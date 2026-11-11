@@ -16,6 +16,7 @@ export function initialImport(input: {
   remote: RemoteVault;
   save: () => Promise<void>;
   signal?: AbortSignal;
+  progress?: () => void;
 }) {
   const { state, local, save } = input,
     remote = input.remote.initial;
@@ -82,6 +83,7 @@ export function initialImport(input: {
     if (result.state === "ready") initial.phase = "ready";
     initial.pending = null;
     await save();
+    input.progress?.();
   };
   const active = () => !!remote && state.initial?.phase === "ready";
   const pending = (path: string) => positions.has(path) && state.initial?.done[path] !== true;

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Connect's setup-method tabs scroll sideways inside their own strip when they are wider than the column, so neither the document nor the dashboard's main area scrolls horizontally on a phone. Every method stays reachable by swipe, the strip's thin scrollbar or arrow keys, and a tab that takes focus is brought fully into the strip. The strip uses the shared TabsList scroll overflow variant, which starts at the left edge so no tab sits in unreachable overflow; other tab lists are unchanged. Wide screens keep the single unscrolled row. The Connect e2e arrows through every tab at 390 and 1280 px and measures the document, main and strip."
+    }
+  }
+}

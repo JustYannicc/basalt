@@ -1,3 +1,4 @@
+import { ModelRequestNotSent } from "../contracts/model-error.ts";
 import type { CredentialSource } from "../contracts/connection.ts";
 import { decodeTunnelFrame } from "../contracts/tunnel.ts";
 import type { OpenOperation } from "../contracts/transport.ts";
@@ -60,6 +61,7 @@ export async function cloudRequest(
     };
   } catch (error) {
     remote.close();
+    if (error instanceof ModelRequestNotSent) await source.transport(signal).catch(() => undefined);
     throw error;
   }
 }

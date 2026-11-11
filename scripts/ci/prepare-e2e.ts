@@ -6,6 +6,7 @@ import { run } from "../process.ts";
 export function e2eCorrections(root: string) {
   return [
     "hitl-inventory-lifetime",
+    "listed-account-bindings-readiness",
     "webhook-removal-recovery",
     "atlassian-fixture-preparation",
     "sso-billing-settlement",

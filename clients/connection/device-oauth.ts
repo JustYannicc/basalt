@@ -174,7 +174,7 @@ function base64url(bytes: Uint8Array) {
     .replaceAll("/", "_")
     .replaceAll("=", "");
 }
-function pause(milliseconds: number, signal: AbortSignal) {
+export function pause(milliseconds: number, signal: AbortSignal) {
   signal.throwIfAborted();
   return new Promise<void>((resolve, reject) => {
     const abort = () => {

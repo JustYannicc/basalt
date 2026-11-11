@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-native-access-load",
+  "file": "0501-native-access-load.patch",
+  "content_sha256": "ddc40e9ca4c1e28e3bfeb645248ef0f576634224ff67de69066e6a5fd7c4e0d3",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

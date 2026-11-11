@@ -44,13 +44,20 @@ export async function nativeFixture(
   let refuseRequest = false;
   let offline = false;
   let accessReads = 0;
+  let accessLifetimeSeconds = 3600;
   let toolsOrganization: string | undefined = "personal-tools";
   let inventory: { status: number; body?: unknown } = { status: 404 };
   let inventoryReads = 0;
   let healthReads = 0;
   let denyAccess = false;
+  let accessDenialStatus = 401;
+  let unavailableAccessReads = 0;
+  let limitedAccessReads = 0;
+  let limitArrived: (() => void) | undefined;
+  const accessTimes: number[] = [];
   let readyFailure: "close" | "timeout" | undefined;
   let operationOpens = 0;
+  let refuseNextUpgrade = false;
   let modelFailure: "unknown" | "not-started" | "disconnect" | undefined;
   const holds = new Set<() => void>();
   let accessGate: ReturnType<typeof gate> | undefined;
@@ -143,7 +150,19 @@ export async function nativeFixture(
     }
     if (request.url === "/api/auth/native/access") {
       accessReads++;
-      if (denyAccess) return json(401, {});
+      accessTimes.push(Date.now());
+      if (limitedAccessReads > 0) {
+        limitedAccessReads--;
+        limitArrived?.();
+        limitArrived = undefined;
+        response.setHeader("Retry-After", "1");
+        return json(429, { error: "synthetic-rate-limit" });
+      }
+      if (unavailableAccessReads > 0) {
+        unavailableAccessReads--;
+        return json(503, { error: "synthetic-deploy-window" });
+      }
+      if (denyAccess) return json(accessDenialStatus, {});
       const held = accessGate;
       accessGate = undefined;
       if (held) {
@@ -164,7 +183,7 @@ export async function nativeFixture(
           models: true,
           ...(toolsOrganization ? { toolsOrganization } : {}),
         },
-        expiresAt: Date.now() + 3600000,
+        expiresAt: Date.now() + accessLifetimeSeconds * 1000,
         ...(display ? { display } : {}),
       });
     }
@@ -182,6 +201,15 @@ export async function nativeFixture(
     return json(404, {});
   });
   server.on("upgrade", (request, socket, head) => {
+    if (offline) {
+      socket.destroy();
+      return;
+    }
+    if (refuseNextUpgrade) {
+      refuseNextUpgrade = false;
+      socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
     if (
       revoked ||
       request.url !== "/native/v1/tunnel" ||
@@ -374,8 +402,26 @@ export async function nativeFixture(
     offline: (value: boolean) => {
       offline = value;
     },
-    denyAccess: (value: boolean) => {
+    denyAccess: (value: boolean, status: 401 | 403 = 401) => {
       denyAccess = value;
+      accessDenialStatus = status;
+    },
+    accessLifetime: (seconds: number) => {
+      accessLifetimeSeconds = seconds;
+    },
+    expireAccess: () => {
+      access = "synthetic-expired-access";
+    },
+    nextAccessLimit: () =>
+      new Promise<void>((resolve) => {
+        limitArrived = resolve;
+      }),
+    limitedAccess: (reads: number) => {
+      limitedAccessReads = reads;
+    },
+    accessTimes: () => [...accessTimes],
+    unavailableAccess: (reads: number) => {
+      unavailableAccessReads = reads;
     },
     holdAccess: () => {
       accessGate = gate();
@@ -417,6 +463,9 @@ export async function nativeFixture(
     },
     loseRefresh: () => {
       loseRefresh = true;
+    },
+    refuseNextUpgrade: () => {
+      refuseNextUpgrade = true;
     },
     failBeforeReady: (value: "close" | "timeout" | undefined) => {
       readyFailure = value;

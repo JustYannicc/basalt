@@ -1,0 +1,148 @@
+diff --git a/packages/ui/src/implementation/components/tabs.tsx b/packages/ui/src/implementation/components/tabs.tsx
+--- a/packages/ui/src/implementation/components/tabs.tsx
++++ b/packages/ui/src/implementation/components/tabs.tsx
+@@ -30,9 +30,18 @@
+         default: "bg-muted",
+         line: "gap-1 bg-transparent",
+       },
++      // A row of tabs wider than its column scrolls inside itself instead of widening the page.
++      // Centred overflow cannot be scrolled back to its start, so a scrolling list starts at the left.
++      // The thin scrollbar stays: without it a plain mouse wheel has no way to the hidden tabs.
++      overflow: {
++        visible: "",
++        scroll:
++          "max-w-full justify-start overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:thin]",
++      },
+     },
+     defaultVariants: {
+       variant: "default",
++      overflow: "visible",
+     },
+   },
+ );
+@@ -41,13 +50,22 @@
+ function TabsList({
+   className,
+   variant = "default",
++  overflow,
++  onFocus,
+   ...props
+ }: React.ComponentProps<typeof TabsPrimitive.List> & VariantProps<typeof tabsListVariants>) {
+   return (
+     <TabsPrimitive.List
+       data-slot="tabs-list"
+       data-variant={variant}
+-      className={cn(tabsListVariants({ variant }), className)}
++      className={cn(tabsListVariants({ variant, overflow }), className)}
++      onFocus={(event) => {
++        onFocus?.(event);
++        // Browsers leave a focused element where it is while any part of it shows, so arrowing
++        // onto a tab at the strip's edge would select it half hidden.
++        if (overflow === "scroll" && event.target instanceof HTMLElement)
++          event.target.scrollIntoView({ block: "nearest", inline: "nearest" });
++      }}
+       {...props}
+     />
+   );
+diff --git a/packages/ui/src/implementation/dashboard/connect.tsx b/packages/ui/src/implementation/dashboard/connect.tsx
+--- a/packages/ui/src/implementation/dashboard/connect.tsx
++++ b/packages/ui/src/implementation/dashboard/connect.tsx
+@@ -941,7 +941,7 @@
+   return (
+     <div className="mcp-install-content min-w-0">
+       <Tabs defaultValue="assistant">
+-        <TabsList aria-label="Setup method" variant="line" className={tabClass}>
++        <TabsList aria-label="Setup method" variant="line" overflow="scroll" className={tabClass}>
+           <TabsTrigger value="assistant">Assistant</TabsTrigger>
+           <TabsTrigger
+             data-product-area="connect"
+diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
+--- a/e2e/tests/pool-setup-connect.spec.ts
++++ b/e2e/tests/pool-setup-connect.spec.ts
+@@ -613,6 +613,86 @@
+     ),
+   );
+ 
++  it.effect(scenarios.connectNarrowLayout.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          browser = yield* Browser;
++        const service = setupService();
++        yield* browser.login(actors.owner);
++        yield* browser.use("Stand in for the setup service", (page) =>
++          page.route("**/setup/v1/**", service.handle),
++        );
++        yield* browser.use("Open Connect", (page) =>
++          page.goto(`/org/${actors.organization.slug}/connect`),
++        );
++        const strip = (page: Page) => page.getByRole("tablist", { name: "Setup method" });
++        yield* browser.use("The setup methods load", (page) => strip(page).waitFor());
++        const names = yield* browser.use("Read the setup methods", (page) =>
++          strip(page).getByRole("tab").allTextContents(),
++        );
++        expect(names).toEqual(expect.arrayContaining(["Personal access token", "Pool endpoint"]));
++        // The page scrolls in <main>, so the document alone can look fine while the page pans sideways.
++        const layout = (step: string) =>
++          browser.use(step, (page) =>
++            strip(page).evaluate((list) => {
++              const main = list.closest("main");
++              const tab = list.querySelector("[data-state='active']")?.getBoundingClientRect();
++              const bounds = list.getBoundingClientRect();
++              return {
++                viewport: innerWidth,
++                document: document.documentElement.scrollWidth,
++                mainClient: main?.clientWidth ?? 0,
++                mainScroll: main?.scrollWidth ?? Number.POSITIVE_INFINITY,
++                mainLeft: main?.scrollLeft ?? 0,
++                stripLeft: bounds.left,
++                stripRight: bounds.right,
++                stripClient: list.clientWidth,
++                stripScroll: list.scrollWidth,
++                stripOverflow: getComputedStyle(list).overflowX,
++                tabLeft: tab?.left ?? Number.NEGATIVE_INFINITY,
++                tabRight: tab?.right ?? Number.POSITIVE_INFINITY,
++              };
++            }),
++          );
++        for (const width of [390, 1280]) {
++          yield* browser.use(`Use ${width} px`, (page) =>
++            page.setViewportSize({ width, height: 844 }),
++          );
++          // Arrow keys move like a person would; a click would let Playwright scroll the tab into view.
++          yield* browser.use(`${width} px: focus the first method`, (page) =>
++            strip(page).getByRole("tab").first().click(),
++          );
++          for (const [index, name] of names.entries()) {
++            if (index > 0)
++              yield* browser.use(`${width} px: arrow to ${name}`, (page) =>
++                page.keyboard.press("ArrowRight"),
++              );
++            yield* browser.use(`${width} px: ${name} shows its section`, (page) =>
++              page.getByRole("tabpanel", { name, exact: true }).waitFor(),
++            );
++            const measured = yield* layout(`${width} px: measure with ${name} chosen`);
++            const detail = JSON.stringify(measured);
++            expect(measured.document, detail).toBeLessThanOrEqual(measured.viewport);
++            expect(measured.mainScroll, detail).toBeLessThanOrEqual(measured.mainClient);
++            expect(measured.mainLeft, detail).toBe(0);
++            expect(measured.tabLeft, detail).toBeGreaterThanOrEqual(measured.stripLeft - 1);
++            expect(measured.tabRight, detail).toBeLessThanOrEqual(measured.stripRight + 1);
++            // Wider than its column, the strip must scroll for touch and mouse, not just clip.
++            if (measured.stripScroll > measured.stripClient)
++              expect(["auto", "scroll"], detail).toContain(measured.stripOverflow);
++            // At 390 the methods do not fit, so the in-strip checks above really exercise scrolling.
++            if (width === 390)
++              expect(measured.stripScroll, detail).toBeGreaterThan(measured.stripClient);
++            else expect(measured.stripScroll, detail).toBeLessThanOrEqual(measured.stripClient);
++          }
++          yield* browser.checkpoint(`Connect at ${width} px`);
++        }
++      }),
++    ),
++  );
++
+   it.effect(scenarios.poolSetupRetainedReturn.title, (context) =>
+     withHostedCase(
+       context,
