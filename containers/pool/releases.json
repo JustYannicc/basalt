@@ -19,17 +19,17 @@
     },
     "node": {
       "repository": "router-for-me/CLIProxyAPI",
-      "tag": "v8.0.66",
-      "commit": "fa11a573b252b30256bef4de952a95feee3c8c9d",
+      "tag": "v8.0.67",
+      "commit": "8bba7a77c6bcbfd993516d26606bfecaa4ff49d0",
       "binary": "cli-proxy-api",
       "assets": {
         "amd64": {
-          "name": "CLIProxyAPI_8.0.66_linux_amd64_no-plugin.tar.gz",
-          "sha256": "285e8a3be8996acfca9fce9cd4636c9adf15dd0574d1e0dbeafc7317a50dbfa2"
+          "name": "CLIProxyAPI_8.0.67_linux_amd64_no-plugin.tar.gz",
+          "sha256": "d22ec5c1a5c7cca7dc4a1bbea71e7a1acf11d22b2ca3d4177a6ee8179a4f8985"
         },
         "arm64": {
-          "name": "CLIProxyAPI_8.0.66_linux_aarch64_no-plugin.tar.gz",
-          "sha256": "70515a991b434c54e9d2c3358f960a7e713a4d2426603163a00def5b86bc4975"
+          "name": "CLIProxyAPI_8.0.67_linux_aarch64_no-plugin.tar.gz",
+          "sha256": "704103eb8ce53946c1172fed835efcf966315f12a79a3f09a3fac0dd0f054b78"
         }
       }
     }
