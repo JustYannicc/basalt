@@ -14,6 +14,9 @@ export interface PoolClaims {
   readonly exp?: number;
 }
 
+// Leave clock-skew headroom below the receiver's strict 30-second assertion limit.
+export const hostAssertionTtlMs = 25_000;
+
 const poolPrefix = "sbp1";
 const encoder = new TextEncoder();
 

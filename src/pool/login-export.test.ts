@@ -14,9 +14,18 @@ type Row = Record<string, unknown>;
 
 async function fixture(provider = "claude") {
   const state = {
-    groups: [{ id: 1, channel_name: `signalbox-pool-${pool}` }, { id: 2, channel_name: "signalbox-pool-other" }],
-    members: [{ id: 1, channel_group_id: 1, auth_id: id }, { id: 2, channel_group_id: 2, auth_id: foreignId }],
-    files: [{ id, provider, type: provider }, { id: foreignId, provider, type: provider }] as Row[],
+    groups: [
+      { id: 1, channel_name: `signalbox-pool-${pool}` },
+      { id: 2, channel_name: "signalbox-pool-other" },
+    ],
+    members: [
+      { id: 1, channel_group_id: 1, auth_id: id },
+      { id: 2, channel_group_id: 2, auth_id: foreignId },
+    ],
+    files: [
+      { id, provider, type: provider },
+      { id: foreignId, provider, type: provider },
+    ] as Row[],
     raw: ` { "type": "${provider}", "access_token": "fixture-secret", "nested": { "preserve": true } }\n`,
     download: undefined as (() => Response | Promise<Response>) | undefined,
     storageAccesses: 0,
@@ -27,33 +36,57 @@ async function fixture(provider = "claude") {
   const home = async (path: string, init?: RequestInit) => {
     calls.push({ path, init });
     assert.equal(init?.method ?? "GET", "GET", "Export must never mutate Home");
-    if (path === "/v8/management/channel-groups") return Response.json({ channel_groups: state.groups });
-    if (path === "/v8/management/channel-group-details") return Response.json({ channel_group_details: state.members });
+    if (path === "/v8/management/channel-groups")
+      return Response.json({ channel_groups: state.groups });
+    if (path === "/v8/management/channel-group-details")
+      return Response.json({ channel_group_details: state.members });
     if (path.startsWith("/v8/management/channel-group-details?")) {
-      const group = Number(new URL(`https://home.invalid${path}`).searchParams.get("channel_group_id"));
-      return Response.json({ channel_group_details: state.members.filter((member) => member.channel_group_id === group) });
+      const group = Number(
+        new URL(`https://home.invalid${path}`).searchParams.get("channel_group_id"),
+      );
+      return Response.json({
+        channel_group_details: state.members.filter((member) => member.channel_group_id === group),
+      });
     }
-    if (path.startsWith("/v8/management/quota/credentials/")) return Response.json({
-      credential: { credential_id: decodeURIComponent(path.slice(path.lastIndexOf("/") + 1)) }, windows: [], reset_credits: null,
-    });
+    if (path.startsWith("/v8/management/quota/credentials/"))
+      return Response.json({
+        credential: { credential_id: decodeURIComponent(path.slice(path.lastIndexOf("/") + 1)) },
+        windows: [],
+        reset_credits: null,
+      });
     if (path.startsWith("/v8/management/quota/credentials?")) return Response.json({ items: [] });
     if (path === "/v8/management/credentials") return Response.json({ files: state.files });
     if (path === `/v8/management/credentials/download?id=${id}`) {
-      assert.equal(init?.redirect, "error");
-      return state.download ? state.download() : new Response(state.raw, { headers: { "X-Private-Home-Header": "fixture-private" } });
+      assert.equal(init?.redirect, "manual");
+      return state.download
+        ? state.download()
+        : new Response(state.raw, { headers: { "X-Private-Home-Header": "fixture-private" } });
     }
     throw new Error("Unexpected fixture Home request");
   };
-  const touchedStorage = async (): Promise<never> => { state.storageAccesses++; throw new Error("Export must not access attribution storage"); };
+  const touchedStorage = async (): Promise<never> => {
+    state.storageAccesses++;
+    throw new Error("Export must not access attribution storage");
+  };
   const values = new Map<string, unknown>();
   const storage: ControlStorage = {
-    async get<T>(key: string) { state.storageReads.push(key); return structuredClone(values.get(key)) as T | undefined; },
-    async put(key, value) { state.storageWrites.push(key); values.set(key, structuredClone(value)); },
-    getAlarm: touchedStorage, setAlarm: touchedStorage,
+    async get<T>(key: string) {
+      state.storageReads.push(key);
+      return structuredClone(values.get(key)) as T | undefined;
+    },
+    async put(key, value) {
+      state.storageWrites.push(key);
+      values.set(key, structuredClone(value));
+    },
+    getAlarm: touchedStorage,
+    setAlarm: touchedStorage,
   };
   const control = new PoolControl(storage, { signingKey, home });
   const token = await signPoolToken(signingKey, { pool, owner, organization });
-  async function call(route = path, options: { token?: string | null; caller?: string | null; method?: string } = {}) {
+  async function call(
+    route = path,
+    options: { token?: string | null; caller?: string | null; method?: string } = {},
+  ) {
     const headers = new Headers();
     const bearer = options.token === undefined ? token : options.token;
     const caller = options.caller === undefined ? owner : options.caller;
@@ -61,12 +94,19 @@ async function fixture(provider = "claude") {
     if (caller !== null) headers.set("x-signalbox-caller", caller);
     const readsBefore = state.storageReads.length;
     const writesBefore = state.storageWrites.length;
-    const response = await control.handle(new Request(`https://pool.invalid/pool/v1${route}`, { headers, method: options.method }));
+    const response = await control.handle(
+      new Request(`https://pool.invalid/pool/v1${route}`, { headers, method: options.method }),
+    );
     assert.equal(response.headers.get("Cache-Control"), "no-store");
     assert.equal(state.storageAccesses, 0);
-    const reads = state.storageReads.slice(readsBefore), writes = state.storageWrites.slice(writesBefore);
+    const reads = state.storageReads.slice(readsBefore),
+      writes = state.storageWrites.slice(writesBefore);
     if (route === "/pool" && caller === owner && bearer === token) {
-      assert.ok(reads.every((key) => key.startsWith("pool-view-") || key === `pool-account-removals:${pool}`));
+      assert.ok(
+        reads.every(
+          (key) => key.startsWith("pool-view-") || key === `pool-account-removals:${pool}`,
+        ),
+      );
       assert.ok(writes.every((key) => key.startsWith("pool-view-")));
     } else {
       assert.deepEqual(reads, [], "Export never reads storage");
@@ -79,12 +119,14 @@ async function fixture(provider = "claude") {
 
 async function error(response: Response, status: number, code: string) {
   assert.equal(response.status, status);
-  const value = await response.json() as Row;
+  const value = (await response.json()) as Row;
   assert.equal(value.error, code);
   assert.deepEqual(Object.keys(value).sort(), ["error", "message"]);
   assert.doesNotMatch(JSON.stringify(value), /fixture-secret|fixture-private/);
 }
-function downloads(calls: { path: string }[]) { return calls.filter((call) => call.path.includes("/credentials/download")); }
+function downloads(calls: { path: string }[]) {
+  return calls.filter((call) => call.path.includes("/credentials/download"));
+}
 
 for (const provider of ["claude", "codex"]) {
   test(`owner exports the exact ${provider} login file from a native opaque pool id without storage writes`, async () => {
@@ -102,9 +144,13 @@ for (const provider of ["claude", "codex"]) {
 test("export rejects missing, invalid, and tampered tokens and non-owner callers before Home", async () => {
   const f = await fixture();
   const parts = f.token.split(".");
-  parts[1] = Buffer.from(JSON.stringify({ pool: "other", owner, organization })).toString("base64url");
-  for (const token of [null, "fake", parts.join(".")]) await error(await f.call(path, { token }), 401, "unauthorized");
-  for (const caller of [null, "other-owner"]) await error(await f.call(path, { caller }), 403, "not_owner");
+  parts[1] = Buffer.from(JSON.stringify({ pool: "other", owner, organization })).toString(
+    "base64url",
+  );
+  for (const token of [null, "fake", parts.join(".")])
+    await error(await f.call(path, { token }), 401, "unauthorized");
+  for (const caller of [null, "other-owner"])
+    await error(await f.call(path, { caller }), 403, "not_owner");
   assert.equal(f.calls.length, 0);
 });
 
@@ -121,7 +167,10 @@ test("export scopes membership to the signed pool and matches the canonical acco
 test("export refreshes group ownership instead of trusting cached group ids", async () => {
   const f = await fixture();
   assert.equal((await f.call("/pool")).status, 200);
-  assert.ok(f.state.storageWrites.length > 0, "The pool view must persist its snapshot before export");
+  assert.ok(
+    f.state.storageWrites.length > 0,
+    "The pool view must persist its snapshot before export",
+  );
   f.state.groups[0]!.channel_name = "signalbox-pool-renamed";
   await error(await f.call(), 404, "not_found");
   assert.equal(downloads(f.calls).length, 0);
@@ -130,14 +179,18 @@ test("export refreshes group ownership instead of trusting cached group ids", as
 test("export validates narrow selectors before Home", async () => {
   const f = await fixture();
   for (const route of [
-    `/accounts/${id}/export`, `/accounts/${id}/export?provider=antigravity`,
+    `/accounts/${id}/export`,
+    `/accounts/${id}/export?provider=antigravity`,
     `/accounts/${id}/export?provider=claude&provider=codex`,
     `/accounts/${id}/export?provider=claude&name=other`,
     `/accounts/${id}/export?provider=claude&id=${foreignId}`,
-    "/accounts/%00/export?provider=claude", "/accounts/%2F/export?provider=claude",
-    "/accounts/%5C/export?provider=claude", "/accounts/%ZZ/export?provider=claude",
+    "/accounts/%00/export?provider=claude",
+    "/accounts/%2F/export?provider=claude",
+    "/accounts/%5C/export?provider=claude",
+    "/accounts/%ZZ/export?provider=claude",
     "/accounts/%20/export?provider=claude",
-  ]) await error(await f.call(route), 400, "invalid_query");
+  ])
+    await error(await f.call(route), 400, "invalid_query");
   await error(await f.call(path, { method: "POST" }), 404, "not_found");
   await error(await f.call(`${path.replace("/export?", "/export/extra?")}`), 404, "not_found");
   assert.equal(f.calls.length, 0);
@@ -171,16 +224,32 @@ test("export rejects membership removal during download without releasing the fi
 test("export sanitizes all Home download errors and does not forward redirects", async () => {
   const f = await fixture();
   for (const status of [302, 400, 401, 403, 404, 429, 500]) {
-    f.state.download = () => new Response("fixture-secret", { status, headers: { Location: "https://elsewhere.invalid/fixture-private" } });
-    await error(await f.call(), status === 404 ? 404 : 503, status === 404 ? "not_found" : "backend_unavailable");
+    f.state.download = () =>
+      new Response("fixture-secret", {
+        status,
+        headers: { Location: "https://elsewhere.invalid/fixture-private" },
+      });
+    await error(
+      await f.call(),
+      status === 404 ? 404 : 503,
+      status === 404 ? "not_found" : "backend_unavailable",
+    );
   }
-  f.state.download = () => { throw new Error("fixture-secret"); };
+  f.state.download = () => {
+    throw new Error("fixture-secret");
+  };
   await error(await f.call(), 503, "backend_unavailable");
 });
 
 test("export rejects malformed, non-object, and wrong-provider files without reflecting their contents", async () => {
   const f = await fixture();
-  for (const raw of ["fixture-secret", "null", "[]", "{}", '{"type":"codex","secret":"fixture-secret"}']) {
+  for (const raw of [
+    "fixture-secret",
+    "null",
+    "[]",
+    "{}",
+    '{"type":"codex","secret":"fixture-secret"}',
+  ]) {
     f.state.download = () => new Response(raw);
     await error(await f.call(), 503, "backend_unavailable");
   }
@@ -193,13 +262,18 @@ test("export rejects malformed, non-object, and wrong-provider files without ref
 test("export bounds streamed files to 1 MiB and cancels an oversized response", async () => {
   const f = await fixture();
   let canceled = false;
-  f.state.download = () => new Response(new ReadableStream({
-    start(controller) {
-      controller.enqueue(new Uint8Array(512 * 1024));
-      controller.enqueue(new Uint8Array(512 * 1024 + 1));
-    },
-    cancel() { canceled = true; },
-  }));
+  f.state.download = () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(512 * 1024));
+          controller.enqueue(new Uint8Array(512 * 1024 + 1));
+        },
+        cancel() {
+          canceled = true;
+        },
+      }),
+    );
   await error(await f.call(), 503, "backend_unavailable");
   assert.equal(canceled, true);
   f.state.raw = JSON.stringify({ type: "claude", padding: "x".repeat(1024 * 1024 - 30) });

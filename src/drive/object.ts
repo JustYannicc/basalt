@@ -74,31 +74,6 @@ export const reply = (result: Effect.Effect<unknown, DriveRequestFailed>): Promi
     ),
   );
 
-/** Commands that store or read attachment bytes; an import uploads its attachments too. */
-const attachmentMethods = new Set<Command["method"]>([
-  "beginAttachment",
-  "uploadAttachmentPart",
-  "completeAttachment",
-  "cancelAttachment",
-  "attach",
-  "attachment",
-  "planImport",
-  "importStatus",
-  "runImport",
-  "finishImport",
-]);
-const unprovisioned = "Vault attachment storage is not provisioned yet";
-/**
- * Stands in until the attachment bucket is bound. Every command that could write to it is refused
- * before the vault opens, so the quota meter never records a write that cannot land.
- */
-const readOnlyBucket: VaultBucket = {
-  put: () => Promise.reject(new Error(unprovisioned)),
-  get: async () => null,
-  list: async () => ({ objects: [], truncated: false }),
-  delete: () => Promise.reject(new Error(unprovisioned)),
-};
-
 const tokenSeconds = 3600,
   refreshMs = 5 * 60_000;
 const repositoryName = (app: string) => {
@@ -116,8 +91,7 @@ export function vaultObject(
   input: {
     app: string;
     storage: TransactionStorage;
-    /** Absent until the attachment bucket is provisioned: text and history still work. */
-    bucket?: VaultBucket;
+    bucket: VaultBucket;
     artifacts: ArtifactsNamespace;
     now?: () => number;
   },
@@ -176,7 +150,7 @@ export function vaultObject(
     const vault = await openVault({
       storage: input.storage,
       accountStorage: input.storage,
-      bucket: strataBucket(input.bucket ?? readOnlyBucket),
+      bucket: strataBucket(input.bucket),
       prefix: `${name}/`,
       repository: vaultRepository,
       now,
@@ -198,11 +172,6 @@ export function vaultObject(
       } catch {
         return { ok: false, error: { _tag: "DriveRequestFailed", reason: "invalid_request" } };
       }
-      if (!input.bucket && attachmentMethods.has(decoded.method))
-        return {
-          ok: false,
-          error: { _tag: "DriveRequestFailed", reason: "unavailable", message: unprovisioned },
-        };
       opened ??= open();
       let dispatch: Awaited<ReturnType<typeof open>>;
       try {

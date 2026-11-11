@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-setup-assertion-window",
+  "file": "0489-setup-assertion-window.patch",
+  "content_sha256": "60efd82e60fee18f295b5bf535beaae927bc0e4d18317dd6cc3c559ea333c6de",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
