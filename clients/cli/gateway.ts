@@ -111,6 +111,8 @@ export async function startGateway(options: GatewayOptions) {
         await forwardHttp(request, response, service, capability, controller.signal);
       }
     } catch (error) {
+      if (dispatched && error instanceof ModelRequestNotSent)
+        await options.source.transport(controller.signal).catch(() => undefined);
       if (response.headersSent || response.destroyed) response.destroy();
       else if (capability === "models" && dispatched && !(error instanceof ModelRequestNotSent)) {
         const failure = upstreamOutcomeUnknown();

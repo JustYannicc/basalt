@@ -1,0 +1,7 @@
+model {
+  extend basalt.setupHost {
+    metadata {
+      constraint "Native access checks authenticate before consuming a database-backed fixed-minute budget of 1200 checks per device across grant rotation. Verified account identity is the fallback key; shared proxy addresses never merge callers into a global budget. This route bypasses the generic IP rate limiter while other auth routes retain their limits. Atomic guarded increments enforce the cap, refusals include Retry-After, and rate-limit pruning preserves the full window."
+    }
+  }
+}

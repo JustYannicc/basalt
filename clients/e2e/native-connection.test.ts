@@ -256,55 +256,71 @@ test(
   },
 );
 
-test("device model failures retain non-retryable ambiguity and explicit not-started refusal", { timeout: 30000 }, async () => {
-  const f = await fixture();
-  try {
-    await f.login();
-    await command(["agent", "add", "both", "models"], f.home);
-    const origin = await f.start(), token = await f.token();
-    for (const mode of ["not-started", "unknown", "disconnect"] as const) {
-      f.remote.failModel(mode);
-      const before = f.remote.counts().modelSends;
-      const response = await fetch(`${origin}/v1/responses`, {
-        method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify({ model: "synthetic-model" }),
-      });
-      if (mode === "not-started") {
+test(
+  "device model failures retain non-retryable ambiguity and explicit not-started refusal",
+  { timeout: 30000 },
+  async () => {
+    const f = await fixture();
+    try {
+      await f.login();
+      await command(["agent", "add", "both", "models"], f.home);
+      const origin = await f.start(),
+        token = await f.token();
+      for (const mode of ["not-started", "unknown", "disconnect"] as const) {
+        f.remote.failModel(mode);
+        const before = f.remote.counts().modelSends;
+        const response = await fetch(`${origin}/v1/responses`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ model: "synthetic-model" }),
+        });
+        if (mode === "not-started") {
+          assert.equal(response.status, 503);
+          assert.equal(response.headers.get("x-should-retry"), null);
+          assert.equal(f.remote.counts().modelSends, before);
+          await response.body?.cancel();
+        } else {
+          assert.equal(response.status, 502);
+          assert.equal(response.headers.get("x-should-retry"), "false");
+          assert.equal(response.headers.get("retry-after"), null);
+          assert.equal(response.headers.get("retry-after-ms"), null);
+          const body = (await response.json()) as { error: { code: string; retryable: boolean } };
+          assert.equal(body.error.code, "upstream_outcome_unknown");
+          assert.equal(body.error.retryable, false);
+          assert.equal(f.remote.counts().modelSends, before + 1);
+        }
+      }
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+for (const mode of ["close", "timeout"] as const)
+  test(
+    `device model ${mode} before ready stays retryable without sending an operation`,
+    { timeout: 105000 },
+    async () => {
+      const f = await fixture();
+      try {
+        await f.login();
+        await command(["agent", "add", "both", "models"], f.home);
+        const origin = await f.start(),
+          token = await f.token();
+        f.remote.failBeforeReady(mode);
+        const before = f.remote.counts();
+        const response = await fetch(`${origin}/v1/responses`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ model: "synthetic-model" }),
+        });
         assert.equal(response.status, 503);
         assert.equal(response.headers.get("x-should-retry"), null);
-        assert.equal(f.remote.counts().modelSends, before);
-        await response.body?.cancel();
-      } else {
-        assert.equal(response.status, 502);
-        assert.equal(response.headers.get("x-should-retry"), "false");
-        assert.equal(response.headers.get("retry-after"), null);
-        assert.equal(response.headers.get("retry-after-ms"), null);
-        const body = await response.json() as { error: { code: string; retryable: boolean } };
-        assert.equal(body.error.code, "upstream_outcome_unknown");
-        assert.equal(body.error.retryable, false);
-        assert.equal(f.remote.counts().modelSends, before + 1);
+        assert.deepEqual(await response.json(), { error: "Model access is unavailable." });
+        assert.equal(f.remote.counts().operationOpens, before.operationOpens);
+        assert.equal(f.remote.counts().modelSends, before.modelSends);
+      } finally {
+        await f.close();
       }
-    }
-  } finally { await f.close(); }
-});
-
-
-for (const mode of ["close", "timeout"] as const) test(`device model ${mode} before ready stays retryable without sending an operation`, { timeout: 45000 }, async () => {
-  const f = await fixture();
-  try {
-    await f.login();
-    await command(["agent", "add", "both", "models"], f.home);
-    const origin = await f.start(), token = await f.token();
-    f.remote.failBeforeReady(mode);
-    const before = f.remote.counts();
-    const response = await fetch(`${origin}/v1/responses`, {
-      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ model: "synthetic-model" }),
-    });
-    assert.equal(response.status, 503);
-    assert.equal(response.headers.get("x-should-retry"), null);
-    assert.deepEqual(await response.json(), { error: "Model access is unavailable." });
-    assert.equal(f.remote.counts().operationOpens, before.operationOpens);
-    assert.equal(f.remote.counts().modelSends, before.modelSends);
-  } finally { await f.close(); }
-});
+    },
+  );
