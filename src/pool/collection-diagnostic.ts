@@ -1,6 +1,7 @@
 import type { CollectionDiagnostic, QuotaFieldPresence } from "../../apps/pool/contract.ts";
 import { digest } from "./backend-users.ts";
 import { object } from "./json.ts";
+import { sourceXaiDiagnostic, xaiCollectionDiagnostic } from "./xai-collection-diagnostic.ts";
 
 function field(value: unknown): QuotaFieldPresence | undefined {
   if (!object(value)) return undefined;
@@ -30,6 +31,7 @@ export function collectionDiagnostic(
   value: unknown,
   provider: string,
 ): CollectionDiagnostic | undefined {
+  if (provider === "xai") return xaiCollectionDiagnostic(value);
   if (
     !object(value) ||
     value.provider !== provider ||
@@ -112,12 +114,19 @@ async function persistDiagnostic(
   const credential = object(value.credential) ? value.credential : value;
   const incoming = object(collection.diagnostic) ? collection.diagnostic : undefined;
   const provider = credential.provider ?? incoming?.provider;
-  if (provider !== "claude" && provider !== "codex") return value;
+  if (provider !== "claude" && provider !== "codex" && provider !== "xai") return value;
   const key = `quota-field-diagnostic-v1:${await digest(id)}`;
   const retained = collectionDiagnostic(await storage.get(key), provider);
   const current = collectionDiagnostic(incoming, provider);
+  const regressiveClaim =
+    current?.attemptedAt === retained?.attemptedAt &&
+    current?.xai?.phase === "claimed" &&
+    retained?.xai !== undefined &&
+    retained.xai.phase !== "claimed";
   const latest =
-    current !== undefined && (retained === undefined || current.attemptedAt >= retained.attemptedAt)
+    current !== undefined &&
+    !regressiveClaim &&
+    (retained === undefined || current.attemptedAt >= retained.attemptedAt)
       ? current
       : retained;
   if (latest === undefined) return value;
@@ -126,6 +135,7 @@ async function persistDiagnostic(
     provider: latest.provider,
     response_received: latest.responseReceived,
     json_valid: latest.jsonValid,
+    ...(latest.xai === undefined ? {} : { xai: sourceXaiDiagnostic(latest.xai) }),
     ...(latest.fiveHour === undefined ? {} : { five_hour: sourceField(latest.fiveHour) }),
     ...(latest.primaryWindow === undefined
       ? {}

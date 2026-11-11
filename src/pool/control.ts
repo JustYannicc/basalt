@@ -2,6 +2,7 @@ import {
   retainCollectionDiagnostic,
   type CollectionDiagnosticStorage,
 } from "./collection-diagnostic.ts";
+import { retainedCollectionRequest } from "./quota-collection-request.ts";
 import { poolDependency } from "./dependency-failure.ts";
 import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
 import { HomeTransportFailure } from "./json.ts";
@@ -297,7 +298,9 @@ export class HomeClient {
   private retainDiagnostic(value: Json, id: string): Promise<Json> {
     if (!object(value.credential) || value.credential.credential_id !== id) return unavailable();
     return this.diagnosticStorage
-      ? retainCollectionDiagnostic(value, id, this.diagnosticStorage)
+      ? retainCollectionDiagnostic(value, id, this.diagnosticStorage).then((reading) =>
+          retainedCollectionRequest(reading, id, this.diagnosticStorage!),
+        )
       : Promise.resolve(value);
   }
   async allPoolGroups(signal?: AbortSignal): Promise<Group[]> {

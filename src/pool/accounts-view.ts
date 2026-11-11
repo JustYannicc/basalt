@@ -1,5 +1,6 @@
 import type { Account, BankedResets, UsageWindow } from "../../apps/pool/contract.ts";
 import { collectionDiagnostic } from "./collection-diagnostic.ts";
+import { collectionRequest } from "./quota-collection-request.ts";
 import { object, rows, text, type Json } from "./json.ts";
 
 /** App and alarm reads preserve full details; retained list replies remain readable. */
@@ -18,6 +19,7 @@ export function accountsView(files: Json[], quota: Json[], ids: ReadonlySet<stri
       const collection = object(raw?.collection) ? raw.collection : undefined;
       const provider = text(row.provider) ?? text(row.type) ?? "";
       const diagnostic = collectionDiagnostic(collection?.diagnostic, provider);
+      const request = provider === "xai" ? collectionRequest(collection?.request) : undefined;
       const freshness = collection?.freshness ?? reading?.freshness;
       const windows = Array.isArray(raw?.windows)
         ? detailWindows(rows(raw.windows), provider)
@@ -59,6 +61,7 @@ export function accountsView(files: Json[], quota: Json[], ids: ReadonlySet<stri
           errorCode: collectionError(collection?.error ?? reading?.error),
           lastAttemptAt: text(collection?.last_attempt_at ?? reading?.last_attempt_at),
           ...(diagnostic === undefined ? {} : { diagnostic }),
+          ...(request === undefined ? {} : { request }),
         },
         nextReadAt: text(collection?.next_probe_at ?? reading?.next_probe_at),
         earliestResetAt: text(reading?.earliest_reset_at),
