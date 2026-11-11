@@ -7,6 +7,7 @@ import {
   Platform,
   ScrollView,
   StatusBar,
+  StyleSheet,
   View,
 } from "react-native";
 import Constants from "expo-constants";
@@ -19,6 +20,11 @@ import { ToolsScreen } from "./ToolsScreen.tsx";
 const defaults = Constants.expoConfig?.extra;
 const brandName = typeof defaults?.brandName === "string" ? defaults.brandName : "Signalbox";
 const defaultOrigin = typeof defaults?.serverOrigin === "string" ? defaults.serverOrigin : "";
+// Two buttons share a row on common phones and stack below ~350pt so labels never truncate.
+const local = StyleSheet.create({
+  row: { flexDirection: "row", flexWrap: "wrap", gap: 16 },
+  cell: { flexGrow: 1, flexBasis: 132 },
+});
 export default function App() {
   return (
     <SafeAreaProvider>
@@ -37,7 +43,15 @@ function Home() {
   const connection = snapshot.connection;
   const origin = connection?.origin;
   const busy = Boolean(snapshot.busy);
-  const connected = connection?.state === "connected" && connection.health?.state !== "offline";
+  const reconnecting = Boolean(snapshot.reconnecting);
+  // Credentials the server refused: only a fresh sign-in helps, so Reconnect is hidden.
+  const terminal = connection?.state === "sign-in-required" || connection?.state === "revoked";
+  // Capabilities stay empty until the server has validated this device again.
+  const connected =
+    connection?.state === "connected" &&
+    !reconnecting &&
+    connection.health?.state !== "offline" &&
+    connection.capabilities.length > 0;
   useEffect(() => {
     void controller.initialize();
     const subscription = AppState.addEventListener("change", (state) => {
@@ -71,13 +85,22 @@ function Home() {
         ? "Sign in again"
         : connection?.state === "revoked"
           ? "Device revoked"
-          : connection?.state === "disconnected"
-            ? "Disconnected"
-            : connected
-              ? "Connected"
-              : connection?.health?.state === "offline"
-                ? "Offline"
-                : "Not connected";
+          : reconnecting
+            ? "Reconnecting"
+            : connection?.state === "disconnected"
+              ? "Disconnected"
+              : connected
+                ? "Connected"
+                : connection?.health?.state === "offline"
+                  ? "Offline"
+                  : connection?.state === "connected"
+                    ? "Checking connection"
+                    : "Not connected";
+  // The automatic-retry message belongs with the status, not with failures below.
+  const statusDetail = reconnecting ? snapshot.error : undefined;
+  // A live credential that is only recovering needs no new sign-in.
+  const showSignIn =
+    (connection?.state !== "connected" || Boolean(snapshot.code)) && snapshot.phase !== "starting";
   return (
     <SafeAreaView style={[styles.page, { backgroundColor: theme.background }]}>
       <StatusBar barStyle={theme.background === "#141513" ? "light-content" : "dark-content"} />
@@ -107,7 +130,14 @@ function Home() {
                 <Label muted>Your models and tools, wherever you are.</Label>
               </View>
               <Card>
-                <Label>{state}</Label>
+                <View style={styles.stack} accessibilityLiveRegion="polite">
+                  <Label>{state}</Label>
+                  {statusDetail && (
+                    <Label small muted>
+                      {statusDetail}
+                    </Label>
+                  )}
+                </View>
                 {connection?.display && (
                   <View style={styles.stack}>
                     <Label>
@@ -151,15 +181,30 @@ function Home() {
                     />
                   </>
                 )}
-                {ready && (
-                  <Button
-                    label={connected ? "Disconnect" : "Reconnect"}
-                    secondary
-                    disabled={busy}
-                    onPress={() => {
-                      void (connected ? controller.disconnect() : controller.reconnect());
-                    }}
-                  />
+                {ready && !terminal && (
+                  <View style={local.row}>
+                    <View style={local.cell}>
+                      <Button
+                        label="Reconnect"
+                        secondary
+                        busy={snapshot.busy === "Reconnect"}
+                        disabled={busy}
+                        onPress={() => {
+                          void controller.reconnect();
+                        }}
+                      />
+                    </View>
+                    <View style={local.cell}>
+                      <Button
+                        label="Disconnect"
+                        secondary
+                        disabled={busy || connection?.state !== "connected"}
+                        onPress={() => {
+                          void controller.disconnect();
+                        }}
+                      />
+                    </View>
+                  </View>
                 )}
               </Card>
               {snapshot.code && (
@@ -171,7 +216,7 @@ function Home() {
                   <Label muted>Check that the browser shows this code.</Label>
                 </Card>
               )}
-              {snapshot.error && <Notice text={snapshot.error} />}
+              {snapshot.error && !statusDetail && <Notice text={snapshot.error} />}
               {snapshot.phase === "storage-error" && (
                 <Button
                   label="Reconnect"
@@ -182,7 +227,7 @@ function Home() {
                   }}
                 />
               )}
-              {(!connected || snapshot.code) && snapshot.phase !== "starting" && (
+              {showSignIn && (
                 <View style={styles.group}>
                   {!snapshot.code && (
                     <>
@@ -198,7 +243,7 @@ function Home() {
                         />
                       )}
                       <Button
-                        label={`Sign in to ${brandName}`}
+                        label={terminal ? "Sign in again" : `Sign in to ${brandName}`}
                         busy={snapshot.busy === "Sign in"}
                         disabled={busy}
                         onPress={() => {

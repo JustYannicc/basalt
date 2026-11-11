@@ -11,6 +11,7 @@
         "expo-constants": "58.0.12",
         "expo-crypto": "58.0.7",
         "expo-dev-client": "58.0.14",
+        "expo-network": "58.0.3",
         "expo-secure-store": "58.0.2",
         "expo-system-ui": "58.0.6",
         "expo-web-browser": "58.0.6",
@@ -548,6 +549,8 @@
     "expo-modules-jsi": ["expo-modules-jsi@58.0.21", "", { "peerDependencies": { "react-native": "*" } }, "sha512-6FG3jKt89s+qolbalas+OE5gQjDYu/sfV7HVAFEw3JVtkS1+MVfCvQLxp3RAm85bVNO0vgfnbn5z6A8WSDWalA=="],
 
     "expo-modules-macros": ["expo-modules-macros@0.27.1", "", { "optionalDependencies": { "@expo/modules-macros-linux-arm64": "0.27.1", "@expo/modules-macros-linux-x64": "0.27.1", "@expo/modules-macros-win32-arm64": "0.27.1", "@expo/modules-macros-win32-x64": "0.27.1" } }, "sha512-xWNI+LpK4Pdmj52ygNYlxefZDhw4mpe6s5yVCLXpqtOyU3PPrFGJJJnDyBpOsOv+mXiYLeaszEEJEpDKBObZ7A=="],
+
+    "expo-network": ["expo-network@58.0.3", "", { "peerDependencies": { "expo": "*", "react": "*" } }, "sha512-0WfFHUKt08Zk7ajaFzVDcZ4iNF3ywPVhGtxo7kDSiNQI4XO3MAqB6jYvpqf0D7+KQ28o/BIEkFdwkZl6AynIvw=="],
 
     "expo-secure-store": ["expo-secure-store@58.0.2", "", { "peerDependencies": { "expo": "*" } }, "sha512-VupWWEuQF6IiQ06McSymtn7/tehs8ifThhFwAU4UK8poomZcaa2S0UVt/y7G2XozBdkI3xpiPSx+r0pS2zsuYQ=="],
 

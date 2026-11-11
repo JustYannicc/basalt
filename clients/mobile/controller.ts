@@ -4,11 +4,13 @@ import type { SocketFactory } from "../contracts/transport.ts";
 import { deviceConnection } from "../connection/device.ts";
 import { signInDevice, type ProofKeyCrypto } from "../connection/device-oauth.ts";
 import { connectionHealth } from "../connection/health.ts";
+import { reconnectRecovery } from "./recovery.ts";
 
 export interface MobileSnapshot {
   phase: "starting" | "signed-out" | "ready" | "storage-error";
   connection?: ConnectionView;
   busy?: string;
+  reconnecting?: boolean;
   code?: string;
   error?: string;
 }
@@ -22,6 +24,7 @@ export interface MobilePorts {
   crypto: ProofKeyCrypto;
   openApproval(url: string): Promise<unknown>;
   closeApproval(): void;
+  network?: { subscribe(listener: (online: boolean) => void): () => void };
 }
 export function mobileController(ports: MobilePorts) {
   let snapshot: MobileSnapshot = { phase: "starting" };
@@ -31,7 +34,8 @@ export function mobileController(ports: MobilePorts) {
   let command: AbortController | undefined;
   let session = new AbortController();
   let foreground = true;
-  let resuming = false;
+  let automatic = true;
+  let unsubscribeNetwork: (() => void) | undefined;
   const listeners = new Set<() => void>();
   const publish = (update: Partial<MobileSnapshot> = {}) => {
     snapshot = { ...snapshot, connection: health?.view() ?? source?.view(), ...update };
@@ -41,18 +45,34 @@ export function mobileController(ports: MobilePorts) {
     session.abort();
     session = new AbortController();
   };
+  const terminal = () =>
+    source?.view().state === "sign-in-required" || source?.view().state === "revoked";
+  const recovery = reconnectRecovery({
+    allowed: () => foreground && automatic && !command && source !== undefined,
+    terminal,
+    random: () => Math.random(),
+    attempt: async (signal) => {
+      stopWork();
+      await source?.reconnect(signal);
+      health?.reset();
+    },
+    changed: (reconnecting, error) => publish({ reconnecting, error }),
+  });
   const attach = (credentials: Parameters<typeof deviceConnection>[0]) => {
     source = deviceConnection(credentials, ports.store, ports.socket);
     health = connectionHealth(source);
   };
   const perform = async (name: string, action: (signal: AbortSignal) => Promise<void>) => {
-    if (command || resuming) return;
-    command = new AbortController();
+    if (command) return;
+    const current = new AbortController();
+    command = current;
     publish({ busy: name, error: undefined });
     try {
-      await action(command.signal);
-    } catch (error) {
-      if (!command.signal.aborted) {
+      await recovery.stop();
+      publish({ reconnecting: false });
+      await action(current.signal);
+    } catch {
+      if (!current.signal.aborted) {
         // Native storage and network errors can contain request data.
         publish({
           error:
@@ -66,6 +86,15 @@ export function mobileController(ports: MobilePorts) {
       publish({ busy: undefined, code: undefined });
     }
   };
+  const networkChanged = (online: boolean) => {
+    if (!foreground || !automatic || command || !source || terminal()) return;
+    if (online) {
+      if (recovery.needed() || source.view().capabilities.length === 0) void recovery.request();
+    } else {
+      stopWork();
+      void recovery.request();
+    }
+  };
   return {
     getSnapshot: () => snapshot,
     subscribe: (listener: () => void) => {
@@ -76,6 +105,7 @@ export function mobileController(ports: MobilePorts) {
     },
     initialize: () =>
       (initial ??= (async () => {
+        unsubscribeNetwork = ports.network?.subscribe(networkChanged);
         try {
           const raw = await ports.store.read();
           if (!raw) {
@@ -83,9 +113,7 @@ export function mobileController(ports: MobilePorts) {
             return;
           }
           attach(readDeviceCredentials(JSON.parse(raw)));
-          try {
-            await source?.reconnect();
-          } catch {}
+          await recovery.request();
           publish({ phase: "ready" });
         } catch {
           publish({
@@ -95,18 +123,20 @@ export function mobileController(ports: MobilePorts) {
           });
         }
       })()),
-    signIn: (origin: string) =>
-      perform("Sign in", async (signal) => {
+    signIn: async (origin: string) => {
+      if (command) return;
+      await perform("Sign in", async (signal) => {
         stopWork();
         await health?.close();
         await source?.disconnect();
+        source = undefined;
+        health = undefined;
         try {
           const credentials = await signInDevice(origin, {
             signal,
             crypto: ports.crypto,
             show: async (url, code) => {
               publish({ code });
-              // Poll while the browser is open. Its dismissal is not a denial.
               const attempt = command;
               void ports.openApproval(url).catch(() => {
                 if (command === attempt) {
@@ -119,18 +149,21 @@ export function mobileController(ports: MobilePorts) {
           signal.throwIfAborted();
           await ports.store.write(JSON.stringify(credentials));
           attach(credentials);
+          automatic = true;
           publish({ phase: "ready" });
-          await source?.reconnect();
         } finally {
           ports.closeApproval();
         }
-      }),
+      });
+      await recovery.request();
+    },
     cancel: () => {
       command?.abort();
       ports.closeApproval();
     },
-    reconnect: () =>
-      perform("Reconnect", async () => {
+    reconnect: async () => {
+      if (command) return;
+      await perform("Reconnect", async () => {
         stopWork();
         if (!source) {
           const raw = await ports.store.read();
@@ -140,25 +173,29 @@ export function mobileController(ports: MobilePorts) {
           }
           attach(readDeviceCredentials(JSON.parse(raw)));
         }
-        await source?.reconnect();
-        health?.reset();
+        automatic = true;
         publish({ phase: "ready" });
-      }),
+      });
+      await recovery.request(true);
+    },
     disconnect: () =>
       perform("Disconnect", async () => {
+        automatic = false;
         stopWork();
         health?.reset(true);
         await source?.disconnect();
+        publish({ reconnecting: false });
       }),
     signOut: () =>
       perform("Sign out", async () => {
+        automatic = false;
         stopWork();
         await health?.close();
         if (source) await source.signOut();
         else await ports.store.remove();
         source = undefined;
         health = undefined;
-        publish({ phase: "signed-out" });
+        publish({ phase: "signed-out", reconnecting: false });
       }),
     revoke: () =>
       perform("Revoke", async () => {
@@ -166,46 +203,53 @@ export function mobileController(ports: MobilePorts) {
         await health?.close();
         if (!source) throw new Error("No device is signed in.");
         await source.revoke();
+        automatic = false;
         source = undefined;
         health = undefined;
-        publish({ phase: "signed-out" });
+        publish({ phase: "signed-out", reconnecting: false });
       }),
     foreground: async (active: boolean) => {
       foreground = active;
       if (!active) {
         stopWork();
+        await recovery.stop();
         health?.reset();
         return;
       }
-      if (command || resuming || source?.view().state !== "connected") return;
-      resuming = true;
-      publish({ busy: "Reconnect" });
-      try {
-        await source.reconnect();
-      } catch {
-        publish({ error: "The connection needs attention. Reconnect or sign in again." });
-      } finally {
-        resuming = false;
-        publish({ busy: undefined });
-      }
+      await recovery.request();
     },
     checkHealth: async () => {
-      if (foreground && !command && !resuming) {
-        await health?.check();
-        publish();
-      }
+      if (!foreground || command || recovery.running()) return;
+      const before = health?.view().health?.state;
+      await health?.check();
+      publish();
+      const after = health?.view().health?.state;
+      if (
+        (after === "online" && (before === "offline" || recovery.needed())) ||
+        (after === "offline" && !recovery.needed())
+      )
+        await recovery.request();
     },
     run: async <T>(
       task: (source: CredentialSource, signal: AbortSignal) => Promise<T>,
       signal: AbortSignal,
     ) => {
-      if (!foreground || command || resuming || !source)
+      if (!foreground || command || recovery.needed() || !source)
         throw new Error("Connect before starting.");
       try {
         return await task(source, AbortSignal.any([session.signal, signal]));
       } finally {
         publish();
+        if (source.view().state === "connected" && source.view().capabilities.length === 0)
+          void recovery.request();
       }
+    },
+    close: async () => {
+      foreground = false;
+      unsubscribeNetwork?.();
+      stopWork();
+      await recovery.stop();
+      await health?.close();
     },
   };
 }
