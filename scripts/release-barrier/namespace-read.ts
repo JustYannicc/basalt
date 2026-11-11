@@ -20,7 +20,7 @@ export interface NamespaceReadOptions {
 }
 
 const attempts = 6;
-// The observed refusal lasted at least 14 seconds. Cloudflare documents no 10004 retry window.
+// Refusals spanned about 14 seconds; the provider documents no retry window for this code.
 // Capped doubling plus 0-20% jitter waits 46-55.2 seconds across the five retries.
 const retryDelay = (attempt: number, random: () => number) =>
   Math.floor(Math.min(2000 * 2 ** (attempt - 1), 16_000) * (1 + random() * 0.2));
