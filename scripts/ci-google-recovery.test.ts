@@ -104,7 +104,7 @@ test("both Google halves retain browser setup, ten-minute budgets and independen
     assert.equal(job.if, `contains(fromJSON(needs.select.outputs.jobs), '${ids[index]}')`);
     assert.equal(job.steps[3].uses, "./.github/actions/setup-browser");
     assert.deepEqual(job.steps[3].with, { "prepare-upstream": "true" });
-    assert.equal(job.steps[3]["timeout-minutes"], 2);
+    assert.equal(job.steps[3]["timeout-minutes"], 5);
     assert.equal(job.steps[4].run, "bun run e2e:prepare");
     assert.equal(job.steps[4]["timeout-minutes"], 2);
     assert.equal(job.steps[5].run, "node ../scripts/check-e2e-browser.mjs");
