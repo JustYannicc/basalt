@@ -87,6 +87,11 @@ public final class PanelModel {
   public var page: Page = .home
   public var notice: Notice?
   public var preview: SetupPreview?
+  /// The last list the server returned; a failed refresh keeps it rather than flashing empty.
+  public private(set) var apps: AppSummary?
+  public var appQuery = ""
+  @ObservationIgnored private var appsLoading = false
+  @ObservationIgnored private var appsGeneration = 0
   public var reviewing = false
   public var confirmRevoke = false
   public var selection = AgentSelection(claude: .undo, codex: .undo)
@@ -130,6 +135,38 @@ public final class PanelModel {
     } catch {
       setNotice(Self.unresponsive)
     }
+  }
+
+  /// Only the open panel asks. A reply that lands after sign-out or revoke is dropped.
+  public func refreshApps() async {
+    guard presentation.connected, presentation.toolAccess else {
+      if apps != nil { apps = nil }
+      return
+    }
+    guard !appsLoading else { return }
+    appsLoading = true
+    defer { appsLoading = false }
+    let generation = appsGeneration
+    guard let reply = try? await send(.apps, nil), let next = reply.apps,
+      generation == appsGeneration, snapshot?.canSignOut == true,
+      snapshot?.connection?.state != .revoked
+    else { return }
+    if apps != next { apps = next }
+  }
+
+  public var listedApps: [AppSummary.App] {
+    let all = apps?.apps ?? []
+    let query = appQuery.trimmingCharacters(in: .whitespaces)
+    return query.isEmpty ? all : all.filter { $0.name.localizedCaseInsensitiveContains(query) }
+  }
+
+  /// Apps open in the browser; one without accounts opens where accounts are connected.
+  public func webURL(for app: AppSummary.App) -> URL? {
+    guard let organization = apps?.organization else { return nil }
+    var url = webOrigin.appending(path: "org").appending(path: organization).appending(path: "apps")
+      .appending(path: app.id)
+    if app.accounts == 0 { url.append(queryItems: [URLQueryItem(name: "view", value: "accounts")]) }
+    return url
   }
 
   public func perform(_ request: DesktopRequest, file: URL? = nil) async {
@@ -183,6 +220,10 @@ public final class PanelModel {
     if snapshot != value { snapshot = value }
     let next = Presentation(value)
     if presentation != next { presentation = next }
+    if !value.canSignOut || value.connection?.state == .revoked {
+      appsGeneration += 1
+      if apps != nil { apps = nil }
+    }
     if !initialized && value.phase != .starting {
       initialized = true
       resetSelection(value.configured)

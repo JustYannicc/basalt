@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A native device grant authenticates the organization API with discover authority only, for the organization its tools grant names, after the same token, consent, membership and native computer checks as MCP. Endpoints that need read, run, data or manage authority, and Git access, refuse it; the unchecked organization context read stays reachable as for any bearer. MCP keeps discover and run. A device without a tools grant is refused. The inventory adds per-app counts of usable accounts, the caller's links plus the app's shared links, without account identifiers; reading it may repair the caller's own member defaults as it does for every caller."
+    }
+  }
+}

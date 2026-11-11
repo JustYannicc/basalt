@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { control } from "../cli/ipc.ts";
+import { control, controlApps } from "../cli/ipc.ts";
 import { ipcPath, operatorToken, runtimeOrigin } from "../cli/profile.ts";
 
 /** Owns only the CLI it spawned. Another process using the profile keeps its lease. */
@@ -20,6 +20,9 @@ export class ConnectionSupervisor {
   }
   async health() {
     return control(ipcPath(this.home), await operatorToken(this.home), "health");
+  }
+  async apps() {
+    return controlApps(ipcPath(this.home), await operatorToken(this.home));
   }
   async origin() {
     return runtimeOrigin(this.home);

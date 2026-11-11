@@ -16,6 +16,7 @@ for (const temporary of [false, true])
     let opens = 0;
     const source: CredentialSource = {
       view: () => ({ mode: "device", state: "connected", capabilities: ["models"] }),
+      apps: async () => undefined,
       origins: () => [],
       transport: async () => {
         if (temporary) throw new ModelRequestNotSent("Synthetic authorization network outage.");

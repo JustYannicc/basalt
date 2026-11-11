@@ -1,4 +1,10 @@
-import type { Capability, ConnectionView, CredentialSource } from "../contracts/connection.ts";
+import { Schema } from "effect";
+import type {
+  AppSummary,
+  Capability,
+  ConnectionView,
+  CredentialSource,
+} from "../contracts/connection.ts";
 import {
   readDeviceCredentials,
   readNativeAccess,
@@ -10,6 +16,17 @@ import { authRequest, tokenRequest } from "./device-oauth.ts";
 import { nativeAccess } from "./native-access.ts";
 import { openTunnel } from "./tunnel.ts";
 import type { SocketFactory } from "../contracts/transport.ts";
+
+/** The inventory fields the summary needs; other fields are ignored. */
+const Inventory = Schema.Struct({
+  apps: Schema.Array(Schema.Struct({ id: Schema.NonEmptyString, name: Schema.String })),
+  links: Schema.Array(Schema.Struct({ app: Schema.String, account: Schema.String })),
+  appLinks: Schema.Array(Schema.Struct({ app: Schema.String, account: Schema.String })),
+  accountCounts: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ app: Schema.String, count: Schema.Int })),
+  ),
+});
+const readInventory = Schema.decodeUnknownSync(Inventory);
 
 export function deviceConnection(
   initial: DeviceCredentials,
@@ -152,6 +169,44 @@ export function deviceConnection(
       ...(display ? { display } : {}),
       ...(saved ? { origin: saved.origin } : {}),
     }),
+    // The panel uses the same cached grant as agents: closing it can't cancel a shared refresh,
+    // and a failed list never changes connection state.
+    apps: async (signal): Promise<AppSummary | undefined> => {
+      const generation = epoch;
+      const current = await authorize(signal);
+      const organization = access?.policy.toolsOrganization;
+      if (organization === undefined) return undefined;
+      const response = await globalThis.fetch(
+        new URL(`/api/organizations/${encodeURIComponent(organization)}/inventory`, current.origin),
+        {
+          headers: { authorization: `Bearer ${current.accessToken}` },
+          credentials: "omit",
+          redirect: "error",
+          cache: "no-store",
+          signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+        },
+      );
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error("The app list is unavailable.");
+      }
+      const inventory = readInventory(await response.json());
+      // A sign-out or disconnect during the read leaves nothing for the panel to show.
+      if (generation !== epoch || current !== saved) throw new Error("Connection state changed.");
+      const counts = new Map(inventory.accountCounts?.map(({ app, count }) => [app, count]));
+      // Without server counts, only the caller's own links are known.
+      const linked = new Map<string, Set<string>>();
+      for (const link of [...inventory.links, ...inventory.appLinks])
+        linked.set(link.app, (linked.get(link.app) ?? new Set()).add(link.account));
+      return {
+        organization,
+        apps: inventory.apps.map((app) => ({
+          id: app.id,
+          name: app.name,
+          accounts: counts.get(app.id) ?? linked.get(app.id)?.size ?? 0,
+        })),
+      };
+    },
     transport: async (signal) => {
       const current = await authorize(signal);
       return {

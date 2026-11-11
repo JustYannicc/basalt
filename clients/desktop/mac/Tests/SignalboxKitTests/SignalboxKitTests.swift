@@ -34,12 +34,12 @@ import Testing
   }()
 
   static let sharedRequests: [(DesktopRequest, URL?)] = [
-    (.status, nil), (.signIn(origin: "https://s.example"), nil),
+    (.status, nil), (.apps, nil), (.signIn(origin: "https://s.example"), nil),
     (.setupPreview(.init(claude: .connect, codex: .keep)), nil), (.setupApply(id: "p"), nil),
     (.cancelSignIn, nil), (.importDirect, URL(filePath: "/private/keys.json")),
   ]
 
-  @Test("encodes exactly the lines the host schema accepts", arguments: 0..<6)
+  @Test("encodes exactly the lines the host schema accepts", arguments: 0..<7)
   func encodesTheSharedLines(index: Int) throws {
     let lines = Self.sharedLines
     try #require(lines.count == Self.sharedRequests.count)
@@ -122,6 +122,48 @@ import Testing
     fail = false
     await model.refresh()
     #expect(model.notice == nil)
+  }
+
+  @Test("the app list loads, filters and links into the browser") func appListLoadsFiltersAndLinks() async throws {
+    let model = await Fixture.connected.loadedModel()
+    let apps = try #require(model.apps)
+    #expect(apps.apps.map(\.name) == ["Gmail", "GitHub", "Postgres", "Linear"])
+    model.appQuery = "git"
+    #expect(model.listedApps.map(\.id) == ["github"])
+    let github = try #require(model.listedApps.first)
+    #expect(model.webURL(for: github)?.absoluteString == "https://signalbox.example/org/org-1/apps/github")
+    let linear = try #require(apps.apps.last)
+    #expect(model.webURL(for: linear)?.absoluteString == "https://signalbox.example/org/org-1/apps/linear?view=accounts")
+  }
+
+  @Test("signing out drops the app list; a failed read keeps it") func appListLifecycle() async {
+    var reply = DesktopReply(snapshot: Fixture.connected.snapshot, apps: Fixture.appList)
+    var fail = false
+    let model = PanelModel(machineName: "Mac", snapshot: Fixture.connected.snapshot) { _, _ in
+      if fail { throw HostError.stopped }
+      return reply
+    }
+    await model.refreshApps()
+    #expect(model.apps == Fixture.appList)
+    fail = true
+    await model.refreshApps()
+    #expect(model.apps == Fixture.appList)
+    fail = false
+    reply = DesktopReply(snapshot: Fixture.signedOut.snapshot)
+    await model.perform(.signOut)
+    #expect(model.apps == nil)
+  }
+
+  @Test("revoking drops the app list") func revokingDropsTheAppList() async {
+    var reply = DesktopReply(snapshot: Fixture.connected.snapshot, apps: Fixture.appList)
+    let model = PanelModel(machineName: "Mac", snapshot: Fixture.connected.snapshot) { _, _ in reply }
+    await model.refreshApps()
+    #expect(model.apps != nil)
+    reply = DesktopReply(snapshot: Fixture.revoked.snapshot, apps: Fixture.appList)
+    await model.perform(.revoke)
+    #expect(model.apps == nil)
+    await model.refreshApps()
+    #expect(model.apps == nil)
   }
 
   @Test("review is offered only when something would change") func reviewIsOfferedOnlyWhenSomethingWouldChange() {

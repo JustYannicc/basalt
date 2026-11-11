@@ -95,9 +95,27 @@ export const readConnectionView = Schema.decodeUnknownSync(ConnectionView, {
   onExcessProperty: "error",
 });
 
+/** The apps a device's tools grant can discover, as names and linked-account counts only. */
+export const AppSummary = Schema.Struct({
+  organization: Schema.NonEmptyString,
+  apps: Schema.Array(
+    Schema.Struct({
+      id: Schema.NonEmptyString,
+      name: Schema.String,
+      accounts: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    }),
+  ),
+});
+export type AppSummary = typeof AppSummary.Type;
+export const readAppSummary = Schema.decodeUnknownSync(AppSummary, {
+  onExcessProperty: "error",
+});
+
 /** The process owns forwarding; a credential source owns renewal and server-side revocation. */
 export interface CredentialSource {
   view(): ConnectionView;
+  /** Undefined when this connection has no device tools grant to list apps with. */
+  apps(signal: AbortSignal): Promise<AppSummary | undefined>;
   origins(): readonly string[];
   transport(signal: AbortSignal): Promise<ConnectionTransport>;
   disconnect(): Promise<void>;

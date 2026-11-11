@@ -1,0 +1,81 @@
+diff --git a/apps/hosted/server/src/contracts/organization.ts b/apps/hosted/server/src/contracts/organization.ts
+--- a/apps/hosted/server/src/contracts/organization.ts
++++ b/apps/hosted/server/src/contracts/organization.ts
+@@ -211,6 +211,12 @@
+       Schema.Struct({ ...Account.fields, health: Schema.optionalKey(AccountHealth) }),
+     ),
+     accountSetup: Schema.Struct({ redirectUri: HttpUrl }),
++    /** Distinct accounts each listed app can use: the caller's links and the app's shared ones. */
++    accountCounts: Schema.optionalKey(
++      Schema.Array(
++        Schema.Struct({ app: AppId, count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)) }),
++      ),
++    ),
+   }))();
+ export type Inventory = typeof Inventory.Type;
+ /** Membership and inventory for the explicitly requested organization. */
+diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hosted/server/src/implementation/bearer-access.ts
+--- a/apps/hosted/server/src/implementation/bearer-access.ts
++++ b/apps/hosted/server/src/implementation/bearer-access.ts
+@@ -348,9 +348,10 @@
+     if (grantId.startsWith("native:")) {
+       const nativeAudience = `${origin}/native`;
+       const consentScopes = strings(row.consentScopes) ?? [];
++      // A device uses MCP to call tools. On the API it may only discover, which lets the Mac
++      // app list the apps it can reach without reading account details.
+       if (
+-        kind !== "mcp" ||
+-        (request.mode ?? "model") !== "model" ||
++        (kind === "mcp" && (request.mode ?? "model") !== "model") ||
+         row.grantConnection !== null ||
+         audiences.length !== 1 ||
+         audiences[0] !== nativeAudience ||
+@@ -414,7 +415,9 @@
+           policy: GrantPolicy.make({ kind: "all" }),
+           target: GrantTarget.make({ kind: "mcp", mode: "model" }),
+         },
+-        policy: selectedAuthority(["discover", "run"], { kind: "all" }),
++        policy: selectedAuthority(kind === "mcp" ? ["discover", "run"] : ["discover"], {
++          kind: "all",
++        }),
+         access: { organization, owner: organizationOwner(organization), role },
+         organizationSlug: member?.slug ?? null,
+       };
+diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
+--- a/apps/hosted/server/src/implementation/organization.ts
++++ b/apps/hosted/server/src/implementation/organization.ts
+@@ -279,17 +279,29 @@
+         ? accounts
+         : accounts.filter((account) => selected.has(account.id));
+     const listedIds = new Set(listedAccounts.map((account) => account.id));
++    const appLinked = yield* appLinkedAccounts(
++      yield* policyDatabase,
++      apps.map((app) => app.id),
++    );
+     const appLinks = [
+       ...new Map(
+-        (yield* appLinkedAccounts(
+-          yield* policyDatabase,
+-          apps.map((app) => app.id),
+-        ))
++        appLinked
+           .filter((link) => listedIds.has(link.id))
+           .map((link) => [`${link.app}\u0000${link.id}`, { app: link.app, account: link.id }]),
+       ).values(),
+     ];
+-    return { apps, accounts: yield* withHealth(listedAccounts), links, appLinks };
++    // A caller that cannot read accounts still learns how many each app can use, never which.
++    const usable = new Map<string, Set<string>>();
++    for (const link of [
++      ...links,
++      ...appLinked.map((link) => ({ app: link.app, account: link.id })),
++    ])
++      usable.set(link.app, (usable.get(link.app) ?? new Set()).add(link.account));
++    const accountCounts = apps.map((app) => ({
++      app: app.id,
++      count: usable.get(app.id)?.size ?? 0,
++    }));
++    return { apps, accounts: yield* withHealth(listedAccounts), links, appLinks, accountCounts };
+   });
+ /** Organization routes do not own app/account operations. */
+ export const hostedOrganizationHandlers = HttpApiBuilder.group(

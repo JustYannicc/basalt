@@ -21,6 +21,7 @@ import { startNativeClientWorker } from "./native-client-worker.mjs";
 import { nativeClientCli } from "./native-client-cli.mjs";
 import { nativeSlowReader } from "./native-client-reader.mjs";
 import { verifyNativeDisplay } from "./native-display.mjs";
+import { verifyNativeApps } from "./native-apps.mjs";
 import { verifyNativeSearch } from "./native-search.mjs";
 import { verifyNativeLocalHeaders } from "./native-local-headers.mjs";
 
@@ -114,6 +115,7 @@ const program = Effect.gen(function* () {
     );
     assert.equal(deployed.status, 200);
     const app = await deployed.json();
+    const created = [];
     try {
       const login = launch(["login", worker.origin, "--no-browser", "--storage", storage]);
       const match = await ready(login, /Confirmation code: ([A-Z-]+)/u);
@@ -149,6 +151,17 @@ const program = Effect.gen(function* () {
         poolId: "pool-native-client",
         setDisplay: (enabled) => Effect.runPromise(pool.display(enabled)),
         sentTeams: () => Effect.runPromise(pool.teams),
+      });
+      await verifyNativeApps({
+        worker,
+        home,
+        storage,
+        command,
+        app,
+        organization: actors.organization.id,
+        owner,
+        appsManifest,
+        created,
       });
       const modelSearch = await verifyNativeSearch({ worker, origin, headers, WebSocket });
       const localModelHeaders = await verifyNativeLocalHeaders({ origin, token, WebSocket });
@@ -272,10 +285,11 @@ const program = Effect.gen(function* () {
       console.log(JSON.stringify(evidence));
     } finally {
       await stop();
-      await fetch(`${worker.origin}/api/organizations/${actors.organization.id}/apps/${app.id}`, {
-        method: "DELETE",
-        headers: owner,
-      });
+      for (const id of [app.id, ...created])
+        await fetch(`${worker.origin}/api/organizations/${actors.organization.id}/apps/${id}`, {
+          method: "DELETE",
+          headers: owner,
+        });
     }
   });
 });

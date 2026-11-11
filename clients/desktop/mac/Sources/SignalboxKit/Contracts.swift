@@ -130,9 +130,35 @@ public struct SetupPreview: Codable, Equatable, Sendable {
   }
 }
 
+/// What the device's tools grant can discover: names and linked-account counts, nothing else.
+public struct AppSummary: Codable, Equatable, Sendable {
+  public struct App: Codable, Equatable, Sendable, Identifiable {
+    public var id: String
+    public var name: String
+    public var accounts: Int
+    public init(id: String, name: String, accounts: Int) {
+      self.id = id
+      self.name = name
+      self.accounts = accounts
+    }
+  }
+  public var organization: String
+  public var apps: [App]
+  public init(organization: String, apps: [App]) {
+    self.organization = organization
+    self.apps = apps
+  }
+}
+
 public struct DesktopReply: Codable, Equatable, Sendable {
   public var snapshot: DesktopSnapshot
   public var preview: SetupPreview?
+  public var apps: AppSummary?
+  public init(snapshot: DesktopSnapshot, preview: SetupPreview? = nil, apps: AppSummary? = nil) {
+    self.snapshot = snapshot
+    self.preview = preview
+    self.apps = apps
+  }
 }
 
 public enum AgentChoice: String, Codable, Sendable, CaseIterable { case connect, keep, undo }
@@ -146,7 +172,7 @@ public struct AgentSelection: Codable, Equatable, Sendable {
 }
 
 public enum DesktopRequest: Equatable, Sendable, Encodable {
-  case status, cancelSignIn, openApproval, disconnect, reconnect, signOut, revoke
+  case status, apps, cancelSignIn, openApproval, disconnect, reconnect, signOut, revoke
   case undoPreview, cancelPreview, importDirect
   case signIn(origin: String)
   case setupPreview(AgentSelection)
@@ -155,6 +181,7 @@ public enum DesktopRequest: Equatable, Sendable, Encodable {
   public var action: String {
     switch self {
     case .status: "status"
+    case .apps: "apps"
     case .cancelSignIn: "cancel-sign-in"
     case .openApproval: "open-approval"
     case .disconnect: "disconnect"

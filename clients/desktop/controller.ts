@@ -100,6 +100,11 @@ export function desktopController(options: {
   };
   const handle = async (request: DesktopRequest): Promise<DesktopReply> => {
     if (request.action === "status") return { snapshot: await snapshot() };
+    if (request.action === "apps") {
+      // An unavailable list leaves the reply without apps; the panel keeps what it last showed.
+      const apps = hasProfile ? await connection.apps().catch(() => undefined) : undefined;
+      return { snapshot: await snapshot(), ...(apps ? { apps } : {}) };
+    }
     if (request.action === "cancel-sign-in") {
       await cancelSignIn();
       return { snapshot: await snapshot() };
@@ -173,7 +178,7 @@ export function desktopController(options: {
       phase = "ready";
     },
     request: (request: DesktopRequest): Promise<DesktopReply> => {
-      if (["status", "cancel-sign-in", "open-approval"].includes(request.action))
+      if (["status", "apps", "cancel-sign-in", "open-approval"].includes(request.action))
         return handle(request).catch(async () => ({
           snapshot: {
             ...(await snapshot()),
