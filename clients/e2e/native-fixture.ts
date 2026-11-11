@@ -46,6 +46,8 @@ export async function nativeFixture(
   let accessReads = 0;
   let healthReads = 0;
   let denyAccess = false;
+  let accessDenialStatus = 401;
+  let unavailableAccessReads = 0;
   let readyFailure: "close" | "timeout" | undefined;
   let operationOpens = 0;
   let modelFailure: "unknown" | "not-started" | "disconnect" | undefined;
@@ -140,7 +142,11 @@ export async function nativeFixture(
     }
     if (request.url === "/api/auth/native/access") {
       accessReads++;
-      if (denyAccess) return json(401, {});
+      if (unavailableAccessReads > 0) {
+        unavailableAccessReads--;
+        return json(503, { error: "synthetic-deploy-window" });
+      }
+      if (denyAccess) return json(accessDenialStatus, {});
       const held = accessGate;
       accessGate = undefined;
       if (held) {
@@ -366,8 +372,12 @@ export async function nativeFixture(
     offline: (value: boolean) => {
       offline = value;
     },
-    denyAccess: (value: boolean) => {
+    denyAccess: (value: boolean, status: 401 | 403 = 401) => {
       denyAccess = value;
+      accessDenialStatus = status;
+    },
+    unavailableAccess: (reads: number) => {
+      unavailableAccessReads = reads;
     },
     holdAccess: () => {
       accessGate = gate();
