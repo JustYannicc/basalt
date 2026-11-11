@@ -38,17 +38,12 @@ diff --git a/packages/ui/src/implementation/components/tabs.tsx b/packages/ui/sr
 diff --git a/packages/ui/src/implementation/dashboard/connect.tsx b/packages/ui/src/implementation/dashboard/connect.tsx
 --- a/packages/ui/src/implementation/dashboard/connect.tsx
 +++ b/packages/ui/src/implementation/dashboard/connect.tsx
-@@ -941,7 +941,12 @@
+@@ -941,7 +941,7 @@
    return (
      <div className="mcp-install-content min-w-0">
        <Tabs defaultValue="assistant">
 -        <TabsList aria-label="Setup method" variant="line" className={tabClass}>
-+        <TabsList
-+          aria-label="Setup method"
-+          variant="line"
-+          overflow="scroll"
-+          className={tabClass}
-+        >
++        <TabsList aria-label="Setup method" variant="line" overflow="scroll" className={tabClass}>
            <TabsTrigger value="assistant">Assistant</TabsTrigger>
            <TabsTrigger
              data-product-area="connect"
