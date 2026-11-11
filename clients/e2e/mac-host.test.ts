@@ -108,6 +108,16 @@ function startHost(home: string, config: string) {
   };
 }
 
+/**
+ * A host answers status while it starts, and its connection answers before writing its local
+ * address, so "connected" alone can be seen before the address exists. Ready follows startup or
+ * sign-in, both of which wait for the connection to start; the address is checked directly too.
+ */
+const usable = (reply: DesktopReply) =>
+  reply.snapshot.phase === "ready" &&
+  reply.snapshot.connection?.state === "connected" &&
+  reply.snapshot.localOrigin !== undefined;
+
 const exists = (path: string) =>
   access(path).then(
     () => true,
@@ -140,12 +150,11 @@ test(
         { id: 97, error: "refused" },
       );
 
+      // Actions sent while the host is still starting are ignored, so wait for it first.
+      await host.until((reply) => reply.snapshot.phase === "ready");
       const signing = await host.send({ action: "sign-in", origin: remote.origin });
       assert.equal(signing.snapshot.phase, "signing-in");
-      const connected = await host.until(
-        (reply) =>
-          reply.snapshot.phase === "ready" && reply.snapshot.connection?.state === "connected",
-      );
+      const connected = await host.until(usable);
       const origin = connected.snapshot.localOrigin;
       assert.match(origin ?? "", /^http:\/\/127\.0\.0\.1:\d+$/u);
 
@@ -166,7 +175,7 @@ test(
 
       // The next launch takes over the same profile: same port, same agent credential, no sign-in.
       host = startHost(home, config);
-      const resumed = await host.until((reply) => reply.snapshot.connection?.state === "connected");
+      const resumed = await host.until(usable);
       assert.equal(resumed.snapshot.localOrigin, origin);
       assert.equal(
         JSON.parse(await readFile(join(home, "agent-desktop-codex.json"), "utf8")).token,
@@ -179,14 +188,14 @@ test(
       const outside = launch(["run"], home);
       await ready(outside, /Connection ready at /u);
       host = startHost(home, config);
-      await host.until((reply) => reply.snapshot.connection?.state === "connected");
+      await host.until(usable);
       assert.equal(await host.close(), 0);
       assert.equal(await exists(join(home, "runtime.json")), true);
       outside.child.kill("SIGTERM");
       assert.equal((await outside.exited).code, 0);
 
       host = startHost(home, config);
-      await host.until((reply) => reply.snapshot.connection?.state === "connected");
+      await host.until(usable);
       const revoked = await host.send({ action: "revoke" });
       assert.equal(revoked.snapshot.connection?.state, "revoked");
       const signedOut = await host.send({ action: "sign-out" });
