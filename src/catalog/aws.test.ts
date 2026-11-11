@@ -163,7 +163,32 @@ test("AWS device sign-in accepts only exact AWS pages in the connection's region
   const accepts = (value: string, kind: "page" | "complete" = "complete") =>
     deviceVerificationUrl(value, "eu-west-1", kind)?.href;
 
-  // Current StartDeviceAuthorization shape from the regional OIDC endpoint (instance id synthetic).
+  // StartDeviceAuthorization's shape for a real tenant on 2026-11-11 (request URI and store id synthetic):
+  // both URIs name the sign-in platform and carry no user_code.
+  const platform =
+    "https://eu-west-1.signin.aws/platform/authorize?request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3AAAAAsynthetic&identitystore_id=d-0123456789";
+  assert.equal(accepts(platform), platform);
+  assert.equal(accepts(platform, "page"), platform);
+  const dualStack = platform.replace("eu-west-1.signin.aws", "eu-west-1.sso.signin.aws");
+  assert.equal(accepts(dualStack), dualStack);
+  for (const lookalike of [
+    platform.replace("https:", "http:"),
+    platform.replace("eu-west-1.signin.aws", "us-east-1.signin.aws"),
+    platform.replace("eu-west-1.signin.aws", "evil.eu-west-1.signin.aws"),
+    platform.replace("eu-west-1.signin.aws", "eu-west-1.signin.aws.evil.com"),
+    platform.replace("eu-west-1.signin.aws", "eu-west-1.signin.awsx"),
+    platform
+      .replace("https://", "https://eu-west-1.signin.aws@evil.com/")
+      .replace("@evil.com/eu-west-1.signin.aws", "@evil.com"),
+    platform.replace("/platform/authorize", "/platform/other"),
+    platform.replace("request_uri=urn", "request_uri=https"),
+    `${platform}#fragment`,
+    "https://eu-west-1.signin.aws/platform/authorize?identitystore_id=d-0123456789",
+    "https://eu-west-1.signin.aws/platform/authorize?request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3A&identitystore_id=d-0123456789",
+  ])
+    assert.equal(accepts(lookalike), undefined, lookalike);
+
+  // Instance portal shape from the regional OIDC endpoint (instance id synthetic).
   const portal = "https://ssoins-0a1b2c3d4e5f6789.eu-west-1.portal.amazonaws.com/#/device";
   assert.equal(accepts(`${portal}?user_code=ABCD-EFGH`), `${portal}?user_code=ABCD-EFGH`);
   assert.equal(accepts(portal, "page"), portal);

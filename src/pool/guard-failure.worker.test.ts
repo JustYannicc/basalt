@@ -74,6 +74,13 @@ const cases = [
   },
   { fault: "policy_ack", guard: "native_policy_install", failure: "invalid_body" },
   { fault: "policy_transport", guard: "native_policy_install", failure: "transport" },
+  { fault: "policy_body_transport", guard: "native_policy_install", failure: "transport" },
+  {
+    fault: "policy_cleanup",
+    guard: "native_policy_install",
+    failure: "response_status",
+    backendStatus: 503,
+  },
   {
     fault: "policy_renewal400",
     guard: "native_policy_install",
@@ -86,6 +93,7 @@ for (const scenario of cases)
   test(`pool view names ${scenario.fault} without exposing backend text and recovers on retry`, async (t) => {
     const reports: unknown[][] = [];
     t.mock.method(console, "error", (...args: unknown[]) => reports.push(args));
+    t.mock.method(performance, "now", () => 0);
     let fault = scenario.fault !== "policy_renewal400";
     let now = Date.now();
     if (scenario.fault === "policy_renewal400") t.mock.method(Date, "now", () => now);
@@ -117,6 +125,17 @@ for (const scenario of cases)
                     started_at: "2026-11-09T00:00:00Z",
                   });
                 if (fault && scenario.fault === "policy_transport") throw new Error(secret);
+                if (fault && scenario.fault === "policy_body_transport")
+                  return new Response(
+                    new ReadableStream({
+                      start: (controller) => controller.error(new Error(secret)),
+                    }),
+                  );
+                if (fault && scenario.fault === "policy_cleanup")
+                  return new Response(
+                    new ReadableStream({ cancel: () => Promise.reject(new Error(secret)) }),
+                    { status: 503 },
+                  );
                 if (fault && scenario.fault === "policy_status")
                   return new Response(secret, { status: 409 });
                 if (
@@ -233,6 +252,9 @@ for (const scenario of cases)
             guard: "native_policy_install",
             failure: "response_status",
             backendStatus: 400,
+            phase: "acknowledgement",
+            elapsedMs: 0,
+            deadlineAborted: false,
           },
         ],
       ]);
@@ -259,7 +281,21 @@ for (const scenario of cases)
       message: "The pool backend is unavailable. Try again later.",
     });
     const { fault: _fault, ...diagnostic } = scenario;
-    assert.deepEqual(reports, [["pool_guard_failure", diagnostic]]);
+    assert.deepEqual(reports, [
+      [
+        "pool_guard_failure",
+        {
+          ...diagnostic,
+          ...(scenario.guard === "native_policy_install"
+            ? {
+                phase: scenario.fault === "policy_transport" ? "request" : "acknowledgement",
+                elapsedMs: 0,
+                deadlineAborted: false,
+              }
+            : {}),
+        },
+      ],
+    ]);
     assert.ok(!JSON.stringify(reports).includes(secret));
     fault = false;
     const recovered = await read();

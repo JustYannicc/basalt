@@ -184,6 +184,9 @@ jobs:
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          # The public fingerprint of the key every published APK is signed with; a fork that signs
+          # with its own key sets its own.
+          RELEASE_CERT_SHA256: 4f166e7760b83474b9970949020adfb30f2fe4f43c10f3d6d3972796344b8180
         run: |
           if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
             message="Missing ANDROID_RELEASE_KEYSTORE_BASE64 or ANDROID_RELEASE_KEYSTORE_PASSWORD; the APK can't be signed with the release key."
@@ -201,7 +204,20 @@ jobs:
           "$tools/apksigner" sign --ks "$keystore" --ks-pass env:KEYSTORE_PASSWORD --ks-key-alias signalbox \
             --out "$RUNNER_TEMP/apk/Signalbox-android.apk" "$RUNNER_TEMP/apk/aligned.apk"
           "$tools/zipalign" -c -P 16 4 "$RUNNER_TEMP/apk/Signalbox-android.apk"
-          "$tools/apksigner" verify --print-certs "$RUNNER_TEMP/apk/Signalbox-android.apk" | grep -E 'Signer #1 certificate (DN|SHA-256)'
+          # apksigner's line prefixes change between build-tools versions; only its "certificate
+          # SHA-256 digest:" field is stable, so compare that with the published key's fingerprint.
+          fail() {
+            echo "::error::$1"
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          verified="$("$tools/apksigner" verify --print-certs "$RUNNER_TEMP/apk/Signalbox-android.apk")" ||
+            fail "apksigner $(basename "$tools") couldn't verify the signed APK."
+          seen="$(printf '%s\n' "$verified" | sed -n 's/^.*certificate SHA-256 digest: //p' | sort -u | paste -sd, -)"
+          [ -n "$seen" ] || fail "apksigner $(basename "$tools") printed no certificate SHA-256 digest for the signed APK."
+          [ "$seen" = "$RELEASE_CERT_SHA256" ] ||
+            fail "The signed APK's certificate SHA-256 is $seen, not the release key's $RELEASE_CERT_SHA256. Check ANDROID_RELEASE_KEYSTORE_BASE64: users can only update an APK signed by the same key."
+          echo "Signed with the release key, certificate SHA-256 $seen (build-tools $(basename "$tools"))." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: clients-android

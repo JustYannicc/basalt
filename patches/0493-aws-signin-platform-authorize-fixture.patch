@@ -1,0 +1,41 @@
+diff --git a/e2e/support/aws-identity-fixture.ts b/e2e/support/aws-identity-fixture.ts
+--- a/e2e/support/aws-identity-fixture.ts
++++ b/e2e/support/aws-identity-fixture.ts
+@@ -108,6 +108,8 @@
+     const clientSecret = "synthetic-client-secret";
+     const deviceCode = "synthetic-device-code";
+     const userCode = "SYNTH-1234";
++    const signInPlatformPage =
++      "https://us-east-1.signin.aws/platform/authorize?request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3ASYNTHETIC&identitystore_id=d-0123456789";
+     const accessToken = "synthetic-identity-center-access-token";
+     const refreshToken = "synthetic-identity-center-refresh-token";
+     const credentials = new Map<string, SyntheticCredential>();
+@@ -197,9 +199,9 @@
+           return yield* json({
+             deviceCode,
+             userCode,
+-            verificationUri:
+-              "https://ssoins-0a1b2c3d4e5f6789.us-east-1.portal.amazonaws.com/#/device",
+-            verificationUriComplete: `https://ssoins-0a1b2c3d4e5f6789.us-east-1.portal.amazonaws.com/#/device?user_code=${userCode}`,
++            // AWS sign-in platform page: the request URI carries the code, so the link has none.
++            verificationUri: signInPlatformPage,
++            verificationUriComplete: signInPlatformPage,
+             expiresIn: 600,
+             interval: 1,
+           });
+diff --git a/e2e/support/aws-identity-journey.ts b/e2e/support/aws-identity-journey.ts
+--- a/e2e/support/aws-identity-journey.ts
++++ b/e2e/support/aws-identity-journey.ts
+@@ -160,8 +160,11 @@
+         .getAttribute("href"),
+     );
+     expect(signIn).toBe(
+-      "https://ssoins-0a1b2c3d4e5f6789.us-east-1.portal.amazonaws.com/#/device?user_code=SYNTH-1234",
++      "https://us-east-1.signin.aws/platform/authorize?request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3ASYNTHETIC&identitystore_id=d-0123456789",
+     );
++    yield* browser.use("Show the code AWS asks for beside the link", (page) =>
++      page.getByText("SYNTH-1234", { exact: true }).waitFor({ state: "visible" }),
++    );
+     yield* browser.checkpoint(`AWS Identity Center pending ${width}`);
+     fixture.approve();
+     const completed = yield* browser.use("The hosted poll persists the AWS connection", (page) =>
