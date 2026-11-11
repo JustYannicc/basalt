@@ -99,8 +99,14 @@ test(
 
       const beforeInvalid = remote.counts();
       const invalid = await request("/mcp", { accept: "x".repeat(4097) });
-      assert.equal(invalid.status, 503, "Local frame validation happens before dispatch.");
-      assert.equal((await invalid.json()).error.data.retryable, true);
+      assert.equal(
+        invalid.status,
+        502,
+        "Invalid local input is a permanent refusal before dispatch.",
+      );
+      assert.equal(invalid.headers.get("retry-after"), null);
+      assert.equal(invalid.headers.get("x-should-retry"), "false");
+      assert.doesNotMatch(await invalid.text(), /outcome.*unknown/iu);
       assert.equal(remote.counts().operationOpens, beforeInvalid.operationOpens);
 
       remote.dropTool(true);
