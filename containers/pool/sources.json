@@ -126,7 +126,7 @@
         {
           "identity": "cliproxy-home-xai-healthy-unmetered",
           "file": "0500-home-xai-healthy-unmetered.patch",
-          "sha256": "6530d9cb28e127c349b739c5a3b0b8ee5a2a8d8b6e1f8272a908999973a9fe9f",
+          "sha256": "966c8e6cc3b099b2cd1fca8f55be7a4aa9715a359da8bd743b789d3fdfad4e3c",
           "retirement": {
             "mode": "manual",
             "requires": "Retire after pinned Home accepts valid monthly and weekly quota omissions as healthy unmetered collections, never invents measured amounts, rejects present invalid values and real request errors, and an authoritative omission replaces old measurements and clears earlier collection failures. Pass persisted-collector, public-health, period, alias, malformed-field, explicit-zero and failure-recovery regressions without changing Home database models or versions."

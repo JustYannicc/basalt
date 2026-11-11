@@ -202,7 +202,7 @@ diff --git a/internal/quota/xai_monthly.go b/internal/quota/xai_monthly.go
 new file mode 100644
 --- /dev/null
 +++ b/internal/quota/xai_monthly.go
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,70 @@
 +package quota
 +
 +import (
@@ -223,6 +223,9 @@ new file mode 100644
 +		return nil, nil, fmt.Errorf("xai billing response is missing config")
 +	}
 +	config := payload.Config
++	if !xaiBillingResetValid(config) {
++		return nil, nil, fmt.Errorf("xai billing reset is invalid")
++	}
 +	monthlyLimitCents, validLimit := xaiOptionalFloatValue(config.MonthlyLimit, config.MonthlyLimitSnake)
 +	usedCents, validUsed := xaiOptionalFloatValue(config.Used, xaiOptionalFloat{})
 +	onDemandCapCents, validCap := xaiOptionalFloatValue(config.OnDemandCap, config.OnDemandCapSnake)
@@ -326,7 +329,7 @@ diff --git a/internal/quota/xai_unmetered.go b/internal/quota/xai_unmetered.go
 new file mode 100644
 --- /dev/null
 +++ b/internal/quota/xai_unmetered.go
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,65 @@
 +package quota
 +
 +import (
@@ -347,10 +350,8 @@ new file mode 100644
 +	if config.CurrentPeriod != nil && config.CurrentPeriodSnake != nil && *config.CurrentPeriod != *config.CurrentPeriodSnake {
 +		return false
 +	}
-+	for _, value := range []string{config.BillingPeriodEnd, config.BillingEndSnake} {
-+		if value != "" && parseProviderTime(value) == nil {
-+			return false
-+		}
++	if !xaiBillingResetValid(config) {
++		return false
 +	}
 +	if period := xaiCurrentWeeklyPeriod(config); period != nil {
 +		var start, end *time.Time
@@ -379,11 +380,26 @@ new file mode 100644
 +	}
 +	return true
 +}
++
++func xaiBillingResetValid(config *xaiBillingConfig) bool {
++	var reset *time.Time
++	for _, value := range []string{config.BillingPeriodEnd, config.BillingEndSnake} {
++		if value == "" {
++			continue
++		}
++		parsed := parseProviderTime(value)
++		if parsed == nil || reset != nil && !reset.Equal(*parsed) {
++			return false
++		}
++		reset = parsed
++	}
++	return true
++}
 diff --git a/internal/quota/xai_unmetered_test.go b/internal/quota/xai_unmetered_test.go
 new file mode 100644
 --- /dev/null
 +++ b/internal/quota/xai_unmetered_test.go
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,190 @@
 +package quota
 +
 +import (
@@ -439,6 +455,7 @@ new file mode 100644
 +	}
 +	for _, weekly := range []string{
 +		`{"config":{"creditUsagePercent":null}}`,
++		`{"config":{"billingPeriodEnd":"2026-11-10T00:00:00Z","billing_period_end":"2026-11-18T00:00:00Z"}}`,
 +		`{"config":{"creditUsagePercent":"bad"}}`,
 +		`{"config":{"currentPeriod":{"start":"not-a-time"}}}`,
 +		`{"config":{"currentPeriod":{"start":"2026-11-11T00:00:00Z","end":"2026-11-10T00:00:00Z"}}}`,
@@ -548,5 +565,28 @@ new file mode 100644
 +		if _, _, errParse := parseXAIUsageWindows([]byte(monthly), now); errParse == nil {
 +			t.Fatal("conflicting monthly aliases accepted")
 +		}
++	}
++}
++
++func TestXAIUnmeteredMalformedPeriodsFailCollection(t *testing.T) {
++	now := time.Date(2026, 11, 11, 12, 2, 24, 0, time.UTC)
++	for _, tc := range []struct{ name, monthly, weekly string }{
++		{"invalid monthly reset", `{"config":{"monthlyLimit":15000,"billingPeriodEnd":"bad"}}`, `{"config":{}}`},
++		{"invalid monthly reset alias", `{"config":{"billing_period_end":"bad"}}`, `{"config":{}}`},
++		{"conflicting monthly reset aliases", `{"config":{"billingPeriodEnd":"2026-11-10T00:00:00Z","billing_period_end":"2026-11-18T00:00:00Z"}}`, `{"config":{}}`},
++		{"conflicting weekly reset aliases", `{"config":{}}`, `{"config":{"billingPeriodEnd":"2026-11-10T00:00:00Z","billing_period_end":"2026-11-18T00:00:00Z"}}`},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			fixture := xaiProbeFixture{profile: `{"subscriptionTier":"SuperGrokPlus"}`, monthly: tc.monthly, weekly: tc.weekly}
++			server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++			repo := newCollectorTestRepository(t)
++			seedCollectorProviderAuth(t, repo, "invalid-period", "xai", map[string]any{"type": "xai", "access_token": "fixture"})
++			collector := NewCollector(repo, Options{Owner: "invalid-period", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++			collector.collectCredential(context.Background(), &coreauth.Auth{ID: "invalid-period", Provider: "xai"}, true)
++			item, errGet := repo.GetQuotaCredential(context.Background(), "invalid-period", now)
++			if errGet != nil || item.CollectionStatus != "failed" || item.Error == nil || item.Error.Code != "UPSTREAM_RESPONSE_INVALID" {
++				t.Fatalf("invalid period became healthy: status=%s failure=%+v read=%v", item.CollectionStatus, item.Error, errGet)
++			}
++		})
 +	}
 +}

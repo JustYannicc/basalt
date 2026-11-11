@@ -295,7 +295,7 @@ test("a fresh xAI collection with no quota amounts stays healthy through check a
     assert.equal(observed.length, windows.length);
     for (const window of observed) {
       assert.deepEqual(window.measure, { unit: "percentage" });
-      assert.equal(window.resetAt, undefined);
+      assert.equal(window.resetsAt, undefined);
     }
     assert.equal(
       f.calls.some((path) => path.endsWith("/quota/collect")),
