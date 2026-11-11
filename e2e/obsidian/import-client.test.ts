@@ -239,8 +239,12 @@ test("a first import lands without reading every file back and reports progress 
       fixture.calls.length <= 16,
       `${fixture.calls.length} calls: ${fixture.calls.join(", ")}`,
     );
-    // The count moves after each landed batch, not only when the whole import ends.
-    assert.ok(confirmed.includes(100), `progress seen: ${confirmed.join(", ")}`);
+    // Progress reaches the screen after each of the two plan pages (nothing confirmed yet) and
+    // after each landed batch, not only when the whole import ends.
+    const seen = `progress seen: ${confirmed.join(", ")}`;
+    assert.ok(confirmed.filter((count) => count === 0).length >= 2, seen);
+    assert.ok(confirmed.indexOf(100) > confirmed.lastIndexOf(0), seen);
+    assert.ok(confirmed.indexOf(133) > confirmed.indexOf(100), seen);
     assert.equal(
       (await fixture.vault.service.read({ path: "notes/132.md" }))?.content,
       files.get("notes/132.md"),
