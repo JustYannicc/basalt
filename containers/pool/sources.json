@@ -113,6 +113,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home exposes bounded xAI monthly and weekly source-field flags tied to collector invocation time, distinguishes forced claim refusal and vendor completion persistence, and passes field-shape, privacy, real-collector, lease-loss, write-failure and management-detail regressions, preserves same-attempt completion ordering and pool-owned persistence through the existing authenticated view without response bodies, amounts or credentials, and does so without changing Home database models or versions."
           }
+        },
+        {
+          "identity": "cliproxy-home-xai-optional-quota-fields",
+          "file": "0497-home-xai-optional-quota-fields.patch",
+          "sha256": "7868b8a5d899ff4ce8b3c8c1379c3c0885c99fb6e45de0b7022515c79db268db",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home treats omitted weekly percentages and on-demand usage as not reported, never infers zero, preserves valid monthly readings and rejects present invalid optional values. Pass observed-shape, explicit-zero, alias, malformed-value, retained-window and real-collector regressions without changing Home database models or versions."
+          }
         }
       ]
     },
@@ -124,7 +133,7 @@
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
           "file": "cliproxy-node-v8.0.51-metadata-only.patch",
-          "sha256": "f5f43a2fe21ab52f26cbedffd86d1a9dcdf22969d9c95665d7eb408c6165cdb2",
+          "sha256": "dc68c2f4dde4c0601bdc6bb7cb731e98f2c7098431f380265bb531b280f0ab84",
           "retirement": {
             "mode": "manual",
             "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer, repeated-boot and response-bearing application-log projection, guard and resumable-cleanup regressions before removing this carry."

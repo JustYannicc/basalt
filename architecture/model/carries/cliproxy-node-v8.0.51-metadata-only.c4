@@ -1,7 +1,7 @@
 model {
   extend basalt.modelGateway {
     metadata {
-      constraint "Node usage and application diagnostics retain only bounded metadata while preserving Home selection identity and request outcomes. Credentials, payload bodies, token fingerprints and arbitrary error text never enter metadata-only diagnostics. The carry preserves upstream authentication policy fields and their refresh behavior independently of diagnostic redaction, including version-specific request-scoped error rules."
+      constraint "Node usage and application diagnostics retain only bounded metadata while preserving Home selection identity and request outcomes. Credentials, payload bodies, token fingerprints and arbitrary error text never enter metadata-only diagnostics. The carry preserves upstream authentication policy fields and their refresh behavior independently of diagnostic redaction, including version-specific request-scoped error rules. Model provider stream redaction guards model retention without changing the upstream model-update condition or token accounting."
     }
   }
 }

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A reported but unmeasured quota window names its missing reading by cadence in the account usage cell and Details. An unreported weekly amount reads No weekly reading, without a meter value, drawn share or inferred reset. Explicit zero and measured amounts retain their normal display, stale readings retain their age, and accounts without reported windows remain bare. Shared UI behavior applies on desktop and touch layouts and never changes account health based on an absent optional amount."
+    }
+  }
+}

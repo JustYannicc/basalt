@@ -937,7 +937,7 @@ jobs:
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - name: Prepare the pinned Google recovery runtime
-        timeout-minutes: 2
+        timeout-minutes: 5
         uses: ./.github/actions/setup-browser
         with:
           prepare-upstream: "true"
@@ -994,7 +994,7 @@ jobs:
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - name: Prepare the pinned Google recovery runtime
-        timeout-minutes: 2
+        timeout-minutes: 5
         uses: ./.github/actions/setup-browser
         with:
           prepare-upstream: "true"

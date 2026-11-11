@@ -1,0 +1,142 @@
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+--- a/packages/ui/src/implementation/dashboard/account-observation-format.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+@@ -108,6 +108,23 @@
+   return `${seconds / size}-${unit}`;
+ };
+ 
++const cadences: Readonly<Record<number, string>> = {
++  3_600: "hourly",
++  86_400: "daily",
++  604_800: "weekly",
++  2_592_000: "monthly",
++};
++
++/**
++ * A window the source named but did not measure reads as a missing reading of its period, such
++ * as "No weekly reading" or "No 5-hour reading", never as a zero, a full bar or an outage.
++ */
++const missingReading = (period: Window["period"]) => {
++  const length =
++    cadences[periodSeconds(period)] ?? (period === undefined ? undefined : periodSpan(period));
++  return length === undefined ? "No reading" : `No ${length} reading`;
++};
++
+ /**
+  * One reported window as a usage cell: the remaining share in its header, the drawn width and the
+  * reset. Where no share is known the header names the remaining or used amount instead.
+@@ -125,6 +142,9 @@
+   const short = (value: number) => amount(value, unit, format);
+   const long = (value: number) => amount(value, unit, format, true);
+   const percent = ratio === undefined ? undefined : Math.round(ratio * 100);
++  const measured =
++    unlimited || [ratio, remaining, used, limit].some((value) => value !== undefined);
++  const missing = measured ? undefined : missingReading(entry.period);
+   const state: ObservationMeterState = unlimited
+     ? "unlimited"
+     : over || remaining === 0
+@@ -156,7 +176,7 @@
+             ? { lead: "Rem", figure: long(remaining) }
+             : used !== undefined
+               ? { lead: "Used", figure: long(used) }
+-              : { lead: undefined, figure: "Unknown" }),
++              : { lead: undefined, figure: missing ?? "Unknown" }),
+     flag: over
+       ? undefined
+       : state === "exhausted"
+@@ -172,7 +192,7 @@
+           ? `${percent}% remaining`
+           : limit !== undefined
+             ? `Limit ${long(limit)}, amount unknown`
+-            : "Unknown",
++            : (missing ?? "Unknown"),
+     // The bar draws the remaining share only; it never grows past full or below empty.
+     width: ratio === undefined || unlimited ? undefined : Math.min(100, Math.max(0, ratio * 100)),
+     aria:
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+--- a/e2e/tests/account-usage-cells.spec.ts
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -118,11 +118,36 @@
+           observe: false,
+           health: true,
+         });
++        const optional = yield* observationFixture({
++          name: "Optional usage fixture",
++          observe: true,
++          health: true,
++        });
++        yield* optional.backend.answer({
++          status: 200,
++          body: subscription(now, [
++            {
++              id: "xai-weekly-usage",
++              label: "Weekly Limit",
++              observedAt: iso(now),
++              measure: { unit: "%" },
++              period: { mode: "fixed", unit: "week", value: 1 },
++            },
++            {
++              id: "xai-monthly-spend",
++              label: "Monthly Spend",
++              observedAt: iso(now),
++              measure: { unit: "USD", used: 42, limit: 150, remaining: 108 },
++              period: { mode: "fixed", unit: "month", value: 1 },
++            },
++          ]),
++        });
+         const named = [
+           [studio, "Studio"],
+           [spare, "Spare"],
+           [stale, "Default"],
+           [connector, "Work mail"],
++          [optional, "Optional usage"],
+         ] as const;
+         for (const [fixture, label] of named) {
+           expect(
+@@ -185,6 +210,7 @@
+             cell(page, "Spare", "seven_day").waitFor(),
+             cell(page, "Default", "seven_day").waitFor(),
+             accountRow(page, "Work mail").waitFor(),
++            cell(page, "Optional usage", "xai-weekly-usage").waitFor(),
+             block(page, "New reporter")
+               .locator("[data-usage-unread]", { hasText: "no reading yet" })
+               .waitFor({ timeout: 5000 }),
+@@ -208,6 +234,7 @@
+             );
+             for (const [label, file] of [
+               ["Work mail", "work-mail"],
++              ["Optional usage", "optional-usage"],
+               ["New reporter", "new-reporter"],
+             ] as const) {
+               yield* browser.use(`Show the whole ${label} row`, (page) =>
+@@ -221,6 +248,30 @@
+             }
+           }
+ 
++        const optionalReading = yield* browser.use(
++          "Read unreported weekly and measured monthly usage",
++          (page) => {
++            const weekly = cell(page, "Optional usage", "xai-weekly-usage");
++            return Promise.all([
++              weekly.locator("[data-reading-value]").innerText(),
++              weekly.getAttribute("data-meter-state"),
++              weekly.getByRole("meter").getAttribute("aria-valuenow"),
++              cell(page, "Optional usage", "xai-monthly-spend").innerText(),
++              block(page, "Optional usage").locator('[data-reading="xai-on-demand"]').count(),
++            ]).then(([value, state, meterValue, monthly, onDemand]) => ({
++              value,
++              state,
++              meterValue,
++              monthly,
++              onDemand,
++            }));
++          },
++        );
++        expect(optionalReading.value).toBe("No weekly reading");
++        expect(optionalReading.state).toBe("unknown");
++        expect(optionalReading.meterValue).toBeNull();
++        expect(optionalReading.monthly).toContain("72%");
++        expect(optionalReading.onDemand).toBe(0);
+         const read = yield* browser.use("Read every cell", (page) =>
+           page
+             .setViewportSize({ width: 1280, height: 900 })

@@ -28,6 +28,7 @@ function fixture(
     unlimited?: boolean;
     provider?: string;
     first?: boolean;
+    windows?: Json[];
     stalled?: boolean;
     wait?: (ms: number, signal: AbortSignal) => Promise<void>;
   } = {},
@@ -93,7 +94,8 @@ function fixture(
             : {}),
         },
         windows:
-          options.first && !completed
+          options.windows ??
+          (options.first && !completed
             ? []
             : [
                 {
@@ -107,7 +109,7 @@ function fixture(
                   period: { seconds: 604800 },
                   ...(options.unlimited ? { is_unlimited: true } : {}),
                 },
-              ],
+              ]),
       });
     },
     () => now,
@@ -204,6 +206,52 @@ test("an unnamed native subscription keeps health and usage without exposing its
   assert.deepEqual(body.result.accountInfo, {});
   assert.ok(body.result.observation);
   assert.equal(JSON.stringify(body).includes("bound-id"), false);
+});
+
+test("xAI remains healthy with measured monthly usage and an unreported weekly amount", async () => {
+  const f = fixture({
+    provider: "xai",
+    windows: [
+      {
+        id: "xai-weekly-usage",
+        label: "Weekly Limit",
+        status: "unknown",
+        unit: "percentage",
+        observed_at: new Date(now).toISOString(),
+        period_unit: "week",
+        period_value: 1,
+        mode: "fixed",
+      },
+      {
+        id: "xai-monthly-spend",
+        label: "Monthly Spend",
+        unit: "currency",
+        currency: "USD",
+        limit: 150,
+        used: 42,
+        remaining: 108,
+        observed_at: new Date(now).toISOString(),
+        period_unit: "month",
+        period_value: 1,
+        mode: "fixed",
+      },
+    ],
+  });
+  const check = await (await f.check({ provider: "xai" }))!.json();
+  assert.equal(check.failure, undefined);
+  assert.ok(check.result.observation);
+  const report = await (await f.check({ provider: "xai", action: "observe" }))!.json();
+  assert.equal(report.failure, undefined);
+  const windows = report.result.observation.windows;
+  assert.equal(windows.length, 2);
+  assert.deepEqual(windows[0].measure, { unit: "percentage" });
+  assert.deepEqual(windows[0].period, { mode: "fixed", unit: "week", value: 1 });
+  assert.equal(windows[1].measure.used, 42);
+  assert.equal(windows[1].measure.remaining, 108);
+  assert.equal(
+    windows.some((entry: { id: string }) => entry.id === "xai-on-demand"),
+    false,
+  );
 });
 
 test("native checks preserve credential rejection and rate limits without returning backend diagnostics", async () => {
