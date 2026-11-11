@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-upstream-assertion-ttl-margin",
+  "file": "0496-upstream-assertion-ttl-margin.patch",
+  "content_sha256": "31c751103b163da76bf45298f40207f8c1bbc17d26c8cdf77e5bf6faf8746111",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

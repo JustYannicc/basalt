@@ -11,7 +11,7 @@ import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.t
 import { schema } from "../../.upstream/packages/fumadb-effect/src/schema.ts";
 import { sqlAdapter } from "../../.upstream/packages/fumadb-effect/src/sql.ts";
 import { accountAcquisitions } from "../../.upstream/packages/sdk/src/implementation/account-acquisition-schema.ts";
-import { openEnvelope, signEnvelope } from "../../src/pool/token.ts";
+import { hostAssertionTtlMs, openEnvelope, signEnvelope } from "../../src/pool/token.ts";
 
 const upstream = new URL("../../.upstream/", import.meta.url);
 const load = (path: string) => import(new URL(path, upstream).href);
@@ -73,7 +73,7 @@ test("app-link reservations are signed, opt-in, cover each pool and fail the nat
         at: number;
         expiresAt: number;
       };
-      assert.equal(value.expiresAt - value.at, 30_000);
+      assert.equal(value.expiresAt - value.at, hostAssertionTtlMs);
       delivered.push(value);
       response.writeHead(status);
       response.end();

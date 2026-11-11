@@ -7,7 +7,7 @@ import { Context, Effect, Option, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
 import type { HostAccessLifecycle } from "../../.upstream/packages/sdk/src/core.ts";
-import { openEnvelope } from "../../src/pool/token.ts";
+import { hostAssertionTtlMs, openEnvelope } from "../../src/pool/token.ts";
 import type { AccessEnvelope } from "../../src/pool/access-contract.ts";
 
 const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
@@ -85,7 +85,7 @@ export async function fixture<R>(
       const { envelope } = JSON.parse(Buffer.concat(chunks).toString());
       const value = (await openEnvelope(secret, "sba1", envelope)) as AccessEnvelope;
       assert.ok(value);
-      assert.equal(value.expiresAt - value.at, 30_000);
+      assert.equal(value.expiresAt - value.at, hostAssertionTtlMs);
       assert.ok(Math.abs(Date.now() - value.at) < 5_000);
       changes.push(value);
       requestTransactions.push(currentTransaction);
