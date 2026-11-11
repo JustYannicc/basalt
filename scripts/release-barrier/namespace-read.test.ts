@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { cloudflareArtifactsApi } from "../ensure-artifacts.ts";
 import { admitSourceNamespace } from "./commands.ts";
 import { releaseEvidence } from "./evidence.ts";
+import type { NamespaceRead } from "./namespace-read.ts";
 
 const props = {
   command: "node ensure-artifacts.ts",
@@ -58,12 +59,13 @@ test("namespace admission recovers on attempt two and retains safe failed and su
   const waits: number[] = [];
   await admitSourceNamespace(props, http.api, {
     record: evidence.namespaceRead,
+    random: () => 0,
     wait: async (ms) => {
       waits.push(ms);
     },
   });
   const receipt = JSON.parse(await readFile(join(directory, "namespace-reads.json"), "utf8"));
-  assert.deepEqual(waits, [1000]);
+  assert.deepEqual(waits, [2000]);
   assert.equal(http.calls.length, 3);
   assert.deepEqual(
     receipt.reads.map(({ attempt, status }: { attempt: number; status: number }) => [
@@ -95,14 +97,100 @@ test("namespace admission recovers on attempt two and retains safe failed and su
   assert.deepEqual(complete.namespaceReads, receipt.reads);
 });
 
+for (const phase of ["preparation", "pre-activation"] as const)
+  test(`a long namespace blip recovers on attempt six during ${phase}`, async (context) => {
+    const directory = await mkdtemp(join(tmpdir(), "namespace-long-blip-"));
+    context.after(() => rm(directory, { recursive: true, force: true }));
+    const evidence = releaseEvidence(directory, "a".repeat(40));
+    let elapsed = 0;
+    const http = provider([
+      ...Array.from({ length: 5 }, (_, index) => () => {
+        assert.ok(elapsed < 35_000);
+        return denied(index + 1);
+      }),
+      () => {
+        assert.ok(elapsed > 35_000);
+        return readable();
+      },
+      readable,
+    ]);
+    const waits: number[] = [];
+    await admitSourceNamespace(props, http.api, {
+      phase,
+      record: evidence.namespaceRead,
+      random: () => 0,
+      wait: async (ms) => {
+        waits.push(ms);
+        elapsed += ms;
+      },
+    });
+    const receipt = JSON.parse(await readFile(join(directory, "namespace-reads.json"), "utf8"));
+    assert.deepEqual(waits, [2000, 4000, 8000, 16_000, 16_000]);
+    assert.equal(elapsed, 46_000);
+    assert.equal(http.calls.length, 7);
+    assert.deepEqual(
+      receipt.reads.map((read: NamespaceRead) => [
+        read.phase,
+        read.namespace,
+        read.page,
+        read.attempt,
+        read.status,
+        read.codes,
+        read.ray,
+      ]),
+      [
+        ...[1, 2, 3, 4, 5].map((attempt) => [
+          phase,
+          "apps",
+          1,
+          attempt,
+          403,
+          [10004],
+          ray(attempt),
+        ]),
+        [phase, "apps", 1, 6, 200, [], "aaaaaaaaaaaaaaaa-ORD"],
+        [phase, "vaults", 1, 1, 200, [], "aaaaaaaaaaaaaaaa-ORD"],
+      ],
+    );
+  });
+
+for (const [random, expected] of [
+  [0, [2000, 4000, 8000, 16_000, 16_000]],
+  [0.5, [2200, 4400, 8800, 17_600, 17_600]],
+  [1, [2400, 4800, 9600, 19_200, 19_200]],
+] as const)
+  test(`namespace backoff stays bounded with jitter sample ${random}`, async () => {
+    const http = provider(Array.from({ length: 6 }, (_, index) => () => denied(index + 1)));
+    const waits: number[] = [];
+    let samples = 0;
+    await assert.rejects(
+      admitSourceNamespace(props, http.api, {
+        random: () => {
+          samples++;
+          return random;
+        },
+        wait: async (ms) => {
+          waits.push(ms);
+        },
+      }),
+      /source-namespace-not-ready/,
+    );
+    assert.deepEqual(waits, expected);
+    const total = waits.reduce((sum, ms) => sum + ms, 0);
+    assert.ok(total >= 46_000 && total <= 55_200);
+    assert.equal(samples, 5);
+    assert.equal(http.calls.length, 6);
+  });
+
 test("exhausted namespace admission refuses before activation with every attempt in the failure receipt", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "namespace-exhausted-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const evidence = releaseEvidence(directory, "a".repeat(40));
-  const http = provider([() => denied(1), () => denied(2), () => denied(3)]);
+  const http = provider(Array.from({ length: 6 }, (_, index) => () => denied(index + 1)));
   const waits: number[] = [];
   const refusal = await admitSourceNamespace(props, http.api, {
     record: evidence.namespaceRead,
+    random: () => 0,
     wait: async (ms) => {
       waits.push(ms);
     },
@@ -113,11 +201,11 @@ test("exhausted namespace admission refuses before activation with every attempt
   const receipt = await evidence.failure(refusal);
   assert.equal(receipt.reason, "source-namespace-not-ready");
   assert.deepEqual(receipt.activated, []);
-  assert.deepEqual(waits, [1000, 2000]);
-  assert.equal(http.calls.length, 3);
+  assert.deepEqual(waits, [2000, 4000, 8000, 16_000, 16_000]);
+  assert.equal(http.calls.length, 6);
   assert.deepEqual(
     receipt.namespaceReads?.map((read) => [read.attempt, read.status, read.codes, read.ray]),
-    [1, 2, 3].map((attempt) => [attempt, 403, [10004], ray(attempt)]),
+    [1, 2, 3, 4, 5, 6].map((attempt) => [attempt, 403, [10004], ray(attempt)]),
   );
   assert.doesNotMatch(
     JSON.stringify(receipt),
@@ -165,11 +253,12 @@ test("namespace admission retries repeated 10004 entries only when every error h
   const http = provider([() => denied(1, 403, Array(11).fill(10004)), readable, readable]);
   const waits: number[] = [];
   await admitSourceNamespace(props, http.api, {
+    random: () => 0,
     wait: async (ms) => {
       waits.push(ms);
     },
   });
-  assert.deepEqual(waits, [1000]);
+  assert.deepEqual(waits, [2000]);
   assert.equal(http.calls.length, 3);
 });
 
@@ -181,6 +270,7 @@ for (const body of ["not-json private provider text", JSON.stringify({ success: 
     const http = provider([() => new Response(body, { headers: { "cf-ray": ray(1) } })]);
     const refusal = await admitSourceNamespace(props, http.api, {
       record: evidence.namespaceRead,
+      random: () => 0,
       wait: async () => assert.fail("unexpected retry"),
     }).then(
       () => assert.fail("expected refusal"),
