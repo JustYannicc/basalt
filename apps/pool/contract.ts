@@ -89,6 +89,8 @@ export interface Account {
   readonly earliestResetAt: string | null;
   /** Null when the provider reports none or doesn't support them. */
   readonly bankedResets: BankedResets | null;
+  readonly usageCredits?: import("./usage-credits-contract.ts").UsageCredits;
+  readonly usageRouting?: import("./usage-credits-contract.ts").AccountUsageRouting;
   /**
    * Set by the pool app, not the Worker: the app's Accounts tab holds this subscription, so it's
    * removed there. Accounts added before the tab could connect them have none.
@@ -104,6 +106,7 @@ export interface AccountObservationResponse {
 
 /** GET /pool */
 export interface PoolView {
+  readonly usageCreditPolicy?: import("./usage-credits-contract.ts").UsageCreditPolicy;
   readonly isOwner: boolean;
   readonly reading?: {
     readonly source: "snapshot" | "live";

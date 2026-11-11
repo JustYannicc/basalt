@@ -1,8 +1,10 @@
+import { usageCredits } from "./usage-credits.ts";
 import { object, text, type Json } from "./json.ts";
 
-const number = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) ? value : null;
-const bool = (value: unknown): boolean | null => typeof value === "boolean" ? value : null;
-const records = (value: unknown): Json[] => Array.isArray(value) ? value.filter(object) : [];
+const number = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;
+const bool = (value: unknown): boolean | null => (typeof value === "boolean" ? value : null);
+const records = (value: unknown): Json[] => (Array.isArray(value) ? value.filter(object) : []);
 
 /** Internal Home data. Raw window/period fields never enter an account API response. */
 export interface QuotaWindowObservation {
@@ -34,7 +36,13 @@ export interface QuotaWindowObservation {
 }
 
 export interface QuotaObservation {
-  readonly plan: { readonly name: string | null; readonly premium: boolean | null; readonly rawTier: null; readonly raw: Readonly<Json> } | null;
+  readonly usageCredits?: import("../../apps/pool/usage-credits-contract.ts").UsageCredits;
+  readonly plan: {
+    readonly name: string | null;
+    readonly premium: boolean | null;
+    readonly rawTier: null;
+    readonly raw: Readonly<Json>;
+  } | null;
   readonly observedAt: string | null;
   readonly staleAt: string | null;
   readonly source: string | null;
@@ -49,7 +57,11 @@ export interface QuotaObservation {
   readonly resets: {
     readonly available: number | null;
     readonly observedAt: string | null;
-    readonly credits: readonly { readonly id: string | null; readonly status: string | null; readonly expiresAt: string | null }[];
+    readonly credits: readonly {
+      readonly id: string | null;
+      readonly status: string | null;
+      readonly expiresAt: string | null;
+    }[];
   } | null;
 }
 
@@ -60,9 +72,22 @@ export function quotaObservation(detail: Json): QuotaObservation {
   const plan = object(credential.plan) ? credential.plan : null;
   const reset = object(detail.reset_credits) ? detail.reset_credits : null;
   const error = object(collection.error) ? collection.error : null;
-  const windows = Array.isArray(detail.windows) ? records(detail.windows) : records(credential.primary_windows);
+  const windows = Array.isArray(detail.windows)
+    ? records(detail.windows)
+    : records(credential.primary_windows);
   return {
-    plan: plan === null ? null : { name: text(plan.name), premium: bool(plan.premium), rawTier: null, raw: structuredClone(plan) },
+    ...(usageCredits(detail.usage_credits) === undefined
+      ? {}
+      : { usageCredits: usageCredits(detail.usage_credits) }),
+    plan:
+      plan === null
+        ? null
+        : {
+            name: text(plan.name),
+            premium: bool(plan.premium),
+            rawTier: null,
+            raw: structuredClone(plan),
+          },
     observedAt: text(collection.observed_at ?? credential.observed_at),
     staleAt: text(collection.expires_at ?? credential.expires_at),
     source: text(collection.source ?? credential.source),
@@ -76,22 +101,44 @@ export function quotaObservation(detail: Json): QuotaObservation {
     windows: windows.map((window) => {
       const period = object(window.period) ? window.period : null;
       return {
-        id: text(window.id), label: text(window.label), scope: text(window.scope), scopeId: text(window.scope_id),
-        mode: text(window.mode), unit: text(window.unit), currency: text(window.currency),
-        used: number(window.used), remaining: number(window.remaining), limit: number(window.limit),
-        usedRatio: number(window.used_ratio), remainingRatio: number(window.remaining_ratio),
-        unlimited: bool(window.is_unlimited), resetAt: text(window.reset_at), observedAt: text(window.observed_at),
-        staleAt: text(window.expires_at), source: text(window.source),
+        id: text(window.id),
+        label: text(window.label),
+        scope: text(window.scope),
+        scopeId: text(window.scope_id),
+        mode: text(window.mode),
+        unit: text(window.unit),
+        currency: text(window.currency),
+        used: number(window.used),
+        remaining: number(window.remaining),
+        limit: number(window.limit),
+        usedRatio: number(window.used_ratio),
+        remainingRatio: number(window.remaining_ratio),
+        unlimited: bool(window.is_unlimited),
+        resetAt: text(window.reset_at),
+        observedAt: text(window.observed_at),
+        staleAt: text(window.expires_at),
+        source: text(window.source),
         period: {
-          seconds: number(window.window_seconds), unit: text(window.period_unit), value: number(window.period_value),
-          mode: text(period?.mode ?? window.mode), raw: structuredClone(window.period ?? null),
+          seconds: number(window.window_seconds),
+          unit: text(window.period_unit),
+          value: number(window.period_value),
+          mode: text(period?.mode ?? window.mode),
+          raw: structuredClone(window.period ?? null),
         },
         raw: structuredClone(window),
       };
     }),
-    resets: reset === null ? null : {
-      available: number(reset.available_count), observedAt: text(reset.observed_at),
-      credits: records(reset.credits).map((credit) => ({ id: text(credit.id), status: text(credit.status), expiresAt: text(credit.expires_at) })),
-    },
+    resets:
+      reset === null
+        ? null
+        : {
+            available: number(reset.available_count),
+            observedAt: text(reset.observed_at),
+            credits: records(reset.credits).map((credit) => ({
+              id: text(credit.id),
+              status: text(credit.status),
+              expiresAt: text(credit.expires_at),
+            })),
+          },
   };
 }

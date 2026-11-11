@@ -1,3 +1,4 @@
+import { creditRoutingPaths, handleCreditRouting } from "./credit-routing-http.ts";
 export { PoolRuntime } from "./runtime-do.worker.ts";
 import type { PoolRuntime } from "./runtime-do.worker.ts";
 import { RuntimeHandoff, type HandoffEnvironment } from "./runtime-slots/integration.ts";
@@ -544,6 +545,13 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         return failureResponse(error);
       }
     }
+    if (creditRoutingPaths.has(pathname))
+      return handleCreditRouting(request, {
+        home: this.mirrorHome,
+        signingKey: this.env.POOL_APP_SIGNING_KEY,
+        previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+        ensure: (pool, organization) => this.memberships.ensure(pool, organization),
+      });
     if (
       pathname === poolUsageSeriesPath ||
       pathname === lastSuccessAtPath ||

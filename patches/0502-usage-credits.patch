@@ -1,0 +1,4083 @@
+diff --git a/apps/hosted/server/src/contracts/pool-usage.ts b/apps/hosted/server/src/contracts/pool-usage.ts
+index e279e61..38306f6 100644
+--- a/apps/hosted/server/src/contracts/pool-usage.ts
++++ b/apps/hosted/server/src/contracts/pool-usage.ts
+@@ -1,4 +1,5 @@
+-import { AppId, StorageError } from "@executor-js/sdk/core";
++import { UsageCreditPolicy, AccountUsageRouting } from "apps/contracts";
++import { AccountId, AppId, StorageError } from "@executor-js/sdk/core";
+ import { ApiError } from "@executor-js/utils/api-error";
+ import { Context, Schema } from "effect";
+ import type { Redacted } from "effect";
+@@ -113,9 +114,43 @@ export const PoolUsageBackend = Context.Reference<
+   | undefined
+ >("hosted/PoolUsageBackend", { defaultValue: () => undefined });
+ 
++export const PoolCreditPolicyUnavailable = ApiError.define({
++  tag: "PoolCreditPolicyUnavailable",
++  status: 503,
++  message: "Pool credit policy could not be confirmed. Try again.",
++});
++export const PoolAccountRouting = Schema.Struct({
++  usageCreditPolicy: UsageCreditPolicy,
++  canEdit: Schema.Boolean,
++  accounts: Schema.Record(AccountId, AccountUsageRouting),
++});
++
+ const params = { organization: OrganizationReference, app: AppId };
+ export const HostedPoolUsage = /* @__PURE__ */ (() =>
+   HttpApiGroup.make("poolUsage")
++    .add(
++      HttpApiEndpoint.get(
++        "accountRouting",
++        "/api/organizations/:organization/apps/:app/pool-credit-policy",
++        {
++          params,
++          success: Schema.NullOr(PoolAccountRouting),
++          error: [OrganizationForbidden, StorageError, PoolCreditPolicyUnavailable],
++        },
++      ).annotate(RequiredAction, "read"),
++    )
++    .add(
++      HttpApiEndpoint.patch(
++        "setCreditPolicy",
++        "/api/organizations/:organization/apps/:app/pool-credit-policy",
++        {
++          params,
++          payload: Schema.Struct({ usageCreditPolicy: UsageCreditPolicy }),
++          success: Schema.Struct({ success: Schema.Literal(true) }),
++          error: [OrganizationForbidden, StorageError, PoolCreditPolicyUnavailable],
++        },
++      ).annotate(RequiredAction, "manage"),
++    )
+     .add(
+       HttpApiEndpoint.post(
+         "poolUsageSeries",
+diff --git a/apps/hosted/server/src/implementation/pool-backend.ts b/apps/hosted/server/src/implementation/pool-backend.ts
+new file mode 100644
+index 0000000..12000e2
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-backend.ts
+@@ -0,0 +1,139 @@
++import { AppId, StorageError } from "@executor-js/sdk/core";
++import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { FetchHttpClient, HttpBody, HttpClient, HttpClientResponse } from "effect/http";
++import { Principal } from "../contracts/auth.ts";
++import { PoolUsageBackend, PoolUsageUnavailable } from "../contracts/pool-usage.ts";
++import { applicationAudiences } from "./application-audience.ts";
++import { lockCurrentActor, policyDatabase, requireAppAccessAs } from "./resource-policy.ts";
++import { hostAssertionTtlMs, signEnvelope } from "./pool-token.ts";
++import { appUiPhase } from "./app-ui-phase-timing.ts";
++
++const Pool = Schema.Struct({
++  owner: Principal.fields.userId,
++  authorization: Schema.NullOr(Schema.String),
++});
++
++const backend = Effect.gen(function* () {
++  const supplied = yield* PoolUsageBackend;
++  if (supplied !== undefined) return supplied;
++  const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
++  const origin = yield* Config.String("BASALT_POOL_ORIGIN").pipe(Config.option);
++  if (Option.isNone(key) || Option.isNone(origin)) return yield* new PoolUsageUnavailable();
++  return { key: key.value, origin: origin.value };
++}).pipe(Effect.catch(() => new PoolUsageUnavailable()));
++
++export const sendPoolCommand = <A>(
++  action:
++    | "accountRouting"
++    | "setCreditPolicy"
++    | "managed-usage"
++    | "managed-cap"
++    | "poolUsageSeries"
++    | "lastSuccessAt"
++    | "poolOverview"
++    | "poolPersonalOverview",
++  payload: Record<string, unknown>,
++  responseSchema: Schema.ConstraintDecoder<A, never>,
++) =>
++  Effect.gen(function* () {
++    const { key, origin } = yield* backend;
++    const now = yield* Clock.currentTimeMillis;
++    const envelope = yield* Effect.tryPromise(() =>
++      signEnvelope(Redacted.value(key), "sbs1", {
++        ...payload,
++        action,
++        expiresAt: now + hostAssertionTtlMs,
++      }),
++    );
++    const client = yield* HttpClient.HttpClient;
++    // Match the public pool usage paths in Basalt's src/pool/model-history/series-http.ts.
++    const path =
++      action === "poolUsageSeries"
++        ? "/pool/v1/usage/series"
++        : action === "lastSuccessAt"
++          ? "/pool/v1/usage/last-success"
++          : action === "poolOverview"
++            ? "/pool/v1/usage/overview"
++            : action === "poolPersonalOverview"
++              ? "/pool/v1/usage/personal-overview"
++              : `/pool/v1/${action}`;
++    const response = yield* client.post(new URL(path, origin).href, {
++      body: HttpBody.jsonUnsafe({ envelope }),
++    });
++    if (response.status !== 200) return yield* new PoolUsageUnavailable();
++    return yield* HttpClientResponse.schemaBodyJson(responseSchema)(response);
++  }).pipe(
++    Effect.timeout("10 seconds"),
++    Effect.provide(FetchHttpClient.layer),
++    Effect.catch(() => new PoolUsageUnavailable()),
++  );
++
++/** The native policy and external cap write share the organization access lock. */
++export const withPool = <A, E, R>(
++  app: AppId,
++  work: (pool: {
++    pool: AppId;
++    organization: string;
++    owner: string;
++    user: string;
++    native: boolean;
++    users: string[];
++  }) => Effect.Effect<A, E, R>,
++  access: "manage" | "use" = "manage",
++) =>
++  Effect.gen(function* () {
++    const sql = yield* policyDatabase;
++    return yield* appUiPhase(
++      "overview-transaction",
++      sql.withTransaction(
++        Effect.gen(function* () {
++          const pool = yield* appUiPhase(
++            "overview-policy",
++            Effect.gen(function* () {
++              const actor = yield* lockCurrentActor;
++              yield* requireAppAccessAs(actor, app, access);
++              const rows =
++                yield* sql`select coalesce(entry.value ->> 'owner', entry.key) as owner, entry.value ->> 'authorization' as authorization
++        from organization o
++        cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++        join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
++        where o.id = ${actor.organization} and app.id = ${app}`;
++              if (rows.length === 0) return null;
++              const found = yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
++              if (found.length !== 1 || found[0] === undefined) return yield* new StorageError();
++              const saved = found[0];
++              const native = saved.authorization === "executor-app-v1";
++              const audience = (yield* applicationAudiences(actor.organization, [app]))[0];
++              const delegated =
++                yield* sql`select distinct app_id as app, authorizer from hosted_model_bindings
++          where pool_id = ${app} and subject = ''`;
++              const appIds = yield* Schema.decodeUnknownEffect(Schema.Array(AppId))(
++                delegated.map((row) => row.app),
++              );
++              const audiences = yield* applicationAudiences(actor.organization, appIds);
++              const authors = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.String))(
++                delegated.map((row) => row.authorizer),
++              );
++              const users = [
++                ...new Set([
++                  ...(native ? [] : [saved.owner]),
++                  ...(audience?.users ?? []),
++                  ...authors,
++                  ...audiences.flatMap((entry) => entry.users),
++                ]),
++              ].sort();
++              return {
++                pool: app,
++                organization: actor.organization,
++                owner: saved.owner,
++                user: actor.user,
++                native,
++                users,
++              };
++            }),
++          );
++          return pool === null ? null : yield* work(pool);
++        }),
++      ),
++    );
++  });
+diff --git a/apps/hosted/server/src/implementation/pool-credit-routing.ts b/apps/hosted/server/src/implementation/pool-credit-routing.ts
+new file mode 100644
+index 0000000..e7253fd
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-credit-routing.ts
+@@ -0,0 +1,71 @@
++import { StorageHost, type AppId } from "@executor-js/sdk/core";
++import type { UsageCreditPolicy } from "apps/contracts";
++import { Effect, Schema } from "effect";
++import { PoolAccountRouting, PoolCreditPolicyUnavailable } from "../contracts/pool-usage.ts";
++import { OrganizationForbidden } from "../contracts/organization.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { sendPoolCommand, withPool } from "./pool-backend.ts";
++import { creditRoutingAccounts } from "./pool-usage-series-accounts.ts";
++
++export const poolAccountRouting = (app: AppId) =>
++  withPool(
++    app,
++    (pool) =>
++      Effect.gen(function* () {
++        const accounts = yield* creditRoutingAccounts(pool);
++        return yield* sendPoolCommand(
++          "accountRouting",
++          {
++            pool: pool.pool,
++            organization: pool.organization,
++            user: pool.user,
++            owner: pool.owner,
++            canEdit: pool.owner === pool.user,
++            accounts,
++          },
++          PoolAccountRouting,
++        );
++      }),
++    "use",
++  ).pipe(
++    tracked,
++    Effect.catchTags({
++      SqlError: () => new PoolCreditPolicyUnavailable(),
++      SchemaError: () => new PoolCreditPolicyUnavailable(),
++      PoolUsageUnavailable: () => new PoolCreditPolicyUnavailable(),
++    }),
++  );
++
++export const setPoolCreditPolicy = (app: AppId, usageCreditPolicy: UsageCreditPolicy) =>
++  withPool(app, (pool) =>
++    Effect.gen(function* () {
++      if (pool.owner !== pool.user) return yield* new OrganizationForbidden();
++      yield* sendPoolCommand(
++        "setCreditPolicy",
++        {
++          pool: pool.pool,
++          organization: pool.organization,
++          user: pool.user,
++          owner: pool.owner,
++          usageCreditPolicy,
++        },
++        Schema.Struct({ success: Schema.Literal(true) }),
++      );
++      return { success: true as const };
++    }),
++  ).pipe(
++    Effect.flatMap((result) =>
++      result === null ? new OrganizationForbidden() : Effect.succeed(result),
++    ),
++    Effect.catchTags({
++      SqlError: () => new PoolCreditPolicyUnavailable(),
++      SchemaError: () => new PoolCreditPolicyUnavailable(),
++      PoolUsageUnavailable: () => new PoolCreditPolicyUnavailable(),
++    }),
++  );
++
++const tracked = <A, E, R>(read: Effect.Effect<A, E, R>) =>
++  Effect.gen(function* () {
++    const executor = yield* Effect.flatten(HostedExecutor);
++    return yield* executor[StorageHost].transaction(read);
++  });
+diff --git a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+index fe857b7..0e661fb 100644
+--- a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
++++ b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+@@ -25,7 +25,7 @@ const digest = async (value: string) => {
+ };
+ 
+ /** Same opaque reference format as the private pool membership reader, bounded to 32 IDs. */
+-const references = (reference: string) => {
++export const poolHomeReferences = (reference: string) => {
+   const prefix = "sbhrefs1:";
+   const value: unknown = reference.startsWith(prefix)
+     ? JSON.parse(reference.slice(prefix.length))
+@@ -79,7 +79,7 @@ export const usageSeriesAccounts = (
+               ? []
+               : yield* Effect.tryPromise(async () =>
+                   Promise.all(
+-                    references(account.homeReference!).map((id) =>
++                    poolHomeReferences(account.homeReference!).map((id) =>
+                       digest(JSON.stringify([source, "account", id])),
+                     ),
+                   ),
+@@ -89,3 +89,28 @@ export const usageSeriesAccounts = (
+       ),
+     );
+   });
++
++export const creditRoutingAccounts = (pool: {
++  readonly pool: AppId;
++  readonly organization: string;
++}) =>
++  Effect.gen(function* () {
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const sql = yield* policyDatabase;
++    const membership = yield* nativePoolMembership(pool.organization, pool.pool, executor).pipe(
++      Effect.provideService(SqlClient.SqlClient, sql),
++    );
++    const accounts = [
++      ...new Map(membership.accounts.map((account) => [account.account, account])).values(),
++    ];
++    if (accounts.length > 500) return yield* new StorageError();
++    return yield* Effect.forEach(accounts, (account) =>
++      Effect.gen(function* () {
++        if (account.homeReference === null || !(yield* inspect(account.account))) return [];
++        const home = yield* Effect.try(() => poolHomeReferences(account.homeReference!)).pipe(
++          Effect.mapError(() => new StorageError()),
++        );
++        return [{ account: account.account, home }];
++      }),
++    ).pipe(Effect.map((groups) => groups.flat()));
++  });
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+index c88ae4f..d6c9bf1 100644
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -1,19 +1,17 @@
++import { sendPoolCommand, withPool } from "./pool-backend.ts";
++import { poolAccountRouting, setPoolCreditPolicy } from "./pool-credit-routing.ts";
+ import { AppId, StorageError, StorageHost } from "@executor-js/sdk/core";
+-import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
+-import { FetchHttpClient, HttpBody, HttpClient, HttpClientResponse } from "effect/http";
++import { Effect, Schema } from "effect";
+ import { HttpApiBuilder } from "effect/http-api";
+ import { HostedApi } from "../contracts/api.ts";
+ import { Principal } from "../contracts/auth.ts";
+ import {
+   PoolCapConflict,
+-  PoolUsageBackend,
+   PoolUsagePage,
+   PoolUsageSummary,
+   PoolUsageUnavailable,
+ } from "../contracts/pool-usage.ts";
+-import { applicationAudiences } from "./application-audience.ts";
+ import { lockCurrentActor, policyDatabase, requireAppAccessAs } from "./resource-policy.ts";
+-import { hostAssertionTtlMs, signEnvelope } from "./pool-token.ts";
+ import {
+   LastSuccessAt,
+   type LastSuccessAtInput,
+@@ -26,10 +24,6 @@ import { poolOverviewSignedInput, poolPersonalOverviewOfferings } from "./pool-u
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
+ 
+-const Pool = Schema.Struct({
+-  owner: Principal.fields.userId,
+-  authorization: Schema.NullOr(Schema.String),
+-});
+ const Person = Schema.Struct({
+   user: Principal.fields.userId,
+   name: Schema.String,
+@@ -37,128 +31,6 @@ const Person = Schema.Struct({
+ });
+ const pageSize = 100;
+ 
+-const backend = Effect.gen(function* () {
+-  const supplied = yield* PoolUsageBackend;
+-  if (supplied !== undefined) return supplied;
+-  const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
+-  const origin = yield* Config.String("BASALT_POOL_ORIGIN").pipe(Config.option);
+-  if (Option.isNone(key) || Option.isNone(origin)) return yield* new PoolUsageUnavailable();
+-  return { key: key.value, origin: origin.value };
+-}).pipe(Effect.catch(() => new PoolUsageUnavailable()));
+-
+-const send = <A>(
+-  action:
+-    | "managed-usage"
+-    | "managed-cap"
+-    | "poolUsageSeries"
+-    | "lastSuccessAt"
+-    | "poolOverview"
+-    | "poolPersonalOverview",
+-  payload: Record<string, unknown>,
+-  responseSchema: Schema.ConstraintDecoder<A, never>,
+-) =>
+-  Effect.gen(function* () {
+-    const { key, origin } = yield* backend;
+-    const now = yield* Clock.currentTimeMillis;
+-    const envelope = yield* Effect.tryPromise(() =>
+-      signEnvelope(Redacted.value(key), "sbs1", {
+-        ...payload,
+-        action,
+-        expiresAt: now + hostAssertionTtlMs,
+-      }),
+-    );
+-    const client = yield* HttpClient.HttpClient;
+-    // Match the public pool usage paths in Basalt's src/pool/model-history/series-http.ts.
+-    const path =
+-      action === "poolUsageSeries"
+-        ? "/pool/v1/usage/series"
+-        : action === "lastSuccessAt"
+-          ? "/pool/v1/usage/last-success"
+-          : action === "poolOverview"
+-            ? "/pool/v1/usage/overview"
+-            : action === "poolPersonalOverview"
+-              ? "/pool/v1/usage/personal-overview"
+-              : `/pool/v1/${action}`;
+-    const response = yield* client.post(new URL(path, origin).href, {
+-      body: HttpBody.jsonUnsafe({ envelope }),
+-    });
+-    if (response.status !== 200) return yield* new PoolUsageUnavailable();
+-    return yield* HttpClientResponse.schemaBodyJson(responseSchema)(response);
+-  }).pipe(
+-    Effect.timeout("10 seconds"),
+-    Effect.provide(FetchHttpClient.layer),
+-    Effect.catch(() => new PoolUsageUnavailable()),
+-  );
+-
+-/** The native policy and external cap write share the organization access lock. */
+-const withPool = <A, E, R>(
+-  app: AppId,
+-  work: (pool: {
+-    pool: AppId;
+-    organization: string;
+-    owner: string;
+-    user: string;
+-    native: boolean;
+-    users: string[];
+-  }) => Effect.Effect<A, E, R>,
+-) =>
+-  Effect.gen(function* () {
+-    const sql = yield* policyDatabase;
+-    return yield* appUiPhase(
+-      "overview-transaction",
+-      sql.withTransaction(
+-        Effect.gen(function* () {
+-          const pool = yield* appUiPhase(
+-            "overview-policy",
+-            Effect.gen(function* () {
+-              const actor = yield* lockCurrentActor;
+-              yield* requireAppAccessAs(actor, app, "manage");
+-              const rows =
+-                yield* sql`select coalesce(entry.value ->> 'owner', entry.key) as owner, entry.value ->> 'authorization' as authorization
+-        from organization o
+-        cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
+-        join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
+-        where o.id = ${actor.organization} and app.id = ${app}`;
+-              if (rows.length === 0) return null;
+-              const found = yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
+-              if (found.length !== 1 || found[0] === undefined) return yield* new StorageError();
+-              const saved = found[0];
+-              const native = saved.authorization === "executor-app-v1";
+-              const audience = (yield* applicationAudiences(actor.organization, [app]))[0];
+-              const delegated =
+-                yield* sql`select distinct app_id as app, authorizer from hosted_model_bindings
+-          where pool_id = ${app} and subject = ''`;
+-              const appIds = yield* Schema.decodeUnknownEffect(Schema.Array(AppId))(
+-                delegated.map((row) => row.app),
+-              );
+-              const audiences = yield* applicationAudiences(actor.organization, appIds);
+-              const authors = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.String))(
+-                delegated.map((row) => row.authorizer),
+-              );
+-              const users = [
+-                ...new Set([
+-                  ...(native ? [] : [saved.owner]),
+-                  ...(audience?.users ?? []),
+-                  ...authors,
+-                  ...audiences.flatMap((entry) => entry.users),
+-                ]),
+-              ].sort();
+-              return {
+-                pool: app,
+-                organization: actor.organization,
+-                owner: saved.owner,
+-                user: actor.user,
+-                native,
+-                users,
+-              };
+-            }),
+-          );
+-          return pool === null ? null : yield* work(pool);
+-        }),
+-      ),
+-    );
+-  });
+-
+ export const poolUsage = (app: AppId, after?: string) =>
+   withPool(app, (pool) =>
+     Effect.gen(function* () {
+@@ -174,7 +46,7 @@ export const poolUsage = (app: AppId, after?: string) =>
+       from member m join "user" u on u.id = m."userId"
+       where m."organizationId" = ${pool.organization} and ${sql.in("m.userId", page)}`;
+       const names = yield* Schema.decodeUnknownEffect(Schema.Array(Person))(rows);
+-      const usage = yield* send(
++      const usage = yield* sendPoolCommand(
+         "managed-usage",
+         {
+           pool: pool.pool,
+@@ -222,7 +94,7 @@ export const setPoolCap = (app: AppId, member: string, weekly: number | null) =>
+     Effect.gen(function* () {
+       if (member === pool.owner || !pool.users.includes(member))
+         return yield* new PoolCapConflict();
+-      yield* send(
++      yield* sendPoolCommand(
+         "managed-cap",
+         {
+           pool: pool.pool,
+@@ -251,7 +123,7 @@ export const poolUsageSeries = (app: AppId, input: PoolUsageSeriesInput) =>
+   withPool(app, (pool) =>
+     Effect.gen(function* () {
+       const accounts = yield* usageSeriesAccounts(pool, input.accounts);
+-      return yield* send(
++      return yield* sendPoolCommand(
+         "poolUsageSeries",
+         {
+           pool: pool.pool,
+@@ -275,7 +147,7 @@ export const lastSuccessAt = (app: AppId, input: LastSuccessAtInput) =>
+   withPool(app, (pool) =>
+     Effect.gen(function* () {
+       const accounts = yield* usageSeriesAccounts(pool, input.accounts);
+-      return yield* send(
++      return yield* sendPoolCommand(
+         "lastSuccessAt",
+         {
+           pool: pool.pool,
+@@ -301,7 +173,7 @@ export const poolUsageOverview = (app: AppId, input: PoolOverviewInput) =>
+       const signedInput = yield* poolOverviewSignedInput(pool, input);
+       return yield* appUiPhase(
+         "overview-backend",
+-        send(
++        sendPoolCommand(
+           "poolOverview",
+           {
+             pool: pool.pool,
+@@ -339,7 +211,7 @@ export const poolPersonalUsageOverview = (app: AppId, input: PoolOverviewInput)
+           pool: app,
+           organization: actor.organization,
+         });
+-        return yield* send(
++        return yield* sendPoolCommand(
+           "poolPersonalOverview",
+           {
+             pool: app,
+@@ -367,6 +239,10 @@ export const poolPersonalUsageOverview = (app: AppId, input: PoolOverviewInput)
+ 
+ export const hostedPoolUsageHandlers = HttpApiBuilder.group(HostedApi, "poolUsage", (handlers) =>
+   handlers
++    .handle("accountRouting", ({ params }) => poolAccountRouting(params.app))
++    .handle("setCreditPolicy", ({ params, payload }) =>
++      setPoolCreditPolicy(params.app, payload.usageCreditPolicy),
++    )
+     .handle("poolUsageSeries", ({ params, payload }) => poolUsageSeries(params.app, payload))
+     .handle("lastSuccessAt", ({ params, payload }) => lastSuccessAt(params.app, payload))
+     .handle("get", ({ params, query }) => poolUsage(params.app, query.after))
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index 98e8a94..ffa30e0 100644
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -31,6 +31,7 @@ const errorMessage = Match.type<HostedError>().pipe(
+     AccountResetRefused: ({ message }) => message,
+     PoolManagerTokenUnavailable: ({ message }) => message,
+     PoolUsageUnavailable: ({ message }) => message,
++    PoolCreditPolicyUnavailable: ({ message }) => message,
+     PoolCapConflict: ({ message }) => message,
+     AccountLinkRequired: () => "Save the account, then link it to this pool to finish connecting.",
+     ProviderAppConnectionRequired: () =>
+diff --git a/e2e/support/pool-usage-backend.ts b/e2e/support/pool-usage-backend.ts
+index 3235f2d..02adf18 100644
+--- a/e2e/support/pool-usage-backend.ts
++++ b/e2e/support/pool-usage-backend.ts
+@@ -5,7 +5,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
+ import { createServer } from "node:http";
+ 
+ const Assertion = Schema.Struct({
+-  action: Schema.Literals(["managed-usage", "managed-cap"]),
++  action: Schema.Literals(["managed-usage", "managed-cap", "accountRouting", "setCreditPolicy"]),
+   pool: Schema.NonEmptyString,
+   organization: Schema.NonEmptyString,
+   owner: Schema.NonEmptyString,
+@@ -13,6 +13,11 @@ const Assertion = Schema.Struct({
+   expiresAt: Schema.Finite,
+   members: Schema.optionalKey(Schema.Array(Schema.String)),
+   member: Schema.optionalKey(Schema.String),
++  usageCreditPolicy: Schema.optionalKey(Schema.Literals(["last_resort", "never"])),
++  canEdit: Schema.optionalKey(Schema.Boolean),
++  accounts: Schema.optionalKey(
++    Schema.Array(Schema.Struct({ account: Schema.String, home: Schema.Array(Schema.String) })),
++  ),
+   weekly: Schema.optionalKey(Schema.NullOr(Schema.Finite)),
+ });
+ 
+@@ -20,6 +25,15 @@ const Assertion = Schema.Struct({
+ export const poolUsageBackend = Effect.gen(function* () {
+   const calls = yield* Ref.make<readonly (typeof Assertion.Type)[]>([]);
+   const caps = new Map<string, number>();
++  const creditPolicies = new Map<string, "last_resort" | "never">();
++  let creditAccounts: Record<
++    string,
++    {
++      use: "plan" | "credits" | "unknown" | "exhausted" | "blocked";
++      eligible: boolean;
++      reason: string;
++    }
++  > = {};
+   let unavailable = false;
+   let rich = false;
+   let unpriced = false;
+@@ -55,6 +69,31 @@ export const poolUsageBackend = Effect.gen(function* () {
+       return HttpServerResponse.empty({ status: 401 });
+     yield* Ref.update(calls, (items) => [...items, value]);
+     if (unavailable) return HttpServerResponse.empty({ status: 503 });
++    if (value.action === "setCreditPolicy") {
++      if (value.user !== value.owner || value.usageCreditPolicy === undefined)
++        return HttpServerResponse.empty({ status: 403 });
++      creditPolicies.set(value.pool, value.usageCreditPolicy);
++      return HttpServerResponse.jsonUnsafe({ success: true });
++    }
++    if (value.action === "accountRouting") {
++      const policy = creditPolicies.get(value.pool) ?? "last_resort";
++      return HttpServerResponse.jsonUnsafe({
++        usageCreditPolicy: policy,
++        canEdit: value.canEdit === true,
++        accounts: Object.fromEntries(
++          Object.entries(creditAccounts).map(([id, account]) => [
++            id,
++            {
++              ...account,
++              policy,
++              ...(policy === "never" && (account.use === "credits" || account.use === "unknown")
++                ? { use: "blocked", eligible: false, reason: "credit_policy_never" }
++                : {}),
++            },
++          ]),
++        ),
++      });
++    }
+     if (value.action === "managed-cap") {
+       const held = gate;
+       if (held !== undefined) {
+@@ -119,6 +158,8 @@ export const poolUsageBackend = Effect.gen(function* () {
+       Layer.mergeAll(
+         HttpRouter.add("POST", "/pool/v1/managed-usage", handler),
+         HttpRouter.add("POST", "/pool/v1/managed-cap", handler),
++        HttpRouter.add("POST", "/pool/v1/accountRouting", handler),
++        HttpRouter.add("POST", "/pool/v1/setCreditPolicy", handler),
+       ),
+       { disableLogger: true, disableListenLog: true },
+     ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
+@@ -127,6 +168,10 @@ export const poolUsageBackend = Effect.gen(function* () {
+   if (!("port" in server.address)) return yield* Effect.die("Pool fixture requires TCP");
+   return {
+     origin: `http://127.0.0.1:${server.address.port}`,
++    creditAccounts: (value: typeof creditAccounts) =>
++      Effect.sync(() => {
++        creditAccounts = value;
++      }),
+     calls: Ref.get(calls),
+     unpriced: Effect.sync(() => {
+       unpriced = true;
+diff --git a/packages/apps/package.json b/packages/apps/package.json
+index 59f10c4..08ad1f0 100644
+--- a/packages/apps/package.json
++++ b/packages/apps/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "apps",
+-  "version": "0.0.1-beta.104-basalt.14",
++  "version": "0.0.1-beta.104-basalt.15",
+   "private": true,
+   "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
+   "type": "module",
+diff --git a/packages/apps/protocols/41.json b/packages/apps/protocols/41.json
+new file mode 100644
+index 0000000..03f160c
+--- /dev/null
++++ b/packages/apps/protocols/41.json
+@@ -0,0 +1,2028 @@
++{
++  "protocol": 41,
++  "previous": 40,
++  "messages": {
++    "accountCheck": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "accountInfo",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "externalId",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 255
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": true
++              },
++              {
++                "name": "displayName",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 255
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": true
++              },
++              {
++                "name": "username",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 255
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": true
++              },
++              {
++                "name": "email",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 255
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": true
++              },
++              {
++                "name": "avatarUrl",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter"
++                    }
++                  ]
++                },
++                "isOptional": true
++              },
++              {
++                "name": "profileUrl",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter"
++                    }
++                  ]
++                },
++                "isOptional": true
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "status",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "badges",
++                "type": {
++                  "_tag": "Arrays",
++                  "rest": [
++                    {
++                      "_tag": "Objects",
++                      "propertySignatures": [
++                        {
++                          "name": "label",
++                          "type": {
++                            "_tag": "String",
++                            "checks": [
++                              {
++                                "_tag": "Filter",
++                                "representation": {
++                                  "id": "effect/schema/isMinLength",
++                                  "payload": {
++                                    "minLength": 1
++                                  }
++                                }
++                              },
++                              {
++                                "_tag": "Filter",
++                                "representation": {
++                                  "id": "effect/schema/isMaxLength",
++                                  "payload": {
++                                    "maxLength": 64
++                                  }
++                                }
++                              }
++                            ]
++                          },
++                          "isOptional": false
++                        },
++                        {
++                          "name": "tone",
++                          "type": {
++                            "_tag": "Union",
++                            "types": [
++                              {
++                                "_tag": "Literal",
++                                "literal": "neutral"
++                              },
++                              {
++                                "_tag": "Literal",
++                                "literal": "good"
++                              },
++                              {
++                                "_tag": "Literal",
++                                "literal": "warning"
++                              },
++                              {
++                                "_tag": "Literal",
++                                "literal": "bad"
++                              }
++                            ]
++                          },
++                          "isOptional": false
++                        }
++                      ]
++                    }
++                  ],
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 8
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "meters",
++                "type": {
++                  "_tag": "Arrays",
++                  "rest": [
++                    {
++                      "_tag": "Objects",
++                      "propertySignatures": [
++                        {
++                          "name": "label",
++                          "type": {
++                            "_tag": "String",
++                            "checks": [
++                              {
++                                "_tag": "Filter",
++                                "representation": {
++                                  "id": "effect/schema/isMinLength",
++                                  "payload": {
++                                    "minLength": 1
++                                  }
++                                }
++                              },
++                              {
++                                "_tag": "Filter",
++                                "representation": {
++                                  "id": "effect/schema/isMaxLength",
++                                  "payload": {
++                                    "maxLength": 64
++                                  }
++                                }
++                              }
++                            ]
++                          },
++                          "isOptional": false
++                        },
++                        {
++                          "name": "remaining",
++                          "type": {
++                            "_tag": "Union",
++                            "types": [
++                              {
++                                "_tag": "Number",
++                                "checks": [
++                                  {
++                                    "_tag": "Filter",
++                                    "representation": {
++                                      "id": "effect/schema/isFinite",
++                                      "payload": null
++                                    }
++                                  },
++                                  {
++                                    "_tag": "Filter",
++                                    "representation": {
++                                      "id": "effect/schema/isBetween",
++                                      "payload": {
++                                        "minimum": 0,
++                                        "maximum": 1
++                                      }
++                                    }
++                                  }
++                                ]
++                              },
++                              {
++                                "_tag": "Null"
++                              }
++                            ]
++                          },
++                          "isOptional": false
++                        },
++                        {
++                          "name": "resetsAt",
++                          "type": {
++                            "_tag": "String",
++                            "checks": [
++                              {
++                                "_tag": "Filter",
++                                "representation": {
++                                  "id": "effect/schema/isMaxLength",
++                                  "payload": {
++                                    "maxLength": 35
++                                  }
++                                }
++                              },
++                              {
++                                "_tag": "Filter",
++                                "representation": {
++                                  "id": "effect/schema/isPattern",
++                                  "payload": {
++                                    "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                                    "flags": ""
++                                  }
++                                }
++                              },
++                              {
++                                "_tag": "Filter"
++                              }
++                            ]
++                          },
++                          "isOptional": true
++                        },
++                        {
++                          "name": "detail",
++                          "type": {
++                            "_tag": "String",
++                            "checks": [
++                              {
++                                "_tag": "Filter",
++                                "representation": {
++                                  "id": "effect/schema/isMaxLength",
++                                  "payload": {
++                                    "maxLength": 256
++                                  }
++                                }
++                              }
++                            ]
++                          },
++                          "isOptional": true
++                        }
++                      ]
++                    }
++                  ],
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 4
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "stats",
++                "type": {
++                  "_tag": "Arrays",
++                  "rest": [
++                    {
++                      "_tag": "Objects",
++                      "propertySignatures": [
++                        {
++                          "name": "label",
++                          "type": {
++                            "_tag": "String",
++                            "checks": [
++                              {
++                                "_tag": "Filter",
++                                "representation": {
++                                  "id": "effect/schema/isMinLength",
++                                  "payload": {
++                                    "minLength": 1
++                                  }
++                                }
++                              },
++                              {
++                                "_tag": "Filter",
++                                "representation": {
++                                  "id": "effect/schema/isMaxLength",
++                                  "payload": {
++                                    "maxLength": 64
++                                  }
++                                }
++                              }
++                            ]
++                          },
++                          "isOptional": false
++                        },
++                        {
++                          "name": "value",
++                          "type": {
++                            "_tag": "String",
++                            "checks": [
++                              {
++                                "_tag": "Filter",
++                                "representation": {
++                                  "id": "effect/schema/isMaxLength",
++                                  "payload": {
++                                    "maxLength": 128
++                                  }
++                                }
++                              }
++                            ]
++                          },
++                          "isOptional": false
++                        }
++                      ]
++                    }
++                  ],
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 8
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "observation",
++          "type": {
++            "$shared": "627f3baa1781c24c"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "observationInvalid",
++          "type": {
++            "_tag": "Literal",
++            "literal": true
++          },
++          "isOptional": true
++        }
++      ]
++    },
++    "accountObservation": {
++      "_tag": "Union",
++      "types": [
++        {
++          "$shared": "627f3baa1781c24c"
++        },
++        {
++          "_tag": "Null"
++        }
++      ]
++    }
++  },
++  "unchanged": [
++    "invocation",
++    "request",
++    "response",
++    "requirements",
++    "catalog",
++    "catalogSummary",
++    "sharedCatalog",
++    "skills",
++    "elicitationRequest",
++    "elicitationReply",
++    "workflowStep",
++    "workflowStepReply",
++    "workflowControl",
++    "appCall",
++    "appCallReply",
++    "appToolPolicy",
++    "appToolPolicyReply",
++    "driveCommand",
++    "driveReply",
++    "modelRequest",
++    "modelReply",
++    "cacheCommand",
++    "cacheReply",
++    "accounts",
++    "migrate"
++  ],
++  "references": {},
++  "shared": {
++    "1839124810fd8195": {
++      "name": "extraUsage",
++      "type": {
++        "$shared": "573eb3c5d7116a6c"
++      },
++      "isOptional": false
++    },
++    "222641d5b2f60efb": {
++      "name": "period",
++      "type": {
++        "$shared": "2fb89bb26707aa35"
++      },
++      "isOptional": true
++    },
++    "2a2b29ef9a95dc0b": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "enabled",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Boolean"
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "monthlyCap",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "limited"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "unlimited"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "unknown"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "usedRatio",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Number",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isFinite",
++                      "payload": null
++                    }
++                  },
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isBetween",
++                      "payload": {
++                        "minimum": 0,
++                        "maximum": 1
++                      }
++                    }
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "spent",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Objects",
++                "propertySignatures": [
++                  {
++                    "name": "value",
++                    "type": {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isMaxLength",
++                            "payload": {
++                              "maxLength": 80
++                            }
++                          }
++                        },
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isPattern",
++                            "payload": {
++                              "source": "^(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
++                              "flags": "u"
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    "isOptional": false
++                  },
++                  {
++                    "name": "currency",
++                    "type": {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isPattern",
++                            "payload": {
++                              "source": "^[A-Z]{3}$",
++                              "flags": "u"
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    "isOptional": false
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "cap",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Objects",
++                "propertySignatures": [
++                  {
++                    "name": "value",
++                    "type": {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isMaxLength",
++                            "payload": {
++                              "maxLength": 80
++                            }
++                          }
++                        },
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isPattern",
++                            "payload": {
++                              "source": "^(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
++                              "flags": "u"
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    "isOptional": false
++                  },
++                  {
++                    "name": "currency",
++                    "type": {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isPattern",
++                            "payload": {
++                              "source": "^[A-Z]{3}$",
++                              "flags": "u"
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    "isOptional": false
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": false
++        }
++      ]
++    },
++    "2fb89bb26707aa35": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "mode",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "fixed"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "rolling"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "startsAt",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 35
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isPattern",
++                  "payload": {
++                    "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                    "flags": "u"
++                  }
++                }
++              },
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "seconds",
++          "type": {
++            "_tag": "Number",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isFinite",
++                  "payload": null
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isGreaterThan",
++                  "payload": {
++                    "exclusiveMinimum": 0
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "unit",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 64
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "value",
++          "type": {
++            "_tag": "Number",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isFinite",
++                  "payload": null
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ]
++    },
++    "3e94ba1d2260229f": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "observedAt",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 35
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isPattern",
++                  "payload": {
++                    "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                    "flags": "u"
++                  }
++                }
++              },
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "staleAt",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 35
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isPattern",
++                  "payload": {
++                    "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                    "flags": "u"
++                  }
++                }
++              },
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "id",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 64
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "label",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 64
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "unit",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 64
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "available",
++          "type": {
++            "_tag": "Number",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isFinite",
++                  "payload": null
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "expiresAt",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 35
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isPattern",
++                  "payload": {
++                    "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                    "flags": "u"
++                  }
++                }
++              },
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ]
++    },
++    "4c36e63564d77154": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "observedAt",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 35
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isPattern",
++                  "payload": {
++                    "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                    "flags": "u"
++                  }
++                }
++              },
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "staleAt",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 35
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isPattern",
++                  "payload": {
++                    "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                    "flags": "u"
++                  }
++                }
++              },
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "id",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 64
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "label",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 64
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "scope",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "kind",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 128
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "id",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 128
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": true
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "measure",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "unit",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 64
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "used",
++                "type": {
++                  "_tag": "Number",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isFinite",
++                        "payload": null
++                      }
++                    }
++                  ]
++                },
++                "isOptional": true
++              },
++              {
++                "name": "remaining",
++                "type": {
++                  "_tag": "Number",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isFinite",
++                        "payload": null
++                      }
++                    }
++                  ]
++                },
++                "isOptional": true
++              },
++              {
++                "name": "limit",
++                "type": {
++                  "_tag": "Number",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isFinite",
++                        "payload": null
++                      }
++                    }
++                  ]
++                },
++                "isOptional": true
++              },
++              {
++                "name": "remainingRatio",
++                "type": {
++                  "_tag": "Number",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isFinite",
++                        "payload": null
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isBetween",
++                        "payload": {
++                          "minimum": 0,
++                          "maximum": 1
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": true
++              },
++              {
++                "name": "unlimited",
++                "type": {
++                  "_tag": "Boolean"
++                },
++                "isOptional": true
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "$shared": "222641d5b2f60efb"
++        },
++        {
++          "name": "resetsAt",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 35
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isPattern",
++                  "payload": {
++                    "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                    "flags": "u"
++                  }
++                }
++              },
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ]
++    },
++    "528db149f3db258b": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "observedAt",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 35
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isPattern",
++                  "payload": {
++                    "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                    "flags": "u"
++                  }
++                }
++              },
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "staleAt",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 35
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isPattern",
++                  "payload": {
++                    "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                    "flags": "u"
++                  }
++                }
++              },
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "id",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 64
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "label",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMinLength",
++                  "payload": {
++                    "minLength": 1
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 64
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": false
++        }
++      ]
++    },
++    "573eb3c5d7116a6c": {
++      "_tag": "Union",
++      "types": [
++        {
++          "$shared": "2a2b29ef9a95dc0b"
++        },
++        {
++          "_tag": "Null"
++        }
++      ]
++    },
++    "627f3baa1781c24c": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "observedAt",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 35
++                  }
++                }
++              },
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isPattern",
++                  "payload": {
++                    "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                    "flags": "u"
++                  }
++                }
++              },
++              {
++                "_tag": "Filter"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "$shared": "ac8a9b13cba1b065"
++        },
++        {
++          "name": "collection",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "attemptedAt",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 35
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isPattern",
++                        "payload": {
++                          "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                          "flags": "u"
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter"
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "outcome",
++                "type": {
++                  "_tag": "Union",
++                  "types": [
++                    {
++                      "_tag": "Literal",
++                      "literal": "success"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "unavailable"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "rate_limited"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "invalid"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "timed_out"
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "retryAt",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 35
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isPattern",
++                        "payload": {
++                          "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                          "flags": "u"
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter"
++                    }
++                  ]
++                },
++                "isOptional": true
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ],
++      "checks": [
++        {
++          "_tag": "Filter"
++        }
++      ]
++    },
++    "7410f27267b755ef": {
++      "_tag": "Arrays",
++      "rest": [
++        {
++          "$shared": "3e94ba1d2260229f"
++        }
++      ],
++      "checks": [
++        {
++          "_tag": "Filter",
++          "representation": {
++            "id": "effect/schema/isMaxLength",
++            "payload": {
++              "maxLength": 8
++            }
++          }
++        },
++        {
++          "_tag": "Filter"
++        }
++      ]
++    },
++    "74c4828c2755b111": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "state",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "available"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "unlimited"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "none"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "disabled"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "unknown"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "balance",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Objects",
++                "propertySignatures": [
++                  {
++                    "name": "value",
++                    "type": {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isMaxLength",
++                            "payload": {
++                              "maxLength": 80
++                            }
++                          }
++                        },
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isPattern",
++                            "payload": {
++                              "source": "^(?:0|[1-9]\\d*)(?:\\.\\d+)?$",
++                              "flags": "u"
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    "isOptional": false
++                  },
++                  {
++                    "name": "unit",
++                    "type": {
++                      "_tag": "Union",
++                      "types": [
++                        {
++                          "_tag": "Literal",
++                          "literal": "credits"
++                        },
++                        {
++                          "_tag": "Literal",
++                          "literal": "currency"
++                        }
++                      ]
++                    },
++                    "isOptional": false
++                  },
++                  {
++                    "name": "currency",
++                    "type": {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isPattern",
++                            "payload": {
++                              "source": "^[A-Z]{3}$",
++                              "flags": "u"
++                            }
++                          }
++                        }
++                      ]
++                    },
++                    "isOptional": true
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "observedAt",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMaxLength",
++                      "payload": {
++                        "maxLength": 35
++                      }
++                    }
++                  },
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isPattern",
++                      "payload": {
++                        "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                        "flags": "u"
++                      }
++                    }
++                  },
++                  {
++                    "_tag": "Filter"
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "staleAt",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMaxLength",
++                      "payload": {
++                        "maxLength": 35
++                      }
++                    }
++                  },
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isPattern",
++                      "payload": {
++                        "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                        "flags": "u"
++                      }
++                    }
++                  },
++                  {
++                    "_tag": "Filter"
++                  }
++                ]
++              },
++              {
++                "_tag": "Null"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "freshness",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "fresh"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "stale"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "unknown"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "$shared": "1839124810fd8195"
++        }
++      ]
++    },
++    "994b6ac10f879ff5": {
++      "name": "plan",
++      "type": {
++        "$shared": "528db149f3db258b"
++      },
++      "isOptional": true
++    },
++    "a5473dc7ba2540dc": {
++      "name": "usageCredits",
++      "type": {
++        "$shared": "74c4828c2755b111"
++      },
++      "isOptional": true
++    },
++    "a64c933ff88188b7": {
++      "name": "balances",
++      "type": {
++        "$shared": "7410f27267b755ef"
++      },
++      "isOptional": false
++    },
++    "ac8a9b13cba1b065": {
++      "name": "observation",
++      "type": {
++        "$shared": "d684f9512d1aba44"
++      },
++      "isOptional": false
++    },
++    "bed6015625d0b1a6": {
++      "name": "windows",
++      "type": {
++        "$shared": "ff5acb3464dc9d20"
++      },
++      "isOptional": false
++    },
++    "d684f9512d1aba44": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "offering",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "subscription"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "metered_api"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "prepaid"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "other"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "unknown"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "$shared": "a5473dc7ba2540dc"
++        },
++        {
++          "$shared": "994b6ac10f879ff5"
++        },
++        {
++          "$shared": "bed6015625d0b1a6"
++        },
++        {
++          "$shared": "a64c933ff88188b7"
++        },
++        {
++          "name": "availability",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "available"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "limited"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "paused"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "unknown"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "summary",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 256
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ]
++    },
++    "ff5acb3464dc9d20": {
++      "_tag": "Arrays",
++      "rest": [
++        {
++          "$shared": "4c36e63564d77154"
++        }
++      ],
++      "checks": [
++        {
++          "_tag": "Filter",
++          "representation": {
++            "id": "effect/schema/isMaxLength",
++            "payload": {
++              "maxLength": 8
++            }
++          }
++        },
++        {
++          "_tag": "Filter"
++        }
++      ]
++    }
++  }
++}
+diff --git a/packages/apps/src/contracts/account-observation.ts b/packages/apps/src/contracts/account-observation.ts
+index f373865..4291137 100644
+--- a/packages/apps/src/contracts/account-observation.ts
++++ b/packages/apps/src/contracts/account-observation.ts
+@@ -23,9 +23,62 @@ const reading = {
+ const ratio = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
+ const scopeText = Schema.NonEmptyString.check(Schema.isMaxLength(128));
+ 
++export const UsageCreditPolicy = Schema.Literals(["last_resort", "never"]);
++export type UsageCreditPolicy = typeof UsageCreditPolicy.Type;
++
++const creditAmount = Schema.String.check(
++  Schema.isMaxLength(80),
++  Schema.isPattern(/^(?:0|[1-9]\d*)(?:\.\d+)?$/u),
++);
++const currencyAmount = Schema.Struct({
++  value: creditAmount,
++  currency: Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/u)),
++});
++export const UsageCredits = Schema.Struct({
++  state: Schema.Literals(["available", "unlimited", "none", "disabled", "unknown"]),
++  balance: Schema.NullOr(
++    Schema.Struct({
++      value: creditAmount,
++      unit: Schema.Literals(["credits", "currency"]),
++      currency: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/u))),
++    }),
++  ),
++  observedAt: Schema.NullOr(AccountObservationInstant),
++  staleAt: Schema.NullOr(AccountObservationInstant),
++  freshness: Schema.Literals(["fresh", "stale", "unknown"]),
++  extraUsage: Schema.NullOr(
++    Schema.Struct({
++      enabled: Schema.NullOr(Schema.Boolean),
++      monthlyCap: Schema.Literals(["limited", "unlimited", "unknown"]),
++      usedRatio: Schema.NullOr(ratio),
++      spent: Schema.NullOr(currencyAmount),
++      cap: Schema.NullOr(currencyAmount),
++    }),
++  ),
++});
++export type UsageCredits = typeof UsageCredits.Type;
++
++export const AccountUsageRouting = Schema.Struct({
++  use: Schema.Literals(["plan", "credits", "unknown", "exhausted", "blocked"]),
++  eligible: Schema.Boolean,
++  reason: Schema.Literals([
++    "plan_available",
++    "credits_only",
++    "credits_disabled",
++    "credit_policy_never",
++    "usage_unknown",
++    "quota_exhausted",
++    "credential_unavailable",
++    "continuity_requires_reconnect",
++  ]),
++  policy: UsageCreditPolicy,
++});
++export type AccountUsageRouting = typeof AccountUsageRouting.Type;
++
+ /** Provider-reported allowance, independent of credential health and account identity. */
+ export const AccountObservation = Schema.Struct({
+   offering: AccountOffering,
++  usageCredits: Schema.optionalKey(UsageCredits),
+   plan: Schema.optionalKey(
+     Schema.Struct({
+       ...reading,
+diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
+index dc6ff16..b0ea050 100644
+--- a/packages/apps/src/contracts/host.ts
++++ b/packages/apps/src/contracts/host.ts
+@@ -98,6 +98,7 @@ export {
+   frameworkProtocol,
+   oauthScopesProtocol,
+   unavailableAccountsProtocol,
++  usageCreditsProtocol,
+ } from "./protocol-version.ts";
+ export { current as protocol35 } from "./protocols/35.ts";
+ export { current as protocol39 } from "./protocols/39.ts";
+diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
+index f6c4af9..e5b7648 100644
+--- a/packages/apps/src/contracts/protocol-version.ts
++++ b/packages/apps/src/contracts/protocol-version.ts
+@@ -7,4 +7,5 @@
+ export const oauthScopesProtocol = 39;
+ /** Unavailable account bindings exist only for discovery. */
+ export const unavailableAccountsProtocol = 40;
+-export const frameworkProtocol = unavailableAccountsProtocol;
++export const usageCreditsProtocol = 41;
++export const frameworkProtocol = usageCreditsProtocol;
+diff --git a/packages/apps/src/contracts/protocols/19.ts b/packages/apps/src/contracts/protocols/19.ts
+index 1353703..9d0c782 100644
+--- a/packages/apps/src/contracts/protocols/19.ts
++++ b/packages/apps/src/contracts/protocols/19.ts
+@@ -1,4 +1,4 @@
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -34,7 +34,7 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
+ import { OAuth2Config } from "./oauth-before-identities.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+diff --git a/packages/apps/src/contracts/protocols/20.ts b/packages/apps/src/contracts/protocols/20.ts
+index c136a77..e4bbb2f 100644
+--- a/packages/apps/src/contracts/protocols/20.ts
++++ b/packages/apps/src/contracts/protocols/20.ts
+@@ -1,4 +1,4 @@
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -34,7 +34,7 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
+ import { OAuth2Config } from "./oauth-before-identities.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+diff --git a/packages/apps/src/contracts/protocols/21.ts b/packages/apps/src/contracts/protocols/21.ts
+index eb051d5..faf49c4 100644
+--- a/packages/apps/src/contracts/protocols/21.ts
++++ b/packages/apps/src/contracts/protocols/21.ts
+@@ -1,4 +1,4 @@
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -33,7 +33,7 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
+ import { OAuth2Config } from "./oauth-before-identities.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+diff --git a/packages/apps/src/contracts/protocols/23.ts b/packages/apps/src/contracts/protocols/23.ts
+index 4f15007..dd24248 100644
+--- a/packages/apps/src/contracts/protocols/23.ts
++++ b/packages/apps/src/contracts/protocols/23.ts
+@@ -1,4 +1,4 @@
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -33,7 +33,7 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
+ import { OAuth2Config } from "./oauth-26.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+diff --git a/packages/apps/src/contracts/protocols/24.ts b/packages/apps/src/contracts/protocols/24.ts
+index c3efad9..bf25344 100644
+--- a/packages/apps/src/contracts/protocols/24.ts
++++ b/packages/apps/src/contracts/protocols/24.ts
+@@ -1,4 +1,4 @@
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -33,7 +33,7 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
+ import { OAuth2Config } from "./oauth-26.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+diff --git a/packages/apps/src/contracts/protocols/25.ts b/packages/apps/src/contracts/protocols/25.ts
+index 25ea965..3f392bc 100644
+--- a/packages/apps/src/contracts/protocols/25.ts
++++ b/packages/apps/src/contracts/protocols/25.ts
+@@ -1,4 +1,4 @@
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -33,7 +33,7 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
+ import { OAuth2Config } from "./oauth-26.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+diff --git a/packages/apps/src/contracts/protocols/26.ts b/packages/apps/src/contracts/protocols/26.ts
+index e687976..1be46d3 100644
+--- a/packages/apps/src/contracts/protocols/26.ts
++++ b/packages/apps/src/contracts/protocols/26.ts
+@@ -1,5 +1,5 @@
+ import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -34,7 +34,7 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
+ import { OAuth2Config } from "./oauth-26.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+diff --git a/packages/apps/src/contracts/protocols/27.ts b/packages/apps/src/contracts/protocols/27.ts
+index 4bca07b..b1ee868 100644
+--- a/packages/apps/src/contracts/protocols/27.ts
++++ b/packages/apps/src/contracts/protocols/27.ts
+@@ -1,5 +1,5 @@
+ import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -46,7 +46,7 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
+ import { OAuth2Config } from "./oauth-26.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+diff --git a/packages/apps/src/contracts/protocols/30.ts b/packages/apps/src/contracts/protocols/30.ts
+index 44d888a..72f45f4 100644
+--- a/packages/apps/src/contracts/protocols/30.ts
++++ b/packages/apps/src/contracts/protocols/30.ts
+@@ -1,5 +1,5 @@
+ import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -35,7 +35,7 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
+ import { OAuth2Config } from "./oauth-26.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+diff --git a/packages/apps/src/contracts/protocols/31.ts b/packages/apps/src/contracts/protocols/31.ts
+index 79078e9..127ad9a 100644
+--- a/packages/apps/src/contracts/protocols/31.ts
++++ b/packages/apps/src/contracts/protocols/31.ts
+@@ -1,5 +1,5 @@
+ import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -34,7 +34,8 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
++import { OAuth2Config } from "../provider.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+ import { AppIcons } from "../icons.ts";
+diff --git a/packages/apps/src/contracts/protocols/33.ts b/packages/apps/src/contracts/protocols/33.ts
+index 24694ef..051aab0 100644
+--- a/packages/apps/src/contracts/protocols/33.ts
++++ b/packages/apps/src/contracts/protocols/33.ts
+@@ -6,7 +6,7 @@ import {
+   AppToolPolicyReply,
+ } from "../app-calls.ts";
+ import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -41,7 +41,8 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
++import { OAuth2Config } from "../provider.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+ import { AppIcons } from "../icons.ts";
+diff --git a/packages/apps/src/contracts/protocols/34.ts b/packages/apps/src/contracts/protocols/34.ts
+index fe98aed..59390bb 100644
+--- a/packages/apps/src/contracts/protocols/34.ts
++++ b/packages/apps/src/contracts/protocols/34.ts
+@@ -6,7 +6,7 @@ import {
+   AppToolPolicyReplayReply as AppToolPolicyReply,
+ } from "../app-calls.ts";
+ import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -41,7 +41,7 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
+ import { OAuth2Config } from "./oauth-34.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+diff --git a/packages/apps/src/contracts/protocols/35.ts b/packages/apps/src/contracts/protocols/35.ts
+index 070fbcd..aad419f 100644
+--- a/packages/apps/src/contracts/protocols/35.ts
++++ b/packages/apps/src/contracts/protocols/35.ts
+@@ -6,7 +6,7 @@ import {
+   AppToolPolicyReplayReply as AppToolPolicyReply,
+ } from "../app-calls.ts";
+ import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /** Frozen protocol 35, retained unchanged for bundles built before account-owned MCP endpoints. */
+ import { Effect, Schema } from "effect";
+ import { AccountFamily } from "../account-family.ts";
+@@ -29,7 +29,7 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
+ import { OAuth2Config } from "./oauth-35.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+diff --git a/packages/apps/src/contracts/protocols/36.ts b/packages/apps/src/contracts/protocols/36.ts
+index c836731..115498b 100644
+--- a/packages/apps/src/contracts/protocols/36.ts
++++ b/packages/apps/src/contracts/protocols/36.ts
+@@ -6,7 +6,7 @@ import {
+   AppToolPolicyReplayReply as AppToolPolicyReply,
+ } from "../app-calls.ts";
+ import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -42,7 +42,8 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
++import { OAuth2Config } from "../provider.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+ import { AppIcons } from "../icons.ts";
+diff --git a/packages/apps/src/contracts/protocols/37.ts b/packages/apps/src/contracts/protocols/37.ts
+index b1b2d0e..e554628 100644
+--- a/packages/apps/src/contracts/protocols/37.ts
++++ b/packages/apps/src/contracts/protocols/37.ts
+@@ -6,7 +6,7 @@ import {
+   AppToolPolicyReplayReply as AppToolPolicyReply,
+ } from "../app-calls.ts";
+ import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -42,7 +42,8 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
++import { OAuth2Config } from "../provider.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+ import { AppIcons } from "../icons.ts";
+diff --git a/packages/apps/src/contracts/protocols/38.ts b/packages/apps/src/contracts/protocols/38.ts
+index 6f2e39d..befb3e6 100644
+--- a/packages/apps/src/contracts/protocols/38.ts
++++ b/packages/apps/src/contracts/protocols/38.ts
+@@ -7,7 +7,7 @@ import {
+   AppToolPolicyReplayReply as AppToolPolicyReply,
+ } from "../app-calls.ts";
+ import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -43,7 +43,8 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
++import { OAuth2Config } from "../provider.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+ import { AppIcons } from "../icons.ts";
+diff --git a/packages/apps/src/contracts/protocols/39.ts b/packages/apps/src/contracts/protocols/39.ts
+index 4ba121f..8b61089 100644
+--- a/packages/apps/src/contracts/protocols/39.ts
++++ b/packages/apps/src/contracts/protocols/39.ts
+@@ -7,7 +7,7 @@ import {
+   AppToolPolicyReplayReply as AppToolPolicyReply,
+ } from "../app-calls.ts";
+ import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
+-import { AccountObservationResult } from "../account-observation.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
+ /**
+  * The host protocol this framework speaks: every message that crosses between a host and an app
+  * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
+@@ -43,7 +43,8 @@ import {
+ } from "../elicitation.ts";
+ import { DeclaredEvents, EmittedEvents } from "../events.ts";
+ import { FailureDetail, UpstreamError } from "../failure.ts";
+-import { AccountCheckResult, OAuth2Config } from "../provider.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
++import { OAuth2Config } from "../provider.ts";
+ import { ProviderError } from "../provider-error.ts";
+ import { RouterIcon } from "../router.ts";
+ import { AppIcons } from "../icons.ts";
+diff --git a/packages/apps/src/contracts/protocols/40.ts b/packages/apps/src/contracts/protocols/40.ts
+new file mode 100644
+index 0000000..6873fe7
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/40.ts
+@@ -0,0 +1,752 @@
++import { AccountUnavailable } from "../account-unavailable.ts";
++import { DriveCommand, DriveReply } from "../drive.ts";
++import {
++  AppCallCommand,
++  AppCallReply,
++  DeclaredAppDependencies,
++  AppToolPolicyCommand,
++  AppToolPolicyReplayReply as AppToolPolicyReply,
++} from "../app-calls.ts";
++import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
++import { AccountObservationResult } from "./account-observation-40.ts";
++/**
++ * The host protocol this framework speaks: every message that crosses between a host and an app
++ * bundle built with it. Its number is `frameworkProtocol` in `../protocol-version.ts`.
++ *
++ * This module is live. The framework and the SDK read the current boundary from here, through
++ * `../host.ts`. `bun run check` records it in `packages/apps/protocols/<frameworkProtocol>.json` and
++ * checks that it stays compatible with every released protocol in `released.ts`: a host that speaks
++ * this module must keep running every bundle a released protocol retained. A change that no longer
++ * does so is a break: freeze this module's previous content as `<frameworkProtocol>.ts`, raise the
++ * number, and give the host an adapter for the frozen one. See notes/apps-publishing.md.
++ *
++ * The frozen protocol modules beside this one are records of released boundaries. Nothing here
++ * imports them, so a change here never edits a released protocol.
++ */
++import { Effect, Schema } from "effect";
++import { AccountFamily } from "../account-family.ts";
++import { McpAppViewObservation, McpAppUi } from "../mcp-apps.ts";
++import { ConnectCommand } from "../connect.ts";
++import { ProviderSite } from "@executor-js/utils/account-site";
++import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
++const frameworkProtocol = 40;
++import {
++  DatabaseFieldReserved,
++  DatabaseLimitExceeded,
++  DatabaseSchema,
++} from "@executor-js/app-data/contracts";
++import { OpenapiResponseError } from "../api-response-error.ts";
++import {
++  ApprovalElicitation,
++  ElicitationFailed,
++  ElicitationReply,
++  FormElicitation,
++} from "../elicitation.ts";
++import { DeclaredEvents, EmittedEvents } from "../events.ts";
++import { FailureDetail, UpstreamError } from "../failure.ts";
++import { AccountCheckResult } from "./account-observation-40.ts";
++import { OAuth2Config } from "../provider.ts";
++import { ProviderError } from "../provider-error.ts";
++import { RouterIcon } from "../router.ts";
++import { AppIcons } from "../icons.ts";
++import { Placements } from "../placement.ts";
++import { OperationSchedule } from "../schedules.ts";
++import { AccountId, JsonObject, JsonValue } from "../schema.ts";
++import { AppSkillName, AppSkills } from "../skills.ts";
++import { ToolAnnotations } from "../tools.ts";
++import { WebhookCommand } from "../webhook-protocol.ts";
++import {
++  WorkflowCommand,
++  WorkflowControlCommand,
++  WorkflowFailure,
++  WorkflowReplay,
++  DriveWorkflowRpcCommand as WorkflowRpcCommand,
++  WorkflowRpcResult,
++  WorkflowRunId,
++} from "../workflows.ts";
++
++/** An MCP failure as it crosses the host boundary. Apps throw the author-facing class from `apps/mcp`. */
++export class McpError extends Schema.TaggedError<McpError>()("McpError", {
++  phase: Schema.Literals(["connect", "discover", "call", "schema", "transport"]),
++  reason: Schema.Literals([
++    "request",
++    "unauthorized",
++    "invalid_response",
++    "timeout",
++    "invalid_input",
++  ]),
++  status: Schema.optional(Schema.Number),
++  /** The JSON-RPC error the server stated. */
++  upstream: Schema.optional(UpstreamError),
++  /**
++   * The refused request carried the session ID the server issued at initialization, so a 404 reads
++   * as a session the server may have lost. Chooses the explanation only; the host never decides from
++   * it whose side a failure is on.
++   */
++  session: Schema.optional(Schema.Literal(true)),
++}) {}
++
++/** A skill loader failure as it crosses the host boundary. Apps throw the author-facing class from `apps/skills`. */
++export class SkillLoadFailed extends Schema.TaggedError<SkillLoadFailed>()("SkillLoadFailed", {
++  reason: Schema.Literals([
++    "source",
++    "request",
++    "rate_limited",
++    "document",
++    "limit",
++    "changed",
++    "encoding",
++  ]),
++  message: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
++  status: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
++  /** What the service's answer points to as missing: the repository, or the branch or tag. */
++  missing: Schema.optional(Schema.Literals(["repository", "ref"])),
++}) {}
++
++/**
++ * Where a provider's credentials may be sent: an exact host, `host:port`, or `*.` followed by a
++ * domain, matching exactly one more label. Lowercase, without a scheme or path.
++ */
++// Keep this schema local; importing a frozen protocol evaluates its whole message graph in Workers.
++export const CredentialHost = Schema.String.check(
++  Schema.isPattern(
++    /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/,
++  ),
++);
++
++/**
++ * Field names an auth method exposes to app code, and where its secret fields may be sent. Every
++ * other string field is secret.
++ */
++const exposure = {
++  /** Not secret: app code reads the real value and forms show it. */
++  plain: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  /** Secret, but app code reads the real value, for signing and similar uses. */
++  raw: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  /**
++   * The only places the outbound network substitutes this method's secret fields: whole header
++   * values and query parameters, each an exact template. Part of the provider's identity. In an
++   * invocation, an account's provider carries the placements granted to that account, which can
++   * be narrower than the app's declaration.
++   */
++  request: Schema.optionalKey(Placements),
++};
++
++/** Serializable authentication declarations interpreted by the trusted host. */
++export const DeclaredAuthMethod = Schema.Union([
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[4].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("interactive"),
++    label: Schema.String,
++    reconnect: Schema.optionalKey(Schema.Literal(true)),
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("secrets"),
++    provisioned: Schema.optionalKey(Schema.Literal(true)),
++    label: Schema.String,
++    fields: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[0].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[1].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[2].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++  Schema.Struct({
++    type: Schema.Literal("oauth2"),
++    ...OAuth2Config.members[3].fields,
++    response: JsonObject,
++    ...exposure,
++  }),
++]);
++
++/** A credential-free provider declaration with the hosts its credentials may be sent to. */
++export const DeclaredProvider = Schema.Struct({
++  name: Schema.NonEmptyString,
++  family: Schema.optionalKey(AccountFamily),
++  auth: Schema.Record(Schema.NonEmptyString, DeclaredAuthMethod),
++  site: Schema.optionalKey(ProviderSite),
++  hosts: Schema.optionalKey(Schema.Array(CredentialHost)),
++});
++/** Credential-free provider declaration; content matching remains host policy. */
++export type DeclaredProvider = typeof DeclaredProvider.Type;
++
++/** One requirement: its provider, how many accounts it takes, and whether it has a check. */
++export const DeclaredAccountSlot = Schema.Struct({
++  definition: DeclaredProvider,
++  capabilities: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  cardinality: Schema.Literals(["one", "many"]),
++  contributed: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
++  /**
++   * The slot's provider defines an account check. Kept beside the definition, not in it, so
++   * adding or editing a check never changes the provider's identity.
++   */
++  health: Schema.optionalKey(Schema.Literal(true)),
++  /** This slot can check app-acquired references through connect.check. */
++  interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
++  hostAcquisition: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++});
++export type DeclaredAccountSlot = typeof DeclaredAccountSlot.Type;
++
++/** One scope's requirements, by name. */
++export const DeclaredAccountSlots = Schema.Record(Schema.NonEmptyString, DeclaredAccountSlot);
++export type DeclaredAccountSlots = typeof DeclaredAccountSlots.Type;
++
++/** Account slots available without binding accounts or evaluating the app factory. */
++export const DeclaredRequirements = Schema.Struct({
++  drive: Schema.optionalKey(Schema.Literal(true)),
++  models: Schema.optionalKey(DeclaredModels),
++  dependencies: Schema.optionalKey(DeclaredAppDependencies),
++  /** Protocol support of this retained framework build, not an author-declared requirement. */
++  capabilities: Schema.optionalKey(
++    Schema.Struct({
++      skills: Schema.Literal(true),
++      /** Accepts inspect detail and tools. Earlier builds reject both as excess fields. */
++      toolIndex: Schema.optionalKey(Schema.Literal(true)),
++      /** Accepts skills sources and reports whether the catalog includes a live loader. */
++      skillSources: Schema.optionalKey(Schema.Literal(true)),
++      /** Accepts scheduled inspection. Earlier builds reject it as an excess field. */
++      scheduledTools: Schema.optionalKey(Schema.Literal(true)),
++      /**
++       * Accepts inspect definitions and answers it with a shared catalog. Earlier builds reject it
++       * as an excess field.
++       */
++      sharedDefinitions: Schema.optionalKey(Schema.Literal(true)),
++      /** Accepts unavailable account bindings during inspect only. */
++      unavailableAccounts: Schema.optionalKey(Schema.Literal(true)),
++      mcpApps: Schema.optionalKey(Schema.Literal(true)),
++    }),
++  ),
++  /**
++   * The document database an app of protocol 9 or earlier declared. Apps of this protocol declare
++   * `sql` instead; the field remains so requirements read from older retained builds keep their meaning.
++   */
++  database: Schema.optionalKey(DatabaseSchema),
++  /**
++   * Requirements by scope. `app` requirements are filled by the accounts the app's managers link for everyone,
++   * for every caller and for background work; `user` requirements by each caller's linked
++   * accounts. A name is used in one scope only. Bundles of protocol 12 and earlier declare user
++   * requirements only.
++   */
++  accounts: Schema.Struct({ app: DeclaredAccountSlots, user: DeclaredAccountSlots }),
++  /** The build has SQL files in `migrations/` and owns a raw SQLite database. */
++  sql: Schema.optionalKey(Schema.Literal(true)),
++  /** The events the app declares, so a host lists them without evaluating the app. */
++  events: Schema.optionalKey(DeclaredEvents),
++  /** The icons the app declares, so a host shows them without evaluating the app. */
++  icons: Schema.optionalKey(AppIcons),
++});
++/** Parsed declared account requirements. */
++export type DeclaredRequirements = typeof DeclaredRequirements.Type;
++
++/**
++ * Host-resolved credentials for one stable saved account. Never a request DTO. When the provider
++ * declares hosts, its secret string fields are sealed handles, not values. The provider carries
++ * the hosts and placements granted to this account.
++ */
++export const ResolvedAccountMetadata = Schema.Struct({
++  id: AccountId,
++  mcpEndpoint: Schema.optionalKey(Schema.String),
++  site: Schema.optionalKey(Schema.String),
++  provider: DeclaredProvider,
++  method: Schema.NonEmptyString,
++  /**
++   * Changes when the account is reconnected or its credentials replaced, not on renewal. Hosts
++   * send it since credential generations; `apps@0.0.1-beta.0` and `beta.1` ignore it.
++   */
++  generation: Schema.optionalKey(Schema.Int),
++  /** Host-recorded grant scopes from the credential snapshot; absent means unknown. */
++  oauthScopes: Schema.optionalKey(Schema.Array(Schema.String)),
++});
++/** A credential-free discovery binding is distinct from a resolved credential. */
++export const ResolvedAccount = Schema.Union([
++  Schema.Struct({
++    ...ResolvedAccountMetadata.fields,
++    fields: JsonObject,
++    unavailable: Schema.optionalKey(Schema.Never),
++  }),
++  Schema.Struct({
++    ...ResolvedAccountMetadata.fields,
++    unavailable: AccountUnavailable,
++    fields: Schema.optionalKey(Schema.Never),
++  }),
++]);
++export type ResolvedAccount = typeof ResolvedAccount.Type;
++
++/** One scope's resolved accounts by requirement; [] differs from a missing slot. */
++export const ResolvedAccountSlots = Schema.Record(
++  Schema.NonEmptyString,
++  Schema.Union([ResolvedAccount, Schema.Array(ResolvedAccount)]),
++);
++export type ResolvedAccountSlots = typeof ResolvedAccountSlots.Type;
++
++/**
++ * An invocation's accounts by scope, resolved by the trusted caller. `user` is absent for work
++ * without a caller, such as an app schedule or an app-account webhook: its context has no `user`.
++ */
++export const ResolvedAccounts = Schema.Struct({
++  app: ResolvedAccountSlots,
++  user: Schema.optionalKey(ResolvedAccountSlots),
++});
++/** Parsed host selections, kept redacted until native account binding. */
++export type ResolvedAccounts = typeof ResolvedAccounts.Type;
++
++/** Trusted approval for one decoded call. Never accepted in public command JSON. */
++export const TrustedToolApproval = Schema.Struct({ tool: Schema.NonEmptyString, input: JsonValue });
++export type TrustedToolApproval = typeof TrustedToolApproval.Type;
++
++/** Absolute Unix time in milliseconds; remote hosts enforce it inside the operation transaction. */
++export const InvocationDeadline = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
++
++/**
++ * Serializable live tool metadata; executable callbacks never cross this boundary. `name` is the
++ * tool's full dotted path. `router` is the path of the router that owns it, omitted at the root.
++ * `readOnly` marks a query; a tool without it is a mutation.
++ */
++export const HostedTool = Schema.Struct({
++  schedules: Schema.optionalKey(Schema.Array(OperationSchedule)),
++  name: Schema.NonEmptyString,
++  router: Schema.optionalKey(Schema.NonEmptyString),
++  tags: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++  description: Schema.String,
++  inputSchema: JsonObject,
++  readOnly: Schema.optionalKey(Schema.Boolean),
++  title: Schema.optionalKey(Schema.String),
++  outputSchema: Schema.optionalKey(JsonObject),
++  annotations: Schema.optionalKey(ToolAnnotations),
++  _meta: Schema.optionalKey(JsonObject),
++  ui: Schema.optionalKey(McpAppUi),
++});
++/** Parsed live tool description. */
++export type HostedTool = typeof HostedTool.Type;
++
++/** Catalog entry without schemas. Browsing lists these and reads one full tool on selection. */
++export const HostedToolSummary = HostedTool.mapFields(
++  ({ inputSchema: _input, outputSchema: _output, _meta, ...fields }) => fields,
++);
++export type HostedToolSummary = typeof HostedToolSummary.Type;
++
++/**
++ * The module or declared capability shape could not be hosted. The detail names what the app
++ * declared wrongly; declarations bind no accounts.
++ */
++export class HostDeclarationInvalid extends Schema.TaggedError<HostDeclarationInvalid>()(
++  "HostDeclarationInvalid",
++  FailureDetail,
++) {}
++/** Fresh app evaluation failed before calling a tool. */
++export class HostEvaluationFailed extends Schema.TaggedError<HostEvaluationFailed>()(
++  "HostEvaluationFailed",
++  FailureDetail,
++) {}
++
++/** Why one router's tools could not be read. The rest of the app's catalog is unaffected. */
++export const HostRouterError = Schema.Union([
++  AccountUnavailable,
++  ProviderError,
++  McpError,
++  SkillLoadFailed,
++  HostDeclarationInvalid,
++  HostEvaluationFailed,
++]);
++export type HostRouterError = typeof HostRouterError.Type;
++
++/**
++ * One router in a live catalog. `path` is "" for the app's root router. `skill` names the skill
++ * that carries this router's instructions. A router with `error` lists none of its tools.
++ */
++export const HostedRouter = Schema.Struct({
++  path: Schema.String,
++  title: Schema.optionalKey(Schema.String),
++  description: Schema.optionalKey(Schema.String),
++  icons: Schema.optionalKey(Schema.Array(RouterIcon)),
++  tags: Schema.optionalKey(Schema.Record(Schema.NonEmptyString, Schema.String)),
++  skill: Schema.optionalKey(AppSkillName),
++  error: Schema.optionalKey(HostRouterError),
++});
++export type HostedRouter = typeof HostedRouter.Type;
++
++/** A live evaluation's tools and the routers that group them. */
++export const HostedCatalog = Schema.Struct({
++  tools: Schema.Array(HostedTool),
++  routers: Schema.Array(HostedRouter),
++});
++export type HostedCatalog = typeof HostedCatalog.Type;
++
++/** A catalog without tool schemas. Browsing lists these and reads one full tool on selection. */
++export const HostedCatalogSummary = Schema.Struct({
++  tools: Schema.Array(HostedToolSummary),
++  routers: Schema.Array(HostedRouter),
++});
++export type HostedCatalogSummary = typeof HostedCatalogSummary.Type;
++
++/** A tool schema whose `$defs` a shared catalog sends once, beside its tools. */
++export const SharedSchemaKey = Schema.Literals(["inputSchema", "outputSchema"]);
++export type SharedSchemaKey = typeof SharedSchemaKey.Type;
++
++/**
++ * A tool of a shared catalog. The `$defs` of each schema `shared` names is the position of its
++ * entries in the catalog's `defs`; the tool's other fields are as `HostedTool`'s.
++ */
++export const HostedSharedTool = Schema.Struct({
++  ...HostedTool.fields,
++  shared: Schema.optionalKey(Schema.Array(SharedSchemaKey)),
++});
++export type HostedSharedTool = typeof HostedSharedTool.Type;
++
++/**
++ * A catalog that sends each `$defs` its tools' schemas hold once, and each definition in them
++ * once. Routers such as the OpenAPI importer give every tool the definitions its schemas reach,
++ * which for a densely connected document is most of the document again for each tool, under the
++ * same few hundred `$defs`. Putting each tool's `$defs` back gives the `HostedCatalog` the bundle
++ * evaluated. Only builds that declare the sharedDefinitions capability send it, and only when
++ * the inspection asks.
++ */
++export const HostedSharedCatalog = Schema.Struct({
++  tools: Schema.Array(HostedSharedTool),
++  routers: Schema.Array(HostedRouter),
++  definitions: Schema.Array(JsonValue),
++  /** Each distinct `$defs`, its entries naming positions in `definitions`. */
++  defs: Schema.Array(Schema.Record(Schema.String, Schema.Int)),
++});
++export type HostedSharedCatalog = typeof HostedSharedCatalog.Type;
++
++/**
++ * A skill catalog and whether any of it came from `dynamicSkills`. Without a live loader the
++ * catalog is determined by the build and its evaluation inputs; with one it reflects a publisher.
++ * `cached` says the loader read through the app cache, so the cache's freshness and invalidation
++ * govern its publisher reads.
++ */
++export const SkillSources = Schema.Struct({
++  skills: AppSkills,
++  dynamic: Schema.Boolean,
++  cached: Schema.optionalKey(Schema.Boolean),
++});
++export type SkillSources = typeof SkillSources.Type;
++/** Either response shape; `dynamic` is unknown for builds that predate skillSources. */
++export const SkillCatalogResponse = Schema.Union([SkillSources, AppSkills]);
++
++/** Whether a tool reads or writes. */
++export const ToolKind = Schema.Literals(["query", "mutation"]);
++
++/**
++ * Check one account for one declared slot. The invocation supplies only that slot, in its scope,
++ * as a single account even when the slot takes many. The app factory is not evaluated.
++ */
++export const AccountCheckCommand = Schema.Struct({
++  operation: Schema.Literal("account-check"),
++  requirement: Schema.NonEmptyString,
++});
++export type AccountCheckCommand = typeof AccountCheckCommand.Type;
++export const AccountObserveCommand = Schema.Struct({
++  operation: Schema.Literal("account-observe"),
++  requirement: Schema.NonEmptyString,
++});
++
++/** Apply the build's pending SQL migrations. No accounts are bound and the app is not evaluated. */
++export const MigrateCommand = Schema.Struct({ operation: Schema.Literal("migrate") });
++export type MigrateCommand = typeof MigrateCommand.Type;
++
++/** The migrations this command applied, oldest first, by position and file path. Empty when the database was current. */
++export const MigrateResult = Schema.Array(
++  Schema.Struct({ id: Schema.Int, name: Schema.NonEmptyString }),
++);
++export type MigrateResult = typeof MigrateResult.Type;
++
++/** Framework-owned dispatch, independent of app-authored HTTP routing. */
++export const HostRequest = Schema.Union([
++  ...ConnectCommand.members,
++  WorkflowCommand,
++  WebhookCommand,
++  Schema.Struct({ operation: Schema.Literal("requirements") }),
++  Schema.Struct({
++    operation: Schema.Literal("inspect"),
++    uiProfile: Schema.optionalKey(Schema.Literal(true)),
++    /** Omit schemas. Only builds that declare the toolIndex capability accept this. */
++    detail: Schema.optionalKey(Schema.Literal("summary")),
++    /** Describe only these tools. Only builds that declare the toolIndex capability accept this. */
++    tools: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
++    /**
++     * Describe only declared operations that have schedules, without dynamic tool discovery.
++     * Only builds that declare the scheduledTools capability accept this.
++     */
++    scheduled: Schema.optionalKey(Schema.Literal(true)),
++    /**
++     * Answer with a HostedSharedCatalog, each shared `$defs` entry sent once. Only builds that
++     * declare the sharedDefinitions capability accept this.
++     */
++    definitions: Schema.optionalKey(Schema.Literal("shared")),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("skills"),
++    /** Answer with SkillSources. Only builds that declare the skillSources capability accept this. */
++    sources: Schema.optionalKey(Schema.Literal(true)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("query"),
++    name: Schema.NonEmptyString,
++    input: JsonValue,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("mutate"),
++    name: Schema.NonEmptyString,
++    input: JsonValue,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("call"),
++    tool: Schema.NonEmptyString,
++    /**
++     * The caller's claim; the bundle rejects a call whose tool has the other kind. The host omits
++     * it for a tool its catalog does not list, and then opens storage for writing.
++     */
++    kind: Schema.optionalKey(ToolKind),
++    input: JsonValue,
++    audience: Schema.optionalKey(Schema.Literal("app")),
++    uiProfile: Schema.optionalKey(Schema.Literal(true)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-resource"),
++    tool: Schema.NonEmptyString,
++    input: JsonValue,
++    source: Schema.String,
++    selection: JsonValue,
++    uri: Schema.NonEmptyString,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("app-callback"),
++    tool: Schema.NonEmptyString,
++    input: JsonValue,
++    source: Schema.String,
++    selection: JsonValue,
++    name: Schema.NonEmptyString,
++    arguments: JsonValue,
++  }),
++  AccountCheckCommand,
++  AccountObserveCommand,
++  MigrateCommand,
++]);
++/** Parsed portable dispatch request. */
++export type HostRequest = typeof HostRequest.Type;
++
++/** The dispatch request did not match the protocol. */
++export class HostRequestInvalid extends Schema.TaggedError<HostRequestInvalid>()(
++  "HostRequestInvalid",
++  {},
++) {}
++/** Host-supplied accounts did not satisfy the declared slots or native method schemas. */
++export class HostAccountsInvalid extends Schema.TaggedError<HostAccountsInvalid>()(
++  "HostAccountsInvalid",
++  {},
++) {}
++/** No query or mutation matched the requested name. */
++export class HostOperationNotFound extends Schema.TaggedError<HostOperationNotFound>()(
++  "HostOperationNotFound",
++  {},
++) {}
++/** An app operation failed. Carries the app's own error name, code, fields and bounded message. */
++export class HostOperationFailed extends Schema.TaggedError<HostOperationFailed>()(
++  "HostOperationFailed",
++  FailureDetail,
++) {}
++/** The freshly evaluated catalog did not contain the requested tool. */
++export class HostToolNotFound extends Schema.TaggedError<HostToolNotFound>()(
++  "HostToolNotFound",
++  {},
++) {}
++/** The tool exists but is a query called as a mutation, or the reverse. Nothing ran. */
++export class HostKindMismatch extends Schema.TaggedError<HostKindMismatch>()("HostKindMismatch", {
++  tool: Schema.NonEmptyString,
++  requested: ToolKind,
++  actual: ToolKind,
++}) {}
++/** One failing input location and its expected shape; never the supplied value. */
++export const InputProblem = Schema.String.check(Schema.isMaxLength(512));
++/** Input decoding reports at most this many problems. */
++export const maxInputProblems = 10;
++/** Native input decoding failed; supplied values are omitted. Builds before problems were reported send none. */
++export class HostInputInvalid extends Schema.TaggedError<HostInputInvalid>()("HostInputInvalid", {
++  problems: Schema.optionalKey(
++    Schema.Array(InputProblem).check(Schema.isMaxLength(maxInputProblems)),
++  ),
++}) {}
++/** The tool's approval policy blocked this call before its tool body ran. */
++export class HostToolBlocked extends Schema.TaggedError<HostToolBlocked>()("HostToolBlocked", {}) {}
++/** Policy elicitation plus decoded input. No tool body ran; the host owns delivery and resumption. */
++export class HostToolApprovalRequired extends Schema.TaggedError<HostToolApprovalRequired>()(
++  "HostToolApprovalRequired",
++  { input: JsonValue, elicitation: ApprovalElicitation },
++) {}
++/** The tool's approval policy failed or returned an invalid decision. Author failures remain private. */
++export class HostToolPolicyFailed extends Schema.TaggedError<HostToolPolicyFailed>()(
++  "HostToolPolicyFailed",
++  {},
++) {}
++/** A tool result was not JSON; the result is never included in the error. */
++export class HostOutputInvalid extends Schema.TaggedError<HostOutputInvalid>()(
++  "HostOutputInvalid",
++  {},
++) {}
++
++/**
++ * Safe error envelope. Author failures carry only their name, code, scalar fields and bounded
++ * message with account secrets replaced; no stack or cause value is serialized.
++ */
++export const HostError = Schema.Union([
++  AccountUnavailable,
++  OpenapiResponseError,
++  ProviderError,
++  McpError,
++  SkillLoadFailed,
++  WorkflowFailure,
++  HostRequestInvalid,
++  HostAccountsInvalid,
++  HostDeclarationInvalid,
++  HostEvaluationFailed,
++  HostOperationNotFound,
++  HostOperationFailed,
++  DatabaseLimitExceeded,
++  DatabaseFieldReserved,
++  HostToolNotFound,
++  HostInputInvalid,
++  HostOutputInvalid,
++  HostToolBlocked,
++  HostToolApprovalRequired,
++  HostToolPolicyFailed,
++  ElicitationFailed,
++  HostKindMismatch,
++]);
++/** Expected host failures. */
++export type HostError = typeof HostError.Type;
++
++/** Portable response envelope; callers parse the success value for their operation. */
++export const HostResponse = Schema.Union([
++  Schema.Struct({
++    ok: Schema.Literal(true),
++    value: JsonValue,
++    /** Account branches that ran, distinct from all accounts available to the app. */
++    accountsUsed: Schema.optionalKey(Schema.Array(AccountId)),
++    toolError: Schema.optionalKey(Schema.Literal(true)),
++    appView: Schema.optionalKey(McpAppViewObservation),
++    /** The occurrences this invocation emitted, kept only because it succeeded. */
++    events: Schema.optionalKey(EmittedEvents),
++  }),
++  Schema.Struct({
++    ok: Schema.Literal(false),
++    error: HostError,
++    accountsUsed: Schema.optionalKey(Schema.Array(AccountId)),
++  }),
++]);
++/** Parsed response envelope. */
++export type HostResponse = typeof HostResponse.Type;
++
++/**
++ * The JSON body the host sends to a bundle's generated server entry. The entry is compiled into
++ * the retained build, so this shape is part of the protocol too.
++ */
++export const HostInvocation = Schema.Struct({
++  command: HostRequest,
++  accounts: ResolvedAccounts,
++  /** Trusted host identity; never part of the public command. */
++  caller: Schema.optionalKey(Schema.NonEmptyString),
++  approval: Schema.optionalKey(TrustedToolApproval),
++  replay: Schema.optionalKey(WorkflowReplay),
++  deadline: Schema.optionalKey(InvocationDeadline),
++  workflowRun: Schema.optionalKey(WorkflowRunId),
++});
++export type HostInvocation = typeof HostInvocation.Type;
++
++/**
++ * Who sends each message. The host must keep accepting everything a released protocol's bundles
++ * send (`bundle`), and must send a released protocol's bundles only what they accept, or gate the
++ * addition on something the bundle declared (`host`). Names a released protocol used and this one
++ * dropped, such as `tools`, keep their direction here.
++ */
++export const messageDirections = {
++  invocation: "host",
++  request: "host",
++  accounts: "host",
++  elicitationReply: "host",
++  workflowStepReply: "host",
++  cacheReply: "host",
++  response: "bundle",
++  requirements: "bundle",
++  catalog: "bundle",
++  catalogSummary: "bundle",
++  sharedCatalog: "bundle",
++  tools: "bundle",
++  toolSummaries: "bundle",
++  skills: "bundle",
++  elicitationRequest: "bundle",
++  workflowStep: "bundle",
++  workflowControl: "bundle",
++  appCall: "bundle",
++  appCallReply: "host",
++  appToolPolicy: "bundle",
++  appToolPolicyReply: "host",
++  driveCommand: "bundle",
++  driveReply: "host",
++  modelRequest: "bundle",
++  modelReply: "host",
++  cacheCommand: "bundle",
++  accountCheck: "bundle",
++  accountObservation: "bundle",
++  migrate: "bundle",
++} as const satisfies Record<string, "host" | "bundle">;
++/** A message name every protocol so far has used. */
++export type MessageName = keyof typeof messageDirections;
++
++/** Every message of the current protocol. The snapshot records them by name. */
++export const current = {
++  version: frameworkProtocol,
++  schemas: {
++    invocation: HostInvocation,
++    request: HostRequest,
++    response: HostResponse,
++    requirements: DeclaredRequirements,
++    catalog: HostedCatalog,
++    catalogSummary: HostedCatalogSummary,
++    sharedCatalog: HostedSharedCatalog,
++    skills: SkillCatalogResponse,
++    elicitationRequest: FormElicitation,
++    elicitationReply: ElicitationReply,
++    workflowStep: WorkflowRpcCommand,
++    workflowStepReply: WorkflowRpcResult,
++    workflowControl: WorkflowControlCommand,
++    appCall: AppCallCommand,
++    appCallReply: AppCallReply,
++    appToolPolicy: AppToolPolicyCommand,
++    appToolPolicyReply: AppToolPolicyReply,
++    driveCommand: DriveCommand,
++    driveReply: DriveReply,
++    modelRequest: ModelCommand,
++    modelReply: ModelReply,
++    cacheCommand: CacheCommand,
++    cacheReply: CacheReply,
++    accountCheck: AccountCheckResult,
++    accountObservation: Schema.NullOr(AccountObservationResult),
++    accounts: ResolvedAccounts,
++    migrate: MigrateResult,
++  },
++} as const satisfies {
++  readonly version: number;
++  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
++};
+diff --git a/packages/apps/src/contracts/protocols/account-observation-40.ts b/packages/apps/src/contracts/protocols/account-observation-40.ts
+new file mode 100644
+index 0000000..faf441a
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/account-observation-40.ts
+@@ -0,0 +1,117 @@
++import { AccountInfo, AccountStatus } from "../provider.ts";
++export { accountPlanName } from "../account-plan-name.ts";
++import { Schema } from "effect";
++import { AccountOffering } from "../account-family.ts";
++
++const short = Schema.NonEmptyString.check(Schema.isMaxLength(64));
++/** A source timestamp in ISO 8601, including its reported time zone. */
++export const AccountObservationInstant = Schema.String.check(
++  Schema.isMaxLength(35),
++  Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/u),
++  Schema.makeFilter((value) => {
++    const time = Date.parse(value);
++    if (!Number.isFinite(time)) return false;
++    const zone = value.match(/([+-])(\d{2}):(\d{2})$/);
++    const offset =
++      zone === null ? 0 : (zone[1] === "+" ? 1 : -1) * (Number(zone[2]) * 60 + Number(zone[3]));
++    return new Date(time + offset * 60_000).toISOString().slice(0, 19) === value.slice(0, 19);
++  }),
++);
++const reading = {
++  observedAt: AccountObservationInstant,
++  staleAt: Schema.optionalKey(AccountObservationInstant),
++};
++const ratio = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
++const scopeText = Schema.NonEmptyString.check(Schema.isMaxLength(128));
++
++/** Provider-reported allowance, independent of credential health and account identity. */
++export const AccountObservation = Schema.Struct({
++  offering: AccountOffering,
++  plan: Schema.optionalKey(
++    Schema.Struct({
++      ...reading,
++      id: Schema.optionalKey(short),
++      label: short,
++    }),
++  ),
++  windows: Schema.Array(
++    Schema.Struct({
++      ...reading,
++      id: short,
++      label: short,
++      scope: Schema.optionalKey(
++        Schema.Struct({ kind: scopeText, id: Schema.optionalKey(scopeText) }),
++      ),
++      measure: Schema.Struct({
++        unit: short,
++        used: Schema.optionalKey(Schema.Finite),
++        remaining: Schema.optionalKey(Schema.Finite),
++        limit: Schema.optionalKey(Schema.Finite),
++        remainingRatio: Schema.optionalKey(ratio),
++        unlimited: Schema.optionalKey(Schema.Boolean),
++      }),
++      period: Schema.optionalKey(
++        Schema.Struct({
++          mode: Schema.optionalKey(Schema.Literals(["fixed", "rolling"])),
++          startsAt: Schema.optionalKey(AccountObservationInstant),
++          seconds: Schema.optionalKey(Schema.Finite.check(Schema.isGreaterThan(0))),
++          unit: Schema.optionalKey(short),
++          value: Schema.optionalKey(Schema.Finite),
++        }),
++      ),
++      resetsAt: Schema.optionalKey(AccountObservationInstant),
++    }),
++  ).check(
++    Schema.isMaxLength(8),
++    Schema.makeFilter((items) => new Set(items.map((item) => item.id)).size === items.length),
++  ),
++  balances: Schema.Array(
++    Schema.Struct({
++      ...reading,
++      id: short,
++      label: short,
++      unit: short,
++      available: Schema.Finite,
++      expiresAt: Schema.optionalKey(AccountObservationInstant),
++    }),
++  ).check(
++    Schema.isMaxLength(8),
++    Schema.makeFilter((items) => new Set(items.map((item) => item.id)).size === items.length),
++  ),
++  availability: Schema.optionalKey(Schema.Literals(["available", "limited", "paused", "unknown"])),
++  summary: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(256))),
++});
++export type AccountObservation = typeof AccountObservation.Type;
++
++/** The source's last collection attempt, independent of the age of retained readings. */
++export const AccountObservationAttempt = Schema.Struct({
++  attemptedAt: AccountObservationInstant,
++  outcome: Schema.Literals(["success", "unavailable", "rate_limited", "invalid", "timed_out"]),
++  retryAt: Schema.optionalKey(AccountObservationInstant),
++});
++
++/** Cached reads retain the source's timestamps and last collection result. */
++export const AccountObservationResult = Schema.Struct({
++  observedAt: AccountObservationInstant,
++  observation: AccountObservation,
++  collection: Schema.optionalKey(AccountObservationAttempt),
++}).check(
++  Schema.makeFilter(
++    (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength <= 16_384,
++  ),
++);
++export type AccountObservationResult = typeof AccountObservationResult.Type;
++
++/** Like health hooks, observers run with only one host-bound account. */
++export interface AccountObserver<Auth extends import("../provider.ts").AuthMethods> {
++  run(
++    context: import("../provider.ts").AccountCheckContext<Auth>,
++  ): import("effect").Effect.Effect<AccountObservationResult | void, unknown>;
++}
++
++export const AccountCheckResult = Schema.Struct({
++  accountInfo: Schema.optionalKey(AccountInfo),
++  status: Schema.optionalKey(AccountStatus),
++  observation: Schema.optionalKey(AccountObservationResult),
++  observationInvalid: Schema.optionalKey(Schema.Literal(true)),
++});
+diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
+index 12679b7..59a993a 100644
+--- a/packages/apps/src/contracts/protocols/released.ts
++++ b/packages/apps/src/contracts/protocols/released.ts
+@@ -1,3 +1,4 @@
++import { current as protocol40 } from "./40.ts";
+ import { current as protocol39 } from "./39.ts";
+ import { current as protocol38 } from "./38.ts";
+ import { current as protocol37 } from "./37.ts";
+@@ -82,4 +83,5 @@ export const releasedProtocols = [
+   protocol37,
+   protocol38,
+   protocol39,
++  protocol40,
+ ] as const;
+diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
+index e8792b5..e7798b4 100644
+--- a/packages/sdk/src/implementation/app-protocols.ts
++++ b/packages/sdk/src/implementation/app-protocols.ts
+@@ -13,6 +13,7 @@ import {
+   protocol3,
+   oauthScopesProtocol,
+   unavailableAccountsProtocol,
++  usageCreditsProtocol,
+   type HostAccount,
+   type HostAccountSlots,
+   type HostAccounts,
+@@ -329,6 +330,11 @@ const protocolUnavailableAccounts: AppProtocol = {
+   version: unavailableAccountsProtocol,
+   nodeEntry: nodeAppEntry(unavailableAccountsProtocol),
+ };
++const protocolUsageCredits: AppProtocol = {
++  ...protocolUnavailableAccounts,
++  version: usageCreditsProtocol,
++  nodeEntry: nodeAppEntry(usageCreditsProtocol),
++};
+ 
+ /**
+  * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
+@@ -562,6 +568,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
+     protocol38,
+     protocolOAuthScopes,
+     protocolUnavailableAccounts,
++    protocolUsageCredits,
+   ].map((protocol) => [
+     protocol.version,
+     protocol.version >= 36

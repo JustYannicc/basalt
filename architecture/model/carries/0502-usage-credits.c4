@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Provider credit facts use an optional bounded observation in protocol 41. Routing is pool-scoped, readable only after app access and account inspection; only the pool owner writes policy, and writes acknowledge exact Home readback. Prior protocol observation and check codecs remain frozen. Credits retain vendor units and never share the banked-reset balance."
+    }
+  }
+}
