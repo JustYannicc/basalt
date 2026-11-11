@@ -49,5 +49,5 @@ new file mode 100644
 +  const headers = new Headers(request.headers);
 +  headers.set("content-type", "application/json");
 +  headers.delete("content-length");
-+  return { request: new Request(request, { headers, body: "{}" }) };
++  return { request: new Request(request, { method: "POST", headers, body: "{}" }) };
 +}
