@@ -6,7 +6,7 @@ import { command } from "./support.ts";
 import { fixture } from "./native-client-fixture.ts";
 
 test(
-  "cancelling native access validation leaves the next request usable without reconnect",
+  "cancelling one native access caller leaves shared validation usable without reconnect",
   { timeout: 30000 },
   async () => {
     const f = await fixture();
@@ -15,6 +15,14 @@ test(
       await command(["agent", "add", "both", "models", "tools"], f.home);
       const origin = await f.start(),
         token = await f.token();
+      f.remote.accessLifetime(60);
+      f.remote.refuseNextUpgrade();
+      const refused = await fetch(`${origin}/v1/models`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      assert.equal(refused.status, 503);
+      await refused.body?.cancel();
+      f.remote.accessLifetime(3600);
       const held = f.remote.holdAccess(),
         abort = new AbortController();
       try {
@@ -26,7 +34,6 @@ test(
         await held.arrived;
         abort.abort();
         await rejected;
-        await held.cancelled;
       } finally {
         held.release();
       }
@@ -49,12 +56,12 @@ test(
 );
 
 test(
-  "cancelling an older access check leaves another request's successful renewal usable",
+  "cancelling one caller leaves a shared native credential renewal usable",
   { timeout: 30000 },
   async () => {
     const f = await fixture();
     try {
-      f.remote.expireNext(60);
+      f.remote.expireNext(180);
       await f.login();
       await command(["agent", "add", "both", "models", "tools"], f.home);
       const clock = join(f.home, "clock.now"),
@@ -68,23 +75,19 @@ test(
       );
       const origin = await f.start(["--import", preload]),
         token = await f.token();
-      const heldAccess = f.remote.holdAccess(),
-        heldRefresh = f.remote.holdRefresh();
+      const heldRefresh = f.remote.holdRefresh();
       const abort = new AbortController(),
         headers = { authorization: `Bearer ${token}` };
       try {
-        const cancelled = fetch(`${origin}/v1/models`, { headers, signal: abort.signal });
-        const rejected = assert.rejects(cancelled, /abort/u);
-        await heldAccess.arrived;
         const credentials = JSON.parse(await readFile(join(f.home, "credentials.json"), "utf8"));
         f.remote.expireNext(3600);
         await writeFile(clock, String(credentials.expiresAt - 20000));
-        const renewing = fetch(`${origin}/v1/models`, { headers });
+        const cancelled = fetch(`${origin}/v1/models`, { headers, signal: abort.signal });
+        const rejected = assert.rejects(cancelled, /abort/u);
         await heldRefresh.arrived;
+        const renewing = fetch(`${origin}/v1/models`, { headers });
         abort.abort();
         await rejected;
-        await heldAccess.cancelled;
-        heldAccess.release();
         heldRefresh.release();
         const renewed = await renewing;
         assert.equal(
@@ -108,7 +111,6 @@ test(
         assert.equal(f.remote.counts().refreshes, 1);
         assert.equal(JSON.parse((await command(["status"], f.home)).stdout).state, "connected");
       } finally {
-        heldAccess.release();
         heldRefresh.release();
       }
     } finally {

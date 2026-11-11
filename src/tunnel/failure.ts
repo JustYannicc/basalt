@@ -28,7 +28,7 @@ const codes = new Set([
   "ERR_WEBSOCKET_CLOSED",
   "ERR_WEBSOCKET_CONNECTION_ERROR",
 ]);
-type Phase = "message" | "flush" | "socket";
+type Phase = "message" | "flush" | "socket" | "http";
 type EventKind = "message" | "close" | "error";
 
 function field(value: unknown, key: string): unknown {

@@ -301,7 +301,7 @@ test(
 for (const mode of ["close", "timeout"] as const)
   test(
     `device model ${mode} before ready stays retryable without sending an operation`,
-    { timeout: 45000 },
+    { timeout: 105000 },
     async () => {
       const f = await fixture();
       try {

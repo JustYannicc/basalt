@@ -114,3 +114,61 @@ test("unknown exception fields and throwing accessors cannot export arbitrary te
     event: "error",
   });
 });
+
+test("HTTP tunnel failures log closed diagnostics without upstream exception text", async (context) => {
+  const records: string[] = [];
+  context.mock.method(console, "warn", (record: string) => records.push(record));
+  const { TunnelOperation } = await import("./operation.ts");
+  const frames: import("../../clients/contracts/tunnel.ts").TunnelServerFrame[] = [];
+  const operation = new TunnelOperation(
+    {
+      v: 1,
+      type: "open",
+      id: 9,
+      headers: {},
+      operation: { service: "tools", method: "GET", path: "/mcp", transport: "http" },
+    },
+    (frame) => frames.push(frame),
+    () => {},
+  );
+  await operation.run(
+    new Request("https://router.example/native/v1/tunnel", {
+      headers: { authorization: "Bearer private-native-token" },
+    }),
+    {
+      POOL_APP_SIGNING_KEY: "ab".repeat(32),
+      TOOLS_SERVICE: {
+        fetch: async () => {
+          throw Object.assign(new TypeError("private upstream body and token"), {
+            code: "ECONNRESET",
+          });
+        },
+      },
+      POOL_SERVICE: {
+        fetch: async () => {
+          throw new Error("Models are not involved.");
+        },
+      },
+    },
+  );
+  assert.deepEqual(
+    records.map((record) => JSON.parse(record.slice("NATIVE_TUNNEL_FAILURE ".length))),
+    [
+      {
+        id: 9,
+        class: "TypeError",
+        name: "TypeError",
+        code: "ECONNRESET",
+        phase: "http",
+        event: "error",
+      },
+    ],
+  );
+  assert.deepEqual(frames.at(-1), {
+    v: 1,
+    type: "error",
+    id: 9,
+    code: "unavailable",
+    outcome: "unknown",
+  });
+});

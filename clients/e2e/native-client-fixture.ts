@@ -4,9 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { launch } from "./support.ts";
 import { nativeFixture } from "./native-fixture.ts";
-export async function fixture() {
-  assert.equal(process.platform, "linux", "Explicit file storage is a headless Linux choice.");
-  const remote = await nativeFixture();
+export async function fixture(options?: {
+  storage?: "os" | "file";
+  services?: Parameters<typeof nativeFixture>[0];
+}) {
+  const storage = options?.storage ?? "file";
+  if (storage === "file")
+    assert.equal(process.platform, "linux", "Explicit file storage is a headless Linux choice.");
+  const remote = await nativeFixture(options?.services);
   const home = await mkdtemp(join(tmpdir(), "client-native-"));
   let runtime: ReturnType<typeof launch> | undefined;
   const stop = async () => {
@@ -27,7 +32,7 @@ export async function fixture() {
     start,
     stop,
     login: async () => {
-      const child = launch(["login", remote.origin, "--no-browser", "--storage", "file"], home);
+      const child = launch(["login", remote.origin, "--no-browser", "--storage", storage], home);
       await ready(child, /Confirmation code: BCDF-GHJK/u);
       remote.approve();
       const result = await child.exited;
@@ -40,6 +45,7 @@ export async function fixture() {
       JSON.parse(await readFile(join(home, "agent-both.json"), "utf8")).token as string,
     close: async () => {
       await stop();
+      if (storage === "os") await launch(["sign-out"], home).exited;
       await remote.close();
       await rm(home, { recursive: true, force: true });
     },
