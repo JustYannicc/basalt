@@ -1,0 +1,24 @@
+diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/hosted/server/src/implementation/native-grant-host.ts
+--- a/apps/hosted/server/src/implementation/native-grant-host.ts
++++ b/apps/hosted/server/src/implementation/native-grant-host.ts
+@@ -42,7 +42,7 @@
+         method: "POST",
+         headers: { "content-type": "application/json" },
+         body: JSON.stringify({ envelope }),
+-        redirect: "error",
++        redirect: "manual",
+         signal: AbortSignal.timeout(15_000),
+       }),
+     );
+diff --git a/apps/hosted/server/src/implementation/pool-provider-mirror.ts b/apps/hosted/server/src/implementation/pool-provider-mirror.ts
+--- a/apps/hosted/server/src/implementation/pool-provider-mirror.ts
++++ b/apps/hosted/server/src/implementation/pool-provider-mirror.ts
+@@ -77,7 +77,7 @@
+   ]);
+   const response = await context.fetch(url, {
+     signal,
+-    redirect: "error",
++    redirect: "manual",
+     headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+   });
+   if (!response.ok) {

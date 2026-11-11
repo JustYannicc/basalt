@@ -1,0 +1,7 @@
+model {
+  extend basalt.setupHost {
+    metadata {
+      constraint "Setup and native control hosts issue assertions for 25 seconds, leaving clock-skew headroom below the pool verifier's strict 30-second maximum. The verifier retains its signature, expiry and maximum-window checks; valid initial pool loads and repeated reads use the same browser session."
+    }
+  }
+}

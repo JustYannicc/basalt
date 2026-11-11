@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { storageFixture } from "./fixture.ts";
 import { openVault } from "./vault.ts";
 import { defaultLimits } from "./quota-limits.ts";
@@ -121,6 +122,50 @@ test("an acknowledged R2 write with a lost reply settles its reservation from th
     assert.ok(status.retainedBytes > 0);
     const again = await openVault(input);
     assert.equal((await again.status()).retainedBytes, status.retainedBytes);
+  } finally {
+    data.close();
+    account.close();
+  }
+});
+
+test("an attachment part whose R2 write failed is written again by its retry", async () => {
+  const data = storageFixture(),
+    account = storageFixture();
+  let fail = true;
+  const bucket = {
+    ...data.bucket,
+    async put(key: string, value: Parameters<typeof data.bucket.put>[1]) {
+      if (fail && /\/parts\/[0-9]{5}$/u.test(key)) {
+        fail = false;
+        throw new Error("Synthetic R2 failure before anything was stored");
+      }
+      return data.bucket.put(key, value);
+    },
+  };
+  try {
+    const vault = await openVault({
+      storage: data.storage,
+      bucket,
+      accountStorage: account.storage,
+      prefix: "retry/",
+    });
+    const bytes = Uint8Array.from({ length: 3000 }, (_, i) => i % 251);
+    const oid = createHash("sha256").update(bytes).digest("hex");
+    const upload = await vault.attachments.begin({ operation: "pdf", oid, bytes: bytes.length });
+    const part = { upload: upload.upload, part: 0, content: bytes };
+    await assert.rejects(vault.attachments.put(part), /Synthetic R2 failure/);
+    await vault.attachments.put(part);
+    assert.equal((await vault.attachments.complete({ upload: upload.upload })).state, "present");
+    await vault.service.attach({
+      base: vault.root,
+      path: "paper.pdf",
+      operation: "attach",
+      oid,
+      bytes: bytes.length,
+    });
+    const read = await vault.service.attachment({ path: "paper.pdf" });
+    assert.equal(read?.contentBase64, Buffer.from(bytes).toString("base64"));
+    assert.equal((await vault.status()).reservedStorageBytes, 0);
   } finally {
     data.close();
     account.close();

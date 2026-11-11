@@ -67,7 +67,7 @@ async function fixture(
     const url = String(input);
     if (url.startsWith("https://pool.example/"))
       return handleAccountKeyMirror(new Request(input, init), { home, signingKey });
-    assert.equal(init?.redirect, "error");
+    assert.equal(init?.redirect, "manual");
     assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${fields.token}`);
     return discovery(url);
   };
@@ -208,6 +208,25 @@ test("multiple Cloudflare accounts and failed model discovery write no credentia
   );
   await assert.rejects(failed.mirror(), /configuration unavailable/);
   assert.equal(failed.calls.length, 0);
+});
+
+test("provider discovery refuses redirects before writing credentials", async () => {
+  for (const status of [301, 302, 307, 308]) {
+    const f = await fixture(
+      "kimi",
+      "apiKey",
+      { token: "synthetic-saved-token" },
+      () =>
+        new Response(null, {
+          status,
+          headers: { location: "https://synthetic-provider.invalid/models" },
+        }),
+    );
+    await assert.rejects(f.mirror(), /configuration unavailable/);
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.configs.size, 0);
+    assert.equal(f.files.size, 0);
+  }
 });
 
 test("Vertex service-account mirror uses the documented payload and keeps its assigned UUID", async () => {
