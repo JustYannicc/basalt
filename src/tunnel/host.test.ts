@@ -7,7 +7,7 @@ import type { TunnelEnvironment } from "./access.ts";
 const tunnelUrl = "https://app.example.test/native/v1/tunnel";
 
 // The access lookup answers 401, so a request that reaches it has passed the handshake checks.
-async function handshake(origin?: string) {
+async function handshake(origin?: string | string[]) {
   let accessReads = 0;
   const env: TunnelEnvironment = {
     TOOLS_SERVICE: {
@@ -24,7 +24,7 @@ async function handshake(origin?: string) {
     "sec-websocket-protocol": tunnelProtocol,
     authorization: "Bearer synthetic-native-token",
   });
-  if (origin !== undefined) headers.set("origin", origin);
+  for (const value of origin === undefined ? [] : [origin].flat()) headers.append("origin", value);
   const response = await handleTunnel(new Request(tunnelUrl, { headers }), env);
   return { status: response.status, accessReads };
 }
@@ -45,7 +45,10 @@ test("any other Origin is refused before access is read", async () => {
     "https://app.example.test:8443",
     "https://sub.app.example.test",
     "https://app.example.test.attacker.example",
+    "https://app.example.test/",
+    "https://app.example.test:443",
     "",
+    ["https://app.example.test", "https://attacker.example"],
   ])
     assert.deepEqual(
       await handshake(origin),
