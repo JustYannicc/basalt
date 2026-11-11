@@ -52,27 +52,6 @@ diff --git a/packages/ui/src/implementation/dashboard/connect.tsx b/packages/ui/
            <TabsTrigger value="assistant">Assistant</TabsTrigger>
            <TabsTrigger
              data-product-area="connect"
-diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
---- a/e2e/test-plan.ts
-+++ b/e2e/test-plan.ts
-@@ -11782,6 +11782,17 @@
-       local: na("Local has no organization members or hosted Connect page."),
-     },
-   },
-+  connectNarrowLayout: {
-+    fixtures: "actors",
-+    file: "pool-setup-connect.spec.ts",
-+    serverEnvironment: { EXECUTOR_PRODUCT_NAME: "Signalbox" },
-+    title: "Connect never scrolls sideways on a phone and every setup tab stays reachable",
-+    targets: {
-+      "self-host": scheduled,
-+      cloud: na("The setup service is the deployment's own Worker; self-host covers the page."),
-+      local: na("Local has no organization members or hosted Connect page."),
-+    },
-+  },
-   connectedAgents: {
-     fixtures: "actors",
-     file: "connected-agents.spec.ts",
 diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
 --- a/e2e/tests/pool-setup-connect.spec.ts
 +++ b/e2e/tests/pool-setup-connect.spec.ts
