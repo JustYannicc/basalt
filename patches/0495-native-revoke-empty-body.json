@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-native-revoke-empty-body",
+  "file": "0495-native-revoke-empty-body.patch",
+  "content_sha256": "45e333351eac72f629058231563585caf7a6165b58a7deb08dd0f5b04965780c",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
