@@ -9,6 +9,7 @@ import { containerProps } from "./test/container-fixture.ts";
 import { Effect } from "effect";
 import { releaseEvidence } from "./evidence.ts";
 import { releaseWorkers } from "./barrier.ts";
+import { reportRefusal } from "./refusal-report.ts";
 import { BarrierRefusal, manifestDigest, type ReleaseManifest } from "./manifest.ts";
 
 const candidate = "a".repeat(40);
@@ -69,6 +70,13 @@ test("a startup-headroom refusal retains both measurements in receipt and failur
   assert.deepEqual(failure.startupMeasurements, measurements);
   assert.deepEqual(failure.activated, []);
   assert.equal(failure.reason, "startup-headroom");
+  const output: string[] = [];
+  const summary = join(root, "summary.md");
+  await reportRefusal(failure, summary, (message) => output.push(message));
+  for (const text of [output.join("\n"), await readFile(summary, "utf8")]) {
+    assert.match(text, /AppPages/);
+    assert.match(text, /770 → 780; ceiling=750 ms/);
+  }
 });
 test("exact frozen requests stay private while refusal receipts retain the safe disposition", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "release-evidence-"));
