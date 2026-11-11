@@ -2214,10 +2214,11 @@ jobs:
       - name: Run the complete owned unit suite
         if: needs.select.outputs.full_suite == 'true'
         run: npm run check
-      - name: Check app source snapshots against their separate repositories
+      - name: Check app source snapshots against verified pins and hashes
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/catalog-sources.ts --check
+          BASE_SHA: ${{ needs.select.outputs.base_sha }}
+        run: node scripts/catalog-sources.ts --check --base "$BASE_SHA" --summary "$GITHUB_STEP_SUMMARY"
       - name: Check every catalog OAuth method has a reviewed connection path
         run: node scripts/check-catalog-oauth.ts
       - name: Verify social sign-in and admin security boundaries

@@ -1,0 +1,9 @@
+[
+  "{\"id\":1,\"request\":{\"action\":\"status\"}}",
+  "{\"id\":1,\"request\":{\"action\":\"apps\"}}",
+  "{\"id\":1,\"request\":{\"action\":\"sign-in\",\"origin\":\"https:\\/\\/s.example\"}}",
+  "{\"id\":1,\"request\":{\"action\":\"setup-preview\",\"selection\":{\"claude\":\"connect\",\"codex\":\"keep\"}}}",
+  "{\"id\":1,\"request\":{\"action\":\"setup-apply\",\"id\":\"p\"}}",
+  "{\"id\":1,\"request\":{\"action\":\"cancel-sign-in\"}}",
+  "{\"file\":\"\\/private\\/keys.json\",\"id\":2,\"request\":{\"action\":\"import-direct\"}}"
+]

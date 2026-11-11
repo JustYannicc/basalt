@@ -25,10 +25,8 @@ await build({
   target: "node24",
   external: ["electron"],
 });
-await build({
+const nodeModule = {
   ...common,
-  entryPoints: ["../cli/main.mjs"],
-  outfile: join(output, "connection.mjs"),
   platform: "node",
   format: "esm",
   target: "node24",
@@ -36,7 +34,14 @@ await build({
   banner: {
     js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);',
   },
+};
+await build({
+  ...nodeModule,
+  entryPoints: ["../cli/main.mjs"],
+  outfile: join(output, "connection.mjs"),
 });
+// The native Mac shell runs this host on a bundled Node beside connection.mjs.
+await build({ ...nodeModule, entryPoints: ["host.ts"], outfile: join(output, "host.mjs") });
 await build({
   ...common,
   entryPoints: ["ui.tsx"],

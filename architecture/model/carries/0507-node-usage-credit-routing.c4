@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Each retained and duplex WebSocket turn validates the bound credential against current Home funding policy before forwarding bytes. A refusal requires reconnect and full context, never transfers an account-owned response ID and does not interrupt an in-flight turn. Old Home cannot silently treat validation as another dispatch. Wire proofs accept Redis command casing while requiring the validation request type and pinned account identity."
+    }
+  }
+}

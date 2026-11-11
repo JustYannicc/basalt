@@ -19,6 +19,16 @@ on:
   pull_request:
     paths:
       - clients/release-notes.md
+      - clients/desktop/mac/**
+      - clients/desktop/host.ts
+      - clients/desktop/host-messages.json
+      - clients/desktop/controller.ts
+      - clients/desktop/contracts.ts
+      - clients/desktop/supervisor.ts
+      - clients/desktop/build.mjs
+      - clients/cli/**
+      - clients/connection/**
+      - clients/contracts/**
       - .github/workflows/clients-release.yml
   workflow_dispatch:
     inputs:
@@ -87,18 +97,32 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.4
+      # The Mac app is native (clients/desktop/mac) and needs no Electron or packaging downloads.
       - uses: ./.github/actions/desktop-release-assets
+        if: matrix.platform != 'mac'
         id: desktop-assets
       - run: bun install --cwd clients --frozen-lockfile
       - run: bun install --cwd clients/desktop --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: ${{ matrix.platform == 'mac' && '1' || '' }}
       - run: bun run --cwd clients/desktop build
       # The keyring's native module is installed for the runner's own architecture only, so each
       # runner packages its own: Apple Silicon on macos-latest, x64 on Windows and Linux.
       # Published builds carry the permanent identifiers; package.json keeps the development ones.
       # Bash on every runner: Windows PowerShell splits a native argument like -c.appId at its dot.
       - name: Package the app
+        if: matrix.platform != 'mac'
         shell: bash
         run: bun run --cwd clients/desktop package:${{ matrix.platform }} -c.appId=run.signalbox.client -c.productName=Signalbox
+      - name: Test the Mac app
+        if: matrix.platform == 'mac'
+        run: swift test --package-path clients/desktop/mac
+      # Same bundle id and file names as the Electron app it replaces, so it updates in place.
+      - name: Package the Mac app
+        if: matrix.platform == 'mac'
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: bash clients/desktop/mac/package.sh "$VERSION"
       - name: Package the command line connection
         if: matrix.platform == 'linux'
         shell: bash

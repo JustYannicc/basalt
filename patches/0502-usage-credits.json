@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-subscription-usage-credits",
+  "file": "0502-usage-credits.patch",
+  "content_sha256": "a4f8bacef439addadb36106e7bfcf378f8fcaae23a9879f3b5b3b4af569fcc5d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

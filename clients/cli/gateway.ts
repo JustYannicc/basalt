@@ -54,6 +54,26 @@ export async function startGateway(options: GatewayOptions) {
         return answer(response, 200, health.view());
       if (request.method === "GET" && request.url === "/client/health")
         return answer(response, 200, await health.check());
+      if (request.method === "GET" && request.url === "/client/apps") {
+        // Disconnect, sign-out and a closed caller interrupt the read like forwarded requests.
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        response.once("close", cancel);
+        active.add(controller);
+        try {
+          // A reconnect or sign-out in progress finishes before the read uses the grant.
+          await transition;
+          const summary = await options.source.apps(
+            AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
+          );
+          return answer(response, 200, summary ?? null);
+        } catch {
+          return answer(response, 409, { error: "The app list is unavailable." });
+        } finally {
+          response.off("close", cancel);
+          active.delete(controller);
+        }
+      }
       const command = request.url.slice("/client/".length);
       if (
         request.method !== "POST" ||

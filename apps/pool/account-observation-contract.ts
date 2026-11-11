@@ -2,8 +2,13 @@
 export interface PoolAccountObservation {
   readonly observedAt: string;
   readonly observation: {
+    readonly usageCredits?: import("./usage-credits-contract.ts").UsageCredits;
     readonly offering: import("apps").AccountOffering;
-    readonly plan?: { readonly label: string; readonly observedAt: string; readonly staleAt?: string };
+    readonly plan?: {
+      readonly label: string;
+      readonly observedAt: string;
+      readonly staleAt?: string;
+    };
     readonly windows: readonly {
       readonly id: string;
       readonly label: string;

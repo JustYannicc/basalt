@@ -15,9 +15,12 @@ export function desktopController(options: {
   env: NodeJS.ProcessEnv;
   connectionEntry: string;
   executable: string;
+  /** Headless Linux tests choose file custody explicitly; desktop apps always use the OS store. */
+  storage?: "os" | "file";
   openBrowser(url: string): Promise<void>;
   chooseDirectFile(): Promise<string | undefined>;
 }) {
+  const storage = options.storage ?? "os";
   const connection = new ConnectionSupervisor(
     options.home,
     options.connectionEntry,
@@ -64,7 +67,7 @@ export function desktopController(options: {
     setup.cancel();
     const abort = new AbortController();
     phase = "signing-in";
-    const finished = login(options.home, origin, "os", false, {
+    const finished = login(options.home, origin, storage, false, {
       signal: abort.signal,
       show: async (url, code) => {
         authorization = { url, code };
@@ -97,6 +100,11 @@ export function desktopController(options: {
   };
   const handle = async (request: DesktopRequest): Promise<DesktopReply> => {
     if (request.action === "status") return { snapshot: await snapshot() };
+    if (request.action === "apps") {
+      // An unavailable list leaves the reply without apps; the panel keeps what it last showed.
+      const apps = hasProfile ? await connection.apps().catch(() => undefined) : undefined;
+      return { snapshot: await snapshot(), ...(apps ? { apps } : {}) };
+    }
     if (request.action === "cancel-sign-in") {
       await cancelSignIn();
       return { snapshot: await snapshot() };
@@ -113,7 +121,7 @@ export function desktopController(options: {
       if (file) {
         await connection.stop();
         setup.cancel();
-        await importDirect(options.home, file, "os");
+        await importDirect(options.home, file, storage);
         hasProfile = true;
         await connection.start();
       }
@@ -170,7 +178,7 @@ export function desktopController(options: {
       phase = "ready";
     },
     request: (request: DesktopRequest): Promise<DesktopReply> => {
-      if (["status", "cancel-sign-in", "open-approval"].includes(request.action))
+      if (["status", "apps", "cancel-sign-in", "open-approval"].includes(request.action))
         return handle(request).catch(async () => ({
           snapshot: {
             ...(await snapshot()),

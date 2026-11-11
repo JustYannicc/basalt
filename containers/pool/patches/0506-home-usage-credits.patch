@@ -1,0 +1,1532 @@
+diff --git a/cmd/home/main.go b/cmd/home/main.go
+index 3e93ab0..3b02be4 100644
+--- a/cmd/home/main.go
++++ b/cmd/home/main.go
+@@ -424,6 +424,7 @@ func run() int {
+ 	})
+ 	// Keep the Antigravity quota User-Agent aligned with the CPA request User-Agent.
+ 	cpasdkauth.StartAntigravityVersionUpdater(runCtx)
++	rt.SetUsageCreditCollector(quotaCollector)
+ 	quotaCollector.Start(runCtx)
+ 
+ 	respSrv = respserver.New(addr, rt)
+diff --git a/docs/management/api.md b/docs/management/api.md
+index 88c68a0..9bf4010 100644
+--- a/docs/management/api.md
++++ b/docs/management/api.md
+@@ -183,6 +183,7 @@ The following v8 routes are derived from `internal/managementhttp/routes_v8.go`
+ | `POST` | `/channel-groups` |
+ | `DELETE` | `/channel-groups/:id` |
+ | `GET` | `/channel-groups/:id` |
++| `GET` | `/channel-groups/:id/usage-credit-routing` |
+ | `PATCH` | `/channel-groups/:id` |
+ | `PUT` | `/channel-groups/:id` |
+ | `GET` | `/config` |
+@@ -3776,6 +3777,14 @@ Updates a channel group. The request fields are the same as `POST /channel-group
+ 
+ Response: `{ "channel_group": ... }`.
+ 
++### GET `/channel-groups/:id/usage-credit-routing`
++
++Returns `{usageCreditPolicy, accounts}` for this group. Optional `model` selects model-specific quota windows. Account entries contain `use` (`plan`, `credits`, `unknown`, `exhausted`, `blocked`), `eligible`, `reason` and `policy`. Under `never`, credit-only and unknown accounts keep their funding `use` and return `eligible: false`, `reason: "credit_policy_never"`.
++
++v8 channel-group create/update and read responses accept/expose `usage_credit_policy`: `last_resort` (default) or `never`. The strictest applicable server-owned group policy governs an authenticated client key. Known plan quota precedes credits, then unknown funding, before session affinity. `never` admits only fresh proven plan quota. A funding refusal requests a bounded, coalesced normal quota collection. A spending guarantee still requires disabling extra usage at the vendor because observations can change between collection and a request.
++
++v8 quota detail responses include nullable `usage_credits`: `state`, optional decimal-string `balance`, source `observed_at`/`expires_at`, Codex `allowed`/`limit_reached`/`has_credits`/`unlimited`, and optional Claude `extra_usage` with `enabled`, `monthly_cap` (`limited`, `unlimited`, `unknown`) and `used_ratio`. `credit_blocked` preserves explicit zero, disabled or exhausted evidence. Claude caps are not wallets; currency and scale are unproven, so no money amount is published. `reset_credits` remains separate. Older rows without these facts are unknown until collection.
++
+ ### DELETE `/channel-groups/:id`
+ 
+ Soft-deletes the group and its details, and atomically removes its ID from API key `channels` and model group detail `channels`, including soft-deleted records. Other bindings, key identity, and user ownership are preserved. Removing the last API key channel binding makes credential selection unrestricted by that key; removing the last model-detail channel binding restores inheritance from the key. A config event is published when bindings change, and the local runtime config is refreshed. Disabled groups are not removed.
+diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
+index a9c174e..1b9abf6 100644
+--- a/docs/management/api_CN.md
++++ b/docs/management/api_CN.md
+@@ -178,6 +178,7 @@ DB-backed handler 通常同时返回机器可读 `error` 和可读 `message`：
+ | `POST` | `/channel-groups` |
+ | `DELETE` | `/channel-groups/:id` |
+ | `GET` | `/channel-groups/:id` |
++| `GET` | `/channel-groups/:id/usage-credit-routing` |
+ | `PATCH` | `/channel-groups/:id` |
+ | `PUT` | `/channel-groups/:id` |
+ | `GET` | `/config` |
+@@ -3763,6 +3764,14 @@ Channel groups 限制某个客户端 API key 可以使用哪些 auth records。
+ 
+ 输出：`{ "channel_group": ... }`。
+ 
++### GET `/channel-groups/:id/usage-credit-routing`
++
++返回当前组的 `{usageCreditPolicy, accounts}`。可选参数 `model` 用于选择模型专属配额窗口。 Account entries contain `use` (`plan`, `credits`, `unknown`, `exhausted`, `blocked`), `eligible`, `reason` and `policy`. Under `never`, credit-only and unknown accounts keep their funding `use` and return `eligible: false`, `reason: "credit_policy_never"`.
++
++v8 channel-group create/update and read responses accept/expose `usage_credit_policy`: `last_resort` (default) or `never`. The strictest applicable server-owned group policy governs an authenticated client key. Known plan quota precedes credits, then unknown funding, before session affinity. `never` admits only fresh proven plan quota. A funding refusal requests a bounded, coalesced normal quota collection. A spending guarantee still requires disabling extra usage at the vendor because observations can change between collection and a request.
++
++v8 quota detail responses include nullable `usage_credits`: `state`, optional decimal-string `balance`, source `observed_at`/`expires_at`, Codex `allowed`/`limit_reached`/`has_credits`/`unlimited`, and optional Claude `extra_usage` with `enabled`, `monthly_cap` (`limited`, `unlimited`, `unknown`) and `used_ratio`. `credit_blocked` preserves explicit zero, disabled or exhausted evidence. Claude caps are not wallets; currency and scale are unproven, so no money amount is published. `reset_credits` remains separate. Older rows without these facts are unknown until collection.
++
+ ### DELETE `/channel-groups/:id`
+ 
+ 软删除 group 及其 details，并在同一事务中从 API key 的 `channels` 和 model group detail 的 `channels` 中移除该 ID，包括软删除记录中的引用。保留其他绑定、密钥身份及用户归属。移除 API key 的最后一个凭证范围后，该 key 不再额外限制凭证；移除模型明细的最后一个凭证范围后，恢复继承 key 的凭证范围。绑定发生变化时发布配置事件，并刷新本地运行时配置。禁用但未删除的范围不会被移除。
+diff --git a/internal/cliproxy/auth/manager.go b/internal/cliproxy/auth/manager.go
+index 5dacc35..5d15695 100644
+--- a/internal/cliproxy/auth/manager.go
++++ b/internal/cliproxy/auth/manager.go
+@@ -1357,7 +1357,7 @@ func (m *Manager) Dispatch(ctx context.Context, providers []string, requestedMod
+ 		requestRetry = 0
+ 	}
+ 
+-	if !m.hasPluginScheduler() && m.useSchedulerFastPath() {
++	if opts.CandidateFilter == nil && !m.hasPluginScheduler() && m.useSchedulerFastPath() {
+ 		tried := cloneAuthIDSet(excludedAuthIDs)
+ 		for {
+ 			auth, providerKey, errPick := m.scheduler.pickMixed(ctx, providers, routeModel, opts, tried)
+@@ -1474,6 +1474,33 @@ func (m *Manager) Dispatch(ctx context.Context, providers []string, requestedMod
+ 			return nil, m.finalizeDispatchUnavailableError(errUnavailable, normalizedProviders, routeModel, opts, excludedAuthIDs, tried, defaultRequestRetry)
+ 		}
+ 
++		if opts.CandidateFilter != nil {
++			var errFilter error
++			models := make(map[string]string, len(dispatchCandidates))
++			for _, candidate := range dispatchCandidates {
++				if candidate.auth != nil {
++					models[candidate.auth.ID] = candidate.upstreamModel
++				}
++			}
++			availableAuths, errFilter = opts.CandidateFilter(availableAuths, models)
++			if errFilter != nil {
++				return nil, errFilter
++			}
++			permitted := make(map[string]struct{}, len(availableAuths))
++			for _, auth := range availableAuths {
++				permitted[auth.ID] = struct{}{}
++			}
++			filtered := dispatchCandidates[:0]
++			for _, candidate := range dispatchCandidates {
++				if _, ok := permitted[candidate.auth.ID]; ok {
++					filtered = append(filtered, candidate)
++				}
++			}
++			dispatchCandidates = filtered
++			if len(availableAuths) == 0 {
++				return nil, &Error{Code: "usage_credit_policy_denied", Message: "No account has funding allowed by this pool.", HTTPStatus: 429, Retryable: true}
++			}
++		}
+ 		if opts.SessionAffinity != nil {
+ 			*opts.SessionAffinity = SessionAffinitySelection{}
+ 		}
+@@ -1489,7 +1516,7 @@ func (m *Manager) Dispatch(ctx context.Context, providers []string, requestedMod
+ 		}
+ 
+ 		if auth == nil {
+-			if isBuiltInSelector(selector) && len(excludedConcurrencyCandidatesFromOptions(opts)) == 0 {
++			if opts.CandidateFilter == nil && isBuiltInSelector(selector) && len(excludedConcurrencyCandidatesFromOptions(opts)) == 0 {
+ 				builtinAuth, handledBuiltin, errBuiltinPick := m.pickViaBuiltinScheduler(ctx, schedulerStrategyCurrent, providerForSelector, normalizedProviders, routeModel, opts, tried)
+ 				if errBuiltinPick != nil {
+ 					return nil, errBuiltinPick
+diff --git a/internal/cliproxy/auth/options.go b/internal/cliproxy/auth/options.go
+index 81eee94..4126c6c 100644
+--- a/internal/cliproxy/auth/options.go
++++ b/internal/cliproxy/auth/options.go
+@@ -40,6 +40,7 @@ type ExcludedConcurrencyCandidate struct {
+ // This is a deliberately small subset of CPA's execution options: CLIProxyAPIHome only needs
+ // headers / query / raw request bytes for selector decisions, and a generic metadata bag.
+ type Options struct {
++	CandidateFilter func([]*Auth, map[string]string) ([]*Auth, error)
+ 	Headers         http.Header
+ 	Query           url.Values
+ 	OriginalRequest []byte
+diff --git a/internal/cluster/channel_groups.go b/internal/cluster/channel_groups.go
+index ffc544d..578283c 100644
+--- a/internal/cluster/channel_groups.go
++++ b/internal/cluster/channel_groups.go
+@@ -12,8 +12,9 @@ import (
+ )
+ 
+ type ChannelGroupUpdate struct {
+-	ChannelName *string
+-	Disabled    *bool
++	UsageCreditPolicy *string
++	ChannelName       *string
++	Disabled          *bool
+ }
+ 
+ type ChannelGroupDetailUpdate struct {
+@@ -107,6 +108,13 @@ func (r *Repository) UpdateChannelGroup(ctx context.Context, id uint, update Cha
+ 		if update.Disabled != nil {
+ 			record.Disabled = *update.Disabled
+ 		}
++		if update.UsageCreditPolicy != nil {
++			policy := *update.UsageCreditPolicy
++			if policy != "last_resort" && policy != "never" {
++				return fmt.Errorf("invalid usage credit policy")
++			}
++			record.UsageCreditPolicy = policy
++		}
+ 		return tx.Save(record).Error
+ 	})
+ 	if errTransaction != nil {
+@@ -258,6 +266,7 @@ func (r *Repository) UpdateChannelGroupDetail(ctx context.Context, id uint, upda
+ 			}
+ 			record.AuthID = authID
+ 		}
++
+ 		return tx.Save(record).Error
+ 	})
+ 	if errTransaction != nil {
+diff --git a/internal/cluster/dashboard_indexes_test.go b/internal/cluster/dashboard_indexes_test.go
+index e137d91..f8455bd 100644
+--- a/internal/cluster/dashboard_indexes_test.go
++++ b/internal/cluster/dashboard_indexes_test.go
+@@ -123,7 +123,7 @@ func TestUsageTokenAccountingPendingQueriesUseLiteralVersion(t *testing.T) {
+ func TestDatabaseSnapshotIndexOnlyVersionsRemainCompatible(t *testing.T) {
+ 	t.Parallel()
+ 
+-	for _, version := range []int{6, 7, 8, 9, 10, 11, 12, currentDatabaseVersion} {
++	for _, version := range []int{6, 7, 8, 9, 10, 11, 12, 13, currentDatabaseVersion} {
+ 		models, okModels := databaseSnapshotModels(version)
+ 		if !okModels || len(models) != len(homeDatabaseModels) {
+ 			t.Fatalf("snapshot version %d registry is incompatible", version)
+diff --git a/internal/cluster/database_models.go b/internal/cluster/database_models.go
+index b848e62..d0bcd09 100644
+--- a/internal/cluster/database_models.go
++++ b/internal/cluster/database_models.go
+@@ -10,7 +10,7 @@ import (
+ // currentDatabaseVersion is shared by the live schema migration gate and the
+ // portable snapshot format. Increment it for every required startup migration
+ // or snapshot format change, and retain mappings for prior snapshot formats.
+-const currentDatabaseVersion = 13
++const currentDatabaseVersion = 14
+ 
+ // databaseModel describes one managed Home database table.
+ type databaseModel struct {
+@@ -365,7 +365,7 @@ func databaseSnapshotModels(formatVersion int) ([]databaseModel, bool) {
+ 		return databaseSnapshotV4Models, true
+ 	case 5:
+ 		return databaseSnapshotV5Models, true
+-	case 6, 7, 8, 9, 10, 11, 12, currentDatabaseVersion:
++	case 6, 7, 8, 9, 10, 11, 12, 13, currentDatabaseVersion:
+ 		// Versions 7 through 13 add migrations, indexes, and transient tables;
+ 		// portable table shapes still match v6.
+ 		return homeDatabaseModels, true
+diff --git a/internal/cluster/management/channel_groups.go b/internal/cluster/management/channel_groups.go
+index f227f5c..520268c 100644
+--- a/internal/cluster/management/channel_groups.go
++++ b/internal/cluster/management/channel_groups.go
+@@ -11,10 +11,11 @@ import (
+ )
+ 
+ type channelGroupWriteRequest struct {
+-	ChannelName *string `json:"channel_name"`
+-	Name        *string `json:"name"`
+-	Disabled    *bool   `json:"disabled"`
+-	Enabled     *bool   `json:"enabled"`
++	UsageCreditPolicy *string `json:"usage_credit_policy"`
++	ChannelName       *string `json:"channel_name"`
++	Name              *string `json:"name"`
++	Disabled          *bool   `json:"disabled"`
++	Enabled           *bool   `json:"enabled"`
+ }
+ 
+ type channelGroupDetailWriteRequest struct {
+@@ -95,7 +96,7 @@ func (h *Handler) UpdateChannelGroup(c *gin.Context) {
+ 		respondError(c, http.StatusBadRequest, "invalid body", errBindJSON)
+ 		return
+ 	}
+-	update := cluster.ChannelGroupUpdate{}
++	update := cluster.ChannelGroupUpdate{UsageCreditPolicy: body.UsageCreditPolicy}
+ 	if body.ChannelName != nil || body.Name != nil {
+ 		channelName := body.channelName()
+ 		update.ChannelName = &channelName
+@@ -316,13 +317,14 @@ func channelGroupRecordToMap(record *cluster.ChannelGroupRecord) gin.H {
+ 		return gin.H{}
+ 	}
+ 	return gin.H{
+-		"id":           record.ID,
+-		"channel_name": record.ChannelName,
+-		"disabled":     record.Disabled,
+-		"enabled":      !record.Disabled,
+-		"created_at":   record.CreatedAt,
+-		"updated_at":   record.UpdatedAt,
+-		"deleted_at":   deletedAtValue(record.DeletedAt),
++		"id":                  record.ID,
++		"channel_name":        record.ChannelName,
++		"usage_credit_policy": record.UsageCreditPolicy,
++		"disabled":            record.Disabled,
++		"enabled":             !record.Disabled,
++		"created_at":          record.CreatedAt,
++		"updated_at":          record.UpdatedAt,
++		"deleted_at":          deletedAtValue(record.DeletedAt),
+ 	}
+ }
+ 
+diff --git a/internal/cluster/management/quota_snapshots.go b/internal/cluster/management/quota_snapshots.go
+index 079ab15..d2e9934 100644
+--- a/internal/cluster/management/quota_snapshots.go
++++ b/internal/cluster/management/quota_snapshots.go
+@@ -102,6 +102,7 @@ func (h *Handler) GetQuotaCredential(c *gin.Context) {
+ 		"credential":    item,
+ 		"windows":       item.Windows,
+ 		"reset_credits": quotaResetCreditsDTOFrom(item.ResetCredits),
++		"usage_credits": item.UsageCredits,
+ 		"collection": gin.H{
+ 			"source": item.Source, "freshness": item.Freshness, "status": item.CollectionStatus,
+ 			"diagnostic":  item.CollectionDiagnostic,
+diff --git a/internal/cluster/management/usage_credits.go b/internal/cluster/management/usage_credits.go
+new file mode 100644
+index 0000000..76d6763
+--- /dev/null
++++ b/internal/cluster/management/usage_credits.go
+@@ -0,0 +1,32 @@
++package management
++
++import (
++	"net/http"
++	"time"
++
++	"github.com/gin-gonic/gin"
++)
++
++func (h *Handler) GetChannelGroupCreditRouting(c *gin.Context) {
++	id, ok := channelIDFromParam(c)
++	if !ok {
++		return
++	}
++	ctx, cancel := h.requestContext(c)
++	defer cancel()
++	group, errGroup := h.repo.GetChannelGroup(ctx, id)
++	if errGroup != nil {
++		respondChannelRecordError(c, "channel_group_load_failed", errGroup)
++		return
++	}
++	routing, errRouting := h.repo.ChannelGroupCreditRouting(ctx, id, c.Query("model"), time.Now().UTC())
++	if errRouting != nil {
++		respondError(c, http.StatusServiceUnavailable, "usage_credit_policy_unavailable", errRouting)
++		return
++	}
++	policy := group.UsageCreditPolicy
++	if policy == "" {
++		policy = "last_resort"
++	}
++	c.JSON(http.StatusOK, gin.H{"usageCreditPolicy": policy, "accounts": routing})
++}
+diff --git a/internal/cluster/models.go b/internal/cluster/models.go
+index 67bc0d5..ce5155b 100644
+--- a/internal/cluster/models.go
++++ b/internal/cluster/models.go
+@@ -455,12 +455,13 @@ func (record *APIKeyRecord) BeforeSave(*gorm.DB) error {
+ }
+ 
+ type ChannelGroupRecord struct {
+-	ID          uint           `gorm:"column:id;primaryKey;autoIncrement;index:idx_channel_group_active_order,priority:2;index:idx_channel_group_enabled_order,priority:3"`
+-	ChannelName string         `gorm:"column:channel_name;not null"`
+-	Disabled    bool           `gorm:"column:disabled;not null;default:false;index:idx_channel_group_enabled_order,priority:2"`
+-	CreatedAt   time.Time      `gorm:"column:created_at"`
+-	UpdatedAt   time.Time      `gorm:"column:updated_at"`
+-	DeletedAt   gorm.DeletedAt `gorm:"column:deleted_at;index;index:idx_channel_group_active_order,priority:1;index:idx_channel_group_enabled_order,priority:1"`
++	UsageCreditPolicy string         `gorm:"column:usage_credit_policy;not null;default:last_resort;size:16"`
++	ID                uint           `gorm:"column:id;primaryKey;autoIncrement;index:idx_channel_group_active_order,priority:2;index:idx_channel_group_enabled_order,priority:3"`
++	ChannelName       string         `gorm:"column:channel_name;not null"`
++	Disabled          bool           `gorm:"column:disabled;not null;default:false;index:idx_channel_group_enabled_order,priority:2"`
++	CreatedAt         time.Time      `gorm:"column:created_at"`
++	UpdatedAt         time.Time      `gorm:"column:updated_at"`
++	DeletedAt         gorm.DeletedAt `gorm:"column:deleted_at;index;index:idx_channel_group_active_order,priority:1;index:idx_channel_group_enabled_order,priority:1"`
+ }
+ 
+ // TableName returns the database table name.
+diff --git a/internal/cluster/quota_snapshots.go b/internal/cluster/quota_snapshots.go
+index 67493a9..9580131 100644
+--- a/internal/cluster/quota_snapshots.go
++++ b/internal/cluster/quota_snapshots.go
+@@ -64,6 +64,7 @@ func QuotaSnapshotVersion(provider string) int {
+ }
+ 
+ type QuotaSnapshotRecord struct {
++	UsageCredits        JSONB      `gorm:"column:usage_credits"`
+ 	CredentialID        string     `gorm:"column:credential_id;primaryKey;size:128"`
+ 	QuotaStatus         string     `gorm:"column:quota_status;not null;size:32;index"`
+ 	CollectionStatus    string     `gorm:"column:collection_status;not null;size:32;index"`
+@@ -193,6 +194,7 @@ type QuotaResetCredits struct {
+ }
+ 
+ type QuotaCredentialSnapshot struct {
++	UsageCredits         *QuotaUsageCredits         `json:"-"`
+ 	CollectionDiagnostic *QuotaCollectionDiagnostic `json:"-"`
+ 	CredentialID         string                     `json:"credential_id"`
+ 	AuthIndex            *string                    `json:"auth_index"`
+@@ -223,6 +225,8 @@ type QuotaCredentialSnapshot struct {
+ }
+ 
+ type QuotaSnapshotWrite struct {
++	UsageCredits           *QuotaUsageCredits
++	ReplaceUsageCredits    bool
+ 	CredentialID           string
+ 	QuotaStatus            string
+ 	CollectionStatus       string
+@@ -365,6 +369,9 @@ func upsertQuotaSnapshotDB(ctx context.Context, db *gorm.DB, input QuotaSnapshot
+ 				record.PlanName = existing.PlanName
+ 				record.PlanPremium = existing.PlanPremium
+ 			}
++			if !input.ReplaceUsageCredits {
++				record.UsageCredits = append(JSONB(nil), existing.UsageCredits...)
++			}
+ 			if !input.ReplaceResetCredits && len(existing.ResetCredits) > 0 {
+ 				record.ResetCredits = append(JSONB(nil), existing.ResetCredits...)
+ 			}
+@@ -1163,6 +1170,7 @@ func quotaCredentialFromAuth(record AuthRecord, auth *coreauth.Auth, snapshot Qu
+ 		item.Plan = &QuotaPlan{Name: snapshot.PlanName, Premium: snapshot.PlanPremium != nil && *snapshot.PlanPremium}
+ 	}
+ 	item.ResetCredits = quotaResetCreditsFromJSON(snapshot.ResetCredits)
++	item.UsageCredits = usageCreditsFromJSON(snapshot.UsageCredits)
+ 	item.PrimaryWindows = quotaPrimaryWindows(provider, displayWindows)
+ 	legacyOnly := (codexLegacyPending && len(codexCurrentQuotaWindows(displayWindows)) == 0) ||
+ 		(antigravityLegacyPending && len(antigravityCurrentQuotaWindows(displayWindows)) == 0)
+@@ -1391,6 +1399,16 @@ func quotaSnapshotRecordFromWrite(input QuotaSnapshotWrite) (QuotaSnapshotRecord
+ 		premium := input.Plan.Premium
+ 		record.PlanPremium = &premium
+ 	}
++	if input.UsageCredits != nil {
++		encoded, errEncode := json.Marshal(input.UsageCredits)
++		if errEncode != nil {
++			return QuotaSnapshotRecord{}, errEncode
++		}
++		if len(encoded) > 2048 {
++			return QuotaSnapshotRecord{}, fmt.Errorf("usage credits exceed size limit")
++		}
++		record.UsageCredits = encoded
++	}
+ 	if input.ResetCredits != nil {
+ 		resetCredits, errResetCredits := quotaResetCreditsJSON(input.ResetCredits)
+ 		if errResetCredits != nil {
+diff --git a/internal/cluster/usage_credits.go b/internal/cluster/usage_credits.go
+new file mode 100644
+index 0000000..2137a0d
+--- /dev/null
++++ b/internal/cluster/usage_credits.go
+@@ -0,0 +1,256 @@
++package cluster
++
++import (
++	"context"
++	"encoding/json"
++	"strings"
++	"time"
++)
++
++// Usage-credit observations retain their own deadline across passive quota updates.
++type QuotaUsageCredits struct {
++	State         string           `json:"state"`
++	Balance       *string          `json:"balance"`
++	ObservedAt    time.Time        `json:"observed_at"`
++	ExpiresAt     time.Time        `json:"expires_at"`
++	Allowed       *bool            `json:"allowed"`
++	LimitReached  *bool            `json:"limit_reached"`
++	HasCredits    *bool            `json:"has_credits"`
++	Unlimited     *bool            `json:"unlimited"`
++	CreditBlocked bool             `json:"credit_blocked"`
++	ExtraUsage    *QuotaExtraUsage `json:"extra_usage"`
++}
++type QuotaExtraUsage struct {
++	Enabled    *bool    `json:"enabled"`
++	MonthlyCap string   `json:"monthly_cap"`
++	UsedRatio  *float64 `json:"used_ratio"`
++}
++
++func usageCreditsFromJSON(raw JSONB) *QuotaUsageCredits {
++	if len(raw) == 0 || len(raw) > 2048 {
++		return nil
++	}
++	var value QuotaUsageCredits
++	if json.Unmarshal(raw, &value) != nil {
++		return nil
++	}
++	switch value.State {
++	case "available", "unlimited", "none", "disabled", "unknown":
++	default:
++		return nil
++	}
++	return &value
++}
++
++// A client key inherits the strictest policy of its server-owned channel groups.
++func (r *Repository) usageCreditPolicyForAPIKey(ctx context.Context, apiKey, model string) (string, error) {
++	db, errDB := r.database()
++	if errDB != nil {
++		return "", errDB
++	}
++	key, errKey := r.findAPIKeyForAccess(ctx, db, apiKey)
++	if errKey != nil {
++		return "", errKey
++	}
++	channels, errChannels := apiKeyChannelsFromJSON(key.Channels)
++	if errChannels != nil {
++		return "", errChannels
++	}
++	modelDetails, _, errDetails := allowedModelGroupDetailsForAPIKeyRecord(ctx, db, &key)
++	if errDetails != nil {
++		return "", errDetails
++	}
++	modelChannels, restricted, errModel := modelChannelGroupIDsFromDetails(modelDetails, model)
++	if errModel != nil {
++		return "", errModel
++	}
++	if restricted {
++		channels = append(channels, modelChannels...)
++	}
++	if len(channels) == 0 {
++		return "last_resort", nil
++	}
++	var groups []ChannelGroupRecord
++	if errGroups := db.WithContext(ctx).Where("id IN ? AND disabled = ?", channels, false).Find(&groups).Error; errGroups != nil {
++		return "", errGroups
++	}
++	for _, group := range groups {
++		if group.UsageCreditPolicy != "" && group.UsageCreditPolicy != "last_resort" {
++			return "never", nil
++		}
++	}
++	return "last_resort", nil
++}
++
++func (a *RuntimeAdapter) UsageCreditTiersForAPIKey(ctx context.Context, apiKey, model string, models map[string]string) (map[string]int, error) {
++	policy, errPolicy := a.repo.usageCreditPolicyForAPIKey(ctx, apiKey, model)
++	if errPolicy != nil {
++		return nil, errPolicy
++	}
++	selected := make(map[string]struct{}, len(models))
++	for id := range models {
++		selected[id] = struct{}{}
++	}
++	now := time.Now().UTC()
++	items, errItems := a.repo.loadQuotaCredentials(ctx, now, selected, true)
++	if errItems != nil {
++		return nil, errItems
++	}
++	tiers := make(map[string]int, len(models))
++	for _, item := range items {
++		tier := usageCreditFundingTier(item, models[item.CredentialID], now)
++		if policy == "never" && tier > 0 {
++			tier = 3
++		}
++		tiers[item.CredentialID] = tier
++	}
++	// A missing subscription observation is unknown, never proof of plan quota.
++	for id := range models {
++		if _, ok := tiers[id]; !ok {
++			if policy == "never" {
++				tiers[id] = 3
++			} else {
++				tiers[id] = 2
++			}
++		}
++	}
++	return tiers, nil
++}
++
++// 0 = included plan, 1 = confirmed credits, 2 = unknown funding, 3 = unavailable.
++func usageCreditFundingTier(item QuotaCredentialSnapshot, model string, now time.Time) int {
++	if (item.Provider != "codex" && item.Provider != "claude") || item.CredentialType == "provider_api_key" {
++		return 0
++	}
++	if item.CredentialStatus != "enabled" && item.CredentialStatus != "active" && item.CredentialStatus != "available" && item.CredentialStatus != "" {
++		return 3
++	}
++	credits := item.UsageCredits
++	if item.Error != nil && item.Error.OccurredAt != nil && (credits == nil || !item.Error.OccurredAt.Before(credits.ObservedAt)) {
++		if item.Error.Code == "UPSTREAM_AUTH_REJECTED" || item.Error.Code == "UPSTREAM_RATE_LIMITED" {
++			return 3
++		}
++	}
++	plan := item.Freshness == "fresh" && item.ObservedAt != nil && !item.ObservedAt.After(now)
++	known := false
++	exhausted := false
++	for _, window := range item.Windows {
++		if !usageCreditWindowApplies(window, model) {
++			continue
++		}
++		if window.ExpiresAt != nil && !now.Before(*window.ExpiresAt) || window.ObservedAt.After(now) {
++			plan = false
++			continue
++		}
++		if window.IsUnlimited {
++			known = true
++			continue
++		}
++		if window.RemainingRatio == nil {
++			plan = false
++			continue
++		}
++		known = true
++		if *window.RemainingRatio <= 0 {
++			exhausted = true
++		}
++	}
++	freshCredits := credits != nil && !credits.ObservedAt.After(now) && now.Before(credits.ExpiresAt)
++	if freshCredits && (credits.Allowed != nil && !*credits.Allowed || credits.LimitReached != nil && *credits.LimitReached) {
++		exhausted = true
++	}
++	if plan && known && !exhausted {
++		return 0
++	}
++	if freshCredits && !credits.CreditBlocked && (credits.State == "available" || credits.State == "unlimited") {
++		return 1
++	}
++	if credits != nil && (credits.CreditBlocked || credits.State == "none" || credits.State == "disabled") {
++		return 3
++	}
++	return 2
++}
++
++func usageCreditWindowApplies(window QuotaWindow, model string) bool {
++	if window.ID == "claude-extra-usage" || strings.Contains(window.ID, "code-review") {
++		return false
++	}
++	if window.Scope == "account" {
++		return window.ID != "claude-seven-day-cowork"
++	}
++	if window.Scope != "model" || window.ScopeID == nil {
++		return false
++	}
++	scope := strings.TrimPrefix(strings.ToLower(*window.ScopeID), "codex_")
++	normalized := strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(model))
++	return scope == normalized || scope == "spark" && strings.HasSuffix(normalized, "_spark") || (scope == "opus" || scope == "sonnet") && strings.Contains(normalized, scope)
++}
++
++type AccountUsageRouting struct {
++	Use      string `json:"use"`
++	Eligible bool   `json:"eligible"`
++	Reason   string `json:"reason"`
++	Policy   string `json:"policy"`
++}
++
++func (r *Repository) ChannelGroupCreditRouting(ctx context.Context, id uint, model string, now time.Time) (map[string]AccountUsageRouting, error) {
++	group, errGroup := r.GetChannelGroup(ctx, id)
++	if errGroup != nil {
++		return nil, errGroup
++	}
++	db, errDB := r.database()
++	if errDB != nil {
++		return nil, errDB
++	}
++	var details []ChannelGroupDetailRecord
++	if errDetails := db.WithContext(ctx).Where("channel_group_id = ?", id).Find(&details).Error; errDetails != nil {
++		return nil, errDetails
++	}
++	ids := make(map[string]struct{}, len(details))
++	for _, detail := range details {
++		ids[detail.AuthID] = struct{}{}
++	}
++	result := make(map[string]AccountUsageRouting, len(ids))
++	if len(ids) == 0 {
++		return result, nil
++	}
++	items, errItems := r.loadQuotaCredentials(ctx, now, ids, true)
++	if errItems != nil {
++		return nil, errItems
++	}
++	policy := group.UsageCreditPolicy
++	if policy == "" {
++		policy = "last_resort"
++	}
++	for _, item := range items {
++		tier := usageCreditFundingTier(item, model, now)
++		value := AccountUsageRouting{Policy: policy, Eligible: tier < 3}
++		switch tier {
++		case 0:
++			value.Use = "plan"
++			value.Reason = "plan_available"
++		case 1:
++			value.Use = "credits"
++			value.Reason = "credits_only"
++		case 2:
++			value.Use = "unknown"
++			value.Reason = "usage_unknown"
++		default:
++			value.Use = "exhausted"
++			value.Reason = "quota_exhausted"
++			if item.UsageCredits != nil && item.UsageCredits.State == "disabled" {
++				value.Reason = "credits_disabled"
++			}
++			if item.CredentialStatus != "enabled" {
++				value.Use = "blocked"
++				value.Reason = "credential_unavailable"
++			}
++		}
++		if policy == "never" && tier > 0 && tier < 3 {
++			value.Eligible = false
++			value.Reason = "credit_policy_never"
++		}
++		result[item.CredentialID] = value
++	}
++	return result, nil
++}
+diff --git a/internal/cluster/usage_credits_postgres_test.go b/internal/cluster/usage_credits_postgres_test.go
+new file mode 100644
+index 0000000..9296ff2
+--- /dev/null
++++ b/internal/cluster/usage_credits_postgres_test.go
+@@ -0,0 +1,83 @@
++package cluster
++
++import (
++	"context"
++	"os"
++	"strconv"
++	"strings"
++	"testing"
++	"time"
++
++	"gorm.io/driver/postgres"
++	"gorm.io/gorm"
++)
++
++func TestUsageCreditPostgresV13ToV14PreservesRows(t *testing.T) {
++	dsn := strings.TrimSpace(os.Getenv("CLIPROXY_HOME_TEST_POSTGRES_DSN"))
++	if dsn == "" {
++		t.Skip("CLIPROXY_HOME_TEST_POSTGRES_DSN is not configured")
++	}
++	admin, errOpen := gorm.Open(postgres.Open(dsn), databaseGORMConfig(defaultDatabaseSlowQueryThreshold))
++	if errOpen != nil {
++		t.Fatal("open isolated postgres", errOpen)
++	}
++	adminSQL, errSQL := admin.DB()
++	if errSQL != nil {
++		t.Fatal(errSQL)
++	}
++	t.Cleanup(func() { _ = adminSQL.Close() })
++	schema := "usage_credits_" + strconv.FormatInt(time.Now().UnixNano(), 10)
++	if errCreate := admin.Exec("CREATE SCHEMA " + schema).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	t.Cleanup(func() {
++		if errDrop := admin.Exec("DROP SCHEMA " + schema + " CASCADE").Error; errDrop != nil {
++			t.Error(errDrop)
++		}
++	})
++	db, errSchema := gorm.Open(postgres.Open(postgresDSNWithSearchPath(dsn, schema)), databaseGORMConfig(defaultDatabaseSlowQueryThreshold))
++	if errSchema != nil {
++		t.Fatal(errSchema)
++	}
++	sqlDB, errDB := db.DB()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	t.Cleanup(func() { _ = sqlDB.Close() })
++	if errMigrate := AutoMigrateContext(context.Background(), db); errMigrate != nil {
++		t.Fatal(errMigrate)
++	}
++	// Construct the previous schema, then add existing rows before the upgrade.
++	for _, statement := range []string{
++		"ALTER TABLE quota_snapshot DROP COLUMN usage_credits",
++		"ALTER TABLE channel_group DROP COLUMN usage_credit_policy",
++		"UPDATE home_schema_migration SET version = 13",
++		"INSERT INTO channel_group (id,channel_name,disabled) VALUES (47,'synthetic-pool',false)",
++		"INSERT INTO quota_snapshot (credential_id,quota_status,collection_status,source,plan_name,reset_credits) VALUES ('retained-account','healthy','success','active_probe','Plus','{\"available_count\":3}')",
++	} {
++		if errStatement := db.Exec(statement).Error; errStatement != nil {
++			t.Fatal(errStatement)
++		}
++	}
++	if errMigrate := AutoMigrateContext(context.Background(), db); errMigrate != nil {
++		t.Fatal(errMigrate)
++	}
++	assertPostgresSchemaMigrationVersion(t, db, 14)
++	var group ChannelGroupRecord
++	if errRead := db.First(&group, 47).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	if group.ChannelName != "synthetic-pool" || group.Disabled || group.UsageCreditPolicy != "last_resort" {
++		t.Fatalf("existing group changed: %+v", group)
++	}
++	var snapshot QuotaSnapshotRecord
++	if errRead := db.Where("credential_id = ?", "retained-account").First(&snapshot).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	if snapshot.PlanName != "Plus" || snapshot.QuotaStatus != "healthy" || !strings.Contains(string(snapshot.ResetCredits), "3") || len(snapshot.UsageCredits) != 0 {
++		t.Fatal("existing quota observation changed")
++	}
++	if errMigrate := AutoMigrateContext(context.Background(), db); errMigrate != nil {
++		t.Fatal("idempotent migration", errMigrate)
++	}
++}
+diff --git a/internal/cluster/usage_credits_test.go b/internal/cluster/usage_credits_test.go
+new file mode 100644
+index 0000000..ed36d87
+--- /dev/null
++++ b/internal/cluster/usage_credits_test.go
+@@ -0,0 +1,109 @@
++package cluster
++
++import (
++	"testing"
++	"time"
++)
++
++func TestUsageCreditFundingTiers(t *testing.T) {
++	now := time.Unix(200, 0).UTC()
++	before := now.Add(-time.Minute)
++	after := now.Add(time.Minute)
++	positive, zero := .5, 0.0
++	balance := "25"
++	plan := QuotaCredentialSnapshot{Provider: "codex", CredentialType: "oauth", CredentialStatus: "enabled", Freshness: "fresh", ObservedAt: &before, Windows: []QuotaWindow{{ID: "codex-5-hour", Scope: "account", RemainingRatio: &positive, ObservedAt: before, ExpiresAt: &after}}, UsageCredits: &QuotaUsageCredits{State: "available", Balance: &balance, ObservedAt: before, ExpiresAt: after}}
++	if usageCreditFundingTier(plan, "gpt-5.5", now) != 0 {
++		t.Fatal("plan must win even when credits available")
++	}
++	plan.Windows[0].RemainingRatio = &zero
++	if usageCreditFundingTier(plan, "gpt-5.5", now) != 1 {
++		t.Fatal("exhausted plan with fresh credits must use credits")
++	}
++	plan.UsageCredits.ExpiresAt = before
++	if usageCreditFundingTier(plan, "gpt-5.5", now) != 2 {
++		t.Fatal("stale funding must be unknown")
++	}
++	plan.UsageCredits.State = "none"
++	if usageCreditFundingTier(plan, "gpt-5.5", now) != 3 {
++		t.Fatal("explicit zero cannot become unknown fallback")
++	}
++	plan.CredentialType = "provider_api_key"
++	if usageCreditFundingTier(plan, "gpt-5.5", now) != 0 {
++		t.Fatal("subscription credit policy changed API-key billing")
++	}
++}
++
++func TestUsageCreditPoolPolicyIsolationAndModelGroups(t *testing.T) {
++	repo := newCredentialFoundationTestRepository(t)
++	ctx := t.Context()
++	allow, errAllow := repo.CreateChannelGroup(ctx, "allow", false)
++	if errAllow != nil {
++		t.Fatal(errAllow)
++	}
++	deny, errDeny := repo.CreateChannelGroup(ctx, "deny", false)
++	if errDeny != nil {
++		t.Fatal(errDeny)
++	}
++	never := "never"
++	if _, errUpdate := repo.UpdateChannelGroup(ctx, deny.ID, ChannelGroupUpdate{UsageCreditPolicy: &never}); errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	for name, channels := range map[string][]uint{"allow-key": {allow.ID}, "deny-key": {deny.ID}, "mixed-key": {allow.ID, deny.ID}} {
++		if _, errKey := repo.CreateAPIKey(ctx, APIKeyEntryUpdate{APIKey: name, Channels: &channels}); errKey != nil {
++			t.Fatal(errKey)
++		}
++	}
++	for key, want := range map[string]string{"allow-key": "last_resort", "deny-key": "never", "mixed-key": "never"} {
++		got, errPolicy := repo.usageCreditPolicyForAPIKey(ctx, key, "gpt")
++		if errPolicy != nil || got != want {
++			t.Fatalf("%s policy=(%s,%v), want %s", key, got, errPolicy, want)
++		}
++	}
++	models, errModels := repo.CreateModelGroup(ctx, "restricted-models", false)
++	if errModels != nil {
++		t.Fatal(errModels)
++	}
++	if _, errDetail := repo.CreateModelGroupDetail(ctx, models.ID, "gpt", []uint{deny.ID}); errDetail != nil {
++		t.Fatal(errDetail)
++	}
++	groups, channels := []uint{models.ID}, []uint{allow.ID}
++	if _, errKey := repo.CreateAPIKey(ctx, APIKeyEntryUpdate{APIKey: "model-key", Channels: &channels, ModelGroups: &groups}); errKey != nil {
++		t.Fatal(errKey)
++	}
++	for model, want := range map[string]string{"gpt": "never", "other": "last_resort"} {
++		got, errPolicy := repo.usageCreditPolicyForAPIKey(ctx, "model-key", model)
++		if errPolicy != nil || got != want {
++			t.Fatalf("%s policy=(%s,%v), want %s", model, got, errPolicy, want)
++		}
++	}
++}
++
++func TestUsageCreditFundingUsesApplicableFreshWindows(t *testing.T) {
++	now := time.Unix(200, 0).UTC()
++	before, after := now.Add(-time.Minute), now.Add(time.Minute)
++	positive, zero := .5, 0.0
++	sonnet, opus, spark := "sonnet", "opus", "codex_spark"
++	item := QuotaCredentialSnapshot{Provider: "claude", CredentialType: "oauth", CredentialStatus: "enabled", Freshness: "fresh", ObservedAt: &before, Windows: []QuotaWindow{
++		{ID: "claude-five-hour", Scope: "account", RemainingRatio: &positive, ObservedAt: before, ExpiresAt: &after},
++		{ID: "claude-seven-day-sonnet", Scope: "model", ScopeID: &sonnet, RemainingRatio: &zero, ObservedAt: before, ExpiresAt: &after},
++		{ID: "claude-seven-day-opus", Scope: "model", ScopeID: &opus, RemainingRatio: &positive, ObservedAt: before, ExpiresAt: &after},
++	}}
++	if got := usageCreditFundingTier(item, "claude-sonnet-4-6", now); got != 2 {
++		t.Fatalf("Sonnet exhausted plan classified %d", got)
++	}
++	if got := usageCreditFundingTier(item, "claude-opus-4-7", now); got != 0 {
++		t.Fatalf("Sonnet exhaustion affected Opus: %d", got)
++	}
++	item.Windows[2].ExpiresAt = &before
++	if got := usageCreditFundingTier(item, "claude-opus-4-7", now); got != 2 {
++		t.Fatalf("stale Opus window proved plan: %d", got)
++	}
++	item.Provider = "codex"
++	item.Windows = []QuotaWindow{{ID: "codex-5-hour", Scope: "account", RemainingRatio: &positive, ObservedAt: before, ExpiresAt: &after}, {ID: "codex-spark-weekly", Scope: "model", ScopeID: &spark, RemainingRatio: &zero, ObservedAt: before, ExpiresAt: &after}}
++	if got := usageCreditFundingTier(item, "gpt-5.5-spark", now); got != 2 {
++		t.Fatalf("Spark exhaustion ignored: %d", got)
++	}
++	if got := usageCreditFundingTier(item, "gpt-5.5", now); got != 0 {
++		t.Fatalf("Spark exhaustion affected ordinary model: %d", got)
++	}
++}
+diff --git a/internal/home/runtime.go b/internal/home/runtime.go
+index 1ba013b..cecc0d9 100644
+--- a/internal/home/runtime.go
++++ b/internal/home/runtime.go
+@@ -60,6 +60,10 @@ type Runtime struct {
+ 	clusterRefresh          func(context.Context, string, string) ([]byte, error)
+ 	originalStore           coreauth.Store
+ 
++	usageCreditCollector usageCreditCollector
++	usageCreditRefreshMu sync.Mutex
++	usageCreditRefreshAt map[string]time.Time
++
+ 	clusterUsageQueueMu sync.Mutex
+ 	clusterUsageQueue   *usagePayloadQueue
+ 
+@@ -150,6 +154,7 @@ type DispatchResponsePreparer func(*DispatchResult) (unaccounted []byte, account
+ 
+ // DispatchConcurrencyContext carries the RESP connection identity required for admission.
+ type DispatchConcurrencyContext struct {
++	FundingCheck    bool
+ 	Fingerprint     string
+ 	ConnectedAt     time.Time
+ 	Controlled      bool
+@@ -875,7 +880,7 @@ func (r *Runtime) dispatchForAPIKey(ctx context.Context, reqModel string, header
+ 		return nil, errAllowed
+ 	}
+ 	pinnedAuthID = strings.TrimSpace(pinnedAuthID)
+-	if pinnedAuthID != "" {
++	if pinnedAuthID != "" && !r.installUsageCreditFilter(ctx, apiKey, reqModel, pinnedAuthID, &opts) {
+ 		pinnedAllowed := allowedAuthIDs == nil
+ 		for _, allowedAuthID := range allowedAuthIDs {
+ 			if strings.TrimSpace(allowedAuthID) == pinnedAuthID {
+@@ -888,6 +893,9 @@ func (r *Runtime) dispatchForAPIKey(ctx context.Context, reqModel string, header
+ 			allowedAuthIDs = append(allowedAuthIDs, pinnedAuthID)
+ 		}
+ 	}
++	if opts.CandidateFilter == nil {
++		r.installUsageCreditFilter(ctx, apiKey, reqModel, "", &opts)
++	}
+ 	metadata := make(map[string]any)
+ 	if allowedAuthIDs != nil {
+ 		metadata[coreauth.AllowedAuthIDsMetadataKey] = allowedAuthIDs
+@@ -907,6 +915,9 @@ func (r *Runtime) dispatchForAPIKey(ctx context.Context, reqModel string, header
+ 	if len(metadata) > 0 {
+ 		opts.Metadata = metadata
+ 	}
++	if concurrencyCtx.FundingCheck && opts.CandidateFilter == nil {
++		return nil, &coreauth.Error{Code: "usage_credit_policy_unavailable", Message: "Pool funding validation unavailable", HTTPStatus: 503, Retryable: true}
++	}
+ 	return r.dispatchWithOptions(ctx, reqModel, opts, concurrencyCtx)
+ }
+ 
+@@ -945,7 +956,7 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
+ 	// Database-backed admissions commit the binding and the concurrency counter
+ 	// in one transaction. Standalone dispatch without a limiter can CAS directly.
+ 	// Legacy custom admitters without a shared store retain selector-side commits.
+-	if r.concurrencyAdmitter == nil || r.sessionAffinityStore != nil {
++	if !concurrencyCtx.FundingCheck && (r.concurrencyAdmitter == nil || r.sessionAffinityStore != nil) {
+ 		opts.SessionAffinity = &coreauth.SessionAffinitySelection{}
+ 	}
+ 	var lastCandidateError error
+@@ -967,6 +978,9 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
+ 			return nil, fmt.Errorf("home runtime: dispatch returned nil auth")
+ 		}
+ 
++		if concurrencyCtx.FundingCheck {
++			return &DispatchResult{Auth: decision.Auth.Clone(), AuthID: decision.Auth.ID}, nil
++		}
+ 		auth := decision.Auth
+ 		upstreamModel := strings.TrimSpace(decision.UpstreamModel)
+ 		if upstreamModel == "" {
+diff --git a/internal/home/usage_credits.go b/internal/home/usage_credits.go
+new file mode 100644
+index 0000000..b90c342
+--- /dev/null
++++ b/internal/home/usage_credits.go
+@@ -0,0 +1,105 @@
++package home
++
++import (
++	"context"
++	"errors"
++	"strings"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++)
++
++type usageCreditStore interface {
++	UsageCreditTiersForAPIKey(context.Context, string, string, map[string]string) (map[string]int, error)
++}
++
++type usageCreditCollector interface {
++	TriggerCollection(context.Context, map[string]struct{}, map[string]struct{}) (int, error)
++}
++
++// SetUsageCreditCollector connects funding refusals to the existing bounded collector.
++func (r *Runtime) SetUsageCreditCollector(collector usageCreditCollector) {
++	r.cfgMu.Lock()
++	defer r.cfgMu.Unlock()
++	r.usageCreditCollector = collector
++}
++
++func (r *Runtime) requestUsageCreditRefresh(ctx context.Context, ids []string) error {
++	r.cfgMu.RLock()
++	collector := r.usageCreditCollector
++	r.cfgMu.RUnlock()
++	if collector == nil {
++		return errors.New("quota collector is unavailable")
++	}
++	now := time.Now()
++	selected := make(map[string]struct{})
++	r.usageCreditRefreshMu.Lock()
++	if r.usageCreditRefreshAt == nil {
++		r.usageCreditRefreshAt = make(map[string]time.Time)
++	}
++	for id, at := range r.usageCreditRefreshAt {
++		if now.Sub(at) >= 30*time.Second {
++			delete(r.usageCreditRefreshAt, id)
++		}
++	}
++	for _, id := range ids {
++		if len(selected) >= 500 {
++			break
++		}
++		if _, queued := r.usageCreditRefreshAt[id]; !queued {
++			selected[id] = struct{}{}
++			r.usageCreditRefreshAt[id] = now
++		}
++	}
++	r.usageCreditRefreshMu.Unlock()
++	if len(selected) > 0 {
++		_, errTrigger := collector.TriggerCollection(ctx, selected, nil)
++		return errTrigger
++	}
++	return nil
++}
++
++func (r *Runtime) installUsageCreditFilter(ctx context.Context, apiKey, model, pinned string, opts *coreauth.Options) bool {
++	store, ok := r.clusterAdapter.(usageCreditStore)
++	if !ok || strings.TrimSpace(apiKey) == "" {
++		return false
++	}
++	opts.CandidateFilter = func(candidates []*coreauth.Auth, models map[string]string) ([]*coreauth.Auth, error) {
++		ids := make([]string, 0, len(candidates))
++		for _, auth := range candidates {
++			ids = append(ids, auth.ID)
++		}
++		tiers, errTiers := store.UsageCreditTiersForAPIKey(ctx, apiKey, model, models)
++		if errTiers != nil {
++			return nil, &coreauth.Error{Code: "usage_credit_policy_unavailable", Message: "Pool funding policy could not be read.", HTTPStatus: 503, Retryable: true}
++		}
++		best := 3
++		for _, id := range ids {
++			tier, exists := tiers[id]
++			if exists && tier < best {
++				best = tier
++			}
++		}
++		if best >= 3 {
++			if errRefresh := r.requestUsageCreditRefresh(ctx, ids); errRefresh != nil {
++				return nil, &coreauth.Error{Code: "usage_credit_policy_unavailable", Message: "A fresh pool funding reading could not be queued.", HTTPStatus: 503, Retryable: true}
++			}
++		}
++		eligible := make([]*coreauth.Auth, 0, len(candidates))
++		for _, auth := range candidates {
++			if tier, exists := tiers[auth.ID]; exists && tier == best && tier < 3 {
++				eligible = append(eligible, auth)
++			}
++		}
++		if pinned == "" {
++			return eligible, nil
++		}
++		for _, auth := range eligible {
++			if auth.ID == pinned {
++				return []*coreauth.Auth{auth}, nil
++			}
++		}
++		return nil, &coreauth.Error{Code: "continuity_requires_reconnect", Message: "This session must reconnect before another turn. Its account no longer satisfies the pool funding policy.", HTTPStatus: 409, Retryable: true}
++	}
++	return true
++}
+diff --git a/internal/home/usage_credits_test.go b/internal/home/usage_credits_test.go
+new file mode 100644
+index 0000000..ab8c086
+--- /dev/null
++++ b/internal/home/usage_credits_test.go
+@@ -0,0 +1,113 @@
++package home
++
++import (
++	"context"
++	"testing"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/registry"
++)
++
++type creditTierStore struct {
++	ClusterAdapter
++	tiers map[string]int
++}
++
++func (s *creditTierStore) UsageCreditTiersForAPIKey(context.Context, string, string, map[string]string) (map[string]int, error) {
++	return s.tiers, nil
++}
++
++type creditStickySelector struct{}
++
++func (*creditStickySelector) Pick(_ context.Context, _ string, _ string, _ coreauth.Options, auths []*coreauth.Auth) (*coreauth.Auth, error) {
++	for _, auth := range auths {
++		if auth.ID == "paid" {
++			return auth, nil
++		}
++	}
++	if len(auths) == 0 {
++		return nil, nil
++	}
++	return auths[0], nil
++}
++func TestUsageCreditPlanPreemptsAffinityAndNeverRefuses(t *testing.T) {
++	ctx := context.Background()
++	manager := coreauth.NewManager(nil, &creditStickySelector{}, nil)
++	for _, id := range []string{"plan", "paid", "unknown"} {
++		auth := &coreauth.Auth{ID: id, Provider: "codex", Status: coreauth.StatusActive, Attributes: map[string]string{"auth_kind": "oauth"}}
++		registry.GetGlobalRegistry().RegisterClient(id, "codex", []*registry.ModelInfo{{ID: "gpt"}})
++		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
++		if _, errRegister := manager.Register(ctx, auth); errRegister != nil {
++			t.Fatal(errRegister)
++		}
++	}
++	store := &creditTierStore{tiers: map[string]int{"plan": 0, "paid": 1, "unknown": 2}}
++	runtime := &Runtime{coreManager: manager, clusterAdapter: store}
++	result, errDispatch := runtime.DispatchForAPIKeyWithConcurrency(ctx, "gpt", nil, "pool-key", "", nil, "", DispatchConcurrencyContext{})
++	if errDispatch != nil || result.AuthID != "plan" {
++		t.Fatal("plan failed to preempt sticky credits", errDispatch)
++	}
++	if _, errDispatch := runtime.DispatchForAPIKeyWithConcurrency(ctx, "gpt", nil, "pool-key", "", nil, "paid", DispatchConcurrencyContext{}); errDispatch == nil {
++		t.Fatal("hard pinned credits bypassed recovered plan")
++	}
++	store.tiers["plan"] = 3
++	result, errDispatch = runtime.DispatchForAPIKeyWithConcurrency(ctx, "gpt", nil, "pool-key", "", nil, "", DispatchConcurrencyContext{})
++	if errDispatch != nil || result.AuthID != "paid" {
++		t.Fatal("confirmed credits must precede unknown", errDispatch)
++	}
++	store.tiers = map[string]int{"plan": 3, "paid": 3, "unknown": 3}
++	if _, errDispatch := runtime.DispatchForAPIKeyWithConcurrency(ctx, "gpt", nil, "never-key", "", nil, "", DispatchConcurrencyContext{}); errDispatch == nil {
++		t.Fatal("never dispatched a paid or unknown account")
++	}
++}
++func TestUsageCreditRetainedCheckDoesNotAdmitAgain(t *testing.T) {
++	manager := coreauth.NewManager(nil, &creditStickySelector{}, nil)
++	auth := &coreauth.Auth{ID: "paid", Provider: "codex", Status: coreauth.StatusActive, Attributes: map[string]string{"auth_kind": "oauth"}}
++	registry.GetGlobalRegistry().RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: "gpt"}})
++	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++		t.Fatal(errRegister)
++	}
++	store := &creditTierStore{tiers: map[string]int{"paid": 1}}
++	runtime := &Runtime{coreManager: manager, clusterAdapter: store}
++	runtime.SetConcurrencyAdmitter(ConcurrencyAdmitterFunc(func(context.Context, ConcurrencyAdmissionRequest) (ConcurrencyAdmissionResult, error) {
++		t.Fatal("validation acquired another admission")
++		return ConcurrencyAdmissionResult{}, nil
++	}))
++	result, errCheck := runtime.DispatchForAPIKeyWithConcurrency(context.Background(), "gpt", nil, "key", "", nil, "paid", DispatchConcurrencyContext{FundingCheck: true})
++	if errCheck != nil || result.AuthID != "paid" || result.Concurrency.Accounted {
++		t.Fatal("funding check failed", errCheck)
++	}
++}
++
++type creditRefreshCollector struct {
++	calls int
++	ids   map[string]struct{}
++}
++
++func (c *creditRefreshCollector) TriggerCollection(_ context.Context, ids, _ map[string]struct{}) (int, error) {
++	c.calls++
++	c.ids = ids
++	return len(ids), nil
++}
++func TestUsageCreditRefusalQueuesOneBoundedRefresh(t *testing.T) {
++	runtime := &Runtime{clusterAdapter: &creditTierStore{tiers: map[string]int{"unknown": 3}}}
++	collector := &creditRefreshCollector{}
++	runtime.SetUsageCreditCollector(collector)
++	var opts coreauth.Options
++	if !runtime.installUsageCreditFilter(t.Context(), "pool-key", "gpt", "", &opts) {
++		t.Fatal("filter unavailable")
++	}
++	for range 2 {
++		selected, errFilter := opts.CandidateFilter([]*coreauth.Auth{{ID: "unknown"}}, map[string]string{"unknown": "gpt"})
++		if errFilter != nil || len(selected) != 0 {
++			t.Fatal("refusal changed", errFilter)
++		}
++	}
++	if collector.calls != 1 {
++		t.Fatalf("collector calls %d, want one coalesced refresh", collector.calls)
++	}
++	if _, ok := collector.ids["unknown"]; !ok {
++		t.Fatal("refused account was not queued")
++	}
++}
+diff --git a/internal/managementhttp/server.go b/internal/managementhttp/server.go
+index 993c59a..adb9b16 100644
+--- a/internal/managementhttp/server.go
++++ b/internal/managementhttp/server.go
+@@ -268,6 +268,7 @@ func registerClusterManagementRoutes(r *RouteRegistry, handler *clustermanagemen
+ 	r.Set(http.MethodGet, "/channel-groups", handler.ListChannelGroups)
+ 	r.Set(http.MethodPost, "/channel-groups", handler.CreateChannelGroup)
+ 	r.Set(http.MethodGet, "/channel-groups/:id", handler.GetChannelGroup)
++	r.Set(http.MethodGet, "/channel-groups/:id/usage-credit-routing", handler.GetChannelGroupCreditRouting)
+ 	r.Set(http.MethodPut, "/channel-groups/:id", handler.UpdateChannelGroup)
+ 	r.Set(http.MethodPatch, "/channel-groups/:id", handler.UpdateChannelGroup)
+ 	r.Set(http.MethodDelete, "/channel-groups/:id", handler.DeleteChannelGroup)
+diff --git a/internal/quota/collector.go b/internal/quota/collector.go
+index 098a3e2..ed1c8ed 100644
+--- a/internal/quota/collector.go
++++ b/internal/quota/collector.go
+@@ -399,7 +399,11 @@ func (c *Collector) collectCredential(ctx context.Context, auth *coreauth.Auth,
+ 		collectionStatus = "partial"
+ 	}
+ 	snapshotVersion := cluster.QuotaSnapshotVersion(auth.Provider)
++	if result.usageCredits != nil {
++		result.usageCredits.ExpiresAt = result.usageCredits.ObservedAt.Add(c.options.SnapshotFreshness)
++	}
+ 	input := cluster.QuotaSnapshotWrite{
++		UsageCredits: result.usageCredits, ReplaceUsageCredits: result.usageCredits != nil,
+ 		CredentialID: auth.ID, QuotaStatus: status, CollectionStatus: collectionStatus, Source: "active_probe",
+ 		ObservedAt: &observedAt, MaxAcceptedObservedAt: &observedAt, ExpiresAt: &expiresAt, LastAttemptAt: &observedAt, LastSuccessAt: &observedAt,
+ 		NextProbeAt: &nextProbeAt, NextProbeNotBefore: nextProbeNotBefore, ConsecutiveFailure: 0, Error: result.collectionError, Plan: result.plan, FallbackPlan: result.fallbackPlan, ReplacePlan: result.replacePlan, ParserVersion: snapshotVersion, CollectorVersion: snapshotVersion,
+@@ -434,6 +438,7 @@ func (c *Collector) collectCredential(ctx context.Context, auth *coreauth.Auth,
+ }
+ 
+ type probeResult struct {
++	usageCredits           *cluster.QuotaUsageCredits
+ 	windows                []cluster.QuotaWindow
+ 	plan                   *cluster.QuotaPlan
+ 	fallbackPlan           *cluster.QuotaPlan
+@@ -490,6 +495,7 @@ func (c *Collector) probeCodex(ctx context.Context, auth *coreauth.Auth) (probeR
+ 	result := probeResult{
+ 		windows:             usage.windows,
+ 		plan:                usage.plan,
++		usageCredits:        parseCodexUsageCredits(body, observedAt),
+ 		resetCredits:        codexResetCreditsCountFallback(usage.resetCreditsAvailableCount, observedAt),
+ 		replaceWindows:      true,
+ 		replacePlan:         true,
+diff --git a/internal/quota/providers.go b/internal/quota/providers.go
+index 8d10ac4..b19e1a2 100644
+--- a/internal/quota/providers.go
++++ b/internal/quota/providers.go
+@@ -30,7 +30,7 @@ func (c *Collector) probeClaude(ctx context.Context, auth *coreauth.Auth) (probe
+ 	if errParse != nil || len(windows) == 0 {
+ 		return probeResult{}, &probeError{code: "UPSTREAM_RESPONSE_INVALID", message: "Claude quota response did not contain usable windows.", retryable: true}
+ 	}
+-	result := probeResult{windows: windows, replaceWindows: true}
++	result := probeResult{windows: windows, replaceWindows: true, usageCredits: parseClaudeUsageCredits(body, c.options.Now().UTC())}
+ 	profileBody, _, errProfile := c.probeRequest(ctx, auth, http.MethodGet, c.options.ClaudeProfileURL, nil, headers)
+ 	if errProfile != nil {
+ 		result.partial = true
+diff --git a/internal/quota/usage_credits.go b/internal/quota/usage_credits.go
+new file mode 100644
+index 0000000..177ef38
+--- /dev/null
++++ b/internal/quota/usage_credits.go
+@@ -0,0 +1,123 @@
++package quota
++
++import (
++	"bytes"
++	"encoding/json"
++	"math"
++	"math/big"
++	"regexp"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++var usageCreditDecimal = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]+)?$`)
++
++func creditBool(value json.RawMessage) *bool {
++	var parsed bool
++	if len(value) == 0 || bytes.Equal(value, []byte("null")) || json.Unmarshal(value, &parsed) != nil {
++		return nil
++	}
++	return &parsed
++}
++func creditDecimal(value json.RawMessage) *string {
++	var text string
++	if len(value) > 82 {
++		return nil
++	}
++	if json.Unmarshal(value, &text) != nil {
++		text = string(value)
++	}
++	if len(text) > 80 || !usageCreditDecimal.MatchString(text) {
++		return nil
++	}
++	return &text
++}
++func creditPositive(value string) bool {
++	for _, char := range value {
++		if char >= '1' && char <= '9' {
++			return true
++		}
++	}
++	return false
++}
++func creditAtLeast(value, limit *string) bool {
++	if value == nil || limit == nil {
++		return false
++	}
++	amount, amountOK := new(big.Rat).SetString(*value)
++	cap, capOK := new(big.Rat).SetString(*limit)
++	return amountOK && capOK && amount.Cmp(cap) >= 0
++}
++func creditRatio(value json.RawMessage) *float64 {
++	var parsed float64
++	if len(value) == 0 || bytes.Equal(value, []byte("null")) || json.Unmarshal(value, &parsed) != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 {
++		return nil
++	}
++	parsed = math.Min(1, parsed/100)
++	return &parsed
++}
++func parseCodexUsageCredits(body []byte, observedAt time.Time) *cluster.QuotaUsageCredits {
++	value := &cluster.QuotaUsageCredits{State: "unknown", ObservedAt: observedAt}
++	var payload struct {
++		Credits   map[string]json.RawMessage `json:"credits"`
++		RateLimit map[string]json.RawMessage `json:"rate_limit"`
++	}
++	if json.Unmarshal(body, &payload) != nil {
++		return value
++	}
++	value.Allowed = creditBool(payload.RateLimit["allowed"])
++	value.LimitReached = creditBool(payload.RateLimit["limit_reached"])
++	value.HasCredits = creditBool(payload.Credits["has_credits"])
++	value.Unlimited = creditBool(payload.Credits["unlimited"])
++	balance := creditDecimal(payload.Credits["balance"])
++	zero := balance != nil && !creditPositive(*balance)
++	off := value.HasCredits != nil && !*value.HasCredits
++	value.CreditBlocked = zero || off
++	unlimited := value.Unlimited != nil && *value.Unlimited
++	switch {
++	case off && (unlimited || balance != nil && !zero):
++		return value
++	case unlimited && !off:
++		value.State = "unlimited"
++	case balance != nil && !zero && !off:
++		value.State = "available"
++		value.Balance = balance
++	case off || zero:
++		value.State = "none"
++		value.Balance = balance
++	}
++	return value
++}
++func parseClaudeUsageCredits(body []byte, observedAt time.Time) *cluster.QuotaUsageCredits {
++	value := &cluster.QuotaUsageCredits{State: "unknown", ObservedAt: observedAt}
++	var payload struct {
++		Extra map[string]json.RawMessage `json:"extra_usage"`
++	}
++	if json.Unmarshal(body, &payload) != nil || payload.Extra == nil {
++		return value
++	}
++	enabled := creditBool(payload.Extra["is_enabled"])
++	extra := &cluster.QuotaExtraUsage{Enabled: enabled, MonthlyCap: "unknown", UsedRatio: creditRatio(payload.Extra["utilization"])}
++	value.ExtraUsage = extra
++	limit, present := payload.Extra["monthly_limit"]
++	if present && bytes.Equal(limit, []byte("null")) {
++		extra.MonthlyCap = "unlimited"
++	} else if creditDecimal(limit) != nil {
++		extra.MonthlyCap = "limited"
++	}
++	if enabled != nil && !*enabled {
++		value.State = "disabled"
++		value.CreditBlocked = true
++		return value
++	}
++	if extra.MonthlyCap == "limited" {
++		cap := creditDecimal(limit)
++		if extra.UsedRatio != nil && *extra.UsedRatio >= 1 || cap != nil && !creditPositive(*cap) || creditAtLeast(creditDecimal(payload.Extra["used_credits"]), cap) {
++			value.CreditBlocked = true
++			value.State = "none"
++		}
++	}
++	// A monthly spending cap is not a prepaid wallet. Currency and scale are unproven.
++	return value
++}
+diff --git a/internal/quota/usage_credits_test.go b/internal/quota/usage_credits_test.go
+new file mode 100644
+index 0000000..f9977d1
+--- /dev/null
++++ b/internal/quota/usage_credits_test.go
+@@ -0,0 +1,57 @@
++package quota
++
++import (
++	"testing"
++	"time"
++)
++
++func TestUsageCreditsCodex(t *testing.T) {
++	for _, test := range []struct {
++		body, state, balance string
++		blocked              bool
++	}{
++		{`{}`, "unknown", "", false},
++		{`{"credits":{"has_credits":true,"balance":"12.50","unlimited":false}}`, "available", "12.50", false},
++		{`{"credits":{"has_credits":true,"unlimited":true}}`, "unlimited", "", false},
++		{`{"credits":{"has_credits":false}}`, "none", "", true},
++		{`{"credits":{"balance":0}}`, "none", "0", true},
++		{`{"credits":{"balance":"-3"}}`, "unknown", "", false},
++		{`{"credits":{"balance":"NaN"}}`, "unknown", "", false},
++		{`{"credits":{"balance":null}}`, "unknown", "", false},
++		{`{"credits":{"has_credits":true}}`, "unknown", "", false},
++		{`{"credits":{"has_credits":false,"balance":"9"}}`, "unknown", "", true},
++	} {
++		value := parseCodexUsageCredits([]byte(test.body), time.Unix(100, 0))
++		balance := ""
++		if value.Balance != nil {
++			balance = *value.Balance
++		}
++		if value.State != test.state || balance != test.balance || value.CreditBlocked != test.blocked {
++			t.Fatalf("body %s produced state=%s balance=%s blocked=%v", test.body, value.State, balance, value.CreditBlocked)
++		}
++	}
++	value := parseCodexUsageCredits([]byte(`{"rate_limit":{"allowed":false,"limit_reached":true}}`), time.Unix(100, 0))
++	if value.Allowed == nil || *value.Allowed || value.LimitReached == nil || !*value.LimitReached {
++		t.Fatal("rate-limit flags lost")
++	}
++}
++func TestUsageCreditsClaude(t *testing.T) {
++	for _, test := range []struct {
++		body, state, cap string
++		blocked          bool
++	}{
++		{`{"extra_usage":{"is_enabled":true,"monthly_limit":null,"used_credits":42}}`, "unknown", "unlimited", false},
++		{`{"extra_usage":{"is_enabled":true}}`, "unknown", "unknown", false},
++		{`{"extra_usage":{"is_enabled":false,"monthly_limit":100,"used_credits":42}}`, "disabled", "limited", true},
++		{`{"extra_usage":{"is_enabled":true,"monthly_limit":100,"utilization":100}}`, "none", "limited", true},
++		{`{"extra_usage":{"is_enabled":true,"monthly_limit":100,"used_credits":100}}`, "none", "limited", true},
++		{`{"extra_usage":{"is_enabled":true,"monthly_limit":"100.01","used_credits":"100.010"}}`, "none", "limited", true},
++		{`{"extra_usage":{"is_enabled":true,"monthly_limit":100,"used_credits":99}}`, "unknown", "limited", false},
++		{`{"extra_usage":{"is_enabled":false,"monthly_limit":0,"utilization":100,"used_credits":100}}`, "disabled", "limited", true},
++	} {
++		value := parseClaudeUsageCredits([]byte(test.body), time.Unix(100, 0))
++		if value.State != test.state || value.ExtraUsage.MonthlyCap != test.cap || value.CreditBlocked != test.blocked || value.Balance != nil {
++			t.Fatalf("wrong extra-usage projection for %s: %+v", test.body, value)
++		}
++	}
++}
+diff --git a/internal/respserver/pop/dynamic/dispatch.go b/internal/respserver/pop/dynamic/dispatch.go
+index e24b93b..2f193ba 100644
+--- a/internal/respserver/pop/dynamic/dispatch.go
++++ b/internal/respserver/pop/dynamic/dispatch.go
+@@ -33,6 +33,7 @@ func Register(reg *dispatch.Registry) {
+ 	}
+ 	_ = reg.RegisterDynamic("RPOP", typeAuth, handleAuth)
+ 	_ = reg.RegisterDynamic("RPOP", typeAuthValidate, handleAuthValidate)
++	_ = reg.RegisterDynamic("RPOP", "usage-credit-check", handleUsageCreditCheck)
+ 	_ = reg.SetDynamicDefault("RPOP", handleAuth)
+ }
+ 
+@@ -277,8 +278,18 @@ func dispatchRequest(ctx context.Context, env dispatch.Env, args []string) (*hom
+ 		return nil, "", &reply
+ 	}
+ 
++	fundingCheck := gjson.Get(jsonArg, "type").String() == "usage-credit-check"
++	if fundingCheck && pinnedAuthID == "" {
++		reply := dispatch.Err("a retained credential is required")
++		return nil, "", &reply
++	}
++	if fundingCheck {
++		headers.Del("X-Session-ID")
++		headers.Del("X-Parent-Session-ID")
++	}
+ 	concurrencyReq := dispatchConcurrencyRequest{Protocol: int(gjson.Get(jsonArg, "concurrency_protocol").Int())}
+ 	result, errDispatch := env.Runtime.DispatchForAPIKeyWithConcurrency(ctx, model, headers, userAPIKey, credentialPolicy, excludedAuthIDs, pinnedAuthID, home.DispatchConcurrencyContext{
++		FundingCheck:      fundingCheck,
+ 		Fingerprint:       env.ConnectionLifetime.Fingerprint,
+ 		ConnectedAt:       env.ConnectionLifetime.ConnectedAt,
+ 		Controlled:        env.ConnectionLifetime.Controlled,
+@@ -537,6 +548,14 @@ func buildErrorJSON(message string) string {
+ // preserving the structured access error code (e.g. no_credentials, invalid_credential) so the
+ // downstream proxy can map it to the correct HTTP status.
+ func buildDispatchErrorJSON(runtime *home.Runtime, errDispatch error) string {
++	var funding *coreauth.Error
++	if errors.As(errDispatch, &funding) && (funding.Code == "usage_credit_policy_denied" || funding.Code == "usage_credit_policy_unavailable" || funding.Code == "continuity_requires_reconnect") {
++		payload, errEncode := json.Marshal(map[string]any{"error": map[string]any{"type": funding.Code, "message": funding.Message, "retryable": funding.Retryable}})
++		if errEncode == nil {
++			return string(payload)
++		}
++	}
++
+ 	var admissionErr *cluster.ConcurrencyAdmissionError
+ 	if errors.As(errDispatch, &admissionErr) {
+ 		out := "{}"
+diff --git a/internal/respserver/pop/dynamic/usage_credits.go b/internal/respserver/pop/dynamic/usage_credits.go
+new file mode 100644
+index 0000000..3db9db3
+--- /dev/null
++++ b/internal/respserver/pop/dynamic/usage_credits.go
+@@ -0,0 +1,27 @@
++package dynamic
++
++import (
++	"context"
++	"encoding/json"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/respserver/dispatch"
++)
++
++// Validation creates no admission, credential response, session binding or upstream request.
++func handleUsageCreditCheck(ctx context.Context, env dispatch.Env, args []string) dispatch.Reply {
++	result, _, errReply := dispatchRequest(ctx, env, args)
++	if errReply != nil {
++		return *errReply
++	}
++	if result == nil || result.AuthID == "" {
++		return dispatch.Err("funding validation unavailable")
++	}
++	payload, errEncode := json.Marshal(struct {
++		Allowed bool   `json:"usage_credit_allowed"`
++		AuthID  string `json:"auth_id"`
++	}{true, result.AuthID})
++	if errEncode != nil {
++		return dispatch.Err("funding validation unavailable")
++	}
++	return dispatch.BulkString(payload)
++}
+diff --git a/internal/respserver/pop/dynamic/usage_credits_test.go b/internal/respserver/pop/dynamic/usage_credits_test.go
+new file mode 100644
+index 0000000..c7e56a4
+--- /dev/null
++++ b/internal/respserver/pop/dynamic/usage_credits_test.go
+@@ -0,0 +1,35 @@
++package dynamic
++
++import (
++	"context"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/respserver/dispatch"
++)
++
++func TestUsageCreditOldHomeRegistryRejectsBeforeDispatch(t *testing.T) {
++	registry := dispatch.NewRegistry()
++	dispatched := 0
++	legacyDispatch := func(context.Context, dispatch.Env, []string) dispatch.Reply {
++		dispatched++
++		return dispatch.BulkString([]byte(`{"auth_id":"paid"}`))
++	}
++	if errRegister := registry.RegisterDynamic("RPOP", "auth", legacyDispatch); errRegister != nil {
++		t.Fatal(errRegister)
++	}
++	if errDefault := registry.SetDynamicDefault("RPOP", legacyDispatch); errDefault != nil {
++		t.Fatal(errDefault)
++	}
++	env := dispatch.Env{ConnectionLifetime: cluster.ConnectionLifetime{Controlled: true}}
++	payload := `{"type":"usage-credit-check","model":"gpt","pinned_auth_id":"paid"}`
++	reply := registry.Execute(t.Context(), env, []string{"RPOP", payload})
++	if reply.Kind != dispatch.ReplyKindRedisError || !strings.Contains(reply.RedisError, "unsupported type") || dispatched != 0 {
++		t.Fatal("unknown funding check entered old Home dispatch")
++	}
++	registry.Execute(t.Context(), env, []string{"RPOP", `{"type":"auth","model":"gpt"}`})
++	if dispatched != 1 {
++		t.Fatal("legacy auth fixture did not dispatch")
++	}
++}

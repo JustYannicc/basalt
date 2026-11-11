@@ -167,6 +167,25 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /metadata-only collection regressions pass on the new pin/,
         );
+      } else if (
+        patch.identity === "cliproxy-home-usage-credits" ||
+        patch.identity === "cliproxy-node-usage-credit-routing"
+      ) {
+        assert.equal(
+          patch.file,
+          name === "home"
+            ? "0506-home-usage-credits.patch"
+            : "0507-node-usage-credit-routing.patch",
+        );
+        assert.match(
+          patch.retirement.requires,
+          /pool-owned policy and plan-before-affinity selection/,
+        );
+        assert.match(patch.retirement.requires, /never-policy and retained WebSocket turn proofs/);
+        assert.match(
+          patch.retirement.requires,
+          /preserves existing schema rows through additive upgrades/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&

@@ -1,11 +1,12 @@
 import { Schema } from "effect";
-import { ConnectionView, Origin } from "../contracts/connection.ts";
+import { AppSummary, ConnectionView, Origin } from "../contracts/connection.ts";
 import { AgentSelection, SetupPreview } from "../contracts/setup.ts";
 export type { AgentSelection, SetupPreview } from "../contracts/setup.ts";
 export const DesktopRequest = Schema.Union([
   Schema.Struct({
     action: Schema.Literals([
       "status",
+      "apps",
       "cancel-sign-in",
       "open-approval",
       "disconnect",
@@ -39,6 +40,7 @@ export type DesktopSnapshot = typeof DesktopSnapshot.Type;
 export const DesktopReply = Schema.Struct({
   snapshot: DesktopSnapshot,
   preview: Schema.optionalKey(SetupPreview),
+  apps: Schema.optionalKey(AppSummary),
 });
 export type DesktopReply = typeof DesktopReply.Type;
 export const readDesktopReply = Schema.decodeUnknownSync(DesktopReply);
@@ -46,3 +48,13 @@ export const readDesktopReply = Schema.decodeUnknownSync(DesktopReply);
 export interface DesktopApi {
   request(value: DesktopRequest): Promise<DesktopReply>;
 }
+
+/** One line from the native Mac shell to host.ts. Only import-direct carries a chosen file. */
+export const HostMessage = Schema.Struct({
+  id: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  request: DesktopRequest,
+  file: Schema.optionalKey(Schema.String),
+});
+export const readHostMessage = Schema.decodeUnknownSync(HostMessage, {
+  onExcessProperty: "error",
+});

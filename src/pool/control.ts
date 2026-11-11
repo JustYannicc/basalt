@@ -1,3 +1,4 @@
+import { poolCreditRouting, setPoolCreditPolicy } from "./credit-policy.ts";
 import {
   retainCollectionDiagnostic,
   type CollectionDiagnosticStorage,
@@ -82,6 +83,7 @@ export interface Session {
   expiresAt: string;
 }
 export interface Group {
+  usageCreditPolicy?: import("../../apps/pool/usage-credits-contract.ts").UsageCreditPolicy;
   id: number;
   channel_name: string;
 }
@@ -305,11 +307,19 @@ export class HomeClient {
   }
   async allPoolGroups(signal?: AbortSignal): Promise<Group[]> {
     const groups = rows((await this.data("/channel-groups", { signal })).channel_groups)
-      .flatMap((row) => {
+      .flatMap<Group>((row) => {
         if (typeof row.channel_name !== "string" || !row.channel_name.startsWith(poolGroupPrefix))
           return [];
         if (!positiveId(row.id)) return unavailable();
-        return [{ id: row.id, channel_name: row.channel_name }];
+        return [
+          {
+            id: row.id,
+            channel_name: row.channel_name,
+            ...(row.usage_credit_policy === "last_resort" || row.usage_credit_policy === "never"
+              ? { usageCreditPolicy: row.usage_credit_policy }
+              : {}),
+          },
+        ];
       })
       .sort((a, b) => a.id - b.id);
     this.groupCache.clear();
@@ -547,7 +557,15 @@ export class PoolHome {
     try {
       const members = await membership;
       readAt.membership = now().toISOString();
-      if (!members.members.length) return { accounts: [], readAt };
+      const usageCreditPolicy =
+        members.groups.length > 0 &&
+        members.groups.every((group) => group.usageCreditPolicy !== undefined)
+          ? members.groups.some((group) => group.usageCreditPolicy === "never")
+            ? ("never" as const)
+            : ("last_resort" as const)
+          : undefined;
+      const policy = usageCreditPolicy === undefined ? {} : { usageCreditPolicy };
+      if (!members.members.length) return { accounts: [], readAt, ...policy };
       const ids = [...new Set(members.members.map((member) => member.auth_id))].sort();
       for (const id of ids) this.client.dropQuotaDetail(id);
       const reads = [
@@ -566,7 +584,7 @@ export class PoolHome {
       ] as const;
       await Promise.allSettled(reads);
       const [files, usage] = await Promise.all(reads);
-      return { accounts: accountsView(files, usage, new Set(ids)), readAt };
+      return { accounts: accountsView(files, usage, new Set(ids)), readAt, ...policy };
     } finally {
       // homeResponse settles on abort even while container readiness or its port fetch is hung.
       controller.abort();
@@ -586,6 +604,9 @@ export class PoolHome {
       result.source === "snapshot" ? retainedAccount(account, now().getTime()) : account,
     );
     return {
+      ...(result.data.usageCreditPolicy === undefined
+        ? {}
+        : { usageCreditPolicy: result.data.usageCreditPolicy }),
       isOwner,
       providers: providers.map(({ protocol, ...provider }) =>
         protocol === "typesafe-systemone" ? { ...provider, protocol } : provider,
@@ -686,6 +707,12 @@ async function sessionFor(
 }
 type Route = (ctx: RouteContext) => Promise<Response>;
 const routes: Record<string, Route> = {
+  "GET /credit-policy": async ({ client, pool }) => json(await poolCreditRouting(client, pool)),
+  "PATCH /credit-policy": async ({ client, pool, request }) => {
+    const payload: unknown = await request.json();
+    if (!object(payload)) return fail(400, "invalid_query", "Choose a subscription credit policy.");
+    return json(await setPoolCreditPolicy(client, pool, payload.usageCreditPolicy));
+  },
   "POST /accounts/:id/action": async (ctx) => accountAction(ctx),
   "GET /accounts/:id/resets": async (ctx) => accountAction(ctx),
   "POST /accounts/:id/collect": async (ctx) => {
@@ -835,7 +862,13 @@ export async function authorizeControl(
   const isOwner = request.headers.get(callerHeader) === claims.owner;
   const collect = routeKey === "POST /accounts/:id/collect";
   const refresh = action?.[2] === "refresh" && request.method === "POST";
-  if (routeKey !== "GET /pool" && !collect && !refresh && !isOwner)
+  if (
+    routeKey !== "GET /pool" &&
+    routeKey !== "GET /credit-policy" &&
+    !collect &&
+    !refresh &&
+    !isOwner
+  )
     return fail(403, "not_owner", "Only the pool owner can use this endpoint.");
   // Old app deployments and tools can still call these routes. Refuse before loading the
   // attribution queue, reading a body or letting a status read finalize a credential.
@@ -847,6 +880,7 @@ export async function authorizeControl(
     collect ||
     observation ||
     routeKey === "GET /pool" ||
+    routeKey === "GET /credit-policy" ||
     routeKey === "GET /usage" ||
     routeKey === "GET /accounts/:id/export";
   return { claims, url, route, routeKey, isOwner, isRead, isAccountAction: !!action };

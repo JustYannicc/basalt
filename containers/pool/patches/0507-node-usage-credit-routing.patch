@@ -1,0 +1,384 @@
+diff --git a/internal/home/usage_credits.go b/internal/home/usage_credits.go
+new file mode 100644
+index 0000000..1ead41b
+--- /dev/null
++++ b/internal/home/usage_credits.go
+@@ -0,0 +1,43 @@
++package home
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"strings"
++
++	"github.com/MoeForge/moego/ojson"
++)
++
++// ValidateUsageCreditTurn reads policy without acquiring another concurrency admission.
++// Older Home rejects unknown types before calling its auth dispatch handler.
++func (c *Client) ValidateUsageCreditTurn(ctx context.Context, model string, headers http.Header, authID string) error {
++	if c == nil || strings.TrimSpace(authID) == "" {
++		return errors.New("retained funding validation unavailable")
++	}
++	cmd, errClient := c.commandClient()
++	if errClient != nil {
++		return errClient
++	}
++	payload := ojson.NewDocString("{}")
++	if errSet := payload.Set("type", "usage-credit-check"); errSet != nil {
++		return errSet
++	}
++	if errSet := payload.Set("model", model); errSet != nil {
++		return errSet
++	}
++	if errSet := payload.Set("headers", headersToLowerMap(headers)); errSet != nil {
++		return errSet
++	}
++	if errSet := payload.Set("pinned_auth_id", authID); errSet != nil {
++		return errSet
++	}
++	raw, errCheck := cmd.RPop(ctx, string(payload.Bytes())).Bytes()
++	if errCheck != nil {
++		return errCheck
++	}
++	if !ojson.ValidBytes(raw) || ojson.GetBytesNoCopy(raw, "usage_credit_allowed").Raw != "true" || ojson.GetBytesNoCopy(raw, "auth_id").String() != authID {
++		return errors.New("retained account no longer satisfies pool funding policy; reconnect")
++	}
++	return nil
++}
+diff --git a/internal/home/usage_credits_test.go b/internal/home/usage_credits_test.go
+new file mode 100644
+index 0000000..75dbfd2
+--- /dev/null
++++ b/internal/home/usage_credits_test.go
+@@ -0,0 +1,32 @@
++package home
++
++import (
++	"context"
++	"fmt"
++	"net/http"
++	"strings"
++	"testing"
++
++	"github.com/MoeForge/moego/ojson"
++)
++
++func TestBasaltUsageCreditWireRefusesUnsupportedOrMalformedCheck(t *testing.T) {
++	for _, response := range []string{"-ERR unsupported type\r\n", "{\"usage_credit_allowed\":true,\"auth_id\":\"other\"}", "{\"usage_credit_allowed\":\"true\",\"auth_id\":\"account\"}"} {
++		client, commands := newRedisCommandTestClient(t, func(args []string) string {
++			if len(args) > 0 && strings.EqualFold(args[0], "RPOP") {
++				if strings.HasPrefix(response, "-") {
++					return response
++				}
++				return fmt.Sprintf("$%d\r\n%s\r\n", len(response), response)
++			}
++			return "-ERR unexpected command\r\n"
++		})
++		if errCheck := client.ValidateUsageCreditTurn(context.Background(), "model", http.Header{"Authorization": {"Bearer synthetic-fixture"}}, "account"); errCheck == nil {
++			t.Fatal("invalid check acknowledged")
++		}
++		last := commands.Last()
++		if len(last) != 2 || !strings.EqualFold(last[0], "RPOP") || ojson.Get(last[1], "type").String() != "usage-credit-check" || ojson.Get(last[1], "pinned_auth_id").String() != "account" {
++			t.Fatal("check used a dispatch request")
++		}
++	}
++}
+diff --git a/sdk/api/handlers/openai/openai_responses_websocket.go b/sdk/api/handlers/openai/openai_responses_websocket.go
+index 125f204..6fdabe7 100644
+--- a/sdk/api/handlers/openai/openai_responses_websocket.go
++++ b/sdk/api/handlers/openai/openai_responses_websocket.go
+@@ -944,6 +944,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+ 		cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
+ 		cliCtx = cliproxyexecutor.WithLocalWebsocketTurnTracker(cliCtx)
+ 		cliCtx = cliproxyexecutor.WithWebsocketInputEpoch(cliCtx, &inputEpoch, msgEpoch)
++		var fundingAuthID atomic.Value
++		fundingAuthID.Store(pinnedAuthID)
+ 		if duplexInput != nil {
+ 			cliCtx = cliproxyexecutor.WithWebsocketInput(cliCtx, duplexInput)
+ 			cliCtx = cliproxyexecutor.WithWebsocketAuthCheck(cliCtx, func(authID string) bool {
+@@ -959,6 +961,17 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+ 						Error:      errors.New("client credential changed during the websocket stream; reconnect"),
+ 					}
+ 				}
++				frameType := ojson.GetBytesNoCopy(turnPayload, "type").String()
++				if errAuth == nil && h.AuthManager != nil && (frameType == "response.create" || frameType == "response.append") {
++					authID, _ := fundingAuthID.Load().(string)
++					requested := strings.TrimSpace(ojson.GetBytesNoCopy(turnPayload, "model").String())
++					if requested == "" {
++						requested = modelName
++					}
++					if errFunding := h.AuthManager.ValidateHomeUsageCreditTurn(cliCtx, requested, upgradeRequest.Header.Clone(), authID); errFunding != nil {
++						errAuth = &interfaces.ErrorMessage{StatusCode: http.StatusConflict, Error: errFunding}
++					}
++				}
+ 				if errAuth == nil {
+ 					return nil, nil
+ 				}
+@@ -977,6 +990,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+ 			if authID == "" || h == nil || h.AuthManager == nil {
+ 				return
+ 			}
++			fundingAuthID.Store(authID)
+ 			lastAttemptedAuthID = authID
+ 			selectedAuthObserved = true
+ 			pinnedAuthAttempted = pinnedAuthAttempted || (pinnedAuthID != "" && authID == pinnedAuthID)
+diff --git a/sdk/api/handlers/openai/usage_credits_test.go b/sdk/api/handlers/openai/usage_credits_test.go
+new file mode 100644
+index 0000000..2060490
+--- /dev/null
++++ b/sdk/api/handlers/openai/usage_credits_test.go
+@@ -0,0 +1,84 @@
++package openai
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/gin-gonic/gin"
++	"github.com/gorilla/websocket"
++	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++func (*homeResponsesWebsocketDispatcher) ValidateUsageCreditTurn(context.Context, string, http.Header, string) error {
++	return nil
++}
++
++type creditWebsocketDispatcher struct {
++	homeResponsesWebsocketDispatcher
++	denied atomic.Bool
++	checks atomic.Int32
++}
++
++func (d *creditWebsocketDispatcher) ValidateUsageCreditTurn(context.Context, string, http.Header, string) error {
++	d.checks.Add(1)
++	if d.denied.Load() {
++		return errors.New("pool policy requires plan account")
++	}
++	return nil
++}
++func TestBasaltUsageCreditWebsocketContinuationRefusesBeforeForwarding(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	dispatcher := &creditWebsocketDispatcher{}
++	executor := &homeResponsesWebsocketExecutor{}
++	manager := coreauth.NewManager(nil, nil, nil)
++	manager.SetConfig(&internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: true}})
++	manager.PublishHomeDispatch(dispatcher, executionregistry.New(), 1)
++	manager.RegisterExecutor(executor)
++	handler := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager))
++	router := gin.New()
++	router.GET("/v1/responses/ws", handler.ResponsesWebsocket)
++	server := httptest.NewServer(router)
++	defer server.Close()
++	conn, _, errDial := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses/ws", nil)
++	if errDial != nil {
++		t.Fatal(errDial)
++	}
++	defer func() {
++		if errClose := conn.Close(); errClose != nil {
++			t.Logf("close websocket: %v", errClose)
++		}
++	}()
++	send := func(payload string) []byte {
++		t.Helper()
++		if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(payload)); errWrite != nil {
++			t.Fatal(errWrite)
++		}
++		_, response, errRead := conn.ReadMessage()
++		if errRead != nil {
++			t.Fatal(errRead)
++		}
++		return response
++	}
++	first := send(`{"type":"response.create","model":"basalt-home-only-model","input":[]}`)
++	if ojson.GetBytes(first, "type").String() != wsEventTypeCompleted {
++		t.Fatal("initial turn did not finish")
++	}
++	dispatcher.denied.Store(true)
++	second := send(`{"type":"response.create","model":"basalt-home-only-model","previous_response_id":"home-response","input":[]}`)
++	if ojson.GetBytes(second, "type").String() != "error" {
++		t.Fatalf("denied turn returned %s", second)
++	}
++	if executor.calls.Load() != 1 || dispatcher.calls.Load() != 1 || dispatcher.checks.Load() < 1 {
++		t.Fatal("retained response was forwarded or transferred to another account")
++	}
++}
+diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
+index ddd7a2b..5c2be8c 100644
+--- a/sdk/cliproxy/auth/conductor_home.go
++++ b/sdk/cliproxy/auth/conductor_home.go
+@@ -1029,6 +1029,9 @@ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, o
+ 		return nil, errRetained
+ 	}
+ 	if retainedOK {
++		if errFunding := m.ValidateHomeUsageCreditTurn(ctx, requestedModel, opts.Headers, retained.Auth.ID); errFunding != nil {
++			return nil, errFunding
++		}
+ 		return retained, nil
+ 	}
+ 	if errLoss := cliproxyexecutor.WebsocketInputLossError(ctx); errLoss != nil {
+diff --git a/sdk/cliproxy/auth/home_concurrency.go b/sdk/cliproxy/auth/home_concurrency.go
+index 8a3f47a..a946fae 100644
+--- a/sdk/cliproxy/auth/home_concurrency.go
++++ b/sdk/cliproxy/auth/home_concurrency.go
+@@ -255,6 +255,12 @@ func decodeHomeDispatchError(raw []byte) error {
+ 		return newHomeConcurrencyBusyError(result, time.Duration(detail.RetryAfterMS)*time.Millisecond)
+ 	case "user_credits_insufficient":
+ 		result.HTTPStatus = http.StatusPaymentRequired
++	case "usage_credit_policy_denied":
++		result.HTTPStatus = http.StatusTooManyRequests
++	case "usage_credit_policy_unavailable":
++		result.HTTPStatus = http.StatusServiceUnavailable
++	case "continuity_requires_reconnect":
++		result.HTTPStatus = http.StatusConflict
+ 	case "user_period_limit_exceeded":
+ 		result.HTTPStatus = http.StatusTooManyRequests
+ 	case "auth_not_found", "auth_unavailable", "refresh_temporarily_unavailable", "home_unavailable",
+diff --git a/sdk/cliproxy/auth/home_execution_paths_test.go b/sdk/cliproxy/auth/home_execution_paths_test.go
+index a09c50b..11e5717 100644
+--- a/sdk/cliproxy/auth/home_execution_paths_test.go
++++ b/sdk/cliproxy/auth/home_execution_paths_test.go
+@@ -1558,3 +1558,11 @@ func TestMetadataOnlyHomeDispatchPreservesSelectedModel(t *testing.T) {
+ 		t.Fatal("queued model changed on repeated sanitization")
+ 	}
+ }
++
++func (*retainingHomeExecutionDispatcher) ValidateUsageCreditTurn(context.Context, string, http.Header, string) error {
++	return nil
++}
++
++func (*accountedHomeExecutionDispatcher) ValidateUsageCreditTurn(context.Context, string, http.Header, string) error {
++	return nil
++}
+diff --git a/sdk/cliproxy/auth/home_force_mapping_test.go b/sdk/cliproxy/auth/home_force_mapping_test.go
+index fcd3435..75504f6 100644
+--- a/sdk/cliproxy/auth/home_force_mapping_test.go
++++ b/sdk/cliproxy/auth/home_force_mapping_test.go
+@@ -632,3 +632,11 @@ func TestHomeForceMappingAliasResultRequiresExplicitFlag(t *testing.T) {
+ 		t.Fatalf("homeForceMappingAliasResult() = %+v, want no force mapping", result)
+ 	}
+ }
++
++func (*ackOrderedRouteDispatcher) ValidateUsageCreditTurn(context.Context, string, http.Header, string) error {
++	return nil
++}
++
++func (*prefixedRetainedRouteDispatcher) ValidateUsageCreditTurn(context.Context, string, http.Header, string) error {
++	return nil
++}
+diff --git a/sdk/cliproxy/auth/usage_credits.go b/sdk/cliproxy/auth/usage_credits.go
+new file mode 100644
+index 0000000..3bd22b4
+--- /dev/null
++++ b/sdk/cliproxy/auth/usage_credits.go
+@@ -0,0 +1,29 @@
++package auth
++
++import (
++	"context"
++	"net/http"
++)
++
++type homeUsageCreditValidator interface {
++	ValidateUsageCreditTurn(context.Context, string, http.Header, string) error
++}
++
++// Retained transports recheck funding at each new turn, before forwarding any upstream bytes.
++func (m *Manager) ValidateHomeUsageCreditTurn(ctx context.Context, model string, headers http.Header, authID string) error {
++	if m == nil || !m.HomeEnabled() {
++		return nil
++	}
++	bundle := m.HomeDispatchBundle()
++	if bundle == nil || bundle.client == nil {
++		return &Error{Code: "usage_credit_policy_unavailable", Message: "Pool credit policy is unavailable. Reconnect before another turn.", HTTPStatus: 503, Retryable: true}
++	}
++	validator, ok := bundle.client.(homeUsageCreditValidator)
++	if !ok {
++		return &Error{Code: "usage_credit_policy_unavailable", Message: "Pool funding validation is unavailable. Reconnect before another turn.", HTTPStatus: 503, Retryable: true}
++	}
++	if errValidate := validator.ValidateUsageCreditTurn(ctx, model, headers, authID); errValidate != nil {
++		return &Error{Code: "continuity_requires_reconnect", Message: "The retained account no longer satisfies pool funding policy. Reconnect and replay the full context.", HTTPStatus: 409, Retryable: true}
++	}
++	return nil
++}
+diff --git a/sdk/cliproxy/auth/usage_credits_test.go b/sdk/cliproxy/auth/usage_credits_test.go
+new file mode 100644
+index 0000000..c03a7e5
+--- /dev/null
++++ b/sdk/cliproxy/auth/usage_credits_test.go
+@@ -0,0 +1,64 @@
++package auth
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"sync/atomic"
++	"testing"
++
++	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++type fundingHomeDispatcher struct {
++	retainingHomeExecutionDispatcher
++	checks atomic.Int32
++	denied atomic.Bool
++}
++
++func (d *fundingHomeDispatcher) ValidateUsageCreditTurn(context.Context, string, http.Header, string) error {
++	d.checks.Add(1)
++	if d.denied.Load() {
++		return errors.New("plan account recovered; credits forbidden")
++	}
++	return nil
++}
++func TestBasaltUsageCreditRetainedTurnRefusesBeforeExecutor(t *testing.T) {
++	dispatcher := &fundingHomeDispatcher{}
++	manager := NewManager(nil, nil, nil)
++	manager.SetConfig(&internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: true}})
++	manager.PublishHomeDispatch(dispatcher, executionregistry.New(), 1)
++	executor := &retainingHomeExecutionExecutor{}
++	manager.RegisterExecutor(executor)
++	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
++	opts := cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: "credits-session", cliproxyexecutor.PinnedAuthMetadataKey: "home-auth"}}
++	request := cliproxyexecutor.Request{Model: "model-a", Payload: []byte(`{"previous_response_id":"account-owned-response"}`)}
++	if _, errExecute := manager.Execute(ctx, []string{"home-execution"}, request, opts); errExecute != nil {
++		t.Fatal(errExecute)
++	}
++	dispatcher.denied.Store(true)
++	if _, errExecute := manager.Execute(ctx, []string{"home-execution"}, request, opts); errExecute == nil {
++		t.Fatal("retained turn bypassed funding policy")
++	}
++	if executor.calls.Load() != 1 || dispatcher.calls.Load() != 1 || dispatcher.checks.Load() < 1 {
++		t.Fatal("denied turn executed or redispatched account-owned response")
++	}
++	dispatcher.denied.Store(false)
++	if _, errExecute := manager.Execute(ctx, []string{"home-execution"}, request, opts); errExecute != nil {
++		t.Fatal(errExecute)
++	}
++	if executor.calls.Load() != 2 {
++		t.Fatal("allowed retained turn failed to resume")
++	}
++}
++
++func TestBasaltUsageCreditUnsupportedValidatorFailsClosed(t *testing.T) {
++	manager := NewManager(nil, nil, nil)
++	manager.SetConfig(&internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: true}})
++	manager.PublishHomeDispatch(&fixtureHomeDispatcher{}, executionregistry.New(), 1)
++	if errValidate := manager.ValidateHomeUsageCreditTurn(context.Background(), "model", nil, "account"); errValidate == nil {
++		t.Fatal("missing validation capability allowed paid turn")
++	}
++}

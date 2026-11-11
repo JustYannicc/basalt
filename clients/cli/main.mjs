@@ -10,7 +10,7 @@ import {
   removeAgent,
 } from "./profile.ts";
 import { privateDirectory, readPrivate } from "./private-files.ts";
-import { control } from "./ipc.ts";
+import { control, controlApps } from "./ipc.ts";
 import { run } from "./run.ts";
 import { bridgeStdio } from "./stdio.ts";
 import { login } from "./login.ts";
@@ -84,6 +84,10 @@ try {
   } else if (command === "sign-out" && rest.length === 0) {
     await signOut(directory);
     process.stderr.write("Saved credentials removed.\n");
+  } else if (command === "apps" && rest.length === 0) {
+    await privateDirectory(directory);
+    const summary = await controlApps(ipcPath(directory), await operatorToken(directory));
+    process.stdout.write(`${JSON.stringify(summary ?? null)}\n`);
   } else if (
     ["status", "health", "disconnect", "reconnect", "revoke"].includes(command) &&
     rest.length === 0
@@ -93,7 +97,7 @@ try {
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } else {
     throw new Error(
-      "Use login, import-direct, agent add/remove, setup, run, stdio, status, health, disconnect, reconnect, sign-out or revoke.",
+      "Use login, import-direct, agent add/remove, setup, run, stdio, status, health, apps, disconnect, reconnect, sign-out or revoke.",
     );
   }
 } catch (error) {
