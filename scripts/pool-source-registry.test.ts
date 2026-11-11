@@ -129,6 +129,23 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /without changing Home database models or versions/,
         );
+      } else if (patch.identity === "cliproxy-home-xai-optional-quota-fields") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0497-home-xai-optional-quota-fields.patch");
+        assert.match(
+          patch.retirement.requires,
+          /omitted weekly percentages and on-demand usage as not reported/,
+        );
+        assert.match(patch.retirement.requires, /never infers zero/);
+        assert.match(patch.retirement.requires, /rejects present invalid optional values/);
+        assert.match(
+          patch.retirement.requires,
+          /observed-shape, explicit-zero, alias, malformed-value, retained-window and real-collector regressions/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /without changing Home database models or versions/,
+        );
       } else if (patch.identity === "cliproxy-home-xai-subscription-quota") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0469-home-xai-subscription-quota.patch");
