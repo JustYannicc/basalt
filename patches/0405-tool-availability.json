@@ -1,7 +1,7 @@
 {
   "identity": "basalt-tool-availability",
   "file": "0405-tool-availability.patch",
-  "content_sha256": "2dec4dae3f34ecf34fb064f7db122a8745c92c6044e338a81c2622186df02b31",
+  "content_sha256": "d3ad52212ad3563f3b64e7cc633dce2f74600e05bb1c8634be37200c10b1b67d",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
