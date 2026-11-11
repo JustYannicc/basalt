@@ -11,7 +11,7 @@ index 3e93ab0..3b02be4 100644
  
  	respSrv = respserver.New(addr, rt)
 diff --git a/docs/management/api.md b/docs/management/api.md
-index 25e0140..466acdf 100644
+index 88c68a0..9bf4010 100644
 --- a/docs/management/api.md
 +++ b/docs/management/api.md
 @@ -183,6 +183,7 @@ The following v8 routes are derived from `internal/managementhttp/routes_v8.go`
@@ -38,7 +38,7 @@ index 25e0140..466acdf 100644
  
  Soft-deletes the group and its details, and atomically removes its ID from API key `channels` and model group detail `channels`, including soft-deleted records. Other bindings, key identity, and user ownership are preserved. Removing the last API key channel binding makes credential selection unrestricted by that key; removing the last model-detail channel binding restores inheritance from the key. A config event is published when bindings change, and the local runtime config is refreshed. Disabled groups are not removed.
 diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
-index d9b2a07..c272ab3 100644
+index a9c174e..1b9abf6 100644
 --- a/docs/management/api_CN.md
 +++ b/docs/management/api_CN.md
 @@ -178,6 +178,7 @@ DB-backed handler 通常同时返回机器可读 `error` 和可读 `message`：
@@ -1206,7 +1206,7 @@ index 098a3e2..ed1c8ed 100644
  		replaceWindows:      true,
  		replacePlan:         true,
 diff --git a/internal/quota/providers.go b/internal/quota/providers.go
-index 84c5fd3..49f358e 100644
+index 8d10ac4..b19e1a2 100644
 --- a/internal/quota/providers.go
 +++ b/internal/quota/providers.go
 @@ -30,7 +30,7 @@ func (c *Collector) probeClaude(ctx context.Context, auth *coreauth.Auth) (probe

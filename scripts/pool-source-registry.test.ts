@@ -146,6 +146,17 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /without changing Home database models or versions/,
         );
+      } else if (patch.identity === "cliproxy-home-xai-healthy-unmetered") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0500-home-xai-healthy-unmetered.patch");
+        assert.match(patch.retirement.requires, /monthly and weekly quota omissions/);
+        assert.match(patch.retirement.requires, /healthy unmetered collections/);
+        assert.match(patch.retirement.requires, /present invalid values and real request errors/);
+        assert.match(patch.retirement.requires, /authoritative omission replaces old measurements/);
+        assert.match(
+          patch.retirement.requires,
+          /without changing Home database models or versions/,
+        );
       } else if (patch.identity === "cliproxy-home-xai-subscription-quota") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0469-home-xai-subscription-quota.patch");

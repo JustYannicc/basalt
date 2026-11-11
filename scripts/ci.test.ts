@@ -376,13 +376,15 @@ test("batch pushes compare with main even when a force push removes the previous
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
   try {
-    git("init", "-q");
+    git("init", "-q", "--initial-branch=candidate");
     git("config", "user.name", "CI fixture");
     git("config", "user.email", "ci@example.invalid");
     writeFileSync(join(root, "input"), "base");
     git("add", ".");
     git("commit", "-qm", "base");
     const base = git("rev-parse", "HEAD");
+    git("branch", "main", base);
+    git("remote", "add", "origin", root);
     git("update-ref", "refs/remotes/origin/main", base);
     writeFileSync(join(root, "input"), "batch");
     git("commit", "-qam", "batch");
