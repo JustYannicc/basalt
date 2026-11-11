@@ -314,7 +314,7 @@ jobs:
             fail "Run $RUN's signalbox-clients artifact couldn't be downloaded; gh's error is above. Usually it's past the repository's artifact retention, or $RUN is a publish run rather than the walked build."
           # upload-artifact roots its paths at their common parent, so assemble's files and their
           # sums arrive under release/ with version.txt and commit.txt beside it.
-          cd "$RUNNER_TEMP/walked"
+          cd "$RUNNER_TEMP/walked" || fail "The downloaded artifact folder is missing."
           held="$(find . -type f | sort | tr '\n' ' ')"
           for file in release/SHA256SUMS.txt version.txt commit.txt; do
             [ -f "$file" ] || fail "Run $RUN's signalbox-clients artifact has no $file. It holds: $held"
@@ -322,14 +322,16 @@ jobs:
           version="$(cat version.txt)"
           commit="$(cat commit.txt)"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Run $RUN recorded version '$version', not major.minor.patch."
-          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] && [ "$commit" = "$head" ] ||
+          if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || [ "$commit" != "$head" ]; then
             fail "Run $RUN recorded commit '$commit', but it built $head."
-          cd release
+          fi
+          cd release || fail "Run $RUN's artifact has no release/ folder."
           # Publish exactly the files the sums name: an extra file would go out unchecked.
           listed="$(awk '{print $2}' SHA256SUMS.txt | sort | tr '\n' ' ')"
           present="$(find . -type f ! -name SHA256SUMS.txt | sed 's|^\./||' | sort | tr '\n' ' ')"
-          [ -n "$listed" ] && [ "$listed" = "$present" ] ||
+          if [ -z "$listed" ] || [ "$listed" != "$present" ]; then
             fail "Run $RUN's release/ holds $present but SHA256SUMS.txt lists $listed."
+          fi
           sha256sum --strict -c SHA256SUMS.txt || fail "Run $RUN's files don't match their recorded SHA256SUMS.txt."
           echo "VERSION=$version" >> "$GITHUB_ENV"
           echo "COMMIT=$commit" >> "$GITHUB_ENV"
