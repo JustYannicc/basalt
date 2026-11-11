@@ -17,6 +17,30 @@ export const isNativePolicyReason = (value: unknown): value is NativePolicyReaso
 export const isNativePolicyLeaseMs = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value >= -60_000 && value <= 60_000;
 
+export const nativePolicyElapsedMaxMs = 60_000;
+export interface NativePolicyInstallObservation {
+  phase: "request" | "acknowledgement";
+  elapsedMs: number;
+  deadlineAborted: boolean;
+}
+
+export function nativePolicyInstallObservation(value: Partial<NativePolicyInstallObservation>) {
+  return {
+    ...(value.phase === "request" || value.phase === "acknowledgement"
+      ? { phase: value.phase }
+      : {}),
+    ...(typeof value.elapsedMs === "number" &&
+    Number.isInteger(value.elapsedMs) &&
+    value.elapsedMs >= 0 &&
+    value.elapsedMs <= nativePolicyElapsedMaxMs
+      ? { elapsedMs: value.elapsedMs }
+      : {}),
+    ...(typeof value.deadlineAborted === "boolean"
+      ? { deadlineAborted: value.deadlineAborted }
+      : {}),
+  };
+}
+
 /** Diagnostics share the install deadline and cannot replace the original refusal. */
 export async function readNativePolicyReason(response: Response, signal: AbortSignal) {
   try {

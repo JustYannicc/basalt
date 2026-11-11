@@ -1,6 +1,8 @@
 import {
   isNativePolicyLeaseMs,
   isNativePolicyReason,
+  nativePolicyInstallObservation,
+  type NativePolicyInstallObservation,
   type NativePolicyReason,
 } from "./native-policy-diagnostic.ts";
 import type { ControlError, ControlErrorCode } from "../../apps/pool/contract.ts";
@@ -20,6 +22,9 @@ export interface PoolFailureDiagnostic {
   backendStatus?: number;
   reason?: NativePolicyReason;
   leaseMs?: number;
+  phase?: NativePolicyInstallObservation["phase"];
+  elapsedMs?: number;
+  deadlineAborted?: boolean;
 }
 const diagnostics = new WeakMap<object, PoolFailureDiagnostic>();
 const diagnosticGuards = new Set<PoolFailureDiagnostic["guard"]>([
@@ -55,6 +60,9 @@ export function diagnosePoolFailure(error: unknown, diagnostic: PoolFailureDiagn
     diagnostics.set(error, {
       guard: diagnostic.guard,
       failure: diagnostic.failure,
+      ...(diagnostic.guard === "native_policy_install"
+        ? nativePolicyInstallObservation(diagnostic)
+        : {}),
       ...(diagnostic.guard === "native_policy_install" && isNativePolicyReason(diagnostic.reason)
         ? { reason: diagnostic.reason }
         : {}),
@@ -70,6 +78,17 @@ export function diagnosePoolFailure(error: unknown, diagnostic: PoolFailureDiagn
         ? { backendStatus }
         : {}),
     });
+  return error;
+}
+
+/** Installation timing enriches the original refusal without replacing its cause or status. */
+export function observeNativePolicyFailure(
+  error: unknown,
+  observation: NativePolicyInstallObservation,
+) {
+  const diagnostic = poolFailureDiagnostic(error);
+  if (diagnostic?.guard === "native_policy_install" && typeof error === "object" && error !== null)
+    diagnostics.set(error, { ...diagnostic, ...nativePolicyInstallObservation(observation) });
   return error;
 }
 
