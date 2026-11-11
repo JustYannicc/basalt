@@ -179,8 +179,17 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         return readRuntimeHealth(ctx.container.getTcpPort(8318), env.POOL_MANAGEMENT_KEY, signal);
       },
       defer: (work) => ctx.waitUntil(work),
-      unavailable: (count) => {
-        console.error("POOL_ACTIVE_STREAMS_CLOSED", { code: "pool_protection_unavailable", count });
+      unavailable: (count, diagnostic) => {
+        console.error(
+          diagnostic.action === "closed"
+            ? "POOL_ACTIVE_STREAMS_CLOSED"
+            : "POOL_RUNTIME_PROTECTION_UNAVAILABLE",
+          {
+            code: "pool_protection_unavailable",
+            count,
+            ...diagnostic,
+          },
+        );
         ctx.waitUntil(captureError(env, "pool_failure", "/v1"));
       },
     });
