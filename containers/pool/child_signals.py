@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from .quota_signals import quota_signal_line
+from .dispatch_signals import dispatch_signal_line, node_dispatch_message
 
 MAX_HOME_SIGNAL_INTEGER = (1 << 63) - 1
 
@@ -282,6 +283,9 @@ class NativePolicyProbeParser:
 def safe_child_output_line(name: str, line: str) -> str | None:
     """Return closed Home worker signals and quota window metadata."""
     message = _extract_home_message(name, line)
+    timing = dispatch_signal_line(name, node_dispatch_message(line) if name == "node" else message)
+    if timing is not None:
+        return timing
     quota = quota_signal_line(message)
     if quota is not None:
         return quota

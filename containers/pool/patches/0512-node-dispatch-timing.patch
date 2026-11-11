@@ -1,0 +1,216 @@
+diff --git a/internal/dispatchtiming/timing.go b/internal/dispatchtiming/timing.go
+new file mode 100644
+index 0000000..c57e7ca
+--- /dev/null
++++ b/internal/dispatchtiming/timing.go
+@@ -0,0 +1,44 @@
++package dispatchtiming
++
++import (
++	"context"
++	"errors"
++	"net"
++	"time"
++
++	log "github.com/sirupsen/logrus"
++)
++
++type Stage string
++
++const (
++	Ping Stage = "ping"
++	RPop Stage = "rpop"
++)
++
++// Record emits only bounded timings; request values and error text never enter the record.
++func Record(stage Stage, started time.Time, err error) {
++	switch stage {
++	case Ping, RPop:
++	default:
++		return
++	}
++	outcome := "ok"
++	if err != nil {
++		outcome = "error"
++		var timeout net.Error
++		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() {
++			outcome = "timeout"
++		} else if errors.Is(err, context.Canceled) {
++			outcome = "cancelled"
++		}
++	}
++	elapsed := time.Since(started).Milliseconds()
++	if elapsed < 0 {
++		elapsed = 0
++	}
++	if elapsed > 86400000 {
++		elapsed = 86400000
++	}
++	log.Infof(`POOL_NODE_DISPATCH_TIMING {"stage":"%s","duration_ms":%d,"outcome":"%s"}`, stage, elapsed, outcome)
++}
+diff --git a/internal/dispatchtiming/timing_test.go b/internal/dispatchtiming/timing_test.go
+new file mode 100644
+index 0000000..0b5a27d
+--- /dev/null
++++ b/internal/dispatchtiming/timing_test.go
+@@ -0,0 +1,46 @@
++package dispatchtiming
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	log "github.com/sirupsen/logrus"
++	logtest "github.com/sirupsen/logrus/hooks/test"
++	"io"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestBasaltNodeDispatchTimingClosedOutcomesAndBounds(t *testing.T) {
++	logger := log.StandardLogger()
++	oldHooks := logger.Hooks
++	oldOutput := logger.Out
++	hook := logtest.NewGlobal()
++	logger.SetOutput(io.Discard)
++	defer func() { logger.ReplaceHooks(oldHooks); logger.SetOutput(oldOutput) }()
++	for _, test := range []struct {
++		err     error
++		outcome string
++	}{
++		{nil, "ok"}, {errors.New("private-error-sentinel"), "error"}, {fmt.Errorf("private-timeout-sentinel: %w", context.DeadlineExceeded), "timeout"}, {fmt.Errorf("private-cancel-sentinel: %w", context.Canceled), "cancelled"},
++	} {
++		hook.Reset()
++		Record(RPop, time.Now().Add(time.Hour), test.err)
++		entries := hook.AllEntries()
++		want := `POOL_NODE_DISPATCH_TIMING {"stage":"rpop","duration_ms":0,"outcome":"` + test.outcome + `"}`
++		if len(entries) != 1 || entries[0].Message != want {
++			t.Fatalf("closed outcome/bounds changed: %v", entries)
++		}
++	}
++	hook.Reset()
++	Record(RPop, time.Time{}, nil)
++	if len(hook.AllEntries()) != 1 || !strings.Contains(hook.AllEntries()[0].Message, `"duration_ms":86400000`) {
++		t.Fatal("duration was not bounded")
++	}
++	hook.Reset()
++	Record(Stage("private-stage-sentinel"), time.Now(), nil)
++	if len(hook.AllEntries()) != 0 {
++		t.Fatal("unknown stage escaped closed projection")
++	}
++}
+diff --git a/internal/home/basalt_dispatch_timing_test.go b/internal/home/basalt_dispatch_timing_test.go
+new file mode 100644
+index 0000000..cea5c04
+--- /dev/null
++++ b/internal/home/basalt_dispatch_timing_test.go
+@@ -0,0 +1,76 @@
++package home
++
++import (
++	"context"
++	"github.com/MoeForge/moego/ojson"
++	"io"
++	"strings"
++	"testing"
++
++	log "github.com/sirupsen/logrus"
++	logtest "github.com/sirupsen/logrus/hooks/test"
++)
++
++func TestBasaltNodeDispatchTimingPreservesResultAndProjectsOnlyMetadata(t *testing.T) {
++	for _, failed := range []bool{false, true} {
++		t.Run(map[bool]string{false: "success", true: "error"}[failed], func(t *testing.T) {
++			logger := log.StandardLogger()
++			oldHooks := logger.Hooks
++			oldOutput := logger.Out
++			hook := logtest.NewGlobal()
++			logger.SetOutput(io.Discard)
++			defer func() { logger.ReplaceHooks(oldHooks); logger.SetOutput(oldOutput) }()
++			client, commands := newRedisCommandTestClient(t, func(args []string) string {
++				if strings.EqualFold(args[0], "RPOP") {
++					if failed {
++						return "-ERR private-dispatch-sentinel\r\n"
++					}
++					return "$2\r\n{}\r\n"
++				}
++				return balanceTestRedisReply(args)
++			})
++			raw, err := client.RPopAuth(context.Background(), "private-model-sentinel", "private-session-sentinel", nil, 1)
++			if failed && err == nil || !failed && (err != nil || string(raw) != "{}") {
++				t.Fatalf("unexpected dispatch result, failed=%v", failed)
++			}
++			count := 0
++			for _, command := range commands.All() {
++				if len(command) > 0 && strings.EqualFold(command[0], "RPOP") {
++					count++
++				}
++			}
++			if count != 1 {
++				t.Fatal("dispatch was replayed")
++			}
++			stages := map[string]string{}
++			for _, entry := range hook.AllEntries() {
++				if !strings.HasPrefix(entry.Message, "POOL_NODE_DISPATCH_TIMING ") {
++					continue
++				}
++				if strings.Contains(entry.Message, "private-") {
++					t.Fatal("diagnostic retained private request or error text")
++				}
++				rawJSON := strings.TrimPrefix(entry.Message, "POOL_NODE_DISPATCH_TIMING ")
++				if !ojson.Valid(rawJSON) {
++					t.Fatal("invalid diagnostic JSON")
++				}
++				record := ojson.Parse(rawJSON).Map()
++				if len(record) != 3 {
++					t.Fatalf("unexpected fields: %v", record)
++				}
++				elapsed := record["duration_ms"]
++				if elapsed.Type != ojson.Number || elapsed.Int() < 0 || elapsed.Int() > 86400000 {
++					t.Fatal("invalid duration")
++				}
++				stages[record["stage"].String()] = record["outcome"].String()
++			}
++			want := "ok"
++			if failed {
++				want = "error"
++			}
++			if len(stages) != 2 || stages["ping"] != "ok" || stages["rpop"] != want {
++				t.Fatalf("dispatch stage metadata = %v, want ping=ok,rpop=%s", stages, want)
++			}
++		})
++	}
++}
+diff --git a/internal/home/client.go b/internal/home/client.go
+index 8c2d49c..99d0373 100644
+--- a/internal/home/client.go
++++ b/internal/home/client.go
+@@ -23,6 +23,7 @@ import (
+ 	"github.com/redis/go-redis/v9"
+ 	"github.com/redis/go-redis/v9/maintnotifications"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/dispatchtiming"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/kvstore"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginstore"
+ 	log "github.com/sirupsen/logrus"
+@@ -1406,13 +1407,18 @@ func (c *Client) rPopAuth(ctx context.Context, requestedModel string, sessionID
+ 			log.Debugf("Home auth dispatch connection close failed: %v", errClose)
+ 		}
+ 	}()
+-	if errProbe := conn.Ping(ctx).Err(); errProbe != nil {
++	pingStarted := time.Now()
++	errProbe := conn.Ping(ctx).Err()
++	dispatchtiming.Record(dispatchtiming.Ping, pingStarted, errProbe)
++	if errProbe != nil {
+ 		return nil, errProbe
+ 	}
+ 	if c.dispatchFenced.Load() {
+ 		return nil, ErrDispatchFenced
+ 	}
++	rpopStarted := time.Now()
+ 	raw, errRPop := conn.RPop(ctx, string(keyBytes)).Bytes()
++	dispatchtiming.Record(dispatchtiming.RPop, rpopStarted, errRPop)
+ 	if errors.Is(errRPop, redis.Nil) {
+ 		return nil, ErrAuthNotFound
+ 	}

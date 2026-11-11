@@ -131,6 +131,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home accepts valid monthly and weekly quota omissions as healthy unmetered collections, never invents measured amounts, rejects present invalid values and real request errors, and an authoritative omission replaces old measurements and clears earlier collection failures. Pass persisted-collector, public-health, period, alias, malformed-field, explicit-zero and failure-recovery regressions without changing Home database models or versions."
           }
+        },
+        {
+          "identity": "cliproxy-home-dispatch-timing",
+          "file": "0509-home-dispatch-timing.patch",
+          "sha256": "1541d4ee48f6fc46f77cd09fa1cb371ef7e35aeda49dfb3ca0bc764238dd3d2d",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only when the pinned source emits the same closed stage timings and passes success, failure, privacy, duration-bound and real-child projection regressions without changing dispatch behavior."
+          }
         }
       ]
     },
@@ -155,6 +164,15 @@
           "retirement": {
             "mode": "manual",
             "requires": "Retire this carry only after the replacement serves native System One through Home authority and execution, preserves native errors and accounting, and passes stock SDK, compression, multipart, current-generation catalog and revocation proofs. A forced failure during mirror creation, reconnect or deletion must leave no usable stale credential and must recover on retry without replacing the saved Executor account. Migrate each current mirror to the replacement binding before removing the old path, then purge the retired mirrored Home credentials while retaining original Executor token fields and unrelated Home accounts. Prove that the purge is scoped, resumable after a forced failure and idempotent across repeated boots, with no retired credential selectable after unlink, deletion or generation replacement."
+          }
+        },
+        {
+          "identity": "cliproxy-node-dispatch-timing",
+          "file": "0512-node-dispatch-timing.patch",
+          "sha256": "cb2bc2e729f86ca3ca187331219ecb3e8e38641d98a4095f7e0e9d6faa7d5c81",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only when the pinned source emits the same closed stage timings and passes success, failure, privacy, duration-bound and real-child projection regressions without changing dispatch behavior."
           }
         }
       ]
