@@ -132,7 +132,7 @@ test("closing one native tunnel lease leaves overlapping and subsequent leases u
 
 for (const operation of ["tunnel", "model"] as const)
   test(`internal ${operation} authorization honors 429 before dispatching once`, async () => {
-    const { f, access } = await device();
+    const { access } = await device();
     access.expiresAt = Date.now() + 3_600_000;
     let checks = 0,
       forwarded = 0;

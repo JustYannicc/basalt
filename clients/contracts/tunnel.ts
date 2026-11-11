@@ -9,6 +9,7 @@ export function normalizeModelSearch(value: string): string {
   if (
     value.length > maximumModelSearchLength ||
     !value.startsWith("?") ||
+    // oxlint-disable-next-line no-control-regex -- URL routing rejects raw control characters.
     /[#\\\u0000-\u0020\u007f]/u.test(value)
   )
     throw new Error("Invalid model search.");
@@ -17,6 +18,7 @@ export function normalizeModelSearch(value: string): string {
   const parameters = new URLSearchParams(value.slice(1));
   if (!parameters.size) throw new Error("Empty model search.");
   for (const [name, item] of parameters)
+    // oxlint-disable-next-line no-control-regex -- Percent-decoded controls must not enter a model URL.
     if (!/^[a-zA-Z0-9_.~-]+$/u.test(name) || /[#\\\u0000-\u001f\u007f]/u.test(item))
       throw new Error("Invalid model search parameter.");
   const normalized = `?${parameters.toString()}`;
