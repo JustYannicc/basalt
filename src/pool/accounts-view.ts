@@ -1,3 +1,4 @@
+import { usageCredits, retainedUsageCredits } from "./usage-credits.ts";
 import type { Account, BankedResets, UsageWindow } from "../../apps/pool/contract.ts";
 import { collectionDiagnostic } from "./collection-diagnostic.ts";
 import { collectionRequest } from "./quota-collection-request.ts";
@@ -66,6 +67,9 @@ export function accountsView(files: Json[], quota: Json[], ids: ReadonlySet<stri
         nextReadAt: text(collection?.next_probe_at ?? reading?.next_probe_at),
         earliestResetAt: text(reading?.earliest_reset_at),
         bankedResets: bankedResets(raw?.reset_credits),
+        ...(usageCredits(raw?.usage_credits) === undefined
+          ? {}
+          : { usageCredits: usageCredits(raw?.usage_credits) }),
       };
     })
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -80,6 +84,8 @@ function readingDeadline(values: unknown[]): string | null {
 }
 
 export function retainedAccount(account: Account, now: number): Account {
+  if (account.usageCredits)
+    account = { ...account, usageCredits: retainedUsageCredits(account.usageCredits, now) };
   if (account.freshness !== "fresh") return account;
   const observed = Date.parse(account.observedAt ?? "");
   const expires = Date.parse(account.staleAt ?? "");

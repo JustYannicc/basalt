@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Home schema 14 adds nullable credit observations and a default last-resort channel policy without changing existing rows. Actual upstream model windows and current rejections determine funding after eligibility and before affinity. Proven plan quota precedes confirmed credits, then unknown funding; never excludes both. Retained-turn checks authenticate the same key and create no concurrency admission."
+    }
+  }
+}

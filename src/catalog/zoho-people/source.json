@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@signalbox/zoho-people\",\n  \"private\": true,\n  \"description\": \"Zoho People employee records, forms, attendance, shifts, leave and time tracking.\",\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"@modelcontextprotocol/sdk\": \"1.32.1\",\n    \"apps\": \"0.0.1-beta.104-basalt.14\"\n  },\n  \"executor\": {\n    \"title\": \"Zoho People\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@signalbox/zoho-people\",\n  \"private\": true,\n  \"description\": \"Zoho People employee records, forms, attendance, shifts, leave and time tracking.\",\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"@modelcontextprotocol/sdk\": \"1.32.1\",\n    \"apps\": \"0.0.1-beta.104-basalt.15\"\n  },\n  \"executor\": {\n    \"title\": \"Zoho People\"\n  }\n}\n"
     },
     {
       "path": "provider.ts",

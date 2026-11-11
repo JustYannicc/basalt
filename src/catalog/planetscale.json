@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@executor.sh/planetscale\",\n  \"description\": \"PlanetScale organizations, databases, branches, deploy requests, backups, passwords, workflows and Insights through the PlanetScale API.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"PlanetScale\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.14\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@executor.sh/planetscale\",\n  \"description\": \"PlanetScale organizations, databases, branches, deploy requests, backups, passwords, workflows and Insights through the PlanetScale API.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"PlanetScale\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.15\"\n  }\n}\n"
     },
     {
       "path": "scopes.ts",

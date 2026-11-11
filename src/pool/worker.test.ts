@@ -912,6 +912,14 @@ for (const retire of [false, true])
       t.mock.timers.enable({ apis: ["Date"], now: start });
       const values = new Map<string, unknown>(),
         background: Promise<unknown>[] = [];
+      const errors = t.mock.method(console, "error", () => {});
+      t.after(() => {
+        assert.deepEqual(
+          errors.mock.calls.map((call) => call.arguments),
+          [],
+          "background upkeep must not swallow a usage sync failure",
+        );
+      });
       const entered = Promise.withResolvers<void>(),
         release = Promise.withResolvers<void>();
       const installed: NativeMembershipPolicy[] = [];
@@ -994,6 +1002,7 @@ for (const retire of [false, true])
             put: async (name: string, value: unknown) => {
               values.set(name, structuredClone(value));
             },
+            delete: async (name: string) => values.delete(name),
             getAlarm: async () => alarm,
             setAlarm: async (at: number) => {
               alarm = at;

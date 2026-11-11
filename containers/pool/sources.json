@@ -131,6 +131,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home accepts valid monthly and weekly quota omissions as healthy unmetered collections, never invents measured amounts, rejects present invalid values and real request errors, and an authoritative omission replaces old measurements and clears earlier collection failures. Pass persisted-collector, public-health, period, alias, malformed-field, explicit-zero and failure-recovery regressions without changing Home database models or versions."
           }
+        },
+        {
+          "identity": "cliproxy-home-usage-credits",
+          "file": "0506-home-usage-credits.patch",
+          "sha256": "8d88c1f17d145cf091e7a76ce5ada41db9bc6aa5eb4471f7830d304b12118105",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only after the pinned source preserves credit observations, pool-owned policy and plan-before-affinity selection, passes the never-policy and retained WebSocket turn proofs, and preserves existing schema rows through additive upgrades."
+          }
         }
       ]
     },
@@ -155,6 +164,15 @@
           "retirement": {
             "mode": "manual",
             "requires": "Retire this carry only after the replacement serves native System One through Home authority and execution, preserves native errors and accounting, and passes stock SDK, compression, multipart, current-generation catalog and revocation proofs. A forced failure during mirror creation, reconnect or deletion must leave no usable stale credential and must recover on retry without replacing the saved Executor account. Migrate each current mirror to the replacement binding before removing the old path, then purge the retired mirrored Home credentials while retaining original Executor token fields and unrelated Home accounts. Prove that the purge is scoped, resumable after a forced failure and idempotent across repeated boots, with no retired credential selectable after unlink, deletion or generation replacement."
+          }
+        },
+        {
+          "identity": "cliproxy-node-usage-credit-routing",
+          "file": "0507-node-usage-credit-routing.patch",
+          "sha256": "4c5935844c7130f55a230fa134423a73cbc30c8edd0ca07992dea611f9ed94dc",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only after the pinned source preserves credit observations, pool-owned policy and plan-before-affinity selection, passes the never-policy and retained WebSocket turn proofs, and preserves existing schema rows through additive upgrades."
           }
         }
       ]

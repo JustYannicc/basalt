@@ -2,6 +2,7 @@ import type { Account } from "../../apps/pool/contract.ts";
 import { ChunkStorage, type UsageStorage } from "./usage-storage.ts";
 
 export interface HomeViewData {
+  usageCreditPolicy?: import("../../apps/pool/usage-credits-contract.ts").UsageCreditPolicy;
   accounts: Account[];
   readAt: { membership: string; credentials?: string; quota?: string };
 }
