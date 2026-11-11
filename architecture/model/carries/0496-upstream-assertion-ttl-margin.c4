@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Pool usage, app model and pool change acknowledgement hosts issue assertions for 25 seconds using the shared host TTL. The receiving pool keeps its strict 30-second ceiling, signature, authorization and expiry checks. Expiry-only receivers accept a signer clock ahead by up to five seconds. Membership acknowledgements retain their separate future-issued-at refusal."
+    }
+  }
+}

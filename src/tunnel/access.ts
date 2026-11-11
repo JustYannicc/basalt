@@ -4,7 +4,7 @@ import {
   nativeSessionHeader,
   nativeSessionPath,
 } from "../pool/native-contract.ts";
-import { signEnvelope } from "../pool/token.ts";
+import { hostAssertionTtlMs, signEnvelope } from "../pool/token.ts";
 import { upgradedSocket } from "./platform.ts";
 
 export interface TunnelEnvironment {
@@ -56,7 +56,7 @@ export async function tunnelLease(request: Request, env: TunnelEnvironment, acce
     grant: access.id,
     computer: access.policy.computer,
     pool: access.policy.pool,
-    expiresAt: Date.now() + 30_000,
+    expiresAt: Date.now() + hostAssertionTtlMs,
   });
   const response = await env.POOL_SERVICE.fetch(
     new Request(new URL(nativeSessionPath, request.url), {

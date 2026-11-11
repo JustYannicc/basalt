@@ -1,0 +1,63 @@
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -13,7 +13,7 @@
+ } from "../contracts/pool-usage.ts";
+ import { applicationAudiences } from "./application-audience.ts";
+ import { lockCurrentActor, policyDatabase, requireAppAccessAs } from "./resource-policy.ts";
+-import { signEnvelope } from "./pool-token.ts";
++import { hostAssertionTtlMs, signEnvelope } from "./pool-token.ts";
+ import {
+   LastSuccessAt,
+   type LastSuccessAtInput,
+@@ -64,7 +64,7 @@
+       signEnvelope(Redacted.value(key), "sbs1", {
+         ...payload,
+         action,
+-        expiresAt: now + 30_000,
++        expiresAt: now + hostAssertionTtlMs,
+       }),
+     );
+     const client = yield* HttpClient.HttpClient;
+diff --git a/apps/hosted/server/src/implementation/pool-models.ts b/apps/hosted/server/src/implementation/pool-models.ts
+--- a/apps/hosted/server/src/implementation/pool-models.ts
++++ b/apps/hosted/server/src/implementation/pool-models.ts
+@@ -8,7 +8,7 @@
+ import { OrganizationForbidden, OrganizationId } from "../contracts/organization.ts";
+ import { modelPoolOwner } from "./model-bindings.ts";
+ import { policyDatabase, resourceAuthority, requireAppAccessAs } from "./resource-policy.ts";
+-import { signEnvelope } from "./pool-token.ts";
++import { hostAssertionTtlMs, signEnvelope } from "./pool-token.ts";
+ import { appModelPath, appModelPrefix } from "./app-model-contract.ts";
+ 
+ const SavedBinding = Schema.Struct({
+@@ -89,7 +89,7 @@
+       const envelope = yield* Effect.tryPromise(() =>
+         signEnvelope(Redacted.value(key.value), appModelPrefix, {
+           nonce,
+-          expiresAt: now + 30_000,
++          expiresAt: now + hostAssertionTtlMs,
+           organization: binding.organization,
+           owner,
+           pool: binding.pool,
+diff --git a/apps/hosted/server/src/implementation/pool-receiver.ts b/apps/hosted/server/src/implementation/pool-receiver.ts
+--- a/apps/hosted/server/src/implementation/pool-receiver.ts
++++ b/apps/hosted/server/src/implementation/pool-receiver.ts
+@@ -1,7 +1,7 @@
+ import { AccessDependencyUnavailable, StorageError } from "@executor-js/sdk/core";
+ import { Clock, Effect, Redacted, Schedule } from "effect";
+ import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
+-import { signEnvelope } from "./pool-token.ts";
++import { hostAssertionTtlMs, signEnvelope } from "./pool-token.ts";
+ 
+ /** Signing failures stay local; only a failed receiver acknowledgement is a dependency outage. */
+ export const acknowledgePoolChange = (
+@@ -19,7 +19,7 @@
+         ...payload,
+         nonce: crypto.randomUUID(),
+         at,
+-        expiresAt: at + 30_000,
++        expiresAt: at + hostAssertionTtlMs,
+       }),
+     ).pipe(Effect.mapError(() => new StorageError()));
+     yield* Effect.gen(function* () {
