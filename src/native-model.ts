@@ -5,7 +5,7 @@ import {
   nativeModelPrefix,
 } from "./pool/native-contract.ts";
 export { nativeAuthenticationHeader } from "./pool/native-contract.ts";
-import { signEnvelope } from "./pool/token.ts";
+import { hostAssertionTtlMs, signEnvelope } from "./pool/token.ts";
 import { object, text } from "./pool/json.ts";
 
 interface Environment {
@@ -54,7 +54,7 @@ export async function nativeModelRequest(request: Request, env: Environment): Pr
       pool: access.policy.pool,
       method: request.method,
       path: url.pathname + url.search,
-      expiresAt: Date.now() + 30_000,
+      expiresAt: Date.now() + hostAssertionTtlMs,
     });
     const headers = new Headers(request.headers);
     for (const name of [
@@ -74,7 +74,13 @@ export async function nativeModelRequest(request: Request, env: Environment): Pr
 }
 
 /** Once a binding send starts, a rejected promise leaves the upstream outcome unknown. */
-export async function forwardModelRequest(request: Request, env: Pick<Environment, "POOL_SERVICE">): Promise<Response> {
-  try { return await env.POOL_SERVICE.fetch(request); }
-  catch { return upstreamOutcomeUnknown(); }
+export async function forwardModelRequest(
+  request: Request,
+  env: Pick<Environment, "POOL_SERVICE">,
+): Promise<Response> {
+  try {
+    return await env.POOL_SERVICE.fetch(request);
+  } catch {
+    return upstreamOutcomeUnknown();
+  }
 }
