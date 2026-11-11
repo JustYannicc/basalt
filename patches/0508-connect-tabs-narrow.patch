@@ -1,0 +1,151 @@
+diff --git a/packages/ui/src/implementation/components/tabs.tsx b/packages/ui/src/implementation/components/tabs.tsx
+--- a/packages/ui/src/implementation/components/tabs.tsx
++++ b/packages/ui/src/implementation/components/tabs.tsx
+@@ -30,9 +30,17 @@
+         default: "bg-muted",
+         line: "gap-1 bg-transparent",
+       },
++      // A row of tabs wider than its column scrolls inside itself instead of widening the page.
++      // Centred overflow cannot be scrolled back to its start, so a scrolling list starts at the left.
++      overflow: {
++        visible: "",
++        scroll:
++          "max-w-full justify-start overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
++      },
+     },
+     defaultVariants: {
+       variant: "default",
++      overflow: "visible",
+     },
+   },
+ );
+@@ -41,13 +49,14 @@
+ function TabsList({
+   className,
+   variant = "default",
++  overflow,
+   ...props
+ }: React.ComponentProps<typeof TabsPrimitive.List> & VariantProps<typeof tabsListVariants>) {
+   return (
+     <TabsPrimitive.List
+       data-slot="tabs-list"
+       data-variant={variant}
+-      className={cn(tabsListVariants({ variant }), className)}
++      className={cn(tabsListVariants({ variant, overflow }), className)}
+       {...props}
+     />
+   );
+diff --git a/packages/ui/src/implementation/dashboard/connect.tsx b/packages/ui/src/implementation/dashboard/connect.tsx
+--- a/packages/ui/src/implementation/dashboard/connect.tsx
++++ b/packages/ui/src/implementation/dashboard/connect.tsx
+@@ -941,7 +941,12 @@
+   return (
+     <div className="mcp-install-content min-w-0">
+       <Tabs defaultValue="assistant">
+-        <TabsList aria-label="Setup method" variant="line" className={tabClass}>
++        <TabsList
++          aria-label="Setup method"
++          variant="line"
++          overflow="scroll"
++          className={tabClass}
++        >
+           <TabsTrigger value="assistant">Assistant</TabsTrigger>
+           <TabsTrigger
+             data-product-area="connect"
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -11782,6 +11782,17 @@
+       local: na("Local has no organization members or hosted Connect page."),
+     },
+   },
++  connectNarrowLayout: {
++    fixtures: "actors",
++    file: "pool-setup-connect.spec.ts",
++    serverEnvironment: { EXECUTOR_PRODUCT_NAME: "Signalbox" },
++    title: "Connect never scrolls sideways on a phone and every setup tab stays reachable",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("The setup service is the deployment's own Worker; self-host covers the page."),
++      local: na("Local has no organization members or hosted Connect page."),
++    },
++  },
+   connectedAgents: {
+     fixtures: "actors",
+     file: "connected-agents.spec.ts",
+diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
+--- a/e2e/tests/pool-setup-connect.spec.ts
++++ b/e2e/tests/pool-setup-connect.spec.ts
+@@ -613,6 +613,72 @@
+     ),
+   );
+ 
++  it.effect(scenarios.connectNarrowLayout.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          browser = yield* Browser;
++        const service = setupService();
++        yield* browser.login(actors.owner);
++        yield* browser.use("Stand in for the setup service", (page) =>
++          page.route("**/setup/v1/**", service.handle),
++        );
++        yield* browser.use("Use phone width", (page) =>
++          page.setViewportSize({ width: 390, height: 844 }),
++        );
++        yield* browser.use("Open Connect", (page) =>
++          page.goto(`/org/${actors.organization.slug}/connect`),
++        );
++        const strip = (page: Page) => page.getByRole("tablist", { name: "Setup method" });
++        yield* browser.use("The setup methods load", (page) => strip(page).waitFor());
++        const names = yield* browser.use("Read the setup methods", (page) =>
++          strip(page).getByRole("tab").allTextContents(),
++        );
++        expect(names).toEqual(expect.arrayContaining(["Personal access token", "Pool endpoint"]));
++        // The page scrolls in <main>, so the document alone can look fine while the page pans sideways.
++        const layout = (step: string) =>
++          browser.use(step, (page) =>
++            strip(page).evaluate((list) => {
++              const main = list.closest("main");
++              const tab = list.querySelector("[data-state='active']");
++              return {
++                viewport: innerWidth,
++                document: document.documentElement.scrollWidth,
++                mainClient: main?.clientWidth ?? 0,
++                mainScroll: main?.scrollWidth ?? Number.POSITIVE_INFINITY,
++                mainLeft: main?.scrollLeft ?? 0,
++                tabLeft: tab?.getBoundingClientRect().left ?? -1,
++                tabRight: tab?.getBoundingClientRect().right ?? Number.POSITIVE_INFINITY,
++              };
++            }),
++          );
++        for (const width of [390, 1280]) {
++          yield* browser.use(`Use ${width} px`, (page) =>
++            page.setViewportSize({ width, height: 844 }),
++          );
++          for (const name of names) {
++            yield* browser.use(`${width} px: choose ${name}`, (page) =>
++              strip(page).getByRole("tab", { name, exact: true }).click(),
++            );
++            yield* browser.use(`${width} px: ${name} shows its section`, (page) =>
++              page.getByRole("tabpanel", { name, exact: true }).waitFor(),
++            );
++            const measured = yield* layout(`${width} px: measure with ${name} chosen`);
++            const detail = JSON.stringify(measured);
++            expect(measured.document, detail).toBeLessThanOrEqual(measured.viewport);
++            expect(measured.mainScroll, detail).toBeLessThanOrEqual(measured.mainClient);
++            expect(measured.mainLeft, detail).toBe(0);
++            // The chosen tab is in view inside its own strip, without panning the page.
++            expect(measured.tabLeft, detail).toBeGreaterThanOrEqual(0);
++            expect(measured.tabRight, detail).toBeLessThanOrEqual(measured.viewport);
++          }
++          yield* browser.checkpoint(`Connect at ${width} px`);
++        }
++      }),
++    ),
++  );
++
+   it.effect(scenarios.poolSetupRetainedReturn.title, (context) =>
+     withHostedCase(
+       context,

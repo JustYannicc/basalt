@@ -1,0 +1,9 @@
+{
+  "identity": "connect-tabs-narrow",
+  "file": "0508-connect-tabs-narrow.patch",
+  "content_sha256": "79283dc6df45c7c64b9393222a7fc823d9c48f9b98bff20fa4b6b52c18f36944",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
