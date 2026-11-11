@@ -15,9 +15,12 @@ export function desktopController(options: {
   env: NodeJS.ProcessEnv;
   connectionEntry: string;
   executable: string;
+  /** Headless Linux tests choose file custody explicitly; desktop apps always use the OS store. */
+  storage?: "os" | "file";
   openBrowser(url: string): Promise<void>;
   chooseDirectFile(): Promise<string | undefined>;
 }) {
+  const storage = options.storage ?? "os";
   const connection = new ConnectionSupervisor(
     options.home,
     options.connectionEntry,
@@ -64,7 +67,7 @@ export function desktopController(options: {
     setup.cancel();
     const abort = new AbortController();
     phase = "signing-in";
-    const finished = login(options.home, origin, "os", false, {
+    const finished = login(options.home, origin, storage, false, {
       signal: abort.signal,
       show: async (url, code) => {
         authorization = { url, code };
@@ -113,7 +116,7 @@ export function desktopController(options: {
       if (file) {
         await connection.stop();
         setup.cancel();
-        await importDirect(options.home, file, "os");
+        await importDirect(options.home, file, storage);
         hasProfile = true;
         await connection.start();
       }
