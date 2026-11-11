@@ -74,7 +74,7 @@ export function releaseEvidence(directory: string, candidate: string, encryption
             Schema.isInt(),
             Schema.isBetween({ minimum: 1, maximum: 1000 }),
           ),
-          attempt: Schema.Literals([1, 2, 3]),
+          attempt: Schema.Literals([1, 2, 3, 4, 5, 6]),
           at: Schema.String.check(
             Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u),
           ),
