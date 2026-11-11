@@ -341,8 +341,8 @@ jobs:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
-      - run: bunx playwright install --with-deps chromium
-        working-directory: .upstream
+      - uses: ./.github/actions/setup-browser
+        timeout-minutes: 5
       - name: Verify Clerk sign-in, cancellation, refusal and retained API keys
         run: bun e2e/clerk-sign-in.mjs .generated/clerk-sign-in/ci
       - name: Collect sanitized connector diagnostics
@@ -370,8 +370,8 @@ jobs:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
-      - run: bunx playwright install --with-deps chromium
-        working-directory: .upstream
+      - uses: ./.github/actions/setup-browser
+        timeout-minutes: 5
       - name: Verify WorkOS sign-in, cancellation, refusal and retained API keys
         run: bun e2e/workos-sign-in.mjs .generated/workos-sign-in/ci
       - name: Collect sanitized connector diagnostics
@@ -399,8 +399,8 @@ jobs:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
-      - run: bunx playwright install --with-deps chromium
-        working-directory: .upstream
+      - uses: ./.github/actions/setup-browser
+        timeout-minutes: 5
       - name: Verify GitLab MCP sign-in, instance setup guidance and full REST access
         run: bun e2e/gitlab-sign-in.mjs .generated/gitlab-sign-in/ci
       - name: Collect sanitized connector diagnostics
@@ -428,8 +428,8 @@ jobs:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
-      - run: bunx playwright install --with-deps chromium
-        working-directory: .upstream
+      - uses: ./.github/actions/setup-browser
+        timeout-minutes: 5
       - name: Verify fixture certificate trust and the unrelated-certificate rejection
         run: node --test e2e/browser-fixture-certificate-trust.test.ts
       - name: Verify hosted PlanetScale sign-in asks for the full reviewed permissions
