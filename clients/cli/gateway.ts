@@ -1,4 +1,8 @@
-import { upstreamOutcomeUnknown, ModelRequestNotSent } from "../contracts/model-error.ts";
+import {
+  upstreamOutcomeUnknown,
+  ModelRequestNotSent,
+  LocalRequestRefused,
+} from "../contracts/model-error.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { chmod, rm } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
@@ -112,7 +116,10 @@ export async function startGateway(options: GatewayOptions) {
       }
     } catch (error) {
       if (response.headersSent || response.destroyed) response.destroy();
-      else if (!dispatched || error instanceof ModelRequestNotSent) {
+      else if (error instanceof LocalRequestRefused) {
+        response.setHeader("x-should-retry", "false");
+        return answer(response, 502, { error: "The local request was refused before dispatch." });
+      } else if (!dispatched || error instanceof ModelRequestNotSent) {
         if (["sign-in-required", "revoked"].includes(options.source.view().state))
           return answer(response, 401, { error: "Sign in again before using this device." });
         response.setHeader("Retry-After", "1");

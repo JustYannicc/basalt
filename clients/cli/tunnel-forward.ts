@@ -4,7 +4,7 @@ import { WebSocketServer } from "ws";
 import { decodeTunnelFrame, tunnelLimits } from "../contracts/tunnel.ts";
 import type { Capability, ConnectionTransport } from "../contracts/connection.ts";
 import type { ClientOperation } from "../contracts/transport.ts";
-import { ModelRequestNotSent } from "../contracts/model-error.ts";
+import { LocalRequestRefused } from "../contracts/model-error.ts";
 
 type DeviceTransport = Extract<ConnectionTransport, { mode: "device" }>;
 function operation(
@@ -30,8 +30,9 @@ function operation(
     const value = incoming.headers[key];
     if (typeof value === "string") headers[key] = value;
   }
+  let checked;
   try {
-    const checked = decodeTunnelFrame(
+    checked = decodeTunnelFrame(
       JSON.stringify({
         v: 1,
         type: "open",
@@ -48,11 +49,11 @@ function operation(
       }),
       "client",
     );
-    if (checked.type !== "open") throw new Error("Unsupported tunnel operation.");
-    return transport.open(checked, signal);
   } catch {
-    throw new ModelRequestNotSent("The local operation was refused before dispatch.");
+    throw new LocalRequestRefused("The local operation is invalid.");
   }
+  if (checked.type !== "open") throw new LocalRequestRefused("Unsupported tunnel operation.");
+  return transport.open(checked, signal);
 }
 const write = (outgoing: ServerResponse, bytes: Uint8Array) =>
   new Promise<void>((resolve, reject) => {
