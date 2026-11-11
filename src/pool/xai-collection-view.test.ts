@@ -40,6 +40,17 @@ function handoff(at: string) {
         },
       },
       weekly: response(xaiWeeklyFields),
+      profile: {
+        response_received: true,
+        http_ok: true,
+        json_valid: true,
+        failure_reason: "unknown-tier",
+        fields: {
+          subscriptionTier: { present: true, null: false, string: true, raw: "private-secret" },
+          subscription_tier: { present: false, null: false, string: false },
+          private_field: { raw: "private-secret" },
+        },
+      },
       private_body: "private-secret",
     },
   };
@@ -85,6 +96,16 @@ test("existing owner observation and pool views retain exact xAI fields and skip
   assert.equal(diagnostic?.xai?.phase, "snapshot_write_failed");
   assert.equal(diagnostic?.xai?.vendorCallStarted, true);
   assert.equal(diagnostic?.xai?.snapshotPersisted, false);
+  assert.deepEqual(diagnostic?.xai?.profile, {
+    responseReceived: true,
+    httpOk: true,
+    jsonValid: true,
+    failureReason: "unknown-tier",
+    fields: {
+      subscriptionTier: { present: true, null: false, string: true },
+      subscription_tier: { present: false, null: false, string: false },
+    },
+  });
   assert.deepEqual(diagnostic?.xai?.monthly.fields["config.used"], {
     present: true,
     null: true,
@@ -242,4 +263,65 @@ test("a delayed claimed HTTP reply cannot erase completed fields for the same Ho
   );
   assert.equal(diagnostic?.attemptedAt, next);
   assert.equal(diagnostic?.xai?.phase, "claimed");
+});
+
+test("eligibility reasons stay closed and retain only fixed profile shape", async () => {
+  const absent = { present: false, null: false, string: false };
+  const text = { present: true, null: false, string: true };
+  for (const reason of ["malformed", "missing", "ambiguous", "non-string", "unknown-tier"]) {
+    const profile = {
+      response_received: true,
+      http_ok: true,
+      json_valid: reason !== "malformed",
+      failure_reason: reason,
+      fields: {
+        subscriptionTier:
+          reason === "malformed" || reason === "missing"
+            ? absent
+            : reason === "non-string"
+              ? { ...text, string: false }
+              : text,
+        subscription_tier: reason === "ambiguous" ? text : absent,
+        private_field: "private-payload",
+      },
+      private_payload: "private-payload",
+    };
+    const at = "2030-01-01T01:00:00Z";
+    const diagnostic = { ...handoff(at), xai: { ...handoff(at).xai, profile } };
+    assert.equal(collectionDiagnostic(diagnostic, "xai")?.xai?.profile?.failureReason, reason);
+    let saved: unknown;
+    await retainCollectionDiagnostic(
+      { credential: { provider: "xai" }, collection: { diagnostic } },
+      "a",
+      {
+        async get<T>() {
+          return saved as T | undefined;
+        },
+        async put(_key: string, value: unknown) {
+          saved = value;
+        },
+      },
+    );
+    assert.equal(collectionDiagnostic(saved, "xai")?.xai?.profile?.failureReason, reason);
+    assert.ok(!JSON.stringify(saved).includes("private"));
+    for (const invalid of [
+      { ...profile, failure_reason: "private-payload" },
+      { ...profile, http_ok: false },
+      {
+        ...profile,
+        fields: {
+          ...profile.fields,
+          subscriptionTier: { present: false, null: false, string: true },
+        },
+      },
+    ]) {
+      assert.equal(
+        collectionDiagnostic(
+          { ...diagnostic, xai: { ...diagnostic.xai, profile: invalid } },
+          "xai",
+        ),
+        undefined,
+      );
+    }
+  }
 });

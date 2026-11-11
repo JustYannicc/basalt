@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A successful driver observation newer than a current failed health check requests one check through the existing driver health lifecycle and deadline. The observation never sets health directly. Invalid future observations cannot trigger a check. Cached readings do not repeat a completed check or overwrite a newer failure; missing hooks, failures, unavailable sources and credential-generation changes retain their normal behavior. The existing observation lease and cooldown bound calls, without changing storage or authorization."
+    }
+  }
+}

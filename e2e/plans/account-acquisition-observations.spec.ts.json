@@ -33,6 +33,23 @@
           "reason": "Requires process-owned registration and a loopback credential service."
         }
       }
+    },
+    "accountObservationHealthRecovery": {
+      "fixtures": "actors",
+      "title": "fresh driver observations recheck older failed health once and preserve a current failure",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises shared SDK driver recovery through hosted account APIs."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Requires process-owned registration and a loopback credential service."
+        }
+      }
     }
   },
   "runs": {
@@ -40,6 +57,9 @@
       "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
     ],
     "accountAcquisitionOptional": [
+      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+    ],
+    "accountObservationHealthRecovery": [
       "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
     ]
   },

@@ -146,6 +146,24 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /without changing Home database models or versions/,
         );
+      } else if (patch.identity === "cliproxy-home-xai-grok-pro-entitlement") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0511-home-xai-grok-pro-entitlement.patch");
+        assert.match(patch.retirement.requires, /recognizes the GrokPro paid subscription tier/);
+        assert.match(patch.retirement.requires, /numeric weekly and product percentages/);
+        assert.match(
+          patch.retirement.requires,
+          /closed malformed, missing, ambiguous, non-string or unknown-tier/,
+        );
+        assert.match(patch.retirement.requires, /fixed field-type flags only/);
+        assert.match(
+          patch.retirement.requires,
+          /real-collector, unknown-profile and free-profile regressions/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /without changing Home database models or versions/,
+        );
       } else if (patch.identity === "cliproxy-home-xai-healthy-unmetered") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0500-home-xai-healthy-unmetered.patch");

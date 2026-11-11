@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "GrokPro is a recognized paid xAI subscription tier. Explicit numeric weekly and product percentages remain measured values; absent amounts stay unreported. Eligibility failures name a closed malformed, missing, ambiguous, non-string or unknown-tier reason with only fixed profile field-type flags, carried through existing owner views and persistence. No response values, arbitrary keys or raw payload enter that diagnostic. Unknown and free profiles keep their existing failure semantics. The collector persists successful readings through the existing snapshot path without changing Home database models, versions or retry eligibility."
+    }
+  }
+}

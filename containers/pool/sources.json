@@ -149,6 +149,15 @@
             "mode": "manual",
             "requires": "Retire only when the pinned source emits the same closed stage timings and passes success, failure, privacy, duration-bound and real-child projection regressions without changing dispatch behavior."
           }
+        },
+        {
+          "identity": "cliproxy-home-xai-grok-pro-entitlement",
+          "file": "0511-home-xai-grok-pro-entitlement.patch",
+          "sha256": "cfb49762a897b69399defb9ad231fbcf4238687fae4b3529f3c88a6e2f64ff8b",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home recognizes the GrokPro paid subscription tier, preserves explicitly reported numeric weekly and product percentages, retains a closed malformed, missing, ambiguous, non-string or unknown-tier profile eligibility reason with fixed field-type flags only, and passes the real-collector, unknown-profile and free-profile regressions without changing Home database models or versions."
+          }
         }
       ]
     },
