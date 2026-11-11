@@ -67,7 +67,9 @@ test(
       assert.equal(JSON.parse((await command(["status"], f.home)).stdout).state, "revoked");
       await assert.rejects(readFile(join(f.home, "credentials.json")));
       const refused = await fetch(`${origin}/v1/models`, { headers });
-      assert.equal(refused.status, 503);
+      assert.equal(refused.status, 401);
+      assert.equal(refused.headers.get("retry-after"), null);
+      assert.equal(refused.headers.get("x-should-retry"), null);
       await refused.body?.cancel();
       assert.equal(JSON.parse((await command(["status"], f.home)).stdout).state, "revoked");
     } finally {

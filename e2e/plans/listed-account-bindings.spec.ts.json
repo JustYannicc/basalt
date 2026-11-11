@@ -74,6 +74,7 @@
     ".upstream/packages/ui/src/implementation/dashboard/account-health-line.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/account-observation-details.tsx",
     ".upstream/apps/hosted/web/src/implementation/pages/account-observations-client.tsx",
-    ".upstream/apps/hosted/web/src/contracts/accounts.ts"
+    ".upstream/apps/hosted/web/src/contracts/accounts.ts",
+    "e2e/listed-account-bindings-readiness.patch"
   ]
 }
