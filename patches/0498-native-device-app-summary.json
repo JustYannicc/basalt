@@ -1,7 +1,7 @@
 {
   "identity": "basalt-native-device-app-summary",
   "file": "0498-native-device-app-summary.patch",
-  "content_sha256": "f69ed12e88f8d05dde8be6cd0878a5471d836630c505046baf34abf48145e98e",
+  "content_sha256": "d788ab23fdc83358f1cb6b2fb474dd2319cf5ffebc1f91a1c5e94ea9df0c5454",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
