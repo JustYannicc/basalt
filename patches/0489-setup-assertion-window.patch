@@ -1,0 +1,21 @@
+diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/hosted/server/src/implementation/native-grant-host.ts
+--- a/apps/hosted/server/src/implementation/native-grant-host.ts
++++ b/apps/hosted/server/src/implementation/native-grant-host.ts
+@@ -8,7 +8,7 @@
+ } from "@executor-js/mcp-auth/oauth";
+ import { APIError } from "better-auth/api";
+ import { Clock, Effect, Option, Redacted, Schema } from "effect";
+-import { signEnvelope } from "./pool-token.ts";
++import { hostAssertionTtlMs, signEnvelope } from "./pool-token.ts";
+ import { nativeGrantDisplay } from "./native-grant-display.ts";
+ import { nativeControlPath, nativeControlPrefix } from "./native-contract.ts";
+ import { nativeControlCall, nativeControlFailure } from "./native-control-error.ts";
+@@ -34,7 +34,7 @@
+       signEnvelope(Redacted.value(secret), nativeControlPrefix, {
+         ...value,
+         action,
+-        expiresAt: at + 30_000,
++        expiresAt: at + hostAssertionTtlMs,
+       }),
+     );
+     const response = yield* nativeControlCall(action, "native_control_request", () =>
