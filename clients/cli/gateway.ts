@@ -1,4 +1,8 @@
-import { upstreamOutcomeUnknown, ModelRequestNotSent } from "../contracts/model-error.ts";
+import {
+  upstreamOutcomeUnknown,
+  ModelRequestNotSent,
+  LocalRequestRefused,
+} from "../contracts/model-error.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { chmod, rm } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
@@ -112,14 +116,37 @@ export async function startGateway(options: GatewayOptions) {
       }
     } catch (error) {
       if (response.headersSent || response.destroyed) response.destroy();
-      else if (capability === "models" && dispatched && !(error instanceof ModelRequestNotSent)) {
+      else if (error instanceof LocalRequestRefused) {
+        response.setHeader("x-should-retry", "false");
+        return answer(response, 502, { error: "The local request was refused before dispatch." });
+      } else if (!dispatched || error instanceof ModelRequestNotSent) {
+        if (["sign-in-required", "revoked"].includes(options.source.view().state))
+          return answer(response, 401, { error: "Sign in again before using this device." });
+        response.setHeader("Retry-After", "1");
+        return answer(
+          response,
+          503,
+          capability === "models"
+            ? { error: "Model access is unavailable." }
+            : {
+                jsonrpc: "2.0",
+                id: null,
+                error: {
+                  code: -32000,
+                  message: "Tools are temporarily unavailable. Nothing was sent. Retry shortly.",
+                  data: { retryable: true },
+                },
+              },
+        );
+      } else if (capability === "models") {
         const failure = upstreamOutcomeUnknown();
         failure.headers.forEach((value, name) => response.setHeader(name, value));
         response.writeHead(failure.status);
         response.end(await failure.text());
-      } else answer(response, capability === "models" ? 503 : 502, {
-        error: capability === "models" ? "Model access is unavailable." : "The request was interrupted. Its outcome may be unknown; it was not replayed.",
-      });
+      } else
+        answer(response, 502, {
+          error: "The request was interrupted. Its outcome may be unknown; it was not replayed.",
+        });
     } finally {
       active.delete(controller);
       response.off("close", cancel);

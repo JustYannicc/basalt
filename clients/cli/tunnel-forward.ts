@@ -4,6 +4,7 @@ import { WebSocketServer } from "ws";
 import { decodeTunnelFrame, tunnelLimits } from "../contracts/tunnel.ts";
 import type { Capability, ConnectionTransport } from "../contracts/connection.ts";
 import type { ClientOperation } from "../contracts/transport.ts";
+import { LocalRequestRefused } from "../contracts/model-error.ts";
 
 type DeviceTransport = Extract<ConnectionTransport, { mode: "device" }>;
 function operation(
@@ -29,24 +30,29 @@ function operation(
     const value = incoming.headers[key];
     if (typeof value === "string") headers[key] = value;
   }
-  const checked = decodeTunnelFrame(
-    JSON.stringify({
-      v: 1,
-      type: "open",
-      id: 1,
-      headers,
-      operation: {
-        service: capability,
-        method: incoming.method,
-        // Keep existing refusals in the literal-path decoder when no search was supplied.
-        path: url.search ? url.pathname : incoming.url,
-        ...(capability === "models" && url.search ? { search: url.search } : {}),
-        transport: websocket ? "websocket" : "http",
-      },
-    }),
-    "client",
-  );
-  if (checked.type !== "open") throw new Error("Unsupported tunnel operation.");
+  let checked;
+  try {
+    checked = decodeTunnelFrame(
+      JSON.stringify({
+        v: 1,
+        type: "open",
+        id: 1,
+        headers,
+        operation: {
+          service: capability,
+          method: incoming.method,
+          // Keep existing refusals in the literal-path decoder when no search was supplied.
+          path: url.search ? url.pathname : incoming.url,
+          ...(capability === "models" && url.search ? { search: url.search } : {}),
+          transport: websocket ? "websocket" : "http",
+        },
+      }),
+      "client",
+    );
+  } catch {
+    throw new LocalRequestRefused("The local operation is invalid.");
+  }
+  if (checked.type !== "open") throw new LocalRequestRefused("Unsupported tunnel operation.");
   return transport.open(checked, signal);
 }
 const write = (outgoing: ServerResponse, bytes: Uint8Array) =>
