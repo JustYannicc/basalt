@@ -115,7 +115,8 @@ test("operator manifest binds the private account map before any apply request",
       join(dir, "legacy-server"),
     ]);
     assert.equal(legacy.code, 1);
-    assert.match(legacy.output, /Server did not acknowledge/);
+    assert.match(legacy.output, /Import stopped/);
+    assert.doesNotMatch(legacy.output, /fixture-token/);
     assert.equal(requests, beforeLegacy + 1);
     assert.equal(applies, 0, "an older server cannot apply an ignored map");
     acknowledges = true;
