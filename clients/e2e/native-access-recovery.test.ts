@@ -48,6 +48,7 @@ test(
           ),
         });
       const invalidate = async () => {
+        remote.accessLifetime(60);
         remote.refuseNextUpgrade();
         const refused = await request("/mcp");
         assert.equal(
@@ -56,6 +57,7 @@ test(
           "A rejected handshake invalidates the cached grant before dispatch.",
         );
         await refused.body?.cancel();
+        remote.accessLifetime(3600);
       };
       await invalidate();
       const before = remote.counts();

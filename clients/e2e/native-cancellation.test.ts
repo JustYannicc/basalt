@@ -15,12 +15,14 @@ test(
       await command(["agent", "add", "both", "models", "tools"], f.home);
       const origin = await f.start(),
         token = await f.token();
+      f.remote.accessLifetime(60);
       f.remote.refuseNextUpgrade();
       const refused = await fetch(`${origin}/v1/models`, {
         headers: { authorization: `Bearer ${token}` },
       });
       assert.equal(refused.status, 503);
       await refused.body?.cancel();
+      f.remote.accessLifetime(3600);
       const held = f.remote.holdAccess(),
         abort = new AbortController();
       try {
@@ -59,7 +61,7 @@ test(
   async () => {
     const f = await fixture();
     try {
-      f.remote.expireNext(60);
+      f.remote.expireNext(180);
       await f.login();
       await command(["agent", "add", "both", "models", "tools"], f.home);
       const clock = join(f.home, "clock.now"),

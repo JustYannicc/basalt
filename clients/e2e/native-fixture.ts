@@ -44,11 +44,13 @@ export async function nativeFixture(
   let refuseRequest = false;
   let offline = false;
   let accessReads = 0;
+  let accessLifetimeSeconds = 3600;
   let healthReads = 0;
   let denyAccess = false;
   let accessDenialStatus = 401;
   let unavailableAccessReads = 0;
   let limitedAccessReads = 0;
+  let limitArrived: (() => void) | undefined;
   const accessTimes: number[] = [];
   let readyFailure: "close" | "timeout" | undefined;
   let operationOpens = 0;
@@ -148,6 +150,8 @@ export async function nativeFixture(
       accessTimes.push(Date.now());
       if (limitedAccessReads > 0) {
         limitedAccessReads--;
+        limitArrived?.();
+        limitArrived = undefined;
         response.setHeader("Retry-After", "1");
         return json(429, { error: "synthetic-rate-limit" });
       }
@@ -176,7 +180,7 @@ export async function nativeFixture(
           models: true,
           toolsOrganization: "personal-tools",
         },
-        expiresAt: Date.now() + 3600000,
+        expiresAt: Date.now() + accessLifetimeSeconds * 1000,
         ...(display ? { display } : {}),
       });
     }
@@ -394,6 +398,16 @@ export async function nativeFixture(
       denyAccess = value;
       accessDenialStatus = status;
     },
+    accessLifetime: (seconds: number) => {
+      accessLifetimeSeconds = seconds;
+    },
+    expireAccess: () => {
+      access = "synthetic-expired-access";
+    },
+    nextAccessLimit: () =>
+      new Promise<void>((resolve) => {
+        limitArrived = resolve;
+      }),
     limitedAccess: (reads: number) => {
       limitedAccessReads = reads;
     },

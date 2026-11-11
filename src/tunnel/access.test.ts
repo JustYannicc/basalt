@@ -129,3 +129,45 @@ test("closing one native tunnel lease leaves overlapping and subsequent leases u
   second.release();
   third.release();
 });
+
+for (const operation of ["tunnel", "model"] as const)
+  test(`internal ${operation} authorization honors 429 before dispatching once`, async () => {
+    const { f, access } = await device();
+    access.expiresAt = Date.now() + 3_600_000;
+    let checks = 0,
+      forwarded = 0;
+    const times: number[] = [];
+    const env = {
+      POOL_APP_SIGNING_KEY: signingKey,
+      TOOLS_SERVICE: {
+        fetch: async () => {
+          checks++;
+          times.push(Date.now());
+          return checks === 1
+            ? new Response(null, { status: 429, headers: { "retry-after": "1" } })
+            : Response.json(access);
+        },
+      },
+      POOL_SERVICE: {
+        fetch: async () => {
+          forwarded++;
+          return Response.json({ data: [] });
+        },
+      },
+    };
+    const request = new Request(
+      `https://router.example/${operation === "model" ? "v1/models" : "native/v1/tunnel"}`,
+      { headers: { authorization: "Bearer synthetic-native" } },
+    );
+    if (operation === "tunnel") {
+      const { tunnelAccess } = await import("./access.ts");
+      assert.deepEqual(await tunnelAccess(request, env), access);
+      assert.equal(forwarded, 0);
+    } else {
+      const response = await nativeModelRequest(request, env);
+      assert.equal(response.status, 200);
+      assert.equal(forwarded, 1);
+    }
+    assert.equal(checks, 2);
+    assert.ok(times[1]! - times[0]! >= 950, "Internal authorization must wait for Retry-After.");
+  });

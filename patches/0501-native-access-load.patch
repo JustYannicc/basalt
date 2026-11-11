@@ -1,11 +1,12 @@
 diff --git a/apps/hosted/server/src/implementation/auth.ts b/apps/hosted/server/src/implementation/auth.ts
 --- a/apps/hosted/server/src/implementation/auth.ts
 +++ b/apps/hosted/server/src/implementation/auth.ts
-@@ -130,7 +130,7 @@
+@@ -130,7 +130,8 @@
        // the server with the visitor's address. These reads require a valid session cookie and
        // change nothing; a per-address limit on them would make whole pages unavailable to people
        // sharing an address. Sign-in, sign-up and other credential routes keep their limits.
 -      customRules: { "/get-session": false, "/organization/list": false },
++      // Native checks share proxy addresses; their authenticated device budget runs in the endpoint.
 +      customRules: { "/get-session": false, "/organization/list": false, "/native/access": false },
      },
      advanced: {
@@ -49,7 +50,7 @@ diff --git a/packages/mcp-auth/src/implementation/native-access-budget.ts b/pack
 new file mode 100644
 --- /dev/null
 +++ b/packages/mcp-auth/src/implementation/native-access-budget.ts
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,75 @@
 +import type { GenericEndpointContext } from "@better-auth/core";
 +import { APIError } from "better-auth/api";
 +import { authCall } from "./auth-call.ts";
@@ -85,7 +86,9 @@ new file mode 100644
 +        increment: { count: 1 },
 +      });
 +      if (updated) return;
-+      if (await adapter.findOne({ model: "rateLimit", where })) {
++      const existing = await adapter.findOne<{ count: number }>({ model: "rateLimit", where });
++      if (existing) {
++        if (existing.count < maximumChecks) return consume();
 +        const retryAfter = Math.max(
 +          1,
 +          Math.ceil(((window + 1) * windowMilliseconds - Date.now()) / 1000),

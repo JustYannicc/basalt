@@ -66,12 +66,22 @@ test("native access budgets isolate devices at one proxy address and recover nex
     const second = await authorize(await start.json());
     const access = (token: string) =>
       f.raw("/native/access", { headers: { authorization: `Bearer ${token}` } });
+    const held = f.holdMissingBudgetIncrement();
+    const firstWindow = access(first);
+    await held.arrived;
+    assert.equal((await access(first)).status, 200, "A sibling creates the missing device window.");
+    held.release();
+    assert.equal(
+      (await firstWindow).status,
+      200,
+      "The delayed initial request must consume remaining budget, not invent 429.",
+    );
     const initial = await Promise.all(Array.from({ length: 130 }, () => access(first)));
     assert.ok(
       initial.every((response) => response.status === 200),
       "agent bursts must exceed the old shared 100-check limit",
     );
-    for (let count = 130; count < 1190; count += 20) {
+    for (let count = 132; count < 1190; count += 20) {
       const responses = await Promise.all(
         Array.from({ length: Math.min(20, 1190 - count) }, () => access(first)),
       );

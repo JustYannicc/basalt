@@ -1,5 +1,5 @@
 import { WebSocket } from "ws";
-import { tunnelProtocol, tunnelLimits } from "../contracts/tunnel.ts";
+import { tunnelProtocol, tunnelLimits, nativeTunnelReadyTimeoutMs } from "../contracts/tunnel.ts";
 import type { SocketFactory } from "../contracts/transport.ts";
 
 export const deviceSocket: SocketFactory = (url, token) => {
@@ -7,7 +7,7 @@ export const deviceSocket: SocketFactory = (url, token) => {
     headers: { authorization: `Bearer ${token}` },
     maxPayload: tunnelLimits.frameBytes,
     perMessageDeflate: false,
-    handshakeTimeout: 30_000,
+    handshakeTimeout: nativeTunnelReadyTimeoutMs,
     followRedirects: false,
   });
   return {

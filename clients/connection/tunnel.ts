@@ -4,6 +4,7 @@ import {
   decodeTunnelFrame,
   encodeTunnelBytes,
   tunnelLimits,
+  nativeTunnelReadyTimeoutMs,
   type TunnelClientFrame,
   type TunnelData,
   type TunnelServerFrame,
@@ -69,7 +70,7 @@ export function openTunnel(
     cleanup();
     socket.close();
   };
-  const timer = setTimeout(fail, 30_000);
+  const timer = setTimeout(fail, nativeTunnelReadyTimeoutMs);
   const cleanup = () => {
     clearTimeout(timer);
     signal.removeEventListener("abort", fail);
@@ -78,7 +79,7 @@ export function openTunnel(
   const unlisten = socket.listen((event) => {
     if (stopped || ended) return;
     if (event.type !== "message") {
-      if (event.type === "error" && event.status === 401) unauthorized();
+      if (!started || (event.type === "error" && event.status === 401)) unauthorized();
       console.warn("NATIVE_TUNNEL_CLIENT_FAILURE", {
         phase: responded ? "stream" : started ? "headers" : "handshake",
         event: event.type,

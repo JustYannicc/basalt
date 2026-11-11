@@ -5,7 +5,7 @@ import {
   type DeviceCredentials,
   type NativeAccess,
 } from "../contracts/device.ts";
-import { tunnelPath } from "../contracts/tunnel.ts";
+import { tunnelPath, nativeTunnelReadyTimeoutMs } from "../contracts/tunnel.ts";
 import { authRequest, tokenRequest } from "./device-oauth.ts";
 import { nativeAccess } from "./native-access.ts";
 import { openTunnel } from "./tunnel.ts";
@@ -64,17 +64,29 @@ export function deviceConnection(
     }
     const generation = epoch;
     try {
-      if (!pending && current.expiresAt <= Date.now() + 30_000) {
-        pending = renew(current, signal, generation).finally(() => {
-          pending = undefined;
-        });
-      }
-      await pending;
-      signal.throwIfAborted();
+      const bearer = async () => {
+        const credential = saved;
+        if (
+          !credential ||
+          (credential.refreshPending && !pending) ||
+          generation !== epoch ||
+          state !== "connected"
+        )
+          throw new Error("Connection state changed.");
+        if (!pending && credential.expiresAt <= Date.now() + nativeTunnelReadyTimeoutMs) {
+          pending = renew(credential, signal, generation).finally(() => {
+            pending = undefined;
+          });
+        }
+        await pending;
+        signal.throwIfAborted();
+        if (generation !== epoch || state !== "connected" || !saved)
+          throw new Error("Connection state changed.");
+        return saved.accessToken;
+      };
+      const response = await nativeAccess(current.origin, bearer, signal);
       const next = saved;
-      if (generation !== epoch || state !== "connected" || !next)
-        throw new Error("Connection state changed.");
-      const response = await nativeAccess(next.origin, next.accessToken, signal);
+      if (!next || generation !== epoch) throw new Error("Connection state changed.");
       if (!response.ok) {
         if (generation === epoch && (response.status === 401 || response.status === 403))
           state = "sign-in-required";
@@ -100,7 +112,11 @@ export function deviceConnection(
   const validate = async (signal: AbortSignal) => {
     signal.throwIfAborted();
     if (state !== "connected") throw new Error("The connection is not connected.");
-    if (access && saved && Math.min(access.expiresAt, saved.expiresAt) > Date.now() + 30_000)
+    if (
+      access &&
+      saved &&
+      Math.min(access.expiresAt, saved.expiresAt) > Date.now() + nativeTunnelReadyTimeoutMs
+    )
       return;
     // A cancelled caller must not cancel the grant refresh shared by sibling operations.
     validation ??= readAccess(validationAbort.signal).finally(() => {

@@ -118,10 +118,41 @@ export async function fixture(
   );
   assert.equal(started.status, 200, await started.clone().text());
   const { user_code, device_code } = await started.json();
+  const adapter = (await auth.$context).adapter;
+  let missingBudgetIncrement: { arrive(): void; released: Promise<void> } | undefined;
+  const increment = adapter.incrementOne.bind(adapter);
+  adapter.incrementOne = async (input) => {
+    const result = await increment(input);
+    const key = input.where.find((condition) => condition.field === "key")?.value;
+    if (
+      !result &&
+      input.model === "rateLimit" &&
+      typeof key === "string" &&
+      key.startsWith("native-access:") &&
+      missingBudgetIncrement
+    ) {
+      const held = missingBudgetIncrement;
+      missingBudgetIncrement = undefined;
+      held.arrive();
+      await held.released;
+    }
+    return result;
+  };
   const oldFetch = globalThis.fetch;
   if (control) globalThis.fetch = async (input, init) => control(new Request(input, init));
   return {
     request,
+    holdMissingBudgetIncrement: () => {
+      let arrive!: () => void, release!: () => void;
+      const arrived = new Promise<void>((resolve) => {
+        arrive = resolve;
+      });
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      missingBudgetIncrement = { arrive, released };
+      return { arrived, release };
+    },
     userId: signupUser.id as string,
     raw: (path: string, init: RequestInit) =>
       auth.handler(new Request(`${origin}/api/auth${path}`, init)),

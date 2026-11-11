@@ -105,3 +105,54 @@ test("expiry refresh is shared and survives a caller cancellation", async () => 
     await f.close();
   }
 });
+
+test("token expiry while throttled renews before the authorization read is retried", async () => {
+  let refuse = false;
+  const f = await fixture({
+    storage: process.platform === "linux" ? "file" : "os",
+    services: () => ({ status: refuse ? 401 : 200 }),
+  });
+  try {
+    f.remote.expireNext(120);
+    await f.login();
+    await command(["agent", "add", "both", "models"], f.home);
+    const { writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const start = Date.now(),
+      clock = join(f.home, "clock.now"),
+      preload = join(f.home, "clock.mjs");
+    await writeFile(clock, String(start));
+    await writeFile(
+      preload,
+      'import { readFileSync } from "node:fs"; Date.now = () => Number(readFileSync(new URL("./clock.now", import.meta.url), "utf8"));',
+    );
+    const origin = await f.start(["--import", preload]),
+      token = await f.token();
+    const get = async () => {
+      const response = await fetch(`${origin}/v1/models`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      await response.body?.cancel();
+      return response.status;
+    };
+    refuse = true;
+    assert.equal(await get(), 401);
+    refuse = false;
+    f.remote.expireNext(3600);
+    f.remote.limitedAccess(1);
+    const limit = f.remote.nextAccessLimit();
+    const pending = get();
+    await limit;
+    f.remote.expireAccess();
+    await writeFile(clock, String(start + 200_000));
+    assert.equal(
+      await pending,
+      200,
+      "The throttle must not force sign-in with valid refresh credentials.",
+    );
+    assert.equal(f.remote.counts().refreshes, 1);
+    assert.equal(JSON.parse((await command(["status"], f.home)).stdout).state, "connected");
+  } finally {
+    await f.close();
+  }
+});

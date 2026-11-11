@@ -33,6 +33,9 @@ const ModelSearch = Schema.String.check(
     }
   }),
 );
+// A device budget may wait sixty seconds before admitting a read.
+export const nativeTunnelReadyTimeoutMs = 90_000;
+
 export const tunnelLimits = {
   frameBytes: 32_768,
   chunkBytes: 16_384,
