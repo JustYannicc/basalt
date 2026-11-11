@@ -2214,7 +2214,7 @@ jobs:
       - name: Run the complete owned unit suite
         if: needs.select.outputs.full_suite == 'true'
         run: npm run check
-      - name: Check app source snapshots against their separate repositories
+      - name: Check app source snapshots against committed pins and hashes
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/catalog-sources.ts --check

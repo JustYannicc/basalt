@@ -4,11 +4,24 @@ import {
   type GitHubSourceReader,
 } from "./catalog-source-github.ts";
 export type { SourceFile, GitHubSourceReader } from "./catalog-source-github.ts";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { GitHubApi } from "./releases/github.ts";
+
+import {
+  createSourceArtifacts,
+  updateSourceProvenance,
+  isRecord,
+  isSafeSourcePath,
+} from "./catalog-source-artifacts.ts";
+export {
+  createSourceArtifacts,
+  updateSourceProvenance,
+  type SourceArtifacts,
+} from "./catalog-source-artifacts.ts";
+import { checkCatalogSources } from "./catalog-source-check.ts";
 
 const sourceRepositories = {
   aws: "JustYannicc/signalbox-app-aws",
@@ -28,12 +41,6 @@ export type CatalogSourceApp = {
 export type CatalogSourceManifest = {
   schema: 1;
   apps: CatalogSourceApp[];
-};
-
-export type SourceArtifacts = {
-  snapshot: Buffer;
-  snapshotSha256: string;
-  fileSha256: Record<string, string>;
 };
 
 export function parseCatalogSourceManifest(value: unknown): CatalogSourceManifest {
@@ -90,20 +97,6 @@ export function parseCatalogSourceManifest(value: unknown): CatalogSourceManifes
   return { schema: 1, apps };
 }
 
-function isSafeSourcePath(value: unknown): value is string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value !== value.trim() ||
-    value.includes("\\") ||
-    value.includes("\0") ||
-    value.startsWith("/")
-  )
-    return false;
-  const segments = value.split("/");
-  return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
-}
-
 export async function fetchPinnedSource(
   app: CatalogSourceApp,
   github: GitHubSourceReader,
@@ -133,58 +126,6 @@ export async function fetchPinnedSource(
   return files;
 }
 
-export function createSourceArtifacts(
-  packageName: CatalogPackage,
-  files: readonly SourceFile[],
-): SourceArtifacts {
-  if (!files.some((file) => file.path === "package.json"))
-    throw new Error(`${packageName} source snapshot requires package.json`);
-  const ordered = [...files].sort((left, right) =>
-    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
-  );
-  if (new Set(ordered.map((file) => file.path)).size !== ordered.length)
-    throw new Error(`${packageName} source snapshot contains duplicate paths`);
-  if (ordered.some((file) => !isSafeSourcePath(file.path)))
-    throw new Error(`${packageName} source snapshot only accepts safe relative paths`);
-  let packageManifest: unknown;
-  try {
-    packageManifest = JSON.parse(ordered.find((file) => file.path === "package.json")!.content);
-  } catch {
-    throw new Error(`${packageName} source package.json is not valid JSON`);
-  }
-  if (!isRecord(packageManifest) || packageManifest.name !== packageName)
-    throw new Error(`${packageName} source package.json must keep the package name ${packageName}`);
-  const fileSha256 = Object.fromEntries(
-    ordered.map((file) => [file.path, sha256(Buffer.from(file.content, "utf8"))]),
-  );
-  const snapshot = Buffer.from(
-    `${JSON.stringify({ package: packageName, files: ordered }, null, 2)}\n`,
-    "utf8",
-  );
-  return { snapshot, snapshotSha256: sha256(snapshot), fileSha256 };
-}
-
-export function updateSourceProvenance(
-  current: Record<string, unknown>,
-  app: CatalogSourceApp,
-  artifacts: SourceArtifacts,
-): Buffer {
-  const provenance: Record<string, unknown> = { ...current };
-  if ("sourceSha256" in provenance) provenance.sourceSha256 = artifacts.snapshotSha256;
-  if ("snapshotSha256" in provenance) provenance.snapshotSha256 = artifacts.snapshotSha256;
-  if ("catalogFileSha256" in provenance) provenance.catalogFileSha256 = artifacts.fileSha256;
-
-  const previousCatalogSource = isRecord(provenance.catalogSource) ? provenance.catalogSource : {};
-  provenance.catalogSource = {
-    ...previousCatalogSource,
-    repository: `https://github.com/${app.repository}`,
-    commit: app.commit,
-    fileSha256: artifacts.fileSha256,
-    snapshotSha256: artifacts.snapshotSha256,
-  };
-  return Buffer.from(`${JSON.stringify(provenance, null, 2)}\n`, "utf8");
-}
-
 export async function runCatalogSources(options: {
   root: string;
   manifestPath?: string;
@@ -196,6 +137,10 @@ export async function runCatalogSources(options: {
   const manifest = parseCatalogSourceManifest(
     JSON.parse(await readFile(manifestPath, "utf8")) as unknown,
   );
+  if (!options.write) {
+    await checkCatalogSources(root, manifest);
+    return;
+  }
   const github = options.github ?? new GitHubApi();
   const updates = await Promise.all(
     manifest.apps.map(async (app) => {
@@ -216,20 +161,6 @@ export async function runCatalogSources(options: {
       };
     }),
   );
-
-  if (!options.write) {
-    const stale = [] as string[];
-    for (const update of updates) {
-      if (!(await readFile(update.sourcePath)).equals(update.source)) stale.push(update.sourcePath);
-      if (!(await readFile(update.provenancePath)).equals(update.provenance))
-        stale.push(update.provenancePath);
-    }
-    if (stale.length)
-      throw new Error(
-        `Catalog source snapshots are stale: ${stale.join(", ")}. Run with --write to update them.`,
-      );
-    return;
-  }
 
   const staged: Array<{ temporary: string; target: string }> = [];
   try {
@@ -252,14 +183,6 @@ export async function runCatalogSources(options: {
 
 function isGitSha(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
-}
-
-function sha256(bytes: Buffer): string {
-  return createHash("sha256").update(bytes).digest("hex");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseArgs(argv: string[]): { manifestPath?: string; write: boolean } {
@@ -285,7 +208,7 @@ async function main(): Promise<void> {
   console.log(
     args.write
       ? "Catalog source snapshots updated."
-      : "Catalog source snapshots match their pinned repositories.",
+      : "Catalog source snapshots match their committed pins and hashes (offline).",
   );
 }
 

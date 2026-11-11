@@ -1,4 +1,5 @@
 import type { SourceComparison } from "./types.ts";
+import { readGitHubJson, type GitHubReadOptions } from "./github-read.ts";
 
 const githubApiOrigin = new URL("https://api.github.com/");
 
@@ -22,10 +23,16 @@ export class GitHubApi {
   private readonly cache = new Map<string, Promise<unknown>>();
   private readonly token: string | undefined;
   private readonly fetchImpl: typeof fetch;
+  private readonly readOptions: GitHubReadOptions;
 
-  constructor(token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN, fetchImpl: typeof fetch = fetch) {
+  constructor(
+    token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN,
+    fetchImpl: typeof fetch = fetch,
+    readOptions: GitHubReadOptions = {},
+  ) {
     this.token = token;
     this.fetchImpl = fetchImpl;
+    this.readOptions = readOptions;
   }
 
   async get<T>(path: string): Promise<T> {
@@ -33,24 +40,36 @@ export class GitHubApi {
     const cacheKey = url.toString();
     const cached = this.cache.get(cacheKey);
     if (cached) return (await cached) as T;
-    const request = this.fetchImpl(url, {
-      credentials: "omit",
-      redirect: "error",
-      headers: {
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "basalt-release-updater",
-        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+    const request = readGitHubJson<T>(
+      this.fetchImpl,
+      url,
+      {
+        credentials: "omit",
+        redirect: "error",
+        headers: {
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "basalt-release-updater",
+          ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+        },
       },
-    }).then(async (response) => {
-      if (!response.ok) throw responseError(response.status, path);
-      return response.json() as Promise<T>;
-    });
+      path,
+      this.readOptions,
+    );
     this.cache.set(cacheKey, request);
-    return (await request) as T;
+    try {
+      return await request;
+    } catch (error) {
+      this.cache.delete(cacheKey);
+      throw error;
+    }
   }
 
-  async request<T>(method: "POST" | "PATCH" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
+  async request<T>(
+    method: "POST" | "PATCH" | "PUT" | "DELETE",
+    path: string,
+    body?: unknown,
+  ): Promise<T> {
     const url = githubApiUrl(path);
     const response = await this.fetchImpl(url, {
       method,
@@ -67,7 +86,7 @@ export class GitHubApi {
     });
     if (!response.ok) throw responseError(response.status, path);
     if (response.status === 204) return undefined as T;
-    return await response.json() as T;
+    return (await response.json()) as T;
   }
 
   async compare(repository: string, base: string, candidate: string): Promise<GitHubComparison> {
@@ -114,20 +133,31 @@ export class GitHubApi {
     };
   }
 
-  async compareTrees(repository: string, base: string, candidate: string): Promise<GitHubComparison> {
+  async compareTrees(
+    repository: string,
+    base: string,
+    candidate: string,
+  ): Promise<GitHubComparison> {
     const [baseTree, candidateTree] = await Promise.all([
       this.get<TreeResponse>(`repos/${repository}/git/trees/${base}?recursive=1`),
       this.get<TreeResponse>(`repos/${repository}/git/trees/${candidate}?recursive=1`),
     ]);
-    const complete = baseTree.truncated === false && candidateTree.truncated === false &&
-      Array.isArray(baseTree.tree) && Array.isArray(candidateTree.tree) &&
-      baseTree.tree.every(validTreeEntry) && candidateTree.tree.every(validTreeEntry);
+    const complete =
+      baseTree.truncated === false &&
+      candidateTree.truncated === false &&
+      Array.isArray(baseTree.tree) &&
+      Array.isArray(candidateTree.tree) &&
+      baseTree.tree.every(validTreeEntry) &&
+      candidateTree.tree.every(validTreeEntry);
     if (!Array.isArray(baseTree.tree) || !Array.isArray(candidateTree.tree))
       return { complete: false, status: "diverged", aheadBy: 0, behindBy: 0, files: [] };
 
-    const filesByTree = (tree: TreeEntry[]) => new Map(
-      tree.filter((entry) => entry.type !== "tree").map((entry) => [entry.path, `${entry.type}:${entry.mode}:${entry.sha}`]),
-    );
+    const filesByTree = (tree: TreeEntry[]) =>
+      new Map(
+        tree
+          .filter((entry) => entry.type !== "tree")
+          .map((entry) => [entry.path, `${entry.type}:${entry.mode}:${entry.sha}`]),
+      );
     const before = filesByTree(baseTree.tree);
     const after = filesByTree(candidateTree.tree);
     const paths = new Set([...before.keys(), ...after.keys()]);
@@ -167,6 +197,10 @@ type TreeEntry = { path: string; mode: string; sha: string; type: "blob" | "tree
 type TreeResponse = { truncated: boolean; tree: TreeEntry[] };
 
 function validTreeEntry(value: TreeEntry): boolean {
-  return typeof value.path === "string" && typeof value.sha === "string" &&
-    typeof value.mode === "string" && ["blob", "tree", "commit"].includes(value.type);
+  return (
+    typeof value.path === "string" &&
+    typeof value.sha === "string" &&
+    typeof value.mode === "string" &&
+    ["blob", "tree", "commit"].includes(value.type)
+  );
 }
