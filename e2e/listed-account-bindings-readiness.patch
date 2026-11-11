@@ -1,0 +1,42 @@
+diff --git a/e2e/tests/listed-account-bindings.spec.ts b/e2e/tests/listed-account-bindings.spec.ts
+--- a/e2e/tests/listed-account-bindings.spec.ts
++++ b/e2e/tests/listed-account-bindings.spec.ts
+@@ -287,6 +287,14 @@
+         const groupTitle = fixture.first.identity?.label ?? fixture.first.label;
+         yield* browser.login(actors.owner);
+         for (const width of [1280, 390]) {
++          const readings = yield* holdQuery(
++            [actors.organization.id, actors.organization.slug].map(
++              (organization) =>
++                `/api/organizations/${organization}/accounts/${fixture.first.id}/observations`,
++            ),
++            "continue",
++            { allRequests: true },
++          );
+           const collapsed = yield* browser.use(`Read the grouped row at ${width}px`, (page) => {
+             const row = accountRow(page, groupTitle);
+             return page
+@@ -332,9 +340,15 @@
+                       .evaluate((element) =>
+                         Promise.all(element.getAnimations().map((animation) => animation.finished)),
+                       )
++                      // The optional observation code mounts its action after the row itself.
++                      .then(() =>
++                        menu.getByRole("menuitem", { name: "Check now", exact: true }).waitFor(),
++                      )
+                       .then(() => menu.getByRole("menuitem").allInnerTexts()),
+                   ),
+               );
++              // Check now must work before the row's observation read answers.
++              yield* readings.requested;
+               yield* evidence.attach(
+                 `listed-binding-menu-${width}.png`,
+                 "image/png",
+@@ -398,6 +412,7 @@
+               return { sent, pending };
+             }),
+           );
++          yield* readings.release;
+           const after = yield* fixture.checkCalls;
+           expect
+             .soft(offered?.sent, "Check now sends every sign-in of the group at once")
