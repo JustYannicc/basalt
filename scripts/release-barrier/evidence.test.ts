@@ -8,9 +8,68 @@ import { describeContainer, stageContainer } from "./container.ts";
 import { containerProps } from "./test/container-fixture.ts";
 import { Effect } from "effect";
 import { releaseEvidence } from "./evidence.ts";
+import { releaseWorkers } from "./barrier.ts";
 import { BarrierRefusal, manifestDigest, type ReleaseManifest } from "./manifest.ts";
 
 const candidate = "a".repeat(40);
+
+test("a startup-headroom refusal retains both measurements in receipt and failure files", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "startup-remeasurement-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const evidence = releaseEvidence(root, candidate);
+  const manifest: ReleaseManifest = {
+    candidate,
+    stack: "fixture",
+    stage: "production",
+    workers: [
+      {
+        id: "AppPages",
+        accountId: "fixture",
+        scriptName: "app-pages",
+        metadata: { mainModule: "main.js" },
+        files: [
+          {
+            name: "main.js",
+            type: "application/javascript+module",
+            bytes: new TextEncoder().encode("export default {}"),
+          },
+        ],
+        baseline: [{ versionId: "old", percentage: 100 }],
+      },
+    ],
+  };
+  let uploads = 0;
+  const error = await releaseWorkers(manifest, {
+    record: evidence.record,
+    provider: {
+      async upload() {
+        uploads++;
+        return { versionId: `version-${uploads}`, startupTimeMs: uploads === 1 ? 770 : 780 };
+      },
+      async baseline() {
+        assert.fail("refused uploads must not read activation baselines");
+      },
+      async activate() {
+        assert.fail("refused uploads must not activate");
+      },
+    },
+  }).then(
+    () => assert.fail("expected startup refusal"),
+    (error) => error,
+  );
+  await evidence.failure(error);
+  const receipt = JSON.parse(await readFile(join(root, "receipt.json"), "utf8"));
+  const failure = JSON.parse(await readFile(join(root, "failure.json"), "utf8"));
+  const measurements = [
+    { worker: "AppPages", versionId: "version-1", startupTimeMs: 770 },
+    { worker: "AppPages", versionId: "version-2", startupTimeMs: 780 },
+  ];
+  assert.equal(uploads, 2);
+  assert.deepEqual(receipt.startupMeasurements, measurements);
+  assert.deepEqual(failure.startupMeasurements, measurements);
+  assert.deepEqual(failure.activated, []);
+  assert.equal(failure.reason, "startup-headroom");
+});
 test("exact frozen requests stay private while refusal receipts retain the safe disposition", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "release-evidence-"));
   context.after(() => rm(root, { recursive: true, force: true }));

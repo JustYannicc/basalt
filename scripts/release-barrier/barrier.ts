@@ -43,6 +43,7 @@ export interface BarrierReceipt {
   ceilingMs: number;
   phase: "upload" | "admitted" | "baseline" | "activation" | "container-activation" | "complete";
   accepted: { worker: string; versionId: string; startupTimeMs: number }[];
+  startupMeasurements?: { worker: string; versionId: string; startupTimeMs: number }[];
   activated: { worker: string; versionId: string }[];
   pending?: { worker: string; versionId: string };
   pendingUpload?: { worker: string; versionId?: string; startupTimeMs?: number };
@@ -87,6 +88,7 @@ export async function releaseWorkers(
     ceilingMs,
     phase: "upload",
     accepted: [],
+    startupMeasurements: [],
     activated: [],
     ...(manifest.schemaVersion === 2 ? { containers: [] } : {}),
   };
@@ -102,34 +104,44 @@ export async function releaseWorkers(
     for (const container of manifest.containers ?? [])
       await options.containers!.verifySource(container);
     for (const worker of manifest.workers) {
-      unchanged();
-      receipt.pendingUpload = { worker: worker.id };
-      await record();
-      let uploaded;
-      try {
-        uploaded = await options.provider.upload(worker);
-      } catch (error) {
-        throw uploadFailure(error, worker.id);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        unchanged();
+        receipt.pendingUpload = { worker: worker.id };
+        await record();
+        let uploaded;
+        try {
+          uploaded = await options.provider.upload(worker);
+        } catch (error) {
+          throw uploadFailure(error, worker.id);
+        }
+        receipt.pendingUpload = {
+          worker: worker.id,
+          ...(uploaded.versionId ? { versionId: uploaded.versionId } : {}),
+          ...(typeof uploaded.startupTimeMs === "number" && Number.isFinite(uploaded.startupTimeMs)
+            ? { startupTimeMs: uploaded.startupTimeMs }
+            : {}),
+        };
+        if (!uploaded.versionId?.trim()) throw new BarrierRefusal("missing-version-id", worker.id);
+        const startup = uploaded.startupTimeMs;
+        if (typeof startup !== "number" || !Number.isFinite(startup) || startup < 0)
+          throw new BarrierRefusal("missing-or-invalid-startup-evidence", worker.id);
+        const measurement = {
+          worker: worker.id,
+          versionId: uploaded.versionId,
+          startupTimeMs: startup,
+        };
+        receipt.startupMeasurements!.push(measurement);
+        await record();
+        if (startup > ceilingMs) {
+          // Provider startup measurements vary even for identical uploads. Confirm once without activation.
+          if (attempt === 0) continue;
+          throw new BarrierRefusal("startup-headroom", worker.id);
+        }
+        receipt.accepted.push(measurement);
+        delete receipt.pendingUpload;
+        await record();
+        break;
       }
-      receipt.pendingUpload = {
-        worker: worker.id,
-        ...(uploaded.versionId ? { versionId: uploaded.versionId } : {}),
-        ...(typeof uploaded.startupTimeMs === "number" && Number.isFinite(uploaded.startupTimeMs)
-          ? { startupTimeMs: uploaded.startupTimeMs }
-          : {}),
-      };
-      if (!uploaded.versionId?.trim()) throw new BarrierRefusal("missing-version-id", worker.id);
-      const startup = uploaded.startupTimeMs;
-      if (typeof startup !== "number" || !Number.isFinite(startup) || startup < 0)
-        throw new BarrierRefusal("missing-or-invalid-startup-evidence", worker.id);
-      if (startup > ceilingMs) throw new BarrierRefusal("startup-headroom", worker.id);
-      receipt.accepted.push({
-        worker: worker.id,
-        versionId: uploaded.versionId,
-        startupTimeMs: startup,
-      });
-      delete receipt.pendingUpload;
-      await record();
     }
     unchanged();
     receipt.phase = "admitted";

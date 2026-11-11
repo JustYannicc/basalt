@@ -177,6 +177,7 @@ export function releaseEvidence(directory: string, candidate: string, encryption
         ...(namespaceReads.length ? { namespaceReads } : {}),
         ...(latest?.pending ? { pending: latest.pending } : {}),
         ...(latest?.pendingUpload ? { pendingUpload: latest.pendingUpload } : {}),
+        ...(latest?.startupMeasurements ? { startupMeasurements: latest.startupMeasurements } : {}),
         ...(latest?.containers ? { containers: latest.containers } : {}),
         ...(latest?.pendingContainer ? { pendingContainer: latest.pendingContainer } : {}),
         reason: refusal.reason,
