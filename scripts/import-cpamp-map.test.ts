@@ -13,13 +13,16 @@ test("operator manifest binds the private account map before any apply request",
   const mapping = [
     { sourceAccountRef: "a".repeat(64), targetAccountId: "fixture-account", provider: "codex" },
   ];
-  let requests = 0;
+  let requests = 0,
+    applies = 0,
+    acknowledges = true;
   const server = createServer(async (request, response) => {
     requests++;
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const input = JSON.parse(Buffer.concat(chunks).toString());
     assert.deepEqual(input.accountMappings, mapping);
+    applies += Number(input.mode === "apply");
     response.setHeader("content-type", "application/json");
     response.end(
       JSON.stringify({
@@ -27,6 +30,9 @@ test("operator manifest binds the private account map before any apply request",
         next: null,
         approval: "fixture-approval",
         inserted: input.mode === "apply" ? 1 : 0,
+        ...(acknowledges
+          ? { accountMappingDigest: hash(JSON.stringify(input.accountMappings)) }
+          : {}),
       }),
     );
   });
@@ -99,6 +105,20 @@ test("operator manifest binds the private account map before any apply request",
     assert.equal((await run(["--account-map-file", map, "--report", join(dir, "public")])).code, 1);
     assert.equal(requests, before);
     await chmod(map, 0o600);
+    acknowledges = false;
+    const beforeLegacy = requests;
+    const legacy = await run([
+      ...args,
+      "--account-map-file",
+      map,
+      "--receipts",
+      join(dir, "legacy-server"),
+    ]);
+    assert.equal(legacy.code, 1);
+    assert.match(legacy.output, /Server did not acknowledge/);
+    assert.equal(requests, beforeLegacy + 1);
+    assert.equal(applies, 0, "an older server cannot apply an ignored map");
+    acknowledges = true;
     const applied = await run([
       ...args,
       "--account-map-file",
@@ -107,7 +127,7 @@ test("operator manifest binds the private account map before any apply request",
       join(dir, "applied"),
     ]);
     assert.equal(applied.code, 0, applied.output);
-    assert.equal(requests, before + 2);
+    assert.equal(requests, beforeLegacy + 3);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));

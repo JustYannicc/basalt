@@ -61,6 +61,8 @@ target to be enabled, selected in the destination pool and of the same provider.
 Unlisted source accounts keep their foreign references. The complete map and its
 file digest are bound into the dry-run manifest and each page approval. Use the
 same file for apply and replay. An event's attribution cannot change after import.
+The CLI requires the server to acknowledge the canonical map digest before apply,
+so an older server cannot silently ignore the map.
 
 Production needs the selected organization and pool inventory, backup receipts,
 a complete exact-ID dry run and the coordinator's GO for its report digest.

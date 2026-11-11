@@ -123,7 +123,13 @@ async function main() {
       await response.body?.cancel();
       throw new Error("Import refused");
     }
-    return historyObject(await response.json());
+    const result = historyObject(await response.json());
+    if (
+      accountMappings !== undefined &&
+      result.accountMappingDigest !== hash(JSON.stringify(accountMappings))
+    )
+      throw new Error("Server did not acknowledge the approved account map");
+    return result;
   }
   let pages = 0,
     inserted = 0;

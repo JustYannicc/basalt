@@ -127,6 +127,11 @@ export async function handleUsageImport(
     const { resolvedDigest, ...report } = result;
     return json({
       mode,
+      ...(parsed.accountMappings === undefined
+        ? {}
+        : {
+            accountMappingDigest: await digest(JSON.stringify(parsed.accountMappings)),
+          }),
       ...parsed.report,
       ...report,
       ids: parsed.records.map((row) => row.id),

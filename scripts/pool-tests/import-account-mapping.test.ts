@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { callerHeader } from "../../apps/pool/contract.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
@@ -87,8 +88,19 @@ test("mapped imports feed account counts, ticks, success, window tokens and last
     };
     const dry = await post(mappedPayload);
     assert.equal(dry.status, 200, await dry.clone().text());
-    const report = (await dry.json()) as { approval: string; wouldInsert: number; ids: string[] };
+    const report = (await dry.json()) as {
+      approval: string;
+      wouldInsert: number;
+      ids: string[];
+      accountMappingDigest: string;
+    };
     assert.equal(report.wouldInsert, 2);
+    assert.equal(
+      report.accountMappingDigest,
+      createHash("sha256")
+        .update(JSON.stringify([mapping]))
+        .digest("hex"),
+    );
     assert.equal(
       (await db.query("SELECT count(*)::int AS n FROM basalt_model_requests")).rows[0].n,
       0,
@@ -180,6 +192,7 @@ test("mapped imports feed account counts, ticks, success, window tokens and last
     const plainDry = await post(plain);
     assert.equal(plainDry.status, 200);
     const plainReport = (await plainDry.json()) as { approval: string };
+    assert.equal(Object.hasOwn(plainReport, "accountMappingDigest"), false);
     const applied = await post({ ...plain, mode: "apply", approval: plainReport.approval });
     assert.equal(applied.status, 200);
     const foreign = await poolUsageSeries(db, { ...input, by: ["account"] }, native.authority);
