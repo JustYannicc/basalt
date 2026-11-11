@@ -109,7 +109,13 @@ export default {
 
 test(
   "native preview compiles stay cold while production reuse and normal previews keep their behavior",
-  { timeout: 15_000 },
+  {
+    timeout: 15_000,
+    skip:
+      process.env.BASALT_CHECK_BUILT_FRAMEWORK !== "1"
+        ? "The production framework build runs this proof"
+        : false,
+  },
   async () => {
     const wasm = new Map<string, Buffer>();
     const bundle = await build({
