@@ -1,7 +1,7 @@
 {
   "identity": "connect-tabs-narrow",
   "file": "0508-connect-tabs-narrow.patch",
-  "content_sha256": "f9a84485ae98d9579a937b35b43d7765674a23977022eb5818dbf059c164fc7e",
+  "content_sha256": "8b8b9555d8f06caf3ad2216e4cf697d949575bce4ef1fe0c7b60d59e24f37faf",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
