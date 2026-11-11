@@ -1,0 +1,7 @@
+model {
+  extend basalt.catalog.providerApps {
+    metadata {
+      constraint "Pool account tabs expose selection of reusable saved accounts and authorized links to provider apps instead of inline acquisition. Provider-focused catalog navigation remains reversible: searching clears the focus and Show all apps restores the full catalog. Shared loading frames and app-use checks remain authoritative."
+    }
+  }
+}

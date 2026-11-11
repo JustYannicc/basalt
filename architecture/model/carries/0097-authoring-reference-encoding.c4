@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The Authoring Worker bundles the framework reference as structured build data and JSON-serializes that reference exactly once when files are requested. Returned authoring files keep their original bytes rather than exposing an object or double-encoded JSON."
+    }
+  }
+}

@@ -116,14 +116,16 @@ index 3c0d919..e1003c1 100644
              connect.getByRole("button", { name: "Connect account", exact: true }).click(),
            ]).then(([response]) => response.json() as Promise<unknown>),
 diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
-index 9a5bd530706a5471d12a19fc7348230551f446ac..d0791ffd6a19b301e9ec54501dfbd43def569a87 100644
+index f9f6453..11c552f 100644
 --- a/packages/ui/src/implementation/dashboard/account-form.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-form.tsx
-@@ -1,9 +1,10 @@
+@@ -1,4 +1,4 @@
 -import { useState, type ComponentType, type ReactNode } from "react";
 +import { useId, useState, type ComponentType, type ReactNode } from "react";
  import { Exit, Match, Option, Redacted, type Cause } from "effect";
- import type { Account, CredentialCheck, Provider } from "@executor-js/sdk";
+ import type {
+   Account,
+@@ -10,6 +10,7 @@ import type {
  import { HugeiconsIcon } from "@hugeicons/react";
  import {
    AlertCircleIcon,
@@ -131,7 +133,7 @@ index 9a5bd530706a5471d12a19fc7348230551f446ac..d0791ffd6a19b301e9ec54501dfbd43d
    CheckmarkCircle02Icon,
    SquareLock02Icon,
    ViewIcon,
-@@ -96,6 +97,14 @@ export function AccountForm<A, E>({
+@@ -106,6 +107,14 @@ export function AccountForm<A, E>({
        "",
    );
    const blockedReason = method === "" ? undefined : blocked(method);
@@ -146,7 +148,7 @@ index 9a5bd530706a5471d12a19fc7348230551f446ac..d0791ffd6a19b301e9ec54501dfbd43d
    const [values, setValues] = useState<Readonly<Record<string, string>>>({});
    const [submitting, setPending] = useState(false);
    const pending = submitting || disabled;
-@@ -187,24 +196,6 @@ export function AccountForm<A, E>({
+@@ -197,24 +206,6 @@ export function AccountForm<A, E>({
            </Select>
          </label>
        )}
@@ -171,7 +173,7 @@ index 9a5bd530706a5471d12a19fc7348230551f446ac..d0791ffd6a19b301e9ec54501dfbd43d
        {blockedReason !== undefined || (method === "" && methods.length > 0) ? (
          <p className="setup-notice py-[12px] px-[14px] border border-border rounded-[7px] text-muted-foreground bg-muted text-[13px] my-[8px] mx-0">
            {blockedReason ?? "No sign-in method can be connected here yet."}
-@@ -273,6 +264,44 @@ export function AccountForm<A, E>({
+@@ -284,6 +275,44 @@ export function AccountForm<A, E>({
            This provider needs a custom credential form.
          </p>
        )}

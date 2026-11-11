@@ -1,9 +1,9 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
-index a14b8c5..c9c4243 100644
+index c8c4c28..a9a74ce 100644
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
-@@ -7,7 +7,7 @@ import { makeRegistryStorage } from "@executor-js/app-registry";
- import { firstPartyOAuthClients } from "@executor-js/hosted-server";
+@@ -13,7 +13,7 @@ import { servesBuiltApiDocument } from "../contracts/browser.ts";
+ import api from "../../.generated/executor-api-revision.json" with { type: "json" };
  import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
  import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
 -import { poolAccountAcquisition } from "@executor-js/hosted-server/pool-account-acquisition";
@@ -11,7 +11,7 @@ index a14b8c5..c9c4243 100644
  import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
  import {
    createExecutor,
-@@ -74,13 +74,14 @@ const cloudFirstPartyOAuthClients = Effect.gen(function* () {
+@@ -81,13 +81,14 @@ const cloudFirstPartyOAuthClients = Effect.gen(function* () {
  export const cloudExecutor = Effect.fn(function* (
    databases: Cloudflare.DurableObject<AppDataSupervisor>,
    appSources: AppSources,
@@ -27,7 +27,7 @@ index a14b8c5..c9c4243 100644
      Effect.provide(BrowserCrypto.layer),
      Effect.orDie,
    );
-@@ -126,6 +127,7 @@ export const cloudExecutor = Effect.fn(function* (
+@@ -149,6 +150,7 @@ export const cloudExecutor = Effect.fn(function* (
            closing ? Effect.succeed(false) : FiberSet.run(refreshes, work).pipe(Effect.as(true)),
          );
        const lifecycle = yield* hostedResourceLifecycle.pipe(
@@ -53,7 +53,7 @@ index 0a1d973..4de966b 100644
      cachedBuildAssets(
        origin,
 diff --git a/apps/hosted/cloud/src/infrastructure/product.ts b/apps/hosted/cloud/src/infrastructure/product.ts
-index ad103f2..21ef0fb 100644
+index df0698f..ac2e392 100644
 --- a/apps/hosted/cloud/src/infrastructure/product.ts
 +++ b/apps/hosted/cloud/src/infrastructure/product.ts
 @@ -1,4 +1,7 @@
@@ -64,7 +64,7 @@ index ad103f2..21ef0fb 100644
  import { hostedAppCapabilities } from "@executor-js/hosted-server/app-management";
  import { AppGitOrigins, AppManagementHost } from "@executor-js/app-management";
  import {
-@@ -46,6 +49,11 @@ export const cloudProduct = Effect.fn(function* (
+@@ -47,6 +50,11 @@ export const cloudProduct = Effect.fn(function* (
    const { blobs, sdk, sql, withDatabase, services } = yield* cloudProductServices(
      databases,
      yield* cloudAppSources(tokens),
@@ -77,7 +77,7 @@ index ad103f2..21ef0fb 100644
    const hosts = yield* cloudHosts.pipe(Effect.orDie);
    // The default Executor app calls this deployment's API, an OAuth resource, at its canonical origin.
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 70a467b..986e4f7 100644
+index c127822..cfa7e22 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -4,9 +4,11 @@
@@ -379,7 +379,7 @@ index af54ed9..b875913 100644
    };
  };
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
-index b0b8335..76f8127 100644
+index 338a307..a599ada 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
 @@ -1,3 +1,4 @@
@@ -387,7 +387,7 @@ index b0b8335..76f8127 100644
  import { visibleObservationHealth } from "./account-observation-policy.ts";
  import { getAccountObservations, refreshAccountObservations } from "./account-observations.ts";
  import { readObservationPolicy, updateObservationPolicy } from "./account-observation-policy.ts";
-@@ -124,7 +125,9 @@ export const getAccount = Effect.gen(function* () {
+@@ -126,7 +127,9 @@ export const getAccount = Effect.gen(function* () {
      health: yield* visibleObservationHealth(status!.health!),
      revocation,
      canManage: access.canManage,
@@ -398,7 +398,7 @@ index b0b8335..76f8127 100644
    };
  });
  /** Keep only the checks of apps the caller can see. */
-@@ -282,6 +285,7 @@ export const connectAccount = (
+@@ -290,6 +293,7 @@ export const connectAccount = (
          : yield* AccountGrants.reconnect.pipe(
              Effect.provideService(AccountTargets.reconnect, { account: input.account }),
            );
@@ -1953,10 +1953,10 @@ index 312f347..277afd3 100644
            );
            return yield* asOwner(
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
-index 3d91bd0..227ef41 100644
+index 863f6e0..680916b 100644
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
-@@ -360,6 +360,11 @@ const notRunInCi: Partial<
+@@ -362,6 +362,11 @@ const notRunInCi: Partial<
      reason:
        "The Basalt host-managed-accounts job runs it with an isolated synthetic pool signing key.",
    },
@@ -2414,10 +2414,10 @@ index 0000000..4cac058
 +export const retained = source(false);
 +export const retainedWithPool = source(true);
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 9964a96..9a30d17 100644
+index 3a251e9..395067c 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -3509,8 +3509,45 @@ export const scenarios = plan({
+@@ -4063,8 +4063,45 @@ export const scenarios = plan({
        local: na("The pool alarm belongs to the hosted product."),
      },
    },
@@ -3379,7 +3379,7 @@ index 41576c8..3ac0fa1 100644
    readonly ensureMirror: (input: {
      readonly account: AccountId;
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 6f6520d..680d338 100644
+index 00c41a1..93203fd 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -243,6 +243,13 @@ export interface ResourceLifecycle {
@@ -3700,10 +3700,10 @@ index 0000000..7c3402e
 +      ),
 +    );
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index 4573efc..67fdbc9 100644
+index 6f767f5..32c3d25 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
-@@ -766,6 +766,13 @@ export const makeApps = (
+@@ -769,6 +769,13 @@ export const makeApps = (
              copiedFrom: existing === undefined ? copiedFrom : existing.copiedFrom,
              createdAt: existing === undefined ? createdAt : existing.createdAt,
            };
@@ -3717,7 +3717,7 @@ index 4573efc..67fdbc9 100644
            if (existing === undefined) {
              yield* createApp(tx, {
                ...app,
-@@ -1032,6 +1039,13 @@ export const makeApps = (
+@@ -1035,6 +1042,13 @@ export const makeApps = (
              );
            }
            const version = yield* storedVersion(tx, app, input.version);
@@ -3732,7 +3732,7 @@ index 4573efc..67fdbc9 100644
              tx.updateMany("apps", {
                where: (b) => b("id", "=", app.id),
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index dc3488e..87419b5 100644
+index a8c1172..99a0c40 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -54,6 +54,7 @@ import { makeInteractiveAccounts } from "./interactive-accounts.ts";
@@ -3743,7 +3743,7 @@ index dc3488e..87419b5 100644
    AccountAcquisitionHost,
    type AccountAcquisitionBinding,
  } from "../contracts/account-acquisition-driver.ts";
-@@ -111,6 +112,14 @@ export const createExecutor = (
+@@ -117,6 +118,14 @@ export const createExecutor = (
      );
      const acquisitionRuntime = makeAcquisitionRuntime(db, credentials, crypto, acquisitionRegistry);
      const acquisitionHost = {

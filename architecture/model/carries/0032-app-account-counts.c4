@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "App inventories count distinct app-scoped linked accounts without exposing hidden account details. Linked-account IDs are returned only from the caller's already-visible saved accounts and visible apps. Hosted and local cards combine those counts with the viewer's own user-scoped links without merging saved account identities."
+    }
+  }
+}

@@ -369,9 +369,10 @@ new file mode 100644
 +  );
 +});
 diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
+index 74ac279..73c8b5b 100644
 --- a/e2e/check-boundary.ts
 +++ b/e2e/check-boundary.ts
-@@ -75,6 +75,26 @@
+@@ -76,6 +76,26 @@ const check = Effect.gen(function* () {
              allowed.has(specifier)
            )
              return;

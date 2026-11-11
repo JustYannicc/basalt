@@ -1,7 +1,7 @@
 {
   "identity": "basalt-generic-catalog-instances",
   "file": "0122-generic-catalog-instances.patch",
-  "content_sha256": "92aa2ccf8dc10e9a3253a72dbe825f2f44de7fe2b35a74ccb21e9c5937a9c019",
+  "content_sha256": "3e45f8c3f1d8ee87dfdaccae20034d6cd10b84ecde683a797a5f4ae397c3bfad",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

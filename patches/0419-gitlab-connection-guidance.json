@@ -1,7 +1,7 @@
 {
   "identity": "basalt-gitlab-connection-guidance",
   "file": "0419-gitlab-connection-guidance.patch",
-  "content_sha256": "900873aada611d0466394f2738810c68f03a20966d4c273bd07607611ec5ac3f",
+  "content_sha256": "49f6a03992e3de66ae28c34fc10d8feb7d132aae94a9c1e5e7ddcd8920b2b76d",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

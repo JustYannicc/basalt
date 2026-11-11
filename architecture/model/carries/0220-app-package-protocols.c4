@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The package rejection scenario reads only supportedProtocols as registry metadata and still exercises the real host over HTTP. Its boundary admits that single unaliased import and retains the listener adapter's narrowly scoped transport utility."
+    }
+  }
+}

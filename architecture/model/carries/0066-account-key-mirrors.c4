@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Each API-key credential generation has its own independently encrypted Home mirror reference in the acquisition row. Preflight checks current app and account access before copying credentials, and the final link transaction rechecks the completed binding. Unlink preserves the mirror; account deletion retires it, and incomplete or mismatched generations remain unusable."
+    }
+  }
+}

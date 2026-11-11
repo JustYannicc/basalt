@@ -20,10 +20,10 @@ index 167bdb0..c885f59 100644
        HostedExecutor,
        sdk.pipe(Effect.map((executor) => withDeploySetupWake(withExecutorAnalytics(executor)))),
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
-index 040f8f9..68e3aef 100644
+index 93df221..baf28d1 100644
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
-@@ -52,6 +52,8 @@ import {
+@@ -54,6 +54,8 @@ import {
  } from "@executor-js/sdk/core";
  import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
  import { GroupDatabase } from "@executor-js/hosted-server/groups";
@@ -32,7 +32,7 @@ index 040f8f9..68e3aef 100644
  import { SqlClient } from "effect/sql";
  import { productBrandConfig } from "@executor-js/utils/product-brand";
  
-@@ -201,6 +203,8 @@ export const selfHostExecutorServices = <E, R>(
+@@ -209,6 +211,8 @@ export const selfHostExecutorServices = <E, R>(
          Layer.succeed(SelfHostAuth, auth),
          Layer.succeed(ScheduledAuthority, scheduleAuthority),
          Layer.succeed(GroupDatabase, Effect.succeed(groupDatabase)),
@@ -42,7 +42,7 @@ index 040f8f9..68e3aef 100644
          // Self-host serves Git, like everything else, on its one origin.
          Layer.succeed(AppGitOrigins, () => [new URL(origin).origin]),
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index 057847c..04a87a3 100644
+index f0ab7a9..345d6e2 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -28,7 +28,9 @@
@@ -359,10 +359,10 @@ index 201b4d8..27874ba 100644
      });
      const pendingApp =
 diff --git a/apps/hosted/web/src/contracts/resource-access.ts b/apps/hosted/web/src/contracts/resource-access.ts
-index 9d2862b..ab34cc8 100644
+index a0687fb..e939ff0 100644
 --- a/apps/hosted/web/src/contracts/resource-access.ts
 +++ b/apps/hosted/web/src/contracts/resource-access.ts
-@@ -189,6 +189,9 @@ const inventory = Atom.family((key: ListKey) =>
+@@ -204,6 +204,9 @@ const inventory = Atom.family((key: ListKey) =>
          );
        const links = pairs((entry) => entry.linkedAccounts);
        const appLinks = pairs((entry) => entry.appLinkedAccounts);
@@ -372,7 +372,7 @@ index 9d2862b..ab34cc8 100644
        const accounts = data.accounts.map(({ account, provider, health }) => ({
          ...account,
          providerName: provider.definition.name,
-@@ -201,6 +204,7 @@ const inventory = Atom.family((key: ListKey) =>
+@@ -216,6 +219,7 @@ const inventory = Atom.family((key: ListKey) =>
          links,
          appLinks,
          appAccountCounts,
@@ -381,10 +381,10 @@ index 9d2862b..ab34cc8 100644
        };
      }),
 diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-index 4b9eb13..a5bf6f8 100644
+index 8999882..4c155e4 100644
 --- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-@@ -145,6 +145,7 @@ const withSummaries = (
+@@ -144,6 +144,7 @@ const withSummaries = (
        ...summaries.find((summary) => summary.id === link.account.id),
        signIn: link.signIn,
        ...(link.health === undefined ? {} : { health: link.health }),
@@ -393,10 +393,10 @@ index 4b9eb13..a5bf6f8 100644
    }));
  
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index 2cab808..26e9cb7 100644
+index 9423977..2a38555 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
-@@ -465,6 +465,10 @@ export const DashboardOverview = Schema.Struct({
+@@ -466,6 +466,10 @@ export const DashboardOverview = Schema.Struct({
    ),
    /** The accounts linked to each app for everyone, oldest first. */
    appLinks: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
@@ -433,7 +433,7 @@ index 2a0ac63..c824b6e 100644
        ],
      } satisfies AppAccountRequirement;
 diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
-index 5840376..3aba9e7 100644
+index 18acbd1..95f38a7 100644
 --- a/apps/local/server/src/implementation/dashboard.ts
 +++ b/apps/local/server/src/implementation/dashboard.ts
 @@ -14,6 +14,7 @@ import {
@@ -498,10 +498,10 @@ index 5840376..3aba9e7 100644
    const appDetail = (appId: AppId) =>
      Effect.gen(function* () {
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 96a575a..732386a 100644
+index b94eb07..2623a94 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7483,6 +7483,19 @@ export const scenarios = plan({
+@@ -8707,6 +8707,19 @@ export const scenarios = plan({
        local: na("Exercises hosted account checks and rows."),
      },
    },
@@ -522,9 +522,10 @@ index 96a575a..732386a 100644
      fixtures: "actors",
      legacyStorage: true,
 diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-account.spec.ts
+index d9caacb..938d853 100644
 --- a/e2e/tests/executor-key-account.spec.ts
 +++ b/e2e/tests/executor-key-account.spec.ts
-@@ -75,12 +75,20 @@
+@@ -79,12 +79,20 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
            yield* browser.use("Open Executor's accounts", (page) =>
              page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
            );
@@ -533,7 +534,6 @@ diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-acc
 -              .getByRole("list", { name: "Executor accounts", exact: true })
 -              .getByRole("radio", { name: account.label, exact: true, checked: true })
 -              .waitFor(),
--          );
 +          // The managed key is the host's credential: it fills the requirement without a row.
 +          yield* browser.use(
 +            "The Accounts tab says the managed key is set up for this user",
@@ -542,7 +542,7 @@ diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-acc
 +                .getByRole("region", { name: "Executor", exact: true })
 +                .getByText("Set up automatically", { exact: true })
 +                .waitFor(),
-+          );
+           );
 +          expect(
 +            yield* browser.use("The managed key is not offered as a sign-in", (page) =>
 +              page.getByRole("radio", { name: account.label, exact: true }).count(),
@@ -551,7 +551,7 @@ diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-acc
            yield* browser.use("Return to the app list", (page) =>
              page.getByRole("link", { name: "Back to apps", exact: true }).click(),
            );
-@@ -91,7 +99,8 @@
+@@ -95,7 +103,8 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
            const card = yield* browser.use("The card agrees with the Accounts tab", (page) =>
              page.getByRole("link", { name: "Open Executor", exact: true }).innerText(),
            );
@@ -561,7 +561,7 @@ diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-acc
            expect(card).not.toContain("Needs account");
            // Add app knows the default app is installed, so its Executor row offers Open, not Add.
            yield* browser.use("Open Add app", (page) =>
-@@ -126,62 +135,39 @@
+@@ -130,62 +139,39 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
              const directory = yield* body(
                Schema.Struct({
                  apps: Schema.Array(
@@ -643,6 +643,7 @@ diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-acc
                    .getByRole("link", { name: "Open Executor", exact: true })
 diff --git a/e2e/tests/host-managed-accounts.spec.ts b/e2e/tests/host-managed-accounts.spec.ts
 new file mode 100644
+index 0000000..830b354
 --- /dev/null
 +++ b/e2e/tests/host-managed-accounts.spec.ts
 @@ -0,0 +1,302 @@
@@ -1097,7 +1098,7 @@ index 6692bd1..977f53d 100644
  export const connectableMethods = (definition: ProviderDefinition) =>
    Object.entries(definition.auth).filter(
 diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
-index 230bfb1..421d3cd 100644
+index 800c321..efb2b26 100644
 --- a/packages/ui/src/contracts/dashboard.ts
 +++ b/packages/ui/src/contracts/dashboard.ts
 @@ -9,6 +9,7 @@ import type {
@@ -1127,10 +1128,10 @@ index 230bfb1..421d3cd 100644
  /** Any Effect Atom source, including a live stream or a one-shot HTTP query. */
  export type Query<A, E> = Atom.Atom<AsyncResult.AsyncResult<A, E>>;
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index ff19b9c..3518e78 100644
+index 81dc005..8eec08b 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -47,13 +47,31 @@ import { cn } from "../lib/utils.ts";
+@@ -57,13 +57,31 @@ import { cn } from "../lib/utils.ts";
  import { useProductBrand } from "../hooks/product-brand.ts";
  
  const provisionedOnly = (requirement: AccountRequirement) =>
@@ -1163,19 +1164,19 @@ index ff19b9c..3518e78 100644
  };
  
  const accountName = (account: AccountSummary) =>
-@@ -390,10 +408,36 @@ export function AppAccounts<E>({
+@@ -447,10 +465,36 @@ export function AppAccounts<E>({
    readonly accounts: readonly AccountSummary[];
    readonly Failure: ComponentType<FailureProps<E>>;
  }) {
 -  const appRequirements = scoped(app, "app");
 -  const userRequirements = scoped(app, "user");
-+  useRevalidateChecks(
++  const appChecking = useRevalidateChecks(
 +    app,
 +    "app",
 +    appAccounts.links.map((link) => link.account),
 +    appAccounts.revalidate,
 +  );
-+  useRevalidateChecks(
++  const userChecking = useRevalidateChecks(
 +    app,
 +    "user",
 +    yourAccounts.links.map((link) => link.account),
@@ -1203,7 +1204,13 @@ index ff19b9c..3518e78 100644
        <EmptyState size="compact" title="No accounts required">
          This app can run without a saved account.
        </EmptyState>
-@@ -409,6 +453,7 @@ export function AppAccounts<E>({
+@@ -461,11 +505,13 @@ export function AppAccounts<E>({
+         <LinkScope
+           app={app}
+           scope="app"
++          checking={appChecking}
+           title="App accounts"
+           description="Linked for everyone"
            requirements={appRequirements}
            data={appAccounts}
            accounts={accounts}
@@ -1211,7 +1218,13 @@ index ff19b9c..3518e78 100644
            Failure={Failure}
          />
        )}
-@@ -421,6 +466,7 @@ export function AppAccounts<E>({
+@@ -473,11 +519,13 @@ export function AppAccounts<E>({
+         <LinkScope
+           app={app}
+           scope="user"
++          checking={userChecking}
+           title="Your accounts"
+           description="Linked for you"
            requirements={userRequirements}
            data={yourAccounts}
            accounts={accounts}
@@ -1219,7 +1232,7 @@ index ff19b9c..3518e78 100644
            Failure={Failure}
          />
        )}
-@@ -430,6 +476,7 @@ export function AppAccounts<E>({
+@@ -487,6 +535,7 @@ export function AppAccounts<E>({
  
  interface ScopeProps<E> {
    readonly app: App;
@@ -1227,12 +1240,23 @@ index ff19b9c..3518e78 100644
    readonly scope: AccountScope;
    readonly data: ScopeAccounts<E>;
    readonly accounts: readonly AccountSummary[];
-@@ -446,13 +493,7 @@ function LinkScope<E>({
+@@ -494,22 +543,18 @@ interface ScopeProps<E> {
+ }
+ 
+ function LinkScope<E>({
++  checking,
+   title,
+   description,
+   requirements,
+   ...props
+ }: ScopeProps<E> & {
++  readonly checking: Rechecks;
+   readonly title: string;
    readonly description: string;
    readonly requirements: readonly RequirementEntry[];
  }) {
 -  const { app, scope, data } = props;
--  useRevalidateChecks(
+-  const checking = useRevalidateChecks(
 -    app,
 -    scope,
 -    data.links.map((link) => link.account),
@@ -1241,8 +1265,8 @@ index ff19b9c..3518e78 100644
 +  const { data } = props;
    const readOnly = data.edit === undefined;
    return (
-     <section aria-label={title} data-read-only={readOnly} className="space-y-3">
-@@ -610,6 +651,7 @@ const byName = <C extends { readonly account: AccountSummary }>(choices: readonl
+     <Checking.Provider value={checking}>
+@@ -671,6 +716,7 @@ const byName = <C extends { readonly account: AccountSummary }>(choices: readonl
  /** A member's view: the linked accounts with their status, and no controls. */
  function ReadOnlyChoices<E>({
    app,
@@ -1250,7 +1274,7 @@ index ff19b9c..3518e78 100644
    slot,
    requirement,
    linked,
-@@ -623,10 +665,21 @@ function ReadOnlyChoices<E>({
+@@ -684,10 +730,21 @@ function ReadOnlyChoices<E>({
    if (linked.length === 0)
      return (
        <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">
@@ -1274,7 +1298,7 @@ index ff19b9c..3518e78 100644
      const provisioned = provisionedMethod(requirement, account);
      return (
        <li key={account.id} className={rowClass}>
-@@ -698,6 +749,7 @@ function ReadOnlyChoices<E>({
+@@ -759,6 +816,7 @@ function ReadOnlyChoices<E>({
   */
  function EditableChoices<E>({
    app,
@@ -1282,7 +1306,7 @@ index ff19b9c..3518e78 100644
    slot,
    requirement,
    linked,
-@@ -742,7 +794,14 @@ function EditableChoices<E>({
+@@ -803,7 +861,14 @@ function EditableChoices<E>({
            requirement.definition.auth[choice.account.method]?.type === "interactive",
        )
      : undefined;
@@ -1298,7 +1322,7 @@ index ff19b9c..3518e78 100644
      <ChoiceRow
        replaces={
          bound !== undefined && bound.account.id !== choice.account.id
-@@ -778,7 +837,10 @@ function EditableChoices<E>({
+@@ -839,7 +904,10 @@ function EditableChoices<E>({
            <Failure cause={result.cause} retry={refresh} retrying={result.waiting} />
          </div>
        )}
@@ -1348,7 +1372,7 @@ index fa0f475..2b2cbc7 100644
              return (
                <Card asChild key={app.id} className="gap-0 rounded-lg p-4 shadow-none">
 diff --git a/packages/ui/src/implementation/dashboard/connection-app-picker.tsx b/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
-index 46e7554..882ca42 100644
+index 25fbbe8..3dc592b 100644
 --- a/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
 +++ b/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
 @@ -48,17 +48,32 @@ export interface AppChoices {
@@ -1395,29 +1419,15 @@ index 46e7554..882ca42 100644
  
  /** The events an app's active version declares, by name. */
 diff --git a/packages/ui/src/implementation/dashboard/scoped-connections.tsx b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
-index 75ae149..b706932 100644
+index d4abd1c..8064335 100644
 --- a/packages/ui/src/implementation/dashboard/scoped-connections.tsx
 +++ b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
-@@ -80,7 +80,10 @@ const plural = (count: number, one: string, many = `${one}s`) =>
- /** Every account choice per app, computed once per inventory. */
- const inventoryChoices = (inventory: Inventory) =>
-   new Map<AppId, AppChoices>(
+@@ -333,7 +333,7 @@ function ConnectionCard({
+ 
+ const choicesFor = (inventory: Inventory): ReadonlyMap<AppId, AppChoices> =>
+   new Map(
 -    inventory.apps.map((app) => [app.id, appChoices(app, inventory.links, inventory.accounts)]),
-+    inventory.apps.map((app) => [
-+      app.id,
-+      appChoices(app, inventory.links, inventory.accounts, inventory.hostManagedLinks),
-+    ]),
++    inventory.apps.map((app) => [app.id, appChoices(app, inventory.links, inventory.accounts, inventory.hostManagedLinks)]),
    );
  
- /** Show a stored connection with current names; removed apps and accounts stay visible as such. */
-@@ -628,7 +631,9 @@ function ConnectionEditor<E, ES extends E>({
-   const [pinned] = useState(() => new Set(initial.apps.map((app) => app.id)));
-   const choices = useMemo(() => {
-     return inventory.apps
--      .map((app) => appChoices(app, inventory.links, inventory.accounts))
-+      .map((app) =>
-+        appChoices(app, inventory.links, inventory.accounts, inventory.hostManagedLinks),
-+      )
-       .toSorted(
-         (a, b) =>
-           Number(pinned.has(b.app.id)) - Number(pinned.has(a.app.id)) ||
+ /** A stored connection as an editable draft, keeping removed apps and accounts visible. */

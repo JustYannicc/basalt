@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@executor.sh/spotify\",\n  \"description\": \"Search the catalog, read and edit playlists and the saved library, and control playback through the Spotify Web API.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"Spotify\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.14\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@executor.sh/spotify\",\n  \"description\": \"Search the catalog, read and edit playlists and the saved library, and control playback through the Spotify Web API.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"Spotify\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.16\"\n  }\n}\n"
     }
   ]
 }

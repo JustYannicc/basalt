@@ -15,12 +15,12 @@ const transport = "host-managed-accounts-cloud";
 const actions = "host-managed-accounts-cloud-actions";
 const groups = {
   "isolated-cold-listing-telemetry": { job: transport, count: 1 },
-  "the-private-oauth-transport-and-hosted-placement": { job: transport, count: 19 },
+  "the-private-oauth-transport-and-hosted-placement": { job: transport, count: 22 },
   "account-policy-and-import": { job: actions, count: 12 },
   "listed-account-actions": { job: actions, count: 12 },
 };
 
-test("all 44 Cloud account scenarios keep one owner and their original isolated command", () => {
+test("all 47 Cloud account scenarios keep one owner and their original isolated command", () => {
   const declarations = readDeclarations();
   const all = new Set<string>();
   for (const [name, { job, count }] of Object.entries(groups)) {
@@ -54,7 +54,7 @@ test("all 44 Cloud account scenarios keep one owner and their original isolated 
       },
     ]);
   }
-  assert.equal(all.size, 44);
+  assert.equal(all.size, 47);
 });
 
 test("both jobs prepare separately and retain evidence inside unchanged deadlines", () => {

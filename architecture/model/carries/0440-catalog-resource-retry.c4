@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Catalog compiler resource failures leave the active app and saved links intact, let later apps proceed, and fail the provisioning attempt for its existing bounded durable backoff. Compiler deadlines retain their structured classification through deployment errors; invalid source remains a permanent skip. Safe app, cause, attempt, trace and phase diagnostics reach the existing incident and log sinks. Catalog and provisioning service tests with synthetic workspace/source storage prove recovery and terminal exhaustion without changing production retry or compiler admission limits."
+      constraint "Catalog compiler resource failures leave the active app and saved links intact, let later apps proceed, and fail the provisioning attempt for its existing bounded durable backoff. Compiler deadlines retain their structured classification through deployment errors; invalid source remains a permanent skip. Safe app, cause, attempt, trace and phase diagnostics reach the existing incident and log sinks. Catalog and provisioning service tests with synthetic workspace/source storage prove recovery and terminal exhaustion without changing production retry or compiler admission limits. Provisioning retains a failed result after safe incident reporting, so a recoverable compiler-resource failure reaches the existing job retry policy instead of being swallowed by diagnostics."
     }
   }
 }

@@ -1,5 +1,5 @@
 diff --git a/apps/docs/content/run/self-host.mdx b/apps/docs/content/run/self-host.mdx
-index e5542e8..2095073 100644
+index 1e147e9..8e2989f 100644
 --- a/apps/docs/content/run/self-host.mdx
 +++ b/apps/docs/content/run/self-host.mdx
 @@ -32,6 +32,7 @@ These settings override the defaults:
@@ -25,7 +25,7 @@ index f24b821..9923bc8 100644
        # document there, which authorization servers must be able to fetch over public HTTPS.
        EXECUTOR_OAUTH_CLIENT_METADATA_URL:
 diff --git a/bun.lock b/bun.lock
-index db33d48..fc1169a 100644
+index 48d794d..c389e08 100644
 --- a/bun.lock
 +++ b/bun.lock
 @@ -715,6 +715,7 @@
@@ -36,7 +36,7 @@ index db33d48..fc1169a 100644
          "radix-ui": "1.6.7",
          "react-markdown": "10.1.0",
          "remark-gfm": "4.0.1",
-@@ -4102,6 +4103,8 @@
+@@ -4094,6 +4095,8 @@
  
      "mkdirp": ["mkdirp@0.5.6", "", { "dependencies": { "minimist": "^1.2.6" }, "bin": { "mkdirp": "bin/cmd.js" } }, "sha512-FP+p8RB8OWpF3YZBCrP5gtADmtXApB5AMLn+vdyA+PyxCjrCs00mjyUozssO33cwDeT3wNGdLxJ5M//YqtHAJw=="],
  
@@ -46,7 +46,7 @@ index db33d48..fc1169a 100644
  
      "motion": ["motion@12.43.0", "", { "dependencies": { "framer-motion": "^12.43.0", "tslib": "^2.4.0" }, "peerDependencies": { "@emotion/is-prop-valid": "*", "react": "^18.0.0 || ^19.0.0", "react-dom": "^18.0.0 || ^19.0.0" }, "optionalPeers": ["@emotion/is-prop-valid", "react", "react-dom"] }, "sha512-BQgQbSa9Hn3/mtbib0MK53y6JSANa+YKUKlaYnWzAVDH424RYQ5LVpV3pNiWH00BA2z4ojsSdMzqT7g2FQwjuQ=="],
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index fc9cb52..91721bb 100644
+index 06fe43a..d0ac1a8 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -82,6 +82,7 @@ export const productBrand = {
@@ -57,17 +57,7 @@ index fc9cb52..91721bb 100644
  } as const;
  /**
   * The execute budget of the lazy stall scenario: longer than execute's 10 s discovery wait, so a
-@@ -5062,7 +5063,8 @@ export const scenarios = plan({
-     fixtures: "actors",
-     file: "cloud-app-query-auth.spec.ts",
-     appOrigin: true,
--    title: "Cloud app queries read current authorization without deleting expired verification records",
-+    title:
-+      "Cloud app queries read current authorization without deleting expired verification records",
-     targets: {
-       cloud: managedCloud,
-       "self-host": na("AppPages has a separate Better Auth adapter only on Cloud."),
-@@ -5953,6 +5955,7 @@ export const scenarios = plan({
+@@ -6775,6 +6776,7 @@ export const scenarios = plan({
        EXECUTOR_PRODUCT_DOCS_URL: productBrand.docs,
        EXECUTOR_PRODUCT_PRIVACY_URL: productBrand.privacy,
        EXECUTOR_PRODUCT_SOURCE_URL: productBrand.source,
@@ -167,11 +157,11 @@ index 83f4d33..c500ce3 100644
      "react-markdown": "10.1.0",
      "remark-gfm": "4.0.1",
 diff --git a/packages/ui/src/contracts/http.ts b/packages/ui/src/contracts/http.ts
-index 3aadafa..15756e7 100644
+index 99e4539..3432fef 100644
 --- a/packages/ui/src/contracts/http.ts
 +++ b/packages/ui/src/contracts/http.ts
-@@ -14,6 +14,13 @@ const addressHost = HttpClient.mapRequest((request) =>
-   request.url.startsWith("/") ? HttpClientRequest.prependUrl(request, inProcessOrigin) : request,
+@@ -19,6 +19,13 @@ const stateRevision = HttpClient.mapRequest(
+   HttpClientRequest.setHeader(wireRevisionHeader, String(wireRevision)),
  );
  
 +/**
@@ -184,12 +174,20 @@ index 3aadafa..15756e7 100644
  /**
   * Effect's Fetch client with the runtime's `Fetch`: the browser's, or on the server the
   * document's in-process fetch supplied by the dashboard atom runtime.
-@@ -23,7 +30,7 @@ export const dashboardHttpClient: Layer.Layer<HttpClient.HttpClient> =
-     ? Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, addressHost)).pipe(
-         Layer.provide(FetchHttpClient.layer),
-       )
--    : FetchHttpClient.layer;
-+    : FetchHttpClient.layer.pipe(Layer.provide(Layer.succeed(FetchHttpClient.Fetch, currentFetch)));
+@@ -28,7 +35,15 @@ export const dashboardHttpClient: Layer.Layer<HttpClient.HttpClient> = Layer.eff
+   Effect.map(HttpClient.HttpClient, (client) =>
+     stateRevision(typeof window === "undefined" ? addressHost(client) : client),
+   ),
+-).pipe(Layer.provide(FetchHttpClient.layer));
++).pipe(
++  Layer.provide(
++    typeof window === "undefined"
++      ? FetchHttpClient.layer
++      : FetchHttpClient.layer.pipe(
++          Layer.provide(Layer.succeed(FetchHttpClient.Fetch, currentFetch)),
++        ),
++  ),
++);
  
  /** A deterministic key for a request, independent of property order. */
  export const requestKey = (value: unknown): string => {

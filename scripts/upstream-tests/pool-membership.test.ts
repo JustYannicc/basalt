@@ -46,7 +46,7 @@ const database = (
         "create table executor_apps (id text primary key, owner text, name text, active_deployment text)",
         "create table executor_deployments (id text primary key, requirements jsonb)",
         "create table hosted_account_access (account_id text primary key, organization_id text, kind text, personal_user_id text, creator_id text)",
-        "create table hosted_app_account_links (app text, requirement text, subject text, account text, created_at timestamptz)",
+        "create table hosted_app_account_links (app text, requirement text, subject text, account text, created_at timestamptz, linked_by text)",
         "create table executor_accounts (id text primary key, owner text, provider text, method text, credential_generation integer)",
       ])
         yield* sql.unsafe(statement);

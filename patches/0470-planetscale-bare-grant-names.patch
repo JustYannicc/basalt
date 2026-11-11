@@ -1,6 +1,8 @@
+diff --git a/apps/hosted/server/src/implementation/planetscale-oauth.ts b/apps/hosted/server/src/implementation/planetscale-oauth.ts
+index bba18d9..9159a45 100644
 --- a/apps/hosted/server/src/implementation/planetscale-oauth.ts
 +++ b/apps/hosted/server/src/implementation/planetscale-oauth.ts
-@@ -166,6 +166,8 @@
+@@ -166,6 +166,8 @@ export const planetScaleOAuthClient: FirstPartyOAuthClientDefinition = {
      issuer: "https://api.planetscale.com",
      authorizationUrl: "https://app.planetscale.com/oauth/authorize",
      tokenUrl: "https://auth.planetscale.com/oauth/token",
@@ -9,9 +11,11 @@
      scopeImplications,
    },
    tokenEndpointAuthMethod: "client_secret_basic",
+diff --git a/packages/sdk/src/contracts/oauth-scopes.ts b/packages/sdk/src/contracts/oauth-scopes.ts
+index 16ed957..f5000e3 100644
 --- a/packages/sdk/src/contracts/oauth-scopes.ts
 +++ b/packages/sdk/src/contracts/oauth-scopes.ts
-@@ -29,3 +29,34 @@
+@@ -29,3 +29,34 @@ export const oauthScopeClosure = (
    }
    return [...covered];
  };
@@ -46,20 +50,2297 @@
 +  };
 +  return [...new Set(reported.flatMap(resolve))];
 +};
+diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+index 5bfabc3..59ff98c 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
-@@ -340,6 +340,11 @@
-      * reports `repo,gist` whatever separator the request used. Defaults to whitespace only.
-      */
-     grantedScopeSeparator: Schema.optionalKey(Schema.NonEmptyString),
+@@ -32,11 +32,12 @@ import { AccountId, HttpUrl, JsonObject, OwnerId, ProviderId } from "./shared.ts
+  * A sign-in URL, its expiry and the callback it sent as `redirect_uri`, which a saved client may
+  * have kept from before the host's current one. No account exists until completion succeeds.
+  */
+-export const OAuthSignIn = /* @__PURE__ */ (() => Schema.Struct({
+-  authorizationUrl: HttpUrl,
+-  expiresAt: Schema.Date,
+-  redirectUri: HttpUrl,
+-}))();
++export const OAuthSignIn = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    authorizationUrl: HttpUrl,
++    expiresAt: Schema.Date,
++    redirectUri: HttpUrl,
++  }))();
+ 
+ export type OAuthSignIn = typeof OAuthSignIn.Type;
+ 
+@@ -44,15 +45,16 @@ export const OAuthClientId = Schema.NonEmptyString.pipe(Schema.brand("OAuthClien
+ export type OAuthClientId = typeof OAuthClientId.Type;
+ 
+ /** Authorization code needs a redirect; client credentials completes the same connection immediately. */
+-export const OAuthStartResult = /* @__PURE__ */ (() => Schema.Union([
+-  Schema.Struct({
+-    status: Schema.Literal("redirect"),
+-    ...OAuthSignIn.fields,
+-    /** The stored client this sign-in uses, such as the automatic client it found or created. */
+-    oauthClient: Schema.optional(OAuthClientId),
+-  }),
+-  Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
+-]))();
++export const OAuthStartResult = /* @__PURE__ */ (() =>
++  Schema.Union([
++    Schema.Struct({
++      status: Schema.Literal("redirect"),
++      ...OAuthSignIn.fields,
++      /** The stored client this sign-in uses, such as the automatic client it found or created. */
++      oauthClient: Schema.optional(OAuthClientId),
++    }),
++    Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
++  ]))();
+ export type OAuthStartResult = typeof OAuthStartResult.Type;
+ 
+ /**
+@@ -115,56 +117,59 @@ const clientSetup = {
+   ),
+ };
+ /** Public sign-in setup metadata resolved from provider code and discovery. Secrets remain on the host. */
+-export const OAuthClientSetup = /* @__PURE__ */ (() => Schema.Union([
+-  Schema.Struct({
+-    ...clientSetup,
+-    grant: Schema.Literal("authorization_code"),
+-    /**
+-     * The authorization server this sign-in uses (see `OAuthClientIssuer`): stored clients
+-     * registered for it are the ones a connection may name.
+-     */
+-    issuer: HttpUrl,
+-    /** Omitted when the provider does not declare one; the client secret is then optional. */
+-    tokenEndpointAuthMethod: Schema.optional(OAuthClientAuth),
+-    /**
+-     * Permissions requested for the signed-in user's own token through Slack's `user_scope`
+-     * authorization parameter, beside `scopes`. Omitted when the provider sends none.
+-     */
+-    userScopes: Schema.optional(Schema.Array(Schema.String)),
+-  }),
+-  Schema.Struct({
+-    ...clientSetup,
+-    grant: Schema.Literal("client_credentials"),
+-    tokenEndpointAuthMethod: OAuthSecretClientAuth,
+-  }),
+-]))();
++export const OAuthClientSetup = /* @__PURE__ */ (() =>
++  Schema.Union([
++    Schema.Struct({
++      ...clientSetup,
++      grant: Schema.Literal("authorization_code"),
++      /**
++       * The authorization server this sign-in uses (see `OAuthClientIssuer`): stored clients
++       * registered for it are the ones a connection may name.
++       */
++      issuer: HttpUrl,
++      /** Omitted when the provider does not declare one; the client secret is then optional. */
++      tokenEndpointAuthMethod: Schema.optional(OAuthClientAuth),
++      /**
++       * Permissions requested for the signed-in user's own token through Slack's `user_scope`
++       * authorization parameter, beside `scopes`. Omitted when the provider sends none.
++       */
++      userScopes: Schema.optional(Schema.Array(Schema.String)),
++    }),
++    Schema.Struct({
++      ...clientSetup,
++      grant: Schema.Literal("client_credentials"),
++      tokenEndpointAuthMethod: OAuthSecretClientAuth,
++    }),
++  ]))();
+ export type OAuthClientSetup = typeof OAuthClientSetup.Type;
+ /** Inspect a sign-in method. A connection target supplies its own frozen provider site. */
+-export const CheckOAuthSetup = /* @__PURE__ */ (() => Schema.Union([
+-  Schema.Struct({
+-    owner: OwnerId,
+-    provider: ProviderId,
+-    method: AuthMethodName,
+-    redirectUri: Schema.optional(HttpUrl),
+-  }),
+-  Schema.Struct({
+-    owner: OwnerId,
+-    connection: AccountConnectionId,
+-    method: AuthMethodName,
+-    redirectUri: Schema.optional(HttpUrl),
+-  }),
+-]))();
++export const CheckOAuthSetup = /* @__PURE__ */ (() =>
++  Schema.Union([
++    Schema.Struct({
++      owner: OwnerId,
++      provider: ProviderId,
++      method: AuthMethodName,
++      redirectUri: Schema.optional(HttpUrl),
++    }),
++    Schema.Struct({
++      owner: OwnerId,
++      connection: AccountConnectionId,
++      method: AuthMethodName,
++      redirectUri: Schema.optional(HttpUrl),
++    }),
++  ]))();
+ 
+ /** No client was named and none can be created automatically for this provider method. */
+-export const OAuthClientUnavailable = /* @__PURE__ */ (() => ApiError.define({
+-  tag: "OAuthClientUnavailable",
+-  status: 409,
+-  fields: { provider: ProviderId, method: AuthMethodName },
+-  message: ({ method }) =>
+-    `The “${method}” OAuth method needs a client configured on this host before an account can connect.`,
+-  recorded: () =>
+-    "The OAuth method needs a client configured on this host before an account can connect",
+-}))();
++export const OAuthClientUnavailable = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "OAuthClientUnavailable",
++    status: 409,
++    fields: { provider: ProviderId, method: AuthMethodName },
++    message: ({ method }) =>
++      `The “${method}” OAuth method needs a client configured on this host before an account can connect.`,
++    recorded: () =>
++      "The OAuth method needs a client configured on this host before an account can connect",
++  }))();
+ export type OAuthClientUnavailable = typeof OAuthClientUnavailable.Type;
+ 
+ import { OAuthFailureCause, OAuthRenewalReason } from "./oauth-failure-evidence.ts";
+@@ -195,20 +200,23 @@ export const maxOAuthServiceErrorLength = 128;
+  * text of an error body that is not an OAuth error. Longer text is cut short.
+  */
+ export const maxOAuthServiceTextLength = 500;
+-const OAuthServiceText = /* @__PURE__ */ (() => Schema.String.check(
+-  Schema.isMinLength(1),
+-  Schema.isMaxLength(maxOAuthServiceTextLength),
+-))();
++const OAuthServiceText = /* @__PURE__ */ (() =>
++  Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(maxOAuthServiceTextLength)))();
+ /** An RFC 6749 error response: its `error` code, including codes outside RFC 6749, and description. */
+-export const OAuthServiceErrorResponse = /* @__PURE__ */ (() => Schema.Struct({
+-  error: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(maxOAuthServiceErrorLength)),
+-  description: Schema.optional(OAuthServiceText),
+-}))();
++export const OAuthServiceErrorResponse = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    error: Schema.String.check(
++      Schema.isMinLength(1),
++      Schema.isMaxLength(maxOAuthServiceErrorLength),
++    ),
++    description: Schema.optional(OAuthServiceText),
++  }))();
+ /**
+  * Any other error body, such as Ahrefs' JSON arrays or an HTML error page, as plain text. Markup is
+  * reduced to its text, without scripts, styles or comments.
+  */
+-export const OAuthServiceErrorBody = /* @__PURE__ */ (() => Schema.Struct({ body: OAuthServiceText }))();
++export const OAuthServiceErrorBody = /* @__PURE__ */ (() =>
++  Schema.Struct({ body: OAuthServiceText }))();
+ /**
+  * What the authorization server itself said when it refused a sign-in step. Each secret Executor
+  * sent in that request, in every form the request encoded it, and any credential the text names
+@@ -217,7 +225,8 @@ export const OAuthServiceErrorBody = /* @__PURE__ */ (() => Schema.Struct({ body
+  * callers who may manage the connection and kept on a connection's recorded failure. It never
+  * enters telemetry, logs, reports, or an error's own message.
+  */
+-export const OAuthServiceError = /* @__PURE__ */ (() => Schema.Union([OAuthServiceErrorResponse, OAuthServiceErrorBody]))();
++export const OAuthServiceError = /* @__PURE__ */ (() =>
++  Schema.Union([OAuthServiceErrorResponse, OAuthServiceErrorBody]))();
+ export type OAuthServiceError = typeof OAuthServiceError.Type;
+ 
+ /**
+@@ -341,14 +350,16 @@ const incompatibleResponse = {
+ } satisfies ErrorPresentation;
+ 
+ /** User-supplied client configuration. A client secret is write-only at API boundaries. */
+-export const OAuthClientInput = /* @__PURE__ */ (() => Schema.Struct({
+-  clientId: Schema.NonEmptyString,
+-  clientSecret: Schema.optional(Schema.RedactedFromValue(Schema.NonEmptyString)),
+-}))();
++export const OAuthClientInput = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    clientId: Schema.NonEmptyString,
++    clientSecret: Schema.optional(Schema.RedactedFromValue(Schema.NonEmptyString)),
++  }))();
+ export type OAuthClientInput = typeof OAuthClientInput.Type;
+ 
+ /** An RFC 6749 scope token: printable ASCII without spaces, quotes or backslashes. */
+-const ScopeToken = /* @__PURE__ */ (() => Schema.String.check(Schema.isPattern(/^[\x21\x23-\x5B\x5D-\x7E]+$/u)))();
++const ScopeToken = /* @__PURE__ */ (() =>
++  Schema.String.check(Schema.isPattern(/^[\x21\x23-\x5B\x5D-\x7E]+$/u)))();
+ 
+ /**
+  * The authorization server an operator's client signs in with, and how its requests are encoded,
+@@ -356,39 +367,42 @@ const ScopeToken = /* @__PURE__ */ (() => Schema.String.check(Schema.isPattern(/
+  * tokens goes only to these endpoints: provider and app code never choose where. A provider's own
+  * declaration only decides whether the client is offered for it.
+  */
+-export const FirstPartyOAuthServer = /* @__PURE__ */ (() => Schema.Struct({
+-  /**
+-   * The server's RFC 8414 issuer, checked against the callback's `iss` and ID tokens. Omitted, it
+-   * is derived from the token URL and those checks are skipped, as for providers that declare none.
+-   */
+-  issuer: Schema.optionalKey(HttpUrl),
+-  authorizationUrl: HttpUrl,
+-  tokenUrl: HttpUrl,
+-  /** RFC 7009 endpoint the client's tokens are revoked at when an account is removed. */
+-  revocationUrl: Schema.optionalKey(HttpUrl),
+-  /** Joins requested scopes on the authorization request. Defaults to a space. */
+-  scopeSeparator: Schema.optionalKey(Schema.NonEmptyString),
+-  /**
+-   * Splits the `scope` a token response reports, besides whitespace, such as `,` for GitHub, which
+-   * reports `repo,gist` whatever separator the request used. Defaults to whitespace only.
+-   */
+-  grantedScopeSeparator: Schema.optionalKey(Schema.NonEmptyString),
+-  /** Host-reviewed access included by a scope. Apps cannot extend the operator's scope menu. */
+-  scopeImplications: Schema.optionalKey(Schema.Record(ScopeToken, Schema.Array(ScopeToken))),
+-  /**
+-   * Extra authorization request parameters. Google's `access_type=offline` and `prompt=consent`
+-   * are always sent to Google, so they need not be listed.
+-   */
+-  authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
+-  tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
+-  /** How the token response carries its grant; strict path requirements apply only on exchange. */
+-  tokenResponse: Schema.optionalKey(OAuthTokenResponse),
+-  /**
+-   * The RFC 8707 resource sent on the authorization request, the code exchange and every renewal,
+-   * such as `https://mcp.slack.com`. A provider's own resource is never sent for this client.
+-   */
+-  resource: Schema.optionalKey(HttpUrl),
+-}))();
++export const FirstPartyOAuthServer = /* @__PURE__ */ (() =>
++  Schema.Struct({
 +    /**
-+     * Resource prefixes, narrowest first, that the token response may omit from a reported scope,
-+     * such as PlanetScale's `organization:`. Bare names resolve to allowed prefixed scopes only.
++     * The server's RFC 8414 issuer, checked against the callback's `iss` and ID tokens. Omitted, it
++     * is derived from the token URL and those checks are skipped, as for providers that declare none.
 +     */
++    issuer: Schema.optionalKey(HttpUrl),
++    authorizationUrl: HttpUrl,
++    tokenUrl: HttpUrl,
++    /** RFC 7009 endpoint the client's tokens are revoked at when an account is removed. */
++    revocationUrl: Schema.optionalKey(HttpUrl),
++    /** Joins requested scopes on the authorization request. Defaults to a space. */
++    scopeSeparator: Schema.optionalKey(Schema.NonEmptyString),
++    /**
++     * Splits the `scope` a token response reports, besides whitespace, such as `,` for GitHub, which
++     * reports `repo,gist` whatever separator the request used. Defaults to whitespace only.
++     */
++    grantedScopeSeparator: Schema.optionalKey(Schema.NonEmptyString),
++    /** Resource prefixes, narrowest first, that a token response may omit from granted scopes. */
 +    grantedScopePrefixes: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
-     /** Host-reviewed access included by a scope. Apps cannot extend the operator's scope menu. */
-     scopeImplications: Schema.optionalKey(Schema.Record(ScopeToken, Schema.Array(ScopeToken))),
-     /** Extra authorization request parameters, such as `{ access_type: "offline" }`. */
++    /** Host-reviewed access included by a scope. Apps cannot extend the operator's scope menu. */
++    scopeImplications: Schema.optionalKey(Schema.Record(ScopeToken, Schema.Array(ScopeToken))),
++    /**
++     * Extra authorization request parameters. Google's `access_type=offline` and `prompt=consent`
++     * are always sent to Google, so they need not be listed.
++     */
++    authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
++    tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
++    /** How the token response carries its grant; strict path requirements apply only on exchange. */
++    tokenResponse: Schema.optionalKey(OAuthTokenResponse),
++    /**
++     * The RFC 8707 resource sent on the authorization request, the code exchange and every renewal,
++     * such as `https://mcp.slack.com`. A provider's own resource is never sent for this client.
++     */
++    resource: Schema.optionalKey(HttpUrl),
++  }))();
+ export type FirstPartyOAuthServer = typeof FirstPartyOAuthServer.Type;
+ 
+ /**
+@@ -397,34 +411,37 @@ export type FirstPartyOAuthServer = typeof FirstPartyOAuthServer.Type;
+  * scheme. App and provider code never choose it. Any credential the operator provides is placed
+  * this way; its OAuth clients' access tokens are the only kind so far.
+  */
+-export const ManagedPlacement = /* @__PURE__ */ (() => Schema.Struct({
+-  /** The only hosts the credential reaches, within the hosts the provider declares. */
+-  hosts: Schema.Array(CredentialHost).check(Schema.isMinLength(1)),
+-  /** The header the credential goes in. Defaults to `authorization`. */
+-  header: Schema.optionalKey(PlacementHeaderName),
+-  /** Defaults to `Bearer` in `authorization` and to none in any other header. */
+-  scheme: Schema.optionalKey(Schema.NullOr(Schema.NonEmptyString)),
+-}))();
++export const ManagedPlacement = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    /** The only hosts the credential reaches, within the hosts the provider declares. */
++    hosts: Schema.Array(CredentialHost).check(Schema.isMinLength(1)),
++    /** The header the credential goes in. Defaults to `authorization`. */
++    header: Schema.optionalKey(PlacementHeaderName),
++    /** Defaults to `Bearer` in `authorization` and to none in any other header. */
++    scheme: Schema.optionalKey(Schema.NullOr(Schema.NonEmptyString)),
++  }))();
+ export type ManagedPlacement = typeof ManagedPlacement.Type;
+ 
+ /** The operator's name for a credential it provides, such as one of its OAuth clients. */
+-export const FirstPartyOAuthClientId = /* @__PURE__ */ (() => Schema.String.check(
+-  Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/u),
+-).pipe(Schema.brand("FirstPartyOAuthClientId")))();
++export const FirstPartyOAuthClientId = /* @__PURE__ */ (() =>
++  Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9-]{0,62}$/u)).pipe(
++    Schema.brand("FirstPartyOAuthClientId"),
++  ))();
+ export type FirstPartyOAuthClientId = typeof FirstPartyOAuthClientId.Type;
+ 
+ /**
+  * A host-owned account reporting protocol for one OAuth registration. Endpoints and the subject
+  * ID field are reviewed configuration; no app-authored provider can redirect reporting traffic.
+  */
+-export const PersonalDataReporting = /* @__PURE__ */ (() => Schema.Struct({
+-  /** Read the identity of one saved subject using that subject's own grant. */
+-  identityUrl: HttpUrl,
+-  /** Report stored subject IDs through the registration's 3LO bearer token. */
+-  reportUrl: HttpUrl,
+-  /** Top-level field in the identity response containing the provider's stable subject ID. */
+-  accountIdField: Schema.NonEmptyString,
+-}))();
++export const PersonalDataReporting = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    /** Read the identity of one saved subject using that subject's own grant. */
++    identityUrl: HttpUrl,
++    /** Report stored subject IDs through the registration's 3LO bearer token. */
++    reportUrl: HttpUrl,
++    /** Top-level field in the identity response containing the provider's stable subject ID. */
++    accountIdField: Schema.NonEmptyString,
++  }))();
+ export type PersonalDataReporting = typeof PersonalDataReporting.Type;
+ 
+ /**
+@@ -437,97 +454,100 @@ export type PersonalDataReporting = typeof PersonalDataReporting.Type;
+  * reporting a scope outside `allowedScopes` is refused. Its secret never leaves the host: grants
+  * keep only its ID, so rotating or removing it applies to every account.
+  */
+-export const FirstPartyOAuthClient = /* @__PURE__ */ (() => Schema.Struct({
+-  id: FirstPartyOAuthClientId,
+-  /** Shown when signing in, such as "Executor for Google". */
+-  label: Schema.NonEmptyString,
+-  server: FirstPartyOAuthServer,
+-  /** Trusted tenant boundary for host-owned clients whose endpoints follow one account site. */
+-  issuerSite: Schema.optionalKey(
+-    Schema.Struct({
+-      subdomainOf: Schema.NonEmptyString,
+-      /** Substitute the validated site's single subdomain in a public client's `{subdomain}` ID. */
+-      clientIdTemplate: Schema.optionalKey(Schema.Literal(true)),
+-    }),
+-  ),
+-  clientId: Schema.NonEmptyString,
+-  /** Host-reviewed admin instructions for a client or callback refused by the service. */
+-  setupInstructions: Schema.optionalKey(Schema.NonEmptyString),
+-  /** Check a public client's authorization URL without cookies before sending the person there. */
+-  checkAuthorization: Schema.optionalKey(Schema.Literal(true)),
+-  /** A fixed browser destination completed by pasting its address; never a network target. */
+-  loopbackRedirectUri: Schema.optionalKey(
+-    HttpUrl.check(
+-      Schema.makeFilter((value) => {
+-        const url = new URL(value);
+-        return (
+-          url.protocol === "http:" &&
+-          ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) &&
+-          url.port !== "" &&
+-          url.username === "" &&
+-          url.password === "" &&
+-          url.search === "" &&
+-          url.hash === ""
+-        );
++export const FirstPartyOAuthClient = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    id: FirstPartyOAuthClientId,
++    /** Shown when signing in, such as "Executor for Google". */
++    label: Schema.NonEmptyString,
++    server: FirstPartyOAuthServer,
++    /** Trusted tenant boundary for host-owned clients whose endpoints follow one account site. */
++    issuerSite: Schema.optionalKey(
++      Schema.Struct({
++        subdomainOf: Schema.NonEmptyString,
++        /** Substitute the validated site's single subdomain in a public client's `{subdomain}` ID. */
++        clientIdTemplate: Schema.optionalKey(Schema.Literal(true)),
+       }),
+     ),
+-  ),
+-  clientSecret: Schema.optionalKey(Schema.RedactedFromValue(Schema.NonEmptyString)),
+-  tokenEndpointAuthMethod: OAuthClientAuth,
+-  /** Requested for a provider method that asks for no scopes. */
+-  defaultScopes: Schema.Array(ScopeToken),
+-  /** Pin requested defaults and require the grant to confirm them before saving an account. */
+-  requireScopeConfirmation: Schema.optionalKey(Schema.Boolean),
+-  /** Every scope a sign-in may ask for and a grant may hold. Defaults to `defaultScopes`. */
+-  allowedScopes: Schema.optionalKey(Schema.Array(ScopeToken)),
+-  placement: ManagedPlacement,
+-  /** Optional host-owned scheduled reporting for personal data held under this registration. */
+-  personalDataReporting: Schema.optionalKey(PersonalDataReporting),
+-  /**
+-   * Withheld from new sign-ins: offered only to reconnect an account whose grant it issued. Its
+-   * grants keep renewing, so an operator can stop offering a client without stranding them.
+-   */
+-  unlisted: Schema.optionalKey(Schema.Boolean),
+-}).check(
+-  Schema.makeFilter(
+-    (client) =>
+-      client.issuerSite?.clientIdTemplate !== true ||
+-      (client.tokenEndpointAuthMethod === "none" &&
+-        /^[a-zA-Z0-9_-]*\{subdomain\}[a-zA-Z0-9_-]*$/u.test(client.clientId)),
+-    {
+-      message:
+-        "A site client ID template needs one subdomain placeholder and public authentication.",
+-    },
+-  ),
+-  Schema.makeFilter(
+-    (client) => client.checkAuthorization !== true || client.tokenEndpointAuthMethod === "none",
+-    { message: "Authorization checks are only supported for public clients." },
+-  ),
+-  Schema.makeFilter(
+-    (client) =>
+-      client.loopbackRedirectUri === undefined || client.tokenEndpointAuthMethod === "none",
+-    { message: "Pasted callbacks require a public client." },
+-  ),
+-  Schema.makeFilter(
+-    (client) => (client.tokenEndpointAuthMethod === "none") === (client.clientSecret === undefined),
+-    {
+-      message: "A client that authenticates at the token endpoint needs its secret, and only then.",
+-    },
+-  ),
+-  Schema.makeFilter(
+-    (client) =>
+-      [...client.defaultScopes, ...(client.allowedScopes ?? [])].every(
+-        (scope) => !scope.includes(client.server.scopeSeparator ?? " "),
++    clientId: Schema.NonEmptyString,
++    /** Host-reviewed admin instructions for a client or callback refused by the service. */
++    setupInstructions: Schema.optionalKey(Schema.NonEmptyString),
++    /** Check a public client's authorization URL without cookies before sending the person there. */
++    checkAuthorization: Schema.optionalKey(Schema.Literal(true)),
++    /** A fixed browser destination completed by pasting its address; never a network target. */
++    loopbackRedirectUri: Schema.optionalKey(
++      HttpUrl.check(
++        Schema.makeFilter((value) => {
++          const url = new URL(value);
++          return (
++            url.protocol === "http:" &&
++            ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) &&
++            url.port !== "" &&
++            url.username === "" &&
++            url.password === "" &&
++            url.search === "" &&
++            url.hash === ""
++          );
++        }),
+       ),
+-    { message: "A scope cannot contain the server's scope separator." },
+-  ),
+-  Schema.makeFilter(
+-    (client) =>
+-      client.allowedScopes === undefined ||
+-      client.defaultScopes.every((scope) => client.allowedScopes?.includes(scope) === true),
+-    { message: "Every default scope must be allowed." },
+-  ),
+-))();
++    ),
++    clientSecret: Schema.optionalKey(Schema.RedactedFromValue(Schema.NonEmptyString)),
++    tokenEndpointAuthMethod: OAuthClientAuth,
++    /** Requested for a provider method that asks for no scopes. */
++    defaultScopes: Schema.Array(ScopeToken),
++    /** Pin requested defaults and require the grant to confirm them before saving an account. */
++    requireScopeConfirmation: Schema.optionalKey(Schema.Boolean),
++    /** Every scope a sign-in may ask for and a grant may hold. Defaults to `defaultScopes`. */
++    allowedScopes: Schema.optionalKey(Schema.Array(ScopeToken)),
++    placement: ManagedPlacement,
++    /** Optional host-owned scheduled reporting for personal data held under this registration. */
++    personalDataReporting: Schema.optionalKey(PersonalDataReporting),
++    /**
++     * Withheld from new sign-ins: offered only to reconnect an account whose grant it issued. Its
++     * grants keep renewing, so an operator can stop offering a client without stranding them.
++     */
++    unlisted: Schema.optionalKey(Schema.Boolean),
++  }).check(
++    Schema.makeFilter(
++      (client) =>
++        client.issuerSite?.clientIdTemplate !== true ||
++        (client.tokenEndpointAuthMethod === "none" &&
++          /^[a-zA-Z0-9_-]*\{subdomain\}[a-zA-Z0-9_-]*$/u.test(client.clientId)),
++      {
++        message:
++          "A site client ID template needs one subdomain placeholder and public authentication.",
++      },
++    ),
++    Schema.makeFilter(
++      (client) => client.checkAuthorization !== true || client.tokenEndpointAuthMethod === "none",
++      { message: "Authorization checks are only supported for public clients." },
++    ),
++    Schema.makeFilter(
++      (client) =>
++        client.loopbackRedirectUri === undefined || client.tokenEndpointAuthMethod === "none",
++      { message: "Pasted callbacks require a public client." },
++    ),
++    Schema.makeFilter(
++      (client) =>
++        (client.tokenEndpointAuthMethod === "none") === (client.clientSecret === undefined),
++      {
++        message:
++          "A client that authenticates at the token endpoint needs its secret, and only then.",
++      },
++    ),
++    Schema.makeFilter(
++      (client) =>
++        [...client.defaultScopes, ...(client.allowedScopes ?? [])].every(
++          (scope) => !scope.includes(client.server.scopeSeparator ?? " "),
++        ),
++      { message: "A scope cannot contain the server's scope separator." },
++    ),
++    Schema.makeFilter(
++      (client) =>
++        client.allowedScopes === undefined ||
++        client.defaultScopes.every((scope) => client.allowedScopes?.includes(scope) === true),
++      { message: "Every default scope must be allowed." },
++    ),
++  ))();
+ export type FirstPartyOAuthClient = typeof FirstPartyOAuthClient.Type;
+ 
+ /** The scopes a client allows: `allowedScopes`, or its defaults when it lists none. */
+@@ -578,227 +598,229 @@ export interface OAuthOptions {
+  * OAuth setup failed without exposing upstream bodies, URLs containing codes, or secrets. The
+  * service's own error, when it sent one, is kept apart in `serviceError`.
+  */
+-export const OAuthSetupFailed = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "OAuthSetupFailed",
+-  status: 422,
+-  fields: {
+-    /**
+-     * Each reason has a different recovery: who must act and what they must change. Stored in
+-     * connections' recorded failures, like the cause; a reason the reading release does not know,
+-     * because a later release removed it or an earlier one predates it, hides failures recorded with it.
+-     */
+-    reason: Schema.Literals([
+-      "service_unavailable",
+-      "rate_limited",
+-      "discovery_missing",
+-      "discovery_invalid",
+-      "discovery_blocked",
+-      "resource_mismatch",
+-      "client_not_approved",
+-      "client_registration_required",
+-      "client_metadata_rejected",
+-      "registration_rejected",
+-      "registration_scope_insufficient",
+-      "incompatible_response",
+-      "invalid_client",
+-      "invalid_redirect",
+-      "token_exchange",
+-      "unsupported",
+-    ]),
+-    /** Executor's own public callback, which some services must approve. Forms show it with client entry. */
+-    callbackUrl: Schema.optional(HttpUrl),
+-    clientSetupInstructions: Schema.optional(Schema.NonEmptyString),
+-    cause: Schema.optional(OAuthFailureCause),
+-    serviceError: Schema.optional(OAuthServiceError),
+-    retryAfter: RetryAfter,
+-  },
+-  recorded: ({ reason, cause }) => oauthRecorded("OAuth setup failed", reason, cause),
+-  presentation: ({
+-    reason,
+-    callbackUrl,
+-    cause,
+-    serviceError,
+-    retryAfter,
+-    clientSetupInstructions,
+-  }) => {
+-    // Forms that open client entry already show the callback, so only the fix prompt repeats it.
+-    const callback =
+-      callbackUrl === undefined ? "" : ` This deployment’s callback URL is ${callbackUrl}.`;
+-    if (reason === "invalid_client" && clientSetupInstructions !== undefined)
+-      return withCause(
+-        {
+-          title: "The service refused this OAuth client or callback",
+-          description: "An administrator needs to check the client before you can connect.",
+-          recovery: { action: clientSetupInstructions, instructions: clientSetupInstructions },
+-          agentFixable: false,
+-        },
+-        cause,
+-        serviceError,
+-      );
+-    return withCause(
+-      (
+-        {
+-          service_unavailable: serviceUnavailable,
+-          rate_limited: {
+-            ...rateLimited(retryAfter, {
+-              description: "The service asked for a pause before more sign-in requests.",
+-              action: "Try again",
+-              instructions:
+-                "Starting the sign-in again needs no change to the app or its OAuth client.",
+-            }),
+-            retryable: true,
++export const OAuthSetupFailed = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "OAuthSetupFailed",
++    status: 422,
++    fields: {
++      /**
++       * Each reason has a different recovery: who must act and what they must change. Stored in
++       * connections' recorded failures, like the cause; a reason the reading release does not know,
++       * because a later release removed it or an earlier one predates it, hides failures recorded with it.
++       */
++      reason: Schema.Literals([
++        "service_unavailable",
++        "rate_limited",
++        "discovery_missing",
++        "discovery_invalid",
++        "discovery_blocked",
++        "resource_mismatch",
++        "client_not_approved",
++        "client_registration_required",
++        "client_metadata_rejected",
++        "registration_rejected",
++        "registration_scope_insufficient",
++        "incompatible_response",
++        "invalid_client",
++        "invalid_redirect",
++        "token_exchange",
++        "unsupported",
++      ]),
++      /** Executor's own public callback, which some services must approve. Forms show it with client entry. */
++      callbackUrl: Schema.optional(HttpUrl),
++      clientSetupInstructions: Schema.optional(Schema.NonEmptyString),
++      cause: Schema.optional(OAuthFailureCause),
++      serviceError: Schema.optional(OAuthServiceError),
++      retryAfter: RetryAfter,
++    },
++    recorded: ({ reason, cause }) => oauthRecorded("OAuth setup failed", reason, cause),
++    presentation: ({
++      reason,
++      callbackUrl,
++      cause,
++      serviceError,
++      retryAfter,
++      clientSetupInstructions,
++    }) => {
++      // Forms that open client entry already show the callback, so only the fix prompt repeats it.
++      const callback =
++        callbackUrl === undefined ? "" : ` This deployment’s callback URL is ${callbackUrl}.`;
++      if (reason === "invalid_client" && clientSetupInstructions !== undefined)
++        return withCause(
++          {
++            title: "The service refused this OAuth client or callback",
++            description: "An administrator needs to check the client before you can connect.",
++            recovery: { action: clientSetupInstructions, instructions: clientSetupInstructions },
++            agentFixable: false,
+           },
+-          discovery_missing: {
+-            title: "OAuth settings not found",
+-            description: "This app uses OAuth, but its server doesn’t say how to sign in.",
+-            recovery: {
+-              action: "Check the app’s server URL and sign-in method.",
+-              instructions:
+-                "Inspect the current app’s provider definition, server URL, and the service’s documented sign-in method. Check whether discovery targets the correct OAuth issuer. Do not disable authentication just because OAuth metadata is missing. Use No authentication only if the service documentation confirms this endpoint is public; otherwise configure its supported sign-in method.",
++          cause,
++          serviceError,
++        );
++      return withCause(
++        (
++          {
++            service_unavailable: serviceUnavailable,
++            rate_limited: {
++              ...rateLimited(retryAfter, {
++                description: "The service asked for a pause before more sign-in requests.",
++                action: "Try again",
++                instructions:
++                  "Starting the sign-in again needs no change to the app or its OAuth client.",
++              }),
++              retryable: true,
+             },
+-          },
+-          discovery_invalid: {
+-            title: "OAuth settings not valid",
+-            description: "The service answered, but what it sent is incomplete or malformed.",
+-            recovery: {
+-              action: "Check the app’s OAuth server URL and configuration.",
+-              instructions:
+-                "Inspect the app’s provider definition and OAuth discovery configuration. Compare the discovery response with the required OAuth metadata and the service documentation. Identify an incorrect endpoint or invalid metadata, then repair the app configuration or explain the precise service-side correction needed.",
++            discovery_missing: {
++              title: "OAuth settings not found",
++              description: "This app uses OAuth, but its server doesn’t say how to sign in.",
++              recovery: {
++                action: "Check the app’s server URL and sign-in method.",
++                instructions:
++                  "Inspect the current app’s provider definition, server URL, and the service’s documented sign-in method. Check whether discovery targets the correct OAuth issuer. Do not disable authentication just because OAuth metadata is missing. Use No authentication only if the service documentation confirms this endpoint is public; otherwise configure its supported sign-in method.",
++              },
+             },
+-          },
+-          discovery_blocked: {
+-            title: "OAuth address blocked",
+-            description:
+-              "This instance doesn’t allow requests to an address in the app’s OAuth settings.",
+-            recovery: {
+-              action: "Review the app’s server URL and this instance’s network policy.",
+-              instructions:
+-                "Inspect the app’s OAuth discovery URL and advertised endpoints against this instance’s network policy. Correct unintended or unsupported addresses. Do not bypass address validation or weaken network protections; identify the supported deployment or endpoint change needed.",
++            discovery_invalid: {
++              title: "OAuth settings not valid",
++              description: "The service answered, but what it sent is incomplete or malformed.",
++              recovery: {
++                action: "Check the app’s OAuth server URL and configuration.",
++                instructions:
++                  "Inspect the app’s provider definition and OAuth discovery configuration. Compare the discovery response with the required OAuth metadata and the service documentation. Identify an incorrect endpoint or invalid metadata, then repair the app configuration or explain the precise service-side correction needed.",
++              },
+             },
+-          },
+-          resource_mismatch: {
+-            title: "Server URL does not match its sign-in settings",
+-            description:
+-              "The service says its sign-in belongs to another address, so it won’t be used.",
+-            recovery: {
+-              action: "Check the app’s server URL.",
+-              instructions:
+-                "Compare the app’s configured server URL with the resource the service advertises in its protected-resource metadata. Update the app to use the advertised endpoint. Do not weaken resource validation.",
++            discovery_blocked: {
++              title: "OAuth address blocked",
++              description:
++                "This instance doesn’t allow requests to an address in the app’s OAuth settings.",
++              recovery: {
++                action: "Review the app’s server URL and this instance’s network policy.",
++                instructions:
++                  "Inspect the app’s OAuth discovery URL and advertised endpoints against this instance’s network policy. Correct unintended or unsupported addresses. Do not bypass address validation or weaken network protections; identify the supported deployment or endpoint change needed.",
++              },
+             },
+-          },
+-          // RFC 7591 section 3.2.2: registration itself failed, so no client exists yet.
+-          client_not_approved: {
+-            title: "Callback URL refused during registration",
+-            description: "This service doesn’t accept this deployment’s callback URL.",
+-            recovery: {
+-              action:
+-                "Create an OAuth app there with this redirect URL and enter its client ID and secret, or ask the service to allow it.",
+-              instructions:
+-                "The dynamic client registration request was refused with invalid_redirect_uri (RFC 7591 section 3.2.2): the service does not accept this deployment’s callback URL as a redirect URI. Read the service’s response, when one is shown, for the rule it applies. If the service lets users create their own OAuth apps, explain how to create one with this callback URL and enter its client ID and secret in this deployment. Otherwise identify the service’s approval or allowlist process and prepare a request that includes this deployment’s callback URL. Do not repeatedly register clients." +
+-                callback,
++            resource_mismatch: {
++              title: "Server URL does not match its sign-in settings",
++              description:
++                "The service says its sign-in belongs to another address, so it won’t be used.",
++              recovery: {
++                action: "Check the app’s server URL.",
++                instructions:
++                  "Compare the app’s configured server URL with the resource the service advertises in its protected-resource metadata. Update the app to use the advertised endpoint. Do not weaken resource validation.",
++              },
+             },
+-            agentFixable: false,
+-          },
+-          // RFC 7591 lets a registration endpoint require an initial access token. Executor has
+-          // none, so a 401 or 403 there means the service registers clients only by hand.
+-          client_registration_required: {
+-            title: "Automatic registration not allowed",
+-            description: "This service only accepts OAuth apps created in its developer settings.",
+-            recovery: {
+-              action:
+-                "Create an OAuth app there with this redirect URL, then enter its client ID and secret.",
+-              instructions:
+-                "The service’s dynamic client registration endpoint requires authorization, such as an RFC 7591 initial access token, which this deployment does not have. Explain how to create an OAuth client in the service’s developer settings with this deployment’s callback URL, then enter its client ID and secret in this deployment. Do not repeatedly register clients or ask for the service’s registration credentials." +
+-                callback,
++            // RFC 7591 section 3.2.2: registration itself failed, so no client exists yet.
++            client_not_approved: {
++              title: "Callback URL refused during registration",
++              description: "This service doesn’t accept this deployment’s callback URL.",
++              recovery: {
++                action:
++                  "Create an OAuth app there with this redirect URL and enter its client ID and secret, or ask the service to allow it.",
++                instructions:
++                  "The dynamic client registration request was refused with invalid_redirect_uri (RFC 7591 section 3.2.2): the service does not accept this deployment’s callback URL as a redirect URI. Read the service’s response, when one is shown, for the rule it applies. If the service lets users create their own OAuth apps, explain how to create one with this callback URL and enter its client ID and secret in this deployment. Otherwise identify the service’s approval or allowlist process and prepare a request that includes this deployment’s callback URL. Do not repeatedly register clients." +
++                  callback,
++              },
++              agentFixable: false,
+             },
+-            agentFixable: false,
+-          },
+-          // RFC 7591 section 3.2.2. Cloudflare Access returns it for a callback URL outside
+-          // its allowed redirect URIs; with grant types matched to the server's metadata, that
+-          // allowlist is the likeliest cause.
+-          client_metadata_rejected: {
+-            title: "Service did not accept this deployment’s callback URL",
+-            description:
+-              "This deployment’s callback URL is most likely not among the service’s allowed redirect URIs.",
+-            recovery: {
+-              action:
+-                "Ask the service’s administrator to allow it, or create an OAuth app there and enter its client ID and secret.",
+-              instructions:
+-                "The registration endpoint returned invalid_client_metadata (RFC 7591 section 3.2.2). Services with a redirect URI allowlist, such as Cloudflare Access, return it when the callback URL is not allowed. Check the service’s allowed redirect URIs for this deployment’s callback URL first, then compare the other registered fields: grant types, response types, token endpoint authentication method and scopes. Do not repeatedly register clients." +
+-                callback,
++            // RFC 7591 lets a registration endpoint require an initial access token. Executor has
++            // none, so a 401 or 403 there means the service registers clients only by hand.
++            client_registration_required: {
++              title: "Automatic registration not allowed",
++              description:
++                "This service only accepts OAuth apps created in its developer settings.",
++              recovery: {
++                action:
++                  "Create an OAuth app there with this redirect URL, then enter its client ID and secret.",
++                instructions:
++                  "The service’s dynamic client registration endpoint requires authorization, such as an RFC 7591 initial access token, which this deployment does not have. Explain how to create an OAuth client in the service’s developer settings with this deployment’s callback URL, then enter its client ID and secret in this deployment. Do not repeatedly register clients or ask for the service’s registration credentials." +
++                  callback,
++              },
++              agentFixable: false,
+             },
+-            agentFixable: false,
+-          },
+-          registration_rejected: {
+-            title: "Service rejected this deployment’s registration",
+-            description: "Without an OAuth client for this service, sign-in can’t start.",
+-            recovery: {
+-              action:
+-                "Create an OAuth app there with this redirect URL and enter its client ID and secret, or copy the fix prompt to investigate.",
+-              instructions:
+-                "Compare this deployment’s client registration request, including its redirect URI, grant types, token endpoint authentication method, and scopes, with the service’s registration policy. Determine whether the service needs a pre-registered client or rejects part of the request. Do not repeatedly register clients." +
+-                callback,
++            // RFC 7591 section 3.2.2. Cloudflare Access returns it for a callback URL outside
++            // its allowed redirect URIs; with grant types matched to the server's metadata, that
++            // allowlist is the likeliest cause.
++            client_metadata_rejected: {
++              title: "Service did not accept this deployment’s callback URL",
++              description:
++                "This deployment’s callback URL is most likely not among the service’s allowed redirect URIs.",
++              recovery: {
++                action:
++                  "Ask the service’s administrator to allow it, or create an OAuth app there and enter its client ID and secret.",
++                instructions:
++                  "The registration endpoint returned invalid_client_metadata (RFC 7591 section 3.2.2). Services with a redirect URI allowlist, such as Cloudflare Access, return it when the callback URL is not allowed. Check the service’s allowed redirect URIs for this deployment’s callback URL first, then compare the other registered fields: grant types, response types, token endpoint authentication method and scopes. Do not repeatedly register clients." +
++                  callback,
++              },
++              agentFixable: false,
+             },
+-          },
+-          registration_scope_insufficient: {
+-            title: "Service did not register all requested permissions",
+-            description:
+-              "The service’s OAuth registration response explicitly omitted one or more permissions this app requires.",
+-            recovery: {
+-              action:
+-                "Create an OAuth app there with all requested permissions and enter its client details, or ask the service to register them.",
+-              instructions:
+-                "The dynamic registration endpoint returned a scope list that did not include every requested scope. The automatic client was not saved and authorization did not start. Use a client that is configured for all requested permissions or correct the service's registration defaults. Do not retry registration in a loop or weaken the app's required scopes.",
++            registration_rejected: {
++              title: "Service rejected this deployment’s registration",
++              description: "Without an OAuth client for this service, sign-in can’t start.",
++              recovery: {
++                action:
++                  "Create an OAuth app there with this redirect URL and enter its client ID and secret, or copy the fix prompt to investigate.",
++                instructions:
++                  "Compare this deployment’s client registration request, including its redirect URI, grant types, token endpoint authentication method, and scopes, with the service’s registration policy. Determine whether the service needs a pre-registered client or rejects part of the request. Do not repeatedly register clients." +
++                  callback,
++              },
+             },
+-            agentFixable: false,
+-          },
+-          incompatible_response: incompatibleResponse,
+-          invalid_client: {
+-            title: "OAuth client not accepted",
+-            description:
+-              "The client ID, secret or authentication method doesn’t match what the service expects.",
+-            recovery: {
+-              action:
+-                "Check the client in the service’s developer settings, then enter its current details.",
+-              instructions:
+-                "Inspect which OAuth client configuration this connection selects and compare its client ID, authentication method, and redirect settings with the service’s developer settings. Check secret availability through the supported credential mechanism without exposing values. Correct the mismatch rather than replacing unrelated accounts.",
++            registration_scope_insufficient: {
++              title: "Service did not register all requested permissions",
++              description:
++                "The service’s OAuth registration response explicitly omitted one or more permissions this app requires.",
++              recovery: {
++                action:
++                  "Create an OAuth app there with all requested permissions and enter its client details, or ask the service to register them.",
++                instructions:
++                  "The dynamic registration endpoint returned a scope list that did not include every requested scope. The automatic client was not saved and authorization did not start. Use a client that is configured for all requested permissions or correct the service's registration defaults. Do not retry registration in a loop or weaken the app's required scopes.",
++              },
++              agentFixable: false,
+             },
+-          },
+-          invalid_redirect: {
+-            title: "Callback URL not valid",
+-            description: "The callback URL is malformed or not allowed on this instance.",
+-            recovery: {
+-              action: "Check this instance’s public address.",
+-              instructions:
+-                "Compare this instance’s configured public origin and OAuth callback URL with the service’s allowed redirect URLs. Check URL validity and exact matching. Fix the relevant configuration; preserve redirect validation.",
++            incompatible_response: incompatibleResponse,
++            invalid_client: {
++              title: "OAuth client not accepted",
++              description:
++                "The client ID, secret or authentication method doesn’t match what the service expects.",
++              recovery: {
++                action:
++                  "Check the client in the service’s developer settings, then enter its current details.",
++                instructions:
++                  "Inspect which OAuth client configuration this connection selects and compare its client ID, authentication method, and redirect settings with the service’s developer settings. Check secret availability through the supported credential mechanism without exposing values. Correct the mismatch rather than replacing unrelated accounts.",
++              },
+             },
+-          },
+-          token_exchange: {
+-            title: "Account connection failed",
+-            description: "Couldn’t get an access token from the service for this OAuth client.",
+-            recovery: {
+-              action: "Try connecting again, or copy the fix prompt if this continues.",
+-              instructions:
+-                "Inspect the app’s OAuth token endpoint, client authentication method, callback configuration, and authorization flow. Check for an expired or already-used authorization code without printing it. Fix verified configuration errors and start a fresh user sign-in when needed; never replay a consumed code.",
++            invalid_redirect: {
++              title: "Callback URL not valid",
++              description: "The callback URL is malformed or not allowed on this instance.",
++              recovery: {
++                action: "Check this instance’s public address.",
++                instructions:
++                  "Compare this instance’s configured public origin and OAuth callback URL with the service’s allowed redirect URLs. Check URL validity and exact matching. Fix the relevant configuration; preserve redirect validation.",
++              },
+             },
+-            retryable: true,
+-          },
+-          unsupported: {
+-            title: "Sign-in method unavailable",
+-            description: "The OAuth setup this app or service uses isn’t supported.",
+-            recovery: {
+-              action: "Review the app’s sign-in method and OAuth settings.",
+-              instructions:
+-                "Compare the app’s provider definition with the service’s supported OAuth flow and this instance’s supported configuration. Update the app to a documented compatible method. Do not replace required authentication with an unauthenticated connection.",
++            token_exchange: {
++              title: "Account connection failed",
++              description: "Couldn’t get an access token from the service for this OAuth client.",
++              recovery: {
++                action: "Try connecting again, or copy the fix prompt if this continues.",
++                instructions:
++                  "Inspect the app’s OAuth token endpoint, client authentication method, callback configuration, and authorization flow. Check for an expired or already-used authorization code without printing it. Fix verified configuration errors and start a fresh user sign-in when needed; never replay a consumed code.",
++              },
++              retryable: true,
+             },
+-          },
+-        } satisfies Record<typeof reason, ErrorPresentation>
+-      )[reason],
+-      cause,
+-      serviceError,
+-    );
+-  },
+-}))();
++            unsupported: {
++              title: "Sign-in method unavailable",
++              description: "The OAuth setup this app or service uses isn’t supported.",
++              recovery: {
++                action: "Review the app’s sign-in method and OAuth settings.",
++                instructions:
++                  "Compare the app’s provider definition with the service’s supported OAuth flow and this instance’s supported configuration. Update the app to a documented compatible method. Do not replace required authentication with an unauthenticated connection.",
++              },
++            },
++          } satisfies Record<typeof reason, ErrorPresentation>
++        )[reason],
++        cause,
++        serviceError,
++      );
++    },
++  }))();
+ /** Setup failures that a user-supplied OAuth client can resolve, so forms open client entry. */
+ export const oauthClientEntryReasons: ReadonlySet<OAuthSetupFailed["reason"]> = new Set([
+   "invalid_client",
+@@ -815,42 +837,43 @@ export type OAuthSetupFailed = typeof OAuthSetupFailed.Type;
+  * Stored in connections' recorded failures; a reason the reading release does not know hides
+  * failures recorded with it.
+  */
+-export const OAuthCompletionReason = /* @__PURE__ */ (() => Schema.Literals([
+-  // Executor matches the callback to the sign-in it started.
+-  "callback_malformed",
+-  "sign_in_not_found",
+-  "sign_in_replaced",
+-  "redirect_mismatch",
+-  "sign_in_expired",
+-  "sign_in_used",
+-  "account_unavailable",
+-  "identity_mismatch",
+-  "grant_changed",
+-  "scope_missing",
+-  // The stored client the sign-in started with is no longer one the caller may use.
+-  "client_unavailable",
+-  // The service's authorization response, validated before its `error` is read.
+-  "issuer_mismatch",
+-  "denied",
+-  "invalid_scope",
+-  "invalid_client",
+-  "authorization_rejected",
+-  // The token exchange.
+-  "authorization_code_rejected",
+-  "registered_client_rejected",
+-  "registered_client_incompatible",
+-  "exchange_failed",
+-  // The service refused the RFC 8707 resource indicator, at authorization or the exchange.
+-  "resource_rejected",
+-  "destination_blocked",
+-  "service_unavailable",
+-  "rate_limited",
+-  "incompatible_response",
+-  "unsupported",
+-  "oauth_unavailable",
+-  // The operator's client was granted scopes it does not allow.
+-  "scope_exceeded",
+-]))();
++export const OAuthCompletionReason = /* @__PURE__ */ (() =>
++  Schema.Literals([
++    // Executor matches the callback to the sign-in it started.
++    "callback_malformed",
++    "sign_in_not_found",
++    "sign_in_replaced",
++    "redirect_mismatch",
++    "sign_in_expired",
++    "sign_in_used",
++    "account_unavailable",
++    "identity_mismatch",
++    "grant_changed",
++    "scope_missing",
++    // The stored client the sign-in started with is no longer one the caller may use.
++    "client_unavailable",
++    // The service's authorization response, validated before its `error` is read.
++    "issuer_mismatch",
++    "denied",
++    "invalid_scope",
++    "invalid_client",
++    "authorization_rejected",
++    // The token exchange.
++    "authorization_code_rejected",
++    "registered_client_rejected",
++    "registered_client_incompatible",
++    "exchange_failed",
++    // The service refused the RFC 8707 resource indicator, at authorization or the exchange.
++    "resource_rejected",
++    "destination_blocked",
++    "service_unavailable",
++    "rate_limited",
++    "incompatible_response",
++    "unsupported",
++    "oauth_unavailable",
++    // The operator's client was granted scopes it does not allow.
++    "scope_exceeded",
++  ]))();
+ export type OAuthCompletionReason = typeof OAuthCompletionReason.Type;
+ 
+ const restart = (
+@@ -953,295 +976,298 @@ const resourceRejected = (resource: OAuthResourceIndicator | undefined): ErrorPr
+ };
+ 
+ /** Sign-in completion failed. Saved account credentials are not changed. */
+-export const OAuthCompletionFailed = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "OAuthCompletionFailed",
+-  status: 400,
+-  fields: {
+-    /** A consumed attempt always needs a new sign-in. */
+-    reason: OAuthCompletionReason,
+-    /** Public setup guidance supplied by the host after a validated client refusal. */
+-    clientSetupInstructions: Schema.optional(Schema.NonEmptyString),
+-    requestedScopes: Schema.optional(Schema.Array(Schema.String)),
+-    grantedScopes: Schema.optional(Schema.Array(Schema.String)),
+-    missingScopes: Schema.optional(Schema.Array(Schema.String)),
+-    /** Unreviewed permission names are withheld from saved failures and diagnostics. */
+-    scopeNamesOmitted: Schema.optional(Schema.Boolean),
+-    grantedScopesKnown: Schema.optional(Schema.Boolean),
+-    cause: Schema.optional(OAuthFailureCause),
+-    serviceError: Schema.optional(OAuthServiceError),
+-    retryAfter: RetryAfter,
+-    /** With `resource_rejected`, the indicator the sign-in sent, or why it sent none. */
+-    resource: Schema.optional(OAuthResourceIndicator),
+-  },
+-  recorded: ({ reason, cause }) => oauthRecorded("Sign-in completion failed", reason, cause),
+-  presentation: ({
+-    reason,
+-    clientSetupInstructions,
+-    cause,
+-    serviceError,
+-    retryAfter,
+-    resource,
+-    grantedScopesKnown,
+-    scopeNamesOmitted,
+-  }) => {
+-    if (
+-      clientSetupInstructions !== undefined &&
+-      (reason === "invalid_client" ||
+-        reason === "invalid_scope" ||
+-        reason === "authorization_rejected")
+-    )
++export const OAuthCompletionFailed = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "OAuthCompletionFailed",
++    status: 400,
++    fields: {
++      /** A consumed attempt always needs a new sign-in. */
++      reason: OAuthCompletionReason,
++      /** Public setup guidance supplied by the host after a validated client refusal. */
++      clientSetupInstructions: Schema.optional(Schema.NonEmptyString),
++      requestedScopes: Schema.optional(Schema.Array(Schema.String)),
++      grantedScopes: Schema.optional(Schema.Array(Schema.String)),
++      missingScopes: Schema.optional(Schema.Array(Schema.String)),
++      /** Unreviewed permission names are withheld from saved failures and diagnostics. */
++      scopeNamesOmitted: Schema.optional(Schema.Boolean),
++      grantedScopesKnown: Schema.optional(Schema.Boolean),
++      cause: Schema.optional(OAuthFailureCause),
++      serviceError: Schema.optional(OAuthServiceError),
++      retryAfter: RetryAfter,
++      /** With `resource_rejected`, the indicator the sign-in sent, or why it sent none. */
++      resource: Schema.optional(OAuthResourceIndicator),
++    },
++    recorded: ({ reason, cause }) => oauthRecorded("Sign-in completion failed", reason, cause),
++    presentation: ({
++      reason,
++      clientSetupInstructions,
++      cause,
++      serviceError,
++      retryAfter,
++      resource,
++      grantedScopesKnown,
++      scopeNamesOmitted,
++    }) => {
++      if (
++        clientSetupInstructions !== undefined &&
++        (reason === "invalid_client" ||
++          reason === "invalid_scope" ||
++          reason === "authorization_rejected")
++      )
++        return withCause(
++          {
++            title: "The service refused this OAuth client or its settings",
++            description: "An administrator needs to check the client before you can connect.",
++            recovery: { action: clientSetupInstructions, instructions: clientSetupInstructions },
++            agentFixable: false,
++          },
++          cause,
++          serviceError,
++        );
+       return withCause(
+-        {
+-          title: "The service refused this OAuth client or its settings",
+-          description: "An administrator needs to check the client before you can connect.",
+-          recovery: { action: clientSetupInstructions, instructions: clientSetupInstructions },
+-          agentFixable: false,
+-        },
+-        cause,
+-        serviceError,
+-      );
+-    return withCause(
+-      (
+-        {
+-          callback_malformed: restart({
+-            title: "Sign-in response not recognised",
+-            description: "The service sent the browser back with an incomplete or altered address.",
+-            instructions:
+-              "The callback URL had no single valid state value, or carried a fragment or credentials. Start a fresh sign-in from this instance; never replay or edit a callback URL.",
+-          }),
+-          sign_in_not_found: restart({
+-            title: "Sign-in not found",
+-            description: "This sign-in has no record here. It may have started at another address.",
+-            instructions:
+-              "No pending sign-in matches the callback's state. The sign-in may have started on another instance or origin. Start a fresh sign-in from the instance that should own the account; never replay a callback.",
+-          }),
+-          sign_in_replaced: restart({
+-            title: "Sign-in replaced",
+-            description: "A newer sign-in for this connection started, possibly in another tab.",
+-            instructions:
+-              "Only the latest sign-in for a connection can complete. Finish the newest sign-in or start a fresh one; never replay a callback.",
+-          }),
+-          redirect_mismatch: {
+-            title: "Sign-in returned to a different address",
+-            description:
+-              "A proxy or the service may have changed the callback URL this instance sent.",
+-            recovery: {
+-              action:
+-                "Check this instance’s public address and the service’s allowed redirect URLs.",
++        (
++          {
++            callback_malformed: restart({
++              title: "Sign-in response not recognised",
++              description:
++                "The service sent the browser back with an incomplete or altered address.",
+               instructions:
+-                "Compare the callback URL this instance registered for this sign-in with the address the browser returned to, including origin, path and query parameters. Check the instance’s public origin and any proxy or relay rewriting the callback. Preserve exact redirect matching.",
+-            },
+-          },
+-          sign_in_expired: restart({
+-            title: "Sign-in expired",
+-            description: "This sign-in took longer than ten minutes to finish.",
+-            instructions: "Sign-ins expire after ten minutes. Start a fresh sign-in.",
+-          }),
+-          sign_in_used: restart({
+-            title: "Sign-in already used",
+-            description: "This sign-in may have already finished in another tab.",
+-            instructions:
+-              "Each sign-in can complete once. Check Accounts for an account the other completion created, or start a fresh sign-in; never replay a callback.",
+-          }),
+-          account_unavailable: {
+-            title: "Account changed during sign-in",
+-            description:
+-              "The account being reconnected was removed or edited, so nothing was saved.",
+-            recovery: {
+-              action: "Open the app’s Accounts tab and reconnect the account again.",
++                "The callback URL had no single valid state value, or carried a fragment or credentials. Start a fresh sign-in from this instance; never replay or edit a callback URL.",
++            }),
++            sign_in_not_found: restart({
++              title: "Sign-in not found",
++              description:
++                "This sign-in has no record here. It may have started at another address.",
+               instructions:
+-                "Check whether the reconnected account still exists with the same provider and sign-in method. Start a fresh connection for the intended account.",
+-            },
+-            agentFixable: false,
+-          },
+-          client_unavailable: {
+-            title: "OAuth client no longer available",
+-            description:
+-              "The OAuth client this sign-in started with was removed, or you may no longer use it, so nothing was saved.",
+-            recovery: {
+-              action: "Connect again and choose an OAuth client you can use.",
++                "No pending sign-in matches the callback's state. The sign-in may have started on another instance or origin. Start a fresh sign-in from the instance that should own the account; never replay a callback.",
++            }),
++            sign_in_replaced: restart({
++              title: "Sign-in replaced",
++              description: "A newer sign-in for this connection started, possibly in another tab.",
+               instructions:
+-                "The stored OAuth client the sign-in used was removed, or the product no longer lets this caller use it, before the sign-in finished, so the sign-in could not be completed and no account was saved. Start a fresh sign-in with a client listed in the connection's OAuth setup, or ask an administrator for access.",
++                "Only the latest sign-in for a connection can complete. Finish the newest sign-in or start a fresh one; never replay a callback.",
++            }),
++            redirect_mismatch: {
++              title: "Sign-in returned to a different address",
++              description:
++                "A proxy or the service may have changed the callback URL this instance sent.",
++              recovery: {
++                action:
++                  "Check this instance’s public address and the service’s allowed redirect URLs.",
++                instructions:
++                  "Compare the callback URL this instance registered for this sign-in with the address the browser returned to, including origin, path and query parameters. Check the instance’s public origin and any proxy or relay rewriting the callback. Preserve exact redirect matching.",
++              },
+             },
+-            agentFixable: false,
+-          },
+-          issuer_mismatch: {
+-            title: "Service identified itself differently",
+-            description:
+-              "The service’s sign-in response didn’t name the issuer the app’s OAuth settings expect.",
+-            recovery: {
+-              action: "Check the app’s OAuth issuer settings.",
++            sign_in_expired: restart({
++              title: "Sign-in expired",
++              description: "This sign-in took longer than ten minutes to finish.",
++              instructions: "Sign-ins expire after ten minutes. Start a fresh sign-in.",
++            }),
++            sign_in_used: restart({
++              title: "Sign-in already used",
++              description: "This sign-in may have already finished in another tab.",
+               instructions:
+-                "Compare the issuer the app's provider definition declares, or the issuer its discovery URL publishes, with the service's documented issuer. Prefer the service's discovery document, or declare its exact issuer alongside explicit endpoints. Do not disable issuer validation (RFC 9207).",
++                "Each sign-in can complete once. Check Accounts for an account the other completion created, or start a fresh sign-in; never replay a callback.",
++            }),
++            account_unavailable: {
++              title: "Account changed during sign-in",
++              description:
++                "The account being reconnected was removed or edited, so nothing was saved.",
++              recovery: {
++                action: "Open the app’s Accounts tab and reconnect the account again.",
++                instructions:
++                  "Check whether the reconnected account still exists with the same provider and sign-in method. Start a fresh connection for the intended account.",
++              },
++              agentFixable: false,
+             },
+-          },
+-          identity_mismatch: restart({
+-            title: "A different account signed in",
+-            description:
+-              "The service returned a different account. Your saved sign-in and app links were not changed.",
+-            instructions:
+-              "Start again with the selected account, or choose to add another account. Never attach a different subject to the selected identity.",
+-          }),
+-          grant_changed: restart({
+-            title: "Sign-in changed during consent",
+-            description:
+-              "The selected sign-in changed while you were away. Your new app links were not saved.",
+-            instructions:
+-              "Read the account and its current grant state, then start a fresh connection. Do not replay this callback or replace the newer grant.",
+-          }),
+-          scope_missing: {
+-            title: "Some access was not granted",
+-            description:
+-              "The service did not confirm all the requested access. Your saved sign-in and app links were not changed.",
+-            recovery: {
+-              action:
+-                grantedScopesKnown === false || scopeNamesOmitted === true
+-                  ? "Ask the app owner to check the access details before trying again."
+-                  : "Review the missing permissions before connecting again.",
+-              instructions:
+-                "Compare requested, granted and missing permissions. If the service did not report its grant or permission names were withheld, the app owner must check the permission configuration and token response. Otherwise select every required permission on the consent screen. If a permission is blocked, ask the service administrator to allow the app. If everything was already selected, share the access details with the app owner before retrying. Requested scopes are not proof of granted access.",
++            client_unavailable: {
++              title: "OAuth client no longer available",
++              description:
++                "The OAuth client this sign-in started with was removed, or you may no longer use it, so nothing was saved.",
++              recovery: {
++                action: "Connect again and choose an OAuth client you can use.",
++                instructions:
++                  "The stored OAuth client the sign-in used was removed, or the product no longer lets this caller use it, before the sign-in finished, so the sign-in could not be completed and no account was saved. Start a fresh sign-in with a client listed in the connection's OAuth setup, or ask an administrator for access.",
++              },
++              agentFixable: false,
+             },
+-            agentFixable: false,
+-          },
+-          denied: {
+-            title: "Sign-in was cancelled",
+-            description: "Access was not approved on the service’s sign-in page.",
+-            recovery: {
+-              action: "Start the connection again and approve access.",
+-              instructions:
+-                "The service returned access_denied: the user cancelled consent, or the service refused access for this account. Start a fresh sign-in after resolving the refusal.",
++            issuer_mismatch: {
++              title: "Service identified itself differently",
++              description:
++                "The service’s sign-in response didn’t name the issuer the app’s OAuth settings expect.",
++              recovery: {
++                action: "Check the app’s OAuth issuer settings.",
++                instructions:
++                  "Compare the issuer the app's provider definition declares, or the issuer its discovery URL publishes, with the service's documented issuer. Prefer the service's discovery document, or declare its exact issuer alongside explicit endpoints. Do not disable issuer validation (RFC 9207).",
++              },
+             },
+-            agentFixable: false,
+-          },
+-          invalid_scope: {
+-            title: "Requested access not accepted",
+-            description: "The service doesn’t allow some of the permissions the app asks for.",
+-            recovery: {
+-              action: "Check the app’s requested scopes.",
++            identity_mismatch: restart({
++              title: "A different account signed in",
++              description:
++                "The service returned a different account. Your saved sign-in and app links were not changed.",
+               instructions:
+-                "Compare the scopes the app’s provider definition requests with the scopes the service documents and advertises for this client. Remove or correct unknown or unavailable scopes, then start a fresh sign-in. Do not request broader access to work around the refusal.",
+-            },
+-          },
+-          invalid_client: {
+-            title: "OAuth client not accepted",
+-            description:
+-              "The client ID, secret or authentication method doesn’t match what the service expects.",
+-            recovery: {
+-              action: "Update the OAuth client details and try again.",
++                "Start again with the selected account, or choose to add another account. Never attach a different subject to the selected identity.",
++            }),
++            grant_changed: restart({
++              title: "Sign-in changed during consent",
++              description:
++                "The selected sign-in changed while you were away. Your new app links were not saved.",
+               instructions:
+-                "Compare the selected OAuth client ID, secret availability, authentication method, and redirect URL with the service’s developer settings without exposing secret values. Correct the mismatch and start a fresh sign-in.",
++                "Read the account and its current grant state, then start a fresh connection. Do not replay this callback or replace the newer grant.",
++            }),
++            scope_missing: {
++              title: "Some access was not granted",
++              description:
++                "The service did not confirm all the requested access. Your saved sign-in and app links were not changed.",
++              recovery: {
++                action:
++                  grantedScopesKnown === false || scopeNamesOmitted === true
++                    ? "Ask the app owner to check the access details before trying again."
++                    : "Review the missing permissions before connecting again.",
++                instructions:
++                  "Compare requested, granted and missing permissions. If the service did not report its grant or permission names were withheld, the app owner must check the permission configuration and token response. Otherwise select every required permission on the consent screen. If a permission is blocked, ask the service administrator to allow the app. If everything was already selected, share the access details with the app owner before retrying. Requested scopes are not proof of granted access.",
++              },
++              agentFixable: false,
+             },
+-          },
+-          authorization_rejected: {
+-            title: "Service rejected the sign-in request",
+-            description:
+-              "The service’s sign-in page found a problem in the request built from the app’s OAuth settings.",
+-            recovery: {
+-              action: "Check the app’s OAuth settings.",
+-              instructions:
+-                "The service returned an authorization error other than access_denied, invalid_scope or a client rejection. Compare the app's declared authorization parameters, response type and endpoints with the service's documentation, then start a fresh sign-in.",
++            denied: {
++              title: "Sign-in was cancelled",
++              description: "Access was not approved on the service’s sign-in page.",
++              recovery: {
++                action: "Start the connection again and approve access.",
++                instructions:
++                  "The service returned access_denied: the user cancelled consent, or the service refused access for this account. Start a fresh sign-in after resolving the refusal.",
++              },
++              agentFixable: false,
+             },
+-          },
+-          registered_client_rejected: restart({
+-            title: "Service rejected this deployment’s client",
+-            description:
+-              "The service no longer accepts the client registered earlier, so a new sign-in registers a fresh one.",
+-            instructions:
+-              "The token endpoint answered invalid_client for a client registered in an earlier sign-in and reused. That saved registration was removed, so the next sign-in registers a fresh client. If the fresh client is rejected too, the failure is reported as registered_client_incompatible.",
+-          }),
+-          registered_client_incompatible: {
+-            title: "Service rejected a newly registered client",
+-            description:
+-              "The service refused the client registered moments ago, so trying again would fail the same way.",
+-            recovery: {
+-              action: "Copy the fix prompt for your agent to find out why.",
+-              instructions:
+-                "The token endpoint answered invalid_client for a client registered moments earlier in the same sign-in. That client was discarded. Compare the client authentication method that was registered, and how it sends the client ID and secret, with what the service's token endpoint accepts. Check the service's registration response for a different token_endpoint_auth_method. Do not ask the user for client details; the client was never theirs.",
++            invalid_scope: {
++              title: "Requested access not accepted",
++              description: "The service doesn’t allow some of the permissions the app asks for.",
++              recovery: {
++                action: "Check the app’s requested scopes.",
++                instructions:
++                  "Compare the scopes the app’s provider definition requests with the scopes the service documents and advertises for this client. Remove or correct unknown or unavailable scopes, then start a fresh sign-in. Do not request broader access to work around the refusal.",
++              },
+             },
+-          },
+-          authorization_code_rejected: restart({
+-            title: "Service rejected the sign-in code",
+-            description: "The code from this sign-in may have expired or already been used.",
+-            instructions:
+-              "The token endpoint returned invalid_grant. Start a fresh sign-in; never replay a consumed code. If it repeats, compare the redirect URI and PKCE handling with the service's requirements.",
+-          }),
+-          exchange_failed: {
+-            title: "Service rejected the sign-in",
+-            description: "The service wouldn’t exchange the sign-in code for access.",
+-            recovery: {
+-              action: "Check the app’s OAuth settings.",
++            invalid_client: {
++              title: "OAuth client not accepted",
++              description:
++                "The client ID, secret or authentication method doesn’t match what the service expects.",
++              recovery: {
++                action: "Update the OAuth client details and try again.",
++                instructions:
++                  "Compare the selected OAuth client ID, secret availability, authentication method, and redirect URL with the service’s developer settings without exposing secret values. Correct the mismatch and start a fresh sign-in.",
++              },
++            },
++            authorization_rejected: {
++              title: "Service rejected the sign-in request",
++              description:
++                "The service’s sign-in page found a problem in the request built from the app’s OAuth settings.",
++              recovery: {
++                action: "Check the app’s OAuth settings.",
++                instructions:
++                  "The service returned an authorization error other than access_denied, invalid_scope or a client rejection. Compare the app's declared authorization parameters, response type and endpoints with the service's documentation, then start a fresh sign-in.",
++              },
++            },
++            registered_client_rejected: restart({
++              title: "Service rejected this deployment’s client",
++              description:
++                "The service no longer accepts the client registered earlier, so a new sign-in registers a fresh one.",
+               instructions:
+-                "Inspect the app’s OAuth token endpoint, client authentication method, callback configuration, and requested scopes. Fix verified configuration errors and start a fresh sign-in; never replay a consumed code.",
++                "The token endpoint answered invalid_client for a client registered in an earlier sign-in and reused. That saved registration was removed, so the next sign-in registers a fresh client. If the fresh client is rejected too, the failure is reported as registered_client_incompatible.",
++            }),
++            registered_client_incompatible: {
++              title: "Service rejected a newly registered client",
++              description:
++                "The service refused the client registered moments ago, so trying again would fail the same way.",
++              recovery: {
++                action: "Copy the fix prompt for your agent to find out why.",
++                instructions:
++                  "The token endpoint answered invalid_client for a client registered moments earlier in the same sign-in. That client was discarded. Compare the client authentication method that was registered, and how it sends the client ID and secret, with what the service's token endpoint accepts. Check the service's registration response for a different token_endpoint_auth_method. Do not ask the user for client details; the client was never theirs.",
++              },
+             },
+-          },
+-          resource_rejected: resourceRejected(resource),
+-          destination_blocked: {
+-            title: "OAuth address blocked",
+-            description: "This instance doesn’t allow requests to the service’s token endpoint.",
+-            recovery: {
+-              action: "Review the app’s OAuth endpoints and this instance’s network policy.",
++            authorization_code_rejected: restart({
++              title: "Service rejected the sign-in code",
++              description: "The code from this sign-in may have expired or already been used.",
+               instructions:
+-                "Inspect the app's token endpoint against this instance's network policy. Correct unintended addresses. Do not bypass address validation or weaken network protections.",
++                "The token endpoint returned invalid_grant. Start a fresh sign-in; never replay a consumed code. If it repeats, compare the redirect URI and PKCE handling with the service's requirements.",
++            }),
++            exchange_failed: {
++              title: "Service rejected the sign-in",
++              description: "The service wouldn’t exchange the sign-in code for access.",
++              recovery: {
++                action: "Check the app’s OAuth settings.",
++                instructions:
++                  "Inspect the app’s OAuth token endpoint, client authentication method, callback configuration, and requested scopes. Fix verified configuration errors and start a fresh sign-in; never replay a consumed code.",
++              },
+             },
+-          },
+-          service_unavailable: {
+-            ...serviceUnavailable,
+-            recovery: {
+-              ...serviceUnavailable.recovery,
+-              action: "Start the connection again in a moment.",
++            resource_rejected: resourceRejected(resource),
++            destination_blocked: {
++              title: "OAuth address blocked",
++              description: "This instance doesn’t allow requests to the service’s token endpoint.",
++              recovery: {
++                action: "Review the app’s OAuth endpoints and this instance’s network policy.",
++                instructions:
++                  "Inspect the app's token endpoint against this instance's network policy. Correct unintended addresses. Do not bypass address validation or weaken network protections.",
++              },
+             },
+-            retryable: false,
+-          },
+-          // The sign-in was claimed before the token request, so only a new one can finish.
+-          rate_limited: rateLimited(retryAfter, {
+-            description: "The service asked for a pause before more sign-in requests.",
+-            action: "Start the connection again",
+-            instructions:
+-              "The token endpoint refused the code exchange for now, and this sign-in has ended: start a fresh one, and never replay the callback.",
+-          }),
+-          incompatible_response: incompatibleResponse,
+-          unsupported: {
+-            title: "Sign-in method unavailable",
+-            description: "The service issued a kind of access token that can’t be used here.",
+-            recovery: {
+-              action:
+-                "Retrying won’t help unless the service can issue standard access tokens for this app.",
+-              instructions:
+-                "Check the recorded response field. This instance sends access tokens as Bearer tokens and cannot create DPoP proofs (RFC 9449). Determine whether the service can issue Bearer tokens for this client, and configure that if it can. Do not strip sender constraints from tokens to work around it.",
++            service_unavailable: {
++              ...serviceUnavailable,
++              recovery: {
++                ...serviceUnavailable.recovery,
++                action: "Start the connection again in a moment.",
++              },
++              retryable: false,
+             },
+-            agentFixable: false,
+-          },
+-          oauth_unavailable: {
+-            title: "OAuth sign-in unavailable",
+-            description: "This instance isn’t configured for OAuth.",
+-            recovery: {
+-              action: "Ask the instance administrator to enable OAuth sign-in.",
++            // The sign-in was claimed before the token request, so only a new one can finish.
++            rate_limited: rateLimited(retryAfter, {
++              description: "The service asked for a pause before more sign-in requests.",
++              action: "Start the connection again",
+               instructions:
+-                "The host was started without OAuth transport options. Check the instance configuration that supplies OAuth support.",
++                "The token endpoint refused the code exchange for now, and this sign-in has ended: start a fresh one, and never replay the callback.",
++            }),
++            incompatible_response: incompatibleResponse,
++            unsupported: {
++              title: "Sign-in method unavailable",
++              description: "The service issued a kind of access token that can’t be used here.",
++              recovery: {
++                action:
++                  "Retrying won’t help unless the service can issue standard access tokens for this app.",
++                instructions:
++                  "Check the recorded response field. This instance sends access tokens as Bearer tokens and cannot create DPoP proofs (RFC 9449). Determine whether the service can issue Bearer tokens for this client, and configure that if it can. Do not strip sender constraints from tokens to work around it.",
++              },
++              agentFixable: false,
+             },
+-            agentFixable: false,
+-          },
+-          // The person connecting may not control the client's configuration. Revocation is
+-          // best effort, so the copy never claims it happened.
+-          scope_exceeded: {
+-            title: "More access was granted than allowed",
+-            description:
+-              "The service granted more access than this sign-in is allowed to keep, so nothing was saved.",
+-            recovery: {
+-              action:
+-                "Trying again won’t help until this service’s built-in sign-in is updated. If the service still shows this access in its connected apps, you can remove it there.",
+-              instructions:
+-                "The token response reported scopes outside the operator client's allowedScopes and their reviewed implications. Compare the requested scopes, allowedScopes and granted scope value, including its format. Retrying fails the same way until the configuration or comparison changes. The person connecting usually cannot change this; do not send them to a team administrator. Revocation is best effort: check the oauth.revokeRefused span, and never claim access was revoked. The user can remove leftover access in the service's connected-apps settings. Do not widen allowedScopes unless the operator intends to allow that access.",
++            oauth_unavailable: {
++              title: "OAuth sign-in unavailable",
++              description: "This instance isn’t configured for OAuth.",
++              recovery: {
++                action: "Ask the instance administrator to enable OAuth sign-in.",
++                instructions:
++                  "The host was started without OAuth transport options. Check the instance configuration that supplies OAuth support.",
++              },
++              agentFixable: false,
+             },
+-            agentFixable: false,
+-          },
+-        } satisfies Record<OAuthCompletionReason, ErrorPresentation>
+-      )[reason],
+-      cause,
+-      serviceError,
+-    );
+-  },
+-}))();
++            // The person connecting may not control the client's configuration. Revocation is
++            // best effort, so the copy never claims it happened.
++            scope_exceeded: {
++              title: "More access was granted than allowed",
++              description:
++                "The service granted more access than this sign-in is allowed to keep, so nothing was saved.",
++              recovery: {
++                action:
++                  "Trying again won’t help until this service’s built-in sign-in is updated. If the service still shows this access in its connected apps, you can remove it there.",
++                instructions:
++                  "The token response reported scopes outside the operator client's allowedScopes and their reviewed implications. Compare the requested scopes, allowedScopes and granted scope value, including its format. Retrying fails the same way until the configuration or comparison changes. The person connecting usually cannot change this; do not send them to a team administrator. Revocation is best effort: check the oauth.revokeRefused span, and never claim access was revoked. The user can remove leftover access in the service's connected-apps settings. Do not widen allowedScopes unless the operator intends to allow that access.",
++              },
++              agentFixable: false,
++            },
++          } satisfies Record<OAuthCompletionReason, ErrorPresentation>
++        )[reason],
++        cause,
++        serviceError,
++      );
++    },
++  }))();
+ /**
+  * What the person finishing sign-in can do next, for every completion reason:
+  * - `restart`: start the same connection again.
+@@ -1293,75 +1319,76 @@ export type OAuthCompletionFailed = typeof OAuthCompletionFailed.Type;
+  * The saved grant cannot supply a fresh token. Its account identity remains available for
+  * reconnection. `cause` is present when the token endpoint refused a renewal.
+  */
+-export const OAuthReconnectRequired = /* @__PURE__ */ (() => UserFacingError.define({
+-  tag: "OAuthReconnectRequired",
+-  status: 409,
+-  fields: {
+-    account: AccountId,
+-    /**
+-     * `renewal_interrupted`: an earlier renewal stopped with its process before saving a result,
+-     * and the service refused the saved refresh token when it was retried, most likely because
+-     * the lost renewal had already replaced it. `scope_exceeded`: renewing a grant to the
+-     * operator's client reported scopes the client does not allow, so Executor stopped using it
+-     * and attempted to revoke the renewal's tokens.
+-     */
+-    reason: Schema.optional(Schema.Literals(["renewal_interrupted", "scope_exceeded"])),
+-    cause: Schema.optional(OAuthFailureCause),
+-    /**
+-     * The app requirement the account is linked to as an app link, when the app uses it as its own
+-     * account rather than the caller's: someone who can edit the app must reconnect it.
+-     */
+-    appRequirement: Schema.optional(Schema.String),
+-  },
+-  recorded: ({ reason, cause, appRequirement }) =>
+-    oauthRecorded(
+-      appRequirement === undefined
+-        ? "An account needs to reconnect"
+-        : `The app's ${appRequirement} account needs to reconnect`,
+-      reason,
+-      cause,
+-    ),
+-  presentation: ({ reason, cause, appRequirement }) =>
+-    withCause(
+-      {
+-        title:
+-          appRequirement === undefined
+-            ? "An account needs to reconnect"
+-            : `The app’s “${appRequirement}” account needs to reconnect`,
+-        description:
+-          (reason === "renewal_interrupted"
+-            ? "Renewing this account’s access stopped before the result was saved. The service no longer accepts the saved sign-in, most likely because that renewal had already replaced it."
+-            : reason === "scope_exceeded"
+-              ? "Renewing this account’s access returned more access than this sign-in is allowed to keep, so it is no longer used."
+-              : "The saved sign-in can no longer be used for this account.") +
+-          (appRequirement === undefined
+-            ? ""
+-            : " The app uses this account for everyone, so someone who can edit the app must reconnect it."),
+-        recovery:
+-          reason === "scope_exceeded"
+-            ? {
+-                action:
+-                  "Reconnecting may fail the same way until this service’s built-in sign-in is updated.",
+-                instructions:
+-                  "Renewal reported scopes outside the operator client's allowedScopes and their reviewed implications. The grant is no longer used and revocation is best effort; never claim it succeeded. Compare requested, allowed and granted scopes and their format. Do not present reconnecting as the fix or send the person to a team administrator. Preserve the account and its app links. Do not switch authentication methods or widen allowedScopes as a workaround.",
+-              }
+-            : appRequirement === undefined
++export const OAuthReconnectRequired = /* @__PURE__ */ (() =>
++  UserFacingError.define({
++    tag: "OAuthReconnectRequired",
++    status: 409,
++    fields: {
++      account: AccountId,
++      /**
++       * `renewal_interrupted`: an earlier renewal stopped with its process before saving a result,
++       * and the service refused the saved refresh token when it was retried, most likely because
++       * the lost renewal had already replaced it. `scope_exceeded`: renewing a grant to the
++       * operator's client reported scopes the client does not allow, so Executor stopped using it
++       * and attempted to revoke the renewal's tokens.
++       */
++      reason: Schema.optional(Schema.Literals(["renewal_interrupted", "scope_exceeded"])),
++      cause: Schema.optional(OAuthFailureCause),
++      /**
++       * The app requirement the account is linked to as an app link, when the app uses it as its own
++       * account rather than the caller's: someone who can edit the app must reconnect it.
++       */
++      appRequirement: Schema.optional(Schema.String),
++    },
++    recorded: ({ reason, cause, appRequirement }) =>
++      oauthRecorded(
++        appRequirement === undefined
++          ? "An account needs to reconnect"
++          : `The app's ${appRequirement} account needs to reconnect`,
++        reason,
++        cause,
++      ),
++    presentation: ({ reason, cause, appRequirement }) =>
++      withCause(
++        {
++          title:
++            appRequirement === undefined
++              ? "An account needs to reconnect"
++              : `The app’s “${appRequirement}” account needs to reconnect`,
++          description:
++            (reason === "renewal_interrupted"
++              ? "Renewing this account’s access stopped before the result was saved. The service no longer accepts the saved sign-in, most likely because that renewal had already replaced it."
++              : reason === "scope_exceeded"
++                ? "Renewing this account’s access returned more access than this sign-in is allowed to keep, so it is no longer used."
++                : "The saved sign-in can no longer be used for this account.") +
++            (appRequirement === undefined
++              ? ""
++              : " The app uses this account for everyone, so someone who can edit the app must reconnect it."),
++          recovery:
++            reason === "scope_exceeded"
+               ? {
+                   action:
+-                    "Open the app’s Accounts tab and reconnect the affected account, then return to Tools.",
++                    "Reconnecting may fail the same way until this service’s built-in sign-in is updated.",
+                   instructions:
+-                    "Identify the selected account whose OAuth grant needs renewal. Guide the user through the supported reconnect flow for that same account. Preserve its identity and app links, then verify tool discovery. Do not replace the account or switch authentication methods as a workaround.",
++                    "Renewal reported scopes outside the operator client's allowedScopes and their reviewed implications. The grant is no longer used and revocation is best effort; never claim it succeeded. Compare requested, allowed and granted scopes and their format. Do not present reconnecting as the fix or send the person to a team administrator. Preserve the account and its app links. Do not switch authentication methods or widen allowedScopes as a workaround.",
+                 }
+-              : {
+-                  action:
+-                    "Ask someone who can edit this app to reconnect the app’s account from its Accounts tab.",
+-                  instructions:
+-                    "The account is linked to the app for everyone for this requirement, not linked by the caller. Tell the user someone who can edit the app must reconnect it; a caller cannot replace or reconnect it. Do not link another account as a workaround. Retry once it has been reconnected.",
+-                },
+-      },
+-      cause,
+-    ),
+-}))();
++              : appRequirement === undefined
++                ? {
++                    action:
++                      "Open the app’s Accounts tab and reconnect the affected account, then return to Tools.",
++                    instructions:
++                      "Identify the selected account whose OAuth grant needs renewal. Guide the user through the supported reconnect flow for that same account. Preserve its identity and app links, then verify tool discovery. Do not replace the account or switch authentication methods as a workaround.",
++                  }
++                : {
++                    action:
++                      "Ask someone who can edit this app to reconnect the app’s account from its Accounts tab.",
++                    instructions:
++                      "The account is linked to the app for everyone for this requirement, not linked by the caller. Tell the user someone who can edit the app must reconnect it; a caller cannot replace or reconnect it. Do not link another account as a workaround. Retry once it has been reconnected.",
++                  },
++        },
++        cause,
++      ),
++  }))();
+ /** Parsed expired or revoked account sign-in. */
+ export type OAuthReconnectRequired = typeof OAuthReconnectRequired.Type;
+ 
+@@ -1403,53 +1430,53 @@ export const OAuthRenewalFailed = /* @__PURE__ */ (() =>
+               }),
+               retryable: true,
+             },
+-          service_unavailable: {
+-            ...serviceUnavailable,
+-            description:
+-              "Could not renew this account’s access. The sign-in endpoint may be unavailable or unreachable. The saved sign-in is kept; this error does not require reconnecting.",
+-            recovery: {
+-              action: "Try again in a moment. If this continues, check the service’s status.",
+-              instructions:
+-                "The account’s saved OAuth grant is intact; do not reconnect or replace the account for this failure. Check the service’s status and the reachability of the token endpoint recorded in the app’s provider definition, and distinguish a temporary outage from an incorrect endpoint. Retry a temporary failure; fix incorrect configuration only when the evidence supports it.",
++            service_unavailable: {
++              ...serviceUnavailable,
++              description:
++                "Could not renew this account’s access. The sign-in endpoint may be unavailable or unreachable. The saved sign-in is kept; this error does not require reconnecting.",
++              recovery: {
++                action: "Try again in a moment. If this continues, check the service’s status.",
++                instructions:
++                  "The account’s saved OAuth grant is intact; do not reconnect or replace the account for this failure. Check the service’s status and the reachability of the token endpoint recorded in the app’s provider definition, and distinguish a temporary outage from an incorrect endpoint. Retry a temporary failure; fix incorrect configuration only when the evidence supports it.",
++              },
+             },
+-          },
+-          incompatible_response: {
+-            ...incompatibleResponse,
+-            description:
+-              "The service answered the request to renew this account’s access, but its response did not match what was expected. The saved sign-in is kept; this is a compatibility problem, not a problem with your account.",
+-            recovery: {
+-              ...incompatibleResponse.recovery,
+-              action: "Investigate the incompatible response before retrying renewal.",
++            incompatible_response: {
++              ...incompatibleResponse,
++              description:
++                "The service answered the request to renew this account’s access, but its response did not match what was expected. The saved sign-in is kept; this is a compatibility problem, not a problem with your account.",
++              recovery: {
++                ...incompatibleResponse.recovery,
++                action: "Investigate the incompatible response before retrying renewal.",
++              },
+             },
+-          },
+-          client_rejected: {
+-            title: "The service rejected this deployment’s OAuth client",
+-            description:
+-              "The service rejected the OAuth client used for renewal. Check client configuration and how the renewal request authenticates. The account’s sign-in is kept.",
+-            recovery: {
+-              action:
+-                "Check the OAuth client ID and secret at the service. If they changed, reconnect the account and enter the current client details.",
+-              instructions:
+-                "The account’s saved OAuth grant is intact; do not delete or replace the account. Compare the client ID, secret and token endpoint authentication method recorded for this provider with the service’s client configuration. If the secret was rotated or the client removed, reconnect this same account with the current client details. If the configuration is correct, investigate the client-authentication request.",
++            client_rejected: {
++              title: "The service rejected this deployment’s OAuth client",
++              description:
++                "The service rejected the OAuth client used for renewal. Check client configuration and how the renewal request authenticates. The account’s sign-in is kept.",
++              recovery: {
++                action:
++                  "Check the OAuth client ID and secret at the service. If they changed, reconnect the account and enter the current client details.",
++                instructions:
++                  "The account’s saved OAuth grant is intact; do not delete or replace the account. Compare the client ID, secret and token endpoint authentication method recorded for this provider with the service’s client configuration. If the secret was rotated or the client removed, reconnect this same account with the current client details. If the configuration is correct, investigate the client-authentication request.",
++              },
+             },
+-          },
+-          renewal_rejected: {
+-            title: "The service refused to renew this account’s access",
+-            description:
+-              "The service refused the request to renew this account’s access without saying the sign-in has ended. The saved sign-in is kept, and renewal is tried again the next time the account is used.",
+-            recovery: {
+-              action:
+-                "Inspect the renewal refusal. Retry a temporary failure; reconnect only when the service’s response indicates that it is needed.",
+-              instructions:
+-                "The account’s saved OAuth grant is intact. Inspect the recorded provider error code and HTTP status. Retry a temporary refusal. A refusal that continues does not by itself show that the sign-in has ended: reconnect this same account only when the service’s response indicates that reconnecting is needed. Do not replace the account or change its authentication method.",
++            renewal_rejected: {
++              title: "The service refused to renew this account’s access",
++              description:
++                "The service refused the request to renew this account’s access without saying the sign-in has ended. The saved sign-in is kept, and renewal is tried again the next time the account is used.",
++              recovery: {
++                action:
++                  "Inspect the renewal refusal. Retry a temporary failure; reconnect only when the service’s response indicates that it is needed.",
++                instructions:
++                  "The account’s saved OAuth grant is intact. Inspect the recorded provider error code and HTTP status. Retry a temporary refusal. A refusal that continues does not by itself show that the sign-in has ended: reconnect this same account only when the service’s response indicates that reconnecting is needed. Do not replace the account or change its authentication method.",
++              },
++              retryable: true,
+             },
+-            retryable: true,
+-          },
+-        } satisfies Record<typeof reason, ErrorPresentation>
+-      )[reason],
+-      cause,
+-    ),
+-}))();
++          } satisfies Record<typeof reason, ErrorPresentation>
++        )[reason],
++        cause,
++      ),
++  }))();
+ /** Parsed failed renewal that kept the saved grant. */
+ export type OAuthRenewalFailed = typeof OAuthRenewalFailed.Type;
+ 
+@@ -1458,84 +1485,92 @@ export const OAuthAttemptId = Schema.NonEmptyString.pipe(Schema.brand("OAuthAtte
+ export type OAuthAttemptId = typeof OAuthAttemptId.Type;
+ 
+ /** Validated subset of authorization-server metadata used for saved grants. */
+-export const OAuthTokenServer = /* @__PURE__ */ (() => Schema.Struct({
+-  userinfo_endpoint: Schema.optionalKey(HttpUrl),
+-  /** Microsoft identity platform's multi-tenant metadata publishes a `{tenantid}` template here. */
+-  issuer: HttpUrl,
+-  /**
+-   * The provider declared endpoints without an issuer. Executor derives `issuer` from the token
+-   * URL to key automatic clients, but it is not the service's identifier, so callbacks are not checked against it.
+-   */
+-  issuer_derived: Schema.optional(Schema.Literal(true)),
+-  authorization_endpoint: Schema.optional(HttpUrl),
+-  token_endpoint: HttpUrl,
+-  registration_endpoint: Schema.optional(HttpUrl),
+-  /** RFC 7009 endpoint. Optional so grants saved before it was retained still decode. */
+-  revocation_endpoint: Schema.optional(HttpUrl),
+-  jwks_uri: Schema.optional(HttpUrl),
+-  authorization_response_iss_parameter_supported: Schema.optional(Schema.Boolean),
+-  client_id_metadata_document_supported: Schema.optional(Schema.Boolean),
+-  code_challenge_methods_supported: Schema.optional(Schema.Array(Schema.String)),
+-  token_endpoint_auth_methods_supported: Schema.optional(Schema.Array(Schema.String)),
+-  /** RFC 8414 grant types. Registration requests only advertised ones when present. */
+-  grant_types_supported: Schema.optional(Schema.Array(Schema.String)),
+-  scopes_supported: Schema.optional(Schema.Array(Schema.String)),
+-}))();
++export const OAuthTokenServer = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    userinfo_endpoint: Schema.optionalKey(HttpUrl),
++    /** Microsoft identity platform's multi-tenant metadata publishes a `{tenantid}` template here. */
++    issuer: HttpUrl,
++    /**
++     * The provider declared endpoints without an issuer. Executor derives `issuer` from the token
++     * URL to key automatic clients, but it is not the service's identifier, so callbacks are not checked against it.
++     */
++    issuer_derived: Schema.optional(Schema.Literal(true)),
++    authorization_endpoint: Schema.optional(HttpUrl),
++    token_endpoint: HttpUrl,
++    registration_endpoint: Schema.optional(HttpUrl),
++    /** RFC 7009 endpoint. Optional so grants saved before it was retained still decode. */
++    revocation_endpoint: Schema.optional(HttpUrl),
++    jwks_uri: Schema.optional(HttpUrl),
++    authorization_response_iss_parameter_supported: Schema.optional(Schema.Boolean),
++    client_id_metadata_document_supported: Schema.optional(Schema.Boolean),
++    code_challenge_methods_supported: Schema.optional(Schema.Array(Schema.String)),
++    token_endpoint_auth_methods_supported: Schema.optional(Schema.Array(Schema.String)),
++    /** RFC 8414 grant types. Registration requests only advertised ones when present. */
++    grant_types_supported: Schema.optional(Schema.Array(Schema.String)),
++    scopes_supported: Schema.optional(Schema.Array(Schema.String)),
++  }))();
+ export type OAuthTokenServer = typeof OAuthTokenServer.Type;
+ /** Browser grants require an authorization endpoint as well as a token endpoint. */
+-export const OAuthServer = /* @__PURE__ */ (() => Schema.Struct({
+-  ...OAuthTokenServer.fields,
+-  authorization_endpoint: HttpUrl,
+-}))();
++export const OAuthServer = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...OAuthTokenServer.fields,
++    authorization_endpoint: HttpUrl,
++  }))();
+ export type OAuthServer = typeof OAuthServer.Type;
+ /** The protected resource owns its canonical identifier and authorization-server list. */
+-export const OAuthResource = /* @__PURE__ */ (() => Schema.Struct({
+-  resource: HttpUrl,
+-  authorization_servers: Schema.Array(HttpUrl),
+-  scopes_supported: Schema.optional(Schema.Array(Schema.String)),
+-  /** Ahrefs lists its scopes under this name instead of RFC 9728's `scopes_supported`. */
+-  scopes_provided: Schema.optional(Schema.Array(Schema.String)),
+-}))();
++export const OAuthResource = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    resource: HttpUrl,
++    authorization_servers: Schema.Array(HttpUrl),
++    scopes_supported: Schema.optional(Schema.Array(Schema.String)),
++    /** Ahrefs lists its scopes under this name instead of RFC 9728's `scopes_supported`. */
++    scopes_provided: Schema.optional(Schema.Array(Schema.String)),
++  }))();
+ export type OAuthResource = typeof OAuthResource.Type;
+ 
+ /**
+  * Where protected-resource metadata was read, in the order MCP clients look: the document a
+  * Bearer challenge names, else the path-suffixed well-known URL, then the root one (RFC 9728).
+  */
+-export const ResourceMetadataLocation = /* @__PURE__ */ (() => Schema.Literals(["challenge", "path", "root"]))();
++export const ResourceMetadataLocation = /* @__PURE__ */ (() =>
++  Schema.Literals(["challenge", "path", "root"]))();
+ export type ResourceMetadataLocation = typeof ResourceMetadataLocation.Type;
+ /**
+  * How a client is obtained at an authorization server, in MCP's order of preference: a Client ID
+  * Metadata Document, dynamic client registration (RFC 7591), or a client the user registers.
+  */
+-export const OAuthClientRegistration = /* @__PURE__ */ (() => Schema.Literals([
+-  "client_id_metadata_document",
+-  "dynamic",
+-  "manual",
+-]))();
++export const OAuthClientRegistration = /* @__PURE__ */ (() =>
++  Schema.Literals(["client_id_metadata_document", "dynamic", "manual"]))();
+ export type OAuthClientRegistration = typeof OAuthClientRegistration.Type;
+ /** One protected-resource metadata lookup and what it found, without its URL or body. */
+-export const ResourceMetadataSignal = /* @__PURE__ */ (() => Schema.TaggedStruct("ResourceMetadata", {
+-  location: ResourceMetadataLocation,
+-  status: Schema.optionalKey(Schema.Int),
+-  result: Schema.Literals(["found", "missing", "invalid", "mismatch", "blocked", "unavailable"]),
+-}))();
++export const ResourceMetadataSignal = /* @__PURE__ */ (() =>
++  Schema.TaggedStruct("ResourceMetadata", {
++    location: ResourceMetadataLocation,
++    status: Schema.optionalKey(Schema.Int),
++    result: Schema.Literals(["found", "missing", "invalid", "mismatch", "blocked", "unavailable"]),
++  }))();
+ export type ResourceMetadataSignal = typeof ResourceMetadataSignal.Type;
+ /** The authorization server's RFC 8414 or OpenID Connect metadata, without its URL or body. */
+-export const AuthorizationServerSignal = /* @__PURE__ */ (() => Schema.TaggedStruct("AuthorizationServerMetadata", {
+-  /** Named by the resource metadata, or the MCP server's origin when it publishes none. */
+-  issuer: Schema.Literals(["resource_metadata", "origin"]),
+-  status: Schema.optionalKey(Schema.Int),
+-  result: Schema.Literals(["found", "missing", "invalid", "blocked", "unavailable", "unsupported"]),
+-  /** The document that answered: RFC 8414 metadata or OpenID Connect Discovery. */
+-  document: Schema.optionalKey(Schema.Literals(["oauth", "openid"])),
+-  registration: Schema.optionalKey(OAuthClientRegistration),
+-}))();
++export const AuthorizationServerSignal = /* @__PURE__ */ (() =>
++  Schema.TaggedStruct("AuthorizationServerMetadata", {
++    /** Named by the resource metadata, or the MCP server's origin when it publishes none. */
++    issuer: Schema.Literals(["resource_metadata", "origin"]),
++    status: Schema.optionalKey(Schema.Int),
++    result: Schema.Literals([
++      "found",
++      "missing",
++      "invalid",
++      "blocked",
++      "unavailable",
++      "unsupported",
++    ]),
++    /** The document that answered: RFC 8414 metadata or OpenID Connect Discovery. */
++    document: Schema.optionalKey(Schema.Literals(["oauth", "openid"])),
++    registration: Schema.optionalKey(OAuthClientRegistration),
++  }))();
+ export type AuthorizationServerSignal = typeof AuthorizationServerSignal.Type;
+-export const ResourceOAuthSignal = /* @__PURE__ */ (() => Schema.Union([
+-  ResourceMetadataSignal,
+-  AuthorizationServerSignal,
+-]))();
++export const ResourceOAuthSignal = /* @__PURE__ */ (() =>
++  Schema.Union([ResourceMetadataSignal, AuthorizationServerSignal]))();
+ export type ResourceOAuthSignal = typeof ResourceOAuthSignal.Type;
+ /**
+  * What a protected resource advertises about authorization-code OAuth, and the lookups that
+@@ -1566,16 +1601,18 @@ const registration = {
+   client_secret_expires_at: Schema.optional(Schema.Number),
+ };
+ /** A secret-bearing client suitable for machine grants and confidential browser clients. */
+-export const OAuthConfidentialRegistration = /* @__PURE__ */ (() => Schema.Struct({
+-  ...registration,
+-  token_endpoint_auth_method: OAuthSecretClientAuth,
+-  client_secret: Schema.NonEmptyString,
+-}))();
++export const OAuthConfidentialRegistration = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...registration,
++    token_endpoint_auth_method: OAuthSecretClientAuth,
++    client_secret: Schema.NonEmptyString,
++  }))();
+ export type OAuthConfidentialRegistration = typeof OAuthConfidentialRegistration.Type;
+-export const OAuthRegistration = /* @__PURE__ */ (() => Schema.Union([
+-  Schema.Struct({ ...registration, token_endpoint_auth_method: Schema.Literal("none") }),
+-  OAuthConfidentialRegistration,
+-]))();
++export const OAuthRegistration = /* @__PURE__ */ (() =>
++  Schema.Union([
++    Schema.Struct({ ...registration, token_endpoint_auth_method: Schema.Literal("none") }),
++    OAuthConfidentialRegistration,
++  ]))();
+ export type OAuthRegistration = typeof OAuthRegistration.Type;
+ /**
+  * How a stored client came to exist. `manual` clients were entered by a person; `registered`
+@@ -1583,36 +1620,40 @@ export type OAuthRegistration = typeof OAuthRegistration.Type;
+  * discard and replace. A `metadata` client is the host's client metadata document; it is read
+  * again on each sign-in and never stored.
+  */
+-export const OAuthClientSource = /* @__PURE__ */ (() => Schema.Literals(["registered", "metadata", "manual"]))();
++export const OAuthClientSource = /* @__PURE__ */ (() =>
++  Schema.Literals(["registered", "metadata", "manual"]))();
+ export type OAuthClientSource = typeof OAuthClientSource.Type;
+ /**
+  * A stored client as one attempt used it. `version` is the stored ciphertext in base64, so a
+  * conditional delete removes only the record this attempt saw.
+  */
+-export const OAuthClientUse = /* @__PURE__ */ (() => Schema.Struct({
+-  id: OAuthClientId,
+-  version: Schema.NonEmptyString,
+-  source: OAuthClientSource,
+-  /** No sign-in had completed with the client before this attempt. */
+-  fresh: Schema.Boolean,
+-}))();
++export const OAuthClientUse = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    id: OAuthClientId,
++    version: Schema.NonEmptyString,
++    source: OAuthClientSource,
++    /** No sign-in had completed with the client before this attempt. */
++    fresh: Schema.Boolean,
++  }))();
+ export type OAuthClientUse = typeof OAuthClientUse.Type;
+ /** Existing connection requests batched into one authorization; each retains its own target and policy. */
+-export const OAuthAdditionalConnection = /* @__PURE__ */ (() => Schema.Struct({
+-  connection: AccountConnectionId,
+-  method: Schema.NonEmptyString,
+-}))();
++export const OAuthAdditionalConnection = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    connection: AccountConnectionId,
++    method: Schema.NonEmptyString,
++  }))();
+ export type OAuthAdditionalConnection = typeof OAuthAdditionalConnection.Type;
+ /** The source grant revision selected before consent; callbacks cannot substitute another identity or client. */
+-export const OAuthConsentSource = /* @__PURE__ */ (() => Schema.Struct({
+-  account: AccountId,
+-  grant: AccountId,
+-  generation: Schema.Int,
+-  version: Schema.NonEmptyString,
+-  identity: AccountIdentityId,
+-  issuer: HttpUrl,
+-  subject: Schema.NonEmptyString,
+-}))();
++export const OAuthConsentSource = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    account: AccountId,
++    grant: AccountId,
++    generation: Schema.Int,
++    version: Schema.NonEmptyString,
++    identity: AccountIdentityId,
++    issuer: HttpUrl,
++    subject: Schema.NonEmptyString,
++  }))();
+ export type OAuthConsentSource = typeof OAuthConsentSource.Type;
+ 
+ /** What every sign-in attempt keeps, whichever client it uses. */
+@@ -1639,34 +1680,37 @@ const attemptFields = {
+   additionalConnections: Schema.optionalKey(Schema.Array(OAuthAdditionalConnection)),
+ };
+ /** Protocol context frozen when authorization starts, preventing callback-supplied identity changes. */
+-export const OAuthAttempt = /* @__PURE__ */ (() => Schema.Struct({
+-  ...attemptFields,
+-  server: OAuthServer,
+-  client: OAuthRegistration,
+-  /** The stored client this attempt used, so a rejection can discard exactly that version. */
+-  storedClient: Schema.optionalKey(OAuthClientUse),
+-  /** An entered client registered under the attempt's owner once it completes. */
+-  saveClient: Schema.optionalKey(Schema.Literal(true)),
+-  resource: Schema.optional(HttpUrl),
+-  /** Where `resource` came from, so a refusal can say. Attempts started before it was kept lack it. */
+-  resourceSource: Schema.optional(OAuthResourceSource),
+-  /** Token request encoding and nested grant location; strict path requirements apply on exchange. */
+-  tokenRequestFormat: Schema.optional(OAuthTokenRequestFormat),
+-  tokenResponse: Schema.optional(OAuthTokenResponse),
+-}))();
++export const OAuthAttempt = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...attemptFields,
++    server: OAuthServer,
++    client: OAuthRegistration,
++    /** The stored client this attempt used, so a rejection can discard exactly that version. */
++    storedClient: Schema.optionalKey(OAuthClientUse),
++    /** An entered client registered under the attempt's owner once it completes. */
++    saveClient: Schema.optionalKey(Schema.Literal(true)),
++    resource: Schema.optional(HttpUrl),
++    /** Where `resource` came from, so a refusal can say. Attempts started before it was kept lack it. */
++    resourceSource: Schema.optional(OAuthResourceSource),
++    /** Token request encoding and nested grant location; strict path requirements apply on exchange. */
++    tokenRequestFormat: Schema.optional(OAuthTokenRequestFormat),
++    tokenResponse: Schema.optional(OAuthTokenResponse),
++  }))();
+ /**
+  * An attempt that signs in with the operator's client named by `firstParty`. It keeps no server or
+  * client: the exchange reads both from the operator's current configuration, and fails if the
+  * client is gone. Without them, a server that knows no operator clients cannot decode the attempt,
+  * so it can never complete one as a credential the user brought.
+  */
+-export const OAuthFirstPartyAttempt = /* @__PURE__ */ (() => Schema.Struct({
+-  ...attemptFields,
+-  firstParty: FirstPartyOAuthClientId,
+-}))();
++export const OAuthFirstPartyAttempt = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...attemptFields,
++    firstParty: FirstPartyOAuthClientId,
++  }))();
+ export type OAuthFirstPartyAttempt = typeof OAuthFirstPartyAttempt.Type;
+ /** A stored sign-in attempt. */
+-export const OAuthAttemptRecord = /* @__PURE__ */ (() => Schema.Union([OAuthAttempt, OAuthFirstPartyAttempt]))();
++export const OAuthAttemptRecord = /* @__PURE__ */ (() =>
++  Schema.Union([OAuthAttempt, OAuthFirstPartyAttempt]))();
+ /** Whether an attempt signs in with the operator's client. */
+ export const isFirstPartyAttempt = (
+   attempt: typeof OAuthAttemptRecord.Type,
+@@ -1704,67 +1748,68 @@ const reusableGrant = {
+   grantedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
+ };
+ /** Private renewal context; machine grants retain scopes and exchange client credentials again. */
+-export const OAuthGrant = /* @__PURE__ */ (() => Schema.Union([
+-  Schema.Struct({
+-    ...grantFields,
+-    ...reusableGrant,
+-    grant: Schema.optionalKey(Schema.Literal("authorization_code")),
+-    server: OAuthServer,
+-    client: OAuthRegistration,
+-    /** The stored client signed in with. The grant keeps its own copy for renewal. */
+-    oauthClient: Schema.optionalKey(OAuthClientId),
+-    refreshToken: Schema.optional(Schema.NonEmptyString),
+-    /**
+-     * The callback the sign-in sent, sent again on each refresh for servers that require it.
+-     * Imported grants renew as the product that issued them did, and grants saved before it was
+-     * retained renew as they did, so both omit it.
+-     */
+-    redirectUri: Schema.optional(HttpUrl),
+-    /**
+-     * Scopes each refresh asks for again, space-separated. Only imported grants carry them, as the
+-     * product that issued the grant sent them; other refreshes ask for none, keeping what was
+-     * granted (RFC 6749 §6).
+-     */
+-    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
+-    /** Nested grant location frozen at sign-in; renewals keep the top-level fallback. */
+-    tokenResponse: Schema.optional(OAuthTokenResponse),
+-    generation: grantGeneration,
+-  }),
+-  Schema.Struct({
+-    ...grantFields,
+-    grant: Schema.Literal("client_credentials"),
+-    server: OAuthTokenServer,
+-    client: OAuthConfidentialRegistration,
+-    scopes: Schema.Array(Schema.String),
+-    /** Joins `scopes` on each exchange. Grants saved before it was retained use a space. */
+-    scopeSeparator: Schema.optional(Schema.NonEmptyString),
+-    generation: grantGeneration,
+-  }),
+-  /**
+-   * A grant issued to the operator's client named by `firstParty`; its access token is managed. It
+-   * keeps no server or client; renewal and revocation read both from the operator's current
+-   * configuration. Without them, a server that knows no operator clients cannot decode the grant,
+-   * so it can never release these tokens as a credential the user brought.
+-   */
+-  Schema.Struct({
+-    grant: Schema.Literal("authorization_code"),
+-    ...reusableGrant,
+-    firstParty: FirstPartyOAuthClientId,
+-    site: Schema.optional(SiteOrigin),
+-    response: JsonObject,
+-    expiresAt: Schema.optional(Schema.Number),
+-    fields: JsonObject,
+-    refreshToken: Schema.optional(Schema.NonEmptyString),
+-    /** The callback the sign-in sent, kept across host callback changes; see the grant above. */
+-    redirectUri: Schema.optional(HttpUrl),
++export const OAuthGrant = /* @__PURE__ */ (() =>
++  Schema.Union([
++    Schema.Struct({
++      ...grantFields,
++      ...reusableGrant,
++      grant: Schema.optionalKey(Schema.Literal("authorization_code")),
++      server: OAuthServer,
++      client: OAuthRegistration,
++      /** The stored client signed in with. The grant keeps its own copy for renewal. */
++      oauthClient: Schema.optionalKey(OAuthClientId),
++      refreshToken: Schema.optional(Schema.NonEmptyString),
++      /**
++       * The callback the sign-in sent, sent again on each refresh for servers that require it.
++       * Imported grants renew as the product that issued them did, and grants saved before it was
++       * retained renew as they did, so both omit it.
++       */
++      redirectUri: Schema.optional(HttpUrl),
++      /**
++       * Scopes each refresh asks for again, space-separated. Only imported grants carry them, as the
++       * product that issued the grant sent them; other refreshes ask for none, keeping what was
++       * granted (RFC 6749 §6).
++       */
++      scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++      /** Nested grant location frozen at sign-in; renewals keep the top-level fallback. */
++      tokenResponse: Schema.optional(OAuthTokenResponse),
++      generation: grantGeneration,
++    }),
++    Schema.Struct({
++      ...grantFields,
++      grant: Schema.Literal("client_credentials"),
++      server: OAuthTokenServer,
++      client: OAuthConfidentialRegistration,
++      scopes: Schema.Array(Schema.String),
++      /** Joins `scopes` on each exchange. Grants saved before it was retained use a space. */
++      scopeSeparator: Schema.optional(Schema.NonEmptyString),
++      generation: grantGeneration,
++    }),
+     /**
+-     * Scopes each refresh asks for again. Only imported grants carry them, as the product that
+-     * issued the grant sent them; see the other authorization code grant's `scopes`.
++     * A grant issued to the operator's client named by `firstParty`; its access token is managed. It
++     * keeps no server or client; renewal and revocation read both from the operator's current
++     * configuration. Without them, a server that knows no operator clients cannot decode the grant,
++     * so it can never release these tokens as a credential the user brought.
+      */
+-    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
+-    generation: Schema.Int,
+-  }),
+-]))();
++    Schema.Struct({
++      grant: Schema.Literal("authorization_code"),
++      ...reusableGrant,
++      firstParty: FirstPartyOAuthClientId,
++      site: Schema.optional(SiteOrigin),
++      response: JsonObject,
++      expiresAt: Schema.optional(Schema.Number),
++      fields: JsonObject,
++      refreshToken: Schema.optional(Schema.NonEmptyString),
++      /** The callback the sign-in sent, kept across host callback changes; see the grant above. */
++      redirectUri: Schema.optional(HttpUrl),
++      /**
++       * Scopes each refresh asks for again. Only imported grants carry them, as the product that
++       * issued the grant sent them; see the other authorization code grant's `scopes`.
++       */
++      scopes: Schema.optionalKey(Schema.Array(Schema.String)),
++      generation: Schema.Int,
++    }),
++  ]))();
+ export type OAuthGrant = typeof OAuthGrant.Type;
+ /** A grant issued to the operator's client. */
+ export type OAuthFirstPartyGrant = Extract<
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+index 597e713..9f2cf45 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,5 +1,9 @@
@@ -71,9 +2352,9 @@
 +  oauthScopeClosure,
 +} from "../contracts/oauth-scopes.ts";
  import { projectOAuthFields as project } from "./oauth-fields.ts";
- import type { AppAccountUse, ResourceLifecycle } from "../contracts/executor.ts";
+ import { CurrentActor, type AppAccountUse, type ResourceLifecycle } from "../contracts/executor.ts";
  import { missingOAuthScopes, oauthIdentityConsent } from "../contracts/oauth-families.ts";
-@@ -587,21 +591,38 @@
+@@ -656,21 +660,38 @@ export const makeOAuth = (
     * reports none, which grants what was requested (RFC 6749 §5.1) or, on renewal, what the grant
     * held (§6). Scopes are whitespace-delimited, and also split on the server's
     * `grantedScopeSeparator`, such as GitHub's `repo,gist`; never on the request's `scopeSeparator`.
@@ -116,7 +2397,47 @@
    };
    /**
     * The operator's client and authorization server as configured now, or undefined when the
-@@ -2589,7 +2610,10 @@
+@@ -840,11 +861,23 @@ export const makeOAuth = (
+         return yield* new OAuthSetupFailed({ reason: "unsupported" });
+       const provider = yield* storedProvider(input.provider);
+       const definition = targetDefinition ?? provider.definition;
+-      const declared = Object.hasOwn(definition.auth, input.method) ? definition.auth[input.method] : undefined;
++      const declared = Object.hasOwn(definition.auth, input.method)
++        ? definition.auth[input.method]
++        : undefined;
+       if (declared === undefined || declared.type !== "oauth2")
+         return yield* new AuthMethodInvalid({ provider: provider.id, method: input.method });
+-      const binding = yield* bindConnectionMcpMethod(db, credentials, options.urlPolicy, declared, input);
+-      return yield* setupOf(provider, input, { skipOptionalMetadata, definition: targetDefinition, binding });
++      const binding = yield* bindConnectionMcpMethod(
++        db,
++        credentials,
++        options.urlPolicy,
++        declared,
++        input,
++      );
++      return yield* setupOf(provider, input, {
++        skipOptionalMetadata,
++        definition: targetDefinition,
++        binding,
++      });
+     });
+ 
+   const storedProvider = (id: ProviderId) =>
+@@ -864,7 +897,11 @@ export const makeOAuth = (
+       readonly connection?: import("../contracts/shared.ts").AccountConnectionId | undefined;
+       readonly owner?: OwnerId | undefined;
+     },
+-    { skipOptionalMetadata = false, definition: targetDefinition, binding: bound }: {
++    {
++      skipOptionalMetadata = false,
++      definition: targetDefinition,
++      binding: bound,
++    }: {
+       readonly skipOptionalMetadata?: boolean;
+       readonly definition?: ProviderDefinition | undefined;
+       readonly binding?: Effect.Success<ReturnType<typeof bindConnectionMcpMethod>>;
+@@ -2705,7 +2742,10 @@ export const makeOAuth = (
          ),
        );
        // The operator's client keeps no grant holding a scope it does not allow.
@@ -128,7 +2449,7 @@
          const client = firstPartyClients.get(attempt.firstParty);
          if (client !== undefined)
            yield* Console.warn(
-@@ -2598,7 +2622,7 @@
+@@ -2714,7 +2754,7 @@ export const makeOAuth = (
                client: attempt.firstParty,
                ...oauthScopeExceededEvidence(
                  attempt.requestedScopes ?? [],
@@ -137,7 +2458,7 @@
                  oauthScopeClosure(allowedScopes(client), client.server.scopeImplications),
                ),
              }),
-@@ -2616,8 +2640,8 @@
+@@ -2732,8 +2772,8 @@ export const makeOAuth = (
          const client = firstPartyClients.get(attempt.firstParty);
          if (client?.requireScopeConfirmation === true) {
            const requested = attempt.requestedScopes ?? [];
@@ -148,7 +2469,7 @@
            const recipes = options?.accountFamilies ?? (yield* AccountFamilyConfiguration).recipes;
            const missing = missingOAuthScopes(attempt.identity?.issuer, requested, granted, recipes);
            if (requested.length > 0 && (granted === undefined || missing.length > 0)) {
-@@ -2676,7 +2700,11 @@
+@@ -2797,7 +2837,11 @@ export const makeOAuth = (
            ? {}
            : {
                grantedScopes: isFirstPartyAttempt(attempt)
@@ -161,7 +2482,7 @@
                  : tokens.scope.split(/\s+/u).filter(Boolean),
              }),
  
-@@ -3095,7 +3123,9 @@
+@@ -3219,7 +3263,9 @@ export const makeOAuth = (
              // does not allow. The grant then needs reconnecting, and the response's tokens are
              // revoked.
              Effect.filterOrFail(
@@ -172,7 +2493,7 @@
                (tokens) => ({
                  outcome: "reconnect" as const,
                  cause: { stage, field: "scope" } satisfies OAuthFailureCause,
-@@ -3208,7 +3238,11 @@
+@@ -3332,7 +3378,11 @@ export const makeOAuth = (
                  ? {}
                  : {
                      grantedScopes: isFirstPartyGrant(base)
@@ -185,3 +2506,83 @@
                        : tokens.scope.split(/\s+/u).filter(Boolean),
                    }),
                ...(base.grant === "client_credentials" || refreshToken === undefined
+@@ -3623,7 +3673,11 @@ export const makeOAuth = (
+       const granted = [
+         ...new Set(
+           checks
+-            .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets" && provider.auth[account.method]?.type !== "interactive")
++            .filter(
++              ({ account, provider }) =>
++                provider.auth[account.method]?.type !== "secrets" &&
++                provider.auth[account.method]?.type !== "interactive",
++            )
+             .map(({ account }) => accountGrantId(account)),
+         ),
+       ];
+@@ -3701,7 +3755,13 @@ export const makeOAuth = (
+   ) =>
+     Effect.gen(function* () {
+       if (allowed !== undefined && !allowed.has(account.id)) return yield* new AccountUseRefused();
+-      const credential = yield* resolveCredentials(purpose, account, provider, resolution, rejected);
++      const credential = yield* resolveCredentials(
++        purpose,
++        account,
++        provider,
++        resolution,
++        rejected,
++      );
+       const method = provider.auth[account.method];
+       // Old grants can contain undeclared token metadata. Apply the current declaration on reads
+       // too, before app invocation and the credential privacy checks see those values.
+@@ -3867,18 +3927,26 @@ export const makeOAuth = (
+           /** The account as one slot's invocation sends it, under that slot's definition. */
+           return (definition: ProviderDefinition) =>
+             invocationAccount(account, definition, credential, firstPartyClients, sitePolicy);
+-        }).pipe(Effect.catchTags({
+-          OAuthReconnectRequired: (error) =>
+-            discovery && use.kind === "run"
+-              ? recheck.pipe(Effect.as((definition: ProviderDefinition) =>
+-                  unavailableAccount(account, definition, error, uses)))
+-              : Effect.fail(error),
+-          OAuthRenewalFailed: (error) =>
+-            discovery && use.kind === "run"
+-              ? recheck.pipe(Effect.as((definition: ProviderDefinition) =>
+-                  unavailableAccount(account, definition, error, uses)))
+-              : Effect.fail(error),
+-        })),
++        }).pipe(
++          Effect.catchTags({
++            OAuthReconnectRequired: (error) =>
++              discovery && use.kind === "run"
++                ? recheck.pipe(
++                    Effect.as((definition: ProviderDefinition) =>
++                      unavailableAccount(account, definition, error, uses),
++                    ),
++                  )
++                : Effect.fail(error),
++            OAuthRenewalFailed: (error) =>
++              discovery && use.kind === "run"
++                ? recheck.pipe(
++                    Effect.as((definition: ProviderDefinition) =>
++                      unavailableAccount(account, definition, error, uses),
++                    ),
++                  )
++                : Effect.fail(error),
++          }),
++        ),
+       ).pipe(Effect.provideService(GrantReadAhead, readAhead));
+     });
+   /**
+@@ -3893,7 +3961,11 @@ export const makeOAuth = (
+   ) =>
+     Effect.gen(function* () {
+       const ids = selected
+-        .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets" && provider.auth[account.method]?.type !== "interactive")
++        .filter(
++          ({ account, provider }) =>
++            provider.auth[account.method]?.type !== "secrets" &&
++            provider.auth[account.method]?.type !== "interactive",
++        )
+         .map(({ account }) => accountGrantId(account));
+       if (ids.length === 0) return undefined;
+       const rows = yield* query(() =>

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "OAuth credential projection exposes only the provider's declared response fields and retains non-OAuth credentials unchanged. Resolution receives the actual invocation purpose and CurrentActor before projection, so discovery, execution and account authority do not follow a caller-supplied field choice."
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "scenarios": {
+    "executorAppSetupLeavesVersion": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "managementApps": ["owner", "admin"],
+      "title": "A member joining links their Executor key without redeploying the organization's Executor app",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Recording Executor's installed version writes the runner-owned product database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local uses its configured instance API key."
+        }
+      }
+    }
+  },
+  "runs": {
+    "executorAppSetupLeavesVersion": ["declared:self-host"]
+  },
+  "inputs": [
+    ".upstream/e2e/tests/executor-app-setup-version.spec.ts",
+    ".upstream/apps/hosted/server/src/implementation/organization-defaults.ts"
+  ]
+}

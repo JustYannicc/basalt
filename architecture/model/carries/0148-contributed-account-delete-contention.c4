@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.contributedLinks {
+    metadata {
+      constraint "Deletion claims linked apps in deterministic order before the account and releases savepoint locks before retrying a changed link set or account-first reconnect. After removal preparation and the row lock it rereads the current account and checks webhook dependents before releasing that account's grant. Authorization and hidden-dependent refusal remain inside the deletion transaction."
+    }
+  }
+}

@@ -66,6 +66,7 @@ if (
 process.chdir(fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url)));
 const directory =
   recoveryDirectory ?? fileURLToPath(new URL("../../.local/release-barrier/", import.meta.url));
+process.env.BASALT_RELEASE_EVIDENCE_DIRECTORY = directory;
 const evidence = releaseEvidence(
   directory,
   process.env.BASALT_RELEASE_CANDIDATE!,

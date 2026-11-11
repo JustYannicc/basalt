@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.providerAccountMethods {
+    metadata {
+      constraint "Model-provider apps connect reusable accounts and import supported login files; pools select saved accounts and refuse fresh or stale acquisition before provider work. Each pending import retains its assigned account and mirror reference but remains unusable until acknowledgement. Host connection endpoints compose import implementations explicitly, while runtime adapters only consume their capabilities."
+    }
+  }
+}

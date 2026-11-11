@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Saved Home-bound accounts refresh usage independently of pool selection through the existing signed upkeep request. Only current owner, provider, method, driver and credential-generation bindings with an installed collector qualify. Collection preserves source cooldowns and bounded leases; dashboard polling never grants credential use or exposes hidden account references."
+    }
+  }
+}

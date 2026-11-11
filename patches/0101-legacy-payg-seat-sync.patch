@@ -1,7 +1,8 @@
 diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud/src/implementation/billing.ts
+index d2f8ea5..5ca73a3 100644
 --- a/apps/hosted/cloud/src/implementation/billing.ts
 +++ b/apps/hosted/cloud/src/implementation/billing.ts
-@@ -180,7 +180,11 @@
+@@ -197,7 +197,11 @@ export const billingLive = Effect.gen(function* () {
     * can overwrite this job's value in Autumn, so each pass re-reads the live
     * count after recording it and repeats until they agree.
     */
@@ -12,9 +13,9 @@ diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud
 +    checkoutPlan?: string,
 +  ) =>
      Effect.gen(function* () {
-       let current: { readonly count: number; readonly synced: number | null } | undefined =
-         yield* members.use(seatCounts(organization));
-@@ -190,7 +194,16 @@
+       // The import syncs a held organization's seats once its subscription is carried over.
+       if ((yield* hold(organization)) !== null) return;
+@@ -209,7 +213,16 @@ export const billingLive = Effect.gen(function* () {
          const count: number = current.count;
          const { autumn, catalog, customerId, value } = yield* customer(organization);
          const balance = value.balances[catalog.members];
@@ -32,7 +33,7 @@ diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud
          if (balance.usage !== count)
            yield* use(
              autumn.updateBalance({ customerId, featureId: catalog.members, usage: count }),
-@@ -280,7 +293,7 @@
+@@ -302,7 +315,7 @@ export const billingLive = Effect.gen(function* () {
          checkout: (organization, plan, returnUrl) =>
            Effect.gen(function* () {
              // A new plan bills the seats Autumn holds now, so confirm them with Autumn.
@@ -41,10 +42,64 @@ diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud
              const current = yield* overview(organization);
              if (
                !current.plans.some(
+diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
+index 61799ee..53aef73 100644
+--- a/e2e/support/emulators.ts
++++ b/e2e/support/emulators.ts
+@@ -525,13 +525,47 @@ const make = Effect.gen(function* () {
+       ),
+     );
+   return {
++    billingCustomer: (input: { readonly organizationId: string; readonly freePlanId: string }) =>
++      Effect.gen(function* () {
++        const match = /^(executor-next-[a-z0-9-]+)-free$/.exec(input.freePlanId);
++        if (!match?.[1])
++          return yield* new EmulatorFailed({ operation: "Expected a stage-scoped free plan" });
++        return yield* request(
++          value.services.billing.baseUrl,
++          "/v1/customers.get",
++          { customer_id: `${match[1]}:organization:${input.organizationId}` },
++          value.services.billing.token,
++        ).pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Struct({
++                balances: Schema.Record(
++                  Schema.String,
++                  Schema.Struct({
++                    feature_id: Schema.String,
++                    usage: Schema.Number,
++                    remaining: Schema.Number,
++                    unlimited: Schema.Boolean,
++                  }),
++                ),
++                subscriptions: Schema.Array(
++                  Schema.Struct({ plan_id: Schema.String, status: Schema.String }),
++                ),
++              }),
++            ),
++          ),
++        );
++      }),
+     billingSubscription: (input: {
+       readonly organizationId: string;
+       readonly planId: string;
+       readonly status: "active" | "trialing" | "scheduled" | "expired";
+     }) =>
+       Effect.gen(function* () {
+-        const match = /^(executor-next-[a-z0-9-]+?)-(free|team|enterprise)$/.exec(input.planId);
++        const match =
++          /^(executor-next-[a-z0-9-]+?)-(free(?:-pay-as-you-go)?|team|enterprise)$/.exec(
++            input.planId,
++          );
+         if (!match?.[1])
+           return yield* new EmulatorFailed({ operation: "Expected a stage-scoped billing plan" });
+         yield* request(
 diff --git a/e2e/tests/cloud-sso.spec.ts b/e2e/tests/cloud-sso.spec.ts
+index 782f3a6..6b90217 100644
 --- a/e2e/tests/cloud-sso.spec.ts
 +++ b/e2e/tests/cloud-sso.spec.ts
-@@ -8,7 +8,11 @@
+@@ -8,7 +8,11 @@ import { Browser } from "../support/browser.ts";
  import { Target } from "../support/platform.ts";
  import { ssoFixture } from "../support/sso.ts";
  import { scenarios } from "../test-plan.ts";
@@ -57,7 +112,7 @@ diff --git a/e2e/tests/cloud-sso.spec.ts b/e2e/tests/cloud-sso.spec.ts
  import { Emulators } from "../support/emulators.ts";
  import { targetHosts } from "../support/role-hosts.ts";
  
-@@ -43,6 +47,24 @@
+@@ -43,6 +47,24 @@ const enableEnterprise = (team: { readonly id: string; readonly slug: string },
          .status,
      ).toBe(400);
      if (capture) {
@@ -82,7 +137,7 @@ diff --git a/e2e/tests/cloud-sso.spec.ts b/e2e/tests/cloud-sso.spec.ts
        for (const selection of [
          { name: "Free", status: "active" },
          { name: "Team", status: "active" },
-@@ -61,10 +83,62 @@
+@@ -61,10 +83,62 @@ const enableEnterprise = (team: { readonly id: string; readonly slug: string },
            yield* api.request(actors.owner, "GET", billingPath),
          );
          expect(current.enterprise).toBe(false);
@@ -145,7 +200,7 @@ diff --git a/e2e/tests/cloud-sso.spec.ts b/e2e/tests/cloud-sso.spec.ts
          yield* held.requested;
          expect(
            yield* browser.use("SSO stays hidden while the plan is unknown", (page) =>
-@@ -92,13 +166,22 @@
+@@ -92,13 +166,22 @@ const enableEnterprise = (team: { readonly id: string; readonly slug: string },
          page.getByRole("link", { name: "Contact sales", exact: true }).waitFor(),
        );
        yield* browser.checkpoint("Enterprise uses custom pricing and contact sales");
@@ -170,7 +225,7 @@ diff --git a/e2e/tests/cloud-sso.spec.ts b/e2e/tests/cloud-sso.spec.ts
        // Checkout synchronizes seats first. PAYG has no seats to synchronize and
        // must still reach the plan policy instead of failing with billing unavailable.
        expect(
-@@ -106,6 +189,7 @@
+@@ -106,6 +189,7 @@ const enableEnterprise = (team: { readonly id: string; readonly slug: string },
            plan: enterprise.id,
          })).status,
        ).toBe(400);
@@ -178,55 +233,3 @@ diff --git a/e2e/tests/cloud-sso.spec.ts b/e2e/tests/cloud-sso.spec.ts
      }
      yield* emulators.billingSubscription({
        organizationId: team.id,
-diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
---- a/e2e/support/emulators.ts
-+++ b/e2e/support/emulators.ts
-@@ -493,13 +493,47 @@
-       ),
-     );
-   return {
-+    billingCustomer: (input: { readonly organizationId: string; readonly freePlanId: string }) =>
-+      Effect.gen(function* () {
-+        const match = /^(executor-next-[a-z0-9-]+)-free$/.exec(input.freePlanId);
-+        if (!match?.[1])
-+          return yield* new EmulatorFailed({ operation: "Expected a stage-scoped free plan" });
-+        return yield* request(
-+          value.services.billing.baseUrl,
-+          "/v1/customers.get",
-+          { customer_id: `${match[1]}:organization:${input.organizationId}` },
-+          value.services.billing.token,
-+        ).pipe(
-+          Effect.flatMap(
-+            Schema.decodeUnknownEffect(
-+              Schema.Struct({
-+                balances: Schema.Record(
-+                  Schema.String,
-+                  Schema.Struct({
-+                    feature_id: Schema.String,
-+                    usage: Schema.Number,
-+                    remaining: Schema.Number,
-+                    unlimited: Schema.Boolean,
-+                  }),
-+                ),
-+                subscriptions: Schema.Array(
-+                  Schema.Struct({ plan_id: Schema.String, status: Schema.String }),
-+                ),
-+              }),
-+            ),
-+          ),
-+        );
-+      }),
-     billingSubscription: (input: {
-       readonly organizationId: string;
-       readonly planId: string;
-       readonly status: "active" | "trialing" | "scheduled" | "expired";
-     }) =>
-       Effect.gen(function* () {
--        const match = /^(executor-next-[a-z0-9-]+?)-(free|team|enterprise)$/.exec(input.planId);
-+        const match =
-+          /^(executor-next-[a-z0-9-]+?)-(free(?:-pay-as-you-go)?|team|enterprise)$/.exec(
-+            input.planId,
-+          );
-         if (!match?.[1])
-           return yield* new EmulatorFailed({ operation: "Expected a stage-scoped billing plan" });
-         yield* request(

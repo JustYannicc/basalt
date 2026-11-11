@@ -285,7 +285,7 @@ index 8d5472c..904d54e 100644
    }),
  );
 diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
-index e3b5647..899ad2a 100644
+index 5735f23..e3fb10c 100644
 --- a/apps/hosted/cloud/src/infrastructure/auth.ts
 +++ b/apps/hosted/cloud/src/infrastructure/auth.ts
 @@ -2,6 +2,7 @@ import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook
@@ -295,16 +295,16 @@ index e3b5647..899ad2a 100644
 +import { withOrganizationAccessRequest } from "../implementation/organization-access-request.ts";
  import { AsyncLocalStorage } from "node:async_hooks";
  import { APIError } from "better-auth/api";
- import { OrganizationId } from "@executor-js/hosted-server";
-@@ -40,6 +41,7 @@ import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
+ import { OrganizationId, recordCredential, recordSecurityAudit } from "@executor-js/hosted-server";
+@@ -41,6 +42,7 @@ import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
  import { RuntimeContext } from "alchemy";
  import * as Cloudflare from "alchemy/Cloudflare";
  import { Config, Context, Effect, Layer, Option, Redacted, Schema, type Scope } from "effect";
 +import { SqlClient } from "effect/sql";
  import { HttpBody, HttpServerRequest, HttpServerResponse } from "effect/http";
  import type { SendAuthEmail } from "../contracts/email.ts";
- import { cloudSecrets, v1McpForwardSecret } from "./secrets.ts";
-@@ -163,6 +165,10 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+ import { cloudSecrets, v1McpForwardSecret, v1SessionHandoffSecret } from "./secrets.ts";
+@@ -168,6 +170,10 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
        {
          memberRemoving: (organization, member) =>
            runCallback(withSql(access.memberRemoving?.({ organization, member }) ?? Effect.void)),
@@ -315,13 +315,14 @@ index e3b5647..899ad2a 100644
          membersAdded: (organization) =>
            runCallback(
              withSql(
-@@ -322,16 +328,31 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+@@ -344,17 +350,32 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
      const requestHandler = Effect.gen(function* () {
        const request = yield* HttpServerRequest.HttpServerRequest;
        const web = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
 -      const [instance, bind] = yield* bound;
 -      routes ??= routeTemplates(authEndpointTemplates(instance.api));
--      yield* routes.record(new URL(web.url).pathname);
+       const pathname = new URL(web.url).pathname;
+-      yield* routes.record(pathname);
 -      const context = yield* Effect.context<
 -        RuntimeContext | HttpServerRequest.HttpServerRequest | Scope.Scope
 -      >();
@@ -342,7 +343,7 @@ index e3b5647..899ad2a 100644
 +              transaction ? database.bindTransaction : database.bind,
 +            ]).pipe(Effect.provide(RuntimeContext.phantom));
 +            routes ??= routeTemplates(authEndpointTemplates(instance.api));
-+            yield* routes.record(new URL(web.url).pathname);
++            yield* routes.record(pathname);
 +            const context = yield* Effect.context<
 +              RuntimeContext | HttpServerRequest.HttpServerRequest | Scope.Scope
 +            >();
@@ -353,9 +354,9 @@ index e3b5647..899ad2a 100644
 +            return response;
 +          }),
 +      }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
-       if (response.body === null) return HttpServerResponse.fromWeb(response);
-       // Better Auth answers with complete JSON. Sent as a stream, its last byte would wait for
-       // the request's cleanup, including Better Auth queries the request left running.
+       if (response.body === null) {
+         yield* recordAuthRefusal(response.status, pathname, new Uint8Array(), web.headers);
+         return HttpServerResponse.fromWeb(response);
 diff --git a/apps/hosted/server/src/implementation/app-policy.ts b/apps/hosted/server/src/implementation/app-policy.ts
 new file mode 100644
 index 0000000..d223c5d
@@ -658,7 +659,7 @@ index 2983978..f61649d 100644
            version: locked.activeVersion,
            bundle: poolAppVersion,
 diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
-index 55cd660..a7a5fb0 100644
+index 3c2d8cf..6289455 100644
 --- a/apps/hosted/server/src/implementation/resource-policy.ts
 +++ b/apps/hosted/server/src/implementation/resource-policy.ts
 @@ -10,7 +10,7 @@ import {
@@ -844,7 +845,7 @@ index a61e305..dd73456 100644
      ),
    );
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 5a6b7ab..f539fbd 100644
+index c4617ec..00f0c5a 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -95,6 +95,12 @@ export interface HostAccessLifecycle {

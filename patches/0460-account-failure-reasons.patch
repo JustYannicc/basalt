@@ -869,9 +869,46 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/
              )}
            </div>
 diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
+index fda6c24..a914040 100644
 --- a/packages/ui/src/implementation/dashboard/account-health.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-health.tsx
-@@ -307,7 +307,7 @@
+@@ -230,7 +230,9 @@ export function AccountHealthPanel<E>({
+       .filter((entry) => entry.checkable && (entry.check === null || !entry.check.current))
+       .map((entry) => `${entry.app}:${entry.check?.checkedAt.getTime() ?? "none"}`) ?? []),
+     ...(driver !== undefined && driverCheckable && driver.check?.current !== true
+-      ? [`driver:${driver.source.id}:${driver.source.version}:${driver.check?.checkedAt.getTime() ?? "none"}`]
++      ? [
++          `driver:${driver.source.id}:${driver.source.version}:${driver.check?.checkedAt.getTime() ?? "none"}`,
++        ]
+       : []),
+   ].join(",");
+   const checked = useRef(new Set<string>());
+@@ -263,7 +265,10 @@ export function AccountHealthPanel<E>({
+               data-check-source="driver"
+             >
+               <span className="min-w-0 wrap-anywhere">Sign-in</span>
+-              <AccountCheckResult health={{ checkable: driverCheckable, check: driver.check }} checking={pending} />
++              <AccountCheckResult
++                health={{ checkable: driverCheckable, check: driver.check }}
++                checking={pending}
++              />
+             </li>
+           )}
+           {apps.map((app) => {
+@@ -315,7 +320,11 @@ export function AccountCheckResult({
+     return null;
+   if (health === undefined || (!health.checkable && health.check === null))
+     return <span className="text-[12px] text-muted-foreground">No check</span>;
+-  if ((part === "details" || part === "notes") && (checking || retry !== undefined) && health.check?.current !== true)
++  if (
++    (part === "details" || part === "notes") &&
++    (checking || retry !== undefined) &&
++    health.check?.current !== true
++  )
+     return null;
+   if (checking && health.check?.current !== true)
+     return (
+@@ -345,13 +354,17 @@ export function AccountCheckResult({
      return <span className="text-[12px] text-muted-foreground">Not checked</span>;
    const displayStatus = "displayStatus" in health.check ? health.check.displayStatus : undefined;
    const { label, tone } = describeCheckResult(health.check);
@@ -880,7 +917,18 @@ diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packa
    const badge = (
      <span
        className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${health.check.current ? pills[tone] : pills.muted}`}
-@@ -331,9 +331,15 @@
+       data-check-status={health.check.status}
+       data-check-current={health.check.current}
+-      title={health.check.current ? undefined : "Checked before the app was redeployed or the account's credentials changed"}
++      title={
++        health.check.current
++          ? undefined
++          : "Checked before the app was redeployed or the account's credentials changed"
++      }
+     >
+       {health.check.current ? label : `${label} · outdated`}
+     </span>
+@@ -370,9 +383,15 @@ export function AccountCheckResult({
            {message}
          </span>
        )}

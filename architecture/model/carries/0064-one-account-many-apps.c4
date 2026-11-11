@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Verified issuer and subject group visible saved bindings without merging IDs, placement, access or app links. Reuse requires one compatible grant with confirmed coverage; extra consent commits against its saved destination and leaves prior grants usable on refusal. Batched reads preserve CurrentActor and use-kind authority, registered-client provenance and interactive exclusion; reconnect resumes waiting webhook sources once."
+    }
+  }
+}

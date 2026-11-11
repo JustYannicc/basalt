@@ -23,6 +23,7 @@ import {
   requirePlanetScaleEnvironment,
 } from "./runtime.ts";
 import { poolImageReceipt } from "./pool-image.ts";
+import { executorMarkerPolicy, type ExecutorMarkerPrecondition } from "./executor-marker.ts";
 
 export type ReleaseMode = "automatic" | "manual";
 
@@ -214,6 +215,7 @@ export function assertReleaseMode(
 export function productionReleaseDependencies(
   sourceRoot = repositoryRoot,
   candidateCommit?: string,
+  executorMarker?: ExecutorMarkerPrecondition,
 ): ReleaseDependencies {
   const github = readLedgerEnvironment();
   const planetscale = new PlanetScaleSafety(requirePlanetScaleEnvironment());
@@ -222,6 +224,10 @@ export function productionReleaseDependencies(
     ...process.env,
     GITHUB_SHA: candidateCommit ?? process.env.GITHUB_SHA,
     BASALT_POOL_IMAGE_RECEIPT: receiptPath,
+    BASALT_EXECUTOR_MARKER_POLICY: executorMarkerPolicy(
+      candidateCommit ?? process.env.GITHUB_SHA ?? "",
+      executorMarker,
+    ),
   };
   return {
     dispose: () => rmSync(dirname(receiptPath), { recursive: true, force: true }),

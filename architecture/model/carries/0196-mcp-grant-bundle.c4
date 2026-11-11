@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "MCP session authentication keeps grant and API-key verification but excludes administrative endpoints and session-creation hooks from its Worker bundle. API and self-host sign-in instances retain those services. Caller recording stays on the MCP auth path, and bundle failures retain full diagnostic causes without changing upload budgets."
+    }
+  }
+}

@@ -312,7 +312,7 @@ index 0000000..ae621d0
 +    };
 +  });
 diff --git a/e2e/support/cloud-postgres.ts b/e2e/support/cloud-postgres.ts
-index 6a36df1..de5b3a7 100644
+index f9ac2c1..ee19641 100644
 --- a/e2e/support/cloud-postgres.ts
 +++ b/e2e/support/cloud-postgres.ts
 @@ -10,6 +10,7 @@
@@ -338,7 +338,7 @@ index 6a36df1..de5b3a7 100644
  const Containers = Schema.fromJsonString(
    Schema.Array(
      Schema.Struct({
-@@ -142,9 +135,9 @@ const removeAbandoned = (dockerEnv: DockerEnv, namespace: string) =>
+@@ -142,9 +135,8 @@ const removeAbandoned = (dockerEnv: DockerEnv, namespace: string) =>
  /** Create, start and await a Postgres container that is removed when the caller's scope closes. */
  export const startCloudPostgres = (input: {
    readonly container: string;
@@ -346,12 +346,11 @@ index 6a36df1..de5b3a7 100644
 -  /** A second runner-owned endpoint for binding-change proof against the same retained database. */
 -  readonly alternatePort?: number;
 +  /** A fixed binding only for reproducing startup failures; managed runs let Docker allocate. */
-+  /** A fixed binding only for reproducing startup failures; managed runs let Docker allocate. */
 +  readonly databasePort?: number;
    readonly databasePassword: string;
    /**
     * Create the runtime role, with its grants and this password, before anything else, so every
-@@ -167,66 +160,79 @@ export const startCloudPostgres = (input: {
+@@ -167,84 +159,79 @@ export const startCloudPostgres = (input: {
          stdout: "ignore",
          stderr: "ignore",
        });
@@ -455,9 +454,24 @@ index 6a36df1..de5b3a7 100644
      );
 -    if (created !== 0)
 -      return yield* new CloudPostgresFailed({ operation: "Create the Postgres container" });
--    const started = yield* processes.exitCode(docker(["start", container]));
+-    // Docker says why a container cannot start, such as its published port being in use.
+-    const [started, startErrors] = yield* Effect.scoped(
+-      Effect.gen(function* () {
+-        const start = yield* processes.spawn(
+-          ChildProcess.make("docker", ["start", container], {
+-            env: dockerEnv,
+-            extendEnv: false,
+-            stdout: "ignore",
+-            stderr: "pipe",
+-          }),
+-        );
+-        return yield* Effect.all(
+-          [start.exitCode, Stream.mkString(Stream.decodeText(start.stderr))],
+-          { concurrency: 2 },
+-        );
+-      }),
+-    );
 -    if (started !== 0)
--      return yield* new CloudPostgresFailed({ operation: "Start the Postgres container" });
 +    yield* command.check("Create the Postgres container", "create", created);
 +    yield* command.checked("Start the Postgres container", ["start", container]);
 +    // Docker allocates and holds published ports atomically at start. A freePort probe cannot.
@@ -474,14 +488,15 @@ index 6a36df1..de5b3a7 100644
 +      ports.length !== 1 ||
 +      ports.some((port) => !Number.isInteger(port) || port < 1 || port > 65535)
 +    )
-+      return yield* new CloudPostgresFailed({
+       return yield* new CloudPostgresFailed({
+-        operation: `Start the Postgres container: ${startErrors.trim()}`,
 +        operation: `Read the Postgres ports: unexpected Docker bindings ${bindings.trim()}`,
-+      });
+       });
 +    const databasePort = ports[0]!;
      const logs = yield* processes.spawn(
        ChildProcess.make("docker", ["logs", "--follow", container], {
          env: dockerEnv,
-@@ -243,29 +249,20 @@ export const startCloudPostgres = (input: {
+@@ -261,29 +248,20 @@ export const startCloudPostgres = (input: {
      );
      // The image starts a temporary Unix-only server during initdb. Wait for its
      // final TCP listener before migrations and fixture setup compete to use it.
@@ -525,7 +540,7 @@ index 6a36df1..de5b3a7 100644
      const runtimeRole = yield* processes.exitCode(
        docker([
          "exec",
-@@ -283,6 +280,7 @@ export const startCloudPostgres = (input: {
+@@ -301,6 +279,7 @@ export const startCloudPostgres = (input: {
      );
      if (runtimeRole !== 0)
        return yield* new CloudPostgresFailed({ operation: "Create the runtime database role" });

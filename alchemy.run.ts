@@ -1,6 +1,7 @@
 import { provisionPublicSiteWaitlist } from "./scripts/release-barrier/public-site-waitlist.ts";
 import { provisionVaultAttachments } from "./scripts/release-barrier/vault-attachments.ts";
 import { productionOpsRelease } from "./.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
+import { compilerCacheConfiguration } from "./.upstream/apps/hosted/cloud/src/implementation/compiler-cache-config.ts";
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Command from "alchemy/Command";
@@ -162,9 +163,16 @@ export default Alchemy.Stack(
       deployment: api.hash,
       candidate: productionOpsRelease,
     });
+    const compilerAcceptance = (yield* compilerCacheConfiguration(stage)).acceptance;
     const catalog = yield* Cloudflare.Worker("Catalog", {
       main: fileURLToPath(new URL("./src/catalog/worker.ts", import.meta.url)),
       env: {
+        ...(compilerAcceptance === undefined
+          ? {}
+          : {
+              BASALT_COMPILER_PREVIEW_STAGE: stage,
+              BASALT_COMPILER_PREVIEW_HEAD: compilerAcceptance.release,
+            }),
         ZENDESK_MARKETPLACE_ORGANIZATION_ID: yield* Config.String(
           "ZENDESK_MARKETPLACE_ORGANIZATION_ID",
         ).pipe(Config.withDefault("")),

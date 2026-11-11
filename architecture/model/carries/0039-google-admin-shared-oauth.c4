@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Shared workspace OAuth clients request the reviewed default and administrator scope envelope at the exact authorization endpoint. A client's registered provider, token placement and returned grant coverage must match before an account is saved. Product-specific consent checks remain separate from identity sign-in."
+    }
+  }
+}

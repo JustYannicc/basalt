@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.providerAccountMethods {
+    metadata {
+      constraint "Canonical model-provider declarations supply management apps and pool requirements through one capability planner. Management apps may save credentials without an inference adapter, while pools refuse methods lacking model inference. Account acquisition and explicit native linking remain separate, and host API revision checks cannot be bypassed by provider-family metadata."
+    }
+  }
+}

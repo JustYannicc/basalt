@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.contributionApi {
+    metadata {
+      constraint "Native membership writes and signed pool projections use the same current app-access decision under the organization access lock. The host transaction remains borrowed through native asynchronous work and acknowledgement. Management never implies model use; route refusal telemetry observes the final response without taking over authorization."
+    }
+  }
+}

@@ -16,11 +16,13 @@ import {
 import { SafetyGateError, stableStringify, type PinSummary } from "./contracts.ts";
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
 import { assertNoReleaseHold, requirePlanetScaleEnvironment } from "./runtime.ts";
+import { executorMarkerPrecondition, type ExecutorMarkerPrecondition } from "./executor-marker.ts";
 
 export type ReleasePlan = {
   report: ClassificationReport;
   ledger: DeploymentLedger;
   manualRequired: boolean;
+  executorMarker?: ExecutorMarkerPrecondition;
 };
 
 const trustedRepositoryRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
@@ -50,7 +52,10 @@ export function gitContains(repositoryRoot = trustedRepositoryRoot): RollForward
  * contains. A commit Git can't find or compare throws, so the failure stays unresolved. Rollback
  * paths read the ledger without it.
  */
-export function rollForwardTo(candidateGitCommit: string, repositoryRoot = trustedRepositoryRoot): RollForward {
+export function rollForwardTo(
+  candidateGitCommit: string,
+  repositoryRoot = trustedRepositoryRoot,
+): RollForward {
   return { candidateGitCommit, contains: gitContains(repositoryRoot) };
 }
 
@@ -64,19 +69,35 @@ export function liveCommitContaining(
   ledger: DeploymentLedger,
   contains: RollForward["contains"],
 ): string | undefined {
-  const live = ledger.state === "ready" ? ledger.gitCommit : ledger.state === "unresolved" ? ledger.lastSuccessful?.gitCommit : undefined;
+  const live =
+    ledger.state === "ready"
+      ? ledger.gitCommit
+      : ledger.state === "unresolved"
+        ? ledger.lastSuccessful?.gitCommit
+        : undefined;
   return live && (live === candidate || contains(candidate, live)) ? live : undefined;
 }
 
-export async function productionCommitContaining(candidate: string, repositoryRoot = trustedRepositoryRoot): Promise<string | undefined> {
+export async function productionCommitContaining(
+  candidate: string,
+  repositoryRoot = trustedRepositoryRoot,
+): Promise<string | undefined> {
   // It decides whether a release goes ahead, so a hold stops it like every other release command.
   assertNoReleaseHold();
   const ledger = await readDeploymentLedger(readLedgerEnvironment());
   const contains = gitContains(repositoryRoot);
   return liveCommitContaining(candidate, ledger, (ancestor, descendant) => {
     // A `Manual release` of a pull request records its head commit, which a main checkout lacks.
-    if (spawnSync("git", ["cat-file", "-e", `${descendant}^{commit}`], { cwd: repositoryRoot, stdio: "ignore" }).status !== 0)
-      execFileSync("git", ["fetch", "--quiet", "--no-tags", "origin", descendant], { cwd: repositoryRoot, stdio: ["ignore", "ignore", "pipe"] });
+    if (
+      spawnSync("git", ["cat-file", "-e", `${descendant}^{commit}`], {
+        cwd: repositoryRoot,
+        stdio: "ignore",
+      }).status !== 0
+    )
+      execFileSync("git", ["fetch", "--quiet", "--no-tags", "origin", descendant], {
+        cwd: repositoryRoot,
+        stdio: ["ignore", "ignore", "pipe"],
+      });
     return contains(ancestor, descendant);
   });
 }
@@ -91,15 +112,24 @@ export async function latestProductionBase(): Promise<{
   const environment = readLedgerEnvironment();
   const ledger = await readDeploymentLedger(environment);
   if (ledger.state === "uninitialized") {
-    await new PlanetScaleSafety(requirePlanetScaleEnvironment()).assertInitialDatabaseAbsent(ledger.attempts);
+    await new PlanetScaleSafety(requirePlanetScaleEnvironment()).assertInitialDatabaseAbsent(
+      ledger.attempts,
+    );
     return { state: "uninitialized" };
   }
   if (ledger.state === "ready")
-    return { state: "ready", baseGitCommit: ledger.gitCommit, pins: ledger.pins, deploymentId: ledger.deploymentId };
+    return {
+      state: "ready",
+      baseGitCommit: ledger.gitCommit,
+      pins: ledger.pins,
+      deploymentId: ledger.deploymentId,
+    };
   const lastSuccessful = ledger.lastSuccessful;
   return {
     state: "unresolved",
-    ...(lastSuccessful ? { baseGitCommit: lastSuccessful.gitCommit, pins: lastSuccessful.pins } : {}),
+    ...(lastSuccessful
+      ? { baseGitCommit: lastSuccessful.gitCommit, pins: lastSuccessful.pins }
+      : {}),
     deploymentId: ledger.deploymentId,
     deploymentStatus: ledger.deploymentStatus,
   };
@@ -111,19 +141,29 @@ export async function classifyCurrentRelease(candidateRef = currentCommit()): Pr
   const ledger = await readDeploymentLedger(ledgerEnvironment, fetch, rollForwardTo(candidateRef));
   let baseCommit: string;
   if (ledger.state === "ready") baseCommit = ledger.gitCommit;
-  else if (ledger.state === "unresolved" && ledger.lastSuccessful) baseCommit = ledger.lastSuccessful.gitCommit;
+  else if (ledger.state === "unresolved" && ledger.lastSuccessful)
+    baseCommit = ledger.lastSuccessful.gitCommit;
   else if (ledger.state === "uninitialized") {
-    await new PlanetScaleSafety(requirePlanetScaleEnvironment()).assertInitialDatabaseAbsent(ledger.attempts);
+    await new PlanetScaleSafety(requirePlanetScaleEnvironment()).assertInitialDatabaseAbsent(
+      ledger.attempts,
+    );
     baseCommit = candidateRef;
   } else {
-    throw new SafetyGateError("Production has no successful deployment baseline; reconcile it before classifying a release");
+    throw new SafetyGateError(
+      "Production has no successful deployment baseline; reconcile it before classifying a release",
+    );
   }
 
   const api = new GitHubApi(ledgerEnvironment.token);
   const report = await classifyRefs(trustedRepositoryRoot, baseCommit, candidateRef, api);
   if (report.base.gitCommit !== baseCommit || report.candidate.gitCommit !== candidateRef)
     throw new SafetyGateError("Release classifier did not return the requested exact commits");
-  return { report, ledger: keepRollForwardGates(ledger, report), manualRequired: report.databaseChanged || report.workflowChanged };
+  return {
+    report,
+    ledger: keepRollForwardGates(ledger, report),
+    manualRequired: report.databaseChanged || report.workflowChanged,
+    executorMarker: executorMarkerPrecondition(report),
+  };
 }
 
 export async function classifyManualRollbackCandidate(candidateRef: string): Promise<ReleasePlan> {
@@ -132,7 +172,12 @@ export async function classifyManualRollbackCandidate(candidateRef: string): Pro
   if (ledger.state === "uninitialized" || ledger.gitCommit !== candidateRef)
     throw new SafetyGateError("Rollback candidate does not match the latest production deployment");
   const baseCommit = manualRollbackBaselineCommit(ledger);
-  const report = await classifyRefs(trustedRepositoryRoot, baseCommit, candidateRef, new GitHubApi(environment.token));
+  const report = await classifyRefs(
+    trustedRepositoryRoot,
+    baseCommit,
+    candidateRef,
+    new GitHubApi(environment.token),
+  );
   assertManualRollbackCandidate(report, ledger);
   return { report, ledger, manualRequired: report.databaseChanged || report.workflowChanged };
 }
@@ -152,17 +197,31 @@ export async function verifyFreshManualRollbackReport(
   expectedDeploymentId?: number,
 ): Promise<ReleasePlan> {
   if (report.candidate.gitCommit !== expectedCandidate)
-    throw new SafetyGateError("Manual rollback report candidate does not match the expected commit");
+    throw new SafetyGateError(
+      "Manual rollback report candidate does not match the expected commit",
+    );
   const environment = readLedgerEnvironment();
   const ledger = await readDeploymentLedger(environment);
-  if (expectedDeploymentId !== undefined && (!Number.isSafeInteger(expectedDeploymentId) || expectedDeploymentId < 1 ||
-      ledger.state === "uninitialized" || ledger.deploymentId !== expectedDeploymentId))
+  if (
+    expectedDeploymentId !== undefined &&
+    (!Number.isSafeInteger(expectedDeploymentId) ||
+      expectedDeploymentId < 1 ||
+      ledger.state === "uninitialized" ||
+      ledger.deploymentId !== expectedDeploymentId)
+  )
     throw new SafetyGateError("Production deployment changed after the rollback plan was prepared");
   assertManualRollbackCandidate(report, ledger);
   const baseCommit = manualRollbackBaselineCommit(ledger);
   if (report.base.gitCommit !== baseCommit)
-    throw new SafetyGateError("Manual rollback report base does not match the recorded production baseline");
-  const freshReport = await classifyRefs(trustedRepositoryRoot, baseCommit, expectedCandidate, new GitHubApi(environment.token));
+    throw new SafetyGateError(
+      "Manual rollback report base does not match the recorded production baseline",
+    );
+  const freshReport = await classifyRefs(
+    trustedRepositoryRoot,
+    baseCommit,
+    expectedCandidate,
+    new GitHubApi(environment.token),
+  );
   if (stableStringify(freshReport) !== stableStringify(report))
     throw new SafetyGateError("Manual rollback classification changed since it was produced");
   assertManualRollbackCandidate(freshReport, ledger);
@@ -179,11 +238,15 @@ export function manualRollbackBaselineCommit(ledger: DeploymentLedger): string {
       throw new SafetyGateError("Manual rollback has no prior successful production baseline");
     return ledger.payload.baseGitCommit;
   }
-  if (ledger.state === "unresolved" &&
-      (ledger.deploymentStatus === "failure" || ledger.deploymentStatus === "error") &&
-      ledger.lastSuccessful)
+  if (
+    ledger.state === "unresolved" &&
+    (ledger.deploymentStatus === "failure" || ledger.deploymentStatus === "error") &&
+    ledger.lastSuccessful
+  )
     return ledger.lastSuccessful.gitCommit;
-  throw new SafetyGateError("Manual rollback requires the baseline of a completed production release");
+  throw new SafetyGateError(
+    "Manual rollback requires the baseline of a completed production release",
+  );
 }
 
 async function reclassifyReport(
@@ -191,16 +254,24 @@ async function reclassifyReport(
   expectedCandidate: string,
 ): Promise<ReleasePlan> {
   if (report.candidate.gitCommit !== expectedCandidate)
-    throw new SafetyGateError("Classification report candidate does not match the checked-out commit");
+    throw new SafetyGateError(
+      "Classification report candidate does not match the checked-out commit",
+    );
   const fresh = await classifyCurrentRelease(expectedCandidate);
   if (stableStringify(fresh.report) !== stableStringify(report))
-    throw new SafetyGateError("Classification report changed since it was produced; regenerate it at the current production baseline");
+    throw new SafetyGateError(
+      "Classification report changed since it was produced; regenerate it at the current production baseline",
+    );
   return fresh;
 }
 
 export function currentCommit(repositoryRoot = process.cwd()): string {
-  const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" }).trim();
-  if (!/^[a-f0-9]{40}$/i.test(commit)) throw new SafetyGateError("Current release commit is not an immutable SHA");
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+  }).trim();
+  if (!/^[a-f0-9]{40}$/i.test(commit))
+    throw new SafetyGateError("Current release commit is not an immutable SHA");
   const head = commit.toLowerCase();
   const expected = process.env.BASALT_RELEASE_CANDIDATE_SHA?.trim().toLowerCase();
   if (expected && expected !== head)

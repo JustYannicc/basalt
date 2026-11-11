@@ -7,10 +7,23 @@ bundlePoolApp(fileURLToPath(new URL("../", import.meta.url)), upstream);
 run("node", ["scripts/setup-build.ts"]);
 run("bun", ["run", "apps:build"], upstream);
 run("node", ["scripts/build-basalt-framework.ts"], upstream);
-run("node", ["--test", "scripts/upstream-tests/pool-framework.test.ts"], undefined, {
-  ...process.env,
-  BASALT_CHECK_BUILT_FRAMEWORK: "1",
-});
+run("node", ["scripts/framework-provenance.ts"]);
+run(
+  "node",
+  [
+    "--test",
+    "scripts/upstream-tests/compiler-preview-acceptance.test.ts",
+    "scripts/upstream-tests/pool-framework.test.ts",
+    "scripts/upstream-tests/framework-runner-provenance.test.ts",
+    "scripts/upstream-tests/framework-facet-provenance.test.ts",
+    "scripts/upstream-tests/framework-workflow-provenance.test.ts",
+  ],
+  undefined,
+  {
+    ...process.env,
+    BASALT_CHECK_BUILT_FRAMEWORK: "1",
+  },
+);
 run("bun", ["run", "--cwd", "apps/hosted/cloud", "framework:build"], upstream);
 run("node", ["scripts/worker-build.ts"]);
 run("bun", ["scripts/pool-worker-build.ts"]);

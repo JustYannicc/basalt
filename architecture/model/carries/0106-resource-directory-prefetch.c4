@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Verified organization entry starts the shared resource-directory read without blocking the destination. Its one-shot subscriber releases on completion or identity change, while ordinary consumers retain cache and polling ownership. Navigation proofs install read holds before entry so shared prefetch cannot escape the observed loading boundary."
+    }
+  }
+}

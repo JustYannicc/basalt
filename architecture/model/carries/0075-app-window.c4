@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Open in new tab opens the embedded app alone on a dashboard-owned window route while retaining the isolated app frame, sign-in handshake and current app-use checks. It does not expose opaque app origins as navigation targets. Hosted and self-host routes resolve the same app identity and authorization."
+    }
+  }
+}

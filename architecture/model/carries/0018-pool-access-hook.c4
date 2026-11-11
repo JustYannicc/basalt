@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.contributionApi {
+    metadata {
+      constraint "Membership, audience and deletion writes hold the organization access lock and lend the writing SQL transaction to native access hooks. A failed bounded pool acknowledgement aborts the write. Native asynchronous auth work retains that lock until settlement, including after caller disconnection; setup gates and personal-organization creation remain enforced."
+    }
+  }
+}

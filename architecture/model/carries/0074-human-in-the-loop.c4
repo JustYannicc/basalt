@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Human in the loop contains pending workflow questions and scheduled tool approvals, showing the question or saved invocation before review. Existing encrypted records, request IDs and review URLs survive the label change. Listing runs checks current caller and per-app access; unrelated catalog loading and connection controls retain their own behavior."
+    }
+  }
+}

@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/alchemy.run.ts b/apps/hosted/cloud/alchemy.run.ts
-index ad0458ebf8c33259fd1466c4ec625062538bebec..9139395d47bbe4f02c2f679c1c34b4fcd7c35b72 100644
+index ad0458e..9139395 100644
 --- a/apps/hosted/cloud/alchemy.run.ts
 +++ b/apps/hosted/cloud/alchemy.run.ts
 @@ -15,6 +15,7 @@ import ApiLive, { Api } from "./src/main.ts";
@@ -19,7 +19,7 @@ index ad0458ebf8c33259fd1466c4ec625062538bebec..9139395d47bbe4f02c2f679c1c34b4fc
    AuthoringLive,
    AppDataLive,
 diff --git a/apps/hosted/cloud/src/implementation/auth-options.ts b/apps/hosted/cloud/src/implementation/auth-options.ts
-index e444dbc3588e66a4abe3c6ce7d422d8f7f13fb84..07e78ae007eb2ab9d4c523baac8b6935b0156a2d 100644
+index 80b0017..593ccaa 100644
 --- a/apps/hosted/cloud/src/implementation/auth-options.ts
 +++ b/apps/hosted/cloud/src/implementation/auth-options.ts
 @@ -6,7 +6,7 @@ import {
@@ -39,8 +39,8 @@ index e444dbc3588e66a4abe3c6ce7d422d8f7f13fb84..07e78ae007eb2ab9d4c523baac8b6935
 +import { cloudSsoPolicy, ssoVerifiedEmail } from "./sso-policy.ts";
  import { chatGptSettings, chatGptSignIn } from "./chatgpt-sign-in.ts";
  import { cloudMemberLimit } from "./member-limit.ts";
- import { CurrentProductBrand } from "@executor-js/utils/product-brand";
-@@ -129,6 +129,11 @@ export interface CloudBillingHooks {
+ import { v1HandoffSessions } from "./v1-session-handoff.ts";
+@@ -130,6 +130,11 @@ export interface CloudBillingHooks {
    readonly memberLimit: (organization: string) => Promise<number>;
  }
  
@@ -52,7 +52,7 @@ index e444dbc3588e66a4abe3c6ce7d422d8f7f13fb84..07e78ae007eb2ab9d4c523baac8b6935
  /**
   * Keep the passkey relying-party identity pinned to the configured hosts. The caller decides the
   * per-address limit with `cloudAuthRateLimit`.
-@@ -144,6 +149,7 @@ export const cloudAuthOptions = (
+@@ -145,6 +150,7 @@ export const cloudAuthOptions = (
    allowsOrganization?: (userId: string) => Promise<boolean>,
    grants?: GrantObservers,
    access?: CloudAccessHooks,
@@ -60,9 +60,9 @@ index e444dbc3588e66a4abe3c6ce7d422d8f7f13fb84..07e78ae007eb2ab9d4c523baac8b6935
  ) => {
    const base = authOptions(settings, ipAddressHeaders, grants);
    // A test stage that signs in through production's proxy uses production's callback, which the
-@@ -385,7 +391,7 @@ export const cloudAuthOptions = (
-       }),
-       ...(billing === undefined ? [] : [cloudMemberLimit(billing)]),
+@@ -390,7 +396,7 @@ export const cloudAuthOptions = (
+       // Server only: sessions for members v1 vouches for (`v1-session-handoff.ts`).
+       v1HandoffSessions(),
        // The native migrator creates tables in plugin order; SSO references organization.
 -      cloudSso(billing, access),
 +      sso(billing, access),
@@ -70,7 +70,7 @@ index e444dbc3588e66a4abe3c6ce7d422d8f7f13fb84..07e78ae007eb2ab9d4c523baac8b6935
          storeOTP: "hashed",
          expiresIn: emailCodeExpiresIn,
 diff --git a/apps/hosted/cloud/src/implementation/auth-provisioning.ts b/apps/hosted/cloud/src/implementation/auth-provisioning.ts
-index fea0394c5fd0b0fcd53d41d829c38429dfbff462..4c17ce6fa0493e75360fe6f60ce843d83c0d31b1 100644
+index fea0394..4c17ce6 100644
 --- a/apps/hosted/cloud/src/implementation/auth-provisioning.ts
 +++ b/apps/hosted/cloud/src/implementation/auth-provisioning.ts
 @@ -6,6 +6,7 @@ import { databaseUrl } from "@executor-js/hosted-server/database";
@@ -104,7 +104,7 @@ index fea0394c5fd0b0fcd53d41d829c38429dfbff462..4c17ce6fa0493e75360fe6f60ce843d8
      database,
 diff --git a/apps/hosted/cloud/src/implementation/sso-policy.ts b/apps/hosted/cloud/src/implementation/sso-policy.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..be99bb9e5455a367ea6c4c23b30bd3f31669d274
+index 0000000..be99bb9
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/sso-policy.ts
 @@ -0,0 +1,114 @@
@@ -223,7 +223,7 @@ index 0000000000000000000000000000000000000000..be99bb9e5455a367ea6c4c23b30bd3f3
 +  return { id: "sso", ...storage, hooks: { before: [ssoEmailHook] } };
 +};
 diff --git a/apps/hosted/cloud/src/implementation/sso.ts b/apps/hosted/cloud/src/implementation/sso.ts
-index e32e282c37449364aec80fb1289cb4d8dc63dd20..b16fa0171affb5b674e3d1c05c51a6404f562d0e 100644
+index e32e282..b16fa01 100644
 --- a/apps/hosted/cloud/src/implementation/sso.ts
 +++ b/apps/hosted/cloud/src/implementation/sso.ts
 @@ -1,19 +1,11 @@
@@ -377,51 +377,152 @@ index e32e282c37449364aec80fb1289cb4d8dc63dd20..b16fa0171affb5b674e3d1c05c51a640
          {
            matcher: (context: { path?: string }) => context.path === "/sign-in/sso",
            handler: createAuthMiddleware(async (context) => {
-diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
-index b4b3d8253cebc186f9a02633b377d0071cb0ca5e..060abd7dd4bd8a9436beb3d1632d4c27d75bb729 100644
---- a/apps/hosted/cloud/src/infrastructure/auth.ts
-+++ b/apps/hosted/cloud/src/infrastructure/auth.ts
-@@ -13,9 +13,13 @@ import {
-   recordCloudSignup,
-   recordCloudLogin,
- } from "../implementation/product-analytics.ts";
--import { cloudAuthOptions, cloudAuthSettings } from "../implementation/auth-options.ts";
+diff --git a/apps/hosted/cloud/src/infrastructure/auth-core.ts b/apps/hosted/cloud/src/infrastructure/auth-core.ts
+new file mode 100644
+index 0000000..944c8ec
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/auth-core.ts
+@@ -0,0 +1,288 @@
++import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
++import { authObservability } from "../implementation/auth-observability.ts";
++import { withOrganizationAccessRequest } from "../implementation/organization-access-request.ts";
++import { AsyncLocalStorage } from "node:async_hooks";
++import { APIError } from "better-auth/api";
++import { BillingMeter } from "../contracts/billing-meter.ts";
++import { billingLive } from "../implementation/billing.ts";
++import {
++  clearSiteVisitorOnSignOut,
++  recordCloudSignup,
++  recordCloudLogin,
++} from "../implementation/product-analytics.ts";
 +import {
 +  cloudAuthOptions,
 +  cloudAuthSettings,
 +  type CloudSsoPlugin,
 +} from "../implementation/auth-options.ts";
- import { isOAuthProxyProduction } from "../implementation/oauth-proxy-settings.ts";
--import { Onboarding } from "../contracts/onboarding.ts";
 +import type { Onboarding } from "../contracts/onboarding.ts";
- /** Native Alchemy auth binding for the HTTP Worker; MCP session objects use `mcp-auth.ts`. */
- import {
-   CurrentUsage,
-@@ -51,7 +55,11 @@ import { invocationSql } from "./invocation-database.ts";
- import { mcpAuthentication } from "./mcp-auth.ts";
- 
- /** Bind during initialization; database calls capture the current invocation only. */
--export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Service) =>
-+export const cloudAuth = (
++import {
++  CurrentUsage,
++  CurrentUserId,
++  recordUsage,
++  authEndpointTemplates,
++  OrganizationId,
++  recordCredential,
++  recordSecurityAudit,
++} from "@executor-js/hosted-server";
++import { routeTemplates } from "@executor-js/telemetry";
++import { betterAuth } from "better-auth/minimal";
++import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
++import { RuntimeContext } from "alchemy";
++import * as Cloudflare from "alchemy/Cloudflare";
++import { Config, Context, Effect, Redacted, Schema, type Scope } from "effect";
++import { SqlClient } from "effect/sql";
++import { HttpBody, HttpServerRequest, HttpServerResponse } from "effect/http";
++import type { SendAuthEmail } from "../contracts/email.ts";
++import { cloudSecrets } from "./secrets.ts";
++import { recordAuthRefusal } from "../implementation/auth-refusals.ts";
++import { cloudAuthRateLimit } from "./stage.ts";
++import { AuthDatabase } from "./auth-database.ts";
++import { invocationSql } from "./invocation-database.ts";
++import { authAudit } from "../implementation/auth-audit.ts";
++
++/** Resolve the settings shared by both auth Workers once per Worker initialization. */
++export const cloudAuthInitialization = Effect.gen(function* () {
++  // Only `alchemy dev` binds the switch; see `authRateLimitSwitchBindings`.
++  const environment = yield* Cloudflare.WorkerEnvironment;
++  const settings = {
++    ...(yield* cloudAuthSettings.pipe(Effect.orDie)),
++    rateLimitEnabled: yield* cloudAuthRateLimit(environment.AUTH_RATE_LIMIT_SWITCH === true).pipe(
++      Effect.orDie,
++    ),
++  };
++  const secrets = yield* cloudSecrets.pipe(Effect.orDie);
++  return { settings, secrets };
++});
++
++/** Shared Better Auth request path. Keep its options and request-scoped hooks identical for both Workers. */
++export const cloudAuthCore = (
++  initialization: Effect.Success<typeof cloudAuthInitialization>,
 +  send: SendAuthEmail,
 +  onboarding: Pick<typeof Onboarding.Service, "allowsOrganization"> | undefined,
 +  sso?: CloudSsoPlugin,
 +) =>
-   Effect.gen(function* () {
-     // Only `alchemy dev` binds the switch; see `authRateLimitSwitchBindings`.
-     const environment = yield* Cloudflare.WorkerEnvironment;
-@@ -137,17 +145,19 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
-           ),
-         ),
-       // Fails closed: an unanswered v1 check refuses the create instead of allowing it.
--      (userId) =>
--        runCallback(
--          onboarding.allowsOrganization(userId).pipe(
--            Effect.mapError(
--              () =>
--                new APIError("SERVICE_UNAVAILABLE", {
--                  message: "We could not check your account. Try again.",
--                }),
++  Effect.gen(function* () {
++    const { settings, secrets } = initialization;
++    const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive));
++    // Better Auth invokes Promise callbacks. Carry the calling request's scope,
++    // bindings and cancellation through that boundary, isolated per invocation.
++    const callbacks = new AsyncLocalStorage<{
++      readonly context: Context.Context<
++        RuntimeContext | HttpServerRequest.HttpServerRequest | Scope.Scope
++      >;
++      readonly signal: AbortSignal;
++    }>();
++    const runCallback = <A, E>(
++      effect: Effect.Effect<A, E, HttpServerRequest.HttpServerRequest>,
++    ) => {
++      const current = callbacks.getStore();
++      if (current === undefined)
++        return Promise.reject(
++          new APIError("SERVICE_UNAVAILABLE", {
++            message: "Auth callbacks are unavailable outside an auth request.",
++          }),
++        );
++      return Effect.runPromise(effect.pipe(Effect.provideContext(current.context)), {
++        signal: current.signal,
++      });
++    };
++    const withSql = yield* invocationSql;
++    const access = poolAccessLifecycle(
++      yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option),
++      settings.url,
++    );
++    const observation = authObservability();
++    const options = cloudAuthOptions(
++      settings,
++      ["cf-connecting-ip"],
++      send,
++      {
++        memberLimit: (id) =>
++          runCallback(
++            Schema.decodeUnknownEffect(OrganizationId)(id).pipe(
++              Effect.flatMap(meter.memberLimit),
++              Effect.mapError(
++                () =>
++                  new APIError("SERVICE_UNAVAILABLE", {
++                    message: "We could not check your member allowance. Try again.",
++                  }),
++              ),
++              Effect.scoped,
++            ),
++          ),
++      },
++      (userId) => runCallback(recordCloudSignup(userId, settings.url)),
++      (userId) => {
++        observation.sessionCreated();
++        return runCallback(recordCloudLogin(userId));
++      },
++      (usage) =>
++        runCallback(
++          Effect.gen(function* () {
++            yield* recordUsage("product_operation_completed", {
++              area: "auth",
++              operation: usage.operation,
++              status_code: usage.status,
++              ok: usage.status < 400,
++              outcome: usage.status < 400 ? "success" : "failure",
++            });
++            if (usage.status >= 400) return;
++            if (usage.operation === "organization.invite-member")
++              yield* recordUsage("invitation_sent");
++            else if (usage.operation === "organization.accept-invitation")
++              yield* recordUsage("invitation_accepted");
++          }).pipe(
++            Effect.provideService(CurrentUserId, usage.userId),
++            Effect.provideService(CurrentUsage, { source: "dashboard" }),
++          ),
++        ),
++      // Fails closed: an unanswered v1 check refuses the create instead of allowing it.
 +      onboarding === undefined
 +        ? undefined
 +        : (userId) =>
@@ -434,23 +535,458 @@ index b4b3d8253cebc186f9a02633b377d0071cb0ca5e..060abd7dd4bd8a9436beb3d1632d4c27
 +                    }),
 +                ),
 +              ),
-             ),
++            ),
++      {
++        onRefreshRejected: observation.refreshRejected,
++        // A person approved a new agent, by consent or by a device's code: the agent can connect.
++        onGrantCreated: (grant) =>
++          runCallback(
++            recordUsage("agent_connected", { grant_kind: grant.kind }).pipe(
++              Effect.provideService(CurrentUserId, grant.userId),
++              Effect.provideService(CurrentUsage, {
++                source: "dashboard",
++                client_id: grant.clientId,
++              }),
++            ),
++          ),
++      },
++      {
++        memberRemoving: (organization, member) =>
++          runCallback(withSql(access.memberRemoving?.({ organization, member }) ?? Effect.void)),
++        memberRoleChanging: (organization, member, role) =>
++          runCallback(
++            withSql(access.memberRoleChanging?.({ organization, member, role }) ?? Effect.void),
++          ),
++        membersAdded: (organization) =>
++          runCallback(
++            withSql(
++              (access.appAccessChanged?.({ organization }) ?? Effect.void).pipe(
++                Effect.catch(() =>
++                  Effect.logWarning("Pool member provisioning failed; key minting will retry."),
++                ),
++              ),
++            ),
++          ),
++        userDeleting: (user) => runCallback(withSql(access.userDeleting?.(user) ?? Effect.void)),
++      },
++      sso,
++    );
++    const database = yield* AuthDatabase;
++    const makeInstance = (secret: string) =>
++      betterAuth({
++        ...options,
++        // After the analytics plugin: Better Auth's endpoint middleware does not leave its
++        // session on the after-hook context, and the analytics hook's read of it does. The audit
++        // reads no session itself. Telemetry never fails a request, so a record that cannot be
++        // written is dropped.
++        plugins: [
++          ...options.plugins,
++          authAudit((event, session) =>
++            runCallback(
++              Effect.andThen(
++                session === undefined
++                  ? Effect.void
++                  : recordCredential({ kind: "session", ...session }),
++                recordSecurityAudit(event),
++              ),
++            ).catch(() => undefined),
++          ),
++          observation.plugin,
++        ],
++        database: database.options,
++        secret,
++        // Cookies use hostnames, not ports; cloud dev must not replace self-host sessions.
++        advanced: {
++          ...options.advanced,
++          cookiePrefix: cloudSessionCookiePrefix(settings.url),
++          // The deployment migration validates the schema; runtime reads skip introspection.
++          database: { ...options.advanced.database, validateSchema: false },
++          backgroundTasks: { handler: database.background },
++        },
++      });
++    // One Better Auth instance per isolate, like a long-running server's. Its options,
++    // plugins and endpoints hold no request state: request context travels through
++    // `callbacks`, and every call binds its own invocation's pool through `database`.
++    // The signing secret is deployment configuration, read in the first invocation.
++    let instance: ReturnType<typeof makeInstance> | undefined;
++    let routes: ReturnType<typeof routeTemplates> | undefined;
++    const native = secrets.authSecret.pipe(
++      Effect.map((secret) => (instance ??= makeInstance(Redacted.value(secret)))),
++    );
++    const requestHandler = Effect.gen(function* () {
++      const request = yield* HttpServerRequest.HttpServerRequest;
++      const web = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
++      const pathname = new URL(web.url).pathname;
++      const sql = yield* withSql(
++        Effect.gen(function* () {
++          return yield* SqlClient.SqlClient;
++        }),
++      );
++      const response = yield* withOrganizationAccessRequest(web, {
++        settled: database.settled.pipe(Effect.provide(RuntimeContext.phantom)),
++        run: (transaction) =>
++          Effect.gen(function* () {
++            const [instance, bind] = yield* Effect.all([
++              native,
++              transaction ? database.bindTransaction : database.bind,
++            ]).pipe(Effect.provide(RuntimeContext.phantom));
++            routes ??= routeTemplates(authEndpointTemplates(instance.api));
++            yield* routes.record(pathname);
++            const context = yield* Effect.context<
++              RuntimeContext | HttpServerRequest.HttpServerRequest | Scope.Scope
++            >();
++            // Better Auth returns API errors as responses; it rejects only on defects.
++            const response = yield* Effect.promise((signal) =>
++              callbacks.run({ context, signal }, () => bind(() => instance.handler(web))),
++            );
++            return response;
++          }),
++      }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
++      if (response.body === null) {
++        yield* recordAuthRefusal(response.status, pathname, new Uint8Array(), web.headers);
++        return HttpServerResponse.fromWeb(response);
++      }
++      // Better Auth answers with complete JSON. Sent as a stream, its last byte would wait for
++      // the request's cleanup, including Better Auth queries the request left running.
++      const body = new Uint8Array(yield* Effect.promise(() => response.arrayBuffer()));
++      yield* recordAuthRefusal(response.status, pathname, body, web.headers);
++      return HttpServerResponse.setBody(
++        HttpServerResponse.fromWeb(response),
++        HttpBody.uint8Array(body, response.headers.get("content-type") ?? undefined),
++      );
++    });
++    const handler = observation
++      .observe(requestHandler)
++      .pipe(
++        Effect.flatMap(clearSiteVisitorOnSignOut(settings.url)),
++        Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")),
++      );
++    return { handler, settings, database, native, callbacks, withSql, access };
++  });
++
++/** The SSO Worker needs the same Better Auth handler, but no API identity services. */
++export const cloudSsoAuth = (send: SendAuthEmail, sso: CloudSsoPlugin) =>
++  Effect.gen(function* () {
++    const initialization = yield* cloudAuthInitialization;
++    const { handler } = yield* cloudAuthCore(initialization, send, undefined, sso);
++    return { handler };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
+index 6afb50e..16e0b42 100644
+--- a/apps/hosted/cloud/src/infrastructure/auth.ts
++++ b/apps/hosted/cloud/src/infrastructure/auth.ts
+@@ -1,27 +1,6 @@
+-import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
+ import { BrowserSession } from "@executor-js/hosted-server/browser/contracts";
+ import { HostedAppSessions } from "@executor-js/hosted-server/app-ui";
+-import { authObservability } from "../implementation/auth-observability.ts";
+-import { withOrganizationAccessRequest } from "../implementation/organization-access-request.ts";
+-import { AsyncLocalStorage } from "node:async_hooks";
+-import { APIError } from "better-auth/api";
+-import { OrganizationId, recordCredential, recordSecurityAudit } from "@executor-js/hosted-server";
+-import { BillingMeter } from "../contracts/billing-meter.ts";
+-import { billingLive } from "../implementation/billing.ts";
+ import {
+-  clearSiteVisitorOnSignOut,
+-  recordCloudSignup,
+-  recordCloudLogin,
+-} from "../implementation/product-analytics.ts";
+-import { cloudAuthOptions, cloudAuthSettings } from "../implementation/auth-options.ts";
+-import { isOAuthProxyProduction } from "../implementation/oauth-proxy-settings.ts";
+-import { Onboarding } from "../contracts/onboarding.ts";
+-/** Native Alchemy auth binding for the HTTP Worker; MCP session objects use `mcp-auth.ts`. */
+-import {
+-  CurrentUsage,
+-  CurrentUserId,
+-  recordUsage,
+-  usageFailure,
+   Authentication,
+   AuthenticationUnavailable,
+   sessionPrincipal,
+@@ -33,206 +12,39 @@ import {
+   apiBearerAccess,
+   callerSpanAttributes,
+   grantExpiry,
+-  authEndpointTemplates,
++  usageFailure,
+ } from "@executor-js/hosted-server";
+-import { routeTemplates } from "@executor-js/telemetry";
+-import { betterAuth } from "better-auth/minimal";
+ import { BetterAuthApiError, isAPIErrorLike } from "@alchemy.run/better-auth";
+ import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
+ import { RuntimeContext } from "alchemy";
+-import * as Cloudflare from "alchemy/Cloudflare";
+-import { Config, Context, Effect, Layer, Option, Redacted, Schema, type Scope } from "effect";
+-import { SqlClient } from "effect/sql";
+-import { HttpBody, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { Effect, Layer, Option, Schema, type Scope } from "effect";
++import { HttpServerRequest } from "effect/http";
+ import type { SendAuthEmail } from "../contracts/email.ts";
+-import { cloudSecrets, v1McpForwardSecret, v1SessionHandoffSecret } from "./secrets.ts";
++import type { Onboarding } from "../contracts/onboarding.ts";
++import { isOAuthProxyProduction } from "../implementation/oauth-proxy-settings.ts";
+ import { V1HandoffSessionFailed, v1SessionHandoff } from "../implementation/v1-session-handoff.ts";
+-import { recordAuthRefusal } from "../implementation/auth-refusals.ts";
+-import { cloudAuthRateLimit } from "./stage.ts";
+-import { AuthDatabase, appSessionsPerCall, boundAuthAdapter } from "./auth-database.ts";
+-import { invocationSql } from "./invocation-database.ts";
++import { appSessionsPerCall, boundAuthAdapter } from "./auth-database.ts";
+ import { mcpAuthentication } from "./mcp-auth.ts";
+-import { authAudit } from "../implementation/auth-audit.ts";
++import { v1McpForwardSecret, v1SessionHandoffSecret } from "./secrets.ts";
++import { cloudAuthCore, cloudAuthInitialization } from "./auth-core.ts";
++import type { CloudSsoPlugin } from "../implementation/auth-options.ts";
+ 
+-/** Bind during initialization; database calls capture the current invocation only. */
+-export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Service) =>
++/** API auth retains the existing service surface; SSO uses the narrower core entry point. */
++export const cloudAuth = (
++  send: SendAuthEmail,
++  onboarding: Pick<typeof Onboarding.Service, "allowsOrganization"> | undefined,
++  sso?: CloudSsoPlugin,
++) =>
+   Effect.gen(function* () {
+-    // Only `alchemy dev` binds the switch; see `authRateLimitSwitchBindings`.
+-    const environment = yield* Cloudflare.WorkerEnvironment;
+-    const settings = {
+-      ...(yield* cloudAuthSettings.pipe(Effect.orDie)),
+-      rateLimitEnabled: yield* cloudAuthRateLimit(environment.AUTH_RATE_LIMIT_SWITCH === true).pipe(
+-        Effect.orDie,
+-      ),
+-    };
+-    const secrets = yield* cloudSecrets.pipe(Effect.orDie);
++    const initialization = yield* cloudAuthInitialization;
+     const v1Forward = yield* v1McpForwardSecret;
+     const v1Handoff = yield* v1SessionHandoffSecret;
+-    const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive));
+-    // Better Auth invokes Promise callbacks. Carry the calling request's scope,
+-    // bindings and cancellation through that boundary, isolated per invocation.
+-    const callbacks = new AsyncLocalStorage<{
+-      readonly context: Context.Context<
+-        RuntimeContext | HttpServerRequest.HttpServerRequest | Scope.Scope
+-      >;
+-      readonly signal: AbortSignal;
+-    }>();
+-    const runCallback = <A, E>(
+-      effect: Effect.Effect<A, E, HttpServerRequest.HttpServerRequest>,
+-    ) => {
+-      const current = callbacks.getStore();
+-      if (current === undefined)
+-        return Promise.reject(
+-          new APIError("SERVICE_UNAVAILABLE", {
+-            message: "Auth callbacks are unavailable outside an auth request.",
+-          }),
+-        );
+-      return Effect.runPromise(effect.pipe(Effect.provideContext(current.context)), {
+-        signal: current.signal,
+-      });
+-    };
+-    const withSql = yield* invocationSql;
+-    const access = poolAccessLifecycle(
+-      yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option),
+-      settings.url,
+-    );
+-    const observation = authObservability();
+-    const options = cloudAuthOptions(
+-      settings,
+-      ["cf-connecting-ip"],
+-      send,
+-      {
+-        memberLimit: (id) =>
+-          runCallback(
+-            Schema.decodeUnknownEffect(OrganizationId)(id).pipe(
+-              Effect.flatMap(meter.memberLimit),
+-              Effect.mapError(
+-                () =>
+-                  new APIError("SERVICE_UNAVAILABLE", {
+-                    message: "We could not check your member allowance. Try again.",
+-                  }),
+-              ),
+-              Effect.scoped,
+-            ),
+-          ),
+-      },
+-      (userId) => runCallback(recordCloudSignup(userId, settings.url)),
+-      (userId) => {
+-        observation.sessionCreated();
+-        return runCallback(recordCloudLogin(userId));
+-      },
+-      (usage) =>
+-        runCallback(
+-          Effect.gen(function* () {
+-            yield* recordUsage("product_operation_completed", {
+-              area: "auth",
+-              operation: usage.operation,
+-              status_code: usage.status,
+-              ok: usage.status < 400,
+-              outcome: usage.status < 400 ? "success" : "failure",
+-            });
+-            if (usage.status >= 400) return;
+-            if (usage.operation === "organization.invite-member")
+-              yield* recordUsage("invitation_sent");
+-            else if (usage.operation === "organization.accept-invitation")
+-              yield* recordUsage("invitation_accepted");
+-          }).pipe(
+-            Effect.provideService(CurrentUserId, usage.userId),
+-            Effect.provideService(CurrentUsage, { source: "dashboard" }),
 -          ),
 -        ),
-       {
-         onRefreshRejected: observation.refreshRejected,
-         // A person approved a new agent, by consent or by a device's code: the agent can connect.
-@@ -181,6 +191,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
-           ),
-         userDeleting: (user) => runCallback(withSql(access.userDeleting?.(user) ?? Effect.void)),
-       },
-+      sso,
+-      // Fails closed: an unanswered v1 check refuses the create instead of allowing it.
+-      (userId) =>
+-        runCallback(
+-          onboarding.allowsOrganization(userId).pipe(
+-            Effect.mapError(
+-              () =>
+-                new APIError("SERVICE_UNAVAILABLE", {
+-                  message: "We could not check your account. Try again.",
+-                }),
+-            ),
+-          ),
+-        ),
+-      {
+-        onRefreshRejected: observation.refreshRejected,
+-        // A person approved a new agent, by consent or by a device's code: the agent can connect.
+-        onGrantCreated: (grant) =>
+-          runCallback(
+-            recordUsage("agent_connected", { grant_kind: grant.kind }).pipe(
+-              Effect.provideService(CurrentUserId, grant.userId),
+-              Effect.provideService(CurrentUsage, {
+-                source: "dashboard",
+-                client_id: grant.clientId,
+-              }),
+-            ),
+-          ),
+-      },
+-      {
+-        memberRemoving: (organization, member) =>
+-          runCallback(withSql(access.memberRemoving?.({ organization, member }) ?? Effect.void)),
+-        memberRoleChanging: (organization, member, role) =>
+-          runCallback(
+-            withSql(access.memberRoleChanging?.({ organization, member, role }) ?? Effect.void),
+-          ),
+-        membersAdded: (organization) =>
+-          runCallback(
+-            withSql(
+-              (access.appAccessChanged?.({ organization }) ?? Effect.void).pipe(
+-                Effect.catch(() =>
+-                  Effect.logWarning("Pool member provisioning failed; key minting will retry."),
+-                ),
+-              ),
+-            ),
+-          ),
+-        userDeleting: (user) => runCallback(withSql(access.userDeleting?.(user) ?? Effect.void)),
+-      },
+-    );
+-    const database = yield* AuthDatabase;
+-    const makeInstance = (secret: string) =>
+-      betterAuth({
+-        ...options,
+-        // After the analytics plugin: Better Auth's endpoint middleware does not leave its
+-        // session on the after-hook context, and the analytics hook's read of it does. The audit
+-        // reads no session itself. Telemetry never fails a request, so a record that cannot be
+-        // written is dropped.
+-        plugins: [
+-          ...options.plugins,
+-          authAudit((event, session) =>
+-            runCallback(
+-              Effect.andThen(
+-                session === undefined
+-                  ? Effect.void
+-                  : recordCredential({ kind: "session", ...session }),
+-                recordSecurityAudit(event),
+-              ),
+-            ).catch(() => undefined),
+-          ),
+-          observation.plugin,
+-        ],
+-        database: database.options,
+-        secret,
+-        // Cookies use hostnames, not ports; cloud dev must not replace self-host sessions.
+-        advanced: {
+-          ...options.advanced,
+-          cookiePrefix: cloudSessionCookiePrefix(settings.url),
+-          // The deployment migration validates the schema; runtime reads skip introspection.
+-          database: { ...options.advanced.database, validateSchema: false },
+-          backgroundTasks: { handler: database.background },
+-        },
+-      });
+-    // One Better Auth instance per isolate, like a long-running server's. Its options,
+-    // plugins and endpoints hold no request state: request context travels through
+-    // `callbacks`, and every call binds its own invocation's pool through `database`.
+-    // The signing secret is deployment configuration, read in the first invocation.
+-    let instance: ReturnType<typeof makeInstance> | undefined;
+-    let routes: ReturnType<typeof routeTemplates> | undefined;
+-    const native = secrets.authSecret.pipe(
+-      Effect.map((secret) => (instance ??= makeInstance(Redacted.value(secret)))),
+-    );
++    const { handler, settings, database, native, callbacks, withSql, access } =
++      yield* cloudAuthCore(initialization, send, onboarding, sso);
+     // Better Auth work runs as Promise code on this invocation's pool, bound to the
+     // calling span so each auth SQL timing span is a child of the operation that issued it.
+     const bound = Effect.all([native, database.bind]).pipe(Effect.provide(RuntimeContext.phantom));
+-    const nativeCall = <A>(call: (instance: ReturnType<typeof makeInstance>) => Promise<A>) =>
++    const nativeCall = <A>(call: (instance: Effect.Success<typeof native>) => Promise<A>) =>
+       bound.pipe(
+         Effect.flatMap(([instance, bind]) =>
+           Effect.tryPromise({ try: () => bind(() => call(instance)), catch: (error) => error }),
+@@ -347,54 +159,6 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
+         ),
+       ),
      );
-     const database = yield* AuthDatabase;
-     const makeInstance = (secret: string) =>
+-    const requestHandler = Effect.gen(function* () {
+-      const request = yield* HttpServerRequest.HttpServerRequest;
+-      const web = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
+-      const pathname = new URL(web.url).pathname;
+-      const sql = yield* withSql(
+-        Effect.gen(function* () {
+-          return yield* SqlClient.SqlClient;
+-        }),
+-      );
+-      const response = yield* withOrganizationAccessRequest(web, {
+-        settled: database.settled.pipe(Effect.provide(RuntimeContext.phantom)),
+-        run: (transaction) =>
+-          Effect.gen(function* () {
+-            const [instance, bind] = yield* Effect.all([
+-              native,
+-              transaction ? database.bindTransaction : database.bind,
+-            ]).pipe(Effect.provide(RuntimeContext.phantom));
+-            routes ??= routeTemplates(authEndpointTemplates(instance.api));
+-            yield* routes.record(pathname);
+-            const context = yield* Effect.context<
+-              RuntimeContext | HttpServerRequest.HttpServerRequest | Scope.Scope
+-            >();
+-            // Better Auth returns API errors as responses; it rejects only on defects.
+-            const response = yield* Effect.promise((signal) =>
+-              callbacks.run({ context, signal }, () => bind(() => instance.handler(web))),
+-            );
+-            return response;
+-          }),
+-      }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
+-      if (response.body === null) {
+-        yield* recordAuthRefusal(response.status, pathname, new Uint8Array(), web.headers);
+-        return HttpServerResponse.fromWeb(response);
+-      }
+-      // Better Auth answers with complete JSON. Sent as a stream, its last byte would wait for
+-      // the request's cleanup, including Better Auth queries the request left running.
+-      const body = new Uint8Array(yield* Effect.promise(() => response.arrayBuffer()));
+-      yield* recordAuthRefusal(response.status, pathname, body, web.headers);
+-      return HttpServerResponse.setBody(
+-        HttpServerResponse.fromWeb(response),
+-        HttpBody.uint8Array(body, response.headers.get("content-type") ?? undefined),
+-      );
+-    });
+-    const handler = observation
+-      .observe(requestHandler)
+-      .pipe(
+-        Effect.flatMap(clearSiteVisitorOnSignOut(settings.url)),
+-        Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")),
+-      );
+     const browserSession = (headers: Headers) =>
+       nativeCall((instance) =>
+         instance.api.getSession({
 diff --git a/apps/hosted/cloud/src/infrastructure/sso-worker.ts b/apps/hosted/cloud/src/infrastructure/sso-worker.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..c31663c2172add9f086986bb3812c6fbcf3eebf0
+index 0000000..c31663c
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/sso-worker.ts
 @@ -0,0 +1,7 @@
@@ -463,7 +999,7 @@ index 0000000000000000000000000000000000000000..c31663c2172add9f086986bb3812c6fb
 +  path === "/api/auth/sign-in/sso" || path.startsWith("/api/auth/sso/");
 diff --git a/apps/hosted/cloud/src/infrastructure/sso.ts b/apps/hosted/cloud/src/infrastructure/sso.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..b9c3b8022359840575ce10a8cd3b6f94a3b762de
+index 0000000..b9c3b80
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/sso.ts
 @@ -0,0 +1,25 @@
@@ -493,10 +1029,10 @@ index 0000000000000000000000000000000000000000..b9c3b8022359840575ce10a8cd3b6f94
 +  });
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/worker-build.ts b/apps/hosted/cloud/src/infrastructure/worker-build.ts
-index 4de9b10c145e13206ab9a16b5a95eedbdaa19d4c..9856d93d603f2e503970f00fa2903df08ec11f31 100644
+index 5b2b628..c6ba676 100644
 --- a/apps/hosted/cloud/src/infrastructure/worker-build.ts
 +++ b/apps/hosted/cloud/src/infrastructure/worker-build.ts
-@@ -11,6 +11,7 @@ import {
+@@ -12,6 +12,7 @@ import {
  } from "./worker-upload.ts";
  
  export type WorkerName =
@@ -504,7 +1040,7 @@ index 4de9b10c145e13206ab9a16b5a95eedbdaa19d4c..9856d93d603f2e503970f00fa2903df0
    | "oauth-wire"
    | "api"
    | "app-data"
-@@ -32,6 +33,8 @@ export type WorkerName =
+@@ -33,6 +34,8 @@ export type WorkerName =
   */
  const uploadBudgets: Record<WorkerName, number> = {
    "oauth-wire": 750_000,
@@ -514,10 +1050,10 @@ index 4de9b10c145e13206ab9a16b5a95eedbdaa19d4c..9856d93d603f2e503970f00fa2903df0
    // App runners and data supervisors: a cold tool call starts both isolates.
    "app-data": 700_000,
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index a2a1cf402119df3750112b5a9bf549144e443d29..666a98205706c13f27c7e6709b2a5b0c258111b6 100644
+index 242e615..73b27ac 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
-@@ -157,6 +157,8 @@ import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/h
+@@ -164,6 +164,8 @@ import { recordClientNetwork } from "./implementation/client-network.ts";
  
  import { appCatalogBinding } from "./infrastructure/app-catalog.ts";
  import { Api } from "./infrastructure/api-worker.ts";
@@ -526,7 +1062,7 @@ index a2a1cf402119df3750112b5a9bf549144e443d29..666a98205706c13f27c7e6709b2a5b0c
  import { Dashboard } from "./infrastructure/dashboard-worker.ts";
  import { cloudSourceFormatter } from "./infrastructure/source-formatter.ts";
  import { cloudAuthoringReference } from "./infrastructure/authoring-reference.ts";
-@@ -253,6 +255,11 @@ export default Api.make(
+@@ -265,6 +267,11 @@ export default Api.make(
      const onboarding = yield* cloudOnboarding.pipe(Effect.orDie);
      const v1ImportSettings = yield* cloudV1ImportSettings.pipe(Effect.orDie);
      const auth = yield* cloudAuth(email.send, yield* Onboarding.pipe(Effect.provide(onboarding)));
@@ -538,18 +1074,18 @@ index a2a1cf402119df3750112b5a9bf549144e443d29..666a98205706c13f27c7e6709b2a5b0c
      const welcomeEmails = yield* cloudWelcomeEmails(email.welcome);
      yield* AppWorkflows;
      yield* Provisioning;
-@@ -688,7 +695,7 @@ export default Api.make(
+@@ -739,7 +746,7 @@ export default Api.make(
          "/api/auth/organization/list",
          auth.handler.pipe(Effect.flatMap(hideRemovedOrganizations), Effect.provide(executor)),
        ),
 -      HttpRouter.add("*", "/api/auth/*", dispatchAfterWrites(auth.handler)),
 +      HttpRouter.add("*", "/api/auth/*", dispatchAfterWrites(authHandler)),
+       // A member of a moved v1 workspace, signed in to v1, opens it here without signing in again.
+       HttpRouter.add("GET", v1HandoffPath, auth.v1Handoff),
        HttpRouter.add("*", "/api/email/unsubscribe", welcomeEmails.unsubscribe),
-       HttpRouter.add(
-         "GET",
 diff --git a/apps/hosted/cloud/src/sso.ts b/apps/hosted/cloud/src/sso.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..b9700992ed796bcda6c23c3d5c9d546f82d5b48a
+index 0000000..b3c8a34
 --- /dev/null
 +++ b/apps/hosted/cloud/src/sso.ts
 @@ -0,0 +1,69 @@
@@ -560,7 +1096,7 @@ index 0000000000000000000000000000000000000000..b9700992ed796bcda6c23c3d5c9d546f
 +import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
 +import { cloudSso } from "./implementation/sso.ts";
 +import { reportCloudFailure, cloudSentry } from "./implementation/error-reporting.ts";
-+import { cloudAuth } from "./infrastructure/auth.ts";
++import { cloudSsoAuth } from "./infrastructure/auth-core.ts";
 +import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
 +import { billingBindings } from "./infrastructure/billing.ts";
 +import { cloudEmail } from "./infrastructure/email.ts";
@@ -602,7 +1138,7 @@ index 0000000000000000000000000000000000000000..b9700992ed796bcda6c23c3d5c9d546f
 +  Effect.gen(function* () {
 +    const email = yield* cloudEmail.pipe(Effect.orDie);
 +    // This private service serves only SSO paths; organization creation stays in the API.
-+    const auth = yield* cloudAuth(email.send, undefined, cloudSso);
++    const auth = yield* cloudSsoAuth(email.send, cloudSso);
 +    const reportErrors = yield* cloudSentry;
 +    return {
 +      fetch: Effect.gen(function* () {
@@ -623,23 +1159,23 @@ index 0000000000000000000000000000000000000000..b9700992ed796bcda6c23c3d5c9d546f
 +  ),
 +);
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
-index b6c14c9f486bd3fc890579e99d0f4545ff9afa90..1a470559adca4e05d4a484109489eb3384dea69f 100644
+index a807abb..79532f9 100644
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
-@@ -103,7 +103,7 @@ const jobs = {
+@@ -105,7 +105,7 @@ const jobs = {
      runner: 3,
  
      pattern:
--      "Cloud encrypted workflow (?:waits|resumes)|Approvals (?:answers|renders)|workflow displays recheck|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
-+      "Cloud encrypted workflow (?:waits|resumes)|Approvals (?:answers|renders)|workflow displays recheck|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud SSO OIDC protocol|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)",
+-      "Cloud encrypted workflow (?:waits|resumes)|Approvals (?:answers|renders)|workflow displays recheck|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization",
++      "Cloud encrypted workflow (?:waits|resumes)|Approvals (?:answers|renders)|workflow displays recheck|Cloud dashboard batches share one SQL pool|Cloud SSO SAML accepts|Cloud SSO OIDC protocol|Cloud's operator OAuth client signs in|scheduled personal-data reports refresh identity|personal-data reports use each organization|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud pool migration inventory|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization",
    },
    // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
    // load kept the team installation's workflow span from arriving within its 30-second wait, so
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 1e89d4abcfc6f159373a07306895062a934245a0..c9e07d4f25f3ee7795abc6a6b0d68fa764af9d16 100644
+index 2f31303..5763c03 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -1548,6 +1548,16 @@ export const scenarios = plan({
+@@ -1731,6 +1731,16 @@ export const scenarios = plan({
        local: na("Cloud customer SSO"),
      },
    },
@@ -657,7 +1193,7 @@ index 1e89d4abcfc6f159373a07306895062a934245a0..c9e07d4f25f3ee7795abc6a6b0d68fa7
      fixtures: "actors",
      file: "cloud-sso.spec.ts",
 diff --git a/e2e/tests/cloud-sso.spec.ts b/e2e/tests/cloud-sso.spec.ts
-index d0a142606fdd465f456fca26916854502668ee2c..782f3a68125444e09b719a6a4bb977a58a948055 100644
+index d0a1426..782f3a6 100644
 --- a/e2e/tests/cloud-sso.spec.ts
 +++ b/e2e/tests/cloud-sso.spec.ts
 @@ -735,6 +735,138 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {

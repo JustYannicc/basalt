@@ -39,10 +39,10 @@ index 2378d1b..a669950 100644
 +  return <AddAppPage entry={entry} />;
 +}
 diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
-index cf582b6..6c3bb54 100644
+index c706947..c33a340 100644
 --- a/apps/hosted/web/src/contracts/apps.ts
 +++ b/apps/hosted/web/src/contracts/apps.ts
-@@ -23,6 +23,7 @@ import {
+@@ -24,6 +24,7 @@ import {
    type OAuthClientSelection,
    type ToolName,
    type Json,
@@ -50,7 +50,7 @@ index cf582b6..6c3bb54 100644
    type ApprovalRequestId,
  } from "@executor-js/sdk";
  import { toolRunApproval } from "@executor-js/ui/contracts/browser-approval";
-@@ -246,6 +247,59 @@ export const renameAppAtom = (key: { organization: OrganizationReference; app: A
+@@ -247,6 +248,59 @@ export const renameAppAtom = (key: { organization: OrganizationReference; app: A
    renameApp(new AppKey(key));
  export const removeAppAtom = (key: { organization: OrganizationReference; app: AppId }) =>
    removeApp(new AppKey(key));
@@ -111,7 +111,7 @@ index cf582b6..6c3bb54 100644
   * A dialog owns one submission attempt. Reopening it gets a fresh request; retries keep its
   * connection. Completing a connection started from the app saves the account and links it to the
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
-index b4612a3..26cd124 100644
+index 9b26007..73a873b 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
 @@ -24,6 +24,8 @@ const errorMessage = Match.type<HostedError>().pipe(
@@ -124,10 +124,10 @@ index b4612a3..26cd124 100644
        "This account connection is temporarily unavailable. Retry after the host restores it.",
      AccessConflict: ({ reason }) =>
 diff --git a/apps/hosted/web/src/contracts/navigation.ts b/apps/hosted/web/src/contracts/navigation.ts
-index 282af23..78855a9 100644
+index 5b2125b..71f4471 100644
 --- a/apps/hosted/web/src/contracts/navigation.ts
 +++ b/apps/hosted/web/src/contracts/navigation.ts
-@@ -41,6 +41,15 @@ export function parseAccountsSearch(search: Record<string, unknown>): {
+@@ -43,6 +43,15 @@ export function parseAccountsSearch(search: Record<string, unknown>): {
    };
  }
  
@@ -246,11 +246,11 @@ index efa60d9..58686b2 100644
      </DashboardProvider>
    );
 diff --git a/apps/hosted/web/src/implementation/pages/add-app.tsx b/apps/hosted/web/src/implementation/pages/add-app.tsx
-index 8aa97a2..41d1692 100644
+index d97530f..2a8d8c3 100644
 --- a/apps/hosted/web/src/implementation/pages/add-app.tsx
 +++ b/apps/hosted/web/src/implementation/pages/add-app.tsx
-@@ -8,13 +8,14 @@ import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
- import { useOrganizationRoute } from "../components/organization.tsx";
+@@ -6,13 +6,14 @@ import { useOrganizationRoute } from "../components/organization.tsx";
+ import { MakeYourOwn, AddAppBack } from "../components/add-app.tsx";
  
  /** Catalog apps install into the same organization-owned app records. */
 -export function AddAppPage() {
@@ -266,7 +266,7 @@ index 8aa97a2..41d1692 100644
        Failure={HostedFailure}
        mutation={atoms.install}
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index 7105f19..5853e11 100644
+index a872a5d..3e866d6 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 @@ -21,9 +21,22 @@ import {
@@ -651,10 +651,10 @@ index 84a59f1..becf70d 100644
                  />
                </div>
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index cd2813a..ff7774b 100644
+index 572a62e..915abea 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-@@ -22,7 +22,12 @@ import { Cause, Match, Option, Exit, Schema } from "effect";
+@@ -26,7 +26,12 @@ import { Cause, Effect, Match, Option, Exit, Schema } from "effect";
  import { Button } from "@executor-js/ui/components/button";
  import { OAuthFields, OAuthSetup, oauthDeferral } from "@executor-js/ui/dashboard/oauth-fields";
  import type { CatalogOAuthDeferral } from "@executor-js/catalog/contracts";
@@ -668,8 +668,8 @@ index cd2813a..ff7774b 100644
  import { AccountForm } from "@executor-js/ui/dashboard/account-form";
  import {
    InteractiveSignIn,
-@@ -48,7 +53,9 @@ import { useOrganizationDetails, useOrganizationRoute } from "../components/orga
- import { RegisterServiceClient } from "./oauth-clients.tsx";
+@@ -56,7 +61,9 @@ import {
+ } from "../../contracts/oauth-clients.ts";
  
  // The dialog owns catalog guidance; both normal and loopback forms read the same value.
 -export const OAuthDeferralsContext = createContext<readonly CatalogOAuthDeferral[] | undefined>(undefined);
@@ -679,7 +679,7 @@ index cd2813a..ff7774b 100644
  
  /**
   * A page other than the app's own that starts account sign-ins, such as onboarding, provides where
-@@ -91,6 +98,63 @@ export function ConnectionFields({
+@@ -101,6 +108,63 @@ export function ConnectionFields({
      leave: () => (started.current ? cancel() : Promise.resolve()),
    };
    const handoff = useOAuthHandoff({ provider: connection.provider, onSaved, onPendingChange });
@@ -743,7 +743,7 @@ index cd2813a..ff7774b 100644
    if (connection.state.status !== "pending" && !handoff.active)
      return (
        <>
-@@ -99,19 +163,12 @@ export function ConnectionFields({
+@@ -109,19 +173,12 @@ export function ConnectionFields({
              ? "Account connected."
              : "This connection has expired. Start a new connection from the app."}
          </p>
@@ -766,7 +766,7 @@ index cd2813a..ff7774b 100644
        {handoff.step}
        {/* Kept mounted behind a loopback step, so cancelling returns to the same method. */}
        <div className={handoff.active ? "hidden" : "contents"}>
-@@ -147,7 +204,7 @@ export function ConnectionFields({
+@@ -159,7 +216,7 @@ export function ConnectionFields({
            }
          />
        </div>
@@ -1141,10 +1141,10 @@ index e2dbddf..7a9158f 100644
 +    );
 +  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 6e703cb..129a404 100644
+index 35f2d37..839e33c 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -3569,6 +3569,18 @@ export const scenarios = plan({
+@@ -4144,6 +4144,18 @@ export const scenarios = plan({
        local: na("Uses hosted organization account policies."),
      },
    },
@@ -1165,6 +1165,7 @@ index 6e703cb..129a404 100644
      legacyStorage: true,
 diff --git a/e2e/tests/pool-select-only-ui.spec.ts b/e2e/tests/pool-select-only-ui.spec.ts
 new file mode 100644
+index 0000000..de6436b
 --- /dev/null
 +++ b/e2e/tests/pool-select-only-ui.spec.ts
 @@ -0,0 +1,221 @@
@@ -1478,10 +1479,10 @@ index a6abe76..89fb7fa 100644
  export const requirementMethods = (requirement: AccountRequirement) =>
    Object.entries(requirement.definition.auth)
 diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
-index a2c5898..1eea39b 100644
+index 7755e5c..e529301 100644
 --- a/packages/ui/src/contracts/dashboard.ts
 +++ b/packages/ui/src/contracts/dashboard.ts
-@@ -191,6 +191,17 @@ export interface DashboardBindings {
+@@ -192,6 +192,17 @@ export interface DashboardBindings {
    readonly catalogIcons: Atom.Atom<CatalogIcons>;
    readonly AppLink: ComponentType<AppLinkProps>;
    readonly AccountLink: ComponentType<AccountLinkProps>;
@@ -1500,10 +1501,10 @@ index a2c5898..1eea39b 100644
  
  /** Token expiry needs user action only when the host cannot refresh it. */
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 5a22555..51e8e92 100644
+index b83fc5c..f5ffaab 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -9,7 +9,10 @@ import { RadioGroup } from "radix-ui";
+@@ -19,7 +19,10 @@ import { RadioGroup } from "radix-ui";
  import type { Account, AccountScope, App, AccountId, AccountRequirement } from "@executor-js/sdk";
  import {
    requirementMethods,
@@ -1514,7 +1515,7 @@ index 5a22555..51e8e92 100644
    type RequirementLink,
    type RequirementMethods,
  } from "../../contracts/app-accounts.ts";
-@@ -62,6 +65,8 @@ import {
+@@ -72,6 +75,8 @@ import {
  import { cn } from "../lib/utils.ts";
  import { methodLabels } from "./method-labels.ts";
  import { useProductBrand } from "../hooks/product-brand.ts";
@@ -1523,7 +1524,7 @@ index 5a22555..51e8e92 100644
  
  const provisionedOnly = (requirement: AccountRequirement) =>
    Object.keys(requirement.definition.auth).length > 0 &&
-@@ -415,6 +420,40 @@ const noMethodOpen = (
+@@ -472,6 +477,40 @@ const noMethodOpen = (
    return states.length > 0 && states.every((state) => state.reason !== undefined);
  };
  
@@ -1564,7 +1565,7 @@ index 5a22555..51e8e92 100644
  /**
   * Who may change one requirement's links: an editor's `edit` covers the scope, `contribute` only
   * an app collection that opts in to member contributions.
-@@ -457,6 +496,13 @@ export interface LinkEditing<E> {
+@@ -514,6 +553,13 @@ export interface LinkEditing<E> {
    readonly unlink: (slot: string, account: AccountId) => Atom.AtomResultFn<void, unknown, E>;
    /** Connect a new account for the requirement; saving it links it. */
    readonly connect: (slot: string, requirement: AccountRequirement) => void;
@@ -1578,7 +1579,7 @@ index 5a22555..51e8e92 100644
    /** A connection is open or saving, so the other changes wait for it. */
    readonly connecting?: boolean | undefined;
    readonly onUnlinked?: ((account: AccountId) => void) | undefined;
-@@ -512,6 +558,7 @@ export function AppAccounts<E>({
+@@ -569,6 +615,7 @@ export function AppAccounts<E>({
    yourAccounts,
    accounts,
    methods,
@@ -1586,7 +1587,7 @@ index 5a22555..51e8e92 100644
    Failure,
  }: {
    readonly app: App;
-@@ -524,6 +571,11 @@ export function AppAccounts<E>({
+@@ -581,6 +628,11 @@ export function AppAccounts<E>({
     * method is offered, and the host still refuses one it can't run.
     */
    readonly methods?: RequirementMethods | undefined;
@@ -1597,8 +1598,8 @@ index 5a22555..51e8e92 100644
 +  readonly connections?: RequirementConnections | undefined;
    readonly Failure: ComponentType<FailureProps<E>>;
  }) {
-   useRevalidateChecks(
-@@ -573,6 +625,7 @@ export function AppAccounts<E>({
+   const appChecking = useRevalidateChecks(
+@@ -631,6 +683,7 @@ export function AppAccounts<E>({
            data={appAccounts}
            accounts={accounts}
            methods={methods}
@@ -1606,7 +1607,7 @@ index 5a22555..51e8e92 100644
            showProvisionedProblems={repairs.app}
            Failure={Failure}
          />
-@@ -587,6 +640,7 @@ export function AppAccounts<E>({
+@@ -646,6 +699,7 @@ export function AppAccounts<E>({
            data={yourAccounts}
            accounts={accounts}
            methods={methods}
@@ -1614,7 +1615,7 @@ index 5a22555..51e8e92 100644
            showProvisionedProblems={repairs.user}
            Failure={Failure}
          />
-@@ -602,6 +656,7 @@ interface ScopeProps<E> {
+@@ -661,6 +715,7 @@ interface ScopeProps<E> {
    readonly data: ScopeAccounts<E>;
    readonly accounts: readonly AccountSummary[];
    readonly methods?: RequirementMethods | undefined;
@@ -1622,7 +1623,7 @@ index 5a22555..51e8e92 100644
    readonly Failure: ComponentType<FailureProps<E>>;
  }
  
-@@ -615,16 +670,22 @@ function LinkScope<E>({
+@@ -676,16 +731,22 @@ function LinkScope<E>({
    readonly description: string;
    readonly requirements: readonly RequirementEntry[];
  }) {
@@ -1648,8 +1649,8 @@ index 5a22555..51e8e92 100644
 +  const open = shown.filter((entry) => !closed.includes(entry));
    const readOnly = open.every(([, requirement]) => editingFor(data, requirement) === undefined);
    return (
-     <section aria-label={title} data-read-only={readOnly} className="space-y-3">
-@@ -732,6 +793,7 @@ function RequirementView<E>({
+     <Checking.Provider value={checking}>
+@@ -795,6 +856,7 @@ function RequirementView<E>({
    const managed = provisionedOnly(requirement);
    const label = requirement.definition.name.trim() || undefined;
    const native = props.methods?.native(slot);
@@ -1657,7 +1658,7 @@ index 5a22555..51e8e92 100644
    const states = methodStates(props.methods, slot, requirement);
    const open = states.filter((state) => state.reason === undefined);
    const blocked = states.length - open.length;
-@@ -757,6 +819,11 @@ function RequirementView<E>({
+@@ -820,6 +882,11 @@ function RequirementView<E>({
            {label !== undefined && (
              <p className="flex min-w-0 items-center gap-2 font-medium">
                <span className="truncate">{label}</span>
@@ -1669,7 +1670,7 @@ index 5a22555..51e8e92 100644
                {native !== undefined && (
                  <span
                    className="shrink-0 rounded-sm border px-1.5 py-px text-[10px] font-normal text-foreground"
-@@ -768,9 +835,13 @@ function RequirementView<E>({
+@@ -831,9 +898,13 @@ function RequirementView<E>({
              </p>
            )}
            <p className="text-pretty text-xs leading-4.5 text-muted-foreground">
@@ -1685,7 +1686,7 @@ index 5a22555..51e8e92 100644
              <p className="text-pretty text-[11px] leading-4.5 text-muted-foreground">
                {methodsLine}
              </p>
-@@ -1026,6 +1097,7 @@ function EditableChoices<E>({
+@@ -1093,6 +1164,7 @@ function EditableChoices<E>({
    edit,
    accounts,
    methods,
@@ -1693,7 +1694,7 @@ index 5a22555..51e8e92 100644
    Failure,
  }: ScopeProps<E> & {
    readonly edit: LinkEditing<E>;
-@@ -1033,8 +1105,14 @@ function EditableChoices<E>({
+@@ -1100,8 +1172,14 @@ function EditableChoices<E>({
    readonly requirement: AccountRequirement;
    readonly linked: readonly AccountSummary[];
  }) {
@@ -1708,7 +1709,7 @@ index 5a22555..51e8e92 100644
    // A choice shows the page's own view of the account: its link's details, with sign-in state and
    // checks, or the caller's account list, which renames and reconnects keep current.
    const summarize = (account: Account): AccountSummary =>
-@@ -1058,13 +1136,21 @@ function EditableChoices<E>({
+@@ -1125,13 +1203,21 @@ function EditableChoices<E>({
                  },
                ]
              : choice.linked || accounts.some((item) => item.id === choice.account.id)
@@ -1732,7 +1733,7 @@ index 5a22555..51e8e92 100644
    );
    // The host's read decides contribution; until it arrives no control acts.
    const allowed = Option.isSome(loaded) && loaded.value.canContribute !== false;
-@@ -1075,8 +1161,7 @@ function EditableChoices<E>({
+@@ -1142,8 +1228,7 @@ function EditableChoices<E>({
    const bound = plain
      ? choices.find(
          (choice) =>
@@ -1742,7 +1743,7 @@ index 5a22555..51e8e92 100644
        )
      : undefined;
    // The only unlinked host choice left is the caller's own default credential: its row is the way
-@@ -1108,6 +1193,9 @@ function EditableChoices<E>({
+@@ -1175,6 +1260,9 @@ function EditableChoices<E>({
        edit={edit}
        data={data}
        blockedReason={methodBlocked(methods, slot, choice.account.method)}
@@ -1752,7 +1753,7 @@ index 5a22555..51e8e92 100644
        Failure={Failure}
      />
    ));
-@@ -1154,6 +1242,19 @@ function EditableChoices<E>({
+@@ -1221,6 +1309,19 @@ function EditableChoices<E>({
          ))}
        {provisionedOnly(requirement) ? (
          <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">Set up automatically</p>
@@ -1772,7 +1773,7 @@ index 5a22555..51e8e92 100644
        ) : closedReasons.length > 0 ? (
          <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground" data-connect-unavailable>
            {closedReasons.join(" ")}
-@@ -1172,6 +1273,21 @@ function EditableChoices<E>({
+@@ -1239,6 +1340,21 @@ function EditableChoices<E>({
            Connect new account
          </Button>
        )}
@@ -1794,7 +1795,7 @@ index 5a22555..51e8e92 100644
        {replacingWithNew && bound !== undefined && (
          <RemoveAppBoundAccount
            name={accountName(bound.account)}
-@@ -1202,7 +1318,16 @@ function ChoiceRow<E>({
+@@ -1269,7 +1385,16 @@ function ChoiceRow<E>({
    Failure,
    replaces,
    blockedReason,
@@ -1811,7 +1812,7 @@ index 5a22555..51e8e92 100644
    /** The app-bound account that selecting this one would retire. */
    readonly replaces?: string | undefined;
    /**
-@@ -1240,14 +1365,24 @@ function ChoiceRow<E>({
+@@ -1307,14 +1432,24 @@ function ChoiceRow<E>({
    const fixed = linked && linkOf(data, slot, account.id)?.canRemove === false;
    const unusable = !linked && blockedReason !== undefined;
    // An account the app acquired means nothing elsewhere, so unlinking it deletes it.
@@ -1839,10 +1840,10 @@ index 5a22555..51e8e92 100644
    };
    return (
 diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
-index 972f42b..1e4b219 100644
+index 00e7030..e315fde 100644
 --- a/packages/ui/src/implementation/dashboard/catalog.tsx
 +++ b/packages/ui/src/implementation/dashboard/catalog.tsx
-@@ -83,7 +83,10 @@ export function CatalogPage<E, IE>({
+@@ -85,7 +85,10 @@ export function CatalogPage<E, IE>({
    inventory,
    open,
    onInstalled,
@@ -1853,7 +1854,7 @@ index 972f42b..1e4b219 100644
    /** The install command for one catalog entry; each row has its own. */
    readonly mutation: (entry: string) => MutationProps<InstallApp, AppSummary, IE>["mutation"];
    readonly InstallFailure: MutationProps<InstallApp, AppSummary, IE>["Failure"];
-@@ -159,9 +162,11 @@ export function CatalogPage<E, IE>({
+@@ -164,9 +167,11 @@ export function CatalogPage<E, IE>({
    const renaming = conflict !== undefined && adding.has(conflict.entry.id);
    const retry = useAtomRefresh(query);
    const [search, setSearch] = useState("");
@@ -1866,39 +1867,35 @@ index 972f42b..1e4b219 100644
      .filter((entry) =>
        `${entry.name} ${entry.package} ${entry.category ?? ""} ${entry.description}`
          .toLowerCase()
-@@ -171,6 +176,7 @@ export function CatalogPage<E, IE>({
+@@ -176,6 +181,7 @@ export function CatalogPage<E, IE>({
        (a, b) =>
          Number(!a.name.toLowerCase().includes(term)) - Number(!b.name.toLowerCase().includes(term)),
      );
 +  const entries = focused === undefined ? matches : [focused];
    const visible = useIncrementalList(entries.length, term, 50);
    return (
-     <div className="page w-full shrink-0 max-w-315 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
-@@ -185,10 +191,23 @@ export function CatalogPage<E, IE>({
-         {action}
-       </div>
-       <div className="list-toolbar flex flex-wrap items-center gap-[10px_16px] mb-4">
--        <SearchInput autoFocus value={search} onChange={setSearch} placeholder="Search apps…" />
-+        <SearchInput
-+          autoFocus
-+          value={search}
-+          onChange={(value) => {
-+            setOnly(undefined);
-+            setSearch(value);
-+          }}
-+          placeholder="Search apps…"
-+        />
-         <span className="muted text-muted-foreground">
-           {entries.length.toLocaleString("en-US")} apps
-         </span>
-+        {focused !== undefined && (
-+          <Button variant="outline" size="sm" onClick={() => setOnly(undefined)}>
-+            Show all apps
-+          </Button>
-+        )}
-       </div>
-       {AsyncResult.isFailure(result) && <Failure cause={result.cause} retry={retry} />}
-       {failure && conflict === undefined && <InstallFailure cause={failure} />}
+     <CatalogPageFrame
+@@ -183,7 +189,7 @@ export function CatalogPage<E, IE>({
+       action={action}
+       toolbar={
+         <>
+-          <SearchInput autoFocus value={search} onChange={setSearch} placeholder="Search apps…" />
++          <SearchInput autoFocus value={search} onChange={(value) => { setOnly(undefined); setSearch(value); }} placeholder="Search apps…" />
+           {AsyncResult.isInitial(result) && !entries.length ? (
+             <CatalogCountSkeleton />
+           ) : (
+@@ -191,6 +197,11 @@ export function CatalogPage<E, IE>({
+               {entries.length.toLocaleString("en-US")} apps
+             </span>
+           )}
++          {focused !== undefined && (
++            <Button variant="outline" size="sm" onClick={() => setOnly(undefined)}>
++              Show all apps
++            </Button>
++          )}
+         </>
+       }
+     >
 diff --git a/packages/ui/src/implementation/dashboard/provider-accounts.tsx b/packages/ui/src/implementation/dashboard/provider-accounts.tsx
 new file mode 100644
 index 0000000..3009a60

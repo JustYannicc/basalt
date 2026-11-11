@@ -1,600 +1,5 @@
-diff --git a/packages/sdk/src/contracts/account-acquisition-driver.ts b/packages/sdk/src/contracts/account-acquisition-driver.ts
---- a/packages/sdk/src/contracts/account-acquisition-driver.ts
-+++ b/packages/sdk/src/contracts/account-acquisition-driver.ts
-@@ -1,7 +1,7 @@
- import { Context, Schema, type Effect, type Redacted } from "effect";
- import type { InteractiveStart, InteractiveStatus } from "apps/contracts";
- import type { AccountObservationDriverCapabilities } from "./account-observation-driver.ts";
--import { AccountId, OwnerId, ProviderId, type StorageError } from "./shared.ts";
-+import { AccountId, OwnerId, ProviderId, type JsonObject, type StorageError } from "./shared.ts";
- import type { AccountNotFound } from "./account.ts";
- import { UserFacingError } from "@executor-js/utils/user-facing-error";
- 
-@@ -57,6 +57,11 @@
-   readonly reference: Redacted.Redacted<string>;
- }
- 
-+/** The host assigns one immutable backend reference per saved account credential generation. */
-+export interface AccountAcquisitionMirrorContext extends AccountAcquisitionAccountContext {
-+  readonly fields: Redacted.Redacted<JsonObject>;
-+}
-+
- export interface AccountAcquisitionDriver<
-   Context extends AccountAcquisitionAccountContext = AccountAcquisitionAccountContext,
- > extends AccountObservationDriverCapabilities<Context> {
-@@ -81,6 +86,8 @@
-   ) => Effect.Effect<void, unknown>;
-   /** Idempotent for the host operation ID, including a retry after an uncertain response. */
-   readonly remove: (context: Context) => Effect.Effect<void, unknown>;
-+  /** Idempotently copy supplied credentials to context.reference. Never allocate another reference. */
-+  readonly mirror?: (context: AccountAcquisitionMirrorContext) => Effect.Effect<void, unknown>;
- }
- 
- export interface AccountAcquisitionRegistration {
-@@ -118,6 +125,16 @@
- /** Products authorize inspection/use/refresh before resolving this distinct driver source. */
- export const AccountAcquisitionHost = Symbol("executor.AccountAcquisitionHost");
- export interface AccountAcquisitionHost {
-+  /** The product authorizes the account and destination before requesting a server-side mirror. */
-+  readonly ensureMirror: (input: {
-+    readonly account: AccountId;
-+    readonly owner: OwnerId;
-+    readonly expectedGeneration: number;
-+    readonly operation: string;
-+  }) => Effect.Effect<
-+    AccountAcquisitionBinding,
-+    StorageError | AccountNotFound | AccountAcquisitionUnavailable
-+  >;
-   readonly binding: (input: {
-     readonly account: AccountId;
-     readonly owner?: OwnerId;
-diff --git a/packages/sdk/src/implementation/account-acquisition-adapter.ts b/packages/sdk/src/implementation/account-acquisition-adapter.ts
---- a/packages/sdk/src/implementation/account-acquisition-adapter.ts
-+++ b/packages/sdk/src/implementation/account-acquisition-adapter.ts
-@@ -9,6 +9,7 @@
-   AccountAcquisitionAccountContext,
-   AccountAcquisitionContext,
-   AccountAcquisitionDriver,
-+  AccountAcquisitionMirrorContext,
- } from "../contracts/account-acquisition-driver.ts";
- 
- /** Promise callbacks for hosts whose credential backend is authored outside Effect. */
-@@ -34,6 +35,7 @@
-     input: { readonly session: string },
-   ) => Promise<void>;
-   readonly remove: (context: Context) => Promise<void>;
-+  readonly mirror?: (context: AccountAcquisitionMirrorContext) => Promise<void>;
-   readonly check?: (context: Context) => Promise<AccountCheckResult | void>;
-   readonly observeAccount?: (context: Context) => Promise<AccountObservationResult | void>;
- }
-@@ -45,7 +47,7 @@
- export const accountAcquisitionDriver = <Context extends AccountAcquisitionAccountContext>(
-   driver: PromiseAccountAcquisitionDriver<Context>,
- ): AccountAcquisitionDriver<Context> => {
--  const { submit, check, observeAccount } = driver;
-+  const { submit, check, observeAccount, mirror } = driver;
-   return {
-     id: driver.id,
-     revision: driver.revision,
-@@ -53,6 +55,11 @@
-     status: (context, input) => callback(() => driver.status(context, input)),
-     cancel: (context, input) => callback(() => driver.cancel(context, input)),
-     remove: (context) => callback(() => driver.remove(context)),
-+    ...(mirror === undefined
-+      ? {}
-+      : {
-+          mirror: (context: AccountAcquisitionMirrorContext) => callback(() => mirror(context)),
-+        }),
-     ...(submit === undefined
-       ? {}
-       : {
-diff --git a/packages/sdk/src/implementation/account-acquisition-bindings.ts b/packages/sdk/src/implementation/account-acquisition-bindings.ts
---- a/packages/sdk/src/implementation/account-acquisition-bindings.ts
-+++ b/packages/sdk/src/implementation/account-acquisition-bindings.ts
-@@ -8,37 +8,45 @@
- import { storedAccount } from "./accounts.ts";
- import { query, type Query } from "./database.ts";
- 
-+export const acquisitionRecord = (
-+  db: Query,
-+  input: { readonly account: AccountId; readonly owner?: OwnerId },
-+) =>
-+  query(() =>
-+    db.findFirst("accountAcquisitions", {
-+      where: (b) =>
-+        b.and(
-+          b("account", "=", input.account),
-+          input.owner === undefined ? true : b("owner", "=", input.owner),
-+        ),
-+    }),
-+  );
-+
-+export const decodeAcquisitionBinding = Schema.decodeUnknownEffect(AccountAcquisitionBinding);
-+
- export const acquisitionBinding = (
-   db: Query,
-   input: { readonly account: AccountId; readonly owner?: OwnerId },
- ) =>
-   Effect.gen(function* () {
--    const row = yield* query(() =>
--      db.findFirst("accountAcquisitions", {
--        where: (b) =>
--          b.and(
--            b("account", "=", input.account),
--            input.owner === undefined ? true : b("owner", "=", input.owner),
--          ),
--      }),
--    );
-+    const row = yield* acquisitionRecord(db, input);
-     return row === null
-       ? undefined
--      : yield* Schema.decodeUnknownEffect(AccountAcquisitionBinding)(row).pipe(
--          Effect.mapError(() => new StorageError()),
--        );
-+      : yield* decodeAcquisitionBinding(row).pipe(Effect.mapError(() => new StorageError()));
-   });
- 
- export const bindingMatchesAccount = (
-   binding: AccountAcquisitionBinding,
-   account: StoredAccount,
-   allowRemoval = false,
-+  mirror = false,
- ) =>
-   binding.account === account.id &&
-   binding.owner === account.owner &&
-   binding.provider === account.provider &&
-   binding.method === account.method &&
--  binding.generation === account.credentialGeneration &&
-+  (binding.generation === account.credentialGeneration ||
-+    (allowRemoval && mirror && binding.generation < account.credentialGeneration)) &&
-   (allowRemoval || binding.removal === null);
- 
- /** This read does not create or adopt a binding. Missing and stale bindings stay distinguishable. */
-@@ -47,12 +55,24 @@
-   (input: { readonly account: AccountId; readonly owner?: OwnerId }) =>
-     Effect.gen(function* () {
-       const account = yield* storedAccount(db, input.account, input.owner);
--      const binding = yield* acquisitionBinding(db, { account: account.id, owner: account.owner });
--      if (binding === undefined) return undefined;
--      if (!bindingMatchesAccount(binding, account, allowRemoval))
-+      const row = yield* acquisitionRecord(db, { account: account.id, owner: account.owner });
-+      if (row === null) return undefined;
-+      const binding = yield* decodeAcquisitionBinding(row).pipe(
-+        Effect.mapError(() => new StorageError()),
-+      );
-+      const mirror = row.mirrorReference !== null;
-+      if (
-+        !bindingMatchesAccount(binding, account, allowRemoval, mirror) ||
-+        (!allowRemoval && mirror && !row.mirrorReady)
-+      )
-         return yield* new AccountAcquisitionUnavailable({ reason: "changed" });
-       const fields = yield* credentials
--        .decrypt(account.id, account.encryptedCredentials)
-+        .decrypt(
-+          account.id,
-+          row.mirrorReference === null
-+            ? account.encryptedCredentials
-+            : Redacted.make(row.mirrorReference),
-+        )
-         .pipe(Effect.mapError(() => new StorageError()));
-       const value = yield* Schema.decodeUnknownEffect(
-         Schema.Struct({ ref: Schema.NonEmptyString }),
-@@ -65,16 +85,12 @@
-   db: Query,
-   expected: AccountAcquisitionBinding,
-   allowRemoval = false,
-+  allowPendingMirror = false,
- ) =>
-   Effect.gen(function* () {
-     yield* query(() =>
-       db.updateMany("accounts", {
--        where: (b) =>
--          b.and(
--            b("id", "=", expected.account),
--            b("owner", "=", expected.owner),
--            b("credentialGeneration", "=", expected.generation),
--          ),
-+        where: (b) => b.and(b("id", "=", expected.account), b("owner", "=", expected.owner)),
-         set: { owner: expected.owner },
-       }),
-     );
-@@ -86,14 +102,19 @@
-       }),
-     );
-     const account = yield* storedAccount(db, expected.account, expected.owner);
--    const current = yield* acquisitionBinding(db, expected);
-+    const row = yield* acquisitionRecord(db, expected);
-+    const current =
-+      row === null
-+        ? undefined
-+        : yield* decodeAcquisitionBinding(row).pipe(Effect.mapError(() => new StorageError()));
-     if (
-       current === undefined ||
-       current.revision !== expected.revision ||
-       current.driver !== expected.driver ||
-       current.driverRevision !== expected.driverRevision ||
-       current.generation !== expected.generation ||
--      !bindingMatchesAccount(current, account, allowRemoval)
-+      !bindingMatchesAccount(current, account, allowRemoval, row?.mirrorReference !== null) ||
-+      (!allowRemoval && !allowPendingMirror && row?.mirrorReference !== null && !row?.mirrorReady)
-     )
-       return yield* new AccountAcquisitionUnavailable({ reason: "changed" });
-     return current;
-diff --git a/packages/sdk/src/implementation/account-acquisition-mirror.ts b/packages/sdk/src/implementation/account-acquisition-mirror.ts
-new file mode 100644
---- /dev/null
-+++ b/packages/sdk/src/implementation/account-acquisition-mirror.ts
-@@ -0,0 +1,205 @@
-+import { Clock, Effect, Redacted, type Crypto } from "effect";
-+import {
-+  AccountAcquisitionUnavailable,
-+  type AccountAcquisitionHost,
-+  type AccountAcquisitionAccountContext,
-+  type AccountAcquisitionRegistration,
-+} from "../contracts/account-acquisition-driver.ts";
-+import type { Credentials } from "../contracts/storage.ts";
-+import { StorageError } from "../contracts/shared.ts";
-+import { storedAccount } from "./accounts.ts";
-+import { query, transaction, type Query } from "./database.ts";
-+import {
-+  acquisitionRecord,
-+  requireAcquisitionBinding,
-+  resolveAcquisitionBinding,
-+} from "./account-acquisition-bindings.ts";
-+import { invokeAcquisitionDriver } from "./account-acquisition-runtime.ts";
-+import type { AcquisitionRegistry } from "./account-acquisition-registry.ts";
-+
-+type Input = Parameters<AccountAcquisitionHost["ensureMirror"]>[0];
-+
-+/** Publish only current generations. Pending references survive an uncertain backend response. */
-+export const makeAccountMirrors = (
-+  db: Query,
-+  credentials: Credentials,
-+  crypto: Crypto.Crypto,
-+  registry: AcquisitionRegistry,
-+) => {
-+  const resolveForRemoval = resolveAcquisitionBinding(db, credentials, true);
-+  const read = (input: Input) =>
-+    Effect.gen(function* () {
-+      yield* query(() =>
-+        db.updateMany("accounts", {
-+          where: (b) => b.and(b("id", "=", input.account), b("owner", "=", input.owner)),
-+          set: { owner: input.owner },
-+        }),
-+      );
-+      const account = yield* storedAccount(db, input.account, input.owner);
-+      if (account.credentialGeneration !== input.expectedGeneration)
-+        return yield* new AccountAcquisitionUnavailable({ reason: "changed" });
-+      const record = yield* acquisitionRecord(db, input);
-+      if (
-+        record !== null &&
-+        (record.mirrorReference === null ||
-+          record.removal !== null ||
-+          record.provider !== account.provider ||
-+          record.method !== account.method ||
-+          record.generation > input.expectedGeneration)
-+      )
-+        return yield* new AccountAcquisitionUnavailable({ reason: "binding" });
-+      const previous = record === null ? undefined : yield* resolveForRemoval(input);
-+      const registration =
-+        previous?.binding.generation === input.expectedGeneration
-+          ? yield* registry.retained(previous.binding)
-+          : registry.current(account.provider, account.method);
-+      if (registration?.driver.mirror === undefined)
-+        return yield* new AccountAcquisitionUnavailable({ reason: "unsupported" });
-+      return { account, record, previous, registration };
-+    });
-+  const remove = (
-+    registration: AccountAcquisitionRegistration,
-+    saved: Pick<AccountAcquisitionAccountContext, "binding" | "reference">,
-+  ) =>
-+    Effect.gen(function* () {
-+      yield* invokeAcquisitionDriver(
-+        registration,
-+        {
-+          owner: saved.binding.owner,
-+          provider: saved.binding.provider,
-+          method: saved.binding.method,
-+          operation: `mirror-retire:${saved.binding.revision}`,
-+          deadline: (yield* Clock.currentTimeMillis) + 15_000,
-+        },
-+        (context) => registration.driver.remove({ ...context, ...saved }),
-+      );
-+    });
-+
-+  return (input: Input) =>
-+    Effect.gen(function* () {
-+      if (
-+        !Number.isSafeInteger(input.expectedGeneration) ||
-+        input.expectedGeneration < 0 ||
-+        input.operation.trim() === "" ||
-+        input.operation.length > 255
-+      )
-+        return yield* new AccountAcquisitionUnavailable({ reason: "binding" });
-+      const observed = yield* transaction(db, () => read(input));
-+      if (
-+        observed.previous !== undefined &&
-+        observed.previous.binding.generation !== input.expectedGeneration
-+      ) {
-+        const retained = yield* registry.retained(observed.previous.binding);
-+        // Retire the old generation before replacing its only stored reference.
-+        yield* remove(retained, observed.previous).pipe(
-+          Effect.mapError(() => new AccountAcquisitionUnavailable({ reason: "binding" })),
-+        );
-+      }
-+      const claim = yield* transaction(db, () =>
-+        Effect.gen(function* () {
-+          const current = yield* read(input);
-+          if (current.previous?.binding.generation === input.expectedGeneration)
-+            return {
-+              ...current.previous,
-+              ready: current.record?.mirrorReady === true,
-+              operation: current.record?.mirrorOperation ?? input.operation,
-+              registration: current.registration,
-+            };
-+          if (current.record?.revision !== observed.record?.revision)
-+            return yield* new AccountAcquisitionUnavailable({ reason: "changed" });
-+          const reference = yield* crypto.randomUUIDv4.pipe(
-+            Effect.mapError(() => new StorageError()),
-+          );
-+          const binding = {
-+            account: current.account.id,
-+            owner: current.account.owner,
-+            provider: current.account.provider,
-+            method: current.account.method,
-+            driver: current.registration.driver.id,
-+            driverRevision: current.registration.driver.revision,
-+            generation: current.account.credentialGeneration,
-+            revision: yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError())),
-+            removal: null,
-+          };
-+          const mirrorReference = yield* credentials
-+            .encrypt(input.account, Redacted.make({ ref: reference }))
-+            .pipe(Effect.mapError(() => new StorageError()));
-+          const record = {
-+            ...binding,
-+            mirrorReference,
-+            mirrorReady: false,
-+            mirrorOperation: input.operation,
-+          };
-+          if (current.record === null) yield* query(() => db.create("accountAcquisitions", record));
-+          else {
-+            const previousRevision = current.record.revision;
-+            yield* query(() =>
-+              db.updateMany("accountAcquisitions", {
-+                where: (b) =>
-+                  b.and(b("account", "=", input.account), b("revision", "=", previousRevision)),
-+                set: record,
-+              }),
-+            );
-+          }
-+          return {
-+            account: current.account,
-+            binding,
-+            reference: Redacted.make(reference),
-+            ready: false,
-+            operation: input.operation,
-+            registration: current.registration,
-+          };
-+        }),
-+      );
-+      if (claim.ready) return claim.binding;
-+      const mirror = claim.registration.driver.mirror;
-+      if (mirror === undefined)
-+        return yield* new AccountAcquisitionUnavailable({ reason: "unsupported" });
-+      const cleanIfStale = Effect.gen(function* () {
-+        const current = yield* resolveForRemoval(input).pipe(
-+          Effect.catchTags({
-+            AccountNotFound: () => Effect.succeed(undefined),
-+            AccountAcquisitionUnavailable: () => Effect.succeed(undefined),
-+          }),
-+        );
-+        if (
-+          current !== undefined &&
-+          current.binding.removal === null &&
-+          current.account.credentialGeneration === input.expectedGeneration &&
-+          Redacted.value(current.reference) === Redacted.value(claim.reference)
-+        )
-+          return;
-+        yield* remove(claim.registration, claim);
-+      }).pipe(Effect.catch(() => Effect.logWarning("Stale account mirror cleanup needs retry")));
-+      return yield* Effect.gen(function* () {
-+        const fields = yield* credentials
-+          .decrypt(input.account, claim.account.encryptedCredentials)
-+          .pipe(Effect.mapError(() => new StorageError()));
-+        yield* invokeAcquisitionDriver(
-+          claim.registration,
-+          {
-+            owner: input.owner,
-+            provider: claim.binding.provider,
-+            method: claim.binding.method,
-+            operation: claim.operation,
-+            deadline: (yield* Clock.currentTimeMillis) + 15_000,
-+          },
-+          (context) =>
-+            mirror({ ...context, binding: claim.binding, reference: claim.reference, fields }),
-+        ).pipe(Effect.mapError(() => new AccountAcquisitionUnavailable({ reason: "binding" })));
-+        return yield* transaction(db, () =>
-+          Effect.gen(function* () {
-+            const current = yield* requireAcquisitionBinding(db, claim.binding, false, true);
-+            yield* query(() =>
-+              db.updateMany("accountAcquisitions", {
-+                where: (b) =>
-+                  b.and(b("account", "=", input.account), b("revision", "=", current.revision)),
-+                set: { mirrorReady: true },
-+              }),
-+            );
-+            return current;
-+          }),
-+        );
-+      }).pipe(Effect.ensuring(cleanIfStale));
-+    });
-+};
-diff --git a/packages/sdk/src/implementation/account-acquisition-schema.ts b/packages/sdk/src/implementation/account-acquisition-schema.ts
---- a/packages/sdk/src/implementation/account-acquisition-schema.ts
-+++ b/packages/sdk/src/implementation/account-acquisition-schema.ts
-@@ -2,8 +2,7 @@
- import { column, idColumn, table } from "fumadb-effect/schema";
- import { AccountId, OwnerId, ProviderId } from "../contracts/shared.ts";
- 
--/** Credential references stay in the account's encrypted envelope, independent of app source. */
--export const accountAcquisitions = table("executor_account_acquisitions", {
-+const fields = {
-   account: idColumn("account", AccountId, { type: "varchar(255)" }),
-   owner: column("owner", OwnerId, { type: "varchar(255)" }),
-   provider: column("provider", ProviderId, { type: "varchar(255)" }),
-@@ -13,4 +12,17 @@
-   generation: column("generation", Schema.Int),
-   revision: column("revision", Schema.String, { type: "varchar(255)" }),
-   removal: column("removal", Schema.NullOr(Schema.Json)).default(null),
-+};
-+
-+/** Released layout. Acquired credentials keep their reference in the account envelope. */
-+export const accountAcquisitions4020 = table("executor_account_acquisitions", fields);
-+
-+/** Key mirrors preserve the original account credentials and encrypt their reference separately. */
-+export const accountAcquisitions = table("executor_account_acquisitions", {
-+  ...fields,
-+  mirrorReference: column("mirror_reference", Schema.NullOr(Schema.Uint8Array)).default(null),
-+  mirrorReady: column("mirror_ready", Schema.Boolean).default(true),
-+  mirrorOperation: column("mirror_operation", Schema.NullOr(Schema.String), {
-+    type: "varchar(255)",
-+  }).default(null),
- });
-diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
---- a/packages/sdk/src/implementation/create.ts
-+++ b/packages/sdk/src/implementation/create.ts
-@@ -55,6 +55,7 @@
- } from "../contracts/account-acquisition-driver.ts";
- import { makeAcquisitionRegistry } from "./account-acquisition-registry.ts";
- import { makeAcquisitionRuntime } from "./account-acquisition-runtime.ts";
-+import { makeAccountMirrors } from "./account-acquisition-mirror.ts";
- import { acquisitionBinding } from "./account-acquisition-bindings.ts";
- import { makeAcquisitionConnect } from "./account-acquisition-connect.ts";
- import { makeAcquisitionRetirement } from "./account-acquisition-retirement.ts";
-@@ -101,6 +102,7 @@
-     );
-     const acquisitionRuntime = makeAcquisitionRuntime(db, credentials, crypto, acquisitionRegistry);
-     const acquisitionHost = {
-+      ensureMirror: makeAccountMirrors(db, credentials, crypto, acquisitionRegistry),
-       binding: (input: Parameters<AccountAcquisitionHost["binding"]>[0]) =>
-         acquisitionBinding(db, input),
-       source: acquisitionRuntime.source,
-diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
---- a/packages/sdk/src/implementation/database.ts
-+++ b/packages/sdk/src/implementation/database.ts
-@@ -7,8 +7,7 @@
- export type Query = ReturnType<typeof database>;
- /** Select the latest migrated storage schema. */
- export const database = (storage: ExecutorDatabase) => ({
--  ...storage.orm("4.0.24"),
--
-+  ...storage.orm("4.0.25"),
-   lockAccountObservation: storage.lockAccountObservation,
- });
- 
-diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
---- a/packages/sdk/src/implementation/storage.ts
-+++ b/packages/sdk/src/implementation/storage.ts
-@@ -22,8 +22,7 @@
-     const sql = yield* SqlClient.SqlClient;
-     const reactivity = yield* makeReactiveStore({ namespace: "executor" });
-     const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
--    const db = bindOrm(client.orm("4.0.24"), sql, reactivity);
--
-+    const db = bindOrm(client.orm("4.0.25"), sql, reactivity);
-     const checkMigration = Effect.gen(function* () {
-       const migrator = yield* client.createMigrator;
-       const version = yield* migrator.version;
-@@ -48,7 +47,7 @@
-             yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
-               discard: true,
-             });
--          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.22")));
-+          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.25")));
-           return;
-         }
-         // Execute every registered upgrade in order. A direct diff to latest can skip
-@@ -78,8 +77,7 @@
-       Effect.mapError(() => new StorageError()),
-     );
-     return {
--      orm: (_version: "4.0.24") => db,
--
-+      orm: (_version: "4.0.24" | "4.0.25") => db,
-       // The ORM forbids primary-key updates. Lock without changing source data or provenance.
-       lockAccountObservation: (id: string) =>
-         sql`update executor_account_observations set id = id where id = ${id}`.pipe(
-diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/src/implementation/storage-schema.ts
---- a/packages/sdk/src/implementation/storage-schema.ts
-+++ b/packages/sdk/src/implementation/storage-schema.ts
-@@ -1,4 +1,4 @@
--import { accountAcquisitions } from "./account-acquisition-schema.ts";
-+import { accountAcquisitions, accountAcquisitions4020 } from "./account-acquisition-schema.ts";
- import { accountDriverChecks } from "./account-driver-check-schema.ts";
- import { accountObservations } from "./account-observation-schema.ts";
- import { WorkflowRunId } from "../contracts/workflows.ts";
-@@ -923,7 +923,7 @@
- /** Questions and wake receipts survive process loss; form content is encrypted. */
- export const version4022Tables = {
-   ...version4019Tables,
--  accountAcquisitions,
-+  accountAcquisitions: accountAcquisitions4020,
-   accountDriverChecks,
-   workflowInputs: table("executor_workflow_inputs", {
-     id: idColumn("id", Schema.String, { type: "varchar(80)" }),
-@@ -995,3 +995,5 @@
-   "CREATE INDEX IF NOT EXISTS executor_accounts_identity ON executor_accounts (identity_id)",
-   "CREATE INDEX IF NOT EXISTS executor_accounts_oauth_grant ON executor_accounts (oauth_grant_id)",
- ] as const;
-+
-+export const version4025Tables = { ...version4024Tables, accountAcquisitions };
-diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
---- a/packages/sdk/src/implementation/storage-migrations.ts
-+++ b/packages/sdk/src/implementation/storage-migrations.ts
-@@ -1,4 +1,4 @@
--import { accountAcquisitions } from "./account-acquisition-schema.ts";
-+import { accountAcquisitions4020 } from "./account-acquisition-schema.ts";
- import { accountDriverChecks } from "./account-driver-check-schema.ts";
- import { accountObservations } from "./account-observation-schema.ts";
- /** Current baseline and the upgrades required by existing version 4 databases. */
-@@ -24,6 +24,7 @@
-   version4022Tables,
-   version4024Tables,
-   accountIdentityIndexes,
-+  version4025Tables,
-   workflowInputIndexes,
-   appScheduleIndex,
-   scopedRunKeyIndex,
-@@ -492,7 +493,7 @@
-   });
- 
- /** Version 4 is the oldest supported layout. Append future compatible upgrades here. */
--const version4020Tables = { ...version4019Tables, accountAcquisitions };
-+const version4020Tables = { ...version4019Tables, accountAcquisitions: accountAcquisitions4020 };
- 
- export const storageSchemas = [
-   version4("4.0.0"),
-@@ -793,6 +794,18 @@
-         ]),
-       ),
-   }),
-+  schema({
-+    version: "4.0.25",
-+    tables: version4025Tables,
-+    relations: {
-+      accounts: ({ one }) => ({
-+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
-+      }),
-+      apps: ({ one }) => ({
-+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
-+      }),
-+    },
-+  }),
- ] as const;
- 
- /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index dbe362c..19a80d9 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -35,7 +35,8 @@
@@ -606,8 +11,73 @@ diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
 +    "./account-key-mirror": "./src/implementation/account-key-mirror.ts"
    },
    "dependencies": {
-     "@better-auth/api-key": "1.7.5",
+     "@better-auth/api-key": "1.7.16",
+diff --git a/apps/hosted/server/src/implementation/account-key-mirror.ts b/apps/hosted/server/src/implementation/account-key-mirror.ts
+new file mode 100644
+index 0000000..af54ed9
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-key-mirror.ts
+@@ -0,0 +1,58 @@
++/** The canonical registration supplies the provider template and exact secret field mapping. */
++import type {
++  AccountAcquisitionAccountContext,
++  AccountAcquisitionMirrorContext,
++  JsonObject,
++} from "@executor-js/sdk/core";
++import { Redacted } from "effect";
++import { signEnvelope } from "./pool-token.ts";
++
++export const homeAccountKeyMirror = (options: {
++  readonly origin: string;
++  readonly signingKey: Redacted.Redacted<string>;
++  readonly credential: JsonObject;
++  /** Home field name -> existing account field name. */
++  readonly fields: Readonly<Record<string, string>>;
++}) => {
++  if (
++    "uuid" in options.credential ||
++    "id" in options.credential ||
++    Object.keys(options.fields).some((field) => ["uuid", "id", "type"].includes(field))
++  )
++    throw new Error("Account mirror mapping cannot replace its assigned identity");
++  const send = async (
++    context: AccountAcquisitionAccountContext,
++    action: "upsert" | "remove",
++    credential?: JsonObject,
++  ) => {
++    const at = Date.now();
++    const envelope = await signEnvelope(Redacted.value(options.signingKey), "sbam1", {
++      reference: Redacted.value(context.reference),
++      action,
++      at,
++      expiresAt: at + 30_000,
++      ...(credential === undefined ? {} : { credential }),
++    });
++    const response = await context.fetch(new URL("/pool/v1/account-mirrors", options.origin), {
++      method: "POST",
++      signal: context.signal,
++      headers: { "content-type": "application/json" },
++      body: JSON.stringify({ envelope }),
++    });
++    if (!response.ok) throw new Error("Account mirror backend unavailable");
++  };
++  return {
++    mirror: async (context: AccountAcquisitionMirrorContext) => {
++      const saved = Redacted.value(context.fields);
++      const credential = { ...options.credential };
++      for (const [target, source] of Object.entries(options.fields)) {
++        const value = saved[source];
++        if (typeof value !== "string" || value.length === 0)
++          throw new Error("Account mirror fields unavailable");
++        credential[target] = value;
++      }
++      await send(context, "upsert", credential);
++    },
++    remove: (context: AccountAcquisitionAccountContext) => send(context, "remove"),
++  };
++};
 diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
+index 4bf2dc2..ac7099b 100644
 --- a/apps/hosted/server/src/implementation/app-account-links.ts
 +++ b/apps/hosted/server/src/implementation/app-account-links.ts
 @@ -1,3 +1,7 @@
@@ -618,7 +88,7 @@ diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/h
  import { visibleObservationHealth } from "./account-observation-policy.ts";
  /**
   * The routes that link accounts to an app's requirements, in either scope. App links need edit
-@@ -373,6 +377,7 @@
+@@ -373,6 +377,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
            yield* executor.apps.get({ owner, app: params.app });
            yield* requireAccountAccess(params.account, "use");
            yield* executor.accounts.get({ owner, account: params.account });
@@ -626,7 +96,7 @@ diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/h
            const changed = yield* replacingAccounts(
              executor,
              {
-@@ -385,13 +390,17 @@
+@@ -385,13 +390,17 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
                executor,
                { app: params.app, access: "manage", account: params.account },
                (sql) =>
@@ -653,6 +123,7 @@ diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/h
            if (changed) yield* wake;
 diff --git a/apps/hosted/server/src/implementation/native-pool-account-mirror.ts b/apps/hosted/server/src/implementation/native-pool-account-mirror.ts
 new file mode 100644
+index 0000000..57891bf
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/native-pool-account-mirror.ts
 @@ -0,0 +1,76 @@
@@ -732,126 +203,184 @@ new file mode 100644
 +    if (current.revision !== prepared.revision || current.generation !== prepared.generation)
 +      return yield* new StorageError();
 +  }).pipe(Effect.mapError(() => new StorageError()));
-diff --git a/apps/hosted/server/src/implementation/account-key-mirror.ts b/apps/hosted/server/src/implementation/account-key-mirror.ts
+diff --git a/e2e/account-mirrors.config.ts b/e2e/account-mirrors.config.ts
 new file mode 100644
+index 0000000..861f4d1
 --- /dev/null
-+++ b/apps/hosted/server/src/implementation/account-key-mirror.ts
-@@ -0,0 +1,58 @@
-+/** The canonical registration supplies the provider template and exact secret field mapping. */
-+import type {
-+  AccountAcquisitionAccountContext,
-+  AccountAcquisitionMirrorContext,
-+  JsonObject,
-+} from "@executor-js/sdk/core";
-+import { Redacted } from "effect";
-+import { signEnvelope } from "./pool-token.ts";
++++ b/e2e/account-mirrors.config.ts
+@@ -0,0 +1,4 @@
++import { defineConfig } from "vitest/config";
++export default defineConfig({
++  test: { include: ["e2e/tests/account-mirrors.spec.ts"], testTimeout: 120_000 },
++});
+diff --git a/e2e/support/account-mirror-backend.ts b/e2e/support/account-mirror-backend.ts
+new file mode 100644
+index 0000000..f247e6c
+--- /dev/null
++++ b/e2e/support/account-mirror-backend.ts
+@@ -0,0 +1,79 @@
++/** External credential custodian with an observable request hold for authorization races. */
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Deferred, Effect, Layer, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createServer } from "node:http";
 +
-+export const homeAccountKeyMirror = (options: {
-+  readonly origin: string;
-+  readonly signingKey: Redacted.Redacted<string>;
-+  readonly credential: JsonObject;
-+  /** Home field name -> existing account field name. */
-+  readonly fields: Readonly<Record<string, string>>;
-+}) => {
-+  if (
-+    "uuid" in options.credential ||
-+    "id" in options.credential ||
-+    Object.keys(options.fields).some((field) => ["uuid", "id", "type"].includes(field))
-+  )
-+    throw new Error("Account mirror mapping cannot replace its assigned identity");
-+  const send = async (
-+    context: AccountAcquisitionAccountContext,
-+    action: "upsert" | "remove",
-+    credential?: JsonObject,
-+  ) => {
-+    const at = Date.now();
-+    const envelope = await signEnvelope(Redacted.value(options.signingKey), "sbam1", {
-+      reference: Redacted.value(context.reference),
-+      action,
-+      at,
-+      expiresAt: at + 30_000,
-+      ...(credential === undefined ? {} : { credential }),
-+    });
-+    const response = await context.fetch(new URL("/pool/v1/account-mirrors", options.origin), {
-+      method: "POST",
-+      signal: context.signal,
-+      headers: { "content-type": "application/json" },
-+      body: JSON.stringify({ envelope }),
-+    });
-+    if (!response.ok) throw new Error("Account mirror backend unavailable");
-+  };
-+  return {
-+    mirror: async (context: AccountAcquisitionMirrorContext) => {
-+      const saved = Redacted.value(context.fields);
-+      const credential = { ...options.credential };
-+      for (const [target, source] of Object.entries(options.fields)) {
-+        const value = saved[source];
-+        if (typeof value !== "string" || value.length === 0)
-+          throw new Error("Account mirror fields unavailable");
-+        credential[target] = value;
-+      }
-+      await send(context, "upsert", credential);
-+    },
-+    remove: (context: AccountAcquisitionAccountContext) => send(context, "remove"),
-+  };
-+};
-diff --git a/e2e/support/case.ts b/e2e/support/case.ts
---- a/e2e/support/case.ts
-+++ b/e2e/support/case.ts
-@@ -11,7 +11,11 @@
- import { Terminal } from "./terminal.ts";
- 
- /** Build per-case layers using the shared runtime from Effect Vitest's layer helper. */
--export const withCase = <A, E, R>(context: TestContext, program: Effect.Effect<A, E, R>) =>
-+const withCaseLayer = <A, E, R, B, BE, BR>(
-+  context: TestContext,
-+  program: Effect.Effect<A, E, R>,
-+  browser: Layer.Layer<B, BE, BR>,
-+) =>
-   Effect.gen(function* () {
-     const lifetime = scenarioLifetime(context);
-     const target = lifetime.target;
-@@ -20,7 +24,7 @@
-     return yield* Effect.gen(function* () {
-       const services = yield* Layer.buildWithScope(
-         Layer.fresh(
--          Layer.mergeAll(Api.layer, Browser.layer, Terminal.layer).pipe(
-+          Layer.mergeAll(Api.layer, browser, Terminal.layer).pipe(
-             Layer.provideMerge(
-               evidenceLayer(context).pipe(
-                 Layer.provideMerge(Layer.mergeAll(Telemetry.layer, RecordingFocus.layer)),
-@@ -43,6 +47,9 @@
-     }).pipe(Effect.onExit((exit) => Effect.sync(() => lifetime.completed(exit))));
-   });
- 
-+export const withCase = <A, E, R>(context: TestContext, program: Effect.Effect<A, E, R>) =>
-+  withCaseLayer(context, program, Browser.layer);
-+
- /** Effect Vitest shares platform and browser process layers; cases get fresh contexts and evidence. */
- export const TestLive = BrowserDriver.captureLayer.pipe(Layer.provideMerge(RuntimeLive));
- 
-@@ -63,3 +70,19 @@
-       return yield* program.pipe(Effect.provideService(Actors, actors));
-     }),
-   );
-+
-+/** Full authenticated hosted API cases can run without acquiring a browser process. */
-+export const withHostedHttpCase = <A, E, R>(
-+  context: TestContext,
-+  program: Effect.Effect<A, E, R>,
-+) =>
-+  withCaseLayer(
-+    context,
-+    Effect.gen(function* () {
-+      const actors = scenarioLifetime(context).actors;
-+      if (actors === undefined)
-+        return yield* Effect.die("Hosted scenarios must declare actor fixtures");
-+      return yield* program.pipe(Effect.provideService(Actors, actors));
-+    }),
-+    Layer.empty,
++export const accountMirrorBackend = Effect.gen(function* () {
++  const calls = yield* Ref.make<
++    readonly { account: string; reference: string; fields: Readonly<Record<string, string>> }[]
++  >([]);
++  const references = yield* Ref.make<ReadonlySet<string>>(new Set());
++  let gate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
++  const routes = Layer.mergeAll(
++    HttpRouter.add(
++      "POST",
++      "/mirror",
++      Effect.gen(function* () {
++        const value = yield* HttpServerRequest.schemaBodyJson(
++          Schema.Struct({
++            account: Schema.String,
++            reference: Schema.String,
++            fields: Schema.Record(Schema.String, Schema.String),
++          }),
++        );
++        yield* Ref.update(calls, (items) => [...items, value]);
++        yield* Ref.update(references, (items) => new Set([...items, value.reference]));
++        const held = gate;
++        if (held !== undefined) {
++          yield* Deferred.succeed(held.started, undefined);
++          yield* Deferred.await(held.release);
++        }
++        return HttpServerResponse.empty();
++      }),
++    ),
++    HttpRouter.add(
++      "POST",
++      "/remove",
++      Effect.gen(function* () {
++        const value = yield* HttpServerRequest.schemaBodyJson(
++          Schema.Struct({ reference: Schema.String }),
++        );
++        yield* Ref.update(
++          references,
++          (items) => new Set([...items].filter((id) => id !== value.reference)),
++        );
++        return HttpServerResponse.empty();
++      }),
++    ),
++    HttpRouter.add("POST", "/pool/v1/membership", Effect.succeed(HttpServerResponse.empty())),
++    HttpRouter.add("POST", "/pool/v1/access", Effect.succeed(HttpServerResponse.empty())),
 +  );
++  const context = yield* Layer.build(
++    HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
++      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++    ),
++  );
++  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(context));
++  if (!("port" in server.address)) return yield* Effect.die("Expected TCP fixture");
++  return {
++    origin: `http://127.0.0.1:${server.address.port}`,
++    calls: Ref.get(calls),
++    references: Ref.get(references),
++    hold: Effect.gen(function* () {
++      const held = { started: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
++      gate = held;
++      yield* Effect.addFinalizer(() => Deferred.succeed(held.release, undefined));
++      return {
++        started: Deferred.await(held.started),
++        release: Deferred.succeed(held.release, undefined).pipe(
++          Effect.tap(() =>
++            Effect.sync(() => {
++              gate = undefined;
++            }),
++          ),
++        ),
++      };
++    }),
++  };
++});
+diff --git a/e2e/support/account-mirror-product.ts b/e2e/support/account-mirror-product.ts
+new file mode 100644
+index 0000000..98cd48a
+--- /dev/null
++++ b/e2e/support/account-mirror-product.ts
+@@ -0,0 +1,74 @@
++/** A complete hosted product with only its trusted account driver registration supplied. */
++import { Effect, FileSystem, Path } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { Target } from "./platform.ts";
++import { serverControl } from "./server-control.ts";
++
++export const accountMirrorProduct = (provider: string, backend: string) =>
++  Effect.gen(function* () {
++    const target = yield* Target,
++      fs = yield* FileSystem.FileSystem,
++      path = yield* Path.Path;
++    const entry = path.join(target.directory, "account-mirror-product.ts");
++    yield* fs.writeFileString(
++      entry,
++      `
++import * as Runtime from "@effect/platform-bun/BunRuntime";
++import { main } from "@executor-js/hosted-self-host/server";
++import { AccountAcquisitionConfiguration, ProviderId } from "@executor-js/sdk/core";
++import { accountAcquisitionDriver } from "@executor-js/sdk";
++import { Effect, Redacted } from "effect";
++const driver = accountAcquisitionDriver({ id: "basalt-home", revision: "mirror-e2e-r1",
++  start: async () => { throw new Error("Mirror-only fixture"); },
++  status: async () => { throw new Error("Mirror-only fixture"); }, cancel: async () => {},
++  mirror: async (ctx) => {
++    const response = await ctx.fetch(${JSON.stringify(backend + "/mirror")}, { method: "POST", signal: ctx.signal,
++      headers: { "content-type": "application/json" }, body: JSON.stringify({ account: ctx.binding.account,
++        reference: Redacted.value(ctx.reference), fields: Redacted.value(ctx.fields) }) });
++    if (!response.ok) throw new Error("Synthetic mirror backend failure");
++  },
++  remove: async (ctx) => {
++    const response = await ctx.fetch(${JSON.stringify(backend + "/remove")}, { method: "POST", signal: ctx.signal,
++      headers: { "content-type": "application/json" }, body: JSON.stringify({ reference: Redacted.value(ctx.reference) }) });
++    if (!response.ok) throw new Error("Synthetic mirror removal failure");
++  },
++});
++Runtime.runMain(main.pipe(Effect.provideService(AccountAcquisitionConfiguration, { registrations: [{
++  provider: ProviderId.make(${JSON.stringify(provider)}), method: "apiKey", current: true,
++  exposeHostReference: true, driver, fetch: globalThis.fetch,
++}] })));
++`,
++    );
++    const links = path.join(target.directory, "node_modules", "@executor-js");
++    yield* fs.makeDirectory(links, { recursive: true });
++    const product = path.join(links, "hosted-self-host");
++    if (!(yield* fs.exists(product)))
++      yield* fs.symlink(path.resolve("apps/hosted/self-host"), product);
++    const config = path.join(target.directory, "account-mirror-product.json");
++    yield* fs.writeFileString(
++      config,
++      JSON.stringify({
++        extends: path.resolve("tsconfig.json"),
++        compilerOptions: { typeRoots: [path.resolve("node_modules/@types")] },
++        files: [entry],
++        include: [],
++        exclude: [],
++      }),
++    );
++    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const checked = yield* processes.exitCode(
++      ChildProcess.make(path.resolve("node_modules/.bin/tsc-rs"), ["--noEmit", "-p", config], {
++        stdout: "inherit",
++        stderr: "inherit",
++      }),
++    );
++    if (checked !== 0)
++      return yield* Effect.die("Account mirror product failed its public API typecheck");
++    yield* serverControl("stop");
++    yield* serverControl("environment", 200, {
++      EXECUTOR_E2E_PRODUCT_ENTRY: entry,
++      POOL_APP_SIGNING_KEY: "ab".repeat(32),
++      BASALT_POOL_ORIGIN: backend,
++    });
++    yield* serverControl("start");
++  });
 diff --git a/e2e/support/account-mirror-sdk.ts b/e2e/support/account-mirror-sdk.ts
 new file mode 100644
+index 0000000..73006fb
 --- /dev/null
 +++ b/e2e/support/account-mirror-sdk.ts
 @@ -0,0 +1,158 @@
@@ -1013,171 +542,115 @@ new file mode 100644
 +  return yield* Effect.never;
 +})).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))));
 +`;
-diff --git a/e2e/support/account-mirror-product.ts b/e2e/support/account-mirror-product.ts
-new file mode 100644
---- /dev/null
-+++ b/e2e/support/account-mirror-product.ts
-@@ -0,0 +1,74 @@
-+/** A complete hosted product with only its trusted account driver registration supplied. */
-+import { Effect, FileSystem, Path } from "effect";
-+import { ChildProcess, ChildProcessSpawner } from "effect/process";
-+import { Target } from "./platform.ts";
-+import { serverControl } from "./server-control.ts";
+diff --git a/e2e/support/case.ts b/e2e/support/case.ts
+index 5fb2db2..aca9cf0 100644
+--- a/e2e/support/case.ts
++++ b/e2e/support/case.ts
+@@ -11,7 +11,11 @@ import { RecordingFocus } from "./recording-focus.ts";
+ import { Terminal } from "./terminal.ts";
+ 
+ /** Build per-case layers using the shared runtime from Effect Vitest's layer helper. */
+-export const withCase = <A, E, R>(context: TestContext, program: Effect.Effect<A, E, R>) =>
++const withCaseLayer = <A, E, R, B, BE, BR>(
++  context: TestContext,
++  program: Effect.Effect<A, E, R>,
++  browser: Layer.Layer<B, BE, BR>,
++) =>
+   Effect.gen(function* () {
+     const lifetime = scenarioLifetime(context);
+     const target = lifetime.target;
+@@ -20,7 +24,7 @@ export const withCase = <A, E, R>(context: TestContext, program: Effect.Effect<A
+     return yield* Effect.gen(function* () {
+       const services = yield* Layer.buildWithScope(
+         Layer.fresh(
+-          Layer.mergeAll(Api.layer, Browser.layer, Terminal.layer).pipe(
++          Layer.mergeAll(Api.layer, browser, Terminal.layer).pipe(
+             Layer.provideMerge(
+               evidenceLayer(context).pipe(
+                 Layer.provideMerge(Layer.mergeAll(Telemetry.layer, RecordingFocus.layer)),
+@@ -43,6 +47,9 @@ export const withCase = <A, E, R>(context: TestContext, program: Effect.Effect<A
+     }).pipe(Effect.onExit((exit) => Effect.sync(() => lifetime.completed(exit))));
+   });
+ 
++export const withCase = <A, E, R>(context: TestContext, program: Effect.Effect<A, E, R>) =>
++  withCaseLayer(context, program, Browser.layer);
 +
-+export const accountMirrorProduct = (provider: string, backend: string) =>
-+  Effect.gen(function* () {
-+    const target = yield* Target,
-+      fs = yield* FileSystem.FileSystem,
-+      path = yield* Path.Path;
-+    const entry = path.join(target.directory, "account-mirror-product.ts");
-+    yield* fs.writeFileString(
-+      entry,
-+      `
-+import * as Runtime from "@effect/platform-bun/BunRuntime";
-+import { main } from "@executor-js/hosted-self-host/server";
-+import { AccountAcquisitionConfiguration, ProviderId } from "@executor-js/sdk/core";
-+import { accountAcquisitionDriver } from "@executor-js/sdk";
-+import { Effect, Redacted } from "effect";
-+const driver = accountAcquisitionDriver({ id: "basalt-home", revision: "mirror-e2e-r1",
-+  start: async () => { throw new Error("Mirror-only fixture"); },
-+  status: async () => { throw new Error("Mirror-only fixture"); }, cancel: async () => {},
-+  mirror: async (ctx) => {
-+    const response = await ctx.fetch(${JSON.stringify(backend + "/mirror")}, { method: "POST", signal: ctx.signal,
-+      headers: { "content-type": "application/json" }, body: JSON.stringify({ account: ctx.binding.account,
-+        reference: Redacted.value(ctx.reference), fields: Redacted.value(ctx.fields) }) });
-+    if (!response.ok) throw new Error("Synthetic mirror backend failure");
-+  },
-+  remove: async (ctx) => {
-+    const response = await ctx.fetch(${JSON.stringify(backend + "/remove")}, { method: "POST", signal: ctx.signal,
-+      headers: { "content-type": "application/json" }, body: JSON.stringify({ reference: Redacted.value(ctx.reference) }) });
-+    if (!response.ok) throw new Error("Synthetic mirror removal failure");
-+  },
-+});
-+Runtime.runMain(main.pipe(Effect.provideService(AccountAcquisitionConfiguration, { registrations: [{
-+  provider: ProviderId.make(${JSON.stringify(provider)}), method: "apiKey", current: true,
-+  exposeHostReference: true, driver, fetch: globalThis.fetch,
-+}] })));
-+`,
-+    );
-+    const links = path.join(target.directory, "node_modules", "@executor-js");
-+    yield* fs.makeDirectory(links, { recursive: true });
-+    const product = path.join(links, "hosted-self-host");
-+    if (!(yield* fs.exists(product)))
-+      yield* fs.symlink(path.resolve("apps/hosted/self-host"), product);
-+    const config = path.join(target.directory, "account-mirror-product.json");
-+    yield* fs.writeFileString(
-+      config,
-+      JSON.stringify({
-+        extends: path.resolve("tsconfig.json"),
-+        compilerOptions: { typeRoots: [path.resolve("node_modules/@types")] },
-+        files: [entry],
-+        include: [],
-+        exclude: [],
-+      }),
-+    );
-+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-+    const checked = yield* processes.exitCode(
-+      ChildProcess.make(path.resolve("node_modules/.bin/tsc-rs"), ["--noEmit", "-p", config], {
-+        stdout: "inherit",
-+        stderr: "inherit",
-+      }),
-+    );
-+    if (checked !== 0)
-+      return yield* Effect.die("Account mirror product failed its public API typecheck");
-+    yield* serverControl("stop");
-+    yield* serverControl("environment", 200, {
-+      EXECUTOR_E2E_PRODUCT_ENTRY: entry,
-+      POOL_APP_SIGNING_KEY: "ab".repeat(32),
-+      BASALT_POOL_ORIGIN: backend,
-+    });
-+    yield* serverControl("start");
-+  });
-diff --git a/e2e/support/account-mirror-backend.ts b/e2e/support/account-mirror-backend.ts
-new file mode 100644
---- /dev/null
-+++ b/e2e/support/account-mirror-backend.ts
-@@ -0,0 +1,79 @@
-+/** External credential custodian with an observable request hold for authorization races. */
-+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-+import { Deferred, Effect, Layer, Ref, Schema } from "effect";
-+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
-+import { createServer } from "node:http";
+ /** Effect Vitest shares platform and browser process layers; cases get fresh contexts and evidence. */
+ export const TestLive = BrowserDriver.captureLayer.pipe(Layer.provideMerge(RuntimeLive));
+ 
+@@ -63,3 +70,19 @@ export const withHostedCase = <A, E, R>(context: TestContext, program: Effect.Ef
+       return yield* program.pipe(Effect.provideService(Actors, actors));
+     }),
+   );
 +
-+export const accountMirrorBackend = Effect.gen(function* () {
-+  const calls = yield* Ref.make<
-+    readonly { account: string; reference: string; fields: Readonly<Record<string, string>> }[]
-+  >([]);
-+  const references = yield* Ref.make<ReadonlySet<string>>(new Set());
-+  let gate: { started: Deferred.Deferred<void>; release: Deferred.Deferred<void> } | undefined;
-+  const routes = Layer.mergeAll(
-+    HttpRouter.add(
-+      "POST",
-+      "/mirror",
-+      Effect.gen(function* () {
-+        const value = yield* HttpServerRequest.schemaBodyJson(
-+          Schema.Struct({
-+            account: Schema.String,
-+            reference: Schema.String,
-+            fields: Schema.Record(Schema.String, Schema.String),
-+          }),
-+        );
-+        yield* Ref.update(calls, (items) => [...items, value]);
-+        yield* Ref.update(references, (items) => new Set([...items, value.reference]));
-+        const held = gate;
-+        if (held !== undefined) {
-+          yield* Deferred.succeed(held.started, undefined);
-+          yield* Deferred.await(held.release);
-+        }
-+        return HttpServerResponse.empty();
-+      }),
-+    ),
-+    HttpRouter.add(
-+      "POST",
-+      "/remove",
-+      Effect.gen(function* () {
-+        const value = yield* HttpServerRequest.schemaBodyJson(
-+          Schema.Struct({ reference: Schema.String }),
-+        );
-+        yield* Ref.update(
-+          references,
-+          (items) => new Set([...items].filter((id) => id !== value.reference)),
-+        );
-+        return HttpServerResponse.empty();
-+      }),
-+    ),
-+    HttpRouter.add("POST", "/pool/v1/membership", Effect.succeed(HttpServerResponse.empty())),
-+    HttpRouter.add("POST", "/pool/v1/access", Effect.succeed(HttpServerResponse.empty())),
-+  );
-+  const context = yield* Layer.build(
-+    HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
-+      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
-+    ),
-+  );
-+  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(context));
-+  if (!("port" in server.address)) return yield* Effect.die("Expected TCP fixture");
-+  return {
-+    origin: `http://127.0.0.1:${server.address.port}`,
-+    calls: Ref.get(calls),
-+    references: Ref.get(references),
-+    hold: Effect.gen(function* () {
-+      const held = { started: yield* Deferred.make<void>(), release: yield* Deferred.make<void>() };
-+      gate = held;
-+      yield* Effect.addFinalizer(() => Deferred.succeed(held.release, undefined));
-+      return {
-+        started: Deferred.await(held.started),
-+        release: Deferred.succeed(held.release, undefined).pipe(
-+          Effect.tap(() =>
-+            Effect.sync(() => {
-+              gate = undefined;
-+            }),
-+          ),
-+        ),
-+      };
++/** Full authenticated hosted API cases can run without acquiring a browser process. */
++export const withHostedHttpCase = <A, E, R>(
++  context: TestContext,
++  program: Effect.Effect<A, E, R>,
++) =>
++  withCaseLayer(
++    context,
++    Effect.gen(function* () {
++      const actors = scenarioLifetime(context).actors;
++      if (actors === undefined)
++        return yield* Effect.die("Hosted scenarios must declare actor fixtures");
++      return yield* program.pipe(Effect.provideService(Actors, actors));
 +    }),
-+  };
-+});
++    Layer.empty,
++  );
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index 9228f4a..6e4e30b 100644
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -1,6 +1,9 @@
+-/** Remove the additive identity layout before a fixture labels retained data as an older schema. */
++/** Remove later additive columns before a fixture labels retained data as pre-identity storage. */
+ export const beforeAccountIdentities = () =>
+   [
++    {
++      sql: "ALTER TABLE executor_account_acquisitions DROP COLUMN mirror_reference, DROP COLUMN mirror_ready, DROP COLUMN mirror_operation",
++    },
+     { sql: "ALTER TABLE executor_accounts DROP COLUMN identity_id, DROP COLUMN oauth_grant_id" },
+     { sql: "DROP TABLE executor_account_identities" },
+     {
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index b41122a..7428d06 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9114,6 +9114,17 @@ export const scenarios = plan({
+       local: na("Uses hosted account HTTP endpoints."),
+     },
+   },
++  nativePoolAccountMirrors: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "native-pool-account-mirrors.spec.ts",
++    title: "native pool account links mirror current tokens only after hosted authorization",
++    targets: {
++      "self-host": scheduled,
++      local: na("Uses hosted app-account access policies."),
++      cloud: na("Uses a process-owned driver registration and synthetic credential custodian."),
++    },
++  },
+   accountAcquisition: {
+     fixtures: "actors",
+     file: "account-acquisition.spec.ts",
+diff --git a/e2e/tests/account-identities.spec.ts b/e2e/tests/account-identities.spec.ts
+index e49dfa0..f031686 100644
+--- a/e2e/tests/account-identities.spec.ts
++++ b/e2e/tests/account-identities.spec.ts
+@@ -42,7 +42,7 @@ layer(TestLive, { excludeTestServices: true })("Verified account identities", (i
+         const storage = yield* legacyStorage([
+           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+         ]);
+-        expect(storage).toEqual([[{ value: "4.0.24" }]]);
++        expect(storage).toEqual([[{ value: "4.0.25" }]]);
+         yield* serverControl("start");
+         expect((yield* product.read(app)).status).toBe(200);
+         const again = yield* body(
 diff --git a/e2e/tests/account-mirrors.spec.ts b/e2e/tests/account-mirrors.spec.ts
 new file mode 100644
+index 0000000..0d98d76
 --- /dev/null
 +++ b/e2e/tests/account-mirrors.spec.ts
 @@ -0,0 +1,225 @@
@@ -1406,8 +879,57 @@ new file mode 100644
 +    expect((yield* backend).references).toContain((yield* source(other)).homeReference);
 +  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 +);
+diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+index 54ec0df..41f32c1 100644
+--- a/e2e/tests/account-status-storage.spec.ts
++++ b/e2e/tests/account-status-storage.spec.ts
+@@ -48,7 +48,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+             sql: "SELECT table_name FROM information_schema.tables WHERE table_name = 'executor_workflow_inputs'",
+           },
+         ]);
+-        expect(inputVersion).toEqual([{ value: "4.0.24" }]);
++        expect(inputVersion).toEqual([{ value: "4.0.25" }]);
+         expect(inputTables).toEqual([{ table_name: "executor_workflow_inputs" }]);
+         yield* serverControl("start");
+         expect((yield* fixture.read()).status).toBe(200);
+@@ -78,7 +78,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
+             params: [fixture.account],
+           },
+         ]);
+-        expect(version).toEqual([{ value: "4.0.24" }]);
++        expect(version).toEqual([{ value: "4.0.25" }]);
+         expect(columns).toEqual([]);
+         expect(records).toEqual([
+           {
+diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
+index ab69679..2a859db 100644
+--- a/e2e/tests/legacy-profile-schedules.spec.ts
++++ b/e2e/tests/legacy-profile-schedules.spec.ts
+@@ -630,7 +630,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
+           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
+         ]);
+         expect(ledger).toEqual([{ name: "app_account_links" }]);
+-        expect(version).toEqual([{ value: "4.0.24" }]);
++        expect(version).toEqual([{ value: "4.0.25" }]);
+ 
+         expect(plans).toEqual(
+           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
+diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+index 7843a82..f94ae04 100644
+--- a/e2e/tests/legacy-targetless-connections.spec.ts
++++ b/e2e/tests/legacy-targetless-connections.spec.ts
+@@ -132,7 +132,7 @@ const expectUpgraded = (
+   ids: Ids,
+ ) => {
+   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
+-  expect(version).toEqual([{ value: "4.0.24" }]);
++  expect(version).toEqual([{ value: "4.0.25" }]);
+ 
+   // Only the connection with a target is left, and only the sign-in no connection pointed at.
+   expect(connections).toEqual([{ id: template, target: "object" }]);
 diff --git a/e2e/tests/native-pool-account-mirrors.spec.ts b/e2e/tests/native-pool-account-mirrors.spec.ts
 new file mode 100644
+index 0000000..7a171e2
 --- /dev/null
 +++ b/e2e/tests/native-pool-account-mirrors.spec.ts
 @@ -0,0 +1,177 @@
@@ -1588,99 +1110,11 @@ new file mode 100644
 +    ),
 +  );
 +});
-diff --git a/e2e/account-mirrors.config.ts b/e2e/account-mirrors.config.ts
-new file mode 100644
---- /dev/null
-+++ b/e2e/account-mirrors.config.ts
-@@ -0,0 +1,4 @@
-+import { defineConfig } from "vitest/config";
-+export default defineConfig({
-+  test: { include: ["e2e/tests/account-mirrors.spec.ts"], testTimeout: 120_000 },
-+});
-diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
---- a/e2e/test-plan.ts
-+++ b/e2e/test-plan.ts
-@@ -8010,6 +8010,17 @@
-       local: na("Uses hosted account HTTP endpoints."),
-     },
-   },
-+  nativePoolAccountMirrors: {
-+    fixtures: "actors",
-+    legacyStorage: true,
-+    file: "native-pool-account-mirrors.spec.ts",
-+    title: "native pool account links mirror current tokens only after hosted authorization",
-+    targets: {
-+      "self-host": scheduled,
-+      local: na("Uses hosted app-account access policies."),
-+      cloud: na("Uses a process-owned driver registration and synthetic credential custodian."),
-+    },
-+  },
-   accountAcquisition: {
-     fixtures: "actors",
-     file: "account-acquisition.spec.ts",
-diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
---- a/e2e/support/profile-removal-rollback.ts
-+++ b/e2e/support/profile-removal-rollback.ts
-@@ -1,6 +1,9 @@
--/** Remove the additive identity layout before a fixture labels retained data as an older schema. */
-+/** Remove later additive columns before a fixture labels retained data as pre-identity storage. */
- export const beforeAccountIdentities = () =>
-   [
-+    {
-+      sql: "ALTER TABLE executor_account_acquisitions DROP COLUMN mirror_reference, DROP COLUMN mirror_ready, DROP COLUMN mirror_operation",
-+    },
-     { sql: "ALTER TABLE executor_accounts DROP COLUMN identity_id, DROP COLUMN oauth_grant_id" },
-     { sql: "DROP TABLE executor_account_identities" },
-     {
-diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
---- a/e2e/tests/account-status-storage.spec.ts
-+++ b/e2e/tests/account-status-storage.spec.ts
-@@ -48,7 +48,7 @@
-             sql: "SELECT table_name FROM information_schema.tables WHERE table_name = 'executor_workflow_inputs'",
-           },
-         ]);
--        expect(inputVersion).toEqual([{ value: "4.0.24" }]);
-+        expect(inputVersion).toEqual([{ value: "4.0.25" }]);
-         expect(inputTables).toEqual([{ table_name: "executor_workflow_inputs" }]);
-         yield* serverControl("start");
-         expect((yield* fixture.read()).status).toBe(200);
-@@ -78,7 +78,7 @@
-             params: [fixture.account],
-           },
-         ]);
--        expect(version).toEqual([{ value: "4.0.24" }]);
-+        expect(version).toEqual([{ value: "4.0.25" }]);
-         expect(columns).toEqual([]);
-         expect(records).toEqual([
-           {
-diff --git a/e2e/tests/account-identities.spec.ts b/e2e/tests/account-identities.spec.ts
---- a/e2e/tests/account-identities.spec.ts
-+++ b/e2e/tests/account-identities.spec.ts
-@@ -42,7 +42,7 @@
-         const storage = yield* legacyStorage([
-           { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
-         ]);
--        expect(storage).toEqual([[{ value: "4.0.24" }]]);
-+        expect(storage).toEqual([[{ value: "4.0.25" }]]);
-         yield* serverControl("start");
-         expect((yield* product.read(app)).status).toBe(200);
-         const again = yield* body(
-diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
---- a/e2e/tests/legacy-targetless-connections.spec.ts
-+++ b/e2e/tests/legacy-targetless-connections.spec.ts
-@@ -132,7 +132,7 @@
-   ids: Ids,
- ) => {
-   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
--  expect(version).toEqual([{ value: "4.0.24" }]);
-+  expect(version).toEqual([{ value: "4.0.25" }]);
- 
-   // Only the connection with a target is left, and only the sign-in no connection pointed at.
-   expect(connections).toEqual([{ id: template, target: "object" }]);
 diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-client-issuer-migration.spec.ts
+index b86f434..53b5176 100644
 --- a/e2e/tests/oauth-client-issuer-migration.spec.ts
 +++ b/e2e/tests/oauth-client-issuer-migration.spec.ts
-@@ -361,7 +361,7 @@
+@@ -361,7 +361,7 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration",
            },
          ]);
          yield* serverControl("start");
@@ -1689,15 +1123,600 @@ diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-c
  
          expect(credentials).toEqual([
            { client: ids.a },
-diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
---- a/e2e/tests/legacy-profile-schedules.spec.ts
-+++ b/e2e/tests/legacy-profile-schedules.spec.ts
-@@ -630,7 +630,7 @@
-           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
-         ]);
-         expect(ledger).toEqual([{ name: "app_account_links" }]);
--        expect(version).toEqual([{ value: "4.0.24" }]);
-+        expect(version).toEqual([{ value: "4.0.25" }]);
+diff --git a/packages/sdk/src/contracts/account-acquisition-driver.ts b/packages/sdk/src/contracts/account-acquisition-driver.ts
+index ccca167..faae3d1 100644
+--- a/packages/sdk/src/contracts/account-acquisition-driver.ts
++++ b/packages/sdk/src/contracts/account-acquisition-driver.ts
+@@ -1,7 +1,7 @@
+ import { Context, Schema, type Effect, type Redacted } from "effect";
+ import type { InteractiveStart, InteractiveStatus } from "apps/contracts";
+ import type { AccountObservationDriverCapabilities } from "./account-observation-driver.ts";
+-import { AccountId, OwnerId, ProviderId, type StorageError } from "./shared.ts";
++import { AccountId, OwnerId, ProviderId, type JsonObject, type StorageError } from "./shared.ts";
+ import type { AccountNotFound } from "./account.ts";
+ import { UserFacingError } from "@executor-js/utils/user-facing-error";
  
-         expect(plans).toEqual(
-           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
+@@ -57,6 +57,11 @@ export interface AccountAcquisitionAccountContext extends AccountAcquisitionCont
+   readonly reference: Redacted.Redacted<string>;
+ }
+ 
++/** The host assigns one immutable backend reference per saved account credential generation. */
++export interface AccountAcquisitionMirrorContext extends AccountAcquisitionAccountContext {
++  readonly fields: Redacted.Redacted<JsonObject>;
++}
++
+ export interface AccountAcquisitionDriver<
+   Context extends AccountAcquisitionAccountContext = AccountAcquisitionAccountContext,
+ > extends AccountObservationDriverCapabilities<Context> {
+@@ -81,6 +86,8 @@ export interface AccountAcquisitionDriver<
+   ) => Effect.Effect<void, unknown>;
+   /** Idempotent for the host operation ID, including a retry after an uncertain response. */
+   readonly remove: (context: Context) => Effect.Effect<void, unknown>;
++  /** Idempotently copy supplied credentials to context.reference. Never allocate another reference. */
++  readonly mirror?: (context: AccountAcquisitionMirrorContext) => Effect.Effect<void, unknown>;
+ }
+ 
+ export interface AccountAcquisitionRegistration {
+@@ -118,6 +125,16 @@ export interface AccountAcquisitionSource {
+ /** Products authorize inspection/use/refresh before resolving this distinct driver source. */
+ export const AccountAcquisitionHost = Symbol("executor.AccountAcquisitionHost");
+ export interface AccountAcquisitionHost {
++  /** The product authorizes the account and destination before requesting a server-side mirror. */
++  readonly ensureMirror: (input: {
++    readonly account: AccountId;
++    readonly owner: OwnerId;
++    readonly expectedGeneration: number;
++    readonly operation: string;
++  }) => Effect.Effect<
++    AccountAcquisitionBinding,
++    StorageError | AccountNotFound | AccountAcquisitionUnavailable
++  >;
+   readonly binding: (input: {
+     readonly account: AccountId;
+     readonly owner?: OwnerId;
+diff --git a/packages/sdk/src/implementation/account-acquisition-adapter.ts b/packages/sdk/src/implementation/account-acquisition-adapter.ts
+index ef13666..2a1d8a1 100644
+--- a/packages/sdk/src/implementation/account-acquisition-adapter.ts
++++ b/packages/sdk/src/implementation/account-acquisition-adapter.ts
+@@ -9,6 +9,7 @@ import type {
+   AccountAcquisitionAccountContext,
+   AccountAcquisitionContext,
+   AccountAcquisitionDriver,
++  AccountAcquisitionMirrorContext,
+ } from "../contracts/account-acquisition-driver.ts";
+ 
+ /** Promise callbacks for hosts whose credential backend is authored outside Effect. */
+@@ -34,6 +35,7 @@ export interface PromiseAccountAcquisitionDriver<
+     input: { readonly session: string },
+   ) => Promise<void>;
+   readonly remove: (context: Context) => Promise<void>;
++  readonly mirror?: (context: AccountAcquisitionMirrorContext) => Promise<void>;
+   readonly check?: (context: Context) => Promise<AccountCheckResult | void>;
+   readonly observeAccount?: (context: Context) => Promise<AccountObservationResult | void>;
+ }
+@@ -45,7 +47,7 @@ const callback = <A>(run: () => Promise<A>) =>
+ export const accountAcquisitionDriver = <Context extends AccountAcquisitionAccountContext>(
+   driver: PromiseAccountAcquisitionDriver<Context>,
+ ): AccountAcquisitionDriver<Context> => {
+-  const { submit, check, observeAccount } = driver;
++  const { submit, check, observeAccount, mirror } = driver;
+   return {
+     id: driver.id,
+     revision: driver.revision,
+@@ -53,6 +55,11 @@ export const accountAcquisitionDriver = <Context extends AccountAcquisitionAccou
+     status: (context, input) => callback(() => driver.status(context, input)),
+     cancel: (context, input) => callback(() => driver.cancel(context, input)),
+     remove: (context) => callback(() => driver.remove(context)),
++    ...(mirror === undefined
++      ? {}
++      : {
++          mirror: (context: AccountAcquisitionMirrorContext) => callback(() => mirror(context)),
++        }),
+     ...(submit === undefined
+       ? {}
+       : {
+diff --git a/packages/sdk/src/implementation/account-acquisition-bindings.ts b/packages/sdk/src/implementation/account-acquisition-bindings.ts
+index 74bc6a1..24e7d5b 100644
+--- a/packages/sdk/src/implementation/account-acquisition-bindings.ts
++++ b/packages/sdk/src/implementation/account-acquisition-bindings.ts
+@@ -8,37 +8,45 @@ import { StorageError, type AccountId, type OwnerId } from "../contracts/shared.
+ import { storedAccount } from "./accounts.ts";
+ import { query, type Query } from "./database.ts";
+ 
++export const acquisitionRecord = (
++  db: Query,
++  input: { readonly account: AccountId; readonly owner?: OwnerId },
++) =>
++  query(() =>
++    db.findFirst("accountAcquisitions", {
++      where: (b) =>
++        b.and(
++          b("account", "=", input.account),
++          input.owner === undefined ? true : b("owner", "=", input.owner),
++        ),
++    }),
++  );
++
++export const decodeAcquisitionBinding = Schema.decodeUnknownEffect(AccountAcquisitionBinding);
++
+ export const acquisitionBinding = (
+   db: Query,
+   input: { readonly account: AccountId; readonly owner?: OwnerId },
+ ) =>
+   Effect.gen(function* () {
+-    const row = yield* query(() =>
+-      db.findFirst("accountAcquisitions", {
+-        where: (b) =>
+-          b.and(
+-            b("account", "=", input.account),
+-            input.owner === undefined ? true : b("owner", "=", input.owner),
+-          ),
+-      }),
+-    );
++    const row = yield* acquisitionRecord(db, input);
+     return row === null
+       ? undefined
+-      : yield* Schema.decodeUnknownEffect(AccountAcquisitionBinding)(row).pipe(
+-          Effect.mapError(() => new StorageError()),
+-        );
++      : yield* decodeAcquisitionBinding(row).pipe(Effect.mapError(() => new StorageError()));
+   });
+ 
+ export const bindingMatchesAccount = (
+   binding: AccountAcquisitionBinding,
+   account: StoredAccount,
+   allowRemoval = false,
++  mirror = false,
+ ) =>
+   binding.account === account.id &&
+   binding.owner === account.owner &&
+   binding.provider === account.provider &&
+   binding.method === account.method &&
+-  binding.generation === account.credentialGeneration &&
++  (binding.generation === account.credentialGeneration ||
++    (allowRemoval && mirror && binding.generation < account.credentialGeneration)) &&
+   (allowRemoval || binding.removal === null);
+ 
+ /** This read does not create or adopt a binding. Missing and stale bindings stay distinguishable. */
+@@ -47,12 +55,24 @@ export const resolveAcquisitionBinding =
+   (input: { readonly account: AccountId; readonly owner?: OwnerId }) =>
+     Effect.gen(function* () {
+       const account = yield* storedAccount(db, input.account, input.owner);
+-      const binding = yield* acquisitionBinding(db, { account: account.id, owner: account.owner });
+-      if (binding === undefined) return undefined;
+-      if (!bindingMatchesAccount(binding, account, allowRemoval))
++      const row = yield* acquisitionRecord(db, { account: account.id, owner: account.owner });
++      if (row === null) return undefined;
++      const binding = yield* decodeAcquisitionBinding(row).pipe(
++        Effect.mapError(() => new StorageError()),
++      );
++      const mirror = row.mirrorReference !== null;
++      if (
++        !bindingMatchesAccount(binding, account, allowRemoval, mirror) ||
++        (!allowRemoval && mirror && !row.mirrorReady)
++      )
+         return yield* new AccountAcquisitionUnavailable({ reason: "changed" });
+       const fields = yield* credentials
+-        .decrypt(account.id, account.encryptedCredentials)
++        .decrypt(
++          account.id,
++          row.mirrorReference === null
++            ? account.encryptedCredentials
++            : Redacted.make(row.mirrorReference),
++        )
+         .pipe(Effect.mapError(() => new StorageError()));
+       const value = yield* Schema.decodeUnknownEffect(
+         Schema.Struct({ ref: Schema.NonEmptyString }),
+@@ -65,16 +85,12 @@ export const requireAcquisitionBinding = (
+   db: Query,
+   expected: AccountAcquisitionBinding,
+   allowRemoval = false,
++  allowPendingMirror = false,
+ ) =>
+   Effect.gen(function* () {
+     yield* query(() =>
+       db.updateMany("accounts", {
+-        where: (b) =>
+-          b.and(
+-            b("id", "=", expected.account),
+-            b("owner", "=", expected.owner),
+-            b("credentialGeneration", "=", expected.generation),
+-          ),
++        where: (b) => b.and(b("id", "=", expected.account), b("owner", "=", expected.owner)),
+         set: { owner: expected.owner },
+       }),
+     );
+@@ -86,14 +102,19 @@ export const requireAcquisitionBinding = (
+       }),
+     );
+     const account = yield* storedAccount(db, expected.account, expected.owner);
+-    const current = yield* acquisitionBinding(db, expected);
++    const row = yield* acquisitionRecord(db, expected);
++    const current =
++      row === null
++        ? undefined
++        : yield* decodeAcquisitionBinding(row).pipe(Effect.mapError(() => new StorageError()));
+     if (
+       current === undefined ||
+       current.revision !== expected.revision ||
+       current.driver !== expected.driver ||
+       current.driverRevision !== expected.driverRevision ||
+       current.generation !== expected.generation ||
+-      !bindingMatchesAccount(current, account, allowRemoval)
++      !bindingMatchesAccount(current, account, allowRemoval, row?.mirrorReference !== null) ||
++      (!allowRemoval && !allowPendingMirror && row?.mirrorReference !== null && !row?.mirrorReady)
+     )
+       return yield* new AccountAcquisitionUnavailable({ reason: "changed" });
+     return current;
+diff --git a/packages/sdk/src/implementation/account-acquisition-mirror.ts b/packages/sdk/src/implementation/account-acquisition-mirror.ts
+new file mode 100644
+index 0000000..c65b804
+--- /dev/null
++++ b/packages/sdk/src/implementation/account-acquisition-mirror.ts
+@@ -0,0 +1,205 @@
++import { Clock, Effect, Redacted, type Crypto } from "effect";
++import {
++  AccountAcquisitionUnavailable,
++  type AccountAcquisitionHost,
++  type AccountAcquisitionAccountContext,
++  type AccountAcquisitionRegistration,
++} from "../contracts/account-acquisition-driver.ts";
++import type { Credentials } from "../contracts/storage.ts";
++import { StorageError } from "../contracts/shared.ts";
++import { storedAccount } from "./accounts.ts";
++import { query, transaction, type Query } from "./database.ts";
++import {
++  acquisitionRecord,
++  requireAcquisitionBinding,
++  resolveAcquisitionBinding,
++} from "./account-acquisition-bindings.ts";
++import { invokeAcquisitionDriver } from "./account-acquisition-runtime.ts";
++import type { AcquisitionRegistry } from "./account-acquisition-registry.ts";
++
++type Input = Parameters<AccountAcquisitionHost["ensureMirror"]>[0];
++
++/** Publish only current generations. Pending references survive an uncertain backend response. */
++export const makeAccountMirrors = (
++  db: Query,
++  credentials: Credentials,
++  crypto: Crypto.Crypto,
++  registry: AcquisitionRegistry,
++) => {
++  const resolveForRemoval = resolveAcquisitionBinding(db, credentials, true);
++  const read = (input: Input) =>
++    Effect.gen(function* () {
++      yield* query(() =>
++        db.updateMany("accounts", {
++          where: (b) => b.and(b("id", "=", input.account), b("owner", "=", input.owner)),
++          set: { owner: input.owner },
++        }),
++      );
++      const account = yield* storedAccount(db, input.account, input.owner);
++      if (account.credentialGeneration !== input.expectedGeneration)
++        return yield* new AccountAcquisitionUnavailable({ reason: "changed" });
++      const record = yield* acquisitionRecord(db, input);
++      if (
++        record !== null &&
++        (record.mirrorReference === null ||
++          record.removal !== null ||
++          record.provider !== account.provider ||
++          record.method !== account.method ||
++          record.generation > input.expectedGeneration)
++      )
++        return yield* new AccountAcquisitionUnavailable({ reason: "binding" });
++      const previous = record === null ? undefined : yield* resolveForRemoval(input);
++      const registration =
++        previous?.binding.generation === input.expectedGeneration
++          ? yield* registry.retained(previous.binding)
++          : registry.current(account.provider, account.method);
++      if (registration?.driver.mirror === undefined)
++        return yield* new AccountAcquisitionUnavailable({ reason: "unsupported" });
++      return { account, record, previous, registration };
++    });
++  const remove = (
++    registration: AccountAcquisitionRegistration,
++    saved: Pick<AccountAcquisitionAccountContext, "binding" | "reference">,
++  ) =>
++    Effect.gen(function* () {
++      yield* invokeAcquisitionDriver(
++        registration,
++        {
++          owner: saved.binding.owner,
++          provider: saved.binding.provider,
++          method: saved.binding.method,
++          operation: `mirror-retire:${saved.binding.revision}`,
++          deadline: (yield* Clock.currentTimeMillis) + 15_000,
++        },
++        (context) => registration.driver.remove({ ...context, ...saved }),
++      );
++    });
++
++  return (input: Input) =>
++    Effect.gen(function* () {
++      if (
++        !Number.isSafeInteger(input.expectedGeneration) ||
++        input.expectedGeneration < 0 ||
++        input.operation.trim() === "" ||
++        input.operation.length > 255
++      )
++        return yield* new AccountAcquisitionUnavailable({ reason: "binding" });
++      const observed = yield* transaction(db, () => read(input));
++      if (
++        observed.previous !== undefined &&
++        observed.previous.binding.generation !== input.expectedGeneration
++      ) {
++        const retained = yield* registry.retained(observed.previous.binding);
++        // Retire the old generation before replacing its only stored reference.
++        yield* remove(retained, observed.previous).pipe(
++          Effect.mapError(() => new AccountAcquisitionUnavailable({ reason: "binding" })),
++        );
++      }
++      const claim = yield* transaction(db, () =>
++        Effect.gen(function* () {
++          const current = yield* read(input);
++          if (current.previous?.binding.generation === input.expectedGeneration)
++            return {
++              ...current.previous,
++              ready: current.record?.mirrorReady === true,
++              operation: current.record?.mirrorOperation ?? input.operation,
++              registration: current.registration,
++            };
++          if (current.record?.revision !== observed.record?.revision)
++            return yield* new AccountAcquisitionUnavailable({ reason: "changed" });
++          const reference = yield* crypto.randomUUIDv4.pipe(
++            Effect.mapError(() => new StorageError()),
++          );
++          const binding = {
++            account: current.account.id,
++            owner: current.account.owner,
++            provider: current.account.provider,
++            method: current.account.method,
++            driver: current.registration.driver.id,
++            driverRevision: current.registration.driver.revision,
++            generation: current.account.credentialGeneration,
++            revision: yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError())),
++            removal: null,
++          };
++          const mirrorReference = yield* credentials
++            .encrypt(input.account, Redacted.make({ ref: reference }))
++            .pipe(Effect.mapError(() => new StorageError()));
++          const record = {
++            ...binding,
++            mirrorReference,
++            mirrorReady: false,
++            mirrorOperation: input.operation,
++          };
++          if (current.record === null) yield* query(() => db.create("accountAcquisitions", record));
++          else {
++            const previousRevision = current.record.revision;
++            yield* query(() =>
++              db.updateMany("accountAcquisitions", {
++                where: (b) =>
++                  b.and(b("account", "=", input.account), b("revision", "=", previousRevision)),
++                set: record,
++              }),
++            );
++          }
++          return {
++            account: current.account,
++            binding,
++            reference: Redacted.make(reference),
++            ready: false,
++            operation: input.operation,
++            registration: current.registration,
++          };
++        }),
++      );
++      if (claim.ready) return claim.binding;
++      const mirror = claim.registration.driver.mirror;
++      if (mirror === undefined)
++        return yield* new AccountAcquisitionUnavailable({ reason: "unsupported" });
++      const cleanIfStale = Effect.gen(function* () {
++        const current = yield* resolveForRemoval(input).pipe(
++          Effect.catchTags({
++            AccountNotFound: () => Effect.succeed(undefined),
++            AccountAcquisitionUnavailable: () => Effect.succeed(undefined),
++          }),
++        );
++        if (
++          current !== undefined &&
++          current.binding.removal === null &&
++          current.account.credentialGeneration === input.expectedGeneration &&
++          Redacted.value(current.reference) === Redacted.value(claim.reference)
++        )
++          return;
++        yield* remove(claim.registration, claim);
++      }).pipe(Effect.catch(() => Effect.logWarning("Stale account mirror cleanup needs retry")));
++      return yield* Effect.gen(function* () {
++        const fields = yield* credentials
++          .decrypt(input.account, claim.account.encryptedCredentials)
++          .pipe(Effect.mapError(() => new StorageError()));
++        yield* invokeAcquisitionDriver(
++          claim.registration,
++          {
++            owner: input.owner,
++            provider: claim.binding.provider,
++            method: claim.binding.method,
++            operation: claim.operation,
++            deadline: (yield* Clock.currentTimeMillis) + 15_000,
++          },
++          (context) =>
++            mirror({ ...context, binding: claim.binding, reference: claim.reference, fields }),
++        ).pipe(Effect.mapError(() => new AccountAcquisitionUnavailable({ reason: "binding" })));
++        return yield* transaction(db, () =>
++          Effect.gen(function* () {
++            const current = yield* requireAcquisitionBinding(db, claim.binding, false, true);
++            yield* query(() =>
++              db.updateMany("accountAcquisitions", {
++                where: (b) =>
++                  b.and(b("account", "=", input.account), b("revision", "=", current.revision)),
++                set: { mirrorReady: true },
++              }),
++            );
++            return current;
++          }),
++        );
++      }).pipe(Effect.ensuring(cleanIfStale));
++    });
++};
+diff --git a/packages/sdk/src/implementation/account-acquisition-schema.ts b/packages/sdk/src/implementation/account-acquisition-schema.ts
+index bfd40c6..cf23da5 100644
+--- a/packages/sdk/src/implementation/account-acquisition-schema.ts
++++ b/packages/sdk/src/implementation/account-acquisition-schema.ts
+@@ -2,8 +2,7 @@ import { Schema } from "effect";
+ import { column, idColumn, table } from "fumadb-effect/schema";
+ import { AccountId, OwnerId, ProviderId } from "../contracts/shared.ts";
+ 
+-/** Credential references stay in the account's encrypted envelope, independent of app source. */
+-export const accountAcquisitions = table("executor_account_acquisitions", {
++const fields = {
+   account: idColumn("account", AccountId, { type: "varchar(255)" }),
+   owner: column("owner", OwnerId, { type: "varchar(255)" }),
+   provider: column("provider", ProviderId, { type: "varchar(255)" }),
+@@ -13,4 +12,17 @@ export const accountAcquisitions = table("executor_account_acquisitions", {
+   generation: column("generation", Schema.Int),
+   revision: column("revision", Schema.String, { type: "varchar(255)" }),
+   removal: column("removal", Schema.NullOr(Schema.Json)).default(null),
++};
++
++/** Released layout. Acquired credentials keep their reference in the account envelope. */
++export const accountAcquisitions4020 = table("executor_account_acquisitions", fields);
++
++/** Key mirrors preserve the original account credentials and encrypt their reference separately. */
++export const accountAcquisitions = table("executor_account_acquisitions", {
++  ...fields,
++  mirrorReference: column("mirror_reference", Schema.NullOr(Schema.Uint8Array)).default(null),
++  mirrorReady: column("mirror_ready", Schema.Boolean).default(true),
++  mirrorOperation: column("mirror_operation", Schema.NullOr(Schema.String), {
++    type: "varchar(255)",
++  }).default(null),
+ });
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index 2d14554..b367474 100644
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -55,6 +55,7 @@ import {
+ } from "../contracts/account-acquisition-driver.ts";
+ import { makeAcquisitionRegistry } from "./account-acquisition-registry.ts";
+ import { makeAcquisitionRuntime } from "./account-acquisition-runtime.ts";
++import { makeAccountMirrors } from "./account-acquisition-mirror.ts";
+ import { acquisitionBinding } from "./account-acquisition-bindings.ts";
+ import { makeAcquisitionConnect } from "./account-acquisition-connect.ts";
+ import { makeAcquisitionRetirement } from "./account-acquisition-retirement.ts";
+@@ -107,6 +108,7 @@ export const createExecutor = (
+     );
+     const acquisitionRuntime = makeAcquisitionRuntime(db, credentials, crypto, acquisitionRegistry);
+     const acquisitionHost = {
++      ensureMirror: makeAccountMirrors(db, credentials, crypto, acquisitionRegistry),
+       binding: (input: Parameters<AccountAcquisitionHost["binding"]>[0]) =>
+         acquisitionBinding(db, input),
+       source: acquisitionRuntime.source,
+diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
+index 1f01047..7e6b972 100644
+--- a/packages/sdk/src/implementation/database.ts
++++ b/packages/sdk/src/implementation/database.ts
+@@ -9,8 +9,7 @@ import type { ExecutorDatabase } from "./storage.ts";
+ export type Query = ReturnType<typeof database>;
+ /** Select the latest migrated storage schema. */
+ export const database = (storage: ExecutorDatabase) => ({
+-  ...storage.orm("4.0.24"),
+-
++  ...storage.orm("4.0.25"),
+   lockAccountObservation: storage.lockAccountObservation,
+ });
+ 
+diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
+index 24ddd27..26f1eb2 100644
+--- a/packages/sdk/src/implementation/storage-migrations.ts
++++ b/packages/sdk/src/implementation/storage-migrations.ts
+@@ -1,4 +1,4 @@
+-import { accountAcquisitions } from "./account-acquisition-schema.ts";
++import { accountAcquisitions4020 } from "./account-acquisition-schema.ts";
+ import { accountDriverChecks } from "./account-driver-check-schema.ts";
+ import { accountObservations } from "./account-observation-schema.ts";
+ /** Current baseline and the upgrades required by existing version 4 databases. */
+@@ -24,6 +24,7 @@ import {
+   version4022Tables,
+   version4024Tables,
+   accountIdentityIndexes,
++  version4025Tables,
+   workflowInputIndexes,
+   appScheduleIndex,
+   scopedRunKeyIndex,
+@@ -508,7 +509,7 @@ const version4015Schema = schema({
+ });
+ 
+ /** Version 4 is the oldest supported layout. Append future compatible upgrades here. */
+-const version4020Tables = { ...version4019Tables, accountAcquisitions };
++const version4020Tables = { ...version4019Tables, accountAcquisitions: accountAcquisitions4020 };
+ 
+ export const storageSchemas = [
+   version4("4.0.0"),
+@@ -798,6 +799,18 @@ export const storageSchemas = [
+         ]),
+       ),
+   }),
++  schema({
++    version: "4.0.25",
++    tables: version4025Tables,
++    relations: {
++      accounts: ({ one }) => ({
++        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
++      }),
++      apps: ({ one }) => ({
++        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
++      }),
++    },
++  }),
+ ] as const;
+ 
+ /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
+diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/src/implementation/storage-schema.ts
+index 0d84149..aee1872 100644
+--- a/packages/sdk/src/implementation/storage-schema.ts
++++ b/packages/sdk/src/implementation/storage-schema.ts
+@@ -1,4 +1,4 @@
+-import { accountAcquisitions } from "./account-acquisition-schema.ts";
++import { accountAcquisitions, accountAcquisitions4020 } from "./account-acquisition-schema.ts";
+ import { accountDriverChecks } from "./account-driver-check-schema.ts";
+ import { accountObservations } from "./account-observation-schema.ts";
+ import { WorkflowRunId } from "../contracts/workflows.ts";
+@@ -938,7 +938,7 @@ export const queueReadIndexes = [
+ /** Questions and wake receipts survive process loss; form content is encrypted. */
+ export const version4022Tables = {
+   ...version4019Tables,
+-  accountAcquisitions,
++  accountAcquisitions: accountAcquisitions4020,
+   accountDriverChecks,
+   workflowInputs: table("executor_workflow_inputs", {
+     id: idColumn("id", Schema.String, { type: "varchar(80)" }),
+@@ -1010,3 +1010,5 @@ export const accountIdentityIndexes = [
+   "CREATE INDEX IF NOT EXISTS executor_accounts_identity ON executor_accounts (identity_id)",
+   "CREATE INDEX IF NOT EXISTS executor_accounts_oauth_grant ON executor_accounts (oauth_grant_id)",
+ ] as const;
++
++export const version4025Tables = { ...version4024Tables, accountAcquisitions };
+diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
+index 793f379..b02dfcb 100644
+--- a/packages/sdk/src/implementation/storage.ts
++++ b/packages/sdk/src/implementation/storage.ts
+@@ -25,8 +25,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+     const sql = yield* SqlClient.SqlClient;
+     const reactivity = yield* makeReactiveStore({ namespace: "executor" });
+     const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
+-    const db = bindOrm(client.orm("4.0.24"), sql, reactivity);
+-
++    const db = bindOrm(client.orm("4.0.25"), sql, reactivity);
+     const checkMigration = Effect.gen(function* () {
+       const migrator = yield* client.createMigrator;
+       const version = yield* migrator.version;
+@@ -81,8 +80,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+       Effect.mapError(() => new StorageError()),
+     );
+     return {
+-      orm: (_version: "4.0.24") => db,
+-
++      orm: (_version: "4.0.24" | "4.0.25") => db,
+       // The ORM forbids primary-key updates. Lock without changing source data or provenance.
+       lockAccountObservation: (id: string) =>
+         sql`update executor_account_observations set id = id where id = ${id}`.pipe(

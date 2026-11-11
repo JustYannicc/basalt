@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Managed Cloud startup retains sanitized Alchemy failure output until stream completion or a bounded quiet period and reports that same cause to the startup error and cloud log. Successful readiness adds no wait. Private handoff-file and output-stream cleanup stay owned by the environment scope."
+    }
+  }
+}

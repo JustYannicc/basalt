@@ -1,0 +1,7 @@
+model {
+  extend basalt.productionOps {
+    metadata {
+      constraint "Signed operator requests name one organization and bind the saved plan, encrypted backup, exact GO, deployed source and unchanged row hashes. Apply rechecks row scope in a serializable transaction and records a receipt before uncertain follow-up. Released receipt migration 8 retains its identity; newer migration registrations must not reuse deployed IDs."
+    }
+  }
+}

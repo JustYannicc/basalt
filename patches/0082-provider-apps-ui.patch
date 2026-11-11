@@ -1,7 +1,21 @@
+diff --git a/apps/hosted/self-host/src/worker.ts b/apps/hosted/self-host/src/worker.ts
+index 06b6994..0505609 100644
+--- a/apps/hosted/self-host/src/worker.ts
++++ b/apps/hosted/self-host/src/worker.ts
+@@ -193,7 +193,7 @@ const prepare = (state: DurableObjectState, env: Environment) =>
+             }),
+           ),
+         );
+-      });
++      }).pipe(Effect.provideContext(common));
+       return {
+         fetch: HttpEffect.toWebHandlerWith<never, Effect.Services<typeof addressed>>(context)(
+           addressed,
 diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/server/src/contracts/app-accounts.ts
+index 8e60f56..41b0432 100644
 --- a/apps/hosted/server/src/contracts/app-accounts.ts
 +++ b/apps/hosted/server/src/contracts/app-accounts.ts
-@@ -178,7 +178,29 @@
+@@ -178,7 +178,29 @@ const app = { organization: OrganizationReference, app: AppId };
  const requirement = { ...app, requirement: Schema.NonEmptyString };
  const link = { ...requirement, account: AccountId };
  const prefix = "/api/organizations/:organization/apps/:app/accounts";
@@ -31,7 +45,7 @@ diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/serv
    AccountAcquisitionUnavailable,
    AccountProvisioned,
    InteractiveRetirementBusy,
-@@ -308,6 +330,7 @@
+@@ -308,6 +330,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
  const [appCreate, appList, appGet, appLink, appUnlink, appConnect] = scopeEndpoints("app");
  const [userCreate, userList, userGet, userLink, userUnlink, userConnect] = scopeEndpoints("user");
  export const HostedAppAccounts = HttpApiGroup.make("appAccounts")
@@ -40,18 +54,18 @@ diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/serv
      HttpApiEndpoint.get("departures", `${prefix}/departures`, {
        params: app,
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
-index 3a3b99d..c06e63e 100644
+index 9d9d7ec..8cff64b 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
-@@ -73,6 +73,7 @@ import { currentOwner, ownedConnection } from "./access.ts";
- import { appLinkApps, appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
+@@ -75,6 +75,7 @@ import { appLinkApps, appLinkedAccounts, callerLinkedAccounts } from "./app-acco
  import { AccountLinkedToApp } from "../contracts/accounts.ts";
+ import { visibleAccountRefusal } from "./webhooks.ts";
  import { requireSeparateNativeAccountLink } from "./pool-account-connection.ts";
 +import { requireProviderAccountMethod } from "./provider-account-methods.ts";
  import { RequirementMismatch } from "../contracts/app-accounts.ts";
  
  /** The apps the caller can use and linked this account to, or that link it for everyone. */
-@@ -336,6 +337,11 @@ export const submitConnection = (
+@@ -344,6 +345,11 @@ export const submitConnection = (
      const executor = yield* Effect.flatten(HostedExecutor);
      const connection = yield* ownedConnection(executor, owner, input.connection);
      const intent = yield* checkConnection(connection);
@@ -64,9 +78,10 @@ index 3a3b99d..c06e63e 100644
      return yield* executor.accountConnections.submit({ ...input, owner }).pipe(
        accountDestination(intent.destination),
 diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
+index 450836b..6099e97 100644
 --- a/apps/hosted/server/src/implementation/app-account-links.ts
 +++ b/apps/hosted/server/src/implementation/app-account-links.ts
-@@ -47,6 +47,10 @@
+@@ -47,6 +47,10 @@ import { appManagerOwner, currentOwner, usableApp } from "./access.ts";
  import { canDeleteAccount, replacingAccounts } from "./interactive-retirement.ts";
  import { connectAccount, connectionUrl } from "./accounts.ts";
  import { createRequirementAccount } from "./requirement-account-creation.ts";
@@ -77,7 +92,7 @@ diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/h
  import { accountOAuthRedirectUri } from "./auth.ts";
  import { addLink, callerLinkedAccounts, lockedChange, removeLink } from "./app-accounts.ts";
  import { defaultAccessAccount, hostManagedAccounts } from "./host-managed-accounts.ts";
-@@ -381,6 +385,16 @@
+@@ -381,6 +385,16 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
    Effect.gen(function* () {
      const services = { auth: yield* Authentication, api: yield* ApiAuthentication };
      return handlers
@@ -94,7 +109,7 @@ diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/h
        .handle("departures", ({ params }) => contributedDepartures(params.app))
        .handle("appCreate", ({ params, payload }) =>
          createRequirementAccount("app", params, payload),
-@@ -419,9 +433,10 @@
+@@ -419,9 +433,10 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
            const owner = yield* currentOwner;
            const executor = yield* Effect.flatten(HostedExecutor);
            yield* requireRequirementAccess({ ...params, scope: "app" });
@@ -107,7 +122,7 @@ diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/h
            if (yield* isContributed(yield* policyDatabase, params.app, params.requirement)) {
              const legacy = yield* executor[InteractiveHost].binding({
                owner,
-@@ -516,9 +531,10 @@
+@@ -516,9 +531,10 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
            const user = yield* caller;
            const owner = yield* currentOwner;
            const executor = yield* Effect.flatten(HostedExecutor);
@@ -220,10 +235,10 @@ index 2de771f..2c352ef 100644
        ? requirement.definition.auth[payload.method]
        : undefined;
 diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src/contracts/app-accounts.ts
-index 84a00f5..5041324 100644
+index ba09947..704804a 100644
 --- a/apps/hosted/web/src/contracts/app-accounts.ts
 +++ b/apps/hosted/web/src/contracts/app-accounts.ts
-@@ -64,6 +64,20 @@ const liveUserLinks = Atom.family((key: AppKey) => pollingQuery(userLinks(key)))
+@@ -72,6 +72,20 @@ const liveUserLinks = Atom.family((key: AppKey) => pollingQuery(userLinks(key)))
   */
  export const appLinksAtom = (key: { organization: OrganizationReference; app: AppId }) =>
    appLinks(new AppKey(key));
@@ -245,10 +260,10 @@ index 84a00f5..5041324 100644
  export const userLinksAtom = (key: { organization: OrganizationReference; app: AppId }) =>
    liveUserLinks(new AppKey(key));
 diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
-index e5c2b82..cf582b6 100644
+index 78c9bd8..c706947 100644
 --- a/apps/hosted/web/src/contracts/apps.ts
 +++ b/apps/hosted/web/src/contracts/apps.ts
-@@ -306,6 +306,11 @@ export function appConnectionAtoms(key: {
+@@ -307,6 +307,11 @@ export function appConnectionAtoms(key: {
        )
        .pipe(Atom.setIdleTTL("5 minutes"), revalidated),
    );
@@ -260,7 +275,7 @@ index e5c2b82..cf582b6 100644
    const saved = (get: Atom.FnContext, connection: AccountConnectionId, account: Account) => {
      connectionSaved(
        get,
-@@ -321,6 +326,30 @@ export function appConnectionAtoms(key: {
+@@ -322,6 +327,30 @@ export function appConnectionAtoms(key: {
        get.set(request, undefined),
      ),
      oauthSetup: (method: string) => oauthSetup(method),
@@ -291,7 +306,7 @@ index e5c2b82..cf582b6 100644
      submit: HostedClient.runtime.fn(
        (payload: { method: string; fields: typeof AccountFieldsInput.Type }, get) =>
          Effect.gen(function* () {
-@@ -584,20 +613,30 @@ function connectionSaved(
+@@ -587,20 +616,30 @@ function connectionSaved(
    saved: Account,
    app: AppId | null,
  ) {
@@ -328,7 +343,7 @@ index e5c2b82..cf582b6 100644
  
  const toolCatalogs = Atom.family((key: ToolKey) =>
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index 62e839f..28e67e8 100644
+index 6a34359..e211f61 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 @@ -13,6 +13,7 @@ import { useQuery } from "@executor-js/ui/dashboard/context";
@@ -504,10 +519,10 @@ index 62e839f..28e67e8 100644
        start={(input) =>
          account !== undefined ||
 diff --git a/apps/hosted/web/src/implementation/pages/connect-account.tsx b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-index cc61fb6..e3a9356 100644
+index d95235d..0be052a 100644
 --- a/apps/hosted/web/src/implementation/pages/connect-account.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect-account.tsx
-@@ -176,7 +176,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -189,7 +189,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
    onPendingChange,
    app,
    interactive,
@@ -518,10 +533,10 @@ index cc61fb6..e3a9356 100644
    /** Absent where the product can't run app sign-ins; the form then says it can't connect them. */
    readonly interactive?: HostedInteractiveActions | undefined;
    readonly provider: Provider;
-@@ -263,6 +266,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
+@@ -318,6 +321,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
        site={site}
        {...(account ? { account } : {})}
-       initialMethod={method}
+       initialMethod={initialMethod}
 +      unavailable={unavailable}
        Failure={HostedFailure}
        submitLabel={account ? "Save credentials" : "Connect account"}
@@ -771,10 +786,10 @@ index 0000000..e2dbddf
 +    );
 +  });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 4502a87..2b9c6c3 100644
+index 81dea75..0ef50ad 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -3068,6 +3068,17 @@ export const scenarios = plan({
+@@ -3701,6 +3701,17 @@ export const scenarios = plan({
        local: na("Shared error views and SDK are exercised through hosted APIs."),
      },
    },
@@ -1097,10 +1112,10 @@ index 1929b11..a6abe76 100644
 +    .filter(([, method]) => method.type !== "secrets" || method.provisioned !== true)
 +    .sort(([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"));
 diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
-index 8d2ea30..ddfb5b5 100644
+index 3bc8dad..5c4a315 100644
 --- a/packages/ui/src/implementation/dashboard/account-form.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-form.tsx
-@@ -46,6 +46,7 @@ export function AccountForm<A, E>({
+@@ -53,6 +53,7 @@ export function AccountForm<A, E>({
    Failure,
    onPendingChange,
    initialMethod,
@@ -1108,7 +1123,7 @@ index 8d2ea30..ddfb5b5 100644
    check,
    disabled = false,
  }: {
-@@ -70,6 +71,11 @@ export function AccountForm<A, E>({
+@@ -80,6 +81,11 @@ export function AccountForm<A, E>({
    readonly disabled?: boolean;
    readonly onPendingChange?: (pending: boolean) => void;
    readonly initialMethod?: string | undefined;
@@ -1120,7 +1135,7 @@ index 8d2ea30..ddfb5b5 100644
  }) {
    const selectedSite = site ?? account?.site;
    const hosts =
-@@ -80,7 +86,16 @@ export function AccountForm<A, E>({
+@@ -90,7 +96,16 @@ export function AccountForm<A, E>({
      .filter(([, method]) => method.type !== "secrets" || method.provisioned !== true)
      .sort(([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"));
    const labels = methodLabels(provider.definition.name, methods);
@@ -1138,7 +1153,7 @@ index 8d2ea30..ddfb5b5 100644
    const [values, setValues] = useState<Readonly<Record<string, string>>>({});
    const [submitting, setPending] = useState(false);
    const pending = submitting || disabled;
-@@ -119,6 +134,7 @@ export function AccountForm<A, E>({
+@@ -129,6 +144,7 @@ export function AccountForm<A, E>({
          event.preventDefault();
          if (
            !fields ||
@@ -1146,7 +1161,7 @@ index 8d2ea30..ddfb5b5 100644
            pending ||
            verdict.state === "checking" ||
            !credentialsComplete(fields, values)
-@@ -158,16 +174,42 @@ export function AccountForm<A, E>({
+@@ -168,16 +184,42 @@ export function AccountForm<A, E>({
                <SelectValue />
              </SelectTrigger>
              <SelectContent>
@@ -1196,10 +1211,10 @@ index 8d2ea30..ddfb5b5 100644
            {oauth({
              method,
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 11b7bec..8529724 100644
+index 3fc48b3..eac9b6b 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -4,7 +4,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
+@@ -14,7 +14,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
  import { AsyncResult, type Atom } from "effect/reactivity";
  import { Exit, Option, type Cause } from "effect";
  import { HugeiconsIcon } from "@hugeicons/react";
@@ -1208,7 +1223,7 @@ index 11b7bec..8529724 100644
  import { RadioGroup } from "radix-ui";
  import type {
    Account,
-@@ -14,7 +14,12 @@ import type {
+@@ -24,7 +24,12 @@ import type {
    AccountId,
    AccountRequirement,
  } from "@executor-js/sdk";
@@ -1222,7 +1237,7 @@ index 11b7bec..8529724 100644
  import {
    providerDisplayUrl,
    accountNeedsSignIn,
-@@ -45,6 +50,7 @@ import {
+@@ -55,6 +60,7 @@ import {
    DialogTitle,
  } from "../components/dialog.tsx";
  import { cn } from "../lib/utils.ts";
@@ -1230,7 +1245,7 @@ index 11b7bec..8529724 100644
  import { useProductBrand } from "../hooks/product-brand.ts";
  
  const provisionedOnly = (requirement: AccountRequirement) =>
-@@ -365,6 +371,38 @@ const scoped = (app: App, scope: AccountScope): readonly RequirementEntry[] =>
+@@ -422,6 +428,38 @@ const scoped = (app: App, scope: AccountScope): readonly RequirementEntry[] =>
      ([, requirement]) => requirement.scope === scope,
    );
  
@@ -1269,7 +1284,7 @@ index 11b7bec..8529724 100644
  /**
   * Who may change one requirement's links: an editor's `edit` covers the scope, `contribute` only
   * an app collection that opts in to member contributions.
-@@ -457,6 +495,7 @@ export function AppAccounts<E>({
+@@ -514,6 +552,7 @@ export function AppAccounts<E>({
    appAccounts,
    yourAccounts,
    accounts,
@@ -1277,7 +1292,7 @@ index 11b7bec..8529724 100644
    Failure,
  }: {
    readonly app: App;
-@@ -464,6 +503,11 @@ export function AppAccounts<E>({
+@@ -521,6 +560,11 @@ export function AppAccounts<E>({
    readonly yourAccounts: ScopeAccounts<E>;
    /** The caller's usable accounts, whose sign-in and check details the choices reuse. */
    readonly accounts: readonly AccountSummary[];
@@ -1288,8 +1303,8 @@ index 11b7bec..8529724 100644
 +  readonly methods?: RequirementMethods | undefined;
    readonly Failure: ComponentType<FailureProps<E>>;
  }) {
-   useRevalidateChecks(
-@@ -512,6 +556,7 @@ export function AppAccounts<E>({
+   const appChecking = useRevalidateChecks(
+@@ -570,6 +614,7 @@ export function AppAccounts<E>({
            requirements={appRequirements}
            data={appAccounts}
            accounts={accounts}
@@ -1297,7 +1312,7 @@ index 11b7bec..8529724 100644
            showProvisionedProblems={repairs.app}
            Failure={Failure}
          />
-@@ -525,6 +570,7 @@ export function AppAccounts<E>({
+@@ -584,6 +629,7 @@ export function AppAccounts<E>({
            requirements={userRequirements}
            data={yourAccounts}
            accounts={accounts}
@@ -1305,7 +1320,7 @@ index 11b7bec..8529724 100644
            showProvisionedProblems={repairs.user}
            Failure={Failure}
          />
-@@ -539,6 +585,7 @@ interface ScopeProps<E> {
+@@ -598,6 +644,7 @@ interface ScopeProps<E> {
    readonly scope: AccountScope;
    readonly data: ScopeAccounts<E>;
    readonly accounts: readonly AccountSummary[];
@@ -1313,7 +1328,7 @@ index 11b7bec..8529724 100644
    readonly Failure: ComponentType<FailureProps<E>>;
  }
  
-@@ -552,10 +599,17 @@ function LinkScope<E>({
+@@ -613,39 +660,92 @@ function LinkScope<E>({
    readonly description: string;
    readonly requirements: readonly RequirementEntry[];
  }) {
@@ -1332,26 +1347,54 @@ index 11b7bec..8529724 100644
 +  const open = requirements.filter((entry) => !closed.includes(entry));
 +  const readOnly = open.every(([, requirement]) => editingFor(data, requirement) === undefined);
    return (
-     <section aria-label={title} data-read-only={readOnly} className="space-y-3">
-       <div>
-@@ -566,7 +620,7 @@ function LinkScope<E>({
-         <p className="text-xs text-muted-foreground">{data.readOnly}</p>
-       )}
-       <div className="space-y-5">
--        {requirements.map(([slot, requirement]) => (
+     <Checking.Provider value={checking}>
+-      <section aria-label={title} data-read-only={readOnly} className="space-y-3">
+-        <div>
+-          <h2 className="text-sm font-medium">{title}</h2>
+-          <p className="text-xs text-muted-foreground">{description}</p>
+-        </div>
+-        {readOnly && data.readOnly !== undefined && (
+-          <p className="text-xs text-muted-foreground">{data.readOnly}</p>
++    <section aria-label={title} data-read-only={readOnly} className="space-y-3">
++      <div>
++        <h2 className="text-sm font-medium">{title}</h2>
++        <p className="text-xs text-muted-foreground">{description}</p>
++      </div>
++      {readOnly && data.readOnly !== undefined && (
++        <p className="text-xs text-muted-foreground">{data.readOnly}</p>
++      )}
++      <div className="space-y-5">
 +        {open.map(([slot, requirement]) => (
-           <RequirementView
-             key={slot}
-             {...props}
-@@ -576,11 +630,59 @@ function LinkScope<E>({
-             readOnlyNote={readOnly ? undefined : data.readOnly}
-           />
-         ))}
++          <RequirementView
++            key={slot}
++            {...props}
++            slot={slot}
++            requirement={requirement}
++            linked={data.links.flatMap((link) => (link.requirement === slot ? [link.account] : []))}
++            readOnlyNote={readOnly ? undefined : data.readOnly}
++          />
++        ))}
 +        {closed.length > 0 && (
 +          <UnavailableRequirements app={props.app} requirements={closed} methods={methods} />
-+        )}
-       </div>
-     </section>
+         )}
+-        <div className="space-y-5">
+-          {requirements.map(([slot, requirement]) => (
+-            <RequirementView
+-              key={slot}
+-              {...props}
+-              slot={slot}
+-              requirement={requirement}
+-              readOnlyNote={readOnly ? undefined : data.readOnly}
+-              linked={data.links.flatMap((link) =>
+-                link.requirement === slot ? [link.account] : [],
+-              )}
+-            />
+-          ))}
+-        </div>
+-      </section>
++      </div>
++    </section>
+     </Checking.Provider>
    );
  }
  
@@ -1403,7 +1446,7 @@ index 11b7bec..8529724 100644
  /** Short guidance under a requirement; the rows say the rest. */
  const requirementNote = (requirement: AccountRequirement, linked: number) =>
    requirement.cardinality === "many"
-@@ -613,6 +715,21 @@ function RequirementView<E>({
+@@ -678,6 +778,21 @@ function RequirementView<E>({
    const edit = editingFor(data, requirement);
    const managed = provisionedOnly(requirement);
    const label = requirement.definition.name.trim() || undefined;
@@ -1425,7 +1468,7 @@ index 11b7bec..8529724 100644
    return (
      <section
        {...(label === undefined ? {} : { "aria-label": label })}
-@@ -621,10 +738,27 @@ function RequirementView<E>({
+@@ -686,10 +801,27 @@ function RequirementView<E>({
        <div className="flex min-h-8 min-w-0 items-center gap-3 text-sm [&_.provider-icon]:size-14 [&_.provider-icon]:rounded-lg [&_.provider-icon]:border-0 [&_.provider-icon]:bg-muted/40 [&_.provider-icon>img]:size-8 [&_.provider-icon>svg]:size-8">
          <AppProviderIcon app={props.app} provider={requirement.definition} large />
          <div className="min-w-0">
@@ -1454,7 +1497,7 @@ index 11b7bec..8529724 100644
            {edit === undefined && readOnlyNote !== undefined && (
              <p className="text-pretty text-xs leading-4.5 text-muted-foreground">{readOnlyNote}</p>
            )}
-@@ -883,6 +1017,7 @@ function EditableChoices<E>({
+@@ -948,6 +1080,7 @@ function EditableChoices<E>({
    data,
    edit,
    accounts,
@@ -1462,7 +1505,7 @@ index 11b7bec..8529724 100644
    Failure,
  }: ScopeProps<E> & {
    readonly edit: LinkEditing<E>;
-@@ -964,9 +1099,20 @@ function EditableChoices<E>({
+@@ -1029,9 +1162,20 @@ function EditableChoices<E>({
        ready={ready}
        edit={edit}
        data={data}
@@ -1483,7 +1526,7 @@ index 11b7bec..8529724 100644
    const list = (
      <ul
        {...(requirement.definition.name.trim() === ""
-@@ -1000,6 +1146,10 @@ function EditableChoices<E>({
+@@ -1065,6 +1209,10 @@ function EditableChoices<E>({
          ))}
        {provisionedOnly(requirement) ? (
          <p className="px-3.5 py-2.5 text-[13px] text-muted-foreground">Set up automatically</p>
@@ -1494,7 +1537,7 @@ index 11b7bec..8529724 100644
        ) : (
          <Button
            variant="ghost"
-@@ -1043,9 +1193,15 @@ function ChoiceRow<E>({
+@@ -1108,9 +1256,15 @@ function ChoiceRow<E>({
    data,
    Failure,
    replaces,
@@ -1510,7 +1553,7 @@ index 11b7bec..8529724 100644
    readonly app: App;
    readonly slot: string;
    readonly requirement: AccountRequirement;
-@@ -1073,6 +1229,7 @@ function ChoiceRow<E>({
+@@ -1138,6 +1292,7 @@ function ChoiceRow<E>({
    const hostProvisioned = !automatic && provisionedMethod(requirement, account);
    // Another person's contribution stays linked unless the host says the caller may remove it.
    const fixed = linked && linkOf(data, slot, account.id)?.canRemove === false;
@@ -1518,7 +1561,7 @@ index 11b7bec..8529724 100644
    // An account the app acquired means nothing elsewhere, so unlinking it deletes it.
    const appBound = requirement.definition.auth[account.method]?.type === "interactive";
    const [confirming, setConfirming] = useState(false);
-@@ -1106,7 +1263,7 @@ function ChoiceRow<E>({
+@@ -1171,7 +1326,7 @@ function ChoiceRow<E>({
                id={id}
                value={account.id}
                aria-label={name}
@@ -1527,7 +1570,7 @@ index 11b7bec..8529724 100644
                className={radioClass}
                onClick={() => {
                  if (linked) return;
-@@ -1121,7 +1278,7 @@ function ChoiceRow<E>({
+@@ -1186,7 +1341,7 @@ function ChoiceRow<E>({
                id={id}
                checked={linked}
                aria-label={name}
@@ -1536,7 +1579,7 @@ index 11b7bec..8529724 100644
                onCheckedChange={(checked) =>
                  checked !== true && appBound ? setConfirming(true) : void change(checked === true)
                }
-@@ -1160,8 +1317,13 @@ function ChoiceRow<E>({
+@@ -1225,8 +1380,13 @@ function ChoiceRow<E>({
            />
          </span>
        </div>
@@ -1552,7 +1595,7 @@ index 11b7bec..8529724 100644
          <div className="w-full min-w-0 text-xs">
            <Failure cause={error} />
 diff --git a/packages/ui/src/implementation/dashboard/common.tsx b/packages/ui/src/implementation/dashboard/common.tsx
-index fbe90d7..2d32b68 100644
+index 00d174b..cb1ea25 100644
 --- a/packages/ui/src/implementation/dashboard/common.tsx
 +++ b/packages/ui/src/implementation/dashboard/common.tsx
 @@ -19,6 +19,7 @@ import { Input } from "@executor-js/ui/components/input";
@@ -1577,10 +1620,10 @@ index fbe90d7..2d32b68 100644
    const [failed, setFailed] = useState<readonly string[]>([]);
    const normalized = name.toLowerCase().trim();
 +  const brand = providerBrand(normalized);
-   const size = large || medium ? 24 : 17;
+   // Fetched large enough to stay sharp in the biggest tile on a 2x screen.
+   const fetchSize = 64;
    const catalog = icons ?? catalogIcons.byName.get(normalized) ?? undefined;
-   const domain = url ?? (/^[a-z\d-]+(?:\.[a-z\d-]+)+$/i.test(normalized) ? normalized : null);
-@@ -94,7 +98,8 @@ export function ProviderIcon({
+@@ -95,7 +99,8 @@ export function ProviderIcon({
    const own = sources !== null && !failed.includes(sources.light) ? sources : null;
    const icon =
      own === null && !waiting && source !== null && !failed.includes(source) ? source : null;
@@ -1590,15 +1633,15 @@ index fbe90d7..2d32b68 100644
    const fail = (key: string) => () =>
      setFailed((current) => (current.includes(key) ? current : [...current, key]));
    return (
-@@ -105,6 +110,7 @@ export function ProviderIcon({
-           "provider-icon-large w-11 h-11 rounded-[9px] [&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
-         medium && "[&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
+@@ -107,6 +112,7 @@ export function ProviderIcon({
+         large && "provider-icon-large size-11 rounded-[10px]",
+         medium && "[&_img]:size-6 [&_>_svg]:size-6",
        )}
 +      data-provider={brand?.key}
        aria-hidden
      >
        {own ? (
-@@ -138,6 +144,16 @@ export function ProviderIcon({
+@@ -140,6 +146,16 @@ export function ProviderIcon({
          />
        ) : waiting ? (
          <Skeleton className="size-full rounded-[inherit]" data-icon="loading" />
@@ -1728,15 +1771,3 @@ index 081399d..746ac2d 100644
 +  background-color: color-mix(in oklab, var(--provider-ink) 12%, var(--background));
 +  border-color: color-mix(in oklab, var(--provider-ink) 30%, var(--border));
 +}
-diff --git a/apps/hosted/self-host/src/worker.ts b/apps/hosted/self-host/src/worker.ts
---- a/apps/hosted/self-host/src/worker.ts
-+++ b/apps/hosted/self-host/src/worker.ts
-@@ -193,7 +193,7 @@
-             }),
-           ),
-         );
--      });
-+      }).pipe(Effect.provideContext(common));
-       return {
-         fetch: HttpEffect.toWebHandlerWith<never, Effect.Services<typeof addressed>>(context)(
-           addressed,

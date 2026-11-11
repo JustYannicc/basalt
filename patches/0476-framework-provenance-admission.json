@@ -1,0 +1,9 @@
+{
+  "identity": "framework-provenance-admission",
+  "file": "0476-framework-provenance-admission.patch",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": true,
+  "content_sha256": "600a32a71f20ff574c645ec2648eb059b4f30013e80c246818386470e545dff4"
+}

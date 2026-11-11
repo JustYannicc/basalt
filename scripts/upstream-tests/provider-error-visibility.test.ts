@@ -110,8 +110,8 @@ for (const [verified, label, editor] of [
               failure.description,
               failure.account?.label,
               JSON.stringify(failure),
-              diagnostic(failure),
-              diagnosticSummary(failure),
+              diagnostic(failure, { operation: "call", reference: undefined }),
+              diagnosticSummary(failure, { operation: "call", reference: undefined }),
               renderAppFailure(described),
             ];
             for (const output of outputs) {

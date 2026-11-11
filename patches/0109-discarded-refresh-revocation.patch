@@ -1,8 +1,8 @@
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
-index fdcfd45..fcd83e2 100644
+index e1424db..e6f0199 100644
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
-@@ -293,6 +293,14 @@ const notRunInCi: Partial<
+@@ -295,6 +295,14 @@ const notRunInCi: Partial<
      targets: ["cloud"],
      reason: "The Basalt host-managed-accounts job runs the disposable SQL-gate wrapper.",
    },
@@ -53,7 +53,7 @@ index 0000000..9bf8c21
 +  };
 +});
 diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.ts
-index f8e7cb7..026082e 100644
+index d76cdc4..61e79bc 100644
 --- a/e2e/support/oauth-setup-issuer.ts
 +++ b/e2e/support/oauth-setup-issuer.ts
 @@ -10,7 +10,7 @@ import {
@@ -73,7 +73,7 @@ index f8e7cb7..026082e 100644
    let registration = true;
    let postChallenge = false;
    let challenge = true;
-@@ -195,6 +196,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+@@ -197,6 +198,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
    const refreshOrigins = new Map<string, "sign-in" | "refresh">();
    /** The issuance of each refresh token revocation named, in order: a current or replaced one. */
    const revokedRefreshTokens: Array<"sign-in" | "refresh"> = [];
@@ -82,7 +82,7 @@ index f8e7cb7..026082e 100644
    /** Refresh tokens a rotation replaced, with their client. */
    const replacedRefreshGrants = new Map<string, string>();
    const refreshedAccessTokens = new Set<string>();
-@@ -904,10 +907,19 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+@@ -915,10 +918,19 @@ export const oauthSetupIssuer = Effect.gen(function* () {
            typeof presented.clientId === "string" ? clients.get(presented.clientId) : undefined;
          const token = input.get("token");
          const origin = token === null ? undefined : refreshOrigins.get(token);
@@ -104,7 +104,7 @@ index f8e7cb7..026082e 100644
                ? "refresh"
                : token === "synthetic-access-token" ||
                    (token !== null && refreshedAccessTokens.has(token))
-@@ -921,6 +933,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+@@ -932,6 +944,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
              presented.secret === client.secret,
          });
          yield* Deferred.succeed(revocationReceived, undefined);
@@ -112,7 +112,7 @@ index f8e7cb7..026082e 100644
          return revocation === "failing"
            ? HttpServerResponse.empty({ status: 503 })
            : HttpServerResponse.empty({ status: 200 });
-@@ -1042,6 +1055,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+@@ -1053,6 +1066,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
    return {
      origin,
      revoked: Deferred.await(revocationReceived),
@@ -120,7 +120,7 @@ index f8e7cb7..026082e 100644
      configure: (input: {
        readonly requireUserAgent?: boolean;
        readonly registration?: boolean;
-@@ -1287,6 +1301,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+@@ -1312,6 +1326,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
        nonceRequested,
        revocations: [...revocations],
        revokedRefreshTokens: [...revokedRefreshTokens],
@@ -129,10 +129,10 @@ index f8e7cb7..026082e 100644
        resourceAuthorizations: [...resourceAuthorizations],
        reportingIdentityRequests,
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 9f52b4c..407b0b9 100644
+index 5133a88..87090d5 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -5006,6 +5006,26 @@ export const scenarios = plan({
+@@ -5726,6 +5726,26 @@ export const scenarios = plan({
        local: na("The proof gates the managed Cloud's actual Postgres transactions."),
      },
    },
@@ -397,10 +397,10 @@ index 0000000..f402b02
 +  );
 +});
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index e4dec2e..16f11f9 100644
+index 110736c..a632433 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
-@@ -650,23 +650,6 @@ export const makeOAuth = (
+@@ -719,23 +719,6 @@ export const makeOAuth = (
        return { ...rest, ...operator };
      });
  
@@ -424,7 +424,7 @@ index e4dec2e..16f11f9 100644
    /**
     * The operator's client to sign in with, and the scopes to ask for, when one is configured for
     * exactly the method's authorization and token endpoints. The endpoints decide only whether it
-@@ -2767,10 +2750,14 @@ export const makeOAuth = (
+@@ -2887,10 +2870,14 @@ export const makeOAuth = (
            return held(grant.fields);
          if (protocol === undefined) return yield* reconnect("not_renewable");
          const stage = grant.grant === "client_credentials" ? "clientCredentials" : "refresh";
@@ -442,7 +442,7 @@ index e4dec2e..16f11f9 100644
          if (renewal === undefined) return yield* reconnect("not_renewable");
          const claim = `refresh_${yield* nextId}`;
          /**
-@@ -2976,6 +2963,34 @@ export const makeOAuth = (
+@@ -3096,6 +3083,34 @@ export const makeOAuth = (
            );
            if (!committed) {
              recorded.lost = "tokens";
@@ -477,7 +477,7 @@ index e4dec2e..16f11f9 100644
              return undefined;
            }
            yield* Effect.annotateCurrentSpan("oauth.renewal.outcome", "renewed");
-@@ -3492,11 +3507,27 @@ export const makeOAuth = (
+@@ -3626,11 +3641,27 @@ export const makeOAuth = (
    const settledRevocation = <R>(
      revocation: Effect.Effect<string, unknown, R>,
      span: "oauth.revokeGrant" | "oauth.revokeRefused",
@@ -505,7 +505,7 @@ index e4dec2e..16f11f9 100644
        Effect.asVoid,
        Effect.withSpan(span),
      );
-@@ -3533,6 +3564,7 @@ export const makeOAuth = (
+@@ -3667,6 +3698,7 @@ export const makeOAuth = (
          });
        }),
        "oauth.revokeGrant",

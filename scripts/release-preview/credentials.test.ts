@@ -3,11 +3,32 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { materializeSmokeSecrets, validateSmokeSecrets } from "./credentials.ts";
+import {
+  lifecycleEnvironment,
+  materializeSmokeSecrets,
+  validateSmokeSecrets,
+} from "./credentials.ts";
+
+test("compiler acceptance identity reaches provisioning but never cleanup", () => {
+  const source = {
+    EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE: "true",
+    BASALT_RELEASE_CANDIDATE: "a".repeat(40),
+    UNKNOWN_FUTURE_SECRET: "private",
+  };
+  const deploy = lifecycleEnvironment(source, "deploy");
+  assert.equal(deploy.EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE, "true");
+  assert.equal(deploy.BASALT_RELEASE_CANDIDATE, source.BASALT_RELEASE_CANDIDATE);
+  assert.equal(deploy.UNKNOWN_FUTURE_SECRET, undefined);
+  const cleanup = lifecycleEnvironment(source, "cleanup");
+  assert.equal(cleanup.EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE, undefined);
+  assert.equal(cleanup.BASALT_RELEASE_CANDIDATE, undefined);
+});
 
 const secrets = {
-  PREVIEW_SMOKE_EMAIL: "preview@example.invalid", PREVIEW_SMOKE_PASSWORD: "fixture-password",
-  PREVIEW_CLAUDE_MODEL: "fixture-claude", PREVIEW_CODEX_MODEL: "fixture-codex",
+  PREVIEW_SMOKE_EMAIL: "preview@example.invalid",
+  PREVIEW_SMOKE_PASSWORD: "fixture-password",
+  PREVIEW_CLAUDE_MODEL: "fixture-claude",
+  PREVIEW_CODEX_MODEL: "fixture-codex",
   PREVIEW_CLAUDE_AUTH_JSON: '{"type":"claude","access_token":"private-fixture"}',
   PREVIEW_CODEX_SUBSCRIPTION_AUTH_JSON: '{"type":"codex"}',
   PREVIEW_CODEX_CLI_AUTH_JSON: '{"auth_mode":"chatgpt","tokens":{}}',
@@ -22,21 +43,31 @@ test("preview credentials become private files and leave the child environment",
       assert.equal(env[`PREVIEW_${name}_JSON`], undefined);
       const path = env[`PREVIEW_${name}_FILE`]!;
       assert.equal((await stat(path)).mode & 0o777, 0o600);
-      assert.equal(await readFile(path, "utf8"), secrets[`PREVIEW_${name}_JSON` as keyof typeof secrets]);
+      assert.equal(
+        await readFile(path, "utf8"),
+        secrets[`PREVIEW_${name}_JSON` as keyof typeof secrets],
+      );
     }
     await assert.rejects(materializeSmokeSecrets(secrets, directory), /EEXIST/);
-  } finally { await rm(directory, { recursive: true, force: true }); }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("missing, malformed or real-person smoke identities fail without revealing values", () => {
   assert.throws(() => validateSmokeSecrets({}), /Missing preview smoke input/);
   for (const value of ["private-fixture", "[]", "null", "false"]) {
-    assert.throws(() => validateSmokeSecrets({ ...secrets, PREVIEW_CLAUDE_AUTH_JSON: value }), error => {
-      assert.ok(error instanceof Error);
-      assert.ok(!error.message.includes(value));
-      return true;
-    });
+    assert.throws(
+      () => validateSmokeSecrets({ ...secrets, PREVIEW_CLAUDE_AUTH_JSON: value }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.ok(!error.message.includes(value));
+        return true;
+      },
+    );
   }
-  assert.throws(() => validateSmokeSecrets({ ...secrets, PREVIEW_SMOKE_EMAIL: "person@example.test" }),
-    /reserved example.invalid/);
+  assert.throws(
+    () => validateSmokeSecrets({ ...secrets, PREVIEW_SMOKE_EMAIL: "person@example.test" }),
+    /reserved example.invalid/,
+  );
 });

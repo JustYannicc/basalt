@@ -1,7 +1,7 @@
 {
   "identity": "executor-redacted-worker-logs",
   "file": "0036-redacted-worker-logs.patch",
-  "content_sha256": "a76d1c62982f4005dd29f0f1719ed0dd003d93ae928fe0e88fcaab19c44190e7",
+  "content_sha256": "87bd698623b479b1811b19cb8ac38683993f56193490d529b0c4c3da4450911f",
   "kind": "upstream",
   "upstream_pull_request": 2446,
   "database_sensitive": false,

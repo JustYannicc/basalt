@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Each admitted compile owns a separate bundler and native cancellation target. Admission is the only queue, with request-owned timers and disposal removing cancelled tickets; an older request cannot retain or close its successor's service. Dependency preparation may overlap, and queue and compilation budgets remain unchanged."
+    }
+  }
+}

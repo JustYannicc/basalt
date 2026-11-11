@@ -50,6 +50,7 @@ const render = ({ machine = true, deferred = false, discovery = false, site = fa
     scopes: ["mcp:dashboard"],
     tokenEndpointAuthMethod: "client_secret_post",
     clients: [],
+    resource: { value: null, source: "none" },
   });
   return renderToStaticMarkup(
     createElement(AccountForm, {

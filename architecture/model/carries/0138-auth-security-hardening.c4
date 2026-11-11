@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Authentication dependency overlays apply to the pinned Better Auth family only. Social-token and signing-key requests refuse redirects, administrator updates cannot replace a user ID, and banned users cannot acquire sessions through adapter-only paths. The stronger security runner keeps its runtime cases; obsolete dependency-version patches cannot substitute for the current package."
+    }
+  }
+}

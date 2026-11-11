@@ -17,6 +17,12 @@ const { cloudSiteAfterMigrations } = await import(
 );
 const dev = process.argv[2] === "dev";
 process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000001";
+process.env.BASALT_RELEASE_CANDIDATE = "b".repeat(40);
+process.env.BASALT_EXECUTOR_MARKER_POLICY = JSON.stringify({
+  candidate: "b".repeat(40),
+  precondition: null,
+});
+process.env.BASALT_RELEASE_EVIDENCE_DIRECTORY = process.env.ORDER_FIXTURE_DIRECTORY;
 const context = Layer.succeed(AlchemyContext, {
   dotAlchemy: process.env.ORDER_FIXTURE_DIRECTORY,
   dev,

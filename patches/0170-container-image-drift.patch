@@ -1,10 +1,11 @@
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+index cb74cd0..1d41f63 100644
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -4472,3 +4472,239 @@
-    ).pipe(
-      Stream.mapEffect((event) =>
-        Effect.gen(function* () {
+@@ -4702,3 +4702,239 @@ index 0123bbf211dfab8c3668f36efb449c5a0dc76e85..5a58f337ab567f6dc148f4eaf82bae96
+          const readResult = yield* provider
+            .read({
+              id,
 +diff --git a/src/Cloudflare/Containers/ContainerProvider.ts b/src/Cloudflare/Containers/ContainerProvider.ts
 +index 41dc9d18..00539245 100644
 +--- a/src/Cloudflare/Containers/ContainerProvider.ts

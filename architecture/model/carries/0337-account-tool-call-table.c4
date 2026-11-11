@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.accountPresentation {
     metadata {
-      constraint "The storage migration, run by the migration role, creates the table counting the tool calls each account served, so the runtime role, which may read and write every table but create none, only writes to it. A count that cannot be saved never changes the call's result but reports its failure kind and SQLSTATE in logs and the current span; a read-only operations inventory lists each organization account's counted calls."
+      constraint "The storage migration, run by the migration role, creates the table counting the tool calls each account served, so the runtime role, which may read and write every table but create none, only writes to it. A count that cannot be saved never changes the call's result but reports its failure kind and SQLSTATE in logs and the current span; a read-only operations inventory lists each organization account's counted calls. Runtime failure-source and provenance tracking stay independent of best-effort accounting, so a count-write failure cannot replace the tool's original failure evidence."
     }
   }
 }

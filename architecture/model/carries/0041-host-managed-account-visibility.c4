@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "People-facing lists and pickers omit only credentials proven host-managed by stored provisioning or default-account records. Labels and provider names cannot establish that classification. Machine inventories and tool execution retain those accounts; broken bindings keep warnings, and both app and user check hooks run before conditional row rendering."
+    }
+  }
+}

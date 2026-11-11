@@ -1,7 +1,7 @@
 {
   "identity": "basalt-provider-destinations-once",
   "file": "0373-provider-destinations-once.patch",
-  "content_sha256": "dffbd1786ebe75d2c5f0428bbdc698ea91fc778cc610635824c75ad6ff0346e8",
+  "content_sha256": "5a10f6bbc51c3a3a7e7b36aed202c9b2b5cacc4335928aa38f9ac4d061f0c15c",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

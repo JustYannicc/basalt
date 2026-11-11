@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/self-host/package.json b/apps/hosted/self-host/package.json
-index 2b2b8d7f..329b5716 100644
+index 775ac5b..8f8a290 100644
 --- a/apps/hosted/self-host/package.json
 +++ b/apps/hosted/self-host/package.json
 @@ -2,7 +2,9 @@
@@ -14,7 +14,7 @@ index 2b2b8d7f..329b5716 100644
      "start": "bun run ../../../packages/apps/scripts/build.mjs && bun src/main.ts",
      "build": "bun run ../../../packages/apps/scripts/build.mjs && bun build src/main.ts --target=bun --packages=external --outdir=dist --entry-naming=\"[name].mjs\"",
 diff --git a/apps/hosted/server/src/contracts/accounts.ts b/apps/hosted/server/src/contracts/accounts.ts
-index 2e237dcd..7c5d891c 100644
+index 2e237dc..7c5d891 100644
 --- a/apps/hosted/server/src/contracts/accounts.ts
 +++ b/apps/hosted/server/src/contracts/accounts.ts
 @@ -45,6 +45,7 @@ import {
@@ -99,7 +99,7 @@ index 2e237dcd..7c5d891c 100644
            InteractiveRetirementFailed,
          ],
 diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
-index ae2d077c..cb8c9159 100644
+index ae2d077..cb8c915 100644
 --- a/apps/hosted/server/src/implementation/app-accounts.ts
 +++ b/apps/hosted/server/src/implementation/app-accounts.ts
 @@ -349,6 +349,7 @@ const RequiredRow = Schema.Struct({
@@ -132,7 +132,7 @@ index ae2d077c..cb8c9159 100644
      const retiring =
        yield* sql`select id from executor_account_connections where state ->> 'status' = 'completed'
 diff --git a/apps/hosted/server/src/implementation/interactive-accounts.ts b/apps/hosted/server/src/implementation/interactive-accounts.ts
-index 8f4ed8f8..8c33bfc1 100644
+index 8f4ed8f..8c33bfc 100644
 --- a/apps/hosted/server/src/implementation/interactive-accounts.ts
 +++ b/apps/hosted/server/src/implementation/interactive-accounts.ts
 @@ -4,7 +4,7 @@ import { Effect } from "effect";
@@ -163,7 +163,7 @@ index 8f4ed8f8..8c33bfc1 100644
 +    yield* executor[InteractiveHost].cancel({ owner, connection, accounts });
    });
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
-index 9608f088..cd2ac93b 100644
+index fe5fece..ccaadbe 100644
 --- a/apps/hosted/web/src/contracts/errors.ts
 +++ b/apps/hosted/web/src/contracts/errors.ts
 @@ -15,6 +15,8 @@ export type HostedError =
@@ -176,12 +176,14 @@ index 9608f088..cd2ac93b 100644
        ({
          changed:
 diff --git a/apps/local/server/src/contracts/account-connections.ts b/apps/local/server/src/contracts/account-connections.ts
-index 4621e017..be1a89cd 100644
+index 262fcc6..42ca686 100644
 --- a/apps/local/server/src/contracts/account-connections.ts
 +++ b/apps/local/server/src/contracts/account-connections.ts
-@@ -1,4 +1,11 @@
+@@ -1,5 +1,12 @@
+-import { RequestRejection } from "@executor-js/sdk/core";
 -import { AccountProvisioned } from "@executor-js/sdk/core";
 +import {
++  RequestRejection,
 +  AccountAcquisitionUnavailable,
 +  AppNotDeployed,
 +  VersionNotFound,
@@ -192,7 +194,7 @@ index 4621e017..be1a89cd 100644
  import {
    InteractiveRetirementBusy,
    InteractiveRetirementFailed,
-@@ -170,7 +177,18 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
+@@ -171,7 +178,18 @@ const accountConnectApi = HttpApi.make("account-connect").add(
        HttpApiEndpoint.post("cancel", "/account-connect/api/cancel", {
          payload: ConnectionGrant,
          success: AccountConnection,
@@ -213,7 +215,7 @@ index 4621e017..be1a89cd 100644
      )
      .add(
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index dad25672..5fdd4522 100644
+index 028dda5..893caf9 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
 @@ -1,3 +1,4 @@
@@ -221,7 +223,7 @@ index dad25672..5fdd4522 100644
  import { AccountObservationView } from "@executor-js/sdk/core";
  import { AccountProvisioned } from "@executor-js/sdk/core";
  import {
-@@ -570,7 +571,10 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -571,7 +572,10 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
        HttpApiEndpoint.get("liveAccount", "/dashboard/api/live/accounts/:account", {
          params: { account: AccountId },
          success: HttpApiSchema.StreamSse({
@@ -233,7 +235,7 @@ index dad25672..5fdd4522 100644
            error: liveErrors,
          }),
        }),
-@@ -802,7 +806,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -803,7 +807,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
        HttpApiEndpoint.get("accountObservations", "/dashboard/api/accounts/:account/observations", {
          params: { account: AccountId },
          success: AccountObservationView,
@@ -242,7 +244,7 @@ index dad25672..5fdd4522 100644
        }),
      )
      .add(
-@@ -812,7 +816,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -813,7 +817,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
          {
            params: { account: AccountId },
            success: AccountObservationView,
@@ -251,7 +253,7 @@ index dad25672..5fdd4522 100644
          },
        ),
      )
-@@ -820,7 +824,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -821,7 +825,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
        HttpApiEndpoint.get("account", "/dashboard/api/accounts/:account", {
          params: { account: AccountId },
          success: DashboardAccountDetail,
@@ -260,7 +262,7 @@ index dad25672..5fdd4522 100644
        }),
      )
      .add(
-@@ -839,7 +843,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -840,7 +844,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
        HttpApiEndpoint.post("checkAccount", "/dashboard/api/accounts/:account/health", {
          params: { account: AccountId },
          success: AccountHealth,
@@ -270,7 +272,7 @@ index dad25672..5fdd4522 100644
      )
      .add(
 diff --git a/apps/local/server/src/index.ts b/apps/local/server/src/index.ts
-index 264eb9ee..e201698c 100644
+index f96c30b..c754509 100644
 --- a/apps/local/server/src/index.ts
 +++ b/apps/local/server/src/index.ts
 @@ -1,4 +1,5 @@
@@ -278,9 +280,9 @@ index 264eb9ee..e201698c 100644
  export { ServerConfig, config } from "./contracts/config.ts";
  export { localApi } from "./implementation/server.ts";
 +export { launch } from "./implementation/launcher.ts";
- export { DesktopBootstrap, ServerReady, LocalAuthApi } from "./contracts/auth.ts";
+ export { LocalAuthApi } from "./contracts/auth.ts";
 diff --git a/apps/local/web/src/contracts/errors.ts b/apps/local/web/src/contracts/errors.ts
-index f0236071..de2a153b 100644
+index 7504e31..30d2f96 100644
 --- a/apps/local/web/src/contracts/errors.ts
 +++ b/apps/local/web/src/contracts/errors.ts
 @@ -40,6 +40,16 @@ const unavailable = () =>
@@ -302,7 +304,7 @@ index f0236071..de2a153b 100644
          "Account is set up automatically",
 diff --git a/e2e/support/account-acquisition-fixture.ts b/e2e/support/account-acquisition-fixture.ts
 new file mode 100644
-index 00000000..5ba4bfb7
+index 0000000..5ba4bfb
 --- /dev/null
 +++ b/e2e/support/account-acquisition-fixture.ts
 @@ -0,0 +1,118 @@
@@ -426,7 +428,7 @@ index 00000000..5ba4bfb7
 +  });
 diff --git a/e2e/support/account-acquisition-sdk.ts b/e2e/support/account-acquisition-sdk.ts
 new file mode 100644
-index 00000000..d16fec0c
+index 0000000..d16fec0
 --- /dev/null
 +++ b/e2e/support/account-acquisition-sdk.ts
 @@ -0,0 +1,208 @@
@@ -640,7 +642,7 @@ index 00000000..d16fec0c
 +  });
 diff --git a/e2e/support/acquisition-product.ts b/e2e/support/acquisition-product.ts
 new file mode 100644
-index 00000000..fbad80eb
+index 0000000..fbad80e
 --- /dev/null
 +++ b/e2e/support/acquisition-product.ts
 @@ -0,0 +1,104 @@
@@ -749,7 +751,7 @@ index 00000000..fbad80eb
 +  ctx.user.accounts.identity.map((account) => ({ id: account.id, method: account.method, fields: account.fields }))) }) });
 +`;
 diff --git a/e2e/support/interactive-account-backend.ts b/e2e/support/interactive-account-backend.ts
-index 0ce8306a..ea225782 100644
+index 0ce8306..ea22578 100644
 --- a/e2e/support/interactive-account-backend.ts
 +++ b/e2e/support/interactive-account-backend.ts
 @@ -3,16 +3,18 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -973,7 +975,7 @@ index 0ce8306a..ea225782 100644
        const gate = yield* Deferred.make<void>(),
          started = yield* Deferred.make<void>();
 diff --git a/e2e/support/managed-server.ts b/e2e/support/managed-server.ts
-index 60a65a96..5156be20 100644
+index d03d4c4..c727ba0 100644
 --- a/e2e/support/managed-server.ts
 +++ b/e2e/support/managed-server.ts
 @@ -51,6 +51,8 @@ const maxClockOffset = 40 * 86_400_000;
@@ -991,9 +993,9 @@ index 60a65a96..5156be20 100644
      const env = {
 +      EXECUTOR_E2E_PRODUCT_ENTRY: environment.EXECUTOR_E2E_PRODUCT_ENTRY,
        PATH: runtimePath,
-       NODE_ENV: "test",
-       HOST: "127.0.0.1",
-@@ -252,10 +255,16 @@ export const startManagedServer = (
+       // Every Windows process has it: the local server runs Windows's own programs from there.
+       ...(process.env.SystemRoot === undefined ? {} : { SystemRoot: process.env.SystemRoot }),
+@@ -254,10 +257,16 @@ export const startManagedServer = (
              : path.join(coverageDirectory, String(generation++));
          // The product's workerd logs its function events here; see workerd-coverage.ts.
          if (coverage !== undefined) yield* fs.makeDirectory(coverage, { recursive: true });
@@ -1012,7 +1014,7 @@ index 60a65a96..5156be20 100644
              : {
                  command: "bun",
                  args:
-@@ -274,7 +283,7 @@ export const startManagedServer = (
+@@ -276,7 +285,7 @@ export const startManagedServer = (
                      : [
                          // Bun accepts Node's --import preload, so self-host can advance wall time too.
                          ...preloads.flatMap((url) => ["--import", url.href]),
@@ -1022,7 +1024,7 @@ index 60a65a96..5156be20 100644
                };
          const child = yield* processes.spawn(
 diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
-index 998bc51a..ebdf9429 100644
+index 998bc51..ebdf942 100644
 --- a/e2e/support/profile-removal-rollback.ts
 +++ b/e2e/support/profile-removal-rollback.ts
 @@ -46,6 +46,12 @@ export const profileAppCopiesPending = (
@@ -1047,10 +1049,10 @@ index 998bc51a..ebdf9429 100644
    { sql: "DROP TABLE executor_app_views" },
    { sql: "DROP TABLE executor_account_reports" },
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index c6c48d57..319f4eac 100644
+index ddfef02..cb4ff2d 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7870,6 +7870,126 @@ export const scenarios = plan({
+@@ -8974,6 +8974,126 @@ export const scenarios = plan({
        local: na("Uses hosted account HTTP endpoints."),
      },
    },
@@ -1179,7 +1181,7 @@ index c6c48d57..319f4eac 100644
      file: "account-observations-local.spec.ts",
 diff --git a/e2e/tests/account-acquisition-cleanup.spec.ts b/e2e/tests/account-acquisition-cleanup.spec.ts
 new file mode 100644
-index 00000000..d466148c
+index 0000000..d466148
 --- /dev/null
 +++ b/e2e/tests/account-acquisition-cleanup.spec.ts
 @@ -0,0 +1,233 @@
@@ -1418,7 +1420,7 @@ index 00000000..d466148c
 +});
 diff --git a/e2e/tests/account-acquisition-health.spec.ts b/e2e/tests/account-acquisition-health.spec.ts
 new file mode 100644
-index 00000000..38a4422a
+index 0000000..38a4422
 --- /dev/null
 +++ b/e2e/tests/account-acquisition-health.spec.ts
 @@ -0,0 +1,171 @@
@@ -1595,7 +1597,7 @@ index 00000000..38a4422a
 +});
 diff --git a/e2e/tests/account-acquisition-local.spec.ts b/e2e/tests/account-acquisition-local.spec.ts
 new file mode 100644
-index 00000000..e934160f
+index 0000000..e934160
 --- /dev/null
 +++ b/e2e/tests/account-acquisition-local.spec.ts
 @@ -0,0 +1,161 @@
@@ -1762,7 +1764,7 @@ index 00000000..e934160f
 +});
 diff --git a/e2e/tests/account-acquisition-observations.spec.ts b/e2e/tests/account-acquisition-observations.spec.ts
 new file mode 100644
-index 00000000..ab4f5407
+index 0000000..ab4f540
 --- /dev/null
 +++ b/e2e/tests/account-acquisition-observations.spec.ts
 @@ -0,0 +1,163 @@
@@ -1931,7 +1933,7 @@ index 00000000..ab4f5407
 +});
 diff --git a/e2e/tests/account-acquisition-owner-purge.spec.ts b/e2e/tests/account-acquisition-owner-purge.spec.ts
 new file mode 100644
-index 00000000..e9cd5287
+index 0000000..e9cd528
 --- /dev/null
 +++ b/e2e/tests/account-acquisition-owner-purge.spec.ts
 @@ -0,0 +1,97 @@
@@ -2034,7 +2036,7 @@ index 00000000..e9cd5287
 +});
 diff --git a/e2e/tests/account-acquisition.spec.ts b/e2e/tests/account-acquisition.spec.ts
 new file mode 100644
-index 00000000..7c0607b8
+index 0000000..7c0607b
 --- /dev/null
 +++ b/e2e/tests/account-acquisition.spec.ts
 @@ -0,0 +1,116 @@
@@ -2156,7 +2158,7 @@ index 00000000..7c0607b8
 +});
 diff --git a/e2e/tests/account-observation-discriminator.spec.ts b/e2e/tests/account-observation-discriminator.spec.ts
 new file mode 100644
-index 00000000..06570975
+index 0000000..0657097
 --- /dev/null
 +++ b/e2e/tests/account-observation-discriminator.spec.ts
 @@ -0,0 +1,143 @@
@@ -2304,7 +2306,7 @@ index 00000000..06570975
 +  );
 +});
 diff --git a/e2e/tests/account-observation-migration.spec.ts b/e2e/tests/account-observation-migration.spec.ts
-index b7d77c5e..a4314154 100644
+index b7d77c5..a431415 100644
 --- a/e2e/tests/account-observation-migration.spec.ts
 +++ b/e2e/tests/account-observation-migration.spec.ts
 @@ -14,8 +14,23 @@ layer(HostedLive, { excludeTestServices: true })("Observation storage upgrade",
@@ -2349,7 +2351,7 @@ index b7d77c5e..a4314154 100644
            { table_name: "hosted_account_observation_access" },
          ]);
 diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
-index 7184376b..34d5f614 100644
+index 7184376..34d5f61 100644
 --- a/e2e/tests/account-status-storage.spec.ts
 +++ b/e2e/tests/account-status-storage.spec.ts
 @@ -9,6 +9,7 @@ import { statusAccount } from "../support/status-account.ts";
@@ -2378,7 +2380,7 @@ index 7184376b..34d5f614 100644
          expect(records).toEqual([
            {
 diff --git a/e2e/tests/app-accounts-upgrade.spec.ts b/e2e/tests/app-accounts-upgrade.spec.ts
-index c9e41e9a..1b3bb265 100644
+index c9e41e9..1b3bb26 100644
 --- a/e2e/tests/app-accounts-upgrade.spec.ts
 +++ b/e2e/tests/app-accounts-upgrade.spec.ts
 @@ -281,7 +281,7 @@ const upgradeFlow = <E, R>(
@@ -2391,7 +2393,7 @@ index c9e41e9a..1b3bb265 100644
      // The member's user link as it was, and the app link without a subject.
      expect(linksAfter).toEqual([
 diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
-index 952b15e5..9026c0e3 100644
+index 952b15e..9026c0e 100644
 --- a/e2e/tests/app-package.spec.ts
 +++ b/e2e/tests/app-package.spec.ts
 @@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
@@ -2405,7 +2407,7 @@ index 952b15e5..9026c0e3 100644
          expect(
 diff --git a/packages/apps/protocols/20.json b/packages/apps/protocols/20.json
 new file mode 100644
-index 00000000..722c578d
+index 0000000..722c578
 --- /dev/null
 +++ b/packages/apps/protocols/20.json
 @@ -0,0 +1,2378 @@
@@ -4788,7 +4790,7 @@ index 00000000..722c578d
 +  }
 +}
 diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
-index b9e97062..4ec2a4da 100644
+index b9e9706..4ec2a4d 100644
 --- a/packages/apps/src/contracts/host.ts
 +++ b/packages/apps/src/contracts/host.ts
 @@ -94,9 +94,10 @@ export { protocol15 } from "./protocols/15.ts";
@@ -4804,7 +4806,7 @@ index b9e97062..4ec2a4da 100644
    CredentialHost,
    MigrateCommand,
 diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
-index 31485cb5..c2c6731c 100644
+index 31485cb..c2c6731 100644
 --- a/packages/apps/src/contracts/protocol-version.ts
 +++ b/packages/apps/src/contracts/protocol-version.ts
 @@ -3,4 +3,4 @@
@@ -4815,7 +4817,7 @@ index 31485cb5..c2c6731c 100644
 +export const frameworkProtocol = 20;
 diff --git a/packages/apps/src/contracts/protocols/19.ts b/packages/apps/src/contracts/protocols/19.ts
 new file mode 100644
-index 00000000..0839e4bf
+index 0000000..0839e4b
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/19.ts
 @@ -0,0 +1,681 @@
@@ -5501,10 +5503,10 @@ index 00000000..0839e4bf
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
-index 68c57964..c5b4b0c5 100644
+index 8c6c31a..ff115ec 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
-@@ -176,6 +176,7 @@ export const DeclaredAccountSlot = Schema.Struct({
+@@ -184,6 +184,7 @@ export const DeclaredAccountSlot = Schema.Struct({
    health: Schema.optionalKey(Schema.Literal(true)),
    /** This slot can check app-acquired references through connect.check. */
    interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
@@ -5513,7 +5515,7 @@ index 68c57964..c5b4b0c5 100644
  export type DeclaredAccountSlot = typeof DeclaredAccountSlot.Type;
  
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
-index e775eed9..c44211c1 100644
+index e775eed..c44211c 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
 @@ -24,6 +24,7 @@ import { protocol16 } from "./16.ts";
@@ -5531,7 +5533,7 @@ index e775eed9..c44211c1 100644
 +  protocol19,
  ] as const;
 diff --git a/packages/apps/src/contracts/provider.ts b/packages/apps/src/contracts/provider.ts
-index b4f8c680..807f928d 100644
+index b4f8c68..807f928 100644
 --- a/packages/apps/src/contracts/provider.ts
 +++ b/packages/apps/src/contracts/provider.ts
 @@ -222,6 +222,7 @@ export class OAuth2Method<Response extends Schema.Decoder<unknown>> extends Data
@@ -5543,7 +5545,7 @@ index b4f8c680..807f928d 100644
    readonly exposure = { ref: "plain" } as const;
    readonly request = undefined;
 diff --git a/packages/apps/src/implementation/connect.ts b/packages/apps/src/implementation/connect.ts
-index 1156d340..ef5ad59c 100644
+index 1156d34..ef5ad59 100644
 --- a/packages/apps/src/implementation/connect.ts
 +++ b/packages/apps/src/implementation/connect.ts
 @@ -62,7 +62,11 @@ export function validateConnect(
@@ -5560,7 +5562,7 @@ index 1156d340..ef5ad59c 100644
    }
    for (const slot of required) {
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
-index 0ef41ab2..4b291796 100644
+index 0ef41ab..4b29179 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
 @@ -225,12 +225,19 @@ function declaredSlots(slots: AccountSlots, checks: readonly string[] | undefine
@@ -5585,7 +5587,7 @@ index 0ef41ab2..4b291796 100644
            : {}),
        });
 diff --git a/packages/apps/src/implementation/provider.ts b/packages/apps/src/implementation/provider.ts
-index 4e62ba87..b5ac5c6b 100644
+index 4e62ba8..b5ac5c6 100644
 --- a/packages/apps/src/implementation/provider.ts
 +++ b/packages/apps/src/implementation/provider.ts
 @@ -27,8 +27,10 @@ export const secrets = <Fields extends Schema.Decoder<unknown>>(options: {
@@ -5602,7 +5604,7 @@ index 4e62ba87..b5ac5c6b 100644
  /**
   * The `oauth2()` form an author chose: client credentials or authorization code by `grant`, then
 diff --git a/packages/mcp/src/implementation/app-asset-paths.ts b/packages/mcp/src/implementation/app-asset-paths.ts
-index 50042f97..2cc85c25 100644
+index 50042f9..2cc85c2 100644
 --- a/packages/mcp/src/implementation/app-asset-paths.ts
 +++ b/packages/mcp/src/implementation/app-asset-paths.ts
 @@ -1,7 +1,7 @@
@@ -5615,7 +5617,7 @@ index 50042f97..2cc85c25 100644
      "/_executor/mcp-apps/sandbox-5293f06e3bc38b9e46843a54fde5de096e8dbb469adf9b7952642f8e36aef0fa.js",
  } as const;
 diff --git a/packages/mcp/src/implementation/app-assets.ts b/packages/mcp/src/implementation/app-assets.ts
-index 757c5f87..483c83f2 100644
+index 757c5f8..483c83f 100644
 --- a/packages/mcp/src/implementation/app-assets.ts
 +++ b/packages/mcp/src/implementation/app-assets.ts
 @@ -1,5 +1,5 @@
@@ -5627,7 +5629,7 @@ index 757c5f87..483c83f2 100644
  };
 diff --git a/packages/sdk/src/contracts/account-acquisition-driver.ts b/packages/sdk/src/contracts/account-acquisition-driver.ts
 new file mode 100644
-index 00000000..ccca1671
+index 0000000..ccca167
 --- /dev/null
 +++ b/packages/sdk/src/contracts/account-acquisition-driver.ts
 @@ -0,0 +1,132 @@
@@ -5764,7 +5766,7 @@ index 00000000..ccca1671
 +  >;
 +}
 diff --git a/packages/sdk/src/contracts/account-connection.ts b/packages/sdk/src/contracts/account-connection.ts
-index e62aa308..74125da2 100644
+index e62aa30..74125da 100644
 --- a/packages/sdk/src/contracts/account-connection.ts
 +++ b/packages/sdk/src/contracts/account-connection.ts
 @@ -1,4 +1,10 @@
@@ -5868,7 +5870,7 @@ index e62aa308..74125da2 100644
 +    }),
    );
 diff --git a/packages/sdk/src/contracts/account-observation.ts b/packages/sdk/src/contracts/account-observation.ts
-index 51ca17fb..07982c9f 100644
+index 51ca17f..07982c9 100644
 --- a/packages/sdk/src/contracts/account-observation.ts
 +++ b/packages/sdk/src/contracts/account-observation.ts
 @@ -39,8 +39,23 @@ export const AccountObservationInput = Schema.Struct({
@@ -5897,7 +5899,7 @@ index 51ca17fb..07982c9f 100644
 +  StoredDriverObservationData,
 +]);
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
-index 788c7897..944112ea 100644
+index f15fbdd..7b291ba 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
 @@ -1,3 +1,4 @@
@@ -5945,7 +5947,7 @@ index 788c7897..944112ea 100644
  });
  export type AccountHealth = typeof AccountHealth.Type;
  
-@@ -315,7 +337,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
+@@ -381,7 +403,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
        params: accountParams,
        query: { ...ownerQuery, apps: Schema.fromJsonString(AccountObservationInput.fields.apps) },
        success: AccountObservationView,
@@ -5954,7 +5956,7 @@ index 788c7897..944112ea 100644
      }),
    )
    .add(
-@@ -324,7 +346,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
+@@ -390,7 +412,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
        query: ownerQuery,
        payload: Schema.Struct({ apps: AccountObservationInput.fields.apps }),
        success: AccountObservationView,
@@ -5963,7 +5965,7 @@ index 788c7897..944112ea 100644
      }),
    )
    .add(
-@@ -387,7 +409,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
+@@ -453,7 +475,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
          apps: Schema.fromJsonString(AccountInputs.health.fields.apps),
        },
        success: AccountHealth,
@@ -5972,7 +5974,7 @@ index 788c7897..944112ea 100644
      }).annotate(
        OpenApi.Description,
        "Read the named apps' latest checks of an account and the identity the checks reported. Does not run a check.",
-@@ -410,7 +432,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
+@@ -476,7 +498,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
        query: ownerQuery,
        payload: Schema.Struct({ apps: AccountInputs.check.fields.apps }),
        success: AccountHealth,
@@ -5982,7 +5984,7 @@ index 788c7897..944112ea 100644
        OpenApi.Description,
        "Run the provider checks of the named apps for this account, using its current credentials. Each app's check is a safe read defined in its source. Apps without a check stay unchecked. A passing check verifies only what that app's check tests.",
 diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
-index 19053a3a..b2aea60c 100644
+index 8a19ba6..39e9c56 100644
 --- a/packages/sdk/src/contracts/apps.ts
 +++ b/packages/sdk/src/contracts/apps.ts
 @@ -58,6 +58,7 @@ export const AccountRequirement = Schema.Struct({
@@ -5994,7 +5996,7 @@ index 19053a3a..b2aea60c 100644
  
  export type AccountRequirement = typeof AccountRequirement.Type;
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index 09ab7b8f..e078a0ab 100644
+index b0af070..980ab8f 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -1,4 +1,8 @@
@@ -6006,7 +6008,7 @@ index 09ab7b8f..e078a0ab 100644
  import { WorkflowHost, type WorkflowRuntime } from "./workflow-runtime.ts";
  import { WebhookSourceHost, type WebhookSourceDispatcher } from "./webhooks.ts";
  /** The shared Executor interface and remote client options; projected from ExecutorApi. */
-@@ -314,6 +318,7 @@ export interface ExecutorInputs {
+@@ -330,6 +334,7 @@ export interface ExecutorInputs {
    readonly git: RepositoryBackend;
    readonly blobs: BlobStorage;
    readonly runtime: AppRuntime;
@@ -6014,7 +6016,7 @@ index 09ab7b8f..e078a0ab 100644
    readonly oauth?: OAuthOptions;
    /** Defaults to reading the hosted Executor registry. */
    readonly registry?: RegistryOptions;
-@@ -488,6 +493,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
+@@ -506,6 +511,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
    readonly [StorageHost]: StorageHost;
    readonly [InteractiveHost]: import("./interactive-accounts.ts").InteractiveHost;
    readonly [PersonalDataReportingHost]: PersonalDataReportingHost;
@@ -6022,7 +6024,7 @@ index 09ab7b8f..e078a0ab 100644
    readonly [PrefetchHost]: PrefetchHost;
    readonly [AppViewsHost]: AppViewsHost;
    readonly [AppSourceHost]: AppSourceHost;
-@@ -517,6 +523,7 @@ export type PromiseExecutor = Promisify<
+@@ -535,6 +541,7 @@ export type PromiseExecutor = Promisify<
      | typeof WebhookSourceHost
      | typeof RepositoryHost
      | typeof InteractiveHost
@@ -6031,7 +6033,7 @@ index 09ab7b8f..e078a0ab 100644
      | typeof PersonalDataReportingHost
      | typeof PrefetchHost
 diff --git a/packages/sdk/src/contracts/index.ts b/packages/sdk/src/contracts/index.ts
-index 561ef1bd..72bac8f0 100644
+index 3b6a93e..f0ebce7 100644
 --- a/packages/sdk/src/contracts/index.ts
 +++ b/packages/sdk/src/contracts/index.ts
 @@ -1,5 +1,6 @@
@@ -6042,7 +6044,7 @@ index 561ef1bd..72bac8f0 100644
  export * from "./shared.ts";
  export * from "./provider.ts";
 diff --git a/packages/sdk/src/contracts/interactive-accounts.ts b/packages/sdk/src/contracts/interactive-accounts.ts
-index c76ff77e..ecee8a5d 100644
+index c76ff77..ecee8a5 100644
 --- a/packages/sdk/src/contracts/interactive-accounts.ts
 +++ b/packages/sdk/src/contracts/interactive-accounts.ts
 @@ -1,4 +1,5 @@
@@ -6075,10 +6077,10 @@ index c76ff77e..ecee8a5d 100644
    | import("./interactive-errors.ts").InteractiveRetirementBusy
    | import("./interactive-errors.ts").InteractiveRetirementFailed;
 diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
-index 8e89671d..bfe9a7c6 100644
+index 44656d6..032f394 100644
 --- a/packages/sdk/src/core.ts
 +++ b/packages/sdk/src/core.ts
-@@ -31,6 +31,10 @@ export {
+@@ -32,6 +32,10 @@ export {
  export { executorDatabase } from "./implementation/storage-migrations.ts";
  export { StorageMigrationFailed } from "./implementation/storage-migration-error.ts";
  export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
@@ -6091,7 +6093,7 @@ index 8e89671d..bfe9a7c6 100644
  export { aesGcmCredentials } from "./implementation/credentials.ts";
 diff --git a/packages/sdk/src/implementation/account-acquisition-adapter.ts b/packages/sdk/src/implementation/account-acquisition-adapter.ts
 new file mode 100644
-index 00000000..ef13666f
+index 0000000..ef13666
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-adapter.ts
 @@ -0,0 +1,67 @@
@@ -6164,7 +6166,7 @@ index 00000000..ef13666f
 +};
 diff --git a/packages/sdk/src/implementation/account-acquisition-bindings.ts b/packages/sdk/src/implementation/account-acquisition-bindings.ts
 new file mode 100644
-index 00000000..74bc6a17
+index 0000000..74bc6a1
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-bindings.ts
 @@ -0,0 +1,100 @@
@@ -6270,7 +6272,7 @@ index 00000000..74bc6a17
 +  });
 diff --git a/packages/sdk/src/implementation/account-acquisition-connect.ts b/packages/sdk/src/implementation/account-acquisition-connect.ts
 new file mode 100644
-index 00000000..710f047e
+index 0000000..710f047
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-connect.ts
 @@ -0,0 +1,150 @@
@@ -6426,7 +6428,7 @@ index 00000000..710f047e
 +};
 diff --git a/packages/sdk/src/implementation/account-acquisition-output.ts b/packages/sdk/src/implementation/account-acquisition-output.ts
 new file mode 100644
-index 00000000..518ec95f
+index 0000000..518ec95
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-output.ts
 @@ -0,0 +1,93 @@
@@ -6525,7 +6527,7 @@ index 00000000..518ec95f
 +};
 diff --git a/packages/sdk/src/implementation/account-acquisition-registry.ts b/packages/sdk/src/implementation/account-acquisition-registry.ts
 new file mode 100644
-index 00000000..c73db718
+index 0000000..c73db71
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-registry.ts
 @@ -0,0 +1,49 @@
@@ -6580,7 +6582,7 @@ index 00000000..c73db718
 +export type AcquisitionRegistry = Effect.Success<ReturnType<typeof makeAcquisitionRegistry>>;
 diff --git a/packages/sdk/src/implementation/account-acquisition-retirement.ts b/packages/sdk/src/implementation/account-acquisition-retirement.ts
 new file mode 100644
-index 00000000..c46b439a
+index 0000000..c46b439
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-retirement.ts
 @@ -0,0 +1,149 @@
@@ -6735,7 +6737,7 @@ index 00000000..c46b439a
 +};
 diff --git a/packages/sdk/src/implementation/account-acquisition-runtime.ts b/packages/sdk/src/implementation/account-acquisition-runtime.ts
 new file mode 100644
-index 00000000..65c96676
+index 0000000..65c9667
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-runtime.ts
 @@ -0,0 +1,125 @@
@@ -6866,7 +6868,7 @@ index 00000000..65c96676
 +};
 diff --git a/packages/sdk/src/implementation/account-acquisition-schema.ts b/packages/sdk/src/implementation/account-acquisition-schema.ts
 new file mode 100644
-index 00000000..bfd40c6e
+index 0000000..bfd40c6
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-acquisition-schema.ts
 @@ -0,0 +1,16 @@
@@ -6888,7 +6890,7 @@ index 00000000..bfd40c6e
 +});
 diff --git a/packages/sdk/src/implementation/account-driver-check-schema.ts b/packages/sdk/src/implementation/account-driver-check-schema.ts
 new file mode 100644
-index 00000000..6badc0d4
+index 0000000..6badc0d
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-driver-check-schema.ts
 @@ -0,0 +1,22 @@
@@ -6916,7 +6918,7 @@ index 00000000..6badc0d4
 +});
 diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages/sdk/src/implementation/account-driver-health.ts
 new file mode 100644
-index 00000000..531a265c
+index 0000000..531a265
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-driver-health.ts
 @@ -0,0 +1,213 @@
@@ -7135,7 +7137,7 @@ index 00000000..531a265c
 +};
 diff --git a/packages/sdk/src/implementation/account-driver-observation-store.ts b/packages/sdk/src/implementation/account-driver-observation-store.ts
 new file mode 100644
-index 00000000..d2698a82
+index 0000000..d2698a8
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-driver-observation-store.ts
 @@ -0,0 +1,228 @@
@@ -7369,7 +7371,7 @@ index 00000000..d2698a82
 +};
 diff --git a/packages/sdk/src/implementation/account-driver-observations.ts b/packages/sdk/src/implementation/account-driver-observations.ts
 new file mode 100644
-index 00000000..44b2e12a
+index 0000000..44b2e12
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-driver-observations.ts
 @@ -0,0 +1,72 @@
@@ -7447,7 +7449,7 @@ index 00000000..44b2e12a
 +  });
 diff --git a/packages/sdk/src/implementation/account-driver-source.ts b/packages/sdk/src/implementation/account-driver-source.ts
 new file mode 100644
-index 00000000..82f97e64
+index 0000000..82f97e6
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-driver-source.ts
 @@ -0,0 +1,57 @@
@@ -7509,7 +7511,7 @@ index 00000000..82f97e64
 +    }),
 +  );
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 49cf5481..5e858017 100644
+index a03eff6..7b94ffe 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
 @@ -1,3 +1,5 @@
@@ -7518,7 +7520,7 @@ index 49cf5481..5e858017 100644
  import { privateAccountCheck } from "./account-status-output.ts";
  /**
   * Account checks run by the apps that use an account, as the product names them. Each app's active
-@@ -148,7 +150,14 @@ export const makeAccountHealth = (
+@@ -151,7 +153,14 @@ export const makeAccountHealth = (
    recordObservation?: ReturnType<
      typeof import("./account-observations.ts").makeAccountObservations
    >["fromHealth"],
@@ -7533,19 +7535,19 @@ index 49cf5481..5e858017 100644
    /** One account's health from the apps that use it and its recorded checks. */
    const project = (
      account: HealthAccount,
-@@ -217,17 +226,18 @@ export const makeAccountHealth = (
+@@ -228,17 +237,18 @@ export const makeAccountHealth = (
        const report = yield* query(() =>
-         db.findFirst("accountReports", { where: (b) => b("id", "=", account.id) }),
+         db.findFirst("accountReports", { where: (b) => b("id", "=", stored.id) }),
        );
 -      return yield* project(
 +      const health = yield* project(
-         account,
+         stored,
          apps,
          rows,
-         yield* interactiveBinding(db, { account: account.id, owner: account.owner }),
+         yield* interactiveBinding(db, { account: stored.id, owner: stored.owner }),
          report === null ? undefined : { status: report.status },
        );
-+      return withDriverHealth(health, yield* driver.report(account));
++      return withDriverHealth(health, yield* driver.report(stored));
      });
  
    /**
@@ -7554,7 +7556,7 @@ index 49cf5481..5e858017 100644
     * limits the accounts read to that owner, as for a hosted organization. `links` names the apps
     * each account is linked to.
     */
-@@ -235,7 +245,7 @@ export const makeAccountHealth = (
+@@ -246,7 +256,7 @@ export const makeAccountHealth = (
      Effect.gen(function* () {
        const accounts = yield* query(() =>
          db.findMany("accounts", {
@@ -7563,15 +7565,15 @@ index 49cf5481..5e858017 100644
            where: (b) => (input.owner === undefined ? true : b("owner", "=", input.owner)),
            orderBy: ["id", "asc"],
          }),
-@@ -255,6 +265,7 @@ export const makeAccountHealth = (
-       const reports = new Map(reportRows.map((row) => [row.id, row.status]));
-       const linked = [...new Set(input.links.map((link) => link.app))];
-       const apps = linked.length === 0 ? [] : yield* listApps({ ids: linked });
+@@ -266,6 +276,7 @@ export const makeAccountHealth = (
+         query(() => db.findMany("accountChecks", { where: (b) => b("account", "in", ids) })),
+         linked.length === 0 ? Effect.succeed<readonly App[]>([]) : listApps({ ids: linked }),
+       );
 +      const driverHealth = yield* driver.list(accounts);
        return yield* Effect.forEach(accounts, (account) =>
          project(
            account,
-@@ -264,7 +275,7 @@ export const makeAccountHealth = (
+@@ -275,7 +286,7 @@ export const makeAccountHealth = (
            rows.filter((row) => row.account === account.id),
            acquired.get(account.id),
            reports.has(account.id) ? { status: reports.get(account.id)! } : undefined,
@@ -7580,17 +7582,17 @@ index 49cf5481..5e858017 100644
        );
      }).pipe(Effect.withSpan("sdk.accounts.listHealth"));
  
-@@ -483,6 +494,7 @@ export const makeAccountHealth = (
-       Effect.gen(function* () {
-         const account = yield* storedAccount(db, input.account, input.owner);
-         const apps = input.apps.length === 0 ? [] : yield* listApps({ ids: input.apps });
+@@ -499,6 +510,7 @@ export const makeAccountHealth = (
+             ? Effect.succeed<readonly App[]>([])
+             : listApps({ ids: input.apps }),
+         );
 +        yield* driver.check(account);
          yield* Effect.forEach(apps, (app) => checkApp(app, account), {
            concurrency: 4,
            discard: true,
 diff --git a/packages/sdk/src/implementation/account-observation-state.ts b/packages/sdk/src/implementation/account-observation-state.ts
 new file mode 100644
-index 00000000..bec0015a
+index 0000000..bec0015
 --- /dev/null
 +++ b/packages/sdk/src/implementation/account-observation-state.ts
 @@ -0,0 +1,78 @@
@@ -7673,7 +7675,7 @@ index 00000000..bec0015a
 +  };
 +};
 diff --git a/packages/sdk/src/implementation/account-observation-store.ts b/packages/sdk/src/implementation/account-observation-store.ts
-index 4b11e0e1..d45d1418 100644
+index 4b11e0e..d45d141 100644
 --- a/packages/sdk/src/implementation/account-observation-store.ts
 +++ b/packages/sdk/src/implementation/account-observation-store.ts
 @@ -1,57 +1,31 @@
@@ -7907,7 +7909,7 @@ index 4b11e0e1..d45d1418 100644
 +  };
  };
 diff --git a/packages/sdk/src/implementation/account-observations.ts b/packages/sdk/src/implementation/account-observations.ts
-index 03bbf8eb..03120e9e 100644
+index 03bbf8e..03120e9 100644
 --- a/packages/sdk/src/implementation/account-observations.ts
 +++ b/packages/sdk/src/implementation/account-observations.ts
 @@ -1,3 +1,6 @@
@@ -7970,10 +7972,10 @@ index 03bbf8eb..03120e9e 100644
    };
  };
 diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
-index 29139ff9..2eaee7d9 100644
+index f276cb9..d11f228 100644
 --- a/packages/sdk/src/implementation/accounts.ts
 +++ b/packages/sdk/src/implementation/accounts.ts
-@@ -278,6 +278,16 @@ export const makeAccounts = (
+@@ -346,6 +346,16 @@ export const makeAccounts = (
                  where: (b) => b("account", "=", input.account),
                }),
              );
@@ -7991,11 +7993,11 @@ index 29139ff9..2eaee7d9 100644
                tx.deleteMany("accounts", { where: (b) => b("id", "=", input.account) }),
              );
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
-index a6feadec..ae694d5e 100644
+index 1d7715c..4ea7004 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
-@@ -59,6 +59,20 @@ export interface AppProtocol {
-   readonly sealedCredentials: boolean;
+@@ -67,6 +67,20 @@ export interface AppProtocol {
+   readonly accounts: (accounts: ResolvedAccounts) => ResolvedAccounts;
  }
  
 +/** Host acquisition declarations are distinct from app-owned connection handlers. */
@@ -8015,7 +8017,7 @@ index a6feadec..ae694d5e 100644
  /** Account observations are a separate optional read operation. */
  const protocol19: AppProtocol = {
    version: 19,
-@@ -488,6 +502,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
+@@ -527,6 +541,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
      protocol17,
      protocol18,
      protocol19,
@@ -8024,10 +8026,10 @@ index a6feadec..ae694d5e 100644
  );
  
 diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
-index a3bd0f6d..debd0928 100644
+index ac6cd26..02083ac 100644
 --- a/packages/sdk/src/implementation/apps.ts
 +++ b/packages/sdk/src/implementation/apps.ts
-@@ -475,6 +475,7 @@ export const makeApps = (
+@@ -478,6 +478,7 @@ export const makeApps = (
              cardinality: value.cardinality,
              health: value.health,
              interactiveHealth: value.interactiveHealth,
@@ -8035,7 +8037,7 @@ index a3bd0f6d..debd0928 100644
            })),
          ),
        );
-@@ -490,17 +491,28 @@ export const makeApps = (
+@@ -493,17 +494,28 @@ export const makeApps = (
          ...(built.requirements.events === undefined ? {} : { events: built.requirements.events }),
          ...(built.requirements.icons === undefined ? {} : { icons: built.requirements.icons }),
          accounts: Object.fromEntries(
@@ -8075,7 +8077,7 @@ index a3bd0f6d..debd0928 100644
        return { files, built, entries, requirements, codeFiles, split, invalidSource };
 diff --git a/packages/sdk/src/implementation/connection-interactive.ts b/packages/sdk/src/implementation/connection-interactive.ts
 new file mode 100644
-index 00000000..c8364807
+index 0000000..c836480
 --- /dev/null
 +++ b/packages/sdk/src/implementation/connection-interactive.ts
 @@ -0,0 +1,43 @@
@@ -8123,7 +8125,7 @@ index 00000000..c8364807
 +  };
 +};
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 5e2bbbb3..6d694ba4 100644
+index 7907599..e394830 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,7 +1,8 @@
@@ -8153,9 +8155,9 @@ index 5e2bbbb3..6d694ba4 100644
 +import { pendingInteractive } from "./interactive-state.ts";
 +import { readConnection } from "./connection-state.ts";
  import { makeAccountConnections } from "./account-connections.ts";
- import { credentialsReadable, makeAccounts, storedAccount } from "./accounts.ts";
- import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
-@@ -77,6 +90,30 @@ export const createExecutor = (
+ import {
+   credentialsReadable,
+@@ -83,6 +96,30 @@ export const createExecutor = (
      const credentials =
        options.credentials ?? (yield* aesGcmCredentials(options.secret, globalThis.crypto));
      const db = database(options.database);
@@ -8186,7 +8188,7 @@ index 5e2bbbb3..6d694ba4 100644
      const sources = gitSourceStorage(options.git);
      const origin = options.origin ?? hostedExecutorOrigin;
      const catalog = makeRegistry(
-@@ -203,6 +240,7 @@ export const createExecutor = (
+@@ -210,6 +247,7 @@ export const createExecutor = (
        runtime,
        oauth.resolveSelected,
        options.hooks,
@@ -8194,7 +8196,7 @@ index 5e2bbbb3..6d694ba4 100644
      );
      const connections = makeAccountConnections(db, credentials, crypto, options.hooks, sitePolicy);
      const { add, replaceCredentials, readCredentials, ...accountOperations } = makeAccounts(
-@@ -225,6 +263,7 @@ export const createExecutor = (
+@@ -232,6 +270,7 @@ export const createExecutor = (
        crypto,
        apps.list,
        makeObservationReader(db, runtime, oauth, firstPartyClients, sitePolicy, options.hooks),
@@ -8202,15 +8204,15 @@ index 5e2bbbb3..6d694ba4 100644
      );
      const { checkCredentials, ...accountHealth } = makeAccountHealth(
        db,
-@@ -235,6 +274,7 @@ export const createExecutor = (
-       apps.list,
+@@ -243,6 +282,7 @@ export const createExecutor = (
+       options.hostApi,
        options.hooks,
        fromHealth,
 +      acquisitionHost,
      );
      const schedules = makeSchedules(
        options.database,
-@@ -308,6 +348,7 @@ export const createExecutor = (
+@@ -326,6 +366,7 @@ export const createExecutor = (
        ]),
        [OwnerMovesHost]: makeOwnerMoves(db, credentials),
        [InteractiveHost]: { ...interactive, ...retirement },
@@ -8218,7 +8220,7 @@ index 5e2bbbb3..6d694ba4 100644
        scheduler: schedules.dispatcher,
        events,
        schedules: schedules.operations,
-@@ -319,6 +360,14 @@ export const createExecutor = (
+@@ -337,6 +378,14 @@ export const createExecutor = (
                Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)),
              );
              if (saved === undefined) return yield* accountOperations.remove(input);
@@ -8233,7 +8235,7 @@ index 5e2bbbb3..6d694ba4 100644
              if (
                (yield* interactive.binding({ owner: saved.owner, account: saved.id })) === undefined
              )
-@@ -340,6 +389,19 @@ export const createExecutor = (
+@@ -358,6 +407,19 @@ export const createExecutor = (
        accountConnections: {
          ...connections,
          ...oauth.connections,
@@ -8253,7 +8255,7 @@ index 5e2bbbb3..6d694ba4 100644
          submit: (input) =>
            interactive
              .clearAttempt({ ...input, type: "secrets" })
-@@ -392,11 +454,31 @@ export const createExecutor = (
+@@ -410,11 +472,31 @@ export const createExecutor = (
          ...ownerOperations,
          remove: (input) =>
            Effect.gen(function* () {
@@ -8286,10 +8288,10 @@ index 5e2bbbb3..6d694ba4 100644
              yield* cleanup;
              return result;
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
-index ccf8bd9b..86a41300 100644
+index 40cd636..6933a1c 100644
 --- a/packages/sdk/src/implementation/database.ts
 +++ b/packages/sdk/src/implementation/database.ts
-@@ -6,7 +6,10 @@ import type { ExecutorDatabase } from "./storage.ts";
+@@ -8,7 +8,10 @@ import type { ExecutorDatabase } from "./storage.ts";
  /** Bound query handle sharing the host connection and reactive transaction context. */
  export type Query = ReturnType<typeof database>;
  /** Select the latest migrated storage schema. */
@@ -8300,9 +8302,9 @@ index ccf8bd9b..86a41300 100644
 +});
  /**
   * Run a lazy native query without leaking SQL or driver details. The query's own
-  * FumaDB span covers the same interval, so this boundary adds no span of its own.
+  * `sql.execute` spans cover the same interval, so this boundary adds no span of its own.
 diff --git a/packages/sdk/src/implementation/handlers.ts b/packages/sdk/src/implementation/handlers.ts
-index e95b5ffa..7e35638e 100644
+index e95b5ff..7e35638 100644
 --- a/packages/sdk/src/implementation/handlers.ts
 +++ b/packages/sdk/src/implementation/handlers.ts
 @@ -76,6 +76,18 @@ export const executorHandlers = (executor: Executor) =>
@@ -8325,7 +8327,7 @@ index e95b5ffa..7e35638e 100644
          .handle("startOAuth", ({ payload }) => executor.accountConnections.startOAuth(payload))
          .handle("findOAuth", ({ payload }) => executor.accountConnections.findOAuth(payload))
 diff --git a/packages/sdk/src/implementation/interactive-accounts.ts b/packages/sdk/src/implementation/interactive-accounts.ts
-index 5293f416..e6a35362 100644
+index 5293f41..e6a3536 100644
 --- a/packages/sdk/src/implementation/interactive-accounts.ts
 +++ b/packages/sdk/src/implementation/interactive-accounts.ts
 @@ -35,12 +35,13 @@ import {
@@ -8450,7 +8452,7 @@ index 5293f416..e6a35362 100644
          }),
        );
 diff --git a/packages/sdk/src/implementation/interactive-attempts.ts b/packages/sdk/src/implementation/interactive-attempts.ts
-index 6a852b3c..686b49ad 100644
+index 6a852b3..686b49a 100644
 --- a/packages/sdk/src/implementation/interactive-attempts.ts
 +++ b/packages/sdk/src/implementation/interactive-attempts.ts
 @@ -12,6 +12,7 @@ import { requireTargetProvider } from "./connection-target.ts";
@@ -8487,7 +8489,7 @@ index 6a852b3c..686b49ad 100644
          supplied ??
          (yield* backgroundAccounts(db, lifecycle, {
 diff --git a/packages/sdk/src/implementation/interactive-runner.ts b/packages/sdk/src/implementation/interactive-runner.ts
-index dfcf8a0d..5e452d91 100644
+index dfcf8a0..5e452d9 100644
 --- a/packages/sdk/src/implementation/interactive-runner.ts
 +++ b/packages/sdk/src/implementation/interactive-runner.ts
 @@ -5,6 +5,7 @@ import { AccountId, StorageError, type OwnerId } from "../contracts/shared.ts";
@@ -8574,7 +8576,7 @@ index dfcf8a0d..5e452d91 100644
        yield* lifecycle.connectionCompleting({
          id: row.id,
 diff --git a/packages/sdk/src/implementation/interactive-state.ts b/packages/sdk/src/implementation/interactive-state.ts
-index e102b260..6900948c 100644
+index e102b26..6900948 100644
 --- a/packages/sdk/src/implementation/interactive-state.ts
 +++ b/packages/sdk/src/implementation/interactive-state.ts
 @@ -17,6 +17,7 @@ import {
@@ -8604,7 +8606,7 @@ index e102b260..6900948c 100644
              const previous = yield* interactiveBinding(tx, {
                account: row.reconnectAccount,
 diff --git a/packages/sdk/src/implementation/owner-moves.ts b/packages/sdk/src/implementation/owner-moves.ts
-index 0f45d0d4..3ecc986d 100644
+index 0f45d0d..3ecc986 100644
 --- a/packages/sdk/src/implementation/owner-moves.ts
 +++ b/packages/sdk/src/implementation/owner-moves.ts
 @@ -77,6 +77,9 @@ const ownerTables = [
@@ -8618,7 +8620,7 @@ index 0f45d0d4..3ecc986d 100644
    "profiles",
    "schedules",
 diff --git a/packages/sdk/src/implementation/owners.ts b/packages/sdk/src/implementation/owners.ts
-index 01b0be37..a4e773c0 100644
+index 01b0be3..a4e773c 100644
 --- a/packages/sdk/src/implementation/owners.ts
 +++ b/packages/sdk/src/implementation/owners.ts
 @@ -167,6 +167,16 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
@@ -8639,7 +8641,7 @@ index 01b0be37..a4e773c0 100644
              tx.deleteMany("oauthGrants", { where: (b) => b("id", "in", accountIds) }),
            );
 diff --git a/packages/sdk/src/implementation/promise.ts b/packages/sdk/src/implementation/promise.ts
-index c46844ef..48097725 100644
+index c46844e..4809772 100644
 --- a/packages/sdk/src/implementation/promise.ts
 +++ b/packages/sdk/src/implementation/promise.ts
 @@ -29,6 +29,8 @@ import {
@@ -8667,7 +8669,7 @@ index c46844ef..48097725 100644
          run(StartConnectionOAuth, input, executor.accountConnections.startOAuth),
        findOAuth: (input) => run(FindConnectionOAuth, input, executor.accountConnections.findOAuth),
 diff --git a/packages/sdk/src/implementation/selection.ts b/packages/sdk/src/implementation/selection.ts
-index bda4fd73..02ec4994 100644
+index bda4fd7..02ec499 100644
 --- a/packages/sdk/src/implementation/selection.ts
 +++ b/packages/sdk/src/implementation/selection.ts
 @@ -12,6 +12,7 @@ import { type AccountId, type AppId, StorageError } from "../contracts/shared.ts
@@ -8701,7 +8703,7 @@ index bda4fd73..02ec4994 100644
              return account;
            }),
 diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
-index 2dbd036b..d0d84459 100644
+index fcdec07..cb6a07e 100644
 --- a/packages/sdk/src/implementation/storage-migrations.ts
 +++ b/packages/sdk/src/implementation/storage-migrations.ts
 @@ -1,3 +1,5 @@
@@ -8710,8 +8712,8 @@ index 2dbd036b..d0d84459 100644
  import { accountObservations } from "./account-observation-schema.ts";
  /** Current baseline and the upgrades required by existing version 4 databases. */
  import { fumadb } from "fumadb-effect";
-@@ -484,6 +486,8 @@ const version4 = <Version extends string>(version: Version, up?: CustomMigration
-   });
+@@ -500,6 +502,8 @@ const version4015Schema = schema({
+ });
  
  /** Version 4 is the oldest supported layout. Append future compatible upgrades here. */
 +const version4020Tables = { ...version4019Tables, accountAcquisitions };
@@ -8719,7 +8721,7 @@ index 2dbd036b..d0d84459 100644
  export const storageSchemas = [
    version4("4.0.0"),
    version4("4.0.1", () =>
-@@ -720,6 +724,30 @@ export const storageSchemas = [
+@@ -725,6 +729,30 @@ export const storageSchemas = [
          ]),
        ),
    }),
@@ -8751,10 +8753,10 @@ index 2dbd036b..d0d84459 100644
  
  /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
 diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
-index 2f75f2cb..ac9fbbfb 100644
+index 6541190..c7b12d7 100644
 --- a/packages/sdk/src/implementation/storage.ts
 +++ b/packages/sdk/src/implementation/storage.ts
-@@ -22,7 +22,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+@@ -25,7 +25,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
      const sql = yield* SqlClient.SqlClient;
      const reactivity = yield* makeReactiveStore({ namespace: "executor" });
      const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
@@ -8763,16 +8765,7 @@ index 2f75f2cb..ac9fbbfb 100644
      const checkMigration = Effect.gen(function* () {
        const migrator = yield* client.createMigrator;
        const version = yield* migrator.version;
-@@ -47,7 +47,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
-             yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
-               discard: true,
-             });
--          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.19")));
-+          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.21")));
-           return;
-         }
-         // Execute every registered upgrade in order. A direct diff to latest can skip
-@@ -77,7 +77,13 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+@@ -80,7 +80,13 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
        Effect.mapError(() => new StorageError()),
      );
      return {
@@ -8788,7 +8781,7 @@ index 2f75f2cb..ac9fbbfb 100644
        // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
        toolSearch: makeToolSearchStore(sql),
 diff --git a/packages/sdk/src/index.ts b/packages/sdk/src/index.ts
-index 4c9bdb8d..40084574 100644
+index 4c9bdb8..4008457 100644
 --- a/packages/sdk/src/index.ts
 +++ b/packages/sdk/src/index.ts
 @@ -25,6 +25,10 @@ export {
@@ -8803,7 +8796,7 @@ index 4c9bdb8d..40084574 100644
  export const createExecutor = (options: ExecutorOptions): Promise<Executor> =>
    Effect.runPromise(
 diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
-index b73ee7ce..4c3dbed7 100644
+index b73ee7c..4c3dbed 100644
 --- a/playground/sdk/storage.ts
 +++ b/playground/sdk/storage.ts
 @@ -10,7 +10,7 @@ export const storageWalkthrough = () =>

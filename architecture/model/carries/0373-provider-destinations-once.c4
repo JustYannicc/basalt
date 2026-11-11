@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.providerAccountMethods {
     metadata {
-      constraint "Account methods derive every requirement's destination from one authorized set of reads per request; single-requirement rechecks read fresh."
+      constraint "Account methods derive every requirement's destination from one authorized set of reads per request; single-requirement rechecks read fresh. The current app-access result enters the shared destination context, and only app IDs permitted by that request's authorization may contribute provider destinations."
     }
   }
 }

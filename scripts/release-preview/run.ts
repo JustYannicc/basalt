@@ -1,3 +1,4 @@
+import { catalogAcceptanceOperation } from "./catalog-acceptance-report.ts";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -11,10 +12,11 @@ import { manifestPath, previewNumber } from "./checkpoint.ts";
 import { privateOperation } from "./process.ts";
 import { runPreview } from "./lifecycle.ts";
 import { previewReceipt } from "./receipt.ts";
+import { requireCompilerPreviewIdentity } from "./policy.ts";
 import { previewIdentity } from "../environment.ts";
 import { readPreviewManifest } from "../preview/manifest.ts";
 
-type Identity = { pullRequest: number; head: string; base: string };
+type Identity = { pullRequest: number; head: string; base: string; compilerAcceptance?: true };
 
 function requireIdentity(value: unknown, pullRequest: number): Identity {
   if (!value || typeof value !== "object") throw new Error("Missing preview candidate identity");
@@ -29,7 +31,12 @@ function requireIdentity(value: unknown, pullRequest: number): Identity {
   ) {
     throw new Error("Invalid preview candidate identity");
   }
-  return { pullRequest, head: identity.head, base: identity.base };
+  return {
+    pullRequest,
+    head: identity.head,
+    base: identity.base,
+    ...(identity.compilerAcceptance === true ? { compilerAcceptance: true } : {}),
+  };
 }
 
 export async function executePreview(
@@ -43,10 +50,11 @@ export async function executePreview(
   if (source.PREVIEW_MANIFEST_CHECKPOINTED !== "1")
     throw new Error("The encrypted cleanup checkpoint must be uploaded before deployment");
   validateSmokeSecrets(source);
-  const identity = requireIdentity(
-    JSON.parse(await readFile(join(root, ".local", "candidate.json"), "utf8")),
-    pullRequest,
+  const candidate: unknown = JSON.parse(
+    await readFile(join(root, ".local", "candidate.json"), "utf8"),
   );
+  const identity = requireIdentity(candidate, pullRequest);
+  requireCompilerPreviewIdentity(source, candidate, identity);
   const privateRoot = await mkdtemp(
     join(source.RUNNER_TEMP ?? tmpdir(), "basalt-release-preview-"),
   );
@@ -78,6 +86,7 @@ export async function executePreview(
     await mkdir(join(privateRoot, "credentials"), { mode: 0o700 });
     const materialized = await materializeSmokeSecrets(source, join(privateRoot, "credentials"));
     const runnerEnvironment: NodeJS.ProcessEnv = {};
+    let catalogAcceptance: unknown;
     for (const name of [
       "PATH",
       "LANG",
@@ -131,6 +140,29 @@ export async function executePreview(
         );
       },
       smoke: async () => {
+        if (identity.compilerAcceptance) {
+          const catalogPath = join(root, "preview-catalog-acceptance.json");
+          catalogAcceptance = await catalogAcceptanceOperation(
+            () =>
+              operation(
+                "catalog-acceptance",
+                "scripts/release-preview/catalog-acceptance-cli.ts",
+                [],
+                {
+                  ...runnerEnvironment,
+                  GITHUB_ACTIONS: "true",
+                  EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE: "true",
+                  BASALT_RELEASE_CANDIDATE: identity.head,
+                  PREVIEW_CATALOG_ACCEPTANCE_RESULT: catalogPath,
+                  PREVIEW_CLAUDE_AUTH_FILE: undefined,
+                  PREVIEW_CODEX_SUBSCRIPTION_AUTH_FILE: undefined,
+                },
+              ),
+            catalogPath,
+            identity.head,
+            { summaryPath: source.GITHUB_STEP_SUMMARY },
+          );
+        }
         const resultPath = join(privateRoot, "smoke-result.json");
         await operation("native-smoke", "scripts/pool-acceptance.ts", [], {
           ...runnerEnvironment,
@@ -158,7 +190,7 @@ export async function executePreview(
           true,
         ),
     });
-    const receipt = previewReceipt(outcome.smoke, identity, outcome.teardown);
+    const receipt = previewReceipt(outcome.smoke, identity, outcome.teardown, catalogAcceptance);
     await writeFile(join(root, "preview-receipt.json"), `${JSON.stringify(receipt)}\n`, {
       flag: "wx",
       mode: 0o600,

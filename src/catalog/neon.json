@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@executor.sh/neon\",\n  \"description\": \"Manage Neon serverless Postgres: projects, branches, endpoints, databases, roles, operations, API keys and organizations.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.14\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  },\n  \"executor\": {\n    \"title\": \"Neon\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@executor.sh/neon\",\n  \"description\": \"Manage Neon serverless Postgres: projects, branches, endpoints, databases, roles, operations, API keys and organizations.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.16\",\n    \"@modelcontextprotocol/sdk\": \"1.32.1\"\n  },\n  \"executor\": {\n    \"title\": \"Neon\"\n  }\n}\n"
     }
   ]
 }

@@ -1,7 +1,7 @@
 {
   "identity": "basalt-dashboard-render-lifetime-diagnostics",
   "file": "0378-dashboard-render-lifetime-diagnostics.patch",
-  "content_sha256": "c8fa3ad0267a0e891788bd81fb757dce323cae4d4340787c57f560f5a6e7a64c",
+  "content_sha256": "38377d3d2be4d07a3e0b0e3feb9a8b31ce469603928bb88b85947d1d4f82fc5d",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

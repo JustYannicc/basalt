@@ -12,7 +12,7 @@ import {
   organization,
   secret,
 } from "./pool-access-fixture.ts";
-const { AppId } = await load("packages/sdk/src/core.ts");
+const { AppId, requestRejections } = await load("packages/sdk/src/core.ts");
 const { AccessRevision } = await load(`${contracts}resource-access.ts`);
 const { shareApp } = await load(`${implementation}resource-access.ts`);
 const { hostedResourceLifecycle } = await load(`${implementation}resource-lifecycle.ts`);
@@ -397,6 +397,7 @@ test("group create/update/delete push each pool inside the writing transaction, 
       // The fixture supplies an authenticated owner; exercise the real registered write handlers.
       const context = yield* Layer.build(
         hostedGroupHandlers.pipe(
+          Layer.provide(requestRejections),
           Layer.provide(
             Layer.succeed(RequireOrganization, <A, E, R>(effect: Effect.Effect<A, E, R>) => effect),
           ),
@@ -481,6 +482,7 @@ test("a network failure rolls a share back, and failed group creation leaves no 
       fail();
       const context = yield* Layer.build(
         hostedGroupHandlers.pipe(
+          Layer.provide(requestRejections),
           Layer.provide(
             Layer.succeed(RequireOrganization, <A, E, R>(effect: Effect.Effect<A, E, R>) => effect),
           ),

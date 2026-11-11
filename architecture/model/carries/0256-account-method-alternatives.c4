@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountForms {
+    metadata {
+      constraint "The active connection method owns its fields and error. Unavailable alternatives remain in a collapsed disclosure with their own reasons and never repeat the selected method's refusal. Switching among declared alternatives preserves the selected requirement and naming flow without changing provider identity."
+    }
+  }
+}

@@ -54,7 +54,7 @@ index 4861bf9..0000000
 -  );
 -});
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 666a982..141f261 100644
+index 73b27ac..f4cbe68 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -26,10 +26,7 @@ import {
@@ -69,7 +69,7 @@ index 666a982..141f261 100644
  import { expireIdleAgentGrants } from "@executor-js/app-management/data-steps";
  import { GroupDatabase } from "@executor-js/hosted-server/groups";
  import { SqlClient } from "effect/sql";
-@@ -623,7 +620,7 @@ export default Api.make(
+@@ -649,7 +646,7 @@ export default Api.make(
        HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
        HttpRouter.add("POST", "/api/:channel/submit", errorTunnel),
      );
@@ -79,10 +79,10 @@ index 666a982..141f261 100644
        HttpRouter.add("POST", productionOpsPath, productionOps).pipe(
          HttpRouter.provideRequest(executor),
 diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-server.ts
-index 033dee5..1eb463d 100644
+index 5ffd05b..eeefb5a 100644
 --- a/apps/hosted/cloud/src/mcp-server.ts
 +++ b/apps/hosted/cloud/src/mcp-server.ts
-@@ -24,8 +24,7 @@ import {
+@@ -25,8 +25,7 @@ import {
  } from "./infrastructure/telemetry.ts";
  import { workerBuild } from "./infrastructure/worker-build.ts";
  import { cloudSite } from "./infrastructure/site.ts";
@@ -92,7 +92,7 @@ index 033dee5..1eb463d 100644
  import { productBrandBindings } from "./infrastructure/product-brand.ts";
  
  /** The executor and MCP identity are built once per isolate and shared by its objects. */
-@@ -81,18 +80,9 @@ export default McpServer.make(
+@@ -88,18 +87,9 @@ export default McpServer.make(
    }),
    Effect.gen(function* () {
      const services = yield* cloudServingProduct(yield* appDataSupervisors);

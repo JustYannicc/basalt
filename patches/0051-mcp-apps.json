@@ -1,7 +1,7 @@
 {
   "identity": "executor-mcp-apps",
   "file": "0051-mcp-apps.patch",
-  "content_sha256": "cc78ee76c8ce66ff44bd2ab6eaea767f5d17c8ac7a07adaf23a147459756a9c0",
+  "content_sha256": "77a8d33f150aaac9760499d4a02e257f1790e8a83bca2c15569a891a9eea0ad8",
   "kind": "upstream",
   "upstream_pull_request": null,
   "database_sensitive": true,

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountConnections {
+    metadata {
+      constraint "A refresh result discarded after account deletion or reconnect revokes only its newly issued tokens with their original client. Revocation runs outside SQL with bounded best-effort cleanup and never rereads, revokes or overwrites the replacement grant."
+    }
+  }
+}

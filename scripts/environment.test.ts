@@ -69,6 +69,7 @@ test("production rejects emulator and foreign hosting overrides", () => {
     "PREVIEW_SMOKE_EMAIL",
     "PREVIEW_SMOKE_PASSWORD",
     "EXECUTOR_ROLE_HOSTS_DOMAIN",
+    "EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE",
   ]) {
     assert.throws(
       () => deployEnvironment({ ...credentials, [name]: "set" }),
@@ -236,6 +237,44 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
   assert.equal(first.seed.PREVIEW_SMOKE_EMAIL, source.PREVIEW_SMOKE_EMAIL);
   assert.equal(first.seed.PREVIEW_SMOKE_PASSWORD, source.PREVIEW_SMOKE_PASSWORD);
   assert.equal(first.seed.BETTER_AUTH_SECRET, undefined);
+});
+
+test("explicit compiler acceptance stays in its isolated preview deploy environment", () => {
+  const source = {
+    ...Object.fromEntries(requiredPreviewDeploySecrets.map((name) => [name, "fixture"])),
+    GITHUB_ACTIONS: "true",
+    TEST_STAGE_DOMAIN: "preview.example.invalid",
+    PREVIEW_STATE_KEY: "12".repeat(32),
+    PREVIEW_SMOKE_EMAIL: "preview@example.invalid",
+    PREVIEW_SMOKE_PASSWORD: "fixture-password",
+    EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE: "true",
+    BASALT_RELEASE_CANDIDATE: "a".repeat(40),
+  };
+  const accepted = previewEnvironment(42, source);
+  assert.equal(accepted.stage, "test-pr-42");
+  assert.equal(accepted.deploy.EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE, "true");
+  assert.equal(accepted.deploy.BASALT_RELEASE_CANDIDATE, source.BASALT_RELEASE_CANDIDATE);
+  assert.equal(accepted.deploy.EXECUTOR_COMPILER_CACHE_RELEASE, source.BASALT_RELEASE_CANDIDATE);
+  assert.equal(
+    accepted.deploy.EXECUTOR_COMPILER_CACHE_FRAMEWORK,
+    accepted.deploy.EXECUTOR_APPS_FRAMEWORK,
+  );
+  assert.equal(
+    accepted.deploy.EXECUTOR_COMPILER_CACHE_APPS_VERSION,
+    accepted.deploy.EXECUTOR_APPS_VERSION,
+  );
+  assert.equal(accepted.seed.EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE, undefined);
+  assert.equal(accepted.seed.BASALT_RELEASE_CANDIDATE, undefined);
+  const cleanup = previewCleanupEnvironment(42, source);
+  assert.equal(cleanup.providers.EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE, undefined);
+  assert.equal(cleanup.providers.BASALT_RELEASE_CANDIDATE, undefined);
+  const ordinary = previewEnvironment(42, {
+    ...source,
+    EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE: undefined,
+  });
+  assert.equal(ordinary.deploy.EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE, undefined);
+  assert.equal(ordinary.deploy.BASALT_RELEASE_CANDIDATE, undefined);
+  assert.equal(ordinary.deploy.EXECUTOR_COMPILER_CACHE_RELEASE, undefined);
 });
 
 test("preview config rejects unsafe PRs, hostnames, keys and real-person smoke accounts", () => {

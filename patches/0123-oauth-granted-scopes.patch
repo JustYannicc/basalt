@@ -1,3 +1,267 @@
+diff --git a/apps/hosted/server/src/implementation/shared-catalog-oauth.ts b/apps/hosted/server/src/implementation/shared-catalog-oauth.ts
+index bcaedb1..eb0cfe5 100644
+--- a/apps/hosted/server/src/implementation/shared-catalog-oauth.ts
++++ b/apps/hosted/server/src/implementation/shared-catalog-oauth.ts
+@@ -38,6 +38,8 @@ export const catalogOAuthClientDefinitions: readonly FirstPartyOAuthClientDefini
+       authorizationUrl: "https://app.todoist.com/oauth/authorize",
+       tokenUrl: "https://api.todoist.com/oauth/access_token",
+       scopeSeparator: ",",
++      grantedScopeSeparator: ",",
++      scopeImplications: { "data:read_write": ["data:read", "task:add"] },
+     },
+     tokenEndpointAuthMethod: "client_secret_post",
+     defaultScopes: todoistScopes,
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index 5401b0e..3a08fac 100644
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -122,10 +122,12 @@ const errorMessage = Match.type<HostedError>().pipe(
+       "Your access doesn’t allow connecting this account for the app. Check your access to the app and the account’s destination, then start account setup again.",
+     ProviderNotFound: () => "This provider is no longer available. Reload the app and try again.",
+     // An app's own account is reconnected by people who can edit the app; a caller cannot replace it.
+-    OAuthReconnectRequired: ({ appRequirement }) =>
+-      appRequirement === undefined
+-        ? "This account needs to sign in again."
+-        : `The app’s “${appRequirement}” account needs to sign in again. The app uses it for everyone, so someone who can edit this app must reconnect it from the app’s Accounts tab.`,
++    OAuthReconnectRequired: (error) =>
++      error.reason === "scope_exceeded"
++        ? `${error.description} ${error.recovery.action}`
++        : error.appRequirement === undefined
++          ? "This account needs to sign in again."
++          : `The app’s “${error.appRequirement}” account needs to sign in again. The app uses it for everyone, so someone who can edit this app must reconnect it from the app’s Accounts tab.`,
+     OAuthRenewalFailed: (error) => `${error.description} ${error.recovery.action}`,
+     OAuthClientUnavailable: () =>
+       "This provider needs an OAuth client. Enter its client details below.",
+diff --git a/e2e/support/catalog-oauth-fixtures.ts b/e2e/support/catalog-oauth-fixtures.ts
+index e6bd001..7494b77 100644
+--- a/e2e/support/catalog-oauth-fixtures.ts
++++ b/e2e/support/catalog-oauth-fixtures.ts
+@@ -22,6 +22,8 @@ export const catalogOAuthFixtures = [
+       authorizationUrl: "https://app.todoist.com/oauth/authorize",
+       tokenUrl: "https://api.todoist.com/oauth/access_token",
+       scopeSeparator: ",",
++      grantedScopeSeparator: ",",
++      scopeImplications: { "data:read_write": ["data:read", "task:add"] },
+     },
+     scopes: ["data:read_write", "data:delete", "project:delete"],
+     separator: ",",
+diff --git a/e2e/tests/catalog-oauth-accounts.spec.ts b/e2e/tests/catalog-oauth-accounts.spec.ts
+index 9c8d14f..8880943 100644
+--- a/e2e/tests/catalog-oauth-accounts.spec.ts
++++ b/e2e/tests/catalog-oauth-accounts.spec.ts
+@@ -12,10 +12,7 @@ import { connectionsPath } from "../support/app-accounts.ts";
+ import type { OperatorSettings } from "../support/managed-server.ts";
+ import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
+ import { serverControl } from "../support/server-control.ts";
+-import {
+-  catalogOAuthFixtures,
+-  catalogOAuthCallback,
+-} from "../support/catalog-oauth-fixtures.ts";
++import { catalogOAuthFixtures, catalogOAuthCallback } from "../support/catalog-oauth-fixtures.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const Redirect = Schema.Struct({ authorizationUrl: Schema.String, redirectUri: Schema.String });
+@@ -52,6 +49,16 @@ layer(HostedLive, { excludeTestServices: true })("Catalog OAuth accounts", (it)
+                 scopes: client.scopes,
+                 authMethods: [auth],
+                 tokenRequestFormat: client.id === "TODOIST" ? "form" : "json",
++                // Todoist returns a comma-delimited scope string in its token response.
++                ...(client.id === "TODOIST"
++                  ? {
++                      scopeGrant: {
++                        defaults: [],
++                        exchange: ["data:read", "task:add"],
++                        separator: ",",
++                      },
++                    }
++                  : {}),
+               });
+               const server = {
+                 ...client.server,
+@@ -129,10 +136,13 @@ layer(HostedLive, { excludeTestServices: true })("Catalog OAuth accounts", (it)
+                 });
+                 const callback = yield* Effect.scoped(
+                   Effect.gen(function* () {
+-                    const consent = yield* HttpClient.withScope(http).get(redirect.authorizationUrl);
++                    const consent = yield* HttpClient.withScope(http).get(
++                      redirect.authorizationUrl,
++                    );
+                     expect(consent.status).toBe(302);
+                     const location = consent.headers.location;
+-                    if (location === undefined) return yield* Effect.die("Missing consent callback");
++                    if (location === undefined)
++                      return yield* Effect.die("Missing consent callback");
+                     return location;
+                   }),
+                 ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
+@@ -155,10 +165,12 @@ layer(HostedLive, { excludeTestServices: true })("Catalog OAuth accounts", (it)
+               expect(accounts).toHaveLength(2);
+               expect(accounts[0]).not.toBe(accounts[1]);
+               expect([403, 404]).toContain(
+-                (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${accounts[1]}`)).status,
++                (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${accounts[1]}`))
++                  .status,
+               );
+               expect([403, 404]).toContain(
+-                (yield* api.request(actors.member, "GET", `${prefix}/accounts/${accounts[0]}`)).status,
++                (yield* api.request(actors.member, "GET", `${prefix}/accounts/${accounts[0]}`))
++                  .status,
+               );
+               const metrics = yield* issuer.metrics;
+               expect(metrics.tokenExchanges).toBe(2);
+diff --git a/e2e/tests/credential-placement.spec.ts b/e2e/tests/credential-placement.spec.ts
+index 2753091..90d1334 100644
+--- a/e2e/tests/credential-placement.spec.ts
++++ b/e2e/tests/credential-placement.spec.ts
+@@ -11,6 +11,7 @@ import { FetchHttpClient, HttpClient } from "effect/http";
+ import { randomUUID } from "node:crypto";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
+ import { publishedRelease } from "../support/app-package.ts";
+ import { appsManifest, unscopedAccounts } from "../support/apps-release.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+@@ -286,6 +287,7 @@ const operatorDefinition = (
+     readonly allowedScopes?: readonly string[];
+     /** How the server separates the scopes it reports granting, such as GitHub's `,`. */
+     readonly grantedScopeSeparator?: string;
++    readonly scopeImplications?: Readonly<Record<string, readonly string[]>>;
+     /** Extra sign-in parameters the operator sends, such as Slack's `user_scope`. */
+     readonly authorizationParams?: Readonly<Record<string, string>>;
+     /** The header the token goes in, and its scheme; `Authorization: Bearer` by default. */
+@@ -309,6 +311,9 @@ const operatorDefinition = (
+     ...(options.grantedScopeSeparator === undefined
+       ? {}
+       : { grantedScopeSeparator: options.grantedScopeSeparator }),
++    ...(options.scopeImplications === undefined
++      ? {}
++      : { scopeImplications: options.scopeImplications }),
+     ...(options.authorizationParams === undefined
+       ? {}
+       : { authorizationParams: options.authorizationParams }),
+@@ -1530,8 +1535,11 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+     withHostedCase(
+       context,
+       Effect.gen(function* () {
+-        const { api, actors, prefix, deploy, list } = yield* harness;
+-        const { issuer, store, issuerHost, storeHost } = yield* operatorWith({ revocation: true });
++        const { api, actors, prefix, deploy, list, consent } = yield* harness;
++        const { issuer, store, issuerHost, storeHost } = yield* operatorWith({
++          revocation: true,
++          scopeImplications: { "mail.delete": ["mail.read"] },
++        });
+         const hosts = [issuerHost, storeHost];
+         yield* issuer.configure({ revocation: "recorded" });
+         const base = {
+@@ -1594,7 +1602,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+         expect(yield* revoked(1)).toEqual([refreshRevoked]);
+         expect(JSON.stringify(broader.completed.body)).not.toContain("synthetic-");
+         const refusal = yield* messageOf(broader.completed);
+-        expect(refusal).toContain("The sign-in was rejected and nothing was saved");
++        expect(refusal).toContain("nothing was saved");
+         expect(refusal).not.toMatch(claimsRevoked);
+ 
+         // One within `allowedScopes`, though not asked for, is kept.
+@@ -1619,6 +1627,24 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+         expect(github.completed.status, JSON.stringify(github.completed.body)).toBe(200);
+         // The request still joins scopes with a space.
+         expect((yield* issuer.metrics).authorizationScope).toBe("mail.read");
++        // Reviewed implications include transitive access and can contain cycles. Their direction
++        // matters: the earlier mail.delete refusal must remain outside the operator's scope menu.
++        yield* restartWith(
++          operatorClients(issuer.origin, hosts, {
++            revocation: true,
++            grantedScopeSeparator: ",",
++            scopeImplications: {
++              "mail.read": ["mail.identity"],
++              "mail.identity": ["mail.minimal"],
++              "mail.minimal": ["mail.identity"],
++              "mail.delete": ["mail.read"],
++            },
++          }),
++        );
++        yield* issuer.configure({
++          scopeGrant: { defaults: [], exchange: ["mail.identity", "mail.minimal"], separator: "," },
++        });
++        expect((yield* signIn(scoped)).completed.status).toBe(200);
+         yield* restartWith(operatorClients(issuer.origin, hosts, { revocation: true }));
+ 
+         // So is a renewal that widens the grant: the account must reconnect, the widened token
+@@ -1644,7 +1670,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+           reason: "scope_exceeded",
+         });
+         const stopped = yield* messageOf(read);
+-        expect(stopped).toContain("stopped using");
++        expect(stopped).toContain("no longer used");
+         expect(stopped).not.toMatch(claimsRevoked);
+         expect((yield* issuer.metrics).refreshes).toBeGreaterThan(0);
+         expect(yield* revoked(3)).toEqual([refreshRevoked, refreshRevoked, refreshRevoked]);
+@@ -1761,6 +1787,41 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
+         expect((yield* issuer.metrics).revokedRefreshTokens).toEqual([...before, "refresh"]);
+         const resourceAuthorizations = (yield* issuer.metrics).resourceAuthorizations;
+         expect(resourceAuthorizations.filter((value) => value?.includes("refreshed"))).toEqual([]);
++
++        // The hosted callback explains a real refusal to the person connecting. No live account
++        // or vendor page is involved; the browser and sign-in both belong to this scenario.
++        yield* issuer.configure({ scopeGrant: { defaults: [], exchange: ["mail.delete"] } });
++        const attempt = yield* startSignIn(scoped);
++        const redirect = yield* body(Redirect, attempt.started);
++        yield* issuer.allowClient({
++          clientId: "first-party-client",
++          clientSecret: "first-party-secret",
++          redirect: redirect.redirectUri,
++        });
++        const callback = new URL(yield* consent(redirect.authorizationUrl));
++        const browser = yield* Browser;
++        yield* browser.omitNetworkTrace;
++        yield* browser.login(actors.owner);
++        const copy = yield* browser.use(
++          "Finish a sign-in with unrequested broader access",
++          (page) =>
++            page
++              .goto(`${callback.pathname}${callback.search}`)
++              .then(() =>
++                page.getByRole("heading", { name: "Account not connected", exact: true }).waitFor(),
++              )
++              .then(() => page.getByRole("alert").innerText()),
++        );
++        yield* browser.checkpoint("OAuth-scope-refusal");
++        expect(copy).toContain("nothing was saved");
++        expect(copy).not.toContain("instance administrator");
++        expect(copy).toContain("connected apps");
++        const state = yield* api.request(
++          actors.owner,
++          "GET",
++          `${prefix}/connections/${attempt.connection}`,
++        );
++        expect(state.body).toMatchObject({ state: { status: "pending" } });
+       }),
+     ),
+   );
+diff --git a/packages/sdk/src/contracts/oauth-families.ts b/packages/sdk/src/contracts/oauth-families.ts
+index 56fc3c8..54ff6b3 100644
+--- a/packages/sdk/src/contracts/oauth-families.ts
++++ b/packages/sdk/src/contracts/oauth-families.ts
+@@ -1,3 +1,4 @@
++import { oauthScopeClosure } from "./oauth-scopes.ts";
+ import type { DeclaredAuthMethod } from "apps/contracts";
+ import { defaultAccountFamilies, type OAuthAccountFamilyRecipe } from "./account-family-recipes.ts";
+ type AuthMethod = typeof DeclaredAuthMethod.Type;
+@@ -53,7 +54,8 @@ export const missingOAuthScopes = (
+   recipes: readonly OAuthAccountFamilyRecipe[] = defaultAccountFamilies,
+ ) => {
+   const aliases = recipes.find((recipe) => recipe.issuer === issuer)?.scopeAliases;
+-  const key = (scope: string) => aliases?.[scope] ?? scope;
+-  const covered = new Set(granted?.map(key));
+-  return requested.filter((scope) => !covered.has(key(scope)));
++  const covered = new Set(oauthScopeClosure(granted ?? [], undefined, aliases));
++  return requested.filter(
++    (scope) => !oauthScopeClosure([scope], undefined, aliases).every((name) => covered.has(name)),
++  );
+ };
+diff --git a/packages/sdk/src/contracts/oauth-scopes.ts b/packages/sdk/src/contracts/oauth-scopes.ts
+new file mode 100644
+index 0000000..16ed957
 --- /dev/null
 +++ b/packages/sdk/src/contracts/oauth-scopes.ts
 @@ -0,0 +1,31 @@
@@ -32,18 +296,20 @@
 +  }
 +  return [...covered];
 +};
+diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+index 38a22b5..9af1db9 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
-@@ -360,6 +360,8 @@
+@@ -405,6 +405,8 @@ export const FirstPartyOAuthServer = Schema.Struct({
     * reports `repo,gist` whatever separator the request used. Defaults to whitespace only.
     */
    grantedScopeSeparator: Schema.optionalKey(Schema.NonEmptyString),
 +  /** Host-reviewed access included by a scope. Apps cannot extend the operator's scope menu. */
 +  scopeImplications: Schema.optionalKey(Schema.Record(ScopeToken, Schema.Array(ScopeToken))),
-   /** Extra authorization request parameters, such as `{ access_type: "offline" }`. */
-   authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
-   tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
-@@ -1003,16 +1005,17 @@
+   /**
+    * Extra authorization request parameters. Google's `access_type=offline` and `prompt=consent`
+    * are always sent to Google, so they need not be listed.
+@@ -1165,16 +1167,17 @@ export const OAuthCompletionFailed = UserFacingError.define({
              },
              agentFixable: false,
            },
@@ -53,24 +319,21 @@
 +          // best effort, so the copy never claims it happened.
            scope_exceeded: {
 -            title: "The service granted more access than allowed",
--            description:
--              "The service granted this sign-in access beyond what this instance allows for its own OAuth client. The sign-in was rejected and nothing was saved. When the instance’s client supports revocation, the service is also asked to revoke that access.",
--            recovery: {
--              action: "Ask the instance administrator to check the OAuth client’s scopes.",
--              instructions:
--                "The token response reported scopes outside the operator client's allowedScopes. Compare the provider's scopes, the operator's allowedScopes and what the service grants. Revocation is best effort: check the oauth.revokeRefused span for its outcome. Do not widen allowedScopes unless the operator intends to allow that access.",
 +            title: "More access was granted than allowed",
-+            description:
+             description:
+-              "The service granted this sign-in access beyond what this instance allows for its own OAuth client. The sign-in was rejected and nothing was saved. When the instance’s client supports revocation, the service is also asked to revoke that access.",
 +              "The service granted more access than this sign-in is allowed to keep, so nothing was saved.",
-+            recovery: {
+             recovery: {
+-              action: "Ask the instance administrator to check the OAuth client’s scopes.",
 +              action:
 +                "Trying again won’t help until this service’s built-in sign-in is updated. If the service still shows this access in its connected apps, you can remove it there.",
-+              instructions:
+               instructions:
+-                "The token response reported scopes outside the operator client's allowedScopes. Compare the provider's scopes, the operator's allowedScopes and what the service grants. Revocation is best effort: check the oauth.revokeRefused span for its outcome. Do not widen allowedScopes unless the operator intends to allow that access.",
 +                "The token response reported scopes outside the operator client's allowedScopes and their reviewed implications. Compare the requested scopes, allowedScopes and granted scope value, including its format. Retrying fails the same way until the configuration or comparison changes. The person connecting usually cannot change this; do not send them to a team administrator. Revocation is best effort: check the oauth.revokeRefused span, and never claim access was revoked. The user can remove leftover access in the service's connected-apps settings. Do not widen allowedScopes unless the operator intends to allow that access.",
              },
              agentFixable: false,
            },
-@@ -1111,25 +1114,32 @@
+@@ -1274,25 +1277,32 @@ export const OAuthReconnectRequired = UserFacingError.define({
            (reason === "renewal_interrupted"
              ? "Renewing this account’s access stopped before the result was saved. The service no longer accepts the saved sign-in, most likely because that renewal had already replaced it."
              : reason === "scope_exceeded"
@@ -113,33 +376,16 @@
        },
        cause,
      ),
---- a/packages/sdk/src/contracts/oauth-families.ts
-+++ b/packages/sdk/src/contracts/oauth-families.ts
-@@ -1,3 +1,4 @@
-+import { oauthScopeClosure } from "./oauth-scopes.ts";
- import type { DeclaredAuthMethod } from "apps/contracts";
- import { defaultAccountFamilies, type OAuthAccountFamilyRecipe } from "./account-family-recipes.ts";
- type AuthMethod = typeof DeclaredAuthMethod.Type;
-@@ -53,7 +54,8 @@
-   recipes: readonly OAuthAccountFamilyRecipe[] = defaultAccountFamilies,
- ) => {
-   const aliases = recipes.find((recipe) => recipe.issuer === issuer)?.scopeAliases;
--  const key = (scope: string) => aliases?.[scope] ?? scope;
--  const covered = new Set(granted?.map(key));
--  return requested.filter((scope) => !covered.has(key(scope)));
-+  const covered = new Set(oauthScopeClosure(granted ?? [], undefined, aliases));
-+  return requested.filter(
-+    (scope) => !oauthScopeClosure([scope], undefined, aliases).every((name) => covered.has(name)),
-+  );
- };
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+index 797de52..09519ed 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,3 +1,4 @@
 +import { normalizeOAuthScopes, oauthScopeClosure } from "../contracts/oauth-scopes.ts";
  import { projectOAuthFields as project } from "./oauth-fields.ts";
- import type { AppAccountUse, ResourceLifecycle } from "../contracts/executor.ts";
+ import { CurrentActor, type AppAccountUse, type ResourceLifecycle } from "../contracts/executor.ts";
  import { missingOAuthScopes, oauthIdentityConsent } from "../contracts/oauth-families.ts";
-@@ -584,19 +585,19 @@
+@@ -654,19 +655,19 @@ export const makeOAuth = (
     * `grantedScopeSeparator`, such as GitHub's `repo,gist`; never on the request's `scopeSeparator`.
     */
    const grantedScopes = (client: FirstPartyOAuthClient | undefined, scope: string | undefined) => {
@@ -167,229 +413,3 @@
    };
    /**
     * The operator's client and authorization server as configured now, or undefined when the
---- a/apps/hosted/server/src/implementation/shared-catalog-oauth.ts
-+++ b/apps/hosted/server/src/implementation/shared-catalog-oauth.ts
-@@ -38,6 +38,8 @@
-       authorizationUrl: "https://app.todoist.com/oauth/authorize",
-       tokenUrl: "https://api.todoist.com/oauth/access_token",
-       scopeSeparator: ",",
-+      grantedScopeSeparator: ",",
-+      scopeImplications: { "data:read_write": ["data:read", "task:add"] },
-     },
-     tokenEndpointAuthMethod: "client_secret_post",
-     defaultScopes: todoistScopes,
---- a/e2e/support/catalog-oauth-fixtures.ts
-+++ b/e2e/support/catalog-oauth-fixtures.ts
-@@ -22,6 +22,8 @@
-       authorizationUrl: "https://app.todoist.com/oauth/authorize",
-       tokenUrl: "https://api.todoist.com/oauth/access_token",
-       scopeSeparator: ",",
-+      grantedScopeSeparator: ",",
-+      scopeImplications: { "data:read_write": ["data:read", "task:add"] },
-     },
-     scopes: ["data:read_write", "data:delete", "project:delete"],
-     separator: ",",
---- a/e2e/tests/catalog-oauth-accounts.spec.ts
-+++ b/e2e/tests/catalog-oauth-accounts.spec.ts
-@@ -12,10 +12,7 @@
- import type { OperatorSettings } from "../support/managed-server.ts";
- import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
- import { serverControl } from "../support/server-control.ts";
--import {
--  catalogOAuthFixtures,
--  catalogOAuthCallback,
--} from "../support/catalog-oauth-fixtures.ts";
-+import { catalogOAuthFixtures, catalogOAuthCallback } from "../support/catalog-oauth-fixtures.ts";
- import { scenarios } from "../test-plan.ts";
- 
- const Redirect = Schema.Struct({ authorizationUrl: Schema.String, redirectUri: Schema.String });
-@@ -52,6 +49,16 @@
-                 scopes: client.scopes,
-                 authMethods: [auth],
-                 tokenRequestFormat: client.id === "TODOIST" ? "form" : "json",
-+                // Todoist returns a comma-delimited scope string in its token response.
-+                ...(client.id === "TODOIST"
-+                  ? {
-+                      scopeGrant: {
-+                        defaults: [],
-+                        exchange: ["data:read", "task:add"],
-+                        separator: ",",
-+                      },
-+                    }
-+                  : {}),
-               });
-               const server = {
-                 ...client.server,
-@@ -129,10 +136,13 @@
-                 });
-                 const callback = yield* Effect.scoped(
-                   Effect.gen(function* () {
--                    const consent = yield* HttpClient.withScope(http).get(redirect.authorizationUrl);
-+                    const consent = yield* HttpClient.withScope(http).get(
-+                      redirect.authorizationUrl,
-+                    );
-                     expect(consent.status).toBe(302);
-                     const location = consent.headers.location;
--                    if (location === undefined) return yield* Effect.die("Missing consent callback");
-+                    if (location === undefined)
-+                      return yield* Effect.die("Missing consent callback");
-                     return location;
-                   }),
-                 ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
-@@ -155,10 +165,12 @@
-               expect(accounts).toHaveLength(2);
-               expect(accounts[0]).not.toBe(accounts[1]);
-               expect([403, 404]).toContain(
--                (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${accounts[1]}`)).status,
-+                (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${accounts[1]}`))
-+                  .status,
-               );
-               expect([403, 404]).toContain(
--                (yield* api.request(actors.member, "GET", `${prefix}/accounts/${accounts[0]}`)).status,
-+                (yield* api.request(actors.member, "GET", `${prefix}/accounts/${accounts[0]}`))
-+                  .status,
-               );
-               const metrics = yield* issuer.metrics;
-               expect(metrics.tokenExchanges).toBe(2);
---- a/e2e/tests/credential-placement.spec.ts
-+++ b/e2e/tests/credential-placement.spec.ts
-@@ -11,6 +11,7 @@
- import { randomUUID } from "node:crypto";
- import { Actors } from "../support/actors.ts";
- import { Api, body } from "../support/api.ts";
-+import { Browser } from "../support/browser.ts";
- import { publishedRelease } from "../support/app-package.ts";
- import { appsManifest, unscopedAccounts } from "../support/apps-release.ts";
- import { HostedLive, withHostedCase } from "../support/case.ts";
-@@ -286,6 +287,7 @@
-     readonly allowedScopes?: readonly string[];
-     /** How the server separates the scopes it reports granting, such as GitHub's `,`. */
-     readonly grantedScopeSeparator?: string;
-+    readonly scopeImplications?: Readonly<Record<string, readonly string[]>>;
-     /** Extra sign-in parameters the operator sends, such as Slack's `user_scope`. */
-     readonly authorizationParams?: Readonly<Record<string, string>>;
-     /** The header the token goes in, and its scheme; `Authorization: Bearer` by default. */
-@@ -309,6 +311,9 @@
-     ...(options.grantedScopeSeparator === undefined
-       ? {}
-       : { grantedScopeSeparator: options.grantedScopeSeparator }),
-+    ...(options.scopeImplications === undefined
-+      ? {}
-+      : { scopeImplications: options.scopeImplications }),
-     ...(options.authorizationParams === undefined
-       ? {}
-       : { authorizationParams: options.authorizationParams }),
-@@ -1501,8 +1506,11 @@
-     withHostedCase(
-       context,
-       Effect.gen(function* () {
--        const { api, actors, prefix, deploy } = yield* harness;
--        const { issuer, store, issuerHost, storeHost } = yield* operatorWith({ revocation: true });
-+        const { api, actors, prefix, deploy, consent } = yield* harness;
-+        const { issuer, store, issuerHost, storeHost } = yield* operatorWith({
-+          revocation: true,
-+          scopeImplications: { "mail.delete": ["mail.read"] },
-+        });
-         const hosts = [issuerHost, storeHost];
-         yield* issuer.configure({ revocation: "recorded" });
-         const base = {
-@@ -1565,7 +1573,7 @@
-         expect(yield* revoked(1)).toEqual([refreshRevoked]);
-         expect(JSON.stringify(broader.completed.body)).not.toContain("synthetic-");
-         const refusal = yield* messageOf(broader.completed);
--        expect(refusal).toContain("The sign-in was rejected and nothing was saved");
-+        expect(refusal).toContain("nothing was saved");
-         expect(refusal).not.toMatch(claimsRevoked);
- 
-         // One within `allowedScopes`, though not asked for, is kept.
-@@ -1590,6 +1598,24 @@
-         expect(github.completed.status, JSON.stringify(github.completed.body)).toBe(200);
-         // The request still joins scopes with a space.
-         expect((yield* issuer.metrics).authorizationScope).toBe("mail.read");
-+        // Reviewed implications include transitive access and can contain cycles. Their direction
-+        // matters: the earlier mail.delete refusal must remain outside the operator's scope menu.
-+        yield* restartWith(
-+          operatorClients(issuer.origin, hosts, {
-+            revocation: true,
-+            grantedScopeSeparator: ",",
-+            scopeImplications: {
-+              "mail.read": ["mail.identity"],
-+              "mail.identity": ["mail.minimal"],
-+              "mail.minimal": ["mail.identity"],
-+              "mail.delete": ["mail.read"],
-+            },
-+          }),
-+        );
-+        yield* issuer.configure({
-+          scopeGrant: { defaults: [], exchange: ["mail.identity", "mail.minimal"], separator: "," },
-+        });
-+        expect((yield* signIn(scoped)).completed.status).toBe(200);
-         yield* restartWith(operatorClients(issuer.origin, hosts, { revocation: true }));
- 
-         // So is a renewal that widens the grant: the account must reconnect, the widened token
-@@ -1613,7 +1639,7 @@
-           reason: "scope_exceeded",
-         });
-         const stopped = yield* messageOf(read);
--        expect(stopped).toContain("stopped using");
-+        expect(stopped).toContain("no longer used");
-         expect(stopped).not.toMatch(claimsRevoked);
-         expect((yield* issuer.metrics).refreshes).toBeGreaterThan(0);
-         expect(yield* revoked(3)).toEqual([refreshRevoked, refreshRevoked, refreshRevoked]);
-@@ -1730,6 +1756,37 @@
-         expect((yield* issuer.metrics).revokedRefreshTokens).toEqual([...before, "refresh"]);
-         const resourceAuthorizations = (yield* issuer.metrics).resourceAuthorizations;
-         expect(resourceAuthorizations.filter((value) => value?.includes("refreshed"))).toEqual([]);
-+
-+        // The hosted callback explains a real refusal to the person connecting. No live account
-+        // or vendor page is involved; the browser and sign-in both belong to this scenario.
-+        yield* issuer.configure({ scopeGrant: { defaults: [], exchange: ["mail.delete"] } });
-+        const attempt = yield* startSignIn(scoped);
-+        const redirect = yield* body(Redirect, attempt.started);
-+        yield* issuer.allowClient({
-+          clientId: "first-party-client",
-+          clientSecret: "first-party-secret",
-+          redirect: redirect.redirectUri,
-+        });
-+        const callback = new URL(yield* consent(redirect.authorizationUrl));
-+        const browser = yield* Browser;
-+        yield* browser.omitNetworkTrace;
-+        yield* browser.login(actors.owner);
-+        const copy = yield* browser.use(
-+          "Finish a sign-in with unrequested broader access",
-+          (page) => page.goto(`${callback.pathname}${callback.search}`)
-+            .then(() => page.getByRole("heading", { name: "Account not connected", exact: true }).waitFor())
-+            .then(() => page.getByRole("alert").innerText()),
-+        );
-+        yield* browser.checkpoint("OAuth-scope-refusal");
-+        expect(copy).toContain("nothing was saved");
-+        expect(copy).not.toContain("instance administrator");
-+        expect(copy).toContain("connected apps");
-+        const state = yield* api.request(
-+          actors.owner,
-+          "GET",
-+          `${prefix}/connections/${attempt.connection}`,
-+        );
-+        expect(state.body).toMatchObject({ state: { status: "pending" } });
-       }),
-     ),
-   );
---- a/apps/hosted/web/src/contracts/errors.ts
-+++ b/apps/hosted/web/src/contracts/errors.ts
-@@ -119,10 +119,12 @@
-       "Your access doesn’t allow connecting this account for the app. Check your access to the app and the account’s destination, then start account setup again.",
-     ProviderNotFound: () => "This provider is no longer available. Reload the app and try again.",
-     // An app's own account is reconnected by people who can edit the app; a caller cannot replace it.
--    OAuthReconnectRequired: ({ appRequirement }) =>
--      appRequirement === undefined
--        ? "This account needs to sign in again."
--        : `The app’s “${appRequirement}” account needs to sign in again. The app uses it for everyone, so someone who can edit this app must reconnect it from the app’s Accounts tab.`,
-+    OAuthReconnectRequired: (error) =>
-+      error.reason === "scope_exceeded"
-+        ? `${error.description} ${error.recovery.action}`
-+        : error.appRequirement === undefined
-+          ? "This account needs to sign in again."
-+          : `The app’s “${error.appRequirement}” account needs to sign in again. The app uses it for everyone, so someone who can edit this app must reconnect it from the app’s Accounts tab.`,
-     OAuthRenewalFailed: (error) => `${error.description} ${error.recovery.action}`,
-     OAuthClientUnavailable: () =>
-       "This provider needs an OAuth client. Enter its client details below.",

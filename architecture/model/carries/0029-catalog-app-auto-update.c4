@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Catalog refresh changes only clean installed copies from the configured feed, compares active requirements and saved links, and rechecks the expected active version under the app lock before activation. User edits produce an update offer. Failed jobs emit closed diagnostics and retain their failed result so provisioning backoff and outcome accounting cannot report success. Feed caching resolves its execution-owned HTTP client before use; provisioning reports typed failed units after retaining safe original diagnostics."
+    }
+  }
+}

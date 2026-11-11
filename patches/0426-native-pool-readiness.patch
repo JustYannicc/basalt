@@ -33,10 +33,10 @@ index 1e1b122..be4218b 100644
      p.organization_id, p.creator_id, p.kind, p.revision
      from executor_accounts a
 diff --git a/apps/hosted/server/src/contracts/organization.ts b/apps/hosted/server/src/contracts/organization.ts
-index cbcfc78f..f3b709ef 100644
+index 67ecbcc..c513904 100644
 --- a/apps/hosted/server/src/contracts/organization.ts
 +++ b/apps/hosted/server/src/contracts/organization.ts
-@@ -203,6 +203,8 @@ export const Inventory = /* @__PURE__ */ (() =>
+@@ -202,6 +202,8 @@ export const Inventory = /* @__PURE__ */ (() =>
    Schema.Struct({
      /** The accounts the caller linked to each listed app and may use. */
      links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
@@ -46,7 +46,7 @@ index cbcfc78f..f3b709ef 100644
      /** Each account's checks by the apps listed here; reading them never runs a check. */
      accounts: Schema.Array(
 diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
-index 98cc908..3a3281f 100644
+index fb5b2fc..dd0f3c9 100644
 --- a/apps/hosted/server/src/implementation/organization.ts
 +++ b/apps/hosted/server/src/implementation/organization.ts
 @@ -23,7 +23,7 @@ import { currentResourceAuthority, visibleAccountsAs, visibleAppsAs } from "./re
@@ -57,8 +57,8 @@ index 98cc908..3a3281f 100644
 +import { appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
  import { appUiIndicators } from "./app-ui.ts";
  import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
- import { APIError } from "better-auth/api";
-@@ -272,13 +272,23 @@ export const inventory = (owner: OwnerId) =>
+ import {
+@@ -296,13 +296,23 @@ export const inventory = (owner: OwnerId) =>
            ),
          ),
        );
@@ -90,7 +90,7 @@ index 98cc908..3a3281f 100644
  export const hostedOrganizationHandlers = HttpApiBuilder.group(
 diff --git a/apps/hosted/server/src/implementation/pool-membership-mirrors.ts b/apps/hosted/server/src/implementation/pool-membership-mirrors.ts
 new file mode 100644
-index 0000000..a19586c
+index 0000000..71169b2
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-membership-mirrors.ts
 @@ -0,0 +1,46 @@
@@ -120,9 +120,9 @@ index 0000000..a19586c
 +      a.credential_generation as generation from ${yield* usableAppLinks(sql, [pool])}
 +      and exists (select 1 from organization o
 +        cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
-+        where o.id = ${organization} and entry.value ->> 'app' = app.id
-+          and app.owner = 'organization:' || o.id)
-+      and exists (select 1 from executor_deployments d where d.id = app.active_deployment
++        where o.id = ${organization} and entry.value ->> 'app' = l.app
++          and l.owner = 'organization:' || o.id)
++      and exists (select 1 from executor_deployments d where d.id = l.active_deployment
 +        and d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope' = 'app'
 +        and d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'provider' = a.provider
 +        and d.requirements::jsonb -> 'accounts' -> l.requirement -> 'definition' -> 'auth' -> a.method ->> 'type' = 'secrets'
@@ -141,7 +141,7 @@ index 0000000..a19586c
 +      });
 +  }).pipe(Effect.mapError(() => new StorageError()));
 diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
-index 4ad22d2..3258293 100644
+index 4ad22d2..8f79f93 100644
 --- a/apps/hosted/server/src/implementation/pool-membership.ts
 +++ b/apps/hosted/server/src/implementation/pool-membership.ts
 @@ -15,6 +15,7 @@ import { HostedExecutor } from "../contracts/executor.ts";
@@ -152,6 +152,22 @@ index 4ad22d2..3258293 100644
  import { reconcilePoolMembership } from "./pool-membership-reconcile.ts";
  
  const NativePoolAccountFields = {
+@@ -99,12 +100,12 @@ export const nativePoolMembership = (organization: string, pool: AppId, executor
+           (select driver_revision from executor_account_acquisitions where account = a.id) as "driverRevision",
+           (select revision from executor_account_acquisitions where account = a.id) as "bindingRevision",
+           (select d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope'
+-            from executor_deployments d where d.id = app.active_deployment) as "requirementScope",
++            from executor_deployments d where d.id = l.active_deployment) as "requirementScope",
+           (select d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'provider'
+-            from executor_deployments d where d.id = app.active_deployment) as "requirementProvider",
++            from executor_deployments d where d.id = l.active_deployment) as "requirementProvider",
+           coalesce((select d.requirements::jsonb -> 'accounts' -> l.requirement -> 'definition' -> 'auth' -> a.method
+               @> '{"type":"secrets","provisioned":true}'::jsonb
+-            from executor_deployments d where d.id = app.active_deployment), false) as "requirementProvisioned"
++            from executor_deployments d where d.id = l.active_deployment), false) as "requirementProvisioned"
+         from ${yield* usableAppLinks(sql, [pool])}
+           and not exists (select 1 from executor_account_acquisitions retiring
+             where retiring.account = a.id and retiring.removal is not null)
 @@ -173,6 +174,9 @@ export const readNativePoolMembership = Effect.gen(function* () {
      return HttpServerResponse.empty({ status: 401 });
    const sql = yield* policyDatabase;
@@ -163,10 +179,10 @@ index 4ad22d2..3258293 100644
      Effect.provideService(SqlClient.SqlClient, sql),
    );
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index e24344c..1ea60a2 100644
+index cc5dea6..5cb6b77 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -424,7 +424,7 @@ export const startCloudEnvironment = (input: {
+@@ -437,7 +437,7 @@ export const startCloudEnvironment = (input: {
        CLOUD_DEV_DASHBOARD: nativePoolBackend ? "source" : "built",
        CLOUD_DEV_API_PORT: String(apiPort),
        CLOUD_DEV_WEB_PORT: new URL(input.origin).port,
