@@ -269,6 +269,41 @@ test("native checks preserve credential rejection and rate limits without return
   }
 });
 
+test("a fresh xAI collection with no quota amounts stays healthy through check and observation", async () => {
+  for (const windows of [
+    [],
+    [
+      {
+        id: "xai-weekly-usage",
+        label: "Weekly Limit",
+        status: "unknown",
+        unit: "percentage",
+        observed_at: new Date(now).toISOString(),
+        period_unit: "week",
+        period_value: 1,
+        mode: "fixed",
+      },
+    ],
+  ]) {
+    const f = fixture({ provider: "xai", windows });
+    const check = await (await f.check({ provider: "xai" }))!.json();
+    assert.equal(check.failure, undefined);
+    assert.ok(check.result.observation);
+    const report = await (await f.check({ provider: "xai", action: "observe" }))!.json();
+    assert.equal(report.failure, undefined);
+    const observed = report.result.observation.windows;
+    assert.equal(observed.length, windows.length);
+    for (const window of observed) {
+      assert.deepEqual(window.measure, { unit: "percentage" });
+      assert.equal(window.resetAt, undefined);
+    }
+    assert.equal(
+      f.calls.some((path) => path.endsWith("/quota/collect")),
+      false,
+    );
+  }
+});
+
 test("a stale native check waits for a completed collection and shares the persisted collection cap", async () => {
   const f = fixture({ stale: true });
   for (let attempt = 0; attempt < 2; attempt++)
