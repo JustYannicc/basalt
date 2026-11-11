@@ -269,3 +269,36 @@ test("a rapid background and foreground transition does not lose recovery", asyn
   assert.deepEqual(f.controller.getSnapshot().connection?.capabilities, ["models", "tools"]);
   await f.controller.close();
 });
+
+test("an automatic health recovery preserves active work and reconnects when it finishes", async (t) => {
+  const f = fixture(t);
+  await f.controller.initialize();
+  let release!: () => void;
+  let activeSignal: AbortSignal | undefined;
+  const running = f.controller
+    .run(
+      (_source, signal) =>
+        new Promise<string>((resolve, reject) => {
+          activeSignal = signal;
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          release = () => resolve("completed");
+        }),
+      new AbortController().signal,
+    )
+    .then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+  f.offline();
+  const checking = f.controller.checkHealth();
+  await advance(t, 2000);
+  await checking;
+  assert.equal(activeSignal?.aborted, false, "A health probe must not cancel application work.");
+  f.online();
+  release();
+  assert.deepEqual(await running, { value: "completed" });
+  await advance(t, 50);
+  assert.deepEqual(f.controller.getSnapshot().connection?.capabilities, ["models", "tools"]);
+  assert.equal(f.controller.getSnapshot().reconnecting, false);
+  await f.controller.close();
+});

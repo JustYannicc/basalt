@@ -35,6 +35,8 @@ export function mobileController(ports: MobilePorts) {
   let session = new AbortController();
   let foreground = true;
   let automatic = true;
+  let activeOperations = 0;
+  let recoveryDeferred = false;
   let unsubscribeNetwork: (() => void) | undefined;
   const listeners = new Set<() => void>();
   const publish = (update: Partial<MobileSnapshot> = {}) => {
@@ -42,6 +44,7 @@ export function mobileController(ports: MobilePorts) {
     for (const listener of listeners) listener();
   };
   const stopWork = () => {
+    recoveryDeferred = false;
     session.abort();
     session = new AbortController();
   };
@@ -52,12 +55,19 @@ export function mobileController(ports: MobilePorts) {
     terminal,
     random: () => Math.random(),
     attempt: async (signal) => {
-      stopWork();
       await source?.reconnect(signal);
       health?.reset();
     },
     changed: (reconnecting, error) => publish({ reconnecting, error }),
   });
+  const recover = () => {
+    if (activeOperations > 0) {
+      recoveryDeferred = true;
+      return Promise.resolve();
+    }
+    recoveryDeferred = false;
+    return recovery.request();
+  };
   const attach = (credentials: Parameters<typeof deviceConnection>[0]) => {
     source = deviceConnection(credentials, ports.store, ports.socket);
     health = connectionHealth(source);
@@ -89,10 +99,10 @@ export function mobileController(ports: MobilePorts) {
   const networkChanged = (online: boolean) => {
     if (!foreground || !automatic || command || !source || terminal()) return;
     if (online) {
-      if (recovery.needed() || source.view().capabilities.length === 0) void recovery.request();
+      if (recovery.needed() || recoveryDeferred || source.view().capabilities.length === 0)
+        void recover();
     } else {
-      stopWork();
-      void recovery.request();
+      void recover();
     }
   };
   return {
@@ -113,7 +123,7 @@ export function mobileController(ports: MobilePorts) {
             return;
           }
           attach(readDeviceCredentials(JSON.parse(raw)));
-          await recovery.request();
+          await recover();
           publish({ phase: "ready" });
         } catch {
           publish({
@@ -155,7 +165,7 @@ export function mobileController(ports: MobilePorts) {
           ports.closeApproval();
         }
       });
-      await recovery.request();
+      await recover();
     },
     cancel: () => {
       command?.abort();
@@ -216,7 +226,7 @@ export function mobileController(ports: MobilePorts) {
         health?.reset();
         return;
       }
-      await recovery.request();
+      await recover();
     },
     checkHealth: async () => {
       if (!foreground || command || recovery.running()) return;
@@ -228,20 +238,28 @@ export function mobileController(ports: MobilePorts) {
         (after === "online" && (before === "offline" || recovery.needed())) ||
         (after === "offline" && !recovery.needed())
       )
-        await recovery.request();
+        await recover();
     },
     run: async <T>(
       task: (source: CredentialSource, signal: AbortSignal) => Promise<T>,
       signal: AbortSignal,
     ) => {
-      if (!foreground || command || recovery.needed() || !source)
+      if (!foreground || command || recovery.needed() || recoveryDeferred || !source)
         throw new Error("Connect before starting.");
+      activeOperations++;
       try {
         return await task(source, AbortSignal.any([session.signal, signal]));
       } finally {
+        activeOperations--;
         publish();
-        if (source.view().state === "connected" && source.view().capabilities.length === 0)
-          void recovery.request();
+        if (
+          activeOperations === 0 &&
+          source?.view().state === "connected" &&
+          (recoveryDeferred ||
+            source.view().capabilities.length === 0 ||
+            health?.view().health?.state === "offline")
+        )
+          void recover();
       }
     },
     close: async () => {

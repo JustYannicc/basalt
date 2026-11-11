@@ -37,11 +37,18 @@ export default function App() {
 function Home() {
   const theme = useTheme();
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
-  const [server, setServer] = useState(defaultOrigin);
+  const [draft, setDraft] = useState<{ value: string; origin: string | undefined }>();
   const [customServer, setCustomServer] = useState(!defaultOrigin);
   const [screen, setScreen] = useState<"home" | "model" | "tools">("home");
   const connection = snapshot.connection;
   const origin = connection?.origin;
+  // An edit belongs to the saved origin it was typed against; a different saved origin replaces it.
+  // Sign-in, sign-out and revoke clear the saved origin, so their handlers seed the draft first.
+  const server =
+    draft && (origin === undefined || draft.origin === origin)
+      ? draft.value
+      : (origin ?? defaultOrigin);
+  const keepServer = (value = server) => setDraft({ value, origin });
   const busy = Boolean(snapshot.busy);
   const reconnecting = Boolean(snapshot.reconnecting);
   // Credentials the server refused: only a fresh sign-in helps, so Reconnect is hidden.
@@ -73,9 +80,6 @@ function Home() {
     });
     return () => back.remove();
   }, [screen]);
-  useEffect(() => {
-    if (connection?.origin) setServer(connection.origin);
-  }, [connection?.origin]);
   const ready = snapshot.phase === "ready" || connection !== undefined;
   const state = busy
     ? snapshot.busy
@@ -162,6 +166,7 @@ function Home() {
                     secondary
                     disabled={busy}
                     onPress={() => {
+                      keepServer(origin);
                       void controller.signIn(origin);
                     }}
                   />
@@ -235,7 +240,7 @@ function Home() {
                         <Field
                           label="Server"
                           value={server}
-                          onChangeText={setServer}
+                          onChangeText={(value) => setDraft({ value, origin })}
                           keyboardType="url"
                           autoCapitalize="none"
                           autoCorrect={false}
@@ -247,6 +252,7 @@ function Home() {
                         busy={snapshot.busy === "Sign in"}
                         disabled={busy}
                         onPress={() => {
+                          keepServer();
                           void controller.signIn(server.trim().replace(/\/$/u, ""));
                         }}
                       />
@@ -270,6 +276,7 @@ function Home() {
                     secondary
                     disabled={busy}
                     onPress={() => {
+                      keepServer();
                       void controller.signOut();
                     }}
                   />
@@ -289,6 +296,7 @@ function Home() {
                               text: "Revoke",
                               style: "destructive",
                               onPress: () => {
+                                keepServer();
                                 void controller.revoke();
                               },
                             },
