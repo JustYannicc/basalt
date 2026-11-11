@@ -153,6 +153,11 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /numeric weekly and product percentages/);
         assert.match(
           patch.retirement.requires,
+          /closed malformed, missing, ambiguous, non-string or unknown-tier/,
+        );
+        assert.match(patch.retirement.requires, /fixed field-type flags only/);
+        assert.match(
+          patch.retirement.requires,
           /real-collector, unknown-profile and free-profile regressions/,
         );
         assert.match(

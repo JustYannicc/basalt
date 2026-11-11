@@ -1,15 +1,204 @@
+diff --git a/docs/management/api.md b/docs/management/api.md
+--- a/docs/management/api.md
++++ b/docs/management/api.md
+@@ -3067,7 +3067,7 @@
+ 
+ `collection.diagnostic` is an optional read-only diagnostic for the latest local Claude, Codex or xAI collector invocation. It contains `attempted_at` (UTC timestamp), `provider`, `response_received` and `json_valid`. Claude includes `five_hour`; Codex includes `primary_window` and `secondary_window`. Each field object contains only booleans: `present`, `null`, `quantity_null`, `quantity_valid` and `five_hour` (the field represents a five-hour window; for Codex its reported duration is 18000 seconds). Explicit zero is valid without a reset; absent or null quantities remain unknown. No response bodies, quantities, reset values or credentials are included.
+ 
+-For xAI, `xai.monthly.fields` and `xai.weekly.fields` contain only fixed schema paths and `present`, `null` and `numeric` flags. Numeric means a finite representation accepted by the quota parser, including numeric strings and one `val` wrapper. Wildcard product paths report any presence/null and require every product value to be numeric. `xai.phase`, `vendor_call_started`, `probe_finished`, `snapshot_write_attempted` and `snapshot_persisted` distinguish a forced claim refusal, an HTTP client attempt and a saved or refused completion. `attempted_at` is the Home collector invocation time, never the SDK request or a retained failure time. Scheduled claim refusals do not replace a completed probe diagnostic.
++For xAI, `xai.monthly.fields` and `xai.weekly.fields` contain only fixed schema paths and `present`, `null` and `numeric` flags. Numeric means a finite representation accepted by the quota parser, including numeric strings and one `val` wrapper. Wildcard product paths report any presence/null and require every product value to be numeric. `xai.phase`, `vendor_call_started`, `probe_finished`, `snapshot_write_attempted` and `snapshot_persisted` distinguish a forced claim refusal, an HTTP client attempt and a saved or refused completion. `attempted_at` is the Home collector invocation time, never the SDK request or a retained failure time. Scheduled claim refusals do not replace a completed probe diagnostic. The optional profile diagnostic reports only the fixed subscription-tier field/type flags. On an eligibility parsing failure, `xai.profile.failure_reason` is one of `malformed`, `missing`, `ambiguous`, `non-string` or `unknown-tier`; it never includes the tier value or profile payload.
+ 
+ The diagnostic is available before stdout logging completes and retains one latest attempt per live credential. It is process-local and omitted until a supported collection attempt, after a Home restart, or for other providers. `attempted_at` identifies the diagnostic attempt independently of the saved quota snapshot; it does not assert that the snapshot write succeeded. This field is detail-only and does not initiate a collection.
+ 
+diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
+--- a/docs/management/api_CN.md
++++ b/docs/management/api_CN.md
+@@ -3059,7 +3059,7 @@
+ 
+ `collection.diagnostic` 是可选的只读诊断，记录本进程最近一次 Claude、Codex 或 xAI 采集调用。它包含 `attempted_at`（UTC 时间）、`provider`、`response_received` 和 `json_valid`。Claude 包含 `five_hour`；Codex 包含 `primary_window` 和 `secondary_window`。每个窗口对象仅包含布尔值：`present`、`null`、`quantity_null`、`quantity_valid`、`five_hour`（该字段表示五小时窗口；Codex 报告的时长为 18000 秒）。显式零值无需重置时间也有效；缺失或 null 数量仍表示未知。不包含响应正文、数量、重置值或凭据。
+ 
+-xAI 的 `xai.monthly.fields` 和 `xai.weekly.fields` 仅包含固定字段路径及 `present`、`null`、`numeric` 布尔标记。`numeric` 表示额度解析器接受的有限数值形式，包括数字字符串和一层 `val` 包装；产品通配路径记录任意存在或 null，并要求每个产品字段均为数值。`xai.phase`、`vendor_call_started`、`probe_finished`、`snapshot_write_attempted` 和 `snapshot_persisted` 区分强制认领失败、HTTP 客户端调用及保存完成或保存失败。`attempted_at` 是 Home 采集调用时间，不是 SDK 请求时间或旧错误时间。计划扫描未认领时不会替换已完成采集的诊断。
++xAI 的 `xai.monthly.fields` 和 `xai.weekly.fields` 仅包含固定字段路径及 `present`、`null`、`numeric` 布尔标记。`numeric` 表示额度解析器接受的有限数值形式，包括数字字符串和一层 `val` 包装；产品通配路径记录任意存在或 null，并要求每个产品字段均为数值。`xai.phase`、`vendor_call_started`、`probe_finished`、`snapshot_write_attempted` 和 `snapshot_persisted` 区分强制认领失败、HTTP 客户端调用及保存完成或保存失败。`attempted_at` 是 Home 采集调用时间，不是 SDK 请求时间或旧错误时间。计划扫描未认领时不会替换已完成采集的诊断。 可选的 profile 诊断仅报告固定订阅档位字段及类型标记。资格解析失败时，`xai.profile.failure_reason` 仅为 `malformed`、`missing`、`ambiguous`、`non-string` 或 `unknown-tier`，不包含档位值或 profile 原始内容。
+ 
+ 诊断在 stdout 日志写入完成前即可读取，每个现存凭据保留最近一次尝试。它仅保存在本进程内存中，在首次支持的采集前、Home 重启后或其他 Provider 上省略。`attempted_at` 独立标识诊断尝试，不代表额度快照已成功写入。该字段仅在详情响应中提供，不会触发采集。
+ 
 diff --git a/internal/quota/xai.go b/internal/quota/xai.go
 --- a/internal/quota/xai.go
 +++ b/internal/quota/xai.go
-@@ -115,6 +115,8 @@
- 		plan = &cluster.QuotaPlan{Name: "SuperGrok"}
- 	case "supergrokplus":
- 		plan = &cluster.QuotaPlan{Name: "SuperGrok Plus", Premium: true}
+@@ -1,10 +1,8 @@
+ package quota
+ 
+ import (
+-	"bytes"
+ 	"context"
+ 	"encoding/json"
+-	"fmt"
+ 	"net/http"
+ 	"net/url"
+ 	"path"
+@@ -16,19 +14,6 @@
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
+ )
+ 
+-type xaiWeeklyEntitlement uint8
+-
+-const (
+-	xaiEntitlementUnknown xaiWeeklyEntitlement = iota
+-	xaiEntitlementFree
+-	xaiEntitlementPaid
+-)
+-
+-type xaiSubscription struct {
+-	entitlement xaiWeeklyEntitlement
+-	plan        *cluster.QuotaPlan
+-}
+-
+ // xaiPercentage distinguishes an omitted percentage from null or malformed input.
+ type xaiPercentage struct {
+ 	number  flexFloat
+@@ -80,51 +65,6 @@
+ 	query.Set("include", "subscription")
+ 	target.RawQuery = query.Encode()
+ 	return target.String()
+-}
+-
+-func parseXAISubscription(body []byte) (xaiSubscription, error) {
+-	var payload map[string]json.RawMessage
+-	if errDecode := json.Unmarshal(body, &payload); errDecode != nil || payload == nil {
+-		return xaiSubscription{}, fmt.Errorf("xai profile response is not an object")
+-	}
+-	raw, exists := payload["subscriptionTier"]
+-	if _, alternateExists := payload["subscription_tier"]; exists && alternateExists {
+-		return xaiSubscription{}, fmt.Errorf("xai profile response has ambiguous subscription tier fields")
+-	}
+-	if !exists {
+-		raw, exists = payload["subscription_tier"]
+-	}
+-	if !exists {
+-		return xaiSubscription{}, fmt.Errorf("xai profile response is missing subscription tier")
+-	}
+-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+-		return xaiSubscription{entitlement: xaiEntitlementFree, plan: &cluster.QuotaPlan{Name: "Free"}}, nil
+-	}
+-	var tier string
+-	if errDecode := json.Unmarshal(raw, &tier); errDecode != nil {
+-		return xaiSubscription{}, fmt.Errorf("xai subscription tier is not a string")
+-	}
+-	tier = strings.TrimSpace(tier)
+-	key := strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(tier))
+-	key = strings.TrimPrefix(key, "subscriptiontier")
+-	var plan *cluster.QuotaPlan
+-	switch key {
+-	case "", "free", "none":
+-		return xaiSubscription{entitlement: xaiEntitlementFree, plan: &cluster.QuotaPlan{Name: "Free"}}, nil
+-	case "supergrok":
+-		plan = &cluster.QuotaPlan{Name: "SuperGrok"}
+-	case "supergrokplus":
+-		plan = &cluster.QuotaPlan{Name: "SuperGrok Plus", Premium: true}
+-	case "supergrokpro":
+-		plan = &cluster.QuotaPlan{Name: "SuperGrok Pro", Premium: true}
+-	case "supergrokheavy":
+-		plan = &cluster.QuotaPlan{Name: "SuperGrok Heavy", Premium: true}
+-	case "xpremiumplus":
+-		plan = &cluster.QuotaPlan{Name: "X Premium+", Premium: true}
+-	default:
+-		return xaiSubscription{plan: &cluster.QuotaPlan{Name: tier}}, fmt.Errorf("xai subscription tier is not recognized")
+-	}
+-	return xaiSubscription{entitlement: xaiEntitlementPaid, plan: plan}, nil
+ }
+ 
+ func xaiCurrentWeeklyPeriod(config *xaiBillingConfig) *xaiBillingPeriod {
+@@ -275,6 +215,11 @@
+ 		var errParse error
+ 		subscription, errParse = parseXAISubscription(responses[2].body)
+ 		if errParse != nil {
++			if diagnostic := xaiDiagnostic(ctx); diagnostic != nil && diagnostic.XAI.Profile != nil {
++				if reason, ok := errParse.(xaiEligibilityFailure); ok {
++					diagnostic.XAI.Profile.FailureReason = string(reason)
++				}
++			}
+ 			errProfile = xaiInvalidResponse("xAI subscription eligibility could not be confirmed.")
+ 		}
+ 	}
+diff --git a/internal/quota/xai_subscription.go b/internal/quota/xai_subscription.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/xai_subscription.go
+@@ -0,0 +1,74 @@
++package quota
++
++import (
++	"bytes"
++	"encoding/json"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	"strings"
++)
++
++type xaiWeeklyEntitlement uint8
++
++const (
++	xaiEntitlementUnknown xaiWeeklyEntitlement = iota
++	xaiEntitlementFree
++	xaiEntitlementPaid
++)
++
++type xaiSubscription struct {
++	entitlement xaiWeeklyEntitlement
++	plan        *cluster.QuotaPlan
++}
++
++type xaiEligibilityFailure string
++
++func (reason xaiEligibilityFailure) Error() string {
++	return "xai profile eligibility: " + string(reason)
++}
++
++func parseXAISubscription(body []byte) (xaiSubscription, error) {
++	var payload map[string]json.RawMessage
++	if errDecode := json.Unmarshal(body, &payload); errDecode != nil || payload == nil {
++		return xaiSubscription{}, xaiEligibilityFailure("malformed")
++	}
++	raw, exists := payload["subscriptionTier"]
++	if _, alternateExists := payload["subscription_tier"]; exists && alternateExists {
++		return xaiSubscription{}, xaiEligibilityFailure("ambiguous")
++	}
++	if !exists {
++		raw, exists = payload["subscription_tier"]
++	}
++	if !exists {
++		return xaiSubscription{}, xaiEligibilityFailure("missing")
++	}
++	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
++		return xaiSubscription{entitlement: xaiEntitlementFree, plan: &cluster.QuotaPlan{Name: "Free"}}, nil
++	}
++	var tier string
++	if errDecode := json.Unmarshal(raw, &tier); errDecode != nil {
++		return xaiSubscription{}, xaiEligibilityFailure("non-string")
++	}
++	tier = strings.TrimSpace(tier)
++	key := strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(tier))
++	key = strings.TrimPrefix(key, "subscriptiontier")
++	var plan *cluster.QuotaPlan
++	switch key {
++	case "", "free", "none":
++		return xaiSubscription{entitlement: xaiEntitlementFree, plan: &cluster.QuotaPlan{Name: "Free"}}, nil
++	case "supergrok":
++		plan = &cluster.QuotaPlan{Name: "SuperGrok"}
++	case "supergrokplus":
++		plan = &cluster.QuotaPlan{Name: "SuperGrok Plus", Premium: true}
 +	case "grokpro":
 +		plan = &cluster.QuotaPlan{Name: "Grok Pro", Premium: true}
- 	case "supergrokpro":
- 		plan = &cluster.QuotaPlan{Name: "SuperGrok Pro", Premium: true}
- 	case "supergrokheavy":
++	case "supergrokpro":
++		plan = &cluster.QuotaPlan{Name: "SuperGrok Pro", Premium: true}
++	case "supergrokheavy":
++		plan = &cluster.QuotaPlan{Name: "SuperGrok Heavy", Premium: true}
++	case "xpremiumplus":
++		plan = &cluster.QuotaPlan{Name: "X Premium+", Premium: true}
++	default:
++		return xaiSubscription{plan: &cluster.QuotaPlan{Name: tier}}, xaiEligibilityFailure("unknown-tier")
++	}
++	return xaiSubscription{entitlement: xaiEntitlementPaid, plan: plan}, nil
++}
 diff --git a/internal/quota/xai_grok_pro_test.go b/internal/quota/xai_grok_pro_test.go
 new file mode 100644
 --- /dev/null
@@ -57,5 +246,183 @@ new file mode 100644
 +		if w.Used == nil || *w.Used != want || w.Limit == nil || *w.Limit != 100 || w.Remaining == nil || *w.Remaining != 100-want || w.ResetAt == nil {
 +			t.Fatalf("numeric percentage was not preserved: %+v", w)
 +		}
++	}
++}
+diff --git a/internal/quota/xai_profile_reason_test.go b/internal/quota/xai_profile_reason_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/xai_profile_reason_test.go
+@@ -0,0 +1,71 @@
++package quota
++
++import (
++	"context"
++	"encoding/json"
++	"strings"
++	"testing"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++)
++
++func TestXAIEligibilityFailureRetainsClosedReasonAndShape(t *testing.T) {
++	for _, tc := range []struct {
++		name, profile, reason                              string
++		jsonValid, camelPresent, camelString, snakePresent bool
++	}{
++		{name: "malformed", profile: `{`, reason: "malformed"},
++		{name: "missing", profile: `{"private-field":"private-value"}`, reason: "missing", jsonValid: true},
++		{name: "ambiguous", profile: `{"subscriptionTier":"SuperGrokPlus","subscription_tier":"SuperGrokPlus","private-field":"private-value"}`, reason: "ambiguous", jsonValid: true, camelPresent: true, camelString: true, snakePresent: true},
++		{name: "non-string", profile: `{"subscriptionTier":{"private-field":"private-value"}}`, reason: "non-string", jsonValid: true, camelPresent: true},
++		{name: "unknown-tier", profile: `{"subscriptionTier":"private-unknown-tier"}`, reason: "unknown-tier", jsonValid: true, camelPresent: true, camelString: true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			at := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
++			server := serveXAIProbeFixture(t, func() xaiProbeFixture {
++				return xaiProbeFixture{profile: tc.profile, monthly: `{"config":{"monthlyLimit":15000,"used":300}}`, weekly: `{"config":{"creditUsagePercent":4,"currentPeriod":{"type":"weekly","end":"2030-01-08T00:00:00Z"}}}`}
++			})
++			repo := newCollectorTestRepository(t)
++			seedCollectorProviderAuth(t, repo, "profile-reason", "xai", map[string]any{"type": "xai", "access_token": "private-token"})
++			c := NewCollector(repo, Options{Owner: "profile-reason", Now: func() time.Time { return at }, XAIBillingURL: server.URL + "/v1/billing"})
++			c.collectCredential(context.Background(), &coreauth.Auth{ID: "profile-reason", Provider: "xai"}, true)
++			item, errGet := repo.GetQuotaCredential(context.Background(), "profile-reason", at)
++			if errGet != nil || item.Error == nil || item.Error.Message != "xAI subscription eligibility could not be confirmed." {
++				t.Fatalf("eligibility fixture failed: %+v %v", item.Error, errGet)
++			}
++			encoded, errEncode := json.Marshal(item.CollectionDiagnostic)
++			if errEncode != nil {
++				t.Fatal(errEncode)
++			}
++			var diagnostic struct {
++				AttemptedAt time.Time `json:"attempted_at"`
++				XAI         struct {
++					Profile *struct {
++						ResponseReceived bool                                            `json:"response_received"`
++						HTTPOK           bool                                            `json:"http_ok"`
++						JSONValid        bool                                            `json:"json_valid"`
++						FailureReason    string                                          `json:"failure_reason"`
++						Fields           map[string]struct{ Present, Null, String bool } `json:"fields"`
++					} `json:"profile"`
++				} `json:"xai"`
++			}
++			if json.Unmarshal(encoded, &diagnostic) != nil || diagnostic.XAI.Profile == nil {
++				t.Fatalf("eligibility reason missing from collector handoff: %s", encoded)
++			}
++			d := diagnostic.XAI.Profile
++			if !diagnostic.AttemptedAt.Equal(at) || d.FailureReason != tc.reason || !d.ResponseReceived || !d.HTTPOK || d.JSONValid != tc.jsonValid {
++				t.Fatalf("wrong eligibility branch: %s", encoded)
++			}
++			camel, snake := d.Fields["subscriptionTier"], d.Fields["subscription_tier"]
++			if len(d.Fields) != 2 || camel.Present != tc.camelPresent || camel.String != tc.camelString || camel.Null || snake.Present != tc.snakePresent {
++				t.Fatalf("wrong profile field shape: %s", encoded)
++			}
++			for _, secret := range []string{"private-field", "private-value", "private-token", "private-unknown-tier", "15000", "SuperGrokPlus"} {
++				if strings.Contains(string(encoded), secret) {
++					t.Fatalf("profile payload leaked into diagnostic: %s", secret)
++				}
++			}
++		})
++	}
++}
+diff --git a/internal/quota/basalt_xai_diagnostic.go b/internal/quota/basalt_xai_diagnostic.go
+--- a/internal/quota/basalt_xai_diagnostic.go
++++ b/internal/quota/basalt_xai_diagnostic.go
+@@ -48,7 +48,28 @@
+ 	}
+ 	d.XAI.VendorCallStarted = d.XAI.VendorCallStarted || marker.started
+ 	d.ResponseReceived = d.ResponseReceived || marker.received
+-	if index > 1 {
++	if index == 2 {
++		profile := &cluster.XAIProfileDiagnostic{
++			ResponseReceived: marker.received, HTTPOK: ok,
++			Fields: map[string]cluster.XAIProfileFieldPresence{"subscriptionTier": {}, "subscription_tier": {}},
++		}
++		if ok {
++			var root map[string]json.RawMessage
++			profile.JSONValid = json.Unmarshal(body, &root) == nil && root != nil
++			if profile.JSONValid {
++				for path := range profile.Fields {
++					raw := root[path]
++					field := cluster.XAIProfileFieldPresence{Present: len(raw) > 0, Null: bytes.Equal(bytes.TrimSpace(raw), []byte("null"))}
++					var text string
++					field.String = field.Present && !field.Null && json.Unmarshal(raw, &text) == nil
++					profile.Fields[path] = field
++				}
++			}
++		}
++		d.XAI.Profile = profile
++		return
++	}
++	if index > 2 {
+ 		return
+ 	}
+ 	r := &d.XAI.Monthly
+diff --git a/internal/cluster/basalt_xai_diagnostic.go b/internal/cluster/basalt_xai_diagnostic.go
+--- a/internal/cluster/basalt_xai_diagnostic.go
++++ b/internal/cluster/basalt_xai_diagnostic.go
+@@ -13,7 +13,22 @@
+ 	Fields           map[string]XAIFieldPresence `json:"fields"`
+ }
+ 
++type XAIProfileFieldPresence struct {
++	Present bool `json:"present"`
++	Null    bool `json:"null"`
++	String  bool `json:"string"`
++}
++
++type XAIProfileDiagnostic struct {
++	ResponseReceived bool                               `json:"response_received"`
++	HTTPOK           bool                               `json:"http_ok"`
++	JSONValid        bool                               `json:"json_valid"`
++	FailureReason    string                             `json:"failure_reason,omitempty"`
++	Fields           map[string]XAIProfileFieldPresence `json:"fields"`
++}
++
+ type XAICollectionDiagnostic struct {
++	Profile                *XAIProfileDiagnostic `json:"profile,omitempty"`
+ 	Phase                  string                `json:"phase"`
+ 	VendorCallStarted      bool                  `json:"vendor_call_started"`
+ 	ProbeFinished          bool                  `json:"probe_finished"`
+@@ -68,6 +83,19 @@
+ 	copy := *value
+ 	copy.Monthly = copyXAIResponse(value.Monthly, xaiMonthlyFields)
+ 	copy.Weekly = copyXAIResponse(value.Weekly, xaiWeeklyFields)
++	if value.Profile != nil {
++		profile := *value.Profile
++		switch profile.FailureReason {
++		case "malformed", "missing", "ambiguous", "non-string", "unknown-tier":
++		default:
++			profile.FailureReason = ""
++		}
++		profile.Fields = map[string]XAIProfileFieldPresence{
++			"subscriptionTier":  value.Profile.Fields["subscriptionTier"],
++			"subscription_tier": value.Profile.Fields["subscription_tier"],
++		}
++		copy.Profile = &profile
++	}
+ 	return &copy
+ }
+ 
+diff --git a/internal/cluster/basalt_xai_diagnostic_test.go b/internal/cluster/basalt_xai_diagnostic_test.go
+--- a/internal/cluster/basalt_xai_diagnostic_test.go
++++ b/internal/cluster/basalt_xai_diagnostic_test.go
+@@ -53,3 +53,19 @@
+ 		t.Fatal("a genuinely new Home attempt was suppressed")
+ 	}
+ }
++
++func TestXAIProfileDiagnosticCopyIsClosedAndIndependent(t *testing.T) {
++	profile := &XAIProfileDiagnostic{FailureReason: "unknown-tier", Fields: map[string]XAIProfileFieldPresence{
++		"subscriptionTier": {Present: true, String: true}, "private-field": {Present: true},
++	}}
++	original := &XAICollectionDiagnostic{Profile: profile}
++	copied := copyXAIDiagnostic(original)
++	profile.Fields["subscriptionTier"] = XAIProfileFieldPresence{}
++	if !copied.Profile.Fields["subscriptionTier"].String || len(copied.Profile.Fields) != 2 || copied.Profile.FailureReason != "unknown-tier" {
++		t.Fatalf("profile copy retained mutable or arbitrary fields: %+v", copied.Profile)
++	}
++	profile.FailureReason = "private-value"
++	if copyXAIDiagnostic(original).Profile.FailureReason != "" {
++		t.Fatal("unclosed profile reason was copied")
 +	}
 +}

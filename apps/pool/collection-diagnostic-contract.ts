@@ -54,7 +54,34 @@ export const xaiCollectionPhases = [
   "lease_lost",
 ] as const;
 
+export const xaiEligibilityFailureReasons = [
+  "malformed",
+  "missing",
+  "ambiguous",
+  "non-string",
+  "unknown-tier",
+] as const;
+
+export const xaiProfileFields = ["subscriptionTier", "subscription_tier"] as const;
+export interface XaiProfileDiagnostic {
+  readonly responseReceived: boolean;
+  readonly httpOk: boolean;
+  readonly jsonValid: boolean;
+  readonly failureReason?: (typeof xaiEligibilityFailureReasons)[number];
+  readonly fields: Readonly<
+    Record<
+      (typeof xaiProfileFields)[number],
+      {
+        readonly present: boolean;
+        readonly null: boolean;
+        readonly string: boolean;
+      }
+    >
+  >;
+}
+
 export interface XaiCollectionDiagnostic {
+  readonly profile?: XaiProfileDiagnostic;
   readonly phase: (typeof xaiCollectionPhases)[number];
   readonly vendorCallStarted: boolean;
   readonly probeFinished: boolean;

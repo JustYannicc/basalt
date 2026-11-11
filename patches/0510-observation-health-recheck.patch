@@ -22,7 +22,7 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 diff --git a/e2e/tests/account-acquisition-observations.spec.ts b/e2e/tests/account-acquisition-observations.spec.ts
 --- a/e2e/tests/account-acquisition-observations.spec.ts
 +++ b/e2e/tests/account-acquisition-observations.spec.ts
-@@ -129,6 +129,81 @@
+@@ -129,6 +129,94 @@
        }),
      ),
    );
@@ -98,6 +98,19 @@ diff --git a/e2e/tests/account-acquisition-observations.spec.ts b/e2e/tests/acco
 +        expect((yield* refresh()).status).toBe(200);
 +        expect(yield* countChecks()).toBe(beforeRecovery + 1);
 +        expect(yield* health()).toEqual(stillFailed);
++        yield* f.backend.driverObservation(
++          allowance(
++            new Date(Date.parse(stillFailed.driver.check.checkedAt) + 86_400_000).toISOString(),
++          ),
++        );
++        yield* advance();
++        const invalid = yield* body(ObservationView, yield* refresh());
++        expect(invalid.reports[0]?.lastAttempt?.outcome).toBe("invalid");
++        expect(yield* countChecks()).toBe(beforeRecovery + 1);
++        yield* advance();
++        expect((yield* refresh()).status).toBe(200);
++        expect(yield* countChecks()).toBe(beforeRecovery + 1);
++        expect(yield* health()).toEqual(stillFailed);
 +      }),
 +    ),
 +  );
@@ -107,7 +120,12 @@ diff --git a/e2e/tests/account-acquisition-observations.spec.ts b/e2e/tests/acco
 diff --git a/packages/sdk/src/implementation/account-driver-observations.ts b/packages/sdk/src/implementation/account-driver-observations.ts
 --- a/packages/sdk/src/implementation/account-driver-observations.ts
 +++ b/packages/sdk/src/implementation/account-driver-observations.ts
-@@ -5,6 +5,7 @@
+@@ -1,3 +1,4 @@
++import { validObservationTime } from "./account-observation-state.ts";
+ import { accountCheckFailure } from "./account-check-failure.ts";
+ import { Clock, Effect, Result, Schema } from "effect";
+ import { AccountObservationResult, HostOutputInvalid } from "apps/contracts";
+@@ -5,6 +6,7 @@
    AccountAcquisitionUnavailable,
    type AccountAcquisitionSource,
  } from "../contracts/account-acquisition-driver.ts";
@@ -115,7 +133,7 @@ diff --git a/packages/sdk/src/implementation/account-driver-observations.ts b/pa
  import type { StoredAccount } from "../contracts/storage.ts";
  import { StorageError } from "../contracts/shared.ts";
  import type { makeObservationStore } from "./account-observation-store.ts";
-@@ -14,6 +15,10 @@
+@@ -14,6 +16,10 @@
    store: ReturnType<typeof makeObservationStore>,
    account: StoredAccount,
    source: AccountAcquisitionSource | undefined,
@@ -126,13 +144,14 @@ diff --git a/packages/sdk/src/implementation/account-driver-observations.ts b/pa
  ) =>
    Effect.gen(function* () {
      if (source?.observeAccount === undefined) return;
-@@ -68,6 +73,12 @@
+@@ -68,6 +74,13 @@
          ...(failure === undefined ? {} : { failure }),
          ...(value === undefined ? {} : { result: value }),
        });
 +      if (
 +        recheckHealth !== undefined &&
 +        value !== undefined &&
++        validObservationTime(value, yield* Clock.currentTimeMillis) &&
 +        (value.collection === undefined || value.collection.outcome === "success")
 +      )
 +        yield* recheckHealth(account, value.observedAt);

@@ -135,10 +135,10 @@
         {
           "identity": "cliproxy-home-xai-grok-pro-entitlement",
           "file": "0511-home-xai-grok-pro-entitlement.patch",
-          "sha256": "17fbf4f1dc81fec76e52ffec8da1fa4ab90a2518e2bb70d98e27a0966279f419",
+          "sha256": "50934e9159d5a1f7ed202faaaffedc4a7a4dc97b9973a4bb7c67674f7a18611e",
           "retirement": {
             "mode": "manual",
-            "requires": "Retire after pinned Home recognizes the GrokPro paid subscription tier, preserves explicitly reported numeric weekly and product percentages, and passes the real-collector, unknown-profile and free-profile regressions without changing Home database models or versions."
+            "requires": "Retire after pinned Home recognizes the GrokPro paid subscription tier, preserves explicitly reported numeric weekly and product percentages, retains a closed malformed, missing, ambiguous, non-string or unknown-tier profile eligibility reason with fixed field-type flags only, and passes the real-collector, unknown-profile and free-profile regressions without changing Home database models or versions."
           }
         }
       ]
