@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { run } from "../process.ts";
 
 export function e2eCorrections(root: string) {
-  return ["hitl-inventory-lifetime", "webhook-removal-recovery", "atlassian-fixture-preparation"]
+  return [
+    "hitl-inventory-lifetime",
+    "webhook-removal-recovery",
+    "atlassian-fixture-preparation",
+    "sso-billing-settlement",
+  ]
     .map((name) => join(root, `e2e/${name}.patch`))
     .filter(existsSync);
 }
