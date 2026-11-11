@@ -121,8 +121,8 @@ export async function fixture(
   const adapter = (await auth.$context).adapter;
   let missingBudgetIncrement: { arrive(): void; released: Promise<void> } | undefined;
   const increment = adapter.incrementOne.bind(adapter);
-  adapter.incrementOne = async (input) => {
-    const result = await increment(input);
+  adapter.incrementOne = async <T>(input: Parameters<typeof increment>[0]) => {
+    const result = await increment<T>(input);
     const key = input.where.find((condition) => condition.field === "key")?.value;
     if (
       !result &&
