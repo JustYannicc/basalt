@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Valid xAI billing responses may omit monthly or weekly quota amounts without failing account health. Unmetered collections stay successful and fresh, never invent zero, a remaining amount, unlimited quota or a weekly reset. Present invalid values, contradictory periods, request and profile failures remain errors. A successful authoritative omission replaces old measurements and clears an earlier collection failure; real failures retain their normal preservation and backoff. Public account checks and observations accept successful unmetered snapshots. Home database models, versions, authorization and collection eligibility remain unchanged."
+    }
+  }
+}

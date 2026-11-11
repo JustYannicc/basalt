@@ -1,6 +1,9 @@
 import type { TunnelOpen, TunnelServerFrame } from "./tunnel.ts";
 
-export type WireEvent = { type: "message"; data: unknown } | { type: "close" | "error" };
+export type WireEvent =
+  | { type: "message"; data: unknown }
+  | { type: "close"; code?: number }
+  | { type: "error"; status?: number };
 export interface WireSocket {
   send(value: string): void;
   close(): void;

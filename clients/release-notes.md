@@ -6,13 +6,13 @@ These builds aren't signed by Apple, Microsoft or Google yet. Each system shows 
 
 Download **Signalbox-mac-arm64.dmg**, for Macs with Apple silicon (M1 or later) on macOS 14 or newer. Open it and drag Signalbox to Applications. Signalbox lives in the menu bar: sign in, check your connection, connect Claude Code or Codex, and open Signalbox in your browser for everything else.
 
-Updating from an earlier Signalbox: quit it from its menu first, then drag the new one to Applications and choose **Replace**. Your sign-in, agent settings and local address carry over. The first time it opens, macOS asks whether Signalbox may use its saved sign-in in your keychain; enter your password and click **Always Allow**.
-
 The first time you open it, macOS says it can't check the app for malicious software:
 
 1. Open Signalbox from Applications. When the warning appears, click **Done**.
 2. Open **System Settings → Privacy & Security**. Scroll down to **Security**, click **Open Anyway** next to Signalbox, and confirm with your password or Touch ID.
 3. Click **Open Anyway** once more. After that, the app opens normally.
+
+To update, quit Signalbox from its menu, then open the new download and replace the app in Applications. Your sign-in, agent settings and local address are kept. Each new version needs **Open Anyway** once more, and macOS may ask whether Signalbox can use its saved "Signalbox Client" keychain item: click **Always Allow**.
 
 If macOS says Signalbox **"is damaged and can't be opened"**, the app is fine: macOS says that about unsigned downloads. Open Terminal, run this, then open the app again:
 

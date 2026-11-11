@@ -4,6 +4,7 @@ import {
   decodeTunnelFrame,
   encodeTunnelBytes,
   tunnelLimits,
+  nativeTunnelReadyTimeoutMs,
   type TunnelClientFrame,
   type TunnelData,
   type TunnelServerFrame,
@@ -29,6 +30,7 @@ export function openTunnel(
   socket: WireSocket,
   open: OpenOperation,
   signal: AbortSignal,
+  unauthorized: () => void = () => {},
 ): ClientOperation {
   const response = deferred<Extract<TunnelServerFrame, { type: "response" }>>();
   const ready = deferred<void>();
@@ -54,9 +56,12 @@ export function openTunnel(
   };
   const fail = () => {
     if (stopped || ended) return;
-    failure = !started || notStarted ? new ModelRequestNotSent("The operation was refused before dispatch.") : new Error(
-      "Tunnel interrupted; the outcome may be unknown. The operation was not replayed.",
-    );
+    failure =
+      !started || notStarted
+        ? new ModelRequestNotSent("The operation was refused before dispatch.")
+        : new Error(
+            "Tunnel interrupted; the outcome may be unknown. The operation was not replayed.",
+          );
     stopped = true;
     ready.reject(failure);
     response.reject(failure);
@@ -65,7 +70,7 @@ export function openTunnel(
     cleanup();
     socket.close();
   };
-  const timer = setTimeout(fail, 30_000);
+  const timer = setTimeout(fail, nativeTunnelReadyTimeoutMs);
   const cleanup = () => {
     clearTimeout(timer);
     signal.removeEventListener("abort", fail);
@@ -73,7 +78,16 @@ export function openTunnel(
   };
   const unlisten = socket.listen((event) => {
     if (stopped || ended) return;
-    if (event.type !== "message") return fail();
+    if (event.type !== "message") {
+      if (!started || (event.type === "error" && event.status === 401)) unauthorized();
+      console.warn("NATIVE_TUNNEL_CLIENT_FAILURE", {
+        phase: responded ? "stream" : started ? "headers" : "handshake",
+        event: event.type,
+        closeCode: event.type === "close" ? (event.code ?? null) : null,
+        status: event.type === "error" ? (event.status ?? null) : null,
+      });
+      return fail();
+    }
     try {
       if (typeof event.data !== "string") throw new Error("Expected tunnel text frame.");
       const frame = decodeTunnelFrame(event.data, "server");
@@ -98,6 +112,7 @@ export function openTunnel(
         if (frame.status === 101 && open.operation.transport !== "websocket")
           throw new Error("Unexpected upgrade.");
         responded = true;
+        if (frame.status === 401) unauthorized();
         clearTimeout(timer);
         response.resolve(frame);
       } else if (frame.type === "credit") {

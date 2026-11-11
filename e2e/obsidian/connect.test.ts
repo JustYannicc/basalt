@@ -83,7 +83,7 @@ test("the dashboard installs the plugin release this checkout publishes", () => 
   assert.equal(link.searchParams.get("version"), basaltSyncTag);
 });
 
-test("BRAT is linked only once the release holds every file Obsidian installs", () => {
+test("BRAT is linked unless the release is known to be missing", () => {
   const assets = (...names: string[]) => ({ assets: names.map((name) => ({ name })) });
   assert.equal(
     basaltSyncReleaseStatus(200, assets("main.js", "manifest.json", "styles.css")),
@@ -92,8 +92,49 @@ test("BRAT is linked only once the release holds every file Obsidian installs", 
   assert.equal(basaltSyncReleaseStatus(200, assets("main.js", "manifest.json")), "unavailable");
   assert.equal(basaltSyncReleaseStatus(200, {}), "unavailable");
   assert.equal(basaltSyncReleaseStatus(404, null), "unavailable");
-  const limited = basaltSyncReleaseStatus(403, null);
-  assert.equal(typeof limited === "object" && limited._tag, "BasaltSyncReleaseUnreachable");
+  // GitHub's anonymous limit is 60 an hour per network address; running out must not hide the link.
+  for (const status of [403, 429, 500, 503, null])
+    assert.equal(basaltSyncReleaseStatus(status, null), "unconfirmed", String(status));
+});
+
+test("a found release is remembered for the session; a missing or unconfirmed one is asked again", async () => {
+  const stored = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => void stored.set(key, value),
+  };
+  const replies: (number | "offline")[] = [404, 403, 429, "offline", 200];
+  let fetches = 0;
+  const original = {
+    fetch: globalThis.fetch,
+    storage: Object.getOwnPropertyDescriptor(globalThis, "sessionStorage"),
+  };
+  Object.defineProperty(globalThis, "sessionStorage", { value: storage, configurable: true });
+  globalThis.fetch = async () => {
+    fetches++;
+    const reply = replies.shift()!;
+    if (reply === "offline") throw new TypeError("Failed to fetch");
+    const body = {
+      assets: [{ name: "main.js" }, { name: "manifest.json" }, { name: "styles.css" }],
+    };
+    return new Response(reply === 200 ? JSON.stringify(body) : "{}", { status: reply });
+  };
+  try {
+    const check = () => Effect.runPromise(basaltSyncReleaseCheck("owner/repo"));
+    // Not published yet: it may be published under this tag later, so this is not remembered.
+    assert.equal(await check(), "unavailable");
+    assert.equal(await check(), "unconfirmed");
+    assert.equal(await check(), "unconfirmed");
+    assert.equal(await check(), "unconfirmed");
+    assert.equal(await check(), "available");
+    assert.equal(fetches, 5, "each missing or unconfirmed answer is asked again");
+    assert.equal(await check(), "available");
+    assert.equal(fetches, 5, "a found release spends no more of the GitHub quota");
+  } finally {
+    globalThis.fetch = original.fetch;
+    if (original.storage) Object.defineProperty(globalThis, "sessionStorage", original.storage);
+    else delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
+  }
 });
 
 test("the release check sends GitHub no credentials or dashboard headers", async () => {

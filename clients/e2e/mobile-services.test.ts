@@ -168,6 +168,10 @@ test("mobile signs in, restores its grant, streams a model and resumes approved 
     } finally {
       await tools.close();
     }
+    remote.accessLifetime(60);
+    remote.refuseNextUpgrade();
+    await assert.rejects(restarted.run(availableModels, signal));
+    remote.accessLifetime(3600);
     const held = remote.holdAccess();
     const pendingRead = restarted.run(availableModels, signal);
     await held.arrived;

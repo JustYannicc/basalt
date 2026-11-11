@@ -122,13 +122,22 @@
             "mode": "manual",
             "requires": "Retire after pinned Home treats omitted weekly percentages and on-demand usage as not reported, never infers zero, preserves valid monthly readings and rejects present invalid optional values. Pass observed-shape, explicit-zero, alias, malformed-value, retained-window and real-collector regressions without changing Home database models or versions."
           }
+        },
+        {
+          "identity": "cliproxy-home-xai-healthy-unmetered",
+          "file": "0500-home-xai-healthy-unmetered.patch",
+          "sha256": "966c8e6cc3b099b2cd1fca8f55be7a4aa9715a359da8bd743b789d3fdfad4e3c",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home accepts valid monthly and weekly quota omissions as healthy unmetered collections, never invents measured amounts, rejects present invalid values and real request errors, and an authoritative omission replaces old measurements and clears earlier collection failures. Pass persisted-collector, public-health, period, alias, malformed-field, explicit-zero and failure-recovery regressions without changing Home database models or versions."
+          }
         }
       ]
     },
     "node": {
       "repository": "router-for-me/CLIProxyAPI",
-      "commit": "905637daa3f2fae4dcacf50164dac15ad43ed5c2",
-      "sha256": "c3fd1eda8de1c1533a7e0d022e25cc9b7446043e64ef205ab5d5ba5574edae16",
+      "commit": "fa11a573b252b30256bef4de952a95feee3c8c9d",
+      "sha256": "72efcf6afd84844275f1c6506dd554a72918c124dfdc7943e50f8c8278ad2714",
       "patches": [
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",

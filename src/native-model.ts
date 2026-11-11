@@ -1,3 +1,4 @@
+import { readNativeAuthorization } from "./native-access.ts";
 import { upstreamOutcomeUnknown } from "../clients/contracts/model-error.ts";
 import {
   nativeAuthenticationHeader,
@@ -24,12 +25,7 @@ export async function nativeModelRequest(request: Request, env: Environment): Pr
   try {
     const authorization = request.headers.get("authorization");
     if (!authorization?.match(/^Bearer [^\s]+$/iu)) return refused(401);
-    const check = await env.TOOLS_SERVICE.fetch(
-      new Request(new URL("/api/auth/native/access", request.url), {
-        headers: { authorization, accept: "application/json" },
-        signal: request.signal,
-      }),
-    );
+    const check = await readNativeAuthorization(request, env);
     if (!check.ok) {
       await check.body?.cancel();
       return refused(check.status === 401 || check.status === 403 ? check.status : 503);

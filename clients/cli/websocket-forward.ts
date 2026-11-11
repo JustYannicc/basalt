@@ -13,6 +13,7 @@ export async function forwardWebsocket(
   head: Buffer,
   service: NonNullable<ServiceCredentials["models"]>,
   signal: AbortSignal,
+  ready: () => void,
 ): Promise<void> {
   const target = new URL(incoming.url ?? "/v1/responses", service.origin);
   if (target.search) target.search = normalizeModelSearch(target.search);
@@ -50,6 +51,7 @@ export async function forwardWebsocket(
     socket.once("error", finish);
     remote.once("error", finish);
     remote.once("response", (response) => {
+      ready();
       remote.setTimeout(0);
       const lines = [
         `HTTP/1.1 ${response.statusCode ?? 502} ${response.statusMessage ?? "Remote response"}`,
@@ -61,6 +63,7 @@ export async function forwardWebsocket(
       void pipeline(response, socket, { signal }).then(() => finish(), finish);
     });
     remote.once("upgrade", (response, peer, received) => {
+      ready();
       upstream = peer;
       remote.setTimeout(0);
       const lines = [

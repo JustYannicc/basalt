@@ -1,0 +1,145 @@
+diff --git a/apps/hosted/server/src/implementation/auth.ts b/apps/hosted/server/src/implementation/auth.ts
+--- a/apps/hosted/server/src/implementation/auth.ts
++++ b/apps/hosted/server/src/implementation/auth.ts
+@@ -130,7 +130,8 @@
+       // the server with the visitor's address. These reads require a valid session cookie and
+       // change nothing; a per-address limit on them would make whole pages unavailable to people
+       // sharing an address. Sign-in, sign-up and other credential routes keep their limits.
+-      customRules: { "/get-session": false, "/organization/list": false },
++      // Native checks share proxy addresses; their authenticated device budget runs in the endpoint.
++      customRules: { "/get-session": false, "/organization/list": false, "/native/access": false },
+     },
+     advanced: {
+       cookiePrefix: hostCookieName(settings.url, "executor-hosted"),
+diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
+--- a/packages/mcp-auth/src/implementation/oauth.ts
++++ b/packages/mcp-auth/src/implementation/oauth.ts
+@@ -1,3 +1,4 @@
++import { nativeAccessBudget, nativeAccessRateRule } from "./native-access-budget.ts";
+ import { isToolSelectionSubset } from "@executor-js/authorization";
+ /** Better Auth owns OAuth and token rotation; this plugin owns explicit, revocable grants. */
+ import type { BetterAuthPlugin, GenericEndpointContext } from "@better-auth/core";
+@@ -1133,6 +1134,8 @@
+         },
+       },
+     },
++    // Preserve the device window when the shared database rate-limit storage prunes old rows.
++    rateLimit: [nativeAccessRateRule],
+     endpoints: {
+       getNativeGrantAccess: createAuthEndpoint(
+         "/native/access",
+@@ -1140,7 +1143,16 @@
+         (ctx) =>
+           native === undefined
+             ? Promise.reject(new APIError("NOT_FOUND"))
+-            : runAuth(native.authenticate(ctx, { display: true })),
++            : runAuth(
++                Effect.gen(function* () {
++                  const access = yield* native.authenticate(ctx, { display: true });
++                  yield* nativeAccessBudget(ctx, {
++                    device: access.policy.computer,
++                    userId: access.userId,
++                  });
++                  return access;
++                }),
++              ),
+       ),
+       revokeNativeGrant: createAuthEndpoint(
+         "/native/revoke",
+diff --git a/packages/mcp-auth/src/implementation/native-access-budget.ts b/packages/mcp-auth/src/implementation/native-access-budget.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/mcp-auth/src/implementation/native-access-budget.ts
+@@ -0,0 +1,75 @@
++import type { GenericEndpointContext } from "@better-auth/core";
++import { APIError } from "better-auth/api";
++import { authCall } from "./auth-call.ts";
++
++const windowMilliseconds = 60_000;
++const maximumChecks = 1200;
++const prefix = "native-access:";
++export const nativeAccessRateRule = {
++  pathMatcher: (path: string) => path === "/native/access",
++  window: windowMilliseconds / 1000,
++  max: maximumChecks,
++};
++
++/** Verified devices share a budget across token rotation, never across a proxy address. */
++export const nativeAccessBudget = (
++  ctx: GenericEndpointContext,
++  identity: { device?: string; userId: string },
++) =>
++  authCall(async () => {
++    const now = Date.now();
++    const window = Math.floor(now / windowMilliseconds);
++    if (!ctx.context.rateLimit.enabled) return;
++    const identityKey = identity.device
++      ? `device:${identity.device}`
++      : `account:${identity.userId}`;
++    const key = `${prefix}${identityKey}:${window}`;
++    const adapter = ctx.context.adapter;
++    const where = [{ field: "key", value: key }];
++    const consume = async (): Promise<void> => {
++      const updated = await adapter.incrementOne({
++        model: "rateLimit",
++        where: [...where, { field: "count", operator: "lt", value: maximumChecks }],
++        increment: { count: 1 },
++      });
++      if (updated) return;
++      const existing = await adapter.findOne<{ count: number }>({ model: "rateLimit", where });
++      if (existing) {
++        if (existing.count < maximumChecks) return consume();
++        const retryAfter = Math.max(
++          1,
++          Math.ceil(((window + 1) * windowMilliseconds - Date.now()) / 1000),
++        );
++        ctx.setHeader("Retry-After", String(retryAfter));
++        console.warn("NATIVE_ACCESS_RATE_LIMIT", {
++          scope: identity.device ? "device" : "account",
++          limit: maximumChecks,
++          windowSeconds: 60,
++          retryAfterSeconds: retryAfter,
++        });
++        throw new APIError("TOO_MANY_REQUESTS", {
++          message: "Native access checks are temporarily limited. Retry shortly.",
++        });
++      }
++      try {
++        await adapter.create({ model: "rateLimit", data: { key, count: 1, lastRequest: now } });
++      } catch (error) {
++        // A sibling may create this device's window between the guarded increment and insert.
++        if (!(await adapter.findOne({ model: "rateLimit", where }))) throw error;
++        return consume();
++      }
++      await ctx.context.runInBackgroundOrAwait(
++        adapter
++          .deleteMany({
++            model: "rateLimit",
++            where: [
++              { field: "key", operator: "starts_with", value: prefix },
++              { field: "lastRequest", operator: "lt", value: now - 2 * windowMilliseconds },
++            ],
++          })
++          .then(() => undefined)
++          .catch(() => console.warn("NATIVE_ACCESS_BUDGET_CLEANUP_FAILURE")),
++      );
++    };
++    await consume();
++  });
+diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
+--- a/e2e/tests/native-grants.spec.ts
++++ b/e2e/tests/native-grants.spec.ts
+@@ -28,6 +28,13 @@
+         const p = yield* startNativeProtocol(actors.owner);
+         expect((yield* p.start(false)).status).toBe(400);
+         const tokens = yield* approveNative(p, true, false);
++        const burst = yield* Effect.all(
++          Array.from({ length: 130 }, () =>
++            p.access(tokens).pipe(Effect.flatMap((response) => body(NativeAccess, response))),
++          ),
++          { concurrency: 13 },
++        );
++        expect(burst).toHaveLength(130);
+         const access = yield* body(NativeAccess, yield* p.access(tokens));
+         expect(access.policy.models).toBe(false);
+         const session = yield* body(

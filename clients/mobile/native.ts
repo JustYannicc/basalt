@@ -37,7 +37,7 @@ const socket: SocketFactory = (url, token) => {
     deliver({ type: "message", data: event.data });
   };
   connection.onerror = () => deliver({ type: "error" });
-  connection.onclose = () => deliver({ type: "close" });
+  connection.onclose = (event) => deliver({ type: "close", code: event.code });
   return {
     send: (value) => connection.send(value),
     close: () => {

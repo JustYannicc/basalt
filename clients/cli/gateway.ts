@@ -1,4 +1,8 @@
-import { upstreamOutcomeUnknown, ModelRequestNotSent } from "../contracts/model-error.ts";
+import {
+  upstreamOutcomeUnknown,
+  ModelRequestNotSent,
+  LocalRequestRefused,
+} from "../contracts/model-error.ts";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { chmod, rm } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
@@ -14,8 +18,7 @@ import { forwardHttp, maximumRequestBytes } from "./http-forward.ts";
 import { forwardWebsocket } from "./websocket-forward.ts";
 import { forwardTunnelHttp, forwardTunnelWebsocket } from "./tunnel-forward.ts";
 import { connectionHealth } from "./connection-health.ts";
-
-const maximumActiveRequests = 32;
+import { StartQueue } from "./start-queue.ts";
 
 export interface GatewayOptions {
   readonly profile: () => Promise<Profile>;
@@ -33,6 +36,7 @@ function answer(response: ServerResponse, status: number, value: unknown) {
 export async function startGateway(options: GatewayOptions) {
   const health = connectionHealth(options.source);
   const active = new Set<AbortController>();
+  const starts = new StartQueue();
   let closed = false;
   let transition: Promise<void> = Promise.resolve();
   const interrupt = () => {
@@ -83,10 +87,6 @@ export async function startGateway(options: GatewayOptions) {
       return answer(response, 401, { error: "An agent credential for this service is required." });
     if (Number(request.headers["content-length"] ?? 0) > maximumRequestBytes)
       return answer(response, 413, { error: "The request exceeds the local size limit." });
-    if (active.size >= maximumActiveRequests)
-      return answer(response, 503, {
-        error: "The connection is busy. Retry when a request finishes.",
-      });
     const controller = new AbortController();
     const cancel = () => {
       if (!response.writableFinished) controller.abort();
@@ -95,32 +95,61 @@ export async function startGateway(options: GatewayOptions) {
     request.once("aborted", () => controller.abort());
     active.add(controller);
     let dispatched = false;
+    let ready: (() => void) | undefined;
     try {
+      ready = await starts.acquire(controller.signal);
+      controller.signal.throwIfAborted();
       await transition;
       const transport = await options.source.transport(controller.signal);
       if (transport.mode === "device") {
         if (!transport.capabilities.includes(capability))
           return answer(response, 403, { error: "This connection has no access to this service." });
         dispatched = true;
-        await forwardTunnelHttp(request, response, transport, capability, controller.signal);
+        await forwardTunnelHttp(request, response, transport, capability, controller.signal, ready);
       } else {
         const service = transport.credentials[capability];
         if (!service)
           return answer(response, 403, { error: "This connection has no access to this service." });
         dispatched = true;
-        await forwardHttp(request, response, service, capability, controller.signal);
+        await forwardHttp(request, response, service, capability, controller.signal, ready);
       }
     } catch (error) {
+      if (dispatched && error instanceof ModelRequestNotSent)
+        await options.source.transport(controller.signal).catch(() => undefined);
       if (response.headersSent || response.destroyed) response.destroy();
-      else if (capability === "models" && dispatched && !(error instanceof ModelRequestNotSent)) {
+      else if (error instanceof LocalRequestRefused) {
+        response.setHeader("x-should-retry", "false");
+        return answer(response, 502, { error: "The local request was refused before dispatch." });
+      } else if (!dispatched || error instanceof ModelRequestNotSent) {
+        if (["sign-in-required", "revoked"].includes(options.source.view().state))
+          return answer(response, 401, { error: "Sign in again before using this device." });
+        response.setHeader("Retry-After", "1");
+        return answer(
+          response,
+          503,
+          capability === "models"
+            ? { error: "Model access is unavailable." }
+            : {
+                jsonrpc: "2.0",
+                id: null,
+                error: {
+                  code: -32000,
+                  message: "Tools are temporarily unavailable. Nothing was sent. Retry shortly.",
+                  data: { retryable: true },
+                },
+              },
+        );
+      } else if (capability === "models") {
         const failure = upstreamOutcomeUnknown();
         failure.headers.forEach((value, name) => response.setHeader(name, value));
         response.writeHead(failure.status);
         response.end(await failure.text());
-      } else answer(response, capability === "models" ? 503 : 502, {
-        error: capability === "models" ? "Model access is unavailable." : "The request was interrupted. Its outcome may be unknown; it was not replayed.",
-      });
+      } else
+        answer(response, 502, {
+          error: "The request was interrupted. Its outcome may be unknown; it was not replayed.",
+        });
     } finally {
+      ready?.();
       active.delete(controller);
       response.off("close", cancel);
     }
@@ -135,6 +164,7 @@ export async function startGateway(options: GatewayOptions) {
     });
   });
   tcp.on("upgrade", (request, socket, head) => {
+    socket.on("error", () => socket.destroy());
     const forward = async () => {
       if (
         !localRequest(request, authority) ||
@@ -146,11 +176,12 @@ export async function startGateway(options: GatewayOptions) {
           "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
         );
       const profile = await options.profile();
+      if (socket.destroyed) return;
       if (!findAgent(request, profile.agents, "models"))
         return socket.end(
           "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
         );
-      if (closed || active.size >= maximumActiveRequests)
+      if (closed)
         return socket.end(
           "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
         );
@@ -158,7 +189,11 @@ export async function startGateway(options: GatewayOptions) {
       active.add(controller);
       const cancel = () => controller.abort();
       socket.once("close", cancel);
+      let ready: (() => void) | undefined;
+      let dispatched = false;
       try {
+        ready = await starts.acquire(controller.signal);
+        controller.signal.throwIfAborted();
         await transition;
         const transport = await options.source.transport(controller.signal);
         if (transport.mode === "device") {
@@ -166,21 +201,31 @@ export async function startGateway(options: GatewayOptions) {
             return socket.end(
               "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
             );
-          await forwardTunnelWebsocket(request, socket, head, transport, controller.signal);
+          dispatched = true;
+          await forwardTunnelWebsocket(request, socket, head, transport, controller.signal, ready);
         } else {
           if (!transport.credentials.models)
             return socket.end(
               "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
             );
+          dispatched = true;
           await forwardWebsocket(
             request,
             socket,
             head,
             transport.credentials.models,
             controller.signal,
+            ready,
           );
         }
+      } catch {
+        if (!dispatched && !socket.destroyed)
+          socket.end(
+            "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+          );
+        else socket.destroy();
       } finally {
+        ready?.();
         active.delete(controller);
         socket.off("close", cancel);
       }
@@ -203,7 +248,8 @@ export async function startGateway(options: GatewayOptions) {
   const listen = (server: typeof tcp, target: { host: string; port: number } | { path: string }) =>
     new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(target, () => {
+      // macOS still clamps this to kern.ipc.somaxconn, which defaults to 128.
+      server.listen({ ...target, backlog: 511 }, () => {
         server.off("error", reject);
         resolve();
       });

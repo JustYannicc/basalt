@@ -1,3 +1,4 @@
+import { readNativeAuthorization } from "../native-access.ts";
 import { Schema } from "effect";
 import {
   nativeControlPrefix,
@@ -31,12 +32,7 @@ export async function tunnelAccess(request: Request, env: TunnelEnvironment) {
   const authorization = request.headers.get("authorization");
   if (!authorization || !/^Bearer [^\s]+$/iu.test(authorization))
     return new Response(null, { status: 401 });
-  const response = await env.TOOLS_SERVICE.fetch(
-    new Request(new URL("/api/auth/native/access", request.url), {
-      headers: { authorization, accept: "application/json" },
-      signal: request.signal,
-    }),
-  );
+  const response = await readNativeAuthorization(request, env);
   if (!response.ok) {
     await response.body?.cancel();
     return new Response(null, {
