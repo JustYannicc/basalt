@@ -11,10 +11,10 @@ let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
 
 @MainActor
-func render(_ fixture: Fixture, dark: Bool) throws {
+func render(_ fixture: Fixture, dark: Bool) async throws {
   let actions = PanelActions(
     open: { _ in }, chooseDirectFile: { nil }, quit: {}, openAtLogin: .constant(true))
-  let root = PanelView(model: fixture.model(), actions: actions)
+  let root = PanelView(model: await fixture.loadedModel(), actions: actions)
     .background(Color(nsColor: .windowBackgroundColor))
   let hosting = NSHostingView(rootView: root)
   let size = hosting.fittingSize
@@ -36,6 +36,6 @@ func render(_ fixture: Fixture, dark: Bool) throws {
 }
 
 for fixture in Fixture.allCases {
-  for dark in [false, true] { try render(fixture, dark: dark) }
+  for dark in [false, true] { try await render(fixture, dark: dark) }
 }
 print("Rendered \(Fixture.allCases.count * 2) snapshots to \(output.path(percentEncoded: false))")

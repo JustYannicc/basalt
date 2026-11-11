@@ -25,7 +25,7 @@ test("the host schema accepts the lines the Swift shell encodes", async () => {
       "utf8",
     ),
   );
-  assert.equal(lines.length, 6);
+  assert.equal(lines.length, 7);
   for (const line of lines) readHostMessage(JSON.parse(line));
 });
 

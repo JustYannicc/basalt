@@ -4,7 +4,7 @@ These builds aren't signed by Apple, Microsoft or Google yet. Each system shows 
 
 ## Mac
 
-Download **Signalbox-mac-arm64.dmg**, for Macs with Apple silicon (M1 or later) on macOS 14 or newer. Open it and drag Signalbox to Applications. Signalbox lives in the menu bar: sign in, check your connection, connect Claude Code or Codex, and open Signalbox in your browser for everything else.
+Download **Signalbox-mac-arm64.dmg**, for Macs with Apple silicon (M1 or later) on macOS 14 or newer. Open it and drag Signalbox to Applications. Signalbox lives in the menu bar: sign in, check your connection, see your apps, connect Claude Code or Codex, and open Signalbox in your browser for everything else.
 
 Updating from an earlier Signalbox: quit it from its menu first, then drag the new one to Applications and choose **Replace**. Your sign-in, agent settings and local address carry over. The first time it opens, macOS asks whether Signalbox may use its saved sign-in in your keychain; enter your password and click **Always Allow**.
 

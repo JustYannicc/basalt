@@ -111,23 +111,28 @@ struct StatusLine: View {
 }
 
 struct NavRow: View {
-  let symbol: String
+  var symbol: String?
+  var letter: String?
   let title: String
   let detail: String
+  var trailing = "›"
   let action: () -> Void
 
   var body: some View {
     Button(action: action) {
       HStack(spacing: 10) {
-        Image(systemName: symbol)
-          .frame(width: 28, height: 28)
-          .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
+        Group {
+          if let symbol { Image(systemName: symbol) } else { Text(letter ?? "").fontWeight(.semibold) }
+        }
+        .frame(width: 28, height: 28)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
+        .accessibilityHidden(true)
         VStack(alignment: .leading, spacing: 1) {
-          Text(title)
+          Text(title).lineLimit(1)
           Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
         }
         Spacer(minLength: 4)
-        Text("›").foregroundStyle(.secondary)
+        Text(trailing).foregroundStyle(.secondary).font(.system(size: trailing == "›" ? 13 : 12))
       }
       .padding(8)
       .frame(minHeight: 48)

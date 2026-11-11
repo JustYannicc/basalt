@@ -50,6 +50,24 @@ export async function startGateway(options: GatewayOptions) {
         return answer(response, 200, health.view());
       if (request.method === "GET" && request.url === "/client/health")
         return answer(response, 200, await health.check());
+      if (request.method === "GET" && request.url === "/client/apps") {
+        // Disconnect, sign-out and a closed caller interrupt the read like forwarded requests.
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        response.once("close", cancel);
+        active.add(controller);
+        try {
+          const summary = await options.source.apps(
+            AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
+          );
+          return answer(response, 200, summary ?? null);
+        } catch {
+          return answer(response, 409, { error: "The app list is unavailable." });
+        } finally {
+          response.off("close", cancel);
+          active.delete(controller);
+        }
+      }
       const command = request.url.slice("/client/".length);
       if (
         request.method !== "POST" ||
@@ -117,9 +135,13 @@ export async function startGateway(options: GatewayOptions) {
         failure.headers.forEach((value, name) => response.setHeader(name, value));
         response.writeHead(failure.status);
         response.end(await failure.text());
-      } else answer(response, capability === "models" ? 503 : 502, {
-        error: capability === "models" ? "Model access is unavailable." : "The request was interrupted. Its outcome may be unknown; it was not replayed.",
-      });
+      } else
+        answer(response, capability === "models" ? 503 : 502, {
+          error:
+            capability === "models"
+              ? "Model access is unavailable."
+              : "The request was interrupted. Its outcome may be unknown; it was not replayed.",
+        });
     } finally {
       active.delete(controller);
       response.off("close", cancel);

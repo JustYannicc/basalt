@@ -3,6 +3,7 @@ import Foundation
 /// Synthetic panel states for snapshots and tests. No real account, host or credential.
 public enum Fixture: String, CaseIterable, Sendable {
   case starting, signedOut, approval, connected, connectedNoAgents, offline, revoked, disconnected
+  case manyApps
   case connection, revokeConfirm, agentsReview, failure
 
   static let display = ConnectionView.Display(
@@ -30,7 +31,7 @@ public enum Fixture: String, CaseIterable, Sendable {
       .init(
         phase: .signingIn, configured: none, canReconnect: false, canSignOut: false,
         authorization: .init(url: "https://signalbox.example/device?code=BCDF-GHJK", code: "BCDF-GHJK"))
-    case .connected, .connection, .revokeConfirm, .agentsReview:
+    case .connected, .connection, .revokeConfirm, .agentsReview, .manyApps:
       .init(
         connection: Self.view(.connected), phase: .ready, configured: both, canReconnect: true,
         canSignOut: true, localOrigin: local)
@@ -59,11 +60,33 @@ public enum Fixture: String, CaseIterable, Sendable {
     }
   }
 
+  static let appList = AppSummary(
+    organization: "org-1",
+    apps: [
+      .init(id: "gmail", name: "Gmail", accounts: 2), .init(id: "github", name: "GitHub", accounts: 1),
+      .init(id: "postgres", name: "Postgres", accounts: 2), .init(id: "linear", name: "Linear", accounts: 0),
+    ])
+  static let manyAppList = AppSummary(
+    organization: "org-1",
+    apps: appList.apps + [
+      .init(id: "notion", name: "Notion", accounts: 1), .init(id: "slack", name: "Slack", accounts: 3),
+      .init(id: "a-very-long-app-name", name: "Customer support knowledge base and ticket triage", accounts: 1),
+    ])
+
+  /// Fixtures with a list load it through the model, the way the panel does when it opens.
+  @MainActor
+  public func loadedModel() async -> PanelModel {
+    let model = model()
+    await model.refreshApps()
+    return model
+  }
+
   @MainActor
   public func model() -> PanelModel {
     let snapshot = snapshot
-    let model = PanelModel(machineName: "Alex's MacBook", snapshot: snapshot) { _, _ in
-      DesktopReply(snapshot: snapshot, preview: nil)
+    let apps = self == .manyApps ? Self.manyAppList : Self.appList
+    let model = PanelModel(machineName: "Alex's MacBook", snapshot: snapshot) { request, _ in
+      DesktopReply(snapshot: snapshot, apps: request == .apps ? apps : nil)
     }
     model.server = "https://signalbox.example"
     switch self {

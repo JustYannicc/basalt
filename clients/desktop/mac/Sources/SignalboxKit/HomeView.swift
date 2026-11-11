@@ -37,6 +37,7 @@ struct HomeView: View {
           .padding(.horizontal, 6)
         }
         if !presentation.starting && !presentation.signingIn {
+          if model.apps != nil { AppList(model: model, actions: actions) }
           VStack(spacing: 0) {
             if presentation.connected || presentation.hasSetup {
               NavRow(symbol: "terminal", title: "Connect your agents", detail: agentsDetail) {
@@ -102,5 +103,45 @@ struct Approval: View {
         .buttonStyle(.plain).foregroundStyle(.secondary)
     }
     .card()
+  }
+}
+
+/// The read-only app summary. Rows open the app in the browser, where all editing happens.
+struct AppList: View {
+  @Bindable var model: PanelModel
+  let actions: PanelActions
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Text("Your apps").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+        .padding(.horizontal, 6)
+      if (model.apps?.apps.count ?? 0) > 5 {
+        TextField("Search apps", text: $model.appQuery)
+          .textFieldStyle(.roundedBorder)
+          .padding(.horizontal, 6)
+          .padding(.bottom, 2)
+      }
+      if model.listedApps.isEmpty {
+        Text(model.appQuery.isEmpty ? "No apps yet." : "No apps match.")
+          .font(.system(size: 12)).foregroundStyle(.secondary)
+          .padding(.horizontal, 6).padding(.vertical, 4)
+      }
+      ScrollView {
+        VStack(spacing: 0) {
+          ForEach(model.listedApps) { app in
+            NavRow(
+              symbol: nil, letter: String(app.name.prefix(1)).uppercased(), title: app.name,
+              detail: app.accounts == 0
+                ? "No accounts" : "\(app.accounts) account\(app.accounts == 1 ? "" : "s")",
+              trailing: app.accounts == 0 ? "Connect" : "›"
+            ) {
+              if let url = model.webURL(for: app) { actions.open(url) }
+            }
+          }
+        }
+      }
+      .frame(maxHeight: 240)
+      .scrollBounceBehavior(.basedOnSize)
+    }
   }
 }

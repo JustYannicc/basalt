@@ -59,6 +59,7 @@ final class Shell {
   let model: PanelModel
   private var host: HostProcess?
   private var poller: Task<Void, Never>?
+  private var appsTask: Task<Void, Never>?
   private var visible = false
 
   init() {
@@ -102,6 +103,7 @@ final class Shell {
     process.onExit = { [weak self] in
       self?.host = nil
       self?.poller?.cancel()
+      self?.appsTask?.cancel()
       self?.model.setNotice(.error("Signalbox's connection stopped. Quit and reopen Signalbox."))
     }
     do {
@@ -122,14 +124,23 @@ final class Shell {
 
   func stop() async {
     poller?.cancel()
+    appsTask?.cancel()
     await host?.stop()
   }
 
   private func poll() {
     poller?.cancel()
     poller = Task { [weak self] in
+      // The app list is a server read, so it refreshes on open and then every 30 seconds while
+      // the panel stays open; a closed panel never asks for it.
+      var appsRead = ContinuousClock.now - .seconds(60)
       while !Task.isCancelled, let self {
         await self.model.refresh()
+        if self.visible, ContinuousClock.now - appsRead >= .seconds(30) {
+          appsRead = .now
+          // Its own task, so a slow server never holds up the status line.
+          self.appsTask = Task { await self.model.refreshApps() }
+        }
         try? await Task.sleep(for: self.visible ? .seconds(2) : .seconds(30))
       }
     }

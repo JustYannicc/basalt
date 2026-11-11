@@ -44,6 +44,9 @@ export async function nativeFixture(
   let refuseRequest = false;
   let offline = false;
   let accessReads = 0;
+  let toolsOrganization: string | undefined = "personal-tools";
+  let inventory: { status: number; body?: unknown } = { status: 404 };
+  let inventoryReads = 0;
   let healthReads = 0;
   let denyAccess = false;
   let readyFailure: "close" | "timeout" | undefined;
@@ -159,11 +162,16 @@ export async function nativeFixture(
           computer: "fixture-computer",
           pool: "fixture-pool",
           models: true,
-          toolsOrganization: "personal-tools",
+          ...(toolsOrganization ? { toolsOrganization } : {}),
         },
         expiresAt: Date.now() + 3600000,
         ...(display ? { display } : {}),
       });
+    }
+    if (request.url === "/api/organizations/personal-tools/inventory" && request.method === "GET") {
+      inventoryReads++;
+      if (revoked || request.headers.authorization !== `Bearer ${access}`) return json(401, {});
+      return json(inventory.status, inventory.body ?? {});
     }
     if (request.url === "/api/auth/native/revoke") {
       assert.equal(request.headers.authorization, `Bearer ${access}`);
@@ -379,6 +387,14 @@ export async function nativeFixture(
     },
     approve: () => {
       approved = true;
+    },
+    /** The organization inventory the device's tools grant reads, and how often it was read. */
+    inventory: (status: number, body?: unknown) => {
+      inventory = { status, body };
+    },
+    inventoryReads: () => inventoryReads,
+    toolsOrganization: (value: string | undefined) => {
+      toolsOrganization = value;
     },
     beginApproval: () => {
       approved = false;

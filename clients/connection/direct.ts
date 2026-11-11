@@ -12,6 +12,8 @@ export function directConnection(
   let credentials: DirectCredentials | undefined = initial;
   let state: ConnectionView["state"] = "connected";
   return {
+    // Direct keys reach models and MCP only; listing apps needs a device grant.
+    apps: async () => undefined,
     origins: () =>
       [credentials?.models, credentials?.tools].flatMap((service) =>
         service ? [service.origin] : [],

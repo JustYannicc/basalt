@@ -1,5 +1,5 @@
 import { request } from "node:http";
-import { readConnectionView } from "../contracts/connection.ts";
+import { readAppSummary, readConnectionView } from "../contracts/connection.ts";
 
 /** The SDK still sees HTTP; only its local hop uses the profile's private socket. */
 export function ipcFetch(socketPath: string, token: string) {
@@ -73,4 +73,14 @@ export async function control(socketPath: string, token: string, command: string
   });
   if (!response.ok) throw new Error("The connection command was refused.");
   return readConnectionView(await response.json());
+}
+
+/** The device's discoverable apps, or null when its connection has no tools grant. */
+export async function controlApps(socketPath: string, token: string) {
+  const response = await ipcFetch(socketPath, token)("http://localhost/client/apps", {
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!response.ok) throw new Error("The app list is unavailable.");
+  const value: unknown = await response.json();
+  return value === null ? undefined : readAppSummary(value);
 }
