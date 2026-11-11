@@ -29,7 +29,7 @@ export function binaryDownloader(input: {
     };
     check();
     const identity = pointerIdentity(wanted.pointer);
-    if (!identity || !wanted.at) throw new Error("This attachment has not landed in Basalt yet");
+    if (!identity || !wanted.at) throw new Error("This attachment has not landed in Signalbox yet");
     const version = state.files[path],
       info = await remote.info({ path, at: wanted.at });
     if (

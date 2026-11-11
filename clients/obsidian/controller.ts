@@ -36,7 +36,7 @@ const config = (input: unknown): DeviceConfig => {
     appId = text(value, "appId"),
     appSlug = text(value, "appSlug");
   if (!/^[A-Za-z0-9_-]{1,128}$/u.test(appId) || !/^[A-Za-z0-9_-]{1,128}$/u.test(appSlug))
-    throw new Error("Invalid Basalt app identity");
+    throw new Error("Invalid Signalbox app identity");
   return { connection: connectionUrl(text(value, "connection")), appId, appSlug };
 };
 const credential = (input: string) => {

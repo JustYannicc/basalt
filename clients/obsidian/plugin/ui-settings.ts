@@ -27,7 +27,7 @@ export function renderHowItWorks(parent: HTMLElement) {
   section.createEl("h3", { text: "How sync works" });
   const items: [string, string][] = [
     [
-      "Basalt holds the vault.",
+      "Signalbox holds the vault.",
       "Your agents read, search and edit the cloud copy, even with every device off.",
     ],
     [
@@ -40,7 +40,7 @@ export function renderHowItWorks(parent: HTMLElement) {
     ],
     [
       "Syncs when you pause.",
-      "Your edits go to Basalt together after a few minutes without typing, when you leave Obsidian, or when you choose Sync now. Changes from Basalt arrive when you open Obsidian or a note, and every few minutes while it's open.",
+      "Your edits go to Signalbox together after a few minutes without typing, when you leave Obsidian, or when you choose Sync now. Changes from Signalbox arrive when you open Obsidian or a note, and every few minutes while it's open.",
     ],
     [
       "Edit offline, sync when you return.",
@@ -52,7 +52,7 @@ export function renderHowItWorks(parent: HTMLElement) {
     ],
     [
       "Deleted elsewhere? Kept here.",
-      "Notes removed in Basalt move to the “Basalt recovered” folder instead of disappearing.",
+      "Notes removed in Signalbox move to the “Signalbox recovered” folder instead of disappearing.",
     ],
   ];
   const list = section.createEl("ol");
@@ -104,12 +104,12 @@ export class BasaltSettingTab extends PluginSettingTab {
     const connected = !!status && status.state !== "disconnected" && status.state !== "authorizing";
     const intro = containerEl.createDiv({ cls: "basalt-sync-intro" });
     intro.createEl("h2", {
-      text: connected ? `${host.vaultName} is connected` : "Keep this vault in Basalt",
+      text: connected ? `${host.vaultName} is connected` : "Keep this vault in Signalbox",
     });
     intro.createEl("p", {
       text: connected
-        ? "Basalt holds the authoritative copy. Your agents can use these notes while your devices are off."
-        : "Sync this vault with Basalt so your agents can read, search and edit your notes, even with every device off.",
+        ? "Signalbox holds the authoritative copy. Your agents can use these notes while your devices are off."
+        : "Sync this vault with Signalbox so your agents can read, search and edit your notes, even with every device off.",
     });
 
     const statusRow = new Setting(containerEl)
@@ -152,9 +152,9 @@ export class BasaltSettingTab extends PluginSettingTab {
       if (error) containerEl.createDiv({ cls: "basalt-sync-callout is-error", text: error });
       new Setting(containerEl).setName("This vault").setDesc(host.vaultName);
       new Setting(containerEl)
-        .setName("Connect from Basalt")
+        .setName("Connect from Signalbox")
         .setDesc(
-          "In Basalt, open your Obsidian app and choose Connect Obsidian. This vault opens here and asks you to approve in your browser. Start with your Mac.",
+          "In Signalbox, open your Obsidian app and choose Connect Obsidian. This vault opens here and asks you to approve in your browser. Start with your Mac.",
         );
       return this.renderHelp();
     }
@@ -177,7 +177,7 @@ export class BasaltSettingTab extends PluginSettingTab {
             : `${status.conflicts} conflicts need a choice`,
       });
       box.createEl("p", {
-        text: "Someone else changed the same notes. Both versions are saved in Basalt.",
+        text: "Someone else changed the same notes. Both versions are saved in Signalbox.",
       });
       box
         .createEl("button", { text: "Compare versions" })
@@ -189,10 +189,10 @@ export class BasaltSettingTab extends PluginSettingTab {
     if (unsynced.length || summary.failed.length) {
       const box = containerEl.createDiv({ cls: "basalt-sync-callout is-warn" });
       box.createEl("strong", {
-        text: `${(unsynced.length + summary.failed.length).toLocaleString("en-US")} files are not in Basalt yet`,
+        text: `${(unsynced.length + summary.failed.length).toLocaleString("en-US")} files are not in Signalbox yet`,
       });
       box.createEl("p", {
-        text: "They stay on this device unchanged. Basalt picks them up once it can carry them.",
+        text: "They stay on this device unchanged. Signalbox picks them up once it can carry them.",
       });
       listPreview(box, [
         ...summary.failed.map((file) => `${file.path} — ${file.reason}`),
@@ -207,14 +207,14 @@ export class BasaltSettingTab extends PluginSettingTab {
         text: `Kept ${recovered.length.toLocaleString("en-US")} files removed elsewhere`,
       });
       box.createEl("p", {
-        text: "They were deleted in Basalt, so this device moved them to “Basalt recovered” instead of deleting them. These recovery copies never sync. Delete them when you're sure.",
+        text: "They were deleted in Signalbox, so this device moved them to “Signalbox recovered” instead of deleting them. These recovery copies never sync. Delete them when you're sure.",
       });
       listPreview(box, recovered);
     }
 
     new Setting(containerEl)
       .setName("This vault")
-      .setDesc(`${host.vaultName} · ${config ? new URL(config.connection).host : "Basalt"}`);
+      .setDesc(`${host.vaultName} · ${config ? new URL(config.connection).host : "Signalbox"}`);
 
     this.renderAttachments();
 
@@ -238,7 +238,7 @@ export class BasaltSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Disconnect this device")
       .setDesc(
-        "Removes this device's access in Basalt. Local notes stay. Reconnect any time from Basalt.",
+        "Removes this device's access in Signalbox. Local notes stay. Reconnect any time from Signalbox.",
       )
       .addButton((button) =>
         button
@@ -247,7 +247,7 @@ export class BasaltSettingTab extends PluginSettingTab {
           .onClick(() =>
             new ConfirmModal(host.app, {
               title: "Disconnect this device?",
-              body: "Basalt removes this device's access. Notes on this device stay where they are. Unsent changes wait here until you reconnect.",
+              body: "Signalbox removes this device's access. Notes on this device stay where they are. Unsent changes wait here until you reconnect.",
               confirm: "Disconnect",
               warning: true,
               run: () => host.disconnect(),

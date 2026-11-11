@@ -389,7 +389,7 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
   private emit() {
     if (this.statusBar) {
       const view = this.view();
-      this.statusBar.setText(`Basalt: ${view.title}`);
+      this.statusBar.setText(`Signalbox: ${view.title}`);
       this.statusBar.setAttr("aria-label", view.detail);
       this.statusBar.toggleClass("is-warn", view.tone === "warn" || view.tone === "error");
     }
@@ -409,7 +409,7 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
     if (!controller || !pending) return;
     if (Date.now() >= pending.expiresAt) {
       // Set before cancel(): cancel notifies listeners, and the connect modal reads the reason then.
-      this.authError = "The approval request expired. Choose Connect Obsidian in Basalt again.";
+      this.authError = "The approval request expired. Choose Connect Obsidian in Signalbox again.";
       controller.cancel();
       return;
     }
@@ -417,7 +417,7 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
       this.pollTimer = null;
       try {
         if (await controller.poll()) {
-          new Notice(`${this.vaultName} is connected to Basalt.`);
+          new Notice(`${this.vaultName} is connected to Signalbox.`);
           await this.syncNow();
           return;
         }

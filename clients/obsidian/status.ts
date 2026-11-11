@@ -79,7 +79,7 @@ export function describeStatus(input: StatusInput): StatusView {
 
   if (input.failure) return view("error", "Sync can't start", input.failure);
   if (status.state === "disconnected")
-    return view("muted", "Not connected", "Connect this vault from Basalt.");
+    return view("muted", "Not connected", "Connect this vault from Signalbox.");
   if (status.state === "authorizing")
     return view("busy", "Waiting for approval", "Approve this device in your browser.");
   // Present only while the first import is unfinished; it is never "synced" until it is gone.
@@ -123,7 +123,7 @@ export function describeStatus(input: StatusInput): StatusView {
 
   const needs: string[] = [];
   if (status.conflicts > 0) needs.push(`${plural(status.conflicts, "conflict")} to review`);
-  if (unsynced > 0) needs.push(`${plural(unsynced, "file")} not in Basalt yet`);
+  if (unsynced > 0) needs.push(`${plural(unsynced, "file")} not in Signalbox yet`);
   if (input.recovered > 0) needs.push(`${plural(input.recovered, "recovered file")} to check`);
   if (needs.length) {
     const title = status.conflicts > 0 ? "Needs a choice" : "Needs attention";
@@ -154,7 +154,7 @@ export function describeStatus(input: StatusInput): StatusView {
     return view(
       "muted",
       `${plural(status.queued, "change")} to sync`,
-      "They go to Basalt after a few minutes without edits, when you leave Obsidian, or when you choose Sync now.",
+      "They go to Signalbox after a few minutes without edits, when you leave Obsidian, or when you choose Sync now.",
     );
   const when = input.lastSynced === null ? "" : ` ${ago(input.lastSynced, input.now)}`;
   return view("ok", `Synced${when}`, queuedText(0), true);

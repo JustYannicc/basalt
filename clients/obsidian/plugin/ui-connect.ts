@@ -77,7 +77,7 @@ export class ConnectModal extends Modal {
     if (this.phase === "done") {
       this.setTitle("Vault connected");
       contentEl.createEl("p", {
-        text: `${host.vaultName} now syncs with Basalt. The first sync starts now; keep Obsidian open until it finishes.`,
+        text: `${host.vaultName} now syncs with Signalbox. The first sync starts now; keep Obsidian open until it finishes.`,
       });
       this.actions()
         .createEl("button", { text: "Done", cls: "mod-cta" })
@@ -89,7 +89,7 @@ export class ConnectModal extends Modal {
       const pending = host.controller?.authorization();
       this.setTitle("Approve in your browser");
       contentEl.createEl("p", {
-        text: "Your browser opened Basalt. Check that it shows this code, then approve.",
+        text: "Your browser opened Signalbox. Check that it shows this code, then approve.",
       });
       contentEl.createDiv({ cls: "basalt-sync-code is-large", text: pending?.code ?? "—" });
       contentEl.createEl("p", {
@@ -107,14 +107,14 @@ export class ConnectModal extends Modal {
       return;
     }
 
-    this.setTitle("Connect this vault to Basalt?");
+    this.setTitle("Connect this vault to Signalbox?");
     const rows = contentEl.createEl("dl", { cls: "basalt-sync-facts" });
     const row = (term: string, value: string) => {
       rows.createEl("dt", { text: term });
       rows.createEl("dd", { text: value });
     };
     row("Vault", host.vaultName);
-    row("Basalt server", request.host);
+    row("Signalbox server", request.host);
     row("App", request.config.appSlug);
     const scope = this.importScopeState;
     row(
@@ -140,7 +140,7 @@ export class ConnectModal extends Modal {
     if (request.vaultName && request.vaultName !== host.vaultName)
       contentEl.createDiv({
         cls: "basalt-sync-callout is-warn",
-        text: `This link was made for the vault “${request.vaultName}”. You're in “${host.vaultName}”. Only continue if this is the vault you want in Basalt.`,
+        text: `This link was made for the vault “${request.vaultName}”. You're in “${host.vaultName}”. Only continue if this is the vault you want in Signalbox.`,
       });
     const current = host.controller?.config();
     if (current && current.connection !== request.config.connection)
@@ -151,7 +151,7 @@ export class ConnectModal extends Modal {
     if (this.error) contentEl.createDiv({ cls: "basalt-sync-callout is-error", text: this.error });
     contentEl.createEl("p", {
       cls: "basalt-sync-muted",
-      text: "Your browser opens next so you can approve this device. Basalt never asks for a password here.",
+      text: "Your browser opens next so you can approve this device. Signalbox never asks for a password here.",
     });
 
     const actions = this.actions();

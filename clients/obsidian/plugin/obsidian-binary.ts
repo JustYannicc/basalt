@@ -51,7 +51,7 @@ export function obsidianBinaryIo(
     vault,
     local,
     privateRoot: normalizePath(`${plugin.manifest.dir}/cache/${appId}`),
-    transferRoot: `Basalt transfers/${store.device}/${appId}`,
+    transferRoot: `Signalbox transfers/${store.device}/${appId}`,
     ownership: store.transfers,
     id: newDeviceId,
     signal,

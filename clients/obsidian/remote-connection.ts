@@ -11,7 +11,7 @@ function envelope(reply: HttpReply, id: number) {
   if (reply.status < 200 || reply.status >= 300)
     throw new Error(
       reply.status === 401 || reply.status === 403
-        ? "Device access was removed or expired. Reconnect in Basalt."
+        ? "Device access was removed or expired. Reconnect in Signalbox."
         : `Cloud request failed (${reply.status})`,
     );
   let value: unknown;
@@ -94,7 +94,7 @@ export function createTransport(input: {
         });
       const result = envelope(reply, id);
       if (result.protocolVersion !== "2025-11-25")
-        throw new Error("Basalt does not support this device protocol");
+        throw new Error("Signalbox does not support this device protocol");
       sessionId = reply.headers["mcp-session-id"] ?? null;
       const ready = await post({ jsonrpc: "2.0", method: "notifications/initialized" });
       if (ready.status !== 202 && ready.status !== 200 && ready.status !== 204)

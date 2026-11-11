@@ -74,7 +74,7 @@ test("a choice still waiting never hides edits that haven't synced yet", () => {
 test("unsynced files are named honestly, not as fully synced", () => {
   const view = describeStatus(input({ state: "attention", unsupported: ["photo.png", "doc.pdf"] }));
   assert.equal(view.title, "Needs attention");
-  assert.match(view.detail, /2 files not in Basalt yet/u);
+  assert.match(view.detail, /2 files not in Signalbox yet/u);
 });
 
 test("each lifecycle state has its own truthful headline", () => {
@@ -89,7 +89,7 @@ test("each lifecycle state has its own truthful headline", () => {
   assert.equal(
     title({
       state: "offline",
-      error: "Device access was removed or expired. Reconnect in Basalt.",
+      error: "Device access was removed or expired. Reconnect in Signalbox.",
     }),
     "Device access ended",
   );
