@@ -61,6 +61,15 @@ diff --git a/internal/cluster/basalt_collection_diagnostic.go b/internal/cluster
  	}
  	r.quotaDiagnosticMu.Lock()
  	defer r.quotaDiagnosticMu.Unlock()
+@@ -35,7 +39,7 @@
+ 		r.quotaDiagnostics = make(map[string]QuotaCollectionDiagnostic)
+ 	}
+ 	previous, exists := r.quotaDiagnostics[id]
+-	if exists && previous.AttemptedAt.After(diagnostic.AttemptedAt) {
++	if exists && (previous.AttemptedAt.After(diagnostic.AttemptedAt) || xaiClaimRegression(previous, diagnostic)) {
+ 		return nil
+ 	}
+ 
 @@ -53,6 +57,7 @@
  	return &result
  }
@@ -73,7 +82,7 @@ diff --git a/internal/cluster/basalt_xai_diagnostic.go b/internal/cluster/basalt
 new file mode 100644
 --- /dev/null
 +++ b/internal/cluster/basalt_xai_diagnostic.go
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,81 @@
 +package cluster
 +
 +type XAIFieldPresence struct {
@@ -106,6 +115,13 @@ new file mode 100644
 +	default:
 +		return false
 +	}
++}
++
++func xaiClaimRegression(previous, current QuotaCollectionDiagnostic) bool {
++	return previous.AttemptedAt.Equal(current.AttemptedAt) &&
++		previous.Provider == "xai" && current.Provider == "xai" &&
++		previous.XAI != nil && current.XAI != nil &&
++		previous.XAI.Phase != "claimed" && current.XAI.Phase == "claimed"
 +}
 +
 +var xaiMonthlyFields = []string{
@@ -152,13 +168,14 @@ diff --git a/internal/cluster/basalt_xai_diagnostic_test.go b/internal/cluster/b
 new file mode 100644
 --- /dev/null
 +++ b/internal/cluster/basalt_xai_diagnostic_test.go
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,55 @@
 +package cluster
 +
 +import (
 +	"encoding/json"
 +	"strings"
 +	"testing"
++	"time"
 +)
 +
 +func TestXAIDiagnosticCopiesOnlyFixedFieldFlags(t *testing.T) {
@@ -180,6 +197,31 @@ new file mode 100644
 +	}
 +	if validXAIPhase("private-secret") || !validXAIPhase("snapshot_write_failed") {
 +		t.Fatal("phase projection is not closed")
++	}
++}
++
++func TestXAIDiagnosticCompletedAttemptCannotRegressToClaimed(t *testing.T) {
++	repo := &Repository{}
++	at := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
++	value := QuotaCollectionDiagnostic{Provider: "xai", AttemptedAt: at, XAI: &XAICollectionDiagnostic{Phase: "snapshot_write_failed", VendorCallStarted: true, ProbeFinished: true, SnapshotWriteAttempted: true, Monthly: NewXAIMonthlyDiagnostic(), Weekly: NewXAIWeeklyDiagnostic()}}
++	value.XAI.Monthly.Fields["config.used"] = XAIFieldPresence{Present: true, Null: true}
++	if err := repo.RememberQuotaCollectionDiagnostic("a", value); err != nil {
++		t.Fatal(err)
++	}
++	claimed := QuotaCollectionDiagnostic{Provider: "xai", AttemptedAt: at, XAI: &XAICollectionDiagnostic{Phase: "claimed", Monthly: NewXAIMonthlyDiagnostic(), Weekly: NewXAIWeeklyDiagnostic()}}
++	if err := repo.RememberQuotaCollectionDiagnostic("a", claimed); err != nil {
++		t.Fatal(err)
++	}
++	read := repo.collectionDiagnostic("a")
++	if read.XAI.Phase != "snapshot_write_failed" || !read.XAI.Monthly.Fields["config.used"].Null {
++		t.Fatal("same-attempt claimed handoff erased completed fields")
++	}
++	claimed.AttemptedAt = at.Add(time.Minute)
++	if err := repo.RememberQuotaCollectionDiagnostic("a", claimed); err != nil {
++		t.Fatal(err)
++	}
++	if repo.collectionDiagnostic("a").XAI.Phase != "claimed" {
++		t.Fatal("a genuinely new Home attempt was suppressed")
 +	}
 +}
 diff --git a/internal/cluster/management/basalt_xai_diagnostic_test.go b/internal/cluster/management/basalt_xai_diagnostic_test.go

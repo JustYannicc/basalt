@@ -123,6 +123,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /pool-owned persistence through the existing authenticated view/,
         );
+        assert.match(patch.retirement.requires, /same-attempt completion ordering/);
         assert.match(patch.retirement.requires, /without response bodies, amounts or credentials/);
         assert.match(
           patch.retirement.requires,

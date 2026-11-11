@@ -118,8 +118,15 @@ async function persistDiagnostic(
   const key = `quota-field-diagnostic-v1:${await digest(id)}`;
   const retained = collectionDiagnostic(await storage.get(key), provider);
   const current = collectionDiagnostic(incoming, provider);
+  const regressiveClaim =
+    current?.attemptedAt === retained?.attemptedAt &&
+    current?.xai?.phase === "claimed" &&
+    retained?.xai !== undefined &&
+    retained.xai.phase !== "claimed";
   const latest =
-    current !== undefined && (retained === undefined || current.attemptedAt >= retained.attemptedAt)
+    current !== undefined &&
+    !regressiveClaim &&
+    (retained === undefined || current.attemptedAt >= retained.attemptedAt)
       ? current
       : retained;
   if (latest === undefined) return value;

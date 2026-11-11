@@ -108,10 +108,10 @@
         {
           "identity": "cliproxy-home-xai-collection-diagnostic",
           "file": "0490-home-xai-collection-diagnostic.patch",
-          "sha256": "29b0a15133c0dbc2980767c41fc8047b09af8abef21f452d46e54f265b34d935",
+          "sha256": "78c59a7752ad30f01621157f10f9ee6e34c21e2f703f69267e61ff79aa5b7ef2",
           "retirement": {
             "mode": "manual",
-            "requires": "Retire after pinned Home exposes bounded xAI monthly and weekly source-field flags tied to collector invocation time, distinguishes forced claim refusal and vendor completion persistence, and passes field-shape, privacy, real-collector, lease-loss, write-failure and management-detail regressions, preserves pool-owned persistence through the existing authenticated view without response bodies, amounts or credentials, and does so without changing Home database models or versions."
+            "requires": "Retire after pinned Home exposes bounded xAI monthly and weekly source-field flags tied to collector invocation time, distinguishes forced claim refusal and vendor completion persistence, and passes field-shape, privacy, real-collector, lease-loss, write-failure and management-detail regressions, preserves same-attempt completion ordering and pool-owned persistence through the existing authenticated view without response bodies, amounts or credentials, and does so without changing Home database models or versions."
           }
         }
       ]
