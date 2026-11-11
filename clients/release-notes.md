@@ -12,6 +12,8 @@ The first time you open it, macOS says it can't check the app for malicious soft
 2. Open **System Settings → Privacy & Security**. Scroll down to **Security**, click **Open Anyway** next to Signalbox, and confirm with your password or Touch ID.
 3. Click **Open Anyway** once more. After that, the app opens normally.
 
+To update, quit Signalbox from its menu, then open the new download and replace the app in Applications. Your sign-in is kept. Each new version needs **Open Anyway** once more, and macOS may ask whether Signalbox can use its saved "Signalbox Client" keychain item: click **Always Allow**.
+
 If macOS says Signalbox **"is damaged and can't be opened"**, the app is fine: macOS says that about unsigned downloads. Open Terminal, run this, then open the app again:
 
 ```sh
