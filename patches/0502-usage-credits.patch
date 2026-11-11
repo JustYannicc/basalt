@@ -2710,14 +2710,16 @@ index 0000000..03f160c
 +  }
 +}
 diff --git a/packages/apps/src/contracts/account-observation.ts b/packages/apps/src/contracts/account-observation.ts
-index f373865..4291137 100644
+index f373865..cee8251 100644
 --- a/packages/apps/src/contracts/account-observation.ts
 +++ b/packages/apps/src/contracts/account-observation.ts
-@@ -23,9 +23,62 @@ const reading = {
+@@ -23,9 +23,68 @@ const reading = {
  const ratio = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
  const scopeText = Schema.NonEmptyString.check(Schema.isMaxLength(128));
  
++/** When a pool may spend subscription usage credits. */
 +export const UsageCreditPolicy = Schema.Literals(["last_resort", "never"]);
++/** A pool policy for spending subscription usage credits. */
 +export type UsageCreditPolicy = typeof UsageCreditPolicy.Type;
 +
 +const creditAmount = Schema.String.check(
@@ -2728,6 +2730,7 @@ index f373865..4291137 100644
 +  value: creditAmount,
 +  currency: Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/u)),
 +});
++/** Provider credit facts with their source freshness and unproven currency units preserved. */
 +export const UsageCredits = Schema.Struct({
 +  state: Schema.Literals(["available", "unlimited", "none", "disabled", "unknown"]),
 +  balance: Schema.NullOr(
@@ -2750,8 +2753,10 @@ index f373865..4291137 100644
 +    }),
 +  ),
 +});
++/** Observed subscription credits and separate extra-usage settings. */
 +export type UsageCredits = typeof UsageCredits.Type;
 +
++/** How an account may fund requests under one pool policy. */
 +export const AccountUsageRouting = Schema.Struct({
 +  use: Schema.Literals(["plan", "credits", "unknown", "exhausted", "blocked"]),
 +  eligible: Schema.Boolean,
@@ -2767,6 +2772,7 @@ index f373865..4291137 100644
 +  ]),
 +  policy: UsageCreditPolicy,
 +});
++/** A pool-specific funding decision for an account. */
 +export type AccountUsageRouting = typeof AccountUsageRouting.Type;
 +
  /** Provider-reported allowance, independent of credential health and account identity. */
