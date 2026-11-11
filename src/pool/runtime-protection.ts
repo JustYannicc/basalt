@@ -20,6 +20,13 @@ export interface ProtectionDiagnostic {
   probeOutcome?: "healthy" | "unhealthy" | "timeout" | "transport";
   probeElapsedMs?: number;
 }
+export class ProtectionRefusal extends PoolRuntimeUnhealthy {
+  readonly reason: "lease_invalid" | "lease_expired" | "lease_too_short" | "boot_changed";
+  constructor(reason: ProtectionRefusal["reason"]) {
+    super();
+    this.reason = reason;
+  }
+}
 const milliseconds = (value: number) =>
   Math.max(-86_400_000, Math.min(86_400_000, Math.round(value)));
 function pause(milliseconds: number): Pause {
@@ -51,9 +58,13 @@ export class RuntimeProtection {
   }
 
   admit(status: PoolStatus): void {
-    if (this.degraded && this.watching && status.boot_id === this.boot)
-      throw new PoolRuntimeUnhealthy();
+    if (!Number.isFinite(status.policyLeaseUntil)) throw new ProtectionRefusal("lease_invalid");
+    const remaining = status.policyLeaseUntil! - this.now();
+    if (remaining <= 0) throw new ProtectionRefusal("lease_expired");
+    if (remaining < policyHealthProbeMs) throw new ProtectionRefusal("lease_too_short");
+    const changedBoot = this.boot !== undefined && status.boot_id !== this.boot;
     this.observe(status);
+    if (changedBoot) throw new ProtectionRefusal("boot_changed");
     this.start();
   }
   private observe(status: PoolStatus) {

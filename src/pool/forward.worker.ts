@@ -19,7 +19,7 @@ import {
 import { ModelMembershipUnavailable, modelMembership } from "./model-membership.ts";
 import type { NativeMemberships } from "./membership.ts";
 import type { NativeStreams } from "./native-streams.ts";
-import type { RuntimeProtection } from "./runtime-protection.ts";
+import { ProtectionRefusal, type RuntimeProtection } from "./runtime-protection.ts";
 
 interface Dependencies {
   appModel?: import("./model-membership.ts").ModelIdentity;
@@ -135,6 +135,7 @@ export async function forwardPoolRequest(
     modelLease?.release();
     const diagnostic: GatewayFailureDiagnostic = {
       guard,
+      refusalReason: error instanceof ProtectionRefusal ? error.reason : guard,
       cause:
         error instanceof ModelMembershipUnavailable
           ? "ModelMembershipUnavailable"

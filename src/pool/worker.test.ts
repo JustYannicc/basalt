@@ -889,6 +889,7 @@ test("an unhealthy warm runtime returns a retryable 503 before another model dis
       {
         guard: "runtime_readiness",
         cause: "PoolRuntimeUnhealthy",
+        refusalReason: "runtime_readiness",
       },
     );
     assert.ok(!JSON.stringify(errors).includes("synthetic-private-key"));

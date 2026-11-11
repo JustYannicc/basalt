@@ -28,7 +28,11 @@ test("a retryable refusal correlates the response, sanitized log and alert witho
       (work) => {
         background.push(work);
       },
-      { guard: "model_membership", cause: "ModelMembershipUnavailable" },
+      {
+        guard: "model_membership",
+        cause: "ModelMembershipUnavailable",
+        refusalReason: "model_membership",
+      },
     );
     await Promise.all(background);
     assert.equal(response.status, 503);
@@ -39,6 +43,7 @@ test("a retryable refusal correlates the response, sanitized log and alert witho
     assert.partialDeepStrictEqual(logs.find((entry) => entry[0] === "POOL_GATEWAY_FAILURE")?.[1], {
       guard: "model_membership",
       cause: "ModelMembershipUnavailable",
+      refusalReason: "model_membership",
     });
     assert.equal(alerts.length, 1);
     const event = JSON.parse(alerts[0]!.trim().split("\n")[2]!) as {

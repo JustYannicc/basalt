@@ -4,6 +4,7 @@ import type { SentryEnv } from "../telemetry/sentry-target.ts";
 import { withHistoryDatabase } from "./model-history/database.ts";
 import { recordGatewayRefusal } from "./model-history/gateway.ts";
 import { modelKeyScope } from "./key-scope.ts";
+import type { ProtectionRefusal } from "./runtime-protection.ts";
 
 interface Dependencies extends SentryEnv {
   POOL_MODEL_HISTORY_ENABLED?: string;
@@ -34,6 +35,7 @@ export interface GatewayFailureDiagnostic {
     | "AbortError"
     | "Error"
     | "unknown";
+  refusalReason: GatewayFailureDiagnostic["guard"] | ProtectionRefusal["reason"];
 }
 
 /** Fixed metadata joins the caller's retryable response, its failed history row and error trace. */
