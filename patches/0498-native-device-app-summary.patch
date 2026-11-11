@@ -79,3 +79,68 @@ diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted
    });
  /** Organization routes do not own app/account operations. */
  export const hostedOrganizationHandlers = HttpApiBuilder.group(
+diff --git a/e2e/tests/native-grants.spec.ts b/e2e/tests/native-grants.spec.ts
+--- a/e2e/tests/native-grants.spec.ts
++++ b/e2e/tests/native-grants.spec.ts
+@@ -75,15 +75,26 @@
+         expect(access.policy.toolsOrganization).toBe(actors.organization.id);
+         expect(access.id.startsWith("native:")).toBe(true);
+         const prefix = `/api/organizations/${actors.organization.id}`;
++        // A device may discover its tools organization's apps: names and its own links, never
++        // account records, and nothing that needs read authority.
++        const inventory = yield* p.api.request(
++          p.anonymous,
++          "GET",
++          `${prefix}/inventory`,
++          undefined,
++          p.headers(tokens.access_token),
++        );
++        expect(inventory.status, JSON.stringify(inventory.body)).toBe(200);
++        expect((inventory.body as { readonly accounts: readonly unknown[] }).accounts).toEqual([]);
+         expect(
+           (yield* p.api.request(
+             p.anonymous,
+             "GET",
+-            `${prefix}/inventory`,
++            `${prefix}/resources`,
+             undefined,
+             p.headers(tokens.access_token),
+           )).status,
+-        ).toBe(401);
++        ).toBe(403);
+         expect(
+           (yield* p.api.request(
+             p.anonymous,
+@@ -199,6 +210,15 @@
+         ).toBe(200);
+         expect((yield* p.access(renewed)).status).toBe(401);
+         expect((yield* p.refresh(renewed)).status).toBe(400);
++        expect(
++          (yield* p.api.request(
++            p.anonymous,
++            "GET",
++            `${prefix}/inventory`,
++            undefined,
++            p.headers(renewed.access_token),
++          )).status,
++        ).toBe(401);
+         expect(
+           (yield* p.api.request(
+             p.anonymous,
+@@ -270,6 +290,16 @@
+             p.headers(tokens.access_token),
+           )).status,
+         ).toBe(403);
++        // Without a tools grant there is no organization to discover.
++        expect(
++          (yield* p.api.request(
++            p.anonymous,
++            "GET",
++            `/api/organizations/${actors.organization.id}/inventory`,
++            undefined,
++            p.headers(tokens.access_token),
++          )).status,
++        ).toBe(403);
+         yield* serverControl("stop");
+         yield* serverControl("clock/advance", 200, { milliseconds: 3_601_000 });
+         yield* serverControl("start");
