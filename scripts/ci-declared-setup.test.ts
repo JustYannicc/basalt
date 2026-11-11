@@ -91,7 +91,7 @@ test("HITL partitions retain every target scenario exactly once behind required 
       }
     }
   }
-  assert.equal(counts.size, 64);
+  assert.equal(counts.size, 65);
   assert.ok([...counts.values()].every((count) => count === 1));
   for (const target of ["self-host", "cloud"])
     for (const scenario of [
