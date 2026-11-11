@@ -53,7 +53,8 @@ export async function readGitHubJson<T>(
       (rateLimited && serverDelay === undefined ? 60_000 : 1000) * 2 ** (attempt - 1),
       serverDelay ?? 0,
     );
-    await response.body?.cancel();
+    // An already-broken body must not replace the known HTTP failure or its retry.
+    await response.body?.cancel().catch(() => undefined);
     if (!retryable) throw error;
     if (attempt === attempts || delay > waitBudget - waited)
       throw unavailable(path, attempt, `HTTP ${response.status}`, response.status);

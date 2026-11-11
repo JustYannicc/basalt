@@ -219,3 +219,30 @@ test("transport retries also obey the remaining rate-limit wait budget", async (
   assert.deepEqual(waits, [120_000]);
   assert.equal(calls, 2);
 });
+
+test("an errored HTTP failure body cannot bypass the status retry policy", async () => {
+  let calls = 0;
+  const waits: number[] = [];
+  const api = new GitHubApi(
+    "",
+    async () =>
+      calls++ === 0
+        ? new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.error(new TypeError("private cancellation details"));
+              },
+            }),
+            { status: 503 },
+          )
+        : Response.json({ ok: true }),
+    {
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+    },
+  );
+  assert.deepEqual(await api.get("repos/owner/repository"), { ok: true });
+  assert.equal(calls, 2);
+  assert.deepEqual(waits, [1000]);
+});
