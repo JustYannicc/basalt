@@ -110,7 +110,18 @@ export class RuntimeSlotRouter {
         };
       },
       defer: (work) => this.deps.defer(work),
-      unavailable: () => {},
+      unavailable: (count, diagnostic) => {
+        console.error(
+          diagnostic.action === "closed"
+            ? "POOL_ACTIVE_STREAMS_CLOSED"
+            : "POOL_RUNTIME_PROTECTION_UNAVAILABLE",
+          {
+            code: "pool_protection_unavailable",
+            count,
+            ...diagnostic,
+          },
+        );
+      },
       now: this.deps.clock.monotonic,
     });
     this.protection.set(key, guard);
