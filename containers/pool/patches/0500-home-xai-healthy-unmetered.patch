@@ -1,0 +1,592 @@
+diff --git a/docs/management/api.md b/docs/management/api.md
+--- a/docs/management/api.md
++++ b/docs/management/api.md
+@@ -2898,7 +2898,7 @@
+ 
+ Current passive collection extracts a bounded `quota_headers` object from the CPA usage event `response_headers`. Home preserves only the Codex `X-Codex-*` quota allowlist plus a syntax-validated, non-secret-like upstream request ID, and removes the raw `response_headers` object before writing the usage payload. Before the core transaction starts, the reported `auth_index` is resolved concurrently against the active auth UUID, runtime index, and ID; the usage row stores the stable UUID, normalized provider/type identity, and quota-identity generation, so a concurrent delete or identity change fences the row from the replacement credential without serializing usage ingestion. After the core usage/billing transaction commits, Codex Header observations are normalized and upserted in an isolated quota transaction; invalid quota metadata or quota persistence failures cannot roll back the core usage or billing write. Timestamps more than five minutes ahead of Home's receive time are normalized to the receive time. Older observations cannot replace a newer snapshot or window, including concurrent first writes. Codex Header observations are always treated as sparse rolling updates: they merge by stable limit identity and period, retain still-valid windows and metadata learned by the authoritative active probe, do not clear an in-flight probe lease, and do not postpone the next active probe or bypass its retry backoff. Unprefixed Primary/Secondary windows are accepted only when `X-Codex-Active-Limit` contains a valid limit identity: `codex` and `premium` map to the default account family, `codex_bengalfox` maps to the Spark model family, and other valid identities remain isolated model families. Missing or invalid active-limit metadata causes only the unprefixed windows to be ignored; explicitly grouped windows remain usable. If the active family is also present as an explicit group, matching identity-and-period windows collapse to one entry, the unprefixed observation supplies the quota values, and the explicit group may supply its label. Repeated Primary/Secondary observations for the same limit period also collapse to one window. Expired windows cannot make a new snapshot appear healthy or exhausted.
+ 
+-Home also runs fixed-target active collectors for Claude, Antigravity, Codex, Kimi, xAI, and Meta OAuth/file credentials. Codex reads the official usage endpoint, uses `metered_feature` as the stable identity for additional limits, and derives normalized plan metadata. It queries the reset-credit detail endpoint independently of whether the usage summary contains `rate_limit_reset_credits`. If that detail request fails while the usage summary reports a positive current count, the collection is `partial` and stores the latest count with an empty detail list instead of carrying forward older quantities or expired credits. If neither endpoint provides reliable reset-credit information, older reset-credit data is cleared without degrading otherwise usable quota windows. Codex `primary_windows` keeps one representative from the default account family and one from `codex_bengalfox`, preferring the longest (normally weekly) window in each family, so the default 5-hour window or code-review limits cannot hide Spark. At the next activity-eligible scheduled scan, existing Codex v1 snapshots that use positional `*-primary`/`*-secondary` IDs trigger one immediate v2 active recollection even when freshness or `next_probe_at` would normally defer it. The upgrade attempt is recorded before the request, so a failure returns to the normal retry backoff instead of bypassing it repeatedly. Legacy raw windows remain stored for diagnosis, but the API reports them as `unknown`/`stale` before a successful upgrade and `error`/`stale` after a failed upgrade; a successful v2 probe atomically replaces the old IDs, and later passive Header observations cannot downgrade the snapshot version. No reset-credit consume operation is exposed through the Management API. Claude reads usage and profile, reporting `partial` when quota succeeds but profile metadata fails. Antigravity calls the grouped quota-summary endpoint with the credential `project_id` and maps only `gemini-5h`, `gemini-weekly`, `3p-5h`, and `3p-weekly` into stable `gemini` and `third-party` model scopes. Numeric fractions, numeric strings, and percentage strings are accepted; disabled, unknown, or malformed buckets are omitted independently. Both weekly buckets are required before a response can replace the last-known snapshot, while either 5-hour bucket remains independently optional. Primary selection keeps one window per stable scope and prefers that scope's 5-hour bucket when present. At the next activity-eligible scheduled scan, existing model-ID Antigravity v1 snapshots trigger an immediate v2 recollection; they are reported as `unknown`/`stale` while upgrade is pending and `error`/`stale` after a failed upgrade, with normal retry backoff. A successful v2 probe atomically replaces the legacy model windows. Kimi reads coding usage and preserves both the account usage summary and each returned limit window while accepting numeric fields encoded as numbers or strings. Kimi provider limits take primary-window priority over its aggregate summary so weekly and duration limits remain visible in list views. xAI calls the Grok CLI billing endpoint with the CLI token-auth, client-version, user-agent, and optional user-ID headers, and additionally queries the `format=credits` variant of the same endpoint for the shared weekly limit. It accepts camelCase or snake_case billing fields and `{ "val": ... }`, numeric, or string cent values. `monthlyLimit=15000` maps to SuperGrok and `monthlyLimit=150000` maps to SuperGrok Heavy. The `xai-monthly-spend` USD window is emitted only when the monthly limit is positive; a zero or missing limit carries no quota information and is skipped so weekly-credits-only accounts are never reported as exhausted. A present `creditUsagePercent` produces the `xai-weekly-usage` percentage window on a 0–100 scale with the current period's end as its reset time; a failed weekly probe is non-fatal while the monthly response still yields usable windows, and when neither response yields a window the reported failure prefers the real request error over a generic invalid-response error. Conversely, a failed monthly request with a usable weekly window marks the collection `partial` and preserves the stored plan instead of clearing it, since the weekly payload cannot re-derive the subscription tier. Positive `onDemandCap` plus an explicit numeric `onDemandUsed` produces the `xai-on-demand` monthly USD window. Missing `onDemandUsed` means not reported and omits that window; monthly spend never supplies a derived value. A missing or zero cap emits no on-demand window. For a confirmed paid subscription, missing `creditUsagePercent` leaves an unmeasured weekly window with null amounts and no inferred limit or reset. Valid monthly figures still produce a successful collection. Present null, nonnumeric or conflicting optional values retain a named invalid-response failure. Explicit zero remains a measured value. Provider API-key credentials that cannot use these OAuth collectors are returned as `unsupported`.
++Home also runs fixed-target active collectors for Claude, Antigravity, Codex, Kimi, xAI, and Meta OAuth/file credentials. Codex reads the official usage endpoint, uses `metered_feature` as the stable identity for additional limits, and derives normalized plan metadata. It queries the reset-credit detail endpoint independently of whether the usage summary contains `rate_limit_reset_credits`. If that detail request fails while the usage summary reports a positive current count, the collection is `partial` and stores the latest count with an empty detail list instead of carrying forward older quantities or expired credits. If neither endpoint provides reliable reset-credit information, older reset-credit data is cleared without degrading otherwise usable quota windows. Codex `primary_windows` keeps one representative from the default account family and one from `codex_bengalfox`, preferring the longest (normally weekly) window in each family, so the default 5-hour window or code-review limits cannot hide Spark. At the next activity-eligible scheduled scan, existing Codex v1 snapshots that use positional `*-primary`/`*-secondary` IDs trigger one immediate v2 active recollection even when freshness or `next_probe_at` would normally defer it. The upgrade attempt is recorded before the request, so a failure returns to the normal retry backoff instead of bypassing it repeatedly. Legacy raw windows remain stored for diagnosis, but the API reports them as `unknown`/`stale` before a successful upgrade and `error`/`stale` after a failed upgrade; a successful v2 probe atomically replaces the old IDs, and later passive Header observations cannot downgrade the snapshot version. No reset-credit consume operation is exposed through the Management API. Claude reads usage and profile, reporting `partial` when quota succeeds but profile metadata fails. Antigravity calls the grouped quota-summary endpoint with the credential `project_id` and maps only `gemini-5h`, `gemini-weekly`, `3p-5h`, and `3p-weekly` into stable `gemini` and `third-party` model scopes. Numeric fractions, numeric strings, and percentage strings are accepted; disabled, unknown, or malformed buckets are omitted independently. Both weekly buckets are required before a response can replace the last-known snapshot, while either 5-hour bucket remains independently optional. Primary selection keeps one window per stable scope and prefers that scope's 5-hour bucket when present. At the next activity-eligible scheduled scan, existing model-ID Antigravity v1 snapshots trigger an immediate v2 recollection; they are reported as `unknown`/`stale` while upgrade is pending and `error`/`stale` after a failed upgrade, with normal retry backoff. A successful v2 probe atomically replaces the legacy model windows. Kimi reads coding usage and preserves both the account usage summary and each returned limit window while accepting numeric fields encoded as numbers or strings. Kimi provider limits take primary-window priority over its aggregate summary so weekly and duration limits remain visible in list views. xAI calls the Grok CLI billing endpoint with the CLI token-auth, client-version, user-agent, and optional user-ID headers, and additionally queries the `format=credits` variant of the same endpoint for the shared weekly limit. It accepts camelCase or snake_case billing fields and `{ "val": ... }`, numeric, or string cent values. `monthlyLimit=15000` maps to SuperGrok and `monthlyLimit=150000` maps to SuperGrok Heavy. The `xai-monthly-spend` USD window is emitted only when the monthly limit is positive; a zero or missing limit carries no quota information and is skipped so weekly-credits-only accounts are never reported as exhausted. A present `creditUsagePercent` produces the `xai-weekly-usage` percentage window on a 0–100 scale with the current period's end as its reset time; a failed weekly probe retains usable monthly windows but marks the collection `partial`. With no measured amount, a genuine request or parsing failure still fails collection. Conversely, a failed monthly request with a usable weekly window marks the collection `partial` and preserves the stored plan instead of clearing it, since the weekly payload cannot re-derive the subscription tier. Positive `onDemandCap` plus an explicit numeric `onDemandUsed` produces the `xai-on-demand` monthly USD window. Missing `onDemandUsed` means not reported and omits that window; monthly spend never supplies a derived value. A missing or zero cap emits no on-demand window. For a confirmed paid subscription, a valid response without a current weekly measurement leaves an unmeasured weekly window with null amounts and no inferred limit or reset. Missing monthly `used` also means unreported; a supplied monthly limit may remain visible without a used or remaining amount. Valid billing and profile responses succeed even when no quota amount is reported. Such an authoritative omission replaces prior measurements and clears an earlier collection failure. Present null, nonnumeric or conflicting monetary/percentage values, malformed JSON and contradictory period metadata retain a named invalid-response failure. HTTP, transport and profile failures remain errors. Explicit zero remains a measured value. Provider API-key credentials that cannot use these OAuth collectors are returned as `unsupported`.
+ 
+ Claude plan metadata comes from `/api/oauth/profile`; failed or unrecognized profile reads retain the last known plan. Claude reset counts are read separately with `GET /api/oauth/usage?cedar_ember=1&skip_spend=1`. For an eligible account with a valid grant list, `reset_credits.available_count` sums the remaining resets in grants that have started, have not expired, and are not paused. This is a remaining count, not a guarantee that a reset can be redeemed at the current usage level. The `credits` array is empty because Claude grants may cover multiple resets rather than individual Codex-style credits. Missing or ineligible grant data produces `reset_credits: null`; a failed or malformed reset read clears the prior reset observation and marks collection `partial`, while retaining successfully collected windows and plan data. Home only observes this information and never consumes a reset grant.
+ 
+diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
+--- a/docs/management/api_CN.md
++++ b/docs/management/api_CN.md
+@@ -2891,7 +2891,7 @@
+ 
+ 当前被动采集从 CPA usage 事件的 `response_headers` 中提取受限 `quota_headers`。Home 只保留 Codex `X-Codex-*` 额度 Header allowlist，以及通过语法校验且不具有 secret 特征的 upstream request ID，并在 usage payload 入库前删除 raw `response_headers`。核心事务开始前，会并发地按 active auth UUID、runtime index、ID 依次解析上报的 `auth_index`，并把稳定 UUID、规范化 Provider/凭证类型身份与额度身份代次写入 usage 行；并发删除或身份变更会通过代次隔离该行与替换后的凭证，不会串行化 usage 入库。核心 usage/billing 事务提交后，Codex Header 观测才在隔离的额度事务中归一化并 upsert；非法额度元数据或额度持久化失败都不能回滚核心 usage 或 billing 写入。比 Home 接收时间超前五分钟以上的时间戳会归一化为接收时间。迟到事件不能覆盖更新快照，首次并发写入也遵守该规则。Codex Header 观测始终视为稀疏滚动更新：按稳定 limit 身份和周期合并，保留仍有效的旧窗口以及权威主动探测得到的元数据，不清除正在执行的 probe lease，不延后下一次主动探测，也不绕过失败重试退避。无前缀 Primary/Secondary 窗口仅在 `X-Codex-Active-Limit` 提供合法 limit 身份时摄取：`codex` 与 `premium` 映射到默认 account family，`codex_bengalfox` 映射到 Spark model family，其他合法身份保持为彼此隔离的 model family。active-limit 缺失或非法时只忽略无前缀窗口，明确分组的窗口仍可使用。同一 active family 也出现在明确分组中时，身份与周期相同的窗口合并为一项：额度值以无前缀观测为准，label 可由明确分组补充。同一 limit 周期重复出现的 Primary/Secondary 观测也会合并为一个窗口；已过期窗口不会参与新快照状态汇总。
+ 
+-Home 同时为 Claude、Antigravity、Codex、Kimi、xAI、Meta 的 OAuth/file credential 运行固定目标主动 collector。Codex 读取官方 usage endpoint，使用 `metered_feature` 作为 additional limit 的稳定身份，并推导规范化套餐元数据。无论 usage 汇总是否包含 `rate_limit_reset_credits`，collector 都会独立查询 reset-credit 详情 endpoint。详情请求失败且 usage 汇总报告了正数当前次数时，collection 返回 `partial`，保存本次最新次数和空详情列表，不再沿用旧数量或已过期 credit；两个 endpoint 都没有提供可靠 reset-credit 信息时，会清除旧 reset-credit 数据，但不影响仍然可用的额度窗口。Codex `primary_windows` 会分别保留默认 account family 与 `codex_bengalfox` family 的一个代表窗口，并在每个 family 内优先最长周期（通常为 weekly），因此默认 5 小时窗口或 code-review limit 不会挤掉 Spark。使用位置型 `*-primary`/`*-secondary` ID 的 Codex v1 旧快照会在下一次满足活动门控的定时扫描中触发立即 v2 主动重采集，即使 freshness 或 `next_probe_at` 原本会推迟采集；升级尝试会在发起请求前记录，失败后恢复正常 retry backoff，不会持续绕过退避。旧 raw windows 仍保留用于诊断，但成功升级前 API 表现为 `unknown`/`stale`，升级失败后表现为 `error`/`stale`；v2 成功后原子替换旧 ID，后续被动 Header 观测也不能降低快照版本。Management API 不提供消费 reset credit 的操作。Claude 查询 usage 和 profile，额度成功但 profile 元数据失败时返回 `partial`。Antigravity 携带 credential `project_id` 请求分组额度汇总 endpoint，只将 `gemini-5h`、`gemini-weekly`、`3p-5h` 和 `3p-weekly` 映射到稳定的 `gemini` 与 `third-party` model scope。数字、数字字符串和百分数字符串形式的比例都可解析；disabled、未知或畸形 bucket 会被逐项忽略。只有两个 weekly bucket 都有效时，响应才可以替换最后已知快照；两个 5 小时 bucket 分别可选，不要求成对出现。`primary_windows` 每个稳定 scope 保留一个窗口，并在存在时优先该 scope 的 5 小时窗口。使用旧模型 ID 的 Antigravity v1 快照会在下一次满足活动门控的定时扫描中触发立即 v2 重采集；升级期间 API 返回 `unknown`/`stale`，失败后返回 `error`/`stale` 并遵循正常 retry backoff，成功后原子替换旧模型窗口。Kimi 查询 coding usage，保留账号 usage 汇总和每个 limit 窗口，并兼容数字或字符串形式的数值字段。Kimi 的 Provider limit 优先进入 `primary_windows`，避免聚合 summary 挤掉周限额或 duration 限额。xAI 使用 Grok CLI token-auth、client-version、user-agent 及可选 user-ID Header 请求 billing endpoint，并额外请求同一 endpoint 的 `format=credits` 变体以获取共享周限额；支持 camelCase/snake_case 字段，以及 `{ "val": ... }`、数字或字符串 cents。`monthlyLimit=15000` 推导为 SuperGrok，`monthlyLimit=150000` 推导为 SuperGrok Heavy；`xai-monthly-spend` 月度 USD 窗口仅在月度上限为正数时输出，上限为 0 或缺失时不携带额度信息、直接跳过，因此仅有周限额积分的账号不会被误报为额度耗尽。响应中存在 `creditUsagePercent` 时生成 `xai-weekly-usage` 百分比窗口（0–100 刻度），并以当前周期的结束时间作为重置时间；周限额探测失败时，只要月度响应仍产生可用窗口就不影响整体采集；两个响应都没有产出窗口时，优先上报真实的请求错误而非笼统的响应无效错误。反之，月度请求失败但周限额窗口可用时，采集标记为 `partial` 并保留已存储的套餐信息而不清除，因为周限额响应无法重新推导订阅档位。正数 `onDemandCap` 配合显式数值 `onDemandUsed` 生成 `xai-on-demand` 月度 USD 窗口。缺失 `onDemandUsed` 表示未报告，不输出该窗口，也不从月度支出推导数值；cap 缺失或为 0 时同样不输出该窗口。对于已确认的付费订阅，缺失 `creditUsagePercent` 会保留未测量的周窗口，其数量为 null，不推导上限或重置时间。有效月度数值仍可产生成功采集。显式 null、非数值或互相冲突的可选字段仍保留具名的响应无效错误；显式零值仍是已测量数值。无法使用这些 OAuth collector 的 Provider API-key credential 返回 `unsupported`。
++Home 同时为 Claude、Antigravity、Codex、Kimi、xAI、Meta 的 OAuth/file credential 运行固定目标主动 collector。Codex 读取官方 usage endpoint，使用 `metered_feature` 作为 additional limit 的稳定身份，并推导规范化套餐元数据。无论 usage 汇总是否包含 `rate_limit_reset_credits`，collector 都会独立查询 reset-credit 详情 endpoint。详情请求失败且 usage 汇总报告了正数当前次数时，collection 返回 `partial`，保存本次最新次数和空详情列表，不再沿用旧数量或已过期 credit；两个 endpoint 都没有提供可靠 reset-credit 信息时，会清除旧 reset-credit 数据，但不影响仍然可用的额度窗口。Codex `primary_windows` 会分别保留默认 account family 与 `codex_bengalfox` family 的一个代表窗口，并在每个 family 内优先最长周期（通常为 weekly），因此默认 5 小时窗口或 code-review limit 不会挤掉 Spark。使用位置型 `*-primary`/`*-secondary` ID 的 Codex v1 旧快照会在下一次满足活动门控的定时扫描中触发立即 v2 主动重采集，即使 freshness 或 `next_probe_at` 原本会推迟采集；升级尝试会在发起请求前记录，失败后恢复正常 retry backoff，不会持续绕过退避。旧 raw windows 仍保留用于诊断，但成功升级前 API 表现为 `unknown`/`stale`，升级失败后表现为 `error`/`stale`；v2 成功后原子替换旧 ID，后续被动 Header 观测也不能降低快照版本。Management API 不提供消费 reset credit 的操作。Claude 查询 usage 和 profile，额度成功但 profile 元数据失败时返回 `partial`。Antigravity 携带 credential `project_id` 请求分组额度汇总 endpoint，只将 `gemini-5h`、`gemini-weekly`、`3p-5h` 和 `3p-weekly` 映射到稳定的 `gemini` 与 `third-party` model scope。数字、数字字符串和百分数字符串形式的比例都可解析；disabled、未知或畸形 bucket 会被逐项忽略。只有两个 weekly bucket 都有效时，响应才可以替换最后已知快照；两个 5 小时 bucket 分别可选，不要求成对出现。`primary_windows` 每个稳定 scope 保留一个窗口，并在存在时优先该 scope 的 5 小时窗口。使用旧模型 ID 的 Antigravity v1 快照会在下一次满足活动门控的定时扫描中触发立即 v2 重采集；升级期间 API 返回 `unknown`/`stale`，失败后返回 `error`/`stale` 并遵循正常 retry backoff，成功后原子替换旧模型窗口。Kimi 查询 coding usage，保留账号 usage 汇总和每个 limit 窗口，并兼容数字或字符串形式的数值字段。Kimi 的 Provider limit 优先进入 `primary_windows`，避免聚合 summary 挤掉周限额或 duration 限额。xAI 使用 Grok CLI token-auth、client-version、user-agent 及可选 user-ID Header 请求 billing endpoint，并额外请求同一 endpoint 的 `format=credits` 变体以获取共享周限额；支持 camelCase/snake_case 字段，以及 `{ "val": ... }`、数字或字符串 cents。`monthlyLimit=15000` 推导为 SuperGrok，`monthlyLimit=150000` 推导为 SuperGrok Heavy；`xai-monthly-spend` 月度 USD 窗口仅在月度上限为正数时输出，上限为 0 或缺失时不携带额度信息、直接跳过，因此仅有周限额积分的账号不会被误报为额度耗尽。响应中存在 `creditUsagePercent` 时生成 `xai-weekly-usage` 百分比窗口（0–100 刻度），并以当前周期的结束时间作为重置时间；周限额探测失败时保留可用的月度窗口，但采集标记为 `partial`；没有已测量数值时，真实请求或解析错误仍导致采集失败。反之，月度请求失败但周限额窗口可用时，采集标记为 `partial` 并保留已存储的套餐信息而不清除，因为周限额响应无法重新推导订阅档位。正数 `onDemandCap` 配合显式数值 `onDemandUsed` 生成 `xai-on-demand` 月度 USD 窗口。缺失 `onDemandUsed` 表示未报告，不输出该窗口，也不从月度支出推导数值；cap 缺失或为 0 时同样不输出该窗口。对于已确认的付费订阅，有效响应没有当前周测量时会保留未测量的周窗口，其数量为 null，不推导上限或重置时间。月度 `used` 缺失同样表示未报告；已提供的月度上限可以保留，但不推导已用或剩余数值。有效 billing 和 profile 响应即使没有报告任何额度数值也成功采集。此类权威缺失会替换之前的测量并清除旧采集错误。显式 null、非数值或互相冲突的金额/百分比、格式错误的 JSON 及矛盾的周期元数据仍保留具名响应无效错误。HTTP、传输及 profile 失败仍是错误；显式零值仍是已测量数值。无法使用这些 OAuth collector 的 Provider API-key credential 返回 `unsupported`。
+ 
+ collector 直接读取 DB 凭证，不接受 HMC 提交 URL。探测前会重新解析最新 DB 凭证，并直接使用其中当前保存的 access token，不会调用 OAuth 刷新；凭证刷新仍由独立的 runtime 刷新子系统负责。全局代理使用热更新后的当前配置，凭证级代理仍优先。统一使用 20 秒 timeout、PostgreSQL 下每个 Provider 并发上限 3（SQLite 下全局为 1）、单凭证 DB 租约，以及从 5 分钟开始、带凭证级 jitter、约 1 小时封顶的指数退避；`Retry-After` 可延后下次尝试。禁用凭证以及因 OAuth 刷新失败而被阻断调度的凭证不会被主动探测；模型执行 cooldown 不会阻止额度采集，额度采集自身的重试退避（`next_probe_at`）会推迟定时扫描但不会阻断人工强制重采集。冷却过期或刷新阻断解除后，持久化的 unavailable/error 状态不再永久阻止恢复探测。成功快照默认 30 分钟有效。探测失败时保留最后已知窗口，只写结构化脱敏错误。
+ 
+diff --git a/internal/quota/basalt_xai_diagnostic_test.go b/internal/quota/basalt_xai_diagnostic_test.go
+--- a/internal/quota/basalt_xai_diagnostic_test.go
++++ b/internal/quota/basalt_xai_diagnostic_test.go
+@@ -121,7 +121,7 @@
+ 						t.Error(err)
+ 					}
+ 				}
+-				body := `{"config":{"monthlyLimit":15000}}`
++				body := `{"config":{"monthlyLimit":false}}`
+ 				if r.URL.Path == "/v1/user" {
+ 					body = `{"subscriptionTier":"SuperGrokPlus"}`
+ 				}
+diff --git a/internal/quota/providers.go b/internal/quota/providers.go
+--- a/internal/quota/providers.go
++++ b/internal/quota/providers.go
+@@ -787,11 +787,11 @@
+ }
+ 
+ type xaiBillingConfig struct {
+-	MonthlyLimit            flexFloat                `json:"monthlyLimit"`
+-	MonthlyLimitSnake       flexFloat                `json:"monthly_limit"`
+-	Used                    flexFloat                `json:"used"`
+-	OnDemandCap             flexFloat                `json:"onDemandCap"`
+-	OnDemandCapSnake        flexFloat                `json:"on_demand_cap"`
++	MonthlyLimit            xaiOptionalFloat         `json:"monthlyLimit"`
++	MonthlyLimitSnake       xaiOptionalFloat         `json:"monthly_limit"`
++	Used                    xaiOptionalFloat         `json:"used"`
++	OnDemandCap             xaiOptionalFloat         `json:"onDemandCap"`
++	OnDemandCapSnake        xaiOptionalFloat         `json:"on_demand_cap"`
+ 	OnDemandUsed            xaiOptionalFloat         `json:"onDemandUsed"`
+ 	OnDemandUsedSnake       xaiOptionalFloat         `json:"on_demand_used"`
+ 	BillingPeriodEnd        string                   `json:"billingPeriodEnd"`
+@@ -823,60 +823,6 @@
+ 	}
+ }
+ 
+-func parseXAIUsageWindows(body []byte, observedAt time.Time) ([]cluster.QuotaWindow, *cluster.QuotaPlan, error) {
+-	var payload xaiBillingPayload
+-	if errDecode := json.Unmarshal(body, &payload); errDecode != nil {
+-		return nil, nil, fmt.Errorf("decode xai billing response: %w", errDecode)
+-	}
+-	if payload.Config == nil {
+-		return nil, nil, fmt.Errorf("xai billing response is missing config")
+-	}
+-	config := payload.Config
+-	monthlyLimitCents := firstFloat(flexFloatValue(config.MonthlyLimit), flexFloatValue(config.MonthlyLimitSnake))
+-	usedCents := flexFloatValue(config.Used)
+-	onDemandCapCents := firstFloat(flexFloatValue(config.OnDemandCap), flexFloatValue(config.OnDemandCapSnake))
+-	onDemandUsedCents, validOnDemand := xaiOptionalFloatValue(config.OnDemandUsed, config.OnDemandUsedSnake)
+-	if !validOnDemand {
+-		return nil, nil, fmt.Errorf("xai on-demand used amount is invalid")
+-	}
+-	billingPeriodEnd := firstNonEmptyString(config.BillingPeriodEnd, config.BillingEndSnake)
+-
+-	windows := make([]cluster.QuotaWindow, 0, 2)
+-	// A zero monthly limit carries no quota information and would normalize to
+-	// an exhausted 0/0 window, so weekly-credits-only accounts skip it entirely.
+-	if monthlyLimitCents != nil && *monthlyLimitCents > 0 {
+-		limit := math.Max(0, *monthlyLimitCents/100)
+-		var used *float64
+-		if usedCents != nil {
+-			value := math.Min(limit, math.Max(0, *usedCents/100))
+-			used = &value
+-		}
+-		window := cluster.QuotaWindow{ID: "xai-monthly-spend", Label: quotaStringPtr("Monthly Spend"), Scope: "account", Mode: "fixed", Status: "unknown", Unit: "currency", Currency: quotaStringPtr("USD"), Used: used, Limit: &limit, PeriodUnit: "month", PeriodValue: quotaFloatPtr(1), Source: "active_probe", ObservedAt: observedAt}
+-		window.ResetAt = parseProviderTime(billingPeriodEnd)
+-		normalizeWindowValues(&window)
+-		windows = append(windows, window)
+-	}
+-
+-	if onDemandCapCents != nil && *onDemandCapCents > 0 && onDemandUsedCents != nil {
+-		limit := math.Max(0, *onDemandCapCents/100)
+-		var used *float64
+-		if onDemandUsedCents != nil {
+-			value := math.Max(0, *onDemandUsedCents/100)
+-			used = &value
+-		}
+-		if used != nil {
+-			value := math.Min(limit, *used)
+-			used = &value
+-		}
+-		onDemandWindow := cluster.QuotaWindow{ID: "xai-on-demand", Label: quotaStringPtr("On-Demand"), Scope: "account", Mode: "balance", Status: "unknown", Unit: "currency", Currency: quotaStringPtr("USD"), Used: used, Limit: &limit, PeriodUnit: "month", PeriodValue: quotaFloatPtr(1), Source: "active_probe", ObservedAt: observedAt, Priority: 10}
+-		onDemandWindow.ResetAt = parseProviderTime(billingPeriodEnd)
+-		normalizeWindowValues(&onDemandWindow)
+-		windows = append(windows, onDemandWindow)
+-	}
+-
+-	return windows, xaiPlanFromMonthlyLimit(monthlyLimitCents), nil
+-}
+-
+ // xaiWeeklyBillingURL derives the weekly credits variant of the xAI billing
+ // endpoint, which reports the shared weekly limit instead of monthly spend.
+ func xaiWeeklyBillingURL(monthlyURL string) string {
+@@ -915,7 +861,7 @@
+ 		if config.CreditUsagePercent.present || config.CreditUsagePercentSnake.present || entitlement != xaiEntitlementPaid {
+ 			return cluster.QuotaWindow{}, false
+ 		}
+-		return cluster.QuotaWindow{ID: "xai-weekly-usage", Label: quotaStringPtr("Weekly Limit"), Scope: "account", Mode: "fixed", Status: "unknown", Unit: "percentage", PeriodUnit: "week", PeriodValue: quotaFloatPtr(1), Source: "active_probe", ObservedAt: observedAt, Priority: -10}, true
++		return xaiUnmeasuredWeeklyWindow(observedAt), true
+ 	}
+ 	window := cluster.QuotaWindow{ID: "xai-weekly-usage", Label: quotaStringPtr("Weekly Limit"), Scope: "account", Mode: "fixed", Status: "unknown", Unit: "percentage", Used: usedPercent, Limit: quotaFloatPtr(100), PeriodUnit: "week", PeriodValue: quotaFloatPtr(1), Source: "active_probe", ObservedAt: observedAt, Priority: -10}
+ 	if period != nil {
+diff --git a/internal/quota/providers_xai_quota_test.go b/internal/quota/providers_xai_quota_test.go
+--- a/internal/quota/providers_xai_quota_test.go
++++ b/internal/quota/providers_xai_quota_test.go
+@@ -140,10 +140,7 @@
+ func TestParseXAIUsageWindowsDoesNotRecursivelyUnwrapValues(t *testing.T) {
+ 	now := time.Date(2026, 7, 16, 8, 0, 0, 0, time.UTC)
+ 	windows, plan, errParse := parseXAIUsageWindows([]byte(`{"config":{"monthlyLimit":{"val":{"val":15000}}}}`), now)
+-	if errParse != nil {
+-		t.Fatalf("parseXAIUsageWindows() error = %v", errParse)
+-	}
+-	if len(windows) != 0 || plan != nil {
++	if errParse == nil || len(windows) != 0 || plan != nil {
+ 		t.Fatalf("nested value wrappers were accepted: windows=%+v plan=%+v", windows, plan)
+ 	}
+ }
+diff --git a/internal/quota/xai.go b/internal/quota/xai.go
+--- a/internal/quota/xai.go
++++ b/internal/quota/xai.go
+@@ -268,13 +268,6 @@
+ 		windows, fallbackPlan, errParse = parseXAIUsageWindows(responses[0].body, now)
+ 		if errParse != nil {
+ 			errMonthly = xaiInvalidResponse("xAI monthly billing response could not be parsed.")
+-		} else {
+-			for _, window := range windows {
+-				if window.Used == nil && window.Remaining == nil {
+-					errMonthly = xaiInvalidResponse("xAI monthly remaining quota is unavailable.")
+-					break
+-				}
+-			}
+ 		}
+ 	}
+ 	var subscription xaiSubscription
+@@ -290,35 +283,22 @@
+ 		errWeekly = nil
+ 	} else if errWeekly == nil {
+ 		var payload xaiBillingPayload
+-		if errDecode := json.Unmarshal(responses[1].body, &payload); errDecode != nil || payload.Config == nil || (payload.Config.CreditUsagePercent.present || payload.Config.CreditUsagePercentSnake.present) && xaiPercentageValue(payload.Config.CreditUsagePercent, payload.Config.CreditUsagePercentSnake) == nil {
++		if errDecode := json.Unmarshal(responses[1].body, &payload); errDecode != nil || payload.Config == nil || !xaiWeeklyConfigValid(payload.Config) {
+ 			errWeekly = xaiInvalidResponse("xAI weekly quota response could not be parsed.")
+ 		} else {
+ 			weekly := xaiWeeklyWindows(payload.Config, now, subscription.entitlement)
++			if len(weekly) == 0 && subscription.entitlement == xaiEntitlementPaid {
++				weekly = append(weekly, xaiUnmeasuredWeeklyWindow(now))
++			}
+ 			windows = append(weekly, windows...)
+-			complete := false
+-			productsComplete := true
+-			for _, window := range weekly {
+-				if window.ID == "xai-weekly-usage" && (window.Used != nil || !payload.Config.CreditUsagePercent.present && !payload.Config.CreditUsagePercentSnake.present) {
+-					complete = true
+-				} else if window.ID != "xai-weekly-usage" && window.Used == nil {
+-					productsComplete = false
+-				}
+-			}
+-			if !complete || !productsComplete {
+-				errWeekly = xaiInvalidResponse("xAI weekly remaining quota is unavailable.")
+-			}
+ 		}
+ 	}
+ 	failure := xaiCollectionFailure(errMonthly, errWeekly, errProfile)
+ 	if failure != nil && retryAfter > failure.retryAfter {
+ 		failure.retryAfter = retryAfter
+ 	}
+-	failedWithoutAmounts := !xaiHasObservedAmount(windows) && failure != nil
+-	if failedWithoutAmounts || len(windows) == 0 && !(subscription.entitlement == xaiEntitlementFree && errMonthly == nil) {
+-		if failure != nil {
+-			return probeResult{}, failure
+-		}
+-		return probeResult{}, xaiInvalidResponse("xAI billing response did not contain usable quota.")
++	if !xaiHasObservedAmount(windows) && failure != nil {
++		return probeResult{}, failure
+ 	}
+ 	result := probeResult{windows: windows, plan: subscription.plan, fallbackPlan: fallbackPlan, replaceWindows: true, replacePlan: subscription.plan != nil, boundWindowLifetimes: true, retryAfter: retryAfter}
+ 	if errMonthly != nil {
+diff --git a/internal/quota/xai_monthly.go b/internal/quota/xai_monthly.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/xai_monthly.go
+@@ -0,0 +1,70 @@
++package quota
++
++import (
++	"encoding/json"
++	"fmt"
++	"math"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++func parseXAIUsageWindows(body []byte, observedAt time.Time) ([]cluster.QuotaWindow, *cluster.QuotaPlan, error) {
++	var payload xaiBillingPayload
++	if errDecode := json.Unmarshal(body, &payload); errDecode != nil {
++		return nil, nil, fmt.Errorf("decode xai billing response: %w", errDecode)
++	}
++	if payload.Config == nil {
++		return nil, nil, fmt.Errorf("xai billing response is missing config")
++	}
++	config := payload.Config
++	if !xaiBillingResetValid(config) {
++		return nil, nil, fmt.Errorf("xai billing reset is invalid")
++	}
++	monthlyLimitCents, validLimit := xaiOptionalFloatValue(config.MonthlyLimit, config.MonthlyLimitSnake)
++	usedCents, validUsed := xaiOptionalFloatValue(config.Used, xaiOptionalFloat{})
++	onDemandCapCents, validCap := xaiOptionalFloatValue(config.OnDemandCap, config.OnDemandCapSnake)
++	if !validLimit || !validUsed || !validCap {
++		return nil, nil, fmt.Errorf("xai monthly quota amount is invalid")
++	}
++	onDemandUsedCents, validOnDemand := xaiOptionalFloatValue(config.OnDemandUsed, config.OnDemandUsedSnake)
++	if !validOnDemand {
++		return nil, nil, fmt.Errorf("xai on-demand used amount is invalid")
++	}
++	billingPeriodEnd := firstNonEmptyString(config.BillingPeriodEnd, config.BillingEndSnake)
++
++	windows := make([]cluster.QuotaWindow, 0, 2)
++	// A zero monthly limit carries no quota information and would normalize to
++	// an exhausted 0/0 window, so weekly-credits-only accounts skip it entirely.
++	if monthlyLimitCents != nil && *monthlyLimitCents > 0 {
++		limit := math.Max(0, *monthlyLimitCents/100)
++		var used *float64
++		if usedCents != nil {
++			value := math.Min(limit, math.Max(0, *usedCents/100))
++			used = &value
++		}
++		window := cluster.QuotaWindow{ID: "xai-monthly-spend", Label: quotaStringPtr("Monthly Spend"), Scope: "account", Mode: "fixed", Status: "unknown", Unit: "currency", Currency: quotaStringPtr("USD"), Used: used, Limit: &limit, PeriodUnit: "month", PeriodValue: quotaFloatPtr(1), Source: "active_probe", ObservedAt: observedAt}
++		window.ResetAt = parseProviderTime(billingPeriodEnd)
++		normalizeWindowValues(&window)
++		windows = append(windows, window)
++	}
++
++	if onDemandCapCents != nil && *onDemandCapCents > 0 && onDemandUsedCents != nil {
++		limit := math.Max(0, *onDemandCapCents/100)
++		var used *float64
++		if onDemandUsedCents != nil {
++			value := math.Max(0, *onDemandUsedCents/100)
++			used = &value
++		}
++		if used != nil {
++			value := math.Min(limit, *used)
++			used = &value
++		}
++		onDemandWindow := cluster.QuotaWindow{ID: "xai-on-demand", Label: quotaStringPtr("On-Demand"), Scope: "account", Mode: "balance", Status: "unknown", Unit: "currency", Currency: quotaStringPtr("USD"), Used: used, Limit: &limit, PeriodUnit: "month", PeriodValue: quotaFloatPtr(1), Source: "active_probe", ObservedAt: observedAt, Priority: 10}
++		onDemandWindow.ResetAt = parseProviderTime(billingPeriodEnd)
++		normalizeWindowValues(&onDemandWindow)
++		windows = append(windows, onDemandWindow)
++	}
++
++	return windows, xaiPlanFromMonthlyLimit(monthlyLimitCents), nil
++}
+diff --git a/internal/quota/xai_subscription_test.go b/internal/quota/xai_subscription_test.go
+--- a/internal/quota/xai_subscription_test.go
++++ b/internal/quota/xai_subscription_test.go
+@@ -133,24 +133,37 @@
+ 	}
+ }
+ 
+-func TestXAIOmittedZeroRejectsInvalidOrContradictoryPeriods(t *testing.T) {
++func TestXAIOmittedUsageDistinguishesUnavailableAndInvalidPeriods(t *testing.T) {
+ 	now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
+-	for _, test := range []struct{ name, period string }{
+-		{"expired", `{"type":"weekly","end":"2026-11-05T00:00:00Z"}`},
+-		{"future start", `{"type":"weekly","start":"2026-11-07T00:00:00Z","end":"2026-11-13T00:00:00Z"}`},
+-
+-		{"invalid end", `{"type":"weekly","end":"bad"}`},
+-		{"unknown period", `{"type":"future_period","end":"2026-11-13T00:00:00Z"}`},
+-		{"monthly period", `{"type":"monthly","end":"2026-11-13T00:00:00Z"}`},
+-		{"conflicting period aliases", `{"type":"weekly","end":"2026-11-13T00:00:00Z"},"current_period":{"type":"monthly","end":"2026-11-13T00:00:00Z"}`},
++	for _, test := range []struct {
++		name, period string
++		invalid      bool
++	}{
++		{"expired", `{"type":"weekly","end":"2026-11-05T00:00:00Z"}`, false},
++		{"future start", `{"type":"weekly","start":"2026-11-07T00:00:00Z","end":"2026-11-13T00:00:00Z"}`, false},
++		{"invalid end", `{"type":"weekly","end":"bad"}`, true},
++		{"unknown period", `{"type":"future_period","end":"2026-11-13T00:00:00Z"}`, false},
++		{"monthly period", `{"type":"monthly","end":"2026-11-13T00:00:00Z"}`, false},
++		{"conflicting period aliases", `{"type":"weekly","end":"2026-11-13T00:00:00Z"},"current_period":{"type":"monthly","end":"2026-11-13T00:00:00Z"}`, true},
+ 	} {
+ 		t.Run(test.name, func(t *testing.T) {
+ 			fixture := xaiPaidFixture(now)
+ 			fixture.weekly = `{"config":{"currentPeriod":` + test.period + `}}`
+ 			server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
+ 			collector := NewCollector(newCollectorTestRepository(t), Options{Owner: "xai-period", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
+-			if result, errProbe := collector.probeXAI(context.Background(), &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}}); errProbe == nil {
+-				t.Fatalf("invalid period became a zero-usage quota: %+v", result.windows)
++			result, errProbe := collector.probeXAI(context.Background(), &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}})
++			if test.invalid {
++				if errProbe == nil {
++					t.Fatal("invalid period became a successful observation")
++				}
++				return
++			}
++			if errProbe != nil || result.partial || len(result.windows) != 1 {
++				t.Fatalf("valid unmetered period became unavailable: result=%+v error=%v", result, errProbe)
++			}
++			window := result.windows[0]
++			if window.Status != "unknown" || window.Used != nil || window.Remaining != nil || window.Limit != nil || window.UsedRatio != nil || window.RemainingRatio != nil || window.ResetAt != nil {
++				t.Fatalf("non-current period invented a current measurement: %+v", window)
+ 			}
+ 		})
+ 	}
+diff --git a/internal/quota/xai_unmetered.go b/internal/quota/xai_unmetered.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/xai_unmetered.go
+@@ -0,0 +1,65 @@
++package quota
++
++import (
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++func xaiUnmeasuredWeeklyWindow(observedAt time.Time) cluster.QuotaWindow {
++	return cluster.QuotaWindow{ID: "xai-weekly-usage", Label: quotaStringPtr("Weekly Limit"), Scope: "account", Mode: "fixed", Status: "unknown", Unit: "percentage", PeriodUnit: "week", PeriodValue: quotaFloatPtr(1), Source: "active_probe", ObservedAt: observedAt, Priority: -10}
++}
++
++// A valid period can describe no current weekly quota. Invalid supplied fields remain errors.
++func xaiWeeklyConfigValid(config *xaiBillingConfig) bool {
++	if (config.CreditUsagePercent.present || config.CreditUsagePercentSnake.present) && xaiPercentageValue(config.CreditUsagePercent, config.CreditUsagePercentSnake) == nil {
++		return false
++	}
++	if config.CurrentPeriod != nil && config.CurrentPeriodSnake != nil && *config.CurrentPeriod != *config.CurrentPeriodSnake {
++		return false
++	}
++	if !xaiBillingResetValid(config) {
++		return false
++	}
++	if period := xaiCurrentWeeklyPeriod(config); period != nil {
++		var start, end *time.Time
++		if period.Start != "" {
++			start = parseProviderTime(period.Start)
++			if start == nil {
++				return false
++			}
++		}
++		if period.End != "" {
++			end = parseProviderTime(period.End)
++			if end == nil {
++				return false
++			}
++		}
++		if start != nil && end != nil && !start.Before(*end) {
++			return false
++		}
++	}
++	for _, products := range [][]xaiBillingProductUsage{config.ProductUsage, config.ProductUsageSnake} {
++		for _, product := range products {
++			if (product.UsagePercent.present || product.UsagePercentSnake.present) && xaiPercentageValue(product.UsagePercent, product.UsagePercentSnake) == nil {
++				return false
++			}
++		}
++	}
++	return true
++}
++
++func xaiBillingResetValid(config *xaiBillingConfig) bool {
++	var reset *time.Time
++	for _, value := range []string{config.BillingPeriodEnd, config.BillingEndSnake} {
++		if value == "" {
++			continue
++		}
++		parsed := parseProviderTime(value)
++		if parsed == nil || reset != nil && !reset.Equal(*parsed) {
++			return false
++		}
++		reset = parsed
++	}
++	return true
++}
+diff --git a/internal/quota/xai_unmetered_test.go b/internal/quota/xai_unmetered_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/xai_unmetered_test.go
+@@ -0,0 +1,190 @@
++package quota
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++)
++
++func TestXAIUnmeteredValidResponsesStayHealthy(t *testing.T) {
++	now := time.Date(2026, 11, 11, 12, 2, 24, 0, time.UTC)
++	for _, tc := range []struct{ name, monthly, weekly string }{
++		{"monthly amount omitted", `{"config":{"monthlyLimit":15000}}`, `{"config":{"currentPeriod":{}}}`},
++		{"all quota fields omitted", `{"config":{}}`, `{"config":{}}`},
++		{"monthly period carries no weekly quota", `{"config":{"monthlyLimit":0,"used":0,"onDemandCap":0}}`, `{"config":{"currentPeriod":{"type":"monthly"}}}`},
++		{"no current weekly quota", `{"config":{"monthlyLimit":0,"used":0,"onDemandCap":0}}`, `{"config":{"currentPeriod":{"type":"weekly","end":"2026-11-10T12:00:00Z"}}}`},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			fixture := xaiProbeFixture{profile: `{"subscriptionTier":"SuperGrokPlus"}`, monthly: tc.monthly, weekly: tc.weekly}
++			server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++			repo := newCollectorTestRepository(t)
++			seedCollectorProviderAuth(t, repo, "unmetered", "xai", map[string]any{"type": "xai", "access_token": "fixture"})
++			collector := NewCollector(repo, Options{Owner: "unmetered", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++			collector.collectCredential(context.Background(), &coreauth.Auth{ID: "unmetered", Provider: "xai"}, true)
++			item, errGet := repo.GetQuotaCredential(context.Background(), "unmetered", now)
++			if errGet != nil || item.CollectionStatus != "success" || item.Error != nil {
++				t.Fatalf("valid unmetered response marked unavailable: status=%s failure=%+v read=%v", item.CollectionStatus, item.Error, errGet)
++			}
++			for _, window := range item.Windows {
++				if window.Used != nil || window.Remaining != nil || window.UsedRatio != nil || window.RemainingRatio != nil {
++					t.Fatalf("absent quota became a measurement: %+v", window)
++				}
++			}
++		})
++	}
++}
++
++func TestXAIUnmeteredPresentInvalidValuesRemainErrors(t *testing.T) {
++	now := time.Date(2026, 11, 11, 12, 2, 24, 0, time.UTC)
++	for _, field := range []string{"monthlyLimit", "monthly_limit", "used", "onDemandCap", "on_demand_cap", "onDemandUsed", "on_demand_used"} {
++		for _, value := range []string{`null`, `"bad"`, `false`, `{"val":{"val":1}}`, `-1`} {
++			t.Run(field+value, func(t *testing.T) {
++				fixture := xaiProbeFixture{profile: `{"subscriptionTier":"SuperGrokPlus"}`, monthly: `{"config":{"` + field + `":` + value + `}}`, weekly: `{"config":{}}`}
++				server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++				collector := NewCollector(newCollectorTestRepository(t), Options{XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++				_, failure := collector.probeXAI(context.Background(), &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}})
++				if failure == nil || failure.code != "UPSTREAM_RESPONSE_INVALID" || failure.message != "xAI monthly billing response could not be parsed." {
++					t.Fatalf("present invalid monthly field became healthy: %+v", failure)
++				}
++			})
++		}
++	}
++	for _, weekly := range []string{
++		`{"config":{"creditUsagePercent":null}}`,
++		`{"config":{"billingPeriodEnd":"2026-11-10T00:00:00Z","billing_period_end":"2026-11-18T00:00:00Z"}}`,
++		`{"config":{"creditUsagePercent":"bad"}}`,
++		`{"config":{"currentPeriod":{"start":"not-a-time"}}}`,
++		`{"config":{"currentPeriod":{"start":"2026-11-11T00:00:00Z","end":"2026-11-10T00:00:00Z"}}}`,
++		`{"config":{"currentPeriod":{"type":"weekly"},"current_period":{"type":"monthly"}}}`,
++		`{"config":{"productUsage":[{"product":"fixture","usagePercent":false}]}}`,
++		`{"config":{"productUsage":[{"product":"fixture","usagePercent":0,"usage_percent":1}]}}`,
++		`{"config":null}`,
++		`{"config":`,
++	} {
++		t.Run(weekly, func(t *testing.T) {
++			fixture := xaiProbeFixture{profile: `{"subscriptionTier":"SuperGrokPlus"}`, monthly: `{"config":{}}`, weekly: weekly}
++			server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++			collector := NewCollector(newCollectorTestRepository(t), Options{XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++			_, failure := collector.probeXAI(context.Background(), &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}})
++			if failure == nil || failure.code != "UPSTREAM_RESPONSE_INVALID" || failure.message != "xAI weekly quota response could not be parsed." {
++				t.Fatalf("present invalid weekly field became healthy: %+v", failure)
++			}
++		})
++	}
++}
++
++func TestXAIUnmeteredUpstreamErrorsRemainErrors(t *testing.T) {
++	now := time.Date(2026, 11, 11, 12, 2, 24, 0, time.UTC)
++	for _, tc := range []struct {
++		name   string
++		status int
++		code   string
++	}{
++		{"rejected", 401, "UPSTREAM_AUTH_REJECTED"},
++		{"forbidden", 403, "UPSTREAM_AUTH_REJECTED"},
++		{"rate limit", 429, "UPSTREAM_RATE_LIMITED"},
++		{"outage", 503, "UPSTREAM_UNAVAILABLE"},
++	} {
++		for _, target := range []string{"monthly", "weekly", "profile"} {
++			t.Run(tc.name+target, func(t *testing.T) {
++				fixture := xaiProbeFixture{profile: `{"subscriptionTier":"SuperGrokPlus"}`, monthly: `{"config":{}}`, weekly: `{"config":{}}`}
++				switch target {
++				case "monthly":
++					fixture.monthlyStatus = tc.status
++				case "weekly":
++					fixture.weeklyStatus = tc.status
++				case "profile":
++					fixture.profileStatus = tc.status
++				}
++				server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++				collector := NewCollector(newCollectorTestRepository(t), Options{XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++				_, failure := collector.probeXAI(context.Background(), &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}})
++				if failure == nil || failure.code != tc.code {
++					t.Fatalf("real request error became healthy: %+v", failure)
++				}
++			})
++		}
++	}
++}
++
++func TestXAIUnmeteredReplacesOldMeasurementsAndClearsFailure(t *testing.T) {
++	now := time.Date(2026, 11, 11, 12, 2, 24, 0, time.UTC)
++	fixture := xaiProbeFixture{profile: `{"subscriptionTier":"SuperGrokPlus"}`, monthly: `{"config":{"monthlyLimit":15000,"used":4200,"onDemandCap":5000,"onDemandUsed":12}}`, weekly: `{"config":{"creditUsagePercent":25}}`}
++	server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++	repo := newCollectorTestRepository(t)
++	seedCollectorProviderAuth(t, repo, "unmetered-recovery", "xai", map[string]any{"type": "xai", "access_token": "fixture"})
++	collector := NewCollector(repo, Options{Owner: "unmetered-recovery", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++	auth := &coreauth.Auth{ID: "unmetered-recovery", Provider: "xai"}
++	collector.collectCredential(context.Background(), auth, true)
++	first, errFirst := repo.GetQuotaCredential(context.Background(), auth.ID, now)
++	if errFirst != nil || len(first.Windows) != 3 || first.Windows[0].Used == nil {
++		t.Fatalf("missing initial measurements: %+v, %v", first, errFirst)
++	}
++	fixture.monthlyStatus = 503
++	fixture.weeklyStatus = 503
++	now = now.Add(time.Minute)
++	collector.collectCredential(context.Background(), auth, true)
++	failed, errFailed := repo.GetQuotaCredential(context.Background(), auth.ID, now)
++	if errFailed != nil || failed.CollectionStatus != "failed" || failed.Error == nil {
++		t.Fatalf("outage was hidden: %+v, %v", failed, errFailed)
++	}
++	fixture = xaiProbeFixture{profile: `{"subscriptionTier":"SuperGrokPlus"}`, monthly: `{"config":{"monthlyLimit":15000}}`, weekly: `{"config":{"currentPeriod":{"type":"monthly"}}}`}
++	now = now.Add(time.Minute)
++	collector.collectCredential(context.Background(), auth, true)
++	next, errNext := repo.GetQuotaCredential(context.Background(), auth.ID, now)
++	if errNext != nil || next.CollectionStatus != "success" || next.Error != nil || next.ObservedAt == nil || !next.ObservedAt.Equal(now) || len(next.Windows) != 2 {
++		t.Fatalf("unmetered recovery kept failure: %+v, %v", next, errNext)
++	}
++	for _, window := range next.Windows {
++		if window.ID == "xai-on-demand" || window.Used != nil || window.Remaining != nil || window.UsedRatio != nil || window.RemainingRatio != nil {
++			t.Fatalf("previous amounts survived omission: %+v", window)
++		}
++	}
++}
++
++func TestXAIUnmeteredMonthlyZeroAndAliasesRemainMeasured(t *testing.T) {
++	now := time.Date(2026, 11, 11, 12, 2, 24, 0, time.UTC)
++	for _, monthly := range []string{
++		`{"config":{"monthlyLimit":15000,"used":0}}`,
++		`{"config":{"monthly_limit":"15000","used":{"val":0}}}`,
++		`{"config":{"monthlyLimit":15000,"monthly_limit":15000,"used":0}}`,
++	} {
++		windows, _, errParse := parseXAIUsageWindows([]byte(monthly), now)
++		if errParse != nil || len(windows) != 1 || windows[0].Used == nil || *windows[0].Used != 0 || windows[0].Remaining == nil || *windows[0].Remaining != 150 {
++			t.Fatalf("explicit zero was lost: %+v, %v", windows, errParse)
++		}
++	}
++	for _, monthly := range []string{
++		`{"config":{"monthlyLimit":15000,"monthly_limit":15001}}`,
++		`{"config":{"onDemandCap":5000,"on_demand_cap":5001}}`,
++	} {
++		if _, _, errParse := parseXAIUsageWindows([]byte(monthly), now); errParse == nil {
++			t.Fatal("conflicting monthly aliases accepted")
++		}
++	}
++}
++
++func TestXAIUnmeteredMalformedPeriodsFailCollection(t *testing.T) {
++	now := time.Date(2026, 11, 11, 12, 2, 24, 0, time.UTC)
++	for _, tc := range []struct{ name, monthly, weekly string }{
++		{"invalid monthly reset", `{"config":{"monthlyLimit":15000,"billingPeriodEnd":"bad"}}`, `{"config":{}}`},
++		{"invalid monthly reset alias", `{"config":{"billing_period_end":"bad"}}`, `{"config":{}}`},
++		{"conflicting monthly reset aliases", `{"config":{"billingPeriodEnd":"2026-11-10T00:00:00Z","billing_period_end":"2026-11-18T00:00:00Z"}}`, `{"config":{}}`},
++		{"conflicting weekly reset aliases", `{"config":{}}`, `{"config":{"billingPeriodEnd":"2026-11-10T00:00:00Z","billing_period_end":"2026-11-18T00:00:00Z"}}`},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			fixture := xaiProbeFixture{profile: `{"subscriptionTier":"SuperGrokPlus"}`, monthly: tc.monthly, weekly: tc.weekly}
++			server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++			repo := newCollectorTestRepository(t)
++			seedCollectorProviderAuth(t, repo, "invalid-period", "xai", map[string]any{"type": "xai", "access_token": "fixture"})
++			collector := NewCollector(repo, Options{Owner: "invalid-period", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++			collector.collectCredential(context.Background(), &coreauth.Auth{ID: "invalid-period", Provider: "xai"}, true)
++			item, errGet := repo.GetQuotaCredential(context.Background(), "invalid-period", now)
++			if errGet != nil || item.CollectionStatus != "failed" || item.Error == nil || item.Error.Code != "UPSTREAM_RESPONSE_INVALID" {
++				t.Fatalf("invalid period became healthy: status=%s failure=%+v read=%v", item.CollectionStatus, item.Error, errGet)
++			}
++		})
++	}
++}
