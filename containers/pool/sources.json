@@ -113,6 +113,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home exposes bounded xAI monthly and weekly source-field flags tied to collector invocation time, distinguishes forced claim refusal and vendor completion persistence, and passes field-shape, privacy, real-collector, lease-loss, write-failure and management-detail regressions, preserves same-attempt completion ordering and pool-owned persistence through the existing authenticated view without response bodies, amounts or credentials, and does so without changing Home database models or versions."
           }
+        },
+        {
+          "identity": "cliproxy-home-xai-optional-quota-fields",
+          "file": "0497-home-xai-optional-quota-fields.patch",
+          "sha256": "670af136034ff56de2263f305e307634b1727676cf8ef237c745a2450b8bb20e",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home treats omitted weekly percentages and on-demand usage as not reported, never infers zero, preserves valid monthly readings and rejects present invalid optional values. Pass observed-shape, explicit-zero, alias, malformed-value, retained-window and real-collector regressions without changing Home database models or versions."
+          }
         }
       ]
     },

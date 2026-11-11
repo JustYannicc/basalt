@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { amount, balanceView } = (await import(
+const { amount, balanceView, windowView } = (await import(
   new URL(
     "../../.upstream/packages/ui/src/implementation/dashboard/account-observation-format.ts",
     import.meta.url,
@@ -51,4 +51,42 @@ test("a banked credit's Details amount reads one reset", () => {
     ).detail;
   assert.equal(credit(1), "1 reset");
   assert.equal(credit(2), "2 resets");
+});
+
+test("a window the source named but did not measure reads as a missing reading of its period", () => {
+  const now = Date.parse("2026-11-06T08:00:00Z");
+  const weekly = (
+    period: { readonly seconds?: number; readonly value?: number; readonly unit?: string },
+    measure: Record<string, number> = {},
+  ) =>
+    windowView(
+      {
+        id: "xai-weekly-usage",
+        label: "Weekly",
+        observedAt: "2026-11-06T07:55:00Z",
+        measure: { unit: "%", ...measure },
+        period: { mode: "fixed", ...period },
+      },
+      now,
+      format,
+    );
+  for (const view of [weekly({ value: 1, unit: "week" }), weekly({ seconds: 604_800 })]) {
+    assert.equal(view.state, "unknown");
+    assert.equal(view.lead, undefined);
+    assert.equal(view.figure, "No weekly reading");
+    assert.equal(view.detail, "No weekly reading");
+    assert.equal(view.flag, undefined);
+    // No drawn share and no meter value: neither empty nor full.
+    assert.equal(view.width, undefined);
+    assert.equal(view.aria.now, undefined);
+    assert.equal(view.when, "Reset not reported");
+  }
+  assert.equal(weekly({ seconds: 5 * 3_600 }).figure, "No 5-hour reading");
+  // A measured week, even an untouched one, keeps its figures.
+  assert.equal(weekly({ value: 1, unit: "week" }, { used: 0, limit: 100 }).figure, "100%");
+  assert.equal(weekly({ value: 1, unit: "week" }, { remainingRatio: 0.84 }).figure, "84%");
+  // A known limit without an amount still says the amount is unknown.
+  const limitOnly = weekly({ value: 1, unit: "week" }, { limit: 100 });
+  assert.equal(limitOnly.figure, "Unknown");
+  assert.equal(limitOnly.detail, "Limit 100%, amount unknown");
 });

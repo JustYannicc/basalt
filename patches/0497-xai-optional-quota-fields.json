@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-xai-optional-quota-fields",
+  "file": "0497-xai-optional-quota-fields.patch",
+  "content_sha256": "be6c8e1b13796f884c2067b2e096951d336195437c6745fa236de1cfc3d6b28a",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Missing xAI weekly percentages and on-demand usage stay unreported, never inferred as zero or derived from monthly spend. A valid monthly collection remains healthy, an unmeasured weekly window carries no amount or limit, and an unreported on-demand line is absent. Present null, malformed, nonnumeric and conflicting optional values retain a named invalid-response failure. A later complete reading can replace the unknown window; a later omission removes old on-demand usage instead of presenting it as current. Collection authorization, backoff, retention and Home database models and versions remain unchanged."
+    }
+  }
+}

@@ -1,0 +1,515 @@
+diff --git a/internal/quota/providers.go b/internal/quota/providers.go
+--- a/internal/quota/providers.go
++++ b/internal/quota/providers.go
+@@ -792,8 +792,8 @@
+ 	Used                    flexFloat                `json:"used"`
+ 	OnDemandCap             flexFloat                `json:"onDemandCap"`
+ 	OnDemandCapSnake        flexFloat                `json:"on_demand_cap"`
+-	OnDemandUsed            flexFloat                `json:"onDemandUsed"`
+-	OnDemandUsedSnake       flexFloat                `json:"on_demand_used"`
++	OnDemandUsed            xaiOptionalFloat         `json:"onDemandUsed"`
++	OnDemandUsedSnake       xaiOptionalFloat         `json:"on_demand_used"`
+ 	BillingPeriodEnd        string                   `json:"billingPeriodEnd"`
+ 	BillingEndSnake         string                   `json:"billing_period_end"`
+ 	CreditUsagePercent      xaiPercentage            `json:"creditUsagePercent"`
+@@ -835,7 +835,10 @@
+ 	monthlyLimitCents := firstFloat(flexFloatValue(config.MonthlyLimit), flexFloatValue(config.MonthlyLimitSnake))
+ 	usedCents := flexFloatValue(config.Used)
+ 	onDemandCapCents := firstFloat(flexFloatValue(config.OnDemandCap), flexFloatValue(config.OnDemandCapSnake))
+-	onDemandUsedCents := firstFloat(flexFloatValue(config.OnDemandUsed), flexFloatValue(config.OnDemandUsedSnake))
++	onDemandUsedCents, validOnDemand := xaiOptionalFloatValue(config.OnDemandUsed, config.OnDemandUsedSnake)
++	if !validOnDemand {
++		return nil, nil, fmt.Errorf("xai on-demand used amount is invalid")
++	}
+ 	billingPeriodEnd := firstNonEmptyString(config.BillingPeriodEnd, config.BillingEndSnake)
+ 
+ 	windows := make([]cluster.QuotaWindow, 0, 2)
+@@ -854,14 +857,11 @@
+ 		windows = append(windows, window)
+ 	}
+ 
+-	if onDemandCapCents != nil && *onDemandCapCents > 0 {
++	if onDemandCapCents != nil && *onDemandCapCents > 0 && onDemandUsedCents != nil {
+ 		limit := math.Max(0, *onDemandCapCents/100)
+ 		var used *float64
+ 		if onDemandUsedCents != nil {
+ 			value := math.Max(0, *onDemandUsedCents/100)
+-			used = &value
+-		} else if usedCents != nil && monthlyLimitCents != nil {
+-			value := math.Max(0, (*usedCents-*monthlyLimitCents)/100)
+ 			used = &value
+ 		}
+ 		if used != nil {
+@@ -912,11 +912,10 @@
+ 		return cluster.QuotaWindow{}, false
+ 	}
+ 	if usedPercent == nil {
+-		if entitlement == xaiEntitlementPaid && xaiCanInferZeroUsage(config, observedAt) {
+-			usedPercent = quotaFloatPtr(0)
+-		} else if entitlement != xaiEntitlementPaid || period == nil || !strings.Contains(strings.ToLower(period.Type), "weekly") {
++		if config.CreditUsagePercent.present || config.CreditUsagePercentSnake.present || entitlement != xaiEntitlementPaid {
+ 			return cluster.QuotaWindow{}, false
+ 		}
++		return cluster.QuotaWindow{ID: "xai-weekly-usage", Label: quotaStringPtr("Weekly Limit"), Scope: "account", Mode: "fixed", Status: "unknown", Unit: "percentage", PeriodUnit: "week", PeriodValue: quotaFloatPtr(1), Source: "active_probe", ObservedAt: observedAt, Priority: -10}, true
+ 	}
+ 	window := cluster.QuotaWindow{ID: "xai-weekly-usage", Label: quotaStringPtr("Weekly Limit"), Scope: "account", Mode: "fixed", Status: "unknown", Unit: "percentage", Used: usedPercent, Limit: quotaFloatPtr(100), PeriodUnit: "week", PeriodValue: quotaFloatPtr(1), Source: "active_probe", ObservedAt: observedAt, Priority: -10}
+ 	if period != nil {
+diff --git a/internal/quota/providers_xai_quota_test.go b/internal/quota/providers_xai_quota_test.go
+--- a/internal/quota/providers_xai_quota_test.go
++++ b/internal/quota/providers_xai_quota_test.go
+@@ -121,6 +121,7 @@
+ 			"monthly_limit": 15000,
+ 			"used": "4200",
+ 			"on_demand_cap": "5000",
++			"on_demand_used": 0,
+ 			"billing_period_end": "2026-08-01T00:00:00Z"
+ 		}
+ 	}`)
+@@ -167,7 +168,7 @@
+ 	if errParse != nil {
+ 		t.Fatalf("parseXAIUsageWindows() error = %v", errParse)
+ 	}
+-	if len(windows) != 2 || plan == nil {
++	if len(windows) != 1 || plan == nil {
+ 		t.Fatalf("unexpected windows or plan: windows=%+v plan=%+v", windows, plan)
+ 	}
+ 	for _, window := range windows {
+@@ -314,7 +315,7 @@
+ 		t.Fatalf("zero monthly limit produced windows=%+v plan=%+v", windows, plan)
+ 	}
+ 
+-	windows, _, errParse = parseXAIUsageWindows([]byte(`{"config":{"monthlyLimit":0,"used":0,"onDemandCap":5000}}`), now)
++	windows, _, errParse = parseXAIUsageWindows([]byte(`{"config":{"monthlyLimit":0,"used":0,"onDemandCap":5000,"onDemandUsed":0}}`), now)
+ 	if errParse != nil {
+ 		t.Fatalf("parseXAIUsageWindows() error = %v", errParse)
+ 	}
+diff --git a/internal/quota/xai.go b/internal/quota/xai.go
+--- a/internal/quota/xai.go
++++ b/internal/quota/xai.go
+@@ -170,39 +170,6 @@
+ 	return true
+ }
+ 
+-func xaiCanInferZeroUsage(config *xaiBillingConfig, observedAt time.Time) bool {
+-	if config.CreditUsagePercent.present || config.CreditUsagePercentSnake.present {
+-		return false
+-	}
+-	period := xaiCurrentWeeklyPeriod(config)
+-	if period == nil {
+-		return false
+-	}
+-	switch strings.ToLower(strings.TrimSpace(period.Type)) {
+-	case "weekly", "usage_period_type_weekly":
+-	default:
+-		return false
+-	}
+-	end := parseProviderTime(period.End)
+-	if end == nil || !end.After(observedAt) {
+-		return false
+-	}
+-	if period.Start != "" {
+-		start := parseProviderTime(period.Start)
+-		if start == nil || start.After(observedAt) || !start.Before(*end) {
+-			return false
+-		}
+-	}
+-	for _, product := range append(append([]xaiBillingProductUsage(nil), config.ProductUsage...), config.ProductUsageSnake...) {
+-		for _, percent := range []xaiPercentage{product.UsagePercent, product.UsagePercentSnake} {
+-			if percent.present && (percent.value() == nil || *percent.value() != 0) {
+-				return false
+-			}
+-		}
+-	}
+-	return true
+-}
+-
+ func xaiInvalidResponse(message string) *probeError {
+ 	return &probeError{code: "UPSTREAM_RESPONSE_INVALID", message: message, retryable: true}
+ }
+@@ -323,7 +290,7 @@
+ 		errWeekly = nil
+ 	} else if errWeekly == nil {
+ 		var payload xaiBillingPayload
+-		if errDecode := json.Unmarshal(responses[1].body, &payload); errDecode != nil || payload.Config == nil {
++		if errDecode := json.Unmarshal(responses[1].body, &payload); errDecode != nil || payload.Config == nil || (payload.Config.CreditUsagePercent.present || payload.Config.CreditUsagePercentSnake.present) && xaiPercentageValue(payload.Config.CreditUsagePercent, payload.Config.CreditUsagePercentSnake) == nil {
+ 			errWeekly = xaiInvalidResponse("xAI weekly quota response could not be parsed.")
+ 		} else {
+ 			weekly := xaiWeeklyWindows(payload.Config, now, subscription.entitlement)
+@@ -331,7 +298,7 @@
+ 			complete := false
+ 			productsComplete := true
+ 			for _, window := range weekly {
+-				if window.ID == "xai-weekly-usage" && window.Used != nil {
++				if window.ID == "xai-weekly-usage" && (window.Used != nil || !payload.Config.CreditUsagePercent.present && !payload.Config.CreditUsagePercentSnake.present) {
+ 					complete = true
+ 				} else if window.ID != "xai-weekly-usage" && window.Used == nil {
+ 					productsComplete = false
+diff --git a/internal/quota/xai_omitted_zero_regression_test.go b/internal/quota/xai_omitted_zero_regression_test.go
+--- a/internal/quota/xai_omitted_zero_regression_test.go
++++ b/internal/quota/xai_omitted_zero_regression_test.go
+@@ -1,43 +1,51 @@
+ package quota
+ 
+ import (
+-    "context"
+-    "fmt"
+-    "net/http"
+-    "net/http/httptest"
+-    "testing"
+-    "time"
++	"context"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++	"time"
+ )
+ 
+-// Fixture from upstream Home #186's xaiPaidFixture: proto3 omits a zero percentage.
+-func TestBasaltXAIPaidOmittedZeroStoresReading(t *testing.T) {
+-    now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
+-    profile := `{"subscriptionTier":"SuperGrokPlus"}`
+-    monthly := `{"config":{"monthlyLimit":0,"used":0,"onDemandCap":0}}`
+-    weekly := fmt.Sprintf(`{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":%q,"end":%q}}}`,
+-        now.Add(-time.Hour).Format(time.RFC3339), now.Add(6*24*time.Hour).Format(time.RFC3339))
+-    server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+-        body := monthly
+-        if r.URL.Path == "/v1/user" {
+-            if r.URL.Query().Get("include") != "subscription" { t.Error("profile request lacks subscription metadata") }
+-            body = profile
+-        } else if r.URL.Query().Get("format") == "credits" { body = weekly }
+-        w.Header().Set("Content-Type", "application/json")
+-        _, _ = w.Write([]byte(body))
+-    }))
+-    defer server.Close()
+-    repo := newCollectorTestRepository(t)
+-    seedCollectorProviderAuth(t, repo, "xai-paid-omitted", "xai", map[string]any{"type":"xai", "access_token":"fixture"})
+-    collector := NewCollector(repo, Options{Owner:"omitted-zero", XAIBillingURL:server.URL+"/v1/billing", Now:func() time.Time { return now }})
+-    collector.collect(context.Background())
+-    item, errGet := repo.GetQuotaCredential(context.Background(), "xai-paid-omitted", now)
+-    if errGet != nil { t.Fatalf("reading: %v", errGet) }
+-    if item.CollectionStatus != "success" || item.Error != nil || len(item.Windows) != 1 {
+-        t.Fatalf("paid omitted-zero response did not store usage: status=%s error=%+v windows=%d", item.CollectionStatus, item.Error, len(item.Windows))
+-    }
+-    window := item.Windows[0]
+-    if window.ID != "xai-weekly-usage" || window.Used == nil || *window.Used != 0 || window.Remaining == nil || *window.Remaining != 100 || window.ResetAt == nil || !window.ResetAt.Equal(now.Add(6*24*time.Hour)) {
+-        t.Fatalf("incorrect stored weekly usage: %+v", window)
+-    }
+-    if item.Plan == nil || item.Plan.Name != "SuperGrok Plus" { t.Fatalf("incorrect paid plan: %+v", item.Plan) }
++// An omitted percentage carries no measured amount, even for a confirmed paid profile.
++func TestBasaltXAIPaidOmissionStoresUnknownWindow(t *testing.T) {
++	now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
++	profile := `{"subscriptionTier":"SuperGrokPlus"}`
++	monthly := `{"config":{"monthlyLimit":0,"used":0,"onDemandCap":0}}`
++	weekly := fmt.Sprintf(`{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":%q,"end":%q}}}`,
++		now.Add(-time.Hour).Format(time.RFC3339), now.Add(6*24*time.Hour).Format(time.RFC3339))
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		body := monthly
++		if r.URL.Path == "/v1/user" {
++			if r.URL.Query().Get("include") != "subscription" {
++				t.Error("profile request lacks subscription metadata")
++			}
++			body = profile
++		} else if r.URL.Query().Get("format") == "credits" {
++			body = weekly
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = w.Write([]byte(body))
++	}))
++	defer server.Close()
++	repo := newCollectorTestRepository(t)
++	seedCollectorProviderAuth(t, repo, "xai-paid-omitted", "xai", map[string]any{"type": "xai", "access_token": "fixture"})
++	collector := NewCollector(repo, Options{Owner: "omitted-zero", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++	collector.collect(context.Background())
++	item, errGet := repo.GetQuotaCredential(context.Background(), "xai-paid-omitted", now)
++	if errGet != nil {
++		t.Fatalf("reading: %v", errGet)
++	}
++	if item.CollectionStatus != "success" || item.Error != nil || len(item.Windows) != 1 {
++		t.Fatalf("paid omitted response did not store an unknown window: status=%s error=%+v windows=%d", item.CollectionStatus, item.Error, len(item.Windows))
++	}
++	window := item.Windows[0]
++	if window.ID != "xai-weekly-usage" || window.Used != nil || window.Remaining != nil || window.Limit != nil {
++		t.Fatalf("incorrect stored weekly usage: %+v", window)
++	}
++	if item.Plan == nil || item.Plan.Name != "SuperGrok Plus" {
++		t.Fatalf("incorrect paid plan: %+v", item.Plan)
++	}
+ }
+diff --git a/internal/quota/xai_optional.go b/internal/quota/xai_optional.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/xai_optional.go
+@@ -0,0 +1,26 @@
++package quota
++
++// Optional amounts distinguish omission from a present value that cannot be read.
++type xaiOptionalFloat struct {
++	number  flexFloat
++	present bool
++}
++
++func (f *xaiOptionalFloat) UnmarshalJSON(data []byte) error {
++	f.present = true
++	return f.number.UnmarshalJSON(data)
++}
++
++func xaiOptionalFloatValue(primary, alternate xaiOptionalFloat) (*float64, bool) {
++	left, right := flexFloatValue(primary.number), flexFloatValue(alternate.number)
++	if primary.present && (left == nil || *left < 0) || alternate.present && (right == nil || *right < 0) {
++		return nil, false
++	}
++	if primary.present && alternate.present && *left != *right {
++		return nil, false
++	}
++	if primary.present {
++		return left, true
++	}
++	return right, true
++}
+diff --git a/internal/quota/xai_optional_fields_test.go b/internal/quota/xai_optional_fields_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/quota/xai_optional_fields_test.go
+@@ -0,0 +1,159 @@
++package quota
++
++import (
++	"context"
++	"strings"
++	"testing"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++)
++
++// Field presence matches the retained diagnostic; amounts are synthetic, not a vendor body.
++func xaiOptionalFixture() xaiProbeFixture {
++	return xaiProbeFixture{
++		profile: `{"subscriptionTier":"SuperGrokPlus"}`,
++		monthly: `{"config":{"monthlyLimit":15000,"used":4200,"onDemandCap":5000}}`,
++		weekly:  `{"config":{"currentPeriod":{}}}`,
++	}
++}
++
++func TestXAIOptionalFieldsKeepMonthlyHealthyWithoutInventingUsage(t *testing.T) {
++	now := time.Date(2026, 11, 11, 7, 33, 23, 0, time.UTC)
++	fixture := xaiOptionalFixture()
++	server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++	repo := newCollectorTestRepository(t)
++	seedCollectorProviderAuth(t, repo, "xai-optional", "xai", map[string]any{"type": "xai", "access_token": "fixture"})
++	collector := NewCollector(repo, Options{Owner: "xai-optional", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++	collector.collectCredential(context.Background(), &coreauth.Auth{ID: "xai-optional", Provider: "xai"}, true)
++	item, errGet := repo.GetQuotaCredential(context.Background(), "xai-optional", now)
++	if errGet != nil || item.CollectionStatus != "success" || item.Error != nil {
++		t.Fatalf("valid monthly response became unavailable: item=%+v error=%v", item, errGet)
++	}
++	if len(item.Windows) != 2 {
++		t.Fatalf("want monthly and unmeasured weekly only: %+v", item.Windows)
++	}
++	for _, window := range item.Windows {
++		switch window.ID {
++		case "xai-weekly-usage":
++			if window.Used != nil || window.Remaining != nil || window.Limit != nil || window.UsedRatio != nil || window.RemainingRatio != nil || window.Status != "unknown" {
++				t.Fatalf("omitted weekly amount became a fabricated reading: %+v", window)
++			}
++		case "xai-monthly-spend":
++			if window.Used == nil || *window.Used != 42 || window.Remaining == nil || *window.Remaining != 108 {
++				t.Fatalf("monthly figures were lost: %+v", window)
++			}
++		default:
++			t.Fatalf("unreported on-demand usage must be hidden: %+v", window)
++		}
++	}
++}
++
++func TestXAIOptionalWeeklyOmissionNeverMeansZero(t *testing.T) {
++	now := time.Date(2026, 11, 11, 7, 33, 23, 0, time.UTC)
++	fixture := xaiPaidFixture(now)
++	fixture.monthly = xaiOptionalFixture().monthly
++	server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++	collector := NewCollector(newCollectorTestRepository(t), Options{Owner: "xai-optional-period", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++	result, failure := collector.probeXAI(context.Background(), &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}})
++	if failure != nil || result.partial || len(result.windows) != 2 || result.windows[0].Used != nil || result.windows[0].Remaining != nil || result.windows[0].Limit != nil {
++		t.Fatalf("omission in a current paid week fabricated zero: result=%+v failure=%v", result, failure)
++	}
++}
++
++func TestXAIOptionalMalformedFieldsStillNameTheirStage(t *testing.T) {
++	now := time.Date(2026, 11, 11, 7, 33, 23, 0, time.UTC)
++	for _, field := range []string{"creditUsagePercent", "credit_usage_percent", "onDemandUsed", "on_demand_used"} {
++		for _, value := range []string{`null`, `"bad"`, `false`, `{"val":{"val":1}}`} {
++			t.Run(field+value, func(t *testing.T) {
++				fixture := xaiOptionalFixture()
++				message := "xAI weekly quota response could not be parsed."
++				if strings.HasPrefix(field, "on") {
++					fixture.monthly = strings.Replace(fixture.monthly, `"config":{`, `"config":{"`+field+`":`+value+`,`, 1)
++					message = "xAI monthly billing response could not be parsed."
++				} else {
++					fixture.weekly = strings.Replace(fixture.weekly, `"config":{`, `"config":{"`+field+`":`+value+`,`, 1)
++				}
++				server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++				collector := NewCollector(newCollectorTestRepository(t), Options{Owner: "xai-optional-invalid", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++				result, failure := collector.probeXAI(context.Background(), &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}})
++				code, detail := "", ""
++				if failure != nil {
++					code, detail = failure.code, failure.message
++				} else if result.collectionError != nil {
++					code, detail = result.collectionError.Code, result.collectionError.Message
++				}
++				if code != "UPSTREAM_RESPONSE_INVALID" || detail != message {
++					t.Fatalf("invalid optional value lost its named failure: result=%+v failure=%v", result, failure)
++				}
++			})
++		}
++	}
++}
++
++func TestXAIOptionalExplicitZeroStillReportsMeasuredUsage(t *testing.T) {
++	now := time.Date(2026, 11, 11, 7, 33, 23, 0, time.UTC)
++	fixture := xaiOptionalFixture()
++	fixture.monthly = strings.Replace(fixture.monthly, `"config":{`, `"config":{"onDemandUsed":0,`, 1)
++	fixture.weekly = strings.Replace(fixture.weekly, `"config":{`, `"config":{"creditUsagePercent":0,`, 1)
++	server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++	collector := NewCollector(newCollectorTestRepository(t), Options{Owner: "xai-explicit-zero", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++	result, failure := collector.probeXAI(context.Background(), &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}})
++	if failure != nil || result.partial || len(result.windows) != 3 {
++		t.Fatalf("explicit zero did not produce measured windows: result=%+v failure=%v", result, failure)
++	}
++	for _, index := range []int{0, 2} {
++		if result.windows[index].Used == nil || *result.windows[index].Used != 0 || result.windows[index].Remaining == nil {
++			t.Fatalf("a real zero was mistaken for an omitted amount: %+v", result.windows[index])
++		}
++	}
++}
++
++func TestXAIOptionalOmissionReplacesPriorAmounts(t *testing.T) {
++	now := time.Date(2026, 11, 11, 7, 33, 23, 0, time.UTC)
++	fixture := xaiOptionalFixture()
++	fixture.monthly = strings.Replace(fixture.monthly, `"config":{`, `"config":{"onDemandUsed":100,`, 1)
++	fixture.weekly = strings.Replace(fixture.weekly, `"config":{`, `"config":{"creditUsagePercent":12,`, 1)
++	server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
++	repo := newCollectorTestRepository(t)
++	seedCollectorProviderAuth(t, repo, "xai-optional-replacement", "xai", map[string]any{"type": "xai", "access_token": "fixture"})
++	collector := NewCollector(repo, Options{Owner: "xai-optional-replacement", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
++	auth := &coreauth.Auth{ID: "xai-optional-replacement", Provider: "xai"}
++	collector.collectCredential(context.Background(), auth, true)
++	first, errFirst := repo.GetQuotaCredential(context.Background(), auth.ID, now)
++	if errFirst != nil || len(first.Windows) != 3 || first.Windows[0].Used == nil {
++		t.Fatalf("initial reported usage missing: item=%+v error=%v", first, errFirst)
++	}
++	fixture = xaiOptionalFixture()
++	now = now.Add(time.Minute)
++	collector.collectCredential(context.Background(), auth, true)
++	next, errNext := repo.GetQuotaCredential(context.Background(), auth.ID, now)
++	if errNext != nil || next.CollectionStatus != "success" || next.Error != nil || len(next.Windows) != 2 || next.Windows[0].Used != nil || next.Windows[0].Remaining != nil || next.Windows[0].Limit != nil {
++		t.Fatalf("old amounts survived a later omission: item=%+v error=%v", next, errNext)
++	}
++}
++
++func TestXAIOptionalOnDemandAliasesPreserveZeroAndRejectConflict(t *testing.T) {
++	now := time.Date(2026, 11, 11, 7, 33, 23, 0, time.UTC)
++	for _, tc := range []struct {
++		fields  string
++		invalid bool
++	}{
++		{`"onDemandUsed":0`, false},
++		{`"on_demand_used":"0"`, false},
++		{`"onDemandUsed":{"val":0},"on_demand_used":0`, false},
++		{`"onDemandUsed":0,"on_demand_used":1`, true},
++		{`"onDemandUsed":0,"on_demand_used":null`, true},
++		{`"onDemandUsed":-1`, true},
++	} {
++		body := strings.Replace(xaiOptionalFixture().monthly, `"config":{`, `"config":{`+tc.fields+`,`, 1)
++		windows, _, errParse := parseXAIUsageWindows([]byte(body), now)
++		if tc.invalid {
++			if errParse == nil {
++				t.Fatalf("invalid on-demand amount accepted: %s", tc.fields)
++			}
++		} else if errParse != nil || len(windows) != 2 || windows[1].Used == nil || *windows[1].Used != 0 {
++			t.Fatalf("valid zero alias lost: windows=%+v error=%v", windows, errParse)
++		}
++	}
++}
+diff --git a/internal/quota/xai_subscription_test.go b/internal/quota/xai_subscription_test.go
+--- a/internal/quota/xai_subscription_test.go
++++ b/internal/quota/xai_subscription_test.go
+@@ -57,20 +57,20 @@
+ func TestXAIWeeklySubscriptionAndPresenceMatrix(t *testing.T) {
+ 	now := time.Date(2026, 11, 6, 0, 0, 0, 0, time.UTC)
+ 	type scenario struct {
+-		name           string
+-		profile        string
+-		profileStatus  int
+-		percentage     string
+-		remaining      *float64
+-		plan           string
+-		partial, fails bool
++		name                    string
++		profile                 string
++		profileStatus           int
++		percentage              string
++		remaining               *float64
++		plan                    string
++		partial, fails, unknown bool
+ 	}
+ 	for _, test := range []scenario{
+ 		{name: "free null rejects weekly even with usage", profile: `{"subscriptionTier":null}`, percentage: `1`, plan: "Free"},
+ 		{name: "free explicit rejects weekly", profile: `{"subscriptionTier":"Free"}`, percentage: `0`, plan: "Free"},
+ 		{name: "none rejects weekly", profile: `{"subscription_tier":"none"}`, plan: "Free"},
+ 		{name: "empty tier is free", profile: `{"subscriptionTier":""}`, plan: "Free"},
+-		{name: "paid omitted zero", remaining: quotaFloatPtr(100), plan: "SuperGrok Plus"},
++		{name: "paid omitted percentage is not reported", unknown: true, plan: "SuperGrok Plus"},
+ 		{name: "paid explicit zero", percentage: `0`, remaining: quotaFloatPtr(100), plan: "SuperGrok Plus"},
+ 		{name: "paid numeric string zero", percentage: `"0"`, remaining: quotaFloatPtr(100), plan: "SuperGrok Plus"},
+ 		{name: "paid exhausted", percentage: `100`, remaining: quotaFloatPtr(0), plan: "SuperGrok Plus"},
+@@ -111,7 +111,11 @@
+ 			if errProbe != nil || result.partial != test.partial {
+ 				t.Fatalf("unexpected collection state: partial=%v error=%v", result.partial, errProbe)
+ 			}
+-			if test.remaining == nil {
++			if test.unknown {
++				if len(result.windows) != 1 || result.windows[0].Used != nil || result.windows[0].Remaining != nil || result.windows[0].Limit != nil {
++					t.Fatalf("omitted percentage invented an amount: %+v", result.windows)
++				}
++			} else if test.remaining == nil {
+ 				if len(result.windows) != 0 {
+ 					t.Fatalf("free profile acquired a weekly allowance: %+v", result.windows)
+ 				}
+@@ -134,7 +138,7 @@
+ 	for _, test := range []struct{ name, period string }{
+ 		{"expired", `{"type":"weekly","end":"2026-11-05T00:00:00Z"}`},
+ 		{"future start", `{"type":"weekly","start":"2026-11-07T00:00:00Z","end":"2026-11-13T00:00:00Z"}`},
+-		{"missing end", `{"type":"weekly"}`},
++
+ 		{"invalid end", `{"type":"weekly","end":"bad"}`},
+ 		{"unknown period", `{"type":"future_period","end":"2026-11-13T00:00:00Z"}`},
+ 		{"monthly period", `{"type":"monthly","end":"2026-11-13T00:00:00Z"}`},
+@@ -159,7 +163,7 @@
+ 	server := serveXAIProbeFixture(t, func() xaiProbeFixture { return fixture })
+ 	collector := NewCollector(newCollectorTestRepository(t), Options{Owner: "xai-products", XAIBillingURL: server.URL + "/v1/billing", Now: func() time.Time { return now }})
+ 	result, errProbe := collector.probeXAI(context.Background(), &coreauth.Auth{Metadata: map[string]any{"access_token": "fixture"}})
+-	if errProbe != nil || !result.partial || len(result.windows) != 2 || result.windows[0].Remaining != nil || result.windows[1].Used == nil || *result.windows[1].Used != 1 {
++	if errProbe != nil || result.partial || len(result.windows) != 2 || result.windows[0].Remaining != nil || result.windows[1].Used == nil || *result.windows[1].Used != 1 {
+ 		t.Fatalf("product usage was discarded or an unused total was invented: result=%+v error=%v", result, errProbe)
+ 	}
+ }
+@@ -304,8 +308,8 @@
+ 	now = now.Add(time.Minute)
+ 	collector.collectCredential(context.Background(), auth, true)
+ 	recovered, errRecovered := repo.GetQuotaCredential(context.Background(), auth.ID, now)
+-	if errRecovered != nil || recovered.CollectionStatus != "success" || recovered.Error != nil || recovered.ConsecutiveFailure != 0 || recovered.ObservedAt == nil || !recovered.ObservedAt.Equal(now) || len(recovered.Windows) != 1 || recovered.Windows[0].Remaining == nil || *recovered.Windows[0].Remaining != 100 {
+-		t.Fatalf("confirmed paid zero usage did not recover cleanly: item=%+v error=%v", recovered, errRecovered)
++	if errRecovered != nil || recovered.CollectionStatus != "success" || recovered.Error != nil || recovered.ConsecutiveFailure != 0 || recovered.ObservedAt == nil || !recovered.ObservedAt.Equal(now) || len(recovered.Windows) != 1 || recovered.Windows[0].Remaining != nil || recovered.Windows[0].Used != nil || recovered.Windows[0].Limit != nil {
++		t.Fatalf("unreported weekly usage did not recover cleanly: item=%+v error=%v", recovered, errRecovered)
+ 	}
+ }
+ 
+@@ -323,6 +327,7 @@
+ 	} {
+ 		t.Run(test.name, func(t *testing.T) {
+ 			fixture := xaiPaidFixture(now)
++			fixture.weekly = strings.Replace(fixture.weekly, `"currentPeriod":`, `"creditUsagePercent":0,"currentPeriod":`, 1)
+ 			fixture.monthlyStatus, fixture.weeklyStatus = test.monthlyStatus, test.weeklyStatus
+ 			if test.monthly != "" {
+ 				fixture.monthly = test.monthly
