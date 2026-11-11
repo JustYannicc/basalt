@@ -33,10 +33,14 @@ test(
       await ready(runtime, /Connection ready at /u);
       const { origin } = JSON.parse(await readFile(join(home, "runtime.json"), "utf8"));
       const { token } = JSON.parse(await readFile(join(home, "agent-both.json"), "utf8"));
-      const request = (path: string) =>
+      const request = (path: string, extraHeaders: Record<string, string> = {}) =>
         fetch(`${origin}${path}`, {
           method: "POST",
-          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+            ...extraHeaders,
+          },
           body: JSON.stringify(
             path === "/mcp"
               ? { jsonrpc: "2.0", id: 1, method: "tools/call" }
@@ -93,9 +97,26 @@ test(
       assert.equal(backOnline.status, 200, "A network failure does not latch disconnected state.");
       await backOnline.body?.cancel();
 
+      const beforeInvalid = remote.counts();
+      const invalid = await request("/mcp", { accept: "x".repeat(4097) });
+      assert.equal(invalid.status, 503, "Local frame validation happens before dispatch.");
+      assert.equal((await invalid.json()).error.data.retryable, true);
+      assert.equal(remote.counts().operationOpens, beforeInvalid.operationOpens);
+
+      remote.dropTool(true);
+      const beforeInterrupted = remote.counts();
+      const interrupted = await request("/mcp");
+      assert.equal(interrupted.status, 502, "A dispatched tool call retains its unknown outcome.");
+      assert.equal(interrupted.headers.get("retry-after"), null);
+      assert.match(await interrupted.text(), /outcome may be unknown/u);
+      assert.equal(remote.counts().writes, beforeInterrupted.writes + 1);
+      remote.dropTool(false);
+
       remote.denyAccess(true);
       const deniedBefore = remote.counts();
       const denied = await request("/mcp");
+      assert.equal(denied.status, 401);
+      assert.equal(denied.headers.get("retry-after"), null);
       await denied.body?.cancel();
       assert.equal(
         remote.counts().accessReads,
@@ -105,6 +126,8 @@ test(
       assert.equal(JSON.parse((await command(["status"], home)).stdout).state, "sign-in-required");
       remote.denyAccess(false);
       const stillDenied = await request("/mcp");
+      assert.equal(stillDenied.status, 401);
+      assert.equal(stillDenied.headers.get("retry-after"), null);
       await stillDenied.body?.cancel();
       assert.equal(remote.counts().accessReads, deniedBefore.accessReads + 1);
       remote.denyAccess(true, 403);

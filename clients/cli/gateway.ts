@@ -113,6 +113,8 @@ export async function startGateway(options: GatewayOptions) {
     } catch (error) {
       if (response.headersSent || response.destroyed) response.destroy();
       else if (!dispatched || error instanceof ModelRequestNotSent) {
+        if (["sign-in-required", "revoked"].includes(options.source.view().state))
+          return answer(response, 401, { error: "Sign in again before using this device." });
         response.setHeader("Retry-After", "1");
         return answer(
           response,
