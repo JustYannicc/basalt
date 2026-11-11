@@ -28,7 +28,7 @@ export async function lastSuccessAt(db: HistoryDatabase, raw: unknown, authority
         SELECT * FROM jsonb_to_recordset($3::jsonb) AS b(saved text,history text))
       SELECT b.saved,max(latest.timestamp_exact) AS at FROM bindings b
       LEFT JOIN LATERAL (SELECT timestamp_exact,id FROM basalt_model_requests
-        WHERE pool=$1 AND account=b.history::character(64) AND source=$2 AND NOT failed
+        WHERE pool=$1 AND account=b.history::character(64) AND (source=$2 OR attribution='import-owner') AND NOT failed
         ORDER BY timestamp DESC,timestamp_exact DESC,id DESC LIMIT 1) latest ON true
       GROUP BY b.saved ORDER BY b.saved`,
             [

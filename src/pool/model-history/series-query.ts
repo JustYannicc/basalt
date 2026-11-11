@@ -64,7 +64,7 @@ export async function seriesQuery(
   if (input.accounts !== undefined) {
     if (authority.mappingProven) {
       values.push([...unique.keys()]);
-      accountWhere = ` AND r.account = ANY($${values.length}::character(64)[]) AND r.source = $5`;
+      accountWhere = ` AND r.account = ANY($${values.length}::character(64)[]) AND (r.source = $5 OR r.attribution = 'import-owner')`;
     } else accountWhere = " AND false";
   }
   if (input.sources !== undefined) {
@@ -124,10 +124,10 @@ export async function seriesQuery(
   const app = (await appAttributionReady(db)) ? "r.app_id" : "NULL::text AS app_id";
   const prefix = `WITH bindings AS (SELECT * FROM jsonb_to_recordset($4::jsonb) AS b(history text,saved text)),
     selected AS (SELECT r.*, $6::text AS gateway_source, ${app === "r.app_id" ? "" : `${app},`}
-      CASE WHEN r.account IS NULL THEN NULL WHEN r.source <> $5 OR NOT $7::boolean OR b.history IS NULL THEN 'unmapped'
+      CASE WHEN r.account IS NULL THEN NULL WHEN (r.source <> $5 AND r.attribution <> 'import-owner') OR NOT $7::boolean OR b.history IS NULL THEN 'unmapped'
         WHEN b.saved IS NULL THEN 'otherAccounts' ELSE b.saved END AS saved_account,
-      ${personScope === undefined ? "(r.source = $5 AND r.account IS NOT NULL AND (NOT $7::boolean OR b.history IS NULL OR b.saved IS NULL))" : "false"} AS counts_only
-      FROM basalt_model_requests r LEFT JOIN bindings b ON r.source = $5 AND r.account = b.history::character(64)
+      ${personScope === undefined ? "((r.source = $5 OR r.attribution = 'import-owner' AND b.history IS NOT NULL) AND r.account IS NOT NULL AND (NOT $7::boolean OR b.history IS NULL OR b.saved IS NULL))" : "false"} AS counts_only
+      FROM basalt_model_requests r LEFT JOIN bindings b ON (r.source = $5 OR r.attribution = 'import-owner') AND r.account = b.history::character(64)
       WHERE r.pool = $1
         AND r.timestamp >= $2::text::timestamptz - interval '1 microsecond'
         AND r.timestamp < $3::text::timestamptz + interval '1 microsecond'
