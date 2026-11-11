@@ -74,6 +74,15 @@ export const recoveryReceipt = Schema.Struct({
   schemaVersion: Schema.Literals([1, 2]),
   candidate: Schema.String,
   manifest: Schema.String,
+  startupMeasurements: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        worker: Schema.String,
+        versionId: Schema.String,
+        startupTimeMs: Schema.Number,
+      }),
+    ),
+  ),
   accepted: Schema.Array(
     Schema.Struct({
       worker: Schema.String,

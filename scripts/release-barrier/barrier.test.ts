@@ -95,14 +95,17 @@ test("a late rejected upload leaves every Worker on its previous version", async
 
 for (const startup of [undefined, null, -1, Number.NaN, Number.POSITIVE_INFINITY, 750.1]) {
   test(`unproved or over-ceiling startup ${String(startup)} never activates`, async () => {
+    let uploads = 0;
     const proof = fixture({
       async upload() {
+        uploads++;
         return { versionId: "version", startupTimeMs: startup };
       },
     });
     await assert.rejects(releaseWorkers(manifest(), proof.options));
     assert.deepEqual(proof.receipts.at(-1)?.activated, []);
     assert.equal(proof.events.length, 0);
+    assert.equal(uploads, startup === 750.1 ? 2 : 1);
     assert.equal(proof.receipts.at(-1)?.pendingUpload?.versionId, "version");
     if (typeof startup === "number" && Number.isFinite(startup))
       assert.equal(proof.receipts.at(-1)?.pendingUpload?.startupTimeMs, startup);
@@ -117,6 +120,87 @@ test("missing version ID refuses activation even with good startup evidence", as
   });
   await assert.rejects(releaseWorkers(manifest(), proof.options), /missing-version-id/);
   assert.deepEqual(proof.receipts.at(-1)?.activated, []);
+});
+
+test("one noisy startup measurement reuploads the frozen Worker before any activation", async () => {
+  const uploads: string[] = [];
+  const proof = fixture({
+    async upload(worker) {
+      uploads.push(worker.id);
+      return {
+        versionId: `version-${uploads.length}`,
+        startupTimeMs: uploads.length === 1 ? 770 : 303,
+      };
+    },
+  });
+  const result = await releaseWorkers(manifest(), proof.options);
+  assert.deepEqual(uploads, ["Dashboard", "Dashboard", "Api", "Router"]);
+  assert.deepEqual(result.startupMeasurements?.slice(0, 2), [
+    { worker: "Dashboard", versionId: "version-1", startupTimeMs: 770 },
+    { worker: "Dashboard", versionId: "version-2", startupTimeMs: 303 },
+  ]);
+  assert.deepEqual(result.accepted[0], {
+    worker: "Dashboard",
+    versionId: "version-2",
+    startupTimeMs: 303,
+  });
+  assert.equal(proof.events[0], "baseline:Dashboard");
+  assert.deepEqual(result.activated[0], { worker: "Dashboard", versionId: "version-2" });
+  assert.ok(
+    proof.receipts.some(
+      (receipt) => receipt.startupMeasurements?.length === 1 && receipt.activated.length === 0,
+    ),
+  );
+});
+
+test("two over-ceiling startup measurements refuse without a third upload or activation", async () => {
+  let uploads = 0;
+  const proof = fixture({
+    async upload() {
+      uploads++;
+      return { versionId: `version-${uploads}`, startupTimeMs: uploads === 1 ? 770 : 780 };
+    },
+  });
+  await assert.rejects(releaseWorkers(manifest(), proof.options), /startup-headroom/);
+  assert.equal(uploads, 2);
+  assert.deepEqual(proof.events, []);
+  assert.deepEqual(proof.receipts.at(-1)?.startupMeasurements, [
+    { worker: "Dashboard", versionId: "version-1", startupTimeMs: 770 },
+    { worker: "Dashboard", versionId: "version-2", startupTimeMs: 780 },
+  ]);
+});
+
+test("an unconfirmed second upload preserves the first measurement and never retries again", async () => {
+  let uploads = 0;
+  const proof = fixture({
+    async upload() {
+      uploads++;
+      if (uploads === 2) throw new Error("private provider payload");
+      return { versionId: "version-1", startupTimeMs: 770 };
+    },
+  });
+  await assert.rejects(releaseWorkers(manifest(), proof.options), /upload-rejected-or-unconfirmed/);
+  assert.equal(uploads, 2);
+  assert.deepEqual(proof.events, []);
+  assert.deepEqual(proof.receipts.at(-1)?.startupMeasurements, [
+    { worker: "Dashboard", versionId: "version-1", startupTimeMs: 770 },
+  ]);
+  assert.deepEqual(proof.receipts.at(-1)?.pendingUpload, { worker: "Dashboard" });
+});
+
+test("a changed manifest refuses before the remeasurement upload", async () => {
+  const input = manifest();
+  let uploads = 0;
+  const proof = fixture({
+    async upload() {
+      uploads++;
+      input.workers[0]!.files[0]!.bytes[0] = 0;
+      return { versionId: "version-1", startupTimeMs: 770 };
+    },
+  });
+  await assert.rejects(releaseWorkers(input, proof.options), /manifest-drift/);
+  assert.equal(uploads, 1);
+  assert.deepEqual(proof.events, []);
 });
 
 test("manifest mutation while uploading is detected before activation", async () => {

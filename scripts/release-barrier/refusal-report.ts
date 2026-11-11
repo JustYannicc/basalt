@@ -7,6 +7,8 @@ import type { ResourceDelta } from "./prop-diff.ts";
 
 interface Failure {
   reason: string;
+  ceilingMs?: number;
+  startupMeasurements?: readonly { worker: string; versionId: string; startupTimeMs: number }[];
   stateStore?: StateStoreVersionDiagnostic;
   serving?: ServingDiagnostic;
   operation?: ReleaseOperationFailure["operation"];
@@ -71,6 +73,17 @@ export function refusalTable(failure: Failure) {
       `$serving.${value.check}`,
       `${value.cause}; status=${value.status ?? "none"}; elapsedMs=${value.elapsedMs ?? "none"}; last=${JSON.stringify(value.observation ?? null)}${value.codeIdentity ? `; observedIdentity=${value.codeIdentity.observed ? JSON.stringify(value.codeIdentity.observed) : "unavailable"}; expectedIdentity=${JSON.stringify(value.codeIdentity.expected)}` : ""}`,
     ]);
+  }
+  if (failure.reason === "startup-headroom") {
+    const measurements = failure.startupMeasurements?.filter(
+      (measurement) => measurement.worker === failure.worker,
+    );
+    if (measurements?.length)
+      rows.push([
+        failure.worker!,
+        "startupTimeMs",
+        `${measurements.map((measurement) => measurement.startupTimeMs).join(" → ")}; ceiling=${failure.ceilingMs ?? "unknown"} ms`,
+      ]);
   }
   return [
     "| Resource | Property | Old → new |",
