@@ -1,0 +1,151 @@
+diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/src/contracts/obsidian-plugin.ts
+--- a/apps/hosted/web/src/contracts/obsidian-plugin.ts
++++ b/apps/hosted/web/src/contracts/obsidian-plugin.ts
+@@ -1,4 +1,4 @@
+-import { Data, Effect, Layer } from "effect";
++import { Effect, Layer } from "effect";
+ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+ import { Atom } from "effect/reactivity";
+ import { browserOnly } from "@executor-js/ui/contracts/http";
+@@ -29,22 +29,20 @@
+ export const bratInstallLink = (repository: string) =>
+   `obsidian://brat?plugin=${repository}&version=${basaltSyncTag}`;
+ 
+-export class BasaltSyncReleaseUnreachable extends Data.TaggedError("BasaltSyncReleaseUnreachable")<{
+-  readonly status: number | null;
+-}> {
+-  readonly message = "Couldn't check whether Signalbox Sync can be installed. Check again.";
+-}
++/**
++ * What the dialog knows about the release. "unconfirmed" means GitHub couldn't answer: its
++ * anonymous API allows 60 requests an hour per network address, shared by everyone behind it.
++ * The install link stays offered then, since only a missing release has nothing to install.
++ */
++export type BasaltSyncRelease = "available" | "unavailable" | "unconfirmed";
+ 
+ /**
+  * Whether the release exists with every file Obsidian installs. A missing tag or file means
+- * there is nothing to install yet; only an answer GitHub couldn't give is a failure.
++ * there is nothing to install yet; any other answer GitHub couldn't give leaves it unconfirmed.
+  */
+-export function basaltSyncReleaseStatus(
+-  status: number,
+-  body: unknown,
+-): "available" | "unavailable" | BasaltSyncReleaseUnreachable {
++export function basaltSyncReleaseStatus(status: number | null, body: unknown): BasaltSyncRelease {
+   if (status === 404) return "unavailable";
+-  if (status !== 200) return new BasaltSyncReleaseUnreachable({ status });
++  if (status !== 200) return "unconfirmed";
+   const assets =
+     typeof body === "object" && body !== null && "assets" in body && Array.isArray(body.assets)
+       ? body.assets
+@@ -70,25 +68,47 @@
+   ),
+ );
+ 
++/** A published release never changes, so a confirmed answer holds for the browser session. */
++const sessionKey = (repository: string) => `signalbox-sync-release:${repository}:${basaltSyncTag}`;
++const remembered = (repository: string): BasaltSyncRelease | null => {
++  try {
++    const value = globalThis.sessionStorage?.getItem(sessionKey(repository));
++    return value === "available" || value === "unavailable" ? value : null;
++  } catch {
++    return null;
++  }
++};
++const remember = (repository: string, release: BasaltSyncRelease) => {
++  if (release === "unconfirmed") return;
++  try {
++    globalThis.sessionStorage?.setItem(sessionKey(repository), release);
++  } catch {
++    // Storage can be full or blocked; the check simply runs again next time.
++  }
++};
++
+ /** Whether this repository's release can be installed, read from the page. */
+ export const basaltSyncReleaseCheck = (repository: string) =>
+   Effect.gen(function* () {
++    const known = remembered(repository);
++    if (known) return known;
+     const client = yield* HttpClient.HttpClient;
+-    const response = yield* client
++    const release = yield* client
+       .execute(
+         HttpClientRequest.get(
+           `https://api.github.com/repos/${repository}/releases/tags/${basaltSyncTag}`,
+         ),
+       )
+-      .pipe(Effect.mapError(() => new BasaltSyncReleaseUnreachable({ status: null })));
+-    const body: unknown =
+-      response.status === 200
+-        ? yield* response.json.pipe(
+-            Effect.mapError(() => new BasaltSyncReleaseUnreachable({ status: response.status })),
+-          )
+-        : null;
+-    const status = basaltSyncReleaseStatus(response.status, body);
+-    return typeof status === "string" ? status : yield* status;
++      .pipe(
++        Effect.flatMap((response) =>
++          response.status === 200
++            ? response.json.pipe(Effect.map((body) => basaltSyncReleaseStatus(200, body)))
++            : Effect.succeed(basaltSyncReleaseStatus(response.status, null)),
++        ),
++        Effect.orElseSucceed(() => basaltSyncReleaseStatus(null, null)),
++      );
++    remember(repository, release);
++    return release;
+   }).pipe(
+     Effect.provideService(HttpClient.TracerPropagationEnabled, false),
+     Effect.provide(anonymousGitHubClient),
+@@ -102,7 +122,7 @@
+   browserOnly(
+     Atom.make(
+       repository === null
+-        ? Effect.succeed("unavailable" as const)
++        ? Effect.succeed<BasaltSyncRelease>("unavailable")
+         : basaltSyncReleaseCheck(repository),
+     ),
+   ),
+diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
+--- a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
++++ b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
+@@ -159,8 +159,9 @@
+ }
+ 
+ /**
+- * Install first, then connect. BRAT is linked only once the release exists with every file
+- * Obsidian installs; Connect stays available for vaults that already have the plugin.
++ * Install first, then connect. BRAT is linked unless the release is known to be missing; when
++ * GitHub couldn't confirm it, the link stays with a note. Connect stays available for vaults
++ * that already have the plugin.
+  */
+ function ConnectSteps({
+   repository,
+@@ -174,7 +175,8 @@
+   const release = useAtomValue(basaltSyncReleaseAtom(repository));
+   const refresh = useAtomRefresh(basaltSyncReleaseAtom(repository));
+   const [added, setAdded] = useState(false);
+-  const installable = AsyncResult.isSuccess(release) && release.value === "available";
++  const installable = AsyncResult.isSuccess(release) && release.value !== "unavailable";
++  const unconfirmed = AsyncResult.isSuccess(release) && release.value === "unconfirmed";
+   // Before the install link is used, it is the primary action; afterwards Connect is.
+   const connectFirst = !installable || added || step.kind !== "idle";
+ 
+@@ -200,6 +202,17 @@
+           <p className="text-muted-foreground">Signalbox Sync isn't available to install yet.</p>
+         ) : (
+           <ol className="space-y-2">
++            {unconfirmed && (
++              <li className="flex flex-wrap items-center justify-between gap-2">
++                <p className="text-muted-foreground">
++                  GitHub couldn't confirm the release right now. If BRAT can't find it, try again in
++                  a few minutes.
++                </p>
++                <Button variant="outline" size="sm" onClick={refresh}>
++                  Check again
++                </Button>
++              </li>
++            )}
+             <li className="flex items-center justify-between gap-3">
+               <span className="text-muted-foreground">
+                 Get BRAT from Obsidian's community plugins. Turn them on if Obsidian asks, then
