@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Connect Obsidian's anonymous release check against the outside service is advisory: only a missing release (not found, or a release without every file Obsidian installs) hides Add Signalbox Sync. A rate limit, network failure or server error leaves the link offered with a note and Check again, because the outside service's anonymous limit is small and shared by everyone behind one network address. A confirmed answer is remembered for the browser session; an unconfirmed one is asked again."
+      constraint "Connect Obsidian's anonymous release check against the outside service is advisory: only a missing release (not found, or a release without every file Obsidian installs) hides Add Signalbox Sync. A rate limit, network failure or server error leaves the link offered with a note and Check again, because the outside service's anonymous limit is small and shared by everyone behind one network address. A found release is remembered for the browser session; a missing or unconfirmed one is asked again, since it may still be published under that tag."
     }
   }
 }

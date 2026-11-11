@@ -1,7 +1,7 @@
 {
   "identity": "basalt-obsidian-connect-advisory-check",
   "file": "0505-obsidian-connect-advisory-check.patch",
-  "content_sha256": "a808817cf2b7c5d94d9c3fbc7f706b3b6a93fb213570343ff5145abd7c3048d9",
+  "content_sha256": "9826405c31e3bcc99e9be6a5051b6099dfe8a3ff4326c8f3e609f6099b3d8817",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

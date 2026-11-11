@@ -39,22 +39,25 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
    const assets =
      typeof body === "object" && body !== null && "assets" in body && Array.isArray(body.assets)
        ? body.assets
-@@ -70,25 +68,47 @@
+@@ -70,25 +68,50 @@
    ),
  );
  
-+/** A published release never changes, so a confirmed answer holds for the browser session. */
++/**
++ * A published release never changes, so finding it holds for the browser session. A missing one
++ * may still be published under this tag, so only "available" is remembered.
++ */
 +const sessionKey = (repository: string) => `signalbox-sync-release:${repository}:${basaltSyncTag}`;
 +const remembered = (repository: string): BasaltSyncRelease | null => {
 +  try {
 +    const value = globalThis.sessionStorage?.getItem(sessionKey(repository));
-+    return value === "available" || value === "unavailable" ? value : null;
++    return value === "available" ? value : null;
 +  } catch {
 +    return null;
 +  }
 +};
 +const remember = (repository: string, release: BasaltSyncRelease) => {
-+  if (release === "unconfirmed") return;
++  if (release !== "available") return;
 +  try {
 +    globalThis.sessionStorage?.setItem(sessionKey(repository), release);
 +  } catch {
@@ -97,7 +100,7 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
    }).pipe(
      Effect.provideService(HttpClient.TracerPropagationEnabled, false),
      Effect.provide(anonymousGitHubClient),
-@@ -102,7 +122,7 @@
+@@ -102,7 +125,7 @@
    browserOnly(
      Atom.make(
        repository === null
@@ -131,8 +134,19 @@ diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/app
    // Before the install link is used, it is the primary action; afterwards Connect is.
    const connectFirst = !installable || added || step.kind !== "idle";
  
-@@ -200,6 +202,17 @@
-           <p className="text-muted-foreground">Signalbox Sync isn't available to install yet.</p>
+@@ -197,9 +199,27 @@
+         ) : !AsyncResult.isSuccess(release) ? (
+           <p className="text-muted-foreground">Checking for Signalbox Sync…</p>
+         ) : !installable || repository === null ? (
+-          <p className="text-muted-foreground">Signalbox Sync isn't available to install yet.</p>
++          <div className="flex flex-wrap items-center gap-2">
++            <p className="text-muted-foreground">Signalbox Sync isn't available to install yet.</p>
++            {repository !== null && (
++              <Button variant="outline" size="sm" onClick={refresh}>
++                Check again
++              </Button>
++            )}
++          </div>
          ) : (
            <ol className="space-y-2">
 +            {unconfirmed && (

@@ -97,13 +97,13 @@ test("BRAT is linked unless the release is known to be missing", () => {
     assert.equal(basaltSyncReleaseStatus(status, null), "unconfirmed", String(status));
 });
 
-test("a confirmed release is remembered for the session; an unconfirmed one is asked again", async () => {
+test("a found release is remembered for the session; a missing or unconfirmed one is asked again", async () => {
   const stored = new Map<string, string>();
   const storage = {
     getItem: (key: string) => stored.get(key) ?? null,
     setItem: (key: string, value: string) => void stored.set(key, value),
   };
-  const replies: (number | "offline")[] = [403, 429, "offline", 200];
+  const replies: (number | "offline")[] = [404, 403, 429, "offline", 200];
   let fetches = 0;
   const original = {
     fetch: globalThis.fetch,
@@ -121,13 +121,15 @@ test("a confirmed release is remembered for the session; an unconfirmed one is a
   };
   try {
     const check = () => Effect.runPromise(basaltSyncReleaseCheck("owner/repo"));
+    // Not published yet: it may be published under this tag later, so this is not remembered.
+    assert.equal(await check(), "unavailable");
     assert.equal(await check(), "unconfirmed");
     assert.equal(await check(), "unconfirmed");
     assert.equal(await check(), "unconfirmed");
     assert.equal(await check(), "available");
-    assert.equal(fetches, 4, "each unconfirmed answer is asked again");
+    assert.equal(fetches, 5, "each missing or unconfirmed answer is asked again");
     assert.equal(await check(), "available");
-    assert.equal(fetches, 4, "a confirmed answer spends no more of the GitHub quota");
+    assert.equal(fetches, 5, "a found release spends no more of the GitHub quota");
   } finally {
     globalThis.fetch = original.fetch;
     if (original.storage) Object.defineProperty(globalThis, "sessionStorage", original.storage);
