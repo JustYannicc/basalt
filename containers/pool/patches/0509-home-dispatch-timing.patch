@@ -1,0 +1,418 @@
+diff --git a/internal/dispatchtiming/timing.go b/internal/dispatchtiming/timing.go
+new file mode 100644
+index 0000000..092e9d1
+--- /dev/null
++++ b/internal/dispatchtiming/timing.go
+@@ -0,0 +1,51 @@
++package dispatchtiming
++
++import (
++	"context"
++	"errors"
++	"net"
++	"time"
++
++	log "github.com/sirupsen/logrus"
++)
++
++type Stage string
++
++const (
++	Authenticate Stage = "authenticate"
++	Selection    Stage = "selection"
++	Admission    Stage = "admission"
++	ReplyWrite   Stage = "reply_write"
++)
++
++// Record emits only bounded timings; request values and error text never enter the record.
++func Record(stage Stage, started time.Time, err error) {
++	RecordDuration(stage, time.Since(started), err)
++}
++
++// RecordDuration retains transport time while the caller finishes required fencing first.
++func RecordDuration(stage Stage, duration time.Duration, err error) {
++	switch stage {
++	case Authenticate, Selection, Admission, ReplyWrite:
++	default:
++		return
++	}
++	outcome := "ok"
++	if err != nil {
++		outcome = "error"
++		var timeout net.Error
++		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() {
++			outcome = "timeout"
++		} else if errors.Is(err, context.Canceled) {
++			outcome = "cancelled"
++		}
++	}
++	elapsed := duration.Milliseconds()
++	if elapsed < 0 {
++		elapsed = 0
++	}
++	if elapsed > 86400000 {
++		elapsed = 86400000
++	}
++	log.Infof(`POOL_HOME_DISPATCH_TIMING {"stage":"%s","duration_ms":%d,"outcome":"%s"}`, stage, elapsed, outcome)
++}
+diff --git a/internal/dispatchtiming/timing_test.go b/internal/dispatchtiming/timing_test.go
+new file mode 100644
+index 0000000..e90a4cb
+--- /dev/null
++++ b/internal/dispatchtiming/timing_test.go
+@@ -0,0 +1,47 @@
++package dispatchtiming
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"strings"
++	"testing"
++	"time"
++
++	log "github.com/sirupsen/logrus"
++	logtest "github.com/sirupsen/logrus/hooks/test"
++)
++
++func TestBasaltHomeDispatchTimingClosedOutcomesAndBounds(t *testing.T) {
++	logger := log.StandardLogger()
++	oldHooks := logger.Hooks
++	oldOutput := logger.Out
++	hook := logtest.NewGlobal()
++	logger.SetOutput(io.Discard)
++	defer func() { logger.ReplaceHooks(oldHooks); logger.SetOutput(oldOutput) }()
++	for _, test := range []struct {
++		err     error
++		outcome string
++	}{
++		{nil, "ok"}, {errors.New("private-error-sentinel"), "error"}, {fmt.Errorf("private-timeout-sentinel: %w", context.DeadlineExceeded), "timeout"}, {fmt.Errorf("private-cancel-sentinel: %w", context.Canceled), "cancelled"},
++	} {
++		hook.Reset()
++		Record(Admission, time.Now().Add(time.Hour), test.err)
++		entries := hook.AllEntries()
++		want := `POOL_HOME_DISPATCH_TIMING {"stage":"admission","duration_ms":0,"outcome":"` + test.outcome + `"}`
++		if len(entries) != 1 || entries[0].Message != want {
++			t.Fatalf("closed outcome/bounds changed: %v", entries)
++		}
++	}
++	hook.Reset()
++	Record(Admission, time.Time{}, nil)
++	if len(hook.AllEntries()) != 1 || !strings.Contains(hook.AllEntries()[0].Message, `"duration_ms":86400000`) {
++		t.Fatal("duration was not bounded")
++	}
++	hook.Reset()
++	Record(Stage("private-stage-sentinel"), time.Now(), nil)
++	if len(hook.AllEntries()) != 0 {
++		t.Fatal("unknown stage escaped closed projection")
++	}
++}
+diff --git a/internal/home/runtime.go b/internal/home/runtime.go
+index 1ba013b..efbf7f2 100644
+--- a/internal/home/runtime.go
++++ b/internal/home/runtime.go
+@@ -22,6 +22,7 @@ import (
+ 	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/concurrency"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/dispatchtiming"
+ 	homeerrors "github.com/router-for-me/CLIProxyAPIHome/internal/errors"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/managementasset"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/node"
+@@ -956,7 +957,9 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
+ 		if opts.SessionAffinity != nil {
+ 			*opts.SessionAffinity = coreauth.SessionAffinitySelection{}
+ 		}
++		selectionStarted := time.Now()
+ 		decision, errDispatch := r.coreManager.Dispatch(ctx, providers, reqModel, opts)
++		dispatchtiming.Record(dispatchtiming.Selection, selectionStarted, errDispatch)
+ 		if errDispatch != nil {
+ 			if lastCandidateError != nil {
+ 				return nil, lastCandidateError
+@@ -1016,11 +1019,13 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
+ 			binding = nil
+ 		}
+ 		if r.concurrencyAdmitter != nil {
++			admissionStarted := time.Now()
+ 			admission, errAdmit := r.concurrencyAdmitter.AdmitCredentialConcurrency(ctx, ConcurrencyAdmissionRequest{
+ 				CredentialID: auth.ID, Model: concurrencyModel, Fingerprint: concurrencyCtx.Fingerprint,
+ 				ConnectedAt: concurrencyCtx.ConnectedAt, Controlled: concurrencyCtx.Controlled, ProtocolVersion: concurrencyCtx.ProtocolVersion,
+ 				SessionAffinity: binding,
+ 			})
++			dispatchtiming.Record(dispatchtiming.Admission, admissionStarted, errAdmit)
+ 			if errAdmit != nil {
+ 				if errors.Is(errAdmit, coreauth.ErrSessionAffinityConflict) {
+ 					continue
+diff --git a/internal/respserver/basalt_dispatch_timing_test.go b/internal/respserver/basalt_dispatch_timing_test.go
+new file mode 100644
+index 0000000..1f5c300
+--- /dev/null
++++ b/internal/respserver/basalt_dispatch_timing_test.go
+@@ -0,0 +1,109 @@
++package respserver
++
++import (
++	"context"
++	"errors"
++	"io"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/respserver/dispatch"
++	log "github.com/sirupsen/logrus"
++	logtest "github.com/sirupsen/logrus/hooks/test"
++)
++
++type dispatchTimingConn struct {
++	*subscriptionTestConn
++	failed bool
++}
++
++func (c *dispatchTimingConn) Read(p []byte) (int, error) { return c.input.Read(p) }
++func (c *dispatchTimingConn) Write(p []byte) (int, error) {
++	if c.failed {
++		return 0, errors.New("private-write-sentinel")
++	}
++	return c.subscriptionTestConn.Write(p)
++}
++func TestBasaltHomeDispatchTimingReplyTransport(t *testing.T) {
++	for _, failed := range []bool{false, true} {
++		t.Run(map[bool]string{false: "success", true: "write failure"}[failed], func(t *testing.T) {
++			runtime := newSubscriptionTestRuntime(t, &blockingConfigAdapter{loadStarted: make(chan struct{})})
++			logger := log.StandardLogger()
++			oldHooks := logger.Hooks
++			oldOutput := logger.Out
++			hook := logtest.NewGlobal()
++			logger.SetOutput(io.Discard)
++			defer func() { logger.ReplaceHooks(oldHooks); logger.SetOutput(oldOutput) }()
++			conn := &dispatchTimingConn{newSubscriptionTestConn("RPOP", `{"type":"auth","model":"private-model-sentinel"}`), failed}
++			New("", runtime).HandleConn(context.Background(), conn)
++			found := 0
++			for _, entry := range hook.AllEntries() {
++				if strings.HasPrefix(entry.Message, "POOL_HOME_DISPATCH_TIMING ") && strings.Contains(entry.Message, `"stage":"reply_write"`) {
++					found++
++					want := "ok"
++					if failed {
++						want = "error"
++					}
++					if !strings.Contains(entry.Message, `"outcome":"`+want+`"`) || strings.Contains(entry.Message, "private-") {
++						t.Fatalf("invalid reply metadata %s", entry.Message)
++					}
++				}
++			}
++			if found != 1 {
++				t.Fatalf("reply write records=%d, want1", found)
++			}
++			if !failed && conn.Output() == "" {
++				t.Fatal("response was suppressed")
++			}
++		})
++	}
++}
++
++type dispatchTimingFenceHook struct{ check func() }
++
++func (h dispatchTimingFenceHook) Levels() []log.Level { return log.AllLevels }
++func (h dispatchTimingFenceHook) Fire(entry *log.Entry) error {
++	if strings.HasPrefix(entry.Message, "POOL_HOME_DISPATCH_TIMING ") && strings.Contains(entry.Message, `"stage":"reply_write"`) {
++		h.check()
++	}
++	return nil
++}
++func TestBasaltHomeDispatchTimingLogFollowsFence(t *testing.T) {
++	logger := log.StandardLogger()
++	oldHooks := logger.Hooks
++	oldOutput := logger.Out
++	logger.ReplaceHooks(make(log.LevelHooks))
++	logger.SetOutput(io.Discard)
++	defer func() { logger.ReplaceHooks(oldHooks); logger.SetOutput(oldOutput) }()
++
++	fenced, closed := make(chan struct{}), make(chan struct{})
++	entered, release := make(chan struct{}), make(chan struct{})
++	released := false
++	defer func() {
++		if !released {
++			close(release)
++		}
++	}()
++	logger.AddHook(dispatchTimingFenceHook{func() { close(entered); <-release }})
++	connEnv := &dispatch.ConnEnv{FenceFingerprint: func(context.Context, string) error { close(fenced); return nil }, CloseLocalFingerprint: func() { close(closed) }}
++	result := make(chan error, 1)
++	go func() {
++		result <- writeDispatchReplyWithFence(context.Background(), newSafeWriter(failingSubscriptionWriter{}), dispatch.Reply{Kind: dispatch.ReplyKindBulkString, BulkString: []byte("private-response-sentinel"), AccountedAdmission: true}, connEnv, true)
++	}()
++	waitSubscriptionTestSignal(t, entered, "blocked diagnostic output")
++	select {
++	case <-fenced:
++	default:
++		t.Error("blocked timing output delayed fingerprint fencing")
++	}
++	select {
++	case <-closed:
++	default:
++		t.Error("blocked timing output delayed local close")
++	}
++	close(release)
++	released = true
++	if errWrite := <-result; errWrite == nil {
++		t.Fatal("write failure was suppressed")
++	}
++}
+diff --git a/internal/respserver/pop/dynamic/basalt_dispatch_timing_test.go b/internal/respserver/pop/dynamic/basalt_dispatch_timing_test.go
+new file mode 100644
+index 0000000..6dafebf
+--- /dev/null
++++ b/internal/respserver/pop/dynamic/basalt_dispatch_timing_test.go
+@@ -0,0 +1,63 @@
++package dynamic
++
++import (
++	"context"
++	"encoding/json"
++	"io"
++	"strings"
++	"testing"
++
++	log "github.com/sirupsen/logrus"
++	logtest "github.com/sirupsen/logrus/hooks/test"
++)
++
++func TestBasaltHomeDispatchTimingNamesAdmissionFailureWithoutPrivateData(t *testing.T) {
++	for _, failed := range []bool{false, true} {
++		t.Run(map[bool]string{false: "success", true: "admission timeout"}[failed], func(t *testing.T) {
++			runtime, admitter := newConcurrencyDispatchRuntime(t, []string{"private-credential-sentinel"})
++			if failed {
++				admitter.SetResult("private-credential-sentinel", context.DeadlineExceeded)
++			}
++			logger := log.StandardLogger()
++			oldHooks := logger.Hooks
++			oldOutput := logger.Out
++			hook := logtest.NewGlobal()
++			logger.SetOutput(io.Discard)
++			defer func() { logger.ReplaceHooks(oldHooks); logger.SetOutput(oldOutput) }()
++			_ = handleAuth(context.Background(), protocolOneDispatchEnv(runtime, "private-fingerprint-sentinel"), []string{"RPOP", `{"type":"auth","model":"gpt","concurrency_protocol":1,"headers":{"x-api-key":"dispatch-client-key"}}`})
++			if admitter.Calls() != 1 {
++				t.Fatalf("admission calls=%d, want1", admitter.Calls())
++			}
++			stages := map[string]string{}
++			for _, entry := range hook.AllEntries() {
++				if !strings.HasPrefix(entry.Message, "POOL_HOME_DISPATCH_TIMING ") {
++					continue
++				}
++				if strings.Contains(entry.Message, "private-") || strings.Contains(entry.Message, "dispatch-client-key") {
++					t.Fatal("diagnostic retained request/credential data")
++				}
++				var record map[string]any
++				if json.Unmarshal([]byte(strings.TrimPrefix(entry.Message, "POOL_HOME_DISPATCH_TIMING ")), &record) != nil {
++					t.Fatal("invalid JSON")
++				}
++				if len(record) != 3 {
++					t.Fatalf("unexpected fields: %v", record)
++				}
++				elapsed, ok := record["duration_ms"].(float64)
++				if !ok || elapsed < 0 || elapsed > 86400000 {
++					t.Fatal("invalid duration")
++				}
++				stage, _ := record["stage"].(string)
++				outcome, _ := record["outcome"].(string)
++				stages[stage] = outcome
++			}
++			want := "ok"
++			if failed {
++				want = "timeout"
++			}
++			if stages["authenticate"] != "ok" || stages["selection"] != "ok" || stages["admission"] != want {
++				t.Fatalf("stage metadata=%v, want auth=ok,selection=ok,admission=%s", stages, want)
++			}
++		})
++	}
++}
+diff --git a/internal/respserver/pop/dynamic/dispatch.go b/internal/respserver/pop/dynamic/dispatch.go
+index e24b93b..c34a77c 100644
+--- a/internal/respserver/pop/dynamic/dispatch.go
++++ b/internal/respserver/pop/dynamic/dispatch.go
+@@ -14,6 +14,7 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/access"
+ 	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/dispatchtiming"
+ 	homeerrors "github.com/router-for-me/CLIProxyAPIHome/internal/errors"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/home"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/respserver/dispatch"
+@@ -259,7 +260,13 @@ func dispatchRequest(ctx context.Context, env dispatch.Env, args []string) (*hom
+ 		headers.Set("X-Parent-Session-ID", parentSessionID)
+ 	}
+ 	ctx = cluster.WithAPIKeyRequestCache(ctx)
++	authStarted := time.Now()
+ 	authRes, authErr := env.Runtime.Authenticate(ctx, headers)
++	var authTimingError error
++	if authErr != nil {
++		authTimingError = authErr
++	}
++	dispatchtiming.Record(dispatchtiming.Authenticate, authStarted, authTimingError)
+ 	if authErr != nil {
+ 		reply := dispatch.BulkString([]byte(buildAuthErrorJSON(authErr)))
+ 		return nil, "", &reply
+diff --git a/internal/respserver/server.go b/internal/respserver/server.go
+index dcf1116..5d74e5b 100644
+--- a/internal/respserver/server.go
++++ b/internal/respserver/server.go
+@@ -18,6 +18,7 @@ import (
+ 
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/dispatchtiming"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/home"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/node"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/respserver/dispatch"
+@@ -245,11 +246,16 @@ func buildOrWriteDispatchReply(writer *safeWriter, reply dispatch.Reply) error {
+ 	return writer.WriteDispatchReply(reply)
+ }
+ 
+-func writeDispatchReplyWithFence(serverCtx context.Context, writer *safeWriter, reply dispatch.Reply, connEnv *dispatch.ConnEnv) error {
++func writeDispatchReplyWithFence(serverCtx context.Context, writer *safeWriter, reply dispatch.Reply, connEnv *dispatch.ConnEnv, timedDispatch bool) error {
++	started := time.Now()
+ 	errWrite := buildOrWriteDispatchReply(writer, reply)
++	elapsed := time.Since(started)
+ 	if errWrite != nil && reply.AccountedAdmission {
+ 		fenceAccountedDispatch(serverCtx, connEnv)
+ 	}
++	if timedDispatch {
++		dispatchtiming.RecordDuration(dispatchtiming.ReplyWrite, elapsed, errWrite)
++	}
+ 	return errWrite
+ }
+ 
+@@ -657,7 +663,8 @@ func (s *Server) HandleConn(ctx context.Context, conn net.Conn) {
+ 				return
+ 			}
+ 		}
+-		if errWrite := writeDispatchReplyWithFence(ctx, writer, reply, connEnv); errWrite != nil {
++		errWrite := writeDispatchReplyWithFence(ctx, writer, reply, connEnv, len(args) > 0 && strings.EqualFold(strings.TrimSpace(args[0]), "RPOP"))
++		if errWrite != nil {
+ 			if pendingConfigSubscriptionReady != nil {
+ 				close(pendingConfigSubscriptionAborted)
+ 				close(pendingConfigSubscriptionReady)
+diff --git a/internal/respserver/server_subscription_test.go b/internal/respserver/server_subscription_test.go
+index c39fbc8..c53b14b 100644
+--- a/internal/respserver/server_subscription_test.go
++++ b/internal/respserver/server_subscription_test.go
+@@ -246,7 +246,7 @@ func TestAccountedReplyWriteFailureFencesFingerprint(t *testing.T) {
+ 		},
+ 		CloseLocalFingerprint: func() { closeCalls++ },
+ 	}
+-	if errWrite := writeDispatchReplyWithFence(context.Background(), newSafeWriter(failingSubscriptionWriter{}), dispatch.Reply{Kind: dispatch.ReplyKindBulkString, BulkString: []byte("reply"), AccountedAdmission: true}, connEnv); errWrite == nil {
++	if errWrite := writeDispatchReplyWithFence(context.Background(), newSafeWriter(failingSubscriptionWriter{}), dispatch.Reply{Kind: dispatch.ReplyKindBulkString, BulkString: []byte("reply"), AccountedAdmission: true}, connEnv, true); errWrite == nil {
+ 		t.Fatal("write unexpectedly succeeded")
+ 	}
+ 	if fenceCalls != 1 || closeCalls != 1 {
+@@ -261,7 +261,7 @@ func TestAccountedReplyPreparationFailureFencesFingerprint(t *testing.T) {
+ 		CloseLocalFingerprint: func() { closeCalls++ },
+ 	}
+ 	reply := dispatch.Reply{Kind: dispatch.ReplyKindBulkString, BulkString: []byte("reply"), AccountedAdmission: true, PreWriteError: errors.New("tuple injection failed")}
+-	if errWrite := writeDispatchReplyWithFence(context.Background(), newSafeWriter(&bytes.Buffer{}), reply, connEnv); errWrite == nil {
++	if errWrite := writeDispatchReplyWithFence(context.Background(), newSafeWriter(&bytes.Buffer{}), reply, connEnv, true); errWrite == nil {
+ 		t.Fatal("write unexpectedly succeeded")
+ 	}
+ 	if fenceCalls != 1 || closeCalls != 1 {

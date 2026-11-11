@@ -140,6 +140,15 @@
             "mode": "manual",
             "requires": "Retire only after the pinned source preserves credit observations, pool-owned policy and plan-before-affinity selection, passes the never-policy and retained WebSocket turn proofs, and preserves existing schema rows through additive upgrades."
           }
+        },
+        {
+          "identity": "cliproxy-home-dispatch-timing",
+          "file": "0509-home-dispatch-timing.patch",
+          "sha256": "3294dc2283de4db6480a7ec2416e98674fa3649194d24b3e856483c7538f45d9",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only when the pinned source emits the same closed stage timings and passes success, failure, privacy, duration-bound and real-child projection regressions without changing dispatch behavior."
+          }
         }
       ]
     },
@@ -173,6 +182,15 @@
           "retirement": {
             "mode": "manual",
             "requires": "Retire only after the pinned source preserves credit observations, pool-owned policy and plan-before-affinity selection, passes the never-policy and retained WebSocket turn proofs, and preserves existing schema rows through additive upgrades."
+          }
+        },
+        {
+          "identity": "cliproxy-node-dispatch-timing",
+          "file": "0512-node-dispatch-timing.patch",
+          "sha256": "3fcce60a8c0a6cf718e014aa377796c38be49519dfcf8819ff43fef14fb23dbf",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only when the pinned source emits the same closed stage timings and passes success, failure, privacy, duration-bound and real-child projection regressions without changing dispatch behavior."
           }
         }
       ]
