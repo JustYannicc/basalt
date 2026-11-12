@@ -181,7 +181,15 @@ diff --git a/e2e/support/atlassian-family-fixture.ts b/e2e/support/atlassian-fam
 diff --git a/e2e/tests/atlassian-family-screens.spec.ts b/e2e/tests/atlassian-family-screens.spec.ts
 --- a/e2e/tests/atlassian-family-screens.spec.ts
 +++ b/e2e/tests/atlassian-family-screens.spec.ts
-@@ -49,7 +49,7 @@
+@@ -22,6 +22,7 @@
+ } from "../support/atlassian-family-fixture.ts";
+ import { linkedAccountIds } from "../support/app-accounts.ts";
+ import { Browser } from "../support/browser.ts";
++import { openInApp } from "../support/in-app-navigation.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { Evidence } from "../support/evidence.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+@@ -49,7 +50,7 @@
    Effect.gen(function* () {
      const atlassian = yield* accountIdentityIssuer,
        google = yield* accountIdentityIssuer;
@@ -190,6 +198,74 @@ diff --git a/e2e/tests/atlassian-family-screens.spec.ts b/e2e/tests/atlassian-fa
      const [transport, fixture] = yield* Effect.all(
        [
          atlassianFamilyProduct({ atlassian: atlassian.origin, google: google.origin }),
+@@ -90,14 +91,10 @@
+         const actors = yield* Actors,
+           browser = yield* Browser,
+           evidence = yield* Evidence;
+-        const { atlassian, google, transport, fixture } = yield* familySetup([
+-          "jira",
+-          "confluence",
+-          "serviceManagement",
+-          "trello",
+-          "gmail",
+-          "calendar",
+-        ]);
++        const { atlassian, google, transport, fixture } = yield* evidence.step(
++          "Deploy family apps and restart product",
++          familySetup(["jira", "confluence", "serviceManagement", "trello", "gmail", "calendar"]),
++        );
+         const urls = yield* openBrowser({ atlassian: atlassian.origin, google: google.origin });
+         const capture = (name: string) =>
+           Effect.flatMap(
+@@ -127,12 +124,11 @@
+ 
+         // Jira gets the same consent, offering exactly the Atlassian apps.
+         const jira = fixture.apps.jira;
++        yield* openInApp("Open Jira in the running dashboard", urls.app(jira.id).url);
+         const atlassianTargets = yield* browser.use("Open a fresh Jira connection", (page) =>
+           page
+-            .goto(urls.app(jira.id).url)
+-            .then(() =>
+-              page.getByRole("button", { name: "Connect new account", exact: true }).click(),
+-            )
++            .getByRole("button", { name: "Connect new account", exact: true })
++            .click()
+             .then(() => consentApps(page)),
+         );
+         yield* capture("atlassian-consent-1280.png");
+@@ -169,12 +165,11 @@
+         // Trello uses Atlassian's authorization server for another audience: its own sign-in.
+         yield* atlassian.configure({ subject: "trello-member" });
+         const trello = fixture.apps.trello;
++        yield* openInApp("Open Trello in the running dashboard", urls.app(trello.id).url);
+         const trelloTargets = yield* browser.use("Open a fresh Trello connection", (page) =>
+           page
+-            .goto(urls.app(trello.id).url)
+-            .then(() =>
+-              page.getByRole("button", { name: "Connect new account", exact: true }).click(),
+-            )
++            .getByRole("button", { name: "Connect new account", exact: true })
++            .click()
+             .then(() => page.getByRole("button", { name: "Connect Trello", exact: true }).waitFor())
+             .then(() =>
+               page.getByRole("group", { name: "Connect more apps in this sign-in" }).count(),
+@@ -206,12 +201,15 @@
+         expect(trelloAccount.id).not.toBe(jiraAccount.id);
+         expect(trelloAccount.identity?.id).not.toBe(jiraAccount.identity?.id);
+ 
++        // OAuth finishes in other tabs; read their new accounts once, then resize the same list.
++        yield* browser.use("Read accounts saved by the sign-in tabs", (page) =>
++          page.goto(urls.accounts),
++        );
+         const inspectAccounts = (width: 1280 | 390) =>
+           Effect.gen(function* () {
+             yield* browser.use(`Open Accounts at ${width} px`, (page) =>
+               page
+                 .setViewportSize({ width, height: width === 390 ? 844 : 900 })
+-                .then(() => page.goto(urls.accounts))
+                 .then(() => familyRows(page, ["Jira", "Confluence"]).waitFor())
+                 .then(() =>
+                   Promise.all([
 diff --git a/apps/hosted/testing/atlassian-family-transport.ts b/apps/hosted/testing/atlassian-family-transport.ts
 new file mode 100644
 --- /dev/null
