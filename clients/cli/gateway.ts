@@ -18,7 +18,6 @@ import { forwardHttp, maximumRequestBytes } from "./http-forward.ts";
 import { forwardWebsocket } from "./websocket-forward.ts";
 import { forwardTunnelHttp, forwardTunnelWebsocket } from "./tunnel-forward.ts";
 import { connectionHealth } from "./connection-health.ts";
-import { StartQueue } from "./start-queue.ts";
 
 export interface GatewayOptions {
   readonly profile: () => Promise<Profile>;
@@ -36,7 +35,6 @@ function answer(response: ServerResponse, status: number, value: unknown) {
 export async function startGateway(options: GatewayOptions) {
   const health = connectionHealth(options.source);
   const active = new Set<AbortController>();
-  const starts = new StartQueue();
   let closed = false;
   let transition: Promise<void> = Promise.resolve();
   const interrupt = () => {
@@ -101,12 +99,6 @@ export async function startGateway(options: GatewayOptions) {
     }
     const capability = remoteOperation(request.method, request.url ?? "");
     if (!capability) return answer(response, 404, { error: "This endpoint is not available." });
-    const profile = await options.profile();
-    if (closed) return answer(response, 503, { error: "The connection is stopping." });
-    if (!findAgent(request, profile.agents, capability))
-      return answer(response, 401, { error: "An agent credential for this service is required." });
-    if (Number(request.headers["content-length"] ?? 0) > maximumRequestBytes)
-      return answer(response, 413, { error: "The request exceeds the local size limit." });
     const controller = new AbortController();
     const cancel = () => {
       if (!response.writableFinished) controller.abort();
@@ -115,23 +107,32 @@ export async function startGateway(options: GatewayOptions) {
     request.once("aborted", () => controller.abort());
     active.add(controller);
     let dispatched = false;
-    let ready: (() => void) | undefined;
     try {
-      ready = await starts.acquire(controller.signal);
+      if (request.aborted || response.destroyed) controller.abort();
       controller.signal.throwIfAborted();
+      const profile = await options.profile();
+      controller.signal.throwIfAborted();
+      if (!findAgent(request, profile.agents, capability))
+        return answer(response, 401, {
+          error: "An agent credential for this service is required.",
+        });
+      if (Number(request.headers["content-length"] ?? 0) > maximumRequestBytes)
+        return answer(response, 413, { error: "The request exceeds the local size limit." });
       await transition;
+      controller.signal.throwIfAborted();
       const transport = await options.source.transport(controller.signal);
+      controller.signal.throwIfAborted();
       if (transport.mode === "device") {
         if (!transport.capabilities.includes(capability))
           return answer(response, 403, { error: "This connection has no access to this service." });
         dispatched = true;
-        await forwardTunnelHttp(request, response, transport, capability, controller.signal, ready);
+        await forwardTunnelHttp(request, response, transport, capability, controller.signal);
       } else {
         const service = transport.credentials[capability];
         if (!service)
           return answer(response, 403, { error: "This connection has no access to this service." });
         dispatched = true;
-        await forwardHttp(request, response, service, capability, controller.signal, ready);
+        await forwardHttp(request, response, service, capability, controller.signal);
       }
     } catch (error) {
       if (dispatched && error instanceof ModelRequestNotSent)
@@ -169,7 +170,6 @@ export async function startGateway(options: GatewayOptions) {
           error: "The request was interrupted. Its outcome may be unknown; it was not replayed.",
         });
     } finally {
-      ready?.();
       active.delete(controller);
       response.off("close", cancel);
     }
@@ -195,34 +195,30 @@ export async function startGateway(options: GatewayOptions) {
         return socket.end(
           "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
         );
-      const profile = await options.profile();
-      if (socket.destroyed) return;
-      if (!findAgent(request, profile.agents, "models"))
-        return socket.end(
-          "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
-        );
-      if (closed)
-        return socket.end(
-          "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
-        );
       const controller = new AbortController();
       active.add(controller);
       const cancel = () => controller.abort();
       socket.once("close", cancel);
-      let ready: (() => void) | undefined;
       let dispatched = false;
       try {
-        ready = await starts.acquire(controller.signal);
+        if (socket.destroyed) return;
+        const profile = await options.profile();
         controller.signal.throwIfAborted();
+        if (!findAgent(request, profile.agents, "models"))
+          return socket.end(
+            "HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+          );
         await transition;
+        controller.signal.throwIfAborted();
         const transport = await options.source.transport(controller.signal);
+        controller.signal.throwIfAborted();
         if (transport.mode === "device") {
           if (!transport.capabilities.includes("models"))
             return socket.end(
               "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
             );
           dispatched = true;
-          await forwardTunnelWebsocket(request, socket, head, transport, controller.signal, ready);
+          await forwardTunnelWebsocket(request, socket, head, transport, controller.signal);
         } else {
           if (!transport.credentials.models)
             return socket.end(
@@ -235,7 +231,6 @@ export async function startGateway(options: GatewayOptions) {
             head,
             transport.credentials.models,
             controller.signal,
-            ready,
           );
         }
       } catch {
@@ -245,7 +240,6 @@ export async function startGateway(options: GatewayOptions) {
           );
         else socket.destroy();
       } finally {
-        ready?.();
         active.delete(controller);
         socket.off("close", cancel);
       }

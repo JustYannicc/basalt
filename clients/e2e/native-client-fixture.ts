@@ -7,11 +7,12 @@ import { nativeFixture } from "./native-fixture.ts";
 export async function fixture(options?: {
   storage?: "os" | "file";
   services?: Parameters<typeof nativeFixture>[0];
+  tunnel?: Parameters<typeof nativeFixture>[1];
 }) {
   const storage = options?.storage ?? "file";
   if (storage === "file")
     assert.equal(process.platform, "linux", "Explicit file storage is a headless Linux choice.");
-  const remote = await nativeFixture(options?.services);
+  const remote = await nativeFixture(options?.services, options?.tunnel);
   const home = await mkdtemp(join(tmpdir(), "client-native-"));
   let runtime: ReturnType<typeof launch> | undefined;
   const stop = async () => {
@@ -29,6 +30,7 @@ export async function fixture(options?: {
   return {
     remote,
     home,
+    runtime: () => runtime,
     start,
     stop,
     login: async () => {

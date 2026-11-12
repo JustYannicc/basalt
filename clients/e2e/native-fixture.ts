@@ -1,17 +1,31 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, type WebSocket } from "ws";
+import { servicePeer, type NativeServices } from "./native-service-peer.ts";
 import type { ConnectionView } from "../contracts/connection.ts";
 
 /** External protocol peer. It owns no client implementation or credential source. */
 export async function nativeFixture(
-  services?: (request: {
-    operation: { service: string; method: string; path: string; transport: string };
-    headers: Record<string, string>;
-    body: string;
-  }) => { status: number; headers?: Record<string, string>; chunks?: readonly Uint8Array[] },
+  services?: NativeServices,
+  tunnel?: (
+    peer: WebSocket,
+    request: IncomingMessage,
+    access: {
+      id: string;
+      userId: string;
+      clientId: string;
+      expiresAt: number;
+      policy: {
+        kind: "native";
+        computer: string;
+        pool: string;
+        models: boolean;
+        toolsOrganization?: string;
+      };
+    },
+  ) => void,
 ) {
   let display: ConnectionView["display"];
   const sockets = new WebSocketServer({ noServer: true });
@@ -220,6 +234,22 @@ export async function nativeFixture(
     }
     assert.equal(request.headers["sec-websocket-protocol"], "basalt.tunnel.v1");
     sockets.handleUpgrade(request, socket, head, (peer) => {
+      if (tunnel) {
+        tunnel(peer, request, {
+          id: "native:fixture",
+          userId: "synthetic-person",
+          clientId: "fixture-client",
+          expiresAt: Date.now() + Math.min(accessLifetimeSeconds, expiresIn) * 1000,
+          policy: {
+            kind: "native",
+            computer: "fixture-computer",
+            pool: "fixture-pool",
+            models: true,
+            ...(toolsOrganization ? { toolsOrganization } : {}),
+          },
+        });
+        return;
+      }
       const send = (frame: object) =>
         peer.readyState === peer.OPEN && peer.send(JSON.stringify({ v: 1, ...frame }));
       let operation:
@@ -237,6 +267,7 @@ export async function nativeFixture(
         end: boolean;
         offset: number;
       }[] = [];
+      let outputDrained: (() => void) | undefined;
       const flush = () => {
         if (running) return;
         running = true;
@@ -262,6 +293,8 @@ export async function nativeFixture(
             output.shift();
             if (item.end) send({ type: "end", id: 1 });
           }
+          outputDrained?.();
+          outputDrained = undefined;
         } finally {
           running = false;
         }
@@ -272,20 +305,25 @@ export async function nativeFixture(
       };
       const response = (status: number, headers: Record<string, string> = {}) =>
         send({ type: "response", id: 1, status, headers });
+      const custom = services
+        ? servicePeer(
+            peer,
+            services,
+            response,
+            data,
+            () =>
+              output.length
+                ? new Promise<void>((resolve) => {
+                    outputDrained = resolve;
+                  })
+                : Promise.resolve(),
+            () => send({ type: "end", id: 1 }),
+          )
+        : undefined;
       const finish = () => {
         assert.ok(operation);
-        if (services) {
-          const result = services({
-            operation,
-            headers: requestHeaders,
-            body: Buffer.concat(body).toString(),
-          });
-          response(result.status, result.headers);
-          const chunks = result.chunks ?? [];
-          chunks.forEach((chunk, index) =>
-            data(Buffer.from(chunk), false, false, index === chunks.length - 1),
-          );
-          if (!chunks.length) send({ type: "end", id: 1 });
+        if (custom) {
+          void custom({ operation, headers: requestHeaders, body: Buffer.concat(body).toString() });
           return;
         }
         if (operation.service === "tools") {
@@ -358,7 +396,9 @@ export async function nativeFixture(
             return;
           }
           if (operation!.transport === "websocket") {
-            response(101);
+            if (custom)
+              void custom({ operation: operation!, headers: requestHeaders, body: "" }, true);
+            else response(101);
             send({ type: "credit", id: 1, bytes: 65536 });
           } else if (operation!.method === "POST") send({ type: "credit", id: 1, bytes: 65536 });
         } else if (frame.type === "credit") {
@@ -373,7 +413,13 @@ export async function nativeFixture(
             if (!frame.more) {
               const value = Buffer.concat(message);
               message = [];
-              data(value, frame.text, true);
+              if (custom)
+                void custom({
+                  operation: operation!,
+                  headers: requestHeaders,
+                  body: value.toString(),
+                });
+              else data(value, frame.text, true);
               if (value.length) send({ type: "credit", id: 1, bytes: value.length });
             }
           } else {
@@ -386,10 +432,19 @@ export async function nativeFixture(
           peer.close();
         }
       });
+      const session = setTimeout(
+        () => peer.close(1008),
+        Math.min(accessLifetimeSeconds, expiresIn) * 1000,
+      );
+      peer.once("close", () => clearTimeout(session));
       peer.on("error", () => undefined);
       if (readyFailure === "close") peer.terminate();
       else if (readyFailure !== "timeout")
-        send({ type: "ready", expiresAt: Date.now() + 600000, limits });
+        send({
+          type: "ready",
+          expiresAt: Date.now() + Math.min(accessLifetimeSeconds, expiresIn) * 1000,
+          limits,
+        });
     });
   });
   server.listen(0, "127.0.0.1");
