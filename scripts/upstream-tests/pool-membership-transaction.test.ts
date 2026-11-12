@@ -8,10 +8,12 @@ const upstream = new URL("../../.upstream/", import.meta.url);
 const load = (path: string) => import(new URL(path, upstream).href);
 
 test("native membership rechecks its acquisition binding through the tracked ORM transaction", async () => {
-  const [sdk, membership, runtime] = await Promise.all([
+  const [sdk, membership, runtime, analytics, setup] = await Promise.all([
     load("packages/sdk/src/core.ts"),
     load("apps/hosted/server/src/implementation/pool-membership.ts"),
     load("packages/sdk/src/implementation/account-acquisition-runtime.ts"),
+    load("apps/hosted/server/src/implementation/product-analytics.ts"),
+    load("apps/hosted/server/src/implementation/deploy-setup.ts"),
   ]);
   await Effect.runPromise(
     Effect.scoped(
@@ -125,10 +127,14 @@ test("native membership rechecks its acquisition binding through the tracked ORM
         assert.equal(cached.accounts[0].homeReference, "opaque-home-reference");
         assert.equal(sourceReads, 2);
         assert.equal((yield* sql`select account from binding_rechecks`).length, 2);
-        const nextExecutor = { ...executor };
+        const nextRaw = {
+          ...executor,
+          [sdk.AccountAcquisitionHost]: { ...executor[sdk.AccountAcquisitionHost] },
+        };
+        const nextExecutor = setup.withDeploySetupWake(analytics.withExecutorAnalytics(nextRaw));
         yield* Effect.tryPromise(() =>
           membership.bindPoolMembershipReferenceRuntime(
-            nextExecutor,
+            nextRaw,
             registration,
             Redacted.make("fixture-key-one"),
           ),

@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-membership-reference-reuse",
   "file": "0540-pool-membership-reference-reuse.patch",
-  "content_sha256": "bc3419b92c7a48239bec38574aad416bc689010b5032f9092c72e4ea90213cd5",
+  "content_sha256": "2ab2408ec6640edc871212b49f4994f970019d11fdb26b0f8853a8a06ace2e61",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
