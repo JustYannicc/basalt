@@ -1,14 +1,18 @@
 const compilerPrefix = "Browser compilation returned invalid outputs or unresolved imports.";
 const importsPrefix = `${compilerPrefix} Unresolved imports: `;
+const compileWrapper = "App build failed at the compile stage: ";
 const moduleSpecifier =
   /^(?:#[A-Za-z0-9_][A-Za-z0-9._-]*|(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*)(?:\/[A-Za-z0-9_][A-Za-z0-9._-]*)*$/;
 
 /** Only the compiler's canonical diagnostic and public module-name syntax may leave the run. */
 export function compilerDiagnostic(message) {
   if (typeof message !== "string" || message.length > 2048) return undefined;
-  if (message === compilerPrefix) return message;
-  if (!message.startsWith(importsPrefix)) return undefined;
-  const encoded = message.slice(importsPrefix.length);
+  const detail = message.startsWith(compileWrapper)
+    ? message.slice(compileWrapper.length)
+    : message;
+  if (detail === compilerPrefix) return message;
+  if (!detail.startsWith(importsPrefix)) return undefined;
+  const encoded = detail.slice(importsPrefix.length);
   try {
     const imports = JSON.parse(encoded);
     if (

@@ -23,14 +23,17 @@ export default {
     const filesystem = new InMemoryFileSystem(files);
     const browser = await Effect.runPromise(browserBuild(
       Object.entries(files).map(([path, content]) => ({ path, content })),
-      filesystem, { entries: ["ui.ts"] }, {},
+      filesystem, { html: "", entries: ["ui.ts"], finish: assets => Effect.succeed(assets) }, {},
     ));
     try {
       const compiled = await createApp({
         files: filesystem, server: "index.ts", client: "ui.ts", installDependencies: false,
         __dangerouslyUseEsBuildPluginsDoNotUseOrYouWillBeFired: [browser.plugin],
       });
-      return Response.json({ compiled: JSON.stringify(compiled), errors: [] });
+      const assets = await Effect.runPromise(browser.finish());
+      const browserCode = assets.filter(file => file.contentType === "text/javascript").map(file => new TextDecoder().decode(file.body)).join("\\n");
+      const serverCode = JSON.stringify(compiled.modules);
+      return Response.json({ compiled: JSON.stringify({ serverCode, browserCode }), browser: browserCode, server: serverCode, errors: [] });
     } catch (error) {
       return Response.json({ compiled: null, errors: error.errors?.map(item => item.text) ?? [String(error)] });
     }
@@ -41,6 +44,8 @@ const decode = Schema.decodeUnknownSync(
   Schema.fromJsonString(
     Schema.Struct({
       compiled: Schema.NullOr(Schema.String),
+      browser: Schema.optional(Schema.String),
+      server: Schema.optional(Schema.String),
       errors: Schema.Array(Schema.String),
     }),
   ),
@@ -158,7 +163,7 @@ test(
         });
         assert.deepEqual(result.errors, []);
         assert.ok(result.compiled?.includes("browser-path"));
-        assert.ok(result.compiled?.includes("other-value"));
+        assert.ok(result.compiled?.includes("other-value"), JSON.stringify(result));
       });
       await t.test("the app's own package scope resolves root imports", async () => {
         const files = fixture({}, "export const value = 'unused';");
@@ -170,6 +175,54 @@ test(
         });
         assert.deepEqual(result.errors, []);
         assert.ok(result.compiled?.includes("root-value"));
+      });
+      await t.test("browser conditions do not remove the server's node conditions", async () => {
+        const files = fixture(
+          { "#flavor": { node: "./node-flavor.js", default: "./browser-flavor.js" } },
+          "",
+        );
+        const result = await compile({
+          ...files,
+          "node_modules/subpath-fixture/package.json": JSON.stringify({
+            name: "subpath-fixture",
+            exports: { node: "./server.js", default: "./client.js" },
+            imports: { "#flavor": { node: "./node-flavor.js", default: "./browser-flavor.js" } },
+          }),
+          "node_modules/subpath-fixture/server.js":
+            "import flavor from '#flavor'; export const value = 'server-entry:' + flavor;",
+          "node_modules/subpath-fixture/client.js":
+            "import flavor from '#flavor'; export const value = 'browser-entry:' + flavor;",
+          "node_modules/subpath-fixture/node-flavor.js": "export default 'node-flavor';",
+          "node_modules/subpath-fixture/browser-flavor.js": "export default 'browser-flavor';",
+          "index.ts":
+            "import { value } from 'subpath-fixture'; export default { fetch() { return new Response(value) } }",
+        });
+        assert.deepEqual(result.errors, [], JSON.stringify(result));
+        assert.ok(result.server?.includes("server-entry:"));
+        assert.ok(result.server?.includes("node-flavor"));
+        assert.ok(!result.server?.includes("browser-flavor"));
+        assert.ok(result.browser?.includes("browser-entry:"));
+        assert.ok(result.browser?.includes("browser-flavor"));
+        assert.ok(!result.browser?.includes("node-flavor"));
+      });
+      await t.test("package-valued imports cannot bypass blocked package exports", async () => {
+        const files = fixture(
+          { "#private": "other-fixture/private" },
+          "import value from '#private'; export { value };",
+        );
+        const result = await compile({
+          ...files,
+          "node_modules/other-fixture/package.json": JSON.stringify({
+            name: "other-fixture",
+            exports: { "./private": null },
+          }),
+          "node_modules/other-fixture/private.js": "export default 'must-not-leak';",
+        });
+        assert.equal(result.compiled, null);
+        assert.ok(
+          result.errors.includes(prefix + ' Unresolved imports: ["#private"]'),
+          JSON.stringify(result),
+        );
       });
       await t.test("all unresolved imports are reported once in stable order", async () => {
         const result = await compile(
