@@ -1,7 +1,7 @@
 model {
   extend basalt.pool {
     metadata {
-      constraint "Native account reports and pool reads share one normalization of reset scopes and model windows. Live protocol 41 adds optional reset metadata while released records remain unchanged. Model windows do not add account-wide capacity; grouped reset counts expire against source deadlines and stale readings stay last-known. The pool opens the shared account reading details without spending a reset. Observation privacy scanning admits bounded repeated row metadata while retaining the report byte guard, credential checks and separate compact identity, acquisition instruction and error bounds. Missing expiry remains unreported. Discovery is default-off and its enabled state is bound to the admitted runtime configuration."
+      constraint "Native account reports and pool reads share one normalization of reset scopes and model windows. Live protocol 41 adds optional reset metadata while released records remain unchanged. Model windows do not add account-wide capacity; grouped reset counts expire against source deadlines and stale readings stay last-known. The pool opens the shared account reading details without spending a reset. Observation privacy scanning admits bounded repeated row metadata while retaining the report byte guard, credential checks and separate compact identity, acquisition instruction and error bounds. Missing expiry remains unreported. The embedded renderer and live protocol record are generated from the combined source while released records remain unchanged. Discovery is default-off and its enabled state is bound to the admitted runtime configuration."
     }
   }
 }
