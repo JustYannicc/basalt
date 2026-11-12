@@ -160,7 +160,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/host
 +                    >
 +                      {(vault) =>
 +                        requirements.length === 0 ? (
-+                          <ObsidianDeviceList app={current} vault={vault} manage={false} />
++                          <ObsidianDeviceList vault={vault} manage={false} />
 +                        ) : (
 +                          <AppOverviewAccounts app={current} requirements={requirements} />
 +                        )
@@ -203,7 +203,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/host
 +                      <h2 className="mb-2 text-xs font-medium text-muted-foreground">
 +                        Obsidian devices
 +                      </h2>
-+                      <ObsidianDeviceList app={current} vault={vault} manage />
++                      <ObsidianDeviceList vault={vault} manage />
 +                    </section>
 +                  )}
 +                </ObsidianVault>
@@ -315,9 +315,8 @@ diff --git a/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx b/app
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,276 @@
 +import { useState, type ReactNode } from "react";
-+import { Link } from "@tanstack/react-router";
 +import { useAtomSet, useAtomValue } from "@effect/atom-react";
 +import { Exit, Option } from "effect";
 +import { AsyncResult } from "effect/reactivity";
@@ -469,16 +468,14 @@ new file mode 100644
 + * device's grant ends its sync at once; its notes stay on the device and in the vault.
 + */
 +export function ObsidianDeviceList({
-+  app,
 +  vault,
 +  manage,
 +}: {
-+  readonly app: App;
 +  readonly vault: Vault;
 +  readonly manage: boolean;
 +}) {
 +  const brand = useProductBrand();
-+  const { organization, slug: organizationSlug } = useOrganizationRoute();
++  const { organization } = useOrganizationRoute();
 +  const revoke = revokeMcpAgentAtom(organization);
 +  const submit = useAtomSet(revoke, { mode: "promiseExit" });
 +  const state = useAtomValue(revoke);
@@ -528,16 +525,6 @@ new file mode 100644
 +          </li>
 +        ))}
 +      </ul>
-+      {!manage && (
-+        <Link
-+          className="mt-1 inline-block text-xs text-muted-foreground underline underline-offset-2"
-+          to="/org/$organizationSlug/apps/$appId"
-+          params={{ organizationSlug, appId: app.id }}
-+          search={{ view: "accounts" }}
-+        >
-+          Manage devices in Accounts
-+        </Link>
-+      )}
 +      <Dialog
 +        open={disconnecting !== undefined}
 +        onOpenChange={(open) => {
