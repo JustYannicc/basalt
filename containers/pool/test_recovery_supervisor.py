@@ -174,6 +174,7 @@ class SupervisorTests(unittest.TestCase):
                 "apply_pool_config": lambda *_: advance_phase("config"),
                 "create_node_jwt": enroll,
                 "check_services": health,
+                "check_liveness": health,
                 "PolicyHealthMonitor": Mock(
                     return_value=SimpleNamespace(run=lambda _: None)
                 ),

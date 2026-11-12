@@ -30,6 +30,7 @@ from .pool_contract import (
     atomic_write,
     boolean_env,
     bootstrap_yaml,
+    check_liveness,
     check_services,
     child_environment,
     cluster_yaml,
@@ -40,6 +41,7 @@ from .pool_contract import (
     require_tmpfs,
 )
 from .readiness import Readiness, start_ready_server
+from .service_health import ServiceHealth
 from .recovery import HomeExited, HomeRecovery
 from .recovery_deadline import RecoveryCancelled, current_deadline, operation_timeout
 from .runtime_signals import (
@@ -374,6 +376,8 @@ def main(stop: threading.Event | None = None) -> int:
             return node_id
 
         node_id = launch_generation()
+        health = ServiceHealth(management_key, node_id, check_services, check_liveness)
+        was_ready = readiness.snapshot()[0]
         recovery = HomeRecovery()
         category = FailureCategory.RUNTIME
         while not stop.wait(2):
@@ -404,6 +408,10 @@ def main(stop: threading.Event | None = None) -> int:
                                 readiness.begin_recovery()
                                 continue
                             episode.recovered()
+                            health = ServiceHealth(
+                                management_key, node_id, check_services, check_liveness
+                            )
+                            was_ready = readiness.snapshot()[0]
                             break
                     except BaseException:
                         # Retain the absolute episode deadline through terminal cleanup.
@@ -429,7 +437,10 @@ def main(stop: threading.Event | None = None) -> int:
                                 ready_server.server_close()
                         raise
                 continue
-            readiness.set_ready(check_services(management_key, node_id))
+            if was_ready and not readiness.snapshot()[0]:
+                health.invalidate()
+            readiness.set_ready(health.check())
+            was_ready = readiness.snapshot()[0]
         return 0
     except RecoveryCancelled:
         return 0

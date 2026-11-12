@@ -203,6 +203,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home preserves narrow exact timestamp/string-ID summary pages, transactional late-commit and attribution-repair pending work with token-fenced acknowledgement, exact portable queue restoration, time-bounded first-success key identity, PR 171 overview semantics and online index readiness. Preserve retained v15 rows without legacy normalization, concurrent startup, interrupted-index repair and old-writer compatibility, and ship only with the strict native schema activation barrier."
           }
+        },
+        {
+          "identity": "cliproxy-home-idle-control",
+          "file": "0549-home-idle-control.patch",
+          "sha256": "486b9bff2ca87188109e2d6e052648ddfa3c32edc4a91ee2215057456e48aa7c",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home renews each exact PostgreSQL membership in one atomic statement with membership-before-Home locks, post-lock database time, fenced-lifetime refusal and unchanged three-second heartbeat/five-second cancellation bounds, and exposes a database-free process-health endpoint. Preserve SQLite behavior and supervisor startup, generation, transition and slow-audit readiness gates without delaying child-exit recovery."
+          }
         }
       ]
     },
@@ -265,9 +274,7 @@
       "tag": "v1.0.5",
       "commit": "19d9868ffa24e94a2919ea1d1a761afa634de669",
       "sha256": "79b6ae8702b0ace76c10102d42a1401259e7dc772baacce2d47c90c33c6b25e7",
-      "auth_providers": [
-        "gemini-cli"
-      ]
+      "auth_providers": ["gemini-cli"]
     }
   }
 }

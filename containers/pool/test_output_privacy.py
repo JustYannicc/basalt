@@ -471,12 +471,13 @@ class OutputPrivacyTests(unittest.TestCase):
             patch.object(supervisor, "apply_pool_config"),
             patch.object(supervisor, "create_node_jwt", return_value=("fixture-node", TOKEN_SENTINEL)),
             patch.object(supervisor, "check_services", side_effect=[True, failure]) as health,
+            patch.object(supervisor, "check_liveness", side_effect=failure, create=True) as fast_health,
             patch.object(supervisor, "terminate_children"),
             redirect_stdout(stdout),
             redirect_stderr(stderr),
         ):
             self.assertEqual(supervisor.main(), 1)
-            self.assertEqual(health.call_count, 2)
+            self.assertEqual(health.call_count + fast_health.call_count, 2)
         self.assert_closed_output(
             stdout.getvalue(),
             stderr.getvalue(),

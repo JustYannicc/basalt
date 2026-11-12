@@ -93,7 +93,7 @@ COPY crash_tail.py /opt/pool/crash_tail.py
 COPY runtime_signals.py /opt/pool/runtime_signals.py
 COPY pool_contract.py /opt/pool/pool_contract.py
 COPY billing_policy.py billing-settings.json /opt/pool/
-COPY readiness.py policy_diagnostic.py /opt/pool/
+COPY readiness.py service_health.py policy_diagnostic.py /opt/pool/
 COPY policy_monitor.py /opt/pool/policy_monitor.py
 COPY policy_check.py /opt/pool/policy_check.py
 COPY healthcheck.py /opt/pool/healthcheck.py

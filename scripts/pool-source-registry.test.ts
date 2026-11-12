@@ -298,6 +298,15 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           /concurrent startup, interrupted-index repair and old-writer compatibility/,
         );
         assert.match(patch.retirement.requires, /strict native schema activation barrier/);
+      } else if (patch.identity === "cliproxy-home-idle-control") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0549-home-idle-control.patch");
+        assert.match(patch.retirement.requires, /one atomic statement/);
+        assert.match(patch.retirement.requires, /membership-before-Home locks/);
+        assert.match(patch.retirement.requires, /post-lock database time/);
+        assert.match(patch.retirement.requires, /three-second heartbeat\/five-second cancellation/);
+        assert.match(patch.retirement.requires, /database-free process-health endpoint/);
+        assert.match(patch.retirement.requires, /without delaying child-exit recovery/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
