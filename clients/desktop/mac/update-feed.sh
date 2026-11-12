@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# The Mac app's update feed, shared by the release workflow and local checks. macOS only.
+# The Mac app's update feed, shared by the release workflow, package.sh and local checks.
 #   update-feed.sh url <owner/repo> [update_feed]
 #     Prints the feed a build checks: the given test feed, or the Latest release's appcast.xml.
+#   update-feed.sh check <feed>
+#     Refuses a feed URL that isn't https, doesn't end in /appcast.xml or needs escaping.
 #   update-feed.sh appcast <zip> <version> <owner/repo> <feed> <appcast.xml>   (key on stdin)
 #     Signs the zip with the EdDSA private key read from stdin, checks the signature against
 #     SPARKLE_PUBLIC_ED_KEY and the app inside the zip, then writes a one-item appcast.
-#     SPARKLE_BIN names the folder holding Sparkle's sign_update.
-#   update-feed.sh verify <zip> <base64 signature> <base64 public key>
-#     Exits 0 only when the signature verifies, the same check the installed app makes.
+#     SPARKLE_BIN names the folder holding Sparkle's sign_update. macOS only.
+# url and check run anywhere bash does.
 set -euo pipefail
 zip_name=Signalbox-mac-arm64.zip
 fail() {
@@ -19,15 +20,15 @@ production_feed() { printf 'https://github.com/%s/releases/latest/download/appca
 check_repository() {
   [[ "$1" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "'$1' isn't an owner/repository name."
 }
-# The same characters package.sh accepts, so the feed needs no escaping in the plist or the XML.
+# Only characters that need no escaping in package.sh's sed, the plist or the XML.
 check_feed() {
   [[ "$1" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~%/+-]*/appcast\.xml$ ]] ||
     fail "The update feed must be an https URL ending in /appcast.xml, of letters, digits and ._~%/+-; it is '$1'."
 }
 
+# Exits 0 only when the base64 signature verifies against the base64 public key.
 verify() {
-  local zip="$1" signature="$2" key="$3" source
-  source="$(mktemp -d)/verify.swift"
+  local zip="$1" signature="$2" key="$3" source="$work/verify.swift"
   # CryptoKit's Ed25519 is the check the updater makes against the key in the installed app.
   cat > "$source" <<'SWIFT'
 import CryptoKit
@@ -45,16 +46,16 @@ SWIFT
 
 case "${1:-}" in
 url)
-  repository="${2:?Use update-feed.sh url <owner/repo> [update_feed].}"
+  repository="${2:-}"
   check_repository "$repository"
   feed="${3:-}"
   if [ -z "$feed" ]; then feed="$(production_feed "$repository")"; fi
   check_feed "$feed"
   printf '%s\n' "$feed"
   ;;
-verify)
-  [ "$#" = 4 ] || fail "Use update-feed.sh verify <zip> <signature> <public key>."
-  verify "$2" "$3" "$4"
+check)
+  [ "$#" = 2 ] || fail "Use update-feed.sh check <feed>."
+  check_feed "$2"
   ;;
 appcast)
   [ "$#" = 6 ] || fail "Use update-feed.sh appcast <zip> <version> <owner/repo> <feed> <appcast.xml>, with the key on stdin."
@@ -67,10 +68,12 @@ appcast)
   [ -n "${SPARKLE_PUBLIC_ED_KEY:-}" ] || fail "SPARKLE_PUBLIC_ED_KEY isn't set; it's the public key installed apps verify updates with."
   sign_update="${SPARKLE_BIN:-}/sign_update"
   [ -x "$sign_update" ] || fail "SPARKLE_BIN has no executable sign_update (looked at '$sign_update')."
+  work="$(mktemp -d)"
+  trap 'rm -rf "$work"' EXIT
 
   # The app inside the zip must name this feed and key, or installs of it would check elsewhere
   # or refuse the next update.
-  plist="$(mktemp -d)/Info.plist"
+  plist="$work/Info.plist"
   unzip -p "$zip" Signalbox.app/Contents/Info.plist > "$plist" 2>/dev/null && [ -s "$plist" ] ||
     fail "$zip holds no Signalbox.app/Contents/Info.plist."
   for pair in "SUFeedURL=$feed" "SUPublicEDKey=$SPARKLE_PUBLIC_ED_KEY" "CFBundleVersion=$build" "CFBundleShortVersionString=$version"; do
@@ -117,6 +120,6 @@ XML
   echo "Signed $zip ($length bytes) for $version, build $build; the appcast installs it from $url."
   ;;
 *)
-  fail "Use update-feed.sh url|appcast|verify; see the comment at the top of the script."
+  fail "Use update-feed.sh url|check|appcast; see the comment at the top of the script."
   ;;
 esac

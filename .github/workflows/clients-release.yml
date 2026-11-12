@@ -37,11 +37,11 @@ on:
         required: false
         default: ""
       update_feed:
-        description: Test builds only. An https URL ending in /appcast.xml the Mac app checks instead of the Latest release; a run with one can never be published.
+        description: Test builds only. An https URL ending in /appcast.xml the Mac app checks instead of the Latest release's; publish refuses a run built with any feed but the Latest release's.
         required: false
         default: ""
       test_version:
-        description: Test builds only, with update_feed. Builds every client as this higher major.minor.patch version, for walking an update from this commit's version.
+        description: Test builds only, with an update_feed other than the Latest release's. Builds every client as this higher major.minor.patch version, for walking an update from this commit's version.
         required: false
         default: ""
 
@@ -62,13 +62,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Every job that builds rewrites the checkout the same way, so the agreement check below and
-      # version.txt see the test version. A test version can never ship: test-version.sh refuses it
-      # without update_feed, and publish refuses every run built with a feed other than Latest's.
+      # version.txt see the test version. Keeping it from shipping: test-version.sh refuses it unless
+      # update_feed names a feed other than the Latest release's, and publish refuses a run whose
+      # recorded feed isn't the Latest release's or whose version.txt differs from its commit's.
       - name: Apply a test version
         env:
           TEST_VERSION: ${{ inputs.test_version }}
           UPDATE_FEED: ${{ inputs.update_feed }}
-        run: bash clients/test-version.sh "$TEST_VERSION" "$UPDATE_FEED"
+        run: bash clients/test-version.sh "$TEST_VERSION" "$UPDATE_FEED" "$GITHUB_REPOSITORY"
       # Installed Mac apps check this feed for updates; publish refuses any feed but the Latest release's.
       - id: feed
         name: Choose the Mac update feed
@@ -126,7 +127,7 @@ jobs:
         env:
           TEST_VERSION: ${{ inputs.test_version }}
           UPDATE_FEED: ${{ inputs.update_feed }}
-        run: bash clients/test-version.sh "$TEST_VERSION" "$UPDATE_FEED"
+        run: bash clients/test-version.sh "$TEST_VERSION" "$UPDATE_FEED" "$GITHUB_REPOSITORY"
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.4
@@ -213,7 +214,7 @@ jobs:
         env:
           TEST_VERSION: ${{ inputs.test_version }}
           UPDATE_FEED: ${{ inputs.update_feed }}
-        run: bash clients/test-version.sh "$TEST_VERSION" "$UPDATE_FEED"
+        run: bash clients/test-version.sh "$TEST_VERSION" "$UPDATE_FEED" "$GITHUB_REPOSITORY"
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.4
@@ -490,10 +491,30 @@ jobs:
             echo "$1" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
+          # A run built with test_version records a version its commit doesn't have.
+          committed="$(node -p 'require("./clients/package.json").version')"
+          [ "$committed" = "$VERSION" ] ||
+            fail "Run $RUN recorded version $VERSION, but clients/package.json at $COMMIT is $committed. A test_version build can't be published."
           tag="signalbox-clients-$VERSION"
           state="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || echo missing)"
           [ "$state" != "false" ] ||
             fail "$tag is already published, and published versions never change. To publish $COMMIT, raise version in clients/package.json, clients/desktop/package.json, clients/mobile/package.json and clients/mobile/app.config.ts."
+          # Installed Mac apps read the Latest release's appcast.xml, so a clients Latest never moves
+          # back to an older version. A Latest that isn't a clients release is replaced as before.
+          if latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>"$RUNNER_TEMP/latest.err")"; then
+            :
+          elif grep -q "HTTP 404" "$RUNNER_TEMP/latest.err"; then
+            latest=""
+          else
+            fail "GitHub didn't return the Latest release: $(cat "$RUNNER_TEMP/latest.err")"
+          fi
+          if [[ "$latest" =~ ^signalbox-clients-([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            current="${BASH_REMATCH[1]}"
+            highest="$(printf '%s\n' "$current" "$VERSION" | sort -V | tail -n1)"
+            if [ "$VERSION" = "$current" ] || [ "$highest" != "$VERSION" ]; then
+              fail "Clients $VERSION is at or below the Latest release $latest, so publishing it would move Latest backwards. Raise the clients version above $current."
+            fi
+          fi
           # An interrupted create leaves a draft nobody can see; replace it with these files.
           if [ "$state" = "true" ]; then gh release delete "$tag" --yes; fi
           # A bare assignment keeps ls-remote's status; the peeled line, listed last, names the commit.

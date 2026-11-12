@@ -52,7 +52,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   /// Every quit lands here, including the updater's: its installer agent quits this app with
   /// NSRunningApplication.terminate, a normal quit event, before it swaps the bundle and relaunches.
-  /// So the helper this app started never outlives the old bundle, and the new app starts its own.
+  /// Stopping closes the host's stdin, which asks it to stop the connection it started and exit.
+  /// A host still running after 8 seconds gets SIGTERM, and its connection process may then
+  /// outlive it.
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
     Task {
       await shell.stop()
@@ -88,8 +90,9 @@ final class Updater: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate
   nonisolated var supportsGentleScheduledUpdateReminders: Bool { true }
 
   /// Opens at login and rarely quits, so waiting for a quit could hold an update back for weeks.
-  /// Installing now quits through applicationShouldTerminate like any quit, then relaunches.
-  nonisolated func updater(
+  /// Installing now quits through applicationShouldTerminate, the same stop as any quit, and the
+  /// relaunched app starts its own host.
+  func updater(
     _ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
     immediateInstallationBlock immediateInstallHandler: @escaping () -> Void
   ) -> Bool {

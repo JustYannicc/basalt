@@ -1,0 +1,2 @@
+# Git Bash on the Windows runner fails on CRLF shell scripts (set -euo pipefail\r).
+*.sh text eol=lf

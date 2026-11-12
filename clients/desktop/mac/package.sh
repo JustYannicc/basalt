@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds Signalbox.app for Apple silicon: the SwiftUI menu-bar shell, its updater, a pinned Node
 # runtime and the connection bundle from `bun run --cwd clients/desktop build`.
-# Usage: FEED_URL=https://…/appcast.xml package.sh <version>
+# Usage: FEED_URL=https://…/appcast.xml package.sh <version>; update-feed.sh check sets the rule.
 set -euo pipefail
 version="${1:?Use package.sh <version>.}"
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -16,9 +16,9 @@ fail() {
   exit 1
 }
 # Installed apps check this feed for updates, so a build without one would never update.
+# The release workflow checks its feed with the same rule.
 feed="${FEED_URL:-}"
-[[ "$feed" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/[A-Za-z0-9._~%/+-]*$ ]] ||
-  fail "FEED_URL must be an https URL of letters, digits and ._~%/+-; it is '$feed'."
+bash "$here/update-feed.sh" check "$feed" || exit 1
 # The updater installs a feed item only when its integer is higher than the running app's, so one
 # version maps to one number, the same formula as Android's versionCode in clients/mobile/app.config.ts.
 [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] ||

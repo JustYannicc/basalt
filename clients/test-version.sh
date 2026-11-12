@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # Builds a test run of the clients release as a higher version, so an N+1 update can be walked
 # from main. Rewrites the four version fields in the runner's checkout only; the commit is unchanged.
-#   test-version.sh <test_version> <update_feed>
-# An empty test_version does nothing. A test version can never ship: it needs a test update_feed,
-# and the publish job refuses every run built with a feed other than the Latest release's.
+#   test-version.sh <test_version> <update_feed> <owner/repo>
+# An empty test_version does nothing. What keeps a test version from shipping: this script refuses
+# it unless update_feed names a feed other than the Latest release's, and publish refuses a run
+# whose recorded feed isn't the Latest release's or whose version differs from its commit's.
 set -euo pipefail
-test_version="${1:-}" feed="${2:-}"
+test_version="${1:-}" feed="${2:-}" repository="${3:-}"
 fail() {
   echo "::error::$1" >&2
   [ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "$1" >> "$GITHUB_STEP_SUMMARY"
   exit 1
 }
 [ -n "$test_version" ] || exit 0
-[ -n "$feed" ] ||
-  fail "test_version $test_version needs a non-empty update_feed. A run with a test feed can never be published, which is what keeps a test version from shipping."
+production="$(bash "$(dirname "$0")/desktop/mac/update-feed.sh" url "$repository")" || exit 1
+[ -n "$feed" ] && [ "$feed" != "$production" ] ||
+  fail "test_version $test_version needs an update_feed other than the Latest release's feed $production; it got '$feed'. Installs of a test version must never check the real feed."
 [[ "$test_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] ||
   fail "test_version must be major.minor.patch; it is '$test_version'."
 [ "$((10#${BASH_REMATCH[2]}))" -lt 100 ] && [ "$((10#${BASH_REMATCH[3]}))" -lt 100 ] ||
