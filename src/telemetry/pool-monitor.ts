@@ -82,21 +82,24 @@ export async function capturePoolMonitor(
     },
   });
   const events = [];
-  if (!ok) events.push(report("pool_availability_failure", "error", availability));
+  if (!ok) events.push(report("pool_availability_failure", availability));
   for (const failure of reliability)
-    events.push(
-      report(
-        failure.reason === "below_target"
-          ? "pool_request_success_below_target"
-          : "pool_request_collection_unavailable",
-        failure.reason === "below_target" ? "error" : "warning",
-        [failure],
-      ),
-    );
+    if (failure.reason === "below_target")
+      events.push(report("pool_request_success_below_target", [failure]));
+  // Issue notifications can page on any level, so unknown collection stays in Worker logs.
+  if (reliability.some((failure) => failure.reason !== "below_target")) {
+    const context = input.reliability ? reliabilityContext(input.reliability) : undefined;
+    console.warn("POOL_REQUEST_RELIABILITY_UNKNOWN", {
+      ...context,
+      target: 99,
+      state: "unavailable",
+      reason: context?.reason ?? "collection_unavailable",
+    });
+  }
   const results = await Promise.all([check, ...events]);
   return receipt.accepted && results.every(Boolean);
 
-  function report(errorCode: string, level: "error" | "warning", diagnostics: typeof failures) {
+  function report(errorCode: string, diagnostics: typeof failures) {
     const id = eventId();
     return sendEnvelope(env, {
       id,
@@ -105,7 +108,7 @@ export async function capturePoolMonitor(
         event_id: id,
         timestamp: new Date().toISOString(),
         platform: "javascript",
-        level,
+        level: "error",
         message: `${errorCode} ${diagnostics.map((failure) => `${failure.guard}:${failure.reason}${failure.backend_status ? `:HTTP${failure.backend_status}` : ""}`).join(" ") || "runtime:unknown"}`,
         logger: "pool-availability",
         fingerprint: ["basalt", errorCode],
