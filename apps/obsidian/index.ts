@@ -154,14 +154,28 @@ const resolveConflict = mutation(
 );
 const history = query(
   {
-    description: "Read retained cloud versions and both parents of merged edits.",
-    input: object({ at: string().optional(), limit: number().optional() }),
+    description:
+      "Read retained cloud versions with each commit's time and both parents of merged edits. With a path, only the versions that changed that note.",
+    input: object({
+      path: string().optional(),
+      at: string().optional(),
+      limit: number().optional(),
+    }),
   },
   (ctx: Read, input) =>
     ctx.drive.history({
+      ...(input.path === undefined ? {} : { path: input.path }),
       ...(input.at === undefined ? {} : { at: input.at }),
       ...(input.limit === undefined ? {} : { limit: input.limit }),
     }),
+);
+const devices = query(
+  {
+    description:
+      "Read the vault's current head and last change time, and each device's last sync with the head it had then. A device whose head is the current head is up to date.",
+    input: object({}),
+  },
+  (ctx: Read) => ctx.drive.devices(),
 );
 const createNote = mutation(
   {
@@ -220,6 +234,7 @@ export default defineApp(requirements, {
     resolveConflict,
     searchNotes,
     history,
+    devices,
     createNote,
     editNote,
     moveNote,
