@@ -1,61 +1,12 @@
 import { Schema } from "effect";
-import { versionCode } from "./version-code.ts";
+import { UpdateManifest, isNewer, readUpdateManifest } from "./update-manifest.ts";
 
 /** A foreground return checks again only after this long; launch and Check for updates always do. */
 export const checkInterval = 6 * 60 * 60 * 1000;
+export const manifestBytes = 64 * 1024;
 const manifestTimeout = 20_000;
 // A download that makes no progress for this long is abandoned and retried on a later check.
 const downloadStall = 60_000;
-const manifestBytes = 64 * 1024;
-const apkName = "Signalbox-android.apk";
-
-const Count = Schema.Int.check(Schema.makeFilter((value) => value > 0 && value <= 2 ** 31 - 1));
-// Extra fields are ignored so a later release can add one without stranding installed apps.
-const Manifest = Schema.Struct({
-  version: Schema.String,
-  versionCode: Count,
-  url: Schema.String,
-  sha256: Schema.String.check(Schema.makeFilter((value) => /^[0-9a-f]{64}$/u.test(value))),
-  size: Count,
-});
-export type UpdateManifest = typeof Manifest.Type;
-const decodeManifest = Schema.decodeUnknownSync(Manifest);
-
-/**
- * The APK must come from where its manifest was published: the same release repository, under
- * the tag of its own version, or, for a test feed, the manifest's own folder.
- */
-function expectedApkPath(feed: URL, version: string) {
-  const latest = feed.pathname.indexOf("/releases/latest/download/");
-  return latest >= 0
-    ? `${feed.pathname.slice(0, latest)}/releases/download/signalbox-clients-${version}/${apkName}`
-    : `${feed.pathname.slice(0, feed.pathname.lastIndexOf("/") + 1)}${apkName}`;
-}
-
-/** Reads android-update.json, refusing anything a release of this app wouldn't publish. */
-export function readUpdateManifest(raw: unknown, manifestUrl: string): UpdateManifest {
-  const manifest = decodeManifest(raw);
-  if (versionCode(manifest.version) !== manifest.versionCode)
-    throw new Error(`Manifest versionCode ${manifest.versionCode} isn't ${manifest.version}'s.`);
-  const feed = new URL(manifestUrl);
-  const apk = new URL(manifest.url);
-  if (
-    feed.protocol !== "https:" ||
-    apk.protocol !== "https:" ||
-    apk.username !== "" ||
-    apk.password !== "" ||
-    apk.host !== feed.host ||
-    apk.search !== "" ||
-    apk.hash !== "" ||
-    apk.pathname !== expectedApkPath(feed, manifest.version)
-  )
-    throw new Error(`Manifest APK ${manifest.url} isn't next to ${manifestUrl}.`);
-  return manifest;
-}
-
-/** Only a strictly higher versionCode is an update; Android refuses to install a lower one. */
-export const isNewer = (manifest: UpdateManifest, installed: number) =>
-  manifest.versionCode > installed;
 
 export type CheckReason = "launch" | "foreground" | "manual";
 /** Launch and manual checks always run; a foreground return runs at most every six hours. */
@@ -66,7 +17,7 @@ export interface DownloadedApk {
   size(): number;
   sha256(): Promise<string>;
   remove(): void;
-  /** Hands the file to Android's installer, which asks the user to confirm. */
+  /** Hands the file to Android's installer; settles when the installer screen closes. */
   install(): Promise<unknown>;
 }
 export interface UpdatePorts {
@@ -75,7 +26,12 @@ export interface UpdatePorts {
   get(
     url: string,
     init: { signal: AbortSignal },
-  ): Promise<{ ok: boolean; text(): Promise<string> }>;
+  ): Promise<{
+    ok: boolean;
+    status: number;
+    headers: { get(name: string): string | null };
+    text(): Promise<string>;
+  }>;
   files: {
     cached(versionCode: number): DownloadedApk | undefined;
     download(
@@ -88,41 +44,63 @@ export interface UpdatePorts {
   };
   store: { read(): Promise<string | undefined>; write(value: string): Promise<void> };
   now(): number;
+  /** Receives fixed diagnostic lines, never URLs or response bodies. */
+  warn(message: string): void;
 }
 export type UpdateState =
   | { kind: "idle" }
-  | { kind: "checking" }
   | { kind: "current" }
+  /** `progress` is a whole percent; it changes at most a hundred times per download. */
   | { kind: "downloading"; version: string; progress: number }
-  | { kind: "ready"; version: string; versionCode: number }
-  | { kind: "failed"; message: string };
+  | { kind: "ready"; version: string; versionCode: number };
 export interface UpdateSnapshot {
   installed: { version: string; versionCode: number };
   state: UpdateState;
+  checking: boolean;
+  /** Android's installer is open for the ready version. */
+  installing: boolean;
+  /** Only a check or install the user started reports a failure. */
+  error?: string;
   /** The home banner stays hidden for this ready version; the next version shows it again. */
   dismissed: boolean;
-  /** No update has installed from inside the app yet, so Android will ask to allow the source. */
+  /** No update this app handed to Android's installer has installed yet. */
   firstInstall: boolean;
 }
 
 const Saved = Schema.Struct({
   lastCheck: Schema.optionalKey(Schema.Number),
   dismissed: Schema.optionalKey(Schema.Number),
-  installing: Schema.optionalKey(Schema.Number),
+  /** The versionCode the app last handed to Android's installer. */
+  launched: Schema.optionalKey(Schema.Number),
   installedInApp: Schema.optionalKey(Schema.Boolean),
+  /** The last verified manifest, so a downloaded update shows offline and after a restart. */
+  manifest: Schema.optionalKey(UpdateManifest),
 });
 type Saved = { -readonly [K in keyof typeof Saved.Type]: (typeof Saved.Type)[K] };
 const decodeSaved = Schema.decodeUnknownSync(Saved);
 
-const checkFailed = "Couldn't check for updates. Check your connection and try again.";
-const mismatch = "The download didn't match its release, so it was removed. Try again.";
-const installFailed = "Android couldn't open the installer. Try again.";
+const failures = {
+  network: "Couldn't reach the update server. Check your connection and try again.",
+  unpublished: "No usable update is published right now. Try again later.",
+  mismatch: "The download didn't match its release, so it was removed. Try again.",
+  install: "Android couldn't open the installer. Try again.",
+};
+class Failure extends Error {
+  readonly kind: keyof typeof failures;
+  constructor(kind: keyof typeof failures, detail: string) {
+    super(detail);
+    this.kind = kind;
+  }
+}
 
 /** Checks, downloads and verifies release APKs; the UI only reads snapshots and calls actions. */
 export function appUpdates(ports: UpdatePorts) {
   let saved: Saved = {};
   let state: UpdateState = { kind: "idle" };
-  let ready: DownloadedApk | undefined;
+  let ready: { apk: DownloadedApk; manifest: UpdateManifest } | undefined;
+  let checking = false;
+  let installing = false;
+  let error: string | undefined;
   let running: Promise<void> | undefined;
   let visible = false;
   let loaded: Promise<void> | undefined;
@@ -132,6 +110,9 @@ export function appUpdates(ports: UpdatePorts) {
     return {
       installed: ports.installed,
       state,
+      checking,
+      installing,
+      ...(error ? { error } : {}),
       dismissed: state.kind === "ready" && saved.dismissed === state.versionCode,
       firstInstall: !saved.installedInApp,
     };
@@ -141,6 +122,11 @@ export function appUpdates(ports: UpdatePorts) {
     snapshot = view();
     for (const listener of listeners) listener();
   };
+  const readyState = (current: NonNullable<typeof ready>): UpdateState => ({
+    kind: "ready",
+    version: current.manifest.version,
+    versionCode: current.manifest.versionCode,
+  });
   // Persisting is best effort: losing it only repeats a check or shows a banner again.
   const persist = async () => {
     try {
@@ -153,20 +139,6 @@ export function appUpdates(ports: UpdatePorts) {
       ports.files.clear(keep);
     } catch {}
   };
-  const load = () =>
-    (loaded ??= (async () => {
-      try {
-        const raw = await ports.store.read();
-        if (raw) saved = { ...decodeSaved(JSON.parse(raw)) };
-      } catch {}
-      if (saved.installing !== undefined && ports.installed.versionCode >= saved.installing) {
-        saved.installedInApp = true;
-        delete saved.installing;
-        await persist();
-      }
-      publish();
-    })());
-
   const verified = async (apk: DownloadedApk, manifest: UpdateManifest) => {
     try {
       return apk.size() === manifest.size && (await apk.sha256()) === manifest.sha256;
@@ -174,16 +146,58 @@ export function appUpdates(ports: UpdatePorts) {
       return false;
     }
   };
+  const cachedApk = async (manifest: UpdateManifest) => {
+    const apk = ports.files.cached(manifest.versionCode);
+    return apk && (await verified(apk, manifest)) ? apk : undefined;
+  };
+
+  const load = () =>
+    (loaded ??= (async () => {
+      try {
+        const raw = await ports.store.read();
+        if (raw) saved = { ...decodeSaved(JSON.parse(raw)) };
+      } catch {}
+      const installed = ports.installed.versionCode;
+      if (saved.launched !== undefined && installed >= saved.launched) {
+        // Only the exact version this app handed to the installer proves the source is allowed.
+        if (installed === saved.launched) saved.installedInApp = true;
+        delete saved.launched;
+      }
+      // Android may restart the app after "Install unknown apps" is turned on, often offline.
+      if (saved.manifest) {
+        let manifest: UpdateManifest | undefined;
+        try {
+          manifest = readUpdateManifest(saved.manifest, ports.manifestUrl);
+        } catch {}
+        const apk = manifest && isNewer(manifest, installed) && (await cachedApk(manifest));
+        if (manifest && apk) ready = { apk, manifest };
+        else delete saved.manifest;
+      }
+      await persist();
+      publish(ready ? readyState(ready) : state);
+    })());
 
   const fetchManifest = async () => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), manifestTimeout);
     try {
-      const response = await ports.get(ports.manifestUrl, { signal: controller.signal });
-      if (!response.ok) throw new Error("The update manifest wasn't available.");
-      const text = await response.text();
-      if (text.length > manifestBytes) throw new Error("The update manifest is too large.");
-      return readUpdateManifest(JSON.parse(text), ports.manifestUrl);
+      const response = await ports
+        .get(ports.manifestUrl, { signal: controller.signal })
+        .catch(() => Promise.reject(new Failure("network", "manifest request failed")));
+      if (!response.ok)
+        throw new Failure("unpublished", `manifest answered HTTP ${response.status}`);
+      if (Number(response.headers.get("content-length")) > manifestBytes)
+        throw new Failure("unpublished", "manifest is larger than 64 KiB");
+      const text = await response
+        .text()
+        .catch(() => Promise.reject(new Failure("network", "manifest body was interrupted")));
+      if (new TextEncoder().encode(text).length > manifestBytes)
+        throw new Failure("unpublished", "manifest is larger than 64 KiB");
+      try {
+        return readUpdateManifest(JSON.parse(text), ports.manifestUrl);
+      } catch {
+        throw new Failure("unpublished", "manifest was refused");
+      }
     } finally {
       clearTimeout(timer);
     }
@@ -192,17 +206,32 @@ export function appUpdates(ports: UpdatePorts) {
   const download = async (manifest: UpdateManifest) => {
     const controller = new AbortController();
     let stall = setTimeout(() => controller.abort(), downloadStall);
-    publish({ kind: "downloading", version: manifest.version, progress: 0 });
+    let shown = 0;
+    // An older verified update stays offered until this one is verified.
+    if (!ready) publish({ kind: "downloading", version: manifest.version, progress: 0 });
     try {
-      return await ports.files.download(
-        manifest,
-        (fraction) => {
-          clearTimeout(stall);
-          stall = setTimeout(() => controller.abort(), downloadStall);
-          publish({ kind: "downloading", version: manifest.version, progress: fraction });
-        },
-        controller.signal,
-      );
+      const apk = await ports.files
+        .download(
+          manifest,
+          (fraction) => {
+            clearTimeout(stall);
+            stall = setTimeout(() => controller.abort(), downloadStall);
+            // Native progress arrives every few milliseconds; the screen only needs whole percents.
+            const percent = Math.min(100, Math.floor(fraction * 100));
+            if (ready || percent === shown) return;
+            shown = percent;
+            publish({ kind: "downloading", version: manifest.version, progress: percent });
+          },
+          controller.signal,
+        )
+        .catch(() => Promise.reject(new Failure("network", "APK download failed")));
+      if (!(await verified(apk, manifest))) {
+        try {
+          apk.remove();
+        } catch {}
+        throw new Failure("mismatch", "APK size or SHA-256 differs from the manifest");
+      }
+      return apk;
     } finally {
       clearTimeout(stall);
     }
@@ -210,36 +239,41 @@ export function appUpdates(ports: UpdatePorts) {
 
   const run = async () => {
     const before = state;
-    publish({ kind: "checking" });
-    let message = checkFailed;
+    checking = true;
+    error = undefined;
+    publish();
     try {
-      saved.lastCheck = ports.now();
-      await persist();
       const manifest = await fetchManifest();
       if (!isNewer(manifest, ports.installed.versionCode)) {
         ready = undefined;
+        delete saved.manifest;
         tidy();
-        publish({ kind: "current" });
-        return;
-      }
-      const cached = ports.files.cached(manifest.versionCode);
-      let apk = cached && (await verified(cached, manifest)) ? cached : undefined;
-      if (!apk) {
-        const fresh = await download(manifest);
-        if (!(await verified(fresh, manifest))) {
-          message = mismatch;
-          fresh.remove();
-          throw new Error(message);
+        state = { kind: "current" };
+      } else {
+        let apk = await cachedApk(manifest);
+        if (!apk) {
+          // The offered file is gone or no longer this release's (the cache can be evicted).
+          if (ready && ready.manifest.versionCode >= manifest.versionCode) ready = undefined;
+          apk = await download(manifest);
         }
-        apk = fresh;
+        ready = { apk, manifest };
+        saved.manifest = manifest;
+        tidy(manifest.versionCode);
+        state = readyState(ready);
       }
-      tidy(manifest.versionCode);
-      ready = apk;
-      publish({ kind: "ready", version: manifest.version, versionCode: manifest.versionCode });
-    } catch {
-      // Background checks fail quietly and try again on a later launch or return.
-      // A ready APK stays ready: only a successful check removes older downloads.
-      publish(visible ? { kind: "failed", message } : before);
+      // Only a finished check postpones the next one; a failed one retries on the next return.
+      saved.lastCheck = ports.now();
+      await persist();
+    } catch (cause) {
+      const failure = cause instanceof Failure ? cause : new Failure("network", "check failed");
+      ports.warn(`Signalbox update check failed: ${failure.message}.`);
+      if (visible) error = failures[failure.kind];
+      // A verified update stays offered whatever happened to this check; one whose file was
+      // gone stops being offered.
+      state = ready ? readyState(ready) : before.kind === "ready" ? { kind: "idle" } : before;
+    } finally {
+      checking = false;
+      publish();
     }
   };
 
@@ -273,14 +307,24 @@ export function appUpdates(ports: UpdatePorts) {
       await persist();
     },
     install: async () => {
-      if (state.kind !== "ready" || !ready) return;
-      saved.installing = state.versionCode;
+      // A second tap while the installer is open would otherwise start a second activity.
+      if (!ready || installing || state.kind !== "ready") return;
+      const current = ready;
+      installing = true;
+      error = undefined;
+      saved.launched = current.manifest.versionCode;
+      publish();
       await persist();
       try {
-        await ready.install();
+        await current.apk.install();
       } catch {
-        publish({ kind: "failed", message: installFailed });
-        // The verified file stays; Retry finds it again without downloading.
+        delete saved.launched;
+        await persist();
+        ports.warn("Signalbox update install failed: the installer didn't open.");
+        error = failures.install;
+      } finally {
+        installing = false;
+        publish();
       }
     },
   };

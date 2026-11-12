@@ -7,7 +7,6 @@ import {
   Platform,
   ScrollView,
   StatusBar,
-  StyleSheet,
   View,
 } from "react-native";
 import Constants from "expo-constants";
@@ -22,11 +21,6 @@ import { UpdateBanner, UpdatesCard, useUpdates } from "./UpdateViews.tsx";
 const defaults = Constants.expoConfig?.extra;
 const brandName = typeof defaults?.brandName === "string" ? defaults.brandName : "Signalbox";
 const defaultOrigin = typeof defaults?.serverOrigin === "string" ? defaults.serverOrigin : "";
-// Two buttons share a row on common phones and stack below ~350pt so labels never truncate.
-const local = StyleSheet.create({
-  row: { flexDirection: "row", flexWrap: "wrap", gap: 16 },
-  cell: { flexGrow: 1, flexBasis: 132 },
-});
 export default function App() {
   return (
     <SafeAreaProvider>
@@ -195,8 +189,8 @@ function Home() {
                   </>
                 )}
                 {ready && !terminal && (
-                  <View style={local.row}>
-                    <View style={local.cell}>
+                  <View style={styles.row}>
+                    <View style={styles.cell}>
                       <Button
                         label="Reconnect"
                         secondary
@@ -207,7 +201,7 @@ function Home() {
                         }}
                       />
                     </View>
-                    <View style={local.cell}>
+                    <View style={styles.cell}>
                       <Button
                         label="Disconnect"
                         secondary

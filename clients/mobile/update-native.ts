@@ -75,5 +75,6 @@ export const updates =
           };
         })(),
         now: () => Date.now(),
+        warn: (message) => console.warn(message),
       })
     : undefined;
