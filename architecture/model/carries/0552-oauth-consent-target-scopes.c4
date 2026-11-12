@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "OAuth consent freezes each selected connection's own declared scopes before authorization, independently of the batch's scope union. Completing a batch takes grant locks before locking every target app in stable order and rechecks its current requested scopes in the same transaction as all grant and binding changes. Scope growth refuses the entire batch even when provider identity is retained or another target already requested that scope. Pending batches without per-target proof require fresh consent; denial and failure preserve existing accounts and links."
+    }
+  }
+}
