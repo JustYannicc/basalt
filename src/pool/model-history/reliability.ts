@@ -15,7 +15,7 @@ export async function readPoolReliability(
 ): Promise<PoolReliability> {
   const start = timestamp(from),
     end = timestamp(to);
-  if (start >= end || Date.parse(end) - Date.parse(start) > 31 * 86_400_000)
+  if (start >= end || Date.parse(end) - Date.parse(start) > 90 * 86_400_000 + 3_600_000)
     throw new HistoryInputError();
   const sources = await Promise.all([digest("home-local-v1"), digest("pool-gateway-v1")]);
   const ready =

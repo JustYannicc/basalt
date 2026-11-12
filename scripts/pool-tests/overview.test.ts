@@ -253,6 +253,10 @@ test("overview prices protocol aliases from total context, keeps excluded counts
       "retained requests older than 30 days remain in the selected range",
     );
     assert.equal(ninety.partial, true);
+    assert.ok(ninety.reliability && !("unavailable" in ninety.reliability));
+    assert.equal(Date.parse(ninety.reliability.range.from), Date.parse(ninety.from));
+    assert.equal(Date.parse(ninety.reliability.range.to), Date.parse(ninety.to));
+    assert.ok(ninety.reliability.slo);
     assert.deepEqual(
       ninety.homeCapture.completeHours.filter((hour) => Date.parse(hour) < Date.parse(to)),
       result.homeCapture.completeHours,
