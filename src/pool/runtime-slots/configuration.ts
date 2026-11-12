@@ -8,6 +8,9 @@ export const RuntimeConfiguration = Schema.Struct({
   previousSigningKey: Schema.optional(Schema.String),
   imageInput: Schema.String,
   databaseOwner: Schema.Literal(poolDatabase.owner),
+  homePeerOrdinal: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 128 })),
+  ),
 });
 export type RuntimeConfiguration = typeof RuntimeConfiguration.Type;
 export interface RuntimeEnvironment {
@@ -17,6 +20,7 @@ export interface RuntimeEnvironment {
   POOL_APP_SIGNING_KEY_PREVIOUS?: string;
   POOL_IMAGE_HASH: string;
   POOL_DEPLOYMENT_KEY?: string;
+  POOL_HOME_PEER_ORDINAL?: string;
 }
 export function runtimeConfiguration(env: RuntimeEnvironment): RuntimeConfiguration {
   return Schema.decodeUnknownSync(RuntimeConfiguration)({
@@ -28,6 +32,9 @@ export function runtimeConfiguration(env: RuntimeEnvironment): RuntimeConfigurat
       : {}),
     imageInput: env.POOL_IMAGE_HASH,
     databaseOwner: poolDatabase.owner,
+    ...(env.POOL_HOME_PEER_ORDINAL !== undefined
+      ? { homePeerOrdinal: Number(env.POOL_HOME_PEER_ORDINAL) }
+      : {}),
   });
 }
 export interface StartupOptions {
@@ -43,6 +50,9 @@ export function runtimeStartOptions(value: RuntimeConfiguration): StartupOptions
       POOL_MANAGEMENT_KEY: value.managementKey,
       POOL_MANAGEMENT_ALLOW_REMOTE: "true",
       POOL_APP_SIGNING_KEY: value.signingKey,
+      ...(value.homePeerOrdinal !== undefined
+        ? { POOL_HOME_PEER_ORDINAL: String(value.homePeerOrdinal) }
+        : {}),
       ...(value.previousSigningKey
         ? { POOL_APP_SIGNING_KEY_PREVIOUS: value.previousSigningKey }
         : {}),

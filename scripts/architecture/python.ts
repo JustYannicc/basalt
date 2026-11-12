@@ -78,7 +78,7 @@ export function pythonDependencies(
       report(entry, `Unmodelled SDK or library: ${entry.name}`);
   }
   for (const entry of scan.urls) {
-    const authority = /^(?:https?|wss?):\/\/([^/\s?#]*)/i.exec(entry.value)?.[1];
+    const authority = /^(?:https?|wss?|tcp):\/\/([^/\s?#]*)/i.exec(entry.value)?.[1];
     if (!authority || authority.includes("<dynamic>")) {
       report(entry, "Outside URL has a dynamic or unsupported host");
       continue;

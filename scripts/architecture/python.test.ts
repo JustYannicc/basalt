@@ -175,6 +175,9 @@ test("the actual build downloader and pool wrapper require a release service", (
       "crash_tail.py",
       "runtime_signals.py",
       "pool_contract.py",
+      "home_identity.py",
+      "home_peer.py",
+      "home_peer_wire.py",
       "billing_policy.py",
       "readiness.py",
       "policy_diagnostic.py",
@@ -202,11 +205,17 @@ test("the actual build downloader and pool wrapper require a release service", (
   const result = pythonDependencies(
     copy,
     [module("pool", "containers/pool", ["socket", "http.client"])],
-    [{ id: "releases", hosts: ["github.com"], sdks: [] }],
+    [
+      { id: "releases", hosts: ["github.com"], sdks: [] },
+      { id: "gateway", hosts: ["home-peer.internal"], sdks: [] },
+    ],
   );
   expect(result.errors).toEqual([]);
   expect(result.dependencies).toContainEqual(
     expect.objectContaining({ source: "pool", target: "releases" }),
+  );
+  expect(result.dependencies).toContainEqual(
+    expect.objectContaining({ source: "pool", target: "gateway" }),
   );
 });
 
@@ -244,6 +253,33 @@ test("only a newly created Unix-domain socket has no outside host", () => {
     expect(scan(`import socket\n${call}`, [], ["socket"]).errors.join("\n")).toContain(
       "Unsupported Python network call",
     );
+});
+
+test("TCP factories require proven destinations while Unix pairs and loopback listeners stay local", () => {
+  for (const call of [
+    'socket.create_server(("127.0.0.1", port))',
+    'socket.create_connection(("127.0.0.1", 8329))',
+    "socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)",
+  ])
+    expect(scan(`import socket\n${call}`, [], ["socket"]).errors).toEqual([]);
+  for (const call of [
+    "socket.socketpair()",
+    "socket.socketpair(socket.AF_INET)",
+    'socket.create_server(("0.0.0.0", port))',
+    "socket.create_server((unknown_host, port))",
+    "socket.create_connection((unknown_host, 80))",
+    "socket.create_connection(compute_address())",
+  ])
+    expect(scan(`import socket\n${call}`, [], ["socket"]).errors.length).toBeGreaterThan(0);
+  const text = 'import socket\nHOST = "api.example.invalid"\nsocket.create_connection((HOST, 80))';
+  expect(scan(text, [], ["socket"]).errors.join("\n")).toContain(
+    "Unmodelled outside host: api.example.invalid",
+  );
+  const modelled = scan(text, [api], ["socket"]);
+  expect(modelled.errors).toEqual([]);
+  expect(modelled.dependencies).toContainEqual(
+    expect.objectContaining({ source: "app", target: "api" }),
+  );
 });
 
 test("invalid Python is a reported parse failure, and unowned Python is rejected", () => {

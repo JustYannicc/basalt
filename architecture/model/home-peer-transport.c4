@@ -1,0 +1,18 @@
+model {
+  basalt.poolRuntime -[sync]-> basalt.modelGateway "private Home peer byte transport"
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Private Home peer transport carries opaque end-to-end authenticated bytes. Each direction has at most 64 KiB of outstanding credit and 16 KiB WebSocket messages. Credit returns only after the destination TCP write completes; protocol violations and unknown disconnects close the peer without replay. Independent half closes preserve a reply after the sender finishes. This transport alone does not establish runtime ownership, admission or a safe legacy transition."
+    }
+  }
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Fleet Home identity is a retained ordinal from 1 through 128, included in the encrypted startup capsule and its applied-settings fingerprint. Each ordinal advertises its own private loopback port while Home listens on 8329. The local node keeps a fresh boot-specific certificate and reaches its own Home locally; peer connections use bounded private transport. Each Home retains six frontend PostgreSQL connections and a distinct application name. A missing ordinal preserves the legacy address, name and disabled discovery. Fleet deployment and legacy coexistence require separately admitted routing and migration proofs."
+    }
+  }
+  extend basalt.build {
+    metadata {
+      constraint "Python networking analysis resolves TCP connection hosts through literal address tuples and ordinary helper propagation. Loopback listeners use the atomic create-and-bind factory; raw IP socket constructors, dynamic destinations and non-loopback listeners stay rejected. Unix-domain socket pairs are local only when their family is explicit. Private Home peer hosts must appear in the architecture with their caller relationship."
+    }
+  }
+}

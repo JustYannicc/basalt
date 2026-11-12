@@ -77,3 +77,23 @@ test("startup fingerprint binds every applied setting while launch credentials a
     expected,
   );
 });
+
+test("the Home ordinal is sealed and bound to the applied startup fingerprint", async () => {
+  const environment = {
+    POOL_DATABASE_URL: "postgresql://fixture@database.invalid/pool",
+    POOL_MANAGEMENT_KEY: "fixture-key",
+    POOL_APP_SIGNING_KEY: "a".repeat(64),
+    POOL_IMAGE_HASH: "1".repeat(16),
+  };
+  const legacy = runtimeConfiguration(environment);
+  const first = runtimeConfiguration({ ...environment, POOL_HOME_PEER_ORDINAL: "1" });
+  const second = runtimeConfiguration({ ...environment, POOL_HOME_PEER_ORDINAL: "2" });
+  assert.notEqual(await configurationDigest(legacy), await configurationDigest(first));
+  assert.notEqual(await configurationDigest(first), await configurationDigest(second));
+  const sealed = await sealConfiguration(first, "b".repeat(64), "fleet-first");
+  const retained = await openConfiguration(sealed, "b".repeat(64), "fleet-first");
+  assert.equal(runtimeStartOptions(retained).env.POOL_HOME_PEER_ORDINAL, "1");
+  assert.equal(runtimeStartOptions(legacy).env.POOL_HOME_PEER_ORDINAL, undefined);
+  for (const value of ["0", "129", "NaN", "1.5"])
+    assert.throws(() => runtimeConfiguration({ ...environment, POOL_HOME_PEER_ORDINAL: value }));
+});

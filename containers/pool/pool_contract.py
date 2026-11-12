@@ -16,11 +16,11 @@ from typing import Any
 from .billing_policy import provision_billing_policy
 from .recovery_deadline import current_deadline
 from .recovery_http import request_with_deadline
+from .home_identity import HomeIdentity
 
-HOME_URL = "http://127.0.0.1:8327"
+HOME_URL = f"http://127.0.0.1:{8329 if os.environ.get('POOL_HOME_PEER_ORDINAL') is not None else 8327}"
 NODE_URL = "http://127.0.0.1:8317"
 READY_BIND = ("0.0.0.0", 8318)
-NODE_NAME = "basalt-pool"
 ROOT = pathlib.Path("/dev/shm/cliproxy-pool")
 PATH_VALUE = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 NATIVE_POLICY_SOCKET = ROOT / "native-policy.sock"
@@ -101,11 +101,12 @@ def atomic_write(path: pathlib.Path, content: str) -> None:
 
 
 def cluster_yaml(database_url: str, schema_owner: str = "") -> str:
+    identity = HomeIdentity.parse(os.environ.get("POOL_HOME_PEER_ORDINAL"))
     # A JSON-quoted scalar is valid YAML and preserves URI query/credential bytes.
     parsed = urllib.parse.urlsplit(database_url)
     query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     query = [(key, value) for key, value in query if key != "application_name"]
-    query.append(("application_name", "basalt-home"))
+    query.append(("application_name", identity.database_name))
     encoded_url = json.dumps(urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query))))
     owner_yaml = f"  schema-owner: {json.dumps(schema_owner)}\n" if schema_owner else ""
     return (
@@ -118,8 +119,8 @@ def cluster_yaml(database_url: str, schema_owner: str = "") -> str:
         "  conn-max-lifetime: 30m\n"
         "node:\n"
         "  external-ip: 127.0.0.1\n"
-        "  external-port: 8327\n"
-        "  port: 8327\n"
+        f"  external-port: {identity.advertised_port}\n"
+        f"  port: {identity.port}\n"
         "  heartbeat-interval: 5s\n"
         "  heartbeat-timeout: 20s\n"
         "  event-poll-interval: 3s\n"
@@ -328,7 +329,7 @@ def create_node_jwt(management_key: str) -> tuple[str, str]:
         f"{HOME_URL}/v8/management/certificates/clients",
         "POST",
         management_key,
-        {"node_name": NODE_NAME},
+        {"node_name": HomeIdentity.parse(os.environ.get("POOL_HOME_PEER_ORDINAL")).name},
         timeout=10,
     )
     node_id = payload.get("id")

@@ -92,6 +92,7 @@ COPY child_signals.py quota_signals.py dispatch_signals.py /opt/pool/
 COPY crash_tail.py /opt/pool/crash_tail.py
 COPY runtime_signals.py /opt/pool/runtime_signals.py
 COPY pool_contract.py /opt/pool/pool_contract.py
+COPY home_identity.py home_peer.py home_peer_wire.py /opt/pool/
 COPY billing_policy.py billing-settings.json /opt/pool/
 COPY readiness.py policy_diagnostic.py /opt/pool/
 COPY policy_monitor.py /opt/pool/policy_monitor.py
@@ -101,7 +102,7 @@ ENV HOME=/dev/shm/cliproxy-pool \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/opt \
     TZ=Etc/UTC
-EXPOSE 8317 8318 8327
+EXPOSE 8317 8318 8327 8329
 HEALTHCHECK --interval=10s --timeout=4s --start-period=180s --retries=3 \
   CMD ["python3", "-m", "pool.healthcheck"]
 USER pool
