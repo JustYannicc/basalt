@@ -154,11 +154,18 @@ const resolveConflict = mutation(
 );
 export const history = query(
   {
-    description: "Read retained cloud versions and both parents of merged edits.",
-    input: object({ at: string().optional(), limit: number().optional() }),
+    description:
+      "Read retained cloud versions and both parents of merged edits, newest first. With path, only versions that changed that file.",
+    input: object({
+      path: string().optional(),
+      at: string().optional(),
+      limit: number().optional(),
+    }),
   },
   (ctx: Read, input) =>
     ctx.drive.history({
+      // A drive without per-file history refuses `path`, so callers can tell it can't filter.
+      ...((input.path === undefined ? {} : { path: input.path }) as object),
       ...(input.at === undefined ? {} : { at: input.at }),
       ...(input.limit === undefined ? {} : { limit: input.limit }),
     }),

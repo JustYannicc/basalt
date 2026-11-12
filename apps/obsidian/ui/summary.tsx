@@ -11,7 +11,8 @@ export function Summary({
 }: {
   readonly name: string;
   readonly state: VaultState;
-  readonly files: number | null;
+  /** The walked vault; `complete` is false when a huge vault stopped the walk early. */
+  readonly files: { readonly count: number; readonly complete: boolean } | null;
   readonly latest: Version | null;
   readonly now: number;
 }) {
@@ -23,7 +24,11 @@ export function Summary({
         <h1 className="vault-name">{name}</h1>
         <p className="health">
           <Status state={state} />
-          {known !== null && <span className="part">{count(known)}</span>}
+          {known !== null && (
+            <span className="part">
+              {known.complete ? count(known.count) : `${known.count.toLocaleString()}+ files`}
+            </span>
+          )}
           {change !== null && <span className="part">{change}</span>}
         </p>
         {state.kind === "importing" && (

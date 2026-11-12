@@ -2,7 +2,7 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-devices.ts b/apps/hosted/web
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/obsidian-devices.ts
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,110 @@
 +import { Schema } from "effect";
 +import type { AppId } from "@executor-js/sdk";
 +import { obsidianTools } from "./obsidian-connection.ts";
@@ -35,6 +35,8 @@ new file mode 100644
 +    only !== undefined &&
 +    rest.length === 0 &&
 +    only.app === app &&
++    only.runsAs.length === 1 &&
++    only.runsAs[0]?.kind === "app" &&
 +    only.tools.kind === "selected" &&
 +    only.tools.names.length > 0 &&
 +    only.tools.names.every((name) => syncTools.has(name))

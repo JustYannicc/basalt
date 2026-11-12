@@ -142,3 +142,27 @@ test("an agent's wider connection that includes the vault app is not a device", 
     ["g-mac"],
   );
 });
+
+test("a single-app connection is a device only when scoped to sync tools and run as the app", () => {
+  const scoped = (id: string, tools: unknown, runsAs: unknown = [{ kind: "app" }]) =>
+    ({
+      ...connection(id, vault),
+      policy: { apps: [{ app: vault, runsAs, tools }] },
+    }) as unknown as Connection;
+  const devices = obsidianDevices(
+    vault,
+    [
+      scoped("all", { kind: "all" }),
+      scoped("extra", { kind: "selected", names: [...obsidianTools, "deleteNote"] }),
+      scoped("user", { kind: "selected", names: obsidianTools }, [{ kind: "user" }]),
+      scoped("plugin", { kind: "selected", names: obsidianTools.slice(0, 5) }),
+    ],
+    ["all", "extra", "user", "plugin"].map((id) =>
+      agent(`g-${id}`, through(id), "2026-11-10T08:00:00.000Z"),
+    ),
+  );
+  assert.deepEqual(
+    devices.map((device) => device.agent),
+    ["g-plugin"],
+  );
+});

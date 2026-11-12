@@ -14,7 +14,11 @@ interface Loaded {
 
 export function App({ api }: { readonly api: VaultApi }) {
   const [loaded, setLoaded] = useState<Loaded | "failed" | null>(null);
-  const [files, setFiles] = useState<readonly string[]>([]);
+  const [walked, setWalked] = useState<{ paths: readonly string[]; complete: boolean }>({
+    paths: [],
+    complete: false,
+  });
+  const files = walked.paths;
   const [selected, setSelected] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   // Relative times ("4 minutes ago") age with the page instead of freezing at load.
@@ -36,7 +40,7 @@ export function App({ api }: { readonly api: VaultApi }) {
         });
         // Wikilinks resolve against every path; the tree itself loads folder by folder.
         api.walk().then(
-          (paths) => !cancelled && setFiles(paths),
+          (result) => !cancelled && setWalked(result),
           () => undefined,
         );
       })
@@ -76,7 +80,7 @@ export function App({ api }: { readonly api: VaultApi }) {
       <Summary
         name="Your vault"
         state={state}
-        files={files.length || null}
+        files={files.length ? { count: files.length, complete: walked.complete } : null}
         latest={loaded.latest}
         now={now}
       />
@@ -123,7 +127,7 @@ function EmptyVault() {
         </li>
         <li>
           <b>Add your phone later</b>
-          <span>Notes show up on this page as they arrive.</span>
+          <span>Once your Mac has synced, choose Connect another device at the top.</span>
         </li>
       </ol>
     </div>

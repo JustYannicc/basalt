@@ -1,7 +1,6 @@
 import { json, type Schema } from "apps";
 import { createAppClient, queryReference, type OperationReference } from "apps/client";
 import type { attachmentTools } from "../attachments.ts";
-import type { changeTools } from "../changes.ts";
 import type { importTools } from "../imports.ts";
 import type { history, listNotes, readAttachment, readNote, searchNotes } from "../index.ts";
 import type { Devices, ImportStatus, Version } from "./model.ts";
@@ -18,7 +17,6 @@ const tools = {
   readAttachment: queryReference<typeof readAttachment>("readAttachment"),
   history: queryReference<typeof history>("history"),
   importStatus: queryReference<(typeof importTools)["importStatus"]>("importStatus"),
-  changes: queryReference<(typeof changeTools)["changes"]>("changes"),
   fileInfo: queryReference<(typeof attachmentTools)["fileInfo"]>("fileInfo"),
 };
 // Device sync records arrive with a later server; until then this tool doesn't exist.
@@ -92,7 +90,7 @@ async function search(query: string) {
  * Every path in the vault at one version, for wikilink resolution and the file count. Folders
  * load a few at a time; huge vaults stop at `limit`.
  */
-async function walk(limit = 20000): Promise<string[]> {
+async function walk(limit = 20000): Promise<{ paths: string[]; complete: boolean }> {
   const root = await list(undefined);
   const paths: string[] = [];
   let folders: string[] = [];
@@ -110,7 +108,7 @@ async function walk(limit = 20000): Promise<string[]> {
     for (const page of await Promise.all(batch.map((path) => list(path, root.at))))
       take(page.entries);
   }
-  return paths;
+  return { paths, complete: paths.length < limit };
 }
 
 const maxAttachmentBytes = 8 * 1024 * 1024;
@@ -141,26 +139,16 @@ async function attachment(path: string, type: string): Promise<Blob | null> {
 }
 
 /**
- * One note's dated versions, newest first, or null where the server can't answer per note. A
- * server whose tool ignores `path` answers with the whole vault's versions, so the newest one
- * must really have changed this note.
+ * One note's dated versions, newest first, or null where the server can't answer per note: a
+ * drive without per-file history refuses `path`, and one without commit times leaves `time` out.
  */
 async function noteHistory(path: string, limit: number): Promise<Version[] | null> {
-  // `path` is accepted once the server's history tool declares it; older tools drop it.
-  const versions: readonly Version[] | null = await run(tools.history, {
-    path,
-    limit,
-  } as never).catch(() => null);
-  if (versions === null || !versions.every((version) => typeof version.time === "string"))
-    return null;
-  const newest = versions[0];
-  if (newest === undefined) return [];
-  const changed = await run(tools.changes, {
-    from: newest.parents[0] ?? null,
-    to: newest.oid,
-    limit: 500,
-  }).catch(() => null);
-  return changed?.entries.some((entry) => entry.path === path) ? [...versions] : null;
+  const versions: readonly Version[] | null = await run(tools.history, { path, limit }).catch(
+    () => null,
+  );
+  return versions !== null && versions.every((version) => typeof version.time === "string")
+    ? [...versions]
+    : null;
 }
 
 export const vault = {
