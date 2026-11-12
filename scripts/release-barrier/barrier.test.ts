@@ -1,3 +1,4 @@
+import { readySqlSchemas } from "./sql-schema-fixture.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { releaseWorkers, type BarrierReceipt, type VersionProvider } from "./barrier.ts";
@@ -47,6 +48,7 @@ function fixture(overrides: Partial<VersionProvider> = {}) {
     events,
     receipts,
     options: {
+      sqlSchemas: async () => readySqlSchemas(manifest().candidate),
       provider,
       async record(receipt: BarrierReceipt) {
         receipts.push(receipt);

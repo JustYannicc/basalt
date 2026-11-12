@@ -73,12 +73,13 @@ function descriptorDigest(value: unknown) {
   return digest;
 }
 
-export async function inspectPoolImage(
+export async function withPoolRegistryPull<T>(
   imageRef: string,
   expectedDigest: string,
   credentials: CloudflareCredentials,
+  consume: (access: { username: string; password: string; repository: string }) => Promise<T>,
   fetcher: Fetcher = fetch,
-) {
+): Promise<T> {
   // Credentials may only reach this account's managed registry, through immutable references.
   const prefix = `registry.cloudflare.com/${credentials.accountId}/`;
   if (
@@ -112,40 +113,57 @@ export async function inspectPoolImage(
   );
   const username = stringField(issued.username ?? issued.user, "Pool registry username");
   const password = stringField(issued.password, "Pool registry password");
-  const headers = {
-    Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
-    Accept: manifestTypes,
-  };
-  const base = `https://registry.cloudflare.com/v2/${repository.split("/").map(encodePathSegment).join("/")}`;
-  const manifest = (digest: string) =>
-    boundedJson(fetcher, `${base}/manifests/${digest}`, { method: "GET", headers }, digest);
-  let publication = await manifest(expectedDigest);
-  if (Array.isArray(publication.manifests)) {
-    const matches = publication.manifests
-      .map((value) => record(value, "Pool image index entry"))
-      .filter((entry) => {
-        const platform = record(entry.platform, "Pool image index platform");
-        return platform.os === "linux" && platform.architecture === "amd64";
-      });
-    if (matches.length !== 1)
-      throw new SafetyGateError("Pool image index has no unique linux/amd64 image");
-    publication = await manifest(descriptorDigest(matches[0]));
-  }
-  const configDigest = descriptorDigest(publication.config);
-  const config = await boundedJson(
+  return consume({ username, password, repository });
+}
+
+export async function inspectPoolImage(
+  imageRef: string,
+  expectedDigest: string,
+  credentials: CloudflareCredentials,
+  fetcher: Fetcher = fetch,
+) {
+  return withPoolRegistryPull(
+    imageRef,
+    expectedDigest,
+    credentials,
+    async ({ username, password, repository }) => {
+      const headers = {
+        Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
+        Accept: manifestTypes,
+      };
+      const base = `https://registry.cloudflare.com/v2/${repository.split("/").map(encodePathSegment).join("/")}`;
+      const manifest = (digest: string) =>
+        boundedJson(fetcher, `${base}/manifests/${digest}`, { method: "GET", headers }, digest);
+      let publication = await manifest(expectedDigest);
+      if (Array.isArray(publication.manifests)) {
+        const matches = publication.manifests
+          .map((value) => record(value, "Pool image index entry"))
+          .filter((entry) => {
+            const platform = record(entry.platform, "Pool image index platform");
+            return platform.os === "linux" && platform.architecture === "amd64";
+          });
+        if (matches.length !== 1)
+          throw new SafetyGateError("Pool image index has no unique linux/amd64 image");
+        publication = await manifest(descriptorDigest(matches[0]));
+      }
+      const configDigest = descriptorDigest(publication.config);
+      const config = await boundedJson(
+        fetcher,
+        `${base}/blobs/${configDigest}`,
+        { method: "GET", headers },
+        configDigest,
+      );
+      const platform = `${stringField(config.os, "Pool image OS")}/${stringField(config.architecture, "Pool image architecture")}`;
+      const label = record(
+        record(config.config, "Pool image configuration").Labels,
+        "Pool image labels",
+      )[capabilityLabel];
+      if (platform !== "linux/amd64" || label !== "1")
+        throw new SafetyGateError(
+          "Pool image platform or OAuth completion capability label is missing",
+        );
+      return { digest: expectedDigest, configDigest, platform, capabilityLabel: label };
+    },
     fetcher,
-    `${base}/blobs/${configDigest}`,
-    { method: "GET", headers },
-    configDigest,
   );
-  const platform = `${stringField(config.os, "Pool image OS")}/${stringField(config.architecture, "Pool image architecture")}`;
-  const label = record(
-    record(config.config, "Pool image configuration").Labels,
-    "Pool image labels",
-  )[capabilityLabel];
-  if (platform !== "linux/amd64" || label !== "1")
-    throw new SafetyGateError(
-      "Pool image platform or OAuth completion capability label is missing",
-    );
-  return { digest: expectedDigest, configDigest, platform, capabilityLabel: label };
 }

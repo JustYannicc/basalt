@@ -1,6 +1,8 @@
 import { placementRepairTargets } from "./pending-placement.ts";
 import type { ContainerHealth } from "./container-health.ts";
 import { Schema } from "effect";
+import type { SqlSchemaReceipt } from "./sql-schema-contract.ts";
+import { sqlSchemaReceiptCodec } from "./sql-schema-codec.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import {
   readRecoveryManifest,
@@ -13,6 +15,7 @@ import {
 export { readRecoveryManifest, type RecoveryWorker } from "./recovery-manifest.ts";
 
 export interface RecoveryReceipt {
+  sqlSchemas?: SqlSchemaReceipt;
   candidate: string;
   manifest: string;
   restored: string[];
@@ -54,6 +57,16 @@ export async function recoverWorkers(
   previous?: ReturnType<typeof readRecoveryProgress>,
 ) {
   const manifest = readRecoveryManifest(manifestValue);
+  // Barrier receipts have extra progress fields, but schema evidence must remain a closed DTO.
+  if (
+    typeof receiptValue === "object" &&
+    receiptValue !== null &&
+    "sqlSchemas" in receiptValue &&
+    receiptValue.sqlSchemas !== undefined
+  )
+    Schema.decodeUnknownSync(sqlSchemaReceiptCodec, { onExcessProperty: "error" })(
+      receiptValue.sqlSchemas,
+    );
   const admitted = Schema.decodeUnknownSync(recoveryReceipt)(receiptValue);
   const fingerprint = digest(canonical(manifest));
   if (
@@ -67,10 +80,12 @@ export async function recoverWorkers(
     throw new BarrierRefusal("container-recovery-required");
   if (previous && (previous.candidate !== manifest.candidate || previous.manifest !== fingerprint))
     throw new BarrierRefusal("recovery-progress-mismatch");
+  const sqlSchemas = previous?.sqlSchemas ?? admitted.sqlSchemas;
   const progress: RecoveryReceipt = {
     candidate: manifest.candidate,
     manifest: fingerprint,
     restored: [],
+    ...(sqlSchemas ? { sqlSchemas: structuredClone(sqlSchemas) } : {}),
     ...(previous?.containers
       ? { containers: previous.containers.map((item) => ({ ...item })) }
       : {}),

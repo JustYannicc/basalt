@@ -1,3 +1,4 @@
+import { readySqlSchemas } from "../sql-schema-fixture.ts";
 import { publicSiteWaitlist, provisionPublicSiteWaitlist } from "../public-site-waitlist.ts";
 import assert from "node:assert/strict";
 import * as Apply from "alchemy/Apply";
@@ -222,6 +223,7 @@ export function provisioningD1(
         };
         const releaseOptions = (): DeployStackOptions => ({
           candidate: "a".repeat(40),
+          forwardEncryptionKey: "1".repeat(64),
           declarations,
           declared: async (value) => {
             progress.push(structuredClone(value));
@@ -236,6 +238,7 @@ export function provisioningD1(
           },
           manifest: async () => {},
           io: {
+            sqlSchemas: async () => readySqlSchemas("a".repeat(40)),
             baseline: () => Effect.succeed([{ versionId: "previous", percentage: 100 }]),
             upload: () =>
               Effect.sync(() => {

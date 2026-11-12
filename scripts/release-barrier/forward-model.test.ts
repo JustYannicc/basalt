@@ -25,6 +25,7 @@ const encryptionKey = "f".repeat(64);
 async function fixture() {
   const f = containerRelease();
   await releaseWorkers(f.manifest, {
+    sqlSchemas: f.options.sqlSchemas,
     provider: f.options.provider,
     containers: {
       ...f.options.containers,

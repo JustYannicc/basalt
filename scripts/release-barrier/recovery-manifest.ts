@@ -4,6 +4,7 @@ import { Schema } from "effect";
 import { BarrierRefusal } from "./manifest.ts";
 import { describeContainer } from "./container.ts";
 import { attachmentCodec, configurationCodec, rolloutCodec } from "./container-schema.ts";
+import { sqlSchemaReceiptCodec } from "./sql-schema-codec.ts";
 
 const baseline = Schema.Array(
   Schema.Struct({ versionId: Schema.String, percentage: Schema.Number }),
@@ -71,6 +72,7 @@ export function readRecoveryManifest(value: unknown): RecoveryManifest {
 }
 export type RecoveryWorker = typeof recoveryWorker.Type;
 export const recoveryReceipt = Schema.Struct({
+  sqlSchemas: Schema.optional(sqlSchemaReceiptCodec),
   schemaVersion: Schema.Literals([1, 2]),
   candidate: Schema.String,
   manifest: Schema.String,
@@ -113,6 +115,7 @@ export const recoveryReceipt = Schema.Struct({
 export type RecoveryAdmission = typeof recoveryReceipt.Type;
 export const readRecoveryProgress = Schema.decodeUnknownSync(
   Schema.Struct({
+    sqlSchemas: Schema.optional(sqlSchemaReceiptCodec),
     candidate: Schema.String,
     manifest: Schema.String,
     restored: Schema.Array(Schema.String),
