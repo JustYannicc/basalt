@@ -64,17 +64,24 @@ function reasonsFor(slices: readonly OverviewUsageSlice[], field: "api" | "subsc
 }
 
 function Reasons({ reasons }: { reasons: readonly string[] }) {
+  const [expanded, setExpanded] = useState(false);
   if (!reasons.length) return null;
   const rest = reasons.length - shownReasons;
   return (
-    <span
-      className="mt-0.5 ml-auto grid max-w-48 justify-items-end gap-0.5 text-xs leading-snug max-[540px]:max-w-32 font-normal text-muted-foreground text-pretty [overflow-wrap:anywhere]"
-      title={rest > 0 ? reasons.join("\n") : undefined}
-    >
-      {reasons.slice(0, shownReasons).map((reason) => (
+    <span className="mt-0.5 ml-auto grid max-w-48 justify-items-end gap-0.5 text-xs leading-snug max-[540px]:max-w-32 font-normal text-muted-foreground text-pretty [overflow-wrap:anywhere]">
+      {reasons.slice(0, expanded ? undefined : shownReasons).map((reason) => (
         <span key={reason}>{reason}</span>
       ))}
-      {rest > 0 && <span>+{rest} more · open the row</span>}
+      {rest > 0 && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+          className="min-h-11 min-w-11 cursor-pointer rounded-sm py-1 text-right outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {expanded ? "Show less" : `+${rest} more`}
+        </button>
+      )}
     </span>
   );
 }
@@ -785,7 +792,9 @@ function Figure({
           {days} days
         </small>
       </span>
-      <p className="m-0 text-[13px] text-muted-foreground text-pretty">{body}</p>
+      <p className="m-0 text-[13px] text-muted-foreground text-pretty [overflow-wrap:anywhere]">
+        {body}
+      </p>
     </div>
   );
 }

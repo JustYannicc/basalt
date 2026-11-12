@@ -29,3 +29,27 @@ test("current exact IDs need no per-model aliases, and unknown families never ge
     [],
   );
 });
+
+test("date aliases do not broaden Home's existing preview, latest or thinking normalization", () => {
+  assert.deepEqual(
+    priceAliases([
+      { provider: "codex", model: "gpt-6.1-sol-preview" },
+      { provider: "codex", model: "gpt-6.1-sol-latest" },
+      { provider: "codex", model: "gpt-6.1-sol-thinking" },
+      { provider: "codex", model: "gpt-6.1-sol-20261101-preview" },
+    ]),
+    [],
+  );
+});
+
+test("future Claude families and multi-part versions need no model-name list", () => {
+  assert.deepEqual(
+    priceAliases([{ provider: "claude", model: "claude-future-family-8.2.1-20261101" }]),
+    [
+      {
+        target_model: "claude-future-family-8.2.1-20261101",
+        source_models: ["claude-future-family-8.2.1", "claude-future-family-8-2-1"],
+      },
+    ],
+  );
+});

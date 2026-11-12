@@ -212,6 +212,7 @@ test(
     let browser;
     let exited;
     let evidenceVideo;
+    let costReasonsVideo;
     t.after(async () => {
       const problems = [];
       const step = async (work) => {
@@ -230,6 +231,10 @@ test(
         response.end(JSON.stringify(failed));
       if (artifacts && evidenceVideo)
         await step(() => evidenceVideo.saveAs(join(artifacts, `${artifactLabel}-transition.webm`)));
+      if (artifacts && costReasonsVideo)
+        await step(() =>
+          costReasonsVideo.saveAs(join(artifacts, `${artifactLabel}-cost-reasons-390.webm`)),
+        );
       await step(() => browser?.close());
       await step(() => browserServer?.close());
       if (browserServer)
@@ -475,8 +480,10 @@ test(
               }
             : overviewShape(value),
         );
-        if (personal && holdPersonal) heldPersonal.push({ response, reply });
-        else response.end(reply);
+        if (personal && holdPersonal) {
+          heldPersonal.push({ response, reply });
+          arrived();
+        } else response.end(reply);
       } else if (request.url === "/_executor/api/query") {
         let body = "";
         for await (const chunk of request) body += chunk;
@@ -547,18 +554,19 @@ test(
     };
     const pending = (fresh) =>
       held.filter((entry) => fresh === undefined || entry.fresh === fresh).length;
-    const requests = (count, fresh) =>
+    const requests = (count, fresh, kind = "view") =>
       new Promise((resolve, reject) => {
+        const heldCount = () => (kind === "personal" ? heldPersonal.length : pending(fresh));
         const timer = setTimeout(() => {
           arrived = () => {};
           reject(
             new Error(
-              `Expected ${count} held${fresh ? " fresh" : ""} view request(s), saw ${pending(fresh)}`,
+              `Expected ${count} held${fresh ? " fresh" : ""} ${kind} request(s), saw ${heldCount()}`,
             ),
           );
         }, 10_000);
         arrived = () => {
-          if (pending(fresh) < count) return;
+          if (heldCount() < count) return;
           clearTimeout(timer);
           arrived = () => {};
           resolve();
@@ -1713,6 +1721,8 @@ test(
           ["codex", "synthetic-priced"],
           ["claude", null],
           ["codex", "synthetic-unlisted"],
+          ["codex", "synthetic-unlisted-two"],
+          ["codex", "synthetic-unlisted-three"],
           ["claude", "synthetic-tokenless"],
         ];
         const usage = {
@@ -1748,7 +1758,11 @@ test(
           ...fields,
         });
         const overview = (value) => {
-          const price = { asOf: "2026-11-01T00:00:00Z", source: "models.dev", version: "fixture" };
+          const price = {
+            asOf: "2026-11-01T00:00:00Z",
+            source: "models.dev",
+            version: "a".repeat(64),
+          };
           const available = (amount) => ({
             status: "available",
             amount,
@@ -1778,6 +1792,14 @@ test(
               subscriptionUnpriced: 1,
               subscriptionReason: noPrice,
             }),
+            ...["synthetic-unlisted-two", "synthetic-unlisted-three"].map((model) =>
+              slice("codex", model, {
+                apiUnpriced: 1,
+                apiReason: `No public price for ${model}`,
+                subscriptionUnpriced: 1,
+                subscriptionReason: `No public price for ${model}`,
+              }),
+            ),
             // Pure API traffic: no subscription use, so that column has nothing to explain.
             slice("claude", "synthetic-tokenless", { apiUnpriced: 1, apiReason: noTokens }),
           ];
@@ -1795,6 +1817,7 @@ test(
             await who.locator("table").scrollIntoViewIfNeeded();
             await settled();
             await capture(page, `cost-reasons-${width}`);
+            if (artifacts && width === 390) costReasonsVideo = page.video();
             for (const [name, reason] of [
               ["Model not recorded", noModel],
               ["synthetic-unlisted", noPrice],
@@ -1821,6 +1844,35 @@ test(
               /No public price|Model not recorded/,
               "A missing-token row keeps its own reason",
             );
+            assert.equal(
+              await frame
+                .locator("body")
+                .evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+              true,
+              "Real-length catalog hashes and row reasons fit the viewport",
+            );
+            const costs = frame.locator("section").filter({
+              has: frame.getByRole("heading", {
+                name: "API cost and subscription value",
+                exact: true,
+              }),
+            });
+            const lab = costs
+              .locator("tbody tr")
+              .filter({ has: frame.getByRole("rowheader", { name: "Codex", exact: true }) });
+            const apiCell = lab.locator("td").first();
+            const lastReason = apiCell.getByText("No public price for synthetic-unlisted-three", {
+              exact: true,
+            });
+            assert.equal(await lastReason.isVisible(), false);
+            await apiCell.getByRole("button", { name: "+1 more", exact: true }).click();
+            assert.equal(
+              await lastReason.isVisible(),
+              true,
+              "A non-expandable lab row exposes all reasons by touch",
+            );
+            await apiCell.getByRole("button", { name: "Show less", exact: true }).click();
+            assert.equal(await lastReason.isVisible(), false, "The reason disclosure closes again");
             assert.deepEqual(
               await who.evaluate((section) => {
                 const table = section.querySelector("table").getBoundingClientRect();
@@ -2138,6 +2190,7 @@ test(
                 { exact: true },
               )
               .waitFor();
+            await requests(1, undefined, "personal");
             assert.ok(
               heldPersonal.length > 0,
               "Personal usage stays held after the manager endpoint denies access",

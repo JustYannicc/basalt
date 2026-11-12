@@ -17,11 +17,9 @@ function withoutDate(model: string): string {
 export function priceAliases(targets: readonly PriceTarget[]) {
   return [...new Set(targets.map((target) => target.model))].flatMap((model) => {
     const bare = model.slice(model.lastIndexOf("/") + 1);
-    const plain = bare.replace(/-(thinking|preview|latest)$/i, "");
-    const undated = withoutDate(plain);
+    const undated = withoutDate(bare);
     const candidates = [undated];
-    if (/^claude-(opus|sonnet|haiku)-\d+[.-]\d+(?:-|$)/i.test(undated))
-      candidates.push(undated.replace(/(\d)[.-](\d)/g, "$1-$2"));
+    if (/^claude-/i.test(undated)) candidates.push(undated.replace(/(?<=\d)\.(?=\d)/g, "-"));
     const sourceModels = [...new Set(candidates)].filter((candidate) => candidate !== bare);
     return sourceModels.length ? [{ target_model: model, source_models: sourceModels }] : [];
   });
