@@ -88,6 +88,16 @@ class ServiceHealthTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "^fixture$"):
             self.health.check()
 
+    def test_same_generation_invalidation_cannot_discard_a_later_audit_exception(self) -> None:
+        self.clock.now = 60
+        self.health.check()
+        self.health.invalidate()
+        self.full.side_effect = RuntimeError("fixture")
+        self.finish_audit()
+        self.fast.return_value = False
+        with self.assertRaisesRegex(RuntimeError, "^fixture$"):
+            self.health.check()
+
     def test_policy_transition_between_ticks_cannot_restore_cached_readiness(self) -> None:
         ready = Readiness("fixture", lambda: int(self.clock.now * 1_000_000_000))
         ready.refresh_policy_lease("a" * 32)

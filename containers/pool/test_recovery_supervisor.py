@@ -35,6 +35,7 @@ class SupervisorTests(unittest.TestCase):
         actual_cleanup=False,
         replacement_startup_exit=False,
         replacement_drain_failure=None,
+        invalidate_startup_audit=False,
     ):
         clock = Clock()
         stop = Stop(clock)
@@ -46,6 +47,8 @@ class SupervisorTests(unittest.TestCase):
         boot_ids = []
         terminate_owned = supervisor.terminate_children
         wait_for_home = supervisor.wait_for_home
+        service_health = supervisor.ServiceHealth
+        transition_samples = []
 
         def make_child(name, command, env, cwd, *callbacks):
             number = sum(child.name == "home" for child in launched)
@@ -129,6 +132,12 @@ class SupervisorTests(unittest.TestCase):
             boot_ids.append(ready.generation())
             return True
 
+        def make_service_health(*args):
+            if invalidate_startup_audit:
+                ready_instances[0].invalidate_policy()
+                ready_instances[0].refresh_policy_lease("b" * 32)
+            return service_health(*args)
+
         def advance_phase(phase):
             if sum(child.name == "home" for child in launched) > 1:
                 clock.now += (recovery_phase_delays or {}).get(phase, 0)
@@ -148,6 +157,10 @@ class SupervisorTests(unittest.TestCase):
             return "node", "jwt"
 
         def wait_callback(seconds):
+            if invalidate_startup_audit and seconds == 2:
+                transition_samples.append(ready_instances[0].snapshot()[0])
+                if len(transition_samples) == 2:
+                    stop.set()
             if stop_after_recovery and seconds == 2 and len(boot_ids) == 2:
                 self.assertTrue(ready_instances[0].snapshot()[0])
                 stop.set()
@@ -175,6 +188,7 @@ class SupervisorTests(unittest.TestCase):
                 "create_node_jwt": enroll,
                 "check_services": health,
                 "check_liveness": health,
+                "ServiceHealth": make_service_health,
                 "PolicyHealthMonitor": Mock(
                     return_value=SimpleNamespace(run=lambda _: None)
                 ),
@@ -195,6 +209,7 @@ class SupervisorTests(unittest.TestCase):
             stack.enter_context(redirect_stderr(errors))
             result = supervisor.main(stop)
             ready_instances[0].cleanup_finished_at = clock.now
+            ready_instances[0].transition_samples = transition_samples
             imported = mocks["import_initial_config"].call_count
         records = [
             (line.split(" ", 1)[0], json.loads(line.split(" ", 1)[1]))
@@ -210,6 +225,13 @@ class SupervisorTests(unittest.TestCase):
             boot_ids,
             imported,
         )
+
+    def test_invalidation_after_startup_audit_is_not_adopted_as_cached_proof(self):
+        result, _, ready, _, _, _, _, _ = self.run_supervisor(
+            failed_name="none", invalidate_startup_audit=True
+        )
+        self.assertEqual(result, 0)
+        self.assertEqual(ready.transition_samples, [False, False])
 
     def test_repeated_runtime_failures_exit_one_with_receipts_and_no_budget_reset(self):
         result, children, ready, records, _stop, terminations, ids, _ = (

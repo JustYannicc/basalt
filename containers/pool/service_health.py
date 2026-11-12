@@ -79,9 +79,10 @@ class ServiceHealth:
             error = audit_error
         with self._lock:
             self._running = False
+            if error is not None:
+                self._audit_error = error
             if epoch != self._epoch:
                 return
-            self._audit_error = error
             now = self._clock()
             healthy = healthy and now < deadline
             self._full_ok = healthy
