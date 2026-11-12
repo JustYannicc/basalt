@@ -61,6 +61,16 @@ export interface OverviewTokenPercentiles {
   }[];
 }
 
+/** Source identity and recovery state of the rates used for an estimate. */
+export interface OverviewPriceProvenance {
+  readonly asOf: string;
+  readonly source: string;
+  readonly version: string;
+  /** Omitted by older servers, which only returned refreshed rates. */
+  readonly basis?: "live" | "baseline";
+  readonly refreshFailed?: boolean;
+}
+
 export interface OverviewMoneyMetric {
   readonly status: "available" | "unavailable";
   readonly reason?: string;
@@ -72,11 +82,7 @@ export interface OverviewMoneyMetric {
     readonly unknownKindValue: string | null;
     readonly unpriced: number;
   };
-  readonly price: {
-    readonly asOf: string;
-    readonly source: string;
-    readonly version: string;
-  } | null;
+  readonly price: OverviewPriceProvenance | null;
 }
 
 export interface OverviewPerPersonDailyValue {
@@ -104,6 +110,8 @@ export interface OverviewApiPrice {
   readonly asOf: string;
   readonly source: "models.dev";
   readonly version: string;
+  readonly basis?: "live" | "baseline";
+  readonly refreshFailed?: boolean;
 }
 
 /** Trusted server diagnostics for a public rate lookup, separate from request accounting. */
@@ -154,11 +162,7 @@ export interface OverviewUsageSlice {
   readonly subscriptionReason?: string;
   readonly unknownKind: number;
   readonly unknownKindValue: string | null;
-  readonly price: {
-    readonly asOf: string;
-    readonly source: string;
-    readonly version: string;
-  } | null;
+  readonly price: OverviewPriceProvenance | null;
 }
 
 export interface PoolOverviewInput {

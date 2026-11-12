@@ -76,6 +76,13 @@ function fixture() {
     stale() {
       stale = true;
     },
+    savedEmptyFailure() {
+      values.set(`pool-public-price-v1:${JSON.stringify([target.provider, target.model])}`, {
+        nextAttemptAt: start + 30 * 60_000,
+        prices: [],
+        reason: `Public price refresh failed; no saved price for ${target.model}.`,
+      });
+    },
     addModel() {
       extra = true;
       version = "new-model";
@@ -100,10 +107,16 @@ test("refresh failure keeps the last good rates through restart and retries with
   const original = await f.prices.read([target]);
   f.advance(86_400_000);
   f.fail();
-  assert.deepEqual(await f.create().read([target]), original);
+  assert.deepEqual(
+    await f.create().read([target]),
+    original.map((price) => ({ ...price, refreshFailed: true })),
+  );
   assert.equal(f.requests.length, 2);
   f.recover();
-  assert.deepEqual(await f.create().read([target]), original);
+  assert.deepEqual(
+    await f.create().read([target]),
+    original.map((price) => ({ ...price, refreshFailed: true })),
+  );
   assert.equal(f.requests.length, 2, "restart retains the failed-attempt backoff");
   f.advance(30 * 60_000);
   assert.equal((await f.create().read([target]))[0]!.version, "v2");
@@ -142,13 +155,16 @@ test("an unsupported context band or invalid snapshot retains the entire last-go
   const original = await f.prices.read([target]);
   f.advance(86_400_000);
   f.invalid();
-  assert.deepEqual(await f.prices.read([target]), original);
+  assert.deepEqual(
+    await f.prices.read([target]),
+    original.map((price) => ({ ...price, refreshFailed: true })),
+  );
   const noHistory = fixture();
   noHistory.invalid();
-  assert.deepEqual(await noHistory.prices.read([target]), []);
+  assert.equal((await noHistory.prices.read([target]))[0]!.basis, "baseline");
   const stale = fixture();
   stale.stale();
-  assert.deepEqual(await stale.prices.read([target]), []);
+  assert.equal((await stale.prices.read([target]))[0]!.basis, "baseline");
 });
 
 test("concurrent reads share persisted rates instead of fetching the same source twice", async () => {
@@ -162,9 +178,9 @@ test("a source outage without saved prices stays distinct from a confirmed missi
   t.mock.method(console, "error", () => {});
   const f = fixture();
   f.fail();
-  const failed = await f.prices.readTable([target]);
+  const failed = await f.prices.readTable([{ ...target, model: "unpublished-model-77" }]);
   assert.deepEqual(failed.prices, []);
-  assert.match(failed.issues[0]!.reason, /refresh failed; no saved price for gpt-6.1-sol/);
+  assert.match(failed.issues[0]!.reason, /refresh failed; no saved price for unpublished-model-77/);
   const missing = fixture();
   const unknown = { provider: "openai", model: "new-unpublished" };
   assert.deepEqual((await missing.prices.readTable([unknown])).issues, [
@@ -185,4 +201,102 @@ test("dated aliases are supplied to Home while exact target identities are prese
     include_zero_cost: true,
     aliases: [{ target_model: dated.model, source_models: ["claude-opus-5.5", "claude-opus-5-5"] }],
   });
+});
+
+test("first-read source failure serves the dated baseline, survives restart, then a successful refresh replaces it", async (t) => {
+  const diagnostics: unknown[][] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    diagnostics.push(args);
+  });
+  const f = fixture();
+  f.fail();
+  const initial = await f.prices.readTable([target]);
+  assert.equal(initial.prices[0]!.basis, "baseline");
+  assert.equal(initial.prices[0]!.refreshFailed, true);
+  assert.equal(initial.prices[0]!.input, "2");
+  assert.deepEqual(initial.issues, []);
+  assert.deepEqual(await f.create().readTable([target]), initial);
+  f.recover();
+  f.advance(30 * 60_000);
+  const updated = await f.create().readTable([target]);
+  assert.equal(updated.prices[0]!.basis, "live");
+  assert.equal(updated.prices[0]!.refreshFailed, undefined);
+  assert.equal(updated.prices[0]!.version, "v2");
+  assert.equal(diagnostics.length, 1);
+  assert.equal((diagnostics[0]![1] as { errorClass: string }).errorClass, "transport");
+});
+
+test("a Home response after the old four-second deadline can complete inside the source budget", async () => {
+  const storage = {
+    async get<T>(_key: string): Promise<T | undefined> {
+      return undefined;
+    },
+    async put() {},
+  };
+  const home = new HomeClient(async (_path, init) => {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, 4250);
+      init?.signal?.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          reject(init.signal!.reason);
+        },
+        { once: true },
+      );
+    });
+    return Response.json({
+      source: "models.dev",
+      atomic: true,
+      source_version: "slow-source",
+      source_fetched_at: new Date().toISOString(),
+      rows: [row(target)],
+    });
+  });
+  const result = await new OverviewPrices(home, storage).readTable([target]);
+  assert.equal(result.prices[0]!.version, "slow-source");
+  assert.equal(result.prices[0]!.basis, "live");
+});
+
+test("an existing empty failed cache gains the shipped floor during its retained retry delay", async () => {
+  const f = fixture();
+  f.savedEmptyFailure();
+  const result = await f.prices.readTable([target]);
+  assert.equal(result.prices[0]!.basis, "baseline");
+  assert.equal(result.prices[0]!.refreshFailed, true);
+  assert.equal(result.prices[0]!.input, "2");
+  assert.deepEqual(result.issues, []);
+  assert.equal(f.requests.length, 0, "an upgrade preserves the existing outage backoff");
+});
+
+test("refresh diagnostics keep HTTP, decode and timeout causes without retaining backend text", async (t) => {
+  const seen: unknown[][] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    seen.push(args);
+  });
+  const privateText = "SYNTHETIC_BACKEND_PRIVATE_DETAILS";
+  const cases = [
+    { expected: "http", response: () => new Response(privateText, { status: 429 }) },
+    { expected: "decode", response: () => new Response(privateText) },
+    {
+      expected: "timeout",
+      response: (): Response => {
+        throw new DOMException(privateText, "TimeoutError");
+      },
+    },
+  ];
+  for (const scenario of cases) {
+    const storage = {
+      async get<T>(_key: string): Promise<T | undefined> {
+        return undefined;
+      },
+      async put() {},
+    };
+    const prices = new OverviewPrices(new HomeClient(async () => scenario.response()), storage);
+    assert.equal((await prices.read([target]))[0]!.basis, "baseline");
+    const diagnostic = seen.at(-1)![1] as { errorClass: string; backendStatus?: number };
+    assert.equal(diagnostic.errorClass, scenario.expected);
+    if (scenario.expected === "http") assert.equal(diagnostic.backendStatus, 429);
+    assert.equal(JSON.stringify(seen).includes(privateText), false);
+  }
 });

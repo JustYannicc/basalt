@@ -8,6 +8,8 @@ import type {
 } from "../overview-contract.ts";
 import { Button, Problem, Segmented, StateIcon } from "./controls.tsx";
 import { LabMark, labColor } from "./lab.tsx";
+import { PriceNote } from "./price-note.tsx";
+import { priceSentence, samePrice, slicePrice } from "./price-text.ts";
 import {
   addDecimal,
   coverageNotes,
@@ -91,12 +93,14 @@ function MoneyCell({
   priced,
   excluded,
   reasons,
+  price = null,
   unavailable = false,
 }: {
   list: Totals["home"];
   priced: boolean;
   excluded: bigint;
   reasons: readonly string[];
+  price?: ReturnType<typeof slicePrice>;
   unavailable?: boolean;
 }) {
   if (list.length)
@@ -115,6 +119,7 @@ function MoneyCell({
             </sup>
           )}
         </span>
+        <PriceNote price={price} />
         <Reasons reasons={reasons} />
       </>
     );
@@ -192,6 +197,8 @@ function rowMoney(row: Row, slices: readonly OverviewUsageSlice[]) {
       subscriptionExcluded: 0n,
       apiReasons: [],
       subscriptionReasons: [],
+      apiPrice: null,
+      subscriptionPrice: null,
     };
   const matches = slices.filter(
     (slice) =>
@@ -225,6 +232,8 @@ function rowMoney(row: Row, slices: readonly OverviewUsageSlice[]) {
     ),
     apiReasons: reasonsFor(matches, "api"),
     subscriptionReasons: reasonsFor(matches, "subscription"),
+    apiPrice: slicePrice(matches.filter((slice) => slice.apiBilled !== null)),
+    subscriptionPrice: slicePrice(matches.filter((slice) => slice.subscriptionValue !== null)),
   };
 }
 
@@ -251,6 +260,7 @@ const cells = (row: Row, slices: readonly OverviewUsageSlice[], unavailable: Una
       priced={moneyRows.apiCount}
       excluded={moneyRows.apiExcluded}
       reasons={moneyRows.apiReasons}
+      price={moneyRows.apiPrice}
       unavailable={unavailable.api !== null}
     />
   );
@@ -277,6 +287,12 @@ const cells = (row: Row, slices: readonly OverviewUsageSlice[], unavailable: Una
           priced={moneyRows.subscriptionCount}
           excluded={moneyRows.subscriptionExcluded}
           reasons={moneyRows.subscriptionReasons}
+          price={
+            moneyRows.apiBilled.length > 0 &&
+            samePrice(moneyRows.apiPrice, moneyRows.subscriptionPrice)
+              ? null
+              : moneyRows.subscriptionPrice
+          }
           unavailable={unavailable.subscription !== null}
         />
         {stackApi && (
@@ -288,6 +304,7 @@ const cells = (row: Row, slices: readonly OverviewUsageSlice[], unavailable: Una
                 priced={moneyRows.apiCount}
                 excluded={moneyRows.apiExcluded}
                 reasons={stackedApiReasons}
+                price={moneyRows.apiPrice}
                 unavailable={unavailable.api !== null}
               />
             </span>
@@ -695,6 +712,10 @@ export function Money({
               const lab = slices.filter((slice) => slice.provider === provider);
               const api = sumOverviewAmounts(lab, "apiBilled");
               const subscription = sumOverviewAmounts(lab, "subscriptionValue");
+              const apiPrice = slicePrice(lab.filter((slice) => slice.apiBilled !== null));
+              const subscriptionPrice = slicePrice(
+                lab.filter((slice) => slice.subscriptionValue !== null),
+              );
               return (
                 <tr key={provider ?? "unknown-provider"}>
                   <th
@@ -704,10 +725,18 @@ export function Money({
                     {provider ? (name?.(provider) ?? provider) : "Provider not recorded"}
                   </th>
                   <td className="border-b border-border py-2.5 pr-2 text-right tabular-nums">
-                    <LabAmount sum={api} reasons={reasonsFor(lab, "api")} />
+                    <LabAmount sum={api} reasons={reasonsFor(lab, "api")} price={apiPrice} />
                   </td>
                   <td className="border-b border-border py-2.5 text-right tabular-nums">
-                    <LabAmount sum={subscription} reasons={reasonsFor(lab, "subscription")} />
+                    <LabAmount
+                      sum={subscription}
+                      reasons={reasonsFor(lab, "subscription")}
+                      price={
+                        api.amount !== null && samePrice(apiPrice, subscriptionPrice)
+                          ? null
+                          : subscriptionPrice
+                      }
+                    />
                   </td>
                 </tr>
               );
@@ -722,14 +751,17 @@ export function Money({
 function LabAmount({
   sum,
   reasons,
+  price,
 }: {
   sum: ReturnType<typeof sumOverviewAmounts>;
   reasons: readonly string[];
+  price: ReturnType<typeof slicePrice>;
 }) {
   if (sum.amount === null && reasons.length) return <Reasons reasons={reasons} />;
   return (
     <>
       {sum.amount !== null ? overviewAmount(sum.amount) : sum.excluded ? "excluded" : "—"}
+      {sum.amount !== null && <PriceNote price={price} />}
       {sum.amount !== null && <Reasons reasons={reasons} />}
     </>
   );
@@ -761,11 +793,13 @@ function sumOverviewAmounts(
 }
 
 function metricBody(metric: OverviewMoneyMetric | undefined, fallback: string) {
-  if (!metric || metric.status === "unavailable") return metric?.reason ?? fallback;
-  const price = metric.price
-    ? `${metric.price.source}, ${new Date(metric.price.asOf).toUTCString().replace(" GMT", " UTC")}, ${metric.price.version}`
-    : "price date unavailable";
-  return `Estimated from ${price}. ${metric.pricedRequests.toLocaleString()} priced requests.`;
+  if (!metric || metric.status === "unavailable")
+    return { text: metric?.reason ?? fallback, failed: false };
+  const price = priceSentence(metric.price ? slicePrice([metric]) : null);
+  return {
+    text: `${price.text} ${metric.pricedRequests.toLocaleString()} priced requests.`,
+    failed: price.failed,
+  };
 }
 
 function Figure({
@@ -777,7 +811,7 @@ function Figure({
 }: {
   label: string;
   value: string;
-  body: string;
+  body: { text: string; failed: boolean; detail?: string };
   days: number;
   divided?: boolean;
 }) {
@@ -792,8 +826,12 @@ function Figure({
           {days} days
         </small>
       </span>
-      <p className="m-0 text-[13px] text-muted-foreground text-pretty [overflow-wrap:anywhere]">
-        {body}
+      <p
+        title={body.detail}
+        className={`m-0 flex items-start gap-1.5 text-[13px] text-pretty [overflow-wrap:anywhere] ${body.failed ? "text-warning" : "text-muted-foreground"}`}
+      >
+        {body.failed && <StateIcon tone="warn" className="mt-0.5 size-3.5 shrink-0" />}
+        <span>{body.text}</span>
       </p>
     </div>
   );

@@ -99,7 +99,7 @@ export async function handleUsageSeries(
       const result =
         action === "poolUsageSeries"
           ? await withHistoryDatabase(access.connectionString, (db) =>
-              poolUsageSeries(db, input, authority),
+              poolUsageSeries(db, input, authority, "owned", access.currentPrices),
             )
           : input.session !== undefined && access.home !== undefined
             ? await sessionSuccess(access.home, input, authority, {
