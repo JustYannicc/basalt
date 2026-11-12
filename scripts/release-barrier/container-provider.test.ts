@@ -14,11 +14,18 @@ for (const tree of ["src", "lib"])
   });
 
 for (const tree of ["src", "lib"])
-  test(`the real ${tree} publication hash reaches Home admission without another hash algorithm`, () => {
-    const output = execFileSync(
-      "bun",
-      [fileURLToPath(new URL("./test/provider-admission-proof.mjs", import.meta.url)), tree],
-      { encoding: "utf8", timeout: 30_000 },
-    );
-    assert.match(output, /__PROVIDER_ADMISSION_PASS__/);
-  });
+  for (const baseline of ["ef1236d5c3f08c04", "0e2ecb6f105a95f3"])
+    test(`the real ${tree} publication reaches Home admission from ${baseline}`, () => {
+      const output = execFileSync(
+        "bun",
+        [
+          fileURLToPath(new URL("./test/provider-admission-proof.mjs", import.meta.url)),
+          tree,
+          "",
+          "",
+          baseline,
+        ],
+        { encoding: "utf8", timeout: 30_000 },
+      );
+      assert.match(output, /__PROVIDER_ADMISSION_PASS__/);
+    });

@@ -82,3 +82,36 @@ test("no approved pair refuses every migration and malformed admission cannot si
   });
   assert.equal(duplicate(identity, info, before), false);
 });
+
+test("two reviewed serving baselines admit one candidate while stale candidates and other baselines refuse", async (context) => {
+  const baselines = ["ef1236d5c3f08c04", "0e2ecb6f105a95f3"];
+  const sourceInputHash = "0152ede472b6f78e";
+  const admit = await declarations(context, {
+    format_version: 1,
+    transitions: baselines.map((baselineInputHash) => ({
+      ...transition,
+      baselineInputHash,
+      candidateInputHash: sourceInputHash,
+    })),
+  });
+  for (const baselineInputHash of baselines) {
+    const current = { ...identity, baselineInputHash, sourceInputHash };
+    for (const applied_version of [15, 16])
+      assert.equal(admit(current, info, { ...before, applied_version }), true);
+    for (const stale of [
+      "ef1236d5c3f08c04",
+      "2fe25d81b60b7025",
+      "6842d68639bcd135",
+      "4290c0e3ed44b007",
+      "f0306fefc74fbf8d",
+    ])
+      assert.equal(admit({ ...current, sourceInputHash: stale }, info, before), false);
+    assert.equal(admit(current, { ...info, target_version: 17 }, before), false);
+    assert.equal(admit(current, { ...info, required_indexes: ["idx_usage"] }, before), false);
+    assert.equal(admit(current, info, { ...before, applied_version: 14 }), false);
+  }
+  assert.equal(
+    admit({ ...identity, sourceInputHash, baselineInputHash: "f".repeat(16) }, info, before),
+    false,
+  );
+});
