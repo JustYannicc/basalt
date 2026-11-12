@@ -9,6 +9,7 @@ import {
 import { createDriveService } from "./service.ts";
 import { QuotaExceeded } from "./quota-limits.ts";
 import type { importService } from "./import-service.ts";
+import type { noteHistory } from "./note-history.ts";
 
 /** One host-bound service handles only decoded commands for its own app. */
 export function createDriveDispatcher(
@@ -17,6 +18,8 @@ export function createDriveDispatcher(
   changes?: ReturnType<typeof createChangeReader>,
   importBase?: string,
   imports?: ReturnType<typeof importService>,
+  /** A vault's own history and device record; a drive without a clone has neither. */
+  notes?: ReturnType<typeof noteHistory> & { devices(): Promise<unknown> },
 ): DriveHost {
   const service = createDriveService(drive, attachments, changes, importBase);
   const run = async (command: DriveCommand) => {
@@ -70,7 +73,14 @@ export function createDriveDispatcher(
       case "search":
         return service.search(command.input);
       case "history":
+        // The note history adds commit times and a path filter; it serves a vault with a clone.
+        if (notes) return notes.history(command.input);
+        if (command.input.path !== undefined)
+          throw new DriveError("invalid", "This drive has no per-note history");
         return service.history(command.input);
+      case "devices":
+        if (!notes) throw new DriveError("invalid", "This drive records no devices");
+        return notes.devices();
       case "write":
         return service.write(command.input);
       case "move":
