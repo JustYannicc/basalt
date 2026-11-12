@@ -43,7 +43,7 @@ const readBody = async (request) => {
 const scopesOf = (value) => String(value ?? "").split(/\s+/u).filter(Boolean).sort();
 const challengeOf = (value) => createHash("sha256").update(value).digest("base64url");
 
-/** Three loopback origins: two approved instances and one private redirect target that stays denied. */
+/** Separate loopback origins for tenant APIs, the public definition and denied redirects. */
 export async function startGitLabFixtures() {
   const observations = [];
   const sites = [];
@@ -152,10 +152,21 @@ export async function startGitLabFixtures() {
       };
       site.requests.push(baseEvent);
 
+      if (request.method === "GET" && pathname === "/openapi/gitlab.json" && site.id === "specification") {
+        observations.push({
+          ...baseEvent,
+          phase: "public_specification",
+          credentialFree: !request.headers.authorization && !request.headers["private-token"] && url.search === "",
+        });
+        return json(response, 200, specification({ origin: "https://gitlab.com" }));
+      }
       if (request.method === "GET" &&
         pathname === "/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml") {
-        observations.push({ ...baseEvent, phase: "specification" });
-        return json(response, 200, specification(site));
+        observations.push({ ...baseEvent, phase: "tenant_specification" });
+        // Only the public-service legacy fixture contains the public source repository.
+        if (site.id === "legacy") return json(response, 200, specification(site));
+        response.writeHead(302, { location: site.origin + "/users/sign_in", "content-type": "text/html" });
+        return response.end("<html>Sign in</html>");
       }
 
       if (request.method === "GET" && pathname === "/oauth/authorize") {
@@ -326,8 +337,17 @@ export async function startGitLabFixtures() {
   await startSite("instance-b");
   await startSite("unapproved");
   await startSite("legacy");
+  const publicSpec = await startSite("specification");
   return {
     sites,
+    filesAtPublicSpec(files) {
+      return files.map((file) => {
+        if (file.path !== "openapi.ts") return file;
+        const source = "https://gitlab.com/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml";
+        assert.equal(file.content.split(source).length - 1, 1, "The GitLab public definition source changed");
+        return { ...file, content: file.content.replace(source, publicSpec.origin + "/openapi/gitlab.json") };
+      });
+    },
     site(id) {
       const site = sites.find((candidate) => candidate.id === id);
       assert.ok(site, "Unknown synthetic GitLab site: " + id);

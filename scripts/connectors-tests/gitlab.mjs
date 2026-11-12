@@ -24,7 +24,7 @@ const setupPath = (prefix, connectionId) =>
 const startPath = (prefix, connectionId) =>
   prefix + "/connections/" + connectionId + "/oauth/start";
 
-/** Exercise the unmodified product catalog source through the real account, OAuth and app runtime. */
+/** Exercise catalog behavior through real accounts and MCP, replacing only public definition transport. */
 export function proveGitLab({
   Effect,
   request,
@@ -52,8 +52,8 @@ export function proveGitLab({
 
     const deployed = checked(yield* request(actors.owner, "POST", prefix + "/apps/deploy", {
       name: "GitLab multi-instance proof",
-      files: catalog.source.files,
-    }), 200, "Deploy the exact site-aware catalog source");
+      files: fixtures.filesAtPublicSpec(catalog.source.files),
+    }), 200, "Deploy the site-aware catalog source with its public definition fixture");
     const currentProvider = deployed.requirements?.accounts?.gitlab?.provider;
     assert.equal(currentProvider, legacyProvider,
       "Adding the account-site rule must keep the existing GitLab provider ID");
@@ -182,7 +182,13 @@ export function proveGitLab({
       const tool = search.structuredContent?.items?.find((entry) =>
         entry.path.endsWith(".getApiV4Projects"),
       );
-      assert.ok(tool, "GitLab projects tool must come from the real catalog app");
+      assert.ok(tool, "GitLab projects tool must load when the tenant redirects the public spec path to sign-in");
+      const specificationReads = observations.filter((event) => event.phase === "public_specification");
+      assert.ok(specificationReads.length > 0, "GitLab discovery must read the separate public definition");
+      assert.ok(specificationReads.every((event) => event.credentialFree), "Public definition reads must omit account credentials");
+      assert.equal(observations.filter((event) =>
+        event.phase === "tenant_specification" && [siteA.id, siteB.id].includes(event.site),
+      ).length, 0, "GitLab discovery must not look for the public source repository on a tenant");
       const result = yield* Effect.promise(() => call(client, "call", {
         calls: { path: tool.path, input: { accountId: item.account.id, input: {} } },
       }));
