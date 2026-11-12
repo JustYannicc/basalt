@@ -194,7 +194,8 @@ test("malformed R2 metadata and count, size and stream limits fail with a typed 
       );
     },
     (fixture: ReturnType<typeof bucketFixture>) => {
-      fixture.bucket.get = () => Effect.succeed(nativeObject(8_000_001, nativeBody(new Uint8Array())));
+      fixture.bucket.get = () =>
+        Effect.succeed(nativeObject(8_000_001, nativeBody(new Uint8Array())));
     },
     (fixture: ReturnType<typeof bucketFixture>) => {
       fixture.bucket.get = () =>
@@ -257,23 +258,29 @@ test("failed partial streams retain their cumulative byte reservations", async (
   fixture.bucket.get = () => {
     gets++;
     let sent = false;
-    const readable = new ReadableStream<Uint8Array>({
-      pull(controller) {
-        if (sent) controller.error(new Error(moduleText));
-        else {
-          sent = true;
-          delivered += partial.byteLength;
-          controller.enqueue(partial);
-        }
+    const readable = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          if (sent) controller.error(new Error(moduleText));
+          else {
+            sent = true;
+            delivered += partial.byteLength;
+            controller.enqueue(partial);
+          }
+        },
       },
-    }, { highWaterMark: 0 });
+      { highWaterMark: 0 },
+    );
     return Effect.succeed(nativeObject(8_000_000, readable));
   };
   const refs = Array.from({ length: 5 }, (_, index) => ({
-    app: "app_one", deployment: `dpl_${index}`, build: `bld_${index}`,
+    app: "app_one",
+    deployment: `dpl_${index}`,
+    build: `bld_${index}`,
   }));
   const exit = await Effect.runPromiseExit(
-    retained.retainedFrameworks(refs, r2.retainedFrameworkObjects(fixture.bucket))
+    retained
+      .retainedFrameworks(refs, r2.retainedFrameworkObjects(fixture.bucket))
       .pipe(Effect.provide(fixture.logger)),
   );
   assert.ok(Exit.isFailure(exit));
@@ -285,34 +292,46 @@ test("failed partial streams retain their cumulative byte reservations", async (
   assert.ok(!JSON.stringify({ exit, logs: fixture.logs }).includes(moduleText));
 });
 
-test("a native cancel promise that never settles cannot hold the time bound open", { timeout: 5000 }, async () => {
-  const fixture = bucketFixture();
-  const started = Promise.withResolvers<void>();
-  const neverCancelled = Promise.withResolvers<void>();
-  let cancels = 0;
-  const readable = new ReadableStream<Uint8Array>({
-    pull() { started.resolve(); },
-    cancel() {
-      cancels++;
-      return neverCancelled.promise;
-    },
-  }, { highWaterMark: 0 });
-  fixture.bucket.get = () => Effect.succeed(nativeObject(1, readable));
-  const exit = await Effect.runPromise(Effect.gen(function* () {
-    const fiber = yield* retained.retainedFrameworks(reference(), r2.retainedFrameworkObjects(fixture.bucket))
-      .pipe(Effect.forkChild);
-    yield* Effect.promise(() => started.promise);
-    yield* TestClock.adjust("8 seconds");
-    return yield* Fiber.await(fiber);
-  }).pipe(Effect.provide(TestClock.layer()), Effect.provide(fixture.logger), Effect.scoped));
-  assert.ok(Exit.isFailure(exit));
-  const error = Cause.findErrorOption(exit.cause);
-  assert.ok(error._tag === "Some" && error.value instanceof contracts.ProductionOperationRefused);
-  assert.equal(error.value.message, "Retained frameworks: time bound");
-  assert.equal(cancels, 1);
-  assert.equal(readable.locked, false);
-  assert.ok(!JSON.stringify({ exit, logs: fixture.logs }).includes(moduleText));
-});
+test(
+  "a native cancel promise that never settles cannot hold the time bound open",
+  { timeout: 5000 },
+  async () => {
+    const fixture = bucketFixture();
+    const started = Promise.withResolvers<void>();
+    const neverCancelled = Promise.withResolvers<void>();
+    let cancels = 0;
+    const readable = new ReadableStream<Uint8Array>(
+      {
+        pull() {
+          started.resolve();
+        },
+        cancel() {
+          cancels++;
+          return neverCancelled.promise;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    fixture.bucket.get = () => Effect.succeed(nativeObject(1, readable));
+    const exit = await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* retained
+          .retainedFrameworks(reference(), r2.retainedFrameworkObjects(fixture.bucket))
+          .pipe(Effect.forkChild);
+        yield* Effect.promise(() => started.promise);
+        yield* TestClock.adjust("8 seconds");
+        return yield* Fiber.await(fiber);
+      }).pipe(Effect.provide(TestClock.layer()), Effect.provide(fixture.logger), Effect.scoped),
+    );
+    assert.ok(Exit.isFailure(exit));
+    const error = Cause.findErrorOption(exit.cause);
+    assert.ok(error._tag === "Some" && error.value instanceof contracts.ProductionOperationRefused);
+    assert.equal(error.value.message, "Retained frameworks: time bound");
+    assert.equal(cancels, 1);
+    assert.equal(readable.locked, false);
+    assert.ok(!JSON.stringify({ exit, logs: fixture.logs }).includes(moduleText));
+  },
+);
 
 test("the fixed time bound covers a stalled get and a stalled record body", async () => {
   for (const stalledBody of [false, true]) {
@@ -320,9 +339,16 @@ test("the fixed time bound covers a stalled get and a stalled record body", asyn
     let finalized = false;
     fixture.bucket.get = () =>
       stalledBody
-        ? Effect.succeed(nativeObject(1, new ReadableStream<Uint8Array>({
-            cancel() { finalized = true; },
-          })))
+        ? Effect.succeed(
+            nativeObject(
+              1,
+              new ReadableStream<Uint8Array>({
+                cancel() {
+                  finalized = true;
+                },
+              }),
+            ),
+          )
         : Effect.never;
     const result = await Effect.runPromise(
       Effect.gen(function* () {
@@ -401,8 +427,7 @@ test("an oversized record header cancels its unread native body", async () => {
       cancelled.resolve();
     },
   });
-  fixture.bucket.get = () =>
-    Effect.succeed(nativeObject(8_000_001, native));
+  fixture.bucket.get = () => Effect.succeed(nativeObject(8_000_001, native));
   await assert.rejects(run(fixture), /object byte bound/);
   await cancelled.promise;
   assert.ok(!JSON.stringify(fixture.logs).includes(moduleText));

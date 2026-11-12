@@ -110,7 +110,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-framew
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-r2.ts
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,123 @@
 +/** The existing EU AppBuilds binding supplies reads inside the signed Worker invocation. */
 +import { RuntimeContext } from "alchemy";
 +import * as Cloudflare from "alchemy/Cloudflare";
@@ -194,14 +194,18 @@ new file mode 100644
 +        const reader = yield* Effect.acquireRelease(
 +          Effect.try({
 +            try: () => readable.getReader(),
-+            catch: () => new ProductionOperationRefused({ message: "Retained frameworks: native body unavailable" }),
++            catch: () =>
++              new ProductionOperationRefused({
++                message: "Retained frameworks: native body unavailable",
++              }),
 +          }),
-+          (reader) => Effect.sync(() => {
-+            // The provider's cancel promise may never settle. Initiate it, then release our
-+            // lock synchronously so cleanup cannot hold the inventory's deadline open.
-+            void reader.cancel().catch(() => {});
-+            reader.releaseLock();
-+          }),
++          (reader) =>
++            Effect.sync(() => {
++              // The provider's cancel promise may never settle. Initiate it, then release our
++              // lock synchronously so cleanup cannot hold the inventory's deadline open.
++              void reader.cancel().catch(() => {});
++              reader.releaseLock();
++            }),
 +        );
 +        if (!Number.isSafeInteger(object.size) || object.size < 0)
 +          return yield* retainedFrameworkRefused("malformed record size");
