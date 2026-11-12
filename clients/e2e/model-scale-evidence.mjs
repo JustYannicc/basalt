@@ -65,7 +65,8 @@ export function timingEvidence(pairs) {
     pass: pairs.length >= 40 && addedP95Ms <= 100 && addedP99Ms <= 250,
   };
 }
-export function resourceEvidence(series) {
+export function resourceEvidence(series, phase) {
+  assert.ok(phase.count > 0, "The phase histogram must contain real event-loop samples.");
   assert.ok(series.length);
   return {
     samples: series.length,
@@ -76,7 +77,9 @@ export function resourceEvidence(series) {
     readableBytes: distribution(series.map((sample) => sample.readableBytes)),
     writableBytes: distribution(series.map((sample) => sample.writableBytes)),
     httpBufferedBytes: distribution(series.map((sample) => sample.httpBufferedBytes ?? 0)),
-    loopP99Ms: series.at(-1).cumulativeLoopP99Ms,
+    loopP99Ms: phase.loopP99Ms,
+    lifetimeLoopP99Ms: series.at(-1).cumulativeLoopP99Ms,
+    phase,
     memoryHeadroomMinimum: Math.min(
       ...series.map((sample) => 1 - sample.rss / sample.memoryLimitBytes),
     ),
@@ -88,7 +91,7 @@ export function resourceEvidence(series) {
         series.map((sample) => sample.cpuRatio),
         0.95,
       ) <= 0.8 &&
-      series.at(-1).cumulativeLoopP99Ms <= 20 &&
+      phase.loopP99Ms <= 20 &&
       series.every((sample) => sample.rss <= sample.memoryLimitBytes * 0.7),
   };
 }
@@ -106,9 +109,12 @@ export function levelEvidence({
   upstreamPeak,
   idleRss,
   idleFds,
+  phase,
 }) {
-  const measured = series.filter((record) => record.at >= blockStart && record.at <= end);
-  const resource = resourceEvidence(measured);
+  const measured = series.filter(
+    (record) => record.phaseId === phase.id && record.at >= blockStart && record.at <= end,
+  );
+  const resource = resourceEvidence(measured, phase);
   const blockOperations = allOperations.filter(
     (record) => record.gateway === "load" && record.requestedAt >= blockStart,
   );

@@ -112,6 +112,7 @@ async function lane(client, gateway, index, until, thinkingMs) {
   return { ready, done };
 }
 const levels = [];
+let summary;
 try {
   const baseline = await connect("baseline");
   const load = await connect("load");
@@ -139,7 +140,8 @@ try {
   for (const count of complete ? [200, 400, 800, 1600] : [1600]) {
     currentLevel = count;
     session.level = count;
-    const blockStart = now();
+    const phase = (await session.resetPhase("load")).started;
+    const blockStart = phase.startedAt;
     let until = Infinity;
     const workers = [];
     const timeout = setTimeout(
@@ -209,7 +211,13 @@ try {
       assert.equal(timings.pass, true, "Added own-path TTFB exceeds the accepted p95/p99 bar.");
     await Promise.all(workers.map((worker) => worker.done));
     if (session.failure) throw session.failure;
-    const end = now();
+    const endedPhase = (await session.resetPhase("load")).ended;
+    assert.equal(
+      endedPhase.id,
+      phase.id,
+      "The exact load plateau needs its own event-loop histogram.",
+    );
+    const end = endedPhase.endedAt;
     assert.ok(end >= until, "The plateau must run for its complete requested duration.");
     const result = levelEvidence({
       series: series.get("load"),
@@ -224,6 +232,7 @@ try {
       upstreamPeak: peer.peak.get("load"),
       idleRss: idle.load.rss,
       idleFds: idle.load.fds,
+      phase: endedPhase,
     });
     levels.push(result);
     output("levels.jsonl", result);
@@ -245,7 +254,7 @@ try {
   });
   assert.equal(denied.status, 401);
   await denied.body?.cancel();
-  const summary = {
+  summary = {
     ...fingerprint,
     endedAt: new Date().toISOString(),
     durationMs: now() - start,
@@ -266,34 +275,37 @@ try {
     true,
     "An upstream receipt must have one successful protocol terminal.",
   );
-  writeFileSync(join(directory, "summary.json"), JSON.stringify(summary, null, 2) + "\n");
 } catch (error) {
   stop(error);
-  writeFileSync(
-    join(directory, "summary.json"),
-    JSON.stringify(
-      {
-        ...fingerprint,
-        complete: false,
-        pass: false,
-        error: error.message,
-        levels,
-        operations: allOperations.length,
-      },
-      null,
-      2,
-    ) + "\n",
-  );
+  summary = {
+    ...fingerprint,
+    complete: false,
+    pass: false,
+    error: error.message,
+    levels,
+    operations: allOperations.length,
+  };
   process.exitCode = 1;
 } finally {
   const cleanup = await session.close();
+  const cleanupOk = cleanup.every((result) => result.status === "fulfilled");
   writeFileSync(
     join(directory, "cleanup.json"),
     JSON.stringify({
       at: new Date().toISOString(),
-      ownedClientsStopped: cleanup.every((result) => result.status === "fulfilled"),
+      ownedClientsStopped: cleanupOk,
       cleanup: cleanup.map((result) => result.status),
       activeUpstream: Object.fromEntries(peer.active),
     }) + "\n",
   );
+  if (!cleanupOk) {
+    summary = { ...summary, complete: false, pass: false, cleanupFailed: true };
+    output("failures.jsonl", {
+      at: now(),
+      message: "Owned client cleanup failed.",
+      cleanup: cleanup.map((result) => result.status),
+    });
+    process.exitCode = 1;
+  }
+  writeFileSync(join(directory, "summary.json"), JSON.stringify(summary, null, 2) + "\n");
 }

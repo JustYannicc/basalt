@@ -24,6 +24,7 @@ export function scaleSession(directory, peer, output) {
   });
   void failed.catch(() => undefined);
   let wakeResource;
+  const phaseWaiters = new Map();
   async function connect(name) {
     const client = await fixture({ services: peer.services });
     clients.set(name, client);
@@ -44,7 +45,14 @@ export function scaleSession(directory, peer, output) {
         if (index < 0) break;
         const line = buffer.slice(0, index);
         buffer = buffer.slice(index + 1);
-        if (line.startsWith("SCALE_RECEIPT ")) {
+        if (line.startsWith("SCALE_PHASE ")) {
+          const record = JSON.parse(line.slice(12));
+          output("phases.jsonl", { ...record, gateway: name });
+          const resolve = phaseWaiters.get(name);
+          assert.ok(resolve, "An unrequested phase reset invalidates resource evidence.");
+          phaseWaiters.delete(name);
+          resolve(record);
+        } else if (line.startsWith("SCALE_RECEIPT ")) {
           const record = JSON.parse(line.slice(14));
           receipts.set(record.id, record.at);
           output("local-receipts.jsonl", { ...record, gateway: name });
@@ -147,6 +155,15 @@ export function scaleSession(directory, peer, output) {
     },
     set level(value) {
       currentLevel = value;
+    },
+    resetPhase: async (name) => {
+      assert.equal(phaseWaiters.has(name), false);
+      const recorded = new Promise((resolve) => phaseWaiters.set(name, resolve));
+      assert.ok(
+        clients.get(name).runtime().child.kill("SIGUSR2"),
+        "The owned gateway must acknowledge its phase boundary.",
+      );
+      return Promise.race([recorded, failed]);
     },
     resourcesReady: async () => {
       const ready = () => [...series.values()].every((value) => value.length);

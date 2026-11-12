@@ -34,6 +34,28 @@ HttpServer.prototype.emit = function (event, ...args) {
 };
 const loop = monitorEventLoopDelay({ resolution: 1 });
 const all = monitorEventLoopDelay({ resolution: 1 });
+const phaseLoop = monitorEventLoopDelay({ resolution: 1 });
+phaseLoop.enable();
+let phaseId = 0;
+let phaseStartedAt = performance.timeOrigin + performance.now();
+process.on("SIGUSR2", () => {
+  const at = performance.timeOrigin + performance.now();
+  const ended = {
+    id: phaseId,
+    startedAt: phaseStartedAt,
+    endedAt: at,
+    loopP99Ms: phaseLoop.percentile(99) / 1e6,
+    count: phaseLoop.count,
+  };
+  phaseId++;
+  phaseStartedAt = at;
+  phaseLoop.reset();
+  previous = process.cpuUsage();
+  previousAt = performance.now();
+  process.stderr.write(
+    `SCALE_PHASE ${JSON.stringify({ ended, started: { id: phaseId, startedAt: at } })}\n`,
+  );
+});
 all.enable();
 loop.enable();
 let previous = process.cpuUsage(),
@@ -47,6 +69,8 @@ const sample = async () => {
   if (sampling) return;
   sampling = true;
   try {
+    const samplePhaseId = phaseId;
+    const samplePhaseP99Ms = phaseLoop.percentile(99) / 1e6;
     const at = performance.now(),
       cpu = process.cpuUsage();
     const intervalMs = at - previousAt;
@@ -74,6 +98,8 @@ const sample = async () => {
       readableBytes: [...sockets].reduce((sum, socket) => sum + socket.readableLength, 0),
       writableBytes: [...sockets].reduce((sum, socket) => sum + socket.writableLength, 0),
       httpBufferedBytes: [...responses].reduce((sum, response) => sum + response.writableLength, 0),
+      phaseId: samplePhaseId,
+      phaseLoopP99Ms: samplePhaseP99Ms,
       loopP99Ms: loop.percentile(99) / 1e6,
       loopMaxMs: loop.max / 1e6,
       cumulativeLoopP99Ms: all.percentile(99) / 1e6,
