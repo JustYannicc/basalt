@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Provider consumer fixtures derive supporting modules from the complete generated provider source, replacing only their entry point and framework manifest. Both fresh deployment and upgrade keep transitive provider imports available as the canonical declaration grows. The pool-family fixture retains its bundled provider declaration while carrying the same generated supporting modules."
+    }
+  }
+}

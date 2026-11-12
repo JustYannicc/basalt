@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-provider-consumer-source-bundles",
+  "file": "0551-provider-consumer-source-bundles.patch",
+  "content_sha256": "8a038edef0dda7615aa3083818f0e3cd142e0eea6936014c4622c8e6c38f67e3",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
