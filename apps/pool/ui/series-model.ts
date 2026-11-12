@@ -378,6 +378,7 @@ interface Draft {
   id: string;
   label: string;
   countsOnly: boolean;
+  missingModel?: boolean;
   provider: string | null;
   totals: Totals;
   byProvider: Map<string, bigint>;
@@ -409,10 +410,7 @@ function finish(drafts: Iterable<Draft>): Row[] {
   return [...drafts]
     .map((entry) => ({
       ...entry,
-      label:
-        entry.usageKey?.model === null && noRecordedUsage(entry.totals)
-          ? "Failed requests"
-          : entry.label,
+      label: entry.missingModel && noRecordedUsage(entry.totals) ? "Failed requests" : entry.label,
       empty: entry.empty ?? entry.totals.requests === 0,
       requestTokens: entry.requestTokens ?? null,
       usageKey: entry.usageKey ?? {},
@@ -491,6 +489,7 @@ export function rows(
       ];
     const row = top.get(id) ?? draft(id, label, redacted, by === "person" ? null : provider);
     top.set(id, row);
+    row.missingModel = !redacted && by === "model" && group.key.model == null;
     row.usageKey =
       by === "person" && owner.kind === "person"
         ? { person: owner.id }
@@ -521,6 +520,7 @@ export function rows(
       ? (row.children.get(child[0]!) ?? draft(child[0]!, child[1]!, false, child[2] ?? null))
       : null;
     if (sub) {
+      sub.missingModel = by === "person" && group.key.model == null;
       if (by === "person" && owner.kind === "person")
         sub.usageKey = { person: owner.id, provider, model: group.key.model ?? null };
       else if (by === "provider" && owner.kind === "person")

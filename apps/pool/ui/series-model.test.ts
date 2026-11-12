@@ -399,3 +399,22 @@ test("unassigned failures without any usage stay distinct from missing model acc
     "Model not recorded",
   );
 });
+
+test("an unattributed person's model child identifies failures without usage", () => {
+  const failed = { ...bucket({ requests: 3, failed: 3, tokens: null }), unassignedFailures: 3 };
+  const [row] = rows([group({ person: null, model: null }, failed)], "person", (id) => id);
+  assert.equal(row!.label, "Unattributed");
+  assert.equal(row!.children[0]!.label, "Failed requests");
+});
+
+test("expanding a failed model preserves its person's display name", () => {
+  const failed = { ...bucket({ requests: 3, failed: 3, tokens: null }), unassignedFailures: 3 };
+  const [row] = rows(
+    [group({ person: "fixture-member", model: null }, failed)],
+    "model",
+    (id) => id,
+    [{ person: "fixture-member", displayName: "Replay member", active: true }],
+  );
+  assert.equal(row!.label, "Failed requests");
+  assert.equal(row!.children[0]!.label, "Replay member");
+});
