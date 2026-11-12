@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-signalbox-apps",
+  "file": "0530-signalbox-apps.patch",
+  "content_sha256": "75ca9a8cea2ac0438933e20bb8a40620d23ac39a0c279cdb354c5b45e851bcc3",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

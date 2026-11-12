@@ -10,6 +10,7 @@ import {
   obsidianTools,
   supportsObsidian,
 } from "../../.upstream/apps/hosted/web/src/contracts/obsidian-connection.ts";
+import { githubSourceRepository } from "../../.upstream/apps/hosted/web/src/contracts/github-source.ts";
 import {
   basaltSyncReleaseCheck,
   basaltSyncReleaseStatus,
@@ -72,6 +73,11 @@ test("the dashboard installs the plugin release this checkout publishes", () => 
     "utf8",
   );
   assert.ok(release.includes(`repository=${basaltSyncRepository}\n`));
+  assert.equal(githubSourceRepository("https://github.com/owner/repo"), "owner/repo");
+  assert.equal(githubSourceRepository("https://github.com/owner/repo.git"), "owner/repo");
+  assert.equal(githubSourceRepository("https://gitlab.com/owner/repo"), null);
+  assert.equal(githubSourceRepository("https://github.com/owner"), null);
+  assert.equal(githubSourceRepository(undefined), null);
   const link = new URL(bratInstallLink("owner/repo"));
   assert.equal(link.protocol, "obsidian:");
   assert.equal(link.host || link.pathname.replace(/^\/+/u, ""), "brat");
