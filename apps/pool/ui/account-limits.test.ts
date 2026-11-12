@@ -26,9 +26,10 @@ const window = (
   observedAt: "2026-11-12T09:55:00Z",
   ...extra,
 });
-const fiveHour = window("five_hour", "5 hours", 18_000);
-const weekly = window("seven_day", "Weekly", 604_800);
-const model = window("model_weekly", "Fable weekly", 604_800, {
+// Window ids as the pool normalizes them; resets' `clears` name these same ids.
+const fiveHour = window("claude-five-hour", "5 hours", 18_000);
+const weekly = window("claude-seven-day", "Weekly", 604_800);
+const model = window("claude-seven-day-fable", "Fable weekly", 604_800, {
   scope: { kind: "model", id: "fable" },
 });
 const fable: BankedResetGroup = {
@@ -36,7 +37,11 @@ const fable: BankedResetGroup = {
   available: 3,
   expiresAt: "2027-03-09T07:59:00.000Z",
   scope: { kind: "model", id: "fable" },
-  reset: { kind: "model", clears: ["five_hour"], givesBackWeekly: true },
+  reset: {
+    kind: "model",
+    clears: ["claude-five-hour", "claude-seven-day-fable"],
+    givesBackWeekly: true,
+  },
 };
 const week: BankedResetGroup = {
   label: "Weekly resets",
@@ -111,7 +116,7 @@ test("the pool's Details read the host's text: a model reset gives back only tha
   );
   assert.deepEqual(effects, {
     "Fable resets":
-      "Gives back only the weekly use spent on Fable, not the whole week. Also refills the 5-hour limit.",
+      "Refills the Fable weekly limit and gives back only the weekly use spent on Fable, not the whole week. Also refills the 5-hour limit.",
     "Weekly resets": "Refills the account's whole weekly limit.",
   });
   assert.deepEqual(
@@ -120,6 +125,79 @@ test("the pool's Details read the host's text: a model reset gives back only tha
       [3, "2027-03-09T07:59:00.000Z"],
       [1, "2026-12-10T22:00:00.000Z"],
     ],
+  );
+});
+
+test("a model reset refills the model limit its source lists, never the account's week", () => {
+  const windows = poolObservation(account("a")).windows;
+  const modelReset = (
+    label: string,
+    id: string,
+    clears: readonly string[],
+    givesBackWeekly?: boolean,
+  ) => ({
+    id: `${id}-resets`,
+    label,
+    unit: "resets",
+    available: 1,
+    observedAt: "2026-11-12T09:55:00Z",
+    scope: { kind: "model" as const, id },
+    reset: {
+      kind: "model" as const,
+      clears,
+      ...(givesBackWeekly === undefined ? {} : { givesBackWeekly }),
+    },
+  });
+  // Listing the account's weekly window never turns a model reset into a whole-week refill.
+  const fableEffect = resetEffect(
+    modelReset("Fable resets", "fable", ["claude-seven-day", "claude-seven-day-fable"], true),
+    windows,
+  );
+  assert.equal(
+    fableEffect,
+    "Refills the Fable weekly limit and gives back only the weekly use spent on Fable, not the whole week.",
+  );
+  assert.doesNotMatch(fableEffect ?? "", /whole weekly|Also refills the weekly/);
+  // Giving back weekly use is itself the source saying the model's allowance refills, even with
+  // no listed clear or no reported model window; no period is invented for it.
+  const allowance =
+    "Refills the Fable allowance and gives back only the weekly use spent on Fable, not the whole week.";
+  assert.equal(resetEffect(modelReset("Fable resets", "fable", [], true), windows), allowance);
+  assert.equal(
+    resetEffect(
+      modelReset("Fable resets", "fable", ["claude-seven-day-fable"], true),
+      windows.filter((entry) => entry.scope?.kind !== "model"),
+    ),
+    allowance,
+  );
+  // Any model: its normalized clear id names that model's own window.
+  const newModel = window("claude-seven-day-new-model", "New model weekly", 604_800, {
+    scope: { kind: "model", id: "new-model" },
+  });
+  const generic = poolObservation(account("g", { windows: [weekly, newModel, fiveHour] }));
+  const genericEffect = resetEffect(
+    modelReset("New Model resets", "new-model", ["claude-seven-day-new-model"]),
+    generic.windows,
+  );
+  assert.equal(genericEffect, "Refills the New model weekly limit.");
+  assert.doesNotMatch(genericEffect ?? "", /didn't list|account's/);
+  // Without a matching window or gives-back evidence, an unknown model's reset stays unlisted.
+  assert.equal(
+    resetEffect(
+      modelReset("New Model resets", "new-model", ["claude-seven-day-other"]),
+      generic.windows,
+    ),
+    "Applies to New Model only. The source didn't list which limits it refills.",
+  );
+  assert.equal(
+    resetEffect(
+      modelReset("New Model resets", "new-model", [
+        "claude-seven-day-new-model",
+        "claude-five-hour",
+      ]),
+      generic.windows,
+    ),
+    "Refills the New model weekly limit. Also refills the 5-hour limit.",
   );
 });
 
@@ -139,7 +217,7 @@ test("full and session resets claim only the windows the source lists", () => {
     "A full reset. The source didn't list which limits it refills.",
   );
   assert.equal(
-    resetEffect(balance("full", ["five_hour", "seven_day"]), windows),
+    resetEffect(balance("full", ["claude-five-hour", "claude-seven-day"]), windows),
     "Refills the account's 5-hour limit and weekly limit.",
   );
   assert.equal(resetEffect(balance("session"), windows), "Refills the account's session limit.");

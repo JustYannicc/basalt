@@ -1203,7 +1203,7 @@ test(
               assert.match(row("Fable resets"), /\b3 resets\b/);
               assert.match(
                 row("Fable resets"),
-                /Gives back only the weekly use spent on Fable, not the whole week\. Also refills the 5-hour limit\./,
+                /Refills the Fable weekly limit and gives back only the weekly use spent on Fable, not the whole week\. Also refills the 5-hour limit\./,
               );
               assert.ok(
                 row("Fable resets").includes(`Expires ${await shownMoment(frame, fableExpiry)}`),

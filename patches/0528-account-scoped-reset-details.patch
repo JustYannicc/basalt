@@ -1,8 +1,27 @@
 diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
-index 35ad88926..0ae11d1e5 100644
+index 35ad88926..bfbf802e2 100644
 --- a/e2e/tests/account-usage-cells.spec.ts
 +++ b/e2e/tests/account-usage-cells.spec.ts
-@@ -470,6 +470,249 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+@@ -30,7 +30,7 @@ const percentWindow = (
+   id: string,
+   label: string,
+   remaining: number,
+-  seconds: number,
++  periodMs: number,
+   resetsIn: number,
+   at: number,
+   stale?: number,
+@@ -40,7 +40,8 @@ const percentWindow = (
+   observedAt: iso(at),
+   ...(stale === undefined ? {} : { staleAt: iso(stale) }),
+   measure: { unit: "%", used: 100 - remaining, remainingRatio: remaining / 100 },
+-  period: { mode: "fixed", seconds },
++  // Callers pass durations in milliseconds; a reported period is in seconds.
++  period: { mode: "fixed", seconds: periodMs / 1000 },
+   resetsAt: iso(at + resetsIn),
+ });
+ const subscription = <const W, const B = readonly []>(at: number, windows: W, balances?: B) => ({
+@@ -470,6 +471,249 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
              ),
            ).toContain(label === "Credits only" ? "Credits" : "Unlimited");
          }
@@ -137,7 +156,7 @@ index 35ad88926..0ae11d1e5 100644
 +          expect(fable).toHaveLength(1);
 +          expect(fable[0]).toContain("3 resets");
 +          expect(fable[0]).toContain(
-+            "Gives back only the weekly use spent on Fable, not the whole week. Also refills the 5-hour limit.",
++            "Refills the Fable weekly limit and gives back only the weekly use spent on Fable, not the whole week. Also refills the 5-hour limit.",
 +          );
 +          expect(fable[0]).toMatch(/Expires .*\d{4}/);
 +          const weekly = rows.filter((text) => name(text) === "Weekly resets");
@@ -1737,10 +1756,10 @@ index bb459460f..5d98df232 100644
    if (windows.length === 0 && !hasCredit) return null;
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-text.ts b/packages/ui/src/implementation/dashboard/account-observation-text.ts
 new file mode 100644
-index 000000000..09c46f396
+index 000000000..37c918f48
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-observation-text.ts
-@@ -0,0 +1,461 @@
+@@ -0,0 +1,475 @@
 +/**
 + * What an account observation's readings say, as text and drawn widths. Missing amounts stay
 + * unknown, a ratio stays a percentage, zero stays zero and an amount over its limit stays exact;
@@ -2145,11 +2164,25 @@ index 000000000..09c46f396
 +  const unlisted = "The source didn't list which limits it refills.";
 +  if (scope?.kind === "model" || reset?.kind === "model") {
 +    const name = balance.label.replace(/\s*\bresets?\b\s*/iu, " ").trim() || "this model";
++    // A model window is named by its own label; its period is never the account's week.
++    const models = windows.filter(isModelWindow);
++    const refilled = [
++      ...new Set(
++        (reset?.clears ?? [])
++          .flatMap((id) => models.filter((entry) => entry.id === id))
++          .map((entry) => `${entry.label} limit`),
++      ),
++    ];
++    // A model reset never claims the account's weekly limit, even when the source lists it.
++    const ancillary = cleared.filter((limit) => limit !== "weekly limit");
++    const tail = ancillary.length === 0 ? "" : ` Also refills the ${listed(ancillary)}.`;
++    // Giving back weekly use is the source saying the model's allowance refills, listed or not.
 +    if (reset?.givesBackWeekly === true)
-+      return `Gives back only the weekly use spent on ${name}, not the whole week.${also("weekly limit")}`;
-+    return cleared.length === 0
++      return `Refills the ${refilled.length === 0 ? `${name} allowance` : listed(refilled)} and gives back only the weekly use spent on ${name}, not the whole week.${tail}`;
++    if (refilled.length > 0) return `Refills the ${listed(refilled)}.${tail}`;
++    return ancillary.length === 0
 +      ? `Applies to ${name} only. ${unlisted}`
-+      : `Applies to ${name} only and refills the ${listed(cleared)}.`;
++      : `Applies to ${name} only and refills the ${listed(ancillary)}.`;
 +  }
 +  if (scope?.kind !== "account") return "The source didn't say which limit this refills.";
 +  if (reset?.kind === "weekly")
