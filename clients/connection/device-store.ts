@@ -9,19 +9,19 @@ const stores = new WeakMap<DeviceStore, DeviceStore>();
 export function orderedDeviceStore(storage: DeviceStore): DeviceStore {
   const existing = stores.get(storage);
   if (existing) return existing;
-  let pending = Promise.resolve();
-  const next = <T>(action: () => Promise<T>) => {
-    const result = pending.then(action);
-    pending = result.then(
-      () => undefined,
-      () => undefined,
-    );
+  let mutations = Promise.resolve();
+  const mutate = (action: () => Promise<void>) => {
+    const result = mutations.then(action);
+    mutations = result.catch(() => {});
     return result;
   };
   const ordered: DeviceStore = {
-    read: () => next(() => storage.read()),
-    write: (value) => next(() => storage.write(value)),
-    remove: () => next(() => storage.remove()),
+    read: async () => {
+      await mutations;
+      return storage.read();
+    },
+    write: (value) => mutate(() => storage.write(value)),
+    remove: () => mutate(() => storage.remove()),
   };
   stores.set(storage, ordered);
   stores.set(ordered, ordered);

@@ -232,3 +232,33 @@ test("repeated online notifications do not cancel the replacement attempt", asyn
   assert.equal(f.controller.getSnapshot().reconnecting, false);
   await f.controller.close();
 });
+
+for (const action of ["online", "manual", "signOut"] as const) {
+  test(`a stuck native storage read cannot block later ${action}`, async (t) => {
+    const f = fixture(t);
+    await f.controller.initialize();
+    f.holdStoreRead(new Promise<void>(() => {}));
+    const old = f.controller.foreground(true);
+    await advance(t, 100);
+    f.holdStoreRead(undefined);
+    let completed = false;
+    let next: Promise<void> | undefined;
+    if (action === "online") f.notifyNetwork(true);
+    else
+      next = (action === "manual" ? f.controller.reconnect() : f.controller.signOut()).then(() => {
+        completed = true;
+      });
+    await advance(t, 1000);
+    if (action === "signOut") {
+      assert.equal(completed, true);
+      assert.equal(f.rawSaved(), undefined);
+      assert.equal(f.controller.getSnapshot().phase, "signed-out");
+    } else {
+      assert.equal(f.storeReads(), 4);
+      assert.equal(f.controller.getSnapshot().reconnecting, false);
+      assert.deepEqual(f.controller.getSnapshot().connection?.capabilities, ["models", "tools"]);
+    }
+    await Promise.all([old, next]);
+    await f.controller.close();
+  });
+}

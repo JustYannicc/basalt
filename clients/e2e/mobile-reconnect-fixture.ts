@@ -25,6 +25,8 @@ export function fixture(t: TestContext) {
   let refreshHeld: Promise<void> | undefined;
   let refreshReads = 0;
   let rotationWrite: Promise<void> | undefined;
+  let storeRead: Promise<void> | undefined;
+  let storeReads = 0;
   const signals: AbortSignal[] = [];
   let inFlight = 0;
   let maximum = 0;
@@ -107,7 +109,11 @@ export function fixture(t: TestContext) {
   });
   const controller = mobileController({
     store: {
-      read: async () => saved,
+      read: async () => {
+        storeReads++;
+        await storeRead;
+        return saved;
+      },
       write: async (value) => {
         if (JSON.parse(value).accessToken === "fixture-next-access") await rotationWrite;
         saved = value;
@@ -148,6 +154,10 @@ export function fixture(t: TestContext) {
       held = value;
     },
     signals,
+    holdStoreRead: (value: Promise<void> | undefined) => {
+      storeRead = value;
+    },
+    storeReads: () => storeReads,
     holdRotationWrite: (value: Promise<void>) => {
       rotationWrite = value;
     },
