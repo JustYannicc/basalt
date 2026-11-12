@@ -1,100 +1,82 @@
-name: Pool basic native budget
+name: Atlassian family diagnostic budget
 on:
   workflow_dispatch:
     inputs:
-      baseline:
-        description: Baseline full commit
-        default: 55eca77395e2fd411481013339c14a9d87cd9b09
+      source:
+        description: Full source commit to measure
         required: true
-      candidate:
-        description: Candidate full commit
-        default: 1a59844d0c013d84639f4e4edb9c23793a16ab6a
+      trials:
+        description: JSON array of independent trials
+        default: '[1]'
         required: true
-  pull_request:
-    paths:
-      - .github/workflows/pool-basic-budget.yml
-      - scripts/pool-tests/budget/**
 permissions:
   contents: read
 jobs:
   budget:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        version: [baseline, candidate]
-    services:
-      postgres:
-        image: postgres:17.7-alpine
-        env:
-          POSTGRES_USER: fixture_root
-          POSTGRES_DB: postgres
-          POSTGRES_PASSWORD: fixture-only
-        ports: [5432:5432]
-        options: >-
-          --health-cmd "pg_isready -U fixture_root"
-          --health-interval 5s --health-timeout 5s --health-retries 10
+        trial: ${{ fromJSON(inputs.trials) }}
     env:
-      SOURCE_REF: ${{ matrix.version == 'baseline' && (inputs.baseline || '55eca77395e2fd411481013339c14a9d87cd9b09') || (inputs.candidate || '1a59844d0c013d84639f4e4edb9c23793a16ab6a') }}
-      POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
+      BASALT_CI_OMIT_RELEASE_DOWNLOADS: "true"
+      SOURCE_REF: ${{ inputs.source }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
         with:
-          ref: ${{ env.SOURCE_REF }}
-          path: .probe-source
-      - uses: actions/setup-node@v4
+          ref: ${{ inputs.source }}
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
-      - uses: oven-sh/setup-bun@v2
+      - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.2
-      - name: Verify native amd64 and frozen source
-        working-directory: .probe-source
+      - run: npm run prepare:upstream
+      - working-directory: .upstream
+        run: bun run e2e:prepare
+      - uses: ./.github/actions/setup-browser
+      - name: Add setup timing without changing behavior
         run: |
-          test "$(uname -m)" = x86_64
-          test "$(docker info --format '{{.Architecture}}')" = x86_64
-          test "$(git rev-parse HEAD)" = "$SOURCE_REF"
-      - name: Prepare the unchanged fixture
-        working-directory: .probe-source
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          p = Path('.upstream/e2e/tests/atlassian-family-screens.spec.ts')
+          s = p.read_text()
+          s = s.replace('const { atlassian, google, transport, fixture } = yield* familySetup([', 'const { atlassian, google, transport, fixture } = yield* evidence.step("Deploy family apps and restart product", familySetup([', 1)
+          s = s.replace('          "calendar",\n        ]);', '          "calendar",\n        ]));', 1)
+          p.write_text(s)
+          PYTHON
+      - name: Run the unchanged deadline
+        working-directory: .upstream
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts dashboard-batch:google-byo-oauth-through-the-real-self-host-flow)"
+      - name: Retain only closed timing fields
+        if: always()
         run: |
-          npm run prepare:upstream
-          cd .upstream
-          bun run e2e:prepare
-      - name: Free runner build disk
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android
-          docker builder prune --all --force
-      - name: Build the exact runtime
-        working-directory: .probe-source
-        run: docker build --target runtime --tag basalt-basic-budget:test containers/pool
-      - name: Run three planned cold trials with unchanged deadlines
-        working-directory: .probe-source
-        shell: bash
-        run: |
-          probe="$GITHUB_WORKSPACE/scripts/pool-tests/budget"
-          POOL_BUDGET_DOCKER="$(command -v docker)"
-          export POOL_BUDGET_DOCKER
-          export POOL_TEST_IMAGE=basalt-basic-budget:test
-          mkdir -p "$RUNNER_TEMP/pool-budget/bin"
-          ln -s "$probe/docker.py" "$RUNNER_TEMP/pool-budget/bin/docker"
-          export PATH="$RUNNER_TEMP/pool-budget/bin:$PATH"
-          for trial in 1 2 3; do
-            export POOL_BUDGET_OUTPUT="$RUNNER_TEMP/pool-budget/trial-$trial"
-            mkdir -p "$POOL_BUDGET_OUTPUT"
-            export POOL_BUDGET_HTTP="$POOL_BUDGET_OUTPUT/http.jsonl"
-            set +e
-            node --import ../scripts/pool-tests/budget/observe.mjs --test scripts/pool-tests/container.test.ts > "$POOL_BUDGET_OUTPUT/test.log" 2>&1
-            result=$?
-            set -e
-            echo "$result" > "$POOL_BUDGET_OUTPUT/exit-code"
-            echo "Trial $trial test exit: $result"
-          done
-          python3 "$probe/summarize.py" "$RUNNER_TEMP/pool-budget" "$SOURCE_REF"
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          output = Path('budget-proof')
+          output.mkdir(exist_ok=True)
+          trials = []
+          for p in Path('.generated/e2e-evidence').glob('*/evidence.json'):
+              report = json.loads(p.read_text())
+              for entry in report['entries']:
+                  if not entry['title'].startswith('Jira and Confluence share one Atlassian sign-in'):
+                      continue
+                  row = {k: entry[k] for k in ['title', 'status', 'duration']}
+                  evidence = p.parent / 'self-host/report/evidence' / entry['id']
+                  row['steps'] = json.loads((evidence / 'steps.json').read_text())
+                  row['requests'] = [dict(method=r['method'], status=r['status'], durationMs=r['durationMs'], operation='deploy' if r['path'].endswith('/apps/deploy') else 'other') for r in json.loads((evidence / 'requests.json').read_text())]
+                  trials.append(row)
+          if len(trials) != 1:
+              raise SystemExit(f'Expected one measured scenario, found {len(trials)}')
+          result = dict(source=os.environ['SOURCE_REF'], trials=trials)
+          (output / 'timing.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps(result, indent=2))
+          PYTHON
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: pool-basic-${{ matrix.version }}
-          path: ${{ runner.temp }}/pool-budget/summary.json
+          name: atlassian-budget-${{ matrix.trial }}
+          path: budget-proof/timing.json
           if-no-files-found: error
