@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Quota collection normalizes vendor-reported model weekly windows and active reset grant kind, scope, remaining count and expiry into the existing snapshot. A model grant never becomes a whole-week reset. Reset effects reference the same window identifiers as readings; unknown retained aggregates stay unclassified. Bounded discovery records only approved quota metadata when explicitly enabled, never credentials or raw responses. Existing stored JSON remains readable without a schema migration."
+    }
+  }
+}

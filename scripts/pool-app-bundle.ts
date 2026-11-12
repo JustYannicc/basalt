@@ -12,6 +12,11 @@ export interface PoolAppFile {
 export const poolFrameworkVersion = servedFrameworkVersion;
 
 const fontFiles = ["geist-sans.woff2", "geist-mono.woff2", "LICENSE.txt"];
+const sharedObservationFiles = [
+  "account-observation-text.ts",
+  "account-observation-readings-view.tsx",
+];
+const observationImport = "../../../.upstream/packages/ui/src/implementation/dashboard/";
 
 /**
  * The dashboard's own Geist faces. The hosted compiler installs npm packages without their font
@@ -55,6 +60,8 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
         const name = relative(source, path).split("\\").join("/");
         if (name === "ui/public/fonts.css") continue;
         let content = readFileSync(path, "utf8");
+        if (name === "ui/observation-text.ts" || name === "ui/observation-readings.ts")
+          content = content.replaceAll(observationImport, "./shared-account/");
         if (name === "deployment.ts")
           content = `export const poolOrigin = ${JSON.stringify(`https://${brand.host}`)};\nexport const productName = ${JSON.stringify(brand.name)};\n`;
         if (name === "requirements.ts")
@@ -72,6 +79,15 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
     }
   };
   walk(source);
+  if (files.some((file) => file.path === "ui/observation-readings.ts"))
+    for (const file of sharedObservationFiles)
+      files.push({
+        path: `ui/shared-account/${file}`,
+        content: readFileSync(
+          join(upstream, "packages/ui/src/implementation/dashboard", file),
+          "utf8",
+        ),
+      });
   files.push({
     path: "provider-definitions.ts",
     content: readFileSync(join(root, "src/pool/provider-accounts/definitions.ts"), "utf8"),

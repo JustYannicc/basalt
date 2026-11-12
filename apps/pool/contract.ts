@@ -32,6 +32,7 @@ export type SignInFlow = "callback" | "device";
 
 export interface UsageWindow {
   readonly id: string;
+  readonly scope?: { readonly kind: string; readonly id?: string };
   /** The backend's label, such as "5 hours" or "Weekly". */
   readonly label: string;
   /** 0 to 1, or null when the backend doesn't know. */
@@ -52,6 +53,8 @@ export type ReadingFreshness = "fresh" | "stale" | "never";
 /** Provider-issued resets the account can use, such as Codex reset credits or Claude reset grants. */
 export interface BankedResets {
   readonly available: number;
+  /** Absent on older readings, whose reset kind and scope remain unknown. */
+  readonly groups?: readonly import("./reset-observation-contract.ts").BankedResetGroup[];
   /** ISO time the next one expires, or null when none expires or the provider doesn't say. */
   readonly nextExpiresAt: string | null;
 }

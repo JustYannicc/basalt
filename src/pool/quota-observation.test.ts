@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { quotaObservation } from "./quota-observation.ts";
+import { quotaObservation as readQuotaObservation } from "./quota-observation.ts";
+const quotaObservation = (detail: Parameters<typeof readQuotaObservation>[0]) =>
+  readQuotaObservation(detail, Date.parse("2026-10-30T18:00:00Z"));
 
 test("reported fixed periods normalize without guessing missing or calendar durations", () => {
   const windows = quotaObservation({

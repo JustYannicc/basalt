@@ -133,6 +133,41 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
       )?.[0],
       generated.match(/export const poolAppVersion = .+/)?.[0],
     );
+    const shared = join(upstream, "packages/ui/src/implementation/dashboard");
+    mkdirSync(shared, { recursive: true });
+    const text = "export const source = 'one canonical account renderer';";
+    const view = 'import { source } from "./account-observation-text.ts"; export { source };';
+    writeFileSync(join(shared, "account-observation-text.ts"), text);
+    writeFileSync(join(shared, "account-observation-readings-view.tsx"), view);
+    writeFileSync(
+      join(root, "apps/pool/ui/observation-readings.ts"),
+      'export * from "../../../.upstream/packages/ui/src/implementation/dashboard/account-observation-readings-view.tsx";',
+    );
+    const reused = bundlePoolApp(root, upstream);
+    assert.equal(
+      reused.find((file) => file.path === "ui/shared-account/account-observation-text.ts")?.content,
+      text,
+    );
+    assert.equal(
+      reused.find((file) => file.path === "ui/shared-account/account-observation-readings-view.tsx")
+        ?.content,
+      view,
+    );
+    assert.equal(
+      reused.find((file) => file.path === "ui/observation-readings.ts")?.content,
+      'export * from "./shared-account/account-observation-readings-view.tsx";',
+    );
+    const versionBefore = readFileSync(join(output, "pool-app-source.ts"), "utf8");
+    writeFileSync(
+      join(shared, "account-observation-text.ts"),
+      text + "\n// changed canonical bytes",
+    );
+    bundlePoolApp(root, upstream);
+    assert.notEqual(
+      readFileSync(join(output, "pool-app-source.ts"), "utf8"),
+      versionBefore,
+      "a shared renderer change updates installed app bytes",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

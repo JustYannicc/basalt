@@ -1,0 +1,2204 @@
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+index 35ad88926..0ae11d1e5 100644
+--- a/e2e/tests/account-usage-cells.spec.ts
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -470,6 +470,249 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+             ),
+           ).toContain(label === "Credits only" ? "Credits" : "Unlimited");
+         }
++
++        // A model's own weekly limit and scoped resets: the count stays on the account's Weekly,
++        // the model window sits right after it, and Details say what each kind gives back.
++        const scopedReset = (
++          id: string,
++          label: string,
++          available: number,
++          expiresAt: number,
++          extra: object = {},
++        ) => ({
++          id,
++          label,
++          unit: "resets",
++          available,
++          observedAt: iso(now),
++          expiresAt: iso(expiresAt),
++          ...extra,
++        });
++        const modelFixture = yield* observationFixture({
++          name: "Model limits",
++          observe: true,
++          health: true,
++        });
++        yield* modelFixture.backend.answer({
++          status: 200,
++          body: subscription(
++            now,
++            [
++              percentWindow("claude-five-hour", "5-hour", 70, 5 * hour, 3 * hour, now),
++              {
++                ...percentWindow(
++                  "claude-seven-day-fable",
++                  "Fable weekly",
++                  40,
++                  7 * day,
++                  5 * day,
++                  now,
++                ),
++                scope: { kind: "model", id: "fable" },
++              },
++              percentWindow("claude-seven-day", "Weekly", 80, 7 * day, 5 * day, now),
++            ],
++            [
++              scopedReset("weekly", "Weekly resets", 1, now + 28 * day, {
++                scope: { kind: "account" },
++                reset: { kind: "weekly", clears: ["claude-seven-day"] },
++              }),
++              scopedReset("fable", "Fable resets", 3, now + 117 * day, {
++                scope: { kind: "model", id: "fable" },
++                reset: {
++                  kind: "model",
++                  clears: ["claude-five-hour", "claude-seven-day-fable"],
++                  givesBackWeekly: true,
++                },
++              }),
++              scopedReset("expired", "Weekly resets", 2, now - day, {
++                scope: { kind: "account" },
++                reset: { kind: "weekly" },
++              }),
++              scopedReset("unknown", "Resets with unknown scope", 1, now + 10 * day),
++            ],
++          ),
++        });
++        expect(
++          (yield* modelFixture.api.request(
++            modelFixture.actors.owner,
++            "PATCH",
++            modelFixture.accountPath,
++            { label: "Model limits" },
++          )).status,
++        ).toBe(200);
++        expect((yield* modelFixture.refresh()).status).toBe(200);
++        for (const width of [1280, 390]) {
++          yield* browser.use(`Open Model limits Details at ${width}px`, (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() => page.emulateMedia({ colorScheme: "light" }))
++              .then(() => page.goto(accounts))
++              .then(() => cell(page, "Model limits", "claude-seven-day").waitFor())
++              .then(() => openRowDetails(page, accountRow(page, "Model limits"), "Model limits"))
++              .then(() =>
++                block(page, "Model limits").locator("[data-observation-details]").waitFor(),
++              ),
++          );
++          const shown = yield* browser.use(`Read Model limits at ${width}px`, (page) => {
++            const group = block(page, "Model limits");
++            return Promise.all([
++              group
++                .locator("[data-reading]")
++                .evaluateAll((cells) => cells.map((cell) => cell.getAttribute("data-reading"))),
++              cell(page, "Model limits", "claude-seven-day")
++                .locator("[data-reset-count]")
++                .evaluateAll((items) =>
++                  items.map((item) => [
++                    item.getAttribute("data-reset-count"),
++                    item.getAttribute("title"),
++                  ]),
++                ),
++              cell(page, "Model limits", "claude-seven-day-fable")
++                .locator("[data-reset-count]")
++                .count(),
++              group
++                .locator("[data-observation-details] tbody tr")
++                .evaluateAll((rows) => rows.map((row) => (row as HTMLElement).innerText)),
++              page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++            ]);
++          });
++          const [order, resetCount, modelReset, rows, fits] = shown;
++          expect(order, "the model window follows the account window it counts toward").toEqual([
++            "claude-five-hour",
++            "claude-seven-day",
++            "claude-seven-day-fable",
++          ]);
++          // Expired grants are not counted; kinds stay apart instead of one whole-week total.
++          expect(resetCount).toHaveLength(1);
++          expect(resetCount[0]?.[0]).toBe("5");
++          expect(resetCount[0]?.[1]).toBe(
++            "1 weekly reset · 3 Fable resets · 1 reset with unknown scope",
++          );
++          expect(modelReset, "a model window never carries the account's reset count").toBe(0);
++          // A row's first cell is its name; notes and values follow on later lines or cells.
++          const name = (text: string) => text.split(/[\t\n]/u)[0]?.trim();
++          const row = (label: string) => rows.find((text) => name(text) === label) ?? "";
++          expect(row("Fable weekly")).toContain(
++            "This model's own limit. Its use also counts toward the weekly limit.",
++          );
++          expect(rows.indexOf(row("Fable weekly"))).toBe(rows.indexOf(row("Weekly")) + 1);
++          const fable = rows.filter((text) => name(text) === "Fable resets");
++          expect(fable).toHaveLength(1);
++          expect(fable[0]).toContain("3 resets");
++          expect(fable[0]).toContain(
++            "Gives back only the weekly use spent on Fable, not the whole week. Also refills the 5-hour limit.",
++          );
++          expect(fable[0]).toMatch(/Expires .*\d{4}/);
++          const weekly = rows.filter((text) => name(text) === "Weekly resets");
++          expect(weekly).toHaveLength(2);
++          expect(weekly.find((text) => text.includes("Expires"))).toContain(
++            "Refills the account's whole weekly limit.",
++          );
++          // The expired grant stays visible in Details as expired, never as available.
++          expect(weekly.find((text) => text.includes("2 resets"))).toContain("Expired");
++          expect(row("Resets with unknown scope")).toContain(
++            "The source didn't say which limit this refills.",
++          );
++          expect(fits, `Model limits Details fit at ${width}px`).toBe(true);
++          yield* evidence.attach(
++            `after-model-limits-details-${width}.png`,
++            "image/png",
++            yield* browser.use(`Capture Model limits Details at ${width}px`, (page) =>
++              block(page, "Model limits")
++                .locator("[data-observation-details]")
++                .scrollIntoViewIfNeeded()
++                .then(() => page.screenshot({ fullPage: true })),
++            ),
++          );
++        }
++
++        // A long report under the host's 16 KiB report guard: 12 windows and 52 compact balances,
++        // 64 Details rows. The pool's own test covers 64 windows plus 64 groups.
++        const longWindows = Array.from({ length: 12 }, (_, index) =>
++          index === 0
++            ? percentWindow("claude-seven-day", "Weekly", 80, 7 * day, 5 * day, now)
++            : {
++                ...percentWindow(
++                  `claude-seven-day-model-${index}`,
++                  `Model ${index} weekly`,
++                  50,
++                  7 * day,
++                  5 * day,
++                  now,
++                ),
++                scope: { kind: "model", id: `model-${index}` },
++              },
++        );
++        const longBalances = Array.from({ length: 52 }, (_, index) => ({
++          id: `g${index}`,
++          label: "Weekly resets",
++          unit: "resets",
++          available: 1,
++          observedAt: iso(now),
++          expiresAt: iso(now + (index + 2) * day),
++        }));
++        const longBody = subscription(now, longWindows, longBalances);
++        expect(
++          new TextEncoder().encode(JSON.stringify(longBody)).length,
++          "the long fixture stays under the report guard",
++        ).toBeLessThan(16 * 1024);
++        const longFixture = yield* observationFixture({
++          name: "Long limits",
++          observe: true,
++          health: true,
++        });
++        yield* longFixture.backend.answer({
++          status: 200,
++          body: longBody,
++        });
++        expect(
++          (yield* longFixture.api.request(
++            longFixture.actors.owner,
++            "PATCH",
++            longFixture.accountPath,
++            { label: "Long limits" },
++          )).status,
++        ).toBe(200);
++        expect((yield* longFixture.refresh()).status).toBe(200);
++        for (const width of [1280, 390]) {
++          const long = yield* browser.use(`Read the longest Details at ${width}px`, (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() => page.goto(accounts))
++              .then(() => cell(page, "Long limits", "claude-seven-day").waitFor())
++              .then(() => openRowDetails(page, accountRow(page, "Long limits"), "Long limits"))
++              .then(() => {
++                const rows = block(page, "Long limits").locator(
++                  "[data-observation-details] tbody tr",
++                );
++                const last = rows.last();
++                return last.scrollIntoViewIfNeeded().then(() =>
++                  Promise.all([
++                    rows.count(),
++                    last.innerText(),
++                    last.evaluate((element) => {
++                      const box = element.getBoundingClientRect();
++                      return box.top >= 0 && box.bottom <= window.innerHeight;
++                    }),
++                    page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++                  ]),
++                );
++              }),
++          );
++          const [count, lastText, reachable, fits] = long;
++          expect(count, "every window and balance has its row").toBe(64);
++          expect(lastText).toContain("Weekly resets");
++          expect(reachable, `the last row scrolls into view at ${width}px`).toBe(true);
++          expect(fits, `the longest Details fit at ${width}px`).toBe(true);
++          yield* evidence.attach(
++            `after-long-details-${width}.png`,
++            "image/png",
++            yield* browser.use(`Capture the longest Details end at ${width}px`, (page) =>
++              page.screenshot(),
++            ),
++          );
++        }
+       }),
+     ),
+   );
+diff --git a/packages/apps/protocols/41.json b/packages/apps/protocols/41.json
+index 03f160c7b..477a245a0 100644
+--- a/packages/apps/protocols/41.json
++++ b/packages/apps/protocols/41.json
+@@ -440,7 +440,7 @@
+         {
+           "name": "observation",
+           "type": {
+-            "$shared": "627f3baa1781c24c"
++            "$shared": "91d605433be25102"
+           },
+           "isOptional": true
+         },
+@@ -458,7 +458,7 @@
+       "_tag": "Union",
+       "types": [
+         {
+-          "$shared": "627f3baa1781c24c"
++          "$shared": "91d605433be25102"
+         },
+         {
+           "_tag": "Null"
+@@ -712,6 +712,13 @@
+         }
+       ]
+     },
++    "2e3c51f4edf82741": {
++      "name": "observation",
++      "type": {
++        "$shared": "445b764b5ecd1531"
++      },
++      "isOptional": false
++    },
+     "2fb89bb26707aa35": {
+       "_tag": "Objects",
+       "propertySignatures": [
+@@ -833,7 +840,7 @@
+         }
+       ]
+     },
+-    "3e94ba1d2260229f": {
++    "3cb343c55e43df4e": {
+       "_tag": "Objects",
+       "propertySignatures": [
+         {
+@@ -995,6 +1002,151 @@
+           },
+           "isOptional": false
+         },
++        {
++          "name": "scope",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "kind",
++                "type": {
++                  "_tag": "Union",
++                  "types": [
++                    {
++                      "_tag": "Literal",
++                      "literal": "account"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "model"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "unknown"
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "id",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMinLength",
++                        "payload": {
++                          "minLength": 1
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 128
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": true
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "reset",
++          "type": {
++            "_tag": "Objects",
++            "propertySignatures": [
++              {
++                "name": "kind",
++                "type": {
++                  "_tag": "Union",
++                  "types": [
++                    {
++                      "_tag": "Literal",
++                      "literal": "session"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "weekly"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "full"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "model"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "unknown"
++                    }
++                  ]
++                },
++                "isOptional": false
++              },
++              {
++                "name": "clears",
++                "type": {
++                  "_tag": "Arrays",
++                  "rest": [
++                    {
++                      "_tag": "String",
++                      "checks": [
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isMinLength",
++                            "payload": {
++                              "minLength": 1
++                            }
++                          }
++                        },
++                        {
++                          "_tag": "Filter",
++                          "representation": {
++                            "id": "effect/schema/isMaxLength",
++                            "payload": {
++                              "maxLength": 64
++                            }
++                          }
++                        }
++                      ]
++                    }
++                  ],
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 16
++                        }
++                      }
++                    }
++                  ]
++                },
++                "isOptional": true
++              },
++              {
++                "name": "givesBackWeekly",
++                "type": {
++                  "_tag": "Boolean"
++                },
++                "isOptional": true
++              }
++            ]
++          },
++          "isOptional": true
++        },
+         {
+           "name": "expiresAt",
+           "type": {
+@@ -1028,6 +1180,95 @@
+         }
+       ]
+     },
++    "445b764b5ecd1531": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "name": "offering",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "subscription"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "metered_api"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "prepaid"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "other"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "unknown"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "$shared": "a5473dc7ba2540dc"
++        },
++        {
++          "$shared": "994b6ac10f879ff5"
++        },
++        {
++          "$shared": "4ea6d33672570304"
++        },
++        {
++          "$shared": "d63f83fdcc7b22eb"
++        },
++        {
++          "name": "availability",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "available"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "limited"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "paused"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "unknown"
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "summary",
++          "type": {
++            "_tag": "String",
++            "checks": [
++              {
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 256
++                  }
++                }
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ]
++    },
+     "4c36e63564d77154": {
+       "_tag": "Objects",
+       "propertySignatures": [
+@@ -1363,6 +1604,13 @@
+         }
+       ]
+     },
++    "4ea6d33672570304": {
++      "name": "windows",
++      "type": {
++        "$shared": "abf5e10cd8663642"
++      },
++      "isOptional": false
++    },
+     "528db149f3db258b": {
+       "_tag": "Objects",
+       "propertySignatures": [
+@@ -1495,187 +1743,21 @@
+         }
+       ]
+     },
+-    "627f3baa1781c24c": {
++    "74c4828c2755b111": {
+       "_tag": "Objects",
+       "propertySignatures": [
+         {
+-          "name": "observedAt",
++          "name": "state",
+           "type": {
+-            "_tag": "String",
+-            "checks": [
++            "_tag": "Union",
++            "types": [
+               {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isMaxLength",
+-                  "payload": {
+-                    "maxLength": 35
+-                  }
+-                }
++                "_tag": "Literal",
++                "literal": "available"
+               },
+               {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isPattern",
+-                  "payload": {
+-                    "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
+-                    "flags": "u"
+-                  }
+-                }
+-              },
+-              {
+-                "_tag": "Filter"
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "$shared": "ac8a9b13cba1b065"
+-        },
+-        {
+-          "name": "collection",
+-          "type": {
+-            "_tag": "Objects",
+-            "propertySignatures": [
+-              {
+-                "name": "attemptedAt",
+-                "type": {
+-                  "_tag": "String",
+-                  "checks": [
+-                    {
+-                      "_tag": "Filter",
+-                      "representation": {
+-                        "id": "effect/schema/isMaxLength",
+-                        "payload": {
+-                          "maxLength": 35
+-                        }
+-                      }
+-                    },
+-                    {
+-                      "_tag": "Filter",
+-                      "representation": {
+-                        "id": "effect/schema/isPattern",
+-                        "payload": {
+-                          "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
+-                          "flags": "u"
+-                        }
+-                      }
+-                    },
+-                    {
+-                      "_tag": "Filter"
+-                    }
+-                  ]
+-                },
+-                "isOptional": false
+-              },
+-              {
+-                "name": "outcome",
+-                "type": {
+-                  "_tag": "Union",
+-                  "types": [
+-                    {
+-                      "_tag": "Literal",
+-                      "literal": "success"
+-                    },
+-                    {
+-                      "_tag": "Literal",
+-                      "literal": "unavailable"
+-                    },
+-                    {
+-                      "_tag": "Literal",
+-                      "literal": "rate_limited"
+-                    },
+-                    {
+-                      "_tag": "Literal",
+-                      "literal": "invalid"
+-                    },
+-                    {
+-                      "_tag": "Literal",
+-                      "literal": "timed_out"
+-                    }
+-                  ]
+-                },
+-                "isOptional": false
+-              },
+-              {
+-                "name": "retryAt",
+-                "type": {
+-                  "_tag": "String",
+-                  "checks": [
+-                    {
+-                      "_tag": "Filter",
+-                      "representation": {
+-                        "id": "effect/schema/isMaxLength",
+-                        "payload": {
+-                          "maxLength": 35
+-                        }
+-                      }
+-                    },
+-                    {
+-                      "_tag": "Filter",
+-                      "representation": {
+-                        "id": "effect/schema/isPattern",
+-                        "payload": {
+-                          "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
+-                          "flags": "u"
+-                        }
+-                      }
+-                    },
+-                    {
+-                      "_tag": "Filter"
+-                    }
+-                  ]
+-                },
+-                "isOptional": true
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        }
+-      ],
+-      "checks": [
+-        {
+-          "_tag": "Filter"
+-        }
+-      ]
+-    },
+-    "7410f27267b755ef": {
+-      "_tag": "Arrays",
+-      "rest": [
+-        {
+-          "$shared": "3e94ba1d2260229f"
+-        }
+-      ],
+-      "checks": [
+-        {
+-          "_tag": "Filter",
+-          "representation": {
+-            "id": "effect/schema/isMaxLength",
+-            "payload": {
+-              "maxLength": 8
+-            }
+-          }
+-        },
+-        {
+-          "_tag": "Filter"
+-        }
+-      ]
+-    },
+-    "74c4828c2755b111": {
+-      "_tag": "Objects",
+-      "propertySignatures": [
+-        {
+-          "name": "state",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "Literal",
+-                "literal": "available"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "unlimited"
++                "_tag": "Literal",
++                "literal": "unlimited"
+               },
+               {
+                 "_tag": "Literal",
+@@ -1878,131 +1960,178 @@
+         }
+       ]
+     },
+-    "994b6ac10f879ff5": {
+-      "name": "plan",
+-      "type": {
+-        "$shared": "528db149f3db258b"
+-      },
+-      "isOptional": true
+-    },
+-    "a5473dc7ba2540dc": {
+-      "name": "usageCredits",
+-      "type": {
+-        "$shared": "74c4828c2755b111"
+-      },
+-      "isOptional": true
+-    },
+-    "a64c933ff88188b7": {
+-      "name": "balances",
+-      "type": {
+-        "$shared": "7410f27267b755ef"
+-      },
+-      "isOptional": false
+-    },
+-    "ac8a9b13cba1b065": {
+-      "name": "observation",
+-      "type": {
+-        "$shared": "d684f9512d1aba44"
+-      },
+-      "isOptional": false
+-    },
+-    "bed6015625d0b1a6": {
+-      "name": "windows",
+-      "type": {
+-        "$shared": "ff5acb3464dc9d20"
+-      },
+-      "isOptional": false
++    "80a8991afb903bb1": {
++      "_tag": "Arrays",
++      "rest": [
++        {
++          "$shared": "3cb343c55e43df4e"
++        }
++      ],
++      "checks": [
++        {
++          "_tag": "Filter"
++        }
++      ]
+     },
+-    "d684f9512d1aba44": {
++    "91d605433be25102": {
+       "_tag": "Objects",
+       "propertySignatures": [
+         {
+-          "name": "offering",
++          "name": "observedAt",
+           "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "Literal",
+-                "literal": "subscription"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "metered_api"
+-              },
++            "_tag": "String",
++            "checks": [
+               {
+-                "_tag": "Literal",
+-                "literal": "prepaid"
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isMaxLength",
++                  "payload": {
++                    "maxLength": 35
++                  }
++                }
+               },
+               {
+-                "_tag": "Literal",
+-                "literal": "other"
++                "_tag": "Filter",
++                "representation": {
++                  "id": "effect/schema/isPattern",
++                  "payload": {
++                    "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                    "flags": "u"
++                  }
++                }
+               },
+               {
+-                "_tag": "Literal",
+-                "literal": "unknown"
++                "_tag": "Filter"
+               }
+             ]
+           },
+           "isOptional": false
+         },
+         {
+-          "$shared": "a5473dc7ba2540dc"
++          "$shared": "2e3c51f4edf82741"
+         },
+         {
+-          "$shared": "994b6ac10f879ff5"
+-        },
+-        {
+-          "$shared": "bed6015625d0b1a6"
+-        },
+-        {
+-          "$shared": "a64c933ff88188b7"
+-        },
+-        {
+-          "name": "availability",
++          "name": "collection",
+           "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "Literal",
+-                "literal": "available"
+-              },
++            "_tag": "Objects",
++            "propertySignatures": [
+               {
+-                "_tag": "Literal",
+-                "literal": "limited"
++                "name": "attemptedAt",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 35
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isPattern",
++                        "payload": {
++                          "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                          "flags": "u"
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter"
++                    }
++                  ]
++                },
++                "isOptional": false
+               },
+               {
+-                "_tag": "Literal",
+-                "literal": "paused"
++                "name": "outcome",
++                "type": {
++                  "_tag": "Union",
++                  "types": [
++                    {
++                      "_tag": "Literal",
++                      "literal": "success"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "unavailable"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "rate_limited"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "invalid"
++                    },
++                    {
++                      "_tag": "Literal",
++                      "literal": "timed_out"
++                    }
++                  ]
++                },
++                "isOptional": false
+               },
+               {
+-                "_tag": "Literal",
+-                "literal": "unknown"
++                "name": "retryAt",
++                "type": {
++                  "_tag": "String",
++                  "checks": [
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isMaxLength",
++                        "payload": {
++                          "maxLength": 35
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter",
++                      "representation": {
++                        "id": "effect/schema/isPattern",
++                        "payload": {
++                          "source": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$",
++                          "flags": "u"
++                        }
++                      }
++                    },
++                    {
++                      "_tag": "Filter"
++                    }
++                  ]
++                },
++                "isOptional": true
+               }
+             ]
+           },
+           "isOptional": true
+-        },
++        }
++      ],
++      "checks": [
+         {
+-          "name": "summary",
+-          "type": {
+-            "_tag": "String",
+-            "checks": [
+-              {
+-                "_tag": "Filter",
+-                "representation": {
+-                  "id": "effect/schema/isMaxLength",
+-                  "payload": {
+-                    "maxLength": 256
+-                  }
+-                }
+-              }
+-            ]
+-          },
+-          "isOptional": true
++          "_tag": "Filter"
+         }
+       ]
+     },
+-    "ff5acb3464dc9d20": {
++    "994b6ac10f879ff5": {
++      "name": "plan",
++      "type": {
++        "$shared": "528db149f3db258b"
++      },
++      "isOptional": true
++    },
++    "a5473dc7ba2540dc": {
++      "name": "usageCredits",
++      "type": {
++        "$shared": "74c4828c2755b111"
++      },
++      "isOptional": true
++    },
++    "abf5e10cd8663642": {
+       "_tag": "Arrays",
+       "rest": [
+         {
+@@ -2010,19 +2139,17 @@
+         }
+       ],
+       "checks": [
+-        {
+-          "_tag": "Filter",
+-          "representation": {
+-            "id": "effect/schema/isMaxLength",
+-            "payload": {
+-              "maxLength": 8
+-            }
+-          }
+-        },
+         {
+           "_tag": "Filter"
+         }
+       ]
++    },
++    "d63f83fdcc7b22eb": {
++      "name": "balances",
++      "type": {
++        "$shared": "80a8991afb903bb1"
++      },
++      "isOptional": false
+     }
+   }
+ }
+diff --git a/packages/apps/src/contracts/account-observation.ts b/packages/apps/src/contracts/account-observation.ts
+index cee8251a8..561ccc687 100644
+--- a/packages/apps/src/contracts/account-observation.ts
++++ b/packages/apps/src/contracts/account-observation.ts
+@@ -120,7 +120,6 @@ export const AccountObservation = Schema.Struct({
+       resetsAt: Schema.optionalKey(AccountObservationInstant),
+     }),
+   ).check(
+-    Schema.isMaxLength(8),
+     Schema.makeFilter((items) => new Set(items.map((item) => item.id)).size === items.length),
+   ),
+   balances: Schema.Array(
+@@ -130,10 +129,22 @@ export const AccountObservation = Schema.Struct({
+       label: short,
+       unit: short,
+       available: Schema.Finite,
++      scope: Schema.optionalKey(
++        Schema.Struct({
++          kind: Schema.Literals(["account", "model", "unknown"]),
++          id: Schema.optionalKey(scopeText),
++        }),
++      ),
++      reset: Schema.optionalKey(
++        Schema.Struct({
++          kind: Schema.Literals(["session", "weekly", "full", "model", "unknown"]),
++          clears: Schema.optionalKey(Schema.Array(short).check(Schema.isMaxLength(16))),
++          givesBackWeekly: Schema.optionalKey(Schema.Boolean),
++        }),
++      ),
+       expiresAt: Schema.optionalKey(AccountObservationInstant),
+     }),
+   ).check(
+-    Schema.isMaxLength(8),
+     Schema.makeFilter((items) => new Set(items.map((item) => item.id)).size === items.length),
+   ),
+   availability: Schema.optionalKey(Schema.Literals(["available", "limited", "paused", "unknown"])),
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-details.tsx b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
+index 0076f6c1f..f02d626d9 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-details.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
+@@ -7,59 +7,8 @@ import { useProductBrand } from "../hooks/product-brand.ts";
+ import type { AccountSignIn } from "./account-sign-in-checks.tsx";
+ import { checkExplanation, failureDetail } from "../../contracts/account-check-recovery.ts";
+ import { describeCheckResult } from "./account-health.tsx";
+-import {
+-  age,
+-  attemptReason,
+-  balanceView,
+-  moment,
+-  planLabel,
+-  windowView,
+-} from "./account-observation-format.ts";
+-
+-// Narrow screens read each row as label/value pairs instead of a squeezed table.
+-const tableClass = "w-full border-collapse text-[11px]";
+-const headClass =
+-  "border-b border-border py-0.75 pr-3 text-left font-normal text-muted-foreground max-[740px]:hidden";
+-const rowClass =
+-  "max-[740px]:block max-[740px]:border-b max-[740px]:border-border/60 max-[740px]:py-1.5";
+-const cellClass =
+-  "border-b border-border/60 py-1.25 pr-3 align-top wrap-anywhere max-[740px]:flex max-[740px]:gap-2.5 max-[740px]:border-0 max-[740px]:py-px max-[740px]:pr-0 max-[740px]:before:min-w-24 max-[740px]:before:text-muted-foreground max-[740px]:before:content-[attr(data-label)]";
+-
+-function Table({
+-  caption,
+-  columns,
+-  rows,
+-}: {
+-  readonly caption: string;
+-  readonly columns: readonly string[];
+-  readonly rows: readonly { readonly key: string; readonly cells: readonly ReactNode[] }[];
+-}) {
+-  return (
+-    <table className={tableClass}>
+-      <caption className="pb-1 text-left font-medium text-foreground">{caption}</caption>
+-      <thead>
+-        <tr>
+-          {columns.map((column) => (
+-            <th key={column} scope="col" className={headClass}>
+-              {column}
+-            </th>
+-          ))}
+-        </tr>
+-      </thead>
+-      <tbody>
+-        {rows.map((row) => (
+-          <tr key={row.key} className={rowClass}>
+-            {row.cells.map((cell, index) => (
+-              <td key={columns[index]} data-label={columns[index]} className={cellClass}>
+-                {cell}
+-              </td>
+-            ))}
+-          </tr>
+-        ))}
+-      </tbody>
+-    </table>
+-  );
+-}
++import { attemptReason, moment } from "./account-observation-format.ts";
++import { ObservationReadingsTable, Table } from "./account-observation-readings-view.tsx";
+ 
+ /** Where reading an unusable provider response stopped, in host words, never the response. */
+ const parserStages = {
+@@ -153,14 +102,6 @@ export function ObservationDetails({
+       ),
+     ];
+   };
+-  const read = (value: string, stale: boolean) => (
+-    <>
+-      <span className={stale ? "text-sign-in-warning" : undefined}>{age(value, now)}</span>{" "}
+-      <time dateTime={value} className="text-muted-foreground">
+-        {moment(value, now, format)}
+-      </time>
+-    </>
+-  );
+   return (
+     <div
+       id={id}
+@@ -174,40 +115,13 @@ export function ObservationDetails({
+         return (
+           <div key={report.source.id} className="grid gap-2">
+             {observation !== undefined && (
+-              <Table
++              <ObservationReadingsTable
++                observation={observation}
+                 caption={reports.length > 1 ? `Readings from ${report.source.label}` : "Readings"}
+-                columns={["Reading", "Amount", "Resets or expires", "Read"]}
+-                rows={[
+-                  ...(observation.plan === undefined
+-                    ? []
+-                    : [
+-                        {
+-                          key: "plan",
+-                          cells: [
+-                            "Plan",
+-                            planLabel(observation, providerFamilyId),
+-                            <span key="reset" className="text-muted-foreground">
+-                              Not reported
+-                            </span>,
+-                            read(observation.plan.observedAt, stale),
+-                          ],
+-                        },
+-                      ]),
+-                  ...observation.windows.map((entry) => {
+-                    const view = windowView(entry, now, format);
+-                    return {
+-                      key: `window:${entry.id}`,
+-                      cells: [entry.label, view.detail, view.when, read(entry.observedAt, stale)],
+-                    };
+-                  }),
+-                  ...observation.balances.map((entry) => {
+-                    const view = balanceView(entry, now, format);
+-                    return {
+-                      key: `balance:${entry.id}`,
+-                      cells: [entry.label, view.detail, view.when, read(entry.observedAt, stale)],
+-                    };
+-                  }),
+-                ]}
++                providerFamilyId={providerFamilyId}
++                stale={stale}
++                now={now}
++                format={format}
+               />
+             )}
+             <p className="leading-[1.6] text-muted-foreground" data-observation-provenance>
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+index 58825b547..fccc25e97 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-format.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+@@ -1,11 +1,9 @@
+ /**
+- * What an account observation says, as text and drawn widths. Missing amounts stay unknown, a
+- * ratio stays a percentage, zero stays zero and an amount over its limit stays exact; only the
+- * drawn bar is clamped. Nothing here invents a capacity, a reset time or a refill.
++ * Host-side account observation text: refresh attempts, their reasons and the shared clock. What
++ * the readings themselves say lives in `account-observation-text.ts`, which the pool app shares.
+  */
+ import type { AccountObservationRecord } from "@executor-js/sdk";
+ import { Atom } from "effect/reactivity";
+-import { accountPlanName } from "apps";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+ import {
+   failureDetail,
+@@ -13,13 +11,27 @@ import {
+   failureStatus,
+   failureTime,
+ } from "../../contracts/account-check-recovery.ts";
+-import { formatMoment } from "../hooks/display-format.ts";
++import { age, moment } from "./account-observation-text.ts";
++
++export {
++  age,
++  amount,
++  balanceView,
++  bankedResets,
++  countedUnit,
++  modelWindowNote,
++  moment,
++  orderedWindows,
++  planLabel,
++  resetCountText,
++  resetEffect,
++  resetWindow,
++  span,
++  windowView,
++  type ObservationMeterState,
++} from "./account-observation-text.ts";
+ 
+ type Result = NonNullable<AccountObservationRecord["result"]>;
+-type Observation = Result["observation"];
+-type Window = Observation["windows"][number];
+-type Balance = Observation["balances"][number];
+-export type ObservationMeterState = "good" | "warn" | "bad" | "exhausted" | "unknown" | "unlimited";
+ 
+ /** One slow clock for every visible block: ages and countdowns move by the half minute. */
+ export const observationClock = Atom.readable((get) => {
+@@ -29,278 +41,6 @@ export const observationClock = Atom.readable((get) => {
+   return Date.now();
+ });
+ 
+-/** Elapsed time in its two largest units, such as "2 h 14 min". */
+-export const span = (milliseconds: number) => {
+-  const minutes = Math.floor(Math.abs(milliseconds) / 60_000);
+-  if (minutes < 1) return "less than a minute";
+-  if (minutes < 60) return `${minutes} min`;
+-  const hours = Math.floor(minutes / 60);
+-  if (hours < 24) return minutes % 60 === 0 ? `${hours} h` : `${hours} h ${minutes % 60} min`;
+-  const days = Math.floor(hours / 24);
+-  return `${days} ${days === 1 ? "day" : "days"}`;
+-};
+-
+-/** A source instant as age. Hosts accept a minute of clock skew; a later instant reads as now. */
+-export const age = (value: string, now: number) => {
+-  const elapsed = now - Date.parse(value);
+-  return elapsed < 60_000 ? "just now" : `${span(elapsed)} ago`;
+-};
+-
+-/** Today's moments show the time only; others name the day as well. */
+-export const moment = (value: string, now: number, format: DisplayFormat) => {
+-  const time = { hour: "numeric", minute: "2-digit" } as const;
+-  const sameDay =
+-    formatMoment(value, format, { dateStyle: "short" }) ===
+-    formatMoment(now, format, { dateStyle: "short" });
+-  return formatMoment(
+-    value,
+-    format,
+-    sameDay ? time : { weekday: "short", day: "numeric", month: "short", ...time },
+-  );
+-};
+-
+-const currencies = new Set(Intl.supportedValuesOf("currency"));
+-const isCurrency = (unit: string) => currencies.has(unit);
+-const isPercent = (unit: string) => unit === "%" || unit.toLowerCase() === "percent";
+-/** Reported plural units and how one of each reads; any other unit keeps its spelling. */
+-const singulars: Readonly<Record<string, string>> = {
+-  resets: "reset",
+-  credits: "credit",
+-  requests: "request",
+-  tokens: "token",
+-};
+-
+-/** The nouns are English, so English decides "one", at the displayed precision, in every locale. */
+-const english = new Intl.PluralRules("en", { maximumFractionDigits: 2 });
+-
+-/** How `unit` reads after `value`: "1 request", "2 requests"; any other unit keeps its spelling. */
+-export const countedUnit = (value: number, unit: string) =>
+-  singulars[unit] !== undefined && english.select(value) === "one" ? singulars[unit] : unit;
+-
+-export const amount = (value: number, unit: string, format: DisplayFormat, withUnit = false) => {
+-  if (isCurrency(unit))
+-    return new Intl.NumberFormat(format.locale, { style: "currency", currency: unit }).format(
+-      value,
+-    );
+-  const number = new Intl.NumberFormat(format.locale, { maximumFractionDigits: 2 }).format(value);
+-  if (isPercent(unit)) return `${number}%`;
+-  if (!withUnit) return number;
+-  return `${number} ${countedUnit(value, unit)}`;
+-};
+-
+-const toneOf = (ratio: number): ObservationMeterState =>
+-  ratio <= 0 ? "exhausted" : ratio >= 0.7 ? "good" : ratio >= 0.3 ? "warn" : "bad";
+-
+-const periodSpan = (period: NonNullable<Window["period"]>) => {
+-  const seconds = period.seconds;
+-  if (seconds === undefined)
+-    return period.value !== undefined && period.unit !== undefined
+-      ? `${period.value}-${period.unit}`
+-      : undefined;
+-  const [size, unit]: readonly [number, string] =
+-    seconds % 86_400 === 0
+-      ? [86_400, "day"]
+-      : seconds % 3_600 === 0
+-        ? [3_600, "hour"]
+-        : seconds % 60 === 0
+-          ? [60, "minute"]
+-          : [1, "second"];
+-  return `${seconds / size}-${unit}`;
+-};
+-
+-const cadences: Readonly<Record<number, string>> = {
+-  3_600: "hourly",
+-  86_400: "daily",
+-  604_800: "weekly",
+-  2_592_000: "monthly",
+-};
+-
+-/**
+- * A window the source named but did not measure reads as a missing reading of its period, such
+- * as "No weekly reading" or "No 5-hour reading", never as a zero, a full bar or an outage.
+- */
+-const missingReading = (period: Window["period"]) => {
+-  const length =
+-    cadences[periodSeconds(period)] ?? (period === undefined ? undefined : periodSpan(period));
+-  return length === undefined ? "No reading" : `No ${length} reading`;
+-};
+-
+-/**
+- * One reported window as a usage cell: the remaining share in its header, the drawn width and the
+- * reset. Where no share is known the header names the remaining or used amount instead.
+- */
+-export function windowView(entry: Window, now: number, format: DisplayFormat) {
+-  const { unit, used, limit } = entry.measure;
+-  const unlimited = entry.measure.unlimited === true;
+-  const remaining =
+-    entry.measure.remaining ??
+-    (used !== undefined && limit !== undefined ? limit - used : undefined);
+-  const ratio =
+-    entry.measure.remainingRatio ??
+-    (remaining !== undefined && limit !== undefined && limit > 0 ? remaining / limit : undefined);
+-  const over = remaining !== undefined && remaining < 0;
+-  const short = (value: number) => amount(value, unit, format);
+-  const long = (value: number) => amount(value, unit, format, true);
+-  const percent = ratio === undefined ? undefined : Math.round(ratio * 100);
+-  const measured =
+-    unlimited || [ratio, remaining, used, limit].some((value) => value !== undefined);
+-  const missing = measured ? undefined : missingReading(entry.period);
+-  const state: ObservationMeterState = unlimited
+-    ? "unlimited"
+-    : over || remaining === 0
+-      ? "exhausted"
+-      : ratio === undefined
+-        ? "unknown"
+-        : toneOf(ratio);
+-  const absolute =
+-    remaining !== undefined && limit !== undefined
+-      ? over
+-        ? `${short(limit - remaining)} / ${long(limit)} used, over the limit`
+-        : `${short(remaining)} / ${long(limit)} remaining`
+-      : remaining !== undefined
+-        ? `${long(remaining)} remaining`
+-        : used !== undefined
+-          ? `${long(used)} used`
+-          : undefined;
+-  return {
+-    state,
+-    // The header reads "Rem 89%": a quiet lead and the figure that carries the tone.
+-    ...(unlimited
+-      ? { lead: undefined, figure: "Unlimited" }
+-      : over
+-        ? { lead: undefined, figure: "Over limit" }
+-        : percent !== undefined
+-          ? // A sliver that rounds to zero still reads as some left, not as exhausted.
+-            { lead: "Rem", figure: percent === 0 && state !== "exhausted" ? "<1%" : `${percent}%` }
+-          : remaining !== undefined
+-            ? { lead: "Rem", figure: long(remaining) }
+-            : used !== undefined
+-              ? { lead: "Used", figure: long(used) }
+-              : { lead: undefined, figure: missing ?? "Unknown" }),
+-    flag: over
+-      ? undefined
+-      : state === "exhausted"
+-        ? "Exhausted"
+-        : state === "bad"
+-          ? "Low"
+-          : undefined,
+-    detail: unlimited
+-      ? "Unlimited"
+-      : absolute !== undefined
+-        ? `${absolute}${isCurrency(unit) ? ` (${unit})` : ""}`
+-        : percent !== undefined
+-          ? `${percent}% remaining`
+-          : limit !== undefined
+-            ? `Limit ${long(limit)}, amount unknown`
+-            : (missing ?? "Unknown"),
+-    // The bar draws the remaining share only; it never grows past full or below empty.
+-    width: ratio === undefined || unlimited ? undefined : Math.min(100, Math.max(0, ratio * 100)),
+-    aria:
+-      remaining !== undefined && limit !== undefined
+-        ? { now: Math.min(Math.max(0, remaining), limit), max: limit }
+-        : percent !== undefined
+-          ? { now: Math.min(100, Math.max(0, percent)), max: 100 }
+-          : { now: undefined, max: limit ?? 100 },
+-    ...windowTiming(entry, now, format),
+-  };
+-}
+-
+-/** A reset that already passed never refills the old reading; rolling windows have no reset. */
+-function windowTiming(entry: Window, now: number, format: DisplayFormat) {
+-  if (entry.resetsAt !== undefined) {
+-    const at = Date.parse(entry.resetsAt);
+-    const when = moment(entry.resetsAt, now, format);
+-    if (at <= now)
+-      return {
+-        reset: { text: `was due ${when}`, at: entry.resetsAt, due: true },
+-        when: `Was due ${when}`,
+-      };
+-    return {
+-      reset: {
+-        text: `in ${span(at - now)}`,
+-        at: entry.resetsAt,
+-        title: `Resets ${when}`,
+-        due: false,
+-      },
+-      when,
+-    };
+-  }
+-  const length = entry.period === undefined ? undefined : periodSpan(entry.period);
+-  if (entry.period?.mode === "rolling")
+-    return {
+-      reset: { text: length === undefined ? "rolling" : `rolling ${length}`, due: false },
+-      when: "Rolling, no single reset",
+-    };
+-  return { reset: undefined, when: length === undefined ? "Not reported" : "Reset not reported" };
+-}
+-
+-/** A reported balance, such as banked resets or credits. Expired balances are not minted again. */
+-export function balanceView(balance: Balance, now: number, format: DisplayFormat) {
+-  const expires = balance.expiresAt === undefined ? undefined : Date.parse(balance.expiresAt);
+-  const when = balance.expiresAt === undefined ? undefined : moment(balance.expiresAt, now, format);
+-  return {
+-    detail: amount(balance.available, balance.unit, format, true),
+-    when:
+-      expires === undefined
+-        ? "Does not expire"
+-        : `${expires <= now ? "Expired" : "Expires"} ${when}`,
+-  };
+-}
+-
+-/**
+- * Unexpired balances counted in resets, which refill a window early. They belong to the window
+- * with the longest period, which is the one a banked reset clears. The title is the count only:
+- * each credit's expiry lives in Details, where touch screens can reach it too.
+- */
+-export function bankedResets(observation: Observation, now: number) {
+-  const live = observation.balances.filter(
+-    (balance) =>
+-      balance.unit === "resets" &&
+-      balance.available > 0 &&
+-      (balance.expiresAt === undefined || Date.parse(balance.expiresAt) > now),
+-  );
+-  const count = live.reduce((total, balance) => total + balance.available, 0);
+-  if (count === 0) return undefined;
+-  return { count, title: `${count} banked ${count === 1 ? "reset" : "resets"}` };
+-}
+-
+-const unitSeconds: Readonly<Record<string, number>> = {
+-  second: 1,
+-  minute: 60,
+-  hour: 3_600,
+-  day: 86_400,
+-  week: 604_800,
+-  month: 2_592_000,
+-};
+-/** A period's length in seconds, from `seconds` or a value and unit such as 1 week. */
+-const periodSeconds = (period: Window["period"]) =>
+-  period?.seconds ??
+-  (period?.value ?? 0) * (unitSeconds[period?.unit?.toLowerCase().replace(/s$/u, "") ?? ""] ?? 0);
+-
+-/** The limited window a banked reset applies to: the longest period, else the last reported. */
+-export const resetWindow = (windows: readonly Window[]) =>
+-  windows.reduce<Window | undefined>(
+-    (best, entry) =>
+-      best === undefined || periodSeconds(entry.period) >= periodSeconds(best.period)
+-        ? entry
+-        : best,
+-    undefined,
+-  )?.id;
+-
+-const offerings = {
+-  subscription: "Subscription",
+-  metered_api: "Metered API",
+-  prepaid: "Prepaid",
+-  other: undefined,
+-  unknown: undefined,
+-} satisfies Record<Observation["offering"], string | undefined>;
+-
+-/** The plan a source reported, or the kind of offering when it named no plan. */
+-export const planLabel = (observation: Observation, providerFamilyId?: string) =>
+-  observation.plan === undefined
+-    ? offerings[observation.offering]
+-    : accountPlanName(observation.plan.label, providerFamilyId);
+-
+ const attemptReasons = {
+   unavailable: "the source did not return a reading",
+   rate_limited: "the source is limiting requests",
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings-view.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings-view.tsx
+new file mode 100644
+index 000000000..3c840cd60
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-observation-readings-view.tsx
+@@ -0,0 +1,156 @@
++/**
++ * An observation's readings as one Details table: plan, every window with a model's own limit
++ * right after the account limit it counts toward, and every balance with what a reset gives back
++ * and when it expires. Pure: React and `account-observation-text.ts` only, so the pool app
++ * packages this file and renders the same rows the host does.
++ */
++import type { ReactNode } from "react";
++import {
++  age,
++  balanceView,
++  modelWindowNote,
++  moment,
++  orderedWindows,
++  planLabel,
++  resetEffect,
++  windowView,
++  type DisplayFormat,
++  type ReadingObservation,
++} from "./account-observation-text.ts";
++
++// Narrow screens read each row as label/value pairs instead of a squeezed table.
++const tableClass = "w-full border-collapse text-[11px]";
++const headClass =
++  "border-b border-border py-0.75 pr-3 text-left font-normal text-muted-foreground max-[740px]:hidden";
++const rowClass =
++  "max-[740px]:block max-[740px]:border-b max-[740px]:border-border/60 max-[740px]:py-1.5";
++const cellClass =
++  "border-b border-border/60 py-1.25 pr-3 align-top wrap-anywhere max-[740px]:flex max-[740px]:gap-2.5 max-[740px]:border-0 max-[740px]:py-px max-[740px]:pr-0 max-[740px]:before:min-w-24 max-[740px]:before:text-muted-foreground max-[740px]:before:content-[attr(data-label)]";
++
++export function Table({
++  caption,
++  columns,
++  rows,
++}: {
++  readonly caption: string;
++  readonly columns: readonly string[];
++  readonly rows: readonly { readonly key: string; readonly cells: readonly ReactNode[] }[];
++}) {
++  return (
++    <table className={tableClass}>
++      <caption className="pb-1 text-left font-medium text-foreground">{caption}</caption>
++      <thead>
++        <tr>
++          {columns.map((column) => (
++            <th key={column} scope="col" className={headClass}>
++              {column}
++            </th>
++          ))}
++        </tr>
++      </thead>
++      <tbody>
++        {rows.map((row) => (
++          <tr key={row.key} className={rowClass}>
++            {row.cells.map((cell, index) => (
++              <td key={columns[index]} data-label={columns[index]} className={cellClass}>
++                {cell}
++              </td>
++            ))}
++          </tr>
++        ))}
++      </tbody>
++    </table>
++  );
++}
++
++/** A row's name with the note that keeps it from reading as something it is not. */
++const named = (label: string, note: string | undefined) =>
++  note === undefined ? (
++    label
++  ) : (
++    <span className="grid gap-0.5">
++      {label}
++      <span className="text-muted-foreground" data-observation-note>
++        {note}
++      </span>
++    </span>
++  );
++
++/**
++ * `stale` marks every read time: a reading that is no longer current stays last known. Expired
++ * balances read "Expired", never as available.
++ */
++export function ObservationReadingsTable({
++  observation,
++  caption = "Readings",
++  providerFamilyId,
++  stale,
++  now,
++  format,
++}: {
++  readonly observation: ReadingObservation;
++  readonly caption?: string;
++  readonly providerFamilyId?: string | undefined;
++  readonly stale: boolean;
++  readonly now: number;
++  readonly format: DisplayFormat;
++}) {
++  const read = (value: string) => (
++    <>
++      <span className={stale ? "text-sign-in-warning" : undefined}>{age(value, now)}</span>{" "}
++      <time dateTime={value} className="text-muted-foreground">
++        {moment(value, now, format)}
++      </time>
++    </>
++  );
++  return (
++    <Table
++      caption={caption}
++      columns={["Reading", "Amount", "Resets or expires", "Read"]}
++      rows={[
++        ...(observation.plan === undefined
++          ? []
++          : [
++              {
++                key: "plan",
++                cells: [
++                  "Plan",
++                  planLabel(observation, providerFamilyId),
++                  <span key="reset" className="text-muted-foreground">
++                    Not reported
++                  </span>,
++                  read(observation.plan.observedAt),
++                ],
++              },
++            ]),
++        ...orderedWindows(observation.windows).map(({ entry, within }) => {
++          const view = windowView(entry, now, format);
++          return {
++            key: `window:${entry.id}`,
++            cells: [
++              named(
++                entry.label,
++                entry.scope?.kind === "model" ? modelWindowNote(within) : undefined,
++              ),
++              view.detail,
++              view.when,
++              read(entry.observedAt),
++            ],
++          };
++        }),
++        ...observation.balances.map((entry) => {
++          const view = balanceView(entry, now, format);
++          return {
++            key: `balance:${entry.id}`,
++            cells: [
++              named(entry.label, resetEffect(entry, observation.windows)),
++              view.detail,
++              view.when,
++              read(entry.observedAt),
++            ],
++          };
++        }),
++      ]}
++    />
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+index bb459460f..5d98df232 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+@@ -1,7 +1,7 @@
+ import type { AccountObservationRecord } from "@executor-js/sdk";
+ import type { ReactNode } from "react";
+ import type { DisplayFormat } from "../../contracts/display.ts";
+-import { bankedResets, resetWindow } from "./account-observation-format.ts";
++import { bankedResets, orderedWindows, resetWindow } from "./account-observation-format.ts";
+ import { useResetControl, type AccountResetActions } from "./account-reset-control.tsx";
+ import { UsageCell } from "./account-usage-cell.tsx";
+ import { cn } from "../lib/utils.ts";
+@@ -39,7 +39,10 @@ export function ObservationReadings({
+ }) {
+   const result = record.result;
+   const observation = result?.observation;
+-  const windows = observation?.windows.filter((entry) => entry.measure.unlimited !== true) ?? [];
++  // A model's own window sits beside the account window its use also counts toward.
++  const windows = orderedWindows(
++    observation?.windows.filter((entry) => entry.measure.unlimited !== true) ?? [],
++  ).map((row) => row.entry);
+   if (result === null || observation === undefined) return null;
+   const hasCredit = credit !== undefined && credit !== null;
+   if (windows.length === 0 && !hasCredit) return null;
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-text.ts b/packages/ui/src/implementation/dashboard/account-observation-text.ts
+new file mode 100644
+index 000000000..09c46f396
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-observation-text.ts
+@@ -0,0 +1,461 @@
++/**
++ * What an account observation's readings say, as text and drawn widths. Missing amounts stay
++ * unknown, a ratio stays a percentage, zero stays zero and an amount over its limit stays exact;
++ * only the drawn bar is clamped. Nothing here invents a capacity, a reset time or a refill.
++ *
++ * Pure: no Effect, SDK or host imports, so the pool app packages this file with
++ * `account-observation-readings-view.tsx` and both render one Details table. Types are the
++ * structural subset of the native report that the pool's projection also carries.
++ */
++import { accountPlanName, type AccountOffering } from "apps";
++
++/** Locale and time zone; structurally the host's `DisplayFormat`. */
++export interface DisplayFormat {
++  readonly locale: string;
++  readonly timeZone: string;
++}
++
++export interface ReadingWindow {
++  readonly id: string;
++  readonly label: string;
++  readonly observedAt: string;
++  readonly scope?: { readonly kind: string; readonly id?: string };
++  readonly measure: {
++    readonly unit: string;
++    readonly used?: number;
++    readonly remaining?: number;
++    readonly limit?: number;
++    readonly remainingRatio?: number;
++    readonly unlimited?: boolean;
++  };
++  readonly period?: {
++    readonly mode?: "fixed" | "rolling";
++    readonly seconds?: number;
++    readonly unit?: string;
++    readonly value?: number;
++  };
++  readonly resetsAt?: string;
++}
++
++export interface ReadingBalance {
++  readonly id: string;
++  readonly label: string;
++  readonly unit: string;
++  readonly available: number;
++  readonly observedAt: string;
++  readonly expiresAt?: string;
++  readonly scope?: { readonly kind: "account" | "model" | "unknown"; readonly id?: string };
++  readonly reset?: {
++    readonly kind: "session" | "weekly" | "full" | "model" | "unknown";
++    readonly clears?: readonly string[];
++    readonly givesBackWeekly?: boolean;
++  };
++}
++
++export interface ReadingObservation {
++  readonly offering: AccountOffering;
++  readonly plan?: { readonly label: string; readonly observedAt: string };
++  readonly windows: readonly ReadingWindow[];
++  readonly balances: readonly ReadingBalance[];
++}
++
++type Observation = ReadingObservation;
++type Window = ReadingWindow;
++type Balance = ReadingBalance;
++export type ObservationMeterState = "good" | "warn" | "bad" | "exhausted" | "unknown" | "unlimited";
++
++/** The host's `formatMoment`, kept here so this file has no host imports. */
++const formatMoment = (
++  value: Date | number | string,
++  format: DisplayFormat,
++  options?: Intl.DateTimeFormatOptions,
++) => new Date(value).toLocaleString(format.locale, { timeZone: format.timeZone, ...options });
++
++/** Elapsed time in its two largest units, such as "2 h 14 min". */
++export const span = (milliseconds: number) => {
++  const minutes = Math.floor(Math.abs(milliseconds) / 60_000);
++  if (minutes < 1) return "less than a minute";
++  if (minutes < 60) return `${minutes} min`;
++  const hours = Math.floor(minutes / 60);
++  if (hours < 24) return minutes % 60 === 0 ? `${hours} h` : `${hours} h ${minutes % 60} min`;
++  const days = Math.floor(hours / 24);
++  return `${days} ${days === 1 ? "day" : "days"}`;
++};
++
++/** A source instant as age. Hosts accept a minute of clock skew; a later instant reads as now. */
++export const age = (value: string, now: number) => {
++  const elapsed = now - Date.parse(value);
++  return elapsed < 60_000 ? "just now" : `${span(elapsed)} ago`;
++};
++
++/**
++ * Today's moments show the time only; others name the day as well, and the year when it is not
++ * this one, since a banked reset can expire months ahead.
++ */
++export const moment = (value: string, now: number, format: DisplayFormat) => {
++  const time = { hour: "numeric", minute: "2-digit" } as const;
++  const sameDay =
++    formatMoment(value, format, { dateStyle: "short" }) ===
++    formatMoment(now, format, { dateStyle: "short" });
++  const sameYear =
++    formatMoment(value, format, { year: "numeric" }) ===
++    formatMoment(now, format, { year: "numeric" });
++  return formatMoment(
++    value,
++    format,
++    sameDay
++      ? time
++      : {
++          weekday: "short",
++          day: "numeric",
++          month: "short",
++          ...(sameYear ? {} : { year: "numeric" }),
++          ...time,
++        },
++  );
++};
++
++const currencies = new Set(Intl.supportedValuesOf("currency"));
++const isCurrency = (unit: string) => currencies.has(unit);
++const isPercent = (unit: string) => unit === "%" || unit.toLowerCase() === "percent";
++/** Reported plural units and how one of each reads; any other unit keeps its spelling. */
++const singulars: Readonly<Record<string, string>> = {
++  resets: "reset",
++  credits: "credit",
++  requests: "request",
++  tokens: "token",
++};
++
++/** The nouns are English, so English decides "one", at the displayed precision, in every locale. */
++const english = new Intl.PluralRules("en", { maximumFractionDigits: 2 });
++
++/** How `unit` reads after `value`: "1 request", "2 requests"; any other unit keeps its spelling. */
++export const countedUnit = (value: number, unit: string) =>
++  singulars[unit] !== undefined && english.select(value) === "one" ? singulars[unit] : unit;
++
++export const amount = (value: number, unit: string, format: DisplayFormat, withUnit = false) => {
++  if (isCurrency(unit))
++    return new Intl.NumberFormat(format.locale, { style: "currency", currency: unit }).format(
++      value,
++    );
++  const number = new Intl.NumberFormat(format.locale, { maximumFractionDigits: 2 }).format(value);
++  if (isPercent(unit)) return `${number}%`;
++  if (!withUnit) return number;
++  return `${number} ${countedUnit(value, unit)}`;
++};
++
++const toneOf = (ratio: number): ObservationMeterState =>
++  ratio <= 0 ? "exhausted" : ratio >= 0.7 ? "good" : ratio >= 0.3 ? "warn" : "bad";
++
++const periodSpan = (period: NonNullable<Window["period"]>) => {
++  const seconds = period.seconds;
++  if (seconds === undefined)
++    return period.value !== undefined && period.unit !== undefined
++      ? `${period.value}-${period.unit}`
++      : undefined;
++  const [size, unit]: readonly [number, string] =
++    seconds % 86_400 === 0
++      ? [86_400, "day"]
++      : seconds % 3_600 === 0
++        ? [3_600, "hour"]
++        : seconds % 60 === 0
++          ? [60, "minute"]
++          : [1, "second"];
++  return `${seconds / size}-${unit}`;
++};
++
++const cadences: Readonly<Record<number, string>> = {
++  3_600: "hourly",
++  86_400: "daily",
++  604_800: "weekly",
++  2_592_000: "monthly",
++};
++
++/**
++ * A window the source named but did not measure reads as a missing reading of its period, such
++ * as "No weekly reading" or "No 5-hour reading", never as a zero, a full bar or an outage.
++ */
++const missingReading = (period: Window["period"]) => {
++  const length =
++    cadences[periodSeconds(period)] ?? (period === undefined ? undefined : periodSpan(period));
++  return length === undefined ? "No reading" : `No ${length} reading`;
++};
++
++/**
++ * One reported window as a usage cell: the remaining share in its header, the drawn width and the
++ * reset. Where no share is known the header names the remaining or used amount instead.
++ */
++export function windowView(entry: Window, now: number, format: DisplayFormat) {
++  const { unit, used, limit } = entry.measure;
++  const unlimited = entry.measure.unlimited === true;
++  const remaining =
++    entry.measure.remaining ??
++    (used !== undefined && limit !== undefined ? limit - used : undefined);
++  const ratio =
++    entry.measure.remainingRatio ??
++    (remaining !== undefined && limit !== undefined && limit > 0 ? remaining / limit : undefined);
++  const over = remaining !== undefined && remaining < 0;
++  const short = (value: number) => amount(value, unit, format);
++  const long = (value: number) => amount(value, unit, format, true);
++  const percent = ratio === undefined ? undefined : Math.round(ratio * 100);
++  const measured =
++    unlimited || [ratio, remaining, used, limit].some((value) => value !== undefined);
++  const missing = measured ? undefined : missingReading(entry.period);
++  const state: ObservationMeterState = unlimited
++    ? "unlimited"
++    : over || remaining === 0
++      ? "exhausted"
++      : ratio === undefined
++        ? "unknown"
++        : toneOf(ratio);
++  const absolute =
++    remaining !== undefined && limit !== undefined
++      ? over
++        ? `${short(limit - remaining)} / ${long(limit)} used, over the limit`
++        : `${short(remaining)} / ${long(limit)} remaining`
++      : remaining !== undefined
++        ? `${long(remaining)} remaining`
++        : used !== undefined
++          ? `${long(used)} used`
++          : undefined;
++  return {
++    state,
++    // The header reads "Rem 89%": a quiet lead and the figure that carries the tone.
++    ...(unlimited
++      ? { lead: undefined, figure: "Unlimited" }
++      : over
++        ? { lead: undefined, figure: "Over limit" }
++        : percent !== undefined
++          ? // A sliver that rounds to zero still reads as some left, not as exhausted.
++            { lead: "Rem", figure: percent === 0 && state !== "exhausted" ? "<1%" : `${percent}%` }
++          : remaining !== undefined
++            ? { lead: "Rem", figure: long(remaining) }
++            : used !== undefined
++              ? { lead: "Used", figure: long(used) }
++              : { lead: undefined, figure: missing ?? "Unknown" }),
++    flag: over
++      ? undefined
++      : state === "exhausted"
++        ? "Exhausted"
++        : state === "bad"
++          ? "Low"
++          : undefined,
++    detail: unlimited
++      ? "Unlimited"
++      : absolute !== undefined
++        ? `${absolute}${isCurrency(unit) ? ` (${unit})` : ""}`
++        : percent !== undefined
++          ? `${percent}% remaining`
++          : limit !== undefined
++            ? `Limit ${long(limit)}, amount unknown`
++            : (missing ?? "Unknown"),
++    // The bar draws the remaining share only; it never grows past full or below empty.
++    width: ratio === undefined || unlimited ? undefined : Math.min(100, Math.max(0, ratio * 100)),
++    aria:
++      remaining !== undefined && limit !== undefined
++        ? { now: Math.min(Math.max(0, remaining), limit), max: limit }
++        : percent !== undefined
++          ? { now: Math.min(100, Math.max(0, percent)), max: 100 }
++          : { now: undefined, max: limit ?? 100 },
++    ...windowTiming(entry, now, format),
++  };
++}
++
++/** A reset that already passed never refills the old reading; rolling windows have no reset. */
++function windowTiming(entry: Window, now: number, format: DisplayFormat) {
++  if (entry.resetsAt !== undefined) {
++    const at = Date.parse(entry.resetsAt);
++    const when = moment(entry.resetsAt, now, format);
++    if (at <= now)
++      return {
++        reset: { text: `was due ${when}`, at: entry.resetsAt, due: true },
++        when: `Was due ${when}`,
++      };
++    return {
++      reset: {
++        text: `in ${span(at - now)}`,
++        at: entry.resetsAt,
++        title: `Resets ${when}`,
++        due: false,
++      },
++      when,
++    };
++  }
++  const length = entry.period === undefined ? undefined : periodSpan(entry.period);
++  if (entry.period?.mode === "rolling")
++    return {
++      reset: { text: length === undefined ? "rolling" : `rolling ${length}`, due: false },
++      when: "Rolling, no single reset",
++    };
++  return { reset: undefined, when: length === undefined ? "Not reported" : "Reset not reported" };
++}
++
++/** A reported balance, such as banked resets or credits. Expired balances are not minted again. */
++export function balanceView(balance: Balance, now: number, format: DisplayFormat) {
++  const expires = balance.expiresAt === undefined ? undefined : Date.parse(balance.expiresAt);
++  const when = balance.expiresAt === undefined ? undefined : moment(balance.expiresAt, now, format);
++  return {
++    detail: amount(balance.available, balance.unit, format, true),
++    when:
++      expires === undefined
++        ? "Does not expire"
++        : `${expires <= now ? "Expired" : "Expires"} ${when}`,
++  };
++}
++
++/** "1 weekly reset", "3 Fable resets": a model's name keeps its capital. */
++export const resetCountText = (balance: Pick<Balance, "label" | "scope">, count: number) => {
++  const text = count === 1 ? balance.label.replace(/\b([Rr])esets\b/u, "$1eset") : balance.label;
++  return `${count} ${balance.scope?.kind === "model" ? text : text.charAt(0).toLowerCase() + text.slice(1)}`;
++};
++
++/**
++ * Unexpired balances counted in resets, which refill a window early. They sit on the account's
++ * longest window. The title keeps each kind apart, so one weekly reset and three model resets
++ * never read as four whole-week resets; each credit's expiry lives in Details, where touch
++ * screens can reach it too.
++ */
++export function bankedResets(observation: Observation, now: number) {
++  const live = observation.balances.filter(
++    (balance) =>
++      balance.unit === "resets" &&
++      balance.available > 0 &&
++      (balance.expiresAt === undefined || Date.parse(balance.expiresAt) > now),
++  );
++  const count = live.reduce((total, balance) => total + balance.available, 0);
++  if (count === 0) return undefined;
++  if (live.every((balance) => balance.reset === undefined && balance.scope === undefined))
++    return { count, title: `${count} banked ${count === 1 ? "reset" : "resets"}` };
++  const kinds = new Map<string, { balance: Balance; count: number }>();
++  for (const balance of live) {
++    const key = JSON.stringify([balance.scope?.kind, balance.scope?.id, balance.reset?.kind]);
++    const kind = kinds.get(key);
++    kinds.set(key, {
++      balance: kind?.balance ?? balance,
++      count: (kind?.count ?? 0) + balance.available,
++    });
++  }
++  const rank = (balance: Balance) =>
++    balance.scope?.kind === "account" ? 0 : balance.scope?.kind === "model" ? 1 : 2;
++  const title = [...kinds.values()]
++    .sort(
++      (a, b) => rank(a.balance) - rank(b.balance) || a.balance.label.localeCompare(b.balance.label),
++    )
++    .map((kind) => resetCountText(kind.balance, kind.count))
++    .join(" · ");
++  return { count, title };
++}
++
++const isModelWindow = (entry: Window) => entry.scope?.kind === "model";
++
++/**
++ * Account windows in source order, each model's own window right after the account window of the
++ * same period, which its use also counts toward. `within` names that window.
++ */
++export function orderedWindows<W extends Window>(windows: readonly W[]) {
++  const own = windows.filter((entry) => !isModelWindow(entry));
++  const models = windows.filter(isModelWindow);
++  const placed = new Set<W>();
++  const rows: { entry: W; within?: W }[] = [];
++  for (const entry of own) {
++    rows.push({ entry });
++    const seconds = periodSeconds(entry.period);
++    for (const model of models)
++      if (!placed.has(model) && seconds > 0 && periodSeconds(model.period) === seconds) {
++        placed.add(model);
++        rows.push({ entry: model, within: entry });
++      }
++  }
++  for (const model of models) if (!placed.has(model)) rows.push({ entry: model });
++  return rows;
++}
++
++/** Why a model's own window is not extra capacity. */
++export const modelWindowNote = (within: Window | undefined) =>
++  `This model's own limit. Its use also counts toward ${within === undefined ? "the account's limits" : `the ${within.label.toLowerCase()} limit`}.`;
++
++/** "5-hour limit", "weekly limit": a window by its length, else its own label. */
++const limitName = (entry: Window) =>
++  `${cadences[periodSeconds(entry.period)] ?? (entry.period === undefined ? undefined : periodSpan(entry.period)) ?? entry.label.toLowerCase()} limit`;
++
++const listed = (names: readonly string[]) =>
++  names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
++
++/**
++ * What a reset balance gives back, from the source's kind, scope and listed windows only. Whole-
++ * week and model resets never share wording; a reset claims a window only when the source names
++ * it or its kind is that window, and an unclassified reset is never described as a whole week.
++ */
++export function resetEffect(balance: Balance, windows: readonly Window[]) {
++  if (balance.unit !== "resets") return undefined;
++  const { reset, scope } = balance;
++  const own = windows.filter((entry) => !isModelWindow(entry));
++  const cleared = [
++    ...new Set(
++      (reset?.clears ?? []).flatMap((id) => own.filter((entry) => entry.id === id)).map(limitName),
++    ),
++  ];
++  const also = (skip: string) => {
++    const extra = cleared.filter((name) => name !== skip);
++    return extra.length === 0 ? "" : ` Also refills the ${listed(extra)}.`;
++  };
++  const unlisted = "The source didn't list which limits it refills.";
++  if (scope?.kind === "model" || reset?.kind === "model") {
++    const name = balance.label.replace(/\s*\bresets?\b\s*/iu, " ").trim() || "this model";
++    if (reset?.givesBackWeekly === true)
++      return `Gives back only the weekly use spent on ${name}, not the whole week.${also("weekly limit")}`;
++    return cleared.length === 0
++      ? `Applies to ${name} only. ${unlisted}`
++      : `Applies to ${name} only and refills the ${listed(cleared)}.`;
++  }
++  if (scope?.kind !== "account") return "The source didn't say which limit this refills.";
++  if (reset?.kind === "weekly")
++    return `Refills the account's whole weekly limit.${also("weekly limit")}`;
++  if (cleared.length > 0) return `Refills the account's ${listed(cleared)}.`;
++  if (reset?.kind === "session") return "Refills the account's session limit.";
++  if (reset?.kind === "full") return `A full reset. ${unlisted}`;
++  return "The source didn't say which limit this refills.";
++}
++
++const unitSeconds: Readonly<Record<string, number>> = {
++  second: 1,
++  minute: 60,
++  hour: 3_600,
++  day: 86_400,
++  week: 604_800,
++  month: 2_592_000,
++};
++/** A period's length in seconds, from `seconds` or a value and unit such as 1 week. */
++const periodSeconds = (period: Window["period"]) =>
++  period?.seconds ??
++  (period?.value ?? 0) * (unitSeconds[period?.unit?.toLowerCase().replace(/s$/u, "") ?? ""] ?? 0);
++
++/**
++ * The limited window a banked reset sits on: the account's longest period, else the last
++ * reported. A model's own window of the same length never takes it.
++ */
++export const resetWindow = (windows: readonly Window[]) =>
++  (windows.some((entry) => !isModelWindow(entry))
++    ? windows.filter((entry) => !isModelWindow(entry))
++    : windows
++  ).reduce<Window | undefined>(
++    (best, entry) =>
++      best === undefined || periodSeconds(entry.period) >= periodSeconds(best.period)
++        ? entry
++        : best,
++    undefined,
++  )?.id;
++
++const offerings = {
++  subscription: "Subscription",
++  metered_api: "Metered API",
++  prepaid: "Prepaid",
++  other: undefined,
++  unknown: undefined,
++} satisfies Record<Observation["offering"], string | undefined>;
++
++/** The plan a source reported, or the kind of offering when it named no plan. */
++export const planLabel = (observation: Observation, providerFamilyId?: string) =>
++  observation.plan === undefined
++    ? offerings[observation.offering]
++    : accountPlanName(observation.plan.label, providerFamilyId);
