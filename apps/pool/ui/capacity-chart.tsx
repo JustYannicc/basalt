@@ -123,6 +123,17 @@ export function CapacityChart({
 }) {
   const { ref, width } = useWidth();
   const [hour, setHour] = useState<number | null>(null);
+  const open = hour !== null;
+  // Safari doesn't focus a tabindex element on tap, so blur alone can't close a tapped hour.
+  useEffect(() => {
+    const node = ref.current;
+    if (!open || !node) return;
+    const away = (event: Event) => {
+      if (!(event.target instanceof Node && node.contains(event.target))) setHour(null);
+    };
+    node.ownerDocument.addEventListener("pointerdown", away);
+    return () => node.ownerDocument.removeEventListener("pointerdown", away);
+  }, [open, ref]);
   const byHour = useMemo(
     () => new Map(line.points.map((point) => [point.hour, point])),
     [line.points],
@@ -162,6 +173,11 @@ export function CapacityChart({
   );
   const unit = line.unit.label;
   const first = measuredPoints[0];
+  // Coverage starts at the first real reading, never at the range start or forecast training.
+  const since =
+    first && first.hour > from + hourMs
+      ? Math.min(first.minimum.observedAt.from, first.last.observedAt.from)
+      : null;
   const lastHour = Math.floor((end - 1) / hourMs) * hourMs;
   const clamp = (at: number) =>
     Math.max(Math.floor(from / hourMs) * hourMs, Math.min(lastHour, at));
@@ -176,6 +192,11 @@ export function CapacityChart({
     const box = event.currentTarget.getBoundingClientRect();
     const px = ((event.clientX - box.left) / box.width) * g.width;
     if (px >= g.left) setHour(clamp(Math.floor(g.at(px) / hourMs) * hourMs));
+  };
+  // Touch pointers leave on every lift, so a tapped hour stays until focus moves away. A
+  // keyboard-focused chart keeps its hour when a mouse passes over it.
+  const leave = (event: PointerEvent<SVGSVGElement>) => {
+    if (event.pointerType !== "touch" && !ref.current?.matches(":focus-visible")) setHour(null);
   };
   const onKey = (event: KeyboardEvent<HTMLDivElement>) => {
     const step = event.shiftKey ? dayMs : hourMs;
@@ -201,7 +222,8 @@ export function CapacityChart({
   const missing = gaps(measuredPoints, now);
   const ticks: number[] = [];
   const pxPerDay = g.x(from + dayMs) - g.x(from);
-  const every = pxPerDay >= 56 ? 1 : pxPerDay >= 28 ? 2 : pxPerDay >= 14 ? 4 : 7;
+  const every =
+    pxPerDay >= 56 ? 1 : pxPerDay >= 28 ? 2 : pxPerDay >= 14 ? 4 : pxPerDay >= 7 ? 7 : 14;
   for (let at = Math.ceil(from / dayMs) * dayMs, index = 0; at <= end; at += dayMs, index++)
     if (index % every === 0) ticks.push(at);
   const medianPath = forecast
@@ -248,6 +270,7 @@ export function CapacityChart({
       onFocus={() =>
         setHour((current) => current ?? facts.latest?.hour ?? Math.floor(now / hourMs) * hourMs)
       }
+      onBlur={() => setHour(null)}
     >
       <svg
         viewBox={`0 0 ${g.width} ${g.height}`}
@@ -258,6 +281,8 @@ export function CapacityChart({
           if (event.pointerType === "mouse") select(event);
         }}
         onPointerDown={select}
+        onPointerLeave={leave}
+        onPointerCancel={() => setHour(null)}
       >
         <defs>
           <pattern
@@ -378,7 +403,7 @@ export function CapacityChart({
                 );
               });
           })()}
-        {first && first.hour > from + hourMs && (
+        {first && since !== null && (
           <text
             x={(g.x(from) + g.x(first.hour)) / 2}
             y={g.top + (g.bottom - g.top) / 3}
@@ -613,6 +638,11 @@ export function CapacityChart({
           </g>
         )}
       </svg>
+      {since !== null && (
+        <p className="m-0 mt-1 text-xs text-muted-foreground tabular-nums">
+          Readings since {new Date(since).toISOString().replace("T", " ").slice(0, 16)} UTC
+        </p>
+      )}
       {hour !== null && (
         <div
           id={`capacity-tooltip-${line.key.replace(/[^a-z0-9]/gi, "-")}`}
@@ -936,7 +966,7 @@ function Tip({
         <span>
           {point.minimum.accountCount} {point.minimum.accountCount === 1 ? "account" : "accounts"}
           {point.minimum.unknownWeightCount > 0
-            ? ` · ${point.minimum.unknownWeightCount} with conservative estimates`
+            ? ` · ${point.minimum.unknownWeightCount} at an unverified 1x`
             : ""}
         </span>
         <span>

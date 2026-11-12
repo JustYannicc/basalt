@@ -245,7 +245,7 @@ test("xAI remains healthy with measured monthly usage and an unreported weekly a
   const windows = report.result.observation.windows;
   assert.equal(windows.length, 2);
   assert.deepEqual(windows[0].measure, { unit: "percentage" });
-  assert.deepEqual(windows[0].period, { mode: "fixed", unit: "week", value: 1 });
+  assert.deepEqual(windows[0].period, { mode: "fixed", unit: "week", value: 1, seconds: 604_800 });
   assert.equal(windows[1].measure.used, 42);
   assert.equal(windows[1].measure.remaining, 108);
   assert.equal(

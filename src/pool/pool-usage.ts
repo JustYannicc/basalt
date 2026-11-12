@@ -343,11 +343,13 @@ export class PoolUsage {
       const caller = text(request.headers.get(callerHeader));
       if (!caller) return fail(403, "unauthorized", "Sign in to see your usage on this pool.");
       const raw = new URL(request.url).searchParams.get("days") ?? String(usageDays);
-      if (!/^[1-9][0-9]?$/.test(raw) || Number(raw) > usageDays)
-        return fail(400, "invalid_query", `Ask for 1 to ${usageDays} days.`);
+      const capacityRequest = new URL(request.url).pathname === `${controlBasePath}/usage/capacity`;
+      const maxDays = capacityRequest ? 90 : usageDays;
+      if (!/^[1-9][0-9]?$/.test(raw) || Number(raw) > maxDays)
+        return fail(400, "invalid_query", `Ask for 1 to ${maxDays} days.`);
       const permissions = await this.deps.permissions?.(claims.pool, caller);
       const canManage = permissions?.canManage ?? caller === claims.owner;
-      if (new URL(request.url).pathname === `${controlBasePath}/usage/capacity`) {
+      if (capacityRequest) {
         if (!canManage)
           return fail(403, "unauthorized", "Only a pool manager can read capacity history.");
         const now = (this.deps.now?.() ?? new Date()).getTime();

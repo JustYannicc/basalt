@@ -115,6 +115,7 @@ export function App({
             options={[
               { id: 7, label: "7 days" },
               { id: 30, label: "30 days" },
+              { id: 90, label: "90 days" },
             ]}
           />
           {accountsHref && (

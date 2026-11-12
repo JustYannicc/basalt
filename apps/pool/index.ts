@@ -47,13 +47,13 @@ export const usage = query(
 export const capacity = query(
   {
     description:
-      "Measured capacity and seasonal projections for pool managers. Forecasts need two completed weeks, sizing advice four. Banked resets are never spent by a forecast.",
+      "Measured capacity and seasonal projections for pool managers (1 to 90 days, default 30). Forecasts need two completed weeks, sizing advice four. Banked resets are never spent by a forecast.",
     input: object({ days: number().optional(), to: number().optional() }),
   },
   async (ctx: Context, { days, to }) =>
     control<import("./capacity-contract.ts").PoolCapacityHistory>(
       ctx,
-      `/usage/capacity?days=${Math.min(30, Math.max(1, Math.round(days ?? 7)))}${to === undefined ? "" : `&to=${encodeURIComponent(to)}`}`,
+      `/usage/capacity?days=${Math.min(90, Math.max(1, Math.round(days ?? 30)))}${to === undefined ? "" : `&to=${encodeURIComponent(to)}`}`,
     ),
 );
 

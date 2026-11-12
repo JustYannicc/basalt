@@ -238,6 +238,27 @@ test("overview prices protocol aliases from total context, keeps excluded counts
     assert.equal(result.homeCapture.completeHours.includes("2026-01-02T03:00:00.000Z"), false);
     assert.equal(result.partial, true);
 
+    const ninety = await poolUsageOverview(fixture.db, {
+      ...signed,
+      from: "2026-01-01T00:00:00Z",
+      to: "2026-04-01T00:00:00Z",
+      days: 90,
+      prices: [rates("0", "10"), rates("100", "20")],
+    });
+    assert.equal(ninety.from, "2026-01-01T00:00:00.000Z");
+    assert.equal(ninety.to, "2026-04-01T00:00:00.000Z");
+    assert.equal(
+      ninety.metrics.requestTokens.requests,
+      7,
+      "retained requests older than 30 days remain in the selected range",
+    );
+    assert.equal(ninety.partial, true);
+    assert.deepEqual(
+      ninety.homeCapture.completeHours.filter((hour) => Date.parse(hour) < Date.parse(to)),
+      result.homeCapture.completeHours,
+      "the longer range preserves the source-coverage gap in the retained interval",
+    );
+
     const personal = await poolPersonalOverview(
       fixture.db,
       {

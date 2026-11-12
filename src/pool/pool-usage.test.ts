@@ -684,7 +684,7 @@ test("capacity history requires management rather than model-use authority and l
   assert.equal((await read(null)).status, 403);
   assert.equal((await read(owner)).status, 403);
   assert.equal((await read(idle)).status, 403);
-  assert.equal((await read(b, token, "31")).status, 400);
+  assert.equal((await read(b, token, "91")).status, 400);
   const response = await read(b);
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {

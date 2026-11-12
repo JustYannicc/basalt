@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-overview-ninety-days",
+  "file": "0527-pool-overview-ninety-days.patch",
+  "content_sha256": "d3c0695ccdc9dbea70d9b345f13f7d69c3f78ef31931ce15a95733c71a6220ab",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
