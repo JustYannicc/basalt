@@ -54,9 +54,10 @@ test("sixty authority ticks emit one content-free run event and no skipped noise
       { report: (event) => events.push(event), clock: () => 42 },
     );
   assert.equal(runs, 1);
-  assert.deepEqual(events, [
-    { job: "usage", state: "ran", durationMs: 0, rows: 17, outcome: "success" },
-  ]);
+  assert.deepEqual(
+    [...events],
+    [{ job: "usage", state: "ran", durationMs: 0, rows: 17, outcome: "success" }],
+  );
   await assert.rejects(
     reportWhenDue(
       storage,

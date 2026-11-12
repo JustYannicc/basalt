@@ -1,3 +1,29 @@
+diff --git a/README.md b/README.md
+index 6481d89..c6956fb 100644
+--- a/README.md
++++ b/README.md
+@@ -76,6 +76,8 @@ Home now always runs from a database-backed runtime. When `cluster.yaml` is abse
+ 
+ When `cluster.yaml` exists, Home enables cluster mode and uses the database backend declared in that file. Copy `cluster.sqlite.example.yaml` or `cluster.pgsql.example.yaml` to `cluster.yaml` as a starting point. PostgreSQL accepts either individual connection fields or a connection string in `pgsql.postgres_uri`. SQLite supports only one active Home process per database; deployments with multiple active Homes must use PostgreSQL. Multiple CPA nodes may connect to a single SQLite-backed Home. When using SQLite with `cluster.yaml`, configure `node.external-ip` so CPA clients can reach the Home.
+ 
++PostgreSQL reporting indexes build concurrently outside the schema transaction. Initial setup or completion after an interrupted build requires `pgsql.max-open-conns` of at least 2: one connection guards the build and one runs the index DDL. A cap of 1 refuses incomplete indexes immediately without changing the configured budget. After the indexes are ready, startup and normal operation support a cap of 1.
++
+ Before using automatic CPA connection rebalancing, upgrade all Home nodes to a version that supports it. Automatic rebalancing is not guaranteed while old and new Home versions coexist.
+ 
+ Set `slow-query-threshold` under the selected `pgsql` or `sqlite` backend to control slow SQL logging. It accepts Go duration strings such as `"500ms"` or `"1s"` and defaults to `"200ms"`.
+diff --git a/README_CN.md b/README_CN.md
+index b47b0c9..3695d81 100644
+--- a/README_CN.md
++++ b/README_CN.md
+@@ -76,6 +76,8 @@ Home 现在始终使用数据库驱动的运行时。没有 `cluster.yaml` 时
+ 
+ 存在 `cluster.yaml` 时，Home 启用集群模式，并使用该文件中声明的数据库后端。可以复制 `cluster.sqlite.example.yaml` 或 `cluster.pgsql.example.yaml` 为 `cluster.yaml` 后再修改。PostgreSQL 既支持拆分连接字段，也支持在 `pgsql.postgres_uri` 中填写连接字符串。SQLite 每个数据库仅支持一个 active Home 进程；多 Home 部署必须使用 PostgreSQL。多个 CPA 节点可以连接同一个使用 SQLite 的 Home。SQLite 使用 `cluster.yaml` 时，请配置 `node.external-ip`，确保 CPA 客户端可以访问 Home。
+ 
++PostgreSQL 报表索引在结构事务之外并发构建。首次构建或中断后的补全要求 `pgsql.max-open-conns` 至少为 2：一个连接持有构建保护锁，另一个执行索引 DDL。配置为 1 时，未完成的索引会立即报错，不会自动提高连接上限。索引全部就绪后，启动和正常运行支持连接上限 1。
++
+ 使用 CPA 自动连接均衡前，请先将所有 Home 节点升级到支持该功能的版本；新旧 Home 混合运行期间不保证自动均衡效果。
+ 
+ 可以在所选的 `pgsql` 或 `sqlite` 后端下设置 `slow-query-threshold`，控制慢 SQL 日志阈值。该字段接受 `"500ms"`、`"1s"` 等 Go duration 字符串，默认为 `"200ms"`。
 diff --git a/docs/management/api.md b/docs/management/api.md
 index 2002795..b3035ef 100644
 --- a/docs/management/api.md
@@ -797,10 +823,10 @@ index 0000000..a16a48e
 +}
 diff --git a/internal/cluster/reporting_indexes.go b/internal/cluster/reporting_indexes.go
 new file mode 100644
-index 0000000..4f0c9ab
+index 0000000..ad72f6c
 --- /dev/null
 +++ b/internal/cluster/reporting_indexes.go
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,153 @@
 +package cluster
 +
 +import (
@@ -875,6 +901,26 @@ index 0000000..4f0c9ab
 +	}
 +	ctx, cancel := context.WithTimeout(contextOrBackground(ctx), 10*time.Minute)
 +	defer cancel()
++	incomplete := make([]string, 0, len(reportingIndexes))
++	for _, index := range reportingIndexes {
++		_, ready, errState := reportingIndexState(db.WithContext(ctx), index)
++		if errState != nil {
++			return errState
++		}
++		if !ready {
++			incomplete = append(incomplete, index.name)
++		}
++	}
++	if len(incomplete) == 0 {
++		return nil
++	}
++	sqlDB, errDB := db.DB()
++	if errDB != nil {
++		return errDB
++	}
++	if sqlDB.Stats().MaxOpenConnections == 1 {
++		return fmt.Errorf("reporting indexes %s are incomplete: pgsql.max-open-conns is 1; native index completion requires at least 2 connections for its transaction guard and concurrent builder; run the native migration with max-open-conns >= 2 before serving with 1", strings.Join(incomplete, ","))
++	}
 +	// A transaction lock coordinates builders even through PgBouncer. Only the
 +	// guard is transactional; index DDL uses a separate connection with no BEGIN.
 +	busy := errors.New("reporting index builder is active")
@@ -936,10 +982,10 @@ index 0000000..4f0c9ab
 +}
 diff --git a/internal/cluster/reporting_indexes_postgres_test.go b/internal/cluster/reporting_indexes_postgres_test.go
 new file mode 100644
-index 0000000..0b65b56
+index 0000000..a43eea6
 --- /dev/null
 +++ b/internal/cluster/reporting_indexes_postgres_test.go
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,162 @@
 +package cluster
 +
 +import (
@@ -1063,6 +1109,43 @@ index 0000000..0b65b56
 +	}
 +	if !strings.Contains(definition, "DESC") {
 +		t.Fatalf("wrong index was replaced without authority: %s", definition)
++	}
++}
++
++func TestReportingIndexesSingleConnectionReadinessAndCompletionRefusal(t *testing.T) {
++	repo := newPostgresQuiescenceRepository(t)
++	db := repo.db
++	sqlDB, errDB := db.DB()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	sqlDB.SetMaxOpenConns(1)
++	sqlDB.SetMaxIdleConns(1)
++	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
++	defer cancel()
++	if errMigrate := AutoMigrateContext(ctx, db); errMigrate != nil {
++		t.Fatalf("ready v16 startup with one connection: %v", errMigrate)
++	}
++	index := reportingIndexes[3]
++	if errReset := db.Exec("DROP INDEX " + index.name + "; UPDATE home_schema_migration SET version=15").Error; errReset != nil {
++		t.Fatal(errReset)
++	}
++	errMigrate := AutoMigrateContext(ctx, db)
++	if errMigrate == nil || !strings.Contains(errMigrate.Error(), index.name+" are incomplete") || !strings.Contains(errMigrate.Error(), "requires at least 2 connections") || ctx.Err() != nil {
++		t.Fatalf("incomplete max-open=1 migration must refuse before waiting: %v context=%v", errMigrate, ctx.Err())
++	}
++	assertPostgresSchemaMigrationVersion(t, db, 16)
++	if sqlDB.Stats().MaxOpenConnections != 1 {
++		t.Fatal("migration changed the configured connection budget")
++	}
++	// The operator changes the migration budget; v16 completion needs no new schema upgrade.
++	sqlDB.SetMaxOpenConns(2)
++	if errComplete := AutoMigrateContext(ctx, db); errComplete != nil {
++		t.Fatalf("complete interrupted v15-to-v16 work with two connections: %v", errComplete)
++	}
++	sqlDB.SetMaxOpenConns(1)
++	if errReady := AutoMigrateContext(ctx, db); errReady != nil {
++		t.Fatalf("serve completed schema with one connection: %v", errReady)
 +	}
 +}
 diff --git a/internal/cluster/reporting_scale_metrics_test.go b/internal/cluster/reporting_scale_metrics_test.go

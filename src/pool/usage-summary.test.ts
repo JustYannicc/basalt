@@ -215,6 +215,43 @@ const options = (caller = "owner", days = 30) => ({
   cap: () => null,
 });
 
+for (const pending of [false, true]) {
+  test(`${pending ? "pending" : "legacy"} repair counts a previously unattributable row exactly once`, async () => {
+    const home = pending ? new PendingHome() : new Home();
+    const storage = new Memory();
+    const source = await record("42", "2026-10-23T01:00:00Z");
+    home.records = [{ ...source, client: null, credential: null }];
+    const ledger = new UsageLedger(storage, home);
+    await ledger.sync(now);
+    assert.equal((await ledger.summary("pool-a", options())).total.requests, 0);
+    home.records = [source];
+    if (home instanceof PendingHome) home.pending.add("42");
+    await ledger.sync(new Date(now.getTime() + 300000));
+    assert.equal((await ledger.summary("pool-a", options("member-a"))).total.requests, 1);
+    if (home instanceof PendingHome) home.pending.add("42");
+    await ledger.sync(new Date(now.getTime() + 600000));
+    assert.equal((await ledger.summary("pool-a", options())).total.requests, 1);
+    if (home instanceof PendingHome) assert.equal(home.pending.size, 0);
+  });
+
+  test(`${pending ? "pending" : "legacy"} repair preserves an existing receipt's first attribution`, async () => {
+    const home = pending ? new PendingHome() : new Home();
+    const storage = new Memory();
+    const source = await record("43", "2026-10-23T01:00:00Z");
+    home.records = [{ ...source, client: null }];
+    const ledger = new UsageLedger(storage, home);
+    await ledger.sync(now);
+    assert.equal((await ledger.summary("pool-a", options())).total.requests, 1);
+    assert.equal((await ledger.summary("pool-a", options("member-a"))).total.requests, 0);
+    home.records = [source];
+    if (home instanceof PendingHome) home.pending.add("43");
+    await ledger.sync(new Date(now.getTime() + 300000));
+    assert.equal((await ledger.summary("pool-a", options())).total.requests, 1);
+    assert.equal((await ledger.summary("pool-a", options("member-a"))).total.requests, 0);
+    if (home instanceof PendingHome) assert.equal(home.pending.size, 0);
+  });
+}
+
 test("pending feed counts late commits once after backfill and never repeats retained scans", async () => {
   const home = new PendingHome(),
     storage = new Memory();
