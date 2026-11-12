@@ -35,6 +35,8 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
       "src/pool/native-contract.ts": "export const nativeControlPrefix = 'sbn1';",
       "src/pool/account-acquisition-contract.ts":
         "export const accountAcquisitionPrefix = 'sbas1';",
+      "src/pool/provider-accounts/cloudflare-scopes.ts":
+        "export const cloudflareOAuthScopes = [];\n",
       "src/pool/provider-accounts/definitions.ts": "export type ProviderLab = 'fixture';",
       "src/pool/provider-accounts/capabilities.ts":
         'import type { ProviderLab } from "./definitions.ts";',
@@ -55,6 +57,7 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
     assert.deepEqual(
       files.map((file) => file.path),
       [
+        "cloudflare-scopes.ts",
         "deployment.ts",
         "index.ts",
         "package.json",
@@ -89,13 +92,16 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
     ])
       assert.equal(readFileSync(join(root, "public/brand/fonts", file), "utf8"), content);
     assert.equal(
-      files[0]!.content,
+      files.find((file) => file.path === "deployment.ts")!.content,
       `export const poolOrigin = "https://${brand.host}";\nexport const productName = ${JSON.stringify(brand.name)};\n`,
     );
-    assert.deepEqual(JSON.parse(files[2]!.content).dependencies, {
-      apps: servedFrameworkVersion,
-      react: "19",
-    });
+    assert.deepEqual(
+      JSON.parse(files.find((file) => file.path === "package.json")!.content).dependencies,
+      {
+        apps: servedFrameworkVersion,
+        react: "19",
+      },
+    );
     const output = join(upstream, "apps/hosted/server/src/implementation");
     const generated = readFileSync(join(output, "pool-app-source.ts"), "utf8");
     const version = createHash("sha256").update(JSON.stringify(files)).digest("hex");
@@ -105,7 +111,7 @@ test("bundles nested UI, pins the host framework, rewrites the origin and copies
     assert.match(generated, new RegExp(`poolAppAssetPath = "/_basalt/${assetName}"`));
     assert.ok(!generated.includes("poolAppFiles"));
     assert.ok(
-      !generated.includes(files[1]!.content),
+      !generated.includes(files.find((file) => file.path === "index.ts")!.content),
       "seed contents stay out of the generated module",
     );
     assert.deepEqual(JSON.parse(readFileSync(join(assets, assetName), "utf8")), files);

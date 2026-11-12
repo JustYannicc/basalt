@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Cloudflare sign-in requests every scope in the reviewed issuer catalog, including account token management. OAuth scope additions preserve one unambiguous provider lineage only when all other credential and provider metadata match. Compatible older app versions cannot erase expanded scope requirements. Known incomplete grants offer reconnect for permissions without replacing saved accounts, their identity or consumer links; denial retains existing credentials, and successful consent settles the same pending request with the original account. Unknown grants remain unknown. The public MCP issuer does not advertise user token management. Live consent and token creation remain separate acceptance steps."
+      constraint "Cloudflare sign-in requests every scope in the reviewed issuer catalog, including account token management. OAuth scope additions preserve one unambiguous provider lineage only when all other credential and provider metadata match. Compatible older app versions cannot erase expanded scope requirements. Reconnect through an older compatible consumer retains the provider lineage's expanded scopes. Known incomplete grants offer reconnect for permissions without replacing saved accounts, their identity or consumer links; denial retains existing credentials, and successful consent settles the same pending request with the original account. Unknown grants remain unknown. The public MCP issuer does not advertise user token management. Live consent and token creation remain separate acceptance steps."
     }
   }
 }

@@ -72,6 +72,8 @@ function verifyFixture(declaredPlans: boolean) {
       "src/pool/providers.json": "[]",
       "src/pool/account-acquisition-contract.ts":
         "export const accountAcquisitionPrefix = 'sbas1';\n",
+      "src/pool/provider-accounts/cloudflare-scopes.ts":
+        "export const cloudflareOAuthScopes = [];\n",
       "src/pool/provider-accounts/definitions.ts": "export const providers = {};\n",
       "src/pool/provider-accounts/capabilities.ts": "export const providerCapabilities = [];\n",
       "src/pool/worker.ts": "export default {};\n",

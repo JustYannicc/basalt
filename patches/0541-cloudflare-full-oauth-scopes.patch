@@ -379,7 +379,7 @@ diff --git a/e2e/tests/oauth-scope-expansion-hosted.spec.ts b/e2e/tests/oauth-sc
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/oauth-scope-expansion-hosted.spec.ts
-@@ -0,0 +1,190 @@
+@@ -0,0 +1,195 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { FetchHttpClient, HttpClient } from "effect/http";
@@ -527,11 +527,13 @@ new file mode 100644
 +              .getByRole("menu")
 +              .getByRole("menuitem", { name: "Reconnect to grant new permissions", exact: true })
 +              .click(),
-+          ]).then(async ([response]) => ({
-+            status: response.status(),
-+            payload: response.request().postDataJSON() as unknown,
-+            body: (await response.json()) as unknown,
-+          })),
++          ]).then(([response]) =>
++            response.json().then((body: unknown) => ({
++              status: response.status(),
++              payload: response.request().postDataJSON() as unknown,
++              body,
++            })),
++          ),
 +        );
 +        expect(reconnect.status).toBe(200);
 +        expect(reconnect.payload).toMatchObject({ account: original.id });
@@ -540,11 +542,14 @@ new file mode 100644
 +          reconnectAccount: { id: original.id },
 +          target: { app, requirement: "service" },
 +        });
-+        yield* browser.use("The reconnect dialog opens over Accounts", async (page) => {
++        yield* browser.use("The reconnect dialog opens over Accounts", (page) => {
 +          const dialog = page.getByRole("dialog", { name: `Reconnect ${name}`, exact: true });
-+          await dialog.waitFor({ state: "visible" });
-+          await dialog.getByRole("button", { name: `Reconnect ${name}`, exact: true }).waitFor();
-+          expect(new URL(page.url()).pathname).toBe(accountsPage);
++          return dialog
++            .waitFor({ state: "visible" })
++            .then(() =>
++              dialog.getByRole("button", { name: `Reconnect ${name}`, exact: true }).waitFor(),
++            )
++            .then(() => expect(new URL(page.url()).pathname).toBe(accountsPage));
 +        });
 +        yield* evidence.attach(
 +          "hosted-scope-expansion-dialog.png",
@@ -649,7 +654,7 @@ new file mode 100644
 +        // A retained reader cannot overwrite the expanded provider's requested permissions.
 +        yield* product.deploy(issuer.origin, "Retained reader", ["read"], {}, sibling, { name });
 +        expect((yield* signIn()).body).toMatchObject({ state: "reconnect", reason: "permissions" });
-+        const pending = yield* product.connection(app, original.id);
++        const pending = yield* product.connection(sibling, original.id);
 +        yield* issuer.configure({ denied: true });
 +        const denied = yield* product.authorize(pending);
 +        expect((yield* product.complete(pending, denied)).status).toBe(400);
@@ -752,6 +757,76 @@ diff --git a/packages/sdk/src/implementation/account-sign-in.ts b/packages/sdk/s
 +      return { state: "reconnect", reason: "permissions" } as const;
 +    return { state: "saved", reconnectAt } as const;
    });
+diff --git a/packages/sdk/src/implementation/connection-target.ts b/packages/sdk/src/implementation/connection-target.ts
+--- a/packages/sdk/src/implementation/connection-target.ts
++++ b/packages/sdk/src/implementation/connection-target.ts
+@@ -9,16 +9,22 @@
+   AccountConnectionRefused,
+   type CreateAccountConnection,
+ } from "../contracts/account-connection.ts";
+-import { AccountProvisioned, connectableMethods } from "../contracts/provider.ts";
++import { AccountProvisioned, Provider, connectableMethods } from "../contracts/provider.ts";
+ import { AccountSelectionInvalid } from "../contracts/apps.ts";
+ import type { Account } from "../contracts/account.ts";
+ import type { ResourceLifecycle } from "../contracts/executor.ts";
+-import { StorageError, type AccountConnectionId, type ProviderId } from "../contracts/shared.ts";
++import {
++  StorageError,
++  type AccountConnectionId,
++  type AccountId,
++  type ProviderId,
++} from "../contracts/shared.ts";
+ import { AccountAcquisitionConfiguration } from "../contracts/account-acquisition-driver.ts";
+ import { planAccountConsumerMethod } from "../contracts/account-consumers.ts";
+ import { StoredAccount, type StoredConnectionTarget } from "../contracts/storage.ts";
+ import { lockApp, storedApp, storedVersion } from "./apps.ts";
+ import { query, type Query } from "./database.ts";
++import { mergeOAuthScopes } from "./provider-oauth-scopes.ts";
+ 
+ /**
+  * Resolve a provider from the deployed requirement without evaluating account-dependent app code.
+@@ -125,7 +131,11 @@
+  */
+ export const requireTargetProvider = (
+   db: Query,
+-  row: { readonly target: StoredConnectionTarget; readonly provider: ProviderId },
++  row: {
++    readonly target: StoredConnectionTarget;
++    readonly provider: ProviderId;
++    readonly reconnectAccount?: AccountId | null | undefined;
++  },
+ ) =>
+   Effect.gen(function* () {
+     const shown = yield* targetProvider(db, row.target, row.provider);
+@@ -134,7 +144,27 @@
+         app: row.target.app,
+         requirement: row.target.requirement,
+       });
+-    return shown;
++    if (row.reconnectAccount == null) return shown;
++    const retained = yield* query(() =>
++      db.findFirst("providers", { where: (b) => b("id", "=", row.provider) }),
++    );
++    if (retained === null) return yield* new StorageError();
++    const stored = yield* Schema.decodeUnknownEffect(Provider)(retained).pipe(
++      Effect.mapError(() => new StorageError()),
++    );
++    // An older consumer must not narrow a reconnect below compatible permissions its siblings need.
++    return {
++      ...shown,
++      definition: {
++        ...shown.definition,
++        auth: Object.fromEntries(
++          Object.entries(shown.definition.auth).map(([name, method]) => [
++            name,
++            mergeOAuthScopes(stored.definition.auth[name], method),
++          ]),
++        ),
++      },
++    };
+   });
+ 
+ /**
 diff --git a/packages/sdk/src/implementation/provider-continuity.ts b/packages/sdk/src/implementation/provider-continuity.ts
 --- a/packages/sdk/src/implementation/provider-continuity.ts
 +++ b/packages/sdk/src/implementation/provider-continuity.ts
