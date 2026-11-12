@@ -26,6 +26,7 @@ model {
   }
   basalt.scaleTest -[sync]-> basalt.scaleStage "call only the validated test gateway"
   basalt.scaleTest -[sync]-> basalt.scaleStage.controller "wrap the pinned controller with test control operations"
+  basalt.scaleTest -[sync]-> basalt.poolRuntime "override only fixture-generated connection limits in the unchanged runtime"
   basalt.scaleTest -[sync]-> basalt.scaleStage.runtime "sample processes, readiness and direct database usage"
   basalt.scaleTest -[sync]-> basalt.scaleStage.fixtures "route synthetic provider requests and drive measured load"
   basalt.scaleTest -[sync]-> frozenScaleCandidate "use the immutable gateway source and database contract"
