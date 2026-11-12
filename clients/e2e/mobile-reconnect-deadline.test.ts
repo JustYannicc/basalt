@@ -108,7 +108,7 @@ test("three consecutive twenty-second and two-minute outages recover on the same
   await f.controller.close();
 });
 
-test("a timed-out rotating refresh stays sign-in-required and is never replayed", async (t) => {
+test("a timed-out rotating refresh stays signed in and recovers through replay", async (t) => {
   const f = fixture(t);
   await f.controller.initialize();
   f.expire();
@@ -119,19 +119,16 @@ test("a timed-out rotating refresh stays sign-in-required and is never replayed"
     }),
   );
   const attempt = f.controller.foreground(true);
-  await advance(t, 15_000);
+  await advance(t, 35_000);
   await attempt;
-  assert.equal(f.controller.getSnapshot().connection?.state, "sign-in-required");
-  assert.equal(f.controller.getSnapshot().reconnecting, false);
-  assert.equal(f.refreshReads(), 1);
-  f.notifyNetwork(true);
-  await advance(t, 60_000);
-  release();
-  await advance(t, 100);
-  assert.equal(f.refreshReads(), 1);
+  assert.equal(f.controller.getSnapshot().connection?.state, "connected");
   assert.equal(f.saved().refreshPending, true);
-  assert.equal(f.saved().accessToken, "fixture-access");
-  assert.equal(f.controller.getSnapshot().connection?.state, "sign-in-required");
+  release();
+  await advance(t, 20_000);
+  assert.ok(f.refreshReads() >= 2);
+  assert.equal(f.saved().accessToken, "fixture-next-access");
+  assert.equal(f.saved().refreshPending, false);
+  assert.equal(f.controller.getSnapshot().reconnecting, false);
   await f.controller.close();
 });
 

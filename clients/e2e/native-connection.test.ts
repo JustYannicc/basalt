@@ -4,7 +4,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { once } from "node:events";
 import { WebSocket } from "ws";
-import { launch, command } from "./support.ts";
+import { launch, command, main } from "./support.ts";
+import { ConnectionSupervisor } from "../desktop/supervisor.ts";
 import { fixture, ready } from "./native-client-fixture.ts";
 
 test(
@@ -155,37 +156,113 @@ test(
 );
 
 test(
-  "a lost refresh result remains blocked after restart without another exchange",
+  "CLI and desktop replay the same lost refresh pair after restart",
   { timeout: 30000 },
   async () => {
     const f = await fixture();
     try {
       f.remote.expireNext(1);
       await f.login();
+      f.remote.expireNext(3600);
       f.remote.loseRefresh();
       await command(["agent", "add", "both", "models", "tools"], f.home);
       await f.start();
       assert.equal(f.remote.counts().refreshes, 1);
-      assert.equal(
-        JSON.parse((await command(["status"], f.home)).stdout).state,
-        "sign-in-required",
-      );
-      assert.equal(
-        JSON.parse(await readFile(join(f.home, "credentials.json"), "utf8")).refreshPending,
-        true,
-      );
+      assert.equal(JSON.parse((await command(["status"], f.home)).stdout).state, "connected");
+      const pending = JSON.parse(await readFile(join(f.home, "credentials.json"), "utf8"));
+      assert.equal(pending.refreshPending, true);
+      assert.equal(pending.refreshToken, "synthetic-refresh-1");
+      assert.ok(Date.now() - pending.refreshStartedAt < 600_000);
+      await f.stop();
+      const origin = await f.start();
+      assert.equal(f.remote.counts().refreshes, 2);
+      assert.deepEqual(f.remote.refreshTokens(), ["synthetic-refresh-1", "synthetic-refresh-1"]);
+      assert.equal(f.remote.counts().rotations, 1, "Restart replays instead of rotating again.");
+      const saved = JSON.parse(await readFile(join(f.home, "credentials.json"), "utf8"));
+      assert.equal(saved.accessToken, "synthetic-access-2");
+      assert.equal(saved.refreshToken, "synthetic-refresh-2");
+      assert.equal(saved.refreshPending, false);
+      assert.equal(saved.refreshStartedAt, undefined);
+      const desktop = new ConnectionSupervisor(f.home, main, process.execPath);
+      await desktop.start();
+      assert.equal((await desktop.status()).state, "connected");
+      f.remote.inventory(200, {
+        apps: [{ id: "fixture", name: "Fixture" }],
+        links: [],
+        appLinks: [],
+      });
+      assert.equal((await desktop.apps())?.apps[0]?.id, "fixture");
+      await desktop.stop();
+      assert.equal(JSON.parse((await command(["status"], f.home)).stdout).state, "connected");
+      const response = await fetch(`${origin}/mcp`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${await f.token()}`, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call" }),
+      });
+      assert.equal(response.status, 200);
+      assert.match(await response.text(), /synthetic-tool-receipt/u);
+      assert.equal(f.remote.counts().refreshes, 2);
       await f.stop();
       await f.start();
-      assert.equal(f.remote.counts().refreshes, 1);
       assert.equal(
-        JSON.parse((await command(["status"], f.home)).stdout).state,
-        "sign-in-required",
+        f.remote.counts().refreshes,
+        2,
+        "A saved replay result needs no further exchange.",
       );
     } finally {
       await f.close();
     }
   },
 );
+
+for (const refusal of [true, false])
+  test(
+    refusal
+      ? "a definitive refresh refusal after restart requires sign-in without replaying agent work"
+      : "an exhausted persisted replay budget stops refresh exchanges after restart",
+    { timeout: 30000 },
+    async () => {
+      const f = await fixture();
+      try {
+        f.remote.expireNext(1);
+        await f.login();
+        f.remote.loseRefresh();
+        await command(["agent", "add", "both", "models", "tools"], f.home);
+        await f.start();
+        await f.stop();
+        const file = join(f.home, "credentials.json");
+        const pending = JSON.parse(await readFile(file, "utf8"));
+        assert.equal(pending.refreshPending, true);
+        if (refusal) f.remote.refuseRefresh();
+        else {
+          pending.refreshStartedAt = Date.now() - 600_001;
+          await writeFile(file, JSON.stringify(pending), { mode: 0o600 });
+        }
+        const origin = await f.start();
+        assert.equal(
+          JSON.parse((await command(["status"], f.home)).stdout).state,
+          refusal ? "sign-in-required" : "disconnected",
+        );
+        const before = f.remote.counts().refreshes;
+        assert.equal(before, refusal ? 2 : 1);
+        const response = await fetch(`${origin}/mcp`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${await f.token()}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call" }),
+        });
+        assert.equal(response.status, refusal ? 401 : 503);
+        await response.body?.cancel();
+        assert.equal(f.remote.counts().refreshes, before);
+        assert.equal(f.remote.counts().writes, 0);
+        assert.equal(JSON.parse(await readFile(file, "utf8")).refreshToken, "synthetic-refresh-1");
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
 test(
   "denied sign-in and a foreign approval URL preserve an existing direct profile",

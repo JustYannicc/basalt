@@ -270,3 +270,135 @@ test("lastSuccessAt is a bounded latest-ever lookup, separate from the selected 
     assert.throws(() => seriesInput({ ...input, accounts: Array(501).fill("saved-visible") }));
   });
 });
+
+test("history public USD uses request-level rates while preserving native scope, unknown models and retained charges", async () => {
+  await seriesFixture(async ({ db, insert }) => {
+    const native = await accountAuthority();
+    const model = "claude-opus-5-5";
+    const row = {
+      source: native.source,
+      account: native.visible,
+      provider: "claude",
+      model,
+      apiType: "messages",
+      inputTokens: "1000000",
+      outputTokens: "200000",
+      cacheReadTokens: "400000",
+      cacheWriteTokens: "100000",
+      reasoningTokens: "50000",
+      totalTokens: "1200000",
+      tokenQuality: "complete" as const,
+      cost: "99.000000000000",
+      currency: "credits",
+      costBasis: "home-charge" as const,
+    };
+    await insert(
+      row,
+      { ...row, account: native.hidden, model: "private-model-sentinel" },
+      { ...row, model: "unpublished-model-9988" },
+      { ...row, timestamp: timestamp("2027-01-01T00:00:00Z") },
+      { ...row, source: await digest("fixture-import"), attribution: "import-owner" },
+    );
+    const { baselinePrices } = await import("../../src/pool/public-price-baseline.ts");
+    const seen: unknown[] = [];
+    const result = await poolUsageSeries(
+      db,
+      {
+        ...input,
+        by: ["provider", "model", "source"],
+        sources: [native.source],
+        accounts: ["saved-visible"],
+      },
+      native.authority,
+      "owned",
+      async (targets) => {
+        seen.push(targets);
+        return {
+          prices: baselinePrices({ provider: "claude", model }).prices.map((p) => ({
+            ...p,
+            refreshFailed: true,
+          })),
+          issues: [
+            {
+              provider: "claude",
+              model: "unpublished-model-9988",
+              reason: "No public price for unpublished-model-9988",
+            },
+          ],
+        };
+      },
+    );
+    assert.deepEqual(seen, [
+      [
+        { provider: "claude", model },
+        { provider: "claude", model: "unpublished-model-9988" },
+      ],
+    ]);
+    assert.equal(JSON.stringify(result).includes("private-model-sentinel"), false);
+    const priced = full(result.groups.find((g) => g.key.model === model)!.buckets[0]);
+    // 500k uncached input * 4 + 200k output * 20 + 400k cache reads * .2 + 100k writes * 5, per million.
+    assert.equal(priced.cost.apiEstimate!.amount, "6.580000000000");
+    assert.equal(priced.cost.apiEstimate!.pricedRequests, 1);
+    assert.equal(priced.cost.apiEstimate!.price!.basis, "baseline");
+    assert.equal(priced.cost.apiEstimate!.price!.refreshFailed, true);
+    assert.equal(priced.cost.homeCharge.amount, "99.000000000000");
+    assert.equal(priced.cost.homeCharge.currency, "credits");
+    const unknown = full(
+      result.groups.find((g) => g.key.model === "unpublished-model-9988")!.buckets[0],
+    );
+    assert.equal(unknown.cost.apiEstimate!.amount, null);
+    assert.equal(unknown.cost.apiEstimate!.excluded.unpriced, 1);
+    assert.match(unknown.cost.apiEstimate!.reason!, /No public price for unpublished-model-9988/);
+  });
+});
+
+test("history price dates and recovery state come only from rates used in each bucket", async () => {
+  await seriesFixture(async ({ db, insert }) => {
+    const native = await accountAuthority();
+    const { baselinePrices } = await import("../../src/pool/public-price-baseline.ts");
+    const first = baselinePrices({ provider: "claude", model: "claude-opus-5-5" }).prices.map(
+      (p) => ({ ...p, asOf: "2026-11-01T00:00:00.000Z", refreshFailed: true }),
+    );
+    const second = baselinePrices({ provider: "codex", model: "gpt-6.1-sol" }).prices.map((p) => ({
+      ...p,
+      basis: "live" as const,
+      asOf: "2026-11-12T14:00:00.000Z",
+      version: "fresh-live",
+    }));
+    const common = {
+      source: native.source,
+      account: native.visible,
+      apiType: "responses",
+      inputTokens: "100",
+      outputTokens: "20",
+      cacheReadTokens: "0",
+      cacheWriteTokens: "0",
+      tokenQuality: "complete" as const,
+    };
+    await insert(
+      { ...common, provider: "claude", model: "claude-opus-5-5" },
+      {
+        ...common,
+        provider: "codex",
+        model: "gpt-6.1-sol",
+        timestamp: timestamp("2026-01-02T00:45:00Z"),
+      },
+    );
+    const result = await poolUsageSeries(
+      db,
+      { ...input, to: "2026-01-03T00:00:00Z", bucket: "day", by: ["person"] },
+      native.authority,
+      "owned",
+      { prices: [...first, ...second], issues: [] },
+    );
+    const buckets = result.groups[0]!.buckets.map(full);
+    assert.equal(buckets[0]!.cost.apiEstimate!.price!.basis, "baseline");
+    assert.equal(buckets[0]!.cost.apiEstimate!.price!.refreshFailed, true);
+    assert.deepEqual(buckets[1]!.cost.apiEstimate!.price, {
+      source: "models.dev",
+      asOf: "2026-11-12T14:00:00.000Z",
+      version: "fresh-live",
+      basis: "live",
+    });
+  });
+});

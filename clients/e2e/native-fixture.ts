@@ -36,6 +36,19 @@ export async function nativeFixture(
     cancels = 0,
     polls = 0,
     modelSends = 0;
+  let rotations = 0;
+  let refreshRefused = false;
+  const refreshTokens: string[] = [];
+  const tokenResponse = () => ({
+    access_token: access,
+    refresh_token: refresh,
+    expires_in: expiresIn,
+    token_type: "Bearer",
+    scope: "native offline_access",
+  });
+  let replay:
+    | { token: string; response: ReturnType<typeof tokenResponse>; until: number }
+    | undefined;
   let expiresIn = 3600,
     loseRefresh = false,
     dropTool = false;
@@ -113,8 +126,13 @@ export async function nativeFixture(
     if (request.url === "/api/auth/oauth2/token") {
       if (fields.get("grant_type") === "refresh_token") {
         refreshes++;
-        if (revoked || fields.get("refresh_token") !== refresh)
-          return json(400, { error: "invalid_grant" });
+        const presented = fields.get("refresh_token")!;
+        refreshTokens.push(presented);
+        assert.equal(fields.get("resource"), `${origin}/native`);
+        if (revoked || refreshRefused) return json(400, { error: "invalid_grant" });
+        if (replay?.token === presented && Date.now() < replay.until)
+          return json(200, replay.response);
+        if (presented !== refresh) return json(400, { error: "invalid_grant" });
         const held = refreshGate;
         refreshGate = undefined;
         if (held) {
@@ -123,11 +141,17 @@ export async function nativeFixture(
           await held.released;
           if (response.destroyed) return;
         }
+        const previous = refresh;
+        access = `synthetic-access-${++generation}`;
+        refresh = `synthetic-refresh-${generation}`;
+        rotations++;
+        replay = { token: previous, response: tokenResponse(), until: Date.now() + 3_600_000 };
         if (loseRefresh) {
+          loseRefresh = false;
           request.socket.destroy();
           return;
         }
-        assert.equal(fields.get("resource"), `${origin}/native`);
+        return json(200, replay.response);
       } else {
         polls++;
         if (denial) return json(400, { error: "access_denied" });
@@ -140,13 +164,7 @@ export async function nativeFixture(
       }
       access = `synthetic-access-${++generation}`;
       refresh = `synthetic-refresh-${generation}`;
-      return json(200, {
-        access_token: access,
-        refresh_token: refresh,
-        expires_in: expiresIn,
-        token_type: "Bearer",
-        scope: "native offline_access",
-      });
+      return json(200, tokenResponse());
     }
     if (request.url === "/api/auth/native/access") {
       accessReads++;
@@ -464,6 +482,10 @@ export async function nativeFixture(
     loseRefresh: () => {
       loseRefresh = true;
     },
+    refuseRefresh: () => {
+      refreshRefused = true;
+    },
+    refreshTokens: () => [...refreshTokens],
     refuseNextUpgrade: () => {
       refuseNextUpgrade = true;
     },
@@ -484,6 +506,7 @@ export async function nativeFixture(
     },
     counts: () => ({
       refreshes,
+      rotations,
       writes,
       cancels,
       polls,

@@ -1,3 +1,5 @@
+import type { OverviewPriceTable } from "../../../apps/pool/overview-contract.ts";
+import { officialCostMetric } from "./official-cost.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import {
   apiEquivalentUnavailable,
@@ -29,6 +31,7 @@ import { digest } from "../backend-users.ts";
 function bucket(
   row: Record<string, unknown>,
   input: PoolUsageSeriesInput,
+  prices?: OverviewPriceTable,
 ): SeriesBucket | SeriesCounts {
   const at = timestamp(String(row.at)),
     bounds = seriesBounds(input);
@@ -54,7 +57,8 @@ function bucket(
       },
     ]),
   ) as SeriesBucket["tokens"];
-  const currency = historyObject(JSON.parse(String(row.group_key))).currency;
+  const key = historyObject(JSON.parse(String(row.group_key)));
+  const currency = key.currency;
   const unit = currency === null ? null : String(currency);
   const cost = (amount: unknown, priced: unknown) => ({
     amount: amount === null ? null : String(amount),
@@ -76,6 +80,43 @@ function bucket(
       homeCharge: cost(row.home_amount, row.home_priced),
       importedApiPrice: cost(row.imported_amount, row.imported_priced),
       apiEquivalent: apiEquivalentUnavailable,
+      ...(prices
+        ? {
+            apiEstimate: {
+              ...officialCostMetric(
+                [
+                  {
+                    person: null,
+                    account: null,
+                    app: null,
+                    requirement: null,
+                    provider: typeof key.provider === "string" ? key.provider : null,
+                    model: typeof key.model === "string" ? key.model : null,
+                    day: at.slice(0, 10),
+                    requests,
+                    priced: requestCount(row.api_priced),
+                    missingPrices: requestCount(row.api_missing_prices),
+                    missingTokens: requestCount(row.api_missing_tokens),
+                    cost: row.api_amount === null ? null : String(row.api_amount),
+                  },
+                ],
+                prices.prices,
+                undefined,
+                prices.issues,
+              ),
+              price:
+                requestCount(row.api_priced) > 0
+                  ? {
+                      source: "models.dev",
+                      asOf: String(row.api_price_as_of),
+                      version: String(row.api_price_version),
+                      basis: row.api_price_baseline === true ? "baseline" : "live",
+                      ...(row.api_price_refresh_failed === true ? { refreshFailed: true } : {}),
+                    }
+                  : null,
+            },
+          }
+        : {}),
       unpricedRequests: requestCount(row.unpriced),
     },
     attribution: {
@@ -94,6 +135,9 @@ async function readUsageSeries(
   authority: SeriesAuthority,
   transaction: "owned" | "caller" = "owned",
   personScope?: string,
+  priceInput?:
+    | OverviewPriceTable
+    | ((targets: readonly { provider: string; model: string }[]) => Promise<OverviewPriceTable>),
 ): Promise<PoolUsageSeriesResult> {
   const input = seriesInput(raw);
   if (personScope === undefined) authorizeSeries(input, authority);
@@ -111,7 +155,18 @@ async function readUsageSeries(
     await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
   try {
     await db.query("SET LOCAL statement_timeout = '5s'");
-    const query = await seriesQuery(db, input, authority, after, personScope);
+    let prices = typeof priceInput === "function" ? undefined : priceInput;
+    let query = await seriesQuery(db, input, authority, after, personScope, prices);
+    if (typeof priceInput === "function") {
+      const targets = (await db.query(query.targetsText, query.targetsValues)).rows;
+      prices =
+        targets.length > 100
+          ? { prices: [], issues: [] }
+          : await priceInput(
+              targets.map((row) => ({ provider: String(row.provider), model: String(row.model) })),
+            );
+      query = await seriesQuery(db, input, authority, after, personScope, prices);
+    }
     const { coverage, asOf } = await seriesCoverage(
       db,
       query,
@@ -137,7 +192,7 @@ async function readUsageSeries(
       const key = String(row.group_key),
         known = groups.get(key);
       if (index === maxSeriesRows || (!known && groups.size === maxSeriesGroups)) break;
-      const value = bucket(row, input);
+      const value = bucket(row, input, prices);
       const group = known ?? {
         key: historyObject(JSON.parse(key)) as unknown as SeriesKey,
         buckets: [],
@@ -179,8 +234,11 @@ export async function poolUsageSeries(
   raw: unknown,
   authority: SeriesAuthority,
   transaction: "owned" | "caller" = "owned",
+  prices?:
+    | OverviewPriceTable
+    | ((targets: readonly { provider: string; model: string }[]) => Promise<OverviewPriceTable>),
 ): Promise<PoolUsageSeriesResult> {
-  return readUsageSeries(db, raw, authority, transaction);
+  return readUsageSeries(db, raw, authority, transaction, undefined, prices);
 }
 
 /** Signed personal overview only: account bindings stay absent and the caller hash is the SQL scope. */

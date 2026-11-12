@@ -1,4 +1,5 @@
 import type { Result } from "../control.ts";
+import type { OverviewMoneyMetric, OverviewPriceProvenance } from "../overview-contract.ts";
 import type {
   CostSum,
   PoolUsageSeriesInput,
@@ -139,8 +140,85 @@ export interface Totals {
   homePriced: number;
   imported: Money[];
   unpriced: number;
+  /** Current public USD estimate, kept apart from Home charges and historical prices. */
+  apiEstimate: Estimate;
   /** A bucket in range was still filling when read. */
   partial: boolean;
+}
+
+/**
+ * Rolled-up public estimate. A bucket from an older server carries no estimate at all; its requests
+ * count as `notReported`, never as $0.00. `price` is the oldest rate set used, and stays marked as
+ * baseline or refresh-failed if any part of the sum was.
+ */
+export interface Estimate {
+  amount: Decimal | null;
+  /** An amount failed to parse, so no sum can be trusted. */
+  invalid: boolean;
+  pricedRequests: number;
+  unknownKind: number;
+  unpriced: number;
+  notReported: number;
+  reasons: string[];
+  price: Required<OverviewPriceProvenance> | null;
+}
+
+export const emptyEstimate = (): Estimate => ({
+  amount: null,
+  invalid: false,
+  pricedRequests: 0,
+  unknownKind: 0,
+  unpriced: 0,
+  notReported: 0,
+  reasons: [],
+  price: null,
+});
+
+/** Older servers omit `basis`; they only ever returned refreshed live rates. */
+export const provenance = (price: OverviewPriceProvenance): Required<OverviewPriceProvenance> => ({
+  ...price,
+  basis: price.basis ?? "live",
+  refreshFailed: price.refreshFailed ?? false,
+});
+
+export function combinePrice(
+  a: Required<OverviewPriceProvenance> | null,
+  b: Required<OverviewPriceProvenance> | null,
+): Required<OverviewPriceProvenance> | null {
+  if (!a || !b) return a ?? b;
+  const older = Date.parse(b.asOf) < Date.parse(a.asOf) ? b : a;
+  return {
+    ...older,
+    basis: a.basis === "baseline" || b.basis === "baseline" ? "baseline" : "live",
+    refreshFailed: a.refreshFailed || b.refreshFailed,
+  };
+}
+
+function addEstimate(into: Estimate, metric: OverviewMoneyMetric) {
+  into.pricedRequests += metric.pricedRequests;
+  into.unknownKind += metric.excluded.unknownKind;
+  into.unpriced += metric.excluded.unpriced;
+  if (metric.status === "unavailable") {
+    if (metric.reason && !into.reasons.includes(metric.reason)) into.reasons.push(metric.reason);
+    return;
+  }
+  if (metric.price) into.price = combinePrice(into.price, provenance(metric.price));
+  if (metric.amount === null) return;
+  const amount = decimal(metric.amount);
+  if (!amount) into.invalid = true;
+  else into.amount = into.amount === null ? amount : addDecimal(into.amount, amount);
+}
+
+function mergeEstimate(into: Estimate, from: Estimate) {
+  into.invalid ||= from.invalid;
+  if (from.amount !== null)
+    into.amount = into.amount === null ? from.amount : addDecimal(into.amount, from.amount);
+  into.pricedRequests += from.pricedRequests;
+  into.unknownKind += from.unknownKind;
+  into.unpriced += from.unpriced;
+  into.notReported += from.notReported;
+  for (const reason of from.reasons) if (!into.reasons.includes(reason)) into.reasons.push(reason);
+  into.price = combinePrice(into.price, from.price);
 }
 
 export const emptyTotals = (): Totals => ({
@@ -155,6 +233,7 @@ export const emptyTotals = (): Totals => ({
   homePriced: 0,
   imported: [],
   unpriced: 0,
+  apiEstimate: emptyEstimate(),
   partial: false,
 });
 
@@ -186,6 +265,8 @@ export function addBucket(totals: Totals, bucket: SeriesBucket | SeriesCounts) {
   addMoney(totals.imported, bucket.cost.importedApiPrice);
   totals.homePriced += bucket.cost.homeCharge.priced;
   totals.unpriced += bucket.cost.unpricedRequests;
+  if (bucket.cost.apiEstimate) addEstimate(totals.apiEstimate, bucket.cost.apiEstimate);
+  else totals.apiEstimate.notReported += bucket.requests;
 }
 
 export function addTotals(into: Totals, from: Totals) {
@@ -212,6 +293,7 @@ export function addTotals(into: Totals, from: Totals) {
     });
   into.homePriced += from.homePriced;
   into.unpriced += from.unpriced;
+  mergeEstimate(into.apiEstimate, from.apiEstimate);
   into.partial ||= from.partial;
 }
 

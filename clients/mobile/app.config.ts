@@ -1,5 +1,6 @@
 import type { ExpoConfig } from "expo/config";
 import { brand } from "../../brand.ts";
+import withNetworkRecovery from "./network-recovery.ts";
 
 // Published builds carry the permanent identifiers; every other build keeps separate development
 // ones, so a development install never replaces or reads the released app.
@@ -9,7 +10,7 @@ const identifier = release ? "run.signalbox.client" : "run.signalbox.client.deve
 const config: ExpoConfig = {
   name: release ? brand.name : `${brand.name} Client Dev`,
   slug: "signalbox-client",
-  version: "0.2.0",
+  version: "0.2.1",
   scheme: release ? "signalbox-client" : "signalbox-client-dev",
   orientation: "default",
   userInterfaceStyle: "automatic",
@@ -52,4 +53,4 @@ if (
   );
 config.android!.versionCode = major! * 10000 + minor! * 100 + patch!;
 
-export default config;
+export default withNetworkRecovery(config);

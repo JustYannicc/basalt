@@ -1,7 +1,8 @@
 import type { OverviewApiPrice, OverviewPriceTable } from "../../apps/pool/overview-contract.ts";
 import type { ComputerStorage } from "./computer-registry.ts";
 import type { HomeClient } from "./control.ts";
-import { post } from "./json.ts";
+import { BackendFailure, HomeTransportFailure, post } from "./json.ts";
+import { baselinePrices } from "./public-price-baseline.ts";
 import { priceAliases, type PriceTarget } from "./price-aliases.ts";
 import { overviewPricePreview } from "./overview-price-preview.ts";
 
@@ -57,13 +58,22 @@ export class OverviewPrices {
     if (registry.length <= 1000 && registry.length !== tracked.length)
       await this.storage.put(registryKey, registry);
     const entries = await Promise.all(
-      unique.map(async (target) => ({
-        target,
-        retained: (await this.storage.get<RetainedPrice>(entryKey(target))) ?? {
-          nextAttemptAt: 0,
-          prices: [],
-        },
-      })),
+      unique.map(async (target) => {
+        const saved = await this.storage.get<RetainedPrice>(entryKey(target));
+        const floor = baselinePrices(target);
+        return {
+          target,
+          retained: saved?.prices.length
+            ? saved
+            : {
+                nextAttemptAt: saved?.nextAttemptAt ?? 0,
+                prices: saved?.reason
+                  ? floor.prices.map((price) => ({ ...price, refreshFailed: true }))
+                  : floor.prices,
+                reason: floor.prices.length ? undefined : (saved?.reason ?? floor.reason),
+              },
+        };
+      }),
     );
     const due = entries.filter((entry) => entry.retained.nextAttemptAt <= now);
     if (due.length) {
@@ -72,10 +82,11 @@ export class OverviewPrices {
         entry.retained = { ...entry.retained, nextAttemptAt: now + retryMs };
         await this.storage.put(entryKey(entry.target), entry.retained);
       }
+      const started = this.clock();
       try {
         const wanted = due.map((entry) => entry.target);
         const aliases = priceAliases(wanted);
-        const preview = await this.home.data("/billing/model-prices/import/preview", {
+        const response = await this.home.response("/billing/model-prices/import/preview", {
           ...post({
             source: "models.dev",
             targets: wanted,
@@ -86,26 +97,66 @@ export class OverviewPrices {
               ...(aliases.length ? { aliases } : {}),
             },
           }),
-          signal: AbortSignal.timeout(4_000),
+          // Home's source fetch alone permits eight seconds; include container and decode time.
+          signal: AbortSignal.timeout(12_000),
         });
+        if (!response.ok) throw new BackendFailure(response.status);
+        const preview: unknown = await response.json();
+        if (preview === null || typeof preview !== "object" || Array.isArray(preview))
+          throw new Error("Invalid public price snapshot");
         // Home stamps its snapshot after fetching. Validate against completion, never request start.
-        const fresh = overviewPricePreview(preview, wanted, this.clock());
+        const fresh = overviewPricePreview(
+          preview as Record<string, unknown>,
+          wanted,
+          this.clock(),
+        );
         for (const entry of due) {
           const prices = fresh.prices.get(targetKey(entry.target));
           const reason = fresh.issues.find(
             (issue) => targetKey(issue) === targetKey(entry.target),
           )?.reason;
           entry.retained = prices
-            ? { nextAttemptAt: now + day, prices }
-            : { ...entry.retained, reason };
+            ? {
+                nextAttemptAt: now + day,
+                prices: prices.map((price) => ({ ...price, basis: "live" as const })),
+              }
+            : {
+                ...entry.retained,
+                prices: entry.retained.prices.map((price) => ({ ...price, refreshFailed: true })),
+                reason,
+              };
           await this.storage.put(entryKey(entry.target), entry.retained);
         }
-      } catch {
-        console.error("POOL_PUBLIC_PRICE_REFRESH_FAILED last_good_retained=1");
+      } catch (error) {
+        // Keep closed diagnostics only; backend messages and response bodies can contain credentials.
+        console.error("POOL_PUBLIC_PRICE_REFRESH_FAILED", {
+          phase: "home-preview",
+          source: "models.dev",
+          errorClass:
+            error instanceof BackendFailure
+              ? "http"
+              : error instanceof HomeTransportFailure
+                ? error.errorClass
+                : error instanceof DOMException && error.name === "TimeoutError"
+                  ? "timeout"
+                  : error instanceof SyntaxError
+                    ? "decode"
+                    : error instanceof Error && error.message === "Invalid public price snapshot"
+                      ? "snapshot"
+                      : "unknown",
+          ...(error instanceof BackendFailure ? { backendStatus: error.backendStatus } : {}),
+          elapsedMs: Math.max(0, this.clock() - started),
+          lastGoodRetained: due.filter((entry) => entry.retained.prices.length > 0).length,
+        });
         for (const entry of due) {
           entry.retained = {
             ...entry.retained,
-            reason: `Public price refresh failed; no saved price for ${entry.target.model}.`,
+            prices: entry.retained.prices.map((price) => ({ ...price, refreshFailed: true })),
+            reason: entry.retained.prices.length
+              ? undefined
+              : !baselinePrices(entry.target).reason.startsWith("No public price")
+                ? baselinePrices(entry.target).reason
+                : `Public price refresh failed; no saved price for ${entry.target.model}.`,
           };
           await this.storage.put(entryKey(entry.target), entry.retained);
         }

@@ -59,6 +59,10 @@ The [client guide](https://github.com/{repository}/blob/main/clients/README.md) 
 
 Signalbox Sync for Obsidian has its own release. Install it from **Connect Obsidian** in Signalbox.
 
+## Known issue in this release
+
+One acceptance search exceeded 45 seconds because the server MCP session waited 54.2 seconds. The Android connection recovered and remained usable. A separate MCP latency fix owns this server issue.
+
 ## Check a download
 
 **SHA256SUMS.txt** lists the SHA-256 of every file. On a Mac or Linux, run `shasum -a 256 <file>` and compare.

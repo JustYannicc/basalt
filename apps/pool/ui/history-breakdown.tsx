@@ -1,7 +1,9 @@
 import { Fragment, useState } from "react";
 import type { SeriesGroup } from "../usage-series-contract.ts";
 import { Segmented } from "./controls.tsx";
+import { PriceNote } from "./price-note.tsx";
 import {
+  money,
   moneyList,
   rows,
   tokensShort,
@@ -39,6 +41,70 @@ function rowCost(row: Row): string {
     row.totals.unpriced > 0n ? "Unpriced" : null,
   ].filter((value): value is string => value !== null);
   return costs.join(" · ") || "—";
+}
+
+// Current public USD estimate. It sits beside, never inside, the retained Home and historical costs.
+// A bucket without the field came from an older server and is "not reported", never $0.00.
+function estimate(row: Row) {
+  const value = row.totals.apiEstimate;
+  const excluded = value.unknownKind + value.unpriced + value.notReported;
+  if (row.countsOnly) return { text: "Not mapped", excluded: 0, value, reasons: [] };
+  if (value.invalid) return { text: "Unavailable", excluded: 0, value, reasons: [] };
+  if (value.amount !== null)
+    return {
+      text: money({ currency: "USD", amount: value.amount }),
+      excluded,
+      value,
+      reasons: value.reasons,
+    };
+  if (value.reasons.length) return { text: null, excluded, value, reasons: value.reasons };
+  if (value.notReported > 0 && value.pricedRequests === 0)
+    return { text: "Not reported", excluded: 0, value, reasons: [] };
+  return { text: excluded > 0 ? "Unpriced" : "—", excluded: 0, value, reasons: [] };
+}
+
+function EstimateCell({ row, start = false }: { row: Row; start?: boolean }) {
+  const shown = estimate(row);
+  const muted = shown.value.amount === null || row.countsOnly;
+  return (
+    <span
+      className={
+        start
+          ? "flex flex-wrap items-baseline gap-x-1.5 [&>*]:mt-0"
+          : "grid justify-items-end gap-0.5"
+      }
+    >
+      {shown.text !== null && (
+        <span
+          className={muted ? "text-muted-foreground" : undefined}
+          title={
+            shown.excluded
+              ? `${shown.excluded.toLocaleString()} requests excluded from the estimate`
+              : undefined
+          }
+        >
+          {shown.text}
+          {shown.excluded > 0 && (
+            <sup
+              aria-label={`${shown.excluded.toLocaleString()} excluded`}
+              className="ml-0.5 text-[10px] text-muted-foreground"
+            >
+              †
+            </sup>
+          )}
+        </span>
+      )}
+      {!muted && <PriceNote price={shown.value.price} start={start} />}
+      {shown.reasons.slice(0, 2).map((reason) => (
+        <span
+          key={reason}
+          className={`max-w-56 text-xs leading-snug text-muted-foreground text-pretty [overflow-wrap:anywhere] ${start ? "" : "text-right"}`}
+        >
+          {reason}
+        </span>
+      ))}
+    </span>
+  );
 }
 
 function rowTokens(row: Row): string {
@@ -80,6 +146,7 @@ export function HistoryBreakdown({
   );
   const summary = total(groups);
   const label = by === "person" ? "Person" : by === "provider" ? "Lab" : "Model";
+  const estimates = by === "model";
 
   const toggle = (id: string) =>
     setOpen((current) => {
@@ -136,6 +203,14 @@ export function HistoryBreakdown({
                     {row.totals.requests.toLocaleString()} requests · {rowTokens(row)} ·{" "}
                     {rowCost(row)}
                   </span>
+                  {estimates && (
+                    <span className="mt-1 flex items-baseline gap-1.5 text-xs text-muted-foreground min-[541px]:hidden">
+                      <span className="shrink-0">API est.</span>
+                      <span className="tabular-nums text-foreground">
+                        <EstimateCell row={row} start />
+                      </span>
+                    </span>
+                  )}
                 </span>
               </span>
             </th>
@@ -149,9 +224,16 @@ export function HistoryBreakdown({
                 `${tokensShort(row.totals.tokens)}${row.totals.tokensMissing ? "+" : ""}`
               )}
             </td>
-            <td className="py-3 text-right text-xs text-muted-foreground max-[540px]:hidden">
+            <td
+              className={`py-3 text-right text-xs text-muted-foreground max-[540px]:hidden ${estimates ? "pr-3" : ""}`}
+            >
               {rowCost(row)}
             </td>
+            {estimates && (
+              <td className="py-3 text-right tabular-nums max-[540px]:hidden">
+                <EstimateCell row={row} />
+              </td>
+            )}
           </tr>
           {expanded && renderRows(row.children, key, depth + 1)}
         </Fragment>
@@ -221,9 +303,20 @@ export function HistoryBreakdown({
                 <th scope="col" className="py-2 pr-3 text-right font-medium max-[740px]:hidden">
                   Tokens
                 </th>
-                <th scope="col" className="py-2 text-right font-medium max-[540px]:hidden">
+                <th
+                  scope="col"
+                  className={`py-2 text-right font-medium max-[540px]:hidden ${estimates ? "pr-3" : ""}`}
+                >
                   Cost
                 </th>
+                {estimates && (
+                  <th
+                    scope="col"
+                    className="py-2 text-right font-medium whitespace-nowrap max-[540px]:hidden"
+                  >
+                    API est. (USD)
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -231,7 +324,7 @@ export function HistoryBreakdown({
               {importRows.length > 0 && (
                 <tr>
                   <th
-                    colSpan={4}
+                    colSpan={estimates ? 5 : 4}
                     scope="rowgroup"
                     className="pb-2 pt-6 text-left text-xs font-normal text-muted-foreground"
                   >
