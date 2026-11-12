@@ -203,9 +203,11 @@ test("each device grant's last sync and head are recorded from its own sync call
   });
   const mac = JSON.stringify(["user", "client-mac", "org", "grant-mac"]),
     phone = JSON.stringify(["user", "client-phone", "org", "grant-phone"]);
-  await object.request({ operation: "drive", method: "list", input: {} }, mac);
+  // The plugin's heartbeat: a one-entry listing at the start of every pull and checkpoint.
+  const heartbeat = { operation: "drive", method: "list", input: { limit: 1 } } as const;
+  await object.request(heartbeat, mac);
   clock += 1000;
-  await object.request({ operation: "drive", method: "list", input: {} }, phone);
+  await object.request(heartbeat, phone);
   const root = String(git(server.bare, "rev-parse", "main")).trim();
   clock += 1000;
   const landed = (await object.request(
@@ -216,8 +218,30 @@ test("each device grant's last sync and head are recorded from its own sync call
     },
     mac,
   )) as { value: { oid: string } };
+  // The checkpoint's pull after the landing records the head the Mac now has.
+  await object.request(heartbeat, mac);
+  // An agent's grant reading and writing notes through the same tools is not a device.
+  const agent = JSON.stringify(["user", "client-agent", "org", "grant-agent"]);
+  await object.request({ operation: "drive", method: "list", input: {} }, agent);
+  await object.request(
+    { operation: "drive", method: "list", input: { path: "", limit: 1 } },
+    agent,
+  );
+  await object.request({ operation: "drive", method: "history", input: {} }, agent);
+  await object.request(
+    {
+      operation: "drive",
+      method: "apply",
+      input: {
+        base: landed.value.oid,
+        operation: "agent-edit",
+        edits: [{ path: "agent.md", content: "y" }],
+      },
+    },
+    agent,
+  );
   // A caller without a grant, or a call that saw no revision, records nothing.
-  await object.request({ operation: "drive", method: "list", input: {} }, "not-a-caller");
+  await object.request(heartbeat, "not-a-caller");
   await object.request(
     { operation: "drive", method: "receipt", input: { operation: "mac-edit" } },
     phone,
@@ -230,14 +254,14 @@ test("each device grant's last sync and head are recorded from its own sync call
   })) as {
     value: { head: string; devices: { agent: string; lastSyncAt: string; lastHead: string }[] };
   };
-  assert.equal(value.head, landed.value.oid);
+  assert.notEqual(value.head, landed.value.oid, "the agent's write moved main past the Mac");
   assert.deepEqual(value.devices, [
     { agent: "grant-mac", lastSyncAt: "2026-11-12T10:00:02.000Z", lastHead: landed.value.oid },
     { agent: "grant-phone", lastSyncAt: "2026-11-12T10:00:01.000Z", lastHead: root },
   ]);
-  // Up to date means the device has seen the current head: the Mac has, the phone hasn't.
+  // Up to date means the device has seen the current head; neither has seen the agent's edit.
   assert.deepEqual(
     value.devices.map((d) => d.lastHead === value.head),
-    [true, false],
+    [false, false],
   );
 });
