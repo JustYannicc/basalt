@@ -1,0 +1,383 @@
+diff --git a/patches/@better-auth%2Foauth-provider@1.7.5.patch b/patches/@better-auth%2Foauth-provider@1.7.5.patch
+--- a/patches/@better-auth%2Foauth-provider@1.7.5.patch
++++ b/patches/@better-auth%2Foauth-provider@1.7.5.patch
+@@ -75,7 +75,7 @@
+ +export const seedOAuthResources = (ctx, options) =>
+ +  seedResourcesForProvisioning(ctx, { ...options, resourceSeedMode: "insertOnly" }, true);
+ diff --git a/dist/introspect-njKASm3q.mjs b/dist/introspect-njKASm3q.mjs
+-index c8d635e57ca4cd3fe8f7cbfd5c769d61b7e96874..21d78930a1564b2d380c4b3a5593892629246aa0 100644
++index c8d635e57..987ff255e 100644
+ --- a/dist/introspect-njKASm3q.mjs
+ +++ b/dist/introspect-njKASm3q.mjs
+ @@ -676,6 +676,8 @@ async function getResource(ctx, opts, identifier) {
+@@ -145,7 +145,7 @@
+  		sub: resolvedSub,
+  		aud: client.clientId,
+  		nonce,
+-@@ -1588,10 +1593,13 @@ async function createRefreshToken(ctx, opts, user, referenceId, authorizationCod
++@@ -1588,10 +1593,9 @@ async function createRefreshToken(ctx, opts, user, referenceId, authorizationCod
+  		}],
+  		increment: {},
+  		set: rotationUpdate
+@@ -154,16 +154,24 @@
+ -		error: "invalid_grant"
+ -	});
+ +	})) {
+-+		reportRefreshRejected(ctx, opts, "rotation_lost");
+-+		throw new APIError("BAD_REQUEST", {
+-+			error_description: "invalid refresh token",
+-+			error: "invalid_grant"
+-+		});
+++		throwRefreshUnavailable(ctx, opts, "rotation_lost");
+ +	}
+  	return {
+  		id: (await ctx.context.adapter.create({
+  			model: "oauthRefreshToken",
+-@@ -2097,6 +2105,17 @@ async function handleClientCredentialsGrant(ctx, opts) {
++@@ -1741,8 +1745,9 @@ async function getRefreshTokenRotationReplay(ctx, refreshToken, request) {
++ 	if (!refreshToken.rotationReplayResponse) return;
++ 	try {
++ 		const replay = await decryptRefreshTokenRotationReplay(ctx, refreshToken.rotationReplayResponse);
++-		if (!replay || !sameRefreshTokenRotationReplayRequest(replay.request, request)) return;
++-		return replay.response;
+++		if (!replay) return;
+++		if (!sameRefreshTokenRotationReplayRequest(replay.request, request)) return { mismatch: true };
+++		return { response: replay.response };
++ 	} catch (error) {
++ 		ctx.context.logger.error("refresh token rotation replay failed", error);
++ 		return;
++@@ -2097,6 +2102,25 @@ async function handleClientCredentialsGrant(ctx, opts) {
+  * Refresh tokens will only allow the same or lesser scopes as the initial authorize request.
+  * To add scopes, you must restart the authorize process again.
+  */
+@@ -178,10 +186,18 @@
+ +		ctx.context.logger.error("oauth-provider: onRefreshRejected failed");
+ +	}
+ +}
+++function throwRefreshUnavailable(ctx, opts, reason, refreshToken) {
+++	reportRefreshRejected(ctx, opts, reason, refreshToken);
+++	ctx.setHeader("Retry-After", "1");
+++	throw new APIError("SERVICE_UNAVAILABLE", {
+++		error_description: "refresh token rotation is temporarily unavailable",
+++		error: "server_error"
+++	});
+++}
+  async function handleRefreshTokenGrant(ctx, opts) {
+  	const { clientId: client_id, clientSecret: client_secret, preVerified, authMethod } = destructureCredentials(await extractClientCredentials(ctx, opts, `${ctx.context.baseURL}/oauth2/token`));
+  	const { refresh_token, scope, resource } = ctx.body;
+-@@ -2117,18 +2136,27 @@ async function handleRefreshTokenGrant(ctx, opts) {
++@@ -2117,18 +2141,27 @@ async function handleRefreshTokenGrant(ctx, opts) {
+  			value: await getStoredToken(opts.storeTokens, decodedRefresh.token, "refresh_token")
+  		}]
+  	});
+@@ -221,15 +237,20 @@
+  	if (resources && refreshToken.resources && !resources.every((v) => refreshToken.resources?.includes(v))) throw new APIError("BAD_REQUEST", {
+  		error_description: "requested resource invalid",
+  		error: "invalid_target"
+-@@ -2152,12 +2180,21 @@ async function handleRefreshTokenGrant(ctx, opts) {
++@@ -2151,13 +2184,25 @@ async function handleRefreshTokenGrant(ctx, opts) {
++ 				scopes: requestedScopes ?? scopes,
+  				resources: resources ?? refreshToken.resources
+  			}));
+- 			if (replay) return replayRefreshTokenRotationResponse(ctx, replay);
+-+			reportRefreshRejected(ctx, opts, "replay_unavailable", refreshToken);
+-+			throw new APIError("BAD_REQUEST", {
+-+				error_description: "invalid refresh token",
+-+				error: "invalid_grant"
+-+			});
++-			if (replay) return replayRefreshTokenRotationResponse(ctx, replay);
+++			if (replay?.response) return replayRefreshTokenRotationResponse(ctx, replay.response);
+++			if (replay?.mismatch) {
+++				reportRefreshRejected(ctx, opts, "replay_mismatch", refreshToken);
+++				throw new APIError("BAD_REQUEST", {
+++					error_description: "invalid refresh token",
+++					error: "invalid_grant"
+++				});
+++			}
+++			throwRefreshUnavailable(ctx, opts, "replay_unavailable", refreshToken);
+ +		}
+ +		if (refreshToken.rotatedAt && new Date(refreshToken.rotatedAt).getTime() + (opts.refreshTokenSupersededInterval ?? 0) * 1e3 >= Date.now()) {
+ +			reportRefreshRejected(ctx, opts, "superseded", refreshToken);
+@@ -243,7 +264,7 @@
+  		throw new APIError("BAD_REQUEST", {
+  			error_description: "invalid refresh token",
+  			error: "invalid_grant"
+-@@ -2238,7 +2275,7 @@ async function validateJwtAccessToken(ctx, opts, token, clientId) {
++@@ -2238,7 +2283,7 @@ async function validateJwtAccessToken(ctx, opts, token, clientId) {
+  	const jwtPlugin = opts.disableJwtPlugin ? void 0 : getJwtPlugin(ctx.context);
+  	const jwtPluginOptions = jwtPlugin?.options;
+  	const userInfoAud = `${ctx.context.baseURL ?? ""}/oauth2/userinfo`;
+@@ -252,7 +273,7 @@
+  	let jwtPayload;
+  	try {
+  		jwtPayload = (await jwtVerify(token, createLocalJWKSet(await getJwks(token, {
+-@@ -2360,7 +2397,7 @@ async function validateOpaqueAccessToken(ctx, opts, token, clientId) {
++@@ -2360,7 +2405,7 @@ async function validateOpaqueAccessToken(ctx, opts, token, clientId) {
+  		payload: {
+  			...accessTokenClaims,
+  			active: true,
+@@ -261,7 +282,7 @@
+  			aud: toAudienceClaim(audienceClaim),
+  			client_id: accessToken.clientId,
+  			azp: accessToken.clientId,
+-@@ -2411,7 +2448,7 @@ async function validateRefreshToken(ctx, opts, token, clientId) {
++@@ -2411,7 +2456,7 @@ async function validateRefreshToken(ctx, opts, token, clientId) {
+  	return {
+  		active: true,
+  		client_id: clientId,
+@@ -271,7 +292,7 @@
+  		sid: sessionId,
+  		exp: Math.floor(new Date(refreshToken.expiresAt).getTime() / 1e3),
+ diff --git a/dist/oauth-1Ud-hvZY.d.mts b/dist/oauth-1Ud-hvZY.d.mts
+-index 130fd5d8f3ddd36d1b776338367af5b8cb7f0e79..a49e282e0c52c175591a28afe2217103a861dc6c 100644
++index 130fd5d8f..8b8c006cf 100644
+ --- a/dist/oauth-1Ud-hvZY.d.mts
+ +++ b/dist/oauth-1Ud-hvZY.d.mts
+ @@ -1131,7 +1131,10 @@ interface OAuthOptions<Scopes extends readonly Scope[] = InternallySupportedScop
+@@ -307,7 +328,7 @@
+ +   * `revokedAt` is when the presented token was revoked, and `rotated` whether rotation revoked it.
+ +   */
+ +  onRefreshRejected?: (rejection: {
+-+    reason: "unknown_token" | "other_client" | "expired" | "replay_unavailable" | "superseded" | "reused" | "rotation_lost";
+++    reason: "unknown_token" | "other_client" | "expired" | "replay_unavailable" | "replay_mismatch" | "superseded" | "reused" | "rotation_lost";
+ +    revokedAt?: Date;
+ +    rotated: boolean;
+ +  }) => void;
+diff --git a/e2e/support/mcp-oauth.ts b/e2e/support/mcp-oauth.ts
+--- a/e2e/support/mcp-oauth.ts
++++ b/e2e/support/mcp-oauth.ts
+@@ -245,20 +245,30 @@
+         yield* evidence.json(`oauth-${fields.grant_type}-${response.status}.json`, {
+           status: response.status,
+         });
+-        return { status: response.status, body: value, traceId };
++        return {
++          status: response.status,
++          body: value,
++          traceId,
++          retryAfter: response.headers["retry-after"],
++        };
+       }),
+     ).pipe(
+       Effect.provideService(HttpClient.TracerPropagationEnabled, false),
+       Effect.timeout("30 seconds"),
+       Effect.mapError(() => new OAuthFailed({ operation: "token exchange", status: 0 })),
+     );
+-  const refreshResponse = (grant: Grant, tokenOrigin?: string) =>
++  const refreshResponse = (
++    grant: Grant,
++    tokenOrigin?: string,
++    fields: Record<string, string> = {},
++  ) =>
+     exchange(
+       {
+         grant_type: "refresh_token",
+         client_id: grant.clientId,
+         refresh_token: Redacted.value(grant.tokens).refresh_token,
+         resource: grant.resource,
++        ...fields,
+       },
+       tokenOrigin,
+     );
+@@ -552,6 +562,20 @@
+         );
+         return { ...grant, tokens };
+       }),
++    refreshOutcome: (grant: Grant, fields: Record<string, string> = {}) =>
++      refreshResponse(grant, undefined, fields).pipe(
++        Effect.map((response) => ({
++          status: response.status,
++          retryAfter: response.retryAfter,
++          error:
++            response.body !== null &&
++            typeof response.body === "object" &&
++            "error" in response.body &&
++            typeof response.body.error === "string"
++              ? response.body.error
++              : undefined,
++        })),
++      ),
+     refreshStatus: (grant: Grant) =>
+       refreshResponse(grant).pipe(Effect.map((response) => response.status)),
+     revoke: (grant: Grant) =>
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -364,6 +364,10 @@
+     targets: ["cloud"],
+     reason:
+       "The Basalt compiler-diagnostics job runs inherited production settings on the managed test stage.",
++  },
++  mcpRefreshRetryableErrors: {
++    targets: ["cloud"],
++    reason: "The Basalt declared-cloud job runs the scoped refresh race fixture.",
+   },
+   cloudPoolSetupAtomic: {
+     targets: ["cloud"],
+diff --git a/e2e/tests/mcp-refresh-errors.spec.ts b/e2e/tests/mcp-refresh-errors.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/mcp-refresh-errors.spec.ts
+@@ -0,0 +1,162 @@
++/** Force rotation races through the public token endpoint on the scenario's own grant. */
++import { randomUUID } from "node:crypto";
++import { expect, layer } from "@effect/vitest";
++import { Effect, Fiber, Redacted, Schedule, Schema } from "effect";
++import { scenarios } from "../test-plan.ts";
++import { Actors } from "../support/actors.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Evidence } from "../support/evidence.ts";
++import { McpOAuth } from "../support/mcp-oauth.ts";
++
++const Backend = Schema.Array(Schema.Struct({ pid: Schema.Number }));
++
++layer(HostedLive, { excludeTestServices: true })("Refresh error outcomes", (it) => {
++  it.effect(scenarios.mcpRefreshRetryableErrors.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors,
++          browser = yield* Browser,
++          oauth = yield* McpOAuth,
++          evidence = yield* Evidence,
++          database = yield* cloudLocks;
++        yield* browser.login(actors.owner);
++        const stored = yield* oauth.authorize;
++        const suffix = randomUUID().replaceAll("-", "");
++        const trigger = `refresh_race_${suffix}`;
++        const backup = `refresh_backup_${suffix}`;
++        const key = `refresh-race:${suffix}`;
++        const rows = (sql: string, params: readonly (string | number)[] = []) =>
++          database.run({ sql, params });
++        const selected = yield* rows(
++          'select id from "oauthRefreshToken" where "clientId" = $1 and revoked is null',
++          [stored.clientId],
++        ).pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.String }))),
++          ),
++        );
++        expect(selected).toHaveLength(1);
++        const id = selected[0]!.id.replaceAll("'", "''");
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* database.release;
++            yield* rows(`drop trigger if exists ${trigger} on "oauthRefreshToken"`);
++            yield* rows(`drop function if exists ${trigger}()`);
++            yield* rows(`drop table if exists ${backup}`);
++          }).pipe(Effect.orDie),
++        );
++        // The first update holds its row lock; a second caller has already read the old token.
++        yield* rows(`create function ${trigger}() returns trigger language plpgsql as $$ begin
++          if old.id = '${id}' and old.revoked is null then
++            perform pg_advisory_xact_lock(hashtextextended('${key}', 0));
++          end if; return new; end $$`);
++        yield* rows(
++          `create trigger ${trigger} before update of revoked on "oauthRefreshToken"
++            for each row execute function ${trigger}()`,
++        );
++        const [holder] = yield* database
++          .hold({
++            sql: "select pg_backend_pid() as pid, pg_advisory_xact_lock(hashtextextended($1, 0))",
++            params: [key],
++          })
++          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Backend)));
++        expect(holder).toBeDefined();
++        const blockedBy = (pid: number) =>
++          rows("select pid from pg_stat_activity where $1 = any(pg_blocking_pids(pid))", [
++            pid,
++          ]).pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Backend)),
++            Effect.filterOrFail((waiting) => waiting.length > 0),
++            Effect.retry({ schedule: Schedule.spaced("20 millis"), times: 250 }),
++            Effect.orDie,
++          );
++        const winner = yield* oauth.refresh(stored).pipe(Effect.forkScoped);
++        const [rotating] = yield* blockedBy(holder!.pid);
++        const loser = yield* oauth.refreshOutcome(stored).pipe(Effect.forkScoped);
++        yield* blockedBy(rotating!.pid);
++        yield* database.release;
++        const first = yield* Fiber.join(winner);
++        const rotationLost = yield* Fiber.join(loser);
++        expect(rotationLost).toEqual({ status: 503, error: "server_error", retryAfter: "1" });
++        const replayed = yield* oauth.refresh(stored);
++        expect(
++          Redacted.value(replayed.tokens).refresh_token ===
++            Redacted.value(first.tokens).refresh_token &&
++            Redacted.value(replayed.tokens).access_token ===
++              Redacted.value(first.tokens).access_token,
++        ).toBe(true);
++
++        // Keep the encrypted replay and original expiry entirely inside the runner-owned database.
++        yield* rows(
++          `create table ${backup} as select id, "expiresAt", "rotationReplayExpiresAt", "rotationReplayResponse"
++            from "oauthRefreshToken" where "clientId" = $1`,
++          [stored.clientId],
++        );
++        yield* rows(
++          'update "oauthRefreshToken" set "rotationReplayResponse" = null where id = $1',
++          [selected[0]!.id],
++        );
++        const replayUnavailable = yield* oauth.refreshOutcome(stored);
++        expect(replayUnavailable).toEqual({ status: 503, error: "server_error", retryAfter: "1" });
++        yield* rows('update "oauthRefreshToken" set "rotationReplayResponse" = $2 where id = $1', [
++          selected[0]!.id,
++          "synthetic-invalid-ciphertext",
++        ]);
++        const unreadableReplay = yield* oauth.refreshOutcome(stored);
++        expect(unreadableReplay).toEqual({ status: 503, error: "server_error", retryAfter: "1" });
++        yield* rows(`update "oauthRefreshToken" token set
++          "rotationReplayResponse" = saved."rotationReplayResponse"
++          from ${backup} saved where token.id = saved.id`);
++        const recovered = yield* oauth.refresh(stored);
++        expect(
++          Redacted.value(recovered.tokens).refresh_token ===
++            Redacted.value(first.tokens).refresh_token,
++        ).toBe(true);
++        const mismatch = yield* oauth.refreshOutcome(stored, { scope: "mcp" });
++        expect(mismatch).toEqual({ status: 400, error: "invalid_grant", retryAfter: undefined });
++        const matchedAfterRefusal = yield* oauth.refresh(stored);
++        expect(
++          Redacted.value(matchedAfterRefusal.tokens).refresh_token ===
++            Redacted.value(first.tokens).refresh_token,
++        ).toBe(true);
++        yield* rows(
++          `update "oauthRefreshToken" set "rotationReplayExpiresAt" = now() - interval '1 second' where id = $1`,
++          [selected[0]!.id],
++        );
++        const outsideWindow = yield* oauth.refreshOutcome(stored);
++        expect(outsideWindow).toEqual({
++          status: 400,
++          error: "invalid_grant",
++          retryAfter: undefined,
++        });
++        yield* rows(`update "oauthRefreshToken" token set
++          "rotationReplayExpiresAt" = saved."rotationReplayExpiresAt"
++          from ${backup} saved where token.id = saved.id`);
++        yield* rows(
++          'update "oauthRefreshToken" set "expiresAt" = now() - interval \'1 second\' where "clientId" = $1 and revoked is null',
++          [stored.clientId],
++        );
++        const expired = yield* oauth.refreshOutcome(first);
++        expect(expired).toEqual({ status: 400, error: "invalid_grant", retryAfter: undefined });
++        yield* rows(`update "oauthRefreshToken" token set "expiresAt" = saved."expiresAt"
++          from ${backup} saved where token.id = saved.id`);
++        yield* oauth.revoke(first);
++        const revoked = yield* oauth.refreshOutcome(first);
++        expect(revoked).toEqual({ status: 400, error: "invalid_grant", retryAfter: undefined });
++        yield* evidence.json("refresh-error-wire.json", {
++          rotationLost,
++          replayUnavailable,
++          unreadableReplay,
++          mismatch,
++          outsideWindow,
++          expired,
++          revoked,
++          replayRetainedSamePair: true,
++        });
++      }).pipe(Effect.provide(McpOAuth.layer)),
++    ),
++  );
++});

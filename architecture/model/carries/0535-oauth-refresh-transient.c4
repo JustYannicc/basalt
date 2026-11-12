@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Refresh rotation races and unavailable cached replay return 503 server_error with Retry-After while the existing replay window remains unchanged. Expired, revoked and mismatched grants keep permanent refusal. Only a validated matching cached response may replay the issued pair; observer reasons distinguish parameter mismatch from unavailable replay."
+    }
+  }
+}
