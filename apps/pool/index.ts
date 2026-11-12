@@ -53,7 +53,7 @@ export const capacity = query(
   async (ctx: Context, { days, to }) =>
     control<import("./capacity-contract.ts").PoolCapacityHistory>(
       ctx,
-      `/usage/capacity?days=${Math.min(30, Math.max(1, Math.round(days ?? 7)))}${to === undefined ? "" : `&to=${encodeURIComponent(to)}`}`,
+      `/usage/capacity?days=${Math.min(90, Math.max(1, Math.round(days ?? 7)))}${to === undefined ? "" : `&to=${encodeURIComponent(to)}`}`,
     ),
 );
 

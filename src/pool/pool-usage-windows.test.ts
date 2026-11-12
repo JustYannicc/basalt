@@ -45,6 +45,36 @@ test("a failed detail collection leaves a capacity gap despite fresh credential 
   assert.deepEqual(await f.history.read("fixture"), []);
 });
 
+test("90-day capacity reads preserve the requested bounds and real tracking start", async () => {
+  const at = Date.parse("2026-11-12T08:01:00Z");
+  const f = quotaSamplingFixture(at);
+  await f.usage.observe();
+  const token = await signPoolToken("ab".repeat(32), {
+    pool: "fixture",
+    owner: "owner",
+    organization: "synthetic",
+  });
+  const request = (days: number) =>
+    f.usage.handle(
+      new Request(`https://pool.example.test/pool/v1/usage/capacity?days=${days}`, {
+        headers: { authorization: `Bearer ${token}`, [callerHeader]: "owner" },
+      }),
+    );
+  const response = await request(90);
+  assert.equal(response.status, 200);
+  const value = await response.json();
+  assert.equal(value.from, Math.floor((at - 90 * 86400000) / 3600000) * 3600000);
+  assert.equal(value.to, at);
+  assert.equal(value.trackingSince, at);
+  assert.equal(value.points.length, 2);
+  assert.ok(
+    value.points.every(
+      (point: { hour: number }) => point.hour === Math.floor(at / 3600000) * 3600000,
+    ),
+  );
+  assert.equal((await request(91)).status, 400);
+});
+
 test("the capacity RPC includes a measured Grok week and excludes its product breakdown", async () => {
   const at = Date.parse("2026-11-12T08:01:00Z");
   const weekly = {

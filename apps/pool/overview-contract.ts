@@ -149,7 +149,7 @@ export interface OverviewUsageSlice {
 export interface PoolOverviewInput {
   readonly from: string;
   readonly to: string;
-  readonly days: 7 | 30;
+  readonly days: 7 | 30 | 90;
 }
 
 /** Added by the host after manager authorization. This is never accepted from the app browser. */

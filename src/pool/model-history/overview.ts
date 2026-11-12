@@ -77,7 +77,7 @@ function interval(input: PoolOverviewInput) {
     !Number.isFinite(from) ||
     !Number.isFinite(to) ||
     from >= to ||
-    (input.days !== 7 && input.days !== 30) ||
+    (input.days !== 7 && input.days !== 30 && input.days !== 90) ||
     to - from > input.days * 86_400_000 + hourMs
   )
     throw new HistoryInputError();
@@ -281,7 +281,7 @@ function personalInput(raw: unknown): PoolPersonalOverviewSignedInput {
     person: value.person,
     from: String(value.from),
     to: String(value.to),
-    days: value.days as 7 | 30,
+    days: value.days as PoolOverviewInput["days"],
     offerings: safePersonalOfferings(value.offerings),
   };
 }

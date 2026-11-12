@@ -7,7 +7,7 @@ import type { PoolApi } from "./api.ts";
 import type { SeriesQuery, SeriesRead } from "./series-model.ts";
 import { coherentOverview } from "./overview-snapshot.ts";
 
-export type RangeDays = 7 | 30;
+export type RangeDays = 7 | 30 | 90;
 
 /** The same UTC hour boundary and end instant drive every answer in one refresh. */
 export function seriesRange(
