@@ -2717,12 +2717,19 @@ test(
                   await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
                   "Overview fits at phone and desktop widths",
                 );
-                // The source's model limit, never one the pool copied; withheld accounts list none.
+                // Ambiguity keeps its old model limit; the resolved source replaces its copy.
                 const limitRows = frame
                   .getByRole("region", { name: "Model limits" })
                   .getByRole("button");
-                assert.equal(await limitRows.count(), 1);
-                const limitText = await limitRows.innerText();
+                assert.equal(await limitRows.count(), 2);
+                const fallbackText = await limitRows
+                  .filter({ hasText: "ambiguous@pool.example" })
+                  .innerText();
+                assert.match(fallbackText, /Weekly 20% remaining/);
+                assert.doesNotMatch(fallbackText, /Synthetic model weekly/);
+                const limitText = await limitRows
+                  .filter({ hasText: "native@pool.example" })
+                  .innerText();
                 assert.match(limitText, /native@pool\.example/);
                 assert.match(limitText, /Synthetic model weekly 98% remaining/);
                 if (scenario.src !== null) {
