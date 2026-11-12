@@ -31,7 +31,6 @@ export async function runAvailabilityProbe(
         result.failures.push({ guard: "request_reliability", reason: "below_target" });
       if (measured === null || measured?.state === "unavailable")
         result.failures.push({ guard: "request_reliability", reason: "collection_unavailable" });
-      result.ok = result.ok && result.failures.length === 0;
     }
   } catch {
     result = { ok: false, failures: [{ guard: "runtime", reason: "unavailable" }] };

@@ -140,8 +140,9 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
     true,
   );
   assert.equal(messages.length, 3);
-  assert.match(messages[1]!, /"status":"error"/);
+  assert.match(messages[1]!, /"status":"ok"/);
   assert.match(messages[2]!, /pool_request_collection_unavailable/);
+  assert.match(messages[2]!, /"level":"warning"/);
   const report = await PoolOperations.prototype.fetch.call(
     { env },
     new Request(`https://operations/availability?pool=${state.pool}`),

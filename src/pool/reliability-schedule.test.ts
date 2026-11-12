@@ -35,7 +35,7 @@ const slo = (state: PoolReliabilitySlo["state"]): PoolReliabilitySlo => ({
 });
 
 for (const state of ["breached", "unavailable"] as const)
-  test(`the existing monitor alerts separately for ${state} real-request reliability`, async (t) => {
+  test(`a ${state} SLO leaves healthy synthetic availability green`, async (t) => {
     const envelopes: { type: string; payload: Record<string, unknown> }[] = [];
     t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit) => {
       const lines = new TextDecoder().decode(init.body as ArrayBuffer).split("\n");
@@ -61,17 +61,19 @@ for (const state of ["breached", "unavailable"] as const)
     );
     assert.deepEqual(
       checks.map((entry) => entry.status),
-      ["in_progress", "error"],
+      ["in_progress", "ok"],
     );
     assert.equal(checks[0]!.check_in_id, checks[1]!.check_in_id);
     const event = envelopes.find((entry) => entry.type === "event")!.payload;
+    assert.equal(event.level, state === "breached" ? "error" : "warning");
     assert.deepEqual(event.fingerprint, [
       "basalt",
       state === "breached"
         ? "pool_request_success_below_target"
         : "pool_request_collection_unavailable",
     ]);
-    const context = event.contexts as { request_reliability: { hour: unknown } };
+    const context = event.contexts as { request_reliability: { hour: unknown; state: string } };
+    assert.equal(context.request_reliability.state, state);
     assert.deepEqual(context.request_reliability.hour, {
       requests: 100,
       failed: 2,
@@ -99,7 +101,19 @@ for (const state of ["breached", "unavailable"] as const)
       },
       async () => slo(state),
     );
-    const event = messages.find((message) => message.fingerprint)!;
+    const availability = messages.find(
+      (message) =>
+        message.message && String(message.message).startsWith("pool_availability_failure"),
+    )!;
+    assert.equal(availability.level, "error");
+    assert.deepEqual(
+      messages.filter((message) => message.status).map((message) => message.status),
+      ["in_progress", "error"],
+    );
+    const event = messages.find(
+      (message) => message.message && String(message.message).startsWith("pool_request_"),
+    )!;
+    assert.equal(event.level, state === "breached" ? "error" : "warning");
     assert.deepEqual(event.fingerprint, [
       "basalt",
       state === "breached"
@@ -116,7 +130,7 @@ for (const state of ["breached", "unavailable"] as const)
     assert.doesNotMatch(JSON.stringify(messages), /private-runtime-error/);
   });
 
-test("a failed collector sends an unavailable alert and no-traffic does not claim a measured success rate", async (t) => {
+test("a failed collector sends a non-outage warning and no-traffic does not claim measured success", async (t) => {
   const messages: Record<string, unknown>[] = [];
   t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit) => {
     messages.push(JSON.parse(new TextDecoder().decode(init.body as ArrayBuffer).split("\n")[2]!));
@@ -131,6 +145,15 @@ test("a failed collector sends an unavailable alert and no-traffic does not clai
     },
   );
   assert.deepEqual(messages.at(-1)!.fingerprint, ["basalt", "pool_request_collection_unavailable"]);
+  assert.equal(messages[1]!.status, "ok");
+  assert.equal(messages.at(-1)!.level, "warning");
+  assert.deepEqual(messages.at(-1)!.contexts, {
+    pool_probe: {
+      check_in_id: messages[1]!.check_in_id,
+      failures: [{ guard: "request_reliability", reason: "collection_unavailable" }],
+    },
+    request_reliability: { target: 99, state: "unavailable" },
+  });
   assert.doesNotMatch(JSON.stringify(messages), /private-connection-secret/);
   messages.length = 0;
   await runAvailabilityProbe(
@@ -143,3 +166,61 @@ test("a failed collector sends an unavailable alert and no-traffic does not clai
     ["in_progress", "ok"],
   );
 });
+
+test("pending classification reports unknown reliability without a monitor error", async (t) => {
+  const messages: Record<string, unknown>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit) => {
+    messages.push(JSON.parse(new TextDecoder().decode(init.body as ArrayBuffer).split("\n")[2]!));
+    return new Response(null, { status: 202 });
+  });
+  t.mock.method(console, "error", () => assert.fail("unknown SLO logged a pool outage"));
+  await runAvailabilityProbe(
+    env,
+    async () => ({ ok: true, failures: [] }),
+    async () => ({
+      ...slo("unavailable"),
+      reason: "classification_pending",
+      hour: { ...window(0, 0), classification: "pending" },
+      day: { ...window(0, 0), classification: "pending" },
+    }),
+  );
+  assert.deepEqual(
+    messages.map((message) => message.status ?? message.level),
+    ["in_progress", "ok", "warning"],
+  );
+  const context = messages[2]!.contexts as {
+    request_reliability: { state: string; reason: string; hour: { requests: number } };
+  };
+  assert.equal(context.request_reliability.state, "unavailable");
+  assert.equal(context.request_reliability.reason, "classification_pending");
+  assert.equal(context.request_reliability.hour.requests, 0);
+});
+
+for (const proofFailed of [0, 45])
+  test(`an empty real-request window stays no-data with ${proofFailed} proof failures`, async (t) => {
+    const messages: Record<string, unknown>[] = [];
+    t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit) => {
+      messages.push(JSON.parse(new TextDecoder().decode(init.body as ArrayBuffer).split("\n")[2]!));
+      return new Response(null, { status: 202 });
+    });
+    const empty = window(0, 0);
+    const requests = proofFailed ? 45 : 0;
+    const noTraffic = {
+      ...empty,
+      proof: {
+        ...empty.proof,
+        requests,
+        failed: proofFailed,
+        successRate: requests ? 0 : null,
+      },
+    };
+    await runAvailabilityProbe(
+      env,
+      async () => ({ ok: true, failures: [] }),
+      async () => ({ ...slo("no_traffic"), hour: noTraffic, day: noTraffic }),
+    );
+    assert.deepEqual(
+      messages.map((message) => message.status),
+      ["in_progress", "ok"],
+    );
+  });
