@@ -1,7 +1,7 @@
 name: Obsidian plugin release
 
-# Publishes Signalbox Sync once per manifest version as the release BRAT installs from.
-# The tag is signalbox-sync-<version> and never becomes the repository's Latest release.
+# Publishes Signalbox Sync once per manifest version: here as signalbox-sync-<version>, which never
+# becomes this repository's Latest release, and in its own repository as the bare version BRAT installs.
 on:
   push:
     branches: [main]
@@ -88,3 +88,44 @@ jobs:
             --notes "Signalbox Sync $version for Obsidian. Install it from Connect Obsidian in Basalt, which adds it through BRAT." \
             "$DIST/main.js" "$DIST/manifest.json" "$DIST/styles.css"
           echo "Published $tag." >> "$GITHUB_STEP_SUMMARY"
+      # BRAT installs from the plugin's own repository, where "latest" can only mean a plugin release.
+      # The tag push there starts that repository's release workflow, which attaches these files.
+      - name: Publish the same build to the plugin repository
+        env:
+          DEPLOY_KEY: ${{ secrets.SIGNALBOX_SYNC_DEPLOY_KEY }}
+          DIST: ${{ runner.temp }}/signalbox-sync
+          PLUGIN: ${{ runner.temp }}/plugin-repository
+        run: |
+          if [ -z "$DEPLOY_KEY" ]; then
+            message="SIGNALBOX_SYNC_DEPLOY_KEY is not set, so nothing was published to JustYannicc/signalbox-sync. Add the repository's write deploy key as this secret."
+            echo "::error::$message"; echo "$message" >> "$GITHUB_STEP_SUMMARY"; exit 1
+          fi
+          version="$(node -p 'require("./clients/obsidian/manifest.json").version')"
+          ssh="$RUNNER_TEMP/plugin-ssh"
+          mkdir -m 700 "$ssh"
+          (umask 077 && printf '%s\n' "$DEPLOY_KEY" > "$ssh/key")
+          # GitHub's published host key, so the push can't be redirected.
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$ssh/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh/known_hosts -o StrictHostKeyChecking=yes"
+          git clone --quiet git@github.com:JustYannicc/signalbox-sync.git "$PLUGIN"
+          if git -C "$PLUGIN" rev-parse --quiet --verify "refs/tags/$version" > /dev/null; then
+            for file in dist/main.js manifest.json dist/styles.css; do
+              if ! git -C "$PLUGIN" show "$version:$file" | cmp -s - "$DIST/$(basename "$file")"; then
+                message="JustYannicc/signalbox-sync already has $version and its $file differs from this build. Published versions never change: raise version in clients/obsidian/manifest.json and versions.json."
+                echo "::error::$message"; echo "$message" >> "$GITHUB_STEP_SUMMARY"; exit 1
+              fi
+            done
+            echo "JustYannicc/signalbox-sync already has $version with this exact build." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          mkdir -p "$PLUGIN/dist"
+          cp "$DIST/main.js" "$DIST/styles.css" "$PLUGIN/dist/"
+          cp "$DIST/manifest.json" "$PLUGIN/manifest.json"
+          cp clients/obsidian/versions.json "$PLUGIN/versions.json"
+          git -C "$PLUGIN" add dist manifest.json versions.json
+          git -C "$PLUGIN" -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet -m "Signalbox Sync $version" -m "Built from JustYannicc/basalt@$GITHUB_SHA."
+          git -C "$PLUGIN" tag "$version"
+          git -C "$PLUGIN" push --quiet --atomic origin main "refs/tags/$version"
+          echo "Pushed $version to JustYannicc/signalbox-sync." >> "$GITHUB_STEP_SUMMARY"
