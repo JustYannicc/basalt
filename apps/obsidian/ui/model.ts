@@ -20,7 +20,8 @@ export interface Device {
 }
 
 export interface Devices {
-  readonly head: string;
+  /** Null only while the vault has no commits. */
+  readonly head: string | null;
   readonly lastChangeAt: string | null;
   readonly devices: readonly Device[];
 }
@@ -76,7 +77,8 @@ export function vaultState(input: {
   // Up to date only when every caller that synced holds the current head. Agents using the
   // tools may be among them; a lagging one only withholds "up to date", never claims it.
   if (devices === null || devices.devices.length === 0) return { kind: "saved" };
-  const current = devices.devices.every((device) => device.lastHead === devices.head);
+  const current =
+    devices.head !== null && devices.devices.every((device) => device.lastHead === devices.head);
   return { kind: current ? "up-to-date" : "saved" };
 }
 

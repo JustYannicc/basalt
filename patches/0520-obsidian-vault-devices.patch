@@ -88,7 +88,7 @@ new file mode 100644
 +
 +/** What the vault's drive records from ordinary sync calls: each caller's last sync and head. */
 +export const VaultSync = Schema.Struct({
-+  head: Schema.String,
++  head: Schema.NullOr(Schema.String),
 +  devices: Schema.Array(
 +    Schema.Struct({ agent: Schema.String, lastSyncAt: Schema.String, lastHead: Schema.String }),
 +  ),
@@ -106,7 +106,7 @@ new file mode 100644
 +  const entry = sync.devices.find((item) => item.agent === device.agent);
 +  return entry === undefined
 +    ? null
-+    : { at: entry.lastSyncAt, current: entry.lastHead === sync.head };
++    : { at: entry.lastSyncAt, current: sync.head !== null && entry.lastHead === sync.head };
 +};
 +
 +/** The app tool that reports the drive's sync records. */
