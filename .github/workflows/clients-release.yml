@@ -36,6 +36,10 @@ on:
         description: Run id of a walked build of this workflow on main to publish; empty builds only.
         required: false
         default: ""
+      update_feed:
+        description: Build-only test feed, an https URL ending in /appcast.xml; empty uses the production feed. Its folder also hosts android-update.json and the APK. A test build can't be published.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -50,6 +54,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      update_folder: ${{ steps.feed.outputs.folder }}
+      android_manifest: ${{ steps.feed.outputs.android_manifest }}
     steps:
       - uses: actions/checkout@v4
       - id: version
@@ -73,6 +79,26 @@ jobs:
             exit 1
           fi
           echo "version=$clients" >> "$GITHUB_OUTPUT"
+      # Installed apps read the newest release's manifests from releases/latest. A test feed moves
+      # them, and the files they name, into the feed's own folder.
+      - id: feed
+        name: Read the update feed
+        env:
+          FEED: ${{ inputs.update_feed }}
+        run: |
+          if [ -z "$FEED" ]; then
+            echo "android_manifest=https://github.com/$GITHUB_REPOSITORY/releases/latest/download/android-update.json" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ "$FEED" =~ ^https://[^/?#@[:space:]]+/([^?#[:space:]]*/)?appcast\.xml$ ]]; then
+            message="update_feed must be an https URL ending in /appcast.xml, not '$FEED'."
+            echo "::error::$message"
+            echo "$message" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          folder="${FEED%/appcast.xml}"
+          echo "folder=$folder" >> "$GITHUB_OUTPUT"
+          echo "android_manifest=$folder/android-update.json" >> "$GITHUB_OUTPUT"
 
   desktop:
     needs: version
@@ -168,6 +194,7 @@ jobs:
     timeout-minutes: 40
     env:
       SIGNALBOX_CLIENT_RELEASE: "true"
+      EXPO_PUBLIC_CLIENT_UPDATE_MANIFEST: ${{ needs.version.outputs.android_manifest }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node
@@ -268,6 +295,7 @@ jobs:
       - name: Name the files and record their hashes
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          UPDATE_FOLDER: ${{ needs.version.outputs.update_folder }}
           BUILT: ${{ runner.temp }}/built
           OUT: ${{ runner.temp }}/release
         run: |
@@ -290,6 +318,25 @@ jobs:
           take "Signalbox-Client-$VERSION-linux-amd64.deb" Signalbox-linux-amd64.deb
           take Signalbox-android.apk Signalbox-android.apk
           take "signalbox-client-$VERSION.tgz" signalbox-cli.tgz
+          # Installed Android apps read this from releases/latest to find, check and install the
+          # next version. Its versionCode follows app.config.ts, and the APK must agree.
+          fail() {
+            echo "::error::$1"
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          apk="$OUT/Signalbox-android.apk"
+          IFS=. read -r major minor patch <<< "$VERSION"
+          code=$((10#$major * 10000 + 10#$minor * 100 + 10#$patch))
+          tools="$ANDROID_HOME/build-tools/$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort -V | tail -n1)"
+          badging="$("$tools/aapt2" dump badging "$apk")" || fail "aapt2 $(basename "$tools") couldn't read the signed APK's badging."
+          package="$(printf '%s\n' "$badging" | sed -n "s/^package: name='\([^']*\)' versionCode='\([^']*\)' versionName='\([^']*\)'.*/\1 \2 \3/p")"
+          [ "$package" = "run.signalbox.client $code $VERSION" ] ||
+            fail "The signed APK is '$package' (package versionCode versionName), not 'run.signalbox.client $code $VERSION'. Installed apps compare versionCode to decide on an update."
+          jq -n --arg version "$VERSION" --argjson versionCode "$code" \
+            --arg url "${UPDATE_FOLDER:-https://github.com/$GITHUB_REPOSITORY/releases/download/signalbox-clients-$VERSION}/Signalbox-android.apk" \
+            --arg sha256 "$(sha256sum "$apk" | cut -d' ' -f1)" --argjson size "$(stat -c %s "$apk")" \
+            '{version: $version, versionCode: $versionCode, url: $url, sha256: $sha256, size: $size}' > "$OUT/android-update.json"
           (cd "$OUT" && sha256sum -- * > SHA256SUMS.txt)
           printf '%s\n' "$VERSION" > "$RUNNER_TEMP/version.txt"
           printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/commit.txt"
@@ -357,6 +404,18 @@ jobs:
             fail "Run $RUN's release/ holds $present but SHA256SUMS.txt lists $listed."
           fi
           sha256sum --strict -c SHA256SUMS.txt || fail "Run $RUN's files don't match their recorded SHA256SUMS.txt."
+          # Installed Android apps install whatever android-update.json names, so it must name this
+          # release's own APK. A build with update_feed set names its test feed instead.
+          [ -f android-update.json ] || fail "Run $RUN's release/ has no android-update.json, so installed Android apps wouldn't find this version."
+          IFS=. read -r major minor patch <<< "$version"
+          expected="$(jq -cn --arg version "$version" --argjson versionCode "$((10#$major * 10000 + 10#$minor * 100 + 10#$patch))" \
+            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/signalbox-clients-$version/Signalbox-android.apk" \
+            --arg sha256 "$(sha256sum Signalbox-android.apk | cut -d' ' -f1)" --argjson size "$(stat -c %s Signalbox-android.apk)" \
+            '[$version, $versionCode, $url, $sha256, $size]')"
+          seen="$(jq -c '[.version, .versionCode, .url, .sha256, .size]' android-update.json)" ||
+            fail "Run $RUN's android-update.json isn't JSON."
+          [ "$seen" = "$expected" ] ||
+            fail "Run $RUN's android-update.json has $seen, but publishing needs $expected (version, versionCode, url, sha256, size). Builds made with update_feed can't be published."
           echo "VERSION=$version" >> "$GITHUB_ENV"
           echo "COMMIT=$commit" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
