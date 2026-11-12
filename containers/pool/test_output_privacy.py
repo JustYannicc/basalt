@@ -445,6 +445,11 @@ class OutputPrivacyTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         child = SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
         failure = StartupError(f"{RESPONSE_SENTINEL} Authorization: Bearer {TOKEN_SENTINEL}")
+        probe_owner = (
+            sys.modules[supervisor.ServiceHealth.__module__]
+            if hasattr(supervisor, "ServiceHealth")
+            else supervisor
+        )
 
         class HealthyPolicyMonitor:
             def __init__(self, _ready: readiness.Readiness, _management_key: str) -> None:
@@ -471,7 +476,7 @@ class OutputPrivacyTests(unittest.TestCase):
             patch.object(supervisor, "apply_pool_config"),
             patch.object(supervisor, "create_node_jwt", return_value=("fixture-node", TOKEN_SENTINEL)),
             patch.object(supervisor, "check_services", side_effect=[True, failure]) as health,
-            patch.object(supervisor, "check_liveness", side_effect=failure, create=True) as fast_health,
+            patch.object(probe_owner, "check_liveness", side_effect=failure, create=True) as fast_health,
             patch.object(supervisor, "terminate_children"),
             redirect_stdout(stdout),
             redirect_stderr(stderr),
