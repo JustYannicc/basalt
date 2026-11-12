@@ -4,7 +4,7 @@ import { callerHeader } from "../../apps/pool/contract.ts";
 import { ComputerHome } from "./computer-home.ts";
 import { Computers, type ComputerStorage } from "./computers.ts";
 import { digest } from "./computer-home.ts";
-import { setupTtl, signIntent } from "./setup-links.ts";
+import { setupTtl } from "./setup-links.ts";
 import { signEnvelope, signPoolToken } from "./token.ts";
 import { HomeClient } from "./control.ts";
 
@@ -20,13 +20,17 @@ class DurableMemory implements ComputerStorage {
   private values = new Map<string, unknown>();
   async get<T>(key: string): Promise<T | undefined> {
     const value = this.values.get(key);
-    return value === undefined ? undefined : structuredClone(value) as T;
+    return value === undefined ? undefined : (structuredClone(value) as T);
   }
   async put(key: string, value: unknown): Promise<void> {
     this.values.set(key, structuredClone(value));
   }
-  async snapshot<T>(key: string): Promise<T | undefined> { return this.get<T>(key); }
-  async serialized(): Promise<string> { return JSON.stringify([...this.values]); }
+  async snapshot<T>(key: string): Promise<T | undefined> {
+    return this.get<T>(key);
+  }
+  async serialized(): Promise<string> {
+    return JSON.stringify([...this.values]);
+  }
 }
 
 class FakeComputerHome extends ComputerHome {
@@ -42,7 +46,11 @@ class FakeComputerHome extends ComputerHome {
   onRevoke: (() => void) | undefined;
 
   constructor() {
-    super(new HomeClient(async () => { throw new Error("unexpected real Home request"); }));
+    super(
+      new HomeClient(async () => {
+        throw new Error("unexpected real Home request");
+      }),
+    );
   }
   override async mint(person: string, pool: string, computer: string) {
     this.mints.push({ person, pool, computer });
@@ -73,42 +81,84 @@ async function fixture() {
   const home = new FakeComputerHome();
   const productEvents: [string, string][] = [];
   let time = Date.parse("2026-01-01T00:00:00.000Z");
-  const computers = new Computers({ storage, home, signingKey, origin: "https://setup.example", now: () => time,
-    onProductEvent: (event: string, accountId: string) => productEvents.push([event, accountId]) });
+  const computers = new Computers({
+    storage,
+    home,
+    signingKey,
+    origin: "https://setup.example",
+    now: () => time,
+    onProductEvent: (event: string, accountId: string) => productEvents.push([event, accountId]),
+  });
 
   async function context(poolClaims = claims, caller = poolClaims.owner) {
     const token = await signPoolToken(signingKey, poolClaims);
-    const response = await computers.context(new Request("https://pool.example/pool/v1/computers/context", {
-      headers: { Authorization: `Bearer ${token}`, [callerHeader]: caller },
-    }));
-    return { response, value: await response.clone().json() as Record<string, unknown> };
+    const response = await computers.context(
+      new Request("https://pool.example/pool/v1/computers/context", {
+        headers: { Authorization: `Bearer ${token}`, [callerHeader]: caller },
+      }),
+    );
+    return { response, value: (await response.clone().json()) as Record<string, unknown> };
   }
-  async function action(actionName: string, user = owner, intent?: string, extra: Record<string, unknown> = {}) {
+  async function action(
+    actionName: string,
+    user = owner,
+    intent?: string,
+    extra: Record<string, unknown> = {},
+  ) {
     const envelope = await signEnvelope(signingKey, "sbs1", {
-      ...extra, action: actionName, expiresAt: time + 10_000, user, ...(intent ? { intent } : {}),
+      ...extra,
+      action: actionName,
+      expiresAt: time + 10_000,
+      user,
+      ...(intent ? { intent } : {}),
     });
-    return computers.handle(new Request(`https://pool.example/setup/${actionName}`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ envelope }),
-    }));
+    return computers.handle(
+      new Request(`https://pool.example/setup/${actionName}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ envelope }),
+      }),
+    );
   }
   async function create(poolClaims = claims, user = owner) {
     const setup = await context(poolClaims, user);
     assert.equal(setup.response.status, 200, JSON.stringify(setup.value));
     const intent = String(setup.value.intent);
-    const response = await action("links", user, intent, { name: "Workstation", toolsKeyId, toolsToken });
+    const response = await action("links", user, intent, {
+      name: "Workstation",
+      toolsKeyId,
+      toolsToken,
+    });
     assert.equal(response.status, 200, await response.clone().text());
-    return { intent, value: await response.json() as { computer: { id: string; state: string; createdAt: string }; token: string; expiresAt: string } };
+    return {
+      intent,
+      value: (await response.json()) as {
+        computer: { id: string; state: string; createdAt: string };
+        token: string;
+        expiresAt: string;
+      },
+    };
   }
   return {
-    storage, home, computers, context, action, create, productEvents,
-    advance(ms: number) { time += ms; },
-    now() { return time; },
+    storage,
+    home,
+    computers,
+    context,
+    action,
+    create,
+    productEvents,
+    advance(ms: number) {
+      time += ms;
+    },
+    now() {
+      return time;
+    },
   };
 }
 
 async function expectError(response: Response, status: number, code: string, message?: string) {
   assert.equal(response.status, status, await response.clone().text());
-  const body = await response.json() as { error: string; message: string };
+  const body = (await response.json()) as { error: string; message: string };
   assert.equal(body.error, code);
   if (message) assert.equal(body.message, message);
 }
@@ -122,24 +172,38 @@ test("pool context signs caller and pool into a setup intent used by the interna
   const setup = await f.context();
   assert.equal(setup.response.status, 200, JSON.stringify(setup.value));
   const intent = String(setup.value.intent);
-  const payload = JSON.parse(Buffer.from(intent.split(".")[1]!, "base64url").toString()) as Record<string, unknown>;
+  const payload = JSON.parse(Buffer.from(intent.split(".")[1]!, "base64url").toString()) as Record<
+    string,
+    unknown
+  >;
   assert.equal(payload.user, owner);
   assert.equal(payload.pool, claims.pool);
   assert.equal(payload.owner, claims.owner);
 
-  const response = await f.action("links", owner, intent, { name: "Workstation", toolsKeyId, toolsToken });
+  const response = await f.action("links", owner, intent, {
+    name: "Workstation",
+    toolsKeyId,
+    toolsToken,
+  });
   assert.equal(response.status, 200, await response.clone().text());
-  const issued = await response.json() as { computer: { id: string; state: string }; token: string };
+  const issued = (await response.json()) as {
+    computer: { id: string; state: string };
+    token: string;
+  };
   assert.equal(issued.computer.state, "issuing");
   assert.ok(issued.token);
-  assert.deepEqual(f.home.mints, [{ person: owner, pool: claims.pool, computer: issued.computer.id }]);
+  assert.deepEqual(f.home.mints, [
+    { person: owner, pool: claims.pool, computer: issued.computer.id },
+  ]);
 });
 
 test("invalid pool tokens stop before Home mint", async () => {
   const f = await fixture();
-  const badToken = await f.computers.context(new Request("https://pool.example/pool/v1/computers/context", {
-    headers: { Authorization: "Bearer invalid", [callerHeader]: owner },
-  }));
+  const badToken = await f.computers.context(
+    new Request("https://pool.example/pool/v1/computers/context", {
+      headers: { Authorization: "Bearer invalid", [callerHeader]: owner },
+    }),
+  );
   await expectError(badToken, 401, "unauthorized");
   assert.equal(f.home.mints.length, 0);
 });
@@ -148,8 +212,20 @@ test("a signed intent cannot be used by another caller or after tampering", asyn
   const f = await fixture();
   const setup = await f.context();
   const intent = String(setup.value.intent);
-  await expectError(await f.action("links", "tools-user-2", intent, { name: "Workstation", toolsKeyId, toolsToken }), 401, "unauthorized");
-  await expectError(await f.action("links", owner, `${intent}x`, { name: "Workstation", toolsKeyId, toolsToken }), 401, "unauthorized");
+  await expectError(
+    await f.action("links", "tools-user-2", intent, {
+      name: "Workstation",
+      toolsKeyId,
+      toolsToken,
+    }),
+    401,
+    "unauthorized",
+  );
+  await expectError(
+    await f.action("links", owner, `${intent}x`, { name: "Workstation", toolsKeyId, toolsToken }),
+    401,
+    "unauthorized",
+  );
   assert.equal(f.home.mints.length, 0);
 });
 
@@ -163,24 +239,46 @@ test("claim returns credentials once and storage keeps only digests and cipherte
 
   const response = await claim(f, issued.token);
   assert.equal(response.status, 200, await response.clone().text());
-  const payload = await response.json() as { credentials: { modelKey: string; toolsToken: string } };
+  const payload = (await response.json()) as {
+    credentials: { modelKey: string; toolsToken: string };
+  };
   assert.equal(payload.credentials.modelKey, modelKey);
   assert.equal(payload.credentials.toolsToken, toolsToken);
   const afterClaim = await f.storage.serialized();
   assert.ok(!afterClaim.includes(modelKey));
   assert.ok(!afterClaim.includes(toolsToken));
   assert.ok(!afterClaim.includes(issued.token));
-  assert.equal((await f.storage.snapshot<Record<string, { state: string; link?: unknown }>>("computer-registry-v1"))![issued.computer.id]!.state, "active");
-  assert.equal((await f.storage.snapshot<Record<string, { state: string; link?: unknown }>>("computer-registry-v1"))![issued.computer.id]!.link, undefined);
+  assert.equal(
+    (await f.storage.snapshot<Record<string, { state: string; link?: unknown }>>(
+      "computer-registry-v1",
+    ))![issued.computer.id]!.state,
+    "active",
+  );
+  assert.equal(
+    (await f.storage.snapshot<Record<string, { state: string; link?: unknown }>>(
+      "computer-registry-v1",
+    ))![issued.computer.id]!.link,
+    undefined,
+  );
 
-  await expectError(await claim(f, issued.token), 410, "invalid_session", "This setup link has expired or was already used.");
+  await expectError(
+    await claim(f, issued.token),
+    410,
+    "invalid_session",
+    "This setup link has expired or was already used.",
+  );
 });
 
 test("expired setup claims cannot return credentials", async () => {
   const f = await fixture();
   const { value: issued } = await f.create();
   f.advance(setupTtl);
-  await expectError(await claim(f, issued.token), 410, "invalid_session", "This setup link has expired or was already used.");
+  await expectError(
+    await claim(f, issued.token),
+    410,
+    "invalid_session",
+    "This setup link has expired or was already used.",
+  );
   const stored = await f.storage.serialized();
   assert.ok(!stored.includes(modelKey));
   assert.ok(!stored.includes(toolsToken));
@@ -191,14 +289,21 @@ test("refresh replaces the opaque link and preserves the sealed credentials", as
   const { intent, value: first } = await f.create();
   const refreshedResponse = await f.action("refresh", owner, intent, { id: first.computer.id });
   assert.equal(refreshedResponse.status, 200, await refreshedResponse.clone().text());
-  const refreshed = await refreshedResponse.json() as { token: string };
+  const refreshed = (await refreshedResponse.json()) as { token: string };
   assert.notEqual(refreshed.token, first.token);
   await expectError(await claim(f, first.token), 410, "invalid_session");
 
   const response = await claim(f, refreshed.token);
   assert.equal(response.status, 200, await response.clone().text());
-  const payload = await response.json() as { credentials: { modelKey: string; toolsToken: string } };
-  assert.deepEqual(payload.credentials, { modelUrl: "https://setup.example", modelKey, toolsUrl: "https://setup.example/mcp", toolsToken });
+  const payload = (await response.json()) as {
+    credentials: { modelKey: string; toolsToken: string };
+  };
+  assert.deepEqual(payload.credentials, {
+    modelUrl: "https://setup.example",
+    modelKey,
+    toolsUrl: "https://setup.example/mcp",
+    toolsToken,
+  });
 });
 
 test("unknown computer actions share the same generic response and never call Home", async () => {
@@ -219,7 +324,11 @@ test("a non-owner gets a shared pool intent and can mint a computer", async () =
   const member = await f.context(claims, "tools-user-2");
   assert.equal(member.response.status, 200);
   assert.equal(member.value.shareHref, undefined);
-  const response = await f.action("links", "tools-user-2", String(member.value.intent), { name: "Laptop", toolsKeyId, toolsToken });
+  const response = await f.action("links", "tools-user-2", String(member.value.intent), {
+    name: "Laptop",
+    toolsKeyId,
+    toolsToken,
+  });
   assert.equal(response.status, 200, await response.clone().text());
   assert.equal(f.home.mints[0]!.person, "tools-user-2");
 });
@@ -232,7 +341,9 @@ test("model and tools evidence are recorded independently", async () => {
 
   const toolHash = await digest(toolsToken);
   assert.equal((await f.action("observed", owner, undefined, { tokenHash: toolHash })).status, 200);
-  const afterTools = (await f.storage.snapshot<Record<string, { firstToolCallAt: string | null; firstModelRequestAt: string | null }>>("computer-registry-v1"))![issued.computer.id]!;
+  const afterTools = (await f.storage.snapshot<
+    Record<string, { firstToolCallAt: string | null; firstModelRequestAt: string | null }>
+  >("computer-registry-v1"))![issued.computer.id]!;
   assert.ok(afterTools.firstToolCallAt);
   assert.equal(afterTools.firstModelRequestAt, null);
   assert.equal(f.home.observations.length, 0);
@@ -240,15 +351,27 @@ test("model and tools evidence are recorded independently", async () => {
 
   const listed = await f.action("computers", owner, intent);
   assert.equal(listed.status, 200);
-  const computers = (await listed.json() as { computers: { firstModelRequestAt: string | null; firstToolCallAt: string | null }[] }).computers;
+  const computers = (
+    (await listed.json()) as {
+      computers: { firstModelRequestAt: string | null; firstToolCallAt: string | null }[];
+    }
+  ).computers;
   assert.equal(computers[0]!.firstModelRequestAt, modelObservedAt);
   assert.equal(computers[0]!.firstToolCallAt, afterTools.firstToolCallAt);
-  assert.deepEqual(f.productEvents, [["first_model_request", owner], ["setup_completed", owner]]);
-  assert.deepEqual(f.home.observations, [{ pool: claims.pool, keyId: 73, since: "2026-01-01T00:00:00.000Z" }]);
+  assert.deepEqual(f.productEvents, [
+    ["first_model_request", owner],
+    ["setup_completed", owner],
+  ]);
+  assert.deepEqual(f.home.observations, [
+    { pool: claims.pool, keyId: 73, since: "2026-01-01T00:00:00.000Z" },
+  ]);
 
   await f.action("observed", owner, undefined, { tokenHash: toolHash });
   await f.action("computers", owner, intent);
-  assert.deepEqual(f.productEvents, [["first_model_request", owner], ["setup_completed", owner]]);
+  assert.deepEqual(f.productEvents, [
+    ["first_model_request", owner],
+    ["setup_completed", owner],
+  ]);
   assert.equal(f.home.observations.length, 1);
 });
 
@@ -261,28 +384,57 @@ test("pending model use is reconciled without opening the computer list and retr
 
   await f.computers.observeUsage();
   assert.deepEqual(f.productEvents, []);
+  for (let poll = 0; poll < 60; poll++) {
+    await f.computers.observeUsage();
+    await f.computers.list(owner);
+  }
+  assert.equal(
+    f.home.observations.length,
+    1,
+    "negative observations survive list and alarm polling",
+  );
   f.home.observedResult = modelObservedAt;
-  await f.computers.observeUsage();
+  await f.computers.observeUsage(73);
 
-  assert.deepEqual(f.productEvents, [["first_model_request", owner], ["setup_completed", owner]]);
+  assert.deepEqual(f.productEvents, [
+    ["first_model_request", owner],
+    ["setup_completed", owner],
+  ]);
   assert.equal(f.home.observations.length, 2);
   await f.computers.observeUsage();
   assert.equal(f.home.observations.length, 2);
-  assert.deepEqual(f.productEvents, [["first_model_request", owner], ["setup_completed", owner]]);
+  assert.deepEqual(f.productEvents, [
+    ["first_model_request", owner],
+    ["setup_completed", owner],
+  ]);
 });
 
 test("usage reconciliation bounds each Home scan to pending active computers", async () => {
   const f = await fixture();
   f.home.observedResult = null;
-  const registry = Object.fromEntries(Array.from({ length: 12 }, (_, index) => {
-    const id = `computer-${index}`;
-    return [id, {
-      id, name: "Fixture", user: owner, pool: claims.pool, createdAt: new Date(index).toISOString(),
-      boundAt: "2026-01-01T00:00:00.000Z", state: "active", keyId: index + 1,
-      toolsKeyId: `tools-key-${index}`, toolsHash: `tools-hash-${index}`,
-      firstModelRequestAt: null, firstToolCallAt: null, revokedAt: null,
-    }];
-  }));
+  const registry = Object.fromEntries(
+    Array.from({ length: 12 }, (_, index) => {
+      const id = `computer-${index}`;
+      return [
+        id,
+        {
+          id,
+          name: "Fixture",
+          user: owner,
+          pool: claims.pool,
+          createdAt: new Date(index).toISOString(),
+          boundAt: "2026-01-01T00:00:00.000Z",
+          state: "active",
+          keyId: index + 1,
+          toolsKeyId: `tools-key-${index}`,
+          toolsHash: `tools-hash-${index}`,
+          firstModelRequestAt: null,
+          firstToolCallAt: null,
+          revokedAt: null,
+        },
+      ];
+    }),
+  );
   await f.storage.put("computer-registry-v1", registry);
 
   await f.computers.observeUsage();
@@ -299,17 +451,25 @@ test("revoke durably marks revoking and waits for model-key deletion before retu
 
   let release!: () => void;
   let started!: () => void;
-  const startedRevoke = new Promise<void>((resolve) => { started = resolve; });
-  f.home.revokeGate = new Promise<void>((resolve) => { release = resolve; });
+  const startedRevoke = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  f.home.revokeGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   f.home.onRevoke = started;
   let completed = false;
-  const responsePromise = f.action("revoke", owner, intent, { id: issued.computer.id }).then((response) => {
-    completed = true;
-    return response;
-  });
+  const responsePromise = f
+    .action("revoke", owner, intent, { id: issued.computer.id })
+    .then((response) => {
+      completed = true;
+      return response;
+    });
   await startedRevoke;
   assert.deepEqual(f.home.revoked, [73]);
-  const duringRevoke = (await f.storage.snapshot<Record<string, { state: string; link?: unknown; revokedAt: string | null }>>("computer-registry-v1"))![issued.computer.id]!;
+  const duringRevoke = (await f.storage.snapshot<
+    Record<string, { state: string; link?: unknown; revokedAt: string | null }>
+  >("computer-registry-v1"))![issued.computer.id]!;
   assert.equal(duringRevoke.state, "revoking");
   assert.equal(duringRevoke.link, undefined);
   assert.equal(duringRevoke.revokedAt, null);
@@ -319,11 +479,18 @@ test("revoke durably marks revoking and waits for model-key deletion before retu
   const response = await responsePromise;
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { toolsKeyId });
-  assert.equal((await f.storage.snapshot<Record<string, { state: string }>>("computer-registry-v1"))![issued.computer.id]!.state, "revoking");
+  assert.equal(
+    (await f.storage.snapshot<Record<string, { state: string }>>("computer-registry-v1"))![
+      issued.computer.id
+    ]!.state,
+    "revoking",
+  );
 
   const finalized = await f.action("revoked", owner, intent, { id: issued.computer.id });
   assert.equal(finalized.status, 200);
-  const row = (await f.storage.snapshot<Record<string, { state: string; revokedAt: string | null }>>("computer-registry-v1"))![issued.computer.id]!;
+  const row = (await f.storage.snapshot<
+    Record<string, { state: string; revokedAt: string | null }>
+  >("computer-registry-v1"))![issued.computer.id]!;
   assert.equal(row.state, "revoked");
   assert.equal(row.revokedAt, new Date(f.now()).toISOString());
 });
@@ -337,10 +504,16 @@ test("switch changes the pool on the existing key and clears evidence from the p
   const before = (await f.computers.list(owner, claims.pool))[0]!;
   assert.equal(before.firstModelRequestAt, modelObservedAt);
   assert.ok(before.firstToolCallAt);
-  assert.deepEqual(f.productEvents, [["first_model_request", owner], ["setup_completed", owner]]);
+  assert.deepEqual(f.productEvents, [
+    ["first_model_request", owner],
+    ["setup_completed", owner],
+  ]);
 
   // Simulate a pre-analytics durable row: it has current binding evidence but no historical marker.
-  const legacy = (await f.storage.snapshot<Record<string, { firstModelRequestEverAt?: string | null }>>("computer-registry-v1"))!;
+  const legacy =
+    (await f.storage.snapshot<Record<string, { firstModelRequestEverAt?: string | null }>>(
+      "computer-registry-v1",
+    ))!;
   delete legacy[issued.computer.id]!.firstModelRequestEverAt;
   await f.storage.put("computer-registry-v1", legacy);
 
@@ -348,21 +521,35 @@ test("switch changes the pool on the existing key and clears evidence from the p
   const target = await f.context(destination, owner);
   const targetIntent = String(target.value.intent);
   f.advance(1_000);
-  const response = await f.action("switch", owner, targetIntent, { id: issued.computer.id, pool: destination.pool });
+  const response = await f.action("switch", owner, targetIntent, {
+    id: issued.computer.id,
+    pool: destination.pool,
+  });
   assert.equal(response.status, 200, await response.clone().text());
-  const rebound = await response.json() as { id: string; poolId: string; createdAt: string; firstModelRequestAt: string | null; firstToolCallAt: string | null };
+  const rebound = (await response.json()) as {
+    id: string;
+    poolId: string;
+    createdAt: string;
+    firstModelRequestAt: string | null;
+    firstToolCallAt: string | null;
+  };
   assert.equal(rebound.poolId, "pool-b");
   assert.equal(rebound.createdAt, issued.computer.createdAt);
   assert.equal(rebound.firstModelRequestAt, null);
   assert.equal(rebound.firstToolCallAt, before.firstToolCallAt);
-  const historical = (await f.storage.snapshot<Record<string, { firstModelRequestEverAt?: string | null }>>("computer-registry-v1"))![issued.computer.id]!;
+  const historical = (await f.storage.snapshot<
+    Record<string, { firstModelRequestEverAt?: string | null }>
+  >("computer-registry-v1"))![issued.computer.id]!;
   assert.equal(historical.firstModelRequestEverAt, modelObservedAt);
   assert.deepEqual(f.home.rebound, [{ keyId: 73, pool: "pool-b" }]);
   assert.equal(f.home.mints.length, 1);
   assert.ok(!(await f.storage.serialized()).includes(modelKey));
 
   await f.computers.list(owner, destination.pool);
-  assert.deepEqual(f.productEvents, [["first_model_request", owner], ["setup_completed", owner]]);
+  assert.deepEqual(f.productEvents, [
+    ["first_model_request", owner],
+    ["setup_completed", owner],
+  ]);
 });
 
 test("failed mint remains recoverable by the Home display tag before tools access is returned", async () => {
@@ -371,18 +558,38 @@ test("failed mint remains recoverable by the Home display tag before tools acces
   f.home.orphanKeyIds = [91];
   const setup = await f.context();
   const intent = String(setup.value.intent);
-  const failed = await f.action("links", owner, intent, { name: "Workstation", toolsKeyId, toolsToken });
+  const failed = await f.action("links", owner, intent, {
+    name: "Workstation",
+    toolsKeyId,
+    toolsToken,
+  });
   await expectError(failed, 503, "backend_unavailable");
   assert.equal(f.home.mints.length, 1);
   f.home.mintFailure = undefined;
 
   const pendingList = await f.action("computers", owner, intent);
   assert.equal(pendingList.status, 200);
-  const computer = (await pendingList.json() as { computers: { id: string; state: string }[] }).computers[0]!;
+  const computer = ((await pendingList.json()) as { computers: { id: string; state: string }[] })
+    .computers[0]!;
   assert.equal(computer.state, "issuing");
   const revoked = await f.action("revoke", owner, intent, { id: computer.id });
   assert.equal(revoked.status, 200, await revoked.clone().text());
   assert.deepEqual(f.home.found, [computer.id]);
   assert.deepEqual(f.home.revoked, [91]);
   assert.deepEqual(await revoked.json(), { toolsKeyId });
+});
+
+test("scheduled observation does not wait an extra period behind a newer list cache", async () => {
+  const f = await fixture();
+  const { value: issued } = await f.create();
+  assert.equal((await claim(f, issued.token)).status, 200);
+  f.home.observedResult = null;
+  f.advance(60_000);
+  await f.computers.list(owner);
+  assert.equal(f.home.observations.length, 1);
+  f.advance(4 * 60_000);
+  f.home.observedResult = modelObservedAt;
+  await f.computers.observeUsage(undefined, true);
+  assert.equal(f.home.observations.length, 2);
+  assert.deepEqual(f.productEvents, [["first_model_request", owner]]);
 });

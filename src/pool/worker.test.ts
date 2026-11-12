@@ -1504,3 +1504,58 @@ test("a deferred base controller receives no startup call from the signed adopti
   assert.deepEqual(await adopted.json(), identity);
   assert.equal(warms, 0);
 });
+
+test("five-second membership alarms run persisted reporting jobs only every five minutes", async (t) => {
+  const start = Date.parse("2026-11-12T12:00:00Z");
+  t.mock.timers.enable({ apis: ["Date"], now: start });
+  const saved = new Map<string, unknown>();
+  const calls = { membership: 0, computers: 0, usage: 0, publish: 0 };
+  const storage = {
+    get: async (key: string) => saved.get(key),
+    put: async (key: string, value: unknown) => {
+      saved.set(key, value);
+    },
+  };
+  const instance = () => ({
+    ctx: { storage },
+    env: {
+      POOL_MODEL_HISTORY_ENABLED: "false",
+      POOL_APP_SIGNING_KEY: "ab".repeat(32),
+      TOOLS_SERVICE: {
+        fetch: async () => {
+          calls.publish++;
+          return new Response(null, { status: 204 });
+        },
+      },
+    },
+    appModels: { tick: async () => {} },
+    memberships: {
+      tick: async () => {
+        calls.membership++;
+      },
+    },
+    computers: {
+      expire: async () => {},
+      observeUsage: async () => {
+        calls.computers++;
+      },
+    },
+    handoff: { warm: async () => {} },
+    control: { expire: async () => {} },
+    prices: { run: async () => {} },
+    overviewPrices: { refresh: async () => {} },
+    usage: {
+      observe: async () => {
+        calls.usage++;
+      },
+    },
+  });
+  const fire = async () => Reflect.apply(PoolContainer.prototype.alarm, instance(), []);
+  for (let i = 0; i < 60; i++) {
+    await fire();
+    t.mock.timers.tick(5_000);
+  }
+  assert.deepEqual(calls, { membership: 60, computers: 1, usage: 1, publish: 1 });
+  await fire();
+  assert.deepEqual(calls, { membership: 61, computers: 2, usage: 2, publish: 2 });
+});

@@ -1,3 +1,4 @@
+import { modelKeyScope } from "./key-scope.ts";
 import type { Computers } from "./computers.ts";
 import { ControlFailure, failureResponse } from "./json.ts";
 import {
@@ -117,7 +118,17 @@ export async function forwardPoolRequest(
         pathname === "/typesafe/v1/systemone") &&
       response.ok
     )
-      deps.defer(deps.computers.observeUsage());
+      deps.defer(
+        (async () => {
+          // Legacy pools have no membership identity. Resolve only after the reply, off admission's path.
+          const keyId =
+            identity?.keyId ??
+            native?.keyId ??
+            deps.appModel?.keyId ??
+            (await modelKeyScope(deps.env.POOL_AUTH_DATABASE?.connectionString, request))?.keyId;
+          if (keyId !== undefined) await deps.computers.observeUsage(keyId);
+        })().catch(() => console.error("POOL_FIRST_REQUEST_OBSERVATION_PENDING")),
+      );
     if (response.status === 101) {
       if (response.headers.has(dispatchTimingHeader)) {
         const headers = new Headers(response.headers);
