@@ -1,7 +1,7 @@
 {
   "identity": "basalt-native-account-view-reuse",
   "file": "0529-native-account-view-reuse.patch",
-  "content_sha256": "0a1eeb94ce53ae7e793d023ca647ab28065717e193165b0bd21765676461dc9e",
+  "content_sha256": "53112e11d43284e3b9ce5130087a9913c63b431fe536e19d3c69259818a39a2d",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
