@@ -246,6 +246,15 @@
             "mode": "manual",
             "requires": "Retire only when the pinned sources preserve the opt-in primary dispatch reply, bounded closed timing transport, failure fencing, legacy compatibility and synthetic-provider response proof through Worker logs without exposing diagnostic headers to clients."
           }
+        },
+        {
+          "identity": "node-usage-api-shape",
+          "file": "0554-node-usage-api-shape.patch",
+          "sha256": "d95b66ad90f6abf87ce43ed39b2f98020a5e0248c61759c6af8c524d8874b3fb",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after metadata-only Node usage publication preserves only allowlisted canonical API paths in its detached context, omits arbitrary paths and all other request metadata, and passes context, queue publication and fresh Home-capture regressions."
+          }
         }
       ]
     }

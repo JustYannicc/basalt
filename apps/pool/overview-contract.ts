@@ -69,6 +69,8 @@ export interface OverviewPriceProvenance {
   /** Omitted by older servers, which only returned refreshed rates. */
   readonly basis?: "live" | "baseline";
   readonly refreshFailed?: boolean;
+  /** Includes old records whose token partition was inferred without usable API metadata. */
+  readonly calculation?: "token-counts";
 }
 
 export interface OverviewMoneyMetric {

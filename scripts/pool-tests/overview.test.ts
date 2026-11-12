@@ -217,10 +217,11 @@ test("overview prices protocol aliases from total context, keeps excluded counts
     });
 
     assert.equal(result.metrics.apiBilled.status, "available");
-    assert.equal(result.metrics.apiBilled.amount, "0.007600000000");
+    assert.equal(result.metrics.apiBilled.amount, "0.007770000000");
     assert.equal(result.metrics.subscriptionValue.status, "available");
-    assert.equal(result.metrics.subscriptionValue.amount, "0.005700000000");
-    assert.equal(result.metrics.subscriptionValue.excluded.unpriced, 1);
+    assert.equal(result.metrics.subscriptionValue.amount, "0.005870000000");
+    assert.equal(result.metrics.subscriptionValue.excluded.unpriced, 0);
+    assert.equal(result.metrics.apiBilled.price?.calculation, "token-counts");
     assert.equal(result.metrics.apiBilled.excluded.unknownKind, 0);
     assert.equal(result.directory.activeCount, 1);
     assert.equal(result.directory.totalCount, 2);
@@ -232,7 +233,7 @@ test("overview prices protocol aliases from total context, keeps excluded counts
     assert.equal(result.metrics.requestTokens.percentiles?.p50, 120);
     assert.equal(result.metrics.failureShareWorstHourP95.status, "available");
     assert.equal(result.metrics.failureShareWorstHourP95.p95, 50);
-    assert.equal(result.metrics.perActivePersonPerDay.completeDays, 1);
+    assert.equal(result.metrics.perActivePersonPerDay.completeDays, 2);
     assert.equal(result.metrics.perActivePersonPerDay.activePeople, 1);
     assert.equal(result.homeCapture.completeHours.length, 71);
     assert.equal(result.homeCapture.completeHours.includes("2026-01-02T03:00:00.000Z"), false);
@@ -414,7 +415,7 @@ test("personal overview scopes series, percentiles and pricing to the signed cal
   });
 });
 
-test("overview withholds unpriceable protocols and refuses rounded large token percentiles", async () => {
+test("overview prices unknown protocols from counters but refuses rounded large token percentiles", async () => {
   await seriesFixture(async (fixture) => {
     const fingerprint = await prepareHomeSource(
       fixture.client,
@@ -437,9 +438,10 @@ test("overview withholds unpriceable protocols and refuses rounded large token p
       tokenQuality: "legacy",
     });
     const result = await poolUsageOverview(fixture.db, { ...signed, prices: [rates("0", "10")] });
-    assert.equal(result.metrics.apiBilled.status, "unavailable");
-    assert.equal(result.metrics.apiBilled.amount, null);
-    assert.equal(result.metrics.apiBilled.excluded.unpriced, 1);
+    assert.equal(result.metrics.apiBilled.status, "available");
+    assert.equal(result.metrics.apiBilled.amount, "90071992547.409630000000");
+    assert.equal(result.metrics.apiBilled.excluded.unpriced, 0);
+    assert.equal(result.metrics.apiBilled.price?.calculation, "token-counts");
     assert.equal(result.metrics.requestTokens.status, "unavailable");
     assert.equal(result.metrics.requestTokens.percentiles, null);
     assert.equal(

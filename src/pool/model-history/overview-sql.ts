@@ -1,3 +1,5 @@
+import { counterShapeSql } from "./counter-shape-sql.ts";
+
 /** Trusted query fragments for current API prices and request-level percentiles. */
 export function priceQuery(personScoped = false, retained = false) {
   return `WITH visible_refs AS (
@@ -9,12 +11,7 @@ export function priceQuery(personScoped = false, retained = false) {
     ), selected AS (
       SELECT ${retained ? "r.person::text" : "CASE WHEN r.person=ANY($6::character(64)[]) THEN r.person::text ELSE NULL END"} AS person,
         r.attribution,r.account,r.app_id,r.requirement,r.source,r.provider,r.model,r.timestamp_exact,r.failed,r.total_tokens,r.token_quality,r.api_type,
-        r.input_tokens,r.output_tokens,r.cache_read_tokens,r.cache_write_tokens,r.service_tier,
-        CASE WHEN r.token_quality='complete' OR r.token_quality='legacy' AND r.api_type IN ('responses','responses-compact')
-          THEN r.input_tokens::numeric
-          WHEN r.token_quality='legacy' AND r.api_type='messages'
-          THEN r.input_tokens::numeric+coalesce(r.cache_read_tokens,0)::numeric+coalesce(r.cache_write_tokens,0)::numeric
-          ELSE NULL END AS context_input,
+        r.input_tokens,r.output_tokens,r.cache_read_tokens,r.cache_write_tokens,r.reasoning_tokens,r.service_tier,
         CASE WHEN r.source<>$8 THEN 'excluded'
           WHEN r.account IS NULL THEN 'unknown'
           WHEN refs.offering IN ('subscription','metered_api') THEN refs.offering ELSE 'unknown' END AS offering
@@ -31,7 +28,8 @@ export function priceQuery(personScoped = false, retained = false) {
 /** One request-level calculation is shared by overview, settings and retained history. */
 export function pricedRowsSql(selected = "selected", table = "$7", guard = "true", prefix = "") {
   return `priced AS (
-      SELECT s.*,p.price_version AS ${prefix}price_version,p.price_as_of AS ${prefix}price_as_of,p.price_basis AS ${prefix}price_basis,p.price_refresh_failed AS ${prefix}price_refresh_failed,
+      SELECT s.*,context.context_input,p.price_version AS ${prefix}price_version,p.price_as_of AS ${prefix}price_as_of,p.price_basis AS ${prefix}price_basis,p.price_refresh_failed AS ${prefix}price_refresh_failed,
+        (s.token_quality='legacy' AND coalesce(s.api_type,'') NOT IN ('responses','responses-compact','messages')) AS token_count_estimate,
         CASE WHEN p.price_version IS NULL OR s.token_quality NOT IN ('complete','legacy')
           OR s.input_tokens IS NULL OR s.output_tokens IS NULL OR s.cache_read_tokens IS NULL OR s.cache_write_tokens IS NULL
           OR (s.token_quality='complete' AND s.input_tokens::numeric < s.cache_read_tokens::numeric+s.cache_write_tokens::numeric)
@@ -49,14 +47,18 @@ export function pricedRowsSql(selected = "selected", table = "$7", guard = "true
         WHEN s.api_type='messages' THEN
           (s.input_tokens::numeric*p.input_rate + s.output_tokens::numeric*p.output_rate
           + s.cache_read_tokens::numeric*p.cache_read_rate + s.cache_write_tokens::numeric*p.cache_write_rate)/1000000 + p.request_rate
-        ELSE NULL END AS api_cost
-      FROM ${selected} s LEFT JOIN LATERAL (
+        ELSE
+          ((context.context_input-s.cache_read_tokens::numeric-s.cache_write_tokens::numeric)*p.input_rate
+          + output.output_total*p.output_rate + s.cache_read_tokens::numeric*p.cache_read_rate
+          + s.cache_write_tokens::numeric*CASE WHEN p.cache_write_rate=0 THEN p.input_rate ELSE p.cache_write_rate END)/1000000 + p.request_rate
+        END AS api_cost
+      FROM ${selected} s ${counterShapeSql} LEFT JOIN LATERAL (
         SELECT version AS price_version,as_of AS price_as_of,basis AS price_basis,refresh_failed AS price_refresh_failed,input::numeric AS input_rate,output::numeric AS output_rate,
           cache_read::numeric AS cache_read_rate,cache_write::numeric AS cache_write_rate,request::numeric AS request_rate
         FROM jsonb_to_recordset(${table}::jsonb) AS x(provider text,model text,currency text,input text,output text,
           cache_read text,cache_write text,request text,tier text,min_input text,as_of text,source text,version text,basis text,refresh_failed boolean)
         WHERE x.provider=s.provider AND x.model=s.model AND x.currency='USD' AND x.source='models.dev'
-          AND (x.tier='*' OR x.tier=coalesce(s.service_tier,'*')) AND x.min_input::numeric<=coalesce(s.context_input,0)
+          AND (x.tier='*' OR x.tier=coalesce(s.service_tier,'*')) AND x.min_input::numeric<=coalesce(context.context_input,0)
         ORDER BY (x.tier<>'*') DESC,x.min_input::numeric DESC LIMIT 1
       ) p ON ${guard}
     )`;

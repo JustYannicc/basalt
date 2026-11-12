@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Metadata-only usage contexts retain only allowlisted canonical API paths and generated request IDs. Arbitrary paths, request or response metadata and credentials remain absent. The Home capture derives API type from that path without rewriting retained history."
+    }
+  }
+}
