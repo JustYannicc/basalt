@@ -99,14 +99,43 @@ test("an expiring grant renews once through the shared renewal before listing", 
   }
 });
 
-test("a lost renewal asks for sign-in exactly as agent traffic would", async () => {
+test("a lost renewal replays the same pair before listing apps", async () => {
   const remote = await nativeFixture();
   try {
     remote.expireNext(10);
     const source = await connected(remote);
+    const before = remote.counts();
+    const presented = `synthetic-refresh-${before.rotations + 1}`;
+    remote.expireNext(3600);
     remote.loseRefresh();
     await assert.rejects(source.apps(AbortSignal.timeout(5_000)));
+    assert.equal(source.view().state, "connected");
+    assert.equal(remote.inventoryReads(), 0);
+    remote.inventory(200, inventory());
+    assert.equal((await source.apps(AbortSignal.timeout(5_000)))?.apps.length, 2);
+    assert.deepEqual(remote.refreshTokens().slice(before.refreshes), [presented, presented]);
+    assert.equal(
+      remote.counts().rotations,
+      before.rotations + 1,
+      "Replay must not issue another pair.",
+    );
+    assert.equal(source.view().state, "connected");
+  } finally {
+    await remote.close();
+  }
+});
+
+test("a definitive renewal refusal requires sign-in without another exchange", async () => {
+  const remote = await nativeFixture();
+  try {
+    remote.expireNext(10);
+    const source = await connected(remote);
+    remote.refuseRefresh();
+    await assert.rejects(source.apps(AbortSignal.timeout(5_000)));
     assert.equal(source.view().state, "sign-in-required");
+    const before = remote.counts().refreshes;
+    await assert.rejects(source.apps(AbortSignal.timeout(5_000)));
+    assert.equal(remote.counts().refreshes, before);
     assert.equal(remote.inventoryReads(), 0);
   } finally {
     await remote.close();
