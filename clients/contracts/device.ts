@@ -13,7 +13,7 @@ export const DeviceCredentials = Schema.Struct({
   accessToken: Secret,
   refreshToken: Secret,
   expiresAt: Positive,
-  refreshPending: Schema.optionalKey(Schema.Boolean),
+  refreshPending: Schema.optionalKey(Schema.Union([Schema.Boolean, Schema.Literal("not-sent")])),
 });
 export type DeviceCredentials = typeof DeviceCredentials.Type;
 export const readDeviceCredentials = Schema.decodeUnknownSync(DeviceCredentials, {

@@ -24,7 +24,9 @@ export function fixture(t: TestContext) {
   let ignoresAbort = false;
   let refreshHeld: Promise<void> | undefined;
   let refreshReads = 0;
+  let refreshError: Error | undefined;
   let rotationWrite: Promise<void> | undefined;
+  let notSentWrite: Promise<void> | undefined;
   let storeRead: Promise<void> | undefined;
   let storeReads = 0;
   const signals: AbortSignal[] = [];
@@ -48,6 +50,7 @@ export function fixture(t: TestContext) {
       if (refresh) {
         refreshReads++;
         await refreshHeld;
+        if (refreshError) throw refreshError;
       }
       return Response.json({
         access_token: refresh ? "fixture-next-access" : "fixture-signed-in-access",
@@ -116,6 +119,7 @@ export function fixture(t: TestContext) {
       },
       write: async (value) => {
         if (JSON.parse(value).accessToken === "fixture-next-access") await rotationWrite;
+        if (JSON.parse(value).refreshPending === "not-sent") await notSentWrite;
         saved = value;
       },
       remove: async () => {
@@ -161,6 +165,9 @@ export function fixture(t: TestContext) {
     holdRotationWrite: (value: Promise<void>) => {
       rotationWrite = value;
     },
+    holdNotSentWrite: (value: Promise<void>) => {
+      notSentWrite = value;
+    },
     rawSaved: () => saved,
     expire: () => {
       saved = JSON.stringify({ ...JSON.parse(saved!), expiresAt: Date.now() + 1000 });
@@ -169,6 +176,9 @@ export function fixture(t: TestContext) {
       refreshHeld = value;
     },
     refreshReads: () => refreshReads,
+    failRefresh: (error: Error | undefined) => {
+      refreshError = error;
+    },
     saved: () => JSON.parse(saved!),
     ignoreAbort: () => {
       ignoresAbort = true;

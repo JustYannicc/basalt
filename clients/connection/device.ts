@@ -12,7 +12,8 @@ import {
   type NativeAccess,
 } from "../contracts/device.ts";
 import { tunnelPath, nativeTunnelReadyTimeoutMs } from "../contracts/tunnel.ts";
-import { authRequest, tokenRequest } from "./device-oauth.ts";
+import { authRequest } from "./device-oauth.ts";
+import { refreshDeviceCredentials } from "./device-refresh.ts";
 import { nativeAccess } from "./native-access.ts";
 import { untilAborted } from "./abort.ts";
 import { orderedDeviceStore } from "./device-store.ts";
@@ -60,32 +61,18 @@ export function deviceConnection(
     signal.throwIfAborted();
     if (generation !== epoch) throw new Error("Connection state changed.");
   };
-  const renew = async (current: DeviceCredentials, signal: AbortSignal, generation: number) => {
-    // Persist intent first: a lost refresh response must not be repeated after restart.
-    await store.write(JSON.stringify({ ...current, refreshPending: true }));
-    checkCurrent(generation, signal);
-    saved = { ...current, refreshPending: true };
-    const tokens = await tokenRequest(
-      current.origin,
-      {
-        grant_type: "refresh_token",
-        resource: `${current.origin}/native`,
-        client_id: current.clientId,
-        refresh_token: current.refreshToken,
-      },
-      signal,
-    );
-    const next = { ...current, ...tokens, refreshPending: false };
-    checkCurrent(generation, signal);
-    await store.write(JSON.stringify(next));
-    checkCurrent(generation, signal);
-    saved = next;
-  };
+  const renew = (current: DeviceCredentials, signal: AbortSignal, generation: number) =>
+    refreshDeviceCredentials(current, signal, async (next) => {
+      checkCurrent(generation, signal);
+      await store.write(JSON.stringify(next));
+      checkCurrent(generation, signal);
+      saved = next;
+    });
   const readAccess = async (signal: AbortSignal) => {
     signal.throwIfAborted();
     const current = saved;
     if (state !== "connected") throw new Error("The connection is not connected.");
-    if (!current || (current.refreshPending && !pending)) {
+    if (!current || (current.refreshPending === true && !pending)) {
       state = "sign-in-required";
       throw new Error("Sign in again before using this device.");
     }
@@ -95,7 +82,7 @@ export function deviceConnection(
         const credential = saved;
         if (
           !credential ||
-          (credential.refreshPending && !pending) ||
+          (credential.refreshPending === true && !pending) ||
           generation !== epoch ||
           state !== "connected"
         )
@@ -137,7 +124,8 @@ export function deviceConnection(
       display = checked.display;
     } catch (error) {
       if (generation === epoch) {
-        if (state === "connected" && saved?.refreshPending && !pending) state = "sign-in-required";
+        if (state === "connected" && saved?.refreshPending === true && !pending)
+          state = "sign-in-required";
         if (!signal.aborted || state !== "connected") access = undefined;
       }
       throw error;
@@ -255,7 +243,7 @@ export function deviceConnection(
         epoch++;
         access = undefined;
         // A cancelled rotating exchange can have succeeded remotely. Never replay it.
-        if (saved?.refreshPending) state = "sign-in-required";
+        if (saved?.refreshPending === true) state = "sign-in-required";
       };
       activeSignal.addEventListener("abort", cancel, { once: true });
       try {
