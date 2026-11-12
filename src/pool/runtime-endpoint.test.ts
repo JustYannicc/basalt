@@ -12,6 +12,7 @@ import { RuntimeSqlite } from "../../scripts/pool-tests/runtime-handoff-storage.
 import { RuntimeEndpoint } from "./runtime-slots/endpoint.ts";
 import {
   StartAuthorization,
+  InitialStartAuthorization,
   launchWitnessKey,
   runtimeAttestationFormat,
 } from "./runtime-slots/admission-proof.ts";
@@ -20,7 +21,7 @@ import { configurationDigest, runtimeConfiguration } from "./runtime-slots/confi
 import { signEnvelope } from "./token.ts";
 import { SlotRefused } from "./runtime-slots/contract.ts";
 
-async function fixture() {
+async function fixture(initial = false) {
   const target = {
     format: "pool-runtime-slot-v1" as const,
     controllerId: "a".repeat(64),
@@ -30,6 +31,7 @@ async function fixture() {
     instanceId: "b".repeat(64),
     imageDigest: `sha256:${"d".repeat(64)}`,
     imageInput: "2".repeat(16),
+    ...(initial ? { homePeerOrdinal: 1 } : {}),
   };
   const f = await handoffRuntime(target, {
     POOL_RUNTIME_APPLICATION_ID: target.applicationId,
@@ -48,11 +50,12 @@ async function fixture() {
     instanceId: target.controllerId,
     bootId: "old-boot",
   };
-  await controller.put(slotSelectionKey, {
-    epoch: 1,
-    active: { target: old, identity: old, fenced: false },
-  });
-  const grant = await runtimeGrant(f, controller, "start");
+  if (!initial)
+    await controller.put(slotSelectionKey, {
+      epoch: 1,
+      active: { target: old, identity: old, fenced: false },
+    });
+  const grant = await runtimeGrant(f, controller, initial ? "initial-start" : "start");
   await f.endpoint.admit(grant.envelope);
   return {
     ...f,
@@ -64,6 +67,34 @@ async function fixture() {
     },
   };
 }
+
+test("an independent runtime starts from explicit first-start authority and attests its actual ordinal and boot", async (context) => {
+  const f = await fixture(true);
+  context.after(f.cleanup);
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  assert.equal(identity.homePeerOrdinal, 1);
+  assert.equal(f.calls.start, 1);
+  const joined = await joinedRuntimeProof(
+    f,
+    f.controller,
+    Schema.decodeUnknownSync(InitialStartAuthorization)(f.grant.proof),
+  );
+  const wrongKind = await signEnvelope(f.env.POOL_DEPLOYMENT_KEY!, runtimeAttestationFormat, {
+    ...joined.proof,
+    kind: "attested",
+  });
+  await assert.rejects(f.endpoint.attest(wrongKind));
+  await f.endpoint.attest(joined.envelope);
+  const ready = await f.endpoint.ready(identity, await f.digest(), f.target.imageInput);
+  assert.equal(ready.identity.bootId, identity.bootId);
+  const reconstructed = new RuntimeEndpoint(f.ctx, f.env, "runtime", runtimeFixtureCode, f.wrap);
+  assert.equal(
+    (await reconstructed.start(f.target, AbortSignal.timeout(2_000))).identity.bootId,
+    identity.bootId,
+  );
+  assert.equal(f.calls.start, 1);
+  assert.equal(f.calls.destroy, 0);
+});
 
 test("a reconstructed endpoint waits for the actual response body before destroying its runtime", async (context) => {
   const f = await fixture();

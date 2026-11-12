@@ -270,7 +270,15 @@ export async function handoffRuntime(
     wrap: nativeResponse,
     storage,
     identity: (): SlotIdentity => ({ ...target, bootId }),
-    digest: () => configurationDigest(runtimeConfiguration(env)),
+    digest: () =>
+      configurationDigest(
+        runtimeConfiguration({
+          ...env,
+          ...(target.homePeerOrdinal !== undefined
+            ? { POOL_HOME_PEER_ORDINAL: String(target.homePeerOrdinal) }
+            : {}),
+        }),
+      ),
     stub: { fetch: (request: Request) => runtimeRequest(request, endpoint) },
     cleanup: async () => {
       for (let index = 0; index < background.length; index++) await background[index];

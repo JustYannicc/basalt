@@ -11,6 +11,8 @@ import {
   decodeAdmissionProof,
   runtimeAttestationFormat,
   type AdmissionProof,
+  isLaunchAuthorization,
+  isRuntimeAttestation,
 } from "./admission-proof.ts";
 import { RuntimeWitnessStore, type WitnessRecord } from "./witness-store.ts";
 import { RuntimeChannel } from "./channel.ts";
@@ -90,7 +92,7 @@ export class RuntimeEndpoint {
   admit(envelope: string) {
     return this.serialize(async () => {
       const proof = await this.proof(envelope);
-      if (proof.kind === "attested") throw new SlotRefused("identity");
+      if (isRuntimeAttestation(proof)) throw new SlotRefused("identity");
       const retained = await this.store.retained(proof.target.slotId);
       if (retained && !retained.retired) {
         const { record } = await this.store.read(proof.target);
@@ -109,7 +111,12 @@ export class RuntimeEndpoint {
           throw new SlotRefused("identity");
         return;
       }
-      const configuration = runtimeConfiguration(this.env);
+      const configuration = runtimeConfiguration({
+        ...this.env,
+        ...(proof.target.homePeerOrdinal !== undefined
+          ? { POOL_HOME_PEER_ORDINAL: String(proof.target.homePeerOrdinal) }
+          : {}),
+      });
       if (
         configuration.imageInput !== proof.target.imageInput ||
         (await configurationDigest(configuration)) !== proof.configurationFingerprint
@@ -130,7 +137,7 @@ export class RuntimeEndpoint {
       signal.throwIfAborted();
       const { record, configuration } = await this.store.read(target);
       if (record.identity) return this.health(record.identity, signal);
-      if (record.authorization.kind !== "start") throw new SlotRefused("uncertain");
+      if (!isLaunchAuthorization(record.authorization)) throw new SlotRefused("uncertain");
       await startRuntime(this.ctx, this.code, this.store, record, configuration, signal);
       signal.throwIfAborted();
       return this.complete(target, signal);
@@ -139,7 +146,7 @@ export class RuntimeEndpoint {
   private checked(record: WitnessRecord, status: PoolStatus) {
     if (record.identity && status.boot_id !== record.identity.bootId)
       throw new SlotRefused("identity");
-    if (record.authorization.kind === "start") {
+    if (isLaunchAuthorization(record.authorization)) {
       const witness = record.witness;
       if (
         !witness ||
@@ -161,7 +168,7 @@ export class RuntimeEndpoint {
     const { record, configuration } = await this.store.read(target);
     const status = await this.channel.health(configuration, signal);
     const health = this.checked(record, status);
-    if (record.authorization.kind === "start") {
+    if (isLaunchAuthorization(record.authorization)) {
       await verifyRuntimeLaunch(this.ctx, record, status);
       if (!record.identity) await this.activity.initialize(health.identity, true);
       await this.store.put(target, {
@@ -203,12 +210,13 @@ export class RuntimeEndpoint {
   attest(envelope: string) {
     return this.serialize(async () => {
       const proof = await this.proof(envelope);
-      if (proof.kind !== "attested") throw new SlotRefused("identity");
+      if (!isRuntimeAttestation(proof)) throw new SlotRefused("identity");
       const { record } = await this.store.read(proof.target),
         witness = record.witness;
       const previous = record.authorization;
       if (
-        previous.kind !== "start" ||
+        !isLaunchAuthorization(previous) ||
+        (previous.kind === "initial-start") !== (proof.kind === "initial-attested") ||
         !witness?.bootId ||
         !record.identity ||
         proof.bootId !== witness.bootId ||

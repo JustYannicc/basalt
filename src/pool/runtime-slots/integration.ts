@@ -182,6 +182,25 @@ export class RuntimeHandoff {
       digest: proof.selection.policyDigest,
     });
   }
+  async startInitial(envelope: string) {
+    const proof = await this.authority.read(envelope);
+    if (proof.kind !== "initial-start" || !this.options.remote || this.ctx.container)
+      throw new SlotRefused("identity");
+    await this.authority.selection(proof);
+    await this.driver.admit(proof.target, envelope);
+    return this.slots.firstStart.start(proof.target, proof.selection.policyDigest);
+  }
+  async activateInitial(envelope: string) {
+    const proof = await this.authority.read(envelope);
+    if (proof.kind !== "initial-attested") throw new SlotRefused("identity");
+    await this.authority.selection(proof);
+    await this.driver.attest(proof.target, envelope);
+    return this.slots.firstStart.activate(
+      { ...proof.target, bootId: proof.bootId },
+      proof.selection.policyDigest,
+      () => this.authority.fresh(proof),
+    );
+  }
   async bootstrapPeer(input: PeerBootstrapInput, signal: AbortSignal) {
     const { selection } = await this.storage.inspect();
     if (
