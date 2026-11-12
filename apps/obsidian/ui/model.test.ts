@@ -15,15 +15,14 @@ const complete: ImportStatus = { state: "complete", files: 133, confirmed: 131, 
 // What a vault synced by plugin 0.2.x holds on a server without check-ins or dated history.
 const oldPluginVersion: Version = { oid: "a1", parents: ["a0"], message: "Sync from Obsidian" };
 
-test("a vault synced by an old plugin shows as saved with its file count, never as empty", () => {
+test("a vault synced by an old plugin shows as saved, never as empty", () => {
   assert.deepEqual(
     vaultState({ status: complete, hasFiles: true, latest: oldPluginVersion, devices: null, now }),
-    { kind: "saved", files: 133 },
+    { kind: "saved" },
   );
   // Files synced outside the import still count as a vault.
   assert.deepEqual(vaultState({ status: null, hasFiles: true, latest: null, devices: null, now }), {
     kind: "saved",
-    files: null,
   });
 });
 
@@ -57,6 +56,17 @@ test("an unfinished import is stuck once no device has synced for ten minutes", 
   });
   assert.equal(
     vaultState({ status, hasFiles: false, latest: null, devices: synced(60_000), now }).kind,
+    "importing",
+  );
+  // Right after recording starts there is no record yet: still importing, never stuck.
+  assert.equal(
+    vaultState({
+      status,
+      hasFiles: false,
+      latest: null,
+      devices: { head: "h1", lastChangeAt: null, devices: [] },
+      now,
+    }).kind,
     "importing",
   );
   const stuck = vaultState({

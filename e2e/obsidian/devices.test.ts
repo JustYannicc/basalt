@@ -4,6 +4,7 @@ import { AppId } from "@executor-js/sdk";
 import type { ConnectedAgent } from "@executor-js/mcp-auth/agents";
 import { ConnectionId, type Connection } from "@executor-js/mcp-auth/connections";
 import { GrantId } from "@executor-js/mcp-auth/grants";
+import { obsidianTools } from "../../.upstream/apps/hosted/web/src/contracts/obsidian-connection.ts";
 import {
   connectLabel,
   deviceSync,
@@ -13,11 +14,18 @@ import {
 
 const vault = AppId.make("app_fixture_vault");
 const other = AppId.make("app_fixture_other");
-const connection = (id: string, app: AppId): Connection =>
+// What Connect Obsidian creates: this one app, limited to the plugin's sync tools.
+const connection = (id: string, app: AppId, apps?: readonly AppId[]): Connection =>
   ({
     id: ConnectionId.make(id),
     name: `Obsidian · ${id}`,
-    policy: { apps: [{ app, runsAs: [{ kind: "app" }], tools: { kind: "all" } }] },
+    policy: {
+      apps: (apps ?? [app]).map((entry) => ({
+        app: entry,
+        runsAs: [{ kind: "app" }],
+        tools: apps ? { kind: "all" } : { kind: "selected", names: obsidianTools },
+      })),
+    },
     createdAt: "2026-11-10T08:00:00.000Z",
     updatedAt: "2026-11-10T08:00:00.000Z",
   }) as unknown as Connection;
@@ -118,4 +126,19 @@ test("a device's sync comes from the drive's record for its own grant, never ano
   // Apps from before the drive reported syncs have no such tool; devices show without times.
   assert.equal(hasSyncTool([{ name: "listNotes" }, { name: "history" }]), false);
   assert.equal(hasSyncTool([{ name: "devices" }]), true);
+});
+
+test("an agent's wider connection that includes the vault app is not a device", () => {
+  const devices = obsidianDevices(
+    vault,
+    [connection("mac", vault), connection("claude", vault, [vault, other])],
+    [
+      agent("g-mac", through("mac"), "2026-11-10T08:00:00.000Z"),
+      agent("g-claude", through("claude"), "2026-11-10T07:00:00.000Z", "Claude Code"),
+    ],
+  );
+  assert.deepEqual(
+    devices.map((device) => device.agent),
+    ["g-mac"],
+  );
 });

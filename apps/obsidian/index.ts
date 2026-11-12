@@ -65,7 +65,7 @@ const applyNotes = mutation(
       }),
     }),
 );
-const listNotes = query(
+export const listNotes = query(
   {
     description:
       "List this vault's cloud notes and folders at one pinned version. Pass the returned next cursor to continue. Devices may be off.",
@@ -84,7 +84,7 @@ const listNotes = query(
       ...(input.limit === undefined ? {} : { limit: input.limit }),
     }),
 );
-const readNote = query(
+export const readNote = query(
   {
     description:
       "Read up to 256 KiB of a cloud note. Continue with offset=next and the same at; null next means complete.",
@@ -92,7 +92,7 @@ const readNote = query(
   },
   (ctx: Read, input) => ctx.drive.read(readInput(input)),
 );
-const searchNotes = query(
+export const searchNotes = query(
   {
     description:
       "Search the complete cloud vault. Follow cursor until complete is true; each page has a bounded scan budget.",
@@ -113,7 +113,7 @@ const searchNotes = query(
       ...(input.maxFiles === undefined ? {} : { maxFiles: input.maxFiles }),
     }),
 );
-const readAttachment = query(
+export const readAttachment = query(
   {
     description:
       "Read up to 64 KiB of a cloud attachment as base64. Continue with offset=next and the same at; null next means complete.",
@@ -152,7 +152,7 @@ const resolveConflict = mutation(
       }),
     }),
 );
-const history = query(
+export const history = query(
   {
     description: "Read retained cloud versions and both parents of merged edits.",
     input: object({ at: string().optional(), limit: number().optional() }),

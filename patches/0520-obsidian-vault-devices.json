@@ -1,7 +1,7 @@
 {
   "identity": "basalt-obsidian-vault-devices",
   "file": "0520-obsidian-vault-devices.patch",
-  "content_sha256": "cf5d385fdea9b05e0b0d4b91f0d266e1442812411c6133f3fb2025e0447e6c91",
+  "content_sha256": "aaf6dc103dd041293bec6727c882c96598ea666b187ec6a16cb9683f347bfdf0",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

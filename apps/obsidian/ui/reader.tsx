@@ -34,12 +34,6 @@ function useLoad<T>(load: () => Promise<T>): [Load<T>, () => void] {
   return [state, () => setAttempt((value) => value + 1)];
 }
 
-/** Versions only count as per-note history when the server dates them. */
-const datedVersions = (versions: Version[] | null) =>
-  versions !== null && versions.every((version) => typeof version.time === "string")
-    ? versions
-    : null;
-
 export function Reader({
   api,
   path,
@@ -56,9 +50,7 @@ export function Reader({
   // The parent keys this reader by path, so a new note starts on its current text.
   const [view, setView] = useState<"note" | "history">("note");
   const [version, setVersion] = useState<Version | null>(null);
-  const [versions] = useLoad(
-    useCallback(() => api.history({ path, limit: 50 }).then(datedVersions), [api, path]),
-  );
+  const [versions] = useLoad(useCallback(() => api.noteHistory(path, 50), [api, path]));
   const at = version?.oid;
   const [content, retry] = useLoad(
     useCallback(() => (isNote(path) ? api.read(path, at) : Promise.resolve(null)), [api, path, at]),

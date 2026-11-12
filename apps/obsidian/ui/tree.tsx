@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Entry, VaultApi } from "./api.ts";
-import { noteTitle, sortEntries } from "./model.ts";
+import { isNote, noteTitle, sortEntries } from "./model.ts";
 
 const openKey = "obsidian-vault:open-folders";
 const readOpen = (): string[] => {
@@ -40,7 +40,7 @@ export function Tree({
     });
   }, []);
   return (
-    <ul className="tree" role="tree" aria-label="Vault files">
+    <ul className="tree" aria-label="Vault files">
       {sortEntries(root).map((entry) => (
         <Node
           key={entry.path}
@@ -83,28 +83,33 @@ function Node(props: {
   const indent = { paddingLeft: `${8 + depth * 16}px` };
   if (entry.kind === "file")
     return (
-      <li role="treeitem" aria-selected={selected === entry.path}>
+      <li>
         <button
           type="button"
           className={`row ${selected === entry.path ? "selected" : ""}`}
           style={indent}
+          aria-current={selected === entry.path ? "page" : undefined}
           onClick={() => onSelect(entry.path)}
         >
           <span className="icon file" aria-hidden />
-          <span className="label">
-            {/\.md$/i.test(entry.name) ? noteTitle(entry.name) : entry.name}
-          </span>
+          <span className="label">{isNote(entry.name) ? noteTitle(entry.name) : entry.name}</span>
         </button>
       </li>
     );
   return (
-    <li role="treeitem" aria-expanded={isOpen}>
-      <button type="button" className="row" style={indent} onClick={() => toggle(entry.path)}>
+    <li>
+      <button
+        type="button"
+        className="row"
+        style={indent}
+        aria-expanded={isOpen}
+        onClick={() => toggle(entry.path)}
+      >
         <span className={`icon ${isOpen ? "folder-open" : "folder"}`} aria-hidden />
         <span className="label">{entry.name}</span>
       </button>
       {isOpen && (
-        <ul role="group">
+        <ul>
           {children === null ? (
             <li className="row muted" style={{ paddingLeft: `${24 + depth * 16}px` }}>
               Loading…

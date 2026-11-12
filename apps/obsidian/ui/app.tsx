@@ -10,8 +10,6 @@ interface Loaded {
   readonly root: readonly Entry[];
   readonly latest: Version | null;
   readonly devices: Devices | null;
-  /** When these reads answered; relative times on the page count from it. */
-  readonly at: number;
 }
 
 export function App({ api }: { readonly api: VaultApi }) {
@@ -19,17 +17,22 @@ export function App({ api }: { readonly api: VaultApi }) {
   const [files, setFiles] = useState<readonly string[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  // Relative times ("4 minutes ago") age with the page instead of freezing at load.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.importStatus(), api.list(undefined), api.history({ limit: 1 }), api.devices()])
+    Promise.all([api.importStatus(), api.list(undefined), api.latest(), api.devices()])
       .then(([status, root, history, devices]) => {
         if (cancelled) return;
         setLoaded({
           status,
           root: root.entries,
-          latest: history?.[0] ?? null,
+          latest: history,
           devices,
-          at: Date.now(),
         });
         // Wikilinks resolve against every path; the tree itself loads folder by folder.
         api.walk().then(
@@ -60,7 +63,6 @@ export function App({ api }: { readonly api: VaultApi }) {
         </button>
       </div>
     );
-  const now = loaded.at;
   const state = vaultState({
     status: loaded.status,
     hasFiles: loaded.root.length > 0,
@@ -105,10 +107,10 @@ export function App({ api }: { readonly api: VaultApi }) {
 function EmptyVault() {
   return (
     <div className="empty">
-      <h1>No vault connected yet</h1>
+      <h1>Nothing synced yet</h1>
       <p>
-        Choose Connect Obsidian at the top of this page to keep a vault here. Your agents can then
-        read, search and edit your notes, even with every device off.
+        Use the Connect button at the top of this page to keep an Obsidian vault here. Your agents
+        can then read, search and edit your notes, even with every device off.
       </p>
       <ol className="steps">
         <li>
@@ -121,7 +123,7 @@ function EmptyVault() {
         </li>
         <li>
           <b>Add your phone later</b>
-          <span>Choose Connect another device on this page.</span>
+          <span>Notes show up on this page as they arrive.</span>
         </li>
       </ol>
     </div>

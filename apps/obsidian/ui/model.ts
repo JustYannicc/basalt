@@ -40,10 +40,10 @@ export type VaultState =
       readonly kind: "stuck";
       readonly confirmed: number;
       readonly files: number;
-      readonly since: string | null;
+      readonly since: string;
     }
-  | { readonly kind: "up-to-date"; readonly files: number | null }
-  | { readonly kind: "saved"; readonly files: number | null };
+  | { readonly kind: "up-to-date" }
+  | { readonly kind: "saved" };
 
 /** A device that hasn't synced for this long during an unfinished import counts as stuck. */
 export const stuckAfterMs = 10 * 60 * 1000;
@@ -57,28 +57,27 @@ export function vaultState(input: {
   readonly now: number;
 }): VaultState {
   const { status, devices, latest, now } = input;
-  const files = status === null ? null : status.confirmed + status.omitted;
   if (status !== null && status.state !== "complete") {
     const synced = (devices?.devices ?? [])
       .map((device) => Date.parse(device.lastSyncAt))
       .filter((time) => !Number.isNaN(time));
     const last = synced.length ? Math.max(...synced) : null;
-    // Without check-ins there is no clock to judge by, so an unfinished import reads as moving.
-    if (devices !== null && (last === null || now - last > stuckAfterMs))
+    // Without a sync record there is no clock to judge by, so an unfinished import reads as moving.
+    if (last !== null && now - last > stuckAfterMs)
       return {
         kind: "stuck",
         confirmed: status.confirmed,
         files: status.files,
-        since: last === null ? null : new Date(last).toISOString(),
+        since: new Date(last).toISOString(),
       };
     return { kind: "importing", confirmed: status.confirmed, files: status.files };
   }
   if (status === null && !input.hasFiles && latest === null) return { kind: "empty" };
   // Up to date only when every caller that synced holds the current head. Agents using the
   // tools may be among them; a lagging one only withholds "up to date", never claims it.
-  if (devices === null || devices.devices.length === 0) return { kind: "saved", files };
+  if (devices === null || devices.devices.length === 0) return { kind: "saved" };
   const current = devices.devices.every((device) => device.lastHead === devices.head);
-  return { kind: current ? "up-to-date" : "saved", files };
+  return { kind: current ? "up-to-date" : "saved" };
 }
 
 const minute = 60 * 1000;

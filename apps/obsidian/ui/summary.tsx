@@ -15,8 +15,7 @@ export function Summary({
   readonly latest: Version | null;
   readonly now: number;
 }) {
-  const known =
-    state.kind === "up-to-date" || state.kind === "saved" ? (state.files ?? files) : null;
+  const known = state.kind === "up-to-date" || state.kind === "saved" ? files : null;
   const change = latest?.time === undefined ? null : `Last change ${ago(latest.time, now)}`;
   return (
     <section className="summary">
@@ -44,9 +43,7 @@ export function Summary({
               <b>
                 The import is stuck at {state.confirmed} of {count(state.files)}.
               </b>{" "}
-              {state.since === null
-                ? "No device has synced yet."
-                : `No device has synced since ${ago(state.since, now)}.`}
+              {`Nothing has synced since ${ago(state.since, now)}.`}
             </p>
             <p>
               Open Obsidian on the device that started it and choose Sync now in Signalbox Sync

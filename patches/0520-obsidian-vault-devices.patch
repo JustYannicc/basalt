@@ -2,9 +2,10 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-devices.ts b/apps/hosted/web
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/obsidian-devices.ts
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,108 @@
 +import { Schema } from "effect";
 +import type { AppId } from "@executor-js/sdk";
++import { obsidianTools } from "./obsidian-connection.ts";
 +import type { ConnectedAgent } from "@executor-js/mcp-auth/agents";
 +import type { Connection, ConnectionId } from "@executor-js/mcp-auth/connections";
 +import type { GrantId } from "@executor-js/mcp-auth/grants";
@@ -21,10 +22,29 @@ new file mode 100644
 +/** The plugin's self-declared client name, identical on every device it runs on. */
 +const pluginClientNames = new Set(["Signalbox Obsidian Sync", "Basalt Sync"]);
 +
++/** The plugin's sync tools, any version; Connect Obsidian scopes each device to a subset. */
++const syncTools = new Set<string>(obsidianTools);
++
 +/**
-+ * The member's devices syncing this app's vault, oldest first: grants held through a scoped
-+ * connection whose policy includes the app. Other grants, and connections for other apps, are
-+ * not this vault's devices.
++ * A connection Connect Obsidian made for this vault: this one app, run as the app, limited to
++ * sync tools. A broader connection that happens to include the app belongs to an agent.
++ */
++const isVaultConnection = (app: AppId, connection: Connection) => {
++  const [only, ...rest] = connection.policy.apps;
++  return (
++    only !== undefined &&
++    rest.length === 0 &&
++    only.app === app &&
++    only.tools.kind === "selected" &&
++    only.tools.names.length > 0 &&
++    only.tools.names.every((name) => syncTools.has(name))
++  );
++};
++
++/**
++ * The member's devices syncing this app's vault, oldest first: grants held through a connection
++ * Connect Obsidian made for it. Other grants, and connections for other apps or wider access,
++ * are not this vault's devices.
 + */
 +export function obsidianDevices(
 +  app: AppId,
@@ -33,7 +53,7 @@ new file mode 100644
 +): ObsidianDevice[] {
 +  const vault = new Set(
 +    connections
-+      .filter((connection) => connection.policy.apps.some((entry) => entry.app === app))
++      .filter((connection) => isVaultConnection(app, connection))
 +      .map((connection) => connection.id),
 +  );
 +  const devices = agents
@@ -315,7 +335,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx b/app
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,278 @@
 +import { useState, type ReactNode } from "react";
 +import { useAtomSet, useAtomValue } from "@effect/atom-react";
 +import { Exit, Option } from "effect";
@@ -536,8 +556,10 @@ new file mode 100644
 +            <DialogTitle>Disconnect {disconnecting?.label}?</DialogTitle>
 +            <DialogDescription>
 +              {disconnecting?.label} stops syncing with {brand.name}. Its notes stay on the device,
-+              and the vault stays here with your other devices. To sync it again, choose Connect
-+              another device.
++              and the vault stays here
++              {vault.kind === "ready" && vault.devices.length > 1
++                ? " with your other devices. To sync it again, choose Connect another device."
++                : ". To sync a device again, choose Connect Obsidian."}
 +            </DialogDescription>
 +          </DialogHeader>
 +          {AsyncResult.isFailure(state) && <HostedFailure cause={state.cause} />}
