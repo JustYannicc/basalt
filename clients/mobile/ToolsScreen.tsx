@@ -2,19 +2,12 @@ import { Schema } from "effect";
 import { useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import type { MobileController } from "./controller.ts";
+import { readToolSearch } from "../connection/tool-search.ts";
 import { connectTools, ToolCallError } from "../connection/tools.ts";
 import { readPending, ToolInteraction } from "./ToolInteraction.tsx";
 import { Button, Card, Field, Label, Notice, styles } from "./ui.tsx";
 
-const readSearch = Schema.decodeUnknownSync(
-  Schema.Struct({
-    items: Schema.Array(
-      Schema.Struct({ path: Schema.String, description: Schema.String, input: Schema.String }),
-    ),
-    remaining: Schema.Number,
-    next: Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown)),
-  }),
-);
+const readSearch = readToolSearch;
 const readDescription = Schema.decodeUnknownSync(
   Schema.Struct({
     items: Schema.Array(
@@ -30,7 +23,9 @@ const displayResult = (value: unknown) => {
 };
 export function ToolsScreen({ controller }: { controller: MobileController }) {
   const [query, setQuery] = useState("");
-  const [search, setSearch] = useState<ReturnType<typeof readSearch>>();
+  const [search, setSearch] = useState<
+    ReturnType<typeof readSearch> & { request: Record<string, unknown> }
+  >();
   const [selected, setSelected] = useState<ReturnType<typeof readSearch>["items"][number]>();
   const [description, setDescription] = useState("");
   const [input, setInput] = useState("{}");
@@ -97,7 +92,7 @@ export function ToolsScreen({ controller }: { controller: MobileController }) {
   };
   const find = (args: Record<string, unknown>) =>
     call("search", args, (value) => {
-      setSearch(readSearch(value));
+      setSearch({ ...readSearch(value), request: args });
       setSelected(undefined);
       setDescription("");
       setResult("");
@@ -129,7 +124,23 @@ export function ToolsScreen({ controller }: { controller: MobileController }) {
           />
         </>
       )}
-      {!selected && search?.items.length === 0 && (
+      {!selected && search && search.unavailableApps.length > 0 && (
+        <View style={styles.group}>
+          {search.unavailableApps.map((source) => (
+            <Notice
+              key={`${source.app}:${source.router ?? ""}`}
+              text={`Couldn't reach ${source.name}. Some tools may be missing.`}
+            />
+          ))}
+          <Button
+            label="Retry search"
+            secondary
+            disabled={busy || Boolean(pending)}
+            onPress={() => void find(search.request)}
+          />
+        </View>
+      )}
+      {!selected && search?.items.length === 0 && search.unavailableApps.length === 0 && (
         <Label muted>No tools matched this search.</Label>
       )}
       {!selected &&

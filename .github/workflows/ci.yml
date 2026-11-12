@@ -654,6 +654,8 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify the pool accounts-ready measurement contract
         run: node --test scripts/pool-ui-tests/accounts-ready.test.mjs scripts/pool-ui-tests/history-coverage.test.mjs
+      - name: Verify incomplete tool catalogs stay visible
+        run: node --test scripts/pool-ui-tests/tool-router-failures.test.ts
       - name: Verify app query phase diagnostics
         working-directory: .upstream
         run: >-
