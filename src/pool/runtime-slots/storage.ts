@@ -10,6 +10,7 @@ import type { NativeMembershipPolicy } from "../membership-contract.ts";
 
 export const slotStoragePrefix = "runtime-slots-v1:";
 export const slotSelectionKey = `${slotStoragePrefix}selection`;
+export const slotFirstStartKey = `${slotStoragePrefix}first-start`;
 export const nativeMembershipKey = "native-pool-memberships-v1";
 export interface SlotStorage {
   get<T>(key: string): Promise<T | undefined>;

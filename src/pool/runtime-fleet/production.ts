@@ -1,6 +1,7 @@
 import {
   SlotRefused,
   SlotSelection,
+  sameTarget,
   type ControllerCode,
   type SlotTarget,
 } from "../runtime-slots/contract.ts";
@@ -109,20 +110,26 @@ export class PoolRuntimeFleet {
     if (!value) throw new SlotRefused("identity");
     return value;
   }
-  private async permission(target: SlotTarget, transaction: SlotStorage) {
+  private async permission(target: SlotTarget, transaction: SlotStorage, launch = false) {
     const record = await this.configuration.inspect(undefined, transaction);
     if (!record?.enabled) throw new SlotRefused("selection");
     this.configuration.assertBindings(record.configuration);
     const app = record.configuration.applications.find(
       (entry) => entry.color === record.configuration.active,
     );
+    const rows = await this.state.inspect(transaction);
+    const reserved = rows.find((row) => sameTarget(row.target, target));
     if (
       !app ||
       app.applicationId !== target.applicationId ||
       app.applicationVersion !== target.applicationVersion ||
       app.imageDigest !== target.imageDigest ||
       app.imageInput !== target.imageInput ||
-      (await this.state.inspect(transaction)).length >= record.configuration.maximum
+      (launch
+        ? !reserved ||
+          !["warming", "uncertain"].includes(reserved.phase) ||
+          rows.length > record.configuration.maximum
+        : rows.length >= record.configuration.maximum)
     )
       throw new SlotRefused("identity");
   }
@@ -165,6 +172,7 @@ export class PoolRuntimeFleet {
     return boundFleetCell({
       ...this.deps,
       target,
+      authorizeStart: (transaction) => this.permission(target, transaction, true),
       application: app,
       remote: (value) => this.namespace(value).endpoint(value),
     });

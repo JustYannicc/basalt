@@ -7,10 +7,10 @@ import {
   sameTarget,
   type SlotDriver,
 } from "./contract.ts";
-import { RuntimeSlotStorage, slotSelectionKey, slotStoragePrefix } from "./storage.ts";
+import { RuntimeSlotStorage, slotSelectionKey, slotFirstStartKey } from "./storage.ts";
 import { currentPolicies, healthy, proveSlot, type SlotClock } from "./proof.ts";
 
-const key = `${slotStoragePrefix}first-start`;
+const key = slotFirstStartKey;
 const Initial = Schema.Struct({
   target: SlotTarget,
   identity: Schema.optional(SlotIdentity),
