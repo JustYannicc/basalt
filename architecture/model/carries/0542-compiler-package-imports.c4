@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "App compilation resolves package-local imports maps with the same selected conditions as exports. Package scopes, blocked targets and unresolved imports remain authoritative. Browser failures name every unresolved specifier, and catalog evidence retains only the canonical bounded compiler diagnostic with public module specifiers."
+    }
+  }
+}
