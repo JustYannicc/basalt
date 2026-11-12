@@ -44,6 +44,7 @@ const confirmedNative = (state: State | undefined) =>
 export class NativeMemberships {
   private queue: Promise<unknown> = Promise.resolve();
   private running = new Map<string, Promise<void>>();
+  private initializing = new Map<string, Promise<void>>();
   private ticking?: Promise<void>;
   private failures = new Map<string, PoolFailureDiagnostic>();
   private installations = new Map<string, Set<Promise<void>>>();
@@ -226,39 +227,52 @@ export class NativeMemberships {
     const policy = state?.[pool];
     return { policy, failure: this.failures.get(pool) };
   }
+  private initialize(pool: string, organization: string): Promise<void> {
+    const active = this.initializing.get(pool);
+    if (active) return active;
+    const work = this.initializeOnce(pool, organization).finally(() => {
+      if (this.initializing.get(pool) === work) this.initializing.delete(pool);
+    });
+    this.initializing.set(pool, work);
+    return work;
+  }
+  private async initializeOnce(pool: string, organization: string): Promise<void> {
+    // The private reader may reserve this same object while completing the host's SQL handoff.
+    // Never hold our queue across that callback.
+    const snapshot = await this.deps.read(pool, organization);
+    if (!snapshot.native) return;
+    const created = await this.run(async (state) => {
+      if (state[pool]) return undefined;
+      const next: State = {
+        pool,
+        organization,
+        revision: 1,
+        expiresAt: this.now() + membershipTtlMs,
+        accounts: [],
+        dirty: true,
+        native: true,
+        nativeConfirmed: true,
+        checkedAt: 0,
+        installedRevision: 0,
+        installedUntil: 0,
+      };
+      state[pool] = next;
+      await this.save(state);
+      this.deps.abort(pool);
+      return next;
+    });
+    if (created) {
+      await this.schedule();
+      await this.install(created);
+    }
+  }
   async ensure(pool: string, organization: string): Promise<void> {
     await this.reactivate(pool, organization);
     let current = await this.run(async (state) => state[pool]);
     if (!current) {
-      // The private reader may reserve this same object while completing the host's SQL handoff.
-      // Never hold our queue across that callback.
-      const snapshot = await this.deps.read(pool, organization);
-      if (!snapshot.native) return;
-      const created = await this.run(async (state) => {
-        if (state[pool]) return undefined;
-        const next: State = {
-          pool,
-          organization,
-          revision: 1,
-          expiresAt: this.now() + membershipTtlMs,
-          accounts: [],
-          dirty: true,
-          native: true,
-          nativeConfirmed: true,
-          checkedAt: 0,
-          installedRevision: 0,
-          installedUntil: 0,
-        };
-        state[pool] = next;
-        await this.save(state);
-        this.deps.abort(pool);
-        return next;
-      });
-      if (created) {
-        await this.schedule();
-        await this.install(created);
-      }
+      await this.initialize(pool, organization);
       current = await this.run(async (state) => state[pool]);
+      if (!current) return;
     }
     if (!current || current.organization !== organization)
       throw new Error("Native pool organization changed");
@@ -304,6 +318,10 @@ export class NativeMemberships {
     }
   }
   refresh(pool: string): Promise<void> {
+    const initialization = this.initializing.get(pool);
+    // A handoff can call back before its first host read finishes preparing retained mirrors.
+    // Wait for that read, then renew authority with a fresh repair rather than sharing its snapshot.
+    if (initialization) return initialization.then(() => this.refresh(pool));
     const active = this.running.get(pool);
     if (active) return active;
     const task = this.repair(pool)
