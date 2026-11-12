@@ -1,13 +1,13 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
-index abec6b3..3801fbf 100644
+index a209f3a..3009327 100644
 --- a/apps/hosted/cloud/src/infrastructure/executor.ts
 +++ b/apps/hosted/cloud/src/infrastructure/executor.ts
 @@ -1,3 +1,4 @@
 +import { bindPoolMembershipReferenceRuntime } from "@executor-js/hosted-server/pool-membership";
- /** Cloud composition: Postgres is authoritative; no organization data is stored in a DO. */
- import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy";
- import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
-@@ -170,6 +171,9 @@ export const cloudExecutor = Effect.fn(function* (
+ import { poolModels } from "@executor-js/hosted-server/pool-models";
+ import { cloudEgress } from "./egress.ts";
+ export { cloudEgress } from "./egress.ts";
+@@ -199,6 +200,9 @@ export const cloudExecutor = Effect.fn(function* (
            allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
          },
        }).pipe(Effect.provide(BrowserCrypto.layer));
