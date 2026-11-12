@@ -841,3 +841,41 @@ index 0000000000000000000000000000000000000000..ce6f0b5378e7f4dbaef159b144ada5d8
 +    },
 +  };
 +};
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -24,6 +24,10 @@
+ /** Remove the latest hosted objects and journal together so earlier migrations can replay. */
+ export const beforeHostedAccountRechecks = () =>
+   [
++    { sql: "DROP TRIGGER hosted_deployment_changed ON executor_apps" },
++    { sql: "DROP FUNCTION hosted_deployment_changed(), hosted_record_change(text, text, text)" },
++    { sql: "DROP TABLE hosted_change_pending, hosted_change_heads" },
++    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 19" },
+     { sql: "DROP TABLE hosted_tool_availability" },
+     { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 18" },
+     { sql: "DROP TABLE hosted_account_rechecks, hosted_account_recheck_families" },
+diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-links.spec.ts
+--- a/e2e/tests/legacy-profile-links.spec.ts
++++ b/e2e/tests/legacy-profile-links.spec.ts
+@@ -6,7 +6,7 @@
+  * The fixture rebuilds the database as step 9 finds it inside the upgrade transaction. The
+  * product's migration ledger is per step: SDK schema versions in FumaDB's settings and hosted
+  * steps in `private_hosted_migrations`, which runs every step above its latest recorded one. The
+- * fixture removes steps 9 through 14 from the ledger and their objects, and writes the profiles an
++ * fixture removes steps 9 through 19 from the ledger and their objects, and writes the profiles an
+  * older version left in `executor_installations`. SDK 4.0.13 and 4.0.14 stay applied because, in
+  * a real upgrade, they have already run when step 9 starts, and 4.0.13 keeps
+  * `executor_installations` unchanged for step 9. Step 9 reads only that table, apps, deployments,
+@@ -64,6 +64,11 @@
+   "account_identity_index",
+   "contributed_departure_observability",
+   "model_bindings",
++  "hosted_routes",
++  "tool_policies",
++  "account_rechecks",
++  "tool_availability",
++  "change_revisions",
+ ].map((name, index) => ({ migration_id: index + 1, name }));
+ 
+ const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
