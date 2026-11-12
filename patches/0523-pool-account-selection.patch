@@ -179,7 +179,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-credit-policy.tsx b/a
  } from "../../contracts/pool-credit-routing.ts";
  import type { HostedError } from "../../contracts/errors.ts";
  
-@@ -23,30 +27,110 @@
+@@ -23,30 +27,105 @@
  }
  
  /**
@@ -208,17 +208,12 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-credit-policy.tsx b/a
 +  useEffect(() => {
 +    latestRead.current = read;
 +  }, [read]);
-+  // The chosen policy shows until the pool reports a different one than when the save began, so it
-+  // never flickers back before the reread. An acknowledged save ends at the next read either way,
-+  // so a later change from elsewhere, even back to the old value, shows and stays editable.
++  // External reads cannot unlock an unacknowledged save. Once acknowledged, the next read ends
++  // the optimistic value even if another device returned the setting to its old value.
 +  const live =
 +    pending !== undefined &&
-+    current === pending.from &&
-+    (pending.settledOn === undefined || pending.settledOn === read);
++    (pending.settledOn === undefined || (current === pending.from && pending.settledOn === read));
 +  const saving = live ? pending.policy : undefined;
-+  useEffect(() => {
-+    if (pending !== undefined && !live) setPending(undefined);
-+  }, [pending, live]);
 +  const change = async (policy: P) => {
 +    const started = { policy, from: current };
 +    setPending(started);
@@ -308,7 +303,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-credit-policy.tsx b/a
    // A pool that can't be reached says so; any other app, or a caller without access, shows nothing.
    const unreachable =
      AsyncResult.isFailure(result) &&
-@@ -65,33 +149,19 @@
+@@ -65,33 +144,19 @@
          />
        </div>
      ) : null;
@@ -464,7 +459,7 @@ diff --git a/e2e/tests/pool-account-selection.spec.ts b/e2e/tests/pool-account-s
  
  layer(HostedLive, { excludeTestServices: true })("Pool selection", (it) => {
    it.effect(scenarios.poolAccountSelection.title, (context) =>
-@@ -152,3 +159,378 @@
+@@ -152,3 +159,432 @@
      ),
    );
  });
@@ -540,7 +535,7 @@ diff --git a/e2e/tests/pool-account-selection.spec.ts b/e2e/tests/pool-account-s
 +          selection(page).getByRole("radio", { name, exact: true });
 +        const note = (page: Page, text: string) =>
 +          selection(page).locator("[data-account-selection-policy-note]", { hasText: text });
-+        const resetNote = "New sessions start on the account whose weekly quota resets soonest.";
++        const resetNote = "New sessions start on the account whose quota resets soonest.";
 +        const balancedNote = "New sessions are spread across the accounts that have quota.";
 +        /** What the tab shows: each choice's state, the note, and the credit setting beside it. */
 +        const shown = (page: Page) =>
@@ -642,19 +637,69 @@ diff --git a/e2e/tests/pool-account-selection.spec.ts b/e2e/tests/pool-account-s
 +                  page.screenshot({ fullPage: true }),
 +                ]),
 +              )
-+              .finally(() => release())
-+              .then((held) =>
-+                note(page, balancedNote)
-+                  .waitFor()
-+                  .then(() => page.unroute("**/pool-selection-policy", hold))
-+                  .then(() => held),
-+              );
++              .then((held) => ({ held, release, hold }));
 +          },
 +        );
-+        const [busy, chosen, locked, creditLocked, pendingShot] = pending;
++        const pendingState = yield* Effect.gen(function* () {
++          expect(
++            (yield* api.request(
++              actors.owner,
++              "PATCH",
++              `${prefix}/apps/${app}/pool-selection-policy`,
++              {
++                accountSelectionPolicy: "balanced",
++              },
++            )).status,
++          ).toBe(200);
++          // The independent credit save forces a fresh routing read before this save ends.
++          const stillBusy = yield* browser.use(
++            "Reread routing while the selection save is held",
++            (page) =>
++              credits(page)
++                .getByRole("radio", { name: "Never use credits", exact: true })
++                .click()
++                .then(() =>
++                  credits(page)
++                    .locator("[data-usage-credit-policy-note]", {
++                      hasText: "Accounts with unknown usage are skipped.",
++                    })
++                    .waitFor(),
++                )
++                .then(() =>
++                  Promise.all([
++                    selection(page).getAttribute("aria-busy"),
++                    radio(page, "Use quota before it resets").isDisabled(),
++                  ]),
++                ),
++          );
++          expect(stillBusy).toEqual(["true", true]);
++          return pending.held;
++        }).pipe(
++          Effect.ensuring(
++            browser.use("Release the held selection save", (page) => {
++              pending.release();
++              return note(page, balancedNote)
++                .waitFor()
++                .then(() => page.unroute("**/pool-selection-policy", pending.hold));
++            }),
++          ),
++        );
++        const [busy, chosen, locked, creditLocked, pendingShot] = pendingState;
 +        yield* evidence.attach("account-selection-saving-1280.png", "image/png", pendingShot);
 +        expect([busy, chosen, locked, creditLocked]).toEqual(["true", "true", true, false]);
-+        expect(yield* saves("setSelectionPolicy")).toEqual(["balanced"]);
++        expect(yield* saves("setSelectionPolicy")).toEqual(["balanced", "balanced"]);
++        yield* browser.use("Restore the independent credit choice", (page) =>
++          credits(page)
++            .getByRole("radio", { name: "Allow as last resort", exact: true })
++            .click()
++            .then(() =>
++              credits(page)
++                .locator("[data-usage-credit-policy-note]", {
++                  hasText: "Credits are used only when no account has plan quota.",
++                })
++                .waitFor(),
++            ),
++        );
 +
 +        // Another device changes the policy after this save settled. The same mounted page shows
 +        // the pool's value on its next read and stays editable; the earlier save never returns.
@@ -700,6 +745,7 @@ diff --git a/e2e/tests/pool-account-selection.spec.ts b/e2e/tests/pool-account-s
 +        expect(again).toEqual([["false", "true", balancedNote, "true"], false, false, "false"]);
 +        expect(yield* saves("setSelectionPolicy")).toEqual([
 +          "balanced",
++          "balanced",
 +          "reset_aware",
 +          "reset_aware",
 +          "balanced",
@@ -720,8 +766,9 @@ diff --git a/e2e/tests/pool-account-selection.spec.ts b/e2e/tests/pool-account-s
 +            .then(() => shown(page)),
 +        );
 +        expect(independent).toEqual(["false", "true", balancedNote, "false"]);
-+        expect(yield* saves("setCreditPolicy")).toEqual(["never"]);
++        expect(yield* saves("setCreditPolicy")).toEqual(["never", "last_resort", "never"]);
 +        expect(yield* saves("setSelectionPolicy")).toEqual([
++          "balanced",
 +          "balanced",
 +          "reset_aware",
 +          "reset_aware",
@@ -779,6 +826,7 @@ diff --git a/e2e/tests/pool-account-selection.spec.ts b/e2e/tests/pool-account-s
 +        expect(retried).toEqual([["true", "false", resetNote, "false"], 0]);
 +        expect(yield* saves("setSelectionPolicy")).toEqual([
 +          "balanced",
++          "balanced",
 +          "reset_aware",
 +          "reset_aware",
 +          "balanced",
@@ -831,6 +879,7 @@ diff --git a/e2e/tests/pool-account-selection.spec.ts b/e2e/tests/pool-account-s
 +          )).status,
 +        ).toBe(403);
 +        expect(yield* saves("setSelectionPolicy")).toEqual([
++          "balanced",
 +          "balanced",
 +          "reset_aware",
 +          "reset_aware",
@@ -1022,13 +1071,13 @@ diff --git a/packages/ui/src/implementation/dashboard/account-usage-credits-view
 +  balanced: "Balance across accounts",
 +};
 +const selectionNotes: Record<AccountSelectionPolicy, string> = {
-+  reset_aware: "New sessions start on the account whose weekly quota resets soonest.",
++  reset_aware: "New sessions start on the account whose quota resets soonest.",
 +  balanced: "New sessions are spread across the accounts that have quota.",
 +};
 +
 +/**
-+ * Which account a new session starts on. Ranking only weighs account-wide weekly resets; every
-+ * other limit still decides whether an account can be used at all, which the disclosure says.
++ * Which account a new session starts on. Account-wide resets set the order; every applicable
++ * limit still decides whether an account can be used at all, which the disclosure says.
 + */
 +export function AccountSelectionPolicySetting(props: PolicyControl<AccountSelectionPolicy>) {
 +  return (
@@ -1042,7 +1091,7 @@ diff --git a/packages/ui/src/implementation/dashboard/account-usage-credits-view
 +      notes={selectionNotes}
 +      about={{
 +        summary: "How accounts are chosen",
-+        body: "Only new sessions are placed; a running session stays on its account. Each account's weekly reset date sets the order, and when a date isn't known new sessions are spread instead. Every limit still applies, including short and per-model limits, so an account at any limit is skipped until it frees up. Resets for a single model and banked resets never change the order.",
++        body: "Only new sessions are placed; a running session stays on its account. Each account's weekly reset date sets the order. If it has no weekly limit, its five-hour reset is used. If a reliable reset date is missing, your pool's usual ordering applies. Every limit still applies, including short and per-model limits, so an account at any limit is skipped until it frees up. Resets for a single model and banked resets never change the order.",
 +      }}
 +    />
 +  );
