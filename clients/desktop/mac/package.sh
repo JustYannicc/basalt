@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Builds Signalbox.app for Apple silicon: the SwiftUI menu-bar shell, a pinned Node runtime and the
-# connection bundle from `bun run --cwd clients/desktop build`. Usage: package.sh <version>
+# Builds Signalbox.app for Apple silicon: the SwiftUI menu-bar shell, its updater, a pinned Node
+# runtime and the connection bundle from `bun run --cwd clients/desktop build`.
+# Usage: FEED_URL=https://…/appcast.xml package.sh <version>; update-feed.sh check sets the rule.
 set -euo pipefail
 version="${1:?Use package.sh <version>.}"
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -14,6 +15,18 @@ fail() {
   [ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "$1" >> "$GITHUB_STEP_SUMMARY"
   exit 1
 }
+# Installed apps check this feed for updates, so a build without one would never update.
+# The release workflow checks its feed with the same rule.
+feed="${FEED_URL:-}"
+bash "$here/update-feed.sh" check "$feed" || exit 1
+# The updater installs a feed item only when its integer is higher than the running app's, so one
+# version maps to one number, the same formula as Android's versionCode in clients/mobile/app.config.ts.
+[[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] ||
+  fail "package.sh needs a major.minor.patch version; it got '$version'."
+major=$((10#${BASH_REMATCH[1]})) minor=$((10#${BASH_REMATCH[2]})) patch=$((10#${BASH_REMATCH[3]}))
+[ "$minor" -lt 100 ] && [ "$patch" -lt 100 ] ||
+  fail "Version $version doesn't fit the bundle version major*10000+minor*100+patch: minor and patch must be below 100."
+bundle_version=$((major * 10000 + minor * 100 + patch))
 for file in host.mjs connection.mjs; do
   [ -f "$desktop/.dist/$file" ] || fail "clients/desktop/.dist/$file is missing. Run bun run --cwd clients/desktop build first."
 done
@@ -42,11 +55,22 @@ bin="$(swift build -c release --arch arm64 --package-path "$here" --show-bin-pat
 app="$work/Signalbox.app"
 contents="$app/Contents"
 connection="$contents/Resources/connection"
-mkdir -p "$contents/MacOS" "$contents/Helpers" "$connection/node_modules/@napi-rs"
+mkdir -p "$contents/MacOS" "$contents/Helpers" "$contents/Frameworks" "$connection/node_modules/@napi-rs"
 cp "$bin/Signalbox" "$contents/MacOS/Signalbox"
+otool -l "$contents/MacOS/Signalbox" | grep -q 'path @executable_path/../Frameworks ' ||
+  fail "The built Signalbox binary has no @executable_path/../Frameworks rpath, so it can't load Sparkle.framework from the bundle. Check linkerSettings in Package.swift."
+[ -d "$bin/Sparkle.framework" ] || fail "swift build put no Sparkle.framework in $bin."
+# ditto keeps the framework's version symlinks, which a plain copy would turn into duplicates.
+sparkle="$contents/Frameworks/Sparkle.framework"
+ditto "$bin/Sparkle.framework" "$sparkle"
+# The XPC services are only for sandboxed apps; this app isn't sandboxed.
+rm -rf "$sparkle/XPCServices" "$sparkle/Versions/B/XPCServices"
 cp "$work/$node_dir/bin/node" "$contents/Helpers/signalbox-node"
-# CFBundleVersion only accepts dot-separated numbers, so a prerelease suffix stays in the short version.
-sed -e "s/SHORT_VERSION/$version/" -e "s/BUNDLE_VERSION/${version%%-*}/" "$here/Info.plist" > "$contents/Info.plist"
+sed -e "s/SHORT_VERSION/$version/" -e "s/BUNDLE_VERSION/$bundle_version/" -e "s|FEED_URL|$feed|" \
+  "$here/Info.plist" > "$contents/Info.plist"
+for key in SUFeedURL SUPublicEDKey CFBundleVersion; do
+  plutil -extract "$key" raw "$contents/Info.plist" >/dev/null 2>&1 || fail "The packaged Info.plist has no $key."
+done
 cp "$desktop/.dist/host.mjs" "$desktop/.dist/connection.mjs" "$connection/"
 for module in keyring keyring-darwin-arm64; do
   [ -d "$desktop/node_modules/@napi-rs/$module" ] || fail "clients/desktop/node_modules/@napi-rs/$module is missing. Run bun install --cwd clients/desktop on Apple silicon."
@@ -67,8 +91,17 @@ iconutil -c icns "$iconset" -o "$contents/Resources/AppIcon.icns"
 # the Keychain's "Always Allow" survives app updates.
 codesign --force --sign - --identifier run.signalbox.client.connection "$contents/Helpers/signalbox-node"
 find "$connection" -name '*.node' -exec codesign --force --sign - {} +
+# Sparkle's own order, without --deep: its installer tool, its updater app, then the framework.
+# No hardened runtime: library validation would refuse the ad-hoc signed framework.
+codesign --force --sign - "$sparkle/Versions/B/Autoupdate"
+codesign --force --sign - "$sparkle/Versions/B/Updater.app"
+codesign --force --sign - "$sparkle"
 codesign --force --sign - --identifier run.signalbox.client "$app"
 codesign --verify --strict --deep "$app" || fail "codesign could not verify Signalbox.app."
+for part in "$sparkle/Versions/B/Autoupdate" "$sparkle/Versions/B/Updater.app" "$sparkle"; do
+  codesign --verify --strict "$part" || fail "codesign could not verify ${part#"$app/"}."
+done
+[ ! -e "$sparkle/Versions/B/XPCServices" ] || fail "Sparkle.framework still holds XPCServices."
 
 # The bundled runtime must load the native keyring from the bundle, not from this checkout.
 (cd "$work" && "$contents/Helpers/signalbox-node" --input-type=module \

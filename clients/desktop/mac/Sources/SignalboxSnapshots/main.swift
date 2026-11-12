@@ -13,7 +13,8 @@ app.setActivationPolicy(.prohibited)
 @MainActor
 func render(_ fixture: Fixture, dark: Bool) async throws {
   let actions = PanelActions(
-    open: { _ in }, chooseDirectFile: { nil }, quit: {}, openAtLogin: .constant(true))
+    open: { _ in }, chooseDirectFile: { nil }, quit: {}, openAtLogin: .constant(true),
+    updates: AppUpdates(version: "1.2.3", canCheck: true))
   let root = PanelView(model: await fixture.loadedModel(), actions: actions)
     .background(Color(nsColor: .windowBackgroundColor))
   let hosting = NSHostingView(rootView: root)
