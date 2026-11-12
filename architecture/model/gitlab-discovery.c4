@@ -1,7 +1,7 @@
 model {
   extend basalt.catalog {
     metadata {
-      constraint "GitLab REST discovery reads the public API definition without account credentials. The saved account site controls only the API destination, health and OAuth. A self-managed instance need not host the public source repository; its sign-in redirect must not remove its tools. Existing provider identity, account links and mutation approvals remain unchanged."
+      constraint "REST discovery reads an outside service's public API definition without account credentials. The saved account site controls only the API destination, health and OAuth. A self-managed instance need not host the public source repository; its sign-in redirect must not remove its tools. Existing provider identity, account links and mutation approvals remain unchanged."
     }
   }
 }

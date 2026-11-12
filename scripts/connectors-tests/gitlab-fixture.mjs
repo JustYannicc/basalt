@@ -59,7 +59,6 @@ export async function startGitLabFixtures() {
   const accessTokens = new Map();
   const refreshTokens = new Map();
   const patTokens = new Map();
-  let sequence = 0;
 
   const issueTokens = (site, client, flow, generation, response) => {
     const accessToken = "synthetic-gitlab-access-" + site.id + "-" + randomUUID();

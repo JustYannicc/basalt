@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { Effect } from "effect";
 import { gitlabHostedClient } from "./gitlab-fixture.mjs";
 import { adaptProviderAppFiles } from "./provider-source.mjs";
-import { loadGitLabCatalogSource } from "./gitlab-catalog.mjs";
 import { proveGitLabOAuth } from "./gitlab-oauth.mjs";
 import { proveGitLabLegacy } from "./gitlab-legacy.mjs";
 
