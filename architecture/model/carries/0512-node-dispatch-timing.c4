@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Node dispatch PING and RPOP timings contain only a closed stage, bounded milliseconds and a closed outcome. Supervisor projection rejects unknown fields and preserves these records from both child streams. Diagnostics never replay dispatch, retain request or error text, or change fencing, connection lifetimes or deadlines."
+    }
+  }
+}

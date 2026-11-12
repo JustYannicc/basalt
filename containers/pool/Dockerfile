@@ -12,8 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 COPY --from=source-fetch /source /source
 COPY native /source/node/internal/nativeapi
 COPY home_websocket_continuation_test.go.tmpl /source/node/sdk/api/handlers/openai/basalt_home_websocket_continuation_test.go
-RUN cd /source/home && go test -p=2 -mod=readonly ./internal/auth/xai ./internal/quota ./internal/cluster ./internal/cluster/management ./internal/logging ./internal/managementhttp ./internal/home ./internal/cliproxy/auth ./internal/respserver/pop/dynamic ./internal/respserver/push ./internal/respserver ./cmd/home -run 'TestUsageCredit|TestQuotaFieldDiagnostic|TestQuotaCollectionSignal|TestHomeDBPoolSettings|TestHomeDBPoolConfigYAML|TestHomeDBPoolCapabilities|TestDiagnosticsPrivacy|TestDatabaseSnapshotIndexOnlyVersionsRemainCompatible|TestClaudeOAuthCompletionReceipt|TestOAuthStatusV8|TestOAuthSessionAtomicCredentialCompletion|TestManagementV8Routes|TestXAI' -count=1 && \
-    cd /source/node && go test -p=2 -mod=readonly ./internal/home ./sdk/cliproxy/auth ./sdk/cliproxy/usage ./internal/redisqueue ./internal/runtime/executor/helps ./internal/logging ./sdk/api/handlers/openai -run 'TestBasaltUsageCredit|MetadataOnly|TestBasaltHomeOnlyModelContinuation' -count=1
+RUN cd /source/home && go test -p=2 -mod=readonly ./internal/auth/xai ./internal/quota ./internal/cluster ./internal/cluster/management ./internal/logging ./internal/managementhttp ./internal/home ./internal/cliproxy/auth ./internal/respserver/pop/dynamic ./internal/respserver/push ./internal/respserver ./cmd/home ./internal/dispatchtiming -run 'TestUsageCredit|TestQuotaFieldDiagnostic|TestQuotaCollectionSignal|TestHomeDBPoolSettings|TestHomeDBPoolConfigYAML|TestHomeDBPoolCapabilities|TestDiagnosticsPrivacy|TestDatabaseSnapshotIndexOnlyVersionsRemainCompatible|TestClaudeOAuthCompletionReceipt|TestOAuthStatusV8|TestOAuthSessionAtomicCredentialCompletion|TestManagementV8Routes|TestXAI|TestBasaltHomeDispatchTiming' -count=1 && \
+    cd /source/node && go test -p=2 -mod=readonly ./internal/home ./sdk/cliproxy/auth ./sdk/cliproxy/usage ./internal/redisqueue ./internal/runtime/executor/helps ./internal/logging ./sdk/api/handlers/openai ./internal/dispatchtiming -run 'TestBasaltUsageCredit|MetadataOnly|TestBasaltHomeOnlyModelContinuation|TestBasaltNodeDispatchTiming' -count=1
 COPY home_log_framing.go.tmpl /source/home/cmd/basalt-log-framing/main.go
 RUN mkdir -p /out && cd /source/home && go build -p=2 -mod=readonly -buildvcs=false \
     -o /out/home-log-framing ./cmd/basalt-log-framing && rm -rf cmd/basalt-log-framing
@@ -88,7 +88,7 @@ WORKDIR /opt/pool
 COPY __init__.py /opt/pool/__init__.py
 COPY supervisor.py /opt/pool/supervisor.py
 COPY recovery.py recovery_deadline.py recovery_http.py recovery_signals.py /opt/pool/
-COPY child_signals.py quota_signals.py /opt/pool/
+COPY child_signals.py quota_signals.py dispatch_signals.py /opt/pool/
 COPY crash_tail.py /opt/pool/crash_tail.py
 COPY runtime_signals.py /opt/pool/runtime_signals.py
 COPY pool_contract.py /opt/pool/pool_contract.py

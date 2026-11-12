@@ -53,6 +53,17 @@ The complete report binds the source file digest, caller, destination and exact
 request IDs. A temporary disk-backed index rejects repeated IDs across the whole
 export and approved manifest before any apply request. It contains no bearer credential or reusable page approval.
 
+To attribute known source accounts to current pool accounts, pass a private
+`--account-map-file` containing an array of
+`{ "sourceAccountRef": "<64-character exported hash>", "targetAccountId": "<Home credential ID>", "provider": "<provider ID>" }`.
+Verify those identities from metadata before approval. The server requires each
+target to be enabled, selected in the destination pool and of the same provider.
+Unlisted source accounts keep their foreign references. The complete map and its
+file digest are bound into the dry-run manifest and each page approval. Use the
+same file for apply and replay. An event's attribution cannot change after import.
+The CLI requires the server to acknowledge the canonical map digest before apply,
+so an older server cannot silently ignore the map.
+
 Production needs the selected organization and pool inventory, backup receipts,
 a complete exact-ID dry run and the coordinator's GO for its report digest.
 The source exporter and importer never grant that GO themselves.
@@ -66,7 +77,10 @@ path: retained identical rows insert zero, and changed content fails. Replaying
 pages does not change previous attribution or spend caps.
 
 Imported history is attributed to the import operation, not to an original person
-or app. Foreign account hashes do not identify current native accounts. No
+or app. Foreign account hashes identify current native accounts only through the
+explicit operator map. Mapped history contributes to the current account's
+request series and last-success under the existing saved-account permissions.
+It does not supply quota observations or backfill forecast training. No
 provider invoice or canonical token-breakdown proof exists in this source, so
 these rows remain unpriced with legacy token quality. After apply, reconcile
 counts and token sums by day and model against the verified source ranges, and

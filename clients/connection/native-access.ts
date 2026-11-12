@@ -25,6 +25,15 @@ export async function nativeAccess(
         await waitForRetryAfter(response.headers, signal);
         continue;
       }
+      if (
+        response.status === 503 &&
+        (response.headers.has("retry-after") || response.headers.has("x-retry-after"))
+      ) {
+        await response.body?.cancel();
+        await waitForRetryAfter(response.headers, signal);
+        if (attempt++ === 2) return response;
+        continue;
+      }
       if (response.status < 500 || attempt === 2) return response;
       await response.body?.cancel();
     } catch (error) {

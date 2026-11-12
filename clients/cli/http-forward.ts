@@ -100,7 +100,9 @@ export async function forwardHttp(
       outgoing.flushHeaders();
       pipeline(response, outgoing, { signal }).then(resolve, reject);
     });
-    remote.setTimeout(30_000, () =>
+    // Inference can wait for the first token or a complete nonstreaming answer.
+    // Match the ten-minute model SDK default without extending tool requests.
+    remote.setTimeout(capability === "models" ? 600_000 : 30_000, () =>
       remote.destroy(new Error("The remote service did not answer.")),
     );
     remote.once("error", fail);

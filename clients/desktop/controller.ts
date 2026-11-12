@@ -6,7 +6,7 @@ import { DeviceOAuthError } from "../connection/device-oauth.ts";
 import { brand } from "../../brand.ts";
 import { agentSetup } from "../cli/agent-setup.ts";
 import { signOut } from "../cli/sign-out.ts";
-import { ConnectionSupervisor } from "./supervisor.ts";
+import { ConnectionStartingError, ConnectionSupervisor } from "./supervisor.ts";
 import type { DesktopRequest, DesktopReply, DesktopSnapshot } from "./contracts.ts";
 
 export function desktopController(options: {
@@ -46,8 +46,13 @@ export function desktopController(options: {
   const snapshot = async (): Promise<DesktopSnapshot> => {
     const current = hasProfile ? await connection.health().catch(() => undefined) : undefined;
     const origin = current ? await connection.origin().catch(() => undefined) : undefined;
+    // A connection that answers before writing its local address is still starting; it must not
+    // read as connected without its Models and Tools addresses. Once an error explains why, the
+    // panel keeps its actions instead.
+    if (origin !== undefined && error === ConnectionStartingError.copy) error = undefined;
+    const starting = current?.state === "connected" && origin === undefined && error === undefined;
     return {
-      phase,
+      phase: starting && phase === "ready" ? "starting" : phase,
       configured,
       canReconnect:
         hasProfile && current?.state !== "revoked" && current?.state !== "sign-in-required",
@@ -89,7 +94,9 @@ export function desktopController(options: {
             ? "Device sign-in was denied. Start again when you're ready."
             : cause instanceof DeviceOAuthError && cause.code === "expired_token"
               ? "Device sign-in expired. Start again to get a new code."
-              : "Sign-in could not finish. Check your connection, unlock your credential store and try again.";
+              : cause instanceof ConnectionStartingError
+                ? cause.message
+                : "Sign-in could not finish. Check your connection, unlock your credential store and try again.";
       })
       .finally(() => {
         phase = "ready";
@@ -171,9 +178,11 @@ export function desktopController(options: {
             (await (await credentialStore(options.home, profile.storage)).read()) !== undefined;
         }
         if (hasProfile) await connection.start();
-      } catch {
+      } catch (cause) {
         error =
-          "The connection could not start. Sign in again, or unlock your credential store and reconnect.";
+          cause instanceof ConnectionStartingError
+            ? cause.message
+            : "The connection could not start. Sign in again, or unlock your credential store and reconnect.";
       }
       phase = "ready";
     },
@@ -190,13 +199,15 @@ export function desktopController(options: {
           snapshot: { ...value, error: "Finish the current action before starting another." },
         }));
       const pending = handle(request)
-        .catch(async () => {
+        .catch(async (cause: unknown) => {
           error =
-            request.action.startsWith("setup-") || request.action === "undo-preview"
-              ? "Agent setup could not finish. Check config syntax, file permissions and the setup lock, then review again. Backups are kept."
-              : request.action === "revoke"
-                ? "Device revocation is unconfirmed. Check your account before retrying."
-                : "The connection action could not finish. Check your sign-in and unlock your credential store, then retry.";
+            cause instanceof ConnectionStartingError
+              ? cause.message
+              : request.action.startsWith("setup-") || request.action === "undo-preview"
+                ? "Agent setup could not finish. Check config syntax, file permissions and the setup lock, then review again. Backups are kept."
+                : request.action === "revoke"
+                  ? "Device revocation is unconfirmed. Check your account before retrying."
+                  : "The connection action could not finish. Check your sign-in and unlock your credential store, then retry.";
           return { snapshot: await snapshot() };
         })
         .finally(() => {

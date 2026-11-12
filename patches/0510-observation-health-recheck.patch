@@ -1,0 +1,226 @@
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9915,6 +9915,17 @@
+       cloud: na("Requires process-owned registration and a loopback credential service."),
+     },
+   },
++  accountObservationHealthRecovery: {
++    fixtures: "actors",
++    file: "account-acquisition-observations.spec.ts",
++    title:
++      "fresh driver observations recheck older failed health once and preserve a current failure",
++    targets: {
++      "self-host": scheduled,
++      local: na("Exercises shared SDK driver recovery through hosted account APIs."),
++      cloud: na("Requires process-owned registration and a loopback credential service."),
++    },
++  },
+   accountAcquisitionOptional: {
+     fixtures: "actors",
+     file: "account-acquisition-observations.spec.ts",
+diff --git a/e2e/tests/account-acquisition-observations.spec.ts b/e2e/tests/account-acquisition-observations.spec.ts
+--- a/e2e/tests/account-acquisition-observations.spec.ts
++++ b/e2e/tests/account-acquisition-observations.spec.ts
+@@ -129,6 +129,94 @@
+       }),
+     ),
+   );
++  it.effect(scenarios.accountObservationHealthRecovery.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const f = yield* acquisitionFixture();
++        const { account } = yield* f.create(f.actors.owner);
++        const path = `${f.prefix}/accounts/${account}`;
++        const Check = Schema.Struct({
++          driver: Schema.Struct({
++            check: Schema.Struct({ status: Schema.String, checkedAt: Schema.String }),
++          }),
++        });
++        const check = () =>
++          f.api
++            .request(f.actors.owner, "POST", `${path}/health`)
++            .pipe(Effect.flatMap((r) => body(Check, r)));
++        const health = () =>
++          f.api.request(f.actors.owner, "GET", path).pipe(
++            Effect.flatMap((r) => body(Schema.Struct({ health: Check }), r)),
++            Effect.map((r) => r.health),
++          );
++        const refresh = () => f.api.request(f.actors.owner, "POST", `${path}/observations/refresh`);
++        const advance = () =>
++          serverControl("stop").pipe(
++            Effect.andThen(serverControl("clock/advance", 200, { milliseconds: 360_000 })),
++            Effect.andThen(serverControl("start")),
++          );
++        const countChecks = () =>
++          f.backend.calls.pipe(
++            Effect.map((calls) => calls.filter((call) => call.step === "check").length),
++          );
++        yield* f.backend.driverHealth(false);
++        const failed = yield* check();
++        expect(failed.driver.check.status).toBe("check_failed");
++        const initialChecks = yield* countChecks();
++        yield* advance();
++        yield* f.backend.driverHealth({});
++        yield* f.backend.driverObservation(
++          allowance(new Date(Date.parse(failed.driver.check.checkedAt) + 300_000).toISOString()),
++        );
++        expect((yield* refresh()).status).toBe(200);
++        expect((yield* health()).driver.check.status).toBe("healthy");
++        expect(yield* countChecks()).toBe(initialChecks + 1);
++        expect((yield* refresh()).status).toBe(200);
++        expect(yield* countChecks()).toBe(initialChecks + 1);
++
++        const diagnostic = {
++          source: "provider",
++          reason: "invalid_response",
++          parserStage: "profile_entitlement",
++          occurredAt: new Date().toISOString(),
++        };
++        yield* f.backend.driverHealth({ _test_source_failure: diagnostic }, 502);
++        const realFailure = yield* check();
++        expect(realFailure.driver.check.status).toBe("upstream_unavailable");
++        const beforeRecovery = yield* countChecks();
++        yield* advance();
++        const reading = allowance(
++          new Date(Date.parse(realFailure.driver.check.checkedAt) + 300_000).toISOString(),
++        );
++        yield* f.backend.driverObservation(reading);
++        expect((yield* refresh()).status).toBe(200);
++        const stillFailed = yield* health();
++        expect(stillFailed.driver.check.status).toBe("upstream_unavailable");
++        expect(Date.parse(stillFailed.driver.check.checkedAt)).toBeGreaterThan(
++          Date.parse(realFailure.driver.check.checkedAt),
++        );
++        expect(yield* countChecks()).toBe(beforeRecovery + 1);
++        yield* advance();
++        expect((yield* refresh()).status).toBe(200);
++        expect(yield* countChecks()).toBe(beforeRecovery + 1);
++        expect(yield* health()).toEqual(stillFailed);
++        yield* f.backend.driverObservation(
++          allowance(
++            new Date(Date.parse(stillFailed.driver.check.checkedAt) + 86_400_000).toISOString(),
++          ),
++        );
++        yield* advance();
++        const invalid = yield* body(ObservationView, yield* refresh());
++        expect(invalid.reports[0]?.lastAttempt?.outcome).toBe("invalid");
++        expect(yield* countChecks()).toBe(beforeRecovery + 1);
++        yield* advance();
++        expect((yield* refresh()).status).toBe(200);
++        expect(yield* countChecks()).toBe(beforeRecovery + 1);
++        expect(yield* health()).toEqual(stillFailed);
++      }),
++    ),
++  );
+   it.effect(scenarios.accountAcquisitionOptional.title, (context) =>
+     withHostedCase(
+       context,
+diff --git a/packages/sdk/src/implementation/account-driver-observations.ts b/packages/sdk/src/implementation/account-driver-observations.ts
+--- a/packages/sdk/src/implementation/account-driver-observations.ts
++++ b/packages/sdk/src/implementation/account-driver-observations.ts
+@@ -1,3 +1,4 @@
++import { validObservationTime } from "./account-observation-state.ts";
+ import { accountCheckFailure } from "./account-check-failure.ts";
+ import { Clock, Effect, Result, Schema } from "effect";
+ import { AccountObservationResult, HostOutputInvalid } from "apps/contracts";
+@@ -5,6 +6,7 @@
+   AccountAcquisitionUnavailable,
+   type AccountAcquisitionSource,
+ } from "../contracts/account-acquisition-driver.ts";
++import type { AccountNotFound } from "../contracts/account.ts";
+ import type { StoredAccount } from "../contracts/storage.ts";
+ import { StorageError } from "../contracts/shared.ts";
+ import type { makeObservationStore } from "./account-observation-store.ts";
+@@ -14,6 +16,10 @@
+   store: ReturnType<typeof makeObservationStore>,
+   account: StoredAccount,
+   source: AccountAcquisitionSource | undefined,
++  recheckHealth?: (
++    account: StoredAccount,
++    observedAt: string,
++  ) => Effect.Effect<void, StorageError | AccountAcquisitionUnavailable | AccountNotFound>,
+ ) =>
+   Effect.gen(function* () {
+     if (source?.observeAccount === undefined) return;
+@@ -68,6 +74,13 @@
+         ...(failure === undefined ? {} : { failure }),
+         ...(value === undefined ? {} : { result: value }),
+       });
++      if (
++        recheckHealth !== undefined &&
++        value !== undefined &&
++        validObservationTime(value, yield* Clock.currentTimeMillis) &&
++        (value.collection === undefined || value.collection.outcome === "success")
++      )
++        yield* recheckHealth(account, value.observedAt);
+     }).pipe(
+       Effect.ensuring(
+         store
+diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+--- a/packages/sdk/src/implementation/account-health.ts
++++ b/packages/sdk/src/implementation/account-health.ts
+@@ -617,8 +617,22 @@
+       };
+     }).pipe(Effect.withSpan("sdk.accounts.checkCredentials"));
+ 
++  const recheckAfterObservation = (account: StoredAccount, observedAt: string) =>
++    Effect.gen(function* () {
++      const saved = yield* driver.report(account);
++      const check = saved?.driver.check;
++      if (
++        check == null ||
++        !check.current ||
++        check.status === "healthy" ||
++        check.checkedAt.getTime() >= Date.parse(observedAt)
++      )
++        return;
++      yield* driver.check(account);
++    });
+   return {
+     checkCredentials,
++    recheckAfterObservation,
+     listHealth,
+     health: (input: Parameters<Executor["accounts"]["health"]>[0]) =>
+       storedAccount(db, input.account, input.owner).pipe(
+diff --git a/packages/sdk/src/implementation/account-observations.ts b/packages/sdk/src/implementation/account-observations.ts
+--- a/packages/sdk/src/implementation/account-observations.ts
++++ b/packages/sdk/src/implementation/account-observations.ts
+@@ -26,6 +26,7 @@
+   listApps: ListApps,
+   read: ReturnType<typeof makeObservationReader>,
+   acquisition?: AccountDriverResolver,
++  recheckHealth?: Parameters<typeof refreshDriverObservation>[3],
+ ) => {
+   const store = makeObservationStore(db, crypto);
+   const report = (account: StoredAccount, apps: readonly App[]) =>
+@@ -119,7 +120,7 @@
+               });
+         yield* Effect.all(
+           [
+-            refreshDriverObservation(store, account, source),
++            refreshDriverObservation(store, account, source, recheckHealth),
+             ...apps.map((app) => refreshApp(account, app)),
+           ],
+           { concurrency: 4, discard: true },
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -490,6 +490,7 @@
+       apps.list,
+       makeObservationReader(db, runtime, oauth, firstPartyClients, sitePolicy, options.hooks),
+       acquisitionHost,
++      (account, observedAt) => recheckAfterObservation(account, observedAt),
+     );
+     // The catalog evaluation agents' discovery runs, of the checked version with only the checked
+     // account bound, evaluated now rather than served from a kept listing. An app that needs
+@@ -526,7 +527,7 @@
+             })),
+           ),
+         );
+-    const { checkCredentials, ...accountHealth } = makeAccountHealth(
++    const { checkCredentials, recheckAfterObservation, ...accountHealth } = makeAccountHealth(
+       db,
+       runtime,
+       oauth,

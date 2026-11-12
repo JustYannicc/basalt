@@ -17,6 +17,8 @@ export async function run(home: string) {
   const release = await lock(home, { lockfilePath: join(home, ".running"), retries: 0 });
   let gateway: Awaited<ReturnType<typeof startGateway>> | undefined;
   try {
+    // A killed process can leave its address behind; attachers must only see this run's address.
+    await rm(join(home, "runtime.json"), { force: true });
     const profile = await loadProfile(home);
     const store = await credentialStore(home, profile.storage);
     const raw = await store.read();

@@ -140,6 +140,24 @@
             "mode": "manual",
             "requires": "Retire only after the pinned source preserves credit observations, pool-owned policy and plan-before-affinity selection, passes the never-policy and retained WebSocket turn proofs, and preserves existing schema rows through additive upgrades."
           }
+        },
+        {
+          "identity": "cliproxy-home-dispatch-timing",
+          "file": "0509-home-dispatch-timing.patch",
+          "sha256": "3294dc2283de4db6480a7ec2416e98674fa3649194d24b3e856483c7538f45d9",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only when the pinned source emits the same closed stage timings and passes success, failure, privacy, duration-bound and real-child projection regressions without changing dispatch behavior."
+          }
+        },
+        {
+          "identity": "cliproxy-home-xai-grok-pro-entitlement",
+          "file": "0511-home-xai-grok-pro-entitlement.patch",
+          "sha256": "cfb49762a897b69399defb9ad231fbcf4238687fae4b3529f3c88a6e2f64ff8b",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home recognizes the GrokPro paid subscription tier, preserves explicitly reported numeric weekly and product percentages, retains a closed malformed, missing, ambiguous, non-string or unknown-tier profile eligibility reason with fixed field-type flags only, and passes the real-collector, unknown-profile and free-profile regressions without changing Home database models or versions."
+          }
         }
       ]
     },
@@ -173,6 +191,15 @@
           "retirement": {
             "mode": "manual",
             "requires": "Retire only after the pinned source preserves credit observations, pool-owned policy and plan-before-affinity selection, passes the never-policy and retained WebSocket turn proofs, and preserves existing schema rows through additive upgrades."
+          }
+        },
+        {
+          "identity": "cliproxy-node-dispatch-timing",
+          "file": "0512-node-dispatch-timing.patch",
+          "sha256": "3fcce60a8c0a6cf718e014aa377796c38be49519dfcf8819ff43fef14fb23dbf",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only when the pinned source emits the same closed stage timings and passes success, failure, privacy, duration-bound and real-child projection regressions without changing dispatch behavior."
           }
         }
       ]

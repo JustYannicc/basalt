@@ -119,7 +119,7 @@ export interface CredentialSource {
   origins(): readonly string[];
   transport(signal: AbortSignal): Promise<ConnectionTransport>;
   disconnect(): Promise<void>;
-  reconnect(): Promise<void>;
+  reconnect(signal?: AbortSignal): Promise<void>;
   signOut(): Promise<void>;
   revoke(): Promise<void>;
 }

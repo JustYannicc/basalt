@@ -4,6 +4,7 @@ import { historyObject, identifier, timestamp } from "./record.ts";
 import { authorizeSeries, seriesIds } from "./series-input.ts";
 import type { SeriesAuthority } from "./series-contract.ts";
 import { utcSql } from "./series-query.ts";
+import { accountHistoryReferences, importAccountPrefix } from "./import-account-reference.ts";
 
 /** One backwards index lookup per current Home credential, with no historical range scan. */
 export async function lastSuccessAt(db: HistoryDatabase, raw: unknown, authority: SeriesAuthority) {
@@ -14,7 +15,12 @@ export async function lastSuccessAt(db: HistoryDatabase, raw: unknown, authority
   const bindings = authority.mappingProven
     ? authority.accounts.flatMap((account) =>
         account.account !== null && accounts.includes(account.account)
-          ? account.history.map((history) => ({ saved: account.account, history }))
+          ? account.history.flatMap((home) =>
+              accountHistoryReferences(home).map((history) => ({
+                saved: account.account,
+                history,
+              })),
+            )
           : [],
       )
     : [];
@@ -28,7 +34,8 @@ export async function lastSuccessAt(db: HistoryDatabase, raw: unknown, authority
         SELECT * FROM jsonb_to_recordset($3::jsonb) AS b(saved text,history text))
       SELECT b.saved,max(latest.timestamp_exact) AS at FROM bindings b
       LEFT JOIN LATERAL (SELECT timestamp_exact,id FROM basalt_model_requests
-        WHERE pool=$1 AND account=b.history::character(64) AND source=$2 AND NOT failed
+        WHERE pool=$1 AND account=b.history::character(64)
+          AND (source=$2 OR attribution='import-owner' AND left(account, ${importAccountPrefix.length})='${importAccountPrefix}') AND NOT failed
         ORDER BY timestamp DESC,timestamp_exact DESC,id DESC LIMIT 1) latest ON true
       GROUP BY b.saved ORDER BY b.saved`,
             [

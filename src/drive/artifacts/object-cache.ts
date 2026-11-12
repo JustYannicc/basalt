@@ -1,4 +1,5 @@
 import { DriveError } from "../shared/.generated/strata/errors.js";
+import { referencedOids } from "../shared/.generated/strata/git/objects.js";
 import { createHash } from "node:crypto";
 import type { TransactionStorage } from "../shared/strata/sqlite.ts";
 import type { GitObject } from "../shared/strata/types.ts";
@@ -23,6 +24,12 @@ export function createObjectCache(
   sql.exec("CREATE TABLE IF NOT EXISTS vault_fetch_incomplete (oid TEXT PRIMARY KEY)");
   sql.exec(
     "CREATE TABLE IF NOT EXISTS vault_pack_bases (oid TEXT PRIMARY KEY, temporary INTEGER NOT NULL)",
+  );
+  // Every oid a stored tree names. A blobless clone holds every tree it knows, so a blob the
+  // repository could hold is named here; anything else is new and needs no remote read.
+  sql.exec("CREATE TABLE IF NOT EXISTS vault_tree_refs (oid TEXT PRIMARY KEY)");
+  sql.exec(
+    "CREATE TABLE IF NOT EXISTS vault_tree_refs_ready (id INTEGER PRIMARY KEY CHECK(id = 1))",
   );
   // A previous wake may have stopped before releasing pins. Incomplete metadata stays excluded
   // from negotiation until a successful fetch includes it again.
@@ -57,9 +64,15 @@ export function createObjectCache(
       throw new DriveError("integrity", "A stored Git object is missing some of its bytes");
     return { oid, type: String(meta.type) as GitObject["type"], content };
   };
+  const indexTree = (object: GitObject) => {
+    if (object.type !== "tree") return;
+    for (const oid of referencedOids("tree", object.content))
+      sql.exec("INSERT OR IGNORE INTO vault_tree_refs(oid) VALUES (?)", oid);
+  };
   const save = (objects: readonly GitObject[], pending: boolean) =>
     storage.transactionSync(() => {
       for (const object of objects) {
+        indexTree(object);
         const exists = [
           ...sql.exec("SELECT 1 FROM vault_git_objects WHERE oid = ?", object.oid),
         ][0];
@@ -127,6 +140,17 @@ export function createObjectCache(
         throw new DriveError("integrity", "Artifacts returned a Git object with the wrong id");
     return objects;
   };
+  // Storage from before the index: name what its trees already point at, once.
+  if (![...sql.exec("SELECT 1 FROM vault_tree_refs_ready WHERE id = 1")][0])
+    storage.transactionSync(() => {
+      // Listed first: loading each tree runs further statements.
+      const trees = Array.from(sql.exec("SELECT oid FROM vault_git_objects WHERE type = 'tree'"));
+      for (const row of trees) {
+        const tree = load(String(row.oid));
+        if (tree) indexTree(tree);
+      }
+      sql.exec("INSERT INTO vault_tree_refs_ready(id) VALUES (1)");
+    });
   const known = (oid: string) =>
     [...sql.exec("SELECT 1 FROM vault_git_objects WHERE oid = ?", oid)][0] !== undefined;
   const endFetch = (complete: boolean) => {
@@ -150,6 +174,9 @@ export function createObjectCache(
     save,
     evict,
     verified,
+    /** Whether a stored tree names this oid, so the repository may hold it. */
+    referenced: (oid: string) =>
+      [...sql.exec("SELECT 1 FROM vault_tree_refs WHERE oid = ?", oid)][0] !== undefined,
     complete: (oid: string) =>
       known(oid) && ![...sql.exec("SELECT 1 FROM vault_fetch_incomplete WHERE oid = ?", oid)][0],
     async putFetched(object: GitObject) {

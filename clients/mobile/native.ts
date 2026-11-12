@@ -1,3 +1,4 @@
+import * as Network from "expo-network";
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import * as WebBrowser from "expo-web-browser";
@@ -55,6 +56,27 @@ const socket: SocketFactory = (url, token) => {
   };
 };
 export const controller = mobileController({
+  network: {
+    subscribe: (changed) => {
+      let active = true;
+      let observed = false;
+      const subscription = Network.addNetworkStateListener((state) => {
+        observed = true;
+        if (active) changed(state.isConnected === true && state.isInternetReachable !== false);
+      });
+      void Network.getNetworkStateAsync()
+        .then((state) => {
+          // A later native event takes precedence over this initial asynchronous read.
+          if (active && !observed)
+            changed(state.isConnected === true && state.isInternetReachable !== false);
+        })
+        .catch(() => {});
+      return () => {
+        active = false;
+        subscription.remove();
+      };
+    },
+  },
   store: {
     read: async () => (await SecureStore.getItemAsync(key, options)) ?? undefined,
     write: (value) => SecureStore.setItemAsync(key, value, options),

@@ -1668,7 +1668,7 @@ new file mode 100644
 index 0000000..3cb7493
 --- /dev/null
 +++ b/e2e/support/tool-availability-ui.ts
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,210 @@
 +import { expect } from "@effect/vitest";
 +import { Effect } from "effect";
 +import { Browser } from "./browser.ts";
@@ -1846,8 +1846,25 @@ index 0000000..3cb7493
 +  yield* browser.use("Reveal all hidden tools with recovery action", (page) =>
 +    page.getByRole("button", { name: "Show hidden tools", exact: true }).click(),
 +  );
-+  yield* browser.use("Restore read tools", (page) =>
-+    page.getByRole("checkbox", { name: "Enable all tools in Counter", exact: true }).click(),
++  yield* browser.use("Restore read tools and observe the catalog refresh", (page) =>
++    // The save refreshes the catalog, which unmounts an open writes menu.
++    Promise.all([
++      page
++        .waitForResponse(
++          (response) =>
++            response.request().method() === "GET" &&
++            new URL(response.url()).pathname.endsWith("/tool-availability") &&
++            response.ok(),
++        )
++        .then((response) => response.finished()),
++      page.getByRole("checkbox", { name: "Enable all tools in Counter", exact: true }).click(),
++    ]),
++  );
++  yield* browser.use("Wait for the confirmed restored read tools", (page) =>
++    page
++      .getByRole("checkbox", { name: "Enable all tools in Counter", exact: true })
++      .and(page.locator('[aria-checked="true"]:not(:disabled)'))
++      .waitFor(),
 +  );
 +  yield* browser.use("Open disabled writes menu", (page) =>
 +    page.getByRole("button", { name: "Writes off", exact: true }).click(),
