@@ -107,7 +107,7 @@ export function levelEvidence({
   idleRss,
   idleFds,
 }) {
-  const measured = series.filter((record) => record.at >= reachedAt && record.at <= end);
+  const measured = series.filter((record) => record.at >= blockStart && record.at <= end);
   const resource = resourceEvidence(measured);
   const blockOperations = allOperations.filter(
     (record) => record.gateway === "load" && record.requestedAt >= blockStart,
