@@ -1,3 +1,5 @@
+import type { OverviewMoneyMetric } from "./overview-contract.ts";
+
 export const seriesDimensions = [
   "account",
   "person",
@@ -69,6 +71,8 @@ export interface SeriesBucket extends SeriesCounts {
     homeCharge: CostSum;
     importedApiPrice: CostSum;
     apiEquivalent: Unavailable;
+    /** Current public USD estimate, separate from retained Home charges and historical prices. */
+    apiEstimate?: OverviewMoneyMetric;
     unpricedRequests: number;
   };
   attribution: {
