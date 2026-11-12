@@ -6,6 +6,8 @@ import { providerAppLabs, providerAppSource } from "../../scripts/provider-app-s
 import { providerApps } from "./provider-apps/index.ts";
 import { handleCatalog } from "./worker.ts";
 import type { Feed } from "./feed.ts";
+import { AppIcons } from "apps/contracts";
+import { Schema } from "effect";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -21,6 +23,11 @@ test("Supported providers publish installable sources with the canonical saved-a
     assert.ok(entry, `${lab} is missing from Add app`);
     assert.match(entry.description, /pools/);
     assert.ok(entry.icons.length > 0);
+    assert.equal(
+      Schema.is(AppIcons)(entry.icons),
+      true,
+      `${lab} icons must satisfy the public app declaration contract`,
+    );
     const response = await handleCatalog(
       new Request(`${origin}/catalog/${entry.source}`),
       async () => {

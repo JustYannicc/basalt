@@ -10,6 +10,10 @@ on:
         description: Full commit SHA on main to release; empty releases the current main head
         required: false
         type: string
+      home_migration_retry_intent:
+        description: Exact failed Home migration intent after fixing its cause; empty never repeats unchanged failure
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -277,6 +281,7 @@ jobs:
         run: node scripts/deploy-safety/release.ts deploy --candidate "$RELEASE_HEAD" --candidate-root "$RUNNER_TEMP/candidate" --report .local/production-report.json --mode manual
         env:
           RELEASE_HEAD: ${{ needs.backup.outputs.head }}
+          BASALT_HOME_SCHEMA_RETRY_INTENT: ${{ inputs.home_migration_retry_intent }}
       - name: Retain database budget receipts
         if: always()
         uses: actions/upload-artifact@v4

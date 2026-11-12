@@ -282,6 +282,67 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /retained snapshots and management reads/);
         assert.match(patch.retirement.requires, /default-off bounded diagnostic discovery/);
         assert.match(patch.retirement.requires, /no reset redemption/);
+      } else if (patch.identity === "cliproxy-home-incremental-usage") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0539-home-incremental-usage.patch");
+        assert.match(patch.retirement.requires, /narrow exact timestamp\/string-ID summary pages/);
+        assert.match(
+          patch.retirement.requires,
+          /transactional late-commit and attribution-repair pending work/,
+        );
+        assert.match(patch.retirement.requires, /token-fenced acknowledgement/);
+        assert.match(patch.retirement.requires, /exact portable queue restoration/);
+        assert.match(patch.retirement.requires, /retained v15 rows without legacy normalization/);
+        assert.match(
+          patch.retirement.requires,
+          /concurrent startup, interrupted-index repair and old-writer compatibility/,
+        );
+        assert.match(patch.retirement.requires, /strict native schema activation barrier/);
+      } else if (patch.identity === "cliproxy-home-native-database-migrate") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0546-home-native-database-migrate.patch");
+        assert.equal(
+          artifact.patches[artifact.patches.indexOf(patch) - 1]?.identity,
+          "cliproxy-home-incremental-usage",
+        );
+        assert.match(patch.retirement.requires, /native one-shot database migration/);
+        assert.match(patch.retirement.requires, /no-database schema info/);
+        assert.match(
+          patch.retirement.requires,
+          /read-only schema checks covering the exact schema marker and all required indexes/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /no-op when schema and all required indexes are ready/,
+        );
+        assert.match(patch.retirement.requires, /index completion when schema is already current/);
+        assert.match(patch.retirement.requires, /newer schema and wrong-definition refusal/);
+        assert.match(
+          patch.retirement.requires,
+          /cancellation, retained rows and readiness with one connection/,
+        );
+        assert.match(patch.retirement.requires, /without raising connection budgets/);
+        assert.match(
+          patch.retirement.requires,
+          /Exit before lifecycle, repository, provider, listener or maintenance startup/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /bounded JSON without secrets or native diagnostics/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /actual PostgreSQL migration, rollback, concurrent startup and read-only repeated-no-op regressions/,
+        );
+      } else if (patch.identity === "cliproxy-home-idle-control") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0549-home-idle-control.patch");
+        assert.match(patch.retirement.requires, /one atomic statement/);
+        assert.match(patch.retirement.requires, /membership-before-Home locks/);
+        assert.match(patch.retirement.requires, /post-lock database time/);
+        assert.match(patch.retirement.requires, /three-second heartbeat\/five-second cancellation/);
+        assert.match(patch.retirement.requires, /database-free process-health endpoint/);
+        assert.match(patch.retirement.requires, /without delaying child-exit recovery/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&

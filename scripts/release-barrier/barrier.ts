@@ -1,3 +1,4 @@
+import { assertSqlSchemas, type SqlSchemaReceipt } from "./sql-schema-contract.ts";
 import { uploadFailure } from "./upload-failure.ts";
 import type { ResourceDelta } from "./prop-diff.ts";
 import {
@@ -41,7 +42,15 @@ export interface BarrierReceipt {
   candidate: string;
   manifest: string;
   ceilingMs: number;
-  phase: "upload" | "admitted" | "baseline" | "activation" | "container-activation" | "complete";
+  phase:
+    | "upload"
+    | "admitted"
+    | "schema"
+    | "baseline"
+    | "activation"
+    | "container-activation"
+    | "complete";
+  sqlSchemas?: SqlSchemaReceipt;
   accepted: { worker: string; versionId: string; startupTimeMs: number }[];
   startupMeasurements?: { worker: string; versionId: string; startupTimeMs: number }[];
   activated: { worker: string; versionId: string }[];
@@ -68,6 +77,7 @@ export interface BarrierOptions {
   containers?: ContainerVersionProvider;
   record(receipt: BarrierReceipt): Promise<void>;
   beforeActivate?(): Promise<void>;
+  sqlSchemas?(record: (receipt: SqlSchemaReceipt) => Promise<void>): Promise<SqlSchemaReceipt>;
   ceilingMs?: number;
 }
 
@@ -148,6 +158,28 @@ export async function releaseWorkers(
     await record();
     // The database phase can run only after every Worker has provider acceptance.
     await options.beforeActivate?.();
+    receipt.phase = "schema";
+    await record();
+    if (!options.sqlSchemas) throw new BarrierRefusal("sql-schema-readiness-required");
+    const recordSchemas = async (value: SqlSchemaReceipt) => {
+      receipt.sqlSchemas = structuredClone(value);
+      await record();
+    };
+    const schemas = await options.sqlSchemas(recordSchemas);
+    await recordSchemas(schemas);
+    const candidateHome = manifest.containers?.find(
+      (container) => container.id === "PoolContainer",
+    );
+    if (candidateHome && schemas.homeImageDigest !== candidateHome.imageDigest) {
+      const observed = /^sha256:[a-f0-9]{64}$/.test(schemas.homeImageDigest)
+        ? schemas.homeImageDigest
+        : "invalid";
+      throw new BarrierRefusal(
+        "home-schema-candidate-image-mismatch",
+        `home required-image=${candidateHome.imageDigest} observed-image=${observed}`,
+      );
+    }
+    assertSqlSchemas(schemas, manifest.candidate);
     unchanged();
     receipt.phase = "baseline";
     await record();

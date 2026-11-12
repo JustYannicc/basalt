@@ -1,0 +1,332 @@
+diff --git a/docs/management/api.md b/docs/management/api.md
+index b3035ef..68cafb6 100644
+--- a/docs/management/api.md
++++ b/docs/management/api.md
+@@ -20,6 +20,11 @@ GET /assets/*
+ 
+ The panel assets are embedded into the binary at build time.
+ 
++`GET /healthz` returns `200 {"status":"ok"}` without authentication or database
++access. It reports only that Home's HTTP process responds; it does not establish
++database availability, node membership, or credential-policy readiness. Use the
++management node contract for those checks.
++
+ Home examples usually use port `8327`. An explicit `-addr` takes precedence; otherwise Home uses `node.port` from `cluster.yaml`. The runtime config `server.port` is distributed to CPA nodes and does not configure the Home listener.
+ 
+ ## API Versions
+diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
+index ac02dc0..748e77a 100644
+--- a/docs/management/api_CN.md
++++ b/docs/management/api_CN.md
+@@ -4,6 +4,10 @@
+ 
+ 基础路径：
+ 
++`GET /healthz` 无需身份验证或数据库访问，返回 `200 {"status":"ok"}`。
++它仅表示 Home 的 HTTP 进程可以响应，不代表数据库可用、节点成员关系有效或凭据策略已就绪。
++这些状态仍须通过管理节点接口验证。
++
+ ```text
+ http://<host>:<port>/v8/management
+ ```
+diff --git a/internal/cluster/lifecycle_contention_postgres_test.go b/internal/cluster/lifecycle_contention_postgres_test.go
+index 70c0f85..7658908 100644
+--- a/internal/cluster/lifecycle_contention_postgres_test.go
++++ b/internal/cluster/lifecycle_contention_postgres_test.go
+@@ -151,6 +151,9 @@ func observeLifecycleTransitionPID(t *testing.T, repo *Repository) {
+ 	if errRegister := repo.db.Callback().Update().Before("gorm:update").Register("test:lifecycle-transition-pid", observe); errRegister != nil {
+ 		t.Fatal(errRegister)
+ 	}
++	if errRegister := repo.db.Callback().Row().Before("gorm:row").Register("test:lifecycle-transition-pid", observe); errRegister != nil {
++		t.Fatal(errRegister)
++	}
+ }
+ 
+ func TestPostgresExpirationRechecksCommittedHeartbeat(t *testing.T) {
+diff --git a/internal/cluster/lifecycle_sql_budget_test.go b/internal/cluster/lifecycle_sql_budget_test.go
+index 6a959c1..e4583c6 100644
+--- a/internal/cluster/lifecycle_sql_budget_test.go
++++ b/internal/cluster/lifecycle_sql_budget_test.go
+@@ -43,8 +43,8 @@ func TestLifecycleHotPathSQLBudgets(t *testing.T) {
+ 	if errHeartbeat := repo.RefreshCPALiveness(ctx, lifetime); errHeartbeat != nil {
+ 		t.Fatal(errHeartbeat)
+ 	}
+-	if count := counter.statements.Load(); count != 3 {
+-		t.Fatalf("CPA heartbeat SQL statements = %d, want 3", count)
++	if count := counter.statements.Load(); count != 1 {
++		t.Fatalf("CPA heartbeat SQL statements = %d, want 1", count)
+ 	}
+ 	counter.statements.Store(0)
+ 	if errHeartbeat := repo.HeartbeatHomeIncarnation(ctx, lifetime.Home); errHeartbeat != nil {
+diff --git a/internal/cluster/liveness_postgres.go b/internal/cluster/liveness_postgres.go
+new file mode 100644
+index 0000000..61d07fe
+--- /dev/null
++++ b/internal/cluster/liveness_postgres.go
+@@ -0,0 +1,67 @@
++package cluster
++
++import (
++	"context"
++	"strings"
++
++	"gorm.io/gorm"
++)
++
++// Keep membership-before-Home lock order and evaluate database time after both
++// locks. A statement snapshot taken before a lock wait must not renew a stale
++// lifetime or stamp its heartbeat with the time the wait began.
++const refreshPostgresCPALivenessSQL = `
++WITH member AS MATERIALIZED (
++ SELECT certificate_fingerprint FROM cpa_node_membership
++ WHERE certificate_fingerprint = ? AND connected_at = ? AND state = 'active'
++   AND home_ip = ? AND home_port = ? AND home_started_at = ?
++ FOR NO KEY UPDATE
++), home AS MATERIALIZED (
++ SELECT h.state FROM home_process_incarnation h CROSS JOIN member
++ WHERE h.home_ip = ? AND h.home_port = ? AND h.started_at = ?
++ FOR KEY SHARE OF h
++), beat AS MATERIALIZED (
++ SELECT clock_timestamp() AS observed_at FROM home WHERE state = 'active'
++), renewed AS (
++ UPDATE cpa_node_membership m
++ SET last_seen_at = beat.observed_at, updated_at = beat.observed_at
++ FROM member, beat WHERE m.certificate_fingerprint = member.certificate_fingerprint
++ RETURNING m.certificate_fingerprint
++)
++SELECT EXISTS(SELECT 1 FROM member) AS membership_active,
++ COALESCE((SELECT state FROM home), '') AS home_state,
++ EXISTS(SELECT 1 FROM renewed) AS renewed`
++
++func refreshPostgresCPALiveness(ctx context.Context, db *gorm.DB, lifetime ConnectionLifetime) error {
++	var result struct {
++		MembershipActive bool
++		HomeState        string
++		Renewed          bool
++	}
++	// Pin one checkout without BEGIN/COMMIT. The statement owns its row locks
++	// through its implicit commit, before the caller can publish PONG.
++	errRenew := db.WithContext(ctx).Connection(func(conn *gorm.DB) error {
++		return conn.Raw(refreshPostgresCPALivenessSQL,
++			strings.TrimSpace(lifetime.Fingerprint), lifetime.ConnectedAt,
++			strings.TrimSpace(lifetime.Home.IP), lifetime.Home.Port, lifetime.Home.StartedAt,
++			strings.TrimSpace(lifetime.Home.IP), lifetime.Home.Port, lifetime.Home.StartedAt,
++		).Scan(&result).Error
++	})
++	if errRenew != nil {
++		return errRenew
++	}
++	if !result.MembershipActive {
++		return ErrMembershipNotActive
++	}
++	switch result.HomeState {
++	case "":
++		return ErrHomeIncarnationNotFound
++	case HomeIncarnationFenced:
++		return ErrHomeIncarnationFenced
++	case HomeIncarnationActive:
++		if result.Renewed {
++			return nil
++		}
++	}
++	return ErrHomeIncarnationInactive
++}
+diff --git a/internal/cluster/liveness_postgres_test.go b/internal/cluster/liveness_postgres_test.go
+new file mode 100644
+index 0000000..fba077e
+--- /dev/null
++++ b/internal/cluster/liveness_postgres_test.go
+@@ -0,0 +1,95 @@
++package cluster
++
++import (
++	"context"
++	"errors"
++	"testing"
++	"time"
++
++	"gorm.io/gorm/clause"
++)
++
++func TestPostgresAtomicHeartbeatRefusesInactiveLifetimesWithoutWriting(t *testing.T) {
++	for _, scenario := range []string{"connected-at", "home-identity", "canceling", "closed", "fenced", "retired", "expired", "missing-home"} {
++		t.Run(scenario, func(t *testing.T) {
++			repo, ctx, lifetime := newPostgresLifecycleFixture(t)
++			wantErr := ErrMembershipNotActive
++			switch scenario {
++			case "connected-at":
++				lifetime.ConnectedAt = lifetime.ConnectedAt.Add(time.Second)
++			case "home-identity":
++				lifetime.Home.StartedAt = lifetime.Home.StartedAt.Add(time.Second)
++			case "canceling", "closed":
++				if errUpdate := repo.db.Model(&CPANodeMembershipRecord{}).Where("certificate_fingerprint = ?", lifetime.Fingerprint).Update("state", scenario).Error; errUpdate != nil {
++					t.Fatal(errUpdate)
++				}
++			case "missing-home":
++				wantErr = ErrHomeIncarnationNotFound
++				if errDelete := repo.db.Where("home_ip = ?", lifetime.Home.IP).Delete(&HomeProcessIncarnationRecord{}).Error; errDelete != nil {
++					t.Fatal(errDelete)
++				}
++			default:
++				wantErr = ErrHomeIncarnationInactive
++				if scenario == "fenced" {
++					wantErr = ErrHomeIncarnationFenced
++				}
++				if errUpdate := repo.db.Model(&HomeProcessIncarnationRecord{}).Where("home_ip = ?", lifetime.Home.IP).Update("state", scenario).Error; errUpdate != nil {
++					t.Fatal(errUpdate)
++				}
++			}
++			var before, after CPANodeMembershipRecord
++			if errRead := repo.db.First(&before, "certificate_fingerprint = ?", lifetime.Fingerprint).Error; errRead != nil {
++				t.Fatal(errRead)
++			}
++			if errHeartbeat := repo.RefreshCPALiveness(ctx, lifetime); !errors.Is(errHeartbeat, wantErr) {
++				t.Fatalf("heartbeat error = %v, want %v", errHeartbeat, wantErr)
++			}
++			if errRead := repo.db.First(&after, "certificate_fingerprint = ?", lifetime.Fingerprint).Error; errRead != nil {
++				t.Fatal(errRead)
++			}
++			if !before.LastSeenAt.Equal(after.LastSeenAt) || !before.UpdatedAt.Equal(after.UpdatedAt) {
++				t.Fatal("refused heartbeat changed membership timestamps")
++			}
++		})
++	}
++}
++
++func TestPostgresAtomicHeartbeatRechecksHomeAfterMembershipLockWait(t *testing.T) {
++	repo, ctx, lifetime := newPostgresLifecycleFixture(t)
++	holder := beginTimestampLockHolder(t, ctx, repo)
++	var member CPANodeMembershipRecord
++	if errLock := holder.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&member, "certificate_fingerprint = ?", lifetime.Fingerprint).Error; errLock != nil {
++		t.Fatal(errLock)
++	}
++	observeLifecycleTransitionPID(t, repo)
++	observer := &lifecycleTransitionPIDObserver{results: make(chan postgresBackendPIDResult, 1)}
++	heartbeatCtx := context.WithValue(ctx, lifecycleTransitionPIDContextKey{}, observer)
++	done := make(chan error, 1)
++	go func() { done <- repo.RefreshCPALiveness(heartbeatCtx, lifetime) }()
++	holderPID := make(chan postgresBackendPIDResult, 1)
++	if errPID := postgresContenderBackendPIDHook(holderPID)(holder); errPID != nil {
++		t.Fatal(errPID)
++	}
++	waitForPostgresContendersBlockedByHolder(t, ctx, repo, holderPID, observer.results)
++	if errFence := repo.FenceHomeIncarnation(ctx, lifetime.Home, "fixture"); errFence != nil {
++		t.Fatal(errFence)
++	}
++	if errCommit := holder.Commit().Error; errCommit != nil {
++		t.Fatal(errCommit)
++	}
++	select {
++	case errHeartbeat := <-done:
++		if !errors.Is(errHeartbeat, ErrHomeIncarnationFenced) {
++			t.Fatalf("heartbeat after concurrent fence = %v", errHeartbeat)
++		}
++	case <-ctx.Done():
++		t.Fatal(ctx.Err())
++	}
++	var after CPANodeMembershipRecord
++	if errRead := repo.db.First(&after, "certificate_fingerprint = ?", lifetime.Fingerprint).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	if !member.LastSeenAt.Equal(after.LastSeenAt) || !member.UpdatedAt.Equal(after.UpdatedAt) {
++		t.Fatal("heartbeat renewed after Home was fenced during its lock wait")
++	}
++}
+diff --git a/internal/cluster/quiescence.go b/internal/cluster/quiescence.go
+index be608eb..cf1977d 100644
+--- a/internal/cluster/quiescence.go
++++ b/internal/cluster/quiescence.go
+@@ -379,6 +379,9 @@ func (r *Repository) RefreshCPALiveness(ctx context.Context, lifetime Connection
+ 	if fingerprint == "" || lifetime.ConnectedAt.IsZero() {
+ 		return ErrMembershipNotActive
+ 	}
++	if db.Dialector.Name() == "postgres" {
++		return refreshPostgresCPALiveness(contextOrBackground(ctx), db, lifetime)
++	}
+ 	return db.WithContext(contextOrBackground(ctx)).Transaction(func(tx *gorm.DB) error {
+ 		membership := CPANodeMembershipRecord{}
+ 		// Serialize liveness writers before evaluating the heartbeat timestamp, without blocking KEY SHARE readers.
+diff --git a/internal/managementhttp/health_test.go b/internal/managementhttp/health_test.go
+new file mode 100644
+index 0000000..12d132d
+--- /dev/null
++++ b/internal/managementhttp/health_test.go
+@@ -0,0 +1,63 @@
++package managementhttp
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"path/filepath"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/home"
++	"gorm.io/gorm"
++	gormlogger "gorm.io/gorm/logger"
++)
++
++type healthSQLCounter struct {
++	gormlogger.Interface
++	statements atomic.Int64
++}
++
++func (l *healthSQLCounter) Trace(ctx context.Context, begin time.Time, query func() (string, int64), err error) {
++	l.statements.Add(1)
++	l.Interface.Trace(ctx, begin, query, err)
++}
++
++func TestHealthRouteRemainsDatabaseFreeWithClosedDatabase(t *testing.T) {
++	db, errOpen := cluster.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "health.db"))
++	if errOpen != nil {
++		t.Fatal(errOpen)
++	}
++	counter := &healthSQLCounter{Interface: db.Logger}
++	db = db.Session(&gorm.Session{Logger: counter})
++	sqlDB, errDB := db.DB()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	if errClose := sqlDB.Close(); errClose != nil {
++		t.Fatal(errClose)
++	}
++	runtime, errRuntime := home.NewRuntime(&config.Config{AuthDir: t.TempDir()})
++	if errRuntime != nil {
++		t.Fatal(errRuntime)
++	}
++	server, errBuild := Build(filepath.Join(t.TempDir(), "unused.yaml"), WithDatabaseManagement(DatabaseManagementOption{
++		Enabled: true, Repository: cluster.NewRepository(db), Runtime: runtime,
++	}))
++	if errBuild != nil {
++		t.Fatal(errBuild)
++	}
++	for range 30 {
++		response := httptest.NewRecorder()
++		server.Engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
++		if response.Code != http.StatusOK || response.Body.String() != `{"status":"ok"}` {
++			t.Fatalf("health response = %d %s", response.Code, response.Body.String())
++		}
++	}
++	if count := counter.statements.Load(); count != 0 {
++		t.Fatalf("health SQL statements = %d, want 0", count)
++	}
++}
+diff --git a/internal/managementhttp/server.go b/internal/managementhttp/server.go
+index a4d31d0..d2ceaad 100644
+--- a/internal/managementhttp/server.go
++++ b/internal/managementhttp/server.go
+@@ -632,6 +632,10 @@ func Build(configFilePath string, opts ...RouteOption) (*BuildResult, error) {
+ 	}
+ 	engine.Use(gin.Recovery())
+ 	engine.Use(corsMiddleware())
++	// Process responsiveness must remain observable while the database is down.
++	engine.GET("/healthz", func(c *gin.Context) {
++		c.JSON(http.StatusOK, gin.H{"status": "ok"})
++	})
+ 
+ 	if clusterEnabled {
+ 		registerManagementControlPanelRoutes(engine, func(assetName string) gin.HandlerFunc {

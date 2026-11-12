@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-cloudflare-full-oauth-scopes",
+  "file": "0541-cloudflare-full-oauth-scopes.patch",
+  "content_sha256": "2e5dfdaf532e36a82dfea42380211be5519460d9c81b8ccb448610a4737fa9c2",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -8,6 +8,8 @@ import {
   type AuthMethods,
 } from "apps";
 
+import { cloudflareOAuthScopes } from "./cloudflare-scopes.ts";
+
 const modelProvider = <const Auth extends AuthMethods>(
   options: Omit<Parameters<typeof defineProvider<Auth>>[0], "name" | "family"> & {
     readonly family: NonNullable<Parameters<typeof defineProvider<Auth>>[0]["family"]>;
@@ -152,7 +154,10 @@ export const acquisitionProviders = {
     },
     hosts: ["mcp.cloudflare.com", "api.cloudflare.com"],
     auth: {
-      oauth: oauth2({ discover: "https://mcp.cloudflare.com/mcp" }),
+      oauth: oauth2({
+        discover: "https://mcp.cloudflare.com/mcp",
+        scopes: [...cloudflareOAuthScopes],
+      }),
       apiToken: token("User API token"),
       accountToken: secrets({
         label: "Account API token",

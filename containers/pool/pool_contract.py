@@ -344,14 +344,27 @@ def create_node_jwt(management_key: str) -> tuple[str, str]:
     return node_id, home_jwt
 
 
-def check_services(management_key: str, node_id: str) -> bool:
+def _node_healthy(management_key: str) -> bool:
     node_status, node_payload = request_json(
         f"{NODE_URL}/healthz",
         "GET",
         management_key,
         timeout=2,
     )
-    if node_status != 200 or node_payload.get("status") != "ok":
+    return node_status == 200 and node_payload.get("status") == "ok"
+
+
+def check_liveness(management_key: str) -> bool:
+    if not _node_healthy(management_key):
+        return False
+    home_status, home_payload = request_json(
+        f"{HOME_URL}/healthz", "GET", management_key, timeout=2
+    )
+    return home_status == 200 and home_payload.get("status") == "ok"
+
+
+def check_services(management_key: str, node_id: str) -> bool:
+    if not _node_healthy(management_key):
         return False
     home_status, home_payload = request_json(
         f"{HOME_URL}/v8/management/nodes",

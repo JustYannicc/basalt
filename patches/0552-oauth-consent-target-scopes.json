@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-oauth-consent-target-scopes",
+  "file": "0552-oauth-consent-target-scopes.patch",
+  "content_sha256": "527fbf2832588fc55b7765bbbeac109456ca7b4c13aa571add89e5a0b0f2f7b9",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

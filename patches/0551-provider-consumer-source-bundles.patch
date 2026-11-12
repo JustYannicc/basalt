@@ -1,0 +1,138 @@
+diff --git a/e2e/support/provider-adoption-fixture.ts b/e2e/support/provider-adoption-fixture.ts
+--- a/e2e/support/provider-adoption-fixture.ts
++++ b/e2e/support/provider-adoption-fixture.ts
+@@ -108,10 +108,10 @@
+     });
+   const canonical = catalog.sources
+     .get("openai")!
+-    .files.find((file) => file.path === "providers.ts")!;
++    .files.filter((file) => file.path !== "index.ts" && file.path !== "package.json");
+   const poolFiles = [
+     appsManifest,
+-    canonical,
++    ...canonical,
+     {
+       path: "index.ts",
+       content: `import { defineApp, defineProvider, interactive, object, query, router } from "apps";
+diff --git a/e2e/tests/account-family-pools.spec.ts b/e2e/tests/account-family-pools.spec.ts
+--- a/e2e/tests/account-family-pools.spec.ts
++++ b/e2e/tests/account-family-pools.spec.ts
+@@ -71,7 +71,11 @@
+ import { providers } from "./providers.ts";
+ export default defineApp({ app: { accounts: { openai: providers.openai.many().requiring(${JSON.stringify(capability)}).contributed() } } }, {});`,
+           },
+-          { path: "providers.ts", content: definitions.content },
++          ...managerSource.files
++            .filter((file) => file.path !== "index.ts" && file.path !== "package.json")
++            .map((file) =>
++              file.path === "providers.ts" ? { ...file, content: definitions.content } : file,
++            ),
+           appsManifest,
+         ];
+         const prefix = `/api/organizations/${actors.organization.id}`;
+diff --git a/e2e/tests/pool-account-selection.spec.ts b/e2e/tests/pool-account-selection.spec.ts
+--- a/e2e/tests/pool-account-selection.spec.ts
++++ b/e2e/tests/pool-account-selection.spec.ts
+@@ -42,14 +42,14 @@
+         yield* providerAccountProduct(catalog.origin, `${catalog.origin}/catalog/index.json`);
+         const canonical = catalog.sources
+           .get("openai")!
+-          .files.find((file) => file.path === "providers.ts")!;
++          .files.filter((file) => file.path !== "index.ts" && file.path !== "package.json");
+         const pools: string[] = [];
+         for (const name of ["Selection first", "Selection second"]) {
+           const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+             name,
+             files: [
+               appsManifest,
+-              canonical,
++              ...canonical,
+               {
+                 path: "index.ts",
+                 content: `import { defineApp } from "apps";
+diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-account-source-bindings.spec.ts
+--- a/e2e/tests/pool-account-source-bindings.spec.ts
++++ b/e2e/tests/pool-account-source-bindings.spec.ts
+@@ -90,10 +90,10 @@
+         yield* providerAccountProduct(catalog.origin, `${catalog.origin}/catalog/index.json`);
+         const canonical = catalog.sources
+           .get("openai")!
+-          .files.find((file) => file.path === "providers.ts")!;
++          .files.filter((file) => file.path !== "index.ts" && file.path !== "package.json");
+         const files = (connected: boolean) => [
+           appsManifest,
+-          canonical,
++          ...canonical,
+           { path: "index.ts", content: poolSource(connected) },
+         ];
+         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+diff --git a/e2e/tests/pool-account-source-choice-ui.spec.ts b/e2e/tests/pool-account-source-choice-ui.spec.ts
+--- a/e2e/tests/pool-account-source-choice-ui.spec.ts
++++ b/e2e/tests/pool-account-source-choice-ui.spec.ts
+@@ -57,10 +57,10 @@
+         yield* providerAccountProduct(catalog.origin, `${catalog.origin}/catalog/index.json`);
+         const canonical = catalog.sources
+           .get("openai")!
+-          .files.find((file) => file.path === "providers.ts")!;
++          .files.filter((file) => file.path !== "index.ts" && file.path !== "package.json");
+         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+           name: poolName,
+-          files: [appsManifest, canonical, { path: "index.ts", content: poolSource }],
++          files: [appsManifest, ...canonical, { path: "index.ts", content: poolSource }],
+         });
+         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+         const pool = (yield* body(Resource, deployed)).id;
+diff --git a/e2e/tests/pool-select-only-ui.spec.ts b/e2e/tests/pool-select-only-ui.spec.ts
+--- a/e2e/tests/pool-select-only-ui.spec.ts
++++ b/e2e/tests/pool-select-only-ui.spec.ts
+@@ -42,12 +42,12 @@
+         yield* providerAccountProduct(catalog.origin, `${catalog.origin}/catalog/index.json`);
+         const canonical = catalog.sources
+           .get("openai")!
+-          .files.find((file) => file.path === "providers.ts")!;
++          .files.filter((file) => file.path !== "index.ts" && file.path !== "package.json");
+         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+           name: poolName,
+           files: [
+             appsManifest,
+-            canonical,
++            ...canonical,
+             {
+               path: "index.ts",
+               content: `import { defineApp } from "apps";
+diff --git a/e2e/tests/provider-apps.spec.ts b/e2e/tests/provider-apps.spec.ts
+--- a/e2e/tests/provider-apps.spec.ts
++++ b/e2e/tests/provider-apps.spec.ts
+@@ -69,12 +69,12 @@
+         );
+         const canonical = catalog.sources
+           .get("openai")!
+-          .files.find((file) => file.path === "providers.ts")!;
++          .files.filter((file) => file.path !== "index.ts" && file.path !== "package.json");
+         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+           name: "Pool with native provider requirements",
+           files: [
+             appsManifest,
+-            canonical,
++            ...canonical,
+             {
+               path: "index.ts",
+               content: `import { defineApp } from "apps";
+diff --git a/e2e/tests/provider-quota-capabilities.spec.ts b/e2e/tests/provider-quota-capabilities.spec.ts
+--- a/e2e/tests/provider-quota-capabilities.spec.ts
++++ b/e2e/tests/provider-quota-capabilities.spec.ts
+@@ -46,12 +46,12 @@
+         yield* providerAccountProduct(home.origin, `${home.origin}/catalog/index.json`);
+         const providerFiles = home.sources
+           .get("jev")!
+-          .files.find((file) => file.path === "providers.ts")!;
++          .files.filter((file) => file.path !== "index.ts" && file.path !== "package.json");
+         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+           name: "Native provider fixture pool",
+           files: [
+             appsManifest,
+-            providerFiles,
++            ...providerFiles,
+             {
+               path: "index.ts",
+               content: `import { defineApp, object, query, router } from "apps";

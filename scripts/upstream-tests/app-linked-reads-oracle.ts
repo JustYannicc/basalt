@@ -119,10 +119,9 @@ const linkViews = (
             links: present.map(({ account }) => ({ app, account: account.id })),
           });
     const health = new Map(
-      (yield* Effect.forEach(retained, visibleObservationHealth)).map((entry) => [
-        entry.account,
-        entry,
-      ]),
+      (yield* Effect.forEach(retained, (health) => visibleObservationHealth(health))).map(
+        (entry) => [entry.account, entry],
+      ),
     );
     const scopes = new Map(
       yield* Effect.forEach(present, ({ account }) =>

@@ -24,6 +24,7 @@ const forwardReceipt = Schema.Struct({
   phase: Schema.Literals([
     "upload",
     "admitted",
+    "schema",
     "baseline",
     "activation",
     "container-activation",

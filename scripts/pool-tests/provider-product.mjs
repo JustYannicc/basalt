@@ -114,12 +114,14 @@ export async function withProviderProduct(home, work) {
             true,
             (action, _status, body) => h.control(action, body),
           ).pipe(Effect.provideService(Target, h.target));
-          const canonical = sources[0].files.find((file) => file.path === "providers.ts");
+          const canonical = sources[0].files.filter(
+            (file) => file.path !== "index.ts" && file.path !== "package.json",
+          );
           const pool = yield* h.request("POST", `${h.prefix}/apps/deploy`, {
             name: "Native runtime pool",
             files: [
               appsManifest,
-              canonical,
+              ...canonical,
               {
                 path: "index.ts",
                 content: `import { defineApp } from "apps"; import { providers } from "./providers.ts"; export default defineApp({app:{accounts:{openai:providers.openai.many(),anthropic:providers.anthropic.many(),gemini:providers.gemini.many()}}},{});`,

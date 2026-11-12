@@ -19,7 +19,14 @@ const {
   await import(require.resolve("@effect/sql-pglite/PgliteClient"));
 
 export const preludeVersion = "4.0.29";
-export const historicalSchemas = storageSchemas.filter((entry) => entry.version !== preludeVersion);
+export const preludeSchemas = storageSchemas.slice(
+  0,
+  storageSchemas.findIndex((entry) => entry.version === preludeVersion) + 1,
+);
+export const preludeSchema = preludeSchemas.at(-1)!;
+assert.equal(preludeSchema.version, preludeVersion, "Apply the prelude source patch first");
+export const currentVersion = storageSchemas.at(-1)!.version;
+export const historicalSchemas = preludeSchemas.slice(0, -1);
 export const historicalDatabase = fumadb({ namespace: "executor", schemas: historicalSchemas });
 export const queueNames = [
   "executor_webhook_sources_intent",

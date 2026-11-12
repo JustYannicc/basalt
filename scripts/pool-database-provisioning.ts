@@ -1,4 +1,5 @@
 import { poolDatabase, postgresRoleName } from "../src/pool/database-settings.ts";
+import { migrateModelHistory } from "../src/pool/model-history/schema.ts";
 
 /**
  * Every wait in provisioning is bounded, so a stuck connect or lock becomes a specific failure
@@ -153,6 +154,8 @@ async function provisionOnce(
   await scoped.query("REVOKE ALL ON SCHEMA public FROM PUBLIC");
   step("grant the public schema to the owner");
   await scoped.query(`GRANT ALL ON SCHEMA public TO ${owner}`);
+  step("migrate model request history");
+  await migrateModelHistory(scoped);
 }
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
