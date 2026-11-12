@@ -2,10 +2,11 @@ model {
   extend basalt {
     scaleTest = module "Isolated pool scale test" {
       #basalt
-      description "A manually dispatched test owns one temporary stage, synthetic traffic, its time and cost limits, and verified cleanup. Provisioning keeps state on its own runner. Size changes and deletion use only issue-scoped resources; production state and runtime are outside this boundary. An independent load-evidence gate requires complete raw traffic, latency, persistence and cleanup records. Deploy and destroy never pass this gate; single-instance measurements never claim autoscaling."
+      description "A manually dispatched test owns one temporary stage, synthetic traffic, its time and cost limits, and verified cleanup. Provisioning keeps state on its own runner. Size changes and deletion use only issue-scoped resources; production state and runtime are outside this boundary. An independent load-evidence gate requires complete raw traffic, latency, persistence and cleanup records. Deploy and destroy never pass this gate; single-instance measurements never claim autoscaling. Home density requires native x86 execution with recorded CPU model and cgroups; emulation proves only functional readiness, and provider-hardware calibration remains separate."
       metadata {
         code "scripts/scale-test|.github/workflows/scale-test.yml"
-        libraries "asyncio|ssl|resource"
+        libraries "asyncio|ssl|resource|node:http|node:net"
+        endpointHosts "127.0.0.1|density-upstream"
         bindings "stageClient=basalt.scaleStage|globalThis=basalt.scaleStage|stub(this.env.Mock)=basalt.scaleStage.fixtures|super=basalt.scaleStage.controller|this.ctx.container!.getTcpPort=basalt.scaleStage.runtime|c.getTcpPort=basalt.scaleStage.fixtures|stub(env.PoolContainer)=basalt.scaleStage.controller|target=basalt.scaleStage.fixtures"
       }
     }
@@ -15,7 +16,7 @@ model {
       controller = actor "Test pool controller"
       runtime = adapter "Test pool runtime"
       fixtures = adapter "Synthetic provider and load generator" {
-        metadata { endpointHosts "scale-mock.invalid|fixture" }
+        metadata { endpointHosts "scale-mock.invalid|fixture|density-upstream|127.0.0.1" }
       }
     }
   }
@@ -32,4 +33,8 @@ model {
   basalt.scaleTest -[sync]-> databaseProvider "create and remove only the temporary test database"
   basalt.scaleTest -[sync]-> databaseService "read usage and authenticate against the isolated test database"
   basalt.scaleTest -[sync]-> repositoryApi "download workflow actions and pinned source"
+}
+
+model {
+  basalt.scaleTest -[sync]-> basalt.toolsGateway "use its prepared Effect and Docker build services without deploying it"
 }

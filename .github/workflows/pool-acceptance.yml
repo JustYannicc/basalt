@@ -4,12 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Full includes a runner-only one-hour quiet interval and assumes otherwise quiet deployment traffic; externally deploy or crash the pool when restart observation is armed
+        description: Live acceptance or an isolated native x86 density experiment
         required: true
         type: choice
         options:
           - full
           - restart-observation
+          - density
         default: full
       model:
         description: Model ID from /v1/models; required when the catalog has multiple models
@@ -31,11 +32,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: pool-acceptance-production
+  group: ${{ inputs.mode == 'density' && format('pool-density-{0}', github.ref) || 'pool-acceptance-production' }}
   cancel-in-progress: false
 
 jobs:
   acceptance:
+    if: inputs.mode != 'density'
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -52,3 +54,52 @@ jobs:
           POOL_ACCEPTANCE_MODEL: ${{ inputs.model }}
           POOL_ACCEPTANCE_MODE: ${{ inputs.mode }}
           POOL_ACCEPTANCE_TEST_KEY_CONFIRMED: ${{ inputs.confirm_test_key }}
+
+  density:
+    if: inputs.mode == 'density'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    env:
+      BASALT_CI_OMIT_RELEASE_DOWNLOADS: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Require native x86 and record the machine
+        env:
+          DENSITY_OUTPUT: ${{ runner.temp }}/pool-density
+        run: |
+          test "$(uname -m)" = x86_64
+          echo "DENSITY_OUTPUT=$DENSITY_OUTPUT" >> "$GITHUB_ENV"
+          mkdir -p "$DENSITY_OUTPUT"
+          lscpu --json > "$DENSITY_OUTPUT/runner-cpu.json"
+          df -h > "$DENSITY_OUTPUT/runner-disk.txt"
+          free -b > "$DENSITY_OUTPUT/runner-memory.txt"
+      - name: Fetch the fixed container source commit
+        run: git fetch --no-tags origin 53d3a3730859fd2b46f435cdaaa6ffedaf73400b
+      - name: Prepare the frozen release builder
+        run: npm run prepare:upstream
+      - name: Build the unchanged frozen runtime without publication
+        run: bun scripts/scale-test/density/build-image.mjs
+      - name: Acquire synthetic fixture images
+        run: |
+          docker pull postgres:17.7-alpine
+          docker pull node:24.18.0-alpine
+      - name: Freeze every fixture source before execution
+        run: node scripts/scale-test/density/fingerprint.mjs
+      - name: Run isolated native x86 density
+        run: bun "$DENSITY_OUTPUT/run-density.mjs" hosted-01
+      - name: Retain raw synthetic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pool-density-x86-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/pool-density
+          if-no-files-found: error
+          retention-days: 7
