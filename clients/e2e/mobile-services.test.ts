@@ -6,6 +6,7 @@ import { mobileController } from "../mobile/controller.ts";
 import { deviceSocket } from "../cli/device-socket.ts";
 import { availableModels, tryModel } from "../connection/models.ts";
 import { connectTools } from "../connection/tools.ts";
+import { readToolSearch } from "../connection/tool-search.ts";
 import { serverEvents } from "../connection/request.ts";
 import { nativeFixture } from "./native-fixture.ts";
 
@@ -56,12 +57,29 @@ test("mobile signs in, restores its grant, streams a model and resumes approved 
     const structuredContent =
       rpc.params.name === "search"
         ? {
-            items: [
-              { path: "tools.fixture.create", description: "Create a fixture entry", input: "{}" },
-            ],
+            items:
+              rpc.params.arguments.query === "unavailable"
+                ? []
+                : [
+                    {
+                      path: "tools.fixture.create",
+                      description: "Create a fixture entry",
+                      input: "{}",
+                    },
+                  ],
             namespaces: [],
             remaining: 0,
             next: null,
+            unavailableApps:
+              rpc.params.arguments.query === "unavailable"
+                ? [
+                    {
+                      app: "calendar-fixture",
+                      name: "Calendar",
+                      reason: "AppDiscoveryTimedOut",
+                    },
+                  ]
+                : [],
           }
         : rpc.params.name === "call"
           ? {
@@ -138,7 +156,13 @@ test("mobile signs in, restores its grant, streams a model and resumes approved 
     assert.deepEqual(updates, [reply]);
     const tools = await restarted.run(connectTools, signal);
     try {
-      assert.ok(await tools.call("search", { query: "fixture" }));
+      assert.equal(
+        readToolSearch(await tools.call("search", { query: "fixture" })).items.length,
+        1,
+      );
+      const partial = readToolSearch(await tools.call("search", { query: "unavailable" }));
+      assert.equal(partial.items.length, 0);
+      assert.equal(partial.unavailableApps[0]?.name, "Calendar");
       const pending = await tools.call("call", {
         calls: { path: "tools.fixture.create", input: {} },
       });
