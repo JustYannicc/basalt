@@ -6,8 +6,8 @@ import { generateMigrationFromSchema } from "fumadb-effect/migration";
 import { makeExecutorStorage } from "../../.upstream/packages/sdk/src/implementation/storage.ts";
 import { makeExecutorRuntimeStorage } from "../../.upstream/packages/sdk/src/implementation/storage-runtime.ts";
 import {
-  storageSchemas,
   trailingStorageIndexVersions,
+  trailingIndexVersions,
 } from "../../.upstream/packages/sdk/src/implementation/storage-migrations.ts";
 import {
   archive,
@@ -18,15 +18,18 @@ import {
   historicalSchemas,
   inPglite,
   preludeVersion,
+  preludeSchema,
+  preludeSchemas,
+  currentVersion,
   queueIndexes,
   retained,
 } from "./storage-prelude-fixture.ts";
 import { sqlAdapter } from "fumadb-effect/sql";
 
 assert.equal(
-  storageSchemas.at(-1)?.version,
-  preludeVersion,
-  "Apply the prelude source patch before running these fixtures",
+  currentVersion,
+  "4.0.30",
+  "Apply the current storage source patch before running these fixtures",
 );
 
 test("fresh SDK setup has all Basalt tables and usable queue indexes; rerun keeps their identities", async () => {
@@ -35,7 +38,7 @@ test("fresh SDK setup has all Basalt tables and usable queue indexes; rerun keep
       const sql = yield* SqlClient.SqlClient;
       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
       yield* storage.migrate;
-      assert.equal(yield* storage.version, preludeVersion);
+      assert.equal(yield* storage.version, currentVersion);
       const first = yield* assertQueueIndexes;
       const tables = yield* sql<{
         table_name: string;
@@ -65,7 +68,7 @@ for (const history of historicalSchemas)
       Effect.gen(function* () {
         const storage = yield* makeExecutorStorage({ provider: "postgresql" });
         yield* storage.migrate;
-        assert.equal(yield* storage.version, preludeVersion);
+        assert.equal(yield* storage.version, currentVersion);
         yield* assertRetained(before.rows);
         const first = yield* assertQueueIndexes;
         yield* storage.migrate;
@@ -76,9 +79,9 @@ for (const history of historicalSchemas)
     );
   });
 
-test("4.0.29 changes no tables and remains deferred until the hosted index phase", async () => {
+test("4.0.29 is deferred only while trailing; the current table phase reaches the 4.0.30 layout", async () => {
   const previous = historicalSchemas.at(-1)!;
-  const latest = storageSchemas.at(-1)!;
+  const latest = preludeSchema;
   assert.equal(previous.version, "4.0.28");
   assert.equal(latest.version, preludeVersion);
   assert.deepEqual(
@@ -89,19 +92,27 @@ test("4.0.29 changes no tables and remains deferred until the hosted index phase
     }),
     [],
   );
-  assert.deepEqual([...trailingStorageIndexVersions], [preludeVersion]);
+  assert.deepEqual([...trailingIndexVersions(preludeSchemas)], [preludeVersion]);
+  assert.deepEqual([...trailingStorageIndexVersions], []);
   await inPglite(
     Effect.gen(function* () {
       yield* historicalLayout("4.0.28");
       const before = yield* retained;
       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
       yield* storage.migrateTables;
-      assert.equal(yield* storage.version, "4.0.28");
-      assert.deepEqual(yield* queueIndexes, []);
+      assert.equal(yield* storage.version, currentVersion);
+      const indexes = yield* assertQueueIndexes;
+      const sql = yield* SqlClient.SqlClient;
+      const constraints = yield* sql<{ conname: string }>`select conname from pg_constraint
+        where conrelid = 'executor_app_connections'::regclass and contype = 'u'`;
+      assert.deepEqual(
+        constraints.map((row) => row.conname),
+        ["executor_app_connections_target_binding"],
+      );
       yield* assertRetained(before);
       yield* storage.migrate;
-      assert.equal(yield* storage.version, preludeVersion);
-      yield* assertQueueIndexes;
+      assert.equal(yield* storage.version, currentVersion);
+      assert.deepEqual(yield* queueIndexes, indexes);
       yield* assertRetained(before);
     }),
   );
@@ -135,7 +146,7 @@ test("failure after the webhook indexes rolls back the indexes and version; retr
       yield* sql`alter table fixture_account_checks rename to executor_account_checks`;
       yield* assertRetained(before);
       yield* storage.migrate;
-      assert.equal(yield* storage.version, preludeVersion);
+      assert.equal(yield* storage.version, currentVersion);
       yield* assertQueueIndexes;
       yield* assertRetained(before);
     }),
@@ -161,7 +172,7 @@ test("the existing 4.0.28 ORM can read and write after additive SQL commits", as
   );
 });
 
-test("restarted prelude accepts 4.0.29; the original registry cannot migrate that snapshot", async () => {
+test("restarted current storage accepts 4.0.30; the historical registry refuses that snapshot", async () => {
   const before = await inPglite(
     Effect.gen(function* () {
       yield* historicalLayout("4.0.28");
@@ -175,20 +186,20 @@ test("restarted prelude accepts 4.0.29; the original registry cannot migrate tha
       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
       yield* storage.checkMigration;
       yield* storage.migrate;
-      assert.equal(yield* storage.version, preludeVersion);
+      assert.equal(yield* storage.version, currentVersion);
       yield* assertRetained(before.rows);
       assert.deepEqual(yield* queueIndexes, before.indexes);
       const old = yield* historicalDatabase.client(sqlAdapter({ provider: "postgresql" }))
         .createMigrator;
       assert.equal((yield* Effect.exit(old.migrateToLatest()))._tag, "Failure");
-      assert.equal(yield* storage.version, preludeVersion);
+      assert.equal(yield* storage.version, currentVersion);
       yield* assertRetained(before.rows);
     }),
     before.snapshot,
   );
 });
 
-test("a 4.0.29 marker with a dropped index still requires schema inventory", async () => {
+test("a current marker with a dropped index still requires schema inventory", async () => {
   await inPglite(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -197,7 +208,7 @@ test("a 4.0.29 marker with a dropped index still requires schema inventory", asy
       yield* storage.migrate;
       yield* sql`drop index executor_webhook_sources_retry`;
       yield* storage.migrate;
-      assert.equal(yield* storage.version, preludeVersion);
+      assert.equal(yield* storage.version, currentVersion);
       assert.equal((yield* queueIndexes).length, 2);
       // Startup checks the marker, not physical indexes. Release qualification must reject this drift.
       yield* storage.checkMigration;
