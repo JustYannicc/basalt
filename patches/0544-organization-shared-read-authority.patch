@@ -1,0 +1,182 @@
+diff --git a/apps/hosted/server/src/implementation/organization-access-lock.ts b/apps/hosted/server/src/implementation/organization-access-lock.ts
+index 1c6b130..76eb2ab 100644
+--- a/apps/hosted/server/src/implementation/organization-access-lock.ts
++++ b/apps/hosted/server/src/implementation/organization-access-lock.ts
+@@ -8,6 +8,13 @@ export const lockOrganizationAccess = (organization: string) =>
+     yield* sql`select pg_advisory_xact_lock(hashtextextended(${`executor-access:${organization}`}, 0))`;
+   });
+ 
++/** Read authority remains stable through receiver acknowledgment without excluding other readers. */
++export const lockOrganizationReadAccess = (organization: string) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    yield* sql`select pg_advisory_xact_lock_shared(hashtextextended(${`executor-access:${organization}`}, 0))`;
++  });
++
+ export const withOrganizationAccessLock = <A, E, R>(
+   organization: string,
+   operation: Effect.Effect<A, E, R>,
+diff --git a/apps/hosted/server/src/implementation/pool-backend.ts b/apps/hosted/server/src/implementation/pool-backend.ts
+index 5d5c652..1cf326f 100644
+--- a/apps/hosted/server/src/implementation/pool-backend.ts
++++ b/apps/hosted/server/src/implementation/pool-backend.ts
+@@ -4,7 +4,12 @@ import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
+ import { Principal } from "../contracts/auth.ts";
+ import { PoolUsageBackend, PoolUsageUnavailable } from "../contracts/pool-usage.ts";
+ import { applicationAudiences } from "./application-audience.ts";
+-import { lockCurrentActor, policyDatabase, requireAppAccessAs } from "./resource-policy.ts";
++import {
++  lockCurrentActor,
++  lockCurrentReader,
++  policyDatabase,
++  requireAppAccessAs,
++} from "./resource-policy.ts";
+ import { hostAssertionTtlMs, signEnvelope } from "./pool-token.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
+ 
+@@ -79,8 +84,8 @@ export const sendPoolCommand = <A>(
+     return yield* Schema.decodeUnknownEffect(responseSchema)(response.body);
+   }).pipe(Effect.catch(() => new PoolUsageUnavailable()));
+ 
+-/** The native policy and external cap write share the organization access lock. */
+-export const withPool = <A, E, R>(
++const authorizedPool = <A, E, R>(
++  actor: typeof lockCurrentActor,
+   app: AppId,
+   work: (pool: {
+     pool: AppId;
+@@ -101,27 +106,27 @@ export const withPool = <A, E, R>(
+           const pool = yield* appUiPhase(
+             "overview-policy",
+             Effect.gen(function* () {
+-              const actor = yield* lockCurrentActor;
+-              yield* requireAppAccessAs(actor, app, access);
++              const current = yield* actor;
++              yield* requireAppAccessAs(current, app, access);
+               const rows =
+                 yield* sql`select coalesce(entry.value ->> 'owner', entry.key) as owner, entry.value ->> 'authorization' as authorization
+         from organization o
+         cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
+         join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
+-        where o.id = ${actor.organization} and app.id = ${app}`;
++        where o.id = ${current.organization} and app.id = ${app}`;
+               if (rows.length === 0) return null;
+               const found = yield* Schema.decodeUnknownEffect(Schema.Array(Pool))(rows);
+               if (found.length !== 1 || found[0] === undefined) return yield* new StorageError();
+               const saved = found[0];
+               const native = saved.authorization === "executor-app-v1";
+-              const audience = (yield* applicationAudiences(actor.organization, [app]))[0];
++              const audience = (yield* applicationAudiences(current.organization, [app]))[0];
+               const delegated =
+                 yield* sql`select distinct app_id as app, authorizer from hosted_model_bindings
+           where pool_id = ${app} and subject = ''`;
+               const appIds = yield* Schema.decodeUnknownEffect(Schema.Array(AppId))(
+                 delegated.map((row) => row.app),
+               );
+-              const audiences = yield* applicationAudiences(actor.organization, appIds);
++              const audiences = yield* applicationAudiences(current.organization, appIds);
+               const authors = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.String))(
+                 delegated.map((row) => row.authorizer),
+               );
+@@ -135,9 +140,9 @@ export const withPool = <A, E, R>(
+               ].sort();
+               return {
+                 pool: app,
+-                organization: actor.organization,
++                organization: current.organization,
+                 owner: saved.owner,
+-                user: actor.user,
++                user: current.user,
+                 native,
+                 users,
+               };
+@@ -148,3 +153,17 @@ export const withPool = <A, E, R>(
+       ),
+     );
+   });
++
++/** Writes and reconciliation keep exclusive authority through the receiver's acknowledgment. */
++export const withPool = <A, E, R>(
++  app: AppId,
++  work: Parameters<typeof authorizedPool<A, E, R>>[2],
++  access: "manage" | "use" = "manage",
++) => authorizedPool(lockCurrentActor, app, work, access);
++
++/** No nested writes or exclusive lock upgrades; the shared lock lasts through acknowledgment. */
++export const readPool = <A, E, R>(
++  app: AppId,
++  work: Parameters<typeof authorizedPool<A, E, R>>[2],
++  access: "manage" | "use" = "manage",
++) => authorizedPool(lockCurrentReader, app, work, access);
+diff --git a/apps/hosted/server/src/implementation/pool-usage-import.ts b/apps/hosted/server/src/implementation/pool-usage-import.ts
+index 27a0647..d7dbf40 100644
+--- a/apps/hosted/server/src/implementation/pool-usage-import.ts
++++ b/apps/hosted/server/src/implementation/pool-usage-import.ts
+@@ -8,15 +8,15 @@ import {
+   type PoolUsageImportInput,
+ } from "../contracts/pool-usage-import.ts";
+ import { PoolUsageUnavailable } from "../contracts/pool-usage.ts";
+-import { sendPoolCommandResponse, withPool } from "./pool-backend.ts";
++import { readPool, sendPoolCommandResponse } from "./pool-backend.ts";
+ 
+ const Refusal = Schema.Struct({
+   error: Schema.Literals(["invalid_query", "identity_conflict", "unauthorized"]),
+ });
+ 
+-/** App managers cannot import on behalf of a different recorded pool owner. */
++/** Idempotent usage writes change no access policy; only the recorded owner may import. */
+ export const importPoolUsage = (app: AppId, input: PoolUsageImportInput) =>
+-  withPool(app, (pool) =>
++  readPool(app, (pool) =>
+     Effect.gen(function* () {
+       if (pool.user !== pool.owner) return yield* new OrganizationForbidden();
+       const response = yield* sendPoolCommandResponse("importUsage", {
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+index 7f29175..fb2d3a9 100644
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -1,4 +1,4 @@
+-import { sendPoolCommand, withPool } from "./pool-backend.ts";
++import { readPool, sendPoolCommand, withPool } from "./pool-backend.ts";
+ import { poolAccountRouting, setPoolCreditPolicy } from "./pool-credit-routing.ts";
+ import { importPoolUsage } from "./pool-usage-import.ts";
+ import { AppId, StorageError, StorageHost } from "@executor-js/sdk/core";
+@@ -33,7 +33,7 @@ const Person = Schema.Struct({
+ const pageSize = 100;
+ 
+ export const poolUsage = (app: AppId, after?: string) =>
+-  withPool(app, (pool) =>
++  readPool(app, (pool) =>
+     Effect.gen(function* () {
+       const sql = yield* policyDatabase;
+       const people = pool.users
+diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
+index 4cd5df6..859cee4 100644
+--- a/apps/hosted/server/src/implementation/resource-policy.ts
++++ b/apps/hosted/server/src/implementation/resource-policy.ts
+@@ -29,7 +29,7 @@ import {
+   type SharedAudience,
+ } from "../contracts/resource-access.ts";
+ import { AppPolicy, appAccessOf } from "./app-policy.ts";
+-import { lockOrganizationAccess } from "./organization-access-lock.ts";
++import { lockOrganizationAccess, lockOrganizationReadAccess } from "./organization-access-lock.ts";
+ import { usableAppLinks } from "./app-link-policy.ts";
+ export { usableAppLinks } from "./app-link-policy.ts";
+ 
+@@ -83,6 +83,16 @@ export const lockCurrentActor = Effect.gen(function* () {
+   return yield* membership(organization, yield* CurrentUserId, true);
+ });
+ 
++/** Only for operations with no policy writes or reconciliation, including nested helpers. */
++export const lockCurrentReader = Effect.gen(function* () {
++  const organization = (yield* CurrentOrganization).organization;
++  yield* lockOrganizationReadAccess(organization).pipe(
++    Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
++    Effect.mapError(() => new StorageError()),
++  );
++  return yield* membership(organization, yield* CurrentUserId, true);
++});
++
+ /** Resolve app policies in one read, retaining tenant and group checks for every row. */
+ export const applicationAccesses = (apps: readonly AppId[], actor: ResourceAuthority) =>
+   Effect.gen(function* () {
