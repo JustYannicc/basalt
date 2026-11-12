@@ -100,6 +100,7 @@ export function openTunnel(
           )
         )
           throw new Error("Incompatible tunnel session.");
+        clearTimeout(timer);
         started = true;
         send({ v: 1, type: "open", id: 1, ...open });
         send({ v: 1, type: "credit", id: 1, bytes: tunnelLimits.windowBytes });

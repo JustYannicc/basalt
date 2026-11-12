@@ -7,18 +7,20 @@ import { nativeFixture } from "./native-fixture.ts";
 export async function fixture(options?: {
   storage?: "os" | "file";
   services?: Parameters<typeof nativeFixture>[0];
+  tunnel?: Parameters<typeof nativeFixture>[1];
 }) {
   const storage = options?.storage ?? "file";
   if (storage === "file")
     assert.equal(process.platform, "linux", "Explicit file storage is a headless Linux choice.");
-  const remote = await nativeFixture(options?.services);
+  const remote = await nativeFixture(options?.services, options?.tunnel);
   const home = await mkdtemp(join(tmpdir(), "client-native-"));
   let runtime: ReturnType<typeof launch> | undefined;
   const stop = async () => {
     if (runtime) {
       runtime.child.kill("SIGTERM");
-      assert.equal((await runtime.exited).code, 0);
+      const result = await runtime.exited;
       runtime = undefined;
+      assert.equal(result.code, 0);
     }
   };
   const start = async (execArgv: readonly string[] = []) => {
@@ -29,6 +31,7 @@ export async function fixture(options?: {
   return {
     remote,
     home,
+    runtime: () => runtime,
     start,
     stop,
     login: async () => {
@@ -44,10 +47,22 @@ export async function fixture(options?: {
     token: async () =>
       JSON.parse(await readFile(join(home, "agent-both.json"), "utf8")).token as string,
     close: async () => {
-      await stop();
-      if (storage === "os") await launch(["sign-out"], home).exited;
-      await remote.close();
-      await rm(home, { recursive: true, force: true });
+      const failures = [];
+      for (const cleanup of [
+        stop,
+        async () => {
+          if (storage === "os") await launch(["sign-out"], home).exited;
+        },
+        () => remote.close(),
+        () => rm(home, { recursive: true, force: true }),
+      ]) {
+        try {
+          await cleanup();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length) throw new AggregateError(failures, "Native fixture cleanup failed.");
     },
   };
 }
