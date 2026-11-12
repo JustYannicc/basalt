@@ -5,7 +5,7 @@ import { backendUserName, digest } from "../../src/pool/backend-users.ts";
 import { activateHomeBackfill, planHomeBackfill } from "../../src/pool/model-history/activation.ts";
 import { captureHomeRequests } from "../../src/pool/model-history/capture.ts";
 import { officialCosts, officialCostMetric } from "../../src/pool/model-history/official-cost.ts";
-import { poolUsageOverview } from "../../src/pool/model-history/overview.ts";
+import { poolUsageOverview, poolPersonalOverview } from "../../src/pool/model-history/overview.ts";
 import { poolUsageSeries } from "../../src/pool/model-history/series.ts";
 import { reference } from "../../src/pool/model-history/record.ts";
 import { homeMetadataFixture } from "./history-fixture.ts";
@@ -144,6 +144,57 @@ test("1,112 continuous Home legacy rows with no API type retain charges and gain
     assert.equal(overview.metrics.subscriptionValue.price?.calculation, "token-counts");
     assert.equal(overview.metrics.usageSlices[0]?.apiBilled, metric.amount);
     assert.equal(overview.metrics.usageSlices[0]?.price?.calculation, "token-counts");
+
+    // An estimate outside subscription usage must not relabel canonical subscription value.
+    await f.db.query(
+      `INSERT INTO usage (id,timestamp,auth_index,provider,model,endpoint,api_key,
+      token_accounting_version,token_accounting_quality,accounting_input_tokens,accounting_output_tokens,
+      accounting_cache_read_tokens,accounting_cache_write_tokens,accounting_total_tokens)
+      VALUES (1113,'2026-11-12T18:00:00Z','canonical-account','claude','claude-opus-5-5','/v1/messages',
+        $1,2,'complete',1000,200,400,100,1200)`,
+      [fingerprint],
+    );
+    await captureHomeRequests(f.db);
+    const canonicalAccount = (await reference(source, "account", "canonical-account"))!;
+    const mixed = {
+      ...authority,
+      accounts: [
+        { account: "saved", history: [account], offering: "metered_api" as const },
+        { account: "canonical", history: [canonicalAccount], offering: "subscription" as const },
+      ],
+    };
+    const mixedOverview = await poolUsageOverview(f.db, {
+      pool,
+      from,
+      to,
+      days: 30,
+      authority: mixed,
+      directory: {
+        members: [{ person, displayName: "Fixture member", active: true }],
+        activeCount: 1,
+        totalCount: 1,
+      },
+      prices,
+    });
+    const personal = await poolPersonalOverview(
+      f.db,
+      {
+        pool,
+        person,
+        from,
+        to,
+        days: 30,
+        offerings: mixed.accounts.flatMap((a) =>
+          a.history.map((history) => ({ history, offering: a.offering })),
+        ),
+      },
+      prices,
+    );
+    for (const result of [mixedOverview, personal]) {
+      assert.equal(result.metrics.apiBilled.price?.calculation, "token-counts");
+      assert.equal(result.metrics.subscriptionValue.amount, "0.006580000000");
+      assert.equal(result.metrics.subscriptionValue.price?.calculation, undefined);
+    }
   });
 });
 
@@ -205,6 +256,7 @@ test("counter estimates preserve cache and reasoning once, use context bands, an
         expected: "9.580000000000",
       },
       {
+        // A compact request uses the same inclusive shape after its API metadata was lost.
         row: {
           ...base,
           inputTokens: "100000",
@@ -246,6 +298,7 @@ test("counter estimates preserve cache and reasoning once, use context bands, an
         prices,
       );
       assert.equal(result.amount, c.expected);
+      assert.equal(result.price?.calculation, "token-counts");
     }
     await f.insert({ ...base, timestamp: "2026-11-08T12:00:00.000000000Z", cacheReadTokens: null });
     const missing = officialCostMetric(

@@ -477,7 +477,7 @@ export async function poolPersonalOverview(
     const cte = priceQuery(true);
     const totalsQuery = await db.query(
       `${cte}SELECT
-        count(*) FILTER (WHERE api_cost IS NOT NULL AND token_count_estimate)::text AS token_count_estimates,
+        count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL AND token_count_estimate)::text AS token_count_estimates,
         count(*) FILTER (WHERE offering='metered_api')::text AS api_requests,
         count(*) FILTER (WHERE offering='subscription')::text AS subscription_requests,
         count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NOT NULL)::text AS api_priced,
@@ -947,7 +947,7 @@ export async function poolUsageOverview(
         values,
       );
       const totalsQuery = await db.query(
-        `${cte}SELECT count(*) FILTER (WHERE api_cost IS NOT NULL AND token_count_estimate)::text AS token_count_estimates,
+        `${cte}SELECT count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL AND token_count_estimate)::text AS token_count_estimates,
         count(*) FILTER (WHERE offering='metered_api')::text AS api_requests,
         count(*) FILTER (WHERE offering='subscription')::text AS subscription_requests,
         count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NOT NULL)::text AS api_priced,
