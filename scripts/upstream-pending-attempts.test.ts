@@ -17,6 +17,7 @@ import { test } from "node:test";
 import { installUpstreamDependencies } from "./upstream-dependencies.ts";
 import { collectUpstreamDependencies } from "./upstream-store.ts";
 import { readProcessOwner } from "./process-owner.ts";
+import { fixtureInventory } from "./upstream-fixture-inventory.ts";
 
 const ownerProcess = () =>
   spawn(
@@ -40,12 +41,13 @@ function failedEnumeration(bin: string) {
 for (const mismatch of ["boot", "start"])
   test(`an expired ${mismatch} cannot make an unrelated unreadable group block collection`, async (t) => {
     const fixture = realpathSync(mkdtempSync(join(tmpdir(), "basalt-expired-group-")));
+    const inventory = fixtureInventory(t, fixture, { processTable: true });
     const previousPath = process.env.PATH,
       previousCache = process.env.BASALT_UPSTREAM_CACHE;
     const child = ownerProcess();
+    inventory.track(child.pid!);
     t.after(() => {
       stop(child);
-      process.env.PATH = previousPath;
       if (previousCache === undefined) delete process.env.BASALT_UPSTREAM_CACHE;
       else process.env.BASALT_UPSTREAM_CACHE = previousCache;
       rmSync(fixture, { recursive: true, force: true });
@@ -108,12 +110,13 @@ for (const mismatch of ["boot", "start"])
 
 test("persistent current-boot uncertainty bounds failed preparations at three pending attempts per key", async (t) => {
   const fixture = realpathSync(mkdtempSync(join(tmpdir(), "basalt-pending-limit-")));
+  const inventory = fixtureInventory(t, fixture, { processTable: true });
   const previousPath = process.env.PATH,
     previousCache = process.env.BASALT_UPSTREAM_CACHE;
   const child = ownerProcess();
+  inventory.track(child.pid!);
   t.after(() => {
     stop(child);
-    process.env.PATH = previousPath;
     if (previousCache === undefined) delete process.env.BASALT_UPSTREAM_CACHE;
     else process.env.BASALT_UPSTREAM_CACHE = previousCache;
     rmSync(fixture, { recursive: true, force: true });
