@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
-  cpSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -13,11 +12,12 @@ import {
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { capacityFixture, overviewFixture } from "./overview-fixture.mjs";
 import { handleSelfUsageImport } from "../../src/pool/model-history/self-import-http.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
+import { bundlePoolApp } from "../pool-app-bundle.ts";
 
 export const root = fileURLToPath(new URL("../../", import.meta.url));
 const require = createRequire(join(root, ".upstream/package.json"));
@@ -215,15 +215,12 @@ export async function importAppFixture(connectionString) {
 
 async function buildApp(directory, origin) {
   const app = join(directory, "apps/pool");
-  cpSync(join(root, "apps/pool"), app, {
-    recursive: true,
-    filter: (path) => !path.includes("node_modules") && !/\.(test|spec)\./.test(path),
-  });
-  mkdirSync(join(directory, "src/pool/provider-accounts"), { recursive: true });
-  cpSync(
-    join(root, "src/pool/provider-accounts/definitions.ts"),
-    join(directory, "src/pool/provider-accounts/definitions.ts"),
-  );
+  // Use the shipped source graph, including relocated host files and their imports.
+  for (const file of bundlePoolApp(root, join(root, ".upstream"))) {
+    const path = join(app, file.path);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, file.content);
+  }
   writeFileSync(
     join(app, "deployment.ts"),
     `export const poolOrigin = ${JSON.stringify(origin)}; export const productName = "Signalbox";`,

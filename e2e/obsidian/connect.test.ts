@@ -10,6 +10,7 @@ import {
   obsidianTools,
   supportsObsidian,
 } from "../../.upstream/apps/hosted/web/src/contracts/obsidian-connection.ts";
+import { githubSourceRepository } from "../../.upstream/apps/hosted/web/src/contracts/github-source.ts";
 import {
   basaltSyncReleaseCheck,
   basaltSyncReleaseStatus,
@@ -64,23 +65,24 @@ test("the dashboard installs the plugin release this checkout publishes", () => 
   assert.equal(basaltSyncVersion, manifest.version);
   assert.equal(Object.hasOwn(versions, manifest.version), true);
   assert.equal(manifest.id, protocolAction);
-  // The release workflow, the dashboard's BRAT link and the plugin agree on one tag per version.
-  assert.equal(basaltSyncTag, `${manifest.id}-${manifest.version}`);
+  // The plugin repository is tagged with the bare version; the release workflow publishes to the
+  // same repository the dashboard checks and links BRAT to.
+  assert.equal(basaltSyncTag, manifest.version);
   const release = readFileSync(
     new URL("../../.github/workflows/obsidian-plugin-release.yml", import.meta.url),
     "utf8",
   );
-  assert.ok(release.includes(`tag="${manifest.id}-$version"`));
-  assert.equal(basaltSyncRepository("https://github.com/owner/repo"), "owner/repo");
-  assert.equal(basaltSyncRepository("https://github.com/owner/repo.git"), "owner/repo");
-  assert.equal(basaltSyncRepository("https://gitlab.com/owner/repo"), null);
-  assert.equal(basaltSyncRepository("https://github.com/owner"), null);
-  assert.equal(basaltSyncRepository(undefined), null);
+  assert.ok(release.includes(`repository=${basaltSyncRepository}\n`));
+  assert.equal(githubSourceRepository("https://github.com/owner/repo"), "owner/repo");
+  assert.equal(githubSourceRepository("https://github.com/owner/repo.git"), "owner/repo");
+  assert.equal(githubSourceRepository("https://gitlab.com/owner/repo"), null);
+  assert.equal(githubSourceRepository("https://github.com/owner"), null);
+  assert.equal(githubSourceRepository(undefined), null);
   const link = new URL(bratInstallLink("owner/repo"));
   assert.equal(link.protocol, "obsidian:");
   assert.equal(link.host || link.pathname.replace(/^\/+/u, ""), "brat");
   assert.equal(link.searchParams.get("plugin"), "owner/repo");
-  assert.equal(link.searchParams.get("version"), basaltSyncTag);
+  assert.equal(link.searchParams.get("version"), "latest");
 });
 
 test("BRAT is linked unless the release is known to be missing", () => {

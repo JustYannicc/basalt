@@ -2,6 +2,10 @@ import type { CollectionDiagnostic, QuotaFieldPresence } from "../../apps/pool/c
 import { digest } from "./backend-users.ts";
 import { object } from "./json.ts";
 import { sourceXaiDiagnostic, xaiCollectionDiagnostic } from "./xai-collection-diagnostic.ts";
+import {
+  claudeCollectionDiagnostic,
+  sourceClaudeDiagnostic,
+} from "./claude-collection-diagnostic.ts";
 
 function field(value: unknown): QuotaFieldPresence | undefined {
   if (!object(value)) return undefined;
@@ -54,7 +58,10 @@ export function collectionDiagnostic(
   };
   if (provider === "claude") {
     const fiveHour = field(value.five_hour);
-    return fiveHour === undefined ? undefined : { ...common, provider, fiveHour };
+    const claude = claudeCollectionDiagnostic(value.claude);
+    return fiveHour === undefined
+      ? undefined
+      : { ...common, provider, fiveHour, ...(claude === undefined ? {} : { claude }) };
   }
   const primaryWindow = field(value.primary_window),
     secondaryWindow = field(value.secondary_window);
@@ -136,6 +143,7 @@ async function persistDiagnostic(
     response_received: latest.responseReceived,
     json_valid: latest.jsonValid,
     ...(latest.xai === undefined ? {} : { xai: sourceXaiDiagnostic(latest.xai) }),
+    ...(latest.claude === undefined ? {} : { claude: sourceClaudeDiagnostic(latest.claude) }),
     ...(latest.fiveHour === undefined ? {} : { five_hour: sourceField(latest.fiveHour) }),
     ...(latest.primaryWindow === undefined
       ? {}

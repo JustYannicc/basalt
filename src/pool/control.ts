@@ -1,4 +1,6 @@
 import { poolCreditRouting, setPoolCreditPolicy } from "./credit-policy.ts";
+import { setPoolSelectionPolicy } from "./selection-policy.ts";
+import { usageTimestampOrder } from "./usage-feed.ts";
 import {
   retainCollectionDiagnostic,
   type CollectionDiagnosticStorage,
@@ -106,6 +108,7 @@ const usageMaxLimit = 200;
 interface UsageQuery {
   session?: string;
   key?: number;
+  from?: string;
   limit: number;
   status?: string;
 }
@@ -628,6 +631,7 @@ export class PoolHome {
     if (query.session) params.set("session_id", query.session);
     if (query.key !== undefined) params.set("client_key_id", String(query.key));
     if (query.status) params.set("status", query.status);
+    if (query.from) params.set("from", query.from);
     let offset = 0;
     let total = Infinity;
     // At most five Home pages, or 1,000 scanned rows, per request.
@@ -666,6 +670,39 @@ export class PoolHome {
       offset += items.length;
     }
     return { records: [...records.values()] };
+  }
+  async firstSuccessfulUsage(key: number, since: string): Promise<string | null> {
+    const accounts = [
+      ...new Set((await this.membership()).members.map((member) => member.auth_id)),
+    ];
+    if (!accounts.length) return null;
+    const capabilities = await this.client.data("/capabilities");
+    if (
+      !object(capabilities.capabilities) ||
+      capabilities.capabilities.usage_first_success_v1 !== true
+    ) {
+      const response = await this.usage({ key, from: since, status: "success", limit: 20 });
+      return (
+        response.records
+          .map((row) => row.at)
+          .filter((at) => Date.parse(at) >= Date.parse(since))
+          .sort(usageTimestampOrder)[0] ?? null
+      );
+    }
+    let first: string | null = null;
+    // Keep credential lists below request URL limits without relaxing membership scope.
+    for (let offset = 0; offset < accounts.length; offset += 100) {
+      const params = new URLSearchParams({ client_key_id: String(key), from: since });
+      for (const account of accounts.slice(offset, offset + 100))
+        params.append("credential_id", account);
+      const response = await this.client.data(`/usage/first-success?${params}`);
+      if (response.timestamp === null) continue;
+      const at = text(response.timestamp);
+      if (!at || !Number.isFinite(Date.parse(at)) || Date.parse(at) < Date.parse(since))
+        return unavailable();
+      if (first === null || usageTimestampOrder(at, first) < 0) first = at;
+    }
+    return first;
   }
   async remove(id: string, detached: () => Promise<void>): Promise<void> {
     const members = (await this.membership()).members.filter((member) => member.auth_id === id);
@@ -707,6 +744,11 @@ async function sessionFor(
 }
 type Route = (ctx: RouteContext) => Promise<Response>;
 const routes: Record<string, Route> = {
+  "PATCH /selection-policy": async ({ client, pool, request }) => {
+    const payload: unknown = await request.json();
+    if (!object(payload)) return fail(400, "invalid_query", "Choose an account selection policy.");
+    return json(await setPoolSelectionPolicy(client, pool, payload.accountSelectionPolicy));
+  },
   "GET /credit-policy": async ({ client, pool }) => json(await poolCreditRouting(client, pool)),
   "PATCH /credit-policy": async ({ client, pool, request }) => {
     const payload: unknown = await request.json();

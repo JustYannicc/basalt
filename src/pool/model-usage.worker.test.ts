@@ -111,21 +111,17 @@ test("model responses reconcile successful Home usage without listing; alarm ret
             return Response.json({
               channel_group_details: [{ id: 1, channel_group_id: 20, auth_id: credential }],
             });
-          if (endpoint.startsWith("/usage/records")) {
-            const keyId = Number(new URL(request.url).searchParams.get("client_key_id"));
+          if (endpoint === "/capabilities")
+            return Response.json({ capabilities: { usage_first_success_v1: true } });
+          if (endpoint === "/usage/first-success") {
+            const params = new URL(request.url).searchParams;
+            const keyId = Number(params.get("client_key_id"));
+            assert.equal(params.get("from"), "2026-01-01T00:00:00.000Z");
+            assert.deepEqual(params.getAll("credential_id"), [credential]);
             homeReads.push(keyId);
-            const items = homeUsage.has(keyId)
-              ? [
-                  {
-                    id: `usage-${keyId}`,
-                    status: "success",
-                    timestamp: "2026-01-02T00:00:00.000Z",
-                    credential: { credential_id: credential },
-                    client: { api_key_id: keyId },
-                  },
-                ]
-              : [];
-            return Response.json({ items, total: items.length, limit: 20, offset: 0 });
+            return Response.json({
+              timestamp: homeUsage.has(keyId) ? "2026-01-02T00:00:00.000Z" : null,
+            });
           }
           throw new Error(`Unexpected management request ${path}`);
         },

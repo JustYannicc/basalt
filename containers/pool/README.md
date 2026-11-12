@@ -25,7 +25,7 @@ Optional environment:
 
 - <code>POOL_DATABASE_SCHEMA_OWNER</code>: an existing role selected with <code>SET LOCAL ROLE</code> inside schema transactions. Signalbox supplies its provisioned stable owner. Standalone containers omit this to migrate as their database login. The login must have permission to select a configured owner; a missing or denied role emits <code>POOL_HOME_SCHEMA_OWNER_UNAVAILABLE</code> and ends startup without an internal retry.
 - <code>POOL_APP_SIGNING_KEY</code>: the parent app supplies its existing pool signing key, 32 bytes encoded as lowercase hex, for native membership projections and request assertions. Native use fails closed without it. <code>POOL_APP_SIGNING_KEY_PREVIOUS</code> accepts the previous key during rotation.
-- <code>POOL_MANAGEMENT_ALLOW_REMOTE</code>: defaults to <code>false</code>. The parent app sets <code>true</code> for Home management over the private controller path. The public router and pool Worker reject direct <code>/v0/management/*</code> and <code>/v8/management/*</code> requests. The Durable Object retains the internal mapping to port 8327; Home still requires the management key.
+- <code>POOL_MANAGEMENT_ALLOW_REMOTE</code>: defaults to <code>false</code>. The parent app sets <code>true</code> for Home management over the private controller path. The public router and pool Worker reject direct `/v0/management/*` and `/v8/management/*` requests. The Durable Object retains the internal mapping to port 8327; Home still requires the management key.
 
 The supervisor verifies that /dev/shm is tmpfs before writing secrets. It keeps the PostgreSQL DSN, exchange config, Home JWT, and node certificate material in memory-backed storage. It imports the small exchange config only after Home exits with its explicit empty-database-config diagnostic, then deletes that file. Normal restarts use Home's database as the authority and PATCH only server port, routing, and remote-management fields. The patch does not include provider credentials, client API keys, or the stored management key.
 
@@ -63,17 +63,17 @@ The stack enables container log observability with this image. Home's allowed co
 
 The Python supervisor and readiness server emit only <code>POOL_RUNTIME_FAILURE {"category":N,"count":1}</code> to stderr. They never print exception messages, exception class names, tracebacks or client addresses. The same projection handles uncaught main-thread, child-reader-thread and finalizer failures.
 
-| Category | Failure location |
-| --- | --- |
-| 1 | Configuration and memory-backed storage setup |
-| 2 | Home startup, initial import or configuration |
-| 3 | Node enrollment or launch |
-| 4 | Initial Home and node health check |
-| 5 | Running child process or health check |
-| 6 | Uncaught main-thread failure, including cleanup |
-| 7 | Uncaught thread failure |
-| 8 | Readiness HTTP handler |
-| 9 | An exception Python cannot propagate, such as a finalizer failure |
+| Category | Failure location                                                  |
+| -------- | ----------------------------------------------------------------- |
+| 1        | Configuration and memory-backed storage setup                     |
+| 2        | Home startup, initial import or configuration                     |
+| 3        | Node enrollment or launch                                         |
+| 4        | Initial Home and node health check                                |
+| 5        | Running child process or health check                             |
+| 6        | Uncaught main-thread failure, including cleanup                   |
+| 7        | Uncaught thread failure                                           |
+| 8        | Readiness HTTP handler                                            |
+| 9        | An exception Python cannot propagate, such as a finalizer failure |
 
 CI injects response and token sentinels into supervisor failures and a real readiness HTTP request, then checks both stdout and stderr. A subprocess exercises the actual entrypoint's thread, finalizer and cleanup failure hooks. The supervisor test also reaches readiness before injecting a running health-check failure. All three startup, runtime and HTTP regressions must fail against the previous image source without setup errors.
 
@@ -132,3 +132,5 @@ or `exhausted`, attempt number, delay seconds and elapsed milliseconds. Every
 failed child retains its normal exit receipt. Exhaustion leaves readiness false,
 emits `POOL_RUNTIME_FAILURE` and exits the container with code 1. The lifetime
 budget is in memory; a platform container replacement starts a new budget.
+
+Home database v15 adds the per-pool account selection policy. Take a full PostgreSQL backup before deploying the migration. Existing pools default to reset-aware selection; account rows, memberships, quota readings and credit policies are retained. A saved balanced choice survives repeated boots.

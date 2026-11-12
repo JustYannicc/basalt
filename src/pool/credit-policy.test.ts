@@ -22,6 +22,7 @@ function fixture() {
     if (path.endsWith("/usage-credit-routing"))
       return Response.json({
         usageCreditPolicy: groups[0]!.usage_credit_policy,
+        accountSelectionPolicy: "reset_aware",
         accounts: {
           "unknown-home-id": {
             use: "unknown",

@@ -44,6 +44,7 @@ export async function startRuntime(
       POOL_APP_SIGNING_KEY: configuration.signingKey,
       POOL_APP_SIGNING_KEY_PREVIOUS: configuration.previousSigningKey,
       POOL_IMAGE_HASH: configuration.imageInput,
+      ...(configuration.claudeQuotaDiagnostic ? { POOL_CLAUDE_QUOTA_DIAGNOSTIC: "true" } : {}),
     },
     {
       ledger,

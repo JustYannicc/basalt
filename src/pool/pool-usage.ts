@@ -1,3 +1,4 @@
+import type { ReportingProgress } from "./reporting.ts";
 import {
   callerHeader,
   controlBasePath,
@@ -91,8 +92,8 @@ export class PoolUsage {
   }
 
   /** Alarm work shares one bounded set of full quota reads across every pool. */
-  async observe(): Promise<void> {
-    await this.sync();
+  async observe(progress?: ReportingProgress): Promise<void> {
+    await this.sync(progress);
     const { client } = this.deps;
     const membership = await client.allMembership();
     const pools = new Map<string, Set<string>>();
@@ -229,23 +230,26 @@ export class PoolUsage {
           ),
         });
       } catch (error) {
+        if (progress) progress.outcome = "partial";
         console.error("Pool capacity sampling failed", error);
       }
       try {
         await this.history.sample(pool, readings, now);
       } catch (error) {
+        if (progress) progress.outcome = "partial";
         console.error("Pool limit sampling failed", error);
       }
     }
   }
 
   /** One sync at a time; a failed one leaves what was already read. */
-  private sync(): Promise<void> {
+  private sync(progress?: ReportingProgress): Promise<void> {
     this.syncing ??= this.ledger
-      .sync()
+      .sync(undefined, progress)
       .then(
         () => {},
         (error: unknown) => {
+          if (progress) progress.outcome = "partial";
           console.error("Pool usage sync failed", error);
         },
       )

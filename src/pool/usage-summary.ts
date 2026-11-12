@@ -1,3 +1,4 @@
+import type { ReportingProgress } from "./reporting.ts";
 import type {
   AccountUsage,
   Cap,
@@ -9,9 +10,15 @@ import type {
 } from "../../apps/pool/contract.ts";
 import { digest, parseBackendUserName } from "./backend-users.ts";
 import { poolGroupPrefix, type HomeClient } from "./control.ts";
-import { object, rows, text, unavailable, type Json } from "./json.ts";
+import { object, text, unavailable, type Json } from "./json.ts";
 import type { LimitHistory } from "./limit-history.ts";
 import { ChunkStorage, UsageQueue, type UsageStorage } from "./usage-storage.ts";
+import {
+  acknowledgeUsagePage,
+  readPendingUsagePage,
+  readUsagePage,
+  type UsageScan,
+} from "./usage-feed.ts";
 
 const dayMs = 86_400_000;
 const overlap = 60_000;
@@ -44,11 +51,7 @@ interface Receipts {
   pools: string[];
   pruned?: number;
 }
-interface Scan {
-  from: number;
-  to: number;
-  offset: number;
-}
+type Scan = UsageScan;
 interface Cursor {
   version: number;
   pools: string[];
@@ -57,6 +60,9 @@ interface Cursor {
   late?: Scan;
   lateAt?: number;
   scan?: Scan;
+  pendingFeed?: boolean;
+  backfillComplete?: boolean;
+  attributionScope?: string;
 }
 interface Options {
   now?: () => Date;
@@ -220,7 +226,10 @@ export class UsageLedger {
   readAt(): Promise<string | null> {
     return this.queue.run(async () => (await this.storage.get<Cursor>(cursorKey))?.readAt ?? null);
   }
-  sync(now = this.options.now?.() ?? new Date()): Promise<{ complete: boolean; pages: number }> {
+  sync(
+    now = this.options.now?.() ?? new Date(),
+    progress?: ReportingProgress,
+  ): Promise<{ complete: boolean; pages: number }> {
     return this.queue.run(async () => {
       await this.storage.recover(pendingKey);
       const at = now.getTime();
@@ -346,34 +355,66 @@ export class UsageLedger {
       const canonical =
         object(capabilities.capabilities) &&
         capabilities.capabilities.usage_token_breakdown_v2 === true;
+      const keyset =
+        object(capabilities.capabilities) &&
+        capabilities.capabilities.usage_summary_cursor_v1 === true;
+      const pendingFeed =
+        keyset &&
+        object(capabilities.capabilities) &&
+        capabilities.capabilities.usage_summary_pending_v1 === true;
+      const attributionScope = await digest(
+        JSON.stringify([
+          [...groups].sort(([a], [b]) => a - b),
+          [...pools].sort(([a], [b]) => a.localeCompare(b)),
+        ]),
+      );
+      if (pendingFeed !== Boolean(cursor.pendingFeed)) {
+        cursor.pendingFeed = pendingFeed;
+        delete cursor.scan;
+        delete cursor.backfillComplete;
+      }
+      // A newly selected account can make retained, previously unknown rows
+      // attributable. Revisit history once for a changed membership, not per poll.
+      if (pendingFeed && cursor.attributionScope !== attributionScope) {
+        cursor.attributionScope = attributionScope;
+        delete cursor.scan;
+        delete cursor.backfillComplete;
+      }
+      if (pendingFeed) {
+        // Home also queues pre-existing future timestamps when installing the feed.
+        delete cursor.fresh;
+        delete cursor.late;
+      }
+      if (progress) progress.rows = 0;
       let pages = 0;
-      let sweepComplete = false;
-      for (const kind of ["fresh", "late", "scan"] as const) {
-        if (kind !== "scan" && !cursor[kind]) continue;
+      let sweepComplete = pendingFeed && cursor.backfillComplete === true;
+      let pendingComplete = !pendingFeed;
+      for (const kind of ["fresh", "late", "scan", "pending"] as const) {
+        if (kind === "pending" && !pendingFeed) continue;
+        if (kind === "scan" && sweepComplete) continue;
+        if (kind !== "scan" && kind !== "pending" && !cursor[kind]) continue;
         // Spare fresh/late capacity goes to the sweep, never the reverse.
-        const budget = kind === "fresh" ? 1 : kind === "late" ? 2 : 5 - pages;
+        const budget =
+          kind === "pending"
+            ? 50
+            : kind === "fresh"
+              ? 1
+              : kind === "late"
+                ? 2
+                : pendingFeed
+                  ? 2
+                  : 5 - pages;
         for (let used = 0; used < budget; used++) {
-          const scan = (cursor[kind] ??= { from: Date.parse(cutoff), to: at, offset: 0 });
-          // Home v1.1.6 management/usage_observability.go:129-135,575-597;
-          // cluster/usage_observability.go:2927-2928 orders ties by id.
-          const params = new URLSearchParams({
-            sort: "timestamp_asc",
-            from: new Date(scan.from).toISOString(),
-            to: new Date(scan.to).toISOString(),
-            limit: "200",
-            offset: String(scan.offset),
-          });
-          const page = await this.home.data(`/usage/records?${params}`);
-          const items = rows(page.items);
-          if (
-            items.length > 200 ||
-            typeof page.total !== "number" ||
-            !Number.isSafeInteger(page.total) ||
-            page.total < 0 ||
-            (!items.length && scan.offset < page.total)
-          )
-            return unavailable();
+          const scan =
+            kind === "pending"
+              ? { from: Date.parse(cutoff), to: at, offset: 0 }
+              : (cursor[kind] ??= { from: Date.parse(cutoff), to: at, offset: 0 });
+          const { items, complete } =
+            kind === "pending"
+              ? await readPendingUsagePage(this.home, at)
+              : await readUsagePage(this.home, scan, keyset);
           pages++;
+          if (progress) progress.rows = (progress.rows ?? 0) + items.length;
           const writes = new Map<string, unknown>();
           const before = new Map<string, string>();
           const prepared = await Promise.all(
@@ -381,7 +422,12 @@ export class UsageLedger {
               const id = text(row.id),
                 timestamp = text(row.timestamp);
               const time = timestamp ? Date.parse(timestamp) : NaN;
-              if (!id || !Number.isFinite(time) || time < scan.from || time >= scan.to)
+              if (
+                !id ||
+                !Number.isFinite(time) ||
+                (kind !== "pending" && time < scan.from) ||
+                time >= scan.to
+              )
                 return unavailable();
               return { row, time, day: dayOf(time), hash: await digest(id) };
             }),
@@ -521,14 +567,18 @@ export class UsageLedger {
               );
             }
           }
-          scan.offset += items.length;
-          const complete = scan.offset >= page.total;
-          // An insertion before the saved offset is caught on the next full sweep.
+          // A late commit behind either cursor is caught on the next reconciliation pass.
           if (complete) {
-            if (kind === "fresh") cursor.readAt = new Date(scan.to).toISOString();
+            if (kind === "fresh" && !pendingFeed) cursor.readAt = new Date(scan.to).toISOString();
             else if (kind === "late") cursor.lateAt = scan.to;
-            else sweepComplete = true;
-            delete cursor[kind];
+            else if (kind === "scan") {
+              sweepComplete = true;
+              if (pendingFeed) cursor.backfillComplete = true;
+            }
+            if (kind === "pending") {
+              pendingComplete = true;
+              cursor.readAt = new Date(at).toISOString();
+            } else delete cursor[kind];
           }
           for (const [key, value] of writes)
             if (JSON.stringify(value) === before.get(key)) writes.delete(key);
@@ -537,12 +587,19 @@ export class UsageLedger {
           if (nextCursor !== savedCursor) writes.set(cursorKey, cursor);
           if (nextDays !== savedDays) writes.set(daysKey, retained);
           await this.storage.commit(writes, [], pendingKey);
+          if (kind === "pending")
+            await acknowledgeUsagePage(
+              this.home,
+              items.map((row) => ({ id: text(row.id)!, token: text(row.pending_token)! })),
+            );
           savedCursor = nextCursor;
           savedDays = nextDays;
           if (complete) break;
         }
       }
-      return { complete: !cursor.fresh && sweepComplete, pages };
+      const complete = !cursor.fresh && sweepComplete && pendingComplete;
+      if (progress && !complete) progress.outcome = "incomplete";
+      return { complete, pages };
     });
   }
   summary(pool: string, options: SummaryOptions): Promise<UsageSummary> {

@@ -176,6 +176,33 @@
             "mode": "manual",
             "requires": "Retire when the pinned Home reads credential identity, quota snapshots and quota windows for funding selection in one authoritative SQL statement, preserving old-result parity, soft deletion, expiry and missing-data semantics, with PostgreSQL concurrent-update and query-budget proof. Admission and management loaders remain unchanged."
           }
+        },
+        {
+          "identity": "cliproxy-home-reset-aware-selection",
+          "file": "0522-home-reset-aware-selection.patch",
+          "sha256": "20ecbbfaa54ec5da72484e512831f9a8e4e6391fb2280165056ab075d99efca2",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only after the pinned Home preserves eligible sticky and parent sessions, prefers the earliest fresh account-wide weekly reset among plan-funded candidates with five-hour fallback, keeps model limits as eligibility gates and credits last, supports reversible per-pool balanced selection, migrates retained v14 data additively and passes admission, privacy, policy and repeated-boot regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-home-scoped-limits-resets",
+          "file": "0526-home-scoped-limits-resets.patch",
+          "sha256": "53fb8f12d458871ff259db6f17084be0f6a221af55c45cb28ae2a3dd733b0864",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after the pinned source preserves generic model weekly windows and reset grant kind, scope, count, expiry and normalized effects through retained snapshots and management reads, with default-off bounded diagnostic discovery and no reset redemption."
+          }
+        },
+        {
+          "identity": "cliproxy-home-incremental-usage",
+          "file": "0539-home-incremental-usage.patch",
+          "sha256": "ef9827fecc8509010c9eb4527e4c32d8faef1fe8409099bc6ca0bfe3882a99ea",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home preserves narrow exact timestamp/string-ID summary pages, transactional late-commit and attribution-repair pending work with token-fenced acknowledgement, exact portable queue restoration, time-bounded first-success key identity, PR 171 overview semantics and online index readiness. Preserve retained v15 rows without legacy normalization, concurrent startup, interrupted-index repair and old-writer compatibility, and ship only with the strict native schema activation barrier."
+          }
         }
       ]
     },

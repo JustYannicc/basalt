@@ -65,6 +65,9 @@ export const poolWorker = Effect.gen(function* () {
       POOL_MANAGEMENT_KEY: yield* Config.Redacted("POOL_MANAGEMENT_KEY"),
       TOOLS_SERVICE: yield* Api,
       POOL_APP_SIGNING_KEY: yield* Config.Redacted("POOL_APP_SIGNING_KEY"),
+      POOL_CLAUDE_QUOTA_DIAGNOSTIC: String(
+        yield* Config.Boolean("POOL_CLAUDE_QUOTA_DIAGNOSTIC").pipe(Config.withDefault(false)),
+      ),
       POOL_MODEL_HISTORY_ENABLED: String(
         yield* Config.Boolean("POOL_MODEL_HISTORY_ENABLED").pipe(Config.withDefault(false)),
       ),

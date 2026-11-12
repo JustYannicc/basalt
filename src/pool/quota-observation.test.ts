@@ -1,6 +1,29 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { quotaObservation } from "./quota-observation.ts";
+import { quotaObservation as readQuotaObservation } from "./quota-observation.ts";
+const quotaObservation = (detail: Parameters<typeof readQuotaObservation>[0]) =>
+  readQuotaObservation(detail, Date.parse("2026-10-30T18:00:00Z"));
+
+test("reported fixed periods normalize without guessing missing or calendar durations", () => {
+  const windows = quotaObservation({
+    windows: [
+      { period_unit: "week", period_value: 1 },
+      { period_unit: "hour", period_value: 5 },
+      { period_unit: "day", period_value: 7 },
+      { window_seconds: 18000, period_unit: "week", period_value: 1 },
+      { period_unit: "month", period_value: 1 },
+      { label: "Weekly", reset_at: "2026-11-16T00:00:00Z" },
+      { period_unit: "week", period_value: 0 },
+      { period_unit: "week", period_value: -1 },
+      { window_seconds: -1, period_unit: "week", period_value: 1 },
+      { period_unit: "week", period_value: "1" },
+    ],
+  }).windows;
+  assert.deepEqual(
+    windows.map((window) => window.period.seconds),
+    [604800, 18000, 604800, 18000, null, null, null, null, null, null],
+  );
+});
 
 test("reported fixed periods normalize without guessing missing or calendar durations", () => {
   const windows = quotaObservation({

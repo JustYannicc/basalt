@@ -3,10 +3,10 @@ import { PoolHome, HomeClient, accountsView } from "../../src/pool/control.ts";
 import { PoolViewSnapshots } from "../../src/pool/view-snapshot.ts";
 import { quotaSamplingFixture } from "../../src/pool/quota-sampling.test-helpers.ts";
 import { overviewFixture, capacityFixture } from "./overview-fixture.mjs";
+import { bundlePoolApp } from "../pool-app-bundle.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
-  cpSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -50,6 +50,8 @@ const emptyUsage = {
 
 // Optional PR evidence, never committed. Screenshots go to an absolute directory outside the checkout.
 const artifacts = process.env.POOL_UI_ARTIFACTS;
+// Where the first failing session saves its page and frame DOM; defaults to the evidence folder.
+const failures = process.env.POOL_UI_FAILURE_DIR ?? artifacts;
 // Optional baseline: build that commit's app.tsx, accounts.tsx and api.ts into the fixture instead of the working tree.
 const sourceRef = process.env.POOL_UI_SOURCE_REF;
 const weightPolicyRef = process.env.POOL_UI_WEIGHT_POLICY_REF;
@@ -64,9 +66,12 @@ const peopleCopyRef = process.env.POOL_UI_PEOPLE_COPY_REF;
 const learningRef = process.env.POOL_UI_LEARNING_REF;
 const limitSupportRef = process.env.POOL_UI_LIMIT_SUPPORT_REF;
 const unknownReadingRef = process.env.POOL_UI_UNKNOWN_READING_REF;
+// Optional baseline: build that commit's overview, attention and app files, which summed every
+// banked reset into one total, to capture the old reset line. Reset assertions are skipped.
+const resetsRef = process.env.POOL_UI_RESETS_REF;
 const historicalOverview = Boolean(planBaseline || peopleCopyRef || learningRef);
 const requestWindow = historicalOverview ? "in" : "· last";
-const baselineRef = sourceRef ?? peopleCopyRef ?? learningRef;
+const baselineRef = sourceRef ?? peopleCopyRef ?? learningRef ?? resetsRef;
 const artifactLabel =
   process.env.POOL_UI_ARTIFACT_LABEL ??
   (baselineRef ? `before-${baselineRef.slice(0, 8)}` : "after");
@@ -75,6 +80,12 @@ if (artifacts)
     isAbsolute(artifacts) && !`${resolve(artifacts)}/`.startsWith(root),
     "POOL_UI_ARTIFACTS must be an absolute directory outside the checkout",
   );
+if (failures)
+  assert.ok(
+    isAbsolute(failures) && !`${resolve(failures)}/`.startsWith(root),
+    "POOL_UI_FAILURE_DIR must be an absolute directory outside the checkout",
+  );
+let failureSaved = false;
 
 const minute = 60_000;
 const hour = 60 * minute;
@@ -316,10 +327,11 @@ test(
       );
       ViewHome = (await import(pathToFileURL(baseline).href)).PoolHome;
     }
-    cpSync(join(root, "apps/pool"), app, {
-      recursive: true,
-      filter: (path) => !path.includes("node_modules") && !/\.(test|spec)\./.test(path),
-    });
+    for (const file of bundlePoolApp(root, join(root, ".upstream"))) {
+      const target = join(app, file.path);
+      mkdirSync(resolve(target, ".."), { recursive: true });
+      writeFileSync(target, file.content);
+    }
     if (sourceRef)
       for (const file of ["ui/app.tsx", "ui/accounts.tsx", "ui/api.ts"])
         writeFileSync(
@@ -361,6 +373,12 @@ test(
         writeFileSync(
           join(app, file),
           execFileSync("git", ["-C", root, "show", `${unknownReadingRef}:apps/pool/${file}`]),
+        );
+    if (resetsRef)
+      for (const file of ["ui/overview.tsx", "ui/overview-attention.ts", "ui/app.tsx"])
+        writeFileSync(
+          join(app, file),
+          execFileSync("git", ["-C", root, "show", `${resetsRef}:apps/pool/${file}`]),
         );
     writeFileSync(
       join(app, "deployment.ts"),
@@ -410,6 +428,8 @@ test(
     let directoryResult;
     let usagePartial = false;
     let seriesNext = null;
+    // Every request that could change something; reset coverage asserts it stays empty.
+    const writes = [];
     const answer = (entry) =>
       entry.response.end(
         JSON.stringify(entry.fresh && freshResult !== undefined ? freshResult : viewResult),
@@ -488,6 +508,8 @@ test(
         let body = "";
         for await (const chunk of request) body += chunk;
         const { name, input } = JSON.parse(body);
+        if (!["view", "usage", "capacity", "computerContext", "publicHistory"].includes(name))
+          writes.push(name);
         response.setHeader("content-type", "application/json");
         if (name === "capacity" && holdCapacity) {
           heldCapacity.push({ response, input });
@@ -520,7 +542,15 @@ test(
         response.end(
           `<script type="application/json" id="executor-context">{"version":"fixture"}</script>${stylesheet === null ? "" : '<link rel="stylesheet" href="/main.css">'}<div id="root"></div><script type="module" src="/main.js"></script>`,
         );
-      } else response.writeHead(204).end();
+      } else {
+        if (
+          request.method !== "GET" &&
+          request.method !== "HEAD" &&
+          !request.url?.startsWith("/_executor/api/telemetry")
+        )
+          writes.push(request.url);
+        response.writeHead(204).end();
+      }
     });
     servers.push(child);
     await new Promise((resolve) => child.listen(0, "127.0.0.1", resolve));
@@ -580,9 +610,11 @@ test(
     const capture = async (page, name) => {
       if (!artifacts) return;
       mkdirSync(artifacts, { recursive: true });
+      // Finite transitions, such as a dialog's entrance, are captured at their settled end.
       await page.screenshot({
         path: join(artifacts, `${artifactLabel}-${name}.png`),
         fullPage: true,
+        animations: "disabled",
       });
       if (name === "snapshot-updating") evidenceVideo = page.video();
     };
@@ -655,15 +687,37 @@ test(
                 requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
               ),
           );
-        await work({
-          page,
-          frame,
-          accepted,
-          marks,
-          committedAtReady,
-          settled,
-          clock: context.clock,
-        });
+        try {
+          await work({
+            page,
+            frame,
+            accepted,
+            marks,
+            committedAtReady,
+            settled,
+            clock: context.clock,
+          });
+        } catch (error) {
+          // The first failure keeps what the page showed; the error itself is rethrown unchanged.
+          if (failures && !failureSaved) {
+            failureSaved = true;
+            mkdirSync(failures, { recursive: true });
+            await page
+              .screenshot({
+                path: join(failures, `${artifactLabel}-first-failure.png`),
+                fullPage: true,
+                animations: "disabled",
+              })
+              .catch(() => {});
+            await frame
+              .content()
+              .then((html) =>
+                writeFileSync(join(failures, `${artifactLabel}-first-failure.html`), html),
+              )
+              .catch(() => {});
+          }
+          throw error;
+        }
       } finally {
         release();
         assert.deepEqual(await context.cookies(), []);
@@ -816,14 +870,13 @@ test(
                 assert.doesNotMatch(text, /1 accounts|1 banked resets/);
                 if (freshnessRef) assert.match(text, /4 accounts have stale or missing readings/);
                 else assert.doesNotMatch(text, /stale or missing readings/);
-                const reset = frame.getByRole("link", {
-                  name: "1 banked reset available",
-                  exact: true,
-                });
-                assert.equal(
-                  await reset.getAttribute("href"),
-                  `${parentOrigin}/org/fixture/apps/pool?view=accounts`,
-                );
+                if (!resetsRef) {
+                  const reset = frame.getByRole("button", {
+                    name: "1 reset with unknown scope available",
+                    exact: true,
+                  });
+                  assert.equal(await reset.count(), 1);
+                }
               }
               assert.ok(
                 await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
@@ -912,6 +965,377 @@ test(
             );
         },
       );
+
+    // Scoped banked resets and a model's own weekly limit, seeded as Home rows so they pass
+    // through the pool's own normalization. The pool shows them read-only: nothing here opens a
+    // spend control, and every request that could change something is recorded and must be none.
+    const scopedView = async (files, quota, now) => {
+      const home = new ViewHome(
+        new HomeClient(async (path) => {
+          if (path.endsWith("/channel-groups"))
+            return Response.json({
+              channel_groups: [{ id: 1, channel_name: "signalbox-pool-resets-fixture" }],
+            });
+          if (path.includes("/channel-group-details?"))
+            return Response.json({
+              channel_group_details: files.map(({ id }, index) => ({
+                id: index + 1,
+                channel_group_id: 1,
+                auth_id: id,
+              })),
+            });
+          if (path.endsWith("/credentials")) return Response.json({ files });
+          const detail = quota.find((row) =>
+            path.endsWith(`/quota/credentials/${row.credential.credential_id}`),
+          );
+          if (detail) return Response.json(detail);
+          throw Error("Unexpected synthetic Home request");
+        }),
+        "resets-fixture",
+      );
+      const saved = new Map();
+      const snapshots = new PoolViewSnapshots(
+        {
+          get: async (key) => structuredClone(saved.get(key)),
+          put: async (key, value) => {
+            saved.set(key, structuredClone(value));
+          },
+        },
+        () => {},
+      );
+      return home.view(true, snapshots, false, () => new Date(now));
+    };
+    const claudeRow = (id, now, windows, credits) => ({
+      credential: { credential_id: id, plan: { name: "Max 20x" } },
+      collection: {
+        freshness: "fresh",
+        status: "success",
+        observed_at: new Date(now).toISOString(),
+        expires_at: new Date(now + 30 * minute).toISOString(),
+      },
+      windows,
+      reset_credits: {
+        available_count: credits.reduce((sum, credit) => sum + (credit.remaining ?? 1), 0),
+        credits,
+      },
+    });
+    const homeWindow = (now, id, seconds, ratio, extra = {}) => ({
+      id,
+      scope: "account",
+      window_seconds: seconds,
+      remaining_ratio: ratio,
+      reset_at: new Date(now + 2 * day).toISOString(),
+      observed_at: new Date(now).toISOString(),
+      ...extra,
+    });
+    // The parent's acceptance dates while they are ahead; later runs keep the same shape.
+    const ahead = (now, fixed, fallback) =>
+      Date.parse(fixed) > now + 2 * day ? fixed : new Date(now + fallback).toISOString();
+    // The same text the shared Details renderer writes for an instant, in the frame's own format.
+    const shownMoment = (frame, value) =>
+      frame.evaluate((value) => {
+        const { locale, timeZone } = new Intl.DateTimeFormat().resolvedOptions();
+        const at = (when, options) =>
+          new Date(when).toLocaleString(locale, { timeZone, ...options });
+        const now = Date.now();
+        const time = { hour: "numeric", minute: "2-digit" };
+        const sameDay = at(value, { dateStyle: "short" }) === at(now, { dateStyle: "short" });
+        const sameYear = at(value, { year: "numeric" }) === at(now, { year: "numeric" });
+        return at(
+          value,
+          sameDay
+            ? time
+            : {
+                weekday: "short",
+                day: "numeric",
+                month: "short",
+                ...(sameYear ? {} : { year: "numeric" }),
+                ...time,
+              },
+        );
+      }, value);
+    const rowName = (text) => text.split(/[\t\n]/u)[0]?.trim();
+    const fitsWithin = (frame, dialog) =>
+      Promise.all([
+        frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        dialog
+          ? dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)
+          : Promise.resolve(true),
+      ]).then((checks) => checks.every(Boolean));
+
+    for (const width of [1280, 390])
+      await t.test(
+        `scoped banked resets open read-only Details beside each model's own limit at ${width}px`,
+        async () => {
+          const now = Date.now();
+          const weeklyExpiry = ahead(now, "2026-12-10T22:00:00Z", 28 * day);
+          const fableExpiry = ahead(now, "2027-03-09T07:59:00Z", 117 * day);
+          const files = [
+            { id: "claude-model", provider: "claude", label: "model-seat@example.com" },
+            { id: "claude-plain", provider: "claude", label: "plain-seat@example.com" },
+          ];
+          const quota = [
+            claudeRow(
+              "claude-model",
+              now,
+              [
+                homeWindow(now, "claude-five-hour", 18_000, 0.7),
+                homeWindow(now, "claude-seven-day", 604_800, 0.8),
+                homeWindow(now, "claude-seven-day-fable", 604_800, 0.4, {
+                  scope: "model",
+                  scope_id: "fable",
+                  label: "Fable weekly",
+                }),
+              ],
+              [
+                {
+                  status: "available",
+                  remaining: 1,
+                  expires_at: weeklyExpiry,
+                  kind: "weekly",
+                  scope: "account",
+                  clears: ["claude-seven-day"],
+                },
+                {
+                  status: "available",
+                  remaining: 3,
+                  expires_at: fableExpiry,
+                  kind: "model",
+                  scope: "model",
+                  scope_id: "fable",
+                  clears: ["claude-five-hour", "claude-seven-day-fable"],
+                  gives_back_weekly: true,
+                },
+                // Expired before this read: never available, never counted.
+                {
+                  status: "available",
+                  remaining: 2,
+                  expires_at: new Date(now - day).toISOString(),
+                  kind: "weekly",
+                  scope: "account",
+                },
+                // No kind, scope or expiry: stays unclassified, never a whole week, never lasting.
+                {
+                  status: "available",
+                  remaining: 1,
+                },
+              ],
+            ),
+            claudeRow(
+              "claude-plain",
+              now,
+              [
+                homeWindow(now, "claude-five-hour", 18_000, 0.9),
+                homeWindow(now, "claude-seven-day", 604_800, 0.6),
+              ],
+              [],
+            ),
+          ];
+          const value = await scopedView(files, quota, now);
+          const seeded = value.accounts.find((account) => account.id === "claude-model");
+          assert.deepEqual(
+            seeded?.bankedResets?.groups?.map((group) => [group.label, group.available]),
+            [
+              ["Weekly resets", 1],
+              ["Fable resets", 3],
+              ["Resets with unknown scope", 1],
+            ],
+            "the expired grant is dropped by the pool's own normalization",
+          );
+          viewResult = { ok: true, value };
+          const startWrites = writes.length;
+          await session(
+            async ({ page, frame, settled }) => {
+              release();
+              await frame.getByRole("heading", { name: "Needs attention", exact: true }).waitFor();
+              await settled();
+              const text = await frame.locator("body").innerText();
+              if (resetsRef) {
+                await page.locator("iframe").evaluate(
+                  (iframe, height) => {
+                    iframe.style.height = `${height}px`;
+                  },
+                  await frame.evaluate(() => document.documentElement.scrollHeight),
+                );
+                await settled();
+                await capture(page, `scoped-resets-overview-${width}`);
+                return;
+              }
+              // One short line, kinds apart, no combined total and no expired grant.
+              const summary = frame.getByRole("button", {
+                name: "1 weekly reset · 3 Fable resets · 1 reset with unknown scope available",
+                exact: true,
+              });
+              await summary.waitFor();
+              assert.doesNotMatch(text, /\b[4-7] (banked )?resets? available/);
+              assert.doesNotMatch(text, /Expired/);
+              // Capacity gets no extra weekly line from a model's own limit.
+              assert.equal(await frame.getByRole("radio", { name: /Fable/ }).count(), 0);
+              // The overview row puts the model's weekly beside the account's weekly.
+              const limits = frame.getByRole("region", { name: "Model limits" });
+              const limitRow = limits.getByRole("button");
+              assert.equal(await limitRow.count(), 1, "only the account with a model limit");
+              const limitText = await limitRow.innerText();
+              assert.match(limitText, /model-seat@example\.com/);
+              assert.ok(
+                limitText.indexOf("Weekly 80% remaining") >= 0 &&
+                  limitText.indexOf("Weekly 80% remaining") <
+                    limitText.indexOf("Fable weekly 40% remaining"),
+                limitText,
+              );
+              assert.ok(await fitsWithin(frame), `Overview fits at ${width}px`);
+
+              await summary.click();
+              const dialog = frame.getByRole("dialog", { name: "Banked resets" });
+              await dialog.waitFor();
+              // Read-only: the dialog's only control closes it.
+              assert.deepEqual(await dialog.getByRole("button").allInnerTexts(), ["Close"]);
+              await dialog.getByRole("heading", { name: "model-seat@example.com" }).waitFor();
+              assert.match(await dialog.innerText(), /claude · read/i);
+              const rows = await dialog.locator("tbody tr").allInnerTexts();
+              const names = rows.map(rowName);
+              assert.deepEqual(names, [
+                "Plan",
+                "5h",
+                "Weekly",
+                "Fable weekly",
+                "Weekly resets",
+                "Fable resets",
+                "Resets with unknown scope",
+              ]);
+              const row = (name) => rows[names.indexOf(name)];
+              assert.match(
+                row("Fable weekly"),
+                /This model's own limit\. Its use also counts toward the weekly limit\./,
+              );
+              assert.match(row("Fable weekly"), /40% remaining/);
+              assert.match(row("Fable resets"), /\b3 resets\b/);
+              assert.match(
+                row("Fable resets"),
+                /Refills the Fable weekly limit and gives back only the weekly use spent on Fable, not the whole week\. Also refills the 5-hour limit\./,
+              );
+              assert.ok(
+                row("Fable resets").includes(`Expires ${await shownMoment(frame, fableExpiry)}`),
+                row("Fable resets"),
+              );
+              assert.match(row("Weekly resets"), /\b1 reset\b/);
+              assert.match(row("Weekly resets"), /Refills the account's whole weekly limit\./);
+              assert.ok(
+                row("Weekly resets").includes(`Expires ${await shownMoment(frame, weeklyExpiry)}`),
+                row("Weekly resets"),
+              );
+              assert.match(
+                row("Resets with unknown scope"),
+                /The source didn't say which limit this refills\./,
+              );
+              // A missing expiry is unknown, never a promise that the reset lasts.
+              assert.match(row("Resets with unknown scope"), /Expiry not reported/);
+              assert.doesNotMatch(rows.join("\n"), /\b2 resets\b|Expired|Does not expire/);
+              assert.ok(await fitsWithin(frame, dialog), `Reset Details fit at ${width}px`);
+              await capture(page, `scoped-resets-details-${width}`);
+              await dialog.getByRole("button", { name: "Close", exact: true }).click();
+              await dialog.waitFor({ state: "hidden" });
+
+              // The model-limit row opens the same Details for that one account.
+              await limitRow.click();
+              const accountDialog = frame.getByRole("dialog", { name: "Account limits" });
+              await accountDialog.waitFor();
+              assert.deepEqual(
+                (await accountDialog.locator("tbody tr").allInnerTexts()).map(rowName),
+                names,
+              );
+              assert.ok(
+                await fitsWithin(frame, accountDialog),
+                `Account Details fit at ${width}px`,
+              );
+              await capture(page, `model-limits-details-${width}`);
+              await accountDialog.getByRole("button", { name: "Close", exact: true }).click();
+              await accountDialog.waitFor({ state: "hidden" });
+
+              await page.locator("iframe").evaluate(
+                (iframe, height) => {
+                  iframe.style.height = `${height}px`;
+                },
+                await frame.evaluate(() => document.documentElement.scrollHeight),
+              );
+              await settled();
+              await capture(page, `scoped-resets-overview-${width}`);
+            },
+            { viewport: { width, height: 1000 } },
+          );
+          assert.deepEqual(writes.slice(startWrites), [], "nothing was spent or changed");
+        },
+      );
+
+    // The longest report a producer sends: 64 windows and 64 reset groups in one Details table.
+    if (!resetsRef)
+      await t.test("the longest reset Details scroll inside the dialog at 390px", async () => {
+        const now = Date.now();
+        const files = [{ id: "claude-long", provider: "claude", label: "long-seat@example.com" }];
+        const windows = Array.from({ length: 64 }, (_, index) =>
+          index === 0
+            ? homeWindow(now, "claude-seven-day", 604_800, 0.8)
+            : homeWindow(now, `claude-seven-day-model-${index}`, 604_800, 0.5, {
+                scope: "model",
+                scope_id: `model-${index}`,
+                label: `Model ${index} weekly`,
+              }),
+        );
+        const credits = Array.from({ length: 64 }, (_, index) => ({
+          status: "available",
+          remaining: 1,
+          expires_at: new Date(now + (index + 2) * day).toISOString(),
+          ...(index % 2 === 0
+            ? { kind: "weekly", scope: "account" }
+            : { kind: "model", scope: "model", scope_id: "fable", gives_back_weekly: true }),
+        }));
+        const value = await scopedView(
+          files,
+          [claudeRow("claude-long", now, windows, credits)],
+          now,
+        );
+        assert.equal(value.accounts[0]?.windows.length, 64);
+        assert.equal(value.accounts[0]?.bankedResets?.groups?.length, 64);
+        viewResult = { ok: true, value };
+        const startWrites = writes.length;
+        await session(
+          async ({ page, frame, settled }) => {
+            release();
+            const summary = frame.getByRole("button", {
+              name: "32 weekly resets · 32 Fable resets available",
+              exact: true,
+            });
+            await summary.waitFor();
+            await settled();
+            assert.ok(await fitsWithin(frame), "Overview with 64 limits fits at 390px");
+            await summary.click();
+            const dialog = frame.getByRole("dialog", { name: "Banked resets" });
+            await dialog.waitFor();
+            const rows = dialog.locator("tbody tr");
+            assert.equal(await rows.count(), 1 + 64 + 64, "plan, every window and every group");
+            assert.ok(
+              await dialog.evaluate((element) => element.scrollHeight > element.clientHeight),
+              "the dialog scrolls instead of growing past the screen",
+            );
+            const last = rows.last();
+            await last.scrollIntoViewIfNeeded();
+            assert.ok(
+              await last.evaluate((element) => {
+                const box = element.getBoundingClientRect();
+                const frame = element.closest("dialog").getBoundingClientRect();
+                return box.top >= frame.top && box.bottom <= frame.bottom + 1;
+              }),
+              "the last row is reachable inside the dialog",
+            );
+            assert.equal(rowName(await last.innerText()), "Fable resets");
+            assert.ok(await fitsWithin(frame, dialog), "The longest Details fit at 390px");
+            await capture(page, "long-reset-details-390");
+            await dialog.getByRole("button", { name: "Close", exact: true }).click();
+          },
+          { viewport: { width: 390, height: 844 } },
+        );
+        assert.deepEqual(writes.slice(startWrites), [], "nothing was spent or changed");
+      });
 
     let policyWeight = capacityWeight;
     if (weightPolicyRef) {

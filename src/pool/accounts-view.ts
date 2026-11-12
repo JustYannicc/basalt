@@ -1,12 +1,18 @@
 import { usageCredits, retainedUsageCredits } from "./usage-credits.ts";
-import type { Account, BankedResets, UsageWindow } from "../../apps/pool/contract.ts";
+import { resetObservation } from "./reset-observation.ts";
+import type { Account, UsageWindow } from "../../apps/pool/contract.ts";
 import { quotaWindowSeconds } from "./quota-period.ts";
 import { collectionDiagnostic } from "./collection-diagnostic.ts";
 import { collectionRequest } from "./quota-collection-request.ts";
 import { object, rows, text, type Json } from "./json.ts";
 
 /** App and alarm reads preserve full details; retained list replies remain readable. */
-export function accountsView(files: Json[], quota: Json[], ids: ReadonlySet<string>): Account[] {
+export function accountsView(
+  files: Json[],
+  quota: Json[],
+  ids: ReadonlySet<string>,
+  now = Date.now(),
+): Account[] {
   const byId = new Map(
     quota.map((row) => [
       object(row.credential) ? row.credential.credential_id : row.credential_id,
@@ -66,7 +72,7 @@ export function accountsView(files: Json[], quota: Json[], ids: ReadonlySet<stri
         },
         nextReadAt: text(collection?.next_probe_at ?? reading?.next_probe_at),
         earliestResetAt: text(reading?.earliest_reset_at),
-        bankedResets: bankedResets(raw?.reset_credits),
+        bankedResets: resetObservation(raw?.reset_credits, now),
         ...(usageCredits(raw?.usage_credits) === undefined
           ? {}
           : { usageCredits: usageCredits(raw?.usage_credits) }),
@@ -84,6 +90,21 @@ function readingDeadline(values: unknown[]): string | null {
 }
 
 export function retainedAccount(account: Account, now: number): Account {
+  if (account.bankedResets?.groups) {
+    const groups = account.bankedResets.groups.filter(
+      (group) => group.expiresAt === null || Date.parse(group.expiresAt) > now,
+    );
+    account = {
+      ...account,
+      bankedResets: {
+        groups,
+        available: groups.reduce((sum, group) => sum + group.available, 0),
+        nextExpiresAt:
+          groups.find((group) => group.available > 0 && group.expiresAt !== null)?.expiresAt ??
+          null,
+      },
+    };
+  }
   if (account.usageCredits)
     account = { ...account, usageCredits: retainedUsageCredits(account.usageCredits, now) };
   if (account.freshness !== "fresh") return account;
@@ -143,18 +164,6 @@ function detailWindows(windows: Json[], provider: string): Json[] {
 function finite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
-function bankedResets(value: unknown): BankedResets | null {
-  if (!object(value) || !finite(value.available_count) || value.available_count < 0) return null;
-  const expires = rows(value.credits ?? [])
-    .filter((credit) => credit.status === "available")
-    .map((credit) => text(credit.expires_at))
-    .filter((at): at is string => at !== null && Number.isFinite(Date.parse(at)))
-    .sort((a, b) => Date.parse(a) - Date.parse(b));
-  return {
-    available: value.available_count,
-    nextExpiresAt: value.available_count > 0 ? (expires[0] ?? null) : null,
-  };
-}
 function windowLabel(row: Json): string | null {
   const label = text(row.label)?.trim();
   if (label) return label;
@@ -182,6 +191,14 @@ function windowView(row: Json): UsageWindow | null {
   return {
     // Home labels only additional limits; a raw window id never reaches a screen.
     id: text(row.id) ?? "",
+    ...(text(row.scope)
+      ? {
+          scope: {
+            kind: text(row.scope)!,
+            ...(text(row.scope_id) ? { id: text(row.scope_id)! } : {}),
+          },
+        }
+      : {}),
     label,
     remainingRatio:
       row.is_unlimited === true ? 1 : ratio === null ? null : Math.min(1, Math.max(0, ratio)),
