@@ -160,7 +160,7 @@ export interface Estimate {
   unpriced: number;
   notReported: number;
   reasons: string[];
-  price: Required<OverviewPriceProvenance> | null;
+  price: Price | null;
 }
 
 export const emptyEstimate = (): Estimate => ({
@@ -174,23 +174,30 @@ export const emptyEstimate = (): Estimate => ({
   price: null,
 });
 
+/**
+ * Rate provenance with older-server defaults filled in. `calculation` stays optional: it is set
+ * only when some records were priced from their token counts, and no default stands in for it.
+ */
+export type Price = Required<Omit<OverviewPriceProvenance, "calculation">> &
+  Pick<OverviewPriceProvenance, "calculation">;
+
 /** Older servers omit `basis`; they only ever returned refreshed live rates. */
-export const provenance = (price: OverviewPriceProvenance): Required<OverviewPriceProvenance> => ({
+export const provenance = (price: OverviewPriceProvenance): Price => ({
   ...price,
   basis: price.basis ?? "live",
   refreshFailed: price.refreshFailed ?? false,
 });
 
-export function combinePrice(
-  a: Required<OverviewPriceProvenance> | null,
-  b: Required<OverviewPriceProvenance> | null,
-): Required<OverviewPriceProvenance> | null {
+export function combinePrice(a: Price | null, b: Price | null): Price | null {
   if (!a || !b) return a ?? b;
   const older = Date.parse(b.asOf) < Date.parse(a.asOf) ? b : a;
+  // A sum is only as exact as its least exact part, so one counted slice marks the whole sum.
+  const calculation = a.calculation ?? b.calculation;
   return {
     ...older,
     basis: a.basis === "baseline" || b.basis === "baseline" ? "baseline" : "live",
     refreshFailed: a.refreshFailed || b.refreshFailed,
+    ...(calculation ? { calculation } : {}),
   };
 }
 

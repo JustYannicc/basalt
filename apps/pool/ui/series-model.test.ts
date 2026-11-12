@@ -263,7 +263,12 @@ test("personal overview keeps the signed caller row visible before their first r
 
 const estimate = (
   amount: string | null,
-  price: { asOf: string; basis?: "live" | "baseline"; refreshFailed?: boolean } | null,
+  price: {
+    asOf: string;
+    basis?: "live" | "baseline";
+    refreshFailed?: boolean;
+    calculation?: "token-counts";
+  } | null,
   extra: { status?: "available" | "unavailable"; reason?: string; unpriced?: number } = {},
 ) => ({
   status: extra.status ?? ("available" as const),
@@ -327,4 +332,33 @@ test("an estimate without basis reads as refreshed live rates", () => {
   ]);
   assert.equal(sum.apiEstimate.price?.basis, "live");
   assert.equal(sum.apiEstimate.price?.refreshFailed, false);
+});
+
+test("one bucket priced from token counts marks the whole sum, with its rate notes intact", () => {
+  const withEstimate = (value: ReturnType<typeof estimate>) => {
+    const entry = bucket({});
+    return { ...entry, cost: { ...entry.cost, apiEstimate: value } };
+  };
+  const sum = total([
+    group(
+      { model: "m" },
+      withEstimate(estimate("1", { asOf: "2026-11-03T00:00:00Z", basis: "baseline" })),
+      withEstimate(
+        estimate("2", {
+          asOf: "2026-11-10T00:00:00Z",
+          refreshFailed: true,
+          calculation: "token-counts",
+        }),
+      ),
+    ),
+    group({ model: "n" }, withEstimate(estimate("4", { asOf: "2026-11-12T00:00:00Z" }))),
+  ]);
+  assert.deepEqual(sum.apiEstimate.price, {
+    source: "models.dev",
+    version: "v1",
+    asOf: "2026-11-03T00:00:00Z",
+    basis: "baseline",
+    refreshFailed: true,
+    calculation: "token-counts",
+  });
 });

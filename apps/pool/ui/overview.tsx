@@ -380,7 +380,7 @@ function Answers({
           <span className="text-[13px] text-muted-foreground text-pretty tabular-nums">
             {billed === null
               ? (usage?.metrics.apiBilled.reason ?? "Official USD estimate unavailable.")
-              : `Current official USD prices${unpriced ? ` · ${unpriced.toLocaleString()} requests unpriced` : ""}`}
+              : `Current official USD prices${usage?.metrics.apiBilled.price?.calculation === "token-counts" ? " · some priced from token counts" : ""}${unpriced ? ` · ${unpriced.toLocaleString()} requests unpriced` : ""}`}
           </span>
         )}
       </Answer>
