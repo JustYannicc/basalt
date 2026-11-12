@@ -17,6 +17,17 @@ model {
       }
     }
   }
+  extend basalt.toolsGateway {
+    obsidianVaultPage = part "Obsidian vault page" {
+      description "The Obsidian app's own screen shows a synced vault read-only: its state, devices that checked in, a folder tree loaded folder by folder, search, notes and each note's dated versions. It reads only the app's drive tools, so whatever a plugin already synced renders without a plugin update; reads a server or plugin does not have yet degrade to less detail, never to an empty or connect state. Notes render as Obsidian-flavoured Markdown with the dashboard's renderer, raw HTML skipped, wikilinks resolved by Obsidian's shortest-path rule and image embeds read from the vault."
+      metadata {
+        code "apps/obsidian/ui"
+        libraries "react|react-dom|react-markdown|remark-gfm|@flowershow/remark-wiki-link|@r4ai/remark-callout|apps"
+        constraint "A vault that has synced never shows the never-synced state: only no import, no files and no history does. Per-note history counts only when the server dates its versions; otherwise the page says versions appear after the next update."
+      }
+    }
+  }
+  basalt.toolsGateway.obsidianVaultPage -> basalt.toolsGateway.cloudDrive "Reads notes, versions and import state"
   extend basalt.build {
     cloudDriveProof = part "Cloud drive verification" {
       description "Synthetic installed-app proofs use the ordinary HTTP, MCP, native approval and workflow paths. Seeded large-vault proofs use real local workerd, SQLite and record storage, verify complete cold coverage and retained history, enforce disk bounds and delete their own bulk data after exporting hashes. Local proofs do not establish hosted adoption or device compatibility."
