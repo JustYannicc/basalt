@@ -167,6 +167,15 @@
             "mode": "manual",
             "requires": "Retire only when the pinned sources preserve the opt-in primary dispatch reply, bounded closed timing transport, failure fencing, legacy compatibility and synthetic-provider response proof through Worker logs without exposing diagnostic headers to clients."
           }
+        },
+        {
+          "identity": "cliproxy-home-funding-read",
+          "file": "0519-home-funding-read.patch",
+          "sha256": "dc7730fe0155ee76a9a858abf1c806411ed19f5141d6419c0e34d96e7a15037c",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire when the pinned Home reads credential identity, quota snapshots and quota windows for funding selection in one authoritative SQL statement, preserving old-result parity, soft deletion, expiry and missing-data semantics, with PostgreSQL concurrent-update and query-budget proof. Admission and management loaders remain unchanged."
+          }
         }
       ]
     },
@@ -229,7 +238,9 @@
       "tag": "v1.0.5",
       "commit": "19d9868ffa24e94a2919ea1d1a761afa634de669",
       "sha256": "79b6ae8702b0ace76c10102d42a1401259e7dc772baacce2d47c90c33c6b25e7",
-      "auth_providers": ["gemini-cli"]
+      "auth_providers": [
+        "gemini-cli"
+      ]
     }
   }
 }

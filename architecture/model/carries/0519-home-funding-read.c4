@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Pool funding selection reads credential identity, quota snapshots and quota windows in one authoritative database statement. Freshness, missing data, soft deletion and funding-tier semantics match the existing loader; concurrent commits cannot mix identity and quota snapshots. Management reads, admission transactions, affinity and fencing retain their existing behavior. No cross-request permission or quota cache is introduced."
+    }
+  }
+}
