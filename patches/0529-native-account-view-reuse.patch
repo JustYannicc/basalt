@@ -112,6 +112,19 @@ index 321effe..13b645f 100644
        reads?.observations.get(health.account) ??
        (yield* observationAccess(health.account).pipe(
          Effect.map((access) => access.canInspect),
+diff --git a/apps/hosted/server/src/implementation/account-observations.ts b/apps/hosted/server/src/implementation/account-observations.ts
+index 7c6634d..142b7bf 100644
+--- a/apps/hosted/server/src/implementation/account-observations.ts
++++ b/apps/hosted/server/src/implementation/account-observations.ts
+@@ -10,7 +10,7 @@ import {
+ } from "@executor-js/sdk/core";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { AccountGrants } from "./proofs/account-access.ts";
+-import { linkedApps } from "./accounts.ts";
++import { linkedApps } from "./linked-account-apps.ts";
+ import { policyDatabase } from "./resource-policy.ts";
+ import { observationAccess, requireObservationAccess } from "./account-observation-policy.ts";
+ 
 diff --git a/apps/hosted/server/src/implementation/account-source-authority.ts b/apps/hosted/server/src/implementation/account-source-authority.ts
 new file mode 100644
 index 0000000..25ef26f
@@ -255,10 +268,10 @@ index 0000000..25ef26f
 +  }).pipe(Effect.mapError(() => new StorageError()));
 diff --git a/apps/hosted/server/src/implementation/account-source-connections.ts b/apps/hosted/server/src/implementation/account-source-connections.ts
 new file mode 100644
-index 0000000..cb1cc54
+index 0000000..bf4a86f
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-source-connections.ts
-@@ -0,0 +1,347 @@
+@@ -0,0 +1,357 @@
 +import { BindingChange, selectedSourceAccount as selected } from "./account-source-authority.ts";
 +import {
 +  AppCallsHost,
@@ -354,7 +367,17 @@ index 0000000..cb1cc54
 +      )
 +        found.push(binding);
 +    }
-+    if (found.length !== 1) return undefined;
++    if (found.length !== 1) {
++      // A saved refusal must not become an unbound account's legacy presentation fallback.
++      return bindings.some(
++        (binding) =>
++          binding.connection.dependency === dependency &&
++          binding.connection.scope === input.scope &&
++          binding.selections?.some((entry) => sameSelection(entry, input)),
++      )
++        ? null
++        : undefined;
++    }
 +    return {
 +      connection: dependency as "accountView",
 +      target: found[0]!.connection.target,
@@ -731,8 +754,46 @@ index 0000000..39e5e80
 +    }
 +    return result;
 +  }).pipe(Effect.mapError(() => new StorageError()));
+diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
+index d691d32..04b3fac 100644
+--- a/apps/hosted/server/src/implementation/accounts.ts
++++ b/apps/hosted/server/src/implementation/accounts.ts
+@@ -74,31 +74,13 @@ import {
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { recordUsage } from "../contracts/product-analytics.ts";
+ import { currentOwner, ownedConnection } from "./access.ts";
+-import { appLinkApps, appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
++import { appLinkApps } from "./app-accounts.ts";
++import { linkedApps } from "./linked-account-apps.ts";
+ import { AccountLinkedToApp } from "../contracts/accounts.ts";
+ import { requireSeparateNativeAccountLink } from "./pool-account-connection.ts";
+ import { requireProviderAccountMethod } from "./provider-account-methods.ts";
+ import { RequirementMismatch } from "../contracts/app-accounts.ts";
+ 
+-/** The apps the caller can use and linked this account to, or that link it for everyone. */
+-export const linkedApps = (owner: OwnerId, account: AccountId) =>
+-  Effect.gen(function* () {
+-    const executor = yield* Effect.flatten(HostedExecutor);
+-    const policy = yield* CurrentAuthorization;
+-    const apps = yield* executor.apps
+-      .list({ owner, ids: permittedAppIds(policy) })
+-      .pipe(Effect.flatMap(visibleApps));
+-    const ids = apps.map((app) => app.id);
+-    const linked = new Set(
+-      [
+-        ...(yield* callerLinkedAccounts(ids)),
+-        ...(yield* appLinkedAccounts(yield* policyDatabase, ids)),
+-      ]
+-        .filter((entry) => entry.id === account)
+-        .map((entry) => entry.app),
+-    );
+-    return apps.filter((app) => linked.has(app.id));
+-  });
+ /**
+  * Read provider metadata through the public SDK, including for accounts with no remaining apps.
+  * App-scoped tokens reach this only through an app they can use; see RequireAccountGrant.
 diff --git a/apps/hosted/server/src/implementation/app-account-links.ts b/apps/hosted/server/src/implementation/app-account-links.ts
-index ccf55b6..7a951ae 100644
+index ccf55b6..188c8d3 100644
 --- a/apps/hosted/server/src/implementation/app-account-links.ts
 +++ b/apps/hosted/server/src/implementation/app-account-links.ts
 @@ -1,3 +1,9 @@
@@ -829,7 +890,7 @@ index ccf55b6..7a951ae 100644
 +            });
 +            const options = sources.get(choice.account.id);
 +            const current =
-+              source === undefined
++              source === undefined || source === null
 +                ? undefined
 +                : options?.find((option) => option.source.app === source.target)?.source;
 +            return {
@@ -1320,6 +1381,39 @@ index 366f1eb..c3294be 100644
                Stream.provideService(CurrentUserId, current.access.userId),
                Stream.provideService(CurrentOrganization, current.access),
                Stream.provideService(GroupDatabase, groups),
+diff --git a/apps/hosted/server/src/implementation/linked-account-apps.ts b/apps/hosted/server/src/implementation/linked-account-apps.ts
+new file mode 100644
+index 0000000..8a90c5a
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/linked-account-apps.ts
+@@ -0,0 +1,27 @@
++import { permittedAppIds } from "@executor-js/authorization";
++import type { AccountId, OwnerId } from "@executor-js/sdk/core";
++import { Effect } from "effect";
++import { CurrentAuthorization } from "../contracts/authorization.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
++import { policyDatabase, visibleApps } from "./resource-policy.ts";
++
++/** The apps the caller can use and linked this account to, or that link it for everyone. */
++export const linkedApps = (owner: OwnerId, account: AccountId) =>
++  Effect.gen(function* () {
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const policy = yield* CurrentAuthorization;
++    const apps = yield* executor.apps
++      .list({ owner, ids: permittedAppIds(policy) })
++      .pipe(Effect.flatMap(visibleApps));
++    const ids = apps.map((app) => app.id);
++    const linked = new Set(
++      [
++        ...(yield* callerLinkedAccounts(ids)),
++        ...(yield* appLinkedAccounts(yield* policyDatabase, ids)),
++      ]
++        .filter((entry) => entry.id === account)
++        .map((entry) => entry.app),
++    );
++    return apps.filter((app) => linked.has(app.id));
++  });
 diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/server/src/implementation/mcp-http.ts
 index 9403300..01f0e39 100644
 --- a/apps/hosted/server/src/implementation/mcp-http.ts
@@ -1399,17 +1493,20 @@ index d4a8e13..fe88184 100644
      );
      const withHealth = (listedAccounts: typeof accounts) =>
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-index 46d72b7..f705791 100644
+index 46d72b7..aaccfca 100644
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-@@ -1,3 +1,7 @@
+@@ -1,5 +1,9 @@
 +import {
 +  accountSourceBindingChange,
 +  authorizeAccountSourceCall,
 +} from "./account-source-authority.ts";
  import { hostedToolAccess } from "./tool-availability-store.ts";
- import { linkedApps } from "./accounts.ts";
+-import { linkedApps } from "./accounts.ts";
++import { linkedApps } from "./linked-account-apps.ts";
  import { visibleProviderAccountTitle } from "./account-identity.ts";
+ import { AutomaticAccountCheck, automaticCheckAccounts } from "./account-recheck-authority.ts";
+ import { accountIdentityPlacements } from "./account-identity-placement.ts";
 @@ -320,9 +324,14 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
                  Effect.mapError(() => new StorageError()),
                );
@@ -1448,10 +1545,10 @@ index 46d72b7..f705791 100644
                );
 diff --git a/apps/hosted/server/src/implementation/selected-account-read.ts b/apps/hosted/server/src/implementation/selected-account-read.ts
 new file mode 100644
-index 0000000..f8a961c
+index 0000000..950d55e
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/selected-account-read.ts
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,112 @@
 +import { selectedAccountSource } from "./account-source-connections.ts";
 +import { GroupDatabase } from "../contracts/groups.ts";
 +import { AccountHealthJson } from "apps/contracts";
@@ -1469,7 +1566,7 @@ index 0000000..f8a961c
 +import { CurrentOrganization } from "../contracts/organization.ts";
 +import { HostedExecutor } from "../contracts/executor.ts";
 +import { inspectableAccounts } from "./proofs/account-access.ts";
-+import { linkedApps } from "./accounts.ts";
++import { linkedApps } from "./linked-account-apps.ts";
 +import { visibleApps } from "./resource-policy.ts";
 +import { observationAccess, visibleObservationHealth } from "./account-observation-policy.ts";
 +import { visibleAccountStatuses } from "./account-identity.ts";
@@ -1526,6 +1623,7 @@ index 0000000..f8a961c
 +          subject: yield* CurrentUserId,
 +          scope: input.scope,
 +        });
++        if (sourceConnection === null) return denied;
 +        if (!(yield* access)) return denied;
 +        const currentApps = yield* linkedApps(owner, input.account);
 +        if (currentApps.length !== ids.length || currentApps.some((app) => !ids.includes(app.id)))
@@ -2057,10 +2155,10 @@ index dfadc17..260b8ed 100644
            { client: ids.a },
 diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-account-source-bindings.spec.ts
 new file mode 100644
-index 0000000..8f565ab
+index 0000000..27868d1
 --- /dev/null
 +++ b/e2e/tests/pool-account-source-bindings.spec.ts
-@@ -0,0 +1,368 @@
+@@ -0,0 +1,377 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { Actors } from "../support/actors.ts";
@@ -2090,13 +2188,16 @@ index 0000000..8f565ab
 +  scope: Schema.Literal("app"),
 +  requirement: Schema.String,
 +});
-+const Native = Schema.Struct({
-+  state: Schema.Literal("available"),
-+  account: Schema.Struct({ id: Schema.String, label: Schema.String }),
-+  sourceConnection: Schema.optionalKey(
-+    Schema.Struct({ connection: Schema.String, target: Schema.String, account: Schema.String }),
-+  ),
-+});
++const Native = Schema.Union([
++  Schema.Struct({
++    state: Schema.Literal("available"),
++    account: Schema.Struct({ id: Schema.String, label: Schema.String }),
++    sourceConnection: Schema.optionalKey(
++      Schema.Struct({ connection: Schema.String, target: Schema.String, account: Schema.String }),
++    ),
++  }),
++  Schema.Struct({ state: Schema.Literal("denied"), account: Resource }),
++]);
 +const View = Schema.Struct({
 +  selected: Schema.Array(Schema.String),
 +  native: Native,
@@ -2297,11 +2398,14 @@ index 0000000..8f565ab
 +          fallback = yield* view(ambiguous);
 +        expect(firstView.reused?.sourceApp.id).toBe(first);
 +        expect(secondView.reused?.sourceApp.id).toBe(second);
++        expect(firstView.native.state).toBe("available");
++        expect(secondView.native.state).toBe("available");
++        expect(fallback.native.state).toBe("available");
 +        expect(fallback.native.account).toMatchObject({
 +          id: ambiguous,
 +          label: "Ambiguous account",
 +        });
-+        expect(fallback.native.sourceConnection).toBeUndefined();
++        expect("sourceConnection" in fallback.native).toBe(false);
 +        expect(fallback.reused).toBeNull();
 +        expect((yield* connections()).map((connection) => connection.target).sort()).toEqual(
 +          [first, second].sort(),
@@ -2340,7 +2444,7 @@ index 0000000..8f565ab
 +        expect(
 +          (yield* api.request(actors.member, "GET", `${poolPath}/accounts/app/openai`)).status,
 +        ).toBe(200);
-+        expect((yield* view(a)).native.sourceConnection).toBeUndefined();
++        expect((yield* view(a)).native).toEqual({ state: "denied", account: { id: a } });
 +        expect(
 +          (yield* connections()).find((connection) => connection.target === first),
 +        ).toMatchObject({ id: beforeRevocation.id, enabled: false });
@@ -2350,7 +2454,7 @@ index 0000000..8f565ab
 +        // Explicitly choosing another account cannot restore authority for the revoked account.
 +        expect((yield* choose(ambiguous, yield* source(first))).status).toBe(200);
 +        expect((yield* view(ambiguous)).reused?.sourceApp.id).toBe(first);
-+        expect((yield* view(a)).native.sourceConnection).toBeUndefined();
++        expect((yield* view(a)).native).toEqual({ state: "denied", account: { id: a } });
 +        expect((yield* view(b)).reused?.sourceApp.id).toBe(second);
 +        expect(
 +          (yield* api.request(actors.member, "DELETE", `${poolPath}/accounts/app/openai/${a}`))
@@ -2401,7 +2505,7 @@ index 0000000..8f565ab
 +        expect(
 +          (yield* api.request(actors.member, "DELETE", `${providerPath(first)}/${a}`)).status,
 +        ).toBe(200);
-+        expect((yield* view(a)).native.sourceConnection).toBeUndefined();
++        expect((yield* view(a)).native).toEqual({ state: "denied", account: { id: a } });
 +        expect(yield* nativeIds()).toEqual(membership);
 +        expect(yield* catalog.mirrors).toEqual(mirrors);
 +
@@ -2419,7 +2523,10 @@ index 0000000..8f565ab
 +            `${poolPath}/connections/accountView?scope=app&target=${encodeURIComponent(first)}&revision=${unavailableBinding.revision}`,
 +          )).status,
 +        ).toBe(200);
-+        expect((yield* view(ambiguous)).native.sourceConnection).toBeUndefined();
++        expect((yield* view(ambiguous)).native).toEqual({
++          state: "denied",
++          account: { id: ambiguous },
++        });
 +        expect(
 +          (yield* connections()).find((connection) => connection.target === first)?.enabled,
 +        ).toBe(false);
@@ -2679,10 +2786,10 @@ index 0000000..ac5ed8b
 +});
 diff --git a/e2e/tests/pool-provider-native-presentation.spec.ts b/e2e/tests/pool-provider-native-presentation.spec.ts
 new file mode 100644
-index 0000000..5a7c622
+index 0000000..49330bd
 --- /dev/null
 +++ b/e2e/tests/pool-provider-native-presentation.spec.ts
-@@ -0,0 +1,400 @@
+@@ -0,0 +1,469 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, FileSystem, Path, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -3079,6 +3186,75 @@ index 0000000..5a7c622
 +        expect(JSON.stringify(deniedPool.raw)).not.toContain("COPIED_PRIVATE_");
 +        expect(JSON.stringify(deniedPool.raw)).not.toContain(secondReading.observation.plan.label);
 +        expect(yield* home.poolViewCallers).toContain(owner);
++
++        // Revoking a saved source is a refusal, not a new ambiguous source choice.
++        const bindings = yield* body(
++          Schema.Struct({
++            connections: Schema.Array(
++              Schema.Struct({
++                dependency: Schema.String,
++                target: Schema.String,
++                revision: Schema.Number,
++              }),
++            ),
++          }),
++          yield* api.request(actors.owner, "GET", `${poolPath}/connections`),
++        );
++        const binding = bindings.connections.find(
++          (entry) => entry.dependency === "accountView" && entry.target === provider,
++        )!;
++        expect(binding).toBeDefined();
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "DELETE",
++            `${poolPath}/connections/accountView?scope=app&target=${encodeURIComponent(provider)}&revision=${binding.revision}`,
++          )).status,
++        ).toBe(200);
++        const assertWithheld = (reply: typeof deniedPool) => {
++          expect(reply.value.accounts[0]?.nativeView).toMatchObject({ state: "denied" });
++          expect(reply.value.accounts[0]).toMatchObject({
++            id: backendRow.id,
++            nativeAccountId: account,
++            plan: null,
++            windows: [],
++            observedAt: null,
++            bankedResets: null,
++          });
++          expect(reply.value.accounts[0]?.usageCredits).toBeUndefined();
++          expect(reply.value.accounts[0]?.collection).toBeUndefined();
++          expect(JSON.stringify(reply.raw)).not.toContain("COPIED_PRIVATE_");
++          expect(JSON.stringify(reply.raw)).not.toContain(secondReading.observation.plan.label);
++        };
++        assertWithheld(yield* view());
++        const version = yield* body(
++          Schema.Struct({ activeVersion: Schema.String }),
++          yield* api.request(actors.owner, "GET", providerPath),
++        );
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "PUT",
++            `${poolPath}/accounts/app/openai/${account}/source`,
++            { app: provider, version: version.activeVersion, scope: "app", requirement: "openai" },
++          )).status,
++        ).toBe(200);
++        expect((yield* view()).value.accounts[0]?.nativeView?.observations?.reports).toEqual(
++          secondNative.reports,
++        );
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "DELETE",
++            `${providerPath}/accounts/app/openai/${account}`,
++          )).status,
++        ).toBe(200);
++        assertWithheld(yield* view());
++        const members = yield* body(
++          Schema.Array(Schema.Struct({ account: Resource })),
++          yield* api.request(actors.owner, "GET", `${poolPath}/accounts/app`),
++        );
++        expect(members.map((member) => member.account.id)).toContain(account);
 +      }),
 +    ),
 +  );
