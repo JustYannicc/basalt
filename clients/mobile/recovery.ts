@@ -66,7 +66,7 @@ export function reconnectRecovery(ports: {
         pending = undefined;
         controller = undefined;
         if ((!signal.aborted || timedOut) && needed && ports.allowed() && !ports.terminal()) {
-          const ceiling = Math.min(30_000, 1000 * 2 ** Math.min(failures++, 5));
+          const ceiling = Math.min(5_000, 1000 * 2 ** Math.min(failures++, 5));
           const delay = Math.round(ceiling * (0.5 + ports.random() * 0.5));
           schedule(Math.max(delay, notBefore - Date.now()));
         }
