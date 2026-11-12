@@ -116,6 +116,7 @@ process.exitCode = await releaseOutcome(evidence, process.env.GITHUB_STEP_SUMMAR
                       publication: evidence.publication,
                       admission: evidence.admission,
                       namespaceRead: evidence.namespaceRead,
+                      bucketRead: evidence.bucketRead,
                       serving: evidence.serving,
                       manifest: evidence.manifest,
                     });
