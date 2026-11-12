@@ -68,6 +68,7 @@ export async function fleetWorkerFixture() {
   let providerAvailable = true,
     secretAvailable = true;
   const providerReads: string[] = [];
+  let providerRead: () => Promise<void> = async () => {};
   globalThis.fetch = async (input, init) => {
     assert.equal(typeof input, "string");
     const url = new URL(String(input));
@@ -75,6 +76,7 @@ export async function fleetWorkerFixture() {
     assert.equal(init?.method, "GET");
     assert.equal(new Headers(init?.headers).get("authorization"), "Bearer synthetic-provider-read");
     providerReads.push(url.pathname);
+    await providerRead();
     if (!providerAvailable) return new Response(null, { status: 403 });
     const app = raw.find(
       (app) =>
@@ -272,6 +274,9 @@ export async function fleetWorkerFixture() {
       }),
     secretAvailable: (available: boolean) => {
       secretAvailable = available;
+    },
+    onProviderRead: (hook: typeof providerRead) => {
+      providerRead = hook;
     },
     providerAvailable: (available: boolean) => {
       providerAvailable = available;

@@ -105,14 +105,17 @@ test(
 );
 
 test(
-  "restoring the secret cannot dispatch an unsent launch after fleet permission is disabled",
+  "disable fences an unsent recovery while its provider observation is pending",
   { timeout: 10000 },
   async (context) => {
     const f = await fleetWorkerFixture();
-    const release = deferred();
+    const release = deferred(),
+      providerEntered = deferred(),
+      providerRelease = deferred();
     let response: Promise<Response> | undefined;
     context.after(async () => {
       release.resolve();
+      providerRelease.resolve();
       const body = (await response)?.body;
       if (body && !body.locked) await body.cancel();
       await f.cleanup();
@@ -133,13 +136,24 @@ test(
     const waiting = f.resourcesWhen((rows) => rows.some((row) => row.phase === "uncertain"));
     response = f.model(new Request("https://pool.invalid/v1/models?id=held-disabled-demand"));
     const unsent = (await waiting)[0]!;
+    f.secretAvailable(true);
+    f.onProviderRead(async () => {
+      providerEntered.resolve();
+      await providerRelease.promise;
+    });
+    const recovery = f.upkeep();
+    await providerEntered.promise;
     await f.send("fleet-disable", {
       operationId: "disabled-unsent-stop",
       expectedDigest: permission.digest,
     });
-    f.secretAvailable(true);
-    await f.upkeep();
-    assert.equal(f.instances.size, 0);
+    providerRelease.resolve();
+    await recovery;
+    assert.equal(
+      [...f.instances.values()].reduce((sum, instance) => sum + instance.fixture.calls.start, 0),
+      0,
+    );
+    assert.equal(f.old.calls.start, 0);
     const rows = await new RuntimeFleetState(f.old.storage, 4).inspect();
     assert.equal(rows.length, 1);
     assert.equal(rows[0]?.target.slotId, unsent.target.slotId);

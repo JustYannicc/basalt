@@ -12,6 +12,7 @@ import type { NativeStreamLease } from "../native-streams.ts";
 import type { RuntimeProviderReader } from "../runtime-provider/read.ts";
 import type { FleetApplication } from "./configuration.ts";
 import { runtimeCellState } from "./cell-state.ts";
+import type { SlotStorage } from "../runtime-slots/storage.ts";
 import { FleetAdmission } from "./admission.ts";
 import { FleetHandoffCell } from "./cell.ts";
 
@@ -22,6 +23,7 @@ interface Input {
   target: SlotTarget;
   application: FleetApplication;
   provider: RuntimeProviderReader;
+  authorizeStart?(transaction: SlotStorage): Promise<void>;
   remote(target: SlotTarget): RuntimeStub;
   wrap(response: Response, lease: NativeStreamLease): Response;
 }
@@ -58,10 +60,15 @@ export function boundFleetCell(input: Input) {
       },
     };
   };
-  const handoff = new RuntimeHandoff(runtimeCellState(input.ctx, target.slotId), env, input.code, {
-    remote,
-    wrap: input.wrap,
-  });
+  const handoff = new RuntimeHandoff(
+    runtimeCellState(input.ctx, target.slotId, input.authorizeStart),
+    env,
+    input.code,
+    {
+      remote,
+      wrap: input.wrap,
+    },
+  );
   const admission = new FleetAdmission({
     handoff,
     application,
