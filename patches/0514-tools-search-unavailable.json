@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-tools-search-unavailable",
+  "file": "0514-tools-search-unavailable.patch",
+  "content_sha256": "c3ca9926a58808fa76646de6d8eec01bfe0be6403ffb7e37452d52e4f83939a5",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

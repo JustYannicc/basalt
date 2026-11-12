@@ -1,0 +1,52 @@
+diff --git a/apps/hosted/server/src/implementation/mcp.ts b/apps/hosted/server/src/implementation/mcp.ts
+index c8470ab..13f42c0 100644
+--- a/apps/hosted/server/src/implementation/mcp.ts
++++ b/apps/hosted/server/src/implementation/mcp.ts
+@@ -21,6 +21,7 @@ import { policyDatabase, visibleApps, requireAppAccess } from "./resource-policy
+ import type { McpBackend } from "@executor-js/mcp";
+ import {
+   AccountRequired,
++  AccountReadHost,
+   AppNotFound,
+   ElicitationFailed,
+   EventNotFound,
+@@ -108,18 +109,28 @@ export const hostedMcpBackend = Effect.gen(function* () {
+   const discoveryAccounts = yield* Effect.cached(
+     Effect.flatMap(discoveryApps, (apps) => callerLinkedAccounts(apps.map((app) => app.id))).pipe(
+       Effect.flatMap((links) =>
+-        Effect.forEach(links, (link) =>
+-          Effect.gen(function* () {
+-            const account = yield* (yield* sdk).accounts.get({
+-              account: link.id,
++        Effect.gen(function* () {
++          const accounts = new Map(
++            (yield* (yield* sdk)[AccountReadHost].listIds({
+               owner: organization.owner,
+-            });
+-            return {
+-              ...link,
+-              ...(account.execution === undefined ? {} : { execution: account.execution }),
+-            };
+-          }),
+-        ),
++              ids: [...new Set(links.map((link) => link.id))],
++            })).map((account) => [account.id, account]),
++          );
++          // Every app waits on this snapshot. Per-link reads spend discovery's wait budget
++          // before any app reaches its kept listing, even when no source needs loading.
++          return links.flatMap((link) => {
++            const account = accounts.get(link.id);
++            // A removed account is no longer linked, never an implicit cloud target.
++            return account === undefined
++              ? []
++              : [
++                  {
++                    ...link,
++                    ...(account.execution === undefined ? {} : { execution: account.execution }),
++                  },
++                ];
++          });
++        }),
+       ),
+       Effect.provideContext(context),
+     ),
