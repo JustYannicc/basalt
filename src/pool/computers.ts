@@ -248,12 +248,13 @@ export class Computers {
     return this.run((registry) => this.listLocked(registry, user));
   }
   /** Reconcile only pending computers against Home's successful, exact-key usage records. */
-  async observeUsage(): Promise<void> {
+  async observeUsage(keyId?: number, scheduled = false): Promise<void> {
     await this.run(async (registry) => {
       const events = await observePendingUsage(
         registry,
         (pool, keyId, since) => this.deps.home.observed(pool, keyId, since),
         () => this.now(),
+        { keyId, scheduled },
       );
       await this.save(registry);
       this.emitUsageEvents(events);
@@ -560,6 +561,7 @@ export class Computers {
     delete computer.switching;
     computer.firstModelRequestAt = null;
     delete computer.modelObservationCheckedAt;
+    delete computer.modelObservationRetryAt;
     await this.save(registry);
     return json(publicView(computer));
   }

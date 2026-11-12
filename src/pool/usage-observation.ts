@@ -1,3 +1,4 @@
+import { reportingCadence } from "./reporting.ts";
 import { hasTools } from "./computer-registry.ts";
 export interface UsageObservationComputer {
   id: string;
@@ -10,6 +11,7 @@ export interface UsageObservationComputer {
   firstModelRequestAt: string | null;
   firstModelRequestEverAt?: string | null;
   modelObservationCheckedAt?: number;
+  modelObservationRetryAt?: number;
   firstToolCallAt: string | null;
   toolsKeyId?: string;
   setupCompletedAt?: string | null;
@@ -27,33 +29,57 @@ export async function observePendingUsage(
   registry: Record<string, UsageObservationComputer>,
   observed: (pool: string, keyId: number, since: string) => Promise<string | null>,
   now: () => number,
-  filter: { user?: string; pool?: string } = {},
+  filter: { user?: string; pool?: string; keyId?: number; scheduled?: boolean } = {},
 ): Promise<UsageObservationEvent[]> {
   const computers = Object.values(registry);
-  let checkedAt = computers.reduce((latest, computer) => Math.max(latest, computer.modelObservationCheckedAt ?? 0), now());
+  let checkedAt = computers.reduce(
+    (latest, computer) => Math.max(latest, computer.modelObservationCheckedAt ?? 0),
+    now(),
+  );
   const pending = computers
-    .filter((computer) => computer.state === "active" && !computer.firstModelRequestAt && computer.keyId
-      && (filter.user === undefined || computer.user === filter.user)
-      && (filter.pool === undefined || computer.pool === filter.pool))
-    .sort((a, b) => (a.modelObservationCheckedAt ?? 0) - (b.modelObservationCheckedAt ?? 0)
-      || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+    .filter(
+      (computer) =>
+        computer.state === "active" &&
+        !computer.firstModelRequestAt &&
+        computer.keyId &&
+        (filter.user === undefined || computer.user === filter.user) &&
+        (filter.pool === undefined || computer.pool === filter.pool) &&
+        (filter.keyId === undefined
+          ? filter.scheduled ||
+            computer.modelObservationRetryAt === undefined ||
+            now() >= computer.modelObservationRetryAt
+          : computer.keyId === filter.keyId),
+    )
+    .sort(
+      (a, b) =>
+        (a.modelObservationCheckedAt ?? 0) - (b.modelObservationCheckedAt ?? 0) ||
+        a.createdAt.localeCompare(b.createdAt) ||
+        a.id.localeCompare(b.id),
+    )
     .slice(0, batchSize);
 
   const events: UsageObservationEvent[] = [];
   for (const computer of pending) {
     checkedAt = Math.max(checkedAt + 1, now());
     computer.modelObservationCheckedAt = checkedAt;
+    computer.modelObservationRetryAt = now() + reportingCadence;
     let observedAt: string | null;
-    try { observedAt = await observed(computer.pool, computer.keyId!, computer.boundAt); }
-    catch { continue; }
+    try {
+      observedAt = await observed(computer.pool, computer.keyId!, computer.boundAt);
+    } catch {
+      continue;
+    }
     if (!observedAt) continue;
 
-    const firstForAccount = !computers.some((row) => row.user === computer.user
-      && (row.firstModelRequestEverAt || row.firstModelRequestAt));
+    const firstForAccount = !computers.some(
+      (row) =>
+        row.user === computer.user && (row.firstModelRequestEverAt || row.firstModelRequestAt),
+    );
     computer.firstModelRequestAt = observedAt;
     computer.firstModelRequestEverAt ??= observedAt;
     if (firstForAccount) events.push({ event: "first_model_request", accountId: computer.user });
-    if (markSetupCompleted(computer, now)) events.push({ event: "setup_completed", accountId: computer.user });
+    if (markSetupCompleted(computer, now))
+      events.push({ event: "setup_completed", accountId: computer.user });
   }
   return events;
 }
