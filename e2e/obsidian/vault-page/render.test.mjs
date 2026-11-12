@@ -26,6 +26,16 @@ const rendered = [
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 let ui;
 let scratch;
+/** Package root → version, for every package the bundle actually includes. */
+const consumed = new Map();
+const repo = fileURLToPath(new URL("../../../", import.meta.url));
+
+/** The package directory an input lives in, such as node_modules/@r4ai/remark-callout. */
+const packageRoot = (input) => {
+  const parts = input.split("/");
+  const at = parts.lastIndexOf("node_modules");
+  return parts.slice(0, at + (parts[at + 1]?.startsWith("@") ? 3 : 2)).join("/");
+};
 
 before(async () => {
   if (!existsSync(packages))
@@ -43,6 +53,7 @@ before(async () => {
       resolveDir: join(app, "ui"),
       loader: "ts",
     },
+    absWorkingDir: repo,
     bundle: true,
     write: false,
     format: "esm",
@@ -50,15 +61,33 @@ before(async () => {
     // The conditions the app compiler resolves packages with.
     conditions: ["import", "browser"],
     jsx: "automatic",
-    nodePaths: [packages],
     metafile: true,
     logLevel: "silent",
+    plugins: [
+      {
+        // One resolver: a package the app's own sources (or this entry) import comes only from
+        // the pinned install, never from a node_modules above apps/obsidian. Packages resolve
+        // their own dependencies from inside that install as usual.
+        name: "pinned-packages",
+        setup(builder) {
+          builder.onResolve({ filter: /^[^./]/ }, async (args) => {
+            if (args.pluginData === "pinned" || args.importer.startsWith(packages)) return;
+            const resolved = await builder.resolve(args.path, {
+              kind: args.kind,
+              resolveDir: here,
+              pluginData: "pinned",
+            });
+            return resolved.errors.length ? { errors: resolved.errors } : resolved;
+          });
+        },
+      },
+    ],
   });
-  // Every package in the bundle came from this pinned install, never from elsewhere in the repo.
-  const strays = Object.keys(result.metafile.inputs).filter(
-    (input) => input.includes("node_modules/") && !join(process.cwd(), input).startsWith(packages),
-  );
-  assert.deepEqual(strays, []);
+  for (const input of Object.keys(result.metafile.inputs)) {
+    if (!input.includes("node_modules/")) continue;
+    const root = join(repo, packageRoot(input));
+    if (!consumed.has(root)) consumed.set(root, readJson(join(root, "package.json")).version);
+  }
   const bundle = join(scratch, "note-markdown.mjs");
   writeFileSync(bundle, result.outputFiles[0].text);
   GlobalRegistrator.register();
@@ -93,13 +122,22 @@ async function mount(content, { loadFile = async () => null, onOpen = () => {} }
 
 const png = () => new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" });
 
-test("the test package installs the renderer exactly as the app declares and serves it", () => {
+test("the rendered page uses one copy of each served renderer package, at the app's pins", () => {
   const declared = readJson(join(app, "package.json")).dependencies;
-  const pinned = readJson(join(here, "package.json")).dependencies;
+  // Everything bundled came from the pinned install, nothing from elsewhere in the repo.
+  assert.deepEqual(
+    [...consumed.keys()].filter((root) => !root.startsWith(packages)),
+    [],
+  );
   for (const name of rendered) {
-    assert.equal(pinned[name], declared[name], `${name} pin differs from apps/obsidian`);
-    assert.equal(readJson(join(packages, name, "package.json")).version, declared[name], name);
+    const copies = [...consumed].filter(([root]) => root.endsWith(`/node_modules/${name}`));
+    // react-dom/client and the component share one React; each package is bundled once.
+    assert.equal(copies.length, 1, `${name} is bundled ${copies.length} times`);
+    assert.equal(copies[0][1], declared[name], `${name} rendered at another version`);
   }
+  // The install itself follows the app's pins, so the lockfile can't drift from them.
+  const pinned = readJson(join(here, "package.json")).dependencies;
+  for (const name of rendered) assert.equal(pinned[name], declared[name], name);
 });
 
 test("wikilinks resolve by Obsidian's shortest path, keep aliases, and leave missing notes inert", async () => {
