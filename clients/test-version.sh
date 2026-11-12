@@ -16,6 +16,13 @@ fail() {
 production="$(bash "$(dirname "$0")/desktop/mac/update-feed.sh" url "$repository")" || exit 1
 [ -n "$feed" ] && [ "$feed" != "$production" ] ||
   fail "test_version $test_version needs an update_feed other than the Latest release's feed $production; it got '$feed'. Installs of a test version must never check the real feed."
+# GitHub serves the production feed under other spellings too (any owner/repo casing, www.), so a
+# test feed must live off GitHub altogether rather than merely differ from the production string.
+feed_host="$(printf '%s' "$feed" | sed -E 's|^https://([^/]+).*|\1|' | tr '[:upper:]' '[:lower:]')"
+case "$feed_host" in
+  github.com | *.github.com | githubusercontent.com | *.githubusercontent.com)
+    fail "test_version $test_version needs an update_feed off GitHub; '$feed' is on $feed_host, where it could reach the real feed." ;;
+esac
 [[ "$test_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] ||
   fail "test_version must be major.minor.patch; it is '$test_version'."
 [ "$((10#${BASH_REMATCH[2]}))" -lt 100 ] && [ "$((10#${BASH_REMATCH[3]}))" -lt 100 ] ||

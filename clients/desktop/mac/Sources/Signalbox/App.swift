@@ -53,8 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// Every quit lands here, including the updater's: its installer agent quits this app with
   /// NSRunningApplication.terminate, a normal quit event, before it swaps the bundle and relaunches.
   /// Stopping closes the host's stdin, which asks it to stop the connection it started and exit.
-  /// A host still running after 8 seconds gets SIGTERM, and its connection process may then
-  /// outlive it.
+  /// A host still running after 8 seconds gets SIGTERM, which it handles with the same close, so
+  /// the host and its connection can outlive this app until that close finishes.
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
     Task {
       await shell.stop()
