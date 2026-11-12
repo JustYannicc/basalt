@@ -155,7 +155,7 @@ const resolveConflict = mutation(
 export const history = query(
   {
     description:
-      "Read retained cloud versions and both parents of merged edits, newest first. With path, only versions that changed that file.",
+      "Read retained cloud versions and both parents of merged edits, newest first. Drives with per-file history also accept path, for only the versions that changed that file; others refuse it.",
     input: object({
       path: string().optional(),
       at: string().optional(),
@@ -165,6 +165,7 @@ export const history = query(
   (ctx: Read, input) =>
     ctx.drive.history({
       // A drive without per-file history refuses `path`, so callers can tell it can't filter.
+      // The cast goes once the drive contract declares `path`.
       ...((input.path === undefined ? {} : { path: input.path }) as object),
       ...(input.at === undefined ? {} : { at: input.at }),
       ...(input.limit === undefined ? {} : { limit: input.limit }),

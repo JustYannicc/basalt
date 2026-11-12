@@ -1,6 +1,6 @@
 import { ago, type VaultState, type Version } from "./model.ts";
 
-const count = (files: number) => `${files} ${files === 1 ? "file" : "files"}`;
+const count = (files: number) => `${files.toLocaleString()} ${files === 1 ? "file" : "files"}`;
 
 export function Summary({
   name,

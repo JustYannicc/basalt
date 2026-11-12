@@ -44,7 +44,8 @@ async function list(path: string | undefined, at?: string) {
     entries.push(...more.entries);
     next = more.next;
   }
-  return { at: result.at, entries };
+  // A folder past 20 pages is cut off; `complete` says so.
+  return { at: result.at, entries, complete: next === null };
 }
 
 /** Up to 1 MiB of a note: the reader shows text, not attachments. */
@@ -94,9 +95,13 @@ async function walk(limit = 20000): Promise<{ paths: string[]; complete: boolean
   const root = await list(undefined);
   const paths: string[] = [];
   let folders: string[] = [];
+  let cut = !root.complete;
   const take = (entries: readonly Entry[]) => {
     for (const entry of entries) {
-      if (paths.length >= limit) return;
+      if (paths.length >= limit) {
+        cut = true;
+        return;
+      }
       if (entry.kind === "directory") folders.push(entry.path);
       else paths.push(entry.path);
     }
@@ -105,10 +110,12 @@ async function walk(limit = 20000): Promise<{ paths: string[]; complete: boolean
   while (folders.length && paths.length < limit) {
     const batch = folders.slice(0, 4);
     folders = folders.slice(4);
-    for (const page of await Promise.all(batch.map((path) => list(path, root.at))))
+    for (const page of await Promise.all(batch.map((path) => list(path, root.at)))) {
+      cut ||= !page.complete;
       take(page.entries);
+    }
   }
-  return { paths, complete: paths.length < limit };
+  return { paths, complete: !cut && folders.length === 0 };
 }
 
 const maxAttachmentBytes = 8 * 1024 * 1024;
