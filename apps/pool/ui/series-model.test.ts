@@ -260,3 +260,71 @@ test("personal overview keeps the signed caller row visible before their first r
   assert.equal(list[0]!.label, "You");
   assert.equal(list[0]!.empty, true);
 });
+
+const estimate = (
+  amount: string | null,
+  price: { asOf: string; basis?: "live" | "baseline"; refreshFailed?: boolean } | null,
+  extra: { status?: "available" | "unavailable"; reason?: string; unpriced?: number } = {},
+) => ({
+  status: extra.status ?? ("available" as const),
+  ...(extra.reason ? { reason: extra.reason } : {}),
+  amount,
+  currency: "USD" as const,
+  pricedRequests: amount === null ? 0 : 1,
+  excluded: { unknownKind: 0, unknownKindValue: null, unpriced: extra.unpriced ?? 0 },
+  price: price && { source: "models.dev", version: "v1", ...price },
+});
+
+test("public estimates add exactly and keep the oldest, least certain price", () => {
+  const withEstimate = (value: ReturnType<typeof estimate>) => {
+    const entry = bucket({});
+    return { ...entry, cost: { ...entry.cost, apiEstimate: value } };
+  };
+  const sum = total([
+    group(
+      { model: "m" },
+      withEstimate(estimate("0.1", { asOf: "2026-11-12T00:00:00Z" })),
+      withEstimate(
+        estimate("0.20000000000000001", { asOf: "2026-11-03T00:00:00Z", basis: "baseline" }),
+      ),
+      withEstimate(estimate("1", { asOf: "2026-11-10T00:00:00Z", refreshFailed: true })),
+      withEstimate(
+        estimate(null, null, { status: "unavailable", reason: "No public price", unpriced: 2 }),
+      ),
+    ),
+  ]);
+  const value = sum.apiEstimate;
+  assert.equal(decimalText(value.amount!), "1.30000000000000001");
+  assert.equal(value.pricedRequests, 3);
+  assert.equal(value.unpriced, 2);
+  assert.deepEqual(value.reasons, ["No public price"]);
+  assert.deepEqual(value.price, {
+    source: "models.dev",
+    version: "v1",
+    asOf: "2026-11-03T00:00:00Z",
+    basis: "baseline",
+    refreshFailed: true,
+  });
+});
+
+test("buckets from servers without estimates are not reported, never $0.00", () => {
+  const sum = total([group({ model: "m" }, bucket({ requests: 4 }))]);
+  assert.equal(sum.apiEstimate.amount, null);
+  assert.equal(sum.apiEstimate.notReported, 4);
+  assert.equal(sum.apiEstimate.price, null);
+});
+
+test("an estimate without basis reads as refreshed live rates", () => {
+  const entry = bucket({});
+  const sum = total([
+    group(
+      { model: "m" },
+      {
+        ...entry,
+        cost: { ...entry.cost, apiEstimate: estimate("2", { asOf: "2026-11-12T00:00:00Z" }) },
+      },
+    ),
+  ]);
+  assert.equal(sum.apiEstimate.price?.basis, "live");
+  assert.equal(sum.apiEstimate.price?.refreshFailed, false);
+});
