@@ -1,5 +1,6 @@
 import { usageCredits, retainedUsageCredits } from "./usage-credits.ts";
 import type { Account, BankedResets, UsageWindow } from "../../apps/pool/contract.ts";
+import { quotaWindowSeconds } from "./quota-period.ts";
 import { collectionDiagnostic } from "./collection-diagnostic.ts";
 import { collectionRequest } from "./quota-collection-request.ts";
 import { object, rows, text, type Json } from "./json.ts";
@@ -42,8 +43,7 @@ export function accountsView(files: Json[], quota: Json[], ids: ReadonlySet<stri
         windows: [...windows]
           .sort(
             (a, b) =>
-              (finite(a.window_seconds) ? a.window_seconds : Infinity) -
-                (finite(b.window_seconds) ? b.window_seconds : Infinity) ||
+              (quotaWindowSeconds(a) ?? Infinity) - (quotaWindowSeconds(b) ?? Infinity) ||
               Number(mainAllowance(a, provider)) - Number(mainAllowance(b, provider)),
           )
           .map(windowView)
@@ -128,7 +128,7 @@ function detailWindows(windows: Json[], provider: string): Json[] {
   return windows.filter((window) => {
     if (
       window.is_unlimited === true ||
-      (window.window_seconds !== 18_000 && window.window_seconds !== 604_800)
+      (quotaWindowSeconds(window) !== 18_000 && quotaWindowSeconds(window) !== 604_800)
     )
       return false;
     if (provider !== "codex") return window.scope === "account" || window.scope === "model";
@@ -158,7 +158,7 @@ function bankedResets(value: unknown): BankedResets | null {
 function windowLabel(row: Json): string | null {
   const label = text(row.label)?.trim();
   if (label) return label;
-  const seconds = row.window_seconds;
+  const seconds = quotaWindowSeconds(row);
   if (!finite(seconds) || seconds <= 0) return null;
   if (seconds === 604_800) return "Weekly";
   for (const [unit, suffix] of [
@@ -187,6 +187,6 @@ function windowView(row: Json): UsageWindow | null {
       row.is_unlimited === true ? 1 : ratio === null ? null : Math.min(1, Math.max(0, ratio)),
     resetAt: row.is_unlimited === true ? null : text(row.reset_at),
     observedAt: text(row.observed_at),
-    windowSeconds: finite(row.window_seconds) ? row.window_seconds : null,
+    windowSeconds: quotaWindowSeconds(row),
   };
 }
