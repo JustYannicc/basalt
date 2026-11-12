@@ -88,17 +88,29 @@ createRoot(document.getElementById("root")).render(<RegistryProvider><Fixture />
                         row.querySelector(".font-mono, code")?.textContent?.trim(),
                     ),
                   );
-              const waitForCount = (count: number) =>
+              const waitForNames = (expected: readonly string[], ordered = false) =>
                 page
                   .waitForFunction(
-                    ({ selector, count }) => document.querySelectorAll(selector).length === count,
-                    { selector, count },
+                    ({ selector, expected, ordered }) => {
+                      const actual = Array.from(
+                        document.querySelectorAll(selector),
+                        (row) =>
+                          row.getAttribute("aria-label") ??
+                          row.querySelector(".font-mono, code")?.textContent?.trim(),
+                      );
+                      return (
+                        JSON.stringify(ordered ? actual : actual.sort()) ===
+                        JSON.stringify(ordered ? expected : [...expected].sort())
+                      );
+                    },
+                    { selector, expected: [...expected], ordered },
                     { timeout: 2000 },
                   )
                   .catch((error: Error) => {
                     if (error.name !== "TimeoutError") throw error;
                   });
-              await waitForCount(tools.length);
+              await waitForNames(tools.map((tool) => tool.name));
+              assert.deepEqual((await names()).sort(), tools.map((tool) => tool.name).sort());
               for (const [query, expected] of [
                 ["events list", ["archive", "events_listing", "events_list", "lookup"]],
                 ["list calendars", ["calendars_list"]],
@@ -107,22 +119,16 @@ createRoot(document.getElementById("root")).render(<RegistryProvider><Fixture />
                 ["LiSt   EvEnTs", ["archive", "events_listing", "events_list", "lookup"]],
               ] as const) {
                 await search.fill(query);
-                await waitForCount(expected.length);
+                await waitForNames(expected);
                 assert.deepEqual((await names()).sort(), [...expected].sort(), query);
               }
               await search.fill("events list");
-              const ordered = await names();
-              assert.ok(
-                ordered.indexOf("lookup") < ordered.indexOf("events_listing"),
-                "exact title ranks before a prefix",
-              );
-              assert.ok(
-                ordered.indexOf("events_list") < ordered.indexOf("archive"),
-                "exact name ranks before description-only match",
-              );
-              assert.ok(
-                ordered.indexOf("events_listing") < ordered.indexOf("archive"),
-                "prefix name ranks before description-only match",
+              const ranked = ["events_list", "lookup", "events_listing", "archive"];
+              await waitForNames(ranked, true);
+              assert.deepEqual(
+                await names(),
+                ranked,
+                "exact names and titles, then prefixes, then descriptions; ties keep catalog order",
               );
               for (const [query, expected] of [
                 [
@@ -144,11 +150,11 @@ createRoot(document.getElementById("root")).render(<RegistryProvider><Fixture />
                 ["  \t ", tools.map((tool) => tool.name)],
               ] as const) {
                 await search.fill(query);
-                await waitForCount(expected.length);
+                await waitForNames(expected);
                 assert.deepEqual((await names()).sort(), [...expected].sort(), query);
               }
               await search.fill("events nonexistent");
-              await waitForCount(0);
+              await waitForNames([]);
               assert.deepEqual(await names(), []);
             }),
           ),
