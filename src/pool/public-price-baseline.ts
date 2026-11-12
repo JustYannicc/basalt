@@ -18,11 +18,11 @@ export function baselinePrices(target: PriceTarget): {
 } {
   const exact = bare(target.model);
   const candidates = [exact, ...(priceAliases([target])[0]?.source_models ?? []).map(bare)];
-  const vendor = /^claude/.test(exact)
+  const vendor = exact.startsWith("claude")
     ? "anthropic"
     : /^(gemini|gemma)/.test(exact)
       ? "google"
-      : /^grok/.test(exact)
+      : exact.startsWith("grok")
         ? "xai"
         : /^(gpt|o1|o3|o4|codex)/.test(exact)
           ? "openai"
