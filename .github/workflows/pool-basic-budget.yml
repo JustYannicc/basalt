@@ -47,9 +47,14 @@ jobs:
           from pathlib import Path
           p = Path('.upstream/e2e/tests/atlassian-family-screens.spec.ts')
           s = p.read_text()
-          s = s.replace('const { atlassian, google, transport, fixture } = yield* familySetup([', 'const { atlassian, google, transport, fixture } = yield* evidence.step("Deploy family apps and restart product", familySetup([', 1)
-          s = s.replace('          "calendar",\n        ]);', '          "calendar",\n        ]));', 1)
-          p.write_text(s)
+          if '"Deploy family apps and restart product"' not in s:
+              start = 'const { atlassian, google, transport, fixture } = yield* familySetup(['
+              end = '          "calendar",\n        ]);'
+              if start not in s or end not in s:
+                  raise SystemExit('Unknown untimed scenario shape; refusing to rewrite it')
+              s = s.replace(start, 'const { atlassian, google, transport, fixture } = yield* evidence.step("Deploy family apps and restart product", familySetup([', 1)
+              s = s.replace(end, '          "calendar",\n        ]));', 1)
+              p.write_text(s)
           PYTHON
       - name: Run the unchanged deadline
         working-directory: .upstream
@@ -61,7 +66,7 @@ jobs:
         if: always()
         run: |
           python3 - <<'PYTHON'
-          import json, os
+          import hashlib, json, os
           from pathlib import Path
           output = Path('budget-proof')
           output.mkdir(exist_ok=True)
@@ -78,7 +83,7 @@ jobs:
                   trials.append(row)
           if len(trials) != 1:
               raise SystemExit(f'Expected one measured scenario, found {len(trials)}')
-          result = dict(source=os.environ['SOURCE_REF'], workers=os.environ['WORKERS'], trials=trials)
+          result = dict(source=os.environ['SOURCE_REF'], workers=os.environ['WORKERS'], scenarioSha256=hashlib.sha256(Path('.upstream/e2e/tests/atlassian-family-screens.spec.ts').read_bytes()).hexdigest(), trials=trials)
           (output / 'timing.json').write_text(json.dumps(result, indent=2) + '\n')
           print(json.dumps(result, indent=2))
           PYTHON
