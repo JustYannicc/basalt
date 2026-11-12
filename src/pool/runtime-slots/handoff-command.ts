@@ -30,6 +30,14 @@ export const RuntimeHandoffCommand = Schema.Union([
     action: Schema.Literals(["fence", "unfence"]),
     identity: SlotIdentity,
   }),
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literal("peer-bootstrap"),
+    operationId: OperationId,
+    identity: SlotIdentity,
+    configurationFingerprint: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+    sourceSha: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+  }),
 ]);
 export type RuntimeHandoffCommand = typeof RuntimeHandoffCommand.Type;
 

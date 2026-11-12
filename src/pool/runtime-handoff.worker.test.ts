@@ -4,6 +4,7 @@ import { handoffWorker } from "../../scripts/pool-tests/runtime-handoff-worker.t
 import { deferred } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
 import type { PromotionReceipt } from "./runtime-slots/contract.ts";
 import { nativeMembershipKey, slotSelectionKey } from "./runtime-slots/storage.ts";
+import peerProgram from "./home-peer-program.json" with { type: "json" };
 
 async function successfulView(f: Awaited<ReturnType<typeof handoffWorker>>, fresh: boolean) {
   const { response, body } = await f.view(fresh);
@@ -11,6 +12,38 @@ async function successfulView(f: Awaited<ReturnType<typeof handoffWorker>>, fres
   assert.ok(!("error" in body), JSON.stringify(body));
   assert.ok(body.accounts.some((account) => account.id === "auth-a"));
 }
+
+test("the signed operator command starts only the admitted legacy helper and retries inspect the same process", async (context) => {
+  const f = await handoffWorker();
+  context.after(f.cleanup);
+  const input = {
+    operationId: "bootstrap-signed",
+    identity: f.old.identity(),
+    sourceSha: peerProgram.sourceSha,
+    configurationFingerprint: await f.old.digest(),
+  };
+  const first = await f.command("peer-bootstrap", input);
+  assert.equal(first.status, 200, await first.clone().text());
+  assert.equal((await first.json()).result.observation, "ready");
+  assert.equal(f.old.helper.starts, 1);
+  assert.equal(f.old.calls.start, 0);
+  assert.equal(f.old.calls.destroy, 0);
+  f.reconstruct();
+  const again = await f.command("peer-bootstrap", input);
+  assert.equal(again.status, 200);
+  assert.equal((await again.json()).result.observation, "ready");
+  assert.equal(f.old.helper.starts, 1);
+  assert.equal(
+    (await f.command("peer-bootstrap", { ...input, configurationFingerprint: "0".repeat(64) }))
+      .status,
+    409,
+  );
+  assert.equal(
+    (await f.command("peer-bootstrap", { ...input, sourceSha: "0".repeat(64) })).status,
+    409,
+  );
+  assert.equal(f.old.helper.starts, 1);
+});
 
 test("real Worker and SQLite preserve first-attempt fresh and snapshot reads during candidate start, then switch every path", async (context) => {
   const f = await handoffWorker();

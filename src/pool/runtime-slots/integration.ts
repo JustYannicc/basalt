@@ -21,6 +21,7 @@ import type { PoolStatus } from "../lifecycle.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import type { ControllerState } from "./runtime-state.ts";
 import { LegacyActivity } from "./legacy-activity.ts";
+import type { PeerBootstrapInput } from "./peer-bootstrap.ts";
 
 export interface HandoffEnvironment extends EndpointEnvironment {}
 interface Options {
@@ -42,6 +43,7 @@ export class RuntimeHandoff {
   private options: Options;
   private env: HandoffEnvironment;
   private legacyActivity: LegacyActivity;
+  private legacyEndpoint: RuntimeEndpoint;
   constructor(
     ctx: ControllerState,
     env: HandoffEnvironment,
@@ -55,6 +57,7 @@ export class RuntimeHandoff {
     this.storage = new RuntimeSlotStorage(ctx.storage);
     this.legacyActivity = new LegacyActivity(ctx.storage);
     const local = new RuntimeEndpoint(ctx, env, "legacy", code, options.wrap);
+    this.legacyEndpoint = local;
     this.driver = new BoundSlotDriver((target): RuntimeStub => {
       if (target.controllerId !== ctx.id.toString()) throw new SlotRefused("identity");
       if (
@@ -178,6 +181,19 @@ export class RuntimeHandoff {
       active: proof.selection.active,
       digest: proof.selection.policyDigest,
     });
+  }
+  async bootstrapPeer(input: PeerBootstrapInput, signal: AbortSignal) {
+    const { selection } = await this.storage.inspect();
+    if (
+      !selection ||
+      ![selection.active, selection.draining].some(
+        (slot) =>
+          slot?.identity?.bootId === input.identity.bootId &&
+          slot.identity.instanceId === this.ctx.id.toString(),
+      )
+    )
+      throw new SlotRefused("selection");
+    return this.legacyEndpoint.bootstrapPeer(input, signal);
   }
   async promote(intent: PromotionIntent, envelope: string) {
     const proof = await this.authority.promotion(intent, envelope);

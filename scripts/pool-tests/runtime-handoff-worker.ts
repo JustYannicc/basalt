@@ -17,6 +17,7 @@ import type {
   PromotionIntent,
   SlotSelection,
   SlotTarget,
+  SlotIdentity,
 } from "../../src/pool/runtime-slots/contract.ts";
 import type { PoolView } from "../../apps/pool/contract.ts";
 import type { ProbeResult } from "../../src/pool/availability.ts";
@@ -209,6 +210,9 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
       target?: SlotTarget;
       intent?: PromotionIntent;
       operationId?: string;
+      identity?: SlotIdentity;
+      sourceSha?: string;
+      configurationFingerprint?: string;
     } = {},
   ) => {
     const at = Date.now();

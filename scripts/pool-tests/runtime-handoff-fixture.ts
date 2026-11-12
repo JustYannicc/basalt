@@ -28,6 +28,8 @@ import {
 import { fixture, signingKey } from "../../src/pool/test/control.ts";
 import type { NativeStreamLease } from "../../src/pool/native-streams.ts";
 import { legacyDrainProgram } from "../../src/pool/runtime-slots/legacy-drain.ts";
+import { peerBootstrapInspectionProgram } from "../../src/pool/runtime-slots/peer-bootstrap.ts";
+import peerProgram from "../../src/pool/home-peer-program.json" with { type: "json" };
 
 const responseModule = "../../src/pool/native-response.worker.ts";
 const {
@@ -94,6 +96,7 @@ export async function handoffRuntime(
     },
   };
   const policies = new Map<string, NativeMembershipPolicy>();
+  const helper = { starts: 0, witness: undefined as object | undefined };
   const hooks = {
     health: async () => {},
     install: async (_policy: NativeMembershipPolicy) => {},
@@ -107,7 +110,40 @@ export async function handoffRuntime(
       background.push(work);
     },
     container: {
-      async exec(command: string[]) {
+      async exec(command: string[], options?: { stdout: "pipe"; stderr: "ignore" }) {
+        if (command[2] === peerProgram.program) {
+          assert.equal(command.length, 4);
+          assert.deepEqual(options, { stdout: "pipe", stderr: "ignore" });
+          helper.starts++;
+          helper.witness = { ...JSON.parse(command[3]!), pid: 7, startTicks: "12345", ready: true };
+          return {
+            pid: 40001,
+            stdout: new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode(JSON.stringify(helper.witness) + "\n"));
+                controller.close();
+              },
+            }),
+            output: async () => {
+              throw new Error("Cannot collect a running helper");
+            },
+          };
+        }
+        if (command[2] === peerBootstrapInspectionProgram) {
+          assert.deepEqual(command, ["python3", "-c", peerBootstrapInspectionProgram]);
+          return {
+            output: async () => ({
+              exitCode: 0,
+              stderr: new Uint8Array(),
+              stdout: new TextEncoder().encode(
+                JSON.stringify({
+                  live: !!helper.witness,
+                  ...(helper.witness ? { witness: helper.witness } : {}),
+                }),
+              ),
+            }),
+          };
+        }
         assert.deepEqual(command, ["python3", "-c", legacyDrainProgram]);
         const connections = await hooks.connections();
         return {
@@ -229,6 +265,7 @@ export async function handoffRuntime(
     calls,
     hooks,
     policies,
+    helper,
     endpoint,
     wrap: nativeResponse,
     storage,

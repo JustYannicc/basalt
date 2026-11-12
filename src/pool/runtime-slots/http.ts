@@ -60,6 +60,9 @@ export async function handleRuntimeHandoff(
       case "unfence":
         await handoff.slots.unfence(value.identity);
         break;
+      case "peer-bootstrap":
+        result = await handoff.bootstrapPeer(value, request.signal);
+        break;
     }
     return Response.json({ result: result ?? null }, { headers: { "Cache-Control": "no-store" } });
   } catch {

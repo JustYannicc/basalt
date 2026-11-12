@@ -21,7 +21,12 @@ print(json.dumps({'format':'legacy-drain-v1','connections':count},separators=(',
 `;
 
 export interface DrainExecutor {
-  exec(command: string[]): Promise<{
+  exec(
+    command: string[],
+    options?: { stdout: "pipe"; stderr: "ignore" },
+  ): Promise<{
+    readonly pid?: number;
+    readonly stdout?: ReadableStream<Uint8Array> | null;
     output(): Promise<{
       exitCode: number;
       stdout: ArrayBuffer | Uint8Array;

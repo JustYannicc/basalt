@@ -27,6 +27,7 @@ import { openEnvelope } from "../token.ts";
 import { RuntimeActivity } from "./activity.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import { proveLegacyDrain } from "./legacy-drain.ts";
+import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 
 export interface EndpointEnvironment extends RuntimeEnvironment {
   POOL_RUNTIME_APPLICATION_ID?: string;
@@ -283,6 +284,20 @@ export class RuntimeEndpoint {
     if (!(await proveLegacyDrain(this.ctx, identity, signal, () => this.health(identity, signal))))
       return state;
     return this.activity.reconcileDrained(identity);
+  }
+  async bootstrapPeer(input: PeerBootstrapInput, signal: AbortSignal) {
+    if (this.role !== "legacy") throw new SlotRefused("identity");
+    const { record, configuration } = await this.store.read(input.identity);
+    if (
+      !sameIdentity(record.identity, input.identity) ||
+      configuration.homePeerOrdinal !== undefined ||
+      record.authorization.configurationFingerprint !== input.configurationFingerprint
+    )
+      throw new SlotRefused("identity");
+    return new PeerBootstrap(this.ctx, (identity, signal) => this.health(identity, signal)).run(
+      input,
+      signal,
+    );
   }
   retire(target: SlotTarget, identity: SlotIdentity, signal: AbortSignal) {
     return this.serialize(async () => {

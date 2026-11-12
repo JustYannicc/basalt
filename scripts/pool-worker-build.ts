@@ -3,6 +3,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { AlchemyContextLive } from "alchemy/AlchemyContext";
 import { Effect, Layer, type FileSystem, type Path } from "effect";
 import { fileURLToPath } from "node:url";
+import { checkHomePeerProgram } from "./pool-peer-program.ts";
+
+checkHomePeerProgram();
 
 // Match the pinned provider's deploy bundler, including Cloudflare's runtime plugins.
 const entry = import.meta.resolve("alchemy");
@@ -10,7 +13,9 @@ const module = new URL(
   `Cloudflare/Workers/Sources/Rolldown${entry.endsWith(".ts") ? ".ts" : ".js"}`,
   new URL("./", entry),
 );
-const { WorkerBundle }: {
+const {
+  WorkerBundle,
+}: {
   readonly WorkerBundle: Effect.Effect<
     { readonly build: (options: object) => Effect.Effect<unknown, Error> },
     never,
@@ -36,6 +41,6 @@ const program = Effect.gen(function* () {
     });
   }
 });
-NodeRuntime.runMain(program.pipe(
-  Effect.provide(AlchemyContextLive.pipe(Layer.provideMerge(NodeServices.layer))),
-));
+NodeRuntime.runMain(
+  program.pipe(Effect.provide(AlchemyContextLive.pipe(Layer.provideMerge(NodeServices.layer)))),
+);
