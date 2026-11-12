@@ -32,6 +32,13 @@ export function providerAppSource(root: string, lab: (typeof providerAppLabs)[nu
         content: `${JSON.stringify({ name: `provider-${lab}`, private: true, type: "module", dependencies: { apps: servedFrameworkVersion } }, null, 2)}\n`,
       },
       {
+        path: "cloudflare-scopes.ts",
+        content: readFileSync(
+          join(root, "src/pool/provider-accounts/cloudflare-scopes.ts"),
+          "utf8",
+        ),
+      },
+      {
         path: "providers.ts",
         content: readFileSync(join(root, "src/pool/provider-accounts/definitions.ts"), "utf8"),
       },

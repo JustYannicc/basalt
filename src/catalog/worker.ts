@@ -28,6 +28,7 @@ import { planetscaleSource, withPlanetScaleAccess } from "./planetscale.ts";
 import { clerkSource, withClerkSignIn } from "./clerk.ts";
 import { canvaSource } from "./canva.ts";
 import { plaidSource, withPlaidAccess } from "./plaid.ts";
+import cloudflareSource from "./cloudflare.json" with { type: "json" };
 import { obsidian } from "./obsidian/index.ts";
 
 // AWS source stays in the catalog until maintainers identify a maintained destination.
@@ -92,6 +93,11 @@ export async function handleCatalog(
   if (relative === "apps/miro.json")
     return new Response(
       request.method === "HEAD" ? null : onServedFramework(JSON.stringify(miroSource)),
+      { headers },
+    );
+  if (relative === "apps/cloudflare.json")
+    return new Response(
+      request.method === "HEAD" ? null : onServedFramework(JSON.stringify(cloudflareSource)),
       { headers },
     );
   if (relative === "apps/elevenlabs.json")

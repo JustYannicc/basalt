@@ -1,0 +1,1009 @@
+diff --git a/apps/hosted/server/src/contracts/account-sign-in.ts b/apps/hosted/server/src/contracts/account-sign-in.ts
+--- a/apps/hosted/server/src/contracts/account-sign-in.ts
++++ b/apps/hosted/server/src/contracts/account-sign-in.ts
+@@ -4,6 +4,10 @@
+ export const LinkedAccountSignIn = /* @__PURE__ */ (() =>
+   Schema.Union([
+     Schema.Struct({ state: Schema.Literal("saved"), reconnectAt: Schema.NullOr(Schema.Date) }),
+-    Schema.Struct({ state: Schema.Literals(["reconnect", "unavailable"]) }),
++    Schema.Struct({
++      state: Schema.Literal("reconnect"),
++      reason: Schema.optionalKey(Schema.Literal("permissions")),
++    }),
++    Schema.Struct({ state: Schema.Literal("unavailable") }),
+   ]))();
+ export type LinkedAccountSignIn = typeof LinkedAccountSignIn.Type;
+diff --git a/apps/hosted/server/src/implementation/account-sign-in.ts b/apps/hosted/server/src/implementation/account-sign-in.ts
+--- a/apps/hosted/server/src/implementation/account-sign-in.ts
++++ b/apps/hosted/server/src/implementation/account-sign-in.ts
+@@ -19,7 +19,9 @@
+     Effect.map((state): LinkedAccountSignIn =>
+       state.state === "saved"
+         ? { state: "saved", reconnectAt: state.reconnectAt }
+-        : { state: state.state },
++        : state.state === "reconnect" && state.reason !== undefined
++          ? { state: state.state, reason: state.reason }
++          : { state: state.state },
+     ),
+   );
+ 
+diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+--- a/apps/hosted/web/src/implementation/pages/account-actions.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+@@ -2,7 +2,11 @@
+ import { AccountAccessSettings, ReadAccountSharingEarly } from "./resource-settings.tsx";
+ import { AccountUsageSettings } from "./account-observations.tsx";
+ import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
+-import type { AccountDetail, AccountSummary } from "@executor-js/ui/contracts/dashboard";
++import {
++  permissionsReconnectLabel,
++  type AccountDetail,
++  type AccountSummary,
++} from "@executor-js/ui/contracts/dashboard";
+ import { useAtomSet } from "@effect/atom-react";
+ import type { AccountId, App } from "@executor-js/sdk";
+ import { Link } from "@tanstack/react-router";
+@@ -59,6 +63,7 @@
+   open,
+   binding = false,
+   reconnect,
++  reconnectPermissions,
+ }: {
+   readonly account: AccountSummary;
+   /** What the menu's button announces, as the list names this account. */
+@@ -69,21 +74,32 @@
+   readonly binding?: boolean | undefined;
+   /** The app whose current check says signing in again can help, where the caller may reconnect. */
+   readonly reconnect?: App | undefined;
++  /**
++   * Reconnects this account in place when its grant lacks only newly declared permissions. It
++   * replaces `reconnect`'s link: the grant itself is what needs renewing.
++   */
++  readonly reconnectPermissions?: (() => void) | undefined;
+ }) {
+   const brand = useProductBrand();
+   const { slug: organizationSlug } = useOrganizationRoute();
+   return (
+     <AccountActionsMenu account={account} name={name}>
+-      {reconnect !== undefined && (
+-        <DropdownMenuItem asChild>
+-          <Link
+-            to="/org/$organizationSlug/apps/$appId"
+-            params={{ organizationSlug, appId: reconnect.id }}
+-            search={{ view: "accounts" }}
+-          >
+-            Reconnect in {appDisplayName(reconnect, brand)}
+-          </Link>
++      {reconnectPermissions !== undefined ? (
++        <DropdownMenuItem onSelect={reconnectPermissions}>
++          {permissionsReconnectLabel}
+         </DropdownMenuItem>
++      ) : (
++        reconnect !== undefined && (
++          <DropdownMenuItem asChild>
++            <Link
++              to="/org/$organizationSlug/apps/$appId"
++              params={{ organizationSlug, appId: reconnect.id }}
++              search={{ view: "accounts" }}
++            >
++              Reconnect in {appDisplayName(reconnect, brand)}
++            </Link>
++          </DropdownMenuItem>
++        )
+       )}
+       <DropdownMenuItem onSelect={() => open("edit")}>Edit details</DropdownMenuItem>
+       <DropdownMenuItem onSelect={() => open("health")}>Check health</DropdownMenuItem>
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+--- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+@@ -5,8 +5,8 @@
+ import { AppConnectionDialogContent } from "./app-accounts.tsx";
+ import { useState } from "react";
+ import { catalogAtom } from "../../contracts/api.ts";
+-import type { AccountId, App } from "@executor-js/sdk";
+-import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
++import type { AccountId, AccountRequirement, App } from "@executor-js/sdk";
++import { signInNeedsPermissions, type AccountSummary } from "@executor-js/ui/contracts/dashboard";
+ import {
+   HostedAccountActions,
+   HostedAccountDialog,
+@@ -22,6 +22,7 @@
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
+ import { OAuthClientsDialog } from "./oauth-clients.tsx";
++import { ConnectionModal } from "./connection-dialog.tsx";
+ import { HostedAccountObservations, HostedAccountPlan } from "./account-observations.tsx";
+ import { inventoryAtom } from "../../contracts/organization.ts";
+ import { savedAccountRowsAtom } from "../../contracts/account-projection.ts";
+@@ -66,24 +67,24 @@
+     listed: ListedRow;
+   }>();
+   /**
+-   * Whether this page may offer Reconnect for `account` in `app`, once a current check says signing
+-   * in again can help. Host-managed, provisioned and interactive methods never reconnect here.
++   * The requirement through which this page may reconnect `account` in `app`, with the caller's
++   * access to it. Host-managed, provisioned and interactive methods never reconnect here.
+    */
+-  const canReconnect = (account: AccountSummary) => (app: App) => {
++  const reconnectTarget = (account: AccountSummary, app: App) => {
+     if (
+       account.hostManaged === true ||
+       app.activeVersion === null ||
+       !Option.isSome(directory.data) ||
+       !Option.isSome(inventory.data)
+     )
+-      return false;
++      return undefined;
+     const saved = inventory.data.value;
+     const listed = directory.data.value.apps.find((entry) => entry.app.id === app.id);
+     const usable = directory.data.value.accounts.some(
+       (entry) => entry.account.id === account.id && entry.access.canUse,
+     );
+-    if (listed === undefined || !usable) return false;
+-    return Object.values(app.requirements.accounts).some((requirement) => {
++    if (listed === undefined || !usable) return undefined;
++    const found = Object.entries(app.requirements.accounts).find(([, requirement]) => {
+       const method = requirement.definition.auth[account.method];
+       if (
+         requirement.provider !== account.provider ||
+@@ -99,6 +100,46 @@
+               (link) => link.app === app.id && link.account === account.id,
+             );
+     });
++    return found === undefined ? undefined : { slot: found[0], requirement: found[1] };
++  };
++  /**
++   * Whether this page may offer Reconnect for `account` in `app`, once a current check says signing
++   * in again can help.
++   */
++  const canReconnect = (account: AccountSummary) => (app: App) =>
++    reconnectTarget(account, app) !== undefined;
++  /**
++   * The first app using `account` whose grant lacks only newly declared permissions, with the
++   * requirement this page may reconnect it through. Reconnecting replaces this account's grant in
++   * place, so it keeps its ID, identity and links.
++   */
++  const permissionsReconnect = (account: AccountSummary) => {
++    if (!Option.isSome(inventory.data)) return undefined;
++    const saved = Option.isSome(savedRows.data)
++      ? savedRows.data.value.find((row) => row.id === account.id)
++      : undefined;
++    for (const app of bindingApps(inventory.data.value, [account])) {
++      const needs = signInNeedsPermissions([
++        account.signIn,
++        ...(saved?.bindings ?? [])
++          .filter((binding) => binding.app === app.id)
++          .map((binding) => binding.signIn),
++      ]);
++      const target = needs ? reconnectTarget(account, app) : undefined;
++      if (target !== undefined) return { app, account, ...target };
++    }
++    return undefined;
++  };
++  const [reconnecting, setReconnecting] = useState<{
++    readonly app: App;
++    readonly account: AccountSummary;
++    readonly slot: string;
++    readonly requirement: AccountRequirement;
++  }>();
++  const [reconnectBusy, setReconnectBusy] = useState(false);
++  const closeReconnect = () => {
++    setReconnecting(undefined);
++    setReconnectBusy(false);
+   };
+   const role = useOrganizationDetails()?.role;
+   const admin = role !== undefined && role !== "member";
+@@ -167,12 +208,16 @@
+           const entry = Option.isSome(directory.data)
+             ? directory.data.value.accounts.find((item) => item.account.id === account.id)
+             : undefined;
++          const permissions = permissionsReconnect(account);
+           return (
+             <HostedAccountActions
+               account={account}
+               name={name}
+               access={entry?.access}
+               binding={binding}
++              {...(permissions === undefined
++                ? {}
++                : { reconnectPermissions: () => setReconnecting(permissions) })}
+               reconnect={
+                 Option.isSome(inventory.data)
+                   ? reconnectApp(
+@@ -236,6 +281,26 @@
+           onClose={() => setDialog(undefined)}
+         />
+       )}
++      <ConnectionModal
++        open={reconnecting !== undefined}
++        busy={reconnectBusy}
++        onClose={closeReconnect}
++      >
++        {reconnecting !== undefined && Option.isSome(setup.data) && (
++          <CatalogAppConnection
++            key={`${reconnecting.app.id}:${reconnecting.slot}:${reconnecting.account.id}`}
++            app={reconnecting.app}
++            scope={reconnecting.requirement.scope}
++            slot={reconnecting.slot}
++            requirement={reconnecting.requirement}
++            method={reconnecting.account.method}
++            account={reconnecting.account}
++            redirectUri={setup.data.value.accountSetup.redirectUri}
++            onPendingChange={setReconnectBusy}
++            onSaved={closeReconnect}
++          />
++        )}
++      </ConnectionModal>
+       {admin && <OAuthClientsDialog {...oauthClients} />}
+     </>
+   );
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -44,7 +44,12 @@
+ import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
+ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ import { DropdownMenuItem } from "@executor-js/ui/components/dropdown-menu";
+-import type { AccountSummary, Inventory } from "@executor-js/ui/contracts/dashboard";
++import {
++  permissionsReconnectLabel,
++  signInNeedsPermissions,
++  type AccountSummary,
++  type Inventory,
++} from "@executor-js/ui/contracts/dashboard";
+ import { Button } from "@executor-js/ui/components/button";
+ import { Input } from "@executor-js/ui/components/input";
+ import {
+@@ -123,6 +128,14 @@
+       ? savedRows.data.value.find((row) => row.id === account.id)
+       : undefined;
+     return saved === undefined ? undefined : accountRowFromSaved(saved);
++  };
++  // The same grant states the row's health reads: the saved account's and this app's binding.
++  const needsPermissions = (account: AccountSummary) => {
++    const row = accountRow(account);
++    return signInNeedsPermissions([
++      (row?.account ?? account).signIn,
++      row?.bindings.find((binding) => binding.app === app.id)?.signIn,
++    ]);
+   };
+   // Traffic reads cover only the accounts linked here, which every view of the tab lists, so a
+   // pool the tab doesn't show never switches the column on. Connector accounts have no pool link.
+@@ -363,9 +376,11 @@
+                       disabled={connectionDisabled}
+                       onSelect={() => reconnect(scope, slot, account)}
+                     >
+-                      {requirement.definition.auth[account.method]?.type === "oauth2"
+-                        ? "Reconnect"
+-                        : "Update credentials"}
++                      {requirement.definition.auth[account.method]?.type !== "oauth2"
++                        ? "Update credentials"
++                        : needsPermissions(account)
++                          ? permissionsReconnectLabel
++                          : "Reconnect"}
+                     </DropdownMenuItem>
+                   )}
+               </LinkedAccountMenu>
+@@ -397,7 +412,7 @@
+                   disabled={connectionDisabled}
+                   onClick={() => reconnect(scope, slot, account)}
+                 >
+-                  Reconnect
++                  {needsPermissions(account) ? permissionsReconnectLabel : "Reconnect"}
+                 </Button>
+               )
+             );
+diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
+--- a/apps/local/server/src/contracts/dashboard.ts
++++ b/apps/local/server/src/contracts/dashboard.ts
+@@ -438,7 +438,11 @@
+ /** Saved credentials are not proof that an upstream service is reachable. */
+ export const AccountSignIn = Schema.Union([
+   Schema.Struct({ state: Schema.Literal("saved"), reconnectAt: Schema.NullOr(Schema.Date) }),
+-  Schema.Struct({ state: Schema.Literals(["reconnect", "unavailable"]) }),
++  Schema.Struct({
++    state: Schema.Literal("reconnect"),
++    reason: Schema.optionalKey(Schema.Literal("permissions")),
++  }),
++  Schema.Struct({ state: Schema.Literal("unavailable") }),
+ ]);
+ export type AccountSignIn = typeof AccountSignIn.Type;
+ /** Display metadata only; saved credential fields are never part of this projection. */
+diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
+--- a/apps/local/server/src/implementation/dashboard.ts
++++ b/apps/local/server/src/implementation/dashboard.ts
+@@ -139,7 +139,9 @@
+       Effect.map((state) =>
+         state.state === "saved"
+           ? ({ state: "saved", reconnectAt: state.reconnectAt } as const)
+-          : ({ state: state.state } as const),
++          : state.state === "reconnect" && state.reason !== undefined
++            ? ({ state: state.state, reason: state.reason } as const)
++            : ({ state: state.state } as const),
+       ),
+       Effect.catch(() => Effect.succeed({ state: "unavailable" } as const)),
+     );
+diff --git a/apps/local/web/src/contracts/api.ts b/apps/local/web/src/contracts/api.ts
+--- a/apps/local/web/src/contracts/api.ts
++++ b/apps/local/web/src/contracts/api.ts
+@@ -165,7 +165,7 @@
+       return AsyncResult.map(result, (data) => ({
+         ...data,
+         accounts: data.accounts.map((account) =>
+-          accountNeedsSignIn(account, now)
++          account.signIn.state === "saved" && accountNeedsSignIn(account, now)
+             ? { ...account, signIn: { state: "reconnect" as const } }
+             : account,
+         ),
+diff --git a/apps/local/web/src/implementation/pages/app-accounts.tsx b/apps/local/web/src/implementation/pages/app-accounts.tsx
+--- a/apps/local/web/src/implementation/pages/app-accounts.tsx
++++ b/apps/local/web/src/implementation/pages/app-accounts.tsx
+@@ -36,7 +36,11 @@
+   kindIn,
+ } from "@executor-js/ui/dashboard/app-accounts";
+ import type { RequirementLink } from "@executor-js/ui/contracts/app-accounts";
+-import type { AccountSummary } from "@executor-js/ui/contracts/dashboard";
++import {
++  permissionsReconnectLabel,
++  signInNeedsPermissions,
++  type AccountSummary,
++} from "@executor-js/ui/contracts/dashboard";
+ import { accountMenuName } from "@executor-js/ui/contracts/account-title";
+ import type { AccountId, AccountScope, App, AccountRequirement } from "@executor-js/sdk";
+ import type { DashboardError } from "../../contracts/errors.ts";
+@@ -130,9 +134,11 @@
+         >
+           <DropdownMenuItem onSelect={() => setRenaming(account.id)}>Edit details</DropdownMenuItem>
+           <DropdownMenuItem onSelect={() => setReplacing({ scope, slot, requirement, account })}>
+-            {requirement.definition.auth[account.method]?.type === "oauth2"
+-              ? "Reconnect"
+-              : "Update credentials"}
++            {requirement.definition.auth[account.method]?.type !== "oauth2"
++              ? "Update credentials"
++              : signInNeedsPermissions([account.signIn])
++                ? permissionsReconnectLabel
++                : "Reconnect"}
+           </DropdownMenuItem>
+         </LinkedAccountMenu>
+       ),
+@@ -142,7 +148,7 @@
+         size="sm"
+         onClick={() => setReplacing({ scope, slot, requirement, account })}
+       >
+-        Reconnect
++        {signInNeedsPermissions([account.signIn]) ? permissionsReconnectLabel : "Reconnect"}
+       </Button>
+     ),
+   });
+diff --git a/e2e/tests/oauth-scope-expansion-hosted.spec.ts b/e2e/tests/oauth-scope-expansion-hosted.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/oauth-scope-expansion-hosted.spec.ts
+@@ -0,0 +1,190 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
++import { IdentityAccount } from "../support/account-identity-product.ts";
++import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(HostedLive, { excludeTestServices: true })("Hosted OAuth scope expansion", (it) => {
++  it.effect(scenarios.accountScopeExpansionHosted.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          issuer = yield* accountIdentityIssuer,
++          http = yield* HttpClient.HttpClient,
++          browser = yield* Browser,
++          evidence = yield* Evidence;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const name = `Scope expansion ${randomUUID().slice(0, 8)}`;
++        const files = (scopes: readonly string[]) => [
++          appsManifest,
++          {
++            path: "index.ts",
++            content: `import { defineApp, defineProvider, oauth2, router } from "apps";
++const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2(${JSON.stringify(
++              {
++                authorizationUrl: issuer.origin + "/authorize",
++                tokenUrl: issuer.origin + "/token",
++                revocationUrl: issuer.origin + "/revoke",
++                tokenEndpointAuthMethod: "none",
++                scopes,
++                identity: { issuer: issuer.origin, name: "Scope fixture identity" },
++              },
++            )}) } });
++export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));`,
++          },
++        ];
++        let app: string | undefined, account: string | undefined;
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            if (app !== undefined)
++              expect(
++                (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`)).status,
++              ).toBe(200);
++            if (account !== undefined)
++              expect(
++                (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`))
++                  .status,
++              ).toBe(200);
++          }).pipe(Effect.orDie),
++        );
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name,
++          files: files(["read"]),
++        });
++        expect(deployed.status).toBe(200);
++        app = (yield* body(Resource, deployed)).id;
++        const appPath = `${prefix}/apps/${app}`;
++        const connectionPath = connectionsPath(appPath, "user", "service");
++        const created = yield* api.request(actors.owner, "POST", connectionPath, {});
++        expect(created.status).toBe(200);
++        const first = yield* body(Resource, created);
++        const started = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${first.id}/oauth/start`,
++          { method: "oauth", client: { clientId: "synthetic-client" } },
++        );
++        expect(started.status).toBe(200);
++        const authorization = yield* body(
++          Schema.Struct({ authorizationUrl: Schema.String }),
++          started,
++        );
++        expect(new URL(authorization.authorizationUrl).searchParams.get("scope")).toBe("read");
++        const callbackUrl = yield* Effect.scoped(
++          Effect.gen(function* () {
++            const consent = yield* HttpClient.withScope(http).get(authorization.authorizationUrl);
++            expect(consent.status).toBe(302);
++            if (consent.headers.location === undefined)
++              return yield* Effect.die("Issuer omitted callback");
++            return consent.headers.location;
++          }),
++        ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++        const completed = yield* api.request(
++          actors.owner,
++          "POST",
++          `${prefix}/connections/${first.id}/oauth/complete`,
++          { callbackUrl },
++        );
++        expect(completed.status).toBe(200);
++        const original = yield* body(IdentityAccount, completed);
++        account = original.id;
++        expect(yield* linkedAccountIds(actors.owner, appPath)).toEqual([original.id]);
++        const expanded = yield* api.request(actors.owner, "POST", `${appPath}/deploy`, {
++          files: files(["read", "write"]),
++        });
++        expect(expanded.status).toBe(200);
++
++        yield* browser.omitNetworkTrace;
++        yield* browser.login(actors.owner);
++        const accountsPage = `/org/${actors.organization.slug}/accounts`;
++        yield* browser.use("Open the saved synthetic account in Accounts", (page) =>
++          page.goto(accountsPage).then(() =>
++            page
++              .locator(".inventory-row")
++              .filter({ has: page.getByText("same@example.test", { exact: true }) })
++              .waitFor({ state: "visible" }),
++          ),
++        );
++        yield* browser.use("Open the saved account's menu", (page) =>
++          page
++            .locator(".inventory-row")
++            .filter({ has: page.getByText("same@example.test", { exact: true }) })
++            .getByRole("button", { name: /^Manage / })
++            .click(),
++        );
++        yield* evidence.attach(
++          "hosted-scope-expansion-menu.png",
++          "image/png",
++          yield* browser.use("Capture the permissions reconnect action", (page) =>
++            page.screenshot({ fullPage: true }),
++          ),
++        );
++        // A reconnect reads its own OAuth setup, creating its pinned connection as the dialog opens.
++        const reconnect = yield* browser.use("Reconnect directly from the Accounts menu", (page) =>
++          Promise.all([
++            page.waitForResponse(
++              (response) =>
++                response.request().method() === "POST" &&
++                new URL(response.url()).pathname.endsWith(
++                  `/apps/${app}/accounts/user/service/connections`,
++                ),
++            ),
++            page
++              .getByRole("menu")
++              .getByRole("menuitem", { name: "Reconnect to grant new permissions", exact: true })
++              .click(),
++          ]).then(async ([response]) => ({
++            status: response.status(),
++            payload: response.request().postDataJSON() as unknown,
++            body: (await response.json()) as unknown,
++          })),
++        );
++        expect(reconnect.status).toBe(200);
++        expect(reconnect.payload).toMatchObject({ account: original.id });
++        expect(reconnect.body).toMatchObject({
++          provider: { id: original.provider },
++          reconnectAccount: { id: original.id },
++          target: { app, requirement: "service" },
++        });
++        yield* browser.use("The reconnect dialog opens over Accounts", async (page) => {
++          const dialog = page.getByRole("dialog", { name: `Reconnect ${name}`, exact: true });
++          await dialog.waitFor({ state: "visible" });
++          await dialog.getByRole("button", { name: `Reconnect ${name}`, exact: true }).waitFor();
++          expect(new URL(page.url()).pathname).toBe(accountsPage);
++        });
++        yield* evidence.attach(
++          "hosted-scope-expansion-dialog.png",
++          "image/png",
++          yield* browser.use("Capture reconnect without visiting the app", (page) =>
++            page.screenshot({ fullPage: true }),
++          ),
++        );
++        yield* browser.use("Close the reconnect dialog", (page) =>
++          page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click(),
++        );
++        const retained = yield* api.request(
++          actors.owner,
++          "GET",
++          `${prefix}/accounts/${original.id}`,
++        );
++        expect(retained.status).toBe(200);
++        expect(retained.body).toMatchObject({
++          account: { id: original.id, provider: original.provider },
++        });
++        expect(yield* linkedAccountIds(actors.owner, appPath)).toEqual([original.id]);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/tests/oauth-scope-expansion.spec.ts b/e2e/tests/oauth-scope-expansion.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/oauth-scope-expansion.spec.ts
+@@ -0,0 +1,117 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { TestLive, withCase } from "../support/case.ts";
++import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
++import { accountIdentityProduct, IdentityAccount } from "../support/account-identity-product.ts";
++import { body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { localAgent, pairLocalBrowser } from "../support/local-links.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(TestLive, { excludeTestServices: true })("OAuth scope expansion", (it) => {
++  it.effect(scenarios.accountScopeExpansion.title, (context) =>
++    withCase(
++      context,
++      Effect.gen(function* () {
++        const issuer = yield* accountIdentityIssuer,
++          product = yield* accountIdentityProduct;
++        const name = "Scope expansion fixture";
++        const app = yield* product.deploy(issuer.origin, name, ["read"]);
++        const first = yield* product.connection(app);
++        const started = yield* product.authorize(first);
++        expect((yield* product.complete(first, started)).status).toBe(200);
++        const original = yield* product.connectionAccount(first);
++        const sibling = yield* product.deploy(
++          issuer.origin,
++          "Retained reader",
++          ["read"],
++          {},
++          undefined,
++          { name },
++        );
++        const selected = yield* product.reuse(sibling, original.id);
++        expect(selected.status).toBe("completed");
++        if (selected.status !== "completed") return;
++        expect(selected.account.id).toBe(original.id);
++        const signIn = () => product.request("GET", `/v1/accounts/${original.id}/sign-in`);
++        const before = yield* signIn();
++        expect(before.status).toBe(200);
++        yield* product.deploy(issuer.origin, name, ["read", "write"], {}, app);
++        const after = yield* signIn();
++        expect(after.body).toMatchObject({ state: "reconnect", reason: "permissions" });
++        const browser = yield* Browser,
++          evidence = yield* Evidence;
++        yield* pairLocalBrowser((yield* localAgent).agent);
++        yield* browser.use("Inspect expanded OAuth access on the app Accounts tab", (page) =>
++          page
++            .goto(`/apps/${app}?view=accounts`)
++            .then(() => page.locator('[data-health-state="needs-sign-in"]').first().waitFor()),
++        );
++        yield* evidence.attach(
++          "scope-expansion-accounts.png",
++          "image/png",
++          yield* browser.use("Capture the permissions reconnect control", (page) =>
++            page.screenshot({ fullPage: true }),
++          ),
++        );
++        yield* browser.use("Reconnect the existing account from its permissions prompt", (page) =>
++          page
++            .getByRole("button", { name: "Reconnect to grant new permissions", exact: true })
++            .click()
++            .then(() =>
++              page.getByRole("dialog", { name: "Reconnect account", exact: true }).waitFor(),
++            )
++            .then(() =>
++              page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click(),
++            ),
++        );
++        expect(yield* product.connectionAccount(first)).toEqual(original);
++        expect((yield* product.read(sibling)).status).toBe(200);
++        // A retained reader cannot overwrite the expanded provider's requested permissions.
++        yield* product.deploy(issuer.origin, "Retained reader", ["read"], {}, sibling, { name });
++        expect((yield* signIn()).body).toMatchObject({ state: "reconnect", reason: "permissions" });
++        const pending = yield* product.connection(app, original.id);
++        yield* issuer.configure({ denied: true });
++        const denied = yield* product.authorize(pending);
++        expect((yield* product.complete(pending, denied)).status).toBe(400);
++        expect(yield* product.connectionAccount(first)).toEqual(original);
++        expect((yield* product.read(sibling)).status).toBe(200);
++        yield* issuer.configure({ denied: false });
++        const upgraded = yield* product.authorize(pending);
++        expect(new URL(upgraded.authorizationUrl).searchParams.get("scope")).toBe("read write");
++        expect((yield* product.complete(pending, upgraded)).status).toBe(200);
++        const current = yield* product.connectionAccount(pending);
++        expect(current.id).toBe(original.id);
++        expect(current.provider).toBe(original.provider);
++        expect(current.identity?.id).toBe(original.identity?.id);
++        const state = yield* product.request("GET", `/v1/account-connections/${pending}`);
++        expect(state.body).toMatchObject({
++          id: pending,
++          state: { status: "completed", account: { id: original.id } },
++        });
++        for (const linked of [app, sibling]) expect((yield* product.read(linked)).status).toBe(200);
++        const accounts = yield* body(
++          Schema.Array(IdentityAccount),
++          yield* product.request("GET", "/v1/accounts?owner=local"),
++        );
++        expect(accounts.filter((a) => a.provider === original.provider)).toHaveLength(1);
++        expect((yield* signIn()).body).toMatchObject({ state: "saved" });
++        yield* serverControl("restart");
++        expect((yield* signIn()).body).toMatchObject({ state: "saved" });
++        expect((yield* product.connectionAccount(pending)).id).toBe(original.id);
++        // Removing a required scope gets a separate provider and cannot revive the old selection.
++        yield* product.deploy(issuer.origin, name, ["read"], {}, app);
++        const fresh = yield* product.connection(app);
++        const description = yield* product.request("GET", `/v1/account-connections/${fresh}`);
++        expect(description.body).toMatchObject({ reconnectAccount: null });
++        const provider = yield* body(
++          Schema.Struct({ provider: Schema.Struct({ id: Schema.String }) }),
++          description,
++        );
++        expect(provider.provider.id).not.toBe(original.provider);
++      }),
++    ),
++  );
++});
+diff --git a/packages/sdk/src/contracts/account-read.ts b/packages/sdk/src/contracts/account-read.ts
+--- a/packages/sdk/src/contracts/account-read.ts
++++ b/packages/sdk/src/contracts/account-read.ts
+@@ -5,7 +5,8 @@
+ 
+ export type AccountListSignIn =
+   | { readonly state: "saved"; readonly reconnectAt: Date | null }
+-  | { readonly state: "reconnect" | "unavailable" };
++  | { readonly state: "reconnect"; readonly reason?: "permissions" }
++  | { readonly state: "unavailable" };
+ 
+ /** Request-owned account metadata. Products authorize and redact every outward view. */
+ export interface AccountReadSnapshot {
+diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
+--- a/packages/sdk/src/contracts/account.ts
++++ b/packages/sdk/src/contracts/account.ts
+@@ -364,7 +364,11 @@
+       reconnectAt: Schema.NullOr(Schema.Date),
+       credentialsFingerprint: Schema.String,
+     }),
+-    Schema.Struct({ state: Schema.Literal("reconnect"), credentialsFingerprint: Schema.String }),
++    Schema.Struct({
++      state: Schema.Literal("reconnect"),
++      credentialsFingerprint: Schema.String,
++      reason: Schema.optionalKey(Schema.Literal("permissions")),
++    }),
+     Schema.Struct({ state: Schema.Literal("unavailable"), credentialsFingerprint: Schema.String }),
+   ]))();
+ export type AccountSignIn = typeof AccountSignIn.Type;
+diff --git a/packages/sdk/src/implementation/account-sign-in.ts b/packages/sdk/src/implementation/account-sign-in.ts
+--- a/packages/sdk/src/implementation/account-sign-in.ts
++++ b/packages/sdk/src/implementation/account-sign-in.ts
+@@ -3,6 +3,7 @@
+ import { OAuthGrant } from "../contracts/oauth.ts";
+ import type { Provider } from "../contracts/provider.ts";
+ import type { Credentials, StoredAccount } from "../contracts/storage.ts";
++import { missingOAuthScopes } from "../contracts/oauth-families.ts";
+ import { accountGrantId } from "./account-identities.ts";
+ 
+ export interface SignInGrant {
+@@ -38,7 +39,16 @@
+         ? new Date(saved.expiresAt)
+         : null;
+     const now = yield* Clock.currentTimeMillis;
+-    return reconnectAt !== null && reconnectAt.getTime() <= now
+-      ? ({ state: "reconnect" } as const)
+-      : ({ state: "saved", reconnectAt } as const);
++    if (reconnectAt !== null && reconnectAt.getTime() <= now)
++      return { state: "reconnect" } as const;
++    if (
++      method.grant !== "client_credentials" &&
++      saved.grant !== "client_credentials" &&
++      method.scopes !== undefined &&
++      method.scopes.length > 0 &&
++      saved.grantedScopes !== undefined &&
++      missingOAuthScopes(method.identity?.issuer, method.scopes, saved.grantedScopes).length > 0
++    )
++      return { state: "reconnect", reason: "permissions" } as const;
++    return { state: "saved", reconnectAt } as const;
+   });
+diff --git a/packages/sdk/src/implementation/provider-continuity.ts b/packages/sdk/src/implementation/provider-continuity.ts
+--- a/packages/sdk/src/implementation/provider-continuity.ts
++++ b/packages/sdk/src/implementation/provider-continuity.ts
+@@ -5,6 +5,7 @@
+ import { JsonObject, ProviderId, StorageError } from "../contracts/shared.ts";
+ import { query, type Query } from "./database.ts";
+ import { canonical, identifyProvider, methodCredential } from "./provider.ts";
++import { expandsOAuthScopes, mergeOAuthScopes } from "./provider-oauth-scopes.ts";
+ 
+ const isJsonObject = Schema.is(JsonObject);
+ const sameMethod = (
+@@ -37,12 +38,29 @@
+   );
+ };
+ 
++const expandsRequestedAccess = (previous: ProviderDefinition, next: ProviderDefinition) => {
++  const { auth: before, ...previousMetadata } = previous;
++  const { auth: after, ...nextMetadata } = next;
++  return (
++    canonical(previousMetadata) === canonical(nextMetadata) &&
++    Object.keys(before).length === Object.keys(after).length &&
++    Object.entries(before).every(([name, method]) => {
++      const current = after[name];
++      return (
++        current !== undefined &&
++        (sameMethod(method, current) || expandsOAuthScopes(method, current))
++      );
++    }) &&
++    Object.entries(before).some(([name, method]) => expandsOAuthScopes(method, after[name]!))
++  );
++};
++
+ /**
+  * The ID each declared provider gets. Provider IDs once also hashed display text, so a provider
+  * stored then can have an ID other than its identity. A deploy keeps the ID its app's active
+  * version gives a provider of the same identity, preferring the same requirement; else it uses the
+  * row stored for this exact definition under that earlier ID; else the identity. A changed
+- * identity may keep exactly one prior ref when it only adds auth methods. Ambiguous additions
++ * identity may keep exactly one prior ref when it only adds auth methods or OAuth scopes. Ambiguous additions
+  * get a new ref, including when one candidate is in the same slot.
+  */
+ export const chooseProviderIds = <
+@@ -72,7 +90,11 @@
+       if (exact !== undefined) return exact;
+       const additive = new Set(
+         kept
+-          .filter((item) => addsAuthMethods(item.definition, entry.provider.definition))
++          .filter(
++            (item) =>
++              addsAuthMethods(item.definition, entry.provider.definition) ||
++              expandsRequestedAccess(item.definition, entry.provider.definition),
++          )
+           .map((item) => item.provider),
+       );
+       return additive.size === 1 ? additive.values().next().value : undefined;
+@@ -103,10 +125,19 @@
+     });
+   });
+ 
+-const compatibleMethods = (stored: ProviderDefinition, incoming: ProviderDefinition) =>
++const compatibleMethods = (
++  stored: ProviderDefinition,
++  incoming: ProviderDefinition,
++  retainScopes: boolean,
++) =>
+   Object.entries(incoming.auth).every(([name, method]) => {
+     const old = Object.hasOwn(stored.auth, name) ? stored.auth[name] : undefined;
+-    return old === undefined || sameMethod(old, method);
++    return (
++      old === undefined ||
++      sameMethod(old, method) ||
++      expandsOAuthScopes(old, method) ||
++      (retainScopes && expandsOAuthScopes(method, old))
++    );
+   });
+ 
+ /**
+@@ -161,7 +192,7 @@
+         const { provider } = entry;
+         const allowed = (stored: ProviderDefinition | undefined) =>
+           stored === undefined ||
+-          (compatibleMethods(stored, provider.shared) &&
++          (compatibleMethods(stored, provider.shared, provider.allowAdditionalStoredMethods) &&
+             (provider.allowAdditionalStoredMethods ||
+               (Object.keys(stored.auth).length === Object.keys(provider.shared.auth).length &&
+                 Object.keys(stored.auth).every((name) =>
+@@ -178,7 +209,15 @@
+         }
+         const merged = {
+           ...provider.shared,
+-          auth: { ...locked.get(id)?.auth, ...provider.shared.auth },
++          auth: {
++            ...locked.get(id)?.auth,
++            ...Object.fromEntries(
++              Object.entries(provider.shared.auth).map(([name, method]) => [
++                name,
++                mergeOAuthScopes(locked.get(id)?.auth[name], method),
++              ]),
++            ),
++          },
+         };
+         const definition = yield* Schema.decodeUnknownEffect(JsonObject)(merged).pipe(
+           Effect.mapError(() => new StorageError()),
+diff --git a/packages/sdk/src/implementation/provider-oauth-scopes.ts b/packages/sdk/src/implementation/provider-oauth-scopes.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/provider-oauth-scopes.ts
+@@ -0,0 +1,33 @@
++/** OAuth access may grow without changing where credentials go or how they are used. */
++import { Schema } from "effect";
++import { JsonObject } from "../contracts/shared.ts";
++import type { ProviderDefinition } from "../contracts/provider.ts";
++import { canonical } from "./provider.ts";
++
++type Method = ProviderDefinition["auth"][string];
++
++/** Only authorization-code scopes may expand. Every other credential declaration must match. */
++export const expandsOAuthScopes = (before: Method, after: Method): boolean => {
++  if (
++    before.type !== "oauth2" ||
++    after.type !== "oauth2" ||
++    before.grant === "client_credentials" ||
++    after.grant === "client_credentials"
++  )
++    return false;
++  const { scopes: oldScopes, identity: _oldIdentity, ...oldContract } = before;
++  const { scopes: newScopes, identity: _newIdentity, ...newContract } = after;
++  return (
++    newScopes !== undefined &&
++    newScopes.length > 0 &&
++    Schema.is(JsonObject)(oldContract) &&
++    Schema.is(JsonObject)(newContract) &&
++    canonical(oldContract) === canonical(newContract) &&
++    (oldScopes ?? []).every((scope) => newScopes.includes(scope)) &&
++    (oldScopes === undefined || newScopes.some((scope) => !oldScopes.includes(scope)))
++  );
++};
++
++/** A retained app version cannot erase scopes another compatible version already requested. */
++export const mergeOAuthScopes = (stored: Method | undefined, incoming: Method): Method =>
++  stored !== undefined && expandsOAuthScopes(incoming, stored) ? stored : incoming;
+diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
+--- a/packages/ui/src/contracts/dashboard.ts
++++ b/packages/ui/src/contracts/dashboard.ts
+@@ -42,7 +42,9 @@
+   readonly providerUrl?: string | null;
+   readonly signIn?:
+     | { readonly state: "saved"; readonly reconnectAt: Date | null }
+-    | { readonly state: "reconnect" | "unavailable" };
++    /** `permissions`: the grant still works but lacks permissions its apps now declare. */
++    | { readonly state: "reconnect"; readonly reason?: "permissions" | undefined }
++    | { readonly state: "unavailable" };
+   /** Checks by the apps that use the account, when the host exposes them. */
+   readonly health?: AccountHealth;
+   /** The host created it for its own use, even if its method predates `provisioned`. */
+@@ -204,12 +206,28 @@
+   readonly children: ReactNode;
+ }
+ 
++const signInDue = (signIn: AccountSummary["signIn"], now: number) =>
++  signIn?.state === "reconnect" ||
++  (signIn?.state === "saved" && signIn.reconnectAt !== null && signIn.reconnectAt.getTime() <= now);
+ /** Token expiry needs user action only when the host cannot refresh it. */
+ export const accountNeedsSignIn = (account: AccountSummary, now = Date.now()) =>
+-  account.signIn?.state === "reconnect" ||
+-  (account.signIn?.state === "saved" &&
+-    account.signIn.reconnectAt !== null &&
+-    account.signIn.reconnectAt.getTime() <= now);
++  signInDue(account.signIn, now);
++/**
++ * These sign-ins need action only to grant newly declared permissions. Any expiry or other
++ * reconnect among them keeps the generic sign-in wording.
++ */
++export const signInNeedsPermissions = (
++  signIns: readonly AccountSummary["signIn"][],
++  now = Date.now(),
++) => {
++  const due = signIns.filter((signIn) => signInDue(signIn, now));
++  return (
++    due.length > 0 &&
++    due.every((signIn) => signIn?.state === "reconnect" && signIn.reason === "permissions")
++  );
++};
++/** Reconnecting keeps the saved account and its links; only the grant gains permissions. */
++export const permissionsReconnectLabel = "Reconnect to grant new permissions";
+ /** An app's latest check of an account. Outdated or missing checks make no claim. */
+ export const currentAccountCheck = (account: AccountSummary, app: AppId) => {
+   const check = account.health?.apps.find((entry) => entry.app === app)?.check;
+diff --git a/packages/ui/src/implementation/dashboard/account-row-health.tsx b/packages/ui/src/implementation/dashboard/account-row-health.tsx
+--- a/packages/ui/src/implementation/dashboard/account-row-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row-health.tsx
+@@ -3,7 +3,11 @@
+ import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+ import { useAtomValue } from "@effect/atom-react";
+ import type { ReactNode } from "react";
+-import { accountNeedsSignIn, type AccountSummary } from "../../contracts/dashboard.ts";
++import {
++  accountNeedsSignIn,
++  signInNeedsPermissions,
++  type AccountSummary,
++} from "../../contracts/dashboard.ts";
+ import { shortMoment } from "../components/local-time.tsx";
+ import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
+ import { cn } from "../lib/utils.ts";
+@@ -25,7 +29,8 @@
+ 
+ /** What the Health column says. */
+ export type AccountRowHealth =
+-  | { readonly kind: "needs-sign-in" }
++  /** `permissions`: only newly declared permissions are missing; the saved grant still works. */
++  | { readonly kind: "needs-sign-in"; readonly permissions?: boolean }
+   | { readonly kind: "unavailable" }
+   | {
+       readonly kind: "check";
+@@ -68,7 +73,9 @@
+     (signIn) => signIn !== undefined,
+   );
+   if (signIns.some((signIn) => accountNeedsSignIn({ ...account, signIn })))
+-    return { kind: "needs-sign-in" };
++    return signInNeedsPermissions(signIns)
++      ? { kind: "needs-sign-in", permissions: true }
++      : { kind: "needs-sign-in" };
+   if (signIns.some((signIn) => signIn.state === "unavailable")) return { kind: "unavailable" };
+   return undefined;
+ };
+@@ -129,6 +136,11 @@
+     (current, next) => (rank(next) < rank(current) ? next : current),
+     { kind: "no-check" },
+   );
++  // A grouped row names permissions only when no member's sign-in has ended.
++  if (worst.kind === "needs-sign-in")
++    return states.every((state) => state.kind !== "needs-sign-in" || state.permissions === true)
++      ? worst
++      : { kind: "needs-sign-in" };
+   if (worst.kind !== "check") return worst;
+   const same = states.filter(
+     (state): state is Extract<AccountRowHealth, { kind: "check" }> =>
+@@ -223,9 +235,16 @@
+         className={cn(cell, "flex-wrap")}
+         data-account-health-cell
+         data-health-state={health.kind}
++        {...(health.kind === "needs-sign-in" && health.permissions === true
++          ? { "data-sign-in-reason": "permissions" }
++          : {})}
+       >
+         <span className="sign-in-status font-medium text-sign-in-warning">
+-          {health.kind === "needs-sign-in" ? "Needs sign-in" : unavailableLabel}
++          {health.kind === "unavailable"
++            ? unavailableLabel
++            : health.permissions === true
++              ? "Needs new permissions"
++              : "Needs sign-in"}
+         </span>
+         {health.kind === "needs-sign-in" && recover}
+       </span>
