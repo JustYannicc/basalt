@@ -9,7 +9,7 @@ struct ConnectionPage: View {
     let snapshot = model.snapshot
     let view = snapshot?.connection
     VStack(alignment: .leading, spacing: 0) {
-      Header(title: "Connection", back: { model.page = .home })
+      Header(title: "Connection", back: { model.page = .home }, backTitle: model.homeTitle)
       VStack(alignment: .leading, spacing: 12) {
         Text("Connection").font(.system(size: 15, weight: .semibold)).padding(.horizontal, 6)
         if view != nil {

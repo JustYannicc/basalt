@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Deployment activation commits its scoped revision and pending notification in the writer transaction. Retried delivery uses the existing background jobs and app-data supervisor sockets, never a transport ordinal as a durable cursor. Subscription registration precedes the authoritative revision handshake. Every private event checks current session, membership and app authority; snapshot responses cannot replace a newer acknowledged revision. Historical upgrade fixtures remove every later hosted schema object and its journal row together before replaying an earlier migration. This foundation removes no timer. Links, credentials, groups, roles, sharing, session writers, collection and time-driven expiry remain uncovered until their own conversions."
+    }
+  }
+}

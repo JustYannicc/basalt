@@ -13,6 +13,7 @@ import { localNpmRegistry } from "../.upstream/e2e/support/npm-registry.ts";
 import { provisionSelfHostActors } from "../scripts/connectors-tests/test-accounts.mjs";
 import { handleCatalog } from "../src/catalog/worker.ts";
 import { catalog } from "../src/catalog/settings.ts";
+import { catalogBuildFailure } from "../scripts/catalog-compat/build-failure.mjs";
 
 /**
  * Build every package the catalog serves, as the catalog serves it, on the framework Basalt ships:
@@ -84,7 +85,7 @@ const program = Effect.gen(function* () {
   const prefix = `/api/organizations/${actors.organization.id}`;
   /**
    * Deploy one package and remove it; undefined when it built, else its failure: the private text
-   * this run keeps, plus the error's tag and stage, which the uploaded evidence may carry.
+   * this run keeps, plus closed fields and validated compiler diagnostics for uploaded evidence.
    */
   const build = (name, files) =>
     Effect.gen(function* () {
@@ -94,11 +95,7 @@ const program = Effect.gen(function* () {
       });
       if (deployed.status !== 200) {
         const body = deployed.body ?? {};
-        return {
-          text: `${body._tag ?? deployed.status}${body.stage ? ` at ${body.stage}` : ""}: ${String(body.message ?? "").slice(0, 300)}`,
-          tag: typeof body._tag === "string" ? body._tag : String(deployed.status),
-          ...(typeof body.stage === "string" ? { stage: body.stage } : {}),
-        };
+        return catalogBuildFailure(body, deployed.status);
       }
       yield* api.request(session, "DELETE", `${prefix}/apps/${deployed.body.id}`);
       return undefined;
@@ -146,6 +143,9 @@ const program = Effect.gen(function* () {
           failure: failure.text,
           failureTag: failure.tag,
           ...(failure.stage === undefined ? {} : { failureStage: failure.stage }),
+          ...(failure.compilerMessage === undefined
+            ? {}
+            : { compilerMessage: failure.compilerMessage }),
           originalBuilt: originalFailure === undefined,
           originalFailure: originalFailure?.text,
         };

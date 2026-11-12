@@ -3,12 +3,13 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { collectConnectorEvidence } from "./collect-connector-evidence.mjs";
 import { connectorDiagnostic } from "./connector-diagnostics.mjs";
 import { describeGuidanceFailure } from "../connectors-tests/guidance-failure.ts";
+import { catalogBuildFailure } from "../catalog-compat/build-failure.mjs";
 
 const credential = "private-credential-sentinel";
 const tenant = "private-tenant-sentinel";
@@ -350,6 +351,110 @@ test("catalog build failures name each package's error in closed fields, never i
     { id: "unserved", status: 502 },
     { id: "invalid", kind: "timeout", originalBuilt: false },
   ]);
+});
+
+test("uploaded catalog evidence keeps complete canonical compiler messages and import specifiers", async (t) => {
+  const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
+  const load = (path) => import(pathToFileURL(resolve(upstream, path)).href);
+  const [{ RuntimeBuildFailed }, { versionBuildFailed }] = await Promise.all([
+    load("packages/sdk/src/contracts/runtime.ts"),
+    load("packages/sdk/src/implementation/version-build-failure.ts"),
+  ]);
+  const root = await fixture(t);
+  const run = join(root, ".generated", "catalog-compat", "ci");
+  const prefix = "Browser compilation returned invalid outputs or unresolved imports.";
+  const imports = [
+    "#internal/missing",
+    "@fixture/retained-package/browser-entry-that-remains-unresolved",
+    ...Array.from({ length: 5 }, (_, index) => `fixture-package-${index}/unresolved-browser-entry`),
+  ].sort();
+  const messages = [prefix, `${prefix} Unresolved imports: ${JSON.stringify(imports)}`];
+  assert.ok(
+    messages[1].length > 300,
+    "the compiler message exceeds the private failure-text limit",
+  );
+  const bodies = [
+    ...messages.map((message) => ({ _tag: "VersionBuildFailed", stage: "compile", message })),
+    ...messages.map((message) =>
+      versionBuildFailed(
+        "organization:fixture-team",
+        "fixture-app",
+        new RuntimeBuildFailed({ stage: "compile", message }),
+      ),
+    ),
+  ];
+  assert.deepEqual(
+    bodies.slice(messages.length).map((body) => [body._tag, body.stage, body.message]),
+    messages.map((message) => [
+      "VersionBuildFailed",
+      "compile",
+      `App build failed at the compile stage: ${message}`,
+    ]),
+  );
+  const results = bodies.map((body, index) => {
+    const failure = catalogBuildFailure(body, 422);
+    return {
+      id: `fixture-${index}`,
+      built: false,
+      failure: failure.text,
+      failureTag: failure.tag,
+      failureStage: failure.stage,
+      compilerMessage: failure.compilerMessage,
+    };
+  });
+  await put(join(run, "report.json"), JSON.stringify({ failed: results.length, results }));
+  const upload = join(root, "runner-temp", "connector-evidence.json");
+  const collector = fileURLToPath(new URL("./collect-connector-evidence.mjs", import.meta.url));
+  execFileSync(process.execPath, [collector, "catalog-compat", upload], {
+    cwd: root,
+    stdio: "pipe",
+  });
+  const summary = JSON.parse(await readFile(upload, "utf8"));
+  assert.deepEqual(
+    summary.runs[0].records[0].packages.map((entry) => entry.compilerMessage),
+    bodies.map((body) => body.message),
+  );
+});
+
+test("compiler diagnostics reject unrelated, malformed and private module specifiers at both boundaries", () => {
+  const prefix = "Browser compilation returned invalid outputs or unresolved imports.";
+  const message = (imports) => `${prefix} Unresolved imports: ${JSON.stringify(imports)}`;
+  const compileWrapper = "App build failed at the compile stage: ";
+  for (const candidate of [
+    undefined,
+    { message: prefix },
+    `TypeError: ${credential} ${tenant}`,
+    `${prefix} ${credential} ${tenant}`,
+    `${prefix} Unresolved imports: [`,
+    `${prefix} Unresolved imports: [ "fixture" ]`,
+    `App build failed at the dependencies stage: ${prefix}`,
+    `App build failed at the compile stage in /${tenant}/app.ts: ${prefix}`,
+    message([]),
+    message(["z-package", "a-package"]),
+    message(["fixture", "fixture"]),
+    message([42]),
+    message([`https://${tenant}.invalid/${credential}`]),
+    message([`/${tenant}/${credential}`]),
+    message([`C:\\${tenant}\\${credential}`]),
+    message([`#internal/${tenant}?token=${credential}`]),
+    message([`fixture/${tenant}@private.invalid`]),
+    message(["../private"]),
+    message(["fixture/../private"]),
+    message(["x".repeat(161)]),
+    message(Array.from({ length: 33 }, (_, index) => `fixture-${index}`).sort()),
+    message(Array.from({ length: 32 }, (_, index) => `fixture-${index}-${"x".repeat(70)}`).sort()),
+  ]) {
+    for (const value of typeof candidate === "string"
+      ? [candidate, `${compileWrapper}${candidate}`]
+      : [candidate]) {
+      assert.equal(catalogBuildFailure({ message: value }, 400).compilerMessage, undefined);
+      const record = connectorDiagnostic("report", {
+        failed: 1,
+        results: [{ id: "fixture", built: false, compilerMessage: value }],
+      });
+      assert.deepEqual(record.packages, [{ id: "fixture" }]);
+    }
+  }
 });
 
 test("a catalog report lists at most twenty failed packages and says when it stopped", () => {

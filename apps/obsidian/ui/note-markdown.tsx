@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Fragment, jsx, jsxs } from "react/jsx-runtime";
-import { toJsxRuntime, type Components } from "hast-util-to-jsx-runtime";
-import { linkTarget } from "./links.ts";
-import { noteTree } from "./markdown.ts";
+import Markdown, { type Components, type Options } from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { remarkCallout } from "@r4ai/remark-callout";
+import remarkWikiLink from "@flowershow/remark-wiki-link";
+import { fileHref, linkTarget, noteHref } from "./links.ts";
 
 /**
- * Obsidian-flavoured Markdown, read-only, rendered as react-markdown renders the dashboard's:
- * raw HTML skipped, links only to http(s) or other notes, images only from the vault. Links
- * between notes stay inside this page.
+ * Obsidian-flavoured Markdown, read-only: the dashboard's renderer (react-markdown + GFM, raw HTML
+ * skipped) plus Flowershow's wikilink resolution and Obsidian callouts. Links go only to http(s)
+ * or other notes, which stay inside this page; images load only from the vault.
  */
 export function NoteMarkdown({
   content,
@@ -21,7 +22,17 @@ export function NoteMarkdown({
   readonly onOpen: (path: string) => void;
   readonly loadFile: (path: string) => Promise<Blob | null>;
 }) {
-  const components = useMemo<Partial<Components>>(
+  const plugins = useMemo((): NonNullable<Options["remarkPlugins"]> => {
+    // unified types a plugin's options as unknown; checking them against the plugin's own
+    // parameter type keeps a wrong option a type error.
+    const wiki: NonNullable<Parameters<typeof remarkWikiLink>[0]> = {
+      format: "shortestPossible",
+      files: [...files],
+      urlResolver: ({ filePath, isEmbed }) => (isEmbed ? fileHref(filePath) : noteHref(filePath)),
+    };
+    return [remarkGfm, remarkCallout, [remarkWikiLink, wiki]];
+  }, [files]);
+  const components = useMemo<Components>(
     () => ({
       a: ({ href, children, className }: Anchor) => {
         const target = linkTarget(href);
@@ -68,11 +79,13 @@ export function NoteMarkdown({
     }),
     [onOpen, loadFile],
   );
-  const rendered = useMemo(
-    () => toJsxRuntime(noteTree(content, files), { Fragment, jsx, jsxs, components }),
-    [content, files, components],
+  return (
+    <div className="prose">
+      <Markdown remarkPlugins={plugins} skipHtml components={components}>
+        {content}
+      </Markdown>
+    </div>
   );
-  return <div className="prose">{rendered}</div>;
 }
 
 type Anchor = { href?: string; className?: string; children?: ReactNode };

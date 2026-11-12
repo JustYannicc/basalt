@@ -1,4 +1,5 @@
 import { parseClosedErrorClass } from "../connectors-tests/guidance-failure.ts";
+import { compilerDiagnostic } from "../catalog-compat/build-failure.mjs";
 
 const phases = new Set([
   "unknown",
@@ -75,7 +76,7 @@ const packageLimit = 20;
 /**
  * A catalog build report's failed packages, as closed fields only: which package, the error's tag,
  * stage and kind, whether the publisher's own version built, and the catalog's status for a package
- * it could not serve. The failure text stays in the run's private report. Regressions come first,
+ * it could not serve. Only canonical compiler messages may retain text. Regressions come first,
  * then failures the report did not list as known, so the packages that failed the gate are kept.
  */
 function failedPackages(report) {
@@ -100,6 +101,9 @@ function failedPackages(report) {
         ? { stage: result.failureStage }
         : {}),
       ...(typeof result.failure === "string" ? { kind: kindOf(result.failure) } : {}),
+      ...(compilerDiagnostic(result.compilerMessage) === undefined
+        ? {}
+        : { compilerMessage: result.compilerMessage }),
       ...(typeof result.originalBuilt === "boolean" ? { originalBuilt: result.originalBuilt } : {}),
       ...(Number.isInteger(result.servedStatus) &&
       result.servedStatus >= 100 &&
@@ -125,7 +129,7 @@ function kindOf(text) {
   return "unknown";
 }
 
-/** Project fixed diagnostic categories; never redact and republish arbitrary proof output. */
+/** Project fixed categories and validated compiler diagnostics, never arbitrary proof output. */
 export function connectorDiagnostic(stage, input, failureFile = false) {
   const value = input !== null && typeof input === "object" ? input : {};
   const text =

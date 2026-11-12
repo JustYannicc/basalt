@@ -166,6 +166,19 @@ import Testing
     #expect(model.apps == nil)
   }
 
+  @Test(
+    "app rows say how many accounts an app has and where they run",
+    arguments: [(0, "No accounts"), (1, "1 account · Cloud"), (2, "2 accounts · Cloud")])
+  func appRowsSayHowManyAccountsAndWhereTheyRun(accounts: Int, detail: String) {
+    #expect(AppSummary.App(id: "a", name: "A", accounts: accounts).detail == detail)
+  }
+
+  @Test("the panel is titled Apps once the app list is known")
+  func panelTitleFollowsTheAppList() async {
+    #expect(Fixture.signedOut.model().homeTitle == "Signalbox")
+    #expect(await Fixture.connected.loadedModel().homeTitle == "Apps")
+  }
+
   @Test("review is offered only when something would change") func reviewIsOfferedOnlyWhenSomethingWouldChange() {
     let model = Fixture.connected.model()
     #expect(model.selection == .init(claude: .keep, codex: .keep))

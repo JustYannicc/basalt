@@ -1,0 +1,881 @@
+diff --git a/apps/hosted/cloud/src/app-data.ts b/apps/hosted/cloud/src/app-data.ts
+index 570e36b9d0c91bad90fb1566ee9a3d07e8b5ee12..839ebf3d7b12a44f0cd3bdffb6fade24a2055402 100644
+--- a/apps/hosted/cloud/src/app-data.ts
++++ b/apps/hosted/cloud/src/app-data.ts
+@@ -9,6 +9,7 @@ import { EvaluatedSupervisor } from "@executor-js/app-data/evaluated";
+ import { coloOf } from "./infrastructure/colo.ts";
+ import {
+   makeFacetSupervisor,
++  makeChangeNotifications,
+   FacetInvocation,
+   type FacetBundle,
+ } from "@executor-js/app-data/cloudflare";
+@@ -39,6 +40,7 @@ import { appCredentialOutbound, appOutboundBindings } from "./infrastructure/app
+ import { sentryBindings } from "./infrastructure/sentry.ts";
+ import { workerBuild } from "./infrastructure/worker-build.ts";
+ import { HttpServerResponse } from "effect/http";
++import { HttpServerRequest } from "effect/http";
+ import {
+   cloudObservability,
+   cloudTelemetry,
+@@ -241,6 +243,7 @@ const AppDataSupervisorLive = AppDataSupervisor.make(
+         false,
+         environment.APP_DATA_NATIVE_RUNTIME === true,
+       );
++      const notifications = makeChangeNotifications(state.raw);
+       // A database call's runner runs here, beside the facet it calls: the caller reaches this
+       // object directly instead of through a runner isolate that would only forward the call.
+       const local: AppDataHost = {
+@@ -256,6 +259,7 @@ const AppDataSupervisorLive = AppDataSupervisor.make(
+       // Start this isolate's colo lookup as the instance starts, ahead of its first reply.
+       colo();
+       return {
++        publishChange: notifications.publish,
+         // The reply carries how the supervisor ran, for the runner's span; the runner's reply
+         // decoder ignores the extra field, so runners from before it read the reply unchanged.
+         cache: (namespace: string, command: unknown, trace?: string, invocation?: string) =>
+@@ -297,7 +301,14 @@ const AppDataSupervisorLive = AppDataSupervisor.make(
+             within: { supervisor: { serves } },
+           }).pipe(Effect.flatMap((served) => served.invoke(invocation, capabilities))),
+         fetch: Effect.gen(function* () {
++          const request = yield* HttpServerRequest.HttpServerRequest;
+           const [response, socket] = yield* Cloudflare.upgrade();
++          const url = new URL(request.url, "https://app.internal");
++          if (url.pathname === "/hosted-changes") {
++            const keys: unknown = JSON.parse(url.searchParams.get("keys") ?? "null");
++            yield* notifications.initial(socket.ws, keys).pipe(Effect.orDie);
++            return response;
++          }
+           // upgrade already accepts the socket; send the initial revision without accepting twice.
+           yield* supervisor.initial(socket.ws).pipe(Effect.orDie);
+           return response;
+diff --git a/apps/hosted/cloud/src/implementation/data-changes.ts b/apps/hosted/cloud/src/implementation/data-changes.ts
+index b5a10d20895ddba52db1f7e179d19ad263174ca3..afb9e6a1df1a7d383f754cff7c0ca0ef7bb25327 100644
+--- a/apps/hosted/cloud/src/implementation/data-changes.ts
++++ b/apps/hosted/cloud/src/implementation/data-changes.ts
+@@ -3,10 +3,17 @@ import type { DurableObjectNamespace, MessageEvent } from "@cloudflare/workers-t
+ import { Cause, Effect, Queue, Schema, Stream } from "effect";
+ import { RuntimeProtocolFailed } from "@executor-js/sdk/core";
+ import { traceHeaders } from "@executor-js/telemetry";
++import { RevisionEvent, type ChangeKey } from "@executor-js/app-data";
+ 
+ /** Notify after registration, conflate bursts, and close with the subscriber's scope. */
+-export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">, app: string) =>
+-  Stream.callback<number, RuntimeProtocolFailed>(
++const notificationSocket = <A>(
++  namespace: Pick<DurableObjectNamespace, "getByName">,
++  owner: string,
++  path: string,
++  decode: (value: unknown) => A,
++  scoped: boolean,
++) =>
++  Stream.callback<A, RuntimeProtocolFailed>(
+     (queue) =>
+       Effect.gen(function* () {
+         const socket = yield* Effect.acquireRelease(
+@@ -15,8 +22,8 @@ export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">
+             return yield* Effect.tryPromise({
+               try: async () => {
+                 const response = await namespace
+-                  .getByName(app)
+-                  .fetch("https://app.internal/changes", {
++                  .getByName(owner)
++                  .fetch(`https://app.internal${path}`, {
+                     headers: { ...headers, Upgrade: "websocket" },
+                   });
+                 if (response.status !== 101 || response.webSocket === null)
+@@ -30,10 +37,8 @@ export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">
+         );
+         const changed = (event: MessageEvent) => {
+           try {
+-            const { revision } = Schema.decodeUnknownSync(
+-              Schema.fromJsonString(Schema.Struct({ revision: Schema.Int })),
+-            )(event.data);
+-            Queue.offerUnsafe(queue, revision);
++            if (!Queue.offerUnsafe(queue, decode(event.data)))
++              Queue.failCauseUnsafe(queue, Cause.fail(new RuntimeProtocolFailed()));
+           } catch {
+             Queue.failCauseUnsafe(queue, Cause.fail(new RuntimeProtocolFailed()));
+           }
+@@ -53,5 +58,31 @@ export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">
+         );
+         socket.accept();
+       }),
+-    { bufferSize: 1, strategy: "sliding" },
++    scoped ? { bufferSize: 64, strategy: "dropping" } : { bufferSize: 1, strategy: "sliding" },
++  );
++
++export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">, app: string) =>
++  notificationSocket(
++    namespace,
++    app,
++    "/changes",
++    (value) =>
++      Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ revision: Schema.Int })))(
++        value,
++      ).revision,
++    false,
++  );
++
++/** Each connection is bounded; overflow fails closed and forces a fresh SQL-head handshake. */
++export const scopedDataChanges = (
++  namespace: Pick<DurableObjectNamespace, "getByName">,
++  scope: string,
++  keys: readonly ChangeKey[],
++) =>
++  notificationSocket(
++    namespace,
++    `hosted-changes:${scope}`,
++    `/hosted-changes?keys=${encodeURIComponent(JSON.stringify(keys))}`,
++    Schema.decodeUnknownSync(Schema.fromJsonString(RevisionEvent)),
++    true,
+   );
+diff --git a/apps/hosted/cloud/src/infrastructure/app-data.ts b/apps/hosted/cloud/src/infrastructure/app-data.ts
+index 8549917386e8399903b665d25d09d6442a42e8b7..1bd9b1390c3195c91170f5e7c20c16af6a128bea 100644
+--- a/apps/hosted/cloud/src/infrastructure/app-data.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-data.ts
+@@ -4,9 +4,12 @@ import type { Effect } from "effect";
+ import type { makeFacetSupervisor } from "@executor-js/app-data/cloudflare";
+ import type { RemoteCapabilities } from "@executor-js/sdk/workerd";
+ import { AppData } from "./app-data-worker.ts";
++import type { RevisionHint } from "@executor-js/app-data";
++import type { ChangeNotificationFailed } from "@executor-js/app-data/cloudflare";
+ 
+ type FacetSupervisor = Effect.Success<ReturnType<typeof makeFacetSupervisor>>;
+ type Supervisor = Pick<FacetSupervisor, "invoke" | "cancel" | "evaluated" | "wake" | "unload"> & {
++  readonly publishChange: (hint: RevisionHint) => Effect.Effect<void, ChangeNotificationFailed>;
+   /**
+    * A cache command. `trace` is the caller's trace ID and `invocation` its runner invocation's
+    * opaque ID, compared with the call that woke the supervisor; the reply also says how the
+diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+index 2544bf242ff978efe61739ec1bc211c8b630cf74..b36437b907c29e4dd18a1a712f73c5797c519861 100644
+--- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
++++ b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+@@ -19,6 +19,7 @@ export const BackgroundJob = Schema.Literals([
+   "organization-removal",
+   "provisioning",
+   "contributed-departures",
++  "change-revisions",
+   "data-steps",
+   "repository-recovery",
+   "schedule-wake",
+diff --git a/apps/hosted/cloud/src/infrastructure/change-revisions.ts b/apps/hosted/cloud/src/infrastructure/change-revisions.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..dd421e73a70a1185cef38a37e2429ed377a2f045
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/change-revisions.ts
+@@ -0,0 +1,40 @@
++import * as Cloudflare from "alchemy/Cloudflare";
++import { RuntimeContext } from "alchemy";
++import { Effect, Schema } from "effect";
++import type { DurableObjectNamespace } from "@cloudflare/workers-types";
++import { makeChangeJournal, makeChangeRevisionHandler } from "@executor-js/hosted-server";
++import { GroupDatabase } from "@executor-js/hosted-server/groups";
++import { appDataSupervisors } from "./app-data.ts";
++import { scopedDataChanges } from "../implementation/data-changes.ts";
++
++const NativeNamespace = Schema.declare(
++  (value): value is Pick<DurableObjectNamespace, "getByName"> =>
++    typeof value === "object" &&
++    value !== null &&
++    "getByName" in value &&
++    typeof value.getByName === "function",
++);
++
++/** The current namespace already exists. No additional Worker, object class or database binding. */
++export const cloudChangeRevisions = Effect.gen(function* () {
++  const supervisors = yield* appDataSupervisors;
++  const environment = yield* Cloudflare.WorkerEnvironment;
++  return {
++    handler: makeChangeRevisionHandler((scope, keys) =>
++      scopedDataChanges(
++        Schema.decodeUnknownSync(NativeNamespace)(environment.AppDataSupervisor),
++        scope,
++        keys,
++      ),
++    ),
++    deliver: Effect.gen(function* () {
++      const sql = yield* Effect.flatten(GroupDatabase);
++      yield* makeChangeJournal(sql).deliver((scope, hint) =>
++        supervisors
++          .getByName(`hosted-changes:${scope}`)
++          .publishChange(hint)
++          .pipe(Effect.provide(RuntimeContext.phantom)),
++      );
++    }),
++  };
++});
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index d5d2d8f474072b9d1f122f346f3a966697b3886e..ec2dd213c1eb10b7c4551702751c6c6643a0b792 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -1,10 +1,11 @@
+ import { makeMcpGrantRpc } from "./infrastructure/mcp-grant-server.ts";
++import { cloudChangeRevisions } from "./infrastructure/change-revisions.ts";
+ import {
+   workflowStatusFaultBindings,
+   localWorkflowStatusFaults,
+ } from "./infrastructure/workflow-status-faults.ts";
+ import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+-import { runAccountRechecks } from "@executor-js/hosted-server";
++import { runAccountRechecks, changeRevisionsPath } from "@executor-js/hosted-server";
+ import {
+   observationPublishPath,
+   publishAccountObservations,
+@@ -351,10 +352,21 @@ export default Api.make(
+       Effect.scoped,
+       Effect.catch(() => Effect.logWarning("Contributed departure outbox unavailable")),
+     );
+-    const startJobs = Effect.all([dispatchWith(installTeam), contributedDepartures], {
+-      concurrency: 2,
+-      discard: true,
+-    }).pipe(lifetime.background);
++    const changeRevisions = yield* cloudChangeRevisions;
++    const deliverChanges = changeRevisions.deliver.pipe(
++      Effect.provide(executor),
++      Effect.scoped,
++      Effect.catch(() =>
++        Effect.logWarning("Change revision outbox unavailable; retained for retry"),
++      ),
++    );
++    const startJobs = Effect.all(
++      [dispatchWith(installTeam), contributedDepartures, deliverChanges],
++      {
++        concurrency: 3,
++        discard: true,
++      },
++    ).pipe(lifetime.background);
+     const cleanup = yield* EventCleanup;
+     // The event scope closes through waitUntil after a complete response is sent, so it waits
+     // for the jobs and exports their telemetry. A streamed body closes that scope at EOF instead;
+@@ -488,6 +500,7 @@ export default Api.make(
+       "organization-removal",
+       "provisioning",
+       "contributed-departures",
++      "change-revisions",
+       "data-steps",
+       "repository-recovery",
+       "schedule-wake",
+@@ -528,6 +541,7 @@ export default Api.make(
+       "organization-removal": organizationRemovals,
+       provisioning: dispatch,
+       "contributed-departures": contributedDepartures,
++      "change-revisions": deliverChanges,
+       "data-steps": dataSteps,
+       "repository-recovery": repositoryRecovery,
+       "schedule-wake": schedules.wake,
+@@ -672,6 +686,11 @@ export default Api.make(
+     );
+     const productionOps = yield* cloudProductionOps;
+     const routes = Layer.mergeAll(
++      HttpRouter.add("GET", changeRevisionsPath, changeRevisions.handler).pipe(
++        HttpRouter.provideRequest(executor),
++        HttpRouter.provideRequest(auth.identity),
++        HttpRouter.provideRequest(auth.apiIdentity),
++      ),
+       HttpRouter.add("POST", observationPublishPath, publishAccountObservations).pipe(
+         HttpRouter.provideRequest(executor),
+       ),
+diff --git a/apps/hosted/server/src/implementation/authorized-change-stream.ts b/apps/hosted/server/src/implementation/authorized-change-stream.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..d2b04edc9248854372e4fd656fec047eec9432ca
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/authorized-change-stream.ts
+@@ -0,0 +1,46 @@
++import { Effect, Stream } from "effect";
++import { RuntimeProtocolFailed } from "@executor-js/sdk/core";
++import {
++  newerRevision,
++  revisionKey,
++  type ChangeKey,
++  type RevisionEvent,
++  type RevisionHint,
++} from "apps/ui/contracts";
++
++/** The owner's first message proves registration; only then read the authoritative SQL heads. */
++export const authorizedChangeEvents = <E, R, E2, R2, E3, R3>(input: {
++  readonly keys: readonly ChangeKey[];
++  readonly events: Stream.Stream<RevisionEvent, E, R>;
++  readonly current: Effect.Effect<readonly RevisionHint[], E2, R2>;
++  readonly authorize: Effect.Effect<void, E3, R3>;
++}) =>
++  Stream.unwrap(
++    Effect.sync(() => {
++      const seen = new Map<string, string>();
++      const allowed = new Set(input.keys.map(revisionKey));
++      let initialized = false;
++      return input.events.pipe(
++        Stream.mapEffect((event) =>
++          Effect.gen(function* () {
++            if (!initialized) {
++              if (event.kind !== "current") return yield* new RuntimeProtocolFailed();
++              const revisions = yield* input.current;
++              yield* input.authorize;
++              initialized = true;
++              for (const hint of revisions) seen.set(revisionKey(hint), hint.revision);
++              return { kind: "current", revisions, snapshotRequired: true } satisfies RevisionEvent;
++            }
++            if (event.kind !== "changed") return undefined;
++            const key = revisionKey(event.hint);
++            if (!allowed.has(key) || !newerRevision(event.hint.revision, seen.get(key) ?? "0"))
++              return undefined;
++            yield* input.authorize;
++            seen.set(key, event.hint.revision);
++            return event;
++          }),
++        ),
++        Stream.filter((event) => event !== undefined),
++      );
++    }),
++  );
+diff --git a/apps/hosted/server/src/implementation/change-revision-http.ts b/apps/hosted/server/src/implementation/change-revision-http.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..27907e4cd743389230125fac79ebd0f268fdc91b
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/change-revision-http.ts
+@@ -0,0 +1,107 @@
++import { permitsAction, permitsApp } from "@executor-js/authorization";
++import { type ChangeKey, type RevisionEvent } from "apps/ui/contracts";
++import { AppId, type RuntimeProtocolFailed } from "@executor-js/sdk/core";
++import { Effect, Schema, Stream } from "effect";
++import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
++import {
++  ApiAuthentication,
++  Authentication,
++  CurrentUserId,
++  Unauthorized,
++} from "../contracts/auth.ts";
++import { GroupDatabase } from "../contracts/groups.ts";
++import {
++  CurrentOrganization,
++  OrganizationForbidden,
++  OrganizationId,
++  organizationOwner,
++} from "../contracts/organization.ts";
++import { requireAppAccess } from "./resource-policy.ts";
++import { authorizedChangeEvents } from "./authorized-change-stream.ts";
++import { makeChangeJournal } from "./change-revisions.ts";
++
++export const changeRevisionsPath = "/api/organizations/:organization/apps/:app/changes";
++const Params = Schema.Struct({ organization: OrganizationId, app: AppId });
++const headers = { "cache-control": "private, no-store", "x-accel-buffering": "no" };
++
++/** Hosted sessions and API grants are checked again for each private event, never on a timer. */
++export const authorizeAppChanges = (headers: Headers, organization: OrganizationId, app: AppId) =>
++  Effect.gen(function* () {
++    const identity = yield* Authentication;
++    const principal = yield* Effect.gen(function* () {
++      if (headers.has("authorization")) {
++        const grant = yield* (yield* ApiAuthentication).authenticate(headers, organization);
++        if (!permitsAction(grant.policy, "data") || !permitsApp(grant.policy, app))
++          return yield* new OrganizationForbidden();
++        return { user: grant.userId, access: grant.access };
++      }
++      const principal = yield* identity.current(headers);
++      if (principal === null) return yield* new Unauthorized();
++      const membership = yield* identity.membership(principal, organization);
++      return {
++        user: principal.userId,
++        access: { organization, owner: organizationOwner(organization), role: membership.role },
++      };
++    });
++    if (principal.access.organization !== organization) return yield* new OrganizationForbidden();
++    yield* requireAppAccess(app, "read").pipe(
++      Effect.provideService(CurrentOrganization, principal.access),
++      Effect.provideService(CurrentUserId, principal.user),
++    );
++  });
++
++/** This is opt-in foundation transport. Existing app-version and query streams keep their timers. */
++export const makeChangeRevisionHandler = <R>(
++  subscribe: (
++    scope: string,
++    keys: readonly ChangeKey[],
++  ) => Stream.Stream<RevisionEvent, RuntimeProtocolFailed, R>,
++) =>
++  Effect.gen(function* () {
++    const { organization, app } = yield* Schema.decodeUnknownEffect(Params)(
++      yield* HttpRouter.params,
++    );
++    const request = yield* HttpServerRequest.HttpServerRequest;
++    const url = new URL(request.url, "https://api.internal");
++    // Each added topic needs its own writer coverage and authority rule before it is available here.
++    if (url.searchParams.has("topics") && url.searchParams.get("topics") !== "deployment")
++      return HttpServerResponse.empty({ status: 400, headers });
++    const keys = [{ topic: "deployment", resource: app }];
++    const scope = organizationOwner(organization);
++    const authorize = authorizeAppChanges(new Headers(request.headers), organization, app);
++    yield* authorize;
++    const sql = yield* Effect.flatten(GroupDatabase);
++    const events = authorizedChangeEvents({
++      keys,
++      events: subscribe(scope, keys),
++      current: makeChangeJournal(sql).current(scope, keys),
++      authorize,
++    });
++    const services = yield* Effect.context<Stream.Services<typeof events>>();
++    const stream = events.pipe(
++      Stream.map((event) => `event: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`),
++      Stream.catchTags({
++        Unauthorized: () => Stream.make("event: revoked\ndata: {}\n\n"),
++        OrganizationForbidden: () => Stream.make("event: revoked\ndata: {}\n\n"),
++      }),
++      Stream.catch(() => Stream.make("event: resync\ndata: {}\n\n")),
++      Stream.merge(
++        Stream.tick("15 seconds").pipe(
++          Stream.drop(1),
++          Stream.map(() => ": heartbeat\n\n"),
++        ),
++        { haltStrategy: "left" },
++      ),
++      Stream.encodeText,
++      Stream.provideContext(services),
++    );
++    return HttpServerResponse.stream(stream, { contentType: "text/event-stream", headers });
++  }).pipe(
++    Effect.catchTags({
++      Unauthorized: () => Effect.succeed(HttpServerResponse.empty({ status: 401, headers })),
++      OrganizationForbidden: () =>
++        Effect.succeed(HttpServerResponse.empty({ status: 403, headers })),
++      SchemaError: () => Effect.succeed(HttpServerResponse.empty({ status: 400, headers })),
++    }),
++    Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503, headers }))),
++  );
+diff --git a/apps/hosted/server/src/implementation/change-revision-schema.ts b/apps/hosted/server/src/implementation/change-revision-schema.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..bdc6b28486cde8a9e41b425042276a96b40c927e
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/change-revision-schema.ts
+@@ -0,0 +1,58 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** Only new tables and functions; the deployed server can keep using its existing layout. */
++export const migrateChangeRevisions = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create table hosted_change_heads (
++    scope text not null,
++    topic text not null,
++    resource text not null,
++    revision bigint not null check (revision > 0),
++    primary key (scope, topic, resource)
++  )`;
++  yield* sql`create table hosted_change_pending (
++    scope text not null,
++    topic text not null,
++    resource text not null,
++    revision bigint not null check (revision > 0),
++    updated_at timestamptz not null default now(),
++    primary key (scope, topic, resource)
++  )`;
++  yield* sql`create index hosted_change_pending_delivery on hosted_change_pending (updated_at)`;
++  yield* sql`create function hosted_record_change(target_scope text, target_topic text, target_resource text)
++    returns bigint language plpgsql as $$
++    declare committed bigint;
++    begin
++      insert into hosted_change_heads (scope, topic, resource, revision)
++        values (target_scope, target_topic, target_resource, 1)
++        on conflict (scope, topic, resource) do update
++        set revision = hosted_change_heads.revision + 1
++        returning revision into committed;
++      insert into hosted_change_pending (scope, topic, resource, revision)
++        values (target_scope, target_topic, target_resource, committed)
++        on conflict (scope, topic, resource) do update
++        set revision = excluded.revision, updated_at = now();
++      return committed;
++    end $$`;
++  yield* sql`create function hosted_deployment_changed() returns trigger language plpgsql as $$
++    begin
++      if TG_OP = 'DELETE' then
++        perform hosted_record_change(OLD.owner, 'deployment', OLD.id);
++        return OLD;
++      end if;
++      if TG_OP = 'INSERT' then
++        if NEW.active_deployment is not null then
++          perform hosted_record_change(NEW.owner, 'deployment', NEW.id);
++        end if;
++      elsif NEW.active_deployment is distinct from OLD.active_deployment or NEW.owner is distinct from OLD.owner then
++        if NEW.owner is distinct from OLD.owner then
++          perform hosted_record_change(OLD.owner, 'deployment', OLD.id);
++        end if;
++        perform hosted_record_change(NEW.owner, 'deployment', NEW.id);
++      end if;
++      return NEW;
++    end $$`;
++  yield* sql`create trigger hosted_deployment_changed after insert or delete or update of active_deployment, owner
++    on executor_apps for each row execute function hosted_deployment_changed()`;
++});
+diff --git a/apps/hosted/server/src/implementation/change-revisions.ts b/apps/hosted/server/src/implementation/change-revisions.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ea55c1c07b03f4f7efa203638eac10d8c17b4d5a
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/change-revisions.ts
+@@ -0,0 +1,49 @@
++import { Effect, Result, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { RevisionHint, type ChangeKey } from "apps/ui/contracts";
++
++const Pending = Schema.Struct({ scope: Schema.String, ...RevisionHint.fields });
++export class ChangeDispatchFailed extends Schema.TaggedError<ChangeDispatchFailed>()(
++  "ChangeDispatchFailed",
++  {
++    pending: Schema.Int,
++  },
++) {}
++
++/** Captures the request's uncached SQL client, never a rendered answer or authorization verdict. */
++export const makeChangeJournal = (sql: SqlClient.SqlClient) => ({
++  current: (scope: string, keys: readonly ChangeKey[]) =>
++    Effect.forEach(keys, (key) =>
++      sql`select revision::text as revision from hosted_change_heads
++        where scope = ${scope} and topic = ${key.topic} and resource = ${key.resource}`.pipe(
++        Effect.flatMap(
++          Schema.decodeUnknownEffect(
++            Schema.Array(Schema.Struct({ revision: RevisionHint.fields.revision })),
++          ),
++        ),
++        Effect.map((rows) => ({ ...key, revision: rows[0]?.revision ?? "0" })),
++      ),
++    ),
++  /** Network I/O holds no SQL transaction or row lock. A newer pending revision survives its predecessor's ack. */
++  deliver: <E, R>(send: (scope: string, hint: RevisionHint) => Effect.Effect<void, E, R>) =>
++    Effect.gen(function* () {
++      const rows = yield* sql`select scope, topic, resource, revision::text as revision
++        from hosted_change_pending order by updated_at, scope, topic, resource limit 100`;
++      const pending = yield* Schema.decodeUnknownEffect(Schema.Array(Pending))(rows);
++      const results = yield* Effect.forEach(pending, ({ scope, ...hint }) =>
++        send(scope, hint).pipe(
++          Effect.timeout("5 seconds"),
++          Effect.andThen(sql`delete from hosted_change_pending where scope = ${scope}
++            and topic = ${hint.topic} and resource = ${hint.resource} and revision = ${hint.revision}::bigint`),
++          Effect.tapError(
++            () => sql`update hosted_change_pending set updated_at = clock_timestamp()
++            where scope = ${scope} and topic = ${hint.topic} and resource = ${hint.resource}
++              and revision = ${hint.revision}::bigint`,
++          ),
++          Effect.result,
++        ),
++      );
++      const failed = results.filter(Result.isFailure).length;
++      if (failed > 0) return yield* new ChangeDispatchFailed({ pending: failed });
++    }),
++});
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+index a97f73d236b463271660a68cb69f7075c2edc0c8..a72c616d343e8d8d402bf3ede0d92d3c341544d3 100644
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -23,6 +23,7 @@ import { migrateContributedDepartureObservability } from "./contributed-departur
+ import { migrateContributedDepartures } from "./contributed-departure-schema.ts";
+ import { migrateAccountRechecks } from "./account-recheck-schema.ts";
+ import { migrateAccountObservations } from "./account-observation-schema.ts";
++import { migrateChangeRevisions } from "./change-revision-schema.ts";
+ 
+ /**
+  * Migration failures stop startup; callers must not log the driver's secret-bearing cause. The
+@@ -153,6 +154,7 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
+     yield* migrateToolAvailability;
+     yield* queueExecutorAppUpgrades;
+   }),
++  "19_change_revisions": migrateChangeRevisions,
+ });
+ 
+ /**
+diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
+index 6b693d10fca11066c98cb2a20c9dcde76bcd72fa..2aec4993ba4b68825307bd4637593b76c7a2cc56 100644
+--- a/apps/hosted/server/src/index.ts
++++ b/apps/hosted/server/src/index.ts
+@@ -118,3 +118,8 @@ export * from "./contracts/schedules.ts";
+ export { makeScheduledAuthority } from "./implementation/schedules.ts";
+ 
+ export { runAccountRechecks } from "./implementation/account-rechecks.ts";
++export { makeChangeJournal } from "./implementation/change-revisions.ts";
++export {
++  makeChangeRevisionHandler,
++  changeRevisionsPath,
++} from "./implementation/change-revision-http.ts";
+diff --git a/packages/app-data/src/cloudflare.ts b/packages/app-data/src/cloudflare.ts
+index 4e721f5b20d4d858ff207eedb0f29dde0656512f..49b6057b53b83097fca457e2c7b09988fb9ef54b 100644
+--- a/packages/app-data/src/cloudflare.ts
++++ b/packages/app-data/src/cloudflare.ts
+@@ -1,5 +1,9 @@
+ /** Workerd edge: one supervisor per configured app; code changes preserve the isolated facet database. */
+ import { retireMethod, WorkerBundle, workerModules } from "./contracts/worker-bundle.ts";
++export {
++  makeChangeNotifications,
++  ChangeNotificationFailed,
++} from "./implementation/change-notifications.ts";
+ import type {
+   DurableObjectState,
+   Fetcher,
+diff --git a/packages/app-data/src/contracts/change-revisions.ts b/packages/app-data/src/contracts/change-revisions.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..fdc4545ed67f5b43d1799bb5eed612a88cb46e2f
+--- /dev/null
++++ b/packages/app-data/src/contracts/change-revisions.ts
+@@ -0,0 +1,34 @@
++import { Schema } from "effect";
++
++/** Decimal counters stay exact through Postgres, JSON and browser boundaries. */
++export const CommittedRevision = Schema.String.check(
++  Schema.isPattern(/^(0|[1-9][0-9]{0,18})$/u),
++  Schema.makeFilter(
++    (value) => /^(0|[1-9][0-9]{0,18})$/u.test(value) && BigInt(value) <= 9_223_372_036_854_775_807n,
++  ),
++);
++export const ChangeKey = Schema.Struct({
++  topic: Schema.NonEmptyString.check(Schema.isMaxLength(80)),
++  resource: Schema.NonEmptyString.check(Schema.isMaxLength(256)),
++});
++export type ChangeKey = typeof ChangeKey.Type;
++export const RevisionHint = Schema.Struct({ ...ChangeKey.fields, revision: CommittedRevision });
++export type RevisionHint = typeof RevisionHint.Type;
++export const RevisionKeys = Schema.Array(ChangeKey).check(
++  Schema.isMinLength(1),
++  Schema.isMaxLength(32),
++  Schema.makeFilter((keys) => new Set(keys.map(revisionKey)).size === keys.length),
++);
++export const revisionKey = (key: ChangeKey) => JSON.stringify([key.topic, key.resource]);
++export const newerRevision = (left: string, right: string) => BigInt(left) > BigInt(right);
++
++/** A transport ordinal is deliberately absent. Reconnect always reads the committed heads. */
++export const RevisionEvent = Schema.Union([
++  Schema.Struct({ kind: Schema.Literal("changed"), hint: RevisionHint }),
++  Schema.Struct({
++    kind: Schema.Literal("current"),
++    revisions: Schema.Array(RevisionHint).check(Schema.isMaxLength(32)),
++    snapshotRequired: Schema.Literal(true),
++  }),
++]);
++export type RevisionEvent = typeof RevisionEvent.Type;
+diff --git a/packages/app-data/src/implementation/change-notifications.ts b/packages/app-data/src/implementation/change-notifications.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..89de56a97dce9ddcf6a9863bb0344a8d4bd64023
+--- /dev/null
++++ b/packages/app-data/src/implementation/change-notifications.ts
+@@ -0,0 +1,93 @@
++import type { DurableObjectState, WebSocket } from "@cloudflare/workers-types";
++import { Effect, Schema, Semaphore } from "effect";
++import {
++  CommittedRevision,
++  RevisionHint,
++  RevisionKeys,
++  newerRevision,
++  revisionKey,
++  type ChangeKey,
++  type RevisionEvent,
++} from "../contracts/change-revisions.ts";
++
++export class ChangeNotificationFailed extends Schema.TaggedError<ChangeNotificationFailed>()(
++  "ChangeNotificationFailed",
++  {},
++) {}
++const Attachment = Schema.Struct({ kind: Schema.Literal("hosted-changes"), keys: RevisionKeys });
++const failed = () => new ChangeNotificationFailed();
++
++/** Uses the existing supervisor's hibernatable sockets; SQL owns the transactional outbox. */
++export const makeChangeNotifications = (state: DurableObjectState) => {
++  const gate = Semaphore.makeUnsafe(1);
++  const storedKey = (key: ChangeKey) => `hosted-change:${revisionKey(key)}`;
++  const current = (keys: readonly ChangeKey[]) =>
++    Effect.forEach(keys, (key) =>
++      Effect.tryPromise({ try: () => state.storage.get(storedKey(key)), catch: failed }).pipe(
++        Effect.flatMap((value) => Schema.decodeUnknownEffect(CommittedRevision)(value ?? "0")),
++        Effect.map((revision) => ({ ...key, revision })),
++      ),
++    );
++  const send = (socket: WebSocket, event: RevisionEvent) => socket.send(JSON.stringify(event));
++  return {
++    initial: (socket: WebSocket, input: unknown) =>
++      gate
++        .withPermits(1)(
++          Effect.gen(function* () {
++            const keys = yield* Schema.decodeUnknownEffect(RevisionKeys)(input);
++            const revisions = yield* current(keys);
++            yield* Effect.try({
++              try: () => {
++                socket.serializeAttachment({ kind: "hosted-changes", keys });
++                send(socket, { kind: "current", revisions, snapshotRequired: true });
++              },
++              catch: failed,
++            });
++          }),
++        )
++        .pipe(Effect.mapError(failed)),
++    publish: (input: unknown) =>
++      gate
++        .withPermits(1)(
++          Effect.gen(function* () {
++            const hint = yield* Schema.decodeUnknownEffect(RevisionHint)(input);
++            const revision = yield* Effect.tryPromise({
++              try: () =>
++                state.storage.transaction(async (tx) => {
++                  const key = storedKey(hint);
++                  const known = Schema.decodeUnknownSync(CommittedRevision)(
++                    (await tx.get(key)) ?? "0",
++                  );
++                  const next = newerRevision(hint.revision, known) ? hint.revision : known;
++                  await tx.put(key, next);
++                  return next;
++                }),
++              catch: failed,
++            });
++            // Retrying after persistence must still fan out when the first attempt died before sending.
++            yield* Effect.sync(() => {
++              for (const socket of state.getWebSockets()) {
++                try {
++                  const attachment = Schema.decodeUnknownOption(Attachment)(
++                    socket.deserializeAttachment(),
++                  );
++                  if (
++                    attachment._tag === "None" ||
++                    !attachment.value.keys.some((key) => revisionKey(key) === revisionKey(hint))
++                  )
++                    continue;
++                  send(socket, { kind: "changed", hint: { ...hint, revision } });
++                } catch {
++                  try {
++                    socket.close(1011, "Reconnect");
++                  } catch {
++                    /* The client has already gone. */
++                  }
++                }
++              }
++            });
++          }),
++        )
++        .pipe(Effect.mapError(failed)),
++  };
++};
+diff --git a/packages/app-data/src/index.ts b/packages/app-data/src/index.ts
+index d9151d19199a36975ffc1e313a17898d6ec883d3..995cccd83c607eca02a70e3e43c929ec451fb2a7 100644
+--- a/packages/app-data/src/index.ts
++++ b/packages/app-data/src/index.ts
+@@ -1,2 +1,3 @@
+ /** App data contracts shared by hosts and the protocols of retained builds. */
+ export * from "./contracts/database.ts";
++export * from "./contracts/change-revisions.ts";
+diff --git a/packages/apps/src/client.ts b/packages/apps/src/client.ts
+index 50494cccba780a20630f5d0d85710444e6781d9f..9aedb7ca4445f0bd779a523a030f2a4af171f632 100644
+--- a/packages/apps/src/client.ts
++++ b/packages/apps/src/client.ts
+@@ -7,6 +7,7 @@ export {
+   type QueryTransport,
+ } from "./contracts/live.ts";
+ export { createAppClient } from "./implementation/ui-client.ts";
++export { makeRevisionFence } from "./implementation/revision-fence.ts";
+ 
+ export type {
+   AppMutation,
+diff --git a/packages/apps/src/contracts/ui.ts b/packages/apps/src/contracts/ui.ts
+index 824d4b7970471c5a9865480207acc71ae0d87746..1e8eb60757b83d958bca064cada8938ebce2e665 100644
+--- a/packages/apps/src/contracts/ui.ts
++++ b/packages/apps/src/contracts/ui.ts
+@@ -1,5 +1,12 @@
+ /** Browser-to-host operations bind identity and authentication outside authored app code. */
+ import { Schema, type Effect, type Stream } from "effect";
++export {
++  RevisionHint,
++  RevisionEvent,
++  newerRevision,
++  revisionKey,
++  type ChangeKey,
++} from "@executor-js/app-data";
+ import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
+ import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
+ import { JsonValue } from "./schema.ts";
+diff --git a/packages/apps/src/implementation/revision-fence.ts b/packages/apps/src/implementation/revision-fence.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ce6f0b5378e7f4dbaef159b144ada5d81a845718
+--- /dev/null
++++ b/packages/apps/src/implementation/revision-fence.ts
+@@ -0,0 +1,52 @@
++import {
++  newerRevision,
++  revisionKey,
++  type ChangeKey,
++  type RevisionHint,
++} from "@executor-js/app-data";
++
++/** Scope must include the server, organization, viewer/session generation and app. Holds no cached data. */
++export const makeRevisionFence = (scope: string, keys: readonly ChangeKey[]) => {
++  const required = new Map(keys.map((key) => [revisionKey(key), "0"]));
++  let generation = 0;
++  let synchronized = false;
++  type Connection = { readonly scope: string; readonly generation: number };
++  const matches = (connection: Connection) =>
++    connection.scope === scope && connection.generation === generation;
++  const covers = (revisions: readonly RevisionHint[]) => {
++    const supplied = new Map(revisions.map((hint) => [revisionKey(hint), hint.revision]));
++    return [...required].every(([key, minimum]) => {
++      const revision = supplied.get(key);
++      return revision !== undefined && !newerRevision(minimum, revision);
++    });
++  };
++  const observe = (hint: RevisionHint) => {
++    const key = revisionKey(hint);
++    const known = required.get(key);
++    if (known !== undefined && newerRevision(hint.revision, known))
++      required.set(key, hint.revision);
++  };
++  return {
++    begin: (): Connection => {
++      synchronized = false;
++      return { scope, generation: ++generation };
++    },
++    disconnect: () => {
++      synchronized = false;
++      generation++;
++    },
++    handshake: (connection: Connection, revisions: readonly RevisionHint[]) => {
++      if (!matches(connection) || !covers(revisions)) return false;
++      revisions.forEach(observe);
++      synchronized = true;
++      return true;
++    },
++    observe,
++    acknowledge: observe,
++    accept: (connection: Connection, revisions: readonly RevisionHint[]) => {
++      if (!synchronized || !matches(connection) || !covers(revisions)) return false;
++      revisions.forEach(observe);
++      return true;
++    },
++  };
++};
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -24,6 +24,10 @@
+ /** Remove the latest hosted objects and journal together so earlier migrations can replay. */
+ export const beforeHostedAccountRechecks = () =>
+   [
++    { sql: "DROP TRIGGER hosted_deployment_changed ON executor_apps" },
++    { sql: "DROP FUNCTION hosted_deployment_changed(), hosted_record_change(text, text, text)" },
++    { sql: "DROP TABLE hosted_change_pending, hosted_change_heads" },
++    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 19" },
+     { sql: "DROP TABLE hosted_tool_availability" },
+     { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 18" },
+     { sql: "DROP TABLE hosted_account_rechecks, hosted_account_recheck_families" },
+diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-links.spec.ts
+--- a/e2e/tests/legacy-profile-links.spec.ts
++++ b/e2e/tests/legacy-profile-links.spec.ts
+@@ -6,7 +6,7 @@
+  * The fixture rebuilds the database as step 9 finds it inside the upgrade transaction. The
+  * product's migration ledger is per step: SDK schema versions in FumaDB's settings and hosted
+  * steps in `private_hosted_migrations`, which runs every step above its latest recorded one. The
+- * fixture removes steps 9 through 14 from the ledger and their objects, and writes the profiles an
++ * fixture removes steps 9 through 19 from the ledger and their objects, and writes the profiles an
+  * older version left in `executor_installations`. SDK 4.0.13 and 4.0.14 stay applied because, in
+  * a real upgrade, they have already run when step 9 starts, and 4.0.13 keeps
+  * `executor_installations` unchanged for step 9. Step 9 reads only that table, apps, deployments,
+@@ -64,6 +64,11 @@
+   "account_identity_index",
+   "contributed_departure_observability",
+   "model_bindings",
++  "hosted_routes",
++  "tool_policies",
++  "account_rechecks",
++  "tool_availability",
++  "change_revisions",
+ ].map((name, index) => ({ migration_id: index + 1, name }));
+ 
+ const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });

@@ -43,6 +43,8 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
   f.home.addGroup("fixture-pool", 1, ["auth-a"]);
   const native: string[] = [];
   const messages: string[] = [];
+  const diagnostics: unknown[][] = [];
+  t.mock.method(console, "warn", (...args: unknown[]) => diagnostics.push(args));
   t.mock.method(globalThis, "fetch", async (_input: unknown, init?: RequestInit) => {
     messages.push(new TextDecoder().decode(init?.body as ArrayBuffer));
     return new Response(null, { status: 202 });
@@ -139,9 +141,14 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
     f.home.calls.every((call) => call.method === "GET"),
     true,
   );
-  assert.equal(messages.length, 3);
-  assert.match(messages[1]!, /"status":"error"/);
-  assert.match(messages[2]!, /pool_request_collection_unavailable/);
+  assert.equal(messages.length, 2);
+  assert.match(messages[1]!, /"status":"ok"/);
+  assert.deepEqual(diagnostics, [
+    [
+      "POOL_REQUEST_RELIABILITY_UNKNOWN",
+      { target: 99, state: "unavailable", reason: "collection_unavailable" },
+    ],
+  ]);
   const report = await PoolOperations.prototype.fetch.call(
     { env },
     new Request(`https://operations/availability?pool=${state.pool}`),
@@ -149,7 +156,7 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
   assert.equal(report.status, 200);
   assert.equal(report.headers.get("Cache-Control"), "no-store");
   assert.deepEqual(await report.json(), { ok: true, failures: [] });
-  assert.equal(messages.length, 3, "manual reads never send check-ins or change monitoring");
+  assert.equal(messages.length, 2, "manual reads never send check-ins or change monitoring");
   const automatic = await PoolOperations.prototype.fetch.call(
     { env },
     new Request(`https://operations/automatic-recovery-observation?pool=${state.pool}`),
@@ -161,7 +168,7 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
   assert.equal(observed.condition, "healthy");
   assert.equal(observed.runtime.bootId, "fixture-boot");
   assert.equal(observed.runtime.instanceId, "a".repeat(64));
-  assert.equal(messages.length, 3);
+  assert.equal(messages.length, 2);
   assert.equal(
     (
       await worker.fetch(

@@ -61,13 +61,15 @@ public struct PanelView: View {
 struct Header<Trailing: View>: View {
   let title: String
   var back: (() -> Void)?
+  /// Names the page the back button returns to.
+  var backTitle = "Signalbox"
   @ViewBuilder var trailing: Trailing
 
   var body: some View {
     HStack {
       if let back {
         Button(action: back) {
-          Label("Signalbox", systemImage: "chevron.left").font(.system(size: 12))
+          Label(backTitle, systemImage: "chevron.left").font(.system(size: 12))
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
@@ -85,8 +87,8 @@ struct Header<Trailing: View>: View {
 }
 
 extension Header where Trailing == EmptyView {
-  init(title: String, back: (() -> Void)? = nil) {
-    self.init(title: title, back: back) { EmptyView() }
+  init(title: String, back: (() -> Void)? = nil, backTitle: String = "Signalbox") {
+    self.init(title: title, back: back, backTitle: backTitle) { EmptyView() }
   }
 }
 
