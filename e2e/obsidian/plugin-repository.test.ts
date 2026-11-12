@@ -6,7 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const script = fileURLToPath(new URL("../../scripts/obsidian-plugin-repository.sh", import.meta.url));
+const script = fileURLToPath(
+  new URL("../../scripts/obsidian-plugin-repository.sh", import.meta.url),
+);
 const git = (cwd: string, ...args: string[]) => {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -23,7 +25,17 @@ test("a build reaches the plugin repository once, in Obsidian's layout, and neve
     git(root, "clone", "--quiet", remote, seed);
     writeFileSync(join(seed, "README.md"), "Signalbox Sync\n");
     git(seed, "add", "README.md");
-    git(seed, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "-m", "seed");
+    git(
+      seed,
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@example.com",
+      "commit",
+      "--quiet",
+      "-m",
+      "seed",
+    );
     git(seed, "push", "--quiet", "origin", "HEAD:refs/heads/main");
 
     const dist = join(root, "dist");
@@ -63,7 +75,10 @@ test("a build reaches the plugin repository once, in Obsidian's layout, and neve
     const changed = publish();
     assert.equal(changed.status, 1);
     assert.match(changed.stderr, /already has 9\.9\.1 and its dist\/main\.js differs/);
-    assert.equal(git(remote, "rev-parse", "refs/tags/9.9.1^{commit}"), git(check, "rev-parse", "9.9.1^{commit}"));
+    assert.equal(
+      git(remote, "rev-parse", "refs/tags/9.9.1^{commit}"),
+      git(check, "rev-parse", "9.9.1^{commit}"),
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
