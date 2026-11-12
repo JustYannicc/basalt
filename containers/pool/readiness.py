@@ -60,6 +60,7 @@ class Readiness:
         self._key = management_key.encode("utf-8")
         self._monotonic_ns = monotonic_ns
         self._services_ready = False
+        self._service_audit_revision = 0
         self._policy_observations_enabled = True
         self._policy_healthy = False
         self._policy_deadline_ns = 0
@@ -70,9 +71,25 @@ class Readiness:
         self._probe_condition = threading.Condition(self._lock)
         self._observed_policy_probes: OrderedDict[str, None] = OrderedDict()
 
-    def set_ready(self, value: bool) -> None:
+    def set_ready(self, value: bool, *, audit_revision: int | None = None) -> None:
         with self._lock:
-            self._services_ready = value
+            self._services_ready = value and (
+                audit_revision is None or audit_revision == self._service_audit_revision
+            )
+
+    def service_audit_revision(self) -> int:
+        with self._lock:
+            self._expire_policy_lease()
+            return self._service_audit_revision
+
+    def _invalidate_service_audit(self) -> None:
+        self._services_ready = False
+        self._service_audit_revision += 1
+
+    def _expire_policy_lease(self) -> None:
+        if self._policy_healthy and self._monotonic_ns() >= self._policy_deadline_ns:
+            self._policy_healthy = False
+            self._invalidate_service_audit()
 
     def refresh_policy_lease(
         self, instance_id: str, generation: str | None = None
@@ -95,6 +112,9 @@ class Readiness:
                     self._policy_deadline_ns = 0
                     return False
                 self._fused_instance_id = None
+            self._expire_policy_lease()
+            if self._policy_instance_id is not None and self._policy_instance_id != instance_id:
+                self._invalidate_service_audit()
             self._policy_instance_id = instance_id
             self._policy_healthy = True
             self._policy_deadline_ns = self._monotonic_ns() + POLICY_HEALTH_LEASE_NS
@@ -104,6 +124,8 @@ class Readiness:
         with self._lock:
             if generation is not None and generation != self.boot_id:
                 return
+            if self._policy_healthy:
+                self._invalidate_service_audit()
             self._policy_healthy = False
             self._policy_deadline_ns = 0
 
@@ -114,6 +136,7 @@ class Readiness:
             self._fused_instance_id = self._policy_instance_id
             self._fused_instance_pending = self._policy_instance_id is None
             self._policy_healthy = False
+            self._invalidate_service_audit()
             self._policy_deadline_ns = 0
 
     def note_policy_probe(self, nonce: str, generation: str | None = None) -> None:
@@ -178,7 +201,7 @@ class Readiness:
                 .isoformat(timespec="seconds")
                 .replace("+00:00", "Z")
             )
-            self._services_ready = False
+            self._invalidate_service_audit()
             self._policy_observations_enabled = False
             self._fused_instance_id = None
             self._fused_instance_pending = False
@@ -194,6 +217,7 @@ class Readiness:
 
     def readiness_response(self) -> tuple[bool, dict[str, str], int]:
         with self._lock:
+            self._expire_policy_lease()
             remaining_ns = self._policy_deadline_ns - self._monotonic_ns()
             policy_live = (
                 self._policy_healthy

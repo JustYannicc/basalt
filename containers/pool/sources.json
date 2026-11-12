@@ -212,6 +212,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home provides native one-shot database migration, no-database schema info and read-only schema checks covering the exact schema marker and all required indexes. Preserve no-op when schema and all required indexes are ready, index completion when schema is already current, newer schema and wrong-definition refusal, cancellation, retained rows and readiness with one connection without raising connection budgets. Exit before lifecycle, repository, provider, listener or maintenance startup and return bounded JSON without secrets or native diagnostics. Pass actual PostgreSQL migration, rollback, concurrent startup and read-only repeated-no-op regressions."
           }
+        },
+        {
+          "identity": "cliproxy-home-idle-control",
+          "file": "0549-home-idle-control.patch",
+          "sha256": "486b9bff2ca87188109e2d6e052648ddfa3c32edc4a91ee2215057456e48aa7c",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home renews each exact PostgreSQL membership in one atomic statement with membership-before-Home locks, post-lock database time, fenced-lifetime refusal and unchanged three-second heartbeat/five-second cancellation bounds, and exposes a database-free process-health endpoint. Preserve SQLite behavior and supervisor startup, generation, transition and slow-audit readiness gates without delaying child-exit recovery."
+          }
         }
       ]
     },

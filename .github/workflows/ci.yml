@@ -2240,7 +2240,7 @@ jobs:
       - name: Check the provider table against the pinned pool backend
         run: npm run check:providers
       - name: Check the pool bootstrap
-        run: python3 -m unittest containers.pool.test_dispatch_signals containers.pool.test_quota_signals containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_release_cache containers.pool.test_output_privacy containers.pool.test_native_policy containers.pool.test_policy_diagnostic containers.pool.test_policy_check containers.pool.test_recovery containers.pool.test_recovery_supervisor containers.pool.test_recovery_readiness containers.pool.test_launch_readiness containers.pool.test_recovery_http containers.pool.test_recovery_cleanup containers.pool.test_capture_recovery containers.pool.test_billing_policy containers.pool.test_usage_write_signals
+        run: python3 -m unittest containers.pool.test_dispatch_signals containers.pool.test_quota_signals containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_release_cache containers.pool.test_output_privacy containers.pool.test_native_policy containers.pool.test_policy_diagnostic containers.pool.test_policy_check containers.pool.test_recovery containers.pool.test_recovery_supervisor containers.pool.test_service_health containers.pool.test_recovery_readiness containers.pool.test_launch_readiness containers.pool.test_recovery_http containers.pool.test_recovery_cleanup containers.pool.test_capture_recovery containers.pool.test_billing_policy containers.pool.test_usage_write_signals
       - name: Prove the output regression catches the previous image source
         run: |
           mkdir -p "$RUNNER_TEMP/pool-output-baseline"

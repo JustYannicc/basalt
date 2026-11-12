@@ -40,6 +40,7 @@ from .pool_contract import (
     require_tmpfs,
 )
 from .readiness import Readiness, start_ready_server
+from .service_health import ServiceHealth
 from .recovery import HomeExited, HomeRecovery
 from .recovery_deadline import RecoveryCancelled, current_deadline, operation_timeout
 from .runtime_signals import (
@@ -266,7 +267,7 @@ def main(stop: threading.Event | None = None) -> int:
             cluster_yaml(database_url, os.environ.get("POOL_DATABASE_SCHEMA_OWNER", "").strip()),
         )
 
-        def launch_generation(recovering: bool = False) -> str:
+        def launch_generation(recovering: bool = False) -> tuple[str, int]:
             """Reuse boot, child capture and health gates; import only on first boot."""
             nonlocal category
             if not recovering:
@@ -345,6 +346,7 @@ def main(stop: threading.Event | None = None) -> int:
             if not recovering:
                 category = FailureCategory.INITIAL_HEALTH
             with startup_phase(StartupPhase.INITIAL_HEALTH, supervisor_started_ns):
+                successful_audit_revision: int | None = None
                 deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
                 while not stop.is_set() and time.monotonic() < deadline:
                     failed = [(child, child.process.poll()) for child in children]
@@ -360,20 +362,23 @@ def main(stop: threading.Event | None = None) -> int:
                     operation_timeout(STARTUP_TIMEOUT_SECONDS)
                     if recovering and readiness.policy_fused():
                         raise StartupError("Policy fused during recovery")
+                    audit_revision = readiness.service_audit_revision()
                     services_ready = check_services(management_key, node_id)
-                    readiness.set_ready(services_ready)
+                    readiness.set_ready(services_ready, audit_revision=audit_revision)
                     if services_ready and readiness.snapshot()[0]:
+                        successful_audit_revision = audit_revision
                         break
                     stop.wait(operation_timeout(0.5))
                 if stop.is_set():
                     raise RecoveryCancelled()
-                if not readiness.snapshot()[0]:
+                if successful_audit_revision is None or not readiness.snapshot()[0]:
                     raise StartupError(
                         "Home and node did not become healthy before timeout"
                     )
-            return node_id
+            return node_id, successful_audit_revision
 
-        node_id = launch_generation()
+        node_id, audit_revision = launch_generation()
+        health = ServiceHealth(management_key, node_id)
         recovery = HomeRecovery()
         category = FailureCategory.RUNTIME
         while not stop.wait(2):
@@ -396,7 +401,7 @@ def main(stop: threading.Event | None = None) -> int:
                             children.clear()
                             episode.before_launch()
                             try:
-                                node_id = launch_generation(recovering=True)
+                                node_id, audit_revision = launch_generation(recovering=True)
                             except HomeExited as error:
                                 if error.exit_code != 1:
                                     raise
@@ -404,6 +409,7 @@ def main(stop: threading.Event | None = None) -> int:
                                 readiness.begin_recovery()
                                 continue
                             episode.recovered()
+                            health = ServiceHealth(management_key, node_id)
                             break
                     except BaseException:
                         # Retain the absolute episode deadline through terminal cleanup.
@@ -429,7 +435,11 @@ def main(stop: threading.Event | None = None) -> int:
                                 ready_server.server_close()
                         raise
                 continue
-            readiness.set_ready(check_services(management_key, node_id))
+            current_revision = readiness.service_audit_revision()
+            if current_revision != audit_revision:
+                health.invalidate()
+                audit_revision = current_revision
+            readiness.set_ready(health.check(), audit_revision=audit_revision)
         return 0
     except RecoveryCancelled:
         return 0
