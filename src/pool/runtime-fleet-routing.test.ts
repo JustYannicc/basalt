@@ -64,7 +64,8 @@ function fixture(maximum = 4, targetActive = 1) {
       },
       abortPool: () => {},
       drain: async () => ({ active: 0, known: true }),
-      retire: async () => {
+      retire: async (_identity, begin) => {
+        await begin();
         calls.retires++;
         retired = true;
         if (retirementLost) throw new Error("lost retirement acknowledgement");

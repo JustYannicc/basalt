@@ -4,6 +4,8 @@ import { handoffRuntime } from "../../scripts/pool-tests/runtime-handoff-fixture
 import { RuntimeSqlite } from "../../scripts/pool-tests/runtime-handoff-storage.ts";
 import { runtimeFixtureCode } from "../../scripts/pool-tests/runtime-handoff-proofs.ts";
 import { runtimeProofFixture } from "../../scripts/release-barrier/test/runtime-proof-fixture.ts";
+import { RuntimeFleet } from "./runtime-fleet/controller.ts";
+import { RuntimeFleetState } from "./runtime-fleet/state.ts";
 import { boundFleetCell } from "./runtime-fleet/bound-cell.ts";
 import { RuntimeProviderReader } from "./runtime-provider/read.ts";
 import { decodeProviderApplication } from "./runtime-provider/application.ts";
@@ -34,7 +36,8 @@ async function fixture() {
   };
   let failApplication = false,
     failRuntime = false;
-  const provider = new RuntimeProviderReader("synthetic-provider-token", async (input) => {
+  let credential: string | null = "synthetic-provider-token";
+  const provider = new RuntimeProviderReader({ get: async () => credential }, async (input) => {
     const instances = new URL(input).pathname.endsWith("instances-v2");
     if (instances ? failRuntime : failApplication) return new Response(null, { status: 403 });
     return Response.json({
@@ -87,7 +90,11 @@ async function fixture() {
   return {
     ...runtime,
     cell,
+    storage,
     transport,
+    secret: (value: string | null) => {
+      credential = value;
+    },
     failApplication: (value: boolean) => {
       failApplication = value;
     },
@@ -121,7 +128,7 @@ test("a fleet cell joins provider reads to the retained actual start witness bef
   assert.equal(dispatched, 1);
   assert.equal(f.calls.model, 1);
   assert.deepEqual(await f.cell.drain(selected), { active: 0, known: true });
-  await f.cell.retire(selected);
+  await f.cell.retire(selected, async () => {});
   assert.equal(await f.cell.retired(selected), true);
   assert.equal(f.calls.destroy, 1);
   assert.equal(f.transport.stubs, 1);
@@ -172,4 +179,50 @@ test("a native stub failure is never replayed, and the next call reconnects", as
   await response.text();
   assert.equal(f.transport.stubs, 2);
   assert.equal(f.calls.model, 1);
+});
+
+test("a missing observation secret cannot launch and the same cell activates when it appears", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  f.secret(null);
+  await assert.rejects(f.cell.start(f.target), /provider observation refused/);
+  assert.equal(f.calls.start, 0);
+  assert.equal(await f.cell.selected(), undefined);
+  f.secret("synthetic-provider-token");
+  assert.equal((await f.cell.start(f.target)).bootId, f.identity().bootId);
+  assert.equal(f.calls.start, 1);
+});
+
+test("an absent observation secret holds draining capacity without destruction and later enables retirement", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const selected = await f.cell.start(f.target);
+  const state = new RuntimeFleetState(f.storage, 4);
+  await state.reserve(f.target);
+  await state.dispatch(f.target);
+  await state.ready(selected);
+  await state.drain(selected);
+  const fleet = new RuntimeFleet({
+    state,
+    target: async () => f.target,
+    cell: () => f.cell,
+    legacyActive: async () => 0,
+    currentRequests: () => 0,
+    targetActive: 1,
+    idleMilliseconds: 1000,
+    maximum: 4,
+    defer: () => {},
+    wrap: f.wrap,
+    now: Date.now,
+  });
+  f.secret(null);
+  await assert.rejects(fleet.upkeep(), /provider observation refused/);
+  assert.equal(f.calls.destroy, 0);
+  assert.equal((await state.inspect()).length, 1);
+  assert.equal((await state.inspect())[0]?.phase, "draining");
+  f.secret("synthetic-provider-token");
+  await fleet.upkeep();
+  assert.equal(f.calls.destroy, 1);
+  assert.deepEqual(await state.inspect(), []);
+  assert.equal(f.calls.start, 1);
 });

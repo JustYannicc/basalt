@@ -99,12 +99,12 @@ test("exact source declarations produce isolated native create plans with the in
     sdkSourceDigest: "c".repeat(64),
     audit: { accountId, tokenWriteGranted: true, evidenceDigest: "d".repeat(64) },
   };
-  const plan = await Effect.runPromise(
-    sourceObservationTokenPlan(stack, token).pipe(Effect.provideContext(stack.services)),
+  await assert.rejects(
+    Effect.runPromise(
+      sourceObservationTokenPlan(stack, token).pipe(Effect.provideContext(stack.services)),
+    ),
+    /provisioning-source-declaration-missing/,
   );
-  assert.deepEqual(Object.keys(plan.resources), ["PoolProviderObservationToken"]);
-  assert.deepEqual(plan.resources.PoolProviderObservationToken!.bindings, []);
-  assert.deepEqual(plan.resources.PoolProviderObservationToken!.downstream, ["PoolWorker"]);
 });
 
 test("source drift or another stack cannot become an isolated provisioning plan", async () => {
