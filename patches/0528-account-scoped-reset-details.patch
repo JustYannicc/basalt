@@ -1169,6 +1169,102 @@ index cee8251a8..561ccc687 100644
      Schema.makeFilter((items) => new Set(items.map((item) => item.id)).size === items.length),
    ),
    availability: Schema.optionalKey(Schema.Literals(["available", "limited", "paused", "unknown"])),
+diff --git a/packages/apps/src/implementation/account-observation-output.ts b/packages/apps/src/implementation/account-observation-output.ts
+index c8962c6a5..aa966c381 100644
+--- a/packages/apps/src/implementation/account-observation-output.ts
++++ b/packages/apps/src/implementation/account-observation-output.ts
+@@ -1,5 +1,5 @@
+ import { Effect, Option, Schema } from "effect";
+-import { privateObservationStrings } from "@executor-js/utils/account-display-privacy";
++import { privateObservationReportStrings } from "@executor-js/utils/account-display-privacy";
+ import { AccountObservationResult } from "../contracts/account-observation.ts";
+ import { HostOutputInvalid } from "../contracts/host.ts";
+ 
+@@ -7,7 +7,7 @@ import { HostOutputInvalid } from "../contracts/host.ts";
+ export const optionalObservationOutput = (value: unknown, accounts: unknown, ref?: string) => {
+   if (value === undefined) return {};
+   const parsed = Schema.decodeUnknownOption(AccountObservationResult)(value);
+-  return Option.isSome(parsed) && privateObservationStrings(parsed.value, accounts, ref)
++  return Option.isSome(parsed) && privateObservationReportStrings(parsed.value, accounts, ref)
+     ? { observation: parsed.value }
+     : { observationInvalid: true as const };
+ };
+@@ -17,7 +17,8 @@ export const observationOutput = (value: unknown, accounts: unknown, ref?: strin
+     const result = yield* Schema.decodeUnknownEffect(AccountObservationResult)(value).pipe(
+       Effect.mapError(() => new HostOutputInvalid()),
+     );
+-    if (!privateObservationStrings(result, accounts, ref)) return yield* new HostOutputInvalid();
++    if (!privateObservationReportStrings(result, accounts, ref))
++      return yield* new HostOutputInvalid();
+     return yield* Schema.encodeEffect(AccountObservationResult)(result).pipe(
+       Effect.mapError(() => new HostOutputInvalid()),
+     );
+diff --git a/packages/sdk/src/implementation/account-acquisition-output.ts b/packages/sdk/src/implementation/account-acquisition-output.ts
+index f8cb1f7b1..2e2b250f5 100644
+--- a/packages/sdk/src/implementation/account-acquisition-output.ts
++++ b/packages/sdk/src/implementation/account-acquisition-output.ts
+@@ -12,6 +12,7 @@ import {
+ import {
+   privateAccountDisplay,
+   privateObservationStrings,
++  privateObservationReportStrings,
+ } from "@executor-js/utils/account-display-privacy";
+ import { privateAccountCheck } from "./account-status-output.ts";
+ import type { AccountId } from "../contracts/shared.ts";
+@@ -68,7 +69,8 @@ export const acquisitionObservationOutput = (value: unknown, reference: string)
+     const result = yield* Schema.decodeUnknownEffect(AccountObservationResult)(value).pipe(
+       Effect.mapError(() => new HostOutputInvalid()),
+     );
+-    if (!privateObservationStrings(result, {}, reference)) return yield* new HostOutputInvalid();
++    if (!privateObservationReportStrings(result, {}, reference))
++      return yield* new HostOutputInvalid();
+     return result;
+   });
+ 
+diff --git a/packages/sdk/src/implementation/account-observation-read.ts b/packages/sdk/src/implementation/account-observation-read.ts
+index 1e748916c..3c4fff9ab 100644
+--- a/packages/sdk/src/implementation/account-observation-read.ts
++++ b/packages/sdk/src/implementation/account-observation-read.ts
+@@ -5,7 +5,7 @@ import {
+   HostOutputInvalid,
+   type HostAccounts,
+ } from "apps/contracts";
+-import { privateObservationStrings } from "@executor-js/utils/account-display-privacy";
++import { privateObservationReportStrings } from "@executor-js/utils/account-display-privacy";
+ import type { UrlPolicy } from "@executor-js/utils/url-policy";
+ import type { ResourceLifecycle } from "../contracts/executor.ts";
+ import type { App } from "../contracts/apps.ts";
+@@ -89,7 +89,7 @@ export const makeObservationReader =
+         Effect.mapError(() => new HostOutputInvalid()),
+       );
+       if (
+-        !privateObservationStrings(parsed, {
++        !privateObservationReportStrings(parsed, {
+           app: {
+             checked: {
+               provider: required.definition,
+diff --git a/packages/sdk/src/implementation/account-status-output.ts b/packages/sdk/src/implementation/account-status-output.ts
+index 2cb3a6b8a..538ba3d13 100644
+--- a/packages/sdk/src/implementation/account-status-output.ts
++++ b/packages/sdk/src/implementation/account-status-output.ts
+@@ -3,7 +3,7 @@ import { Effect, Option, Schema } from "effect";
+ import { AccountCheckResult, AccountObservationResult, HostOutputInvalid } from "apps/contracts";
+ import {
+   privateAccountDisplay,
+-  privateObservationStrings,
++  privateObservationReportStrings,
+ } from "@executor-js/utils/account-display-privacy";
+ 
+ export const privateAccountCheck = (value: AccountCheckResult, accounts: unknown, ref?: string) =>
+@@ -15,7 +15,7 @@ export const privateAccountCheck = (value: AccountCheckResult, accounts: unknown
+     const optional =
+       observation === undefined
+         ? {}
+-        : Option.isSome(parsed) && privateObservationStrings(parsed.value, accounts, ref)
++        : Option.isSome(parsed) && privateObservationReportStrings(parsed.value, accounts, ref)
+           ? { observation: parsed.value }
+           : { observationInvalid: true as const };
+     return yield* Schema.decodeUnknownEffect(AccountCheckResult)({ ...shown, ...optional }).pipe(
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-details.tsx b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
 index 0076f6c1f..f02d626d9 100644
 --- a/packages/ui/src/implementation/dashboard/account-observation-details.tsx
@@ -2299,7 +2395,7 @@ index 000000000..bf16b3b68
 +    ? offerings[observation.offering]
 +    : accountPlanName(observation.plan.label, providerFamilyId);
 diff --git a/packages/utils/src/account-display-privacy.ts b/packages/utils/src/account-display-privacy.ts
-index 1bd68eed2..e6353a0a6 100644
+index 1bd68eed2..022d39fd5 100644
 --- a/packages/utils/src/account-display-privacy.ts
 +++ b/packages/utils/src/account-display-privacy.ts
 @@ -4,6 +4,8 @@ import { Base64, Base64Url, Hex } from "effect/encoding";
@@ -2322,16 +2418,40 @@ index 1bd68eed2..e6353a0a6 100644
    let total = 0,
      maximum = 0;
    for (const text of strings) {
-@@ -184,10 +187,10 @@ export const privateObservationStrings = (
+@@ -168,10 +171,10 @@ export interface AccountDisplay {
+   };
+ }
+ 
+-/** Observation strings use the same credential/encoding checks, with no raw provider data. */
+-export const privateObservationStrings = (
++const privateDisplayStrings = (
+   value: unknown,
+   accounts: unknown,
++  maximumStrings: number,
+   ref?: string,
+ ): boolean => {
+   const strings: string[] = [];
+@@ -184,13 +187,21 @@ export const privateObservationStrings = (
      } else if (Predicate.isObject(item)) {
        for (const child of Object.values(item)) if (!visit(child, depth + 1)) return false;
      }
 -    return strings.length <= maxDisplayStrings;
-+    return strings.length <= maxObservationStrings;
++    return strings.length <= maximumStrings;
    };
    if (!visit(value, 0)) return false;
 -  const found = exposures(strings, accounts, ref);
-+  const found = exposures(strings, accounts, ref, maxObservationStrings);
++  const found = exposures(strings, accounts, ref, maximumStrings);
    return found !== undefined && found.every((entry) => entry === undefined);
  };
  
++/** Compact instructions and errors keep their existing display budget. */
++export const privateObservationStrings = (value: unknown, accounts: unknown, ref?: string) =>
++  privateDisplayStrings(value, accounts, maxDisplayStrings, ref);
++
++/** Decoded allowance reports have a byte guard and repeated metadata for each reading row. */
++export const privateObservationReportStrings = (value: unknown, accounts: unknown, ref?: string) =>
++  privateDisplayStrings(value, accounts, maxObservationStrings, ref);
++
+ /**
+  * The display with every item that collides with a short credential removed, or undefined when
+  * any string carries a credential or the input exceeds the bounds. Removing a colliding item keeps

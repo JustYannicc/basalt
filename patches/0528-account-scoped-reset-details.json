@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-scoped-reset-details",
   "file": "0528-account-scoped-reset-details.patch",
-  "content_sha256": "c6e18f9cac0826b0df00670e406386e92f0e1ddeeee241fc724bee0a28b0e9f8",
+  "content_sha256": "a54aef7d11d76841d7f459f3100eac81c06a6a9a903e35bd86f0aa9dc35b8498",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
