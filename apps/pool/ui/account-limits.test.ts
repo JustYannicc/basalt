@@ -10,6 +10,7 @@ import {
   resetSummaryText,
 } from "./account-limits.ts";
 import { orderedWindows, resetEffect } from "./observation-text.ts";
+import { balanceView } from "../../../.upstream/packages/ui/src/implementation/dashboard/account-observation-text.ts";
 
 const now = Date.parse("2026-11-12T10:00:00Z");
 const window = (
@@ -260,4 +261,16 @@ test("the adapter keeps source read times and leaves unknown shares unknown", ()
   );
   assert.equal(unknownShare.windows[0]?.measure.remainingRatio, undefined);
   assert.equal(unknownShare.windows[0]?.observedAt, "2026-11-12T09:55:00Z");
+  // An old aggregate count has no expiry: the shared Details say so instead of promising it lasts.
+  const format = { locale: "en-US", timeZone: "UTC" };
+  const aggregate = poolObservation(
+    account("old", { bankedResets: { available: 2, nextExpiresAt: null } }),
+  ).balances[0];
+  assert.ok(aggregate);
+  assert.equal(aggregate.expiresAt, undefined);
+  assert.equal(balanceView(aggregate, now, format).when, "Expiry not reported");
+  const [, dated] = poolObservation(account("a")).balances;
+  assert.ok(dated);
+  assert.match(balanceView(dated, now, format).when, /^Expires .*Dec/);
+  assert.match(balanceView(dated, Date.parse("2027-01-01T00:00:00Z"), format).when, /^Expired /);
 });

@@ -1104,11 +1104,10 @@ test(
                   kind: "weekly",
                   scope: "account",
                 },
-                // No kind or scope: stays unclassified, never a whole week.
+                // No kind, scope or expiry: stays unclassified, never a whole week, never lasting.
                 {
                   status: "available",
                   remaining: 1,
-                  expires_at: new Date(now + 10 * day).toISOString(),
                 },
               ],
             ),
@@ -1127,9 +1126,9 @@ test(
           assert.deepEqual(
             seeded?.bankedResets?.groups?.map((group) => [group.label, group.available]),
             [
-              ["Resets with unknown scope", 1],
               ["Weekly resets", 1],
               ["Fable resets", 3],
+              ["Resets with unknown scope", 1],
             ],
             "the expired grant is dropped by the pool's own normalization",
           );
@@ -1190,9 +1189,9 @@ test(
                 "5h",
                 "Weekly",
                 "Fable weekly",
-                "Resets with unknown scope",
                 "Weekly resets",
                 "Fable resets",
+                "Resets with unknown scope",
               ]);
               const row = (name) => rows[names.indexOf(name)];
               assert.match(
@@ -1219,7 +1218,9 @@ test(
                 row("Resets with unknown scope"),
                 /The source didn't say which limit this refills\./,
               );
-              assert.doesNotMatch(rows.join("\n"), /\b2 resets\b|Expired/);
+              // A missing expiry is unknown, never a promise that the reset lasts.
+              assert.match(row("Resets with unknown scope"), /Expiry not reported/);
+              assert.doesNotMatch(rows.join("\n"), /\b2 resets\b|Expired|Does not expire/);
               assert.ok(await fitsWithin(frame, dialog), `Reset Details fit at ${width}px`);
               await capture(page, `scoped-resets-details-${width}`);
               await dialog.getByRole("button", { name: "Close", exact: true }).click();

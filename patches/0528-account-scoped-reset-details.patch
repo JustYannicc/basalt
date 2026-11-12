@@ -1,8 +1,22 @@
 diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
-index 35ad88926..bfbf802e2 100644
+index 35ad88926..b8cd7cf96 100644
 --- a/e2e/tests/account-usage-cells.spec.ts
 +++ b/e2e/tests/account-usage-cells.spec.ts
-@@ -30,7 +30,7 @@ const percentWindow = (
+@@ -6,7 +6,12 @@ import { Browser } from "../support/browser.ts";
+ import { Evidence } from "../support/evidence.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { acquisitionFixture } from "../support/account-acquisition-fixture.ts";
+-import { observationBackend, observationFixture } from "../support/account-observation-fixture.ts";
++import {
++  observationBackend,
++  observationFixture,
++  observationToken,
++  ObservationView,
++} from "../support/account-observation-fixture.ts";
+ import { resetPoolBackend, resetReference } from "../support/account-reset-pool.ts";
+ import { trafficPool } from "../support/account-traffic.ts";
+ import { poolFixtureSigningKey } from "../support/cloud-pool-gateway.ts";
+@@ -30,7 +35,7 @@ const percentWindow = (
    id: string,
    label: string,
    remaining: number,
@@ -11,7 +25,7 @@ index 35ad88926..bfbf802e2 100644
    resetsIn: number,
    at: number,
    stale?: number,
-@@ -40,7 +40,8 @@ const percentWindow = (
+@@ -40,7 +45,8 @@ const percentWindow = (
    observedAt: iso(at),
    ...(stale === undefined ? {} : { staleAt: iso(stale) }),
    measure: { unit: "%", used: 100 - remaining, remainingRatio: remaining / 100 },
@@ -21,7 +35,7 @@ index 35ad88926..bfbf802e2 100644
    resetsAt: iso(at + resetsIn),
  });
  const subscription = <const W, const B = readonly []>(at: number, windows: W, balances?: B) => ({
-@@ -470,6 +471,249 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+@@ -470,6 +476,295 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
              ),
            ).toContain(label === "Credits only" ? "Credits" : "Unlimited");
          }
@@ -84,7 +98,14 @@ index 35ad88926..bfbf802e2 100644
 +                scope: { kind: "account" },
 +                reset: { kind: "weekly" },
 +              }),
-+              scopedReset("unknown", "Resets with unknown scope", 1, now + 10 * day),
++              // No kind, scope or expiry: its expiry is unknown, not lasting.
++              {
++                id: "unknown",
++                label: "Resets with unknown scope",
++                unit: "resets",
++                available: 1,
++                observedAt: iso(now),
++              },
 +            ],
 +          ),
 +        });
@@ -169,6 +190,8 @@ index 35ad88926..bfbf802e2 100644
 +          expect(row("Resets with unknown scope")).toContain(
 +            "The source didn't say which limit this refills.",
 +          );
++          expect(row("Resets with unknown scope")).toContain("Expiry not reported");
++          expect(rows.join("\n")).not.toContain("Does not expire");
 +          expect(fits, `Model limits Details fit at ${width}px`).toBe(true);
 +          yield* evidence.attach(
 +            `after-model-limits-details-${width}.png`,
@@ -229,7 +252,12 @@ index 35ad88926..bfbf802e2 100644
 +            { label: "Long limits" },
 +          )).status,
 +        ).toBe(200);
-+        expect((yield* longFixture.refresh()).status).toBe(200);
++        const longRefresh = yield* longFixture.refresh();
++        expect(longRefresh.status).toBe(200);
++        // Accepted and saved before any row is read, so a refused report fails here, by name.
++        const longReport = (yield* body(ObservationView, longRefresh)).reports[0];
++        expect(longReport?.lastAttempt?.outcome, "the long report is accepted").toBe("success");
++        expect(longReport?.result, "the long report is saved").not.toBeNull();
 +        for (const width of [1280, 390]) {
 +          const long = yield* browser.use(`Read the longest Details at ${width}px`, (page) =>
 +            page
@@ -267,6 +295,38 @@ index 35ad88926..bfbf802e2 100644
 +              page.screenshot(),
 +            ),
 +          );
++        }
++
++        // The same long report with the account's credential in its last balance label, raw or
++        // encoded, is refused whole and never echoed. A fresh fixture each time avoids cooldown.
++        const encodedToken = btoa(observationToken);
++        for (const [name, secret] of [
++          ["Raw credential", observationToken],
++          ["Encoded credential", encodedToken],
++        ] as const) {
++          const leaking = yield* observationFixture({ name, observe: true, health: true });
++          yield* leaking.backend.answer({
++            status: 200,
++            body: {
++              ...longBody,
++              observation: {
++                ...longBody.observation,
++                balances: longBody.observation.balances.map((balance, index, all) =>
++                  index === all.length - 1 ? { ...balance, label: secret } : balance,
++                ),
++              },
++            },
++          });
++          const refused = yield* leaking.refresh();
++          const view = yield* body(ObservationView, refused);
++          expect(view.reports[0]?.result, `${name}: nothing is saved`).toBeNull();
++          expect(view.reports[0]?.lastAttempt?.outcome, `${name}: the report is refused`).toBe(
++            "invalid",
++          );
++          for (const serialized of [JSON.stringify(refused.body), JSON.stringify(view)]) {
++            expect(serialized).not.toContain(observationToken);
++            expect(serialized).not.toContain(encodedToken);
++          }
 +        }
        }),
      ),
@@ -1756,10 +1816,10 @@ index bb459460f..5d98df232 100644
    if (windows.length === 0 && !hasCredit) return null;
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-text.ts b/packages/ui/src/implementation/dashboard/account-observation-text.ts
 new file mode 100644
-index 000000000..37c918f48
+index 000000000..bf16b3b68
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-observation-text.ts
-@@ -0,0 +1,475 @@
+@@ -0,0 +1,478 @@
 +/**
 + * What an account observation's readings say, as text and drawn widths. Missing amounts stay
 + * unknown, a ratio stays a percentage, zero stays zero and an amount over its limit stays exact;
@@ -2052,7 +2112,10 @@ index 000000000..37c918f48
 +  return { reset: undefined, when: length === undefined ? "Not reported" : "Reset not reported" };
 +}
 +
-+/** A reported balance, such as banked resets or credits. Expired balances are not minted again. */
++/**
++ * A reported balance, such as banked resets or credits. Expired balances are not minted again.
++ * A missing expiry is unknown, never a promise that the balance lasts.
++ */
 +export function balanceView(balance: Balance, now: number, format: DisplayFormat) {
 +  const expires = balance.expiresAt === undefined ? undefined : Date.parse(balance.expiresAt);
 +  const when = balance.expiresAt === undefined ? undefined : moment(balance.expiresAt, now, format);
@@ -2060,7 +2123,7 @@ index 000000000..37c918f48
 +    detail: amount(balance.available, balance.unit, format, true),
 +    when:
 +      expires === undefined
-+        ? "Does not expire"
++        ? "Expiry not reported"
 +        : `${expires <= now ? "Expired" : "Expires"} ${when}`,
 +  };
 +}
@@ -2235,3 +2298,40 @@ index 000000000..37c918f48
 +  observation.plan === undefined
 +    ? offerings[observation.offering]
 +    : accountPlanName(observation.plan.label, providerFamilyId);
+diff --git a/packages/utils/src/account-display-privacy.ts b/packages/utils/src/account-display-privacy.ts
+index 1bd68eed2..e6353a0a6 100644
+--- a/packages/utils/src/account-display-privacy.ts
++++ b/packages/utils/src/account-display-privacy.ts
+@@ -4,6 +4,8 @@ import { Base64, Base64Url, Hex } from "effect/encoding";
+ 
+ const maxDisplayCharacters = 32_768;
+ const maxDisplayStrings = 128;
++// Observation reports carry repeated row metadata and have a separate 16 KiB schema guard.
++const maxObservationStrings = 2_048;
+ const maxCredentialNodes = 16_384;
+ const maxCredentialStrings = 1_024;
+ const maxDepth = 32;
+@@ -106,8 +108,9 @@ const exposures = (
+   strings: readonly string[],
+   accounts: unknown,
+   ref?: string,
++  maximumStrings = maxDisplayStrings,
+ ): readonly Exposure[] | undefined => {
+-  if (strings.length > maxDisplayStrings) return undefined;
++  if (strings.length > maximumStrings) return undefined;
+   let total = 0,
+     maximum = 0;
+   for (const text of strings) {
+@@ -184,10 +187,10 @@ export const privateObservationStrings = (
+     } else if (Predicate.isObject(item)) {
+       for (const child of Object.values(item)) if (!visit(child, depth + 1)) return false;
+     }
+-    return strings.length <= maxDisplayStrings;
++    return strings.length <= maxObservationStrings;
+   };
+   if (!visit(value, 0)) return false;
+-  const found = exposures(strings, accounts, ref);
++  const found = exposures(strings, accounts, ref, maxObservationStrings);
+   return found !== undefined && found.every((entry) => entry === undefined);
+ };
+ 
