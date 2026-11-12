@@ -34,6 +34,26 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
  
  /**
   * Opens BRAT's add dialog on its "latest" track. Any other version is one BRAT freezes and never
+@@ -120,16 +117,7 @@ export const basaltSyncReleaseCheck = (repository: string) =>
+     Effect.provide(anonymousGitHubClient),
+   );
+ 
+-/**
+- * Read in the browser once per repository; the dialog refreshes it on "Check again". A
+- * deployment without a public GitHub source has nothing to install from.
+- */
+-export const basaltSyncReleaseAtom = Atom.family((repository: string | null) =>
+-  browserOnly(
+-    Atom.make(
+-      repository === null
+-        ? Effect.succeed<BasaltSyncRelease>("unavailable")
+-        : basaltSyncReleaseCheck(repository),
+-    ),
+-  ),
++/** Read in the browser once per repository; the dialog refreshes it on "Check again". */
++export const basaltSyncReleaseAtom = Atom.family((repository: string) =>
++  browserOnly(Atom.make(basaltSyncReleaseCheck(repository))),
+ );
 diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
 --- a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
 +++ b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
@@ -46,3 +66,31 @@ diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/app
              step={step}
              onConnect={() => void connect()}
            />
+@@ -168,7 +168,7 @@ function ConnectSteps({
+   step,
+   onConnect,
+ }: {
+-  readonly repository: string | null;
++  readonly repository: string;
+   readonly step: Step;
+   readonly onConnect: () => void;
+ }) {
+@@ -198,14 +198,12 @@ function ConnectSteps({
+           </div>
+         ) : !AsyncResult.isSuccess(release) ? (
+           <p className="text-muted-foreground">Checking for Signalbox Sync…</p>
+-        ) : !installable || repository === null ? (
++        ) : !installable ? (
+           <div className="flex flex-wrap items-center gap-2">
+             <p className="text-muted-foreground">Signalbox Sync isn't available to install yet.</p>
+-            {repository !== null && (
+-              <Button variant="outline" size="sm" onClick={refresh}>
+-                Check again
+-              </Button>
+-            )}
++            <Button variant="outline" size="sm" onClick={refresh}>
++              Check again
++            </Button>
+           </div>
+         ) : (
+           <ol className="space-y-2">

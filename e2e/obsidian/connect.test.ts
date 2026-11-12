@@ -64,15 +64,14 @@ test("the dashboard installs the plugin release this checkout publishes", () => 
   assert.equal(basaltSyncVersion, manifest.version);
   assert.equal(Object.hasOwn(versions, manifest.version), true);
   assert.equal(manifest.id, protocolAction);
-  // The release workflow pushes the bare version tag to the plugin's own repository, which the
-  // dashboard checks and links BRAT to.
+  // The plugin repository is tagged with the bare version; the release workflow publishes to the
+  // same repository the dashboard checks and links BRAT to.
   assert.equal(basaltSyncTag, manifest.version);
   const release = readFileSync(
     new URL("../../.github/workflows/obsidian-plugin-release.yml", import.meta.url),
     "utf8",
   );
-  assert.ok(release.includes(`git@github.com:${basaltSyncRepository}.git`));
-  assert.ok(release.includes('git -C "$PLUGIN" tag "$version"'));
+  assert.ok(release.includes(`repository=${basaltSyncRepository}\n`));
   const link = new URL(bratInstallLink("owner/repo"));
   assert.equal(link.protocol, "obsidian:");
   assert.equal(link.host || link.pathname.replace(/^\/+/u, ""), "brat");
