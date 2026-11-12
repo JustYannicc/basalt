@@ -1,7 +1,9 @@
 /**
- * What the vault page shows, derived only from what the server has. Plugins before device
- * check-in leave `devices` null and history without times; the page then shows less, never an
- * empty or "connect" state for a vault that has synced.
+ * What the vault page shows, derived only from what the server has. Plugins before dated
+ * history leave versions without times; the page then shows less, never an empty or "connect"
+ * state for a vault that has synced. Device sync records don't decide anything here: the drive
+ * can't yet tell a device's sync from an agent's call of the same shape, and a false "needs
+ * attention" costs more than a missing "up to date". Devices show on Accounts, joined to grants.
  */
 
 export interface ImportStatus {
@@ -9,21 +11,6 @@ export interface ImportStatus {
   readonly files: number;
   readonly confirmed: number;
   readonly omitted: number;
-}
-
-/** One caller's last sync, as the drive records it from ordinary sync calls. */
-export interface Device {
-  /** The caller's grant: the host's mcp-agents id. */
-  readonly agent: string;
-  readonly lastSyncAt: string;
-  readonly lastHead: string;
-}
-
-export interface Devices {
-  /** Null only while the vault has no commits. */
-  readonly head: string | null;
-  readonly lastChangeAt: string | null;
-  readonly devices: readonly Device[];
 }
 
 export interface Version {
@@ -37,49 +24,19 @@ export interface Version {
 export type VaultState =
   | { readonly kind: "empty" }
   | { readonly kind: "importing"; readonly confirmed: number; readonly files: number }
-  | {
-      readonly kind: "stuck";
-      readonly confirmed: number;
-      readonly files: number;
-      readonly since: string;
-    }
-  | { readonly kind: "up-to-date" }
   | { readonly kind: "saved" };
-
-/** A device that hasn't synced for this long during an unfinished import counts as stuck. */
-export const stuckAfterMs = 10 * 60 * 1000;
 
 export function vaultState(input: {
   readonly status: ImportStatus | null;
   /** Whether the vault's root lists anything. */
   readonly hasFiles: boolean;
   readonly latest: Version | null;
-  readonly devices: Devices | null;
-  readonly now: number;
 }): VaultState {
-  const { status, devices, latest, now } = input;
-  if (status !== null && status.state !== "complete") {
-    const synced = (devices?.devices ?? [])
-      .map((device) => Date.parse(device.lastSyncAt))
-      .filter((time) => !Number.isNaN(time));
-    const last = synced.length ? Math.max(...synced) : null;
-    // Without a sync record there is no clock to judge by, so an unfinished import reads as moving.
-    if (last !== null && now - last > stuckAfterMs)
-      return {
-        kind: "stuck",
-        confirmed: status.confirmed,
-        files: status.files,
-        since: new Date(last).toISOString(),
-      };
+  const { status, latest } = input;
+  if (status !== null && status.state !== "complete")
     return { kind: "importing", confirmed: status.confirmed, files: status.files };
-  }
   if (status === null && !input.hasFiles && latest === null) return { kind: "empty" };
-  // Up to date only when every caller that synced holds the current head. Agents using the
-  // tools may be among them; a lagging one only withholds "up to date", never claims it.
-  if (devices === null || devices.devices.length === 0) return { kind: "saved" };
-  const current =
-    devices.head !== null && devices.devices.every((device) => device.lastHead === devices.head);
-  return { kind: current ? "up-to-date" : "saved" };
+  return { kind: "saved" };
 }
 
 const minute = 60 * 1000;

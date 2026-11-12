@@ -19,7 +19,7 @@ model {
   }
   extend basalt.toolsGateway {
     obsidianVaultPage = part "Obsidian vault page" {
-      description "The Obsidian app's own screen shows a synced vault read-only: its state, a folder tree loaded folder by folder, search, notes and each note's dated versions. It reads only the app's drive tools, so whatever a plugin already synced renders without a plugin update. It claims up to date only when every recorded sync holds the drive's head; reads a server or plugin does not have yet degrade to less detail, never to an empty or connect state. Notes render as Obsidian-flavoured Markdown with the dashboard's renderer, raw HTML skipped, wikilinks resolved by Obsidian's shortest-path rule and image embeds read from the vault."
+      description "The Obsidian app's own screen shows a synced vault read-only: its state, a folder tree loaded folder by folder, search, notes and each note's dated versions. It reads only the app's drive tools, so whatever a plugin already synced renders without a plugin update. No state on it comes from the drive's sync records, which cannot yet tell a device from an agent calling the same tools; reads a server or plugin does not have yet degrade to less detail, never to an empty or connect state. Notes render as Obsidian-flavoured Markdown with the dashboard's renderer, raw HTML skipped, wikilinks resolved by Obsidian's shortest-path rule and image embeds read from the vault."
       metadata {
         code "apps/obsidian/ui"
         libraries "react|react-dom|react-markdown|remark-gfm|@flowershow/remark-wiki-link|@r4ai/remark-callout|apps"

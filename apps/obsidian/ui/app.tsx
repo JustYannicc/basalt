@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Entry, Match, VaultApi } from "./api.ts";
-import { vaultState, noteTitle, type Devices, type ImportStatus, type Version } from "./model.ts";
+import { vaultState, noteTitle, type ImportStatus, type Version } from "./model.ts";
 import { Reader } from "./reader.tsx";
 import { Summary } from "./summary.tsx";
 import { Tree } from "./tree.tsx";
@@ -9,7 +9,6 @@ interface Loaded {
   readonly status: ImportStatus | null;
   readonly root: readonly Entry[];
   readonly latest: Version | null;
-  readonly devices: Devices | null;
 }
 
 export function App({ api }: { readonly api: VaultApi }) {
@@ -29,14 +28,13 @@ export function App({ api }: { readonly api: VaultApi }) {
   }, []);
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.importStatus(), api.list(undefined), api.latest(), api.devices()])
-      .then(([status, root, history, devices]) => {
+    Promise.all([api.importStatus(), api.list(undefined), api.latest()])
+      .then(([status, root, history]) => {
         if (cancelled) return;
         setLoaded({
           status,
           root: root.entries,
           latest: history,
-          devices,
         });
         // Wikilinks resolve against every path; the tree itself loads folder by folder.
         api.walk().then(
@@ -71,8 +69,6 @@ export function App({ api }: { readonly api: VaultApi }) {
     status: loaded.status,
     hasFiles: loaded.root.length > 0,
     latest: loaded.latest,
-    devices: loaded.devices,
-    now,
   });
   if (state.kind === "empty") return <EmptyVault />;
   return (

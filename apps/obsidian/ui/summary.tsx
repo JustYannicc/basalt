@@ -16,7 +16,7 @@ export function Summary({
   readonly latest: Version | null;
   readonly now: number;
 }) {
-  const known = state.kind === "up-to-date" || state.kind === "saved" ? files : null;
+  const known = state.kind === "saved" ? files : null;
   const change = latest?.time === undefined ? null : `Last change ${ago(latest.time, now)}`;
   return (
     <section className="summary">
@@ -42,20 +42,6 @@ export function Summary({
             </p>
           </div>
         )}
-        {state.kind === "stuck" && (
-          <div className="alert" role="status">
-            <p>
-              <b>
-                The import is stuck at {state.confirmed} of {count(state.files)}.
-              </b>{" "}
-              {`Nothing has synced since ${ago(state.since, now)}.`}
-            </p>
-            <p>
-              Open Obsidian on the device that started it and choose Sync now in Signalbox Sync
-              settings.
-            </p>
-          </div>
-        )}
       </div>
       <div className="devices">
         <h2>Devices</h2>
@@ -69,13 +55,9 @@ export function Summary({
 
 function Status({ state }: { readonly state: VaultState }) {
   const [dot, label] =
-    state.kind === "up-to-date"
-      ? ["ok", "Up to date"]
-      : state.kind === "importing"
-        ? ["busy", `Importing · ${state.confirmed} of ${count(state.files)}`]
-        : state.kind === "stuck"
-          ? ["warn", "Needs attention"]
-          : ["ok", "Saved in Signalbox"];
+    state.kind === "importing"
+      ? ["busy", `Importing · ${state.confirmed} of ${count(state.files)}`]
+      : ["ok", "Saved in Signalbox"];
   return (
     <span className="state">
       <span className={`dot ${dot}`} aria-hidden />

@@ -12,8 +12,8 @@ const run = <I, O>(reference: OperationReference<I, O, "query">, input: NoInfer<
 // The app's note tools pass their input to the drive and return its answer, so the drive's own
 // method types describe them without the page reaching into the app's tool definitions.
 type Drive = QueryContext<{ drive: true }>["drive"];
-type Method = "list" | "read" | "search" | "attachment" | "history" | "devices";
-// A method without parameters (devices) is a tool that takes an empty object.
+type Method = "list" | "read" | "search" | "attachment" | "history";
+// A method without parameters would be a tool that takes an empty object.
 type Input<M extends Method> =
   Parameters<Drive[M]> extends [] ? Record<string, never> : NonNullable<Parameters<Drive[M]>[0]>;
 const driveTool = <M extends Method>(tool: string) =>
@@ -28,9 +28,8 @@ const tools = {
   readNote: driveTool<"read">("readNote"),
   searchNotes: driveTool<"search">("searchNotes"),
   readAttachment: driveTool<"attachment">("readAttachment"),
-  // An older server refuses `path` and has no `devices`; the page then degrades.
+  // An older server refuses `path`; the page then degrades.
   history: driveTool<"history">("history"),
-  devices: driveTool<"devices">("devices"),
   importStatus: queryReference<(typeof importTools)["importStatus"]>("importStatus"),
   fileInfo: queryReference<(typeof attachmentTools)["fileInfo"]>("fileInfo"),
 };
@@ -180,6 +179,5 @@ export const vault = {
     run(tools.history, { limit: 1 })
       .then((versions: readonly Version[]) => versions[0] ?? null)
       .catch(() => null),
-  devices: () => run(tools.devices, {}).catch(() => null),
 };
 export type VaultApi = typeof vault;
