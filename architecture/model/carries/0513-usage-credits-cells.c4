@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A credit line beside an account's usage cells never narrows them below the compact rows' 250 px minimum, so a window label, banked reset count and amount always fit. A band too narrow for the cells and the credit line wraps the credit line under the cells, and no layout scrolls a phone sideways. Account rows show a credit balance rounded to whole credits, superseding the exact row amount, and a positive balance below one credit never reads as zero; Details keeps the exact amount."
+    }
+  }
+}

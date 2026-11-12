@@ -1,0 +1,291 @@
+diff --git a/e2e/tests/account-usage-credits.spec.ts b/e2e/tests/account-usage-credits.spec.ts
+index 221b7db..88d72d0 100644
+--- a/e2e/tests/account-usage-credits.spec.ts
++++ b/e2e/tests/account-usage-credits.spec.ts
+@@ -70,6 +70,42 @@ const subscription = <const C, const B = readonly []>(
+   },
+ });
+ 
++/**
++ * Every usage cell in `scope`, measured: how many, the narrowest, and any whose label, header or
++ * body spills or truncates, or that reaches past its account's usage band. A run that measures
++ * nothing proves nothing, so callers check `measured`.
++ */
++const measureCells = (scope: Locator) =>
++  scope.locator("[data-reading]").evaluateAll((cells) => ({
++    measured: cells.length,
++    narrowest: Math.min(...cells.map((cell) => cell.getBoundingClientRect().width)),
++    clipped: cells.flatMap((cell) => {
++      const header = cell.firstElementChild;
++      const label = cell.querySelector("span[title]");
++      const band = cell.closest("[data-account-observations]")?.getBoundingClientRect();
++      const outside =
++        band !== undefined && cell.getBoundingClientRect().right > band.right + 1
++          ? [`${cell.getAttribute("data-reading")}: past the band`]
++          : [];
++      return [
++        ...outside,
++        ...(
++          [
++            ["cell", cell],
++            ["header", header],
++            ["label", label],
++          ] as const
++        )
++          .filter(([, part]) => part !== null && part.scrollWidth > part.clientWidth + 1)
++          .map(([name]) => `${cell.getAttribute("data-reading")}: ${name}`),
++      ];
++    }),
++  }));
++
++/** How far the page scrolls sideways; zero or less means it fits the viewport. */
++const sideways = (page: Page) =>
++  page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
++
+ /** Each Details row of `row`'s credits, by name. */
+ const creditDetailRows = (row: Locator) =>
+   row
+@@ -151,7 +187,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage credits", (it) =
+                   cap: null,
+                 },
+               }),
+-              [],
++              [banked(0, now)],
+               0,
+             ),
+             line: "Extra usage on",
+@@ -245,16 +281,38 @@ layer(HostedLive, { excludeTestServices: true })("Account usage credits", (it) =
+         const layout = yield* browser.use("Measure the two-window Claude row", (page) => {
+           const group = page.getByRole("group", usageGroupName("Extra on"));
+           return Promise.all([
+-            group.locator('[data-reading="seven_day"]').boundingBox(),
++            group.boundingBox(),
++            group.locator('[data-reading="five_hour"]').boundingBox(),
+             group.locator("[data-usage-credits]").boundingBox(),
+             group.locator("[data-usage-credits]").innerText(),
++            measureCells(group),
+           ]);
+         });
+-        const [cell, creditLine, extraText] = layout;
+-        // At desktop width the credit line sits beside both windows, not under them.
+-        expect(creditLine!.y).toBeLessThan(cell!.y + cell!.height);
+-        expect(creditLine!.x).toBeGreaterThan(cell!.x + cell!.width);
++        const [band, lastCell, creditLine, extraText, extraCells] = layout;
++        // This list is wide enough for the credit line beside both windows, at full cell width.
++        expect(band!.width, "the band fits two cells and a credit line").toBeGreaterThanOrEqual(
++          720,
++        );
++        expect(creditLine!.y).toBeLessThan(lastCell!.y + lastCell!.height);
++        expect(creditLine!.x).toBeGreaterThan(lastCell!.x + lastCell!.width);
++        // Two windows, a banked reset, Exhausted and a credit line: the densest row shape.
++        expect(extraCells.measured).toBe(2);
++        expect(extraCells.clipped).toEqual([]);
++        expect(extraCells.narrowest).toBeGreaterThanOrEqual(250);
+         expect(extraText).toContain("balance unavailable");
++        for (const width of [1280, 390]) {
++          const list = yield* browser.use(`Measure every cell at ${width}px`, (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() => Promise.all([measureCells(page.locator("body")), sideways(page)])),
++          );
++          expect(list[0].measured).toBeGreaterThan(0);
++          expect(list[0].clipped, `no clipped usage text at ${width}px`).toEqual([]);
++          expect(list[1], `no horizontal scroll at ${width}px`).toBeLessThanOrEqual(0);
++        }
++        yield* browser.use("Back to desktop width", (page) =>
++          page.setViewportSize({ width: 1280, height: 900 }),
++        );
+         // No pool is showing these rows, so nothing claims what a pool does with them.
+         const statuses = yield* browser.use("Count routing statuses", (page) =>
+           page.locator("[data-usage-credit-status]").count(),
+@@ -338,12 +396,19 @@ layer(HostedLive, { excludeTestServices: true })("Account usage credits", (it) =
+         const now = yield* Clock.currentTimeMillis;
+         // Each account reads what the mock shows beside its pool status.
+         const readings = [
++          // Two exhausted windows, a banked reset and a fractional balance: the densest row, and
++          // the row's rounded amount.
+           [
+             wallet,
+             subscription(
+               now,
+               0,
+-              credits(now, { state: "available", balance: { value: "1250", unit: "credits" } }),
++              credits(now, {
++                state: "available",
++                balance: { value: "4321.6", unit: "credits" },
++              }),
++              [banked(0, now)],
++              0,
+             ),
+           ],
+           [
+@@ -450,16 +515,25 @@ layer(HostedLive, { excludeTestServices: true })("Account usage credits", (it) =
+           "Credits are used only when no account has plan quota.",
+           ["· Usable on credits", "· Usage unknown · last resort", "· Using plan quota"],
+         ]);
+-        const beside = yield* browser.use("Measure a two-window pool row", (page) => {
+-          const row = tabRow(page, "App accounts", "Pool unread");
++        const wrapped = yield* browser.use("Measure the wallet row", (page) => {
++          const row = tabRow(page, "App accounts", "Pool wallet");
+           return Promise.all([
++            row.locator("[data-account-observations]").boundingBox(),
+             row.locator('[data-reading="five_hour"]').boundingBox(),
+             row.locator("[data-usage-credits]").boundingBox(),
++            row.locator("[data-usage-credits-line]").innerText(),
++            measureCells(row),
+           ]);
+         });
+-        // The credit line sits beside both windows in the pool's own tab too.
+-        expect(beside[1]!.x).toBeGreaterThan(beside[0]!.x + beside[0]!.width);
+-        expect(beside[1]!.y).toBeLessThan(beside[0]!.y + beside[0]!.height);
++        const [poolBand, poolLast, poolCredit, rounded, walletCells] = wrapped;
++        // This tab's band is too narrow for two full cells and a credit line, so the credit line
++        // wraps under the cells instead of narrowing them; the row rounds to whole credits.
++        expect(poolBand!.width).toBeLessThan(720);
++        expect(poolCredit!.y).toBeGreaterThanOrEqual(poolLast!.y + poolLast!.height);
++        expect(walletCells.measured).toBe(2);
++        expect(walletCells.clipped).toEqual([]);
++        expect(walletCells.narrowest).toBeGreaterThanOrEqual(250);
++        expect(rounded).toBe("4,322 credits");
+         const tones = yield* browser.use("Read which statuses pay with credits", (page) =>
+           Promise.all(
+             ["Pool wallet", "Pool unread", "Pool plan"].map((label) =>
+@@ -469,6 +543,26 @@ layer(HostedLive, { excludeTestServices: true })("Account usage credits", (it) =
+         );
+         expect(tones, "only paying with credits is highlighted").toEqual([true, false, false]);
+         for (const width of [1280, 390]) {
++          const cells = yield* browser.use(`Measure every pool cell at ${width}px`, (page) =>
++            page
++              .setViewportSize({ width, height: 900 })
++              .then(() => Promise.all([measureCells(page.locator("body")), sideways(page)])),
++          );
++          yield* browser.use(`Show the wallet row at ${width}px`, (page) =>
++            tabRow(page, "App accounts", "Pool wallet").scrollIntoViewIfNeeded(),
++          );
++          yield* evidence.attach(
++            `after-pool-credits-wallet-row-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture the wallet row", (page) =>
++              tabRow(page, "App accounts", "Pool wallet").screenshot(),
++            ),
++          );
++          // Captured first, so a failure keeps its picture. Beside a credit line every cell keeps
++          // room for its label, reset count and amount, and the page never scrolls sideways.
++          expect(cells[0].measured).toBeGreaterThan(0);
++          expect(cells[0].clipped, `no clipped usage text at ${width}px`).toEqual([]);
++          expect(cells[1], `no horizontal scroll at ${width}px`).toBeLessThanOrEqual(0);
+           yield* browser.use(`Show the setting at ${width}px`, (page) =>
+             page
+               .setViewportSize({ width, height: 900 })
+@@ -533,8 +627,9 @@ layer(HostedLive, { excludeTestServices: true })("Account usage credits", (it) =
+         });
+         expect(details).toMatchObject({
+           "Included plan": "Exhausted",
+-          "Credit balance": "1,250 credits",
++          "Credit balance": "4,321.6 credits",
+           "Credit policy": "Never use credits",
++          "Banked quota resets": "1 · separate from usage credits",
+         });
+         for (const width of [1280, 390]) {
+           yield* browser.use(`Show the pool Details at ${width}px`, (page) =>
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+index 72a8fc4..bb45946 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
+@@ -43,6 +43,18 @@ export function ObservationReadings({
+   if (result === null || observation === undefined) return null;
+   const hasCredit = credit !== undefined && credit !== null;
+   if (windows.length === 0 && !hasCredit) return null;
++  // Beside one or two windows the credit line gets its own track and every cell keeps the compact
++  // rows' 250px minimum. Two windows need 2 x 250 + 160 + 2 x 28 = 716px, so a band under 720px
++  // falls back to the plain cell grid, where the credit line wraps under the cells instead of
++  // squeezing them. The fallback's tracks never outgrow the band, so a phone never scrolls sideways.
++  const beside =
++    !hasCredit || windows.length === 0
++      ? undefined
++      : windows.length === 1
++        ? "grid-cols-[minmax(250px,_320px)_minmax(160px,_1fr)]"
++        : windows.length === 2
++          ? "grid-cols-[repeat(2,_minmax(250px,_320px))_minmax(160px,_1fr)]"
++          : undefined;
+   const stale = record.freshness !== "fresh";
+   const resets = bankedResets(observation, now);
+   const target = resets === undefined ? undefined : resetWindow(windows);
+@@ -53,9 +65,11 @@ export function ObservationReadings({
+       data-freshness={record.freshness}
+       className={cn(
+         "grid max-w-[760px] grid-cols-[repeat(auto-fill,_minmax(250px,_1fr))] gap-x-7 gap-y-2.5 max-[740px]:grid-cols-[minmax(0,_1fr)]",
+-        // A credit line takes a track of its own; narrower tracks, as in the approved credits
+-        // design, keep it beside two windows even in a pool's narrower Accounts tab.
+-        hasCredit && "max-w-[1040px] grid-cols-[repeat(auto-fill,_minmax(190px,_1fr))] gap-x-6",
++        beside !== undefined &&
++          cn(
++            "max-w-[1040px] @max-[720px]:max-w-[760px] @max-[720px]:grid-cols-[repeat(auto-fill,_minmax(min(250px,_100%),_1fr))]",
++            beside,
++          ),
+       )}
+     >
+       {windows.map((entry) => (
+@@ -105,7 +119,8 @@ function ResetCells({
+ }) {
+   const { control, note } = useResetControl(props);
+   return (
+-    <div className="grid min-w-0 gap-2" data-reset-cells>
++    // One band-wide column: an auto column would let the cell grid grow to its own maximum width.
++    <div className="grid min-w-0 grid-cols-[minmax(0,_1fr)] gap-2" data-reset-cells>
+       {children(control)}
+       {note}
+     </div>
+diff --git a/packages/ui/src/implementation/dashboard/account-usage-credits.ts b/packages/ui/src/implementation/dashboard/account-usage-credits.ts
+index e926969..0ea429e 100644
+--- a/packages/ui/src/implementation/dashboard/account-usage-credits.ts
++++ b/packages/ui/src/implementation/dashboard/account-usage-credits.ts
+@@ -15,9 +15,9 @@ export const policyNotes = {
+   never: "Accounts with unknown usage are skipped.",
+ } satisfies Record<UsageCreditPolicy, string>;
+ 
+-// Decimal strings stay exact: Intl formats them without a float round trip or rounding.
+-const decimal = (value: string, format: DisplayFormat) =>
+-  new Intl.NumberFormat(format.locale, { maximumFractionDigits: 20 }).format(
++// Decimal strings stay exact: Intl formats and rounds them without a float round trip.
++const decimal = (value: string, format: DisplayFormat, digits = 20) =>
++  new Intl.NumberFormat(format.locale, { maximumFractionDigits: digits }).format(
+     value as Intl.StringNumericLiteral,
+   );
+ const money = (value: string, currency: string, format: DisplayFormat) =>
+@@ -25,12 +25,25 @@ const money = (value: string, currency: string, format: DisplayFormat) =>
+     value as Intl.StringNumericLiteral,
+   );
+ 
+-/** The finite balance in its own unit; usage credits are never shown as money. */
++/** The finite balance in its own unit, exactly; usage credits are never shown as money. */
+ const balanceText = (balance: NonNullable<UsageCredits["balance"]>, format: DisplayFormat) =>
+   balance.unit === "currency" && balance.currency !== undefined
+     ? money(balance.value, balance.currency, format)
+     : `${decimal(balance.value, format)} ${countedUnit(Number(balance.value), "credits")}`;
+ 
++/**
++ * The row's balance in whole credits, as the approved design shows it; Details keeps the exact
++ * amount. A positive balance below one credit never rounds to zero.
++ */
++const rowBalanceText = (balance: NonNullable<UsageCredits["balance"]>, format: DisplayFormat) => {
++  if (balance.unit === "currency" && balance.currency !== undefined)
++    return balanceText(balance, format);
++  // The contract's amounts are non-negative decimals, so below 0.5 is "0." and never a sign.
++  if (/^0\.[0-4]/u.test(balance.value)) return "Under 1 credit";
++  // The amount itself rounds as a decimal string; a float only decides "credit" or "credits".
++  return `${decimal(balance.value, format, 0)} ${countedUnit(Math.round(Number(balance.value)), "credits")}`;
++};
++
+ /** The row's credit fact: what the provider reported, and for Claude whether extra usage is on. */
+ export function creditLine(credits: UsageCredits, format: DisplayFormat) {
+   const extra = credits.extraUsage;
+@@ -45,7 +58,7 @@ export function creditLine(credits: UsageCredits, format: DisplayFormat) {
+         ? { text: "Credits unavailable" }
+         : /^0(?:\.0+)?$/u.test(credits.balance.value)
+           ? { text: "No credits" }
+-          : { text: balanceText(credits.balance, format) };
++          : { text: rowBalanceText(credits.balance, format) };
+     case "unlimited":
+       return { text: "Unlimited credits" };
+     case "none":
