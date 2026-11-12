@@ -162,6 +162,7 @@ export interface OverviewUsageSlice {
   readonly subscriptionPricedRequests: number;
   readonly subscriptionUnpriced: number;
   readonly subscriptionReason?: string;
+  readonly subscriptionPrice?: OverviewPriceProvenance | null;
   readonly unknownKind: number;
   readonly unknownKindValue: string | null;
   readonly price: OverviewPriceProvenance | null;

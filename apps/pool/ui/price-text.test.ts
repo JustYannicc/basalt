@@ -107,3 +107,16 @@ test("an API cell and a subscription cell differing only in token counts both ke
   assert.equal(samePrice(live, counted(live)), false);
   assert.equal(samePrice(counted(live), counted(live)), true);
 });
+
+test("subscription breakdown uses its own calculation and preserves legacy responses", () => {
+  const api = counted(price("live", false));
+  const canonical = price("live", false);
+  const slices = [{ price: api, subscriptionPrice: canonical }];
+  assert.deepEqual(priceNoteLines(slicePrice(slices)), {
+    lines: ["Priced from token counts"],
+    failed: false,
+  });
+  assert.equal(priceNoteLines(slicePrice(slices, "subscriptionPrice")), null);
+  assert.equal(slicePrice([{ price: api, subscriptionPrice: null }], "subscriptionPrice"), null);
+  assert.deepEqual(slicePrice([{ price: api }], "subscriptionPrice"), slicePrice([{ price: api }]));
+});

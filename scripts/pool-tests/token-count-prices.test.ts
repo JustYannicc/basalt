@@ -194,6 +194,10 @@ test("1,112 continuous Home legacy rows with no API type retain charges and gain
       assert.equal(result.metrics.apiBilled.price?.calculation, "token-counts");
       assert.equal(result.metrics.subscriptionValue.amount, "0.006580000000");
       assert.equal(result.metrics.subscriptionValue.price?.calculation, undefined);
+      const slice = result.metrics.usageSlices.find((slice) => slice.model === "claude-opus-5-5");
+      assert.equal(slice?.price?.calculation, "token-counts");
+      assert.equal(slice?.subscriptionPrice?.calculation, undefined);
+      assert.ok(slice?.subscriptionPrice);
     }
   });
 });

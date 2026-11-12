@@ -493,7 +493,7 @@ export async function poolPersonalOverview(
     );
     const costRows = await db.query(
       `${cte}SELECT person,provider,model,count(*)::text AS requests,
-        count(*) FILTER (WHERE api_cost IS NOT NULL AND token_count_estimate)::text AS token_count_estimates,
+        count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL AND token_count_estimate)::text AS token_count_estimates,
         count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NOT NULL)::text AS api_priced,
         count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NULL)::text AS api_unpriced,
         count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL)::text AS subscription_priced,
@@ -588,6 +588,7 @@ export async function poolPersonalOverview(
           return {
             ...slice,
             subscriptionValue: known?.subscriptionValue ?? null,
+            subscriptionPrice: known?.price ?? null,
             subscriptionPricedRequests: known?.subscriptionPricedRequests ?? 0,
             subscriptionUnpriced: known?.subscriptionUnpriced ?? 0,
             ...(known?.subscriptionUnpriced && slice.apiReason
@@ -963,7 +964,7 @@ export async function poolUsageOverview(
       );
       const costs = await db.query(
         `${cte}SELECT person,provider,model,count(*)::text AS requests,
-          count(*) FILTER (WHERE api_cost IS NOT NULL AND token_count_estimate)::text AS token_count_estimates,
+          count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL AND token_count_estimate)::text AS token_count_estimates,
           count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NOT NULL)::text AS api_priced,
           count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NULL)::text AS api_unpriced,
           count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL)::text AS subscription_priced,
@@ -1188,6 +1189,7 @@ export async function poolUsageOverview(
             return {
               ...slice,
               subscriptionValue: known?.subscriptionValue ?? null,
+              subscriptionPrice: known?.price ?? null,
               subscriptionPricedRequests: known?.subscriptionPricedRequests ?? 0,
               subscriptionUnpriced: known?.subscriptionUnpriced ?? 0,
               ...(known?.subscriptionUnpriced && slice.apiReason

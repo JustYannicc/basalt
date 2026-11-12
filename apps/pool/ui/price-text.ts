@@ -24,9 +24,21 @@ const date = (iso: string, year = true) => {
 };
 
 /** Oldest rate set among the slices, marked baseline or failed if any of them was. */
-export function slicePrice(slices: readonly { readonly price: OverviewPriceProvenance | null }[]) {
+export function slicePrice(
+  slices: readonly {
+    readonly price: OverviewPriceProvenance | null;
+    readonly subscriptionPrice?: OverviewPriceProvenance | null;
+  }[],
+  field: "price" | "subscriptionPrice" = "price",
+) {
   let price: Price | null = null;
-  for (const slice of slices) if (slice.price) price = combinePrice(price, provenance(slice.price));
+  for (const slice of slices) {
+    const source =
+      field === "subscriptionPrice" && slice.subscriptionPrice !== undefined
+        ? slice.subscriptionPrice
+        : slice.price;
+    if (source) price = combinePrice(price, provenance(source));
+  }
   return price;
 }
 

@@ -237,7 +237,10 @@ function rowMoney(row: Row, slices: readonly OverviewUsageSlice[]) {
     apiReasons: reasonsFor(matches, "api"),
     subscriptionReasons: reasonsFor(matches, "subscription"),
     apiPrice: slicePrice(matches.filter((slice) => slice.apiBilled !== null)),
-    subscriptionPrice: slicePrice(matches.filter((slice) => slice.subscriptionValue !== null)),
+    subscriptionPrice: slicePrice(
+      matches.filter((slice) => slice.subscriptionValue !== null),
+      "subscriptionPrice",
+    ),
   };
 }
 
@@ -724,6 +727,7 @@ export function Money({
               const apiPrice = slicePrice(lab.filter((slice) => slice.apiBilled !== null));
               const subscriptionPrice = slicePrice(
                 lab.filter((slice) => slice.subscriptionValue !== null),
+                "subscriptionPrice",
               );
               return (
                 <tr key={provider ?? "unknown-provider"}>
