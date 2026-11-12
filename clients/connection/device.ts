@@ -15,6 +15,7 @@ import { tunnelPath, nativeTunnelReadyTimeoutMs } from "../contracts/tunnel.ts";
 import { authRequest, tokenRequest } from "./device-oauth.ts";
 import { nativeAccess } from "./native-access.ts";
 import { untilAborted } from "./abort.ts";
+import { orderedDeviceStore } from "./device-store.ts";
 import { openTunnel } from "./tunnel.ts";
 import type { SocketFactory } from "../contracts/transport.ts";
 
@@ -31,7 +32,7 @@ const readInventory = Schema.decodeUnknownSync(Inventory);
 
 export function deviceConnection(
   initial: DeviceCredentials,
-  store: {
+  storage: {
     read(): Promise<string | undefined>;
     write(value: string): Promise<void>;
     remove(): Promise<void>;
@@ -39,6 +40,7 @@ export function deviceConnection(
   socket: SocketFactory,
   onRetryAfter?: (timestamp: number) => void,
 ): CredentialSource {
+  const store = orderedDeviceStore(storage);
   let saved: DeviceCredentials | undefined = initial;
   let access: NativeAccess | undefined;
   let display: NativeAccess["display"];

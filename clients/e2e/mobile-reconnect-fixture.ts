@@ -24,18 +24,32 @@ export function fixture(t: TestContext) {
   let ignoresAbort = false;
   let refreshHeld: Promise<void> | undefined;
   let refreshReads = 0;
+  let rotationWrite: Promise<void> | undefined;
   const signals: AbortSignal[] = [];
   let inFlight = 0;
   let maximum = 0;
   t.mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
     if (url.pathname === "/") return new Response(null, { status: online ? 200 : 503 });
-    if (url.pathname === "/api/auth/oauth2/token") {
-      refreshReads++;
-      await refreshHeld;
+    if (url.pathname === "/api/auth/oauth2/register")
+      return Response.json({ client_id: "fixture-client" });
+    if (url.pathname === "/api/auth/oauth2/device-authorization")
       return Response.json({
-        access_token: "fixture-next-access",
-        refresh_token: "fixture-next-refresh",
+        device_code: "fixture-device-code",
+        user_code: "BCDF-GHJK",
+        verification_uri: "https://fixture.example.test/native/device",
+        verification_uri_complete: "https://fixture.example.test/native/device?user_code=BCDF-GHJK",
+        expires_in: 300,
+      });
+    if (url.pathname === "/api/auth/oauth2/token") {
+      const refresh = new URLSearchParams(String(init?.body)).get("grant_type") === "refresh_token";
+      if (refresh) {
+        refreshReads++;
+        await refreshHeld;
+      }
+      return Response.json({
+        access_token: refresh ? "fixture-next-access" : "fixture-signed-in-access",
+        refresh_token: refresh ? "fixture-next-refresh" : "fixture-signed-in-refresh",
         token_type: "bearer",
         expires_in: 3600,
         scope: "native offline_access",
@@ -95,6 +109,7 @@ export function fixture(t: TestContext) {
     store: {
       read: async () => saved,
       write: async (value) => {
+        if (JSON.parse(value).accessToken === "fixture-next-access") await rotationWrite;
         saved = value;
       },
       remove: async () => {
@@ -133,6 +148,10 @@ export function fixture(t: TestContext) {
       held = value;
     },
     signals,
+    holdRotationWrite: (value: Promise<void>) => {
+      rotationWrite = value;
+    },
+    rawSaved: () => saved,
     expire: () => {
       saved = JSON.stringify({ ...JSON.parse(saved!), expiresAt: Date.now() + 1000 });
     },
