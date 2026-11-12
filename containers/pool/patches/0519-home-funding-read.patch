@@ -1,0 +1,344 @@
+diff --git a/internal/cluster/usage_credits.go b/internal/cluster/usage_credits.go
+--- a/internal/cluster/usage_credits.go
++++ b/internal/cluster/usage_credits.go
+@@ -92,7 +92,7 @@
+ 		selected[id] = struct{}{}
+ 	}
+ 	now := time.Now().UTC()
+-	items, errItems := a.repo.loadQuotaCredentials(ctx, now, selected, true)
++	items, errItems := a.repo.loadFundingCredentials(ctx, now, selected)
+ 	if errItems != nil {
+ 		return nil, errItems
+ 	}
+diff --git a/internal/cluster/usage_credit_read.go b/internal/cluster/usage_credit_read.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/usage_credit_read.go
+@@ -0,0 +1,127 @@
++package cluster
++
++import (
++	"context"
++	"time"
++)
++
++type fundingQuotaRow struct {
++	Auth     AuthRecord          `gorm:"embedded;embeddedPrefix:auth_"`
++	Snapshot QuotaSnapshotRecord `gorm:"embedded;embeddedPrefix:snapshot_"`
++	Window   QuotaWindowRecord   `gorm:"embedded;embeddedPrefix:window_"`
++}
++
++// A single statement observes credentials, quota and windows in the same database
++// snapshot. Funding checks remain fresh without serial per-table round trips.
++func (r *Repository) loadFundingCredentials(ctx context.Context, now time.Time, ids map[string]struct{}) ([]QuotaCredentialSnapshot, error) {
++	db, errDB := r.database()
++	if errDB != nil {
++		return nil, errDB
++	}
++	if now.IsZero() {
++		now = time.Now().UTC()
++	} else {
++		now = now.UTC()
++	}
++	var rows []fundingQuotaRow
++	query := db.WithContext(contextOrBackground(ctx)).Model(&AuthRecord{}).
++		Table("auth AS funding_auth").
++		Select([]string{
++			"funding_auth.\"uuid\" AS auth_uuid",
++			"funding_auth.\"auth_json\" AS auth_auth_json",
++			"funding_auth.\"index\" AS auth_index",
++			"funding_auth.\"provider\" AS auth_provider",
++			"funding_auth.\"label\" AS auth_label",
++			"funding_auth.\"status\" AS auth_status",
++			"funding_auth.\"disabled\" AS auth_disabled",
++			"funding_auth.\"unavailable\" AS auth_unavailable",
++			"funding_auth.\"next_retry_after\" AS auth_next_retry_after",
++			"funding_snapshot.\"usage_credits\" AS snapshot_usage_credits",
++			"funding_snapshot.\"credential_id\" AS snapshot_credential_id",
++			"funding_snapshot.\"quota_status\" AS snapshot_quota_status",
++			"funding_snapshot.\"collection_status\" AS snapshot_collection_status",
++			"funding_snapshot.\"source\" AS snapshot_source",
++			"funding_snapshot.\"observed_at\" AS snapshot_observed_at",
++			"funding_snapshot.\"expires_at\" AS snapshot_expires_at",
++			"funding_snapshot.\"last_attempt_at\" AS snapshot_last_attempt_at",
++			"funding_snapshot.\"last_success_at\" AS snapshot_last_success_at",
++			"funding_snapshot.\"next_probe_at\" AS snapshot_next_probe_at",
++			"funding_snapshot.\"last_active_probe_at\" AS snapshot_last_active_probe_at",
++			"funding_snapshot.\"probe_activity_at\" AS snapshot_probe_activity_at",
++			"funding_snapshot.\"consecutive_failures\" AS snapshot_consecutive_failures",
++			"funding_snapshot.\"error_code\" AS snapshot_error_code",
++			"funding_snapshot.\"error_message\" AS snapshot_error_message",
++			"funding_snapshot.\"error_retryable\" AS snapshot_error_retryable",
++			"funding_snapshot.\"error_occurred_at\" AS snapshot_error_occurred_at",
++			"funding_snapshot.\"error_status_code\" AS snapshot_error_status_code",
++			"funding_snapshot.\"error_request_id\" AS snapshot_error_request_id",
++			"funding_snapshot.\"home_id\" AS snapshot_home_id",
++			"funding_snapshot.\"home_label\" AS snapshot_home_label",
++			"funding_snapshot.\"cpa_node_id\" AS snapshot_cpa_node_id",
++			"funding_snapshot.\"cpa_node_label\" AS snapshot_cpa_node_label",
++			"funding_snapshot.\"plan_name\" AS snapshot_plan_name",
++			"funding_snapshot.\"plan_premium\" AS snapshot_plan_premium",
++			"funding_snapshot.\"reset_credits\" AS snapshot_reset_credits",
++			"funding_snapshot.\"probe_lease_owner\" AS snapshot_probe_lease_owner",
++			"funding_snapshot.\"probe_lease_expires_at\" AS snapshot_probe_lease_expires_at",
++			"funding_snapshot.\"parser_version\" AS snapshot_parser_version",
++			"funding_snapshot.\"collector_version\" AS snapshot_collector_version",
++			"funding_snapshot.\"created_at\" AS snapshot_created_at",
++			"funding_snapshot.\"updated_at\" AS snapshot_updated_at",
++			"funding_window.\"credential_id\" AS window_credential_id",
++			"funding_window.\"window_id\" AS window_window_id",
++			"funding_window.\"priority\" AS window_priority",
++			"funding_window.\"label\" AS window_label",
++			"funding_window.\"scope\" AS window_scope",
++			"funding_window.\"scope_id\" AS window_scope_id",
++			"funding_window.\"mode\" AS window_mode",
++			"funding_window.\"status\" AS window_status",
++			"funding_window.\"unit\" AS window_unit",
++			"funding_window.\"currency\" AS window_currency",
++			"funding_window.\"used\" AS window_used",
++			"funding_window.\"remaining\" AS window_remaining",
++			"funding_window.\"limit_value\" AS window_limit_value",
++			"funding_window.\"used_ratio\" AS window_used_ratio",
++			"funding_window.\"remaining_ratio\" AS window_remaining_ratio",
++			"funding_window.\"is_unlimited\" AS window_is_unlimited",
++			"funding_window.\"reset_at\" AS window_reset_at",
++			"funding_window.\"window_seconds\" AS window_window_seconds",
++			"funding_window.\"period_unit\" AS window_period_unit",
++			"funding_window.\"period_value\" AS window_period_value",
++			"funding_window.\"source\" AS window_source",
++			"funding_window.\"observed_at\" AS window_observed_at",
++			"funding_window.\"expires_at\" AS window_expires_at",
++			"funding_window.\"created_at\" AS window_created_at",
++			"funding_window.\"updated_at\" AS window_updated_at",
++		}).
++		Joins("LEFT JOIN quota_snapshot AS funding_snapshot ON funding_snapshot.credential_id = funding_auth.uuid").
++		Joins("LEFT JOIN quota_window AS funding_window ON funding_window.credential_id = funding_auth.uuid").
++		Order("funding_auth.uuid ASC, funding_window.priority ASC, funding_window.window_id ASC")
++	// Match the existing loader: nil and empty selections both mean all accounts.
++	if values := quotaExactSetValues(ids); len(values) > 0 {
++		query = query.Where("funding_auth.uuid IN ?", values)
++	}
++	if errRead := query.Scan(&rows).Error; errRead != nil {
++		return nil, errRead
++	}
++
++	items := make([]QuotaCredentialSnapshot, 0)
++	for index := 0; index < len(rows); {
++		first := rows[index]
++		auth, errAuth := quotaAuthFromRecord(&first.Auth)
++		if errAuth != nil {
++			return nil, errAuth
++		}
++		windows := make([]QuotaWindow, 0)
++		next := index
++		for next < len(rows) && rows[next].Auth.UUID == first.Auth.UUID {
++			if rows[next].Window.WindowID != "" {
++				windows = append(windows, quotaWindowDTO(rows[next].Window))
++			}
++			next++
++		}
++		items = append(items, quotaCredentialFromAuth(first.Auth, auth, first.Snapshot, windows, now))
++		index = next
++	}
++	return items, nil
++}
+diff --git a/internal/cluster/usage_credit_read_test.go b/internal/cluster/usage_credit_read_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/usage_credit_read_test.go
+@@ -0,0 +1,195 @@
++package cluster
++
++import (
++	"context"
++	"errors"
++	"reflect"
++	"sync"
++	"testing"
++	"time"
++
++	"gorm.io/gorm"
++	"gorm.io/gorm/logger"
++)
++
++func TestUsageCreditFundingReadSQLBudgetAndParity(t *testing.T) {
++	for _, backend := range []struct {
++		name string
++		open func(*testing.T) *Repository
++	}{
++		{"sqlite", newCredentialFoundationTestRepository},
++		{"postgres", newPostgresQuiescenceRepository},
++	} {
++		t.Run(backend.name, func(t *testing.T) {
++			repo := backend.open(t)
++			now := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
++			seedFundingReadFixture(t, repo, now)
++			for _, ids := range []map[string]struct{}{nil, {}, {"funding-plan": {}}, {"funding-missing": {}, "funding-absent": {}}, {"funding-deleted": {}}} {
++				old, errOld := repo.loadQuotaCredentials(t.Context(), now, ids, true)
++				if errOld != nil {
++					t.Fatal(errOld)
++				}
++				counter := &lifecycleSQLCounter{Interface: logger.Default.LogMode(logger.Silent)}
++				counted := NewRepository(repo.db.Session(&gorm.Session{Logger: counter}))
++				got, errRead := counted.loadFundingCredentials(t.Context(), now, ids)
++				if errRead != nil {
++					t.Fatal(errRead)
++				}
++				if count := counter.statements.Load(); count != 1 {
++					t.Fatalf("funding read SQL statements=%d, want 1", count)
++				}
++				if !reflect.DeepEqual(got, old) {
++					t.Fatalf("joined funding snapshot differs from existing loader: got %d, want %d", len(got), len(old))
++				}
++				for index, item := range got {
++					for _, model := range []string{"claude-opus-5-5", "claude-sonnet-5-5", "gpt-6.1-sol", "gpt-6.1-spark"} {
++						if usageCreditFundingTier(item, model, now) != usageCreditFundingTier(old[index], model, now) {
++							t.Fatal("funding tier changed")
++						}
++					}
++				}
++			}
++		})
++	}
++}
++
++func seedFundingReadFixture(t *testing.T, repo *Repository, now time.Time) {
++	t.Helper()
++	before, after := now.Add(-time.Minute), now.Add(time.Minute)
++	positive, zero := .5, 0.0
++	for _, id := range []string{"funding-plan", "funding-stale", "funding-missing", "funding-credits", "funding-disabled", "funding-deleted", "funding-legacy", "funding-no-windows"} {
++		seedQuotaSnapshotAuth(t, repo, id, "claude", id, map[string]any{"type": "claude", "auth_kind": "oauth"})
++		if id == "funding-missing" {
++			continue
++		}
++		snapshot := QuotaSnapshotRecord{CredentialID: id, QuotaStatus: "healthy", CollectionStatus: "success", Source: "active_probe", ObservedAt: &before, ExpiresAt: &after, ParserVersion: 1, CollectorVersion: 1}
++		if id == "funding-stale" {
++			snapshot.ExpiresAt = &before
++		}
++		if id == "funding-credits" {
++			snapshot.UsageCredits = JSONB(`{"state":"available","observed_at":"2026-11-11T23:59:00Z","expires_at":"2026-11-12T00:01:00Z","balance":"4"}`)
++		}
++		if errCreate := repo.db.Create(&snapshot).Error; errCreate != nil {
++			t.Fatal(errCreate)
++		}
++		if id == "funding-no-windows" {
++			continue
++		}
++		for index, w := range []struct {
++			id, scope, scopeID string
++			ratio              *float64
++		}{{"claude-five-hour", "account", "", &positive}, {"claude-seven-day-opus", "model", "opus", &zero}, {"claude-seven-day-sonnet", "model", "sonnet", &positive}} {
++			window := QuotaWindowRecord{CredentialID: id, WindowID: w.id, Priority: index, Scope: w.scope, ScopeID: w.scopeID, Mode: "window", Status: "healthy", Unit: "percent", RemainingRatio: w.ratio, ObservedAt: before, ExpiresAt: &after, Source: "active_probe", PeriodUnit: "hour"}
++			if errCreate := repo.db.Create(&window).Error; errCreate != nil {
++				t.Fatal(errCreate)
++			}
++		}
++	}
++	if errUpdate := repo.db.Model(&AuthRecord{}).Where("uuid = ?", "funding-disabled").Update("disabled", true).Error; errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	if errDelete := repo.db.Where("uuid = ?", "funding-deleted").Delete(&AuthRecord{}).Error; errDelete != nil {
++		t.Fatal(errDelete)
++	}
++}
++
++func TestUsageCreditFundingReadPostgresConcurrentCommit(t *testing.T) {
++	for _, mutation := range []string{"quota-and-identity", "delete"} {
++		t.Run(mutation, func(t *testing.T) {
++			repo := newPostgresQuiescenceRepository(t)
++			now := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
++			seedFundingReadFixture(t, repo, now)
++			ids := map[string]struct{}{"funding-plan": {}}
++			before, errBefore := repo.loadQuotaCredentials(t.Context(), now, ids, true)
++			if errBefore != nil {
++				t.Fatal(errBefore)
++			}
++			if len(before) != 1 {
++				t.Fatal("missing initial funding credential")
++			}
++			// QueryContext has established the statement's snapshot before Scan
++			// consumes rows. Commit another connection's complete state change here.
++			var once sync.Once
++			var errCommit error
++			callback := "test:funding-commit-after-query"
++			if errRegister := repo.db.Callback().Row().After("gorm:row").Register(callback, func(tx *gorm.DB) {
++				once.Do(func() {
++					errCommit = repo.db.Transaction(func(writer *gorm.DB) error {
++						if mutation == "delete" {
++							return writer.Where("uuid = ?", "funding-plan").Delete(&AuthRecord{}).Error
++						}
++						if errUpdate := writer.Model(&AuthRecord{}).Where("uuid = ?", "funding-plan").Update("disabled", true).Error; errUpdate != nil {
++							return errUpdate
++						}
++						if errUpdate := writer.Model(&QuotaSnapshotRecord{}).Where("credential_id = ?", "funding-plan").Update("expires_at", now.Add(-time.Minute)).Error; errUpdate != nil {
++							return errUpdate
++						}
++						return writer.Model(&QuotaWindowRecord{}).Where("credential_id = ?", "funding-plan").Update("remaining_ratio", 0).Error
++					})
++				})
++			}); errRegister != nil {
++				t.Fatal(errRegister)
++			}
++			t.Cleanup(func() { _ = repo.db.Callback().Row().Remove(callback) })
++			during, errDuring := repo.loadFundingCredentials(t.Context(), now, ids)
++			if errDuring != nil || errCommit != nil {
++				t.Fatalf("read=%v commit=%v", errDuring, errCommit)
++			}
++			if !reflect.DeepEqual(during, before) {
++				t.Fatal("one funding read mixed snapshots across a concurrent committed update")
++			}
++			if errRemove := repo.db.Callback().Row().Remove(callback); errRemove != nil {
++				t.Fatal(errRemove)
++			}
++			after, errAfter := repo.loadFundingCredentials(t.Context(), now, ids)
++			if errAfter != nil {
++				t.Fatal(errAfter)
++			}
++			expected, errExpected := repo.loadQuotaCredentials(t.Context(), now, ids, true)
++			if errExpected != nil {
++				t.Fatal(errExpected)
++			}
++			if !reflect.DeepEqual(after, expected) || reflect.DeepEqual(after, before) {
++				t.Fatal("next funding read did not observe the committed state")
++			}
++		})
++	}
++}
++
++func TestUsageCreditFundingReadCancellationAndInvalidAuth(t *testing.T) {
++	repo := newCredentialFoundationTestRepository(t)
++	ctx, cancel := context.WithCancel(t.Context())
++	cancel()
++	if _, errRead := repo.loadFundingCredentials(ctx, time.Now(), nil); !errors.Is(errRead, context.Canceled) {
++		t.Fatalf("cancelled read=%v", errRead)
++	}
++	seedQuotaSnapshotAuth(t, repo, "invalid-funding", "claude", "synthetic", nil)
++	if errUpdate := repo.db.Model(&AuthRecord{}).Where("uuid = ?", "invalid-funding").Update("auth_json", JSONB(`[]`)).Error; errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	if _, errRead := repo.loadFundingCredentials(t.Context(), time.Now(), nil); errRead == nil {
++		t.Fatal("malformed auth did not fail closed")
++	}
++}
++
++func TestUsageCreditFundingReadAdapterBudget(t *testing.T) {
++	repo := newCredentialFoundationTestRepository(t)
++	now := time.Now().UTC()
++	seedFundingReadFixture(t, repo, now)
++	if _, errKey := repo.CreateAPIKey(t.Context(), APIKeyEntryUpdate{APIKey: "synthetic-funding-key"}); errKey != nil {
++		t.Fatal(errKey)
++	}
++	counter := &lifecycleSQLCounter{Interface: logger.Default.LogMode(logger.Silent)}
++	counted := NewRepository(repo.db.Session(&gorm.Session{Logger: counter}))
++	adapter := &RuntimeAdapter{repo: counted}
++	tiers, errTiers := adapter.UsageCreditTiersForAPIKey(t.Context(), "synthetic-funding-key", "claude-opus-5-5", map[string]string{"funding-plan": "claude-opus-5-5", "funding-disabled": "claude-opus-5-5", "absent": "claude-opus-5-5"})
++	if errTiers != nil {
++		t.Fatal(errTiers)
++	}
++	if count := counter.statements.Load(); count != 2 {
++		t.Fatalf("adapter SQL statements=%d, want key lookup + one funding read", count)
++	}
++	if tiers["funding-disabled"] != 3 || tiers["absent"] != 2 {
++		t.Fatal("disabled or absent funding state changed")
++	}
++}
