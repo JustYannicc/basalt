@@ -40,7 +40,7 @@ export const updates =
     ? appUpdates({
         manifestUrl,
         installed: { version, versionCode: code },
-        fetch: (url, init) => globalThis.fetch(url, init),
+        get: (url, init) => globalThis.fetch(url, init),
         files: {
           cached: (versionCode) => {
             const file = new File(folder, name(versionCode));

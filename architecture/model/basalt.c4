@@ -232,6 +232,7 @@ model {
         code "clients/mobile"
         libraries "expo|expo-application|expo-constants|expo-crypto|expo-dev-client|expo-file-system|expo-intent-launcher|expo-network|expo-secure-store|expo-system-ui|expo-web-browser|react|react-native|react-native-safe-area-context|effect|node:path"
         endpointHosts "127.0.0.1|localhost"
+        bindings "globalThis=releaseSource"
       }
     }
 

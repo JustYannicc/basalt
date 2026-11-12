@@ -10,3 +10,7 @@ model {
     }
   }
 }
+
+model {
+  basalt.clientMobile -[sync]-> releaseSource "read the newest release's update manifest and APK"
+}

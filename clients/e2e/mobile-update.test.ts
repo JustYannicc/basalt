@@ -36,7 +36,7 @@ function fixture(options: { manifest?: unknown; reachable?: boolean; bytes?: { s
   const ports = {
     manifestUrl: feed,
     installed: { version: "0.2.2", versionCode: 202 },
-    fetch: async () => {
+    get: async () => {
       events.fetches++;
       if (!reachable) throw new TypeError("Network request failed");
       return { ok: true, text: async () => JSON.stringify(manifest) };

@@ -18,7 +18,7 @@ const updateManifestUrl = release
       ? `${brand.links.source}/releases/latest/download/android-update.json`
       : undefined)
   : undefined;
-if (updateManifestUrl !== undefined && !updateManifestUrl.startsWith("https://"))
+if (updateManifestUrl !== undefined && new URL(updateManifestUrl).protocol !== "https:")
   throw new Error(`The update manifest must be an https URL, not ${updateManifestUrl}.`);
 
 const config: ExpoConfig = {

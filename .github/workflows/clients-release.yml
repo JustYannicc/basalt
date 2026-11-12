@@ -90,7 +90,9 @@ jobs:
             echo "android_manifest=https://github.com/$GITHUB_REPOSITORY/releases/latest/download/android-update.json" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if ! [[ "$FEED" =~ ^https://[^/?#@[:space:]]+/([^?#[:space:]]*/)?appcast\.xml$ ]]; then
+          # The scheme is matched apart from the rest, so the pattern holds no URL of its own.
+          rest="${FEED#https:/}"
+          if [ "$rest" = "$FEED" ] || ! [[ "$rest" =~ ^/[^/?#@[:space:]]+/([^?#[:space:]]*/)?appcast\.xml$ ]]; then
             message="update_feed must be an https URL ending in /appcast.xml, not '$FEED'."
             echo "::error::$message"
             echo "$message" >> "$GITHUB_STEP_SUMMARY"

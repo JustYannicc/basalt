@@ -72,7 +72,7 @@ export interface DownloadedApk {
 export interface UpdatePorts {
   manifestUrl: string;
   installed: { version: string; versionCode: number };
-  fetch(url: string, init: { signal: AbortSignal }): Promise<{ ok: boolean; text(): Promise<string> }>;
+  get(url: string, init: { signal: AbortSignal }): Promise<{ ok: boolean; text(): Promise<string> }>;
   files: {
     cached(versionCode: number): DownloadedApk | undefined;
     download(
@@ -176,7 +176,7 @@ export function appUpdates(ports: UpdatePorts) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), manifestTimeout);
     try {
-      const response = await ports.fetch(ports.manifestUrl, { signal: controller.signal });
+      const response = await ports.get(ports.manifestUrl, { signal: controller.signal });
       if (!response.ok) throw new Error("The update manifest wasn't available.");
       const text = await response.text();
       if (text.length > manifestBytes) throw new Error("The update manifest is too large.");
