@@ -67,8 +67,13 @@ check the overall `complete` field before relying on the inventory.
 
 This selection refuses above 2,000 SQL associations or 2,000 framework objects,
 three metadata pages, 8,000,000 bytes per record, 32,000,000 total record bytes or
-eight seconds of R2 inventory work. Stream bytes are bounded before accumulation,
-even if the reported object size is wrong. An invalid listing, unavailable
+eight seconds of R2 inventory work. Each attempt reserves its allowed bytes before
+reading. Successful reads refund unused bytes and confirmed absences refund the
+whole allowance; failed reads retain it, so repeated partial failures cannot bypass
+the total bound. Stream bytes are bounded before accumulation, even if the reported
+object size is wrong. An owned native reader initiates cancellation without awaiting
+the provider's cancellation promise and releases its lock on interruption or refusal.
+An invalid listing, unavailable
 binding or exceeded bound refuses the selection instead of returning a truncated
 result. R2 metadata and the SQL snapshot are separate observations; a concurrent
 deployment can leave an unreferenced framework in the listing.

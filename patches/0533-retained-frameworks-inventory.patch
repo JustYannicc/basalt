@@ -78,7 +78,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts b/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts
-@@ -29,6 +29,26 @@
+@@ -29,6 +29,27 @@
    inventory: {
      unknown_inventory: "Unknown inventory",
      inventory_exceeds_its_bound: "Inventory exceeds its bound",
@@ -96,6 +96,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.
 +    unreadable_metadata: "Retained frameworks: unreadable metadata",
 +    invalid_build_key: "Retained frameworks: invalid build key",
 +    malformed_record_size: "Retained frameworks: malformed record size",
++    native_body_unavailable: "Retained frameworks: native body unavailable",
 +    record_size_changed: "Retained frameworks: record size changed",
 +    object_byte_bound: "Retained frameworks: object byte bound",
 +    stream_byte_bound: "Retained frameworks: stream byte bound",
@@ -109,11 +110,12 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-framew
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-r2.ts
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,119 @@
 +/** The existing EU AppBuilds binding supplies reads inside the signed Worker invocation. */
 +import { RuntimeContext } from "alchemy";
 +import * as Cloudflare from "alchemy/Cloudflare";
-+import { Effect, Stream } from "effect";
++import { Effect } from "effect";
++import { ProductionOperationRefused } from "./contracts.ts";
 +import { AppBuilds } from "../blobs.ts";
 +import {
 +  retainedFrameworkBounds,
@@ -135,7 +137,6 @@ new file mode 100644
 +  readonly get: (key: string) => Effect.Effect<
 +    {
 +      size: number;
-+      body: Stream.Stream<Uint8Array, unknown>;
 +      readonly readable?: ReadableStream<Uint8Array> | undefined;
 +    } | null,
 +    unknown,
@@ -187,20 +188,33 @@ new file mode 100644
 +      const object = yield* bucket.get(key);
 +      if (object === null) return null;
 +      return yield* Effect.gen(function* () {
++        if (object.readable === undefined)
++          return yield* retainedFrameworkRefused("native body unavailable");
++        const readable = object.readable;
++        const reader = yield* Effect.acquireRelease(
++          Effect.try({
++            try: () => readable.getReader(),
++            catch: () => new ProductionOperationRefused({ message: "Retained frameworks: native body unavailable" }),
++          }),
++          (reader) => Effect.sync(() => {
++            // The provider's cancel promise may never settle. Initiate it, then release our
++            // lock synchronously so cleanup cannot hold the inventory's deadline open.
++            void reader.cancel().catch(() => {});
++            reader.releaseLock();
++          }),
++        );
 +        if (!Number.isSafeInteger(object.size) || object.size < 0)
 +          return yield* retainedFrameworkRefused("malformed record size");
 +        if (object.size > maxBytes) return yield* retainedFrameworkRefused("object byte bound");
 +        const chunks: Uint8Array[] = [];
 +        let length = 0;
-+        yield* object.body.pipe(
-+          Stream.runForEach((chunk) =>
-+            Effect.gen(function* () {
-+              length += chunk.byteLength;
-+              if (length > maxBytes) return yield* retainedFrameworkRefused("stream byte bound");
-+              chunks.push(chunk);
-+            }),
-+          ),
-+        );
++        for (;;) {
++          const next = yield* Effect.tryPromise(() => reader.read());
++          if (next.done) break;
++          length += next.value.byteLength;
++          if (length > maxBytes) return yield* retainedFrameworkRefused("stream byte bound");
++          chunks.push(next.value);
++        }
 +        if (length !== object.size) return yield* retainedFrameworkRefused("record size changed");
 +        const body = new Uint8Array(length);
 +        let offset = 0;
@@ -209,16 +223,7 @@ new file mode 100644
 +          offset += chunk.byteLength;
 +        }
 +        return body;
-+      }).pipe(
-+        Effect.ensuring(
-+          Effect.sync(() => {
-+            // Stream finalization cancels an acquired reader. Header refusals also cancel an
-+            // unacquired native body, without waiting for a provider's cancellation reply.
-+            if (object.readable !== undefined && !object.readable.locked)
-+              void object.readable.cancel().catch(() => {});
-+          }),
-+        ),
-+      );
++      }).pipe(Effect.scoped);
 +    }).pipe(Effect.provide(RuntimeContext.phantom)),
 +});
 +
@@ -229,7 +234,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-framew
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks.ts
-@@ -0,0 +1,237 @@
+@@ -0,0 +1,242 @@
 +/** Read retained identities without returning or evaluating any compiled module. */
 +import { WorkerBundle } from "@executor-js/app-data/worker-bundle";
 +import { Effect, Schema } from "effect";
@@ -403,10 +408,15 @@ new file mode 100644
 +        const remaining = retainedFrameworkBounds.totalBytes - bytes;
 +        const max = Math.min(retainedFrameworkBounds.objectBytes, remaining);
 +        if (max <= 0) return yield* retainedFrameworkRefused("total byte bound");
++        // A failed stream may already have delivered bytes. Retain its whole reservation;
++        // only a successful read or confirmed absence can refund the unused allowance.
++        bytes += max;
 +        const body = yield* objects.read(key, max);
 +        if (body !== null) {
 +          if (body.byteLength > max) return yield* retainedFrameworkRefused("byte bound");
-+          bytes += body.byteLength;
++          bytes -= max - body.byteLength;
++        } else {
++          bytes -= max;
 +        }
 +        return body;
 +      });

@@ -4,6 +4,19 @@ import type { RetainedFrameworkBucket } from "../../.upstream/apps/hosted/cloud/
 export const moduleText = "SYNTHETIC_PRIVATE_AUTHORED_MODULE_never_return_this";
 export const frameworkModules = { "node_modules/apps/server.js": "synthetic framework" };
 export const encoded = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+export const nativeBody = (body: Uint8Array) => new ReadableStream<Uint8Array>({
+  start(controller) {
+    controller.enqueue(body);
+    controller.close();
+  },
+});
+export const nativeObject = (size: number, readable: ReadableStream<Uint8Array>) => ({
+  size,
+  readable,
+  // Match Alchemy's default body wrapper as well as its native readable. The adapter must
+  // avoid this wrapper because its finalizer waits for the provider's cancel promise.
+  body: Stream.fromReadableStream({ evaluate: () => readable, onError: () => new Error(moduleText) }),
+});
 export const record = (framework: { version: string; sha256: string }) => ({
   format: 2,
   mainModule: "app.js",
@@ -45,7 +58,7 @@ export function bucketFixture() {
       Effect.sync(() => {
         reads.push(key);
         const body = bodies.get(key);
-        return body === undefined ? null : { size: body.byteLength, body: Stream.make(body) };
+        return body === undefined ? null : nativeObject(body.byteLength, nativeBody(body));
       }),
     put: () => {
       writes++;

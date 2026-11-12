@@ -1,7 +1,7 @@
 {
   "identity": "basalt-retained-frameworks-inventory",
   "file": "0533-retained-frameworks-inventory.patch",
-  "content_sha256": "a1c14e7e2ed930312f96510b867ae9b396f11f3dc42c0522094e81678edc7cf0",
+  "content_sha256": "eb5cf3d2cb2864b644c93e382dfb2615b86967b983d45fe63ef36ab0378d07d0",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
