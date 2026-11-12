@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "The node requests Home timing only for an HTTP request collector, preserves legacy and error replies, and forwards at most six closed bounded stage records in a private HTTP response header before the first body write. Invalid diagnostic metadata never changes a complete dispatch result. The Worker logs only validated stage, milliseconds and outcome and strips the header from client responses. No extra dispatch, provider call, retry or persistence is added."
+    }
+  }
+}

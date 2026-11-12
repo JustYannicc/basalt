@@ -1,0 +1,484 @@
+diff --git a/internal/api/basalt_timing_header_test.go b/internal/api/basalt_timing_header_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/api/basalt_timing_header_test.go
+@@ -0,0 +1,29 @@
++package api
++
++import (
++	"context"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/dispatchtiming"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestBasaltNodeDispatchTimingHeaderHandlerContext(t *testing.T) {
++	server := newTestServer(t)
++	server.engine.POST("/synthetic-timing", func(c *gin.Context) {
++		ctx, cancel := server.handlers.GetContextWithCancel(nil, c, context.Background())
++		defer cancel()
++		dispatchtiming.Observe(ctx, dispatchtiming.Ping, time.Now(), nil)
++		c.Header(dispatchtiming.Header, "private-provider-sentinel")
++		c.String(200, "synthetic-provider-response")
++	})
++	response := httptest.NewRecorder()
++	server.engine.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/synthetic-timing", nil))
++	value := response.Header().Get(dispatchtiming.Header)
++	if response.Code != 200 || response.Body.String() != "synthetic-provider-response" || !strings.Contains(value, `"stage":"ping"`) || strings.Contains(value, "private-") {
++		t.Fatalf("timing context/header handoff failed: %q", value)
++	}
++}
+diff --git a/internal/api/server.go b/internal/api/server.go
+--- a/internal/api/server.go
++++ b/internal/api/server.go
+@@ -22,6 +22,7 @@
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
+ 	codexlive "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/live"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/dispatchtiming"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/githubauth"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/managementasset"
+@@ -173,6 +174,7 @@
+ 	// Add middleware
+ 	engine.Use(logging.GinLogrusLogger())
+ 	engine.Use(logging.CPATraceIDMiddleware())
++	engine.Use(dispatchtiming.Middleware())
+ 	engine.Use(s.maxRequestBodyBytesMiddleware())
+ 
+ 	// Add request logging middleware before recovery and extra middleware so that
+diff --git a/internal/dispatchtiming/header.go b/internal/dispatchtiming/header.go
+new file mode 100644
+--- /dev/null
++++ b/internal/dispatchtiming/header.go
+@@ -0,0 +1,218 @@
++package dispatchtiming
++
++import (
++	"context"
++	"errors"
++	"net"
++	"sync"
++	"time"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/gin-gonic/gin"
++	"github.com/redis/go-redis/v9"
++)
++
++const Header = "X-Signalbox-Pool-Dispatch-Timing"
++
++type Metric struct {
++	Stage      Stage  `json:"stage"`
++	DurationMS int64  `json:"duration_ms"`
++	Outcome    string `json:"outcome"`
++}
++type collectorKey struct{}
++type Collector struct {
++	mu      sync.Mutex
++	metrics map[Stage]Metric
++}
++
++var stages = []Stage{"authenticate", "selection", "admission", "reply_write", Ping, RPop}
++
++func WithCollector(ctx context.Context) (context.Context, *Collector) {
++	c := &Collector{metrics: make(map[Stage]Metric)}
++	return context.WithValue(ctx, collectorKey{}, c), c
++}
++func FromContext(ctx context.Context) *Collector {
++	if ctx == nil {
++		return nil
++	}
++	c, _ := ctx.Value(collectorKey{}).(*Collector)
++	return c
++}
++func Inherit(ctx, source context.Context) context.Context {
++	if c := FromContext(source); c != nil {
++		return context.WithValue(ctx, collectorKey{}, c)
++	}
++	return ctx
++}
++func (c *Collector) Record(stage Stage, duration time.Duration, err error) {
++	if c == nil {
++		return
++	}
++	outcome := "ok"
++	if err != nil {
++		outcome = "error"
++		var timeout net.Error
++		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() {
++			outcome = "timeout"
++		} else if errors.Is(err, context.Canceled) {
++			outcome = "cancelled"
++		}
++	}
++	ms := duration.Milliseconds()
++	if ms < 0 {
++		ms = 0
++	}
++	if ms > 86400000 {
++		ms = 86400000
++	}
++	c.add(Metric{stage, ms, outcome})
++}
++func (c *Collector) add(metric Metric) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	previous := c.metrics[metric.Stage]
++	metric.DurationMS += previous.DurationMS
++	if metric.DurationMS > 86400000 {
++		metric.DurationMS = 86400000
++	}
++	if previous.Outcome != "" && previous.Outcome != "ok" {
++		metric.Outcome = previous.Outcome
++	}
++	c.metrics[metric.Stage] = metric
++}
++func (c *Collector) JSON() []byte {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	metrics := make([]Metric, 0, 6)
++	for _, stage := range stages {
++		if metric, ok := c.metrics[stage]; ok {
++			metrics = append(metrics, metric)
++		}
++	}
++	if len(metrics) == 0 {
++		return nil
++	}
++	doc := ojson.NewDocString("[]")
++	for _, metric := range metrics {
++		if errSet := doc.Set("-1", metric); errSet != nil {
++			return nil
++		}
++	}
++	return doc.Bytes()
++}
++func Observe(ctx context.Context, stage Stage, started time.Time, err error) {
++	FromContext(ctx).Record(stage, time.Since(started), err)
++	Record(stage, started, err)
++}
++func collectTrailer(ctx context.Context, raw string) {
++	c := FromContext(ctx)
++	if c == nil || len(raw) > 2048 {
++		return
++	}
++	if !ojson.Valid(raw) {
++		return
++	}
++	parsed := ojson.Parse(raw)
++	if !parsed.IsArray() {
++		return
++	}
++	records := parsed.Array()
++	if len(records) > 4 {
++		return
++	}
++	seen := make(map[Stage]bool)
++	metrics := make([]Metric, 0, len(records))
++	for _, record := range records {
++		if !record.IsObject() || len(record.Map()) != 3 {
++			return
++		}
++		stage := record.Get("stage")
++		duration := record.Get("duration_ms")
++		outcome := record.Get("outcome")
++		if stage.Type != ojson.String || duration.Type != ojson.Number || outcome.Type != ojson.String {
++			return
++		}
++		if duration.Float() != float64(duration.Int()) {
++			return
++		}
++		metric := Metric{Stage(stage.String()), duration.Int(), outcome.String()}
++		switch metric.Stage {
++		case "authenticate", "selection", "admission", "reply_write":
++		default:
++			return
++		}
++		switch metric.Outcome {
++		case "ok", "error", "timeout", "cancelled":
++		default:
++			return
++		}
++		if seen[metric.Stage] || metric.DurationMS < 0 || metric.DurationMS > 86400000 {
++			return
++		}
++		seen[metric.Stage] = true
++		metrics = append(metrics, metric)
++	}
++	for _, metric := range metrics {
++		c.add(metric)
++	}
++}
++
++// Legacy Home replies have no envelope. Diagnostics never turn a complete primary reply into a retry.
++func DecodeReply(ctx context.Context, value any) ([]byte, error) {
++	if reply, ok := value.([]any); ok {
++		if len(reply) != 2 {
++			return nil, errors.New("home: invalid dispatch timing envelope")
++		}
++		if trailer, ok := reply[1].(string); ok {
++			collectTrailer(ctx, trailer)
++		}
++		value = reply[0]
++	}
++	switch reply := value.(type) {
++	case string:
++		return []byte(reply), nil
++	case []byte:
++		return reply, nil
++	case nil:
++		return nil, redis.Nil
++	case error:
++		return nil, reply
++	default:
++		return nil, errors.New("home: invalid dispatch response")
++	}
++}
++
++type responseWriter struct {
++	gin.ResponseWriter
++	collector *Collector
++	prepared  bool
++}
++
++func (w *responseWriter) prepare() {
++	if w.prepared {
++		return
++	}
++	w.prepared = true
++	w.Header().Del(Header)
++	if value := w.collector.JSON(); len(value) > 0 {
++		w.Header().Set(Header, string(value))
++	}
++}
++func (w *responseWriter) WriteHeaderNow()             { w.prepare(); w.ResponseWriter.WriteHeaderNow() }
++func (w *responseWriter) Write(p []byte) (int, error) { w.prepare(); return w.ResponseWriter.Write(p) }
++func (w *responseWriter) WriteString(p string) (int, error) {
++	w.prepare()
++	return w.ResponseWriter.WriteString(p)
++}
++func (w *responseWriter) Flush() { w.prepare(); w.ResponseWriter.Flush() }
++func Middleware() gin.HandlerFunc {
++	return func(c *gin.Context) {
++		ctx, collector := WithCollector(c.Request.Context())
++		c.Request = c.Request.WithContext(ctx)
++		c.Writer = &responseWriter{ResponseWriter: c.Writer, collector: collector}
++		c.Next()
++		if !c.Writer.Written() {
++			c.Writer.WriteHeaderNow()
++		}
++	}
++}
+diff --git a/internal/home/basalt_timing_header_test.go b/internal/home/basalt_timing_header_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/home/basalt_timing_header_test.go
+@@ -0,0 +1,132 @@
++package home
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/dispatchtiming"
++)
++
++func TestBasaltNodeDispatchTimingHeaderSyntheticProvider(t *testing.T) {
++	trailer := `[{"stage":"authenticate","duration_ms":2,"outcome":"ok"},{"stage":"selection","duration_ms":3,"outcome":"ok"},{"stage":"admission","duration_ms":4,"outcome":"ok"},{"stage":"reply_write","duration_ms":5,"outcome":"ok"}]`
++	for _, legacy := range []bool{false, true} {
++		client, commands := newRedisCommandTestClient(t, func(args []string) string {
++			if strings.EqualFold(args[0], "RPOP") {
++				if !ojson.Valid(args[1]) || ojson.Get(args[1], "dispatch_timing").Type != ojson.True {
++					t.Error("dispatch did not opt in")
++				}
++				primary := `{"credential":"synthetic"}`
++				wire := fmt.Sprintf("$%d\r\n%s\r\n", len(primary), primary)
++				if legacy {
++					return wire
++				}
++				return "*2\r\n" + wire + fmt.Sprintf("$%d\r\n%s\r\n", len(trailer), trailer)
++			}
++			return balanceTestRedisReply(args)
++		})
++		providerCalls := 0
++		provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			providerCalls++
++			w.Header().Set("Content-Type", "text/event-stream")
++			_, _ = io.WriteString(w, "data: synthetic-provider-terminal\n\n")
++		}))
++		engine := gin.New()
++		engine.Use(dispatchtiming.Middleware())
++		engine.POST("/v1/messages", func(c *gin.Context) {
++			ctx := dispatchtiming.Inherit(context.Background(), c.Request.Context())
++			raw, err := client.RPopAuth(ctx, "synthetic-model", "synthetic-session", nil, 1)
++			if err != nil || string(raw) != `{"credential":"synthetic"}` {
++				t.Errorf("primary changed: %s, %v", raw, err)
++				c.Status(500)
++				return
++			}
++			response, err := http.Get(provider.URL)
++			if err != nil {
++				t.Error(err)
++				c.Status(500)
++				return
++			}
++			defer func() {
++				if errClose := response.Body.Close(); errClose != nil {
++					t.Error(errClose)
++				}
++			}()
++			c.Status(response.StatusCode)
++			_, _ = io.Copy(c.Writer, response.Body)
++		})
++		recorder := httptest.NewRecorder()
++		engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages", nil))
++		provider.Close()
++		if recorder.Code != 200 || recorder.Body.String() != "data: synthetic-provider-terminal\n\n" || providerCalls != 1 {
++			t.Fatal("provider response or call count changed")
++		}
++		header := recorder.Header().Get(dispatchtiming.Header)
++		metrics := ojson.Parse(header).Array()
++		if !ojson.Valid(header) || !ojson.Parse(header).IsArray() {
++			t.Fatal("missing timing header")
++		}
++		want := 6
++		if legacy {
++			want = 2
++		}
++		if len(metrics) != want {
++			t.Fatalf("stages=%v, want %d", metrics, want)
++		}
++		if !legacy {
++			for index, stage := range []string{"authenticate", "selection", "admission", "reply_write"} {
++				if metrics[index].Get("stage").String() != stage || metrics[index].Get("duration_ms").Int() != int64(index+2) || metrics[index].Get("outcome").String() != "ok" {
++					t.Fatal("Home timing fields changed")
++				}
++			}
++		}
++		count := 0
++		for _, command := range commands.All() {
++			if strings.EqualFold(command[0], "RPOP") {
++				count++
++			}
++		}
++		if count != 1 {
++			t.Fatal("dispatch replayed")
++		}
++	}
++}
++
++func TestBasaltNodeDispatchTimingInvalidTrailerPreservesPrimary(t *testing.T) {
++	for _, trailer := range []string{"private-sentinel", `[{"stage":"selection","duration_ms":1,"outcome":"ok","private":"sentinel"}]`, `[{"stage":"selection","outcome":"ok"}]`, `[{"stage":"selection","duration_ms":null,"outcome":"ok"}]`, `[{"stage":"private-stage","duration_ms":1,"outcome":"ok"}]`, `[{"stage":"selection","duration_ms":1,"outcome":"ok"},{"stage":"selection","duration_ms":1,"outcome":"ok"}]`, `[{"stage":"selection","duration_ms":1.5,"outcome":"ok"}]`, `[{"stage":"selection","duration_ms":"1","outcome":"ok"}]`, `[{"stage":"selection","duration_ms":86400001,"outcome":"ok"}]`, `[{"stage":"selection","duration_ms":-1,"outcome":"ok"}]`, `[] null`, strings.Repeat("x", 2049)} {
++		ctx, collector := dispatchtiming.WithCollector(context.Background())
++		raw, err := dispatchtiming.DecodeReply(ctx, []any{"primary", trailer})
++		if err != nil || string(raw) != "primary" || len(collector.JSON()) != 0 {
++			t.Fatal("invalid diagnostic altered dispatch or escaped projection")
++		}
++	}
++}
++
++func TestBasaltNodeDispatchTimingServerErrorRemainsDeterministic(t *testing.T) {
++	client, commands := newRedisCommandTestClient(t, func(args []string) string {
++		if strings.EqualFold(args[0], "RPOP") {
++			return "*2\r\n-ERR synthetic rejection\r\n$2\r\n[]\r\n"
++		}
++		return balanceTestRedisReply(args)
++	})
++	ctx, _ := dispatchtiming.WithCollector(context.Background())
++	_, errDispatch := client.RPopAuth(ctx, "synthetic-model", "", nil, 1)
++	if errDispatch == nil || isAmbiguousIssuedRPopAuthError(errDispatch) {
++		t.Fatal("complete server rejection became ambiguous")
++	}
++	count := 0
++	for _, command := range commands.All() {
++		if strings.EqualFold(command[0], "RPOP") {
++			count++
++		}
++	}
++	if count != 1 {
++		t.Fatal("failed dispatch replayed")
++	}
++}
+diff --git a/internal/home/client.go b/internal/home/client.go
+--- a/internal/home/client.go
++++ b/internal/home/client.go
+@@ -1387,6 +1387,7 @@
+ 	} else {
+ 		req = newAuthDispatchRequestWithRetryRound(requestedModel, sessionID, parentSessionID, headers, count, credentialPolicy, *retryRound, excludedAuthIDs, pinnedAuthID)
+ 	}
++	req.DispatchTiming = dispatchtiming.FromContext(ctx) != nil
+ 	keyBytes, errMarshal := json.Marshal(&req)
+ 	if errMarshal != nil {
+ 		return nil, errMarshal
+@@ -1409,7 +1410,7 @@
+ 	}()
+ 	pingStarted := time.Now()
+ 	errProbe := conn.Ping(ctx).Err()
+-	dispatchtiming.Record(dispatchtiming.Ping, pingStarted, errProbe)
++	dispatchtiming.Observe(ctx, dispatchtiming.Ping, pingStarted, errProbe)
+ 	if errProbe != nil {
+ 		return nil, errProbe
+ 	}
+@@ -1417,8 +1418,18 @@
+ 		return nil, ErrDispatchFenced
+ 	}
+ 	rpopStarted := time.Now()
+-	raw, errRPop := conn.RPop(ctx, string(keyBytes)).Bytes()
+-	dispatchtiming.Record(dispatchtiming.RPop, rpopStarted, errRPop)
++	var raw []byte
++	var errRPop error
++	if req.DispatchTiming {
++		command := redis.NewCmd(ctx, "RPOP", string(keyBytes))
++		errRPop = conn.Process(ctx, command)
++		if errRPop == nil {
++			raw, errRPop = dispatchtiming.DecodeReply(ctx, command.Val())
++		}
++	} else {
++		raw, errRPop = conn.RPop(ctx, string(keyBytes)).Bytes()
++	}
++	dispatchtiming.Observe(ctx, dispatchtiming.RPop, rpopStarted, errRPop)
+ 	if errors.Is(errRPop, redis.Nil) {
+ 		return nil, ErrAuthNotFound
+ 	}
+diff --git a/internal/home/requests.go b/internal/home/requests.go
+--- a/internal/home/requests.go
++++ b/internal/home/requests.go
+@@ -3,6 +3,7 @@
+ import "time"
+ 
+ type authDispatchRequest struct {
++	DispatchTiming      bool              `json:"dispatch_timing,omitempty"`
+ 	Type                string            `json:"type"`
+ 	Model               string            `json:"model"`
+ 	Count               int               `json:"count"`
+diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
+--- a/sdk/api/handlers/handlers.go
++++ b/sdk/api/handlers/handlers.go
+@@ -17,6 +17,7 @@
+ 	"github.com/MoeForge/moego/ojson"
+ 	"github.com/gin-gonic/gin"
+ 	"github.com/gorilla/websocket"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/dispatchtiming"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+@@ -634,6 +635,7 @@
+ 	}
+ 
+ 	if requestCtx != nil {
++		parentCtx = dispatchtiming.Inherit(parentCtx, requestCtx)
+ 		parentCtx = httptransport.InheritDecorator(parentCtx, requestCtx)
+ 		parentCtx = logging.InheritDeferredCapture(parentCtx, requestCtx)
+ 	}
