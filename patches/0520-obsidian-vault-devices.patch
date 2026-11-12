@@ -97,7 +97,7 @@ new file mode 100644
 +
 +export interface DeviceSync {
 +  readonly at: string;
-+  /** The device holds the vault's current head. */
++  /** The device has seen the vault's current head on its last sync. */
 +  readonly current: boolean;
 +}
 +

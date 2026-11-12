@@ -13,12 +13,9 @@ const run = <I, O>(reference: OperationReference<I, O, "query">, input: NoInfer<
 // method types describe them without the page reaching into the app's tool definitions.
 type Drive = QueryContext<{ drive: true }>["drive"];
 type Method = "list" | "read" | "search" | "attachment" | "history";
-// A method without parameters would be a tool that takes an empty object.
-type Input<M extends Method> =
-  Parameters<Drive[M]> extends [] ? Record<string, never> : NonNullable<Parameters<Drive[M]>[0]>;
 const driveTool = <M extends Method>(tool: string) =>
   queryReference<never>(tool as never) as unknown as OperationReference<
-    Input<M>,
+    NonNullable<Parameters<Drive[M]>[0]>,
     Awaited<ReturnType<Drive[M]>>,
     "query"
   >;
