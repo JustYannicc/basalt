@@ -1,0 +1,9 @@
+{
+  "identity": "executor-pool-recovery-fixture-race",
+  "file": "0547-pool-recovery-fixture-race.patch",
+  "content_sha256": "2d2b0195bb974a001769dfb8a810d39332bb8ccdedab35aa2b6aba485346a381",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

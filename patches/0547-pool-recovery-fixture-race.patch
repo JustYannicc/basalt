@@ -1,0 +1,227 @@
+diff --git a/apps/hosted/testing/cloud-locks-fixture.ts b/apps/hosted/testing/cloud-locks-fixture.ts
+--- a/apps/hosted/testing/cloud-locks-fixture.ts
++++ b/apps/hosted/testing/cloud-locks-fixture.ts
+@@ -34,6 +34,7 @@
+     Schema.Struct({ run: Statement }),
+     Schema.Struct({ probe: Statement }),
+     Schema.Struct({ release: Schema.Literal(true) }),
++    Schema.Struct({ listen: Schema.NonEmptyString }),
+     Schema.Struct({ signal: Schema.Struct({ pid: Schema.Int, stop: Schema.Boolean }) }),
+     Schema.Struct({ connections: Schema.Boolean }),
+   ]),
+@@ -101,6 +102,14 @@
+           Effect.sync(() => new Pool({ connectionString: Redacted.value(database), max: 2 })),
+           (pool) => Effect.promise(() => pool.end()),
+         );
++        const listener = yield* Effect.acquireRelease(
++          Effect.sync(() => new Client({ connectionString: Redacted.value(database) })),
++          (client) => Effect.promise(() => client.end()),
++        );
++        let listening = false;
++        listener.on("notification", ({ payload }) => {
++          process.stdout.write(`${JSON.stringify({ notification: payload ?? "" })}\n`);
++        });
+         const holder = yield* Effect.acquireRelease(
+           Effect.promise(() => pool.connect()),
+           (client) =>
+@@ -156,6 +165,12 @@
+               if (!open) await holder.query("begin");
+               open = true;
+               rows = await run(holder, instruction.hold);
++            } else if ("listen" in instruction) {
++              if (!listening) {
++                await listener.connect();
++                listening = true;
++              }
++              await listener.query(`listen ${listener.escapeIdentifier(instruction.listen)}`);
+             } else if ("run" in instruction) {
+               rows = await run(pool, instruction.run);
+             } else if ("probe" in instruction) {
+diff --git a/e2e/support/cloud-locks.ts b/e2e/support/cloud-locks.ts
+--- a/e2e/support/cloud-locks.ts
++++ b/e2e/support/cloud-locks.ts
+@@ -13,6 +13,7 @@
+   readonly sql: string;
+   readonly params?: ReadonlyArray<string | number | boolean | null>;
+ }
++const Notification = Schema.fromJsonString(Schema.Struct({ notification: Schema.String }));
+ const Rows = Schema.fromJsonString(Schema.Array(Schema.Record(Schema.String, Schema.Unknown)));
+ 
+ export const cloudLocks = Effect.gen(function* () {
+@@ -43,9 +44,17 @@
+   // Ending its input rolls back the held transaction before the fixture exits.
+   yield* Effect.addFinalizer(() => Queue.end(commands));
+   const replies = yield* Queue.unbounded<string, PlatformError.PlatformError | Cause.Done>();
++  const notifications = yield* Queue.unbounded<string>();
+   yield* child.stdout.pipe(
+     Stream.decodeText(),
+     Stream.splitLines,
++    Stream.mapEffect((line) => {
++      const notification = Schema.decodeUnknownOption(Notification)(line);
++      return notification._tag === "Some"
++        ? Queue.offer(notifications, notification.value.notification).pipe(Effect.as(undefined))
++        : Effect.succeed(line);
++    }),
++    Stream.filter((line): line is string => line !== undefined),
+     Stream.runIntoQueue(replies),
+     Effect.forkScoped,
+   );
+@@ -64,6 +73,10 @@
+     run: (statement: Statement) => send({ run: statement }),
+     /** Try a NOWAIT row lock, reporting only the expected contention code. */
+     probe: (statement: Statement) => send({ probe: statement }),
++    /** Subscribe before starting work, retaining notifications until the scenario awaits them. */
++    listen: (channel: string) => Effect.asVoid(send({ listen: channel })),
++    /** Await a database notification instead of sleeping between state observations. */
++    notified: Effect.asVoid(Queue.take(notifications)),
+     /** Commit the held transaction, releasing its locks. */
+     release: Effect.asVoid(send({ release: true })),
+     /**
+diff --git a/e2e/support/provisioning-settlement.ts b/e2e/support/provisioning-settlement.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/provisioning-settlement.ts
+@@ -0,0 +1,47 @@
++/** Await an already-dispatched provisioning attempt, including its committed retry handoff. */
++import { expect } from "@effect/vitest";
++import { Effect } from "effect";
++import { randomUUID } from "node:crypto";
++import type { cloudLocks } from "./cloud-locks.ts";
++
++export const provisioningSettlement = (
++  database: Effect.Success<typeof cloudLocks>,
++  organization: string,
++) =>
++  Effect.gen(function* () {
++    const rows = (sql: string, params: readonly string[] = []) => database.run({ sql, params });
++    const milestone = `pool_recovery_${randomUUID().replaceAll("-", "")}`;
++    yield* database.listen(milestone);
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        yield* rows(`drop trigger if exists ${milestone} on hosted_provisioning`);
++        yield* rows(`drop function if exists ${milestone}()`);
++      }).pipe(Effect.orDie),
++    );
++    yield* rows(`create function ${milestone}() returns trigger language plpgsql as $$ begin
++    perform pg_notify('${milestone}', new.id); return new; end $$`);
++    yield* rows(`create trigger ${milestone} after update of status on hosted_provisioning
++    for each row when (new.organization_id = '${organization.replaceAll("'", "''")}'
++      and new.status in ('queued', 'succeeded', 'failed') and new.attempts > 0) execute function ${milestone}()`);
++    return (ids: readonly unknown[]) =>
++      Effect.gen(function* () {
++        if (ids.length === 0) return [];
++        for (;;) {
++          const jobs = yield* rows(
++            `select id, status, attempts from hosted_provisioning
++            where id in (select jsonb_array_elements_text($1::jsonb)) order by id`,
++            [JSON.stringify(ids)],
++          );
++          expect(jobs).toHaveLength(ids.length);
++          expect(jobs.some((job) => job.status === "failed")).toBe(false);
++          if (
++            jobs.every(
++              (job) =>
++                job.status === "succeeded" || (job.status === "queued" && Number(job.attempts) > 0),
++            )
++          )
++            return jobs;
++          yield* database.notified;
++        }
++      });
++  });
+diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-recovery.spec.ts
+--- a/e2e/tests/pool-account-recovery.spec.ts
++++ b/e2e/tests/pool-account-recovery.spec.ts
+@@ -8,6 +8,8 @@
+ import { appsManifest } from "../support/apps-release.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { cloudLocks } from "../support/cloud-locks.ts";
++import { writeRows, type RowStatement } from "../support/cloud-rows.ts";
++import { provisioningSettlement } from "../support/provisioning-settlement.ts";
+ import { Evidence } from "../support/evidence.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -94,7 +96,8 @@
+           (available_at > now() + interval '1 minute') as deferred
+         from hosted_provisioning where organization_id = $1 and user_id = $2
+           and kind = 'member' and status in ('queued', 'running')
+-          and id not like 'basalt-pool-token:%' and id not like 'basalt-catalog-apps:%'`,
++          and id not like 'basalt-pool-token:%' and id not like 'basalt-catalog-apps:%'
++        order by id`,
+             [actors.organization.id, owner],
+           );
+         // Pool rollouts use ordinary member jobs delayed by 15 minutes, without a special prefix.
+@@ -151,8 +154,25 @@
+         coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id = $2`,
+             [JSON.stringify({ [owner]: value }), actors.organization.id],
+           );
++        const settled = yield* provisioningSettlement(database, actors.organization.id);
++        // Role changes and email verification queue ordinary jobs in their own transaction.
++        const mutateIdentity = (statements: readonly RowStatement[]) =>
++          writeRows("sso-database.json", [
++            ...statements,
++            {
++              sql: `update hosted_provisioning set available_at = now() + interval '1 day'
++                where organization_id = $1 and status = 'queued'`,
++              params: [actors.organization.id],
++            },
++          ]);
+         const noRecovery = Effect.gen(function* () {
+           const before = yield* pending();
++          // Another scenario's request finalizer can dispatch globally between these reads.
++          yield* tick;
++          const completed = yield* settled(
++            before.filter((job) => !job.deferred || job.status === "running").map((job) => job.id),
++          );
++          yield* evidence.json(`pool-recovery-race-${randomUUID()}.json`, { before, completed });
+           expect((yield* choices()).recovery).toBeUndefined();
+           expect(yield* pending()).toEqual(before);
+         });
+@@ -163,23 +183,24 @@
+             yield* record({ app: app.id });
+             yield* noRecovery;
+             yield* record({ app: app.id, version: app.activeVersion });
+-            yield* rows(
+-              `update member set role = 'admin' where "organizationId" = $1 and "userId" = $2`,
+-              [actors.organization.id, owner],
+-            );
+-            yield* rows(
+-              `update hosted_provisioning set available_at = now() + interval '1 day'
+-            where organization_id = $1 and user_id = $2 and kind = 'member' and status = 'queued'`,
+-              [actors.organization.id, owner],
+-            );
++            yield* mutateIdentity([
++              {
++                sql: `update member set role = 'admin' where "organizationId" = $1 and "userId" = $2`,
++                params: [actors.organization.id, owner],
++              },
++            ]);
+             yield* noRecovery;
+-            yield* rows(
+-              `update member set role = 'owner' where "organizationId" = $1 and "userId" = $2`,
+-              [actors.organization.id, owner],
+-            );
+-            yield* rows(`update "user" set "emailVerified" = false where id = $1`, [owner]);
++            yield* mutateIdentity([
++              {
++                sql: `update member set role = 'owner' where "organizationId" = $1 and "userId" = $2`,
++                params: [actors.organization.id, owner],
++              },
++              { sql: `update "user" set "emailVerified" = false where id = $1`, params: [owner] },
++            ]);
+             yield* noRecovery;
+-            yield* rows(`update "user" set "emailVerified" = true where id = $1`, [owner]);
++            yield* mutateIdentity([
++              { sql: `update "user" set "emailVerified" = true where id = $1`, params: [owner] },
++            ]);
+           }),
+         );
+         // The app's second version models an owner-edited pool. Repair must keep that source.
+@@ -275,6 +296,7 @@
+             });
+             // The real consumer runs only after the last exact queue observation.
+             yield* tick;
++            yield* settled(fresh.map((job) => job.id));
+             const consumed = yield* recovery();
+             expect(consumed).not.toEqual(fresh);
+             yield* evidence.json("pool-recovery-consumed.json", { jobs: consumed });

@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Pool recovery tests commit fixture identity changes and triggered-job deferral together, compare ordered queue snapshots, and await committed provisioning outcomes through lab-only database notifications. Forced dispatch between snapshots must preserve every recovery, permission and backoff assertion. Product provisioning behavior is unchanged."
+    }
+  }
+}
