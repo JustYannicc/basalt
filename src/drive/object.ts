@@ -87,10 +87,11 @@ export const grantOf = (caller: string | undefined) => {
   }
 };
 /**
- * The main a device's sync call has seen. Only the plugin's own sync calls count, so an agent
- * listing, reading or writing notes through the same tools never appears as a device: its heartbeat
- * (a one-entry listing of the root, at the start of every pull and checkpoint), its change ranges,
- * and the import calls only the plugin makes. A landed write counts at the heartbeat that follows it.
+ * The main a device's sync call has seen. Only the shapes of the plugin's sync calls count: its
+ * heartbeat (a one-entry listing of the root, at the start of every pull and checkpoint), its change
+ * ranges and its import calls. A landed write counts at the heartbeat that follows it. The vault sees
+ * only the grant id, not what kind of client holds it, so an agent's ordinary listings, reads and
+ * writes record nothing, but an agent making one of these exact calls is recorded like a device.
  */
 export const seenHead = (command: Command, value: unknown): string | null => {
   const out = record(value);
