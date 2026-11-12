@@ -105,8 +105,10 @@ export function resetSummary(view: PoolView, now: number): ResetSummary {
   return {
     parts,
     accounts,
-    lastKnown: accounts.filter(
-      (account) => latestReading(accountReadings(account))?.state !== "current",
+    lastKnown: accounts.filter((account) =>
+      inspection(account).kind === "pool"
+        ? account.freshness !== "fresh"
+        : latestReading(accountReadings(account))?.state !== "current",
     ).length,
   };
 }
