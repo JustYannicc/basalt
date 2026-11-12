@@ -248,9 +248,9 @@ diff --git a/apps/hosted/web/src/contracts/github-source.ts b/apps/hosted/web/sr
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/github-source.ts
-@@ -0,0 +1,25 @@
-+import { Layer } from "effect";
-+import { FetchHttpClient } from "effect/http";
+@@ -0,0 +1,81 @@
++import { Effect, Layer } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 +
 +const githubRepository =
 +  /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/u;
@@ -266,29 +266,84 @@ new file mode 100644
 + * GitHub answers with Access-Control-Allow-Origin "*", which a browser refuses for a credentialed
 + * request, and its preflight rejects Effect's trace headers. So releases are read as plain
 + * anonymous requests: no credentials, no trace headers, no extra headers, through the page's
-+ * current fetch. Callers also turn off `HttpClient.TracerPropagationEnabled`.
++ * current fetch.
 + */
-+export const anonymousGitHubClient = FetchHttpClient.layer.pipe(
++const anonymousGitHubClient = FetchHttpClient.layer.pipe(
 +  Layer.provide(Layer.succeed(FetchHttpClient.RequestInit, { credentials: "omit" })),
 +  Layer.provide(
 +    Layer.succeed(FetchHttpClient.Fetch, (input, init) => globalThis.fetch(input, init)),
 +  ),
 +);
++
++/**
++ * Reads one release from GitHub's API in the page. `read` turns the answer into a value; its status
++ * is null when GitHub couldn't be reached or its body couldn't be read. GitHub's anonymous API
++ * allows 60 requests an hour per network address, so `remember` names the values worth keeping
++ * for the browser session, serialized, and `recall` restores one or rejects it.
++ */
++export const githubReleaseRead = <A>(input: {
++  /** The API path below `https://api.github.com/repos/`. */
++  readonly path: string;
++  readonly sessionKey: string;
++  readonly read: (status: number | null, body: unknown) => A;
++  readonly remember: (value: A, body: unknown) => string | null;
++  readonly recall: (stored: string) => A | null;
++}) =>
++  Effect.gen(function* () {
++    const known = recalled(input);
++    if (known !== null) return known;
++    const client = yield* HttpClient.HttpClient;
++    const value = yield* client
++      .execute(HttpClientRequest.get(`https://api.github.com/repos/${input.path}`))
++      .pipe(
++        Effect.flatMap((response) =>
++          response.status === 200
++            ? response.json.pipe(Effect.map((body) => ({ body, value: input.read(200, body) })))
++            : Effect.succeed({ body: null, value: input.read(response.status, null) }),
++        ),
++        Effect.orElseSucceed(() => ({ body: null, value: input.read(null, null) })),
++      );
++    store(input.sessionKey, input.remember(value.value, value.body));
++    return value.value;
++  }).pipe(
++    Effect.provideService(HttpClient.TracerPropagationEnabled, false),
++    Effect.provide(anonymousGitHubClient),
++  );
++
++const recalled = <A>(input: {
++  readonly sessionKey: string;
++  readonly recall: (stored: string) => A | null;
++}) => {
++  try {
++    const stored = globalThis.sessionStorage?.getItem(input.sessionKey);
++    return stored == null ? null : input.recall(stored);
++  } catch {
++    return null;
++  }
++};
++
++const store = (key: string, value: string | null) => {
++  if (value === null) return;
++  try {
++    globalThis.sessionStorage?.setItem(key, value);
++  } catch {
++    // Storage can be full or blocked; the read simply runs again next time.
++  }
++};
 diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/src/contracts/obsidian-plugin.ts
 --- a/apps/hosted/web/src/contracts/obsidian-plugin.ts
 +++ b/apps/hosted/web/src/contracts/obsidian-plugin.ts
-@@ -1,7 +1,8 @@
+@@ -1,7 +1,7 @@
 -import { Effect, Layer } from "effect";
 -import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 +import { Effect } from "effect";
-+import { HttpClient, HttpClientRequest } from "effect/http";
  import { Atom } from "effect/reactivity";
  import { browserOnly } from "@executor-js/ui/contracts/http";
-+import { anonymousGitHubClient, githubSourceRepository } from "./github-source.ts";
++import { githubReleaseRead } from "./github-source.ts";
  import { basaltSyncVersion } from "./obsidian-plugin-version.ts";
  
  /**
-@@ -15,15 +16,8 @@ export const basaltSyncFiles = ["main.js", "manifest.json", "styles.css"] as con
+@@ -15,16 +15,6 @@ export const basaltSyncFiles = ["main.js", "manifest.json", "styles.css"] as con
  /** BRAT is the community plugin that installs a plugin from a GitHub release. */
  export const bratStoreLink = "obsidian://show-plugin?id=obsidian42-brat";
  
@@ -301,12 +356,11 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
 - */
 -export const basaltSyncRepository = (source: string | undefined): string | null =>
 -  source === undefined ? null : (githubRepository.exec(source)?.[1] ?? null);
-+/** Signalbox Sync is published from the deployment's own GitHub source repository. */
-+export const basaltSyncRepository = githubSourceRepository;
- 
+-
  /** Opens BRAT's add dialog for this exact published version. */
  export const bratInstallLink = (repository: string) =>
-@@ -55,19 +49,6 @@ export function basaltSyncReleaseStatus(status: number | null, body: unknown): B
+   `obsidian://brat?plugin=${repository}&version=${basaltSyncTag}`;
+@@ -55,67 +45,18 @@ export function basaltSyncReleaseStatus(status: number | null, body: unknown): B
    return basaltSyncFiles.every((file) => names.has(file)) ? "available" : "unavailable";
  }
  
@@ -326,16 +380,69 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
  /**
   * A published release never changes, so finding it holds for the browser session. A missing one
   * may still be published under this tag, so only "available" is remembered.
+  */
+-const sessionKey = (repository: string) => `signalbox-sync-release:${repository}:${basaltSyncTag}`;
+-const remembered = (repository: string): BasaltSyncRelease | null => {
+-  try {
+-    const value = globalThis.sessionStorage?.getItem(sessionKey(repository));
+-    return value === "available" ? value : null;
+-  } catch {
+-    return null;
+-  }
+-};
+-const remember = (repository: string, release: BasaltSyncRelease) => {
+-  if (release !== "available") return;
+-  try {
+-    globalThis.sessionStorage?.setItem(sessionKey(repository), release);
+-  } catch {
+-    // Storage can be full or blocked; the check simply runs again next time.
+-  }
+-};
+-
+-/** Whether this repository's release can be installed, read from the page. */
+ export const basaltSyncReleaseCheck = (repository: string) =>
+-  Effect.gen(function* () {
+-    const known = remembered(repository);
+-    if (known) return known;
+-    const client = yield* HttpClient.HttpClient;
+-    const release = yield* client
+-      .execute(
+-        HttpClientRequest.get(
+-          `https://api.github.com/repos/${repository}/releases/tags/${basaltSyncTag}`,
+-        ),
+-      )
+-      .pipe(
+-        Effect.flatMap((response) =>
+-          response.status === 200
+-            ? response.json.pipe(Effect.map((body) => basaltSyncReleaseStatus(200, body)))
+-            : Effect.succeed(basaltSyncReleaseStatus(response.status, null)),
+-        ),
+-        Effect.orElseSucceed(() => basaltSyncReleaseStatus(null, null)),
+-      );
+-    remember(repository, release);
+-    return release;
+-  }).pipe(
+-    Effect.provideService(HttpClient.TracerPropagationEnabled, false),
+-    Effect.provide(anonymousGitHubClient),
+-  );
++  githubReleaseRead<BasaltSyncRelease>({
++    path: `${repository}/releases/tags/${basaltSyncTag}`,
++    sessionKey: `signalbox-sync-release:${repository}:${basaltSyncTag}`,
++    read: basaltSyncReleaseStatus,
++    remember: (release) => (release === "available" ? release : null),
++    recall: (stored) => (stored === "available" ? stored : null),
++  });
+ 
+ /**
+  * Read in the browser once per repository; the dialog refreshes it on "Check again". A
 diff --git a/apps/hosted/web/src/contracts/signalbox-apps.ts b/apps/hosted/web/src/contracts/signalbox-apps.ts
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/signalbox-apps.ts
-@@ -0,0 +1,168 @@
-+import { Effect } from "effect";
-+import { HttpClient, HttpClientRequest } from "effect/http";
+@@ -0,0 +1,137 @@
 +import { Atom } from "effect/reactivity";
 +import { browserOnly } from "@executor-js/ui/contracts/http";
-+import { anonymousGitHubClient } from "./github-source.ts";
++import { githubReleaseRead } from "./github-source.ts";
 +
 +/**
 + * The version-free file names every Signalbox apps release publishes. Links use GitHub's
@@ -386,14 +493,13 @@ new file mode 100644
 +  return Number.isNaN(date.getTime()) ? null : `${date.getUTCDate()} ${months[date.getUTCMonth()]}`;
 +};
 +
-+const field = (body: unknown, name: string): unknown =>
-+  typeof body === "object" && body !== null && name in body
-+    ? (body as Record<string, unknown>)[name]
-+    : undefined;
++const isObject = (value: unknown): value is { readonly [name: string]: unknown } =>
++  typeof value === "object" && value !== null;
++const field = (body: unknown, name: string): unknown => (isObject(body) ? body[name] : undefined);
 +
 +/** GitHub's `releases/latest` answer, as the page shows it. */
 +export function signalboxAppsRelease(status: number | null, body: unknown): SignalboxAppsRelease {
-+  if (status !== 200 || typeof body !== "object" || body === null) return { kind: "unconfirmed" };
++  if (status !== 200 || !isObject(body)) return { kind: "unconfirmed" };
 +  const tag = field(body, "tag_name");
 +  const assets = field(body, "assets");
 +  return {
@@ -440,62 +546,34 @@ new file mode 100644
 +  );
 +};
 +
-+/** A read release holds for the browser session; a failed read is tried again next time. */
-+const sessionKey = (repository: string) => `signalbox-apps-release:${repository}`;
-+const remembered = (repository: string): SignalboxAppsRelease | null => {
-+  try {
-+    const value = globalThis.sessionStorage?.getItem(sessionKey(repository));
-+    if (value == null) return null;
-+    const release = signalboxAppsRelease(200, JSON.parse(value));
-+    return release.kind === "read" ? release : null;
-+  } catch {
-+    return null;
-+  }
-+};
-+const remember = (repository: string, body: unknown, release: SignalboxAppsRelease) => {
-+  if (release.kind !== "read") return;
-+  try {
-+    globalThis.sessionStorage?.setItem(
-+      sessionKey(repository),
-+      JSON.stringify({
-+        tag_name: field(body, "tag_name"),
-+        published_at: field(body, "published_at"),
-+        assets: release.assets.map((name) => ({ name })),
-+      }),
-+    );
-+  } catch {
-+    // Storage can be full or blocked; the read simply runs again next time.
-+  }
-+};
-+
-+/** The latest release of this repository, read from the page. */
++/**
++ * The latest release, read from the page. Only a read that names an apps version is kept for the
++ * browser session: anything else is asked again. Unlike a pinned tag, `releases/latest` moves, so
++ * a kept read can show the previous release until the session ends.
++ */
 +export const signalboxAppsReleaseCheck = (repository: string) =>
-+  Effect.gen(function* () {
-+    const known = remembered(repository);
-+    if (known) return known;
-+    const client = yield* HttpClient.HttpClient;
-+    return yield* client
-+      .execute(HttpClientRequest.get(`https://api.github.com/repos/${repository}/releases/latest`))
-+      .pipe(
-+        Effect.flatMap((response) =>
-+          response.status === 200
-+            ? response.json.pipe(
-+                Effect.map((body) => {
-+                  const release = signalboxAppsRelease(200, body);
-+                  remember(repository, body, release);
-+                  return release;
-+                }),
-+              )
-+            : Effect.succeed(signalboxAppsRelease(response.status, null)),
-+        ),
-+        Effect.orElseSucceed(() => signalboxAppsRelease(null, null)),
-+      );
-+  }).pipe(
-+    Effect.provideService(HttpClient.TracerPropagationEnabled, false),
-+    Effect.provide(anonymousGitHubClient),
-+  );
++  githubReleaseRead<SignalboxAppsRelease>({
++    path: `${repository}/releases/latest`,
++    sessionKey: `signalbox-apps-release:${repository}`,
++    read: signalboxAppsRelease,
++    remember: (release, body) =>
++      release.kind === "read" && release.version !== null
++        ? JSON.stringify({
++            tag_name: field(body, "tag_name"),
++            published_at: field(body, "published_at"),
++            assets: release.assets.map((name) => ({ name })),
++          })
++        : null,
++    recall: (stored) => {
++      const release = signalboxAppsRelease(200, JSON.parse(stored));
++      return release.kind === "read" && release.version !== null ? release : null;
++    },
++  });
 +
-+/** Read in the browser once per repository and page load, then from the session. */
++/**
++ * Read whenever the page mounts the atom; after one kept read the session answers instead of
++ * GitHub.
++ */
 +export const signalboxAppsReleaseAtom = Atom.family((repository: string) =>
 +  browserOnly(Atom.make(signalboxAppsReleaseCheck(repository))),
 +);
@@ -629,18 +707,18 @@ diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/
    );
  }
  
-+/** Computers connect through the Signalbox apps; their downloads live on the account page. */
++/** Next to agent setup, since the apps connect a computer; their downloads live on the account page. */
 +function SignalboxAppsLink() {
 +  const { slug } = useOrganizationRoute();
 +  if (githubSourceRepository(useProductBrand().source) === null) return null;
 +  return (
-+    <p className="mt-8 text-[13px]">
++    <p className="mb-4 text-[13px]">
 +      <Link
 +        to="/account/signalbox-apps"
 +        search={{ organization: slug }}
 +        className="text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
 +      >
-+        Get the Signalbox apps for Mac, Windows, Linux and Android →
++        Get the Signalbox apps for Mac, Windows, Linux and Android <span aria-hidden>→</span>
 +      </Link>
 +    </p>
 +  );
@@ -649,39 +727,46 @@ diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/
  /** Installed apps, MCP connections and connected agents. */
  export const connectPageReads: OrganizationPageReads = (organization) => [
    resourceInventoryAtom(organization),
-@@ -147,13 +165,16 @@ export function ConnectPage() {
-       Failure={HostedFailure}
-       docs={docs}
-       agents={
--        <ConnectedAgents
--          query={mcpAgentsAtom(organization)}
--          revoke={revokeMcpAgentAtom(organization)}
--          Failure={HostedFailure}
--        >
--          {computerRows(setup)}
--        </ConnectedAgents>
-+        <>
-+          <ConnectedAgents
-+            query={mcpAgentsAtom(organization)}
-+            revoke={revokeMcpAgentAtom(organization)}
-+            Failure={HostedFailure}
-+          >
-+            {computerRows(setup)}
-+          </ConnectedAgents>
-+          <SignalboxAppsLink />
-+        </>
-       }
+@@ -158,6 +176,7 @@ export function ConnectPage() {
        installation={
          // Only the person's own setup gets the pool; a scoped connection keeps the built-in guides.
+         <AssistantGuideExtensionsProvider value={extensions}>
++          <SignalboxAppsLink />
+           <McpInstallInstructions
+             endpoint={`${mcpOrigin}/mcp`}
+             docs={docs}
+diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
+--- a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
++++ b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
+@@ -24,9 +24,9 @@ import {
+   prepareObsidianConnectionAtom,
+   type ObsidianProtocolUnavailable,
+ } from "../../contracts/obsidian-sync.ts";
++import { githubSourceRepository } from "../../contracts/github-source.ts";
+ import {
+   basaltSyncReleaseAtom,
+-  basaltSyncRepository,
+   bratInstallLink,
+   bratStoreLink,
+ } from "../../contracts/obsidian-plugin.ts";
+@@ -132,7 +132,7 @@ function ConnectObsidian({ app }: { readonly app: App }) {
+           </ul>
+           {/* Mounted only while open, so the release is checked when someone is connecting. */}
+           <ConnectSteps
+-            repository={basaltSyncRepository(brand.source)}
++            repository={githubSourceRepository(brand.source)}
+             step={step}
+             onConnect={() => void connect()}
+           />
 diff --git a/apps/hosted/web/src/implementation/pages/signalbox-apps.tsx b/apps/hosted/web/src/implementation/pages/signalbox-apps.tsx
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/signalbox-apps.tsx
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,240 @@
 +import { useAtomValue } from "@effect/atom-react";
 +import { Link, useLocation } from "@tanstack/react-router";
 +import { AsyncResult } from "effect/reactivity";
-+import { useSyncExternalStore, type ReactNode } from "react";
++import { useId, useSyncExternalStore, type ReactNode } from "react";
 +import { Button } from "@executor-js/ui/components/button";
 +import {
 +  Card,
@@ -768,11 +853,9 @@ new file mode 100644
 +        description={
 +          <>
 +            {signalboxAppsDescription}
-+            {/* Reserves the line while GitHub answers; a failed read drops it. */}
++            {/* Holds the version line's height while GitHub answers; a failed read drops it. */}
 +            {AsyncResult.isInitial(result) ? (
-+              <span className="block" aria-hidden>
-+                {" "}
-+              </span>
++              <span className="block min-h-[1lh]" aria-hidden />
 +            ) : (
 +              version !== null && <span className="block">{version}</span>
 +            )}
@@ -858,12 +941,13 @@ new file mode 100644
 +  readonly downloads: ReadonlyArray<ReactNode>;
 +}) {
 +  const offered = downloads.filter(Boolean);
++  const heading = useId();
 +  return (
-+    <section aria-label={title} className={wide ? "md:col-span-2" : undefined}>
++    <section aria-labelledby={heading} className={wide ? "md:col-span-2" : undefined}>
 +      <Card className={`${accountSettingClass} h-full`}>
 +        <CardHeader>
 +          <CardTitle>
-+            <h2>{title}</h2>
++            <h2 id={heading}>{title}</h2>
 +          </CardTitle>
 +          <CardDescription>{requirement}</CardDescription>
 +        </CardHeader>
@@ -902,7 +986,7 @@ new file mode 100644
 +        </a>
 +      </li>
 +      <li>
-+        Obsidian: Signalbox Sync installs from Connect Obsidian on your notes app.
++        Obsidian: install Signalbox Sync with Connect Obsidian on your notes app.
 +        {selected !== undefined && (
 +          <>
 +            {" "}
