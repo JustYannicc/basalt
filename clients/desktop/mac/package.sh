@@ -87,10 +87,10 @@ free_kb="$(df -Pk "$(dirname "$dmg")" | awk 'NR == 2 {print $4}')"
 # UDZO writes an uncompressed image first, then the compressed copy.
 [ "$free_kb" -ge $((image_kb * 2)) ] ||
   fail "The disk image needs $((image_kb * 2)) KB free next to $dmg; the volume has $free_kb KB."
-# hdiutil sometimes reports a busy resource on a first attempt; retry once before failing loudly.
-for attempt in 1 2; do
+# hdiutil sometimes reports a busy resource on a first attempt; retry before failing loudly.
+for attempt in 1 2 3; do
   hdiutil create -volname Signalbox -srcfolder "$stage" -size "${image_kb}k" -ov -format UDZO "$dmg" >/dev/null && break
-  [ "$attempt" = 2 ] && fail "hdiutil could not create a ${image_kb} KB disk image from $stage_kb KB of app after 2 attempts; its error is above."
+  [ "$attempt" = 3 ] && fail "hdiutil could not create a ${image_kb} KB disk image from $stage_kb KB of app after 3 attempts; its error is above."
   sleep 5
 done
 echo "Signalbox.app $version: $(du -sh "$app" | cut -f1) installed, zip $(du -h "$zip" | cut -f1), dmg $(du -h "$dmg" | cut -f1)"
