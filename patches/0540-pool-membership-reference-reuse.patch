@@ -1,0 +1,251 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+index a209f3a..3009327 100644
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -1,3 +1,4 @@
++import { bindPoolMembershipReferenceRuntime } from "@executor-js/hosted-server/pool-membership";
+ import { poolModels } from "@executor-js/hosted-server/pool-models";
+ import { cloudEgress } from "./egress.ts";
+ export { cloudEgress } from "./egress.ts";
+@@ -199,6 +200,9 @@ export const cloudExecutor = Effect.fn(function* (
+           allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
+         },
+       }).pipe(Effect.provide(BrowserCrypto.layer));
++      yield* Effect.tryPromise(() =>
++        bindPoolMembershipReferenceRuntime(executor, acquisition, key),
++      ).pipe(Effect.mapError(() => new StorageError()));
+       yield* lifecycle.attach(executor);
+       return executor;
+     }).pipe(
+diff --git a/apps/hosted/server/src/implementation/pool-membership-reference-cache.ts b/apps/hosted/server/src/implementation/pool-membership-reference-cache.ts
+new file mode 100644
+index 0000000..7bade32
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-membership-reference-cache.ts
+@@ -0,0 +1,55 @@
++import { AccountAcquisitionHost, type Executor } from "@executor-js/sdk/core";
++import { Redacted } from "effect";
++import type { NativePoolAccount } from "./pool-membership.ts";
++
++type Accounts = readonly (typeof NativePoolAccount.Type)[];
++const views = new Map<string, { fingerprint: string; accounts: Accounts }>();
++const runtimes = new WeakMap<object, string>();
++const registrations = new WeakMap<object, string>();
++
++/** Hosts opt in only while their registration configuration and credential key are unchanged. */
++export async function bindPoolMembershipReferenceRuntime(
++  executor: Executor,
++  registration: object,
++  key: Redacted.Redacted<string>,
++) {
++  const identity = registrations.get(registration) ?? crypto.randomUUID();
++  registrations.set(registration, identity);
++  const hash = new Uint8Array(
++    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(Redacted.value(key))),
++  );
++  runtimes.set(
++    executor[AccountAcquisitionHost],
++    JSON.stringify([
++      identity,
++      Array.from(hash, (byte) => byte.toString(16).padStart(2, "0")).join(""),
++    ]),
++  );
++}
++
++/** Only opaque reference material is reused. Authority and row locks are read live. */
++export const poolMembershipReferences = {
++  scope(executor: Executor, scope: string) {
++    const runtime = runtimes.get(executor[AccountAcquisitionHost]);
++    return runtime === undefined ? undefined : JSON.stringify([runtime, scope]);
++  },
++  get(scope: string | undefined, fingerprint: string) {
++    if (scope === undefined) return undefined;
++    const cached = views.get(scope);
++    if (cached?.fingerprint !== fingerprint) return undefined;
++    views.delete(scope);
++    views.set(scope, cached);
++    return cached.accounts;
++  },
++  put(scope: string | undefined, fingerprint: string, accounts: Accounts) {
++    if (
++      scope === undefined ||
++      new TextEncoder().encode(JSON.stringify([fingerprint, accounts])).byteLength > 262_144 ||
++      accounts.some((row) => row.homeReference === null)
++    )
++      return;
++    views.delete(scope);
++    views.set(scope, { fingerprint, accounts });
++    while (views.size > 16) views.delete(views.keys().next().value!);
++  },
++};
+diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
+index 3258293..3126239 100644
+--- a/apps/hosted/server/src/implementation/pool-membership.ts
++++ b/apps/hosted/server/src/implementation/pool-membership.ts
+@@ -17,6 +17,7 @@ import { policyDatabase, usableAppLinks } from "./resource-policy.ts";
+ import { openEnvelope } from "./pool-token.ts";
+ import { preparePoolMembershipMirrors } from "./pool-membership-mirrors.ts";
+ import { reconcilePoolMembership } from "./pool-membership-reconcile.ts";
++import { poolMembershipReferences } from "./pool-membership-reference-cache.ts";
+ 
+ const NativePoolAccountFields = {
+   account: AccountId,
+@@ -39,6 +40,9 @@ const NativePoolAccountRow = Schema.Struct({
+   requirementScope: Schema.NullOr(Schema.String),
+   requirementProvider: Schema.NullOr(ProviderId),
+   requirementProvisioned: Schema.Boolean,
++  mirrorNeeded: Schema.Boolean,
++  mirrorReady: Schema.Boolean,
++  referenceDigest: Schema.String,
+ });
+ 
+ const homeReference = (executor: Executor, row: typeof NativePoolAccountRow.Type) =>
+@@ -70,14 +74,9 @@ const homeReference = (executor: Executor, row: typeof NativePoolAccountRow.Type
+       binding.driverRevision === row.driverRevision &&
+       binding.revision === row.bindingRevision &&
+       binding.removal === null;
+-    if (!matches(source.binding)) return null;
+-    const current = yield* source.current.pipe(
+-      Effect.catchTags({
+-        AccountAcquisitionUnavailable: () => Effect.succeed(undefined),
+-        AccountNotFound: () => Effect.succeed(undefined),
+-      }),
+-    );
+-    return current !== undefined && matches(current) ? Redacted.value(source.hostReference) : null;
++    const current = yield* source.current;
++    if (!matches(source.binding) || !matches(current)) return null;
++    return Redacted.value(source.hostReference);
+   });
+ 
+ /** Host-only identity read. It returns no credentials, labels, personal identity or inferred bindings. */
+@@ -87,33 +86,55 @@ export const nativePoolMembership = (organization: string, pool: AppId, executor
+     Effect.gen(function* () {
+       const sql = yield* SqlClient.SqlClient;
+       yield* reconcilePoolMembership(organization, pool);
+-      const found = yield* sql`select app.id from organization o
++      const found =
++        yield* sql`select app.id,current_database() as database,current_schema() as schema from organization o
+         cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
+         join executor_apps app on app.id = entry.value ->> 'app'
+           and app.owner = 'organization:' || o.id
+         where o.id = ${organization} and app.id = ${pool}
+           and entry.value ->> 'membership' = 'executor-links-v1'`;
+       if (found.length === 0) return { pool, organization, native: false, accounts: [] };
+-      const rows = yield* sql`select a.id as account, a.owner, l.requirement, a.provider, a.method,
++      const identity = yield* Schema.decodeUnknownEffect(
++        Schema.Struct({ database: Schema.String, schema: Schema.String }),
++      )(found[0]);
++      const usable = yield* usableAppLinks(sql, [pool]);
++      // Match acquisition mutation order: all accounts first, then bindings.
++      // Shared locks prevent a reference changing after its fresh fingerprint.
++      yield* sql`select a.id from ${usable} order by a.id for share of a`;
++      yield* sql`select account from executor_account_acquisitions where account in
++        (select a.id from ${usable}) order by account for share`;
++      const rows =
++        yield* sql`with linked as (select a.*,l.requirement as linked_requirement,l.created_at as link_order,
++        app.active_deployment from ${usable})
++        select a.id as account,a.owner,a.linked_requirement as requirement,a.provider,a.method,
+           a.credential_generation as generation,
+-          (select driver from executor_account_acquisitions where account = a.id) as driver,
+-          (select driver_revision from executor_account_acquisitions where account = a.id) as "driverRevision",
+-          (select revision from executor_account_acquisitions where account = a.id) as "bindingRevision",
+-          (select d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope'
+-            from executor_deployments d where d.id = app.active_deployment) as "requirementScope",
+-          (select d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'provider'
+-            from executor_deployments d where d.id = app.active_deployment) as "requirementProvider",
+-          coalesce((select d.requirements::jsonb -> 'accounts' -> l.requirement -> 'definition' -> 'auth' -> a.method
+-              @> '{"type":"secrets","provisioned":true}'::jsonb
+-            from executor_deployments d where d.id = app.active_deployment), false) as "requirementProvisioned"
+-        from ${yield* usableAppLinks(sql, [pool])}
+-          and not exists (select 1 from executor_account_acquisitions retiring
+-            where retiring.account = a.id and retiring.removal is not null)
+-          and not exists (select 1 from executor_account_acquisitions stale
+-            where stale.account = a.id and (stale.owner <> a.owner or stale.provider <> a.provider
+-              or stale.method <> a.method or stale.generation <> a.credential_generation))
+-        order by l.requirement, l.created_at, a.id`;
++          r.driver,r.driver_revision as "driverRevision",r.revision as "bindingRevision",
++          d.requirements::jsonb -> 'accounts' -> a.linked_requirement ->> 'scope' as "requirementScope",
++          d.requirements::jsonb -> 'accounts' -> a.linked_requirement ->> 'provider' as "requirementProvider",
++          coalesce(d.requirements::jsonb -> 'accounts' -> a.linked_requirement -> 'definition' -> 'auth' -> a.method
++              @> '{"type":"secrets","provisioned":true}'::jsonb,false) as "requirementProvisioned",
++          coalesce(r.mirror_ready,false) as "mirrorReady",
++          encode(sha256(coalesce(r.mirror_reference,a.encrypted_credentials)),'hex') as "referenceDigest",
++          coalesce(d.requirements::jsonb -> 'accounts' -> a.linked_requirement ->> 'scope' = 'app'
++            and d.requirements::jsonb -> 'accounts' -> a.linked_requirement ->> 'provider' = a.provider
++            and d.requirements::jsonb -> 'accounts' -> a.linked_requirement -> 'definition' -> 'auth' -> a.method ->> 'type' = 'secrets'
++            and coalesce(d.requirements::jsonb -> 'accounts' -> a.linked_requirement -> 'definition' -> 'auth' -> a.method ->> 'provisioned','false') <> 'true'
++            and (r.account is null or r.driver='basalt-home' and r.mirror_reference is not null and not r.mirror_ready),false) as "mirrorNeeded"
++        from linked a left join executor_account_acquisitions r on r.account=a.id
++        left join executor_deployments d on d.id=a.active_deployment
++        where r.removal is null and (r.account is null or r.owner=a.owner and r.provider=a.provider
++          and r.method=a.method and r.generation=a.credential_generation)
++        order by a.linked_requirement,a.link_order,a.id`;
+       const linked = yield* Schema.decodeUnknownEffect(Schema.Array(NativePoolAccountRow))(rows);
++      const scope = poolMembershipReferences.scope(
++        executor,
++        JSON.stringify([identity.database, identity.schema, organization, pool]),
++      );
++      const fingerprint = JSON.stringify(linked);
++      const retained = poolMembershipReferences.get(scope, fingerprint);
++      const needsMirrors = linked.some((row) => row.mirrorNeeded);
++      if (retained !== undefined)
++        return { pool, organization, native: true, accounts: [...retained], needsMirrors };
+       const accounts = yield* Effect.forEach(linked, (row) =>
+         Effect.gen(function* () {
+           // Only the provisioned control token is outside Home; a model slot may also be named pool.
+@@ -137,15 +158,18 @@ export const nativePoolMembership = (organization: string, pool: AppId, executor
+           };
+         }),
+       );
++      const selected = accounts.filter((row) => row !== undefined);
++      poolMembershipReferences.put(scope, fingerprint, selected);
+       return {
+         pool,
+         organization,
+         native: true,
+-        accounts: accounts.filter((row) => row !== undefined),
++        accounts: selected,
++        needsMirrors,
+       };
+     }),
+   ).pipe(
+-    // Binding rechecks write through the ORM, so its tracked boundary must own the SQL lock.
++    // The tracked transaction keeps the policy and acquisition row locks together.
+     executor[StorageHost].transaction,
+     Effect.catch(() => new StorageError()),
+   );
+@@ -174,13 +198,28 @@ export const readNativePoolMembership = Effect.gen(function* () {
+     return HttpServerResponse.empty({ status: 401 });
+   const sql = yield* policyDatabase;
+   const executor = yield* Effect.flatten(HostedExecutor);
+-  yield* preparePoolMembershipMirrors(executor, value.organization, value.pool).pipe(
++  let membership = yield* nativePoolMembership(value.organization, value.pool, executor).pipe(
+     Effect.provideService(SqlClient.SqlClient, sql),
+   );
+-  const membership = yield* nativePoolMembership(value.organization, value.pool, executor).pipe(
+-    Effect.provideService(SqlClient.SqlClient, sql),
++  if ("needsMirrors" in membership && membership.needsMirrors) {
++    yield* preparePoolMembershipMirrors(executor, value.organization, value.pool).pipe(
++      Effect.provideService(SqlClient.SqlClient, sql),
++    );
++    membership = yield* nativePoolMembership(value.organization, value.pool, executor).pipe(
++      Effect.provideService(SqlClient.SqlClient, sql),
++    );
++  }
++  return yield* HttpServerResponse.json(
++    {
++      pool: membership.pool,
++      organization: membership.organization,
++      native: membership.native,
++      accounts: membership.accounts,
++    },
++    {
++      headers: { "cache-control": "no-store" },
++    },
+   );
+-  return yield* HttpServerResponse.json(membership, {
+-    headers: { "cache-control": "no-store" },
+-  });
+ }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))));
++
++export { bindPoolMembershipReferenceRuntime } from "./pool-membership-reference-cache.ts";
