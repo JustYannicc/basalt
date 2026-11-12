@@ -117,7 +117,7 @@ export async function forwardPoolRequest(
         pathname === "/typesafe/v1/systemone") &&
       response.ok
     )
-      deps.defer(deps.computers.observeUsage());
+      deps.defer(deps.computers.observeUsage(identity?.keyId ?? native?.keyId));
     if (response.status === 101) {
       if (response.headers.has(dispatchTimingHeader)) {
         const headers = new Headers(response.headers);

@@ -1,3 +1,4 @@
+import { reportWhenDue } from "./reporting.ts";
 import { creditRoutingPaths, handleCreditRouting } from "./credit-routing-http.ts";
 export { PoolRuntime } from "./runtime-do.worker.ts";
 import type { PoolRuntime } from "./runtime-do.worker.ts";
@@ -411,22 +412,21 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await this.memberships.tick();
     await this.computers.expire();
     await this.handoff.warm(() => this.lifecycle.then((lifecycle) => lifecycle.warm()));
-    await this.computers.observeUsage();
+    await reportWhenDue(this.ctx.storage, "first-request", () => this.computers.observeUsage());
     await this.control.expire();
     await this.prices.run();
     await this.overviewPrices.refresh();
     // Usage is a report: a slow or failing read must not hold the pool's own upkeep.
-    await this.usage
-      .observe()
-      .catch((error: unknown) => console.error("Pool usage observation failed", error));
-    await publishAccountObservations(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY).catch(
-      () => console.error("POOL_ACCOUNT_OBSERVATIONS_PENDING"),
+    await reportWhenDue(this.ctx.storage, "usage", () => this.usage.observe()).catch(
+      (error: unknown) => console.error("Pool usage observation failed", error),
     );
+    await reportWhenDue(this.ctx.storage, "account-observations", () =>
+      publishAccountObservations(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY),
+    ).catch(() => console.error("POOL_ACCOUNT_OBSERVATIONS_PENDING"));
     if (this.env.POOL_MODEL_HISTORY_ENABLED === "true") {
       try {
-        await withHistoryDatabase(
-          this.env.POOL_AUTH_DATABASE?.connectionString,
-          captureHomeRequests,
+        await reportWhenDue(this.ctx.storage, "model-history", () =>
+          withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, captureHomeRequests),
         );
       } catch {
         console.error("POOL_MODEL_HISTORY_FAILURE count=1");
