@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Home returns an opt-in two-element RPOP envelope containing the unchanged primary reply followed by at most four closed, bounded stage timings. Reply-write duration measures the real primary transport before its trailer. Required accounting fencing and local close precede diagnostic work on primary write failure; an incomplete trailer also fences accounted admission. Legacy requests retain their exact reply and no dispatch is replayed."
+    }
+  }
+}

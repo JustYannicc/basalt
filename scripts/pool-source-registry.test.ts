@@ -220,6 +220,26 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           /success, failure, privacy, duration-bound and real-child projection regressions/,
         );
         assert.match(patch.retirement.requires, /without changing dispatch behavior/);
+      } else if (
+        patch.identity === "cliproxy-home-dispatch-timing-trailer" ||
+        patch.identity === "cliproxy-node-dispatch-timing-header"
+      ) {
+        const home = patch.identity === "cliproxy-home-dispatch-timing-trailer";
+        assert.equal(name, home ? "home" : "node");
+        assert.equal(
+          patch.file,
+          home
+            ? "0515-home-dispatch-timing-trailer.patch"
+            : "0516-node-dispatch-timing-header.patch",
+        );
+        assert.match(patch.retirement.requires, /opt-in primary dispatch reply/);
+        assert.match(patch.retirement.requires, /bounded closed timing transport/);
+        assert.match(patch.retirement.requires, /failure fencing, legacy compatibility/);
+        assert.match(
+          patch.retirement.requires,
+          /synthetic-provider response proof through Worker logs/,
+        );
+        assert.match(patch.retirement.requires, /without exposing diagnostic headers to clients/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&

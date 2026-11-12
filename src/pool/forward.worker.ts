@@ -20,6 +20,7 @@ import { ModelMembershipUnavailable, modelMembership } from "./model-membership.
 import type { NativeMemberships } from "./membership.ts";
 import type { NativeStreams } from "./native-streams.ts";
 import { ProtectionRefusal, type RuntimeProtection } from "./runtime-protection.ts";
+import { dispatchTimingHeader, logDispatchTiming } from "./dispatch-timing.ts";
 
 interface Dependencies {
   appModel?: import("./model-membership.ts").ModelIdentity;
@@ -107,7 +108,8 @@ export async function forwardPoolRequest(
       ? await deps.route(outbound, port, identity?.pool, legacy, beforeDispatch)
       : await legacy(outbound);
     guard = "upstream_response";
-    const response = await rewriteCapResponse(upstream, pathname);
+    logDispatchTiming(upstream.headers.get(dispatchTimingHeader));
+    let response = await rewriteCapResponse(upstream, pathname);
     if (
       request.method === "POST" &&
       (modelPaths.has(pathname) ||
@@ -117,10 +119,16 @@ export async function forwardPoolRequest(
     )
       deps.defer(deps.computers.observeUsage());
     if (response.status === 101) {
+      if (response.headers.has(dispatchTimingHeader)) {
+        const headers = new Headers(response.headers);
+        headers.delete(dispatchTimingHeader);
+        response = new Response(null, { status: 101, headers, webSocket: response.webSocket });
+      }
       const forwarded = native === undefined ? response : nativeResponse(response, native);
       return modelLease === undefined ? forwarded : nativeResponse(forwarded, modelLease);
     }
     const headers = new Headers(response.headers);
+    headers.delete(dispatchTimingHeader);
     const observedBoot = upstream.headers.get("X-Signalbox-Pool-Boot") ?? boot;
     if (observedBoot) headers.set("X-Signalbox-Pool-Boot", observedBoot);
     const forwarded = new Response(response.body, {
