@@ -31,3 +31,7 @@ export interface PoolReliabilitySlo {
   readonly hour: PoolReliability;
   readonly day: PoolReliability;
 }
+
+export type PoolOverviewReliability =
+  | { readonly range: PoolReliability; readonly slo: PoolReliabilitySlo }
+  | { readonly unavailable: true };

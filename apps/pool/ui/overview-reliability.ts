@@ -2,7 +2,8 @@ import type { PoolOverviewResult } from "../overview-contract.ts";
 import type { PoolReliabilitySlo, ReliabilityCounts } from "../reliability-contract.ts";
 import type { Tone } from "./capacity-view.tsx";
 
-export type Reliability = NonNullable<PoolOverviewResult["reliability"]>;
+type ReliabilityRead = NonNullable<PoolOverviewResult["reliability"]>;
+export type Reliability = Extract<ReliabilityRead, { range: unknown }>;
 
 // Integer tenths keep float error out of the threshold: success rounds down so 99.96% never reads
 // as 100% and 98.96% never as 99%; failure rounds up so one failure never reads as 0%.
@@ -46,9 +47,17 @@ export function brokenAnswer({
   viewRead,
 }: {
   needYou: number;
-  reliability: Reliability;
+  reliability: ReliabilityRead;
   viewRead: boolean;
 }): Broken {
+  if ("unavailable" in reliability)
+    return {
+      tone: needYou ? "bad" : "warn",
+      answer: needYou
+        ? `${needYou} ${needYou === 1 ? "account needs" : "accounts need"} you`
+        : "Success rate unavailable",
+      sub: ["Success rates could not be read. Try again."],
+    };
   const { range, slo } = reliability;
   const real = range.real;
   const pending = range.classification === "pending";
@@ -80,7 +89,15 @@ export interface FailureItem {
 }
 
 /** Needs-attention lines: real failures first, proof checks counted apart and never mixed in. */
-export function failureItems(reliability: Reliability, days: number): FailureItem[] {
+export function failureItems(reliability: ReliabilityRead, days: number): FailureItem[] {
+  if ("unavailable" in reliability)
+    return [
+      {
+        tone: "warn",
+        text: "Request success rate unavailable",
+        sub: "Success rates could not be read. Try again.",
+      },
+    ];
   const { range, slo } = reliability;
   const { real, proof } = range;
   const items: FailureItem[] = [];

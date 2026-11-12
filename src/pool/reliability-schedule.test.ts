@@ -84,6 +84,38 @@ for (const state of ["breached", "unavailable"] as const)
     );
   });
 
+for (const state of ["breached", "unavailable"] as const)
+  test(`a rejected availability RPC preserves the independently ${state} SLO`, async (t) => {
+    const messages: Record<string, unknown>[] = [];
+    t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit) => {
+      messages.push(JSON.parse(new TextDecoder().decode(init.body as ArrayBuffer).split("\n")[2]!));
+      return new Response(null, { status: 202 });
+    });
+    t.mock.method(console, "error", () => {});
+    await runAvailabilityProbe(
+      env,
+      async () => {
+        throw new Error("private-runtime-error");
+      },
+      async () => slo(state),
+    );
+    const event = messages.find((message) => message.fingerprint)!;
+    assert.deepEqual(event.fingerprint, [
+      "basalt",
+      state === "breached"
+        ? "pool_request_success_below_target"
+        : "pool_request_collection_unavailable",
+    ]);
+    const context = event.contexts as {
+      pool_probe: { failures: { guard: string; reason: string }[] };
+    };
+    assert.ok(context.pool_probe.failures.some((failure) => failure.guard === "runtime"));
+    assert.ok(
+      context.pool_probe.failures.some((failure) => failure.guard === "request_reliability"),
+    );
+    assert.doesNotMatch(JSON.stringify(messages), /private-runtime-error/);
+  });
+
 test("a failed collector sends an unavailable alert and no-traffic does not claim a measured success rate", async (t) => {
   const messages: Record<string, unknown>[] = [];
   t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit) => {

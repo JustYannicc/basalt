@@ -120,12 +120,10 @@ test("schema v2 upgrades add only the account-time index and purpose table witho
           values: [historySchemaVersion],
         },
       ]);
-      assert.deepEqual(
-        JSON.parse(await readFile(path, "utf8")).report.pendingDdl,
-        [...historyAccountTimeStatements, ...historyTrafficStatements],
-        historyAccountTimeSchemaVersion,
-        historyTrafficStatements,
-      );
+      assert.deepEqual(JSON.parse(await readFile(path, "utf8")).report.pendingDdl, [
+        ...historyAccountTimeStatements,
+        ...historyTrafficStatements,
+      ]);
       await runHistoryOperator({ ...options, apply: true }, "a".repeat(32), connect);
       assert.equal(writes, 1);
     } finally {

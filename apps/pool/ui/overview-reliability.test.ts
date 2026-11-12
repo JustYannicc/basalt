@@ -105,6 +105,19 @@ test("a breach or an unavailable verdict is stated, not smoothed over", () => {
   ]);
 });
 
+test("a failed optional reliability read stays explicit without hiding an account that needs attention", () => {
+  const unavailable = { unavailable: true } as const;
+  assert.equal(
+    brokenAnswer({ needYou: 0, reliability: unavailable, viewRead: true }).answer,
+    "Success rate unavailable",
+  );
+  assert.equal(
+    brokenAnswer({ needYou: 1, reliability: unavailable, viewRead: true }).answer,
+    "1 account needs you",
+  );
+  assert.equal(failureItems(unavailable, 7)[0]!.text, "Request success rate unavailable");
+});
+
 test("pending classification and old responses never call the total real", () => {
   const pending = reliability(window(counts(100, 5), counts(0), "pending"), {
     state: "unavailable",

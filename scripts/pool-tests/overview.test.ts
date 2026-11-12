@@ -120,6 +120,38 @@ async function input(
   };
 }
 
+test("an SLO SQL error cannot discard the overview's request, cost and token answers", async () => {
+  await seriesFixture(async (fixture) => {
+    const fingerprint = await prepareHomeSource(
+      fixture.client,
+      await backendUserName("member", pool),
+    );
+    const source = await digest(homeSourceName);
+    const account = (await reference(source, "account", "api-fixture"))!;
+    await addHomeRequest(fixture, fingerprint, 1, account, from);
+    const signed = {
+      ...(await input({
+        canManage: true,
+        mappingProven: homeAccountMappingProven,
+        accounts: [{ account: "saved-api", history: [account], offering: "metered_api" }],
+      })),
+      prices: [rates("0", "10")],
+    };
+    const before = await poolUsageOverview(fixture.db, signed);
+    const fault = {
+      query: (text: string, values?: unknown[]) =>
+        text.includes("SELECT backfill_complete")
+          ? fixture.db.query("SELECT missing_slo_fixture_column")
+          : fixture.db.query(text, values),
+    };
+    const result = await poolUsageOverview(fault, signed);
+    assert.deepEqual(result.reliability, { unavailable: true });
+    assert.deepEqual(result.metrics.apiBilled, before.metrics.apiBilled);
+    assert.deepEqual(result.people.groups, before.people.groups);
+    assert.deepEqual((await fixture.db.query("SELECT 1 AS ready")).rows, [{ ready: 1 }]);
+  });
+});
+
 test("overview prices protocol aliases from total context, keeps excluded counts distinct, and includes unassigned failures", async () => {
   await seriesFixture(async (fixture) => {
     const fingerprint = await prepareHomeSource(

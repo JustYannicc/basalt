@@ -19,7 +19,10 @@ export async function runAvailabilityProbe(
     else {
       const signal = AbortSignal.timeout(25_000);
       const [availability, measured] = await Promise.all([
-        awaitProbe(() => probe(target), signal),
+        awaitProbe(() => probe(target), signal).catch((): ProbeResult => ({
+          ok: false,
+          failures: [{ guard: "runtime", reason: "unavailable" }],
+        })),
         reliability ? awaitProbe(() => reliability(target), signal).catch(() => null) : undefined,
       ]);
       result = { ...availability, failures: [...availability.failures] };
