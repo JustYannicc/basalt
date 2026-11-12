@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
+  readlinkSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -14,7 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { collectUpstreamDependencies } from "./upstream-store.ts";
-import { readProcessOwner } from "./process-owner.ts";
+import { withCacheLock } from "./upstream-cache.ts";
+import { bootIdentity, readProcessOwner } from "./process-owner.ts";
 import { fixtureInventory } from "./upstream-fixture-inventory.ts";
 
 function unrelatedProcess() {
@@ -31,11 +33,6 @@ function unrelatedProcess() {
 function stop(child: ReturnType<typeof spawn>) {
   if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 }
-
-const boot = () =>
-  process.platform === "linux"
-    ? readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
-    : execFileSync("sysctl", ["-n", "kern.bootsessionuuid"], { encoding: "utf8" }).trim();
 
 test("recycled parent and group numbers do not retain abandoned attempts", async (t) => {
   const fixture = mkdtempSync(join(tmpdir(), "basalt-recycled-owners-"));
@@ -68,8 +65,8 @@ test("recycled parent and group numbers do not retain abandoned attempts", async
         JSON.stringify({
           pid: child.pid,
           group: child.pid,
-          boot: incarnation === "boot" ? "previous-boot" : boot(),
-          start: incarnation === "start" ? "0" : readProcessOwner(child.pid!)!.start,
+          boot: incarnation === "boot" ? "previous-boot" : bootIdentity(),
+          start: incarnation === "start" ? "0" : current.start,
           token: "previous-installer-incarnation",
         }),
       );
@@ -92,45 +89,39 @@ for (const incarnation of ["boot", "start"]) {
     async (t) => {
       const fixture = mkdtempSync(join(tmpdir(), "basalt-recycled-lock-"));
       const owner = unrelatedProcess();
-      let waiter: ReturnType<typeof spawn> | undefined;
       t.after(() => {
         stop(owner);
-        if (waiter) stop(waiter);
         rmSync(fixture, { recursive: true, force: true });
       });
       await once(owner, "message");
       const lock = join(fixture, "collection.lock");
       const stale = JSON.stringify({
         pid: owner.pid,
-        boot: incarnation === "boot" ? "previous-boot" : boot(),
+        boot: incarnation === "boot" ? "previous-boot" : bootIdentity(),
         start: incarnation === "start" ? "0" : readProcessOwner(owner.pid!)!.start,
         id: "previous-lock-incarnation",
       });
       symlinkSync(stale, lock);
       symlinkSync(stale, `${lock}.recovery`);
-      waiter = spawn(
-        process.execPath,
-        [
-          "--input-type=module",
-          "-e",
-          `
-      import { withCacheLock } from ${JSON.stringify(new URL("./upstream-cache.ts", import.meta.url).href)};
-      await withCacheLock(${JSON.stringify(lock)}, () => process.send('acquired'));
-    `,
-        ],
-        { stdio: ["ignore", "ignore", "inherit", "ipc"] },
-      );
-      const acquired = await once(waiter, "message");
-      assert.deepEqual(acquired, ["acquired", undefined]);
-      assert.equal(
-        owner.exitCode,
-        null,
-        "lock recovery cannot wait for the unrelated process to exit",
-      );
-      if (waiter.exitCode === null) await once(waiter, "exit");
-      assert.equal(waiter.exitCode, 0);
-      assert.equal(existsSync(lock), false);
-      assert.equal(existsSync(`${lock}.recovery`), false);
+      await withCacheLock(lock, () => {
+        assert.equal(
+          JSON.parse(readlinkSync(lock)).pid,
+          process.pid,
+          "the expired lock has been acquired",
+        );
+        assert.equal(
+          lstatSync(`${lock}.recovery`, { throwIfNoEntry: false }),
+          undefined,
+          "stale recovery ownership was released",
+        );
+        assert.equal(
+          owner.exitCode,
+          null,
+          "lock recovery cannot wait for the unrelated process to exit",
+        );
+      });
+      assert.equal(lstatSync(lock, { throwIfNoEntry: false }), undefined);
+      assert.equal(lstatSync(`${lock}.recovery`, { throwIfNoEntry: false }), undefined);
     },
   );
 }
@@ -182,7 +173,7 @@ test("a recycled leaderless group cannot borrow a previous installer's lease", a
     JSON.stringify({
       pid: group,
       group,
-      boot: boot(),
+      boot: bootIdentity(),
       start: "0",
       token: "previous-installer-incarnation",
     }),
