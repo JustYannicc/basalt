@@ -1,7 +1,7 @@
 {
   "identity": "basalt-catalog-app-status",
   "file": "0553-catalog-app-status.patch",
-  "content_sha256": "a973a070d4d779baa668d5519811f1c65761f470d749493e875a02f068d754d9",
+  "content_sha256": "9497e3dd464b57e58ab3bf274fdbcfc953789e53f19fb59ed5d6e187a4a0b713",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

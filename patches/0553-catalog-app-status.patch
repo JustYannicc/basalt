@@ -1,24 +1,25 @@
 diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
 --- a/apps/hosted/server/src/contracts/apps.ts
 +++ b/apps/hosted/server/src/contracts/apps.ts
-@@ -101,6 +101,16 @@ export const CatalogAppUpdate = /* @__PURE__ */ (() =>
+@@ -101,6 +101,17 @@ export const CatalogAppUpdate = /* @__PURE__ */ (() =>
      ),
      touched: Schema.Boolean,
    }))();
 +/**
 + * Where a catalog copy stands: on the version the catalog last gave it, offered a held-back
 + * update, or changed by someone so updates are offered instead of applied. `nextCheckAt` is when
-+ * the queued catalog sweep runs, while one is queued or running.
++ * a queued catalog sweep runs; `checking` holds while one is already due or running.
 + */
 +export const CatalogAppStatus = /* @__PURE__ */ (() =>
 +  Schema.Struct({
 +    state: Schema.Literals(["current", "offered", "changed"]),
 +    nextCheckAt: Schema.NullOr(Schema.String),
++    checking: Schema.Boolean,
 +  }))();
  /** No catalog update is offered, the workspace has changes, or the app changed meanwhile. */
  export const CatalogUpdateUnavailable = /* @__PURE__ */ (() =>
    ApiError.define({
-@@ -259,6 +269,18 @@ export const HostedApps = /* @__PURE__ */ (() =>
+@@ -259,6 +270,18 @@ export const HostedApps = /* @__PURE__ */ (() =>
            "A newer catalog source held back for this app, or null. Catalog apps update by themselves unless someone changed them or the update would leave linked accounts or requirements unusable: reconnect counts the linked accounts that stop working, reasons says why, and touched means applying it replaces the app's current version. apps.applyCatalogUpdate applies it.",
          ),
      )
@@ -31,7 +32,7 @@ diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/c
 +        .annotate(RequiredAction, "read")
 +        .annotate(
 +          OpenApi.Description,
-+          "Where a catalog app stands, or null for an app not installed from the catalog. state is current while the app holds the catalog's version, offered while apps.catalogUpdate holds an update back, and changed once someone changed the app, so later updates are offered instead of applied. nextCheckAt is when the next catalog check runs, while one is queued.",
++          "Where a catalog app stands, or null for an app not installed from the catalog. state is current while the app holds the catalog's version, offered while apps.catalogUpdate holds an update back, and changed once someone changed the app, so later updates are offered instead of applied. nextCheckAt is when the next catalog check runs while one is queued, and checking is true while one is due or running.",
 +        ),
 +    )
      .add(
@@ -101,7 +102,7 @@ diff --git a/apps/hosted/server/src/implementation/catalog-app-offers.ts b/apps/
  import { activeSource, deployCatalogSource } from "./catalog-app-workspace.ts";
  import {
    recordOf,
-@@ -80,6 +84,48 @@ export const catalogAppOffer = (organization: OrganizationId, app: App) =>
+@@ -80,6 +84,52 @@ export const catalogAppOffer = (organization: OrganizationId, app: App) =>
      return { reconnect: offer.reconnect, reasons: offer.reasons, touched: offer.touched };
    }).pipe(Effect.mapError(() => new StorageError()));
  
@@ -138,12 +139,16 @@ diff --git a/apps/hosted/server/src/implementation/catalog-app-offers.ts b/apps/
 +        ? 1
 +        : (yield* executor.apps.versions({ owner, app: app.id, versionOwner: owner })).length;
 +    const sql = yield* SqlClient.SqlClient;
-+    const [due] = yield* sql<{ at: Date | string | null }>`select min(available_at) as at
++    const [due] = yield* sql<{ at: Date | string | null; checking: boolean | null }>`select
++        min(available_at) filter (where available_at > now()) as at,
++        bool_or(available_at <= now()) as checking
 +      from hosted_provisioning where organization_id = ${organization}
 +        and status in ('queued', 'running') and starts_with(id, ${catalogAppJobPrefix})`;
++    const checking = due?.checking === true;
 +    return {
 +      state: catalogAppState({ recorded, active: app.activeVersion, versions }),
-+      nextCheckAt: due?.at == null ? null : new Date(due.at).toISOString(),
++      nextCheckAt: checking || due?.at == null ? null : new Date(due.at).toISOString(),
++      checking,
 +    };
 +  }).pipe(Effect.mapError(() => new StorageError()));
 +
@@ -233,7 +238,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/catalog-app-status.tsx b/a
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/catalog-app-status.tsx
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,66 @@
 +import { useAtomValue } from "@effect/atom-react";
 +import { Link } from "@tanstack/react-router";
 +import { AsyncResult } from "effect/reactivity";
@@ -259,7 +264,7 @@ new file mode 100644
 +    );
 +  // A copy of anything else, or a status that failed to load, makes no claim about updates.
 +  if (!AsyncResult.isSuccess(status) || status.value === null) return independentCopyNote;
-+  const { state, nextCheckAt } = status.value;
++  const { state, nextCheckAt, checking } = status.value;
 +  const versions = (
 +    <Link
 +      to="/org/$organizationSlug/apps/$appId"
@@ -271,14 +276,13 @@ new file mode 100644
 +    </Link>
 +  );
 +  const due = nextCheckAt === null ? null : <LocalTime value={nextCheckAt} options={shortMoment} />;
-+  const checking = nextCheckAt !== null && Date.parse(nextCheckAt) <= Date.now();
 +  if (state === "current")
 +    return (
 +      <p>
-+        {due === null ? (
-+          "On the catalog’s current version. Catalog updates apply by themselves while nobody changes this app."
-+        ) : checking ? (
++        {checking ? (
 +          "Checking the catalog for an update now. An update found applies by itself."
++        ) : due === null ? (
++          "On the catalog’s current version. Catalog updates apply by themselves while nobody changes this app."
 +        ) : (
 +          <>Catalog update check due {due}. An update found then applies by itself.</>
 +        )}
@@ -297,7 +301,7 @@ new file mode 100644
 +          {versions} instead of applying by themselves.
 +        </>
 +      )}
-+      {due !== null && (checking ? " Checking the catalog now." : <> Next catalog check {due}.</>)}
++      {checking ? " Checking the catalog now." : due !== null && <> Next catalog check {due}.</>}
 +    </p>
 +  );
 +}

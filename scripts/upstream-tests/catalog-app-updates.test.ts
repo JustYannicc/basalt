@@ -281,13 +281,17 @@ test("Settings states a catalog copy by the sweep's own rule", () => {
 
 test("Settings reads a catalog copy's state and the queued sweep's time", async () => {
   const queries: { text: string; values: unknown[] }[] = [];
+  let sweep: { at: Date | null; checking: boolean | null } = {
+    at: new Date("2026-11-12T19:08:00Z"),
+    checking: false,
+  };
   // Only the tagged-template call is used: the records read and the sweep queue read.
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join("?");
     queries.push({ text, values });
     return Effect.succeed(
       text.includes("hosted_provisioning")
-        ? [{ at: new Date("2026-11-12T19:08:00Z") }]
+        ? [sweep]
         : [{ apps: { app_catalog: { version: "dpl_1" } } }],
     );
   }) as unknown as SqlClient.SqlClient;
@@ -307,6 +311,7 @@ test("Settings reads a catalog copy's state and the queued sweep's time", async 
   assert.deepEqual(await status(app(catalog)), {
     state: "current",
     nextCheckAt: "2026-11-12T19:08:00.000Z",
+    checking: false,
   });
   assert.ok(
     queries.some(
@@ -314,9 +319,18 @@ test("Settings reads a catalog copy's state and the queued sweep's time", async 
         /status in \('queued', 'running'\)/.test(text) && values.includes("basalt-catalog-apps:"),
     ),
   );
+  // A sweep already due or running is under way, not scheduled; no queued sweep, no time.
+  sweep = { at: null, checking: true };
   assert.deepEqual(await status(app(catalog, "dpl_2")), {
     state: "changed",
-    nextCheckAt: "2026-11-12T19:08:00.000Z",
+    nextCheckAt: null,
+    checking: true,
+  });
+  sweep = { at: null, checking: null };
+  assert.deepEqual(await status(app(catalog)), {
+    state: "current",
+    nextCheckAt: null,
+    checking: false,
   });
   // A copy of another app, or one never deployed, makes no catalog claim.
   queries.length = 0;
