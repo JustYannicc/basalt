@@ -1,0 +1,1004 @@
+diff --git a/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts b/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts
+--- a/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts
++++ b/apps/hosted/cloud/web/src/implementation/routeTree.gen.ts
+@@ -19,6 +19,7 @@ import { Route as LoginRouteImport } from './routes/login'
+ import { Route as AccountIndexRouteImport } from './routes/account.index'
+ import { Route as AccountProfileRouteImport } from './routes/account.profile'
+ import { Route as AccountSecurityRouteImport } from './routes/account.security'
++import { Route as AccountSignalboxAppsRouteImport } from './routes/account.signalbox-apps'
+ import { Route as AccountTokensRouteImport } from './routes/account.tokens'
+ import { Route as EmailUnsubscribeRouteImport } from './routes/email.unsubscribe'
+ import { Route as LoginSsoRouteImport } from './routes/login_.sso'
+@@ -100,6 +101,11 @@ const AccountSecurityRoute = AccountSecurityRouteImport.update({
+   path: '/security',
+   getParentRoute: () => AccountRoute,
+ } as any)
++const AccountSignalboxAppsRoute = AccountSignalboxAppsRouteImport.update({
++  id: '/signalbox-apps',
++  path: '/signalbox-apps',
++  getParentRoute: () => AccountRoute,
++} as any)
+ const AccountTokensRoute = AccountTokensRouteImport.update({
+   id: '/tokens',
+   path: '/tokens',
+@@ -284,6 +290,7 @@ export interface FileRoutesByFullPath {
+   '/login': typeof LoginRoute
+   '/account/profile': typeof AccountProfileRoute
+   '/account/security': typeof AccountSecurityRoute
++  '/account/signalbox-apps': typeof AccountSignalboxAppsRoute
+   '/account/tokens': typeof AccountTokensRoute
+   '/email/unsubscribe': typeof EmailUnsubscribeRoute
+   '/login/sso': typeof LoginSsoRoute
+@@ -325,6 +332,7 @@ export interface FileRoutesByTo {
+   '/login': typeof LoginRoute
+   '/account/profile': typeof AccountProfileRoute
+   '/account/security': typeof AccountSecurityRoute
++  '/account/signalbox-apps': typeof AccountSignalboxAppsRoute
+   '/account/tokens': typeof AccountTokensRoute
+   '/email/unsubscribe': typeof EmailUnsubscribeRoute
+   '/login/sso': typeof LoginSsoRoute
+@@ -366,6 +374,7 @@ export interface FileRoutesById {
+   '/login': typeof LoginRoute
+   '/account/profile': typeof AccountProfileRoute
+   '/account/security': typeof AccountSecurityRoute
++  '/account/signalbox-apps': typeof AccountSignalboxAppsRoute
+   '/account/tokens': typeof AccountTokensRoute
+   '/email/unsubscribe': typeof EmailUnsubscribeRoute
+   '/login_/sso': typeof LoginSsoRoute
+@@ -410,6 +419,7 @@ export interface FileRouteTypes {
+     | '/login'
+     | '/account/profile'
+     | '/account/security'
++    | '/account/signalbox-apps'
+     | '/account/tokens'
+     | '/email/unsubscribe'
+     | '/login/sso'
+@@ -451,6 +461,7 @@ export interface FileRouteTypes {
+     | '/login'
+     | '/account/profile'
+     | '/account/security'
++    | '/account/signalbox-apps'
+     | '/account/tokens'
+     | '/email/unsubscribe'
+     | '/login/sso'
+@@ -491,6 +502,7 @@ export interface FileRouteTypes {
+     | '/login'
+     | '/account/profile'
+     | '/account/security'
++    | '/account/signalbox-apps'
+     | '/account/tokens'
+     | '/email/unsubscribe'
+     | '/login_/sso'
+@@ -614,6 +626,13 @@ declare module '@tanstack/react-router' {
+       preLoaderRoute: typeof AccountSecurityRouteImport
+       parentRoute: typeof AccountRoute
+     }
++    '/account/signalbox-apps': {
++      id: '/account/signalbox-apps'
++      path: '/signalbox-apps'
++      fullPath: '/account/signalbox-apps'
++      preLoaderRoute: typeof AccountSignalboxAppsRouteImport
++      parentRoute: typeof AccountRoute
++    }
+     '/account/tokens': {
+       id: '/account/tokens'
+       path: '/tokens'
+@@ -830,6 +849,7 @@ declare module '@tanstack/react-router' {
+ interface AccountRouteChildren {
+   AccountProfileRoute: typeof AccountProfileRoute
+   AccountSecurityRoute: typeof AccountSecurityRoute
++  AccountSignalboxAppsRoute: typeof AccountSignalboxAppsRoute
+   AccountTokensRoute: typeof AccountTokensRoute
+   AccountIndexRoute: typeof AccountIndexRoute
+ }
+@@ -837,6 +857,7 @@ interface AccountRouteChildren {
+ const AccountRouteChildren: AccountRouteChildren = {
+   AccountProfileRoute: AccountProfileRoute,
+   AccountSecurityRoute: AccountSecurityRoute,
++  AccountSignalboxAppsRoute: AccountSignalboxAppsRoute,
+   AccountTokensRoute: AccountTokensRoute,
+   AccountIndexRoute: AccountIndexRoute,
+ }
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/account.signalbox-apps.tsx b/apps/hosted/cloud/web/src/implementation/routes/account.signalbox-apps.tsx
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/web/src/implementation/routes/account.signalbox-apps.tsx
+@@ -0,0 +1,11 @@
++import { createFileRoute } from "@tanstack/react-router";
++import { parseAccountSearch } from "@executor-js/hosted-web/contracts/navigation";
++import { SignalboxAppsPending } from "@executor-js/hosted-web/account";
++import { SignalboxAppsPage } from "@executor-js/hosted-web/pages/signalbox-apps";
++
++/** Downloads for the Signalbox apps, from the deployment's own GitHub releases. */
++export const Route = createFileRoute("/account/signalbox-apps")({
++  validateSearch: parseAccountSearch,
++  pendingComponent: SignalboxAppsPending,
++  component: SignalboxAppsPage,
++});
+diff --git a/apps/hosted/cloud/web/src/implementation/worker-routes.gen.json b/apps/hosted/cloud/web/src/implementation/worker-routes.gen.json
+--- a/apps/hosted/cloud/web/src/implementation/worker-routes.gen.json
++++ b/apps/hosted/cloud/web/src/implementation/worker-routes.gen.json
+@@ -5,6 +5,8 @@
+   "/account/profile/",
+   "/account/security",
+   "/account/security/",
++  "/account/signalbox-apps",
++  "/account/signalbox-apps/",
+   "/account/tokens",
+   "/account/tokens/",
+   "/app-auth",
+diff --git a/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts b/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts
+--- a/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts
++++ b/apps/hosted/self-host/web/src/implementation/routeTree.gen.ts
+@@ -18,6 +18,7 @@ import { Route as LoginRouteImport } from './routes/login'
+ import { Route as AccountIndexRouteImport } from './routes/account.index'
+ import { Route as AccountProfileRouteImport } from './routes/account.profile'
+ import { Route as AccountSecurityRouteImport } from './routes/account.security'
++import { Route as AccountSignalboxAppsRouteImport } from './routes/account.signalbox-apps'
+ import { Route as AccountTokensRouteImport } from './routes/account.tokens'
+ import { Route as McpAuthorizeRouteImport } from './routes/mcp.authorize'
+ import { Route as OauthCallbackRouteImport } from './routes/oauth.callback'
+@@ -90,6 +91,11 @@ const AccountSecurityRoute = AccountSecurityRouteImport.update({
+   path: '/security',
+   getParentRoute: () => AccountRoute,
+ } as any)
++const AccountSignalboxAppsRoute = AccountSignalboxAppsRouteImport.update({
++  id: '/signalbox-apps',
++  path: '/signalbox-apps',
++  getParentRoute: () => AccountRoute,
++} as any)
+ const AccountTokensRoute = AccountTokensRouteImport.update({
+   id: '/tokens',
+   path: '/tokens',
+@@ -251,6 +257,7 @@ export interface FileRoutesByFullPath {
+   '/login': typeof LoginRoute
+   '/account/profile': typeof AccountProfileRoute
+   '/account/security': typeof AccountSecurityRoute
++  '/account/signalbox-apps': typeof AccountSignalboxAppsRoute
+   '/account/tokens': typeof AccountTokensRoute
+   '/mcp/authorize': typeof McpAuthorizeRoute
+   '/oauth/callback': typeof OauthCallbackRoute
+@@ -287,6 +294,7 @@ export interface FileRoutesByTo {
+   '/login': typeof LoginRoute
+   '/account/profile': typeof AccountProfileRoute
+   '/account/security': typeof AccountSecurityRoute
++  '/account/signalbox-apps': typeof AccountSignalboxAppsRoute
+   '/account/tokens': typeof AccountTokensRoute
+   '/mcp/authorize': typeof McpAuthorizeRoute
+   '/oauth/callback': typeof OauthCallbackRoute
+@@ -324,6 +332,7 @@ export interface FileRoutesById {
+   '/login': typeof LoginRoute
+   '/account/profile': typeof AccountProfileRoute
+   '/account/security': typeof AccountSecurityRoute
++  '/account/signalbox-apps': typeof AccountSignalboxAppsRoute
+   '/account/tokens': typeof AccountTokensRoute
+   '/mcp/authorize': typeof McpAuthorizeRoute
+   '/oauth/callback': typeof OauthCallbackRoute
+@@ -363,6 +372,7 @@ export interface FileRouteTypes {
+     | '/login'
+     | '/account/profile'
+     | '/account/security'
++    | '/account/signalbox-apps'
+     | '/account/tokens'
+     | '/mcp/authorize'
+     | '/oauth/callback'
+@@ -399,6 +409,7 @@ export interface FileRouteTypes {
+     | '/login'
+     | '/account/profile'
+     | '/account/security'
++    | '/account/signalbox-apps'
+     | '/account/tokens'
+     | '/mcp/authorize'
+     | '/oauth/callback'
+@@ -435,6 +446,7 @@ export interface FileRouteTypes {
+     | '/login'
+     | '/account/profile'
+     | '/account/security'
++    | '/account/signalbox-apps'
+     | '/account/tokens'
+     | '/mcp/authorize'
+     | '/oauth/callback'
+@@ -544,6 +556,13 @@ declare module '@tanstack/react-router' {
+       preLoaderRoute: typeof AccountSecurityRouteImport
+       parentRoute: typeof AccountRoute
+     }
++    '/account/signalbox-apps': {
++      id: '/account/signalbox-apps'
++      path: '/signalbox-apps'
++      fullPath: '/account/signalbox-apps'
++      preLoaderRoute: typeof AccountSignalboxAppsRouteImport
++      parentRoute: typeof AccountRoute
++    }
+     '/account/tokens': {
+       id: '/account/tokens'
+       path: '/tokens'
+@@ -732,6 +751,7 @@ declare module '@tanstack/react-router' {
+ interface AccountRouteChildren {
+   AccountProfileRoute: typeof AccountProfileRoute
+   AccountSecurityRoute: typeof AccountSecurityRoute
++  AccountSignalboxAppsRoute: typeof AccountSignalboxAppsRoute
+   AccountTokensRoute: typeof AccountTokensRoute
+   AccountIndexRoute: typeof AccountIndexRoute
+ }
+@@ -739,6 +759,7 @@ interface AccountRouteChildren {
+ const AccountRouteChildren: AccountRouteChildren = {
+   AccountProfileRoute: AccountProfileRoute,
+   AccountSecurityRoute: AccountSecurityRoute,
++  AccountSignalboxAppsRoute: AccountSignalboxAppsRoute,
+   AccountTokensRoute: AccountTokensRoute,
+   AccountIndexRoute: AccountIndexRoute,
+ }
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/account.signalbox-apps.tsx b/apps/hosted/self-host/web/src/implementation/routes/account.signalbox-apps.tsx
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/self-host/web/src/implementation/routes/account.signalbox-apps.tsx
+@@ -0,0 +1,11 @@
++import { createFileRoute } from "@tanstack/react-router";
++import { parseAccountSearch } from "@executor-js/hosted-web/contracts/navigation";
++import { SignalboxAppsPending } from "@executor-js/hosted-web/account";
++import { SignalboxAppsPage } from "@executor-js/hosted-web/pages/signalbox-apps";
++
++/** Downloads for the Signalbox apps, from the deployment's own GitHub releases. */
++export const Route = createFileRoute("/account/signalbox-apps")({
++  validateSearch: parseAccountSearch,
++  pendingComponent: SignalboxAppsPending,
++  component: SignalboxAppsPage,
++});
+diff --git a/apps/hosted/web/src/contracts/github-source.ts b/apps/hosted/web/src/contracts/github-source.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/github-source.ts
+@@ -0,0 +1,81 @@
++import { Effect, Layer } from "effect";
++import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
++
++const githubRepository =
++  /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/u;
++
++/**
++ * The deployment's own public source repository as `owner/name`, when the brand's source link is
++ * on GitHub. Anything else has no releases to read or download from.
++ */
++export const githubSourceRepository = (source: string | undefined): string | null =>
++  source === undefined ? null : (githubRepository.exec(source)?.[1] ?? null);
++
++/**
++ * GitHub answers with Access-Control-Allow-Origin "*", which a browser refuses for a credentialed
++ * request, and its preflight rejects Effect's trace headers. So releases are read as plain
++ * anonymous requests: no credentials, no trace headers, no extra headers, through the page's
++ * current fetch.
++ */
++const anonymousGitHubClient = FetchHttpClient.layer.pipe(
++  Layer.provide(Layer.succeed(FetchHttpClient.RequestInit, { credentials: "omit" })),
++  Layer.provide(
++    Layer.succeed(FetchHttpClient.Fetch, (input, init) => globalThis.fetch(input, init)),
++  ),
++);
++
++/**
++ * Reads one release from GitHub's API in the page. `read` turns the answer into a value; its status
++ * is null when GitHub couldn't be reached or its body couldn't be read. GitHub's anonymous API
++ * allows 60 requests an hour per network address, so `remember` names the values worth keeping
++ * for the browser session, serialized, and `recall` restores one or rejects it.
++ */
++export const githubReleaseRead = <A>(input: {
++  /** The API path below `https://api.github.com/repos/`. */
++  readonly path: string;
++  readonly sessionKey: string;
++  readonly read: (status: number | null, body: unknown) => A;
++  readonly remember: (value: A, body: unknown) => string | null;
++  readonly recall: (stored: string) => A | null;
++}) =>
++  Effect.gen(function* () {
++    const known = recalled(input);
++    if (known !== null) return known;
++    const client = yield* HttpClient.HttpClient;
++    const value = yield* client
++      .execute(HttpClientRequest.get(`https://api.github.com/repos/${input.path}`))
++      .pipe(
++        Effect.flatMap((response) =>
++          response.status === 200
++            ? response.json.pipe(Effect.map((body) => ({ body, value: input.read(200, body) })))
++            : Effect.succeed({ body: null, value: input.read(response.status, null) }),
++        ),
++        Effect.orElseSucceed(() => ({ body: null, value: input.read(null, null) })),
++      );
++    store(input.sessionKey, input.remember(value.value, value.body));
++    return value.value;
++  }).pipe(
++    Effect.provideService(HttpClient.TracerPropagationEnabled, false),
++    Effect.provide(anonymousGitHubClient),
++  );
++
++const recalled = <A>(input: {
++  readonly sessionKey: string;
++  readonly recall: (stored: string) => A | null;
++}) => {
++  try {
++    const stored = globalThis.sessionStorage?.getItem(input.sessionKey);
++    return stored == null ? null : input.recall(stored);
++  } catch {
++    return null;
++  }
++};
++
++const store = (key: string, value: string | null) => {
++  if (value === null) return;
++  try {
++    globalThis.sessionStorage?.setItem(key, value);
++  } catch {
++    // Storage can be full or blocked; the read simply runs again next time.
++  }
++};
+diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/src/contracts/obsidian-plugin.ts
+--- a/apps/hosted/web/src/contracts/obsidian-plugin.ts
++++ b/apps/hosted/web/src/contracts/obsidian-plugin.ts
+@@ -1,7 +1,7 @@
+-import { Effect, Layer } from "effect";
+-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
++import { Effect } from "effect";
+ import { Atom } from "effect/reactivity";
+ import { browserOnly } from "@executor-js/ui/contracts/http";
++import { githubReleaseRead } from "./github-source.ts";
+ import { basaltSyncVersion } from "./obsidian-plugin-version.ts";
+ 
+ /**
+@@ -14,16 +14,6 @@
+ export const basaltSyncFiles = ["main.js", "manifest.json", "styles.css"] as const;
+ /** BRAT is the community plugin that installs a plugin from a GitHub release. */
+ export const bratStoreLink = "obsidian://show-plugin?id=obsidian42-brat";
+-
+-const githubRepository =
+-  /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/u;
+-
+-/**
+- * Where Signalbox Sync is published: the deployment's own public source repository, when that is
+- * on GitHub. Anything else has nowhere to install from.
+- */
+-export const basaltSyncRepository = (source: string | undefined): string | null =>
+-  source === undefined ? null : (githubRepository.exec(source)?.[1] ?? null);
+ 
+ /**
+  * Opens BRAT's add dialog on its "latest" track. Any other version is one BRAT freezes and never
+@@ -59,66 +49,17 @@
+ }
+ 
+ /**
+- * GitHub answers with Access-Control-Allow-Origin "*", which a browser refuses for a credentialed
+- * request, and its preflight rejects Effect's trace headers. So the release is read as a plain
+- * anonymous request: no credentials, no trace headers, no extra headers, through the page's
+- * current fetch.
+- */
+-const anonymousGitHubClient = FetchHttpClient.layer.pipe(
+-  Layer.provide(Layer.succeed(FetchHttpClient.RequestInit, { credentials: "omit" })),
+-  Layer.provide(
+-    Layer.succeed(FetchHttpClient.Fetch, (input, init) => globalThis.fetch(input, init)),
+-  ),
+-);
+-
+-/**
+  * A published release never changes, so finding it holds for the browser session. A missing one
+  * may still be published under this tag, so only "available" is remembered.
+  */
+-const sessionKey = (repository: string) => `signalbox-sync-release:${repository}:${basaltSyncTag}`;
+-const remembered = (repository: string): BasaltSyncRelease | null => {
+-  try {
+-    const value = globalThis.sessionStorage?.getItem(sessionKey(repository));
+-    return value === "available" ? value : null;
+-  } catch {
+-    return null;
+-  }
+-};
+-const remember = (repository: string, release: BasaltSyncRelease) => {
+-  if (release !== "available") return;
+-  try {
+-    globalThis.sessionStorage?.setItem(sessionKey(repository), release);
+-  } catch {
+-    // Storage can be full or blocked; the check simply runs again next time.
+-  }
+-};
+-
+-/** Whether this repository's release can be installed, read from the page. */
+ export const basaltSyncReleaseCheck = (repository: string) =>
+-  Effect.gen(function* () {
+-    const known = remembered(repository);
+-    if (known) return known;
+-    const client = yield* HttpClient.HttpClient;
+-    const release = yield* client
+-      .execute(
+-        HttpClientRequest.get(
+-          `https://api.github.com/repos/${repository}/releases/tags/${basaltSyncTag}`,
+-        ),
+-      )
+-      .pipe(
+-        Effect.flatMap((response) =>
+-          response.status === 200
+-            ? response.json.pipe(Effect.map((body) => basaltSyncReleaseStatus(200, body)))
+-            : Effect.succeed(basaltSyncReleaseStatus(response.status, null)),
+-        ),
+-        Effect.orElseSucceed(() => basaltSyncReleaseStatus(null, null)),
+-      );
+-    remember(repository, release);
+-    return release;
+-  }).pipe(
+-    Effect.provideService(HttpClient.TracerPropagationEnabled, false),
+-    Effect.provide(anonymousGitHubClient),
+-  );
++  githubReleaseRead<BasaltSyncRelease>({
++    path: `${repository}/releases/tags/${basaltSyncTag}`,
++    sessionKey: `signalbox-sync-release:${repository}:${basaltSyncTag}`,
++    read: basaltSyncReleaseStatus,
++    remember: (release) => (release === "available" ? release : null),
++    recall: (stored) => (stored === "available" ? stored : null),
++  });
+ 
+ /**
+  * Read in the browser once per repository; the dialog refreshes it on "Check again". A
+diff --git a/apps/hosted/web/src/contracts/signalbox-apps.ts b/apps/hosted/web/src/contracts/signalbox-apps.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/signalbox-apps.ts
+@@ -0,0 +1,137 @@
++import { Atom } from "effect/reactivity";
++import { browserOnly } from "@executor-js/ui/contracts/http";
++import { githubReleaseRead } from "./github-source.ts";
++
++/**
++ * The version-free file names every Signalbox apps release publishes. Links use GitHub's
++ * `releases/latest/download/<name>`, which redirects without the API, so they never go stale.
++ */
++export const signalboxAppAssets = {
++  mac: "Signalbox-mac-arm64.dmg",
++  windows: "Signalbox-windows-x64-setup.exe",
++  appImage: "Signalbox-linux-x86_64.AppImage",
++  deb: "Signalbox-linux-amd64.deb",
++  android: "Signalbox-android.apk",
++  cli: "signalbox-cli.tgz",
++} as const;
++export type SignalboxAppAsset = (typeof signalboxAppAssets)[keyof typeof signalboxAppAssets];
++
++export const signalboxAppDownload = (repository: string, asset: SignalboxAppAsset) =>
++  `https://github.com/${repository}/releases/latest/download/${asset}`;
++
++/** The release notes are the only place that explains each system's first-open steps. */
++export const signalboxAppsReleaseNotes = (repository: string) =>
++  `https://github.com/${repository}/releases/latest`;
++
++export const signalboxCliInstall = (repository: string) =>
++  `npm install -g ${signalboxAppDownload(repository, signalboxAppAssets.cli)}\nsignalbox-client login`;
++
++/**
++ * What the page knows about the latest release. "unconfirmed" means GitHub couldn't answer: its
++ * anonymous API allows 60 requests an hour per network address. The download links work without
++ * it, so only the version line depends on this read.
++ */
++export type SignalboxAppsRelease =
++  | { readonly kind: "unconfirmed" }
++  | {
++      readonly kind: "read";
++      /** Only a `signalbox-clients-<version>` tag names a version of the apps. */
++      readonly version: string | null;
++      readonly released: string | null;
++      readonly assets: ReadonlyArray<string>;
++    };
++
++const clientsTag = /^signalbox-clients-(.+)$/u;
++const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
++
++/** "12 Nov", in UTC so every viewer and the release page agree on the day. */
++const releasedOn = (value: unknown) => {
++  if (typeof value !== "string") return null;
++  const date = new Date(value);
++  return Number.isNaN(date.getTime()) ? null : `${date.getUTCDate()} ${months[date.getUTCMonth()]}`;
++};
++
++const isObject = (value: unknown): value is { readonly [name: string]: unknown } =>
++  typeof value === "object" && value !== null;
++const field = (body: unknown, name: string): unknown => (isObject(body) ? body[name] : undefined);
++
++/** GitHub's `releases/latest` answer, as the page shows it. */
++export function signalboxAppsRelease(status: number | null, body: unknown): SignalboxAppsRelease {
++  if (status !== 200 || !isObject(body)) return { kind: "unconfirmed" };
++  const tag = field(body, "tag_name");
++  const assets = field(body, "assets");
++  return {
++    kind: "read",
++    version: typeof tag === "string" ? (clientsTag.exec(tag)?.[1] ?? null) : null,
++    released: releasedOn(field(body, "published_at")),
++    assets: Array.isArray(assets)
++      ? assets.flatMap((asset: unknown) => {
++          const name = field(asset, "name");
++          return typeof name === "string" ? [name] : [];
++        })
++      : [],
++  };
++}
++
++/** "Version 0.2.0 · released 12 Nov", or nothing when the release names no apps version. */
++export const signalboxAppsVersionLine = (release: SignalboxAppsRelease) =>
++  release.kind === "read" && release.version !== null
++    ? `Version ${release.version}${release.released === null ? "" : ` · released ${release.released}`}`
++    : null;
++
++/** A file is "Not in this release" only when GitHub confirmed the release lacks it. */
++export const signalboxAppOffered = (release: SignalboxAppsRelease, asset: SignalboxAppAsset) =>
++  release.kind === "unconfirmed" || release.assets.includes(asset);
++
++/**
++ * Whether this browser runs on a Mac, so the Mac download leads. iPadOS Safari reports a Mac user
++ * agent too, but it has touch points.
++ */
++export const isMacBrowser = (
++  navigator:
++    | {
++        readonly userAgentData?: { readonly platform?: string };
++        readonly userAgent?: string;
++        readonly maxTouchPoints?: number;
++      }
++    | undefined,
++) => {
++  if (navigator === undefined) return false;
++  const platform = navigator.userAgentData?.platform;
++  if (platform) return platform === "macOS";
++  return (
++    /Macintosh|Mac OS X/u.test(navigator.userAgent ?? "") && (navigator.maxTouchPoints ?? 0) <= 1
++  );
++};
++
++/**
++ * The latest release, read from the page. Only a read that names an apps version is kept for the
++ * browser session: anything else is asked again. Unlike a pinned tag, `releases/latest` moves, so
++ * a kept read can show the previous release until the session ends.
++ */
++export const signalboxAppsReleaseCheck = (repository: string) =>
++  githubReleaseRead<SignalboxAppsRelease>({
++    path: `${repository}/releases/latest`,
++    sessionKey: `signalbox-apps-release:${repository}`,
++    read: signalboxAppsRelease,
++    remember: (release, body) =>
++      release.kind === "read" && release.version !== null
++        ? JSON.stringify({
++            tag_name: field(body, "tag_name"),
++            published_at: field(body, "published_at"),
++            assets: release.assets.map((name) => ({ name })),
++          })
++        : null,
++    recall: (stored) => {
++      const release = signalboxAppsRelease(200, JSON.parse(stored));
++      return release.kind === "read" && release.version !== null ? release : null;
++    },
++  });
++
++/**
++ * Read whenever the page mounts the atom; after one kept read the session answers instead of
++ * GitHub.
++ */
++export const signalboxAppsReleaseAtom = Atom.family((repository: string) =>
++  browserOnly(Atom.make(signalboxAppsReleaseCheck(repository))),
++);
+diff --git a/apps/hosted/web/src/implementation/components/account-pending.tsx b/apps/hosted/web/src/implementation/components/account-pending.tsx
+--- a/apps/hosted/web/src/implementation/components/account-pending.tsx
++++ b/apps/hosted/web/src/implementation/components/account-pending.tsx
+@@ -18,6 +18,9 @@ export const profileTitle = "Profile";
+ export const profileDescription = "How you appear across every organization.";
+ export const securityTitle = "Security";
+ export const securityDescription = "How you sign in, and where you are signed in.";
++/** "Apps" alone means connectors in this product; the clients are always the Signalbox apps. */
++export const signalboxAppsTitle = "Signalbox apps";
++export const signalboxAppsDescription = "Download";
+ 
+ /** Account forms share the organization settings geometry. */
+ export const accountSettingClass = organizationSettingClass;
+@@ -121,3 +124,12 @@ export function SecurityPending({ children }: { readonly children?: ReactNode })
+     </PageFrame>
+   );
+ }
++
++/** The downloads read no account data; only the release's version line waits on GitHub. */
++export function SignalboxAppsPending() {
++  return (
++    <PageFrame>
++      <PageHeader title={signalboxAppsTitle} description={signalboxAppsDescription} />
++    </PageFrame>
++  );
++}
+diff --git a/apps/hosted/web/src/implementation/components/account.tsx b/apps/hosted/web/src/implementation/components/account.tsx
+--- a/apps/hosted/web/src/implementation/components/account.tsx
++++ b/apps/hosted/web/src/implementation/components/account.tsx
+@@ -16,13 +16,14 @@ import {
+ } from "./dashboard-frame.tsx";
+ import { OrganizationAvatar } from "./organization.tsx";
+ import { TokensPending } from "./tokens-pending.tsx";
+-import { ProfilePending, SecurityPending } from "./account-pending.tsx";
++import { ProfilePending, SecurityPending, SignalboxAppsPending } from "./account-pending.tsx";
+ export { TokensPending } from "./tokens-pending.tsx";
+ export {
+   AccountSettingPending,
+   ProfilePending,
+   SecurityPending,
+   SessionsPending,
++  SignalboxAppsPending,
+   accountSettingClass,
+   readOnlyInputClass,
+   profileDescription,
+@@ -149,6 +150,8 @@ export function AccountPending({
+         <TokensPending />
+       ) : section === "security" ? (
+         <SecurityPending>{security}</SecurityPending>
++      ) : section === "signalbox-apps" ? (
++        <SignalboxAppsPending />
+       ) : (
+         <ProfilePending />
+       )}
+diff --git a/apps/hosted/web/src/implementation/components/dashboard-frame.tsx b/apps/hosted/web/src/implementation/components/dashboard-frame.tsx
+--- a/apps/hosted/web/src/implementation/components/dashboard-frame.tsx
++++ b/apps/hosted/web/src/implementation/components/dashboard-frame.tsx
+@@ -2,6 +2,7 @@ import { Link, useLocation } from "@tanstack/react-router";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import {
+   BoxesIcon,
++  Download04Icon,
+   FingerPrintIcon,
+   Key01Icon,
+   Plug01Icon,
+@@ -12,6 +13,7 @@ import {
+   HandHelpingIcon,
+ } from "@hugeicons/core-free-icons";
+ import type { ReactNode } from "react";
++import { githubSourceRepository } from "../../contracts/github-source.ts";
+ import { parseAccountSearch } from "../../contracts/navigation.ts";
+ import type { OrganizationAccess } from "@executor-js/hosted-server/organization";
+ import { DashboardShell as SharedShell } from "@executor-js/ui/dashboard/shell";
+@@ -108,25 +110,30 @@ const accountItems = [
+   { to: "/account/profile", label: "Profile", icon: UserIcon },
+   { to: "/account/security", label: "Security", icon: FingerPrintIcon },
+   { to: "/account/tokens", label: "Tokens", icon: Key01Icon },
++  { to: "/account/signalbox-apps", label: "Signalbox apps", icon: Download04Icon },
+ ] as const;
+ 
+ /** Links for the account area; none of them take an organization. */
+ export function AccountNavigation() {
+   const { search } = useLocation();
+   const { organization } = parseAccountSearch(search);
++  // The apps download from the brand's own GitHub releases; without that source there are none.
++  const releases = githubSourceRepository(useProductBrand().source) !== null;
+   return (
+     <>
+-      {accountItems.map((item) => (
+-        <Link
+-          key={item.to}
+-          to={item.to}
+-          search={{ organization }}
+-          activeProps={{ className: "active", "aria-current": "page" }}
+-        >
+-          <HugeiconsIcon icon={item.icon} strokeWidth={2} size={16} aria-hidden />
+-          {item.label}
+-        </Link>
+-      ))}
++      {accountItems
++        .filter((item) => releases || item.to !== "/account/signalbox-apps")
++        .map((item) => (
++          <Link
++            key={item.to}
++            to={item.to}
++            search={{ organization }}
++            activeProps={{ className: "active", "aria-current": "page" }}
++          >
++            <HugeiconsIcon icon={item.icon} strokeWidth={2} size={16} aria-hidden />
++            {item.label}
++          </Link>
++        ))}
+     </>
+   );
+ }
+diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/web/src/implementation/pages/connect.tsx
+--- a/apps/hosted/web/src/implementation/pages/connect.tsx
++++ b/apps/hosted/web/src/implementation/pages/connect.tsx
+@@ -23,6 +23,7 @@ import {
+ } from "../../contracts/mcp-connections.ts";
+ import { useDocumentationUrl } from "../documentation.ts";
+ import { useResourceOrigins } from "../resource-origin.ts";
++import { githubSourceRepository } from "../../contracts/github-source.ts";
+ import { useMemo } from "react";
+ import { ClaudeLogo } from "@executor-js/ui/dashboard/assistant-logos";
+ import { ClaudeDesktopSetup } from "./claude-desktop-setup.tsx";
+@@ -78,6 +79,23 @@ function PersonalTokenSetup({
+   );
+ }
+ 
++/** Next to agent setup, since the apps connect a computer; their downloads live on the account page. */
++function SignalboxAppsLink() {
++  const { slug } = useOrganizationRoute();
++  if (githubSourceRepository(useProductBrand().source) === null) return null;
++  return (
++    <p className="mb-4 text-[13px]">
++      <Link
++        to="/account/signalbox-apps"
++        search={{ organization: slug }}
++        className="text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
++      >
++        Get the Signalbox apps for Mac, Windows, Linux and Android <span aria-hidden>→</span>
++      </Link>
++    </p>
++  );
++}
++
+ /** Installed apps, MCP connections and connected agents. */
+ export const connectPageReads: OrganizationPageReads = (organization) => [
+   resourceInventoryAtom(organization),
+@@ -158,6 +176,7 @@ export function ConnectPage() {
+       installation={
+         // Only the person's own setup gets the pool; a scoped connection keeps the built-in guides.
+         <AssistantGuideExtensionsProvider value={extensions}>
++          <SignalboxAppsLink />
+           <McpInstallInstructions
+             endpoint={`${mcpOrigin}/mcp`}
+             docs={docs}
+diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
+--- a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
++++ b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
+@@ -24,9 +24,9 @@ import {
+   prepareObsidianConnectionAtom,
+   type ObsidianProtocolUnavailable,
+ } from "../../contracts/obsidian-sync.ts";
++import { githubSourceRepository } from "../../contracts/github-source.ts";
+ import {
+   basaltSyncReleaseAtom,
+-  basaltSyncRepository,
+   bratInstallLink,
+   bratStoreLink,
+ } from "../../contracts/obsidian-plugin.ts";
+@@ -132,7 +132,7 @@ function ConnectObsidian({ app }: { readonly app: App }) {
+           </ul>
+           {/* Mounted only while open, so the release is checked when someone is connecting. */}
+           <ConnectSteps
+-            repository={basaltSyncRepository(brand.source)}
++            repository={githubSourceRepository(brand.source)}
+             step={step}
+             onConnect={() => void connect()}
+           />
+diff --git a/apps/hosted/web/src/implementation/pages/signalbox-apps.tsx b/apps/hosted/web/src/implementation/pages/signalbox-apps.tsx
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/signalbox-apps.tsx
+@@ -0,0 +1,240 @@
++import { useAtomValue } from "@effect/atom-react";
++import { Link, useLocation } from "@tanstack/react-router";
++import { AsyncResult } from "effect/reactivity";
++import { useId, useSyncExternalStore, type ReactNode } from "react";
++import { Button } from "@executor-js/ui/components/button";
++import {
++  Card,
++  CardContent,
++  CardDescription,
++  CardFooter,
++  CardHeader,
++  CardTitle,
++} from "@executor-js/ui/components/card";
++import { Code } from "@executor-js/ui/dashboard/code";
++import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
++import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { githubSourceRepository } from "../../contracts/github-source.ts";
++import { parseAccountSearch } from "../../contracts/navigation.ts";
++import {
++  isMacBrowser,
++  signalboxAppAssets,
++  signalboxAppDownload,
++  signalboxAppOffered,
++  signalboxAppsReleaseAtom,
++  signalboxAppsReleaseNotes,
++  signalboxAppsVersionLine,
++  signalboxCliInstall,
++  type SignalboxAppAsset,
++  type SignalboxAppsRelease,
++} from "../../contracts/signalbox-apps.ts";
++import { useAccountOrganization } from "../components/account.tsx";
++import {
++  accountSettingClass,
++  signalboxAppsDescription,
++  signalboxAppsTitle,
++} from "../components/account-pending.tsx";
++
++const linkClass = "font-medium text-foreground underline underline-offset-2";
++const noSubscription = () => () => {};
++
++/** Only the browser knows its platform; the server renders the fixed order. */
++const useMacBrowser = () =>
++  useSyncExternalStore(
++    noSubscription,
++    () => isMacBrowser(globalThis.navigator),
++    () => false,
++  );
++
++/**
++ * Downloads for the Signalbox apps from the deployment's own GitHub releases. The links never
++ * depend on GitHub's API; only the version line and "Not in this release" do.
++ */
++export function SignalboxAppsPage() {
++  useDocumentTitle(signalboxAppsTitle);
++  const repository = githubSourceRepository(useProductBrand().source);
++  return repository === null ? (
++    <PageFrame>
++      <PageHeader title={signalboxAppsTitle} />
++      <p className="text-[13px] text-muted-foreground">
++        This deployment doesn't publish the Signalbox apps.
++      </p>
++    </PageFrame>
++  ) : (
++    <SignalboxApps repository={repository} />
++  );
++}
++
++function SignalboxApps({ repository }: { readonly repository: string }) {
++  const result = useAtomValue(signalboxAppsReleaseAtom(repository));
++  const release: SignalboxAppsRelease = AsyncResult.isSuccess(result)
++    ? result.value
++    : { kind: "unconfirmed" };
++  const version = signalboxAppsVersionLine(release);
++  const mac = useMacBrowser();
++  const notes = signalboxAppsReleaseNotes(repository);
++  const download = (asset: SignalboxAppAsset, label: string, primary = false) =>
++    signalboxAppOffered(release, asset) ? (
++      <Button key={asset} variant={primary ? "default" : "outline"} size="sm" asChild>
++        <a href={signalboxAppDownload(repository, asset)}>{label}</a>
++      </Button>
++    ) : null;
++
++  return (
++    <PageFrame>
++      <PageHeader
++        title={signalboxAppsTitle}
++        description={
++          <>
++            {signalboxAppsDescription}
++            {/* Holds the version line's height while GitHub answers; a failed read drops it. */}
++            {AsyncResult.isInitial(result) ? (
++              <span className="block min-h-[1lh]" aria-hidden />
++            ) : (
++              version !== null && <span className="block">{version}</span>
++            )}
++          </>
++        }
++      />
++      <div className="grid gap-3 md:grid-cols-2">
++        <ClientCard
++          title="Mac"
++          requirement="Apple silicon (M1 or later), macOS 14 or newer"
++          help="macOS asks you to allow it once."
++          notes={notes}
++          downloads={[download(signalboxAppAssets.mac, "Download for Mac", mac)]}
++        />
++        <ClientCard
++          title="Windows"
++          requirement="64-bit Windows"
++          help="Windows may say it protected your PC."
++          notes={notes}
++          downloads={[download(signalboxAppAssets.windows, "Download for Windows")]}
++        />
++        <ClientCard
++          title="Linux"
++          requirement="64-bit x86, as an AppImage or a .deb package"
++          help="The AppImage needs one step before it runs."
++          notes={notes}
++          downloads={[
++            download(signalboxAppAssets.appImage, "Download AppImage"),
++            download(signalboxAppAssets.deb, "Download .deb"),
++          ]}
++        />
++        <ClientCard
++          title="Android"
++          requirement="Download it on your phone"
++          help="Android asks you to allow installs from your browser."
++          notes={notes}
++          downloads={[download(signalboxAppAssets.android, "Download for Android")]}
++        />
++        <ClientCard
++          title="Command line"
++          requirement="For servers and terminals without a desktop. Needs Node.js 24.18 or newer."
++          notes={notes}
++          wide
++          downloads={[
++            signalboxAppOffered(release, signalboxAppAssets.cli) ? (
++              // The install guides' code style wraps long commands instead of scrolling them.
++              <div
++                key="cli"
++                className="mcp-install-code w-full min-w-0 overflow-hidden rounded-lg border"
++              >
++                <Code
++                  code={signalboxCliInstall(repository)}
++                  path="install.sh"
++                  lineNumbers={false}
++                  copyable
++                  copyLabel="Copy commands"
++                />
++              </div>
++            ) : null,
++          ]}
++        />
++      </div>
++      <OtherPlatforms notes={notes} />
++    </PageFrame>
++  );
++}
++
++/** One client: what it runs on, its downloads, and where its first-open steps are. */
++function ClientCard({
++  title,
++  requirement,
++  help,
++  notes,
++  wide = false,
++  downloads,
++}: {
++  readonly title: string;
++  readonly requirement: string;
++  readonly help?: string;
++  readonly notes: string;
++  readonly wide?: boolean;
++  /** One entry per file; a file the release lacks is null. */
++  readonly downloads: ReadonlyArray<ReactNode>;
++}) {
++  const offered = downloads.filter(Boolean);
++  const heading = useId();
++  return (
++    <section aria-labelledby={heading} className={wide ? "md:col-span-2" : undefined}>
++      <Card className={`${accountSettingClass} h-full`}>
++        <CardHeader>
++          <CardTitle>
++            <h2 id={heading}>{title}</h2>
++          </CardTitle>
++          <CardDescription>{requirement}</CardDescription>
++        </CardHeader>
++        <CardContent className="mt-auto">
++          {offered.length > 0 ? (
++            <div className="grid gap-2 sm:flex sm:flex-wrap">{offered}</div>
++          ) : (
++            <p className="text-[12px] text-muted-foreground">Not in this release</p>
++          )}
++        </CardContent>
++        {help !== undefined && offered.length > 0 && (
++          <CardFooter>
++            <p>
++              {help}{" "}
++              <a className={linkClass} href={notes} target="_blank" rel="noreferrer">
++                See the steps
++              </a>
++            </p>
++          </CardFooter>
++        )}
++      </Card>
++    </section>
++  );
++}
++
++/** iPhone, iPad and Obsidian have no download here; say where each one stands. */
++function OtherPlatforms({ notes }: { readonly notes: string }) {
++  const { search } = useLocation();
++  const { selected } = useAccountOrganization(parseAccountSearch(search).organization);
++  return (
++    <ul className="mt-4 space-y-1.5 text-[12px] leading-5 text-muted-foreground">
++      <li>
++        iPhone and iPad: not available yet.{" "}
++        <a className={linkClass} href={notes} target="_blank" rel="noreferrer">
++          Release notes
++        </a>
++      </li>
++      <li>
++        Obsidian: install Signalbox Sync with Connect Obsidian on your notes app.
++        {selected !== undefined && (
++          <>
++            {" "}
++            <Link
++              className={linkClass}
++              to="/org/$organizationSlug/apps"
++              params={{ organizationSlug: selected.slug }}
++            >
++              Open apps
++            </Link>
++          </>
++        )}
++      </li>
++    </ul>
++  );
++}

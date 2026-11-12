@@ -45,6 +45,10 @@ function verifyFixture(declaredPlans: boolean) {
       ".upstream/packages/ui/src/implementation/styles/fonts/geist-sans.woff2": "sans",
       ".upstream/packages/ui/src/implementation/styles/fonts/geist-mono.woff2": "mono",
       ".upstream/packages/ui/src/implementation/styles/fonts/LICENSE.txt": "license",
+      ".upstream/packages/ui/src/implementation/dashboard/account-observation-text.ts":
+        "export const source = 'original';\n",
+      ".upstream/packages/ui/src/implementation/dashboard/account-observation-readings-view.tsx":
+        'export { source } from "./account-observation-text.ts";\n',
     }))
       write(path, content);
     const inventorySource = ".upstream/e2e/tests/hitl-intent-scope.spec.ts";
@@ -52,6 +56,10 @@ function verifyFixture(declaredPlans: boolean) {
     if (declaredPlans) write(inventorySource, "export const documentScoped = false;\n");
     const pin = initialize(upstream);
     write(".upstream/packages/example.ts", "export const carried = true;\n");
+    const sharedText =
+      ".upstream/packages/ui/src/implementation/dashboard/account-observation-text.ts";
+    const carriedText = "export const source = 'carried renderer';\n";
+    write(sharedText, carriedText);
     const requiredSource = ".upstream/packages/required.ts";
     write(requiredSource, "export const required = true;\n");
     if (declaredPlans) {
@@ -66,6 +74,8 @@ function verifyFixture(declaredPlans: boolean) {
       ".gitignore": ".upstream/\n",
       "upstream.json": JSON.stringify({ commit: pin }),
       "apps/pool/index.ts": "export default {};\n",
+      "apps/pool/ui/observation-readings.ts":
+        'export * from "../../../.upstream/packages/ui/src/implementation/dashboard/account-observation-readings-view.tsx";\n',
       "src/pool/token.ts": "export const signer = true;\n",
       "src/pool/access-contract.ts": "export const accessPrefix = 'sba1';\n",
       "src/pool/native-contract.ts": native,
@@ -133,6 +143,11 @@ function verifyFixture(declaredPlans: boolean) {
       commit: pin,
       patches: ["0001-example.patch"],
     });
+    write(sharedText, "export const source = 'unreviewed renderer';\n");
+    bundlePoolApp(root, upstream);
+    assert.throws(() => verifyConnectorsSource(root), /Generated pool runtime source differs/);
+    write(sharedText, carriedText);
+    bundlePoolApp(root, upstream);
     if (declaredPlans) {
       write(inventorySource, "export const documentScoped = false;\n");
       assert.throws(() => verifyConnectorsSource(root), /differs from the carried patch set/);

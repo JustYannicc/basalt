@@ -67,6 +67,7 @@ function view(reading: Json, provider = "codex") {
     [{ id: "a", provider, email: "synthetic@example.test" }],
     [reading],
     new Set(["a"]),
+    Date.parse(observedAt),
   )[0]!;
 }
 
@@ -131,7 +132,9 @@ test("Codex details retain 5h, weekly and real model families; capacity still re
   assert.equal(capacity([result])[0]!.left, 0.8);
   assert.equal(result.windows.at(-1)!.windowSeconds, 604800);
   assert.ok(result.windows.every((w) => w.observedAt === observedAt));
-  assert.deepEqual(result.bankedResets, { available: 3, nextExpiresAt: "2026-11-01T00:00:00Z" });
+  assert.equal(result.bankedResets?.available, 3);
+  assert.equal(result.bankedResets?.nextExpiresAt, "2026-11-01T00:00:00.000Z");
+  assert.ok(result.bankedResets?.groups?.every((group) => group.scope.kind === "unknown"));
   assert.equal(result.freshness, "fresh");
   assert.equal(result.readingFailed, false);
   assert.equal(result.nextReadAt, nextReadAt);
@@ -149,7 +152,9 @@ test("Claude reset grants have a count with no individual credit list or known e
     }),
     "claude",
   );
-  assert.deepEqual(result.bankedResets, { available: 4, nextExpiresAt: null });
+  assert.equal(result.bankedResets?.available, 4);
+  assert.equal(result.bankedResets?.nextExpiresAt, null);
+  assert.equal(result.bankedResets?.groups?.[0]?.scope.kind, "unknown");
   assert.deepEqual(
     result.windows.map((w) => w.windowSeconds),
     [18000, 604800],
@@ -199,7 +204,19 @@ test("stale and failed readings keep last-known windows; partial is usable, neve
   assert.equal(view(detail({ reset_credits: undefined })).bankedResets, null);
   assert.deepEqual(
     view(detail({ reset_credits: { available_count: 0, credits: [] } })).bankedResets,
-    { available: 0, nextExpiresAt: null },
+    {
+      available: 0,
+      nextExpiresAt: null,
+      groups: [
+        {
+          label: "Resets with unknown scope",
+          available: 0,
+          expiresAt: null,
+          scope: { kind: "unknown" },
+          reset: { kind: "unknown" },
+        },
+      ],
+    },
   );
   const empty = accountsView([{ id: "a" }], [], new Set(["a"]))[0]!;
   assert.equal(empty.freshness, "never");

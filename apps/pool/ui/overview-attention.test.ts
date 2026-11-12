@@ -4,8 +4,7 @@ import type { Account, PoolView } from "../contract.ts";
 import {
   accountProblems,
   accountsNeedingSomeone,
-  bankedResetCount,
-  bankedResetText,
+  bankedResetLine,
   peopleOfText,
 } from "./overview-attention.ts";
 
@@ -46,7 +45,10 @@ test("attention keeps overlapping symptoms visible and only totals actual availa
       ["unavailable", 1],
     ],
   );
-  assert.equal(bankedResetCount(result), 3);
+  assert.equal(
+    bankedResetLine(result, 0)?.text,
+    "3 resets with unknown scope · last known for 1 account",
+  );
   assert.deepEqual(accountProblems(view([account("healthy")])), []);
 });
 
@@ -83,8 +85,8 @@ test("attention copy agrees with one account and one reset", () => {
       text.startsWith("accounts "),
     ),
   );
-  assert.equal(bankedResetText(1), "1 banked reset available");
-  assert.equal(bankedResetText(2), "2 banked resets available");
+  const one = view([account("a", { bankedResets: { available: 1, nextExpiresAt: null } })]);
+  assert.equal(bankedResetLine(one, 0)?.text, "1 reset with unknown scope available");
 });
 
 test("people counts take their noun from the total, not the active count", () => {

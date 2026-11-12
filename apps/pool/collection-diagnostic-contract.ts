@@ -92,6 +92,7 @@ export interface XaiCollectionDiagnostic {
 }
 
 export interface CollectionDiagnostic {
+  readonly claude?: ClaudeQuotaShape;
   /** Home collector invocation time, separate from the SDK request and saved failure time. */
   readonly attemptedAt: string;
   readonly provider: "claude" | "codex" | "xai";
@@ -101,6 +102,28 @@ export interface CollectionDiagnostic {
   readonly primaryWindow?: QuotaFieldPresence;
   readonly secondaryWindow?: QuotaFieldPresence;
   readonly xai?: XaiCollectionDiagnostic;
+}
+
+/** Opt-in, closed discovery projection. No account, grant, or credential identifiers. */
+export interface ClaudeQuotaShape {
+  readonly limitsPresent: boolean;
+  readonly grantsPresent: boolean;
+  readonly truncated: boolean;
+  readonly limits: readonly {
+    readonly kind: string;
+    readonly model?: string;
+    readonly percent?: number;
+    readonly resetsAt?: string;
+  }[];
+  readonly grants: readonly {
+    readonly type?: string;
+    readonly remaining?: number;
+    readonly clears: readonly string[];
+    readonly givesBackWeekly: boolean;
+    readonly startsAt?: string;
+    readonly endsAt?: string;
+    readonly paused: boolean;
+  }[];
 }
 
 export const collectionRequestDispositions = [

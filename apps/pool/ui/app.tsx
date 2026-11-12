@@ -198,6 +198,7 @@ export function App({
             days={days}
             providers={view?.providers}
             view={view}
+            now={now}
             accountsHref={accountsHref}
             onRetry={() => void overview.reload()}
           />

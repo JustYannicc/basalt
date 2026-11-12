@@ -74,6 +74,44 @@ export const reply = (result: Effect.Effect<unknown, DriveRequestFailed>): Promi
     ),
   );
 
+const record = (value: unknown): Record<string, unknown> =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+/** The grant id in the host's MCP caller, `[userId, clientId, organization, grantId]`. */
+export const grantOf = (caller: string | undefined) => {
+  if (caller === undefined) return null;
+  try {
+    const parts: unknown = JSON.parse(caller);
+    return Array.isArray(parts) && typeof parts[3] === "string" && parts[3] ? parts[3] : null;
+  } catch {
+    return null;
+  }
+};
+/**
+ * The main a device's sync call has seen. Only the shapes of the plugin's sync calls count: its
+ * heartbeat (a one-entry listing of the root, at the start of every pull and checkpoint), its change
+ * ranges and its import calls. A landed write counts at the heartbeat that follows it. The vault sees
+ * only the grant id, not what kind of client holds it, so an agent's ordinary listings, reads and
+ * writes record nothing, but an agent making one of these exact calls is recorded like a device.
+ */
+export const seenHead = (command: Command, value: unknown): string | null => {
+  const out = record(value);
+  const head = (method: unknown) => {
+    if (method === "list") return typeof out.at === "string" ? out.at : null;
+    if (method === "changes") return typeof out.to === "string" ? out.to : null;
+    if (method === "apply" && out.state === "landed" && typeof out.oid === "string") return out.oid;
+    return null;
+  };
+  if (command.method === "runImport") return head(record(record(command.input).request).method);
+  if (command.method === "changes") return head("changes");
+  if (command.method !== "list") return null;
+  const input = record(command.input);
+  const heartbeat =
+    input.limit === 1 &&
+    input.path === undefined &&
+    input.at === undefined &&
+    input.cursor === undefined;
+  return heartbeat ? head("list") : null;
+};
 const tokenSeconds = 3600,
   refreshMs = 5 * 60_000;
 const repositoryName = (app: string) => {
@@ -161,27 +199,75 @@ export function vaultObject(
       vault.changes,
       vault.root,
       vault.imports,
+      {
+        ...vault.notes,
+        devices: () => devices(vault.notes),
+      },
     );
   };
+  const ready = async () => {
+    opened ??= open();
+    try {
+      return await opened;
+    } catch {
+      // A failed open (the repository was unreachable) must not stick for the object's lifetime.
+      opened = undefined;
+      return null;
+    }
+  };
+  const { sql } = input.storage;
+  // Each device's last successful sync, keyed by its grant: what the vault page shows as up to date.
+  sql.exec(
+    "CREATE TABLE IF NOT EXISTS vault_devices (agent TEXT PRIMARY KEY, last_sync_at INTEGER NOT NULL, last_head TEXT NOT NULL)",
+  );
+  const stamp = (caller: string | undefined, command: Command, value: unknown) => {
+    const agent = grantOf(caller),
+      head = seenHead(command, value);
+    if (!agent || !head) return;
+    sql.exec(
+      "INSERT INTO vault_devices(agent, last_sync_at, last_head) VALUES (?, ?, ?) ON CONFLICT(agent) DO UPDATE SET last_sync_at = excluded.last_sync_at, last_head = excluded.last_head",
+      agent,
+      now(),
+      head,
+    );
+  };
+  const unavailable: VaultReply = {
+    ok: false,
+    error: { _tag: "DriveRequestFailed", reason: "unavailable" },
+  };
+
+  /** The current head, when it changed, and each device's last sync and the head it had then. */
+  const devices = async (notes: {
+    head(): Promise<string | null>;
+    lastChange(): Promise<string | null>;
+  }) => ({
+    head: await notes.head(),
+    lastChangeAt: await notes.lastChange(),
+    devices: [
+      ...sql.exec(
+        "SELECT agent, last_sync_at, last_head FROM vault_devices ORDER BY last_sync_at DESC",
+      ),
+    ].map((row) => ({
+      agent: String(row.agent),
+      lastSyncAt: new Date(Number(row.last_sync_at)).toISOString(),
+      lastHead: String(row.last_head),
+    })),
+  });
 
   return {
-    async request(command: unknown): Promise<VaultReply> {
+    /** `caller` is the host's authenticated MCP caller; a sync from a device grant is recorded. */
+    async request(command: unknown, caller?: string): Promise<VaultReply> {
       let decoded: Command;
       try {
         decoded = Schema.decodeUnknownSync(DriveCommand)(command);
       } catch {
         return { ok: false, error: { _tag: "DriveRequestFailed", reason: "invalid_request" } };
       }
-      opened ??= open();
-      let dispatch: Awaited<ReturnType<typeof open>>;
-      try {
-        dispatch = await opened;
-      } catch {
-        // A failed open (the repository was unreachable) must not stick for the object's lifetime.
-        opened = undefined;
-        return { ok: false, error: { _tag: "DriveRequestFailed", reason: "unavailable" } };
-      }
-      return reply(dispatch(decoded));
+      const dispatch = await ready();
+      if (!dispatch) return unavailable;
+      const answer = await reply(dispatch(decoded));
+      if (answer.ok) stamp(caller, decoded, answer.value);
+      return answer;
     },
   };
 }

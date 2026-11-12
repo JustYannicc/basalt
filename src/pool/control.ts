@@ -1,4 +1,5 @@
 import { poolCreditRouting, setPoolCreditPolicy } from "./credit-policy.ts";
+import { setPoolSelectionPolicy } from "./selection-policy.ts";
 import {
   retainCollectionDiagnostic,
   type CollectionDiagnosticStorage,
@@ -707,6 +708,11 @@ async function sessionFor(
 }
 type Route = (ctx: RouteContext) => Promise<Response>;
 const routes: Record<string, Route> = {
+  "PATCH /selection-policy": async ({ client, pool, request }) => {
+    const payload: unknown = await request.json();
+    if (!object(payload)) return fail(400, "invalid_query", "Choose an account selection policy.");
+    return json(await setPoolSelectionPolicy(client, pool, payload.accountSelectionPolicy));
+  },
   "GET /credit-policy": async ({ client, pool }) => json(await poolCreditRouting(client, pool)),
   "PATCH /credit-policy": async ({ client, pool, request }) => {
     const payload: unknown = await request.json();

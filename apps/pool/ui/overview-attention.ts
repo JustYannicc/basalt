@@ -1,4 +1,5 @@
 import { overviewAccounts } from "./overview-accounts.ts";
+import { resetSummary, resetSummaryText } from "./account-limits.ts";
 import type { PoolView } from "../contract.ts";
 
 export interface AccountProblem {
@@ -73,11 +74,11 @@ export const accountsNeedingSomeone = (view: PoolView) =>
       account.state !== "active",
   ).length;
 
-export const bankedResetCount = (view: PoolView) =>
-  view.accounts.reduce((sum, account) => sum + (account.bankedResets?.available ?? 0), 0);
-
-export const bankedResetText = (count: number) =>
-  `${count} banked ${count === 1 ? "reset" : "resets"} available`;
+/** Banked resets by kind and scope; null when none is left. Never one combined total. */
+export function bankedResetLine(view: PoolView, now: number) {
+  const summary = resetSummary(view, now);
+  return summary.parts.length === 0 ? null : { ...summary, text: resetSummaryText(summary) };
+}
 
 /** The total decides the noun: "1 of 1 person", "0 of 3 people". */
 export const peopleOfText = (active: number, total: number) =>

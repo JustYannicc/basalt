@@ -1,0 +1,847 @@
+diff --git a/internal/cluster/basalt_claude_shape.go b/internal/cluster/basalt_claude_shape.go
+new file mode 100644
+index 0000000..3465f95
+--- /dev/null
++++ b/internal/cluster/basalt_claude_shape.go
+@@ -0,0 +1,48 @@
++package cluster
++
++// Opt-in discovery metadata. No vendor response, credential or grant identifier is retained.
++type ClaudeQuotaShape struct {
++	LimitsPresent bool               `json:"limits_present"`
++	Limits        []ClaudeLimitShape `json:"limits"`
++	GrantsPresent bool               `json:"grants_present"`
++	Grants        []ClaudeGrantShape `json:"grants"`
++	Truncated     bool               `json:"truncated"`
++}
++type ClaudeLimitShape struct {
++	Kind     string   `json:"kind"`
++	Model    string   `json:"model,omitempty"`
++	Percent  *float64 `json:"percent,omitempty"`
++	ResetsAt string   `json:"resets_at,omitempty"`
++}
++type ClaudeGrantShape struct {
++	Type            string   `json:"type,omitempty"`
++	Remaining       *int     `json:"remaining,omitempty"`
++	Clears          []string `json:"clears"`
++	GivesBackWeekly bool     `json:"gives_back_weekly"`
++	StartsAt        string   `json:"starts_at,omitempty"`
++	EndsAt          string   `json:"ends_at,omitempty"`
++	Paused          bool     `json:"paused"`
++}
++
++func copyClaudeShape(value *ClaudeQuotaShape) *ClaudeQuotaShape {
++	if value == nil {
++		return nil
++	}
++	copy := *value
++	copy.Limits = append([]ClaudeLimitShape{}, value.Limits...)
++	copy.Grants = append([]ClaudeGrantShape{}, value.Grants...)
++	for index := range copy.Limits {
++		if copy.Limits[index].Percent != nil {
++			number := *copy.Limits[index].Percent
++			copy.Limits[index].Percent = &number
++		}
++	}
++	for index := range copy.Grants {
++		copy.Grants[index].Clears = append([]string{}, value.Grants[index].Clears...)
++		if copy.Grants[index].Remaining != nil {
++			number := *copy.Grants[index].Remaining
++			copy.Grants[index].Remaining = &number
++		}
++	}
++	return &copy
++}
+diff --git a/internal/cluster/basalt_collection_diagnostic.go b/internal/cluster/basalt_collection_diagnostic.go
+index 0bdfdb7..79ec04c 100644
+--- a/internal/cluster/basalt_collection_diagnostic.go
++++ b/internal/cluster/basalt_collection_diagnostic.go
+@@ -15,6 +15,7 @@ type QuotaFieldPresence struct {
+ 
+ // A closed projection of the source shape, independent of quota quantities and stdout.
+ type QuotaCollectionDiagnostic struct {
++	Claude           *ClaudeQuotaShape        `json:"claude,omitempty"`
+ 	AttemptedAt      time.Time                `json:"attempted_at"`
+ 	Provider         string                   `json:"provider"`
+ 	ResponseReceived bool                     `json:"response_received"`
+@@ -58,6 +59,7 @@ func (r *Repository) collectionDiagnostic(id string) *QuotaCollectionDiagnostic
+ }
+ func copyCollectionDiagnostic(value QuotaCollectionDiagnostic) QuotaCollectionDiagnostic {
+ 	value.XAI = copyXAIDiagnostic(value.XAI)
++	value.Claude = copyClaudeShape(value.Claude)
+ 	if value.FiveHour != nil {
+ 		field := *value.FiveHour
+ 		value.FiveHour = &field
+diff --git a/internal/cluster/basalt_reset_metadata.go b/internal/cluster/basalt_reset_metadata.go
+new file mode 100644
+index 0000000..b0dc041
+--- /dev/null
++++ b/internal/cluster/basalt_reset_metadata.go
+@@ -0,0 +1,39 @@
++package cluster
++
++import (
++	"fmt"
++	"strings"
++)
++
++func normalizeResetMetadata(credit *QuotaResetCredit) (int, error) {
++	remaining := 1 // Older stored Codex entries represent one credit each.
++	if credit.Remaining != nil {
++		remaining = *credit.Remaining
++		if remaining < 1 || remaining > 1_000_000 {
++			return 0, fmt.Errorf("invalid reset remaining count")
++		}
++	}
++	if credit.Kind != "" && !quotaAllowed(credit.Kind, "session", "weekly", "full", "model", "unknown") {
++		return 0, fmt.Errorf("invalid reset kind")
++	}
++	if credit.Scope != "" && !quotaAllowed(credit.Scope, "account", "model", "unknown") {
++		return 0, fmt.Errorf("invalid reset scope")
++	}
++	if credit.Scope == "model" && (credit.ScopeID == nil || strings.TrimSpace(*credit.ScopeID) == "" || len(*credit.ScopeID) > 64) {
++		return 0, fmt.Errorf("model reset scope is missing")
++	}
++	if len(credit.Clears) > 16 {
++		return 0, fmt.Errorf("too many reset windows")
++	}
++	for _, id := range credit.Clears {
++		if id == "" || len(id) > 64 {
++			return 0, fmt.Errorf("invalid reset window")
++		}
++		for _, char := range id {
++			if !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '_' || char == '-') {
++				return 0, fmt.Errorf("invalid reset window")
++			}
++		}
++	}
++	return remaining, nil
++}
+diff --git a/internal/cluster/management/basalt_scoped_reset_test.go b/internal/cluster/management/basalt_scoped_reset_test.go
+new file mode 100644
+index 0000000..c770fbe
+--- /dev/null
++++ b/internal/cluster/management/basalt_scoped_reset_test.go
+@@ -0,0 +1,90 @@
++package management
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++func TestClaudeScopedResetSnapshotHTTP(t *testing.T) {
++	handler, closeRepo := newUsageObservabilityTestHandler(t)
++	defer closeRepo()
++	now := time.Now().UTC().Truncate(time.Second)
++	expiry := now.Add(time.Hour)
++	reset := now.Add(24 * time.Hour)
++	auth := &coreauth.Auth{ID: "scoped-account", Index: "scoped-account", Provider: "claude", Status: coreauth.StatusActive, Metadata: map[string]any{"type": "claude", "access_token": "secret-scoped-sentinel"}, CreatedAt: now, UpdatedAt: now}
++	if _, err := handler.repo.UpsertAuth(context.Background(), auth, "test"); err != nil {
++		t.Fatal(err)
++	}
++	all, fableCount, weeklyCount := 4, 3, 1
++	family := "fable"
++	ratio := .25
++	seconds := int64(604800)
++	_, err := handler.repo.UpsertQuotaSnapshot(context.Background(), cluster.QuotaSnapshotWrite{
++		CredentialID: auth.ID, QuotaStatus: "healthy", CollectionStatus: "success", Source: "active_probe", ObservedAt: &now, ExpiresAt: &expiry, LastAttemptAt: &now, LastSuccessAt: &now, ReplaceWindows: true, ReplaceResetCredits: true,
++		Windows: []cluster.QuotaWindow{{ID: "claude-seven-day-fable", Scope: "model", ScopeID: &family, Mode: "rolling", Status: "healthy", Unit: "percentage", RemainingRatio: &ratio, WindowSeconds: &seconds, ObservedAt: now, ResetAt: &reset}},
++		ResetCredits: &cluster.QuotaResetCredits{AvailableCount: &all, ObservedAt: now, Credits: []cluster.QuotaResetCredit{
++			{ID: "fable-secret-id", Status: "available", GrantedAt: now, ExpiresAt: &reset, Kind: "model", Scope: "model", ScopeID: &family, Remaining: &fableCount, Clears: []string{"seven_day_overage_included"}, GivesBackWeekly: true},
++			{ID: "weekly-secret-id", Status: "available", GrantedAt: now, ExpiresAt: &expiry, Kind: "weekly", Scope: "account", Remaining: &weeklyCount, Clears: []string{"seven_day"}},
++		}},
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	gin.SetMode(gin.TestMode)
++	engine := gin.New()
++	engine.GET("/quota/credentials/:credential_id", handler.GetQuotaCredential)
++	response := httptest.NewRecorder()
++	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/quota/credentials/"+auth.ID, nil))
++	if response.Code != 200 {
++		t.Fatalf("HTTP status %d", response.Code)
++	}
++	var result struct {
++		Resets struct {
++			Available int `json:"available_count"`
++			Credits   []struct {
++				Remaining int       `json:"remaining"`
++				Kind      string    `json:"kind"`
++				Scope     string    `json:"scope"`
++				ScopeID   string    `json:"scope_id"`
++				Gives     bool      `json:"gives_back_weekly"`
++				ExpiresAt time.Time `json:"expires_at"`
++			} `json:"credits"`
++		} `json:"reset_credits"`
++		Windows []struct {
++			Scope   string `json:"scope"`
++			ScopeID string `json:"scope_id"`
++		} `json:"windows"`
++	}
++	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
++		t.Fatal(err)
++	}
++	if result.Resets.Available != 4 || len(result.Resets.Credits) != 2 || len(result.Windows) != 1 || result.Windows[0].Scope != "model" || result.Windows[0].ScopeID != "fable" {
++		t.Fatalf("normalized metadata lost: %+v", result)
++	}
++	var fable, weekly bool
++	for _, credit := range result.Resets.Credits {
++		if credit.Kind == "model" {
++			fable = credit.Scope == "model" && credit.ScopeID == "fable" && credit.Remaining == 3 && credit.Gives && credit.ExpiresAt.Equal(reset)
++		}
++		if credit.Kind == "weekly" {
++			weekly = credit.Scope == "account" && credit.Remaining == 1 && credit.ExpiresAt.Equal(expiry)
++		}
++	}
++	if !fable || !weekly {
++		t.Fatalf("reset kinds/counts/expiry lost: %+v", result.Resets)
++	}
++	for _, secret := range []string{"secret-scoped-sentinel", "fable-secret-id", "weekly-secret-id"} {
++		if strings.Contains(response.Body.String(), secret) {
++			t.Fatal("private identifier escaped")
++		}
++	}
++}
+diff --git a/internal/cluster/management/quota_snapshots.go b/internal/cluster/management/quota_snapshots.go
+index d2e9934..34a2492 100644
+--- a/internal/cluster/management/quota_snapshots.go
++++ b/internal/cluster/management/quota_snapshots.go
+@@ -25,9 +25,15 @@ type quotaHTTPError struct {
+ }
+ 
+ type quotaResetCreditDTO struct {
+-	Status    string     `json:"status"`
+-	GrantedAt time.Time  `json:"granted_at"`
+-	ExpiresAt *time.Time `json:"expires_at"`
++	Remaining       *int       `json:"remaining,omitempty"`
++	Kind            string     `json:"kind,omitempty"`
++	Scope           string     `json:"scope,omitempty"`
++	ScopeID         *string    `json:"scope_id,omitempty"`
++	Clears          []string   `json:"clears,omitempty"`
++	GivesBackWeekly bool       `json:"gives_back_weekly,omitempty"`
++	Status          string     `json:"status"`
++	GrantedAt       *time.Time `json:"granted_at,omitempty"`
++	ExpiresAt       *time.Time `json:"expires_at"`
+ }
+ 
+ type quotaResetCreditsDTO struct {
+@@ -47,8 +53,14 @@ func quotaResetCreditsDTOFrom(value *cluster.QuotaResetCredits) *quotaResetCredi
+ 			expiresAtUTC := credit.ExpiresAt.UTC()
+ 			expiresAt = &expiresAtUTC
+ 		}
++		var grantedAt *time.Time
++		if !credit.GrantedAt.IsZero() {
++			at := credit.GrantedAt.UTC()
++			grantedAt = &at
++		}
+ 		credits = append(credits, quotaResetCreditDTO{
+-			Status: credit.Status, GrantedAt: credit.GrantedAt.UTC(), ExpiresAt: expiresAt,
++			Status: credit.Status, GrantedAt: grantedAt, ExpiresAt: expiresAt,
++			Remaining: credit.Remaining, Kind: credit.Kind, Scope: credit.Scope, ScopeID: credit.ScopeID, Clears: credit.Clears, GivesBackWeekly: credit.GivesBackWeekly,
+ 		})
+ 	}
+ 	return &quotaResetCreditsDTO{
+diff --git a/internal/cluster/quota_snapshots.go b/internal/cluster/quota_snapshots.go
+index 9580131..9d9f092 100644
+--- a/internal/cluster/quota_snapshots.go
++++ b/internal/cluster/quota_snapshots.go
+@@ -180,10 +180,16 @@ type QuotaPlan struct {
+ 
+ // QuotaResetCredit describes one available provider-issued quota reset credit.
+ type QuotaResetCredit struct {
+-	ID        string     `json:"id"`
+-	Status    string     `json:"status"`
+-	GrantedAt time.Time  `json:"granted_at"`
+-	ExpiresAt *time.Time `json:"expires_at"`
++	Remaining       *int       `json:"remaining,omitempty"`
++	Kind            string     `json:"kind,omitempty"`
++	Scope           string     `json:"scope,omitempty"`
++	ScopeID         *string    `json:"scope_id,omitempty"`
++	Clears          []string   `json:"clears,omitempty"`
++	GivesBackWeekly bool       `json:"gives_back_weekly,omitempty"`
++	ID              string     `json:"id"`
++	Status          string     `json:"status"`
++	GrantedAt       time.Time  `json:"granted_at"`
++	ExpiresAt       *time.Time `json:"expires_at"`
+ }
+ 
+ // QuotaResetCredits carries the latest normalized reset-credit observation.
+@@ -1446,8 +1452,17 @@ func normalizeQuotaResetCredits(value *QuotaResetCredits) error {
+ 		return fmt.Errorf("quota reset credits exceed %d items", quotaResetCreditMaxItems)
+ 	}
+ 	seen := make(map[string]struct{}, len(value.Credits))
++	listed := 0
+ 	for index := range value.Credits {
+ 		credit := &value.Credits[index]
++		remaining, errMetadata := normalizeResetMetadata(credit)
++		if errMetadata != nil {
++			return errMetadata
++		}
++		listed += remaining
++		if listed > 1_000_000 {
++			return fmt.Errorf("reset count exceeds limit")
++		}
+ 		credit.ID = quotaBoundedIdentifier(credit.ID, quotaResetCreditIDMaxLength)
+ 		if credit.ID == "" {
+ 			return fmt.Errorf("quota reset credit id is required")
+@@ -1460,7 +1475,7 @@ func normalizeQuotaResetCredits(value *QuotaResetCredits) error {
+ 		if credit.Status != "available" {
+ 			return fmt.Errorf("quota reset credit %q has unsupported status %q", credit.ID, credit.Status)
+ 		}
+-		if credit.GrantedAt.IsZero() {
++		if credit.GrantedAt.IsZero() && credit.Remaining == nil {
+ 			return fmt.Errorf("quota reset credit %q granted_at is required", credit.ID)
+ 		}
+ 		credit.GrantedAt = credit.GrantedAt.UTC()
+@@ -1484,8 +1499,8 @@ func normalizeQuotaResetCredits(value *QuotaResetCredits) error {
+ 	if value.Credits == nil {
+ 		value.Credits = []QuotaResetCredit{}
+ 	}
+-	if value.AvailableCount == nil || *value.AvailableCount < len(value.Credits) {
+-		availableCount := len(value.Credits)
++	if value.AvailableCount == nil || *value.AvailableCount < listed {
++		availableCount := listed
+ 		value.AvailableCount = &availableCount
+ 	}
+ 	return nil
+diff --git a/internal/quota/basalt_claude_limits.go b/internal/quota/basalt_claude_limits.go
+new file mode 100644
+index 0000000..b179cff
+--- /dev/null
++++ b/internal/quota/basalt_claude_limits.go
+@@ -0,0 +1,155 @@
++package quota
++
++import (
++	"fmt"
++	"strings"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++// Claude Code 2.1.322 reads model families from limits, rather than the retired
++// seven_day_<model> fields. is_active describes severity, not whether a cap exists.
++type claudeLimit struct {
++	Kind     string   `json:"kind"`
++	Percent  *float64 `json:"percent"`
++	ResetsAt string   `json:"resets_at"`
++	Scope    struct {
++		Model *struct {
++			DisplayName string `json:"display_name"`
++		} `json:"model"`
++	} `json:"scope"`
++}
++
++func appendClaudeLimits(windows []cluster.QuotaWindow, limits []claudeLimit, observedAt time.Time) ([]cluster.QuotaWindow, error) {
++	if len(limits) > 64 {
++		return nil, fmt.Errorf("too many Claude limits")
++	}
++	seen := make(map[string]bool)
++	for _, limit := range limits {
++		id, label, scope, scopeID, unit, amount := "", (*string)(nil), "account", (*string)(nil), "week", float64(1)
++		switch limit.Kind {
++		case "session":
++			id, unit, amount = "claude-five-hour", "hour", 5
++		case "weekly_all":
++			id = "claude-seven-day"
++		case "weekly_scoped":
++			if limit.Scope.Model == nil {
++				continue
++			}
++			name := strings.TrimSpace(limit.Scope.Model.DisplayName)
++			key := quotaIDSlug(name)
++			if key == "" || len(key) > 64 || len(name) > 64 {
++				continue
++			}
++			id, label, scope, scopeID = "claude-seven-day-"+key, quotaStringPtr(name+" weekly"), "model", quotaStringPtr(key)
++		default:
++			continue
++		}
++		if seen[id] {
++			return nil, fmt.Errorf("duplicate Claude limit")
++		}
++		seen[id] = true
++		current := appendClaudeWindow(nil, id, label, scope, scopeID, &claudeUsageWindow{Utilization: limit.Percent, ResetsAt: limit.ResetsAt}, unit, amount, len(windows), observedAt)
++		if limit.Percent == nil {
++			current = []cluster.QuotaWindow{{ID: id, Label: label, Scope: scope, ScopeID: scopeID, Unit: "percentage", Mode: "rolling", Status: "unknown", WindowSeconds: periodSeconds(unit, amount), PeriodUnit: unit, PeriodValue: quotaFloatPtr(amount), ResetAt: parseProviderTime(limit.ResetsAt), ObservedAt: observedAt, Source: "active_probe", Priority: len(windows)}}
++		} else if !finiteQuantity(*limit.Percent) {
++			return nil, fmt.Errorf("invalid Claude limit amount")
++		}
++		// A present but unreadable modern limit must not resurrect an older alias.
++		kept := windows[:0]
++		for _, window := range windows {
++			if window.ID != id {
++				kept = append(kept, window)
++			}
++		}
++		windows = append(kept, current...)
++	}
++	if len(windows) > 64 {
++		return nil, fmt.Errorf("too many Claude quota windows")
++	}
++	return windows, nil
++}
++
++func claudeResetScope(kind string, givesBackWeekly bool, clears []string) (string, string, *string) {
++	if givesBackWeekly {
++		return "model", "model", quotaStringPtr("fable")
++	}
++	if kind != "" && kind != "session" && kind != "weekly" && kind != "full" {
++		return "unknown", "unknown", nil
++	}
++	if len(clears) == 0 {
++		if kind != "" {
++			return kind, "account", nil
++		}
++		return "unknown", "unknown", nil
++	}
++	session, weekly := false, false
++	var model *string
++	for _, window := range clears {
++		switch window {
++		case "five_hour":
++			session = true
++		case "seven_day", "seven_day_overage_included":
++			weekly = true
++		default:
++			if strings.HasPrefix(window, "seven_day_") {
++				key := quotaIDSlug(strings.TrimPrefix(window, "seven_day_"))
++				if key == "" || model != nil && *model != key {
++					return "unknown", "unknown", nil
++				}
++				model = &key
++			} else {
++				return "unknown", "unknown", nil
++			}
++		}
++	}
++	if model != nil {
++		if weekly {
++			return "unknown", "unknown", nil
++		}
++		return "model", "model", model
++	}
++	if kind != "" {
++		return kind, "account", nil
++	}
++	if session && weekly {
++		return "full", "account", nil
++	}
++	if weekly {
++		return "weekly", "account", nil
++	}
++	if session {
++		return "session", "account", nil
++	}
++	return "unknown", "unknown", nil
++}
++
++// Expose effects using the same window IDs as quota reads, so every UI can
++// describe ancillary refills without another provider-specific mapping.
++func claudeResetWindows(clears []string, givesBackWeekly bool) []string {
++	result := make([]string, 0, len(clears))
++	for _, key := range clears {
++		var id string
++		switch key {
++		case "five_hour":
++			id = "claude-five-hour"
++		case "seven_day":
++			id = "claude-seven-day"
++		case "seven_day_overage_included":
++			if givesBackWeekly {
++				id = "claude-seven-day-fable"
++			} else {
++				id = "claude-seven-day"
++			}
++		default:
++			if strings.HasPrefix(key, "seven_day_") {
++				id = "claude-seven-day-" + quotaIDSlug(strings.TrimPrefix(key, "seven_day_"))
++			}
++		}
++		if id != "" {
++			result = append(result, id)
++		}
++	}
++	return result
++}
+diff --git a/internal/quota/basalt_claude_limits_test.go b/internal/quota/basalt_claude_limits_test.go
+new file mode 100644
+index 0000000..0df9c51
+--- /dev/null
++++ b/internal/quota/basalt_claude_limits_test.go
+@@ -0,0 +1,146 @@
++package quota
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++// Schema fixture from official Claude Code 2.1.322. Account values are synthetic;
++// production discovery must confirm the current vendor shape independently.
++func TestClaudeModernScopedLimits(t *testing.T) {
++	at := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
++	body := `{"seven_day":{"utilization":20},"seven_day_opus":{"utilization":90},"limits":[{"kind":"weekly_all","percent":25,"resets_at":"2026-11-14T12:00:00Z"},{"kind":"weekly_scoped","percent":100,"is_active":false,"resets_at":"2026-11-14T12:00:00Z","scope":{"model":{"display_name":"Fable"}}},{"kind":"weekly_scoped","percent":30,"scope":{"model":{"display_name":"Opus"}}},{"kind":"weekly_scoped","percent":0,"scope":{"model":{"display_name":"New Model"}}},{"kind":"weekly_scoped","percent":10,"scope":{"surface":{"display_name":"Research"}}} ]}`
++	windows, err := parseClaudeUsageWindows([]byte(body), at)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(windows) != 4 {
++		t.Fatalf("windows=%+v", windows)
++	}
++	byID := make(map[string]cluster.QuotaWindow)
++	for _, window := range windows {
++		byID[window.ID] = window
++	}
++	for _, item := range []struct {
++		id, scope, model string
++		remaining        float64
++	}{
++		{"claude-seven-day", "account", "", .75},
++		{"claude-seven-day-fable", "model", "fable", 0},
++		{"claude-seven-day-opus", "model", "opus", .7},
++		{"claude-seven-day-new-model", "model", "new-model", 1},
++	} {
++		window := byID[item.id]
++		if window.Scope != item.scope || window.WindowSeconds == nil || *window.WindowSeconds != 604800 || window.RemainingRatio == nil || *window.RemainingRatio != item.remaining {
++			t.Fatalf("wrong window: %+v", window)
++		}
++		if item.model != "" && (window.ScopeID == nil || *window.ScopeID != item.model) {
++			t.Fatal("model scope lost")
++		}
++	}
++	if byID["claude-seven-day-fable"].ResetAt == nil {
++		t.Fatal("model reset deadline lost")
++	}
++	if _, err := parseClaudeUsageWindows([]byte(`{"limits":[{"kind":"weekly_scoped","percent":1,"scope":{"model":{"display_name":"Fable"}}},{"kind":"weekly_scoped","percent":2,"scope":{"model":{"display_name":"Fable"}}}]}`), at); err == nil {
++		t.Fatal("duplicate model limits accepted")
++	}
++}
++
++func TestClaudeScopedResetGrants(t *testing.T) {
++	at := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
++	body := `{"cedar_ember":{"eligible":true,"grants":[{"id":"fable","resets_left":3,"type":"weekly","gives_back_weekly":true,"clears":["seven_day_overage_included"],"starts_at":"2026-11-01T00:00:00Z","ends_at":"2027-03-09T07:59:00Z"},{"id":"weekly","resets_left":1,"type":"weekly","clears":["seven_day"],"ends_at":"2026-12-10T22:00:00Z"},{"id":"expired","resets_left":50,"ends_at":"2026-11-11T00:00:00Z"},{"id":"paused","resets_left":50,"paused":true},{"id":"future","resets_left":50,"starts_at":"2027-01-01T00:00:00Z"}]}}`
++	credits, err := parseClaudeResetCredits([]byte(body), at)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if *credits.AvailableCount != 4 || len(credits.Credits) != 2 {
++		t.Fatalf("wrong grants: %+v", credits)
++	}
++	fable, weekly := credits.Credits[0], credits.Credits[1]
++	if fable.Kind != "model" || fable.Scope != "model" || fable.ScopeID == nil || *fable.ScopeID != "fable" || !fable.GivesBackWeekly || *fable.Remaining != 3 || fable.ExpiresAt == nil || fable.ExpiresAt.Format(time.RFC3339) != "2027-03-09T07:59:00Z" {
++		t.Fatalf("wrong model reset: %+v", fable)
++	}
++	if len(fable.Clears) != 1 || fable.Clears[0] != "claude-seven-day-fable" {
++		t.Fatal("reset effects do not reference quota windows")
++	}
++	if weekly.Kind != "weekly" || weekly.Scope != "account" || weekly.ScopeID != nil || *weekly.Remaining != 1 || weekly.ExpiresAt == nil || weekly.ExpiresAt.Format(time.RFC3339) != "2026-12-10T22:00:00Z" {
++		t.Fatalf("wrong weekly reset: %+v", weekly)
++	}
++	for _, item := range []struct {
++		kind               string
++		gives              bool
++		clears             []string
++		want, scope, model string
++	}{
++		{"", false, nil, "unknown", "unknown", ""},
++		{"session", false, []string{"five_hour"}, "session", "account", ""},
++		{"", false, []string{"seven_day"}, "weekly", "account", ""},
++		{"", false, []string{"five_hour", "seven_day"}, "full", "account", ""},
++		{"weekly", false, []string{"seven_day_new_model"}, "model", "model", "new-model"},
++	} {
++		kind, scope, model := claudeResetScope(item.kind, item.gives, item.clears)
++		if kind != item.want || scope != item.scope || item.model != "" && (model == nil || *model != item.model) {
++			t.Fatalf("wrong scope %s %s %v", kind, scope, model)
++		}
++	}
++}
++
++func TestClaudeShapeDiagnosticIsOptInAndClosed(t *testing.T) {
++	at := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
++	body := []byte(`{"token":"secret-sentinel","email":"private@example.invalid","limits":[{"kind":"weekly_scoped","percent":88,"scope":{"model":{"display_name":"Fable"}},"resets_at":"2026-12-01T00:00:00Z"}],"cedar_ember":{"grants":[{"id":"grant-secret-sentinel","type":"weekly","resets_left":3,"clears":["seven_day_overage_included"],"gives_back_weekly":true,"ends_at":"2027-03-09T07:59:00Z"}]}}`)
++	diagnostic := newFieldDiagnostic("claude", at)
++	ctx := context.WithValue(context.Background(), fieldDiagnosticKey{}, diagnostic)
++	t.Setenv("POOL_CLAUDE_QUOTA_DIAGNOSTIC", "")
++	recordClaudeShape(ctx, body, false)
++	if diagnostic.Claude != nil {
++		t.Fatal("diagnostic enabled by default")
++	}
++	t.Setenv("POOL_CLAUDE_QUOTA_DIAGNOSTIC", "true")
++	recordClaudeShape(ctx, body, false)
++	recordClaudeShape(ctx, body, true)
++	if diagnostic.Claude == nil || len(diagnostic.Claude.Limits) != 1 || len(diagnostic.Claude.Grants) != 1 || !diagnostic.Claude.GrantsPresent || !diagnostic.Claude.LimitsPresent {
++		t.Fatalf("shape missing: %+v", diagnostic.Claude)
++	}
++	encoded, _ := json.Marshal(diagnostic.Claude)
++	if strings.Contains(string(encoded), "secret") || strings.Contains(string(encoded), "private@") || strings.Contains(string(encoded), `"id"`) {
++		t.Fatal("private source escaped")
++	}
++}
++
++func TestClaudeModernScopedLimitsBoundProducerRows(t *testing.T) {
++	at := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
++	limits := make([]map[string]any, 64)
++	grants := make([]map[string]any, 64)
++	for i := range limits {
++		limits[i] = map[string]any{"kind": "weekly_scoped", "percent": 10, "scope": map[string]any{"model": map[string]any{"display_name": fmt.Sprintf("Model %d", i)}}}
++		grants[i] = map[string]any{"id": fmt.Sprintf("grant-%d", i), "resets_left": 1, "type": "weekly"}
++	}
++	usage, _ := json.Marshal(map[string]any{"limits": limits})
++	windows, err := parseClaudeUsageWindows(usage, at)
++	if err != nil || len(windows) != 64 {
++		t.Fatalf("64 windows lost: %d %v", len(windows), err)
++	}
++	// Legacy windows are part of the same output budget as modern model limits.
++	usage, _ = json.Marshal(map[string]any{"five_hour": map[string]any{"utilization": 10}, "limits": limits})
++	if _, err := parseClaudeUsageWindows(usage, at); err == nil {
++		t.Fatal("65 combined windows accepted")
++	}
++	resetBody := func(rows []map[string]any) []byte {
++		body, _ := json.Marshal(map[string]any{"cedar_ember": map[string]any{"eligible": true, "grants": rows}})
++		return body
++	}
++	credits, err := parseClaudeResetCredits(resetBody(grants), at)
++	if err != nil || len(credits.Credits) != 64 || *credits.AvailableCount != 64 {
++		t.Fatalf("64 balances lost: %+v %v", credits, err)
++	}
++	grants = append(grants, map[string]any{"id": "extra", "resets_left": 1})
++	if _, err := parseClaudeResetCredits(resetBody(grants), at); err == nil {
++		t.Fatal("65 balances accepted")
++	}
++}
+diff --git a/internal/quota/basalt_claude_shape.go b/internal/quota/basalt_claude_shape.go
+new file mode 100644
+index 0000000..50b4747
+--- /dev/null
++++ b/internal/quota/basalt_claude_shape.go
+@@ -0,0 +1,99 @@
++package quota
++
++import (
++	"context"
++	"encoding/json"
++	"os"
++	"regexp"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++var claudeShapeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$`)
++
++func shapeName(value string) string {
++	if claudeShapeName.MatchString(value) {
++		return value
++	}
++	return "unknown"
++}
++func shapeTime(value string) string {
++	if at := parseProviderTime(value); at != nil {
++		return at.UTC().Format(time.RFC3339Nano)
++	}
++	return ""
++}
++func recordClaudeShape(ctx context.Context, body []byte, grants bool) {
++	if os.Getenv("POOL_CLAUDE_QUOTA_DIAGNOSTIC") != "true" {
++		return
++	}
++	d, _ := ctx.Value(fieldDiagnosticKey{}).(*cluster.QuotaCollectionDiagnostic)
++	if d == nil || d.Provider != "claude" {
++		return
++	}
++	if d.Claude == nil {
++		d.Claude = &cluster.ClaudeQuotaShape{Limits: []cluster.ClaudeLimitShape{}, Grants: []cluster.ClaudeGrantShape{}}
++	}
++	var root map[string]json.RawMessage
++	if json.Unmarshal(body, &root) != nil {
++		return
++	}
++	if !grants {
++		_, d.Claude.LimitsPresent = root["limits"]
++		var limits []claudeLimit
++		if json.Unmarshal(root["limits"], &limits) != nil {
++			return
++		}
++		for index, limit := range limits {
++			if index >= 32 {
++				d.Claude.Truncated = true
++				break
++			}
++			row := cluster.ClaudeLimitShape{Kind: shapeName(limit.Kind), ResetsAt: shapeTime(limit.ResetsAt)}
++			if limit.Scope.Model != nil {
++				row.Model = shapeName(limit.Scope.Model.DisplayName)
++			}
++			if limit.Percent != nil && finiteQuantity(*limit.Percent) && *limit.Percent <= 100 {
++				row.Percent = limit.Percent
++			}
++			d.Claude.Limits = append(d.Claude.Limits, row)
++		}
++		return
++	}
++	var status map[string]json.RawMessage
++	if json.Unmarshal(root["cedar_ember"], &status) != nil {
++		return
++	}
++	_, d.Claude.GrantsPresent = status["grants"]
++	var rows []struct {
++		Type            string   `json:"type"`
++		Remaining       *int     `json:"resets_left"`
++		Clears          []string `json:"clears"`
++		GivesBackWeekly bool     `json:"gives_back_weekly"`
++		StartsAt        string   `json:"starts_at"`
++		EndsAt          string   `json:"ends_at"`
++		Paused          bool     `json:"paused"`
++	}
++	if json.Unmarshal(status["grants"], &rows) != nil {
++		return
++	}
++	for index, grant := range rows {
++		if index >= 32 {
++			d.Claude.Truncated = true
++			break
++		}
++		row := cluster.ClaudeGrantShape{Type: shapeName(grant.Type), Clears: []string{}, GivesBackWeekly: grant.GivesBackWeekly, StartsAt: shapeTime(grant.StartsAt), EndsAt: shapeTime(grant.EndsAt), Paused: grant.Paused}
++		if grant.Remaining != nil && *grant.Remaining >= 0 && *grant.Remaining <= 1_000_000 {
++			row.Remaining = grant.Remaining
++		}
++		for i, window := range grant.Clears {
++			if i >= 16 {
++				d.Claude.Truncated = true
++				break
++			}
++			row.Clears = append(row.Clears, shapeName(window))
++		}
++		d.Claude.Grants = append(d.Claude.Grants, row)
++	}
++}
+diff --git a/internal/quota/claude_reset_credits.go b/internal/quota/claude_reset_credits.go
+index b4de52b..49a913d 100644
+--- a/internal/quota/claude_reset_credits.go
++++ b/internal/quota/claude_reset_credits.go
+@@ -30,6 +30,7 @@ func (c *Collector) probeClaudeResetCredits(ctx context.Context, auth *coreauth.
+ 	if errRequest != nil {
+ 		return nil, errRequest
+ 	}
++	recordClaudeShape(ctx, body, true)
+ 	credits, errParse := parseClaudeResetCredits(body, c.options.Now().UTC())
+ 	if errParse != nil {
+ 		return nil, &probeError{code: "RESET_CREDITS_RESPONSE_INVALID", message: "Claude reset credits response could not be parsed.", retryable: true}
+@@ -49,11 +50,14 @@ func parseClaudeResetCredits(body []byte, observedAt time.Time) (*cluster.QuotaR
+ 			Eligible         *bool  `json:"eligible"`
+ 			IneligibleReason string `json:"ineligible_reason"`
+ 			Grants           []struct {
+-				ID         string `json:"id"`
+-				ResetsLeft *int   `json:"resets_left"`
+-				StartsAt   string `json:"starts_at"`
+-				EndsAt     string `json:"ends_at"`
+-				Paused     bool   `json:"paused"`
++				ID              string   `json:"id"`
++				ResetsLeft      *int     `json:"resets_left"`
++				StartsAt        string   `json:"starts_at"`
++				EndsAt          string   `json:"ends_at"`
++				Paused          bool     `json:"paused"`
++				Type            string   `json:"type"`
++				Clears          []string `json:"clears"`
++				GivesBackWeekly bool     `json:"gives_back_weekly"`
+ 			} `json:"grants"`
+ 		} `json:"cedar_ember"`
+ 	}
+@@ -76,7 +80,11 @@ func parseClaudeResetCredits(body []byte, observedAt time.Time) (*cluster.QuotaR
+ 	if status.Grants == nil {
+ 		return nil, fmt.Errorf("Claude reset grants are missing")
+ 	}
++	if len(status.Grants) > 64 {
++		return nil, fmt.Errorf("too many Claude reset grants")
++	}
+ 	count := 0
++	credits := make([]cluster.QuotaResetCredit, 0, len(status.Grants))
+ 	seen := make(map[string]struct{}, len(status.Grants))
+ 	for _, grant := range status.Grants {
+ 		id := strings.TrimSpace(grant.ID)
+@@ -102,16 +110,23 @@ func parseClaudeResetCredits(body []byte, observedAt time.Time) (*cluster.QuotaR
+ 			}
+ 			active = active && endsAt.After(observedAt)
+ 		}
+-		if active {
++		if active && *grant.ResetsLeft > 0 {
+ 			count += *grant.ResetsLeft
+ 			if count > 1_000_000 {
+ 				return nil, fmt.Errorf("Claude reset grant count is out of range")
+ 			}
++			kind, scope, scopeID := claudeResetScope(grant.Type, grant.GivesBackWeekly, grant.Clears)
++			remaining := *grant.ResetsLeft
++			var starts time.Time
++			if grant.StartsAt != "" {
++				starts, _ = time.Parse(time.RFC3339Nano, grant.StartsAt)
++			}
++			credits = append(credits, cluster.QuotaResetCredit{ID: id, Status: "available", GrantedAt: starts, ExpiresAt: parseProviderTime(grant.EndsAt), Remaining: &remaining, Kind: kind, Scope: scope, ScopeID: scopeID, Clears: claudeResetWindows(grant.Clears, grant.GivesBackWeekly), GivesBackWeekly: grant.GivesBackWeekly})
+ 		}
+ 	}
+ 	return &cluster.QuotaResetCredits{
+ 		AvailableCount: &count,
+ 		ObservedAt:     observedAt.UTC(),
+-		Credits:        []cluster.QuotaResetCredit{},
++		Credits:        credits,
+ 	}, nil
+ }
+diff --git a/internal/quota/claude_test.go b/internal/quota/claude_test.go
+index 25d5c82..19eecf3 100644
+--- a/internal/quota/claude_test.go
++++ b/internal/quota/claude_test.go
+@@ -84,7 +84,7 @@ func TestParseClaudeResetCredits(t *testing.T) {
+ 				}
+ 				return
+ 			}
+-			if credits == nil || credits.AvailableCount == nil || *credits.AvailableCount != test.count || !credits.ObservedAt.Equal(now) || len(credits.Credits) != 0 {
++			if credits == nil || credits.AvailableCount == nil || *credits.AvailableCount != test.count || !credits.ObservedAt.Equal(now) {
+ 				t.Fatalf("unexpected reset grants: %+v", credits)
+ 			}
+ 		})
+diff --git a/internal/quota/providers.go b/internal/quota/providers.go
+index b19e1a2..fa0ea8b 100644
+--- a/internal/quota/providers.go
++++ b/internal/quota/providers.go
+@@ -26,6 +26,7 @@ func (c *Collector) probeClaude(ctx context.Context, auth *coreauth.Auth) (probe
+ 		return probeResult{}, errUsage
+ 	}
+ 	recordReturnedWindows(ctx, "claude", body)
++	recordClaudeShape(ctx, body, false)
+ 	windows, errParse := parseClaudeUsageWindows(body, c.options.Now().UTC())
+ 	if errParse != nil || len(windows) == 0 {
+ 		return probeResult{}, &probeError{code: "UPSTREAM_RESPONSE_INVALID", message: "Claude quota response did not contain usable windows.", retryable: true}
+@@ -286,6 +287,7 @@ func probeCollectionError(failure *probeError, occurredAt time.Time) *cluster.Qu
+ }
+ 
+ type claudeUsagePayload struct {
++	Limits            []claudeLimit      `json:"limits"`
+ 	FiveHour          *claudeUsageWindow `json:"five_hour"`
+ 	SevenDay          *claudeUsageWindow `json:"seven_day"`
+ 	SevenDayOAuthApps *claudeUsageWindow `json:"seven_day_oauth_apps"`
+@@ -324,7 +326,7 @@ func parseClaudeUsageWindows(body []byte, observedAt time.Time) ([]cluster.Quota
+ 	if extra, ok := claudeExtraUsageWindow(payload.ExtraUsage, observedAt); ok {
+ 		windows = append(windows, extra)
+ 	}
+-	return windows, nil
++	return appendClaudeLimits(windows, payload.Limits, observedAt)
+ }
+ 
+ func appendClaudeWindow(windows []cluster.QuotaWindow, id string, label *string, scope string, scopeID *string, input *claudeUsageWindow, periodUnit string, periodValue float64, priority int, observedAt time.Time) []cluster.QuotaWindow {

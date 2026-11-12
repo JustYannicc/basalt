@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-selection-import-compatibility",
+  "file": "0536-selection-import-compatibility.patch",
+  "content_sha256": "515462100767360c87566c6c094231548787587a18d51bf10b0680e9936b841f",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

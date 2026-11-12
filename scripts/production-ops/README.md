@@ -45,6 +45,38 @@ Dispatch `production-ops.yml` on `main` with `action=inventory`, the public key 
   the latest counted hour and success. Hours past retention that no later call
   pruned are included. Counts only, never a call's input or result. A missing
   counts table fails the run with SQL state class `42`.
+- `retained-frameworks`: every retained version associated with this organization's
+  apps, including inactive versions and configured copies. Fixed SQL checks both
+  app and version ownership. `rows` groups exact framework version, SHA-256 and
+  protocol tuples with distinct version counts and app IDs. `builds` lists each
+  build pointer, associated version and app IDs, and its completeness. `frameworks`
+  lists only key, size, etag and upload time for objects under `frameworks/` in
+  the existing EU AppBuilds bucket, including currently unreferenced frameworks.
+  No app names, source, compiled modules or raw bodies leave the Worker.
+
+The retained-frameworks reader consumes bounded record bodies inside the Worker.
+Format 2 supplies its recorded framework identity and protocol. Legacy records,
+with format 1 or no format marker, supply only their protocol and inline modules.
+The reader hashes only string `node_modules/apps/*.js` modules using the retained
+storage's canonical hash and requires exactly one framework object with that hash.
+It never evaluates modules, compiles an app or reads its source manifest to guess
+a version. Missing, unreadable or malformed records, missing framework modules,
+and missing or ambiguous framework identities appear as fixed per-build incomplete
+reasons with `complete: false`. Resolved tuples in such a result are partial;
+check the overall `complete` field before relying on the inventory.
+
+This selection refuses above 2,000 SQL associations or 2,000 framework objects,
+three metadata pages, 8,000,000 bytes per record, 32,000,000 total record bytes or
+eight seconds of R2 inventory work. Each attempt reserves its allowed bytes before
+reading. Successful reads refund unused bytes and confirmed absences refund the
+whole allowance; failed reads retain it, so repeated partial failures cannot bypass
+the total bound. Stream bytes are bounded before accumulation, even if the reported
+object size is wrong. An owned native reader initiates cancellation without awaiting
+the provider's cancellation promise and releases its lock on interruption or refusal.
+An invalid listing, unavailable
+binding or exceeded bound refuses the selection instead of returning a truncated
+result. R2 metadata and the SQL snapshot are separate observations; a concurrent
+deployment can leave an unreferenced framework in the listing.
 
 `retired-tokens` uses the same recorded pool-app, personal placement and exact
 provider provenance as host-managed pool-access rows. Labels do not identify

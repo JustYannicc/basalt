@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "An Obsidian app's devices are its connection: Accounts and the Overview accounts card list the member's grants held through a scoped connection whose policy includes that app, oldest first, never other apps' or unscoped grants, and Accounts offers Disconnect, which revokes that one grant. Devices that report only the plugin's shared client name are numbered in connection order. Where the app has a devices query, each row's sync time and whether it holds the vault's head come from the drive's record for that row's own grant, read by running the query as the signed-in person; other callers' records never show, and a device with no record shows its grant's last token activity. The header reads Connect another device once one device syncs the vault and Connect Obsidian otherwise. Apps without the sync protocol read neither their tool list nor grants for this."
+    }
+  }
+}

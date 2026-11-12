@@ -17,12 +17,31 @@
           "reason": "Uses hosted organization and pool policy."
         }
       }
+    },
+    "poolAccountSelectionPolicy": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "a pool owner switches Account selection between Use quota before it resets and Balance across accounts beside Subscription credits, a held save shows as saving, a failed save keeps the pool's choice until retried, both choices survive a reload, and members see the choice but cannot change it",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses loopback allowance and pool services."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted pool settings."
+        }
+      }
     }
   },
   "runs": {
     "poolAccountSelection": [
       "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
-    ]
+    ],
+    "poolAccountSelectionPolicy": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/infrastructure/executor.ts",
@@ -31,6 +50,7 @@
     ".upstream/apps/hosted/server/package.json",
     ".upstream/apps/hosted/server/src/contracts/accounts.ts",
     ".upstream/apps/hosted/server/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/server/src/contracts/pool-usage.ts",
     ".upstream/apps/hosted/server/src/contracts/provider-account-policy.ts",
     ".upstream/apps/hosted/server/src/implementation/account-key-mirror.ts",
     ".upstream/apps/hosted/server/src/implementation/accounts.ts",
@@ -40,6 +60,7 @@
     ".upstream/apps/hosted/server/src/implementation/oauth-account-connections.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-account-registry.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-credit-routing.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-defaults.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-provider-mirror.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-records.ts",
@@ -52,6 +73,10 @@
     ".upstream/apps/hosted/server/src/implementation/requirement-account-creation.ts",
     ".upstream/apps/hosted/server/src/implementation/requirement-login-file.ts",
     ".upstream/apps/hosted/server/src/implementation/resource-lifecycle.ts",
+    ".upstream/apps/hosted/web/src/contracts/pool-credit-routing.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/pool-credit-policy.tsx",
+    ".upstream/e2e/support/pool-usage-backend.ts",
+    ".upstream/packages/apps/src/contracts/account-observation.ts",
     ".upstream/packages/sdk/package.json",
     ".upstream/packages/sdk/src/account-imports.ts",
     ".upstream/packages/sdk/src/contracts/account-acquisition-driver.ts",
@@ -60,6 +85,7 @@
     ".upstream/packages/sdk/src/implementation/account-acquisition-bindings.ts",
     ".upstream/packages/sdk/src/implementation/account-acquisition-import.ts",
     ".upstream/packages/sdk/src/implementation/apps.ts",
-    ".upstream/packages/sdk/src/implementation/create.ts"
+    ".upstream/packages/sdk/src/implementation/create.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-usage-credits-view.tsx"
   ]
 }

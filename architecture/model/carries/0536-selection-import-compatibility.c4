@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The owner-authorized account selection policy uses the same signed command transport as mapped usage imports. Both commands remain in the shared command type and keep their hosted handlers. Selection transport integration applies after the immutable owner-import carry, preserving both public routes and their existing authorization."
+    }
+  }
+}
