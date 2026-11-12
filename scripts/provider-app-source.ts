@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { servedFrameworkVersion } from "../framework-release.ts";
+import { providerAppIcons } from "../src/catalog/provider-apps/presentation.ts";
 
 export const providerAppLabs = [
   "openai",
@@ -25,11 +26,15 @@ export function providerAppSource(root: string, lab: (typeof providerAppLabs)[nu
     files: [
       {
         path: "index.ts",
-        content: `import { defineApp } from "apps";\nimport { providers } from "./providers.ts";\n\nexport const requirements = { app: { accounts: { ${lab}: providers.${lab}.many().requiring("model-inference") } } };\n\nexport default defineApp(requirements, {});\n`,
+        content: `import { defineApp, object, query, router, string, type QueryContext } from "apps";\nimport { providers } from "./providers.ts";\nimport { readAccountView } from "./account-view.ts";\n\nexport const requirements = { icons: ${JSON.stringify(providerAppIcons(lab))}, app: { accounts: { ${lab}: providers.${lab}.many().requiring("model-inference") } } };\n\nexport const accountView = query({ description: "Read the exact selected account, with native inspection permissions and retained observation freshness.", input: object({ account: string() }) }, (ctx: QueryContext<typeof requirements>, { account }) => readAccountView(ctx.app.accounts.${lab}, account));\n\nexport default defineApp(requirements, { tools: router({ accountView }) });\n`,
       },
       {
         path: "package.json",
         content: `${JSON.stringify({ name: `provider-${lab}`, private: true, type: "module", dependencies: { apps: servedFrameworkVersion } }, null, 2)}\n`,
+      },
+      {
+        path: "account-view.ts",
+        content: readFileSync(join(root, "src/catalog/provider-apps/account-view.ts"), "utf8"),
       },
       {
         path: "cloudflare-scopes.ts",

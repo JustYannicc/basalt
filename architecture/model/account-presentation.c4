@@ -1,8 +1,13 @@
 model {
   extend basalt.toolsGateway {
+    accountReadings = part "Account reading presentation" {
+      description "One read-only table formats account allowances and scoped reset balances for native Accounts and authored pool views. The app bundler packages its canonical source, preserving the same amounts, scope explanations and expiry text without introducing another renderer."
+      metadata { code ".upstream/packages/ui/src/implementation/dashboard/account-observation-text.ts|.upstream/packages/ui/src/implementation/dashboard/account-observation-readings-view.tsx" }
+    }
     accountPresentation = part "Account identity presentation" {
-      description "A verified identity row that several visible apps use takes its mark from the verified issuer and family name, independently of saved-binding age or consumer-app order. Catalog app icons and check avatars cannot replace that identity mark. Verified identities used by a single visible app, unverified saved accounts and app-specific account views retain their own provider marks. Family marks and retained app marks remain correct without horizontal overflow at 1280 px and 390 px. Display grouping does not change saved IDs, credentials, access or app selections."
+      description "A verified identity row that several visible apps use takes its mark from the verified issuer and family name, independently of saved-binding age or consumer-app order. Catalog app icons and check avatars cannot replace that identity mark. Verified identities used by a single visible app, unverified saved accounts and app-specific account views retain their own provider marks. Family marks and retained app marks remain correct without horizontal overflow at 1280 px and 390 px. Display grouping does not change saved IDs, credentials, access or app selections. Provider apps expose their declared icons and safe native account view through the existing app-call dispatcher. Pool marks consume those source icons, and withheld native readings cannot fall back to copied allowance data. Theme choice and live reset-balance filtering are shared with the native account presentation."
       metadata { code ".upstream/packages/ui/src/implementation/dashboard/account-row.tsx|.upstream/packages/ui/src/implementation/dashboard/accounts-client.tsx" }
     }
   }
+  basalt.pool -[sync]-> basalt.toolsGateway.accountReadings "shared account reading presentation"
 }

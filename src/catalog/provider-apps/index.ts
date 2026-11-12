@@ -12,8 +12,7 @@ import meta from "./meta.json" with { type: "json" };
 import jev from "./jev.json" with { type: "json" };
 import cloudflare from "./cloudflare.json" with { type: "json" };
 import openrouter from "./openrouter.json" with { type: "json" };
-import icons from "./provider-icons.json" with { type: "json" };
-import { anthropicIcons, openaiIcons } from "./logos.ts";
+import { providerAppIcons, providerAppNames } from "./presentation.ts";
 
 const sources = {
   openai,
@@ -28,20 +27,6 @@ const sources = {
   jev,
   cloudflare,
   openrouter,
-};
-const names = {
-  openai: "OpenAI",
-  anthropic: "Anthropic",
-  gemini: "Gemini",
-  vertex: "Google Vertex AI",
-  antigravity: "Antigravity",
-  kimi: "Kimi",
-  xai: "xAI",
-  devin: "Devin",
-  meta: "Meta",
-  jev: "Jev",
-  cloudflare: "Cloudflare Workers AI",
-  openrouter: "OpenRouter",
 };
 const methodLabels: Readonly<Record<string, string>> = {
   codex: "ChatGPT subscription",
@@ -61,7 +46,7 @@ const methodLabels: Readonly<Record<string, string>> = {
 
 export const providerApps: readonly Addition[] = Object.entries(sources).map(([id, source]) => {
   const lab = id as keyof typeof sources;
-  const name = names[lab];
+  const name = providerAppNames[lab];
   return {
     entry: {
       id: `provider-${lab}`,
@@ -79,12 +64,7 @@ export const providerApps: readonly Addition[] = Object.entries(sources).map(([i
           kind: capability.connection === "home-oauth" ? "interactive" : "secrets",
           label: methodLabels[capability.method] ?? capability.method,
         })),
-      icons:
-        lab === "openai"
-          ? [...openaiIcons]
-          : lab === "anthropic"
-            ? [...anthropicIcons]
-            : icons[lab],
+      icons: [...providerAppIcons(lab)],
       source: `apps/provider-${lab}.json`,
     },
     source,

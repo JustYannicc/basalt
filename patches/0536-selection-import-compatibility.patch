@@ -1,0 +1,35 @@
+diff --git a/apps/hosted/server/src/implementation/pool-backend.ts b/apps/hosted/server/src/implementation/pool-backend.ts
+--- a/apps/hosted/server/src/implementation/pool-backend.ts
++++ b/apps/hosted/server/src/implementation/pool-backend.ts
+@@ -26,6 +26,7 @@
+   | "importUsage"
+   | "accountRouting"
+   | "setCreditPolicy"
++  | "setSelectionPolicy"
+   | "managed-usage"
+   | "managed-cap"
+   | "poolUsageSeries"
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -1,5 +1,9 @@
+ import { sendPoolCommand, withPool } from "./pool-backend.ts";
+-import { poolAccountRouting, setPoolCreditPolicy } from "./pool-credit-routing.ts";
++import {
++  poolAccountRouting,
++  setPoolCreditPolicy,
++  setPoolSelectionPolicy,
++} from "./pool-credit-routing.ts";
+ import { importPoolUsage } from "./pool-usage-import.ts";
+ import { AppId, StorageError, StorageHost } from "@executor-js/sdk/core";
+ import { Effect, Schema } from "effect";
+@@ -245,6 +249,9 @@
+     .handle("setCreditPolicy", ({ params, payload }) =>
+       setPoolCreditPolicy(params.app, payload.usageCreditPolicy),
+     )
++    .handle("setSelectionPolicy", ({ params, payload }) =>
++      setPoolSelectionPolicy(params.app, payload.accountSelectionPolicy),
++    )
+     .handle("poolUsageSeries", ({ params, payload }) => poolUsageSeries(params.app, payload))
+     .handle("lastSuccessAt", ({ params, payload }) => lastSuccessAt(params.app, payload))
+     .handle("get", ({ params, query }) => poolUsage(params.app, query.after))

@@ -1,5 +1,7 @@
 import { overviewAccounts } from "./overview-accounts.ts";
+import { resetSummary, resetSummaryText } from "./account-limits.ts";
 import type { PoolView } from "../contract.ts";
+import { readingFacts } from "./account-view.ts";
 
 export interface AccountProblem {
   readonly kind: "sign-in" | "checks" | "readings" | "unavailable";
@@ -10,15 +12,17 @@ export interface AccountProblem {
 
 /** Keep overlapping account symptoms separate instead of adding them into a fake account total. */
 export function accountProblems(view: PoolView): AccountProblem[] {
+  // Withheld readings are neither stale nor failed here; the source's own Accounts row says.
+  const facts = (account: PoolView["accounts"][number]) => readingFacts(account);
   const signIn = view.accounts.filter((account) => account.credentialFailure === "unauthorized");
-  const checks = view.accounts.filter((account) => account.readingFailed);
-  const readings = overviewAccounts(view).filter((account) => account.freshness !== "fresh");
+  const checks = view.accounts.filter((account) => facts(account)?.failed === true);
+  const readings = overviewAccounts(view).filter((account) => facts(account)?.current === false);
   const unavailable = view.accounts.filter(
     (account) => account.state !== "active" || account.credentialFailure === "unavailable",
   );
   const since = (accounts: PoolView["accounts"]) => {
     const times = accounts
-      .map((account) => account.collection?.lastAttemptAt ?? account.observedAt)
+      .map((account) => facts(account)?.since)
       .filter(
         (at): at is string => at !== null && at !== undefined && Number.isFinite(Date.parse(at)),
       );
@@ -69,15 +73,15 @@ export const accountsNeedingSomeone = (view: PoolView) =>
   view.accounts.filter(
     (account) =>
       account.credentialFailure !== undefined ||
-      account.readingFailed ||
+      readingFacts(account)?.failed === true ||
       account.state !== "active",
   ).length;
 
-export const bankedResetCount = (view: PoolView) =>
-  view.accounts.reduce((sum, account) => sum + (account.bankedResets?.available ?? 0), 0);
-
-export const bankedResetText = (count: number) =>
-  `${count} banked ${count === 1 ? "reset" : "resets"} available`;
+/** Banked resets by kind and scope; null when none is left. Never one combined total. */
+export function bankedResetLine(view: PoolView, now: number) {
+  const summary = resetSummary(view, now);
+  return summary.parts.length === 0 ? null : { ...summary, text: resetSummaryText(summary) };
+}
 
 /** The total decides the noun: "1 of 1 person", "0 of 3 people". */
 export const peopleOfText = (active: number, total: number) =>

@@ -39,6 +39,8 @@ export interface PoolAccountObservation {
       readonly observedAt: string;
       readonly staleAt?: string;
       readonly expiresAt?: string;
+      readonly scope?: import("./reset-observation-contract.ts").ResetScope;
+      readonly reset?: import("./reset-observation-contract.ts").ResetMetadata;
     }[];
   };
   readonly collection?: {

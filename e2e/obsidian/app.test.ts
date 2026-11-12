@@ -228,3 +228,57 @@ test("query and undeclared drive capabilities refuse before the backend runs", a
   await assert.rejects(undeclared.list());
   assert.equal(dispatched, 0);
 });
+
+test("the vault page's history and devices tools reach the vault's own record", async () => {
+  const f = await driveFixture();
+  try {
+    const unavailable = () =>
+      Effect.fail(new WorkflowFailure({ reason: "unavailable", retryable: false }));
+    const asked: unknown[] = [];
+    const version = {
+      oid: f.root,
+      parents: [],
+      message: "Import\n",
+      time: "2026-11-12T09:00:00.000Z",
+    };
+    const devices = {
+      head: f.root,
+      lastChangeAt: version.time,
+      devices: [{ agent: "grant-mac", lastSyncAt: "2026-11-12T09:05:00.000Z", lastHead: f.root }],
+    };
+    const context = {
+      ...hostContext({ app: {}, user: {} }),
+      workflowControls: {
+        start: unavailable,
+        get: unavailable,
+        list: unavailable,
+        terminate: unavailable,
+        drive: createDriveDispatcher(f.drive, undefined, undefined, undefined, undefined, {
+          history: async (input) => (asked.push(input), [version]),
+          head: async () => f.root,
+          lastChange: async () => version.time,
+          devices: async () => devices,
+        }),
+      },
+    };
+    const call = async (tool: string, input: Json) =>
+      (
+        await createAppHandler(app)(
+          new Request("https://fixture.invalid/dispatch", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ operation: "call", tool, kind: "query", input }),
+          }),
+          context,
+        )
+      ).json();
+    assert.deepStrictEqual(await call("history", { path: "daily/a.md", limit: 5 }), {
+      ok: true,
+      value: [version],
+    });
+    assert.deepStrictEqual(asked, [{ path: "daily/a.md", limit: 5 }]);
+    assert.deepStrictEqual(await call("devices", {}), { ok: true, value: devices });
+  } finally {
+    f.close();
+  }
+});

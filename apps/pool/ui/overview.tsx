@@ -1,6 +1,9 @@
 import { overviewAccounts } from "./overview-accounts.ts";
-import type { ReactNode } from "react";
-import type { PoolView, Provider } from "../contract.ts";
+import { useState, type ReactNode } from "react";
+import type { Account, PoolView, Provider } from "../contract.ts";
+import { accountWindows } from "./account-limits.ts";
+import { AccountLimitsDialog, ModelLimits } from "./account-limits-view.tsx";
+import { capacityInputs } from "./account-view.ts";
 import type { Result } from "../index.ts";
 import type { PoolPersonalOverviewResult } from "../overview-contract.ts";
 import { capacityLabs, duration, gaps, hourMs, planChips } from "./capacity-model.ts";
@@ -12,22 +15,22 @@ import {
   type Tone,
 } from "./capacity-view.tsx";
 import { StateIcon } from "./controls.tsx";
-import { LabMark } from "./lab.tsx";
+import { LabMark, labProvider } from "./lab.tsx";
 import { seriesRead, type Overview, type RangeDays } from "./overview-data.ts";
 import { rows, total } from "./series-model.ts";
 import { Money, WhoUses } from "./usage-groups.tsx";
 import {
   accountProblems,
   accountsNeedingSomeone,
-  bankedResetCount,
-  bankedResetText,
+  bankedResetLine,
   peopleOfText,
 } from "./overview-attention.ts";
 import { currentCapacity } from "./overview-snapshot.ts";
 import { brokenAnswer, failureItems, legacyBrokenAnswer } from "./overview-reliability.ts";
 
-// The manager's App tab: four answers first, each linking down to its evidence. Per-account health,
-// resets and actions stay on the host's Accounts tab; this page only aggregates.
+// The manager's App tab: four answers first, each linking down to its evidence. Per-account health
+// and actions, including spending a reset, stay on the host's Accounts tab. Here only read-only
+// reset and model-limit details open per account.
 
 const usd = (value: string) =>
   new Intl.NumberFormat("en", {
@@ -49,6 +52,7 @@ export function ManagerOverview({
   days,
   providers,
   view,
+  now,
   accountsHref,
   onRetry,
 }: {
@@ -56,15 +60,26 @@ export function ManagerOverview({
   days: RangeDays;
   providers: readonly Provider[] | undefined;
   view: PoolView | undefined;
+  now: number;
   accountsHref?: string;
   onRetry: () => void;
 }) {
   const name = namer(providers);
   const current = { ...data, capacity: currentCapacity(data.capacity, view) };
+  // A model's own limit is inside its account's allowance, never extra lab capacity. A source that
+  // withholds inspection lends no plan or window either.
+  const capacityAccounts = capacityInputs(overviewAccounts(view)).map(accountWindows);
   const labs =
     providers && current.coherent === true && current.capacity?.ok
-      ? labSummaries(current.capacity.value, days, view ? overviewAccounts(view) : [])
+      ? labSummaries(current.capacity.value, days, capacityAccounts)
       : [];
+  // Ids, not copies, so an open dialog follows each refresh of the view.
+  const [details, setDetails] = useState<{ title: string; ids: readonly string[] } | null>(null);
+  const openDetails = (title: string, accounts: readonly Account[]) =>
+    setDetails({ title, ids: accounts.map((account) => account.id) });
+  const detailAccounts = details
+    ? (view?.accounts ?? []).filter((account) => details.ids.includes(account.id))
+    : [];
   const mismatched = data.coherent === false && data.capacity !== undefined;
   // Partial usage is coverage of the same snapshot, so it gets its own note and keeps capacity.
   const usagePartial =
@@ -91,17 +106,31 @@ export function ManagerOverview({
           </button>
         </p>
       )}
-      <Answers data={current} labs={labs} days={days} name={name} view={view} />
+      <Answers
+        data={current}
+        labs={labs}
+        days={days}
+        name={name}
+        lab={labProvider(providers)}
+        view={view}
+      />
       <CapacitySection
         result={current.capacity?.ok && !providers ? undefined : current.capacity}
         empty={view !== undefined && overviewAccounts(view).length === 0}
         providers={providers ?? []}
-        accounts={view ? overviewAccounts(view) : []}
+        accounts={capacityAccounts}
         days={days}
         coherent={data.coherent === true}
         onRetry={onRetry}
       />
+      <ModelLimits
+        accounts={overviewAccounts(view)}
+        providers={providers ?? []}
+        now={now}
+        onOpen={(account) => openDetails("Account limits", [account])}
+      />
       <WhoUses
+        lab={labProvider(providers)}
         overview={data.usage?.ok ? data.usage.value : undefined}
         people={data.people}
         models={data.models}
@@ -116,7 +145,22 @@ export function ManagerOverview({
         days={days}
         name={name}
       />
-      <Attention data={current} name={name} days={days} view={view} accountsHref={accountsHref} />
+      <Attention
+        data={current}
+        name={name}
+        days={days}
+        view={view}
+        now={now}
+        accountsHref={accountsHref}
+        onResets={(accounts) => openDetails("Banked resets", accounts)}
+      />
+      <AccountLimitsDialog
+        title={details?.title ?? ""}
+        accounts={detailAccounts}
+        providers={providers ?? []}
+        now={now}
+        onClose={() => setDetails(null)}
+      />
     </>
   );
 }
@@ -165,6 +209,7 @@ export function PersonalOverview({
         </p>
       )}
       <WhoUses
+        lab={labProvider(providers)}
         overview={undefined}
         personal={data.value}
         people={read}
@@ -213,12 +258,14 @@ function Answers({
   labs,
   days,
   name,
+  lab: provider,
   view,
 }: {
   data: Overview;
   labs: readonly LabSummary[];
   days: number;
   name: (id: string) => string;
+  lab: (id: string) => Provider | undefined;
   view: PoolView | undefined;
 }) {
   const worst = labs.find((entry) => entry.verdict.tone === "warn" || entry.verdict.tone === "bad");
@@ -306,7 +353,7 @@ function Answers({
         <span className="grid gap-0.5 text-[13px]">
           {labs.map(({ lab, verdict }) => (
             <span key={lab.provider} className="flex min-w-0 items-center gap-1.5">
-              <LabMark provider={lab.provider} name={name(lab.provider)} small />
+              <LabMark provider={provider(lab.provider)} small />
               <span className={toneText[verdict.tone]}>
                 {name(lab.provider)}: {verdict.short.toLowerCase()}
               </span>
@@ -375,13 +422,17 @@ function Attention({
   name,
   days,
   view,
+  now,
   accountsHref,
+  onResets,
 }: {
   data: Overview;
   name: (id: string) => string;
   days: number;
   view: PoolView | undefined;
+  now: number;
   accountsHref?: string;
+  onResets: (accounts: readonly Account[]) => void;
 }) {
   const items: Item[] = (view ? accountProblems(view) : []).map((problem) => ({
     tone: "warn",
@@ -390,7 +441,7 @@ function Attention({
       ? `Earliest source observation or check: ${new Date(problem.since).toUTCString()}. Review in Accounts.`
       : "Review in Accounts.",
   }));
-  const banked = view ? bankedResetCount(view) : 0;
+  const banked = view ? bankedResetLine(view, now) : null;
   if (data.usage?.ok) {
     const unknown = data.usage.value.metrics.apiBilled.excluded.unknownKind;
     if (unknown > 0)
@@ -470,20 +521,16 @@ function Attention({
           Pool-level problems only. {accountsHandoff}
         </p>
       </div>
-      {banked > 0 && (
+      {banked && (
         <p className="m-0 text-sm text-pretty">
-          {accountsHref ? (
-            <a
-              href={accountsHref}
-              target="_blank"
-              rel="noopener"
-              className="underline underline-offset-2"
-            >
-              {bankedResetText(banked)}
-            </a>
-          ) : (
-            bankedResetText(banked)
-          )}
+          <button
+            type="button"
+            aria-haspopup="dialog"
+            onClick={() => onResets(banked.accounts)}
+            className="rounded-sm text-left underline underline-offset-2 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          >
+            {banked.text}
+          </button>
           . Nothing is spent automatically; forecasts leave them unspent.
         </p>
       )}

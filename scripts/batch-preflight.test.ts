@@ -37,6 +37,7 @@ test("ordinary PRs and local pre-push run the same unconditional preflight with 
 test("preflight checks prepared source and shipped types, and every failure stops subsequent work", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "basalt-preflight-")));
   const expected = [
+    [".", "scripts/check-git-secrets.ts"],
     [".upstream", "e2e/check-boundary.ts"],
     [".", "scripts/ci/style.ts"],
     [".upstream", "run mcp:apps --check"],

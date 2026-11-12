@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { deployEnvironment, requiredSecrets } from "./environment.ts";
 import { run } from "./process.ts";
@@ -7,6 +7,7 @@ import { checkMcpRuntimeBundle } from "./mcp-runtime-bundle.ts";
 
 const upstream = fileURLToPath(new URL("../.upstream/", import.meta.url));
 const cloud = fileURLToPath(new URL("../.upstream/apps/hosted/cloud/", import.meta.url));
+const measurement = `${cloud}/.local/basalt-worker-sizes.ts`;
 // Use upstream's credential-free bundling check with this stack's configuration.
 const credentials = Object.fromEntries(requiredSecrets.map((name) => [name, "0".repeat(64)]));
 credentials.CLOUDFLARE_ACCOUNT_ID = "0".repeat(32);
@@ -23,8 +24,9 @@ const pattern = /const production: Target = \{[\s\S]*?\n\};/;
 if ((source.match(new RegExp(pattern.source, "g")) ?? []).length !== 1) {
   throw new Error("Upstream worker build contract changed");
 }
+mkdirSync(`${cloud}/.local`, { recursive: true });
 writeFileSync(
-  `${cloud}/scripts/basalt-worker-sizes.ts`,
+  measurement,
   source
     .replace(
       "yield* AppPages;",
@@ -34,9 +36,10 @@ writeFileSync(
       pattern,
       `const production: Target = ${JSON.stringify({ stage: configuration.ALCHEMY_STAGE, configuration })};`,
     ),
+  { mode: 0o600 },
 );
 run("bun", ["packages/sdk/scripts/check-storage-versions.ts"], upstream);
-run("bun", ["scripts/basalt-worker-sizes.ts"], cloud, {
+run("bun", [".local/basalt-worker-sizes.ts"], cloud, {
   ...process.env,
   BASALT_RELEASE_ATTEMPT: credentials.BASALT_RELEASE_ATTEMPT,
 });

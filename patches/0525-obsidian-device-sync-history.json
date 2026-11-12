@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-obsidian-device-sync-history",
+  "file": "0525-obsidian-device-sync-history.patch",
+  "content_sha256": "515ce874ea0c841c364f17392de82f2adfc255d17eef4d85044b7c74663bb1a9",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

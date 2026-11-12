@@ -1,0 +1,313 @@
+diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/src/artifacts-credentials.ts
+--- a/apps/hosted/cloud/src/artifacts-credentials.ts
++++ b/apps/hosted/cloud/src/artifacts-credentials.ts
+@@ -388,7 +388,7 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
+             parent: Option.getOrUndefined(externalTrace(trace)),
+           }),
+         ),
+-      vault: (app: string, command: unknown) =>
++      vault: (app: string, command: unknown, caller?: string) =>
+         Effect.gen(function* () {
+           // Refuse a vault command on any object not named for that vault, including app code ones.
+           if (state.raw.id.name !== vaultObjectName(app))
+@@ -412,7 +412,7 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
+             vault = vaultObject({ app, storage: state.raw.storage, bucket, artifacts });
+           }
+           const opened = vault;
+-          return yield* Effect.promise(() => opened.request(command));
++          return yield* Effect.promise(() => opened.request(command, caller));
+         }),
+       alarm: () =>
+         Effect.gen(function* () {
+diff --git a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
+--- a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
++++ b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
+@@ -100,7 +100,11 @@ interface Coordinator {
+   ) => Effect.Effect<typeof envelope.Type | null, SourceError, RuntimeContext>;
+   readonly alarm: () => Effect.Effect<void, never, RuntimeContext>;
+   /** One drive command on the vault object named for `app`; the reply is plain JSON. */
+-  readonly vault: (app: string, command: unknown) => Effect.Effect<unknown, never, RuntimeContext>;
++  readonly vault: (
++    app: string,
++    command: unknown,
++    caller?: string,
++  ) => Effect.Effect<unknown, never, RuntimeContext>;
+ }
+ 
+ /** Vault repositories sit beside the stage's app sources in their own namespace. */
+@@ -134,10 +138,11 @@ const VaultReply = Schema.Union([
+ export const cloudVaultDrives = (
+   coordinator: Cloudflare.DurableObject<ArtifactsTokenCoordinator>,
+ ): DriveBackend => ({
+-  request: ({ app, command }) =>
++  // The caller names the device grant, so the vault can record each device's last sync.
++  request: ({ app, command, caller }) =>
+     coordinator
+       .getByName(vaultObjectName(app))
+-      .vault(app, command)
++      .vault(app, command, caller)
+       .pipe(
+         Effect.flatMap(Schema.decodeUnknownEffect(VaultReply)),
+         Effect.mapError(() => new DriveRequestFailed({ reason: "invalid_response" })),
+diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/src/contracts/obsidian-plugin.ts
+--- a/apps/hosted/web/src/contracts/obsidian-plugin.ts
++++ b/apps/hosted/web/src/contracts/obsidian-plugin.ts
+@@ -25,9 +25,12 @@ const githubRepository =
+ export const basaltSyncRepository = (source: string | undefined): string | null =>
+   source === undefined ? null : (githubRepository.exec(source)?.[1] ?? null);
+ 
+-/** Opens BRAT's add dialog for this exact published version. */
++/**
++ * Opens BRAT's add dialog on its "latest" track. Any other version is one BRAT freezes and never
++ * updates at startup, so every install would stay on the version it was connected with.
++ */
+ export const bratInstallLink = (repository: string) =>
+-  `obsidian://brat?plugin=${repository}&version=${basaltSyncTag}`;
++  `obsidian://brat?plugin=${repository}&version=latest`;
+ 
+ /**
+  * What the dialog knows about the release. "unconfirmed" means GitHub couldn't answer: its
+diff --git a/packages/apps/src/contracts/drive.ts b/packages/apps/src/contracts/drive.ts
+--- a/packages/apps/src/contracts/drive.ts
++++ b/packages/apps/src/contracts/drive.ts
+@@ -97,10 +97,27 @@ export const DriveRestoreInput = Schema.Struct({ base: oid, from: oid, path, ope
+ export const DriveHistoryInput = Schema.Struct({
+   at: Schema.optionalKey(oid),
+   limit: Schema.optionalKey(bound(100)),
++  /** Only commits that changed this note. */
++  path: Schema.optionalKey(path),
+ });
+ export const DriveHistory = Schema.Array(
+-  Schema.Struct({ oid, parents: Schema.Array(oid), message: Schema.String }),
++  Schema.Struct({
++    oid,
++    parents: Schema.Array(oid),
++    message: Schema.String,
++    /** When the host wrote the commit, as an ISO time; absent from hosts that don't record it. */
++    time: Schema.optionalKey(Schema.String),
++  }),
+ );
++export const DriveDevicesInput = Schema.Struct({});
++/** Each device grant's last sync and the head it saw then; up to date means it saw `head`. */
++export const DriveDevices = Schema.Struct({
++  head: Schema.NullOr(oid),
++  lastChangeAt: Schema.NullOr(Schema.String),
++  devices: Schema.Array(
++    Schema.Struct({ agent: Schema.String, lastSyncAt: Schema.String, lastHead: oid }),
++  ),
++});
+ const conflict = Schema.Struct({
+   path,
+   reason: Schema.Literals(["content", "unsupported"]),
+@@ -213,6 +230,11 @@ export const DriveCommand = Schema.Union([
+     method: Schema.Literal("history"),
+     input: DriveHistoryInput,
+   }),
++  Schema.Struct({
++    operation: Schema.Literal("drive"),
++    method: Schema.Literal("devices"),
++    input: DriveDevicesInput,
++  }),
+   Schema.Struct({
+     operation: Schema.Literal("drive"),
+     method: Schema.Literal("write"),
+@@ -282,6 +304,7 @@ export interface DriveReader extends DriveUploadReader, DriveChanges, DriveImpor
+   read(input: typeof DriveReadInput.Type): Promise<typeof DriveReadResult.Type>;
+   search(input: typeof DriveSearchInput.Type): Promise<typeof DriveSearchResult.Type>;
+   history(input?: typeof DriveHistoryInput.Type): Promise<typeof DriveHistory.Type>;
++  devices(): Promise<typeof DriveDevices.Type>;
+ }
+ export interface DriveClient extends DriveReader, DriveUploads, DriveImporter {
+   attach(input: typeof DriveAttachInput.Type): Promise<typeof DriveWriteResult.Type>;
+diff --git a/packages/apps/src/contracts/protocols/38.ts b/packages/apps/src/contracts/protocols/38.ts
+--- a/packages/apps/src/contracts/protocols/38.ts
++++ b/packages/apps/src/contracts/protocols/38.ts
+@@ -1,4 +1,8 @@
+-import { DriveCommand, DriveReply } from "../drive.ts";
++import { DriveReply } from "../drive.ts";
++import {
++  DriveCommand,
++  DriveWorkflowRpcCommand as WorkflowRpcCommand,
++} from "./drive-before-devices.ts";
+ import {
+   AppCallCommand,
+   AppCallReply,
+@@ -59,7 +63,6 @@ import {
+   WorkflowControlCommand,
+   WorkflowFailure,
+   WorkflowReplay,
+-  DriveWorkflowRpcCommand as WorkflowRpcCommand,
+   WorkflowRpcResult,
+   WorkflowRunId,
+ } from "../workflows.ts";
+diff --git a/packages/apps/src/contracts/protocols/39.ts b/packages/apps/src/contracts/protocols/39.ts
+--- a/packages/apps/src/contracts/protocols/39.ts
++++ b/packages/apps/src/contracts/protocols/39.ts
+@@ -1,4 +1,8 @@
+-import { DriveCommand, DriveReply } from "../drive.ts";
++import { DriveReply } from "../drive.ts";
++import {
++  DriveCommand,
++  DriveWorkflowRpcCommand as WorkflowRpcCommand,
++} from "./drive-before-devices.ts";
+ import {
+   AppCallCommand,
+   AppCallReply,
+@@ -59,7 +63,6 @@ import {
+   WorkflowControlCommand,
+   WorkflowFailure,
+   WorkflowReplay,
+-  DriveWorkflowRpcCommand as WorkflowRpcCommand,
+   WorkflowRpcResult,
+   WorkflowRunId,
+ } from "../workflows.ts";
+diff --git a/packages/apps/src/contracts/protocols/40.ts b/packages/apps/src/contracts/protocols/40.ts
+--- a/packages/apps/src/contracts/protocols/40.ts
++++ b/packages/apps/src/contracts/protocols/40.ts
+@@ -1,5 +1,9 @@
+ import { AccountUnavailable } from "../account-unavailable.ts";
+-import { DriveCommand, DriveReply } from "../drive.ts";
++import { DriveReply } from "../drive.ts";
++import {
++  DriveCommand,
++  DriveWorkflowRpcCommand as WorkflowRpcCommand,
++} from "./drive-before-devices.ts";
+ import {
+   AppCallCommand,
+   AppCallReply,
+@@ -60,7 +64,6 @@ import {
+   WorkflowControlCommand,
+   WorkflowFailure,
+   WorkflowReplay,
+-  DriveWorkflowRpcCommand as WorkflowRpcCommand,
+   WorkflowRpcResult,
+   WorkflowRunId,
+ } from "../workflows.ts";
+diff --git a/packages/apps/src/contracts/protocols/drive-before-devices.ts b/packages/apps/src/contracts/protocols/drive-before-devices.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/src/contracts/protocols/drive-before-devices.ts
+@@ -0,0 +1,104 @@
++/**
++ * The drive commands of protocols 38 to 40, frozen. Protocol 41 adds `devices` and a `path` on
++ * history; released protocols keep exactly this union.
++ */
++import { Schema } from "effect";
++import { bound, oid } from "../drive-values.ts";
++import { NativeWorkflowRpcCommand } from "../workflows.ts";
++import {
++  DriveApplyInput,
++  DriveAttachmentInput,
++  DriveChangeCommand,
++  DriveImportCommand,
++  DriveListInput,
++  DriveMoveInput,
++  DriveReadInput,
++  DriveReceiptInput,
++  DriveRemoveInput,
++  DriveResolveInput,
++  DriveRestoreInput,
++  DriveSearchInput,
++  DriveUploadCommand,
++  DriveWriteInput,
++} from "../drive.ts";
++
++const historyInput = Schema.Struct({
++  at: Schema.optionalKey(oid),
++  limit: Schema.optionalKey(bound(100)),
++});
++
++export const DriveCommand = Schema.Union([
++  DriveImportCommand,
++  DriveUploadCommand,
++  DriveChangeCommand,
++  Schema.Struct({
++    operation: Schema.Literal("drive"),
++    method: Schema.Literal("apply"),
++    input: DriveApplyInput,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("drive"),
++    method: Schema.Literal("attachment"),
++    input: DriveAttachmentInput,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("drive"),
++    method: Schema.Literal("receipt"),
++    input: DriveReceiptInput,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("drive"),
++    method: Schema.Literal("resolve"),
++    input: DriveResolveInput,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("drive"),
++    method: Schema.Literal("list"),
++    input: DriveListInput,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("drive"),
++    method: Schema.Literal("read"),
++    input: DriveReadInput,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("drive"),
++    method: Schema.Literal("search"),
++    input: DriveSearchInput,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("drive"),
++    method: Schema.Literal("history"),
++    input: historyInput,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("drive"),
++    method: Schema.Literal("write"),
++    input: DriveWriteInput,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("drive"),
++    method: Schema.Literal("move"),
++    input: DriveMoveInput,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("drive"),
++    method: Schema.Literal("remove"),
++    input: DriveRemoveInput,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("drive"),
++    method: Schema.Literal("restore"),
++    input: DriveRestoreInput,
++  }),
++]);
++
++/** Workflow steps of protocols 38 to 40 carry the drive commands above. */
++export const DriveWorkflowRpcCommand = Schema.Union([
++  Schema.Struct({
++    operation: Schema.Literal("drive"),
++    stepId: Schema.NonEmptyString,
++    command: DriveCommand,
++  }),
++  NativeWorkflowRpcCommand,
++]);
+diff --git a/packages/apps/src/implementation/drive.ts b/packages/apps/src/implementation/drive.ts
+--- a/packages/apps/src/implementation/drive.ts
++++ b/packages/apps/src/implementation/drive.ts
+@@ -17,6 +17,7 @@ import {
+   DriveSearchResult,
+   DriveWriteResult,
+   DriveHistory,
++  DriveDevices,
+   DriveAttachmentResult,
+   DriveReceipt,
+   driveWrites,
+@@ -77,6 +78,7 @@ export function authorDrive(
+     read: (input) => call("read", input, DriveReadResult),
+     search: (input) => call("search", input, DriveSearchResult),
+     history: (input = {}) => call("history", input, DriveHistory),
++    devices: () => call("devices", {}, DriveDevices),
+     write: (input) => call("write", input, DriveWriteResult),
+     move: (input) => call("move", input, DriveWriteResult),
+     remove: (input) => call("remove", input, DriveWriteResult),

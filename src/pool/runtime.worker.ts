@@ -16,6 +16,7 @@ interface PoolRuntimeEnvironment {
   POOL_IMAGE_HASH: string;
   POOL_APP_SIGNING_KEY: string;
   POOL_APP_SIGNING_KEY_PREVIOUS?: string;
+  POOL_CLAUDE_QUOTA_DIAGNOSTIC?: string;
 }
 
 export async function createPoolLifecycle(
@@ -40,6 +41,7 @@ export async function createPoolLifecycle(
       env.POOL_APP_SIGNING_KEY,
       env.POOL_APP_SIGNING_KEY_PREVIOUS ?? null,
       poolDatabase.owner,
+      ...(env.POOL_CLAUDE_QUOTA_DIAGNOSTIC === "true" ? ["claude-shape-diagnostic"] : []),
     ]),
   );
   const revision = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", input)))

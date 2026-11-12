@@ -1,5 +1,6 @@
 /** Provider facts are shared; routing decisions belong to a specific pool. */
 export type UsageCreditPolicy = "last_resort" | "never";
+export type AccountSelectionPolicy = "reset_aware" | "balanced";
 export interface UsageCredits {
   readonly state: "available" | "unlimited" | "none" | "disabled" | "unknown";
   readonly balance: {

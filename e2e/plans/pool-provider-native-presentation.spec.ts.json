@@ -1,0 +1,41 @@
+{
+  "scenarios": {
+    "poolProviderNativePresentation": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "Packaged pool view reuses generated provider reports and icons without a pool edit and withholds denied copied allowance",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses the packaged pool bundle with an external synthetic credential and control backend."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted provider installations, pool control and observation policy."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolProviderNativePresentation": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/account-source-connections.ts",
+    ".upstream/apps/hosted/server/src/implementation/selected-account-read.ts",
+    ".upstream/e2e/support/provider-apps-catalog.ts",
+    ".upstream/packages/apps/src/contracts/selected-account-read.ts",
+    ".upstream/packages/sdk/src/implementation/selected-account-read.ts",
+    "apps/pool/index.ts",
+    "apps/pool/provider-account-view.ts",
+    "apps/pool/requirements.ts",
+    "scripts/pool-app-bundle.ts",
+    "scripts/provider-app-source.ts",
+    "src/catalog/provider-apps/account-view.ts",
+    "src/catalog/provider-apps/presentation.ts"
+  ]
+}

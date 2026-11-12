@@ -77,3 +77,27 @@ test("startup fingerprint binds every applied setting while launch credentials a
     expected,
   );
 });
+
+test("Claude shape discovery is opt-in and bound to the admitted startup configuration", async () => {
+  const env = {
+    POOL_DATABASE_URL: "postgresql://fixture@database.invalid/pool",
+    POOL_MANAGEMENT_KEY: "fixture-key",
+    POOL_APP_SIGNING_KEY: "a".repeat(64),
+    POOL_IMAGE_HASH: "1".repeat(16),
+  };
+  const normal = runtimeConfiguration(env);
+  assert.equal(runtimeStartOptions(normal).env.POOL_CLAUDE_QUOTA_DIAGNOSTIC, undefined);
+  const discovery = runtimeConfiguration({ ...env, POOL_CLAUDE_QUOTA_DIAGNOSTIC: "true" });
+  assert.equal(runtimeStartOptions(discovery).env.POOL_CLAUDE_QUOTA_DIAGNOSTIC, "true");
+  assert.notEqual(await configurationDigest(discovery), await configurationDigest(normal));
+  const retained = await openConfiguration(
+    await sealConfiguration(discovery, "b".repeat(64), "discovery-target"),
+    "b".repeat(64),
+    "discovery-target",
+  );
+  assert.equal(runtimeStartOptions(retained).env.POOL_CLAUDE_QUOTA_DIAGNOSTIC, "true");
+  assert.equal(
+    runtimeConfiguration({ ...env, POOL_CLAUDE_QUOTA_DIAGNOSTIC: "false" }).claudeQuotaDiagnostic,
+    undefined,
+  );
+});

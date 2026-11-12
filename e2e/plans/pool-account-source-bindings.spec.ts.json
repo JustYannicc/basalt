@@ -1,0 +1,44 @@
+{
+  "scenarios": {
+    "poolAccountSourceBindings": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "Pool account views bind exact provider instances without changing native membership or credential routing",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a runner-owned catalog and signed synthetic credential backend."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted organization and contributed-account policy."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolAccountSourceBindings": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/account-source-authority.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-source-connections.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-source-options.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/server/src/implementation/selected-account-read.ts",
+    ".upstream/packages/apps/src/contracts/provider.ts",
+    ".upstream/packages/apps/src/contracts/selected-account-read.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/workflow-rpc.ts",
+    ".upstream/packages/sdk/src/implementation/app-call-protection.ts",
+    ".upstream/packages/sdk/src/implementation/app-connections.ts",
+    ".upstream/packages/sdk/src/implementation/selected-account-read.ts",
+    "apps/pool/provider-account-view.ts",
+    "scripts/provider-app-source.ts",
+    "src/pool/native-account-view.ts"
+  ]
+}
