@@ -1,21 +1,25 @@
 import SwiftUI
 
-/// Things only the app shell can do: open the browser, pick a file, quit, own the login item.
+/// Things only the app shell can do: open the browser, pick a file, quit, own the login item and
+/// the updater.
 public struct PanelActions {
   public var open: @MainActor (URL) -> Void
   public var chooseDirectFile: @MainActor () -> URL?
   public var quit: @MainActor () -> Void
   public var openAtLogin: Binding<Bool>
+  public var updates: AppUpdates
   public init(
     open: @escaping @MainActor (URL) -> Void,
     chooseDirectFile: @escaping @MainActor () -> URL?,
     quit: @escaping @MainActor () -> Void,
-    openAtLogin: Binding<Bool>
+    openAtLogin: Binding<Bool>,
+    updates: AppUpdates
   ) {
     self.open = open
     self.chooseDirectFile = chooseDirectFile
     self.quit = quit
     self.openAtLogin = openAtLogin
+    self.updates = updates
   }
 }
 
