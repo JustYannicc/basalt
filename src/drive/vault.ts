@@ -19,6 +19,7 @@ import { importService } from "./import-service.ts";
 import { operationScope } from "./operation-scope.ts";
 import type { ImportPolicy } from "./import-budget.ts";
 import { createArtifactsStores, type VaultRepository } from "./artifacts/stores.ts";
+import { noteHistory } from "./note-history.ts";
 
 export async function openVault(input: {
   storage: TransactionStorage;
@@ -168,6 +169,10 @@ export async function openVault(input: {
       service = createDriveService(drive, attachments, changes, root);
     const scope = operationScope(drive, service, attachments, io.run);
     return {
+      notes: noteHistory(
+        (oid) => cache.objects.get(oid),
+        () => stores.refs.get("refs/heads/main"),
+      ),
       drive: scope.drive,
       attachments: scope.attachments,
       changes: scope.protect(changes),

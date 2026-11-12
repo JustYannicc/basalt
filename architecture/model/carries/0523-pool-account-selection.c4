@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A pool owner can switch Account selection between reset-aware and balanced through the same pool-scoped signed authority and fresh readback as Subscription credits. Members see the effective choice but cannot change it. The two policies save independently, expose pending and retryable failure states, refresh after either outcome and preserve saved choices across reloads and devices. Desktop and touch layouts reuse the existing policy control. The default comes from Home, never from a browser preference."
+    }
+  }
+}

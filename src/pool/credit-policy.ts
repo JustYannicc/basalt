@@ -5,6 +5,7 @@ import type {
 } from "../../apps/pool/usage-credits-contract.ts";
 import { fail, object, post, rows, unavailable } from "./json.ts";
 import { poolGroupPrefix } from "./pool-group.ts";
+import { accountSelectionPolicy } from "./selection-policy.ts";
 
 export function usageCreditPolicy(value: unknown): UsageCreditPolicy {
   if (value === "last_resort" || value === "never") return value;
@@ -43,10 +44,13 @@ async function groups(client: HomeClient, pool: string) {
 export async function poolCreditRouting(client: HomeClient, pool: string) {
   const selected = await groups(client, pool);
   let policy: UsageCreditPolicy = "last_resort";
+  let selection: import("../../apps/pool/usage-credits-contract.ts").AccountSelectionPolicy =
+    "reset_aware";
   const accounts: Record<string, AccountUsageRouting> = {};
   for (const group of selected) {
     const data = await client.data(`/channel-groups/${group.id}/usage-credit-routing`);
     const current = usageCreditPolicy(data.usageCreditPolicy);
+    if (accountSelectionPolicy(data.accountSelectionPolicy) === "balanced") selection = "balanced";
     if (current === "never") policy = current;
     if (!object(data.accounts) || Object.keys(data.accounts).length > 500) return unavailable();
     for (const [id, value] of Object.entries(data.accounts)) {
@@ -66,7 +70,7 @@ export async function poolCreditRouting(client: HomeClient, pool: string) {
           : {}),
       };
     }
-  return { usageCreditPolicy: policy, accounts };
+  return { usageCreditPolicy: policy, accountSelectionPolicy: selection, accounts };
 }
 export async function setPoolCreditPolicy(client: HomeClient, pool: string, value: unknown) {
   if (value !== "last_resort" && value !== "never")

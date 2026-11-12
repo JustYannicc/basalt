@@ -1,3 +1,4 @@
+import { resetObservation } from "./reset-observation.ts";
 import { usageCredits } from "./usage-credits.ts";
 import { object, text, type Json } from "./json.ts";
 import { quotaWindowSeconds } from "./quota-period.ts";
@@ -56,6 +57,7 @@ export interface QuotaObservation {
   };
   readonly windows: readonly QuotaWindowObservation[];
   readonly resets: {
+    readonly groups: readonly import("../../apps/pool/reset-observation-contract.ts").BankedResetGroup[];
     readonly available: number | null;
     readonly observedAt: string | null;
     readonly credits: readonly {
@@ -67,11 +69,12 @@ export interface QuotaObservation {
 }
 
 /** Keep every reported window, including model scopes and unfamiliar durations. No plan invents a window. */
-export function quotaObservation(detail: Json): QuotaObservation {
+export function quotaObservation(detail: Json, now = Date.now()): QuotaObservation {
   const credential = object(detail.credential) ? detail.credential : detail;
   const collection = object(detail.collection) ? detail.collection : credential;
   const plan = object(credential.plan) ? credential.plan : null;
   const reset = object(detail.reset_credits) ? detail.reset_credits : null;
+  const banked = resetObservation(reset, now);
   const error = object(collection.error) ? collection.error : null;
   const windows = Array.isArray(detail.windows)
     ? records(detail.windows)
@@ -133,7 +136,8 @@ export function quotaObservation(detail: Json): QuotaObservation {
       reset === null
         ? null
         : {
-            available: number(reset.available_count),
+            available: banked?.available ?? null,
+            groups: banked?.groups ?? [],
             observedAt: text(reset.observed_at),
             credits: records(reset.credits).map((credit) => ({
               id: text(credit.id),

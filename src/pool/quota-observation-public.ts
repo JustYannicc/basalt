@@ -100,30 +100,21 @@ export function publicQuotaObservation(value: QuotaObservation): PoolAccountObse
         },
       ];
     })
-    .slice(0, 8);
+    .slice(0, 64);
   const balances: PoolAccountObservation["observation"]["balances"][number][] = [];
   const resets = value.resets;
   if (resets !== null && resets.available !== null && resets.available >= 0) {
-    const groups = new Map<string, number>();
-    for (const credit of resets.credits) {
-      if (credit.status !== "available") continue;
-      const expiry = instant(credit.expiresAt) ?? "unknown";
-      groups.set(expiry, (groups.get(expiry) ?? 0) + 1);
-    }
-    const listed = [...groups.values()].reduce((total, count) => total + count, 0);
-    if (listed > resets.available) groups.clear();
-    const known = [...groups.values()].reduce((total, count) => total + count, 0);
-    if (resets.available > known || groups.size === 0)
-      groups.set("unknown", (groups.get("unknown") ?? 0) + resets.available - known);
-    for (const [expiry, available] of groups)
+    for (const group of resets.groups)
       balances.push({
         id: `resets-${balances.length}`,
-        label: "Banked resets",
+        label: group.label,
         unit: "resets",
-        available,
+        available: group.available,
+        scope: group.scope,
+        reset: group.reset,
         observedAt: instant(resets.observedAt) ?? observedAt,
         staleAt: staleAt(instant(resets.observedAt) ?? observedAt, value.staleAt),
-        ...(expiry === "unknown" ? {} : { expiresAt: expiry }),
+        ...(group.expiresAt === null ? {} : { expiresAt: group.expiresAt }),
       });
   }
   const attemptedAt = instant(value.collection.attemptedAt);
@@ -147,7 +138,7 @@ export function publicQuotaObservation(value: QuotaObservation): PoolAccountObse
         ? {}
         : { plan: { label: plan, observedAt, staleAt: staleAt(observedAt, value.staleAt) } }),
       windows,
-      balances: balances.slice(0, 8),
+      balances: balances.slice(0, 64),
     },
     ...(attemptedAt === undefined || outcome === undefined
       ? {}

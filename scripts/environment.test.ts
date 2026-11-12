@@ -30,6 +30,7 @@ test("deploy maps login secrets and pins EU production without hosted emulators"
   source.POOL_APP_SIGNING_KEY = "ab".repeat(32);
   source.POOL_DEPLOYMENT_KEY = "ef".repeat(32);
   source.POOL_MODEL_HISTORY_ENABLED = "false";
+  source.POOL_CLAUDE_QUOTA_DIAGNOSTIC = "false";
   source.POOL_AVAILABILITY_TARGET = "fixture-pool";
   source.GOOGLE_MAPS_ROUTES_API_KEY = "production-routes-fixture";
   const env = deployEnvironment(source);
@@ -45,6 +46,7 @@ test("deploy maps login secrets and pins EU production without hosted emulators"
   assert.equal(env.EXECUTOR_ENCRYPTED_WORKFLOW_STARTS, "true");
   assert.equal(env.EXECUTOR_APP_PUBLISHING, "off");
   assert.equal(env.POOL_MODEL_HISTORY_ENABLED, "true");
+  assert.equal(env.POOL_CLAUDE_QUOTA_DIAGNOSTIC, "true");
   assert.equal(env.POOL_AVAILABILITY_TARGET, "fixture-pool");
   assert.equal(env.EXECUTOR_EMULATORS, undefined);
   assert.equal(env.TEST_STAGE_DATABASE_PROVIDER, undefined);
@@ -193,6 +195,7 @@ test("preview environment is per-PR, isolated, and keeps smoke credentials deplo
   assert.equal(first.deploy.EXECUTOR_ENCRYPTED_WORKFLOW_STARTS, "true");
   assert.equal(first.deploy.EXECUTOR_APP_PUBLISHING, "off");
   assert.equal(first.deploy.POOL_MODEL_HISTORY_ENABLED, undefined);
+  assert.equal(first.deploy.POOL_CLAUDE_QUOTA_DIAGNOSTIC, undefined);
   assert.equal(first.deploy.POOL_AVAILABILITY_TARGET, undefined);
   assert.equal(first.deploy.EXECUTOR_COMPILER_CACHE_RELEASE, undefined);
   assert.equal(first.deploy.PLANETSCALE_ADOPT_DATABASE, "false");

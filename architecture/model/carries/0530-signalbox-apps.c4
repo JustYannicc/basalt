@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The account area's Signalbox apps page and the Connect page's link to it appear only when the brand's public source repository is on the outside service that publishes its releases, read through the brand's source parser. Every download links to that repository's latest-release download path with the release's version-free file names, so links work without the outside service's API. The browser reads the latest release anonymously through the same release reader as Connect Obsidian, only for the one version line taken from a signalbox-clients tag and for marking a file the release lacks as not in this release, and keeps a read for the session only when it names an apps version; when the outside service doesn't answer, only the version line is hidden. The release notes stay the only source of each system's first-open steps."
+    }
+  }
+}

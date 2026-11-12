@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import type { Feed } from "./feed.ts";
 import { handleCatalog } from "./worker.ts";
+import { obsidianSource } from "../../scripts/obsidian-source.ts";
 
 const origin = "https://catalog.example.test";
 
@@ -26,11 +25,11 @@ test("Obsidian catalog installation receives every shipped app file without anot
     throw new Error("Obsidian source must be supplied by this release");
   });
   assert.equal(response.status, 200);
-  const directory = fileURLToPath(new URL("../../apps/obsidian", import.meta.url));
-  const files = readdirSync(directory)
-    .sort()
-    .map((path) => ({ path, content: readFileSync(join(directory, path), "utf8") }));
-  assert.deepEqual(await response.json(), { package: "obsidian", files });
+  // The release ships the app as it is in this commit: every file, its screen included.
+  assert.deepEqual(
+    await response.json(),
+    obsidianSource(fileURLToPath(new URL("../../", import.meta.url))),
+  );
   const head = await handleCatalog(new Request(request, { method: "HEAD" }));
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");

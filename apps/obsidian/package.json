@@ -3,6 +3,15 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "apps": "0.0.1-beta.104-basalt.15"
+    "@flowershow/remark-wiki-link": "3.4.0",
+    "@r4ai/remark-callout": "0.6.2",
+    "apps": "0.0.1-beta.104-basalt.15",
+    "hast-util-to-jsx-runtime": "2.3.6",
+    "mdast-util-from-markdown": "2.0.3",
+    "mdast-util-gfm": "3.1.0",
+    "mdast-util-to-hast": "13.2.1",
+    "micromark-extension-gfm": "3.0.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
   }
 }

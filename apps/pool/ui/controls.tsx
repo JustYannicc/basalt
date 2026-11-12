@@ -145,11 +145,14 @@ export function Dialog({
   open,
   onClose,
   label,
+  wide = false,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   label: string;
+  /** Room for a Details table's four columns; phones get the same full width either way. */
+  wide?: boolean;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -170,7 +173,7 @@ export function Dialog({
       onClick={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
-      className="m-auto w-[min(30rem,calc(100vw-2rem))] max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-lg border border-border bg-background p-0 text-foreground shadow-[0_16px_48px_-12px_rgb(0_0_0/0.25)] open:animate-[pool-dialog-in_180ms_cubic-bezier(0.16,1,0.3,1)]"
+      className={`m-auto ${wide ? "w-[min(48rem,calc(100vw-2rem))]" : "w-[min(30rem,calc(100vw-2rem))]"} max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-lg border border-border bg-background p-0 text-foreground shadow-[0_16px_48px_-12px_rgb(0_0_0/0.25)] open:animate-[pool-dialog-in_180ms_cubic-bezier(0.16,1,0.3,1)]`}
     >
       {open && children}
     </dialog>
