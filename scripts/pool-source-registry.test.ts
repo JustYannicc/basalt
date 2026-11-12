@@ -298,6 +298,42 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           /concurrent startup, interrupted-index repair and old-writer compatibility/,
         );
         assert.match(patch.retirement.requires, /strict native schema activation barrier/);
+      } else if (patch.identity === "cliproxy-home-native-database-migrate") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0546-home-native-database-migrate.patch");
+        assert.equal(
+          artifact.patches[artifact.patches.indexOf(patch) - 1]?.identity,
+          "cliproxy-home-incremental-usage",
+        );
+        assert.match(patch.retirement.requires, /native one-shot database migration/);
+        assert.match(patch.retirement.requires, /no-database schema info/);
+        assert.match(
+          patch.retirement.requires,
+          /read-only schema checks covering the exact schema marker and all required indexes/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /no-op when schema and all required indexes are ready/,
+        );
+        assert.match(patch.retirement.requires, /index completion when schema is already current/);
+        assert.match(patch.retirement.requires, /newer schema and wrong-definition refusal/);
+        assert.match(
+          patch.retirement.requires,
+          /cancellation, retained rows and readiness with one connection/,
+        );
+        assert.match(patch.retirement.requires, /without raising connection budgets/);
+        assert.match(
+          patch.retirement.requires,
+          /Exit before lifecycle, repository, provider, listener or maintenance startup/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /bounded JSON without secrets or native diagnostics/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /actual PostgreSQL migration, rollback, concurrent startup and read-only repeated-no-op regressions/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&

@@ -203,6 +203,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home preserves narrow exact timestamp/string-ID summary pages, transactional late-commit and attribution-repair pending work with token-fenced acknowledgement, exact portable queue restoration, time-bounded first-success key identity, PR 171 overview semantics and online index readiness. Preserve retained v15 rows without legacy normalization, concurrent startup, interrupted-index repair and old-writer compatibility, and ship only with the strict native schema activation barrier."
           }
+        },
+        {
+          "identity": "cliproxy-home-native-database-migrate",
+          "file": "0546-home-native-database-migrate.patch",
+          "sha256": "682c15dcb06cfd684042e81327f9f7d5e63127cfc7e3aef4060bbf70480ce82c",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home provides native one-shot database migration, no-database schema info and read-only schema checks covering the exact schema marker and all required indexes. Preserve no-op when schema and all required indexes are ready, index completion when schema is already current, newer schema and wrong-definition refusal, cancellation, retained rows and readiness with one connection without raising connection budgets. Exit before lifecycle, repository, provider, listener or maintenance startup and return bounded JSON without secrets or native diagnostics. Pass actual PostgreSQL migration, rollback, concurrent startup and read-only repeated-no-op regressions."
+          }
         }
       ]
     },

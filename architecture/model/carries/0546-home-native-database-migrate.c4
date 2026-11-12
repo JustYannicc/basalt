@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Home's migration-only command uses the candidate's existing native migrator and locks and closes the database before reporting success. Schema information requires no configuration or database. Read-only schema readiness runs in a database-enforced repeatable-read transaction and includes the exact marker and every required index definition, validity and readiness. Complete readiness returns a no-op before the migrator; pending indexes at the current schema use native completion. Missing or newer schema markers and wrong index definitions refuse. Commands exit before lifecycle, repository, provider, listener or maintenance startup and emit bounded metadata with closed errors. Compatibility admission remains separate and binds the operation to the reviewed immutable candidate image."
+    }
+  }
+}

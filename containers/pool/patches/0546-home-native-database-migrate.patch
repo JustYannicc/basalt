@@ -1,0 +1,806 @@
+diff --git a/cmd/home/main.go b/cmd/home/main.go
+--- a/cmd/home/main.go
++++ b/cmd/home/main.go
+@@ -112,8 +112,6 @@
+ // run executes the home command and returns the process exit code.
+ func run() int {
+ 	// Keep validation before state changes so failures leave existing data intact.
+-	logging.SetupBaseLogger()
+-
+ 	var configPath string
+ 	var addr string
+ 	var sqlitePath string
+@@ -121,6 +119,9 @@
+ 	var exportState bool
+ 	var databaseImportPath string
+ 	var databaseExportPath string
++	var databaseMigrate bool
++	var databaseSchemaInfo bool
++	var databaseSchemaCheck bool
+ 	var exportDir string
+ 	var authDir string
+ 	flag.StringVar(&configPath, "config", "config.yaml", "Config file path")
+@@ -130,18 +131,34 @@
+ 	flag.BoolVar(&exportState, "export", false, "Export config and auth files from database, then exit")
+ 	flag.StringVar(&databaseImportPath, "db-import", "", "Import a portable Home database snapshot, then exit")
+ 	flag.StringVar(&databaseExportPath, "db-export", "", "Export a portable Home database snapshot, then exit")
++	flag.BoolVar(&databaseMigrate, "db-migrate", false, "Migrate the configured PostgreSQL database, then exit")
++	flag.BoolVar(&databaseSchemaInfo, "db-schema-info", false, "Print the compiled schema target and required indexes as JSON, then exit")
++	flag.BoolVar(&databaseSchemaCheck, "db-schema-check", false, "Check the configured PostgreSQL schema without migration, then exit")
+ 	flag.StringVar(&exportDir, "export-dir", "", "Override output directory used by export")
+ 	flag.StringVar(&authDir, "auth-dir", "", "Override auth directory used by import")
+ 	flag.Parse()
+ 	databaseImportPath = strings.TrimSpace(databaseImportPath)
+ 	databaseExportPath = strings.TrimSpace(databaseExportPath)
+-	if oneTimeModeCount(importState, exportState, databaseImportPath, databaseExportPath) > 1 {
++	if !databaseMigrate && !databaseSchemaInfo && !databaseSchemaCheck {
++		logging.SetupBaseLogger()
++	}
++	if oneTimeModeCount(importState, exportState, databaseImportPath, databaseExportPath, databaseMigrate, databaseSchemaInfo, databaseSchemaCheck) > 1 {
++		if databaseMigrate || databaseSchemaInfo || databaseSchemaCheck {
++			return writeDatabaseMigrationReceipt(databaseMigrationFailure("refused", "invalid_mode"))
++		}
+ 		log.Errorf("only one of -import, -export, -db-import, or -db-export can be used")
+ 		return 1
++	}
++
++	if databaseSchemaInfo {
++		return writeDatabaseSchemaInfo()
+ 	}
+ 
+ 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+ 	defer stop()
++	if databaseMigrate || databaseSchemaCheck {
++		return runDatabaseMigration(ctx, databaseSchemaCheck)
++	}
+ 	runCtx, cancelRun := context.WithCancel(ctx)
+ 	defer cancelRun()
+ 	var databaseSnapshot *cluster.ValidatedDatabaseSnapshot
+@@ -652,8 +669,13 @@
+ 	return "home.db"
+ }
+ 
+-func oneTimeModeCount(importState bool, exportState bool, databaseImportPath string, databaseExportPath string) int {
++func oneTimeModeCount(importState bool, exportState bool, databaseImportPath string, databaseExportPath string, databaseModes ...bool) int {
+ 	count := 0
++	for _, enabled := range databaseModes {
++		if enabled {
++			count++
++		}
++	}
+ 	if importState {
+ 		count++
+ 	}
+diff --git a/cmd/home/database_migrate.go b/cmd/home/database_migrate.go
+new file mode 100644
+--- /dev/null
++++ b/cmd/home/database_migrate.go
+@@ -0,0 +1,69 @@
++package main
++
++import (
++	"context"
++	"encoding/json"
++	"io"
++	"os"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	log "github.com/sirupsen/logrus"
++)
++
++func writeDatabaseSchemaInfo() int {
++	if errEncode := json.NewEncoder(os.Stdout).Encode(cluster.DatabaseSchemaInfo()); errEncode != nil {
++		return 1
++	}
++	return 0
++}
++
++func databaseMigrationFailure(status, reason string) cluster.DatabaseMigrationReceipt {
++	return cluster.DatabaseMigrationReceipt{FormatVersion: 1, TargetVersion: cluster.DatabaseSchemaVersion(), Status: status, Reason: reason, PendingIndexes: []string{}}
++}
++
++func writeDatabaseMigrationReceipt(receipt cluster.DatabaseMigrationReceipt) int {
++	if errEncode := json.NewEncoder(os.Stdout).Encode(receipt); errEncode != nil {
++		return 1
++	}
++	if receipt.Status != "migrated" && receipt.Status != "noop" && receipt.Status != "ready" {
++		return 1
++	}
++	return 0
++}
++
++func runDatabaseMigration(ctx context.Context, checkOnly bool) int {
++	// One-shot callers receive only a closed receipt, including on native driver errors.
++	previousOutput := log.StandardLogger().Out
++	log.SetOutput(io.Discard)
++	defer log.SetOutput(previousOutput)
++	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
++	defer cancel()
++	cfg, exists, errConfig := cluster.LoadConfigOptional("")
++	if errConfig != nil {
++		return writeDatabaseMigrationReceipt(databaseMigrationFailure("failed", "configuration_failed"))
++	}
++	// Never create an implicit local database when deployment configuration is missing.
++	if !exists || cfg == nil || cfg.DatabaseBackend() != cluster.DatabaseBackendPostgres {
++		return writeDatabaseMigrationReceipt(databaseMigrationFailure("refused", "postgres_configuration_required"))
++	}
++	db, _, errOpen := openRuntimeDatabase(ctx, cfg, true, "")
++	if errOpen != nil {
++		return writeDatabaseMigrationReceipt(databaseMigrationFailure("failed", "database_open_failed"))
++	}
++	sqlDB, errHandle := db.DB()
++	if errHandle != nil {
++		return writeDatabaseMigrationReceipt(databaseMigrationFailure("failed", "database_handle_failed"))
++	}
++	var receipt cluster.DatabaseMigrationReceipt
++	if checkOnly {
++		receipt = cluster.CheckDatabaseSchemaContext(ctx, db)
++	} else {
++		receipt = cluster.MigrateDatabaseContext(ctx, db)
++	}
++	// Successful closure is part of completion; do not publish success before it.
++	if errClose := sqlDB.Close(); errClose != nil {
++		receipt.Status, receipt.Reason = "failed", "database_close_failed"
++	}
++	return writeDatabaseMigrationReceipt(receipt)
++}
+diff --git a/cmd/home/database_migrate_test.go b/cmd/home/database_migrate_test.go
+new file mode 100644
+--- /dev/null
++++ b/cmd/home/database_migrate_test.go
+@@ -0,0 +1,99 @@
++package main
++
++import (
++	"encoding/json"
++	"flag"
++	"io"
++	"os"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++func runDatabaseCommand(t *testing.T, args ...string) (int, []byte) {
++	t.Helper()
++	oldArgs, oldFlags, oldStdout := os.Args, flag.CommandLine, os.Stdout
++	reader, writer, errPipe := os.Pipe()
++	if errPipe != nil {
++		t.Fatal(errPipe)
++	}
++	os.Args = append([]string{"home"}, args...)
++	flag.CommandLine = flag.NewFlagSet("home", flag.ContinueOnError)
++	os.Stdout = writer
++	defer func() { os.Args, flag.CommandLine, os.Stdout = oldArgs, oldFlags, oldStdout }()
++	code := run()
++	if errClose := writer.Close(); errClose != nil {
++		t.Fatal(errClose)
++	}
++	output, errRead := io.ReadAll(reader)
++	if errRead != nil {
++		t.Fatal(errRead)
++	}
++	if errClose := reader.Close(); errClose != nil {
++		t.Fatal(errClose)
++	}
++	return code, output
++}
++
++func TestDatabaseMigrateSchemaInfoDoesNotReadConfigOrOpenDatabase(t *testing.T) {
++	t.Chdir(t.TempDir())
++	if errWrite := os.WriteFile("cluster.yaml", []byte("not: [valid YAML"), 0600); errWrite != nil {
++		t.Fatal(errWrite)
++	}
++	code, output := runDatabaseCommand(t, "-db-schema-info")
++	var result cluster.DatabaseSchemaInformation
++	if errDecode := json.Unmarshal(output, &result); errDecode != nil {
++		t.Fatal(errDecode)
++	}
++	if code != 0 || result.FormatVersion != 1 || result.TargetVersion != cluster.DatabaseSchemaVersion() || len(result.RequiredIndexes) == 0 {
++		t.Fatalf("code=%d output=%s", code, output)
++	}
++	if _, errStat := os.Stat("home.db"); !os.IsNotExist(errStat) {
++		t.Fatalf("database fallback opened: %v", errStat)
++	}
++}
++
++func TestDatabaseMigrateRefusesEveryOtherOneTimeMode(t *testing.T) {
++	for _, other := range [][]string{{"-import"}, {"-export"}, {"-db-import", "snapshot"}, {"-db-export", "snapshot"}, {"-db-schema-info"}, {"-db-schema-check"}} {
++		code, output := runDatabaseCommand(t, append([]string{"-db-migrate"}, other...)...)
++		var receipt cluster.DatabaseMigrationReceipt
++		if errDecode := json.Unmarshal(output, &receipt); errDecode != nil {
++			t.Fatal(errDecode)
++		}
++		if code == 0 || receipt.Status != "refused" || receipt.Reason != "invalid_mode" {
++			t.Fatalf("code=%d output=%s", code, output)
++		}
++	}
++}
++
++func TestDatabaseMigrateMissingConfigurationNeverCreatesFallback(t *testing.T) {
++	t.Chdir(t.TempDir())
++	for _, mode := range []string{"-db-migrate", "-db-schema-check"} {
++		code, output := runDatabaseCommand(t, mode)
++		var receipt cluster.DatabaseMigrationReceipt
++		if errDecode := json.Unmarshal(output, &receipt); errDecode != nil {
++			t.Fatal(errDecode)
++		}
++		if code == 0 || receipt.Status != "refused" || receipt.Reason != "postgres_configuration_required" {
++			t.Fatalf("code=%d output=%s", code, output)
++		}
++		if _, errStat := os.Stat("home.db"); !os.IsNotExist(errStat) {
++			t.Fatalf("database fallback opened: %v", errStat)
++		}
++	}
++}
++
++func TestDatabaseMigrateMalformedConfigurationReturnsClosedFailure(t *testing.T) {
++	t.Chdir(t.TempDir())
++	if errWrite := os.WriteFile("cluster.yaml", []byte("private-password: [invalid YAML"), 0600); errWrite != nil {
++		t.Fatal(errWrite)
++	}
++	code, output := runDatabaseCommand(t, "-db-migrate")
++	var receipt cluster.DatabaseMigrationReceipt
++	if errDecode := json.Unmarshal(output, &receipt); errDecode != nil {
++		t.Fatal(errDecode)
++	}
++	if code == 0 || receipt.Status != "failed" || receipt.Reason != "configuration_failed" || receipt.AppliedVersion != nil {
++		t.Fatalf("code=%d output=%s", code, output)
++	}
++}
+diff --git a/internal/cluster/db.go b/internal/cluster/db.go
+--- a/internal/cluster/db.go
++++ b/internal/cluster/db.go
+@@ -168,35 +168,36 @@
+ func autoMigratePostgresContext(ctx context.Context, db *gorm.DB, runWhenCurrent bool, afterSchema func(context.Context, *gorm.DB) error) error {
+ 	ctx = contextOrBackground(ctx)
+ 	startedAt := time.Now()
+-	result, errMigrate := coordinateSchemaMigration(
+-		ctx,
+-		currentDatabaseVersion,
+-		schemaMigrationPollInterval,
+-		schemaMigrationWaitTimeout,
+-		runWhenCurrent,
+-		postgresSchemaMigrationOperations(db, startedAt, ctx, func(lockedCtx context.Context, tx *gorm.DB, fromVersion int64, requiredVersion int64) error {
+-			lockedDB := tx.WithContext(lockedCtx)
+-			// Acquire the binding lock before schema/row locks to match live API key writes.
+-			if errLock := lockAPIKeyMutationTransaction(lockedDB); errLock != nil {
+-				return errLock
+-			}
+-			if errSchema := autoMigrateSchema(lockedDB); errSchema != nil {
+-				return errSchema
+-			}
+-			if afterSchema != nil {
+-				if errAfterSchema := afterSchema(lockedCtx, lockedDB); errAfterSchema != nil {
+-					return errAfterSchema
+-				}
+-			}
+-			if errCustom := runCustomMigrationsAfterVersion(lockedDB, fromVersion); errCustom != nil {
+-				return errCustom
+-			}
+-			if errVersion := writePostgresSchemaMigrationVersion(lockedCtx, lockedDB, requiredVersion); errVersion != nil {
+-				return fmt.Errorf("write database schema version: %w", errVersion)
+-			}
+-			return nil
+-		}),
+-	)
++	operations := postgresSchemaMigrationOperations(db, startedAt, ctx, func(lockedCtx context.Context, tx *gorm.DB, fromVersion int64, requiredVersion int64) error {
++		lockedDB := tx.WithContext(lockedCtx)
++		// Acquire the binding lock before schema/row locks to match live API key writes.
++		if errLock := lockAPIKeyMutationTransaction(lockedDB); errLock != nil {
++			return errLock
++		}
++		if errSchema := autoMigrateSchema(lockedDB); errSchema != nil {
++			return errSchema
++		}
++		if afterSchema != nil {
++			if errAfterSchema := afterSchema(lockedCtx, lockedDB); errAfterSchema != nil {
++				return errAfterSchema
++			}
++		}
++		if errCustom := runCustomMigrationsAfterVersion(lockedDB, fromVersion); errCustom != nil {
++			return errCustom
++		}
++		if errVersion := writePostgresSchemaMigrationVersion(lockedCtx, lockedDB, requiredVersion); errVersion != nil {
++			return fmt.Errorf("write database schema version: %w", errVersion)
++		}
++		return nil
++	})
++	mode, migrationOnly := ctx.Value(databaseMigrationOnlyKey{}).(*databaseMigrationOnly)
++	if migrationOnly {
++		operations = exactMigrationOperations(operations)
++	}
++	result, errMigrate := coordinateSchemaMigration(ctx, currentDatabaseVersion, schemaMigrationPollInterval, schemaMigrationWaitTimeout, runWhenCurrent, operations)
++	if migrationOnly {
++		mode.committed = result.MigrationCommitted
++	}
+ 	fields := log.Fields{
+ 		"database_backend":                "postgres",
+ 		"schema_initial_version":          result.InitialState.Version,
+diff --git a/internal/cluster/database_migrate.go b/internal/cluster/database_migrate.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/database_migrate.go
+@@ -0,0 +1,253 @@
++package cluster
++
++import (
++	"context"
++	"database/sql"
++	"errors"
++
++	"gorm.io/gorm"
++)
++
++// DatabaseSchemaVersion returns this binary's native schema target without database access.
++func DatabaseSchemaVersion() int64 { return currentDatabaseVersion }
++
++// DatabaseSchemaInformation identifies the native work checked by schema readiness.
++type DatabaseSchemaInformation struct {
++	FormatVersion   int      `json:"format_version"`
++	TargetVersion   int64    `json:"target_version"`
++	RequiredIndexes []string `json:"required_indexes"`
++}
++
++// DatabaseSchemaInfo reports the target and required index names without database access.
++func DatabaseSchemaInfo() DatabaseSchemaInformation {
++	names := make([]string, 0, len(reportingIndexes))
++	for _, index := range reportingIndexes {
++		names = append(names, index.name)
++	}
++	return DatabaseSchemaInformation{1, currentDatabaseVersion, names}
++}
++
++// DatabaseMigrationReceipt contains only bounded migration metadata, never driver diagnostics.
++type DatabaseMigrationReceipt struct {
++	FormatVersion   int      `json:"format_version"`
++	TargetVersion   int64    `json:"target_version"`
++	PreviousVersion *int64   `json:"previous_version"`
++	AppliedVersion  *int64   `json:"applied_version"`
++	Status          string   `json:"status"`
++	IndexesChecked  bool     `json:"indexes_checked"`
++	PendingIndexes  []string `json:"pending_indexes"`
++	Reason          string   `json:"reason,omitempty"`
++}
++
++type databaseSchemaObservation struct {
++	state          schemaMigrationState
++	indexesChecked bool
++	pendingIndexes []string
++}
++
++type databaseMigrationOnlyKey struct{}
++type databaseMigrationOnly struct{ committed bool }
++
++var errDatabaseSchemaAhead = errors.New("schema_ahead")
++var errDatabaseSchemaUninitialized = errors.New("schema_uninitialized")
++var errDatabaseSchemaRead = errors.New("schema_read_failed")
++var errDatabaseIndexRead = errors.New("index_read_failed")
++var errDatabaseIndexDefinition = errors.New("index_definition_mismatch")
++
++func exactDatabaseMigrationState(state schemaMigrationState) error {
++	if !state.Initialized || state.Version <= 0 {
++		return errDatabaseSchemaUninitialized
++	}
++	if state.Version > currentDatabaseVersion {
++		return errDatabaseSchemaAhead
++	}
++	return nil
++}
++
++func observeDatabaseSchema(ctx context.Context, db *gorm.DB) (databaseSchemaObservation, error) {
++	observation := databaseSchemaObservation{pendingIndexes: []string{}}
++	state, errRead := readPostgresSchemaMigrationState(ctx, db)
++	observation.state = state
++	if errRead != nil {
++		return observation, errDatabaseSchemaRead
++	}
++	// Earlier layouts may not have the tables required by this candidate's indexes.
++	if !state.Initialized || state.Version != currentDatabaseVersion {
++		return observation, nil
++	}
++	observation.indexesChecked = true
++	var errObservation error
++	for _, index := range reportingIndexes {
++		exists, ready, errIndex := reportingIndexState(db.WithContext(ctx), index)
++		if errIndex != nil || !exists || !ready {
++			observation.pendingIndexes = append(observation.pendingIndexes, index.name)
++		}
++		if errIndex != nil {
++			if errors.Is(errIndex, errReportingIndexDefinition) {
++				if errObservation == nil {
++					errObservation = errDatabaseIndexDefinition
++				}
++			} else {
++				errObservation = errDatabaseIndexRead
++			}
++		}
++	}
++	return observation, errObservation
++}
++
++func observeDatabaseSchemaReadOnly(ctx context.Context, db *gorm.DB) (databaseSchemaObservation, error) {
++	observation := databaseSchemaObservation{pendingIndexes: []string{}}
++	errTransaction := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
++		var errRead error
++		observation, errRead = observeDatabaseSchema(ctx, tx)
++		return errRead
++	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
++	if errTransaction != nil {
++		if errors.Is(errTransaction, errDatabaseIndexRead) || errors.Is(errTransaction, errDatabaseIndexDefinition) {
++			return observation, errTransaction
++		}
++		return observation, errDatabaseSchemaRead
++	}
++	return observation, nil
++}
++
++func newDatabaseMigrationReceipt() DatabaseMigrationReceipt {
++	return DatabaseMigrationReceipt{FormatVersion: 1, TargetVersion: currentDatabaseVersion, Status: "failed", PendingIndexes: []string{}}
++}
++
++func recordDatabaseObservation(receipt *DatabaseMigrationReceipt, observation databaseSchemaObservation) {
++	if observation.state.Initialized {
++		version := observation.state.Version
++		receipt.AppliedVersion = &version
++	}
++	receipt.IndexesChecked = observation.indexesChecked
++	receipt.PendingIndexes = observation.pendingIndexes
++	if receipt.PendingIndexes == nil {
++		receipt.PendingIndexes = []string{}
++	}
++}
++
++func databaseSchemaReadiness(observation databaseSchemaObservation, errRead error) DatabaseMigrationReceipt {
++	receipt := newDatabaseMigrationReceipt()
++	recordDatabaseObservation(&receipt, observation)
++	if errRead != nil {
++		receipt.Reason = "schema_read_failed"
++		if errors.Is(errRead, errDatabaseIndexRead) {
++			receipt.Reason = "index_read_failed"
++		}
++		if errors.Is(errRead, errDatabaseIndexDefinition) {
++			receipt.Status, receipt.Reason = "refused", "index_definition_mismatch"
++		}
++		return receipt
++	}
++	if errState := exactDatabaseMigrationState(observation.state); errState != nil {
++		receipt.Status, receipt.Reason = "refused", errState.Error()
++		return receipt
++	}
++	if observation.state.Version < currentDatabaseVersion {
++		receipt.Status, receipt.Reason = "pending", "schema_pending"
++		return receipt
++	}
++	if !observation.indexesChecked || len(observation.pendingIndexes) != 0 {
++		receipt.Status, receipt.Reason = "pending", "indexes_pending"
++		return receipt
++	}
++	receipt.Status = "ready"
++	return receipt
++}
++
++// CheckDatabaseSchemaContext reads the native schema marker and every required online index.
++func CheckDatabaseSchemaContext(ctx context.Context, db *gorm.DB) DatabaseMigrationReceipt {
++	if db == nil || db.Dialector == nil || db.Dialector.Name() != "postgres" {
++		receipt := newDatabaseMigrationReceipt()
++		receipt.Status, receipt.Reason = "refused", "postgres_required"
++		return receipt
++	}
++	return databaseSchemaReadiness(observeDatabaseSchemaReadOnly(contextOrBackground(ctx), db))
++}
++
++// MigrateDatabaseContext runs the native migrator once and verifies all native schema work.
++// Compatibility with a serving older binary remains the deployment caller's responsibility.
++func MigrateDatabaseContext(ctx context.Context, db *gorm.DB) DatabaseMigrationReceipt {
++	if db == nil || db.Dialector == nil || db.Dialector.Name() != "postgres" {
++		receipt := newDatabaseMigrationReceipt()
++		receipt.Status, receipt.Reason = "refused", "postgres_required"
++		return receipt
++	}
++	return migrateDatabaseContext(ctx,
++		func(readCtx context.Context) (databaseSchemaObservation, error) {
++			return observeDatabaseSchemaReadOnly(readCtx, db)
++		},
++		func(migrateCtx context.Context) error { return AutoMigrateContext(migrateCtx, db) })
++}
++
++func migrateDatabaseContext(ctx context.Context, read func(context.Context) (databaseSchemaObservation, error), migrate func(context.Context) error) DatabaseMigrationReceipt {
++	ctx = contextOrBackground(ctx)
++	initial, errRead := read(ctx)
++	receipt := databaseSchemaReadiness(initial, errRead)
++	if initial.state.Initialized {
++		version := initial.state.Version
++		receipt.PreviousVersion = &version
++	}
++	if receipt.Status == "ready" {
++		receipt.Status = "noop"
++		return receipt
++	}
++	if receipt.Status != "pending" {
++		return receipt
++	}
++	mode := &databaseMigrationOnly{}
++	ctx = context.WithValue(ctx, databaseMigrationOnlyKey{}, mode)
++	if errMigrate := migrate(ctx); errMigrate != nil {
++		// A native attempt may have committed its version before an online step failed.
++		// Reconcile when readable, while retaining failure even if another process finishes.
++		observed, _ := read(ctx)
++		receipt.AppliedVersion = nil
++		recordDatabaseObservation(&receipt, observed)
++		receipt.Status, receipt.Reason = "failed", "migration_failed"
++		if errors.Is(errMigrate, errDatabaseSchemaAhead) {
++			receipt.Status, receipt.Reason = "refused", "schema_ahead"
++		}
++		if errors.Is(errMigrate, errDatabaseSchemaUninitialized) {
++			receipt.Status, receipt.Reason = "refused", "schema_uninitialized"
++		}
++		return receipt
++	}
++	finalState, errFinal := read(ctx)
++	finalReceipt := databaseSchemaReadiness(finalState, errFinal)
++	finalReceipt.PreviousVersion = receipt.PreviousVersion
++	if finalReceipt.Status != "ready" {
++		if finalReceipt.Status == "pending" {
++			finalReceipt.Status = "refused"
++		}
++		return finalReceipt
++	}
++	finalReceipt.Status = "noop"
++	if mode.committed || len(initial.pendingIndexes) != 0 {
++		finalReceipt.Status = "migrated"
++	}
++	return finalReceipt
++}
++
++// exactMigrationOperations checks every native observation, including the locked re-read.
++// It adds no lock or transaction around the existing migration coordinator.
++func exactMigrationOperations(operations schemaMigrationOperations) schemaMigrationOperations {
++	checkedRead := func(read func(context.Context) (schemaMigrationState, error)) func(context.Context) (schemaMigrationState, error) {
++		return func(ctx context.Context) (schemaMigrationState, error) {
++			state, errRead := read(ctx)
++			if errRead != nil {
++				return state, errRead
++			}
++			return state, exactDatabaseMigrationState(state)
++		}
++	}
++	return schemaMigrationOperations{
++		currentVersion: checkedRead(operations.currentVersion),
++		tryLock: func(ctx context.Context, run func(lockedSchemaMigrationOperations) error) (bool, error) {
++			return operations.tryLock(ctx, func(locked lockedSchemaMigrationOperations) error {
++				locked.currentVersion = checkedRead(locked.currentVersion)
++				return run(locked)
++			})
++		},
++	}
++}
+diff --git a/internal/cluster/database_migrate_test.go b/internal/cluster/database_migrate_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/database_migrate_test.go
+@@ -0,0 +1,202 @@
++package cluster
++
++import (
++	"context"
++	"database/sql"
++	"database/sql/driver"
++	"errors"
++	"strings"
++	"testing"
++	"time"
++
++	"gorm.io/driver/postgres"
++	"gorm.io/gorm"
++)
++
++func observedDatabase(version int64, indexesChecked bool, pending ...string) databaseSchemaObservation {
++	return databaseSchemaObservation{state: schemaMigrationState{Version: version, Initialized: true}, indexesChecked: indexesChecked, pendingIndexes: pending}
++}
++
++func TestDatabaseMigrateCurrentCompletedVersionNeverCallsNativeMigrator(t *testing.T) {
++	calls := 0
++	receipt := migrateDatabaseContext(context.Background(), func(context.Context) (databaseSchemaObservation, error) {
++		return observedDatabase(currentDatabaseVersion, true), nil
++	}, func(context.Context) error { calls++; return errors.New("must not migrate") })
++	if calls != 0 || receipt.Status != "noop" || *receipt.AppliedVersion != currentDatabaseVersion || !receipt.IndexesChecked {
++		t.Fatalf("calls=%d receipt=%+v", calls, receipt)
++	}
++}
++
++func TestDatabaseMigrateCurrentVersionWithPendingIndexesRunsNativePath(t *testing.T) {
++	pending := true
++	calls := 0
++	receipt := migrateDatabaseContext(context.Background(), func(context.Context) (databaseSchemaObservation, error) {
++		if pending {
++			return observedDatabase(currentDatabaseVersion, true, "idx_usage_summary_cursor_v1"), nil
++		}
++		return observedDatabase(currentDatabaseVersion, true), nil
++	}, func(context.Context) error { calls++; pending = false; return nil })
++	if calls != 1 || receipt.Status != "migrated" || *receipt.PreviousVersion != currentDatabaseVersion || len(receipt.PendingIndexes) != 0 {
++		t.Fatalf("calls=%d receipt=%+v", calls, receipt)
++	}
++}
++
++func TestDatabaseMigrateRefusesUnknownOrFutureState(t *testing.T) {
++	for _, state := range []schemaMigrationState{{}, {Version: -1, Initialized: true}, {Version: currentDatabaseVersion + 1, Initialized: true}} {
++		calls := 0
++		receipt := migrateDatabaseContext(context.Background(), func(context.Context) (databaseSchemaObservation, error) {
++			return databaseSchemaObservation{state: state}, nil
++		}, func(context.Context) error { calls++; return nil })
++		if calls != 0 || receipt.Status != "refused" {
++			t.Fatalf("state=%+v calls=%d receipt=%+v", state, calls, receipt)
++		}
++	}
++}
++
++func TestDatabaseMigrateUsesNativePathThenVerifiesExactVersion(t *testing.T) {
++	version := int64(currentDatabaseVersion - 1)
++	calls := 0
++	receipt := migrateDatabaseContext(context.Background(), func(context.Context) (databaseSchemaObservation, error) {
++		return observedDatabase(version, version == currentDatabaseVersion), nil
++	}, func(ctx context.Context) error {
++		calls++
++		ctx.Value(databaseMigrationOnlyKey{}).(*databaseMigrationOnly).committed = true
++		version = currentDatabaseVersion
++		return nil
++	})
++	if calls != 1 || receipt.Status != "migrated" || *receipt.PreviousVersion != currentDatabaseVersion-1 || *receipt.AppliedVersion != currentDatabaseVersion {
++		t.Fatalf("calls=%d receipt=%+v", calls, receipt)
++	}
++}
++
++func TestDatabaseMigrateDoesNotPublishNativeDiagnostics(t *testing.T) {
++	secret := "postgres://private-user:private-password@private-host/database"
++	for _, failRead := range []bool{true, false} {
++		receipt := migrateDatabaseContext(context.Background(), func(context.Context) (databaseSchemaObservation, error) {
++			if failRead {
++				return databaseSchemaObservation{}, errors.New(secret)
++			}
++			return observedDatabase(currentDatabaseVersion-1, false), nil
++		}, func(context.Context) error { return errors.New(secret) })
++		if receipt.Status != "failed" || strings.Contains(receipt.Reason, secret) || (receipt.Reason != "migration_failed" && receipt.Reason != "schema_read_failed") {
++			t.Fatalf("unsafe receipt=%+v", receipt)
++		}
++	}
++}
++
++func TestDatabaseMigrateDoesNotClaimCompletionAfterPartialIndexFailure(t *testing.T) {
++	calls := 0
++	receipt := migrateDatabaseContext(context.Background(), func(context.Context) (databaseSchemaObservation, error) {
++		return observedDatabase(currentDatabaseVersion, true, "idx_usage_summary_cursor_v1"), nil
++	}, func(context.Context) error { calls++; return errors.New("index build failed") })
++	if calls != 1 || receipt.Status != "failed" || receipt.Reason != "migration_failed" || len(receipt.PendingIndexes) != 1 || *receipt.AppliedVersion != currentDatabaseVersion {
++		t.Fatalf("calls=%d receipt=%+v", calls, receipt)
++	}
++}
++
++func TestDatabaseMigrateRefusesMismatchedIndexesWithoutNativeAttempt(t *testing.T) {
++	calls := 0
++	receipt := migrateDatabaseContext(context.Background(), func(context.Context) (databaseSchemaObservation, error) {
++		return observedDatabase(currentDatabaseVersion, true, "idx_usage_summary_cursor_v1"), errDatabaseIndexDefinition
++	}, func(context.Context) error { calls++; return nil })
++	if calls != 0 || receipt.Status != "refused" || receipt.Reason != "index_definition_mismatch" || len(receipt.PendingIndexes) != 1 {
++		t.Fatalf("calls=%d receipt=%+v", calls, receipt)
++	}
++}
++
++func TestDatabaseMigrateRequiresReadBackOfAllNativeWork(t *testing.T) {
++	receipt := migrateDatabaseContext(context.Background(), func(context.Context) (databaseSchemaObservation, error) {
++		return observedDatabase(currentDatabaseVersion, true, "idx_usage_summary_cursor_v1"), nil
++	}, func(context.Context) error { return nil })
++	if receipt.Status != "refused" || receipt.Reason != "indexes_pending" {
++		t.Fatalf("receipt=%+v", receipt)
++	}
++}
++
++func TestDatabaseMigrateSchemaCheckNeverRunsNativeWork(t *testing.T) {
++	tests := []struct {
++		observation    databaseSchemaObservation
++		status, reason string
++	}{
++		{observedDatabase(currentDatabaseVersion, true), "ready", ""},
++		{observedDatabase(currentDatabaseVersion, true, "idx_usage_summary_cursor_v1"), "pending", "indexes_pending"},
++		{observedDatabase(currentDatabaseVersion, false), "pending", "indexes_pending"},
++		{observedDatabase(currentDatabaseVersion-1, false), "pending", "schema_pending"},
++		{observedDatabase(currentDatabaseVersion+1, false), "refused", "schema_ahead"},
++	}
++	for _, test := range tests {
++		receipt := databaseSchemaReadiness(test.observation, nil)
++		if receipt.Status != test.status || receipt.Reason != test.reason {
++			t.Fatalf("observation=%+v receipt=%+v", test.observation, receipt)
++		}
++	}
++}
++
++func TestDatabaseMigrateRechecksFutureVersionInsideNativeLock(t *testing.T) {
++	migrated := false
++	operations := exactMigrationOperations(schemaMigrationOperations{
++		currentVersion: func(context.Context) (schemaMigrationState, error) {
++			return schemaMigrationState{Version: currentDatabaseVersion - 1, Initialized: true}, nil
++		},
++		tryLock: func(ctx context.Context, run func(lockedSchemaMigrationOperations) error) (bool, error) {
++			return true, run(lockedSchemaMigrationOperations{
++				currentVersion: func(context.Context) (schemaMigrationState, error) {
++					return schemaMigrationState{Version: currentDatabaseVersion + 1, Initialized: true}, nil
++				},
++				migrateToVersion: func(context.Context, int64, int64) error { migrated = true; return nil },
++			})
++		},
++	})
++	_, errMigrate := coordinateSchemaMigration(context.Background(), currentDatabaseVersion, time.Millisecond, time.Second, false, operations)
++	if !errors.Is(errMigrate, errDatabaseSchemaAhead) || migrated {
++		t.Fatalf("migrated=%v error=%v", migrated, errMigrate)
++	}
++}
++
++type migrationObservationConnector struct{ options *driver.TxOptions }
++
++func (connector migrationObservationConnector) Connect(context.Context) (driver.Conn, error) {
++	return migrationObservationConn{options: connector.options}, nil
++}
++func (migrationObservationConnector) Driver() driver.Driver { return migrationObservationDriver{} }
++
++type migrationObservationDriver struct{}
++
++func (migrationObservationDriver) Open(string) (driver.Conn, error) {
++	return nil, errors.New("unexpected driver open")
++}
++
++type migrationObservationConn struct{ options *driver.TxOptions }
++
++func (migrationObservationConn) Prepare(string) (driver.Stmt, error) {
++	return nil, errors.New("unexpected prepare")
++}
++func (migrationObservationConn) Close() error { return nil }
++func (migrationObservationConn) Begin() (driver.Tx, error) {
++	return nil, errors.New("unexpected default transaction")
++}
++func (connection migrationObservationConn) BeginTx(_ context.Context, options driver.TxOptions) (driver.Tx, error) {
++	*connection.options = options
++	return nil, errors.New("synthetic transaction refusal with private driver diagnostic")
++}
++
++func TestDatabaseMigrateObservationRequiresReadonlyRepeatableReadTransaction(t *testing.T) {
++	var options driver.TxOptions
++	sqlDB := sql.OpenDB(migrationObservationConnector{options: &options})
++	defer func() {
++		if errClose := sqlDB.Close(); errClose != nil {
++			t.Error(errClose)
++		}
++	}()
++	db, errOpen := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{DisableAutomaticPing: true})
++	if errOpen != nil {
++		t.Fatal(errOpen)
++	}
++	receipt := CheckDatabaseSchemaContext(context.Background(), db)
++	if !options.ReadOnly || options.Isolation != driver.IsolationLevel(sql.LevelRepeatableRead) {
++		t.Fatalf("transaction options=%+v", options)
++	}
++	if receipt.Status != "failed" || receipt.Reason != "schema_read_failed" || receipt.AppliedVersion != nil {
++		t.Fatalf("receipt=%+v", receipt)
++	}
++}
+diff --git a/internal/cluster/reporting_indexes.go b/internal/cluster/reporting_indexes.go
+--- a/internal/cluster/reporting_indexes.go
++++ b/internal/cluster/reporting_indexes.go
+@@ -34,6 +34,8 @@
+ 		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_billing_charge_key_usage_v1 ON billing_charge (api_key_id,usage_id)`},
+ }
+ 
++var errReportingIndexDefinition = errors.New("unexpected reporting index definition")
++
+ func reportingIndexState(db *gorm.DB, index reportingIndex) (bool, bool, error) {
+ 	var row struct {
+ 		Matches bool
+@@ -61,7 +63,7 @@
+ 		return false, false, result.Error
+ 	}
+ 	if !row.Matches && result.RowsAffected != 0 {
+-		return false, false, fmt.Errorf("reporting index %s has an unexpected definition", index.name)
++		return false, false, fmt.Errorf("reporting index %s: %w", index.name, errReportingIndexDefinition)
+ 	}
+ 	return row.Matches, row.Ready, nil
+ }
