@@ -86,15 +86,30 @@ export const grantOf = (caller: string | undefined) => {
     return null;
   }
 };
-/** The main a successful sync call has seen: a listing's revision, a change range's end, a landing. */
+/**
+ * The main a device's sync call has seen. Only the plugin's own sync calls count, so an agent
+ * listing, reading or writing notes through the same tools never appears as a device: its heartbeat
+ * (a one-entry listing of the root, at the start of every pull and checkpoint), its change ranges,
+ * and the import calls only the plugin makes. A landed write counts at the heartbeat that follows it.
+ */
 export const seenHead = (command: Command, value: unknown): string | null => {
-  const inner = command.method === "runImport" ? record(record(command.input).request) : null;
-  const method = inner ? inner.method : command.method,
-    out = record(value);
-  if (method === "list") return typeof out.at === "string" ? out.at : null;
-  if (method === "changes") return typeof out.to === "string" ? out.to : null;
-  if (method === "apply" && out.state === "landed" && typeof out.oid === "string") return out.oid;
-  return null;
+  const out = record(value);
+  const head = (method: unknown) => {
+    if (method === "list") return typeof out.at === "string" ? out.at : null;
+    if (method === "changes") return typeof out.to === "string" ? out.to : null;
+    if (method === "apply" && out.state === "landed" && typeof out.oid === "string") return out.oid;
+    return null;
+  };
+  if (command.method === "runImport") return head(record(record(command.input).request).method);
+  if (command.method === "changes") return head("changes");
+  if (command.method !== "list") return null;
+  const input = record(command.input);
+  const heartbeat =
+    input.limit === 1 &&
+    input.path === undefined &&
+    input.at === undefined &&
+    input.cursor === undefined;
+  return heartbeat ? head("list") : null;
 };
 const tokenSeconds = 3600,
   refreshMs = 5 * 60_000;
