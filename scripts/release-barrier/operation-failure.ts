@@ -14,7 +14,9 @@ export type ReleaseOperation =
   | "record-class-expansion"
   | "release-stack";
 
-const knownTypes = new Set([
+export const knownTypes = new Set([
+  // Effect's own timeout, raised by a provider call's bounded wait.
+  "TimeoutError",
   "CloudflareHttpError",
   "CloudflareParseError",
   "UnknownCloudflareError",
@@ -29,6 +31,7 @@ const knownTypes = new Set([
   "NotFound",
   "Conflict",
   "UnprocessableEntity",
+  "Locked",
   "TooManyRequests",
   "InternalServerError",
   "BadGateway",

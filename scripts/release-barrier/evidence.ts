@@ -1,5 +1,5 @@
 import { ServingFailure } from "./serving-failure.ts";
-import { operationFailure, ReleaseOperationFailure } from "./operation-failure.ts";
+import { knownTypes, operationFailure, ReleaseOperationFailure } from "./operation-failure.ts";
 import { appendFile, chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { BarrierReceipt } from "./barrier.ts";
@@ -21,6 +21,7 @@ import { sealRecovery } from "./recovery-envelope.ts";
 import { declaredEvidence } from "./declared-evidence.ts";
 import { classEvidence } from "./class-evidence.ts";
 import type { NamespaceRead } from "./namespace-read.ts";
+import { bucketReadAttempts, type BucketRead } from "./bucket-read.ts";
 
 const write = async (directory: string, name: string, value: unknown) => {
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -35,6 +36,7 @@ export function releaseEvidence(directory: string, candidate: string, encryption
   let fingerprint: string | undefined;
   let latest: BarrierReceipt | undefined;
   const namespaceReads: NamespaceRead[] = [];
+  const bucketReads: BucketRead[] = [];
   const declared = declaredEvidence(
     (name, value) => write(directory, name, value),
     candidate,
@@ -99,6 +101,40 @@ export function releaseEvidence(directory: string, candidate: string, encryption
         reads: namespaceReads,
       });
     },
+    async bucketRead(read: BucketRead) {
+      const safe = Schema.decodeUnknownSync(
+        Schema.Struct({
+          fqn: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]{1,128}$/u)),
+          attempt: Schema.Number.check(
+            Schema.isInt(),
+            Schema.isBetween({ minimum: 1, maximum: bucketReadAttempts }),
+          ),
+          at: Schema.String.check(
+            Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u),
+          ),
+          outcome: Schema.Literals(["ok", "unknown", ...knownTypes]),
+          reason: Schema.optional(
+            Schema.Literals([
+              "TransportError",
+              "EncodeError",
+              "InvalidUrlError",
+              "StatusCodeError",
+              "DecodeError",
+              "EmptyBodyError",
+            ]),
+          ),
+          status: Schema.optional(
+            Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 100, maximum: 599 })),
+          ),
+        }),
+      )(read);
+      bucketReads.push(safe);
+      await write(directory, "bucket-reads.json", {
+        schemaVersion: 1,
+        candidate,
+        reads: bucketReads,
+      });
+    },
     async serving(value: ServingContainer) {
       await write(directory, "serving.json", value);
     },
@@ -156,6 +192,7 @@ export function releaseEvidence(directory: string, candidate: string, encryption
       await write(directory, "receipt.json", {
         ...receipt,
         ...(namespaceReads.length ? { namespaceReads } : {}),
+        ...(bucketReads.length ? { bucketReads } : {}),
       });
       latest = structuredClone(receipt);
     },
@@ -175,6 +212,7 @@ export function releaseEvidence(directory: string, candidate: string, encryption
         manifest: fingerprint ?? null,
         activated: latest?.activated ?? [],
         ...(namespaceReads.length ? { namespaceReads } : {}),
+        ...(bucketReads.length ? { bucketReads } : {}),
         ...(latest?.pending ? { pending: latest.pending } : {}),
         ...(latest?.pendingUpload ? { pendingUpload: latest.pendingUpload } : {}),
         ...(latest?.startupMeasurements ? { startupMeasurements: latest.startupMeasurements } : {}),

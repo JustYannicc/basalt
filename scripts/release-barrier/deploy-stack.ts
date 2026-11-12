@@ -1,3 +1,4 @@
+import { retryingBucketReads, type BucketRead, type BucketReadOptions } from "./bucket-read.ts";
 import {
   d1Account,
   preflightDeclaredD1,
@@ -87,6 +88,9 @@ export interface DeployStackOptions {
   publication?(container: FrozenContainer, normalization?: BaselineNormalization): Promise<void>;
   admission?(verifications: readonly VerificationAdmission[]): Promise<void>;
   namespaceRead?(read: NamespaceRead): Promise<void>;
+  bucketRead?(read: BucketRead): Promise<void>;
+  /** Test seam for the bucket read retry's waits. */
+  bucketReadTiming?: Pick<BucketReadOptions, "wait" | "random">;
   serving?(container: ServingContainer): Promise<void>;
   io?: {
     buckets?: BucketProvider;
@@ -113,14 +117,19 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     const context = yield* Effect.context<Services>();
     const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
       Effect.runPromise(effect.pipe(Effect.provideContext(context)));
-    const buckets =
+    const buckets = retryingBucketReads(
       options.io?.buckets ??
-      ({
-        accountId: () => run(bucketAccount),
-        read: (target, fqn) => run(readDeclaredBucket(target, fqn)),
-        create: (target) => run(createDeclaredBucket(target)),
-        configure: (target) => run(configureDeclaredBucket(target)),
-      } satisfies BucketProvider);
+        ({
+          accountId: () => run(bucketAccount),
+          read: (target, fqn) => run(readDeclaredBucket(target, fqn)),
+          create: (target) => run(createDeclaredBucket(target)),
+          configure: (target) => run(configureDeclaredBucket(target)),
+        } satisfies BucketProvider),
+      {
+        ...(options.bucketRead ? { record: options.bucketRead } : {}),
+        ...options.bucketReadTiming,
+      },
+    );
     const d1 =
       options.io?.d1 ??
       ({
