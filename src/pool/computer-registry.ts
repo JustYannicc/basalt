@@ -3,16 +3,33 @@ import type { SealedLink } from "./setup-links.ts";
 import type { SealedNativeKey } from "./native-key.ts";
 
 export interface StoredComputer {
-  id: string; name: string; user: string; pool: string; createdAt: string; boundAt: string;
+  id: string;
+  name: string;
+  user: string;
+  pool: string;
+  createdAt: string;
+  boundAt: string;
   state: "issuing" | "active" | "revoking" | "revoked" | "removed";
-  keyId?: number; userId?: number;
+  keyId?: number;
+  userId?: number;
   /** The model key stays on the server; only a live matching OAuth grant can use it. */
   native?: { grant: string; models: boolean; key?: SealedNativeKey; toolsOrganization?: string };
   /** Absent when the computer was set up for models only. */
-  toolsKeyId?: string; toolsHash?: string;
-  firstModelRequestAt: string | null; firstToolCallAt: string | null; revokedAt: string | null;
-  firstModelRequestEverAt?: string | null; modelObservationCheckedAt?: number; setupCompletedAt?: string | null;
-  removedAt?: string | null; removalPending?: boolean; removalAt?: number; switching?: string[]; switchingTo?: string; link?: SealedLink;
+  toolsKeyId?: string;
+  toolsHash?: string;
+  firstModelRequestAt: string | null;
+  firstToolCallAt: string | null;
+  revokedAt: string | null;
+  firstModelRequestEverAt?: string | null;
+  modelObservationCheckedAt?: number;
+  modelObservationRetryAt?: number;
+  setupCompletedAt?: string | null;
+  removedAt?: string | null;
+  removalPending?: boolean;
+  removalAt?: number;
+  switching?: string[];
+  switchingTo?: string;
+  link?: SealedLink;
   beforeRemoval?: { state: StoredComputer["state"]; link?: SealedLink };
 }
 export interface ComputerStorage {
@@ -21,18 +38,32 @@ export interface ComputerStorage {
 }
 export type Registry = Record<string, StoredComputer>;
 export const publicView = (computer: StoredComputer): Computer => ({
-  id: computer.id, name: computer.name, poolId: computer.pool, createdAt: computer.createdAt,
-  state: computer.state, firstModelRequestAt: computer.firstModelRequestAt,
-  firstToolCallAt: computer.firstToolCallAt, revokedAt: computer.revokedAt, removedAt: computer.removedAt ?? null,
+  id: computer.id,
+  name: computer.name,
+  poolId: computer.pool,
+  createdAt: computer.createdAt,
+  state: computer.state,
+  firstModelRequestAt: computer.firstModelRequestAt,
+  firstToolCallAt: computer.firstToolCallAt,
+  revokedAt: computer.revokedAt,
+  removedAt: computer.removedAt ?? null,
   tools: hasTools(computer),
   // Unclaimed with its link gone: nobody can ever set it up, so the page may clear it.
-  ...computer.state === "issuing" && !computer.link && { lapsed: true },
+  ...(computer.state === "issuing" && !computer.link && { lapsed: true }),
 });
 
 /** A models-only computer has no tools token. */
-export const hasTools = (computer: { toolsKeyId?: string; native?: { toolsOrganization?: string } }): boolean =>
+export const hasTools = (computer: {
+  toolsKeyId?: string;
+  native?: { toolsOrganization?: string };
+}): boolean =>
   computer.toolsKeyId !== undefined || computer.native?.toolsOrganization !== undefined;
 
 /** Include every destination whose backend write may have succeeded. */
-export const boundPools = (computer: StoredComputer): string[] =>
-  [...new Set([computer.pool, ...(computer.switching ?? []), ...(computer.switchingTo ? [computer.switchingTo] : [])])];
+export const boundPools = (computer: StoredComputer): string[] => [
+  ...new Set([
+    computer.pool,
+    ...(computer.switching ?? []),
+    ...(computer.switchingTo ? [computer.switchingTo] : []),
+  ]),
+];
