@@ -11,6 +11,7 @@ on:
           - full
           - restart-observation
           - density
+          - db-study
         default: full
       model:
         description: Model ID from /v1/models; required when the catalog has multiple models
@@ -32,12 +33,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ inputs.mode == 'density' && format('pool-density-{0}', github.ref) || 'pool-acceptance-production' }}
+  group: ${{ (inputs.mode == 'density' || inputs.mode == 'db-study') && format('pool-study-{0}', github.ref) || 'pool-acceptance-production' }}
   cancel-in-progress: false
 
 jobs:
   acceptance:
-    if: inputs.mode != 'density'
+    if: inputs.mode == 'full' || inputs.mode == 'restart-observation'
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -101,5 +102,174 @@ jobs:
         with:
           name: pool-density-x86-${{ github.sha }}-${{ github.run_id }}
           path: ${{ runner.temp }}/pool-density
+          if-no-files-found: error
+          retention-days: 7
+
+  db-study-images:
+    if: inputs.mode == 'db-study' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [release, profile]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Freeze the study build venue
+        env:
+          DENSITY_OUTPUT: ${{ runner.temp }}/db-study-image
+        run: |
+          test "$(uname -m)" = x86_64
+          echo "DENSITY_OUTPUT=$DENSITY_OUTPUT" >> "$GITHUB_ENV"
+          mkdir -p "$DENSITY_OUTPUT"
+          lscpu --json > "$DENSITY_OUTPUT/runner-cpu.json"
+          git fetch --no-tags origin 53d3a3730859fd2b46f435cdaaa6ffedaf73400b
+      - name: Prepare the frozen image builder
+        run: npm run prepare:upstream
+        env:
+          BASALT_CI_OMIT_RELEASE_DOWNLOADS: "false"
+      - name: Build the frozen release or separate diagnostic image
+        env:
+          STUDY_KIND: ${{ matrix.kind }}
+        run: bun scripts/scale-test/db-study/build-images.mjs "$STUDY_KIND"
+      - name: Export the exact image for its isolated test runners
+        env:
+          STUDY_KIND: ${{ matrix.kind }}
+        run: |
+          docker image save "pool-db-study:$STUDY_KIND" | gzip -1 > "$DENSITY_OUTPUT/image.tar.gz"
+          cd "$DENSITY_OUTPUT"
+          sha256sum image.tar.gz > image.tar.gz.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pool-db-study-image-${{ matrix.kind }}-${{ github.sha }}
+          path: ${{ runner.temp }}/db-study-image
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  db-study-sensitivity:
+    needs: db-study-images
+    if: always() && inputs.mode == 'db-study' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 210
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [standard-1, standard-2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Freeze one host for all three connection limits
+        env:
+          STUDY_OUTPUT: ${{ runner.temp }}/db-sensitivity
+          IMAGE_OUTPUT: ${{ runner.temp }}/db-image
+        run: |
+          test "$(uname -m)" = x86_64
+          echo "STUDY_OUTPUT=$STUDY_OUTPUT" >> "$GITHUB_ENV"
+          echo "IMAGE_OUTPUT=$IMAGE_OUTPUT" >> "$GITHUB_ENV"
+          mkdir -p "$STUDY_OUTPUT" "$IMAGE_OUTPUT"
+          lscpu --json > "$STUDY_OUTPUT/runner-cpu.json"
+          free -b > "$STUDY_OUTPUT/runner-memory.txt"
+      - uses: actions/download-artifact@v4
+        with:
+          name: pool-db-study-image-release-${{ github.sha }}
+          path: ${{ runner.temp }}/db-image
+      - name: Verify and load the unchanged release image
+        run: |
+          cd "$IMAGE_OUTPUT"
+          sha256sum -c image.tar.gz.sha256
+          docker image load --input image.tar.gz
+      - name: Acquire the same pinned synthetic dependencies
+        run: |
+          docker pull postgres@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2
+          docker tag postgres@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2 postgres:17.7-alpine
+          docker pull node@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+          docker tag node@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd node:24.18.0-alpine
+      - name: Measure pool limits 6, 12 and 24 on this same host
+        env:
+          DENSITY_PROFILE: ${{ matrix.profile }}
+        run: |
+          for size in 6 12 24; do
+            export DENSITY_OUTPUT="$STUDY_OUTPUT/pool-$size"
+            export DENSITY_DB_POOL_SIZE="$size"
+            mkdir -p "$DENSITY_OUTPUT"
+            cp "$IMAGE_OUTPUT/release-image.id" "$DENSITY_OUTPUT/image.id"
+            node scripts/scale-test/db-study/prepare-sensitivity.mjs
+            bun "$DENSITY_OUTPUT/run-density.mjs" "sensitivity-$size"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pool-db-sensitivity-${{ matrix.profile }}-${{ github.sha }}
+          path: ${{ runner.temp }}/db-sensitivity
+          if-no-files-found: error
+          retention-days: 7
+
+  db-study-profile:
+    needs: db-study-images
+    if: always() && inputs.mode == 'db-study' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Freeze the separate diagnostic venue
+        env:
+          DENSITY_OUTPUT: ${{ runner.temp }}/db-profile
+          IMAGE_OUTPUT: ${{ runner.temp }}/db-image
+        run: |
+          test "$(uname -m)" = x86_64
+          echo "DENSITY_OUTPUT=$DENSITY_OUTPUT" >> "$GITHUB_ENV"
+          echo "IMAGE_OUTPUT=$IMAGE_OUTPUT" >> "$GITHUB_ENV"
+          mkdir -p "$DENSITY_OUTPUT" "$IMAGE_OUTPUT"
+          lscpu --json > "$DENSITY_OUTPUT/runner-cpu.json"
+      - uses: actions/download-artifact@v4
+        with:
+          name: pool-db-study-image-profile-${{ github.sha }}
+          path: ${{ runner.temp }}/db-image
+      - name: Verify and load the diagnostic image
+        run: |
+          cd "$IMAGE_OUTPUT"
+          sha256sum -c image.tar.gz.sha256
+          docker image load --input image.tar.gz
+          cp profile-image.id "$DENSITY_OUTPUT/image.id"
+      - name: Acquire the same pinned synthetic dependencies
+        run: |
+          docker pull postgres@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2
+          docker tag postgres@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2 postgres:17.7-alpine
+          docker pull node@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd
+          docker tag node@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd node:24.18.0-alpine
+      - name: Freeze the diagnostic fixture and profile one request at a time
+        run: |
+          node scripts/scale-test/db-study/prepare-profile.mjs
+          bun "$DENSITY_OUTPUT/run-density.mjs" diagnostic-01
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pool-db-query-profile-${{ github.sha }}
+          path: ${{ runner.temp }}/db-profile
           if-no-files-found: error
           retention-days: 7

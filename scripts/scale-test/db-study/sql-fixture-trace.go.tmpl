@@ -1,0 +1,164 @@
+package sql
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sync"
+	"time"
+)
+
+// This file is injected only into a diagnostic toolchain, never the release build.
+var basaltFixture = struct {
+	once        sync.Once
+	lock        sync.Mutex
+	file        *os.File
+	next        uint64
+	connections map[*driverConn]uint64
+	held        map[*driverConn]basaltFixtureCheckout
+}{connections: make(map[*driverConn]uint64), held: make(map[*driverConn]basaltFixtureCheckout)}
+
+type basaltFixtureCheckout struct {
+	id uint64
+	at time.Time
+}
+
+func basaltFixtureEnabled() bool {
+	basaltFixture.once.Do(func() {
+		path := os.Getenv("BASALT_FIXTURE_SQL_TRACE")
+		if path != "" {
+			var err error
+			basaltFixture.file, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+			if err != nil {
+				panic("diagnostic SQL trace cannot be opened")
+			}
+		}
+	})
+	return basaltFixture.file != nil
+}
+
+func basaltFixtureStack() []map[string]any {
+	pcs := make([]uintptr, 32)
+	n := runtime.Callers(3, pcs)
+	frames := runtime.CallersFrames(pcs[:n])
+	result := make([]map[string]any, 0, n)
+	for {
+		frame, more := frames.Next()
+		result = append(result, map[string]any{"function": frame.Function, "file": filepath.Base(frame.File), "line": frame.Line})
+		if !more {
+			break
+		}
+	}
+	return result
+}
+
+func basaltFixtureWrite(row map[string]any) {
+	row["atNs"] = time.Now().UnixNano()
+	row["pid"] = os.Getpid()
+	row["executable"] = filepath.Base(os.Args[0])
+	data, err := json.Marshal(row)
+	if err != nil {
+		panic("diagnostic SQL event cannot be encoded")
+	}
+	data = append(data, '\n')
+	if _, err := basaltFixture.file.Write(data); err != nil {
+		panic("diagnostic SQL trace cannot be written")
+	}
+}
+
+func basaltFixtureIdentity(dc *driverConn) (uint64, uint64) {
+	connection, exists := basaltFixture.connections[dc]
+	if !exists {
+		basaltFixture.next++
+		connection = basaltFixture.next
+		basaltFixture.connections[dc] = connection
+	}
+	return connection, basaltFixture.held[dc].id
+}
+
+func (db *DB) conn(ctx context.Context, strategy connReuseStrategy) (*driverConn, error) {
+	if !basaltFixtureEnabled() {
+		return db.basaltOriginalConn(ctx, strategy)
+	}
+	began := time.Now()
+	dc, err := db.basaltOriginalConn(ctx, strategy)
+	acquired := time.Now()
+	basaltFixture.lock.Lock()
+	defer basaltFixture.lock.Unlock()
+	basaltFixture.next++
+	id := basaltFixture.next
+	if err != nil {
+		basaltFixtureWrite(map[string]any{"event": "checkout-error", "id": id, "acquireNs": acquired.Sub(began).Nanoseconds(), "stack": basaltFixtureStack()})
+		return dc, err
+	}
+	connection, _ := basaltFixtureIdentity(dc)
+	if _, exists := basaltFixture.held[dc]; exists {
+		panic("diagnostic connection acquired twice")
+	}
+	basaltFixture.held[dc] = basaltFixtureCheckout{id: id, at: acquired}
+	basaltFixtureWrite(map[string]any{"event": "checkout", "id": id, "connectionId": connection, "acquireNs": acquired.Sub(began).Nanoseconds(), "stack": basaltFixtureStack()})
+	return dc, err
+}
+
+func (db *DB) putConn(dc *driverConn, err error, resetSession bool) {
+	if basaltFixtureEnabled() {
+		returned := time.Now()
+		basaltFixture.lock.Lock()
+		connection, checkout := basaltFixtureIdentity(dc)
+		held, exists := basaltFixture.held[dc]
+		if !exists {
+			panic("diagnostic connection released without checkout")
+		}
+		basaltFixtureWrite(map[string]any{"event": "checkin", "id": checkout, "connectionId": connection, "holdNs": returned.Sub(held.at).Nanoseconds(), "error": err != nil})
+		delete(basaltFixture.held, dc)
+		basaltFixture.lock.Unlock()
+	}
+	db.basaltOriginalPutConn(dc, err, resetSession)
+}
+
+func basaltFixtureQuery(dc *driverConn, kind, query string, args int) (uint64, time.Time) {
+	if !basaltFixtureEnabled() {
+		return 0, time.Time{}
+	}
+	began := time.Now()
+	basaltFixture.lock.Lock()
+	defer basaltFixture.lock.Unlock()
+	connection, checkout := basaltFixtureIdentity(dc)
+	basaltFixture.next++
+	id := basaltFixture.next
+	digest := sha256.Sum256([]byte(query))
+	basaltFixtureWrite(map[string]any{"event": "query-start", "id": id, "connectionId": connection, "checkoutId": checkout, "kind": kind, "query": query, "querySha256": hex.EncodeToString(digest[:]), "argumentCount": args, "stack": basaltFixtureStack()})
+	return id, began
+}
+
+func basaltFixtureQueryEnd(id uint64, began time.Time, err error) {
+	if id == 0 {
+		return
+	}
+	elapsed := time.Since(began)
+	basaltFixture.lock.Lock()
+	defer basaltFixture.lock.Unlock()
+	basaltFixtureWrite(map[string]any{"event": "query-return", "id": id, "elapsedNs": elapsed.Nanoseconds(), "error": err != nil})
+}
+
+func (db *DB) execDC(ctx context.Context, dc *driverConn, release func(error), query string, args []any) (res Result, err error) {
+	id, began := basaltFixtureQuery(dc, "exec", query, len(args))
+	defer func() { basaltFixtureQueryEnd(id, began, err) }()
+	return db.basaltOriginalExecDC(ctx, dc, release, query, args)
+}
+
+func (db *DB) queryDC(ctx, txctx context.Context, dc *driverConn, releaseConn func(error), query string, args []any) (rows *Rows, err error) {
+	id, began := basaltFixtureQuery(dc, "query", query, len(args))
+	defer func() { basaltFixtureQueryEnd(id, began, err) }()
+	return db.basaltOriginalQueryDC(ctx, txctx, dc, releaseConn, query, args)
+}
+
+func (db *DB) beginDC(ctx context.Context, dc *driverConn, release func(error), opts *TxOptions) (tx *Tx, err error) {
+	id, began := basaltFixtureQuery(dc, "begin", "BEGIN", 0)
+	defer func() { basaltFixtureQueryEnd(id, began, err) }()
+	return db.basaltOriginalBeginDC(ctx, dc, release, opts)
+}
