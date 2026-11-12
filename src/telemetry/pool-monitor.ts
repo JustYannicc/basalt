@@ -67,7 +67,10 @@ export async function capturePoolMonitor(
       ? { backend_status: failure.backendStatus }
       : {}),
   }));
-  const ok = input.ok && failures.length === 0;
+  // Request history measures a separate objective; missing history is not a pool outage.
+  const availability = failures.filter((failure) => failure.guard !== "request_reliability");
+  const reliability = failures.filter((failure) => failure.guard === "request_reliability");
+  const ok = input.ok && availability.length === 0;
   const check = sendEnvelope(env, {
     id: receipt.id,
     type: "check_in",
@@ -78,17 +81,27 @@ export async function capturePoolMonitor(
       duration: Math.max(0, performance.now() - receipt.started) / 1000,
     },
   });
-  let event = Promise.resolve(true);
-  if (!ok) {
-    const reliability = failures.find((failure) => failure.guard === "request_reliability");
-    const errorCode =
-      reliability?.reason === "below_target"
-        ? "pool_request_success_below_target"
-        : reliability?.reason === "collection_unavailable"
-          ? "pool_request_collection_unavailable"
-          : "pool_availability_failure";
+  const events = [];
+  if (!ok) events.push(report("pool_availability_failure", availability));
+  for (const failure of reliability)
+    if (failure.reason === "below_target")
+      events.push(report("pool_request_success_below_target", [failure]));
+  // Issue notifications can page on any level, so unknown collection stays in Worker logs.
+  if (reliability.some((failure) => failure.reason !== "below_target")) {
+    const context = input.reliability ? reliabilityContext(input.reliability) : undefined;
+    console.warn("POOL_REQUEST_RELIABILITY_UNKNOWN", {
+      ...context,
+      target: 99,
+      state: "unavailable",
+      reason: context?.reason ?? "collection_unavailable",
+    });
+  }
+  const results = await Promise.all([check, ...events]);
+  return receipt.accepted && results.every(Boolean);
+
+  function report(errorCode: string, diagnostics: typeof failures) {
     const id = eventId();
-    event = sendEnvelope(env, {
+    return sendEnvelope(env, {
       id,
       type: "event",
       payload: {
@@ -96,25 +109,25 @@ export async function capturePoolMonitor(
         timestamp: new Date().toISOString(),
         platform: "javascript",
         level: "error",
-        message: `${errorCode} ${failures.map((failure) => `${failure.guard}:${failure.reason}${failure.backend_status ? `:HTTP${failure.backend_status}` : ""}`).join(" ") || "runtime:unknown"}`,
+        message: `${errorCode} ${diagnostics.map((failure) => `${failure.guard}:${failure.reason}${failure.backend_status ? `:HTTP${failure.backend_status}` : ""}`).join(" ") || "runtime:unknown"}`,
         logger: "pool-availability",
         fingerprint: ["basalt", errorCode],
         tags: {
           error_code: errorCode,
-          guard: failures[0]?.guard ?? "runtime",
-          reason: failures[0]?.reason ?? "unknown",
+          guard: diagnostics[0]?.guard ?? "runtime",
+          reason: diagnostics[0]?.reason ?? "unknown",
         },
         contexts: {
           pool_probe: { check_in_id: receipt.id, failures },
           ...(input.reliability
             ? { request_reliability: reliabilityContext(input.reliability) }
-            : {}),
+            : reliability.length
+              ? { request_reliability: { target: 99, state: "unavailable" } }
+              : {}),
         },
       },
     });
   }
-  const results = await Promise.all([check, event]);
-  return receipt.accepted && results.every(Boolean);
 }
 
 function reliabilityContext(slo: PoolReliabilitySlo) {
@@ -127,6 +140,7 @@ function reliabilityContext(slo: PoolReliabilitySlo) {
   });
   return {
     target: 99,
+    state: ["ok", "breached", "no_traffic", "unavailable"].includes(slo.state) ? slo.state : null,
     hour: window(slo.hour),
     day: window(slo.day),
     reason: [
