@@ -1,14 +1,13 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import Markdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkCallout from "@r4ai/remark-callout";
-import remarkWikiLink from "@flowershow/remark-wiki-link";
-import { noteHref, fileHref, linkTarget } from "./links.ts";
+import { Fragment, jsx, jsxs } from "react/jsx-runtime";
+import { toJsxRuntime, type Components } from "hast-util-to-jsx-runtime";
+import { linkTarget } from "./links.ts";
+import { noteTree } from "./markdown.ts";
 
 /**
- * Obsidian-flavoured Markdown, read-only: the dashboard's renderer (react-markdown + GFM, raw HTML
- * skipped) plus Flowershow's wikilink resolution and Obsidian callouts. Links between notes stay
- * inside this page; embedded images load from the vault.
+ * Obsidian-flavoured Markdown, read-only, rendered as react-markdown renders the dashboard's:
+ * raw HTML skipped, links only to http(s) or other notes, images only from the vault. Links
+ * between notes stay inside this page.
  */
 export function NoteMarkdown({
   content,
@@ -22,25 +21,9 @@ export function NoteMarkdown({
   readonly onOpen: (path: string) => void;
   readonly loadFile: (path: string) => Promise<Blob | null>;
 }) {
-  const plugins = useMemo(
-    () => [
-      remarkGfm,
-      remarkCallout,
-      [
-        remarkWikiLink,
-        {
-          format: "shortestPossible",
-          files: [...files],
-          urlResolver: ({ filePath, isEmbed }: { filePath: string; isEmbed: boolean }) =>
-            isEmbed ? fileHref(filePath) : noteHref(filePath),
-        },
-      ] as const,
-    ],
-    [files],
-  );
-  const components = useMemo<Components>(
+  const components = useMemo<Partial<Components>>(
     () => ({
-      a: ({ href, children, className }) => {
+      a: ({ href, children, className }: Anchor) => {
         const target = linkTarget(href);
         if (target?.kind === "note")
           return (
@@ -64,26 +47,37 @@ export function NoteMarkdown({
           </a>
         );
       },
-      img: ({ src, alt, width }) => {
+      img: ({ src, alt, "data-fs-width": width, "data-fs-height": height }: Image) => {
         const target = linkTarget(typeof src === "string" ? src : undefined);
+        // `![[sketch.png|360]]` sizes the image, as in Obsidian.
         if (target?.kind === "file")
-          return <VaultImage path={target.path} alt={alt ?? ""} width={width} load={loadFile} />;
+          return (
+            <VaultImage
+              path={target.path}
+              alt={alt ?? ""}
+              width={width}
+              height={height}
+              load={loadFile}
+            />
+          );
         return <span className="embed-missing">{alt || "Image"}</span>;
       },
-      iframe: ({ src }) => <EmbedChip src={src} />,
-      video: ({ src }) => <EmbedChip src={src} />,
-      audio: ({ src }) => <EmbedChip src={src} />,
+      iframe: ({ src }: Media) => <EmbedChip src={src} />,
+      video: ({ src }: Media) => <EmbedChip src={src} />,
+      audio: ({ src }: Media) => <EmbedChip src={src} />,
     }),
     [onOpen, loadFile],
   );
-  return (
-    <div className="prose">
-      <Markdown remarkPlugins={plugins as never} skipHtml components={components}>
-        {content}
-      </Markdown>
-    </div>
+  const rendered = useMemo(
+    () => toJsxRuntime(noteTree(content, files), { Fragment, jsx, jsxs, components }),
+    [content, files, components],
   );
+  return <div className="prose">{rendered}</div>;
 }
+
+type Anchor = { href?: string; className?: string; children?: ReactNode };
+type Image = { src?: string; alt?: string; "data-fs-width"?: string; "data-fs-height"?: string };
+type Media = { src?: string };
 
 function EmbedChip({ src }: { readonly src?: string | undefined }): ReactNode {
   const target = linkTarget(src);
@@ -96,11 +90,13 @@ function VaultImage({
   path,
   alt,
   width,
+  height,
   load,
 }: {
   readonly path: string;
   readonly alt: string;
   readonly width?: string | number | undefined;
+  readonly height?: string | number | undefined;
   readonly load: (path: string) => Promise<Blob | null>;
 }) {
   const [url, setUrl] = useState<string | null | undefined>(undefined);
@@ -121,5 +117,5 @@ function VaultImage({
   }, [path, load]);
   if (url === undefined) return <span className="embed-loading" aria-label={`Loading ${alt}`} />;
   if (url === null) return <span className="embed-chip">{path.split("/").pop()}</span>;
-  return <img src={url} alt={alt} width={width} className="embed-image" />;
+  return <img src={url} alt={alt} width={width} height={height} className="embed-image" />;
 }

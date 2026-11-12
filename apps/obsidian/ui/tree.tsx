@@ -91,7 +91,7 @@ function Node(props: {
           aria-current={selected === entry.path ? "page" : undefined}
           onClick={() => onSelect(entry.path)}
         >
-          <span className="icon file" aria-hidden />
+          <Icon kind="file" />
           <span className="label">{isNote(entry.name) ? noteTitle(entry.name) : entry.name}</span>
         </button>
       </li>
@@ -105,7 +105,7 @@ function Node(props: {
         aria-expanded={isOpen}
         onClick={() => toggle(entry.path)}
       >
-        <span className={`icon ${isOpen ? "folder-open" : "folder"}`} aria-hidden />
+        <Icon kind={isOpen ? "folder-open" : "folder"} />
         <span className="label">{entry.name}</span>
       </button>
       {isOpen && (
@@ -133,5 +133,30 @@ function Node(props: {
         </ul>
       )}
     </li>
+  );
+}
+
+// Inline, not CSS data URLs: the app compiler refuses a stylesheet's data: imports.
+const iconPaths = {
+  folder: ["M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
+  "folder-open": ["M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v1H8l-3 8", "M5 18l3-8h14l-3 8z"],
+  file: ["M6 3h8l4 4v14H6z", "M14 3v4h4M9 12h6M9 16h6"],
+} as const;
+
+function Icon({ kind }: { readonly kind: keyof typeof iconPaths }) {
+  return (
+    <svg
+      className="icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.7}
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      {iconPaths[kind].map((d) => (
+        <path key={d} d={d} />
+      ))}
+    </svg>
   );
 }
