@@ -11,7 +11,7 @@
     },
     {
       "path": "account-view.ts",
-      "content": "import type { AccountCheckContext, AuthMethods } from \"apps\";\nimport { SelectedAccountReadFailed } from \"apps/contracts\";\n\n/** Read only the exact native selection; never search other accounts or refresh a provider. */\nexport const readAccountView = (\n  accounts: readonly Pick<AccountCheckContext<AuthMethods>[\"account\"], \"id\" | \"read\">[],\n  account: string,\n) => {\n  const selected = accounts.find((candidate) => candidate.id === account);\n  if (selected === undefined)\n    throw new SelectedAccountReadFailed({ reason: \"invalid_input\", retryable: false });\n  return selected.read();\n};\n"
+      "content": "import { SelectedAccountReadFailed, type AccountCheckContext, type AuthMethods } from \"apps\";\n\n/** Read only the exact native selection; never search other accounts or refresh a provider. */\nexport const readAccountView = (\n  accounts: readonly Pick<AccountCheckContext<AuthMethods>[\"account\"], \"id\" | \"read\">[],\n  account: string,\n) => {\n  const selected = accounts.find((candidate) => candidate.id === account);\n  if (selected === undefined)\n    throw new SelectedAccountReadFailed({ reason: \"invalid_input\", retryable: false });\n  return selected.read();\n};\n"
     },
     {
       "path": "providers.ts",

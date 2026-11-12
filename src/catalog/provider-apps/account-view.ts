@@ -1,5 +1,4 @@
-import type { AccountCheckContext, AuthMethods } from "apps";
-import { SelectedAccountReadFailed } from "apps/contracts";
+import { SelectedAccountReadFailed, type AccountCheckContext, type AuthMethods } from "apps";
 
 /** Read only the exact native selection; never search other accounts or refresh a provider. */
 export const readAccountView = (

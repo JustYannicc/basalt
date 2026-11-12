@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Schema } from "effect";
 import { decodeSelectedAccountView } from "apps";
-import type { SelectedAccountView } from "apps/contracts";
+import type { SelectedAccountView } from "apps";
 import type { Account, PoolView } from "./contract.ts";
 import { providerAccountView } from "./provider-account-view.ts";
 import { nativeAccountView } from "../../src/pool/native-account-view.ts";

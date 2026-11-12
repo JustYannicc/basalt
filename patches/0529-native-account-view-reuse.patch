@@ -2057,10 +2057,10 @@ index dfadc17..260b8ed 100644
            { client: ids.a },
 diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-account-source-bindings.spec.ts
 new file mode 100644
-index 0000000..69c94ef
+index 0000000..8f565ab
 --- /dev/null
 +++ b/e2e/tests/pool-account-source-bindings.spec.ts
-@@ -0,0 +1,371 @@
+@@ -0,0 +1,368 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import { Actors } from "../support/actors.ts";
@@ -2252,13 +2252,7 @@ index 0000000..69c94ef
 +        const membership = yield* nativeIds();
 +        expect(membership).toEqual([...accounts].sort());
 +        const mirrors = yield* catalog.mirrors;
-+        const current = yield* body(
-+          Schema.Struct({ activeVersion: Schema.String }),
-+          yield* api.request(actors.owner, "GET", poolPath),
-+        );
-+        const upgraded = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-+          app: pool,
-+          expectedVersion: current.activeVersion,
++        const upgraded = yield* api.request(actors.owner, "POST", `${poolPath}/deploy`, {
 +          files: files(true),
 +        });
 +        expect(upgraded.status, JSON.stringify(upgraded.body)).toBe(200);
@@ -2368,15 +2362,18 @@ index 0000000..69c94ef
 +
 +        const oldSource = yield* source(first);
 +        const providerFiles = catalog.sources.get("openai")!.files;
-+        const changed = yield* api.request(actors.member, "POST", `${prefix}/apps/deploy`, {
-+          app: first,
-+          expectedVersion: oldSource.version,
-+          files: providerFiles.map((file) =>
-+            file.path === "index.ts"
-+              ? { ...file, content: `${file.content}\n// Exact source version fixture\n` }
-+              : file,
-+          ),
-+        });
++        const changed = yield* api.request(
++          actors.member,
++          "POST",
++          `${prefix}/apps/${first}/deploy`,
++          {
++            files: providerFiles.map((file) =>
++              file.path === "index.ts"
++                ? { ...file, content: `${file.content}\n// Exact source version fixture\n` }
++                : file,
++            ),
++          },
++        );
 +        expect(changed.status, JSON.stringify(changed.body)).toBe(200);
 +        const newSource = yield* source(first);
 +        expect(newSource.version).not.toBe(oldSource.version);
@@ -2434,10 +2431,10 @@ index 0000000..69c94ef
 +});
 diff --git a/e2e/tests/pool-account-source-choice-ui.spec.ts b/e2e/tests/pool-account-source-choice-ui.spec.ts
 new file mode 100644
-index 0000000..7d42fbf
+index 0000000..ac5ed8b
 --- /dev/null
 +++ b/e2e/tests/pool-account-source-choice-ui.spec.ts
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,242 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import type { Page } from "playwright";
@@ -2573,6 +2570,7 @@ index 0000000..7d42fbf
 +        const before = yield* membership();
 +        expect(before).toEqual([...accounts].sort());
 +
++        yield* browser.login(actors.owner);
 +        yield* openThroughBrowser(
 +          "Open the pool's accounts",
 +          `/org/${actors.organization.slug}/apps/${pool}?view=accounts`,
@@ -3089,10 +3087,10 @@ index 0000000..c5e908c
 +});
 diff --git a/e2e/tests/selected-account-read.spec.ts b/e2e/tests/selected-account-read.spec.ts
 new file mode 100644
-index 0000000..dfbed67
+index 0000000..c2c86e0
 --- /dev/null
 +++ b/e2e/tests/selected-account-read.spec.ts
-@@ -0,0 +1,427 @@
+@@ -0,0 +1,436 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Fiber, Schedule, Schema } from "effect";
 +import { Api, body } from "../support/api.ts";
@@ -3173,8 +3171,10 @@ index 0000000..dfbed67
 +          files: [{ path: "index.ts", content: source(f.backend.origin) }, appsManifest],
 +        });
 +        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-+        const target = yield* body(
-+          Schema.Struct({ ...App.fields, activeVersion: Schema.NullOr(Schema.String) }),
++        const { app: target } = yield* body(
++          Schema.Struct({
++            app: Schema.Struct({ ...App.fields, activeVersion: Schema.NullOr(Schema.String) }),
++          }),
 +          deployed,
 +        );
 +        const call = (actor: typeof f.actors.owner, wait = "") =>
@@ -3445,8 +3445,15 @@ index 0000000..dfbed67
 +          `${callerPath}/tools/call`,
 +          { tool: "invoke", kind: "query", input: { account: f.account, target: f.app.id } },
 +        );
-+        expect(metadataDenied.status, JSON.stringify(metadataDenied.body)).toBe(200);
-+        expect(metadataDenied.body).toEqual({ state: "denied", account: { id: f.account } });
++        // Revoking account use refuses target admission before its selected-account read runs.
++        expect(metadataDenied.status, JSON.stringify(metadataDenied.body)).toBe(502);
++        expect(metadataDenied.body).toMatchObject({
++          _tag: "ToolCallFailed",
++          failure: { errorName: "AppCallFailed", code: "denied" },
++        });
++        expect(JSON.stringify(metadataDenied.body)).not.toContain("Private identity");
++        expect(JSON.stringify(metadataDenied.body)).not.toContain("Private allowance");
++        expect(yield* f.backend.calls).toBe(2);
 +        const restoredAccess = yield* body(Revision, privateAccount);
 +        expect(
 +          (yield* api.request(f.actors.owner, "PATCH", `${f.accountPath}/access`, {
@@ -12565,14 +12572,18 @@ index ac339b4..ac0ccfd 100644
      appCallReply: AppCallReply,
      appToolPolicy: AppToolPolicyCommand,
 diff --git a/packages/apps/src/contracts/provider.ts b/packages/apps/src/contracts/provider.ts
-index 0ffd24d..0b5ee05 100644
+index 0ffd24d..436b959 100644
 --- a/packages/apps/src/contracts/provider.ts
 +++ b/packages/apps/src/contracts/provider.ts
-@@ -400,6 +400,8 @@ export type AccountOfMethods<Auth extends AuthMethods> = {
+@@ -400,6 +400,12 @@ export type AccountOfMethods<Auth extends AuthMethods> = {
    // accounts print it as written.
    readonly [Method in keyof Auth & string]: {
      readonly id: AccountId;
-+    /** Read this selection through the original viewer's native account policy. */
++    /**
++     * Read saved metadata and observations for this selection without resolving credentials or
++     * refreshing the provider. The original viewer and grant control inspection; without a
++     * verified viewer the result is denied. A selection changed during the read refuses it.
++     */
 +    readonly read: () => Promise<import("./selected-account-read.ts").SelectedAccountView>;
      /** The canonical origin selected for this saved account, when the provider declares a site. */
      readonly site?: string;
@@ -12593,16 +12604,17 @@ index 0d0cd22..4ebba7f 100644
 +export type AppId = typeof AppId.Type;
 diff --git a/packages/apps/src/contracts/selected-account-read.ts b/packages/apps/src/contracts/selected-account-read.ts
 new file mode 100644
-index 0000000..b2e5f1c
+index 0000000..2b3577a
 --- /dev/null
 +++ b/packages/apps/src/contracts/selected-account-read.ts
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,62 @@
 +import { Schema, type Effect } from "effect";
 +import { AccountId } from "./schema.ts";
 +import { AppIcons } from "./icons.ts";
 +import { AccountHealthJson } from "./account-health.ts";
 +import { AccountObservationView } from "./account-observation-view.ts";
 +
++/** Native metadata and retained readings visible to this invocation's original viewer and grant. */
 +export const SelectedAccountView = Schema.Union([
 +  Schema.Struct({ state: Schema.Literal("denied"), account: Schema.Struct({ id: AccountId }) }),
 +  Schema.Struct({
@@ -12633,6 +12645,7 @@ index 0000000..b2e5f1c
 +]);
 +export type SelectedAccountView = typeof SelectedAccountView.Type;
 +
++/** A selected-account read refused stale authority or could not complete without collecting data. */
 +export class SelectedAccountReadFailed extends Schema.TaggedError<SelectedAccountReadFailed>()(
 +  "SelectedAccountReadFailed",
 +  {
@@ -12687,12 +12700,13 @@ index 0000000..62e9b00
 +  );
 diff --git a/packages/apps/src/implementation/app-icons.ts b/packages/apps/src/implementation/app-icons.ts
 new file mode 100644
-index 0000000..824a6a8
+index 0000000..3e3c33f
 --- /dev/null
 +++ b/packages/apps/src/implementation/app-icons.ts
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,32 @@
 +import type { AppIcons } from "../contracts/icons.ts";
 +
++/** The authored image to render in each color scheme, after applying the declared fallbacks. */
 +export interface AppIconSources {
 +  readonly light: string;
 +  readonly dark: string;
@@ -12723,7 +12737,7 @@ index 0000000..824a6a8
 +    ),
 +  );
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
-index aa46566..77ea217 100644
+index aa46566..cafc784 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
 @@ -1,3 +1,4 @@
@@ -12832,7 +12846,11 @@ index aa46566..77ea217 100644
          ).pipe(Effect.withSpan("app.accounts.bind"))),
          workflows: workflowReads,
          signal: invocationSignal,
-@@ -854,10 +894,17 @@ function dispatch(
+@@ -851,13 +891,22 @@ function dispatch(
+           (stepId, signal, stepName) =>
+             Effect.gen(function* () {
+               const current = yield* execution.resolve();
++              const workflowControls = current.workflowControls ?? context.workflowControls;
                const accounts = yield* safe(
                  // A run keeps its initiating caller; each step refreshes only the accounts.
                  () =>
@@ -12845,6 +12863,7 @@ index aa46566..77ea217 100644
 +                    declared,
 +                    {
 +                      ...current,
++                      ...(workflowControls === undefined ? {} : { workflowControls }),
 +                      ...(context.caller === undefined ? {} : { caller: context.caller }),
 +                    },
 +                    undefined,
@@ -12914,15 +12933,19 @@ index 761ffbd..643776c 100644
        // oxlint-disable-next-line executor/authored-code-through-adapter -- invocation-owned host RPC
        Effect.tryPromise({
 diff --git a/packages/apps/src/index.ts b/packages/apps/src/index.ts
-index 34e2597..22613db 100644
+index 34e2597..9e48c10 100644
 --- a/packages/apps/src/index.ts
 +++ b/packages/apps/src/index.ts
-@@ -1,3 +1,4 @@
-+export * from "./contracts/selected-account-read.ts";
+@@ -1,3 +1,8 @@
++export {
++  SelectedAccountView,
++  SelectedAccountReadFailed,
++  decodeSelectedAccountView,
++} from "./contracts/selected-account-read.ts";
  export { AppCallFailed } from "./contracts/app-calls.ts";
  export type { AppCalls, AppCallCommand, AppDependency } from "./contracts/app-calls.ts";
  export * from "./contracts/account-observation.ts";
-@@ -407,3 +408,10 @@ export type {
+@@ -407,3 +412,10 @@ export type {
  export { workflowInputQuestions } from "./implementation/workflow-input-questions.ts";
  
  export { declaredAccountOffering } from "./contracts/account-family.ts";
@@ -13358,7 +13381,7 @@ index 33fb8b6..9fa7e23 100644
 +
 +export * from "./contracts/selected-account-read.ts";
 diff --git a/packages/sdk/src/implementation/app-call-protection.ts b/packages/sdk/src/implementation/app-call-protection.ts
-index 2b767f7..92ea9a5 100644
+index 2b767f7..9075444 100644
 --- a/packages/sdk/src/implementation/app-call-protection.ts
 +++ b/packages/sdk/src/implementation/app-call-protection.ts
 @@ -52,44 +52,7 @@ export const makeAppCallProtection = (options: {
@@ -13407,7 +13430,7 @@ index 2b767f7..92ea9a5 100644
          const { sourceApp, current, accepted, accountVersions } = yield* readAuthority;
          const confirmation = accepted.confirmation;
          const valid =
-@@ -141,6 +104,13 @@ export const makeAppCallProtection = (options: {
+@@ -141,6 +104,14 @@ export const makeAppCallProtection = (options: {
              target: target.app,
              scope: connection.scope,
              authorizer: current.authorizer,
@@ -13417,11 +13440,12 @@ index 2b767f7..92ea9a5 100644
 +              kind: target.kind,
 +              input: command.input,
 +              accounts: target.accounts,
++              selections: accepted.selections,
 +            },
              ...(source.caller === undefined ? {} : { caller: source.caller }),
            },
            check,
-@@ -159,3 +129,51 @@ export const makeAppCallProtection = (options: {
+@@ -159,3 +130,51 @@ export const makeAppCallProtection = (options: {
          ),
        );
  };

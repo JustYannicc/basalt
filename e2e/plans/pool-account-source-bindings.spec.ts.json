@@ -14,7 +14,7 @@
         },
         "local": {
           "status": "not-applicable",
-          "reason": "Uses hosted organization account and app-connection policy."
+          "reason": "Uses hosted organization and contributed-account policy."
         }
       }
     }

@@ -65,7 +65,7 @@ export interface Account {
   /** Exact native selection for presentation only. Null withholds an unproved binding. */
   readonly nativeAccountId?: string | null;
   /** The exact provider app's authorized native view, independent of routing state. */
-  readonly nativeView?: import("apps/contracts").SelectedAccountView;
+  readonly nativeView?: import("apps").SelectedAccountView;
   readonly provider: string;
   /** The account's email or the backend's label for it. */
   readonly label: string;

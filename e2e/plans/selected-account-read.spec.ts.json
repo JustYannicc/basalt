@@ -13,7 +13,7 @@
         },
         "local": {
           "status": "not-applicable",
-          "reason": "Uses hosted organization account and app-connection policy."
+          "reason": "Uses hosted account and application access policy."
         }
       }
     }

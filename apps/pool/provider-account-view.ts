@@ -1,10 +1,10 @@
 import {
   decodeSelectedAccountView,
   type AccountCheckContext,
+  type AppCalls,
   type AuthMethods,
   type SelectedAccountView,
 } from "apps";
-import type { AppCalls } from "apps/contracts";
 import type { Account, PoolView, Provider } from "./contract.ts";
 type ReadAccount = Pick<AccountCheckContext<AuthMethods>["account"], "id" | "read">;
 interface Context {
