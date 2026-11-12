@@ -1,0 +1,31 @@
+{
+  "scenarios": {
+    "mcpRefreshRetryableErrors": {
+      "fixtures": "actors",
+      "title": "OAuth refresh races and unavailable replay return retryable errors while invalid grants stay refused",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The deterministic rotation race holds rows in the managed Cloud Postgres fixture."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted OAuth grants."
+        }
+      }
+    }
+  },
+  "runs": {
+    "mcpRefreshRetryableErrors": [
+      "declared:cloud"
+    ]
+  },
+  "inputs": [
+    ".upstream/patches/@better-auth%2Foauth-provider@1.7.5.patch",
+    ".upstream/packages/mcp-auth/src/implementation/oauth.ts"
+  ]
+}
