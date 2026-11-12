@@ -8,7 +8,8 @@ import type {
 } from "../overview-contract.ts";
 import { Button, Problem, Segmented, StateIcon } from "./controls.tsx";
 import { LabMark, labColor } from "./lab.tsx";
-import { PriceNote, priceSentence, samePrice, slicePrice } from "./price-note.tsx";
+import { PriceNote } from "./price-note.tsx";
+import { priceSentence, samePrice, slicePrice } from "./price-text.ts";
 import {
   addDecimal,
   coverageNotes,
