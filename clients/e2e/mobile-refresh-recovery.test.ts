@@ -179,3 +179,27 @@ test("a retryable refresh server error recovers without requiring sign-in", asyn
   assert.equal(f.controller.getSnapshot().reconnecting, false);
   await f.controller.close();
 });
+
+for (const [status, code] of [
+  [400, "invalid_request"],
+  [415, "unsupported_media_type"],
+] as const) {
+  test(`a non-authentication refresh rejection retains credentials: ${status} ${code}`, async (t) => {
+    const f = fixture(t);
+    await f.controller.initialize();
+    f.expire();
+    f.refuseRefresh(status, code);
+    const attempt = f.controller.foreground(true);
+    await advance(t, 100);
+    await attempt;
+    assert.equal(f.controller.getSnapshot().connection?.state, "connected");
+    assert.equal(f.saved().refreshToken, "fixture-refresh");
+    assert.equal(f.saved().refreshPending, true);
+    f.allowRefresh();
+    await advance(t, 20_000);
+    assert.equal(f.refreshReads(), 2);
+    assert.equal(f.saved().refreshPending, false);
+    assert.equal(f.controller.getSnapshot().reconnecting, false);
+    await f.controller.close();
+  });
+}

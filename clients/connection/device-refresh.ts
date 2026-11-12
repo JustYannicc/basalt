@@ -28,6 +28,7 @@ export async function refreshDeviceCredentials(
   ).catch(async (error: unknown) => {
     if (
       error instanceof DeviceOAuthError &&
+      error.code === "invalid_grant" &&
       error.status !== undefined &&
       error.status >= 400 &&
       error.status < 500 &&
