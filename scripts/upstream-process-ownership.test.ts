@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { collectUpstreamDependencies } from "./upstream-store.ts";
 import { readProcessOwner } from "./process-owner.ts";
+import { fixtureInventory } from "./upstream-fixture-inventory.ts";
 
 function unrelatedProcess() {
   return spawn(
@@ -38,8 +39,10 @@ const boot = () =>
 
 test("recycled parent and group numbers do not retain abandoned attempts", async (t) => {
   const fixture = mkdtempSync(join(tmpdir(), "basalt-recycled-owners-"));
+  const inventory = fixtureInventory(t, fixture, { processTable: true });
   const previous = process.env.BASALT_UPSTREAM_CACHE;
   const child = unrelatedProcess();
+  inventory.track(child.pid!);
   t.after(() => {
     stop(child);
     if (previous === undefined) delete process.env.BASALT_UPSTREAM_CACHE;
@@ -134,6 +137,7 @@ for (const incarnation of ["boot", "start"]) {
 
 test("a recycled leaderless group cannot borrow a previous installer's lease", async (t) => {
   const fixture = mkdtempSync(join(tmpdir(), "basalt-recycled-group-"));
+  const inventory = fixtureInventory(t, fixture, { processTable: true });
   const previous = process.env.BASALT_UPSTREAM_CACHE;
   let orphan: number | undefined;
   const leader = spawn(
@@ -166,6 +170,7 @@ test("a recycled leaderless group cannot borrow a previous installer's lease", a
   });
   const [{ pid, group }] = (await once(leader, "message")) as [{ pid: number; group: number }];
   orphan = pid;
+  inventory.track(orphan);
   if (leader.exitCode === null) await once(leader, "exit");
   process.env.BASALT_UPSTREAM_CACHE = join(fixture, "cache");
   const entry = join(process.env.BASALT_UPSTREAM_CACHE, "prepared/pin/key");

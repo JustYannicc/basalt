@@ -5,17 +5,24 @@ import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 
 /** Real handle checks cover captured fixture processes without enumerating the shared host. */
-export function fixtureInventory(t: TestContext, directory: string) {
+export function fixtureInventory(
+  t: TestContext,
+  directory: string,
+  options: { processTable?: boolean } = {},
+) {
   const root = realpathSync(directory);
   const bin = join(root, "inventory-bin");
   const pids = join(root, "inventory-pids");
   const checkouts = join(root, "inventory-checkouts");
+  const failure = join(root, "inventory-usage-failure");
   const repository = realpathSync(fileURLToPath(new URL("../", import.meta.url)));
   const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
   const realLsof = execFileSync("which", ["lsof"], { encoding: "utf8" }).trim();
+  const realPs = execFileSync("which", ["ps"], { encoding: "utf8" }).trim();
   mkdirSync(bin);
   writeFileSync(pids, "");
   writeFileSync(checkouts, "");
+  writeFileSync(failure, "");
   const command = (name: string, source: string) => {
     const path = join(bin, name);
     writeFileSync(path, "#!/usr/bin/env node\n" + source);
@@ -45,6 +52,27 @@ process.stderr.write(result.stderr ?? "");
 process.exit(result.status ?? 1);
 `,
   );
+  if (options.processTable)
+    command(
+      "ps",
+      `
+import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+const args = process.argv.slice(2);
+if (args[0] === "-axo" || args[0] === "-eo") {
+  if (args.length !== 2 || args[1] !== "pid=,pgid=,stat=")
+    throw new Error("Unexpected fixture process inventory");
+  const recorded = readFileSync(${JSON.stringify(pids)}, "utf8").trim().split("\\n").filter(Boolean).map(Number);
+  if (recorded.some(pid => !Number.isInteger(pid) || pid <= 0))
+    throw new Error("Invalid fixture process identity");
+  args.splice(0, args.length, "-p", [...new Set([process.ppid, ...recorded])].join(","), "-o", "pid=,pgid=,stat=");
+}
+const result = spawnSync(${JSON.stringify(realPs)}, args, { encoding: "utf8" });
+process.stdout.write(result.stdout ?? "");
+process.stderr.write(result.stderr ?? "");
+process.exit(result.status ?? 1);
+`,
+    );
   command(
     "lsof",
     `
@@ -52,6 +80,11 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 if (process.argv.slice(2).join(" ") !== "-nP -F0n")
   throw new Error("Unexpected fixture handle inventory");
+const failure = readFileSync(${JSON.stringify(failure)}, "utf8");
+if (failure) {
+  if (failure === "stderr") process.stderr.write("Fixture could not observe every open file\\n");
+  process.exit(failure === "exit" ? 1 : 0);
+}
 const recorded = readFileSync(${JSON.stringify(pids)}, "utf8").trim().split("\\n").filter(Boolean).map(Number);
 if (recorded.some(pid => !Number.isInteger(pid) || pid <= 0))
   throw new Error("Invalid fixture process identity");
@@ -78,6 +111,9 @@ process.exit(result.status ?? 1);
     else process.env.PATH = previousPath;
   });
   return {
+    usageFailure(mode: "exit" | "stderr" | "") {
+      writeFileSync(failure, mode);
+    },
     track(pid: number) {
       if (!Number.isInteger(pid) || pid <= 0) throw new Error("Expected a captured fixture PID");
       appendFileSync(pids, `${pid}\n`);
