@@ -221,6 +221,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home renews each exact PostgreSQL membership in one atomic statement with membership-before-Home locks, post-lock database time, fenced-lifetime refusal and unchanged three-second heartbeat/five-second cancellation bounds, and exposes a database-free process-health endpoint. Preserve SQLite behavior and supervisor startup, generation, transition and slow-audit readiness gates without delaying child-exit recovery."
           }
+        },
+        {
+          "identity": "cliproxy-home-idle-events",
+          "file": "0555-home-idle-events.patch",
+          "sha256": "8f54dd6bdc0eaaca8e8af873bb9289ceb95c6404a2cd8a8d5ff6f1a9f57601c2",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home publishes steady single-part PostgreSQL observations in one statement with fresh membership authority, post-lock database time and a concurrent-attempt snapshot guard; preserves cold, multipart, invalid, replay and stale-revision behavior; renews exact Home incarnations in one locked statement; and persists semantic node changes with bounded nonempty retention refresh and no empty periodic writes. Preserve observation, liveness, fencing and draining bounds without a schema or lease change."
+          }
         }
       ]
     },
