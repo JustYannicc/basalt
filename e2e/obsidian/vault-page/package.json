@@ -1,0 +1,16 @@
+{
+  "name": "obsidian-vault-page-render-tests",
+  "private": true,
+  "type": "module",
+  "description": "The Obsidian app's served renderer packages, pinned as apps/obsidian/package.json declares them, plus a virtual DOM for render tests.",
+  "dependencies": {
+    "@flowershow/remark-wiki-link": "3.4.0",
+    "@happy-dom/global-registrator": "21.0.4",
+    "@r4ai/remark-callout": "0.6.2",
+    "happy-dom": "21.0.4",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
+  }
+}
