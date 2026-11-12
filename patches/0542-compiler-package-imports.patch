@@ -1,0 +1,227 @@
+diff --git a/patches/@cloudflare%2Fworker-bundler@0.2.4.patch b/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
+--- a/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
++++ b/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
+@@ -54,7 +54,7 @@
+     * Include devDependencies (default: false)
+     */
+ diff --git a/dist/index.js b/dist/index.js
+-index 9ddcbac0..6088b4df 100644
++index 9ddcbac0..3773da52 100644
+ --- a/dist/index.js
+ +++ b/dist/index.js
+ @@ -1,5 +1,5 @@
+@@ -64,7 +64,62 @@
+  import { parse } from "es-module-lexer/js";
+  import * as resolveExports from "resolve.exports";
+  import { parse as parse$1 } from "smol-toml";
+-@@ -78,7 +78,7 @@ function resolvePackage(specifier, files, conditions, extensions) {
++@@ -38,6 +38,7 @@
++ 		};
++ 		throw new Error(`Cannot resolve relative import '${specifier}' from '${importer}'`);
++ 	}
+++	if (specifier.startsWith("#")) return resolvePackageImport(specifier, importer, files, conditions, extensions);
++ 	return resolvePackage(specifier, files, conditions, extensions);
++ }
++ /**
++@@ -45,6 +46,37 @@
++ */
++ function resolveRelative(specifier, importer, files, extensions) {
++ 	return resolveWithExtensions(joinPaths(getDirectory$1(importer), specifier), files, extensions);
+++}
+++/** Resolve internal imports from the nearest package, never a surrounding package. */
+++function resolvePackageImport(specifier, importer, files, conditions, extensions) {
+++	const unresolved = { path: specifier, external: true };
+++	let directory = getDirectory$1(normalizePath(importer));
+++	while (true) {
+++		if (directory === "node_modules" || directory.endsWith("/node_modules")) return unresolved;
+++		const manifest = files.read(directory ? `${directory}/package.json` : "package.json");
+++		if (manifest !== null) {
+++			try {
+++				const pkg = JSON.parse(manifest);
+++				const seen = new Set();
+++				let target = specifier;
+++				while (target.startsWith("#")) {
+++					if (seen.has(target)) return unresolved;
+++					seen.add(target);
+++					target = resolveExports.imports(pkg, target, { conditions, unsafe: true })?.[0];
+++					if (typeof target !== "string") return unresolved;
+++				}
+++				if (target.startsWith("./")) {
+++					if (target.split("/").some(part => part === ".." || part === "node_modules")) return unresolved;
+++					const path = resolveWithExtensions(joinPaths(directory, target), files, extensions);
+++					return path ? { path, external: false } : unresolved;
+++				}
+++				if (target.startsWith(".") || target.startsWith("/")) return unresolved;
+++				return resolvePackage(target, files, conditions, extensions);
+++			} catch { return unresolved; }
+++		}
+++		if (!directory) return unresolved;
+++		directory = getDirectory$1(directory);
+++	}
++ }
++ /**
++ * Resolve a package specifier
++@@ -66,7 +98,7 @@
++ 	}
++ 	const entrySubpath = subpath ? `./${subpath}` : ".";
++ 	try {
++-		const resolved = resolveExports.resolve(pkg, entrySubpath, { conditions });
+++		const resolved = resolveExports.resolve(pkg, entrySubpath, { conditions, unsafe: true });
++ 		if (resolved && resolved.length > 0) {
++ 			const resolvedPath = resolved[0];
++ 			if (resolvedPath) {
++@@ -78,7 +110,7 @@ function resolvePackage(specifier, files, conditions, extensions) {
+  			}
+  		}
+  	} catch {}
+@@ -73,7 +128,7 @@
+  	if (legacyEntry && typeof legacyEntry === "string") {
+  		const fullPath = `node_modules/${packageName}/${normalizeRelativePath(legacyEntry)}`;
+  		if (files.read(fullPath) !== null) return {
+-@@ -232,8 +232,10 @@ function bundlerOnlyOptionsWarning(opts) {
++@@ -232,8 +264,10 @@ function bundlerOnlyOptionsWarning(opts) {
+  * Bundle files using esbuild-wasm
+  */
+  async function bundleWithEsbuild(options) {
+@@ -85,16 +140,16 @@
+  	const virtualFsPlugin = {
+  		name: "virtual-fs",
+  		setup(build) {
+-@@ -255,7 +257,7 @@ async function bundleWithEsbuild(options) {
++@@ -255,7 +289,7 @@ async function bundleWithEsbuild(options) {
+  						external: true
+  					};
+  					try {
+ -						const result = resolveModule(args.path, { files });
+-+						const result = resolveModule(args.path, { files, conditions: args.kind === "import-rule" ? ["style", "browser"] : ["import", "browser"] });
+++						const result = resolveModule(args.path, { files, importer: args.importer, conditions: args.kind === "import-rule" ? ["style", "browser"] : ["import", "browser"] });
+  						if (!result.external) return {
+  							path: result.path,
+  							namespace: "virtual"
+-@@ -387,8 +389,6 @@ function getLoader(path, overrides) {
++@@ -387,8 +421,6 @@ function getLoader(path, overrides) {
+  	if (path.endsWith(".css")) return "css";
+  	return "js";
+  }
+@@ -103,7 +158,7 @@
+  /**
+  * Detect whether we are running inside the Cloudflare Workers runtime
+  * (workerd). Both production Workers and the local dev runtime expose
+-@@ -406,57 +406,17 @@ function isCloudflareWorkersRuntime() {
++@@ -406,57 +438,17 @@ function isCloudflareWorkersRuntime() {
+  * duplicating the wording.
+  */
+  const NOT_IN_WORKERS_ERROR = "@cloudflare/worker-bundler is only supported inside the Cloudflare Workers runtime (workerd). It cannot run in plain Node.js — including Vitest, Jest or other Node-based test runners — because it bundles via a `WebAssembly.Module` import that only the Workers module loader can resolve. To test code that uses this package, run your tests with @cloudflare/vitest-pool-workers so they execute inside workerd. See https://developers.cloudflare.com/workers/testing/vitest-integration/ for setup.";
+@@ -130,8 +185,7 @@
+  if (isCloudflareWorkersRuntime()) {
+ -	pendingWasmImport = import("./esbuild.wasm");
+ -	pendingWasmImport.catch(() => {});
+-+	import("./esbuild.wasm").then((module) => { esbuildWasmModule = module.default; }).catch(() => {});
+- }
++-}
+ -/**
+ -* Initialize the esbuild bundler.
+ -* This is called automatically when needed.
+@@ -162,6 +216,8 @@
+ -		esbuildInitializePromise = null;
+ -		throw error;
+ -	}
+++	import("./esbuild.wasm").then((module) => { esbuildWasmModule = module.default; }).catch(() => {});
+++}
+ +async function initializeEsbuild(esbuild) {
+ +	if (!isCloudflareWorkersRuntime()) throw new Error(NOT_IN_WORKERS_ERROR);
+ +	const wasmModule = esbuildWasmModule ?? (await import("./esbuild.wasm")).default;
+@@ -170,7 +226,7 @@
+  }
+  //#endregion
+  //#region src/config.ts
+-@@ -857,7 +817,12 @@ var InMemoryFileSystem = class {
++@@ -857,7 +849,12 @@ var InMemoryFileSystem = class {
+  		this.files = files instanceof Map ? files : new Map(Object.entries(files));
+  	}
+  	read(path) {
+@@ -184,7 +240,7 @@
+  	}
+  	write(path, content) {
+  		this.files.set(path, content);
+-@@ -1516,7 +1481,7 @@ async function createApp(options) {
++@@ -1516,7 +1513,7 @@ async function createApp(options) {
+  	const wranglerConfig = parseWranglerConfig(fileSystem);
+  	const nodejsCompat = hasNodejsCompat(wranglerConfig);
+  	const installWarnings = [];
+@@ -193,7 +249,7 @@
+  		const installResult = await installDependencies(fileSystem, { ...registry ? { registry } : {} });
+  		installWarnings.push(...installResult.warnings);
+  	}
+-@@ -1526,6 +1491,7 @@ async function createApp(options) {
++@@ -1526,6 +1523,7 @@ async function createApp(options) {
+  	for (const clientEntry of clientEntries) {
+  		if (fileSystem.read(clientEntry) === null) throw new Error(`Client entry point "${clientEntry}" was not found in \`files\`. Available files: ${formatFileListForError(fileSystem)}.`);
+  		const bundleModule = (await bundleWithEsbuild({
+@@ -201,7 +257,7 @@
+  			files: fileSystem,
+  			entryPoint: clientEntry,
+  			externals,
+-@@ -1558,6 +1524,7 @@ async function createApp(options) {
++@@ -1558,6 +1556,7 @@ async function createApp(options) {
+  	if (fileSystem.read(serverEntry) === null) throw new Error(`Server entry point "${serverEntry}" was not found in \`files\`. Available files: ${formatFileListForError(fileSystem)}.`);
+  	let serverResult;
+  	if (bundle) serverResult = await bundleWithEsbuild({
+@@ -209,7 +265,7 @@
+  		files: fileSystem,
+  		entryPoint: serverEntry,
+  		externals,
+-@@ -1653,6 +1620,7 @@ async function createWorker(options) {
++@@ -1653,6 +1652,7 @@ async function createWorker(options) {
+  	}
+  	if (bundle) {
+  		const result = await bundleWithEsbuild({
+diff --git a/packages/sdk/src/implementation/worker-browser-build.ts b/packages/sdk/src/implementation/worker-browser-build.ts
+--- a/packages/sdk/src/implementation/worker-browser-build.ts
++++ b/packages/sdk/src/implementation/worker-browser-build.ts
+@@ -171,15 +171,29 @@
+         });
+         build.onEnd((result) => {
+           if (result.errors.length > 0) return;
+-          const fail = () => ({
++          const fail = (unresolved: readonly string[] = []) => ({
+             errors: [
+-              { text: "Browser compilation returned invalid outputs or unresolved imports." },
++              {
++                text:
++                  "Browser compilation returned invalid outputs or unresolved imports." +
++                  (unresolved.length === 0
++                    ? ""
++                    : ` Unresolved imports: ${JSON.stringify(unresolved)}`),
++              },
+             ],
+           });
+           if (result.outputFiles === undefined || result.metafile === undefined) return fail();
++          const unresolved = [
++            ...new Set(
++              Object.values(result.metafile.outputs).flatMap((metadata) =>
++                metadata.imports
++                  .filter((item) => item.external && !/^https?:\/\//.test(item.path))
++                  .map((item) => item.path),
++              ),
++            ),
++          ].sort();
++          if (unresolved.length > 0) return fail(unresolved);
+           for (const [file, metadata] of Object.entries(result.metafile.outputs)) {
+-            if (metadata.imports.some((item) => item.external && !/^https?:\/\//.test(item.path)))
+-              return fail();
+             if (metadata.entryPoint !== `virtual:${entry}`) continue;
+             const output = relativeOutput(file);
+             const css =
+diff --git a/packages/sdk/src/implementation/worker-browser-exports.ts b/packages/sdk/src/implementation/worker-browser-exports.ts
+--- a/packages/sdk/src/implementation/worker-browser-exports.ts
++++ b/packages/sdk/src/implementation/worker-browser-exports.ts
+@@ -20,7 +20,7 @@
+   }
+ }
+ 
+-/** The pinned bundler also enables node; honor an explicit browser export without that condition. */
++/** Keep explicit browser exports authoritative when the bundler tries legacy fallbacks. */
+ export function browserExport(files: InMemoryFileSystem, specifier: string) {
+   const parts = specifier.split("/");
+   const count = specifier.startsWith("@") ? 2 : 1;

@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-compiler-package-imports",
+  "file": "0542-compiler-package-imports.patch",
+  "content_sha256": "be5d466f70e2a905e49b4690370c9716fea55538feba85a42d3a5e436f2ff63f",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
