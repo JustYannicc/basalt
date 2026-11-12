@@ -5,6 +5,7 @@ import { deviceConnection } from "../connection/device.ts";
 import { signInDevice, type ProofKeyCrypto } from "../connection/device-oauth.ts";
 import { connectionHealth } from "../connection/health.ts";
 import { reconnectRecovery } from "./recovery.ts";
+import { orderedDeviceStore } from "../connection/device-store.ts";
 
 export interface MobileSnapshot {
   phase: "starting" | "signed-out" | "ready" | "storage-error";
@@ -27,6 +28,7 @@ export interface MobilePorts {
   network?: { subscribe(listener: (online: boolean) => void): () => void };
 }
 export function mobileController(ports: MobilePorts) {
+  const store = orderedDeviceStore(ports.store);
   let snapshot: MobileSnapshot = { phase: "starting" };
   let source: CredentialSource | undefined;
   let health: ReturnType<typeof connectionHealth> | undefined;
@@ -37,6 +39,7 @@ export function mobileController(ports: MobilePorts) {
   let automatic = true;
   let activeOperations = 0;
   let recoveryDeferred = false;
+  let networkOnline: boolean | undefined;
   let unsubscribeNetwork: (() => void) | undefined;
   const listeners = new Set<() => void>();
   const publish = (update: Partial<MobileSnapshot> = {}) => {
@@ -56,20 +59,22 @@ export function mobileController(ports: MobilePorts) {
     random: () => Math.random(),
     attempt: async (signal) => {
       await source?.reconnect(signal);
+      signal.throwIfAborted();
       health?.reset();
     },
     changed: (reconnecting, error) => publish({ reconnecting, error }),
   });
-  const recover = () => {
+  const recover = (restart = false) => {
     if (activeOperations > 0) {
       recoveryDeferred = true;
       return Promise.resolve();
     }
     recoveryDeferred = false;
-    return recovery.request();
+    return restart ? recovery.restart() : recovery.request();
   };
   const attach = (credentials: Parameters<typeof deviceConnection>[0]) => {
-    source = deviceConnection(credentials, ports.store, ports.socket);
+    recovery.reset();
+    source = deviceConnection(credentials, store, ports.socket, recovery.retryAfter);
     health = connectionHealth(source);
   };
   const perform = async (name: string, action: (signal: AbortSignal) => Promise<void>) => {
@@ -97,10 +102,12 @@ export function mobileController(ports: MobilePorts) {
     }
   };
   const networkChanged = (online: boolean) => {
+    if (networkOnline === online) return;
+    networkOnline = online;
     if (!foreground || !automatic || command || !source || terminal()) return;
     if (online) {
       if (recovery.needed() || recoveryDeferred || source.view().capabilities.length === 0)
-        void recover();
+        void recover(true);
     } else {
       void recover();
     }
@@ -117,7 +124,7 @@ export function mobileController(ports: MobilePorts) {
       (initial ??= (async () => {
         unsubscribeNetwork = ports.network?.subscribe(networkChanged);
         try {
-          const raw = await ports.store.read();
+          const raw = await store.read();
           if (!raw) {
             publish({ phase: "signed-out" });
             return;
@@ -157,7 +164,7 @@ export function mobileController(ports: MobilePorts) {
             },
           });
           signal.throwIfAborted();
-          await ports.store.write(JSON.stringify(credentials));
+          await store.write(JSON.stringify(credentials));
           attach(credentials);
           automatic = true;
           publish({ phase: "ready" });
@@ -176,7 +183,7 @@ export function mobileController(ports: MobilePorts) {
       await perform("Reconnect", async () => {
         stopWork();
         if (!source) {
-          const raw = await ports.store.read();
+          const raw = await store.read();
           if (!raw) {
             publish({ phase: "signed-out", error: undefined });
             return;
@@ -202,7 +209,7 @@ export function mobileController(ports: MobilePorts) {
         stopWork();
         await health?.close();
         if (source) await source.signOut();
-        else await ports.store.remove();
+        else await store.remove();
         source = undefined;
         health = undefined;
         publish({ phase: "signed-out", reconnecting: false });
