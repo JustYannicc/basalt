@@ -8,8 +8,7 @@ struct HomeView: View {
     let presentation = model.presentation
     let snapshot = model.snapshot
     VStack(alignment: .leading, spacing: 0) {
-      // The approved panel is titled Apps once there is a list to show.
-      Header(title: model.apps == nil ? "Signalbox" : "Apps") {
+      Header(title: model.homeTitle) {
         Text(model.machineName).font(.system(size: 12)).foregroundStyle(.secondary)
       }
       VStack(alignment: .leading, spacing: 10) {
@@ -39,7 +38,7 @@ struct HomeView: View {
         }
         if !presentation.starting && !presentation.signingIn {
           if model.apps != nil { AppList(model: model, actions: actions) }
-          if snapshot?.canSignOut == true {
+          if model.apps != nil {
             // The web app's root opens this account's Apps, where adding an app starts.
             Button("Add app…") { actions.open(model.webOrigin) }
               .buttonStyle(.bordered)
