@@ -112,7 +112,7 @@ export function releaseEvidence(directory: string, candidate: string, encryption
           at: Schema.String.check(
             Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u),
           ),
-          outcome: Schema.Literals(["ok", "unknown", ...knownTypes]),
+          outcome: Schema.Literals(["ok", "refused", "unknown", ...knownTypes]),
           reason: Schema.optional(
             Schema.Literals([
               "TransportError",

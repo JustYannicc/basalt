@@ -20,7 +20,17 @@ const target: BucketTarget = {
   jurisdiction: "eu",
   storageClass: "Standard",
 };
-const observation = { attributes: target, publicAccess: false } as unknown as BucketObservation;
+const observation = {
+  attributes: {
+    ...target,
+    location: "weur",
+    domains: [],
+    cors: [],
+    lifecycleRules: [],
+    publicDomain: undefined,
+  },
+  publicAccess: false,
+} satisfies BucketObservation;
 const changed = (error: unknown) =>
   error instanceof BarrierRefusal ? error.delta?.changed : assert.fail("expected a refusal");
 
@@ -148,7 +158,7 @@ test("policy drift, refused access and writes are never retried", async () => {
     assert.equal(calls.read, 1);
     assert.deepEqual(
       reads.map(({ outcome }) => outcome),
-      error === drift ? [] : ["Forbidden"],
+      [error === drift ? "refused" : "Forbidden"],
     );
   }
   const { calls, base } = provider([]);

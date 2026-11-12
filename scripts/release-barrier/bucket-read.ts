@@ -6,7 +6,7 @@ export interface BucketRead {
   readonly fqn: string;
   readonly attempt: number;
   readonly at: string;
-  /** "ok", or the failure's closed provider type. */
+  /** "ok", "refused" for a read that observed a refusal, or the failure's closed provider type. */
   readonly outcome: string;
   readonly reason?: string;
   readonly status?: number;
@@ -58,17 +58,20 @@ export function retryingBucketReads(
           (value) => ({ ok: true as const, value }),
           (error: unknown) => ({ ok: false as const, error }),
         );
-        if (!result.ok && result.error instanceof BarrierRefusal) throw result.error;
-        const failure = result.ok ? undefined : safeProviderFailure(result.error);
+        const refused = !result.ok && result.error instanceof BarrierRefusal;
+        const failure = result.ok || refused ? undefined : safeProviderFailure(result.error);
         await options.record?.({
           fqn,
           attempt,
           at: new Date().toISOString(),
-          outcome: failure?.type ?? "ok",
+          // A refusal is the observation itself (policy drift, an unknown location); its reason and
+          // exact change are in the refusal, so the attempt only notes that the read answered.
+          outcome: refused ? "refused" : (failure?.type ?? "ok"),
           ...(failure?.reason === undefined ? {} : { reason: failure.reason }),
           ...(failure?.status === undefined ? {} : { status: failure.status }),
         });
         if (result.ok) return result.value;
+        if (refused) throw result.error;
         if (!retryable(failure!) || attempt === bucketReadAttempts) throw result.error;
         await (options.wait ?? pause)(retryDelay(attempt, options.random ?? Math.random));
       }
