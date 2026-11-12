@@ -1,7 +1,7 @@
 import {
   removalDiagnostic,
   type RemovalDiagnostic,
-} from "../../src/pool/import-removal/failure.ts";
+} from "../../src/pool/import-removal/diagnostic.ts";
 
 const categories = [
   "config",
