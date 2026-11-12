@@ -44,6 +44,7 @@ test("account and pool jobs retain their owned scenarios, commands and execution
       cwd: ".upstream",
       minutes: null,
       scenarios: [
+        "accountScopeExpansionHosted",
         "additiveProviderAuthAmbiguous",
         "additiveProviderAuthIncompatible",
         "additiveProviderAuthSelection",

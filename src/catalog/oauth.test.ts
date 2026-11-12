@@ -20,6 +20,7 @@ test("reviewed carried sources match the packages the catalog serves", async () 
     "jira",
     "confluence",
     "clerk",
+    "cloudflare",
     "aws",
     "elevenlabs",
     "gitlab",

@@ -37,6 +37,13 @@ export function providerAppSource(root: string, lab: (typeof providerAppLabs)[nu
         content: readFileSync(join(root, "src/catalog/provider-apps/account-view.ts"), "utf8"),
       },
       {
+        path: "cloudflare-scopes.ts",
+        content: readFileSync(
+          join(root, "src/pool/provider-accounts/cloudflare-scopes.ts"),
+          "utf8",
+        ),
+      },
+      {
         path: "providers.ts",
         content: readFileSync(join(root, "src/pool/provider-accounts/definitions.ts"), "utf8"),
       },
