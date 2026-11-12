@@ -54,7 +54,8 @@ export const updates =
               {
                 idempotent: true,
                 signal,
-                onProgress: ({ bytesWritten }) => progress(Math.min(1, bytesWritten / manifest.size)),
+                onProgress: ({ bytesWritten }) =>
+                  progress(Math.min(1, bytesWritten / manifest.size)),
               },
             );
             return apk(file);

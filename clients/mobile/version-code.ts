@@ -6,7 +6,13 @@
 export function versionCode(version: string) {
   const parts = /^(\d+)\.(\d+)\.(\d+)$/u.exec(version)?.slice(1).map(Number);
   const [major, minor, patch] = parts ?? [];
-  if (major === undefined || minor === undefined || patch === undefined || minor >= 100 || patch >= 100)
+  if (
+    major === undefined ||
+    minor === undefined ||
+    patch === undefined ||
+    minor >= 100 ||
+    patch >= 100
+  )
     throw new Error(
       `Clients version ${version} must be major.minor.patch with minor and patch below 100.`,
     );

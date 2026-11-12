@@ -6,7 +6,10 @@ interface Manifest {
 }
 
 /** Adds the install permission once, however often prebuild applies the plugin. */
-export function addInstallPermission<T extends Manifest>(manifest: T, blocked: readonly string[] = []) {
+export function addInstallPermission<T extends Manifest>(
+  manifest: T,
+  blocked: readonly string[] = [],
+) {
   // A blocked permission is stripped again at build time, and the installer would then refuse.
   if (blocked.includes(installPermission))
     throw new Error(

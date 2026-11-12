@@ -72,7 +72,10 @@ export interface DownloadedApk {
 export interface UpdatePorts {
   manifestUrl: string;
   installed: { version: string; versionCode: number };
-  get(url: string, init: { signal: AbortSignal }): Promise<{ ok: boolean; text(): Promise<string> }>;
+  get(
+    url: string,
+    init: { signal: AbortSignal },
+  ): Promise<{ ok: boolean; text(): Promise<string> }>;
   files: {
     cached(versionCode: number): DownloadedApk | undefined;
     download(

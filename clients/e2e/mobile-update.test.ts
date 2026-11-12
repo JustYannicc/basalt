@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { appUpdates, checkInterval, readUpdateManifest, type UpdateManifest } from "../mobile/update.ts";
+import {
+  appUpdates,
+  checkInterval,
+  readUpdateManifest,
+  type UpdateManifest,
+} from "../mobile/update.ts";
 import { addInstallPermission, installPermission } from "../mobile/plugins/install-permission.ts";
 
 const feed = "https://github.com/example/signalbox/releases/latest/download/android-update.json";
@@ -14,7 +19,13 @@ const release = (version: string, code: number, extra: Partial<UpdateManifest> =
   ...extra,
 });
 
-function fixture(options: { manifest?: unknown; reachable?: boolean; bytes?: { size: number; sha256: string } } = {}) {
+function fixture(
+  options: {
+    manifest?: unknown;
+    reachable?: boolean;
+    bytes?: { size: number; sha256: string };
+  } = {},
+) {
   let now = 1_000_000;
   let stored: string | undefined;
   let manifest: unknown = options.manifest ?? release("0.2.3", 203);
@@ -79,7 +90,11 @@ test("a newer release downloads, verifies and waits for Install", async () => {
   const seen: string[] = [];
   f.updates.subscribe(() => seen.push(f.updates.getSnapshot().state.kind));
   await f.updates.launch();
-  assert.deepEqual(f.updates.getSnapshot().state, { kind: "ready", version: "0.2.3", versionCode: 203 });
+  assert.deepEqual(f.updates.getSnapshot().state, {
+    kind: "ready",
+    version: "0.2.3",
+    versionCode: 203,
+  });
   assert.ok(seen.includes("downloading"));
   assert.equal(f.updates.getSnapshot().firstInstall, true);
   await f.updates.install();
@@ -87,7 +102,10 @@ test("a newer release downloads, verifies and waits for Install", async () => {
 });
 
 test("the same or an older release is up to date and downloads nothing", async () => {
-  for (const [version, code] of [["0.2.2", 202], ["0.2.1", 201]] as const) {
+  for (const [version, code] of [
+    ["0.2.2", 202],
+    ["0.2.1", 201],
+  ] as const) {
     const f = fixture({ manifest: release(version, code) });
     await f.updates.launch();
     assert.equal(f.updates.getSnapshot().state.kind, "current");
@@ -98,14 +116,26 @@ test("the same or an older release is up to date and downloads nothing", async (
 test("manifests a release wouldn't publish are refused before anything downloads", async () => {
   const refused: Record<string, unknown> = {
     malformed: "not a manifest",
-    "missing size": (({ size: _, ...rest }) => rest)(release("0.2.3", 203)),
+    "missing size": Object.fromEntries(
+      Object.entries(release("0.2.3", 203)).filter(([key]) => key !== "size"),
+    ),
     "fractional size": release("0.2.3", 203, { size: 10.5 }),
     "versionCode of another version": release("0.2.3", 204),
-    "plain http": release("0.2.3", 203, { url: "http://github.com/example/signalbox/releases/download/signalbox-clients-0.2.3/Signalbox-android.apk" }),
-    "another host": release("0.2.3", 203, { url: "https://example.test/example/signalbox/releases/download/signalbox-clients-0.2.3/Signalbox-android.apk" }),
-    "another repository": release("0.2.3", 203, { url: "https://github.com/other/fork/releases/download/signalbox-clients-0.2.3/Signalbox-android.apk" }),
-    "another version's tag": release("0.2.3", 203, { url: "https://github.com/example/signalbox/releases/download/signalbox-clients-0.2.4/Signalbox-android.apk" }),
-    "a path that climbs out": release("0.2.3", 203, { url: "https://github.com/example/signalbox/releases/download/../../../other/Signalbox-android.apk" }),
+    "plain http": release("0.2.3", 203, {
+      url: "http://github.com/example/signalbox/releases/download/signalbox-clients-0.2.3/Signalbox-android.apk",
+    }),
+    "another host": release("0.2.3", 203, {
+      url: "https://example.test/example/signalbox/releases/download/signalbox-clients-0.2.3/Signalbox-android.apk",
+    }),
+    "another repository": release("0.2.3", 203, {
+      url: "https://github.com/other/fork/releases/download/signalbox-clients-0.2.3/Signalbox-android.apk",
+    }),
+    "another version's tag": release("0.2.3", 203, {
+      url: "https://github.com/example/signalbox/releases/download/signalbox-clients-0.2.4/Signalbox-android.apk",
+    }),
+    "a path that climbs out": release("0.2.3", 203, {
+      url: "https://github.com/example/signalbox/releases/download/../../../other/Signalbox-android.apk",
+    }),
     "short hash": release("0.2.3", 203, { sha256: "abc" }),
   };
   for (const [name, manifest] of Object.entries(refused)) {
@@ -118,12 +148,19 @@ test("manifests a release wouldn't publish are refused before anything downloads
 
 test("a test feed's APK must sit in the feed's own folder", () => {
   const testFeed = "https://updates.example.test/run-7/android-update.json";
-  const manifest = release("0.2.3", 203, { url: "https://updates.example.test/run-7/Signalbox-android.apk" });
+  const manifest = release("0.2.3", 203, {
+    url: "https://updates.example.test/run-7/Signalbox-android.apk",
+  });
   assert.equal(readUpdateManifest(manifest, testFeed).versionCode, 203);
   assert.throws(() =>
-    readUpdateManifest({ ...manifest, url: "https://updates.example.test/run-8/Signalbox-android.apk" }, testFeed),
+    readUpdateManifest(
+      { ...manifest, url: "https://updates.example.test/run-8/Signalbox-android.apk" },
+      testFeed,
+    ),
   );
-  assert.throws(() => readUpdateManifest(manifest, "http://updates.example.test/run-7/android-update.json"));
+  assert.throws(() =>
+    readUpdateManifest(manifest, "http://updates.example.test/run-7/android-update.json"),
+  );
 });
 
 test("an unreachable release fails quietly in the background and loudly on demand", async () => {
@@ -139,7 +176,10 @@ test("an unreachable release fails quietly in the background and loudly on deman
 });
 
 test("a download with the wrong size or hash is removed, never offered", async () => {
-  for (const bytes of [{ size: 999, sha256: sha("a") }, { size: 1000, sha256: sha("b") }]) {
+  for (const bytes of [
+    { size: 999, sha256: sha("a") },
+    { size: 1000, sha256: sha("b") },
+  ]) {
     const f = fixture({ bytes });
     await f.updates.check();
     const state = f.updates.getSnapshot().state;
@@ -190,7 +230,11 @@ test("a dismissed banner stays hidden for that version and returns for the next"
   assert.equal(restarted.getSnapshot().dismissed, true);
   f.publishes(release("0.2.4", 204));
   await restarted.check();
-  assert.deepEqual(restarted.getSnapshot().state, { kind: "ready", version: "0.2.4", versionCode: 204 });
+  assert.deepEqual(restarted.getSnapshot().state, {
+    kind: "ready",
+    version: "0.2.4",
+    versionCode: 204,
+  });
   assert.equal(restarted.getSnapshot().dismissed, false);
   assert.deepEqual([...f.files.keys()], [204]);
 });
@@ -210,6 +254,11 @@ test("the install permission is added once and refused when blocked", () => {
   const manifest = { manifest: {} as { "uses-permission"?: { $: { "android:name": string } }[] } };
   addInstallPermission(manifest);
   addInstallPermission(manifest);
-  assert.deepEqual(manifest.manifest["uses-permission"], [{ $: { "android:name": installPermission } }]);
-  assert.throws(() => addInstallPermission({ manifest: {} }, [installPermission]), /blockedPermissions/u);
+  assert.deepEqual(manifest.manifest["uses-permission"], [
+    { $: { "android:name": installPermission } },
+  ]);
+  assert.throws(
+    () => addInstallPermission({ manifest: {} }, [installPermission]),
+    /blockedPermissions/u,
+  );
 });
