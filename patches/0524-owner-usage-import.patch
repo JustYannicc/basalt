@@ -261,6 +261,17 @@ diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/s
      .handle("accountRouting", ({ params }) => poolAccountRouting(params.app))
      .handle("setCreditPolicy", ({ params, payload }) =>
        setPoolCreditPolicy(params.app, payload.usageCreditPolicy),
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -31,6 +31,7 @@
+     AccountResetRefused: ({ message }) => message,
+     PoolManagerTokenUnavailable: ({ message }) => message,
+     PoolUsageUnavailable: ({ message }) => message,
++    PoolUsageImportRejected: ({ message }) => message,
+     PoolCreditPolicyUnavailable: ({ message }) => message,
+     PoolCapConflict: ({ message }) => message,
+     AccountLinkRequired: () => "Save the account, then link it to this pool to finish connecting.",
 diff --git a/e2e/support/pool-usage-import-backend.ts b/e2e/support/pool-usage-import-backend.ts
 new file mode 100644
 --- /dev/null

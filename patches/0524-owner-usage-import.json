@@ -1,7 +1,7 @@
 {
   "identity": "basalt-owner-usage-import",
   "file": "0524-owner-usage-import.patch",
-  "content_sha256": "74ebb11840be1c1cc52a1b4d9fc311ae4dbed28ec792812fec002e7cc6c5778e",
+  "content_sha256": "f3edda8cbcf1356b4592f82cbc3c8a8f855b69452edb256e0d02979aece88541",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

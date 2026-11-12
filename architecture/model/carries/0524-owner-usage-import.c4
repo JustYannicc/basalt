@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Mapped metadata import uses the recorded pool owner's ordinary browser session and holds the organization access lock through a short-lived signed backend command. App managers and organization administrators acting as a different person cannot import. Dry run and apply share one owner route and the existing immutable ledger importer, preserving the source namespace, exact request identities, account-map acknowledgement and current selected-account validation. The operator client binds its private session to the approved caller and persists receipts without retaining page approval credentials."
+      constraint "Mapped metadata import uses the recorded pool owner's ordinary browser session and holds the organization access lock through a short-lived signed backend command. App managers and organization administrators acting as a different person cannot import. Dry run and apply share one owner route and the existing immutable ledger importer, preserving the source namespace, exact request identities, account-map acknowledgement and current selected-account validation. Typed clients retain the structured refusal message. The operator client binds its private session to the approved caller and persists receipts without retaining page approval credentials."
     }
   }
 }
