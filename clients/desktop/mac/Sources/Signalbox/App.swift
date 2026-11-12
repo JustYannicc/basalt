@@ -50,8 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     shell.start()
   }
 
-  /// Every quit lands here, including the one the updater asks for before it swaps the bundle and
-  /// relaunches, so the helper this app started never outlives the old bundle.
+  /// Every quit lands here, including the updater's: its installer agent quits this app with
+  /// NSRunningApplication.terminate, a normal quit event, before it swaps the bundle and relaunches.
+  /// So the helper this app started never outlives the old bundle, and the new app starts its own.
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
     Task {
       await shell.stop()
@@ -62,9 +63,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 /// Owns the one updater. Info.plist sets the signed feed, the hourly check and silent installs,
-/// so updates download in the background and install when the app quits.
+/// so updates download in the background and install as soon as they're ready.
 @MainActor
-final class Updater: NSObject, SPUStandardUserDriverDelegate {
+final class Updater: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
   let updates: AppUpdates
   private var controller: SPUStandardUpdaterController?
   private var observation: NSKeyValueObservation?
@@ -74,7 +75,7 @@ final class Updater: NSObject, SPUStandardUserDriverDelegate {
     updates = AppUpdates(version: version ?? "unknown")
     super.init()
     let controller = SPUStandardUpdaterController(
-      startingUpdater: true, updaterDelegate: nil, userDriverDelegate: self)
+      startingUpdater: true, updaterDelegate: self, userDriverDelegate: self)
     self.controller = controller
     updates.check = { [weak controller] in controller?.checkForUpdates(nil) }
     observation = controller.updater.observe(\.canCheckForUpdates, options: [.initial, .new]) {
@@ -85,6 +86,16 @@ final class Updater: NSObject, SPUStandardUserDriverDelegate {
 
   /// A menu-bar app has no window to bring forward, so a scheduled update must not steal focus.
   nonisolated var supportsGentleScheduledUpdateReminders: Bool { true }
+
+  /// Opens at login and rarely quits, so waiting for a quit could hold an update back for weeks.
+  /// Installing now quits through applicationShouldTerminate like any quit, then relaunches.
+  nonisolated func updater(
+    _ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
+    immediateInstallationBlock immediateInstallHandler: @escaping () -> Void
+  ) -> Bool {
+    immediateInstallHandler()
+    return true
+  }
 }
 
 @MainActor

@@ -40,6 +40,10 @@ on:
         description: Test builds only. An https URL ending in /appcast.xml the Mac app checks instead of the Latest release; a run with one can never be published.
         required: false
         default: ""
+      test_version:
+        description: Test builds only, with update_feed. Builds every client as this higher major.minor.patch version, for walking an update from this commit's version.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -57,6 +61,14 @@ jobs:
       feed: ${{ steps.feed.outputs.feed }}
     steps:
       - uses: actions/checkout@v4
+      # Every job that builds rewrites the checkout the same way, so the agreement check below and
+      # version.txt see the test version. A test version can never ship: test-version.sh refuses it
+      # without update_feed, and publish refuses every run built with a feed other than Latest's.
+      - name: Apply a test version
+        env:
+          TEST_VERSION: ${{ inputs.test_version }}
+          UPDATE_FEED: ${{ inputs.update_feed }}
+        run: bash clients/test-version.sh "$TEST_VERSION" "$UPDATE_FEED"
       # Installed Mac apps check this feed for updates; publish refuses any feed but the Latest release's.
       - id: feed
         name: Choose the Mac update feed
@@ -108,6 +120,13 @@ jobs:
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
+      # Same rewrite as the version job, so the packages carry the version assemble expects.
+      - name: Apply a test version
+        shell: bash
+        env:
+          TEST_VERSION: ${{ inputs.test_version }}
+          UPDATE_FEED: ${{ inputs.update_feed }}
+        run: bash clients/test-version.sh "$TEST_VERSION" "$UPDATE_FEED"
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.4
@@ -188,6 +207,13 @@ jobs:
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
+      # Same rewrite as the version job; app.config.ts derives the APK's versionCode from it.
+      - name: Apply a test version
+        shell: bash
+        env:
+          TEST_VERSION: ${{ inputs.test_version }}
+          UPDATE_FEED: ${{ inputs.update_feed }}
+        run: bash clients/test-version.sh "$TEST_VERSION" "$UPDATE_FEED"
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.4
@@ -424,14 +450,16 @@ jobs:
           # sums arrive under release/ with version.txt, commit.txt and update-feed.txt beside it.
           cd "$RUNNER_TEMP/walked" || fail "The downloaded artifact folder is missing."
           held="$(find . -type f | sort | tr '\n' ' ')"
-          for file in release/SHA256SUMS.txt version.txt commit.txt update-feed.txt; do
+          for file in release/SHA256SUMS.txt version.txt commit.txt; do
             [ -f "$file" ] || fail "Run $RUN's signalbox-clients artifact has no $file. It holds: $held"
           done
           version="$(cat version.txt)"
           commit="$(cat commit.txt)"
           # A test build's Mac app checks its own feed, so its installs would never see later releases.
-          feed="$(cat update-feed.txt)"
+          # Runs from before update_feed existed record no feed and could only build the production one.
           production="https://github.com/$GITHUB_REPOSITORY/releases/latest/download/appcast.xml"
+          feed="$production"
+          if [ -f update-feed.txt ]; then feed="$(cat update-feed.txt)"; fi
           [ "$feed" = "$production" ] ||
             fail "Run $RUN is a test build: its Mac app checks $feed for updates, not $production. Test builds can't be published; build again without update_feed."
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Run $RUN recorded version '$version', not major.minor.patch."
