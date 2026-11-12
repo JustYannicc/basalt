@@ -7,11 +7,32 @@
       "react": ["./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react"],
       "react/*": ["./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react/*"],
       "react-dom": ["./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react-dom"],
-      "react-dom/*": ["./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react-dom/*"],
-      "react-markdown": ["./.upstream/packages/ui/node_modules/react-markdown"],
-      "remark-gfm": ["./.upstream/packages/ui/node_modules/remark-gfm"]
+      "react-dom/*": [
+        "./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react-dom/*"
+      ],
+      "hast-util-to-jsx-runtime": [
+        "./.upstream/node_modules/.bun/hast-util-to-jsx-runtime@2.3.6/node_modules/hast-util-to-jsx-runtime"
+      ],
+      "mdast-util-from-markdown": [
+        "./.upstream/node_modules/.bun/mdast-util-from-markdown@2.0.3/node_modules/mdast-util-from-markdown"
+      ],
+      "mdast-util-gfm": [
+        "./.upstream/node_modules/.bun/mdast-util-gfm@3.1.0/node_modules/mdast-util-gfm"
+      ],
+      "mdast-util-to-hast": [
+        "./.upstream/node_modules/.bun/mdast-util-to-hast@13.2.1/node_modules/mdast-util-to-hast"
+      ],
+      "micromark-extension-gfm": [
+        "./.upstream/node_modules/.bun/micromark-extension-gfm@3.0.0/node_modules/micromark-extension-gfm"
+      ],
+      "hast": ["./.upstream/node_modules/.bun/@types+hast@3.0.5/node_modules/@types/hast"],
+      "mdast": ["./.upstream/node_modules/.bun/@types+mdast@4.0.4/node_modules/@types/mdast"]
     }
   },
-  "include": ["apps/obsidian/**/*.ts", "apps/obsidian/**/*.tsx", "scripts/types/obsidian-markdown-plugins.d.ts"],
+  "include": [
+    "apps/obsidian/**/*.ts",
+    "apps/obsidian/**/*.tsx",
+    "scripts/types/obsidian-markdown-plugins.d.ts"
+  ],
   "exclude": ["apps/obsidian/**/*.test.ts"]
 }
