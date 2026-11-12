@@ -240,6 +240,22 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           /synthetic-provider response proof through Worker logs/,
         );
         assert.match(patch.retirement.requires, /without exposing diagnostic headers to clients/);
+      } else if (patch.identity === "cliproxy-home-funding-read") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0519-home-funding-read.patch");
+        assert.match(patch.retirement.requires, /one authoritative SQL statement/);
+        assert.match(
+          patch.retirement.requires,
+          /old-result parity, soft deletion, expiry and missing-data semantics/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /PostgreSQL concurrent-update and query-budget proof/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /Admission and management loaders remain unchanged/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
