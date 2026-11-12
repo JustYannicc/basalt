@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Cause, Effect, Exit } from "effect";
 import { releaseWorkers } from "./barrier.ts";
+import { readySqlSchemas } from "./sql-schema-fixture.ts";
 import { decodeApplication, waitForContainerVersion } from "./container-cloudflare.ts";
 import { assertImageOnlyPublication } from "./container.ts";
 import { BarrierRefusal } from "./manifest.ts";
@@ -129,7 +130,11 @@ test("equivalent-digest verification refuses a foreign final readback before acc
         },
       ],
     },
-    proof.options,
+    {
+      ...proof.options,
+      sqlSchemas: async () =>
+        readySqlSchemas(proof.manifest.candidate, proof.previous.hash!.digest!),
+    },
   ).then(
     () => assert.fail("foreign final readback must refuse"),
     (error: unknown) => error,

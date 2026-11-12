@@ -220,6 +220,7 @@ export function releaseEvidence(directory: string, candidate: string, encryption
         ...(latest?.startupMeasurements ? { startupMeasurements: latest.startupMeasurements } : {}),
         ...(latest?.containers ? { containers: latest.containers } : {}),
         ...(latest?.pendingContainer ? { pendingContainer: latest.pendingContainer } : {}),
+        ...(latest?.sqlSchemas ? { sqlSchemas: latest.sqlSchemas } : {}),
         reason: refusal.reason,
         ...(refusal.stateStore ? { stateStore: refusal.stateStore } : {}),
         ...(refusal instanceof ServingFailure ? { serving: refusal.serving } : {}),

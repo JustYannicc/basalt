@@ -1,4 +1,7 @@
 import { retryingBucketReads, type BucketRead, type BucketReadOptions } from "./bucket-read.ts";
+import { deploymentSqlSchemas } from "./sql-schema-live.ts";
+import { writeSqlSchemaJournal } from "./sql-schema-journal.ts";
+import type { SqlSchemaReceipt } from "./sql-schema-contract.ts";
 import {
   d1Account,
   preflightDeclaredD1,
@@ -83,6 +86,7 @@ export interface DeployStackOptions {
   expansion?(value: ClassProgress): Promise<void>;
   forwardInput?: ForwardInputProof;
   forwardEncryptionKey?: string;
+  homeSchemaRetryIntent?: string;
   record(receipt: BarrierReceipt): Promise<void>;
   manifest(value: ReleaseManifest): Promise<void>;
   publication?(container: FrozenContainer, normalization?: BaselineNormalization): Promise<void>;
@@ -93,6 +97,9 @@ export interface DeployStackOptions {
   bucketReadTiming?: Pick<BucketReadOptions, "wait" | "random">;
   serving?(container: ServingContainer): Promise<void>;
   io?: {
+    sqlSchemas?: (
+      record: (receipt: SqlSchemaReceipt) => Promise<void>,
+    ) => Promise<SqlSchemaReceipt>;
     buckets?: BucketProvider;
     d1?: D1Provider;
     classes?: ClassProvider;
@@ -238,6 +245,8 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       );
     yield* Effect.promise(() => options.manifest(manifest));
     yield* prerequisites("before-upload");
+    if (!options.forwardEncryptionKey) throw new BarrierRefusal("sql-schema-journal-key-required");
+    const schemaEncryptionKey = options.forwardEncryptionKey;
     const journal = options.forwardEncryptionKey
       ? yield* beginForwardJournal(stack, manifest, options.forwardEncryptionKey)
       : undefined;
@@ -298,10 +307,31 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       try: () =>
         releaseWorkers(manifest, {
           record: async (receipt) => {
+            if (receipt.sqlSchemas)
+              await run(
+                writeSqlSchemaJournal(state, stack, schemaEncryptionKey, receipt.sqlSchemas),
+              );
             if (journal) await run(journal.record(receipt));
             await options.record(receipt);
           },
           beforeActivate: () => run(database),
+          sqlSchemas: (record) =>
+            options.io?.sqlSchemas
+              ? options.io.sqlSchemas(record)
+              : run(
+                  deploymentSqlSchemas({
+                    stack,
+                    candidate: options.candidate,
+                    plan,
+                    state,
+                    changedContainers: [...prepared.containers.values()].map(
+                      (value) => value.frozen,
+                    ),
+                    encryptionKey: schemaEncryptionKey,
+                    retryIntentId: options.homeSchemaRetryIntent,
+                    record,
+                  }),
+                ),
           provider: {
             async upload(worker) {
               const exit = await run(Effect.exit(io.upload(worker)));

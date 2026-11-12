@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { historySchemaMigrations } from "../src/pool/model-history/schema.ts";
+import { releaseWorkers } from "./release-barrier/barrier.ts";
 import {
   classify,
   clientConfig,
@@ -79,6 +81,17 @@ test("provisioning on an existing cluster runs the same idempotent statements in
     ...sessionLimits,
     "REVOKE ALL ON SCHEMA public FROM PUBLIC",
     'GRANT ALL ON SCHEMA public TO "basalt_pool_owner"',
+    "BEGIN",
+    'SET LOCAL ROLE "basalt_pool_owner"',
+    "SET LOCAL lock_timeout = '500ms'",
+    "SET LOCAL statement_timeout = '5s'",
+    "SELECT pg_advisory_xact_lock(1409, 20)",
+    `CREATE TABLE IF NOT EXISTS basalt_model_history_migrations (
+      name text PRIMARY KEY, completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+    ...historySchemaMigrations.map(
+      () => "SELECT 1 FROM basalt_model_history_migrations WHERE name = $1",
+    ),
+    "COMMIT",
   ]);
   assert.deepEqual(fake.events, ["connect cluster", "connect pool", "end cluster", "end pool"]);
 });
@@ -288,4 +301,116 @@ test("the deploy's command timeout exceeds the script's worst case", () => {
     minutes * 60_000 >= worstCaseMs + 30_000,
     `${minutes} minutes leaves no headroom over ${worstCaseMs}ms`,
   );
+});
+
+for (const code of ["42501", "55P03", "57014"]) {
+  test(`history migration ${code} aborts release with a safe step and SQLSTATE`, async () => {
+    const fake = cluster({
+      answer: (sql) =>
+        sql === "SELECT pg_advisory_xact_lock(1409, 20)" ? postgresError(code) : undefined,
+    });
+    const logs: string[] = [];
+    await assert.rejects(
+      provisionPoolDatabase({
+        runtimeLogin: "pool_runtime",
+        connect: fake.connect,
+        sleep: instant.sleep,
+        log: (line) => void logs.push(line),
+      }),
+      (error: Error) => {
+        assert.match(error.message, /at "migrate model request history"/);
+        assert.ok(error.message.includes(code));
+        assert.doesNotMatch(error.message, /cluster\.example|fixture-secret|admin@/);
+        return true;
+      },
+    );
+    const attempts = code === "42501" ? 1 : 3;
+    assert.equal(fake.statements.filter((sql) => sql === "ROLLBACK").length, attempts);
+    assert.equal(fake.events.filter((event) => event === "end pool").length, attempts);
+    assert.equal(logs.length, attempts - 1);
+    for (const line of logs) assert.doesNotMatch(line, /cluster\.example|fixture-secret|admin@/);
+    assert.ok(!fake.statements.includes("COMMIT"));
+  });
+}
+
+test("history migration retries roll back and reopen both sessions before completing", async () => {
+  const fake = cluster({
+    answer: (sql, attempt) =>
+      sql === "SELECT pg_advisory_xact_lock(1409, 20)" && attempt === 1
+        ? postgresError("55P03")
+        : undefined,
+  });
+  await provisionPoolDatabase({ runtimeLogin: "pool_runtime", connect: fake.connect, ...instant });
+  assert.equal(fake.statements.filter((sql) => sql === "ROLLBACK").length, 1);
+  assert.equal(fake.statements.filter((sql) => sql === "COMMIT").length, 1);
+  assert.deepEqual(fake.events, [
+    "connect cluster",
+    "connect pool",
+    "end cluster",
+    "end pool",
+    "connect cluster",
+    "connect pool",
+    "end cluster",
+    "end pool",
+  ]);
+});
+
+test("a failed history migration stops the release before any Worker activation", async () => {
+  const fake = cluster({
+    answer: (sql) =>
+      sql === "SELECT pg_advisory_xact_lock(1409, 20)" ? postgresError("42501") : undefined,
+  });
+  const activations: string[] = [];
+  let uploads = 0;
+  let migrationFailure = "";
+  await assert.rejects(
+    releaseWorkers(
+      {
+        candidate: "a".repeat(40),
+        stack: "basalt",
+        stage: "production",
+        workers: [
+          {
+            id: "ModelGateway",
+            accountId: "fixture",
+            scriptName: "fixture-model-gateway",
+            metadata: { mainModule: "main.js" },
+            files: [
+              {
+                name: "main.js",
+                type: "application/javascript+module",
+                bytes: new TextEncoder().encode("export default {}"),
+              },
+            ],
+            baseline: [{ versionId: "old-gateway", percentage: 100 }],
+          },
+        ],
+      },
+      {
+        record: async () => {},
+        beforeActivate: () =>
+          provisionPoolDatabase({
+            runtimeLogin: "pool_runtime",
+            connect: fake.connect,
+            ...instant,
+          }).catch((error: Error) => {
+            migrationFailure = error.message;
+            throw error;
+          }),
+        provider: {
+          upload: async () => {
+            uploads++;
+            return { versionId: "new-gateway", startupTimeMs: 1 };
+          },
+          baseline: async (worker) => worker.baseline,
+          activate: async (worker) => void activations.push(worker.id),
+        },
+      },
+    ),
+    /Release barrier refused: barrier-operation-failed/,
+  );
+  assert.match(migrationFailure, /migrate model request history.*42501/);
+  assert.equal(uploads, 1);
+  assert.deepEqual(activations, []);
+  assert.ok(fake.statements.includes("ROLLBACK"));
 });

@@ -9,6 +9,7 @@ import * as Command from "alchemy/Command";
 import { WorkerUploadHook } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
 import { ContainerPublicationHook } from "alchemy/Cloudflare/Containers/ContainerPublicationHook";
 import { deployStack } from "./deploy-stack.ts";
+import { readySqlSchemas } from "./sql-schema-fixture.ts";
 import { preparedUpload } from "./fixture.ts";
 import { decodeApplication } from "./container-cloudflare.ts";
 import { Resource } from "alchemy/Resource";
@@ -443,11 +444,13 @@ for (const scenario of [
             const nextReceipts: BarrierReceipt[] = [];
             yield* deployStack(compiled, {
               candidate: "b".repeat(40),
+              forwardEncryptionKey: "f".repeat(64),
               record: async (value) => {
                 nextReceipts.push(value);
               },
               manifest: async () => {},
               io: {
+                sqlSchemas: async () => readySqlSchemas("b".repeat(40), proof.frozen.imageDigest),
                 placements: (worker, baseline) =>
                   readActivePlacements(worker, baseline).pipe(
                     Effect.provideService(HttpClient.HttpClient, sdk),

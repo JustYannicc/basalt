@@ -1,3 +1,4 @@
+import { readySqlSchemas } from "../sql-schema-fixture.ts";
 import { d1Companion, d1Declaration } from "./d1-companion.ts";
 import type { BucketProgress } from "../declared-buckets.ts";
 import type { D1Progress } from "../declared-d1-types.ts";
@@ -230,6 +231,7 @@ export function classProvisioning(
         }
         const release = {
           candidate: "a".repeat(40),
+          forwardEncryptionKey: "1".repeat(64),
           declarations,
           declared: async (value) => {
             storageProgress.push(structuredClone(value));
@@ -251,6 +253,7 @@ export function classProvisioning(
             manifest = value;
           },
           io: {
+            sqlSchemas: async () => readySqlSchemas("a".repeat(40)),
             baseline: (request) =>
               Effect.succeed(
                 request.scriptName !== "AppData" && options.companion

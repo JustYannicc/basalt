@@ -1,3 +1,4 @@
+import { readySqlSchemas } from "./sql-schema-fixture.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -281,6 +282,11 @@ for (const scenario of ["baseline", "worker-drift", "unchanged-image"])
                   try: () =>
                     releaseWorkers(nextManifest, {
                       ...fixture.options,
+                      sqlSchemas: async () =>
+                        readySqlSchemas(
+                          nextManifest.candidate,
+                          nextManifest.containers?.[0]?.imageDigest,
+                        ),
                       record: async (receipt) => {
                         await Effect.runPromise(nextJournal.record(receipt));
                         if (records++ === 0) {
