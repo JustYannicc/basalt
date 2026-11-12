@@ -1,0 +1,7 @@
+model {
+  extend basalt.productionOps {
+    metadata {
+      constraint "The fixed retained-frameworks inventory selects every retained version associated with this organization's apps, checks both owners and reads only those build records through the existing EU AppBuilds binding inside the signed Worker. Format 2 projects framework identity and protocol; legacy records hash only string node_modules/apps/*.js modules and require exactly one retained framework identity. Per-build completeness, app and version IDs, build pointers, tuple counts and framework object key, size, etag and upload time may leave the Worker; authored modules, source, raw bodies and errors never do. Reads have fixed object count, page, per-object byte, total byte and time bounds. Missing, unreadable, malformed, absent or ambiguous identities remain explicitly incomplete; exceeded bounds refuse. No compiler, evaluation, source manifest lookup or storage write participates."
+    }
+  }
+}
