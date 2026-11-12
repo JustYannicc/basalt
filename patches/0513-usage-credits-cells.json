@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-usage-credits-cells",
+  "file": "0513-usage-credits-cells.patch",
+  "content_sha256": "e9b14ed9d5d204e5ba17cae605eff80eaf87d3b04a5400e0e8ae5ce700de4ece",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
