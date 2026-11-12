@@ -104,6 +104,6 @@ export function serveTunnel(
   if (request.signal.aborted || Date.now() >= expiresAt) close(1008);
   else {
     send({ v: 1, type: "ready", expiresAt, limits: tunnelLimits });
-    timing?.mark("ready");
+    if (!stopped) timing?.mark("ready");
   }
 }

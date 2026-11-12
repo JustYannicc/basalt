@@ -131,3 +131,35 @@ test("a failed diagnostic sink cannot block an operation", () => {
     timing.operation(open(1))?.("dispatch");
   });
 });
+
+test("a failed READY send records closure without claiming readiness", async () => {
+  class BrokenPeer extends Peer {
+    send() {
+      throw new Error("synthetic socket failure");
+    }
+  }
+  const stages: string[] = [];
+  const timing = createTunnelTimingSampler(Date.now, (event) => stages.push(event.stage))()!;
+  const work: Promise<unknown>[] = [];
+  serveTunnel(
+    new BrokenPeer(),
+    new Peer(),
+    new Request("https://fixture.example/native/v1/tunnel"),
+    {
+      POOL_APP_SIGNING_KEY: "ab".repeat(32),
+      TOOLS_SERVICE: { fetch: async () => assert.fail("No dispatch expected") },
+      POOL_SERVICE: { fetch: async () => assert.fail("No dispatch expected") },
+    },
+    {
+      id: "native:fixture",
+      userId: "fixture",
+      clientId: "fixture",
+      expiresAt: Date.now() + 60_000,
+      policy: { kind: "native", computer: "fixture", pool: "fixture", models: true },
+    },
+    (promise) => work.push(promise),
+    timing,
+  );
+  await Promise.all(work);
+  assert.deepEqual(stages, ["closed"]);
+});
