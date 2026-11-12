@@ -130,11 +130,16 @@ try {
     "POSTGRES_DB=basalt_pool",
     dependencyImages["postgres:17.7-alpine"].imageId,
   ]);
+  // PostgreSQL's initialization server accepts Unix sockets before the final TCP listener exists.
   await until(
     async () =>
-      spawnSync(bin, ["exec", db, "pg_isready", "-U", "fixture_admin", "-d", "basalt_pool"], {
-        stdio: "ignore",
-      }).status === 0,
+      spawnSync(
+        bin,
+        ["exec", db, "pg_isready", "-h", "127.0.0.1", "-U", "fixture_admin", "-d", "basalt_pool"],
+        {
+          stdio: "ignore",
+        },
+      ).status === 0,
   );
   run([
     "exec",

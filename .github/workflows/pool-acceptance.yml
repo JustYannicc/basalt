@@ -12,6 +12,7 @@ on:
           - restart-observation
           - density
           - db-study
+          - db-sensitivity
         default: full
       model:
         description: Model ID from /v1/models; required when the catalog has multiple models
@@ -33,7 +34,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ (inputs.mode == 'density' || inputs.mode == 'db-study') && format('pool-study-{0}', github.ref) || 'pool-acceptance-production' }}
+  group: ${{ (inputs.mode == 'density' || inputs.mode == 'db-study' || inputs.mode == 'db-sensitivity') && format('pool-study-{0}', github.ref) || 'pool-acceptance-production' }}
   cancel-in-progress: false
 
 jobs:
@@ -158,8 +159,11 @@ jobs:
 
   db-study-sensitivity:
     needs: db-study-images
-    if: always() && inputs.mode == 'db-study' && github.event.repository.private == false
+    if: always() && (inputs.mode == 'db-study' || inputs.mode == 'db-sensitivity') && github.event.repository.private == false
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
     timeout-minutes: 210
     strategy:
       fail-fast: false
@@ -187,14 +191,26 @@ jobs:
           lscpu --json > "$STUDY_OUTPUT/runner-cpu.json"
           free -b > "$STUDY_OUTPUT/runner-memory.txt"
       - uses: actions/download-artifact@v4
+        if: inputs.mode == 'db-study'
         with:
           name: pool-db-study-image-release-${{ github.sha }}
+          path: ${{ runner.temp }}/db-image
+      - uses: actions/download-artifact@v4
+        if: inputs.mode == 'db-sensitivity'
+        with:
+          name: pool-db-study-image-release-bfd52b4a74afdb939a4829bad595dbb3900ef0e4
+          run-id: 43274889206
+          github-token: ${{ github.token }}
           path: ${{ runner.temp }}/db-image
       - name: Verify and load the unchanged release image
         run: |
           cd "$IMAGE_OUTPUT"
           sha256sum -c image.tar.gz.sha256
           docker image load --input image.tar.gz
+      - name: Verify the retained sensitivity-only image
+        if: inputs.mode == 'db-sensitivity'
+        run: |
+          test "$(cat "$IMAGE_OUTPUT/release-image.id")" = sha256:37317ec944975dbfaec2320dd56df41bf931b27f89eb9f46a0baba4e129aedbc
       - name: Acquire the same pinned synthetic dependencies
         run: |
           docker pull postgres@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2
