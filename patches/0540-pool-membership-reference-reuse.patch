@@ -79,7 +79,7 @@ index 0000000..7bade32
 +  },
 +};
 diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
-index 3258293..3126239 100644
+index 3258293..8147397 100644
 --- a/apps/hosted/server/src/implementation/pool-membership.ts
 +++ b/apps/hosted/server/src/implementation/pool-membership.ts
 @@ -17,6 +17,7 @@ import { policyDatabase, usableAppLinks } from "./resource-policy.ts";
@@ -100,7 +100,7 @@ index 3258293..3126239 100644
  });
  
  const homeReference = (executor: Executor, row: typeof NativePoolAccountRow.Type) =>
-@@ -70,14 +74,9 @@ const homeReference = (executor: Executor, row: typeof NativePoolAccountRow.Type
+@@ -70,50 +74,71 @@ const homeReference = (executor: Executor, row: typeof NativePoolAccountRow.Type
        binding.driverRevision === row.driverRevision &&
        binding.revision === row.bindingRevision &&
        binding.removal === null;
@@ -117,12 +117,21 @@ index 3258293..3126239 100644
 +    return Redacted.value(source.hostReference);
    });
  
- /** Host-only identity read. It returns no credentials, labels, personal identity or inferred bindings. */
-@@ -87,33 +86,55 @@ export const nativePoolMembership = (organization: string, pool: AppId, executor
+-/** Host-only identity read. It returns no credentials, labels, personal identity or inferred bindings. */
+-export const nativePoolMembership = (organization: string, pool: AppId, executor: Executor) =>
++const readPoolMembership = (
++  organization: string,
++  pool: AppId,
++  executor: Executor,
++  reconcile: boolean,
++) =>
+   withOrganizationAccessLock(
+     organization,
      Effect.gen(function* () {
        const sql = yield* SqlClient.SqlClient;
-       yield* reconcilePoolMembership(organization, pool);
+-      yield* reconcilePoolMembership(organization, pool);
 -      const found = yield* sql`select app.id from organization o
++      if (reconcile) yield* reconcilePoolMembership(organization, pool);
 +      const found =
 +        yield* sql`select app.id,current_database() as database,current_schema() as schema from organization o
          cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
@@ -193,7 +202,7 @@ index 3258293..3126239 100644
        const accounts = yield* Effect.forEach(linked, (row) =>
          Effect.gen(function* () {
            // Only the provisioned control token is outside Home; a model slot may also be named pool.
-@@ -137,15 +158,18 @@ export const nativePoolMembership = (organization: string, pool: AppId, executor
+@@ -137,19 +162,26 @@ export const nativePoolMembership = (organization: string, pool: AppId, executor
            };
          }),
        );
@@ -214,17 +223,26 @@ index 3258293..3126239 100644
      executor[StorageHost].transaction,
      Effect.catch(() => new StorageError()),
    );
-@@ -174,13 +198,28 @@ export const readNativePoolMembership = Effect.gen(function* () {
+ 
++/** Host-only identity read. It returns no credentials, labels, personal identity or inferred bindings. */
++export const nativePoolMembership = (organization: string, pool: AppId, executor: Executor) =>
++  readPoolMembership(organization, pool, executor, true);
++
+ export const poolMembershipReadPath = "/api/internal/pool-membership";
+ const Read = Schema.Struct({
+   pool: AppId,
+@@ -174,13 +206,29 @@ export const readNativePoolMembership = Effect.gen(function* () {
      return HttpServerResponse.empty({ status: 401 });
    const sql = yield* policyDatabase;
    const executor = yield* Effect.flatten(HostedExecutor);
 -  yield* preparePoolMembershipMirrors(executor, value.organization, value.pool).pipe(
-+  let membership = yield* nativePoolMembership(value.organization, value.pool, executor).pipe(
++  // Publishing a legacy handoff wakes another reader. Finish its mirrors before that callback.
++  let membership = yield* readPoolMembership(value.organization, value.pool, executor, false).pipe(
      Effect.provideService(SqlClient.SqlClient, sql),
    );
 -  const membership = yield* nativePoolMembership(value.organization, value.pool, executor).pipe(
 -    Effect.provideService(SqlClient.SqlClient, sql),
-+  if ("needsMirrors" in membership && membership.needsMirrors) {
++  if (!membership.native || ("needsMirrors" in membership && membership.needsMirrors)) {
 +    yield* preparePoolMembershipMirrors(executor, value.organization, value.pool).pipe(
 +      Effect.provideService(SqlClient.SqlClient, sql),
 +    );
@@ -249,3 +267,87 @@ index 3258293..3126239 100644
  }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))));
 +
 +export { bindPoolMembershipReferenceRuntime } from "./pool-membership-reference-cache.ts";
+diff --git a/e2e/tests/pool-legacy-handoff.spec.ts b/e2e/tests/pool-legacy-handoff.spec.ts
+--- a/e2e/tests/pool-legacy-handoff.spec.ts
++++ b/e2e/tests/pool-legacy-handoff.spec.ts
+@@ -1,3 +1,4 @@
++import { createHmac } from "node:crypto";
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, FileSystem, Path, Schema } from "effect";
+ import { Actors } from "../support/actors.ts";
+@@ -149,19 +150,43 @@
+           id: `synthetic-cloud-native-reference-${index + 1}`,
+           provider,
+         }));
++        const privateRead = () =>
++          Effect.gen(function* () {
++            const at = Date.now();
++            const signed = `sbq1.${Buffer.from(JSON.stringify({ pool: pool.id, organization: actors.organization.id, at, expiresAt: at + 30_000 })).toString("base64url")}`;
++            const envelope = `${signed}.${createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++              .update(signed)
++              .digest("base64url")}`;
++            return yield* api.request(actors.owner, "POST", "/api/internal/pool-membership", {
++              envelope,
++            });
++          });
+         const mirrorLocks: boolean[] = [];
++        const mirrorHandoffs: boolean[] = [];
++        let mirrorAttempts = 0;
+         const home = yield* legacyPoolHome(
+           pool.id,
+           homeAccounts,
+-          database
+-            .run({
+-              sql: "select pg_try_advisory_xact_lock(hashtextextended($1, 0)) as acquired",
+-              params: [`executor-access:${actors.organization.id}`],
+-            })
+-            .pipe(
+-              Effect.tap((rows) => Effect.sync(() => mirrorLocks.push(rows[0]?.acquired === true))),
+-              Effect.asVoid,
+-            ),
++          Effect.gen(function* () {
++            const attempt = ++mirrorAttempts;
++            const rows = yield* database.run({
++              sql: `select pg_try_advisory_xact_lock(hashtextextended($1, 0)) as acquired,
++                exists(select 1 from organization o,
++                  lateral jsonb_each(o.metadata::jsonb->'basaltPools') entry
++                  where o.id=$2 and entry.value->>'app'=$3
++                    and entry.value->>'membership'='executor-links-v1') as handed_off`,
++              params: [
++                `executor-access:${actors.organization.id}`,
++                actors.organization.id,
++                pool.id,
++              ],
++            });
++            mirrorLocks.push(rows[0]?.acquired === true);
++            mirrorHandoffs.push(rows[0]?.handed_off === true);
++            // Deliver the receiver's concurrent read while its published handoff still has a pending mirror.
++            if (attempt === 1 && rows[0]?.handed_off === true)
++              expect((yield* privateRead()).status).toBe(200);
++          }),
+         );
+         const worker = yield* poolWorkerRuntime(target.metadata.origin, home.origin);
+         expect(yield* home.members).toEqual([]);
+@@ -230,6 +255,14 @@
+             kind: "query",
+             input: {},
+           });
++        const handoff = yield* privateRead();
++        yield* evidence.json("mirror-handoff-order.json", {
++          status: handoff.status,
++          attempts: mirrorAttempts,
++          mirrorHandoffs,
++          mirrorLocks,
++        });
++        expect(handoff.status, JSON.stringify(handoff.body)).toBe(200);
+         const first = yield* read();
+         yield* evidence.json("first-legacy-pool-read.json", {
+           status: first.status,
+@@ -258,6 +291,7 @@
+         });
+         expect(yield* home.mirrors).toHaveLength(1);
+         expect(mirrorLocks).toEqual([true]);
++        expect(mirrorHandoffs).toEqual([false]);
+         const reset = yield* api.request(
+           actors.owner,
+           "GET",
