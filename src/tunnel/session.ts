@@ -18,7 +18,8 @@ export function serveTunnel(
   let stopped = false;
   let lastId = 0;
   const operations = new Map<number, TunnelOperation>();
-  const expiresAt = Math.min(access.expiresAt, Date.now() + tunnelLimits.sessionMilliseconds);
+  // Installed clients compare READY limits exactly. The grant owns the actual session deadline.
+  const expiresAt = access.expiresAt;
   const send = (frame: TunnelServerFrame) => {
     if (stopped) return;
     try {
@@ -47,7 +48,17 @@ export function serveTunnel(
     } catch {}
     finish();
   };
-  const deadline = setTimeout(() => close(1008), Math.max(0, expiresAt - Date.now()));
+  let deadline: ReturnType<typeof setTimeout>;
+  const armDeadline = () => {
+    deadline = setTimeout(
+      () => {
+        if (Date.now() >= expiresAt) close(1008);
+        else armDeadline();
+      },
+      Math.max(0, Math.min(2_147_483_647, expiresAt - Date.now())),
+    );
+  };
+  armDeadline();
   request.signal.addEventListener("abort", () => close(), { once: true });
   for (const remote of [socket, lease]) {
     remote.addEventListener("close", () => close());
