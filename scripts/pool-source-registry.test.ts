@@ -256,6 +256,21 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /Admission and management loaders remain unchanged/,
         );
+      } else if (patch.identity === "cliproxy-home-reset-aware-selection") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0522-home-reset-aware-selection.patch");
+        assert.match(patch.retirement.requires, /eligible sticky and parent sessions/);
+        assert.match(patch.retirement.requires, /account-wide weekly reset/);
+        assert.match(
+          patch.retirement.requires,
+          /model limits as eligibility gates and credits last/,
+        );
+        assert.match(patch.retirement.requires, /reversible per-pool balanced selection/);
+        assert.match(patch.retirement.requires, /retained v14 data additively/);
+        assert.match(
+          patch.retirement.requires,
+          /admission, privacy, policy and repeated-boot regressions/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&

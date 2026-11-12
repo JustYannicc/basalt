@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Eligible existing and parent sessions keep their account. New plan-funded selections prefer the earliest fresh account-wide weekly reset, with five-hour fallback only when no account weekly window exists, then least positive headroom and the existing selector. Every applicable model and account window still gates eligibility; model windows and banked resets never supply reset deadlines. Unknown resets preserve the existing ordering, credits remain last and final admission rechecks availability. Pool policy defaults to reset-aware through additive Home DB v15 while balanced remains reversible without changing accounts, memberships, quota data or credit policy. Pre-v15 portable archives remain importable through their frozen channel-group shape and receive the new policy default, while current archives preserve a saved balanced choice. Selection receipts contain only closed reasons and identifiers."
+    }
+  }
+}
