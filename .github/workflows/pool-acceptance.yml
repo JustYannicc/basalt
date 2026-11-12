@@ -1,54 +1,209 @@
-name: Pool acceptance
+name: Dependency cache load proof
 
 on:
   workflow_dispatch:
-    inputs:
-      mode:
-        description: Full includes a runner-only one-hour quiet interval and assumes otherwise quiet deployment traffic; externally deploy or crash the pool when restart observation is armed
-        required: true
-        type: choice
-        options:
-          - full
-          - restart-observation
-        default: full
-      model:
-        description: Model ID from /v1/models; required when the catalog has multiple models
-        required: false
-        type: string
-        default: ""
-      pool:
-        description: Dedicated acceptance-<run> pool containing the two test subscriptions and scoped POOL_ACCEPTANCE_KEY; required for full mode
-        required: false
-        type: string
-        default: ""
-      confirm_test_key:
-        description: Confirm POOL_ACCEPTANCE_KEY is dedicated to test use
-        required: true
-        type: boolean
-        default: false
 
 permissions:
   contents: read
 
-concurrency:
-  group: pool-acceptance-production
-  cancel-in-progress: false
-
 jobs:
-  acceptance:
-    runs-on: ubuntu-latest
-    timeout-minutes: 150
+  stress:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
-      - name: Run live pool acceptance
-        run: node scripts/pool-acceptance.ts
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.2
+      - name: Run twenty parallel repetitions with bounded owned load
         env:
-          POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
-          POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
-          POOL_ACCEPTANCE_POOL: ${{ inputs.pool }}
-          POOL_ACCEPTANCE_MODEL: ${{ inputs.model }}
-          POOL_ACCEPTANCE_MODE: ${{ inputs.mode }}
-          POOL_ACCEPTANCE_TEST_KEY_CONFIRMED: ${{ inputs.confirm_test_key }}
+          PROOF_OUTPUT: ${{ runner.temp }}/cache-tests-proof
+        run: |
+          cat > "$RUNNER_TEMP/heavy-slot" <<'SLOT'
+          #!/usr/bin/env bash
+          # heavy-slot: run one heavy command (tests, typecheck, build, install) inside a
+          # machine-wide slot, so agent threads take turns instead of each waiting for load to drop.
+          #   heavy-slot vp test run path/to/file.test.ts --maxWorkers=2
+          # Pools (each an atomic-mkdir slot dir; dead owners are reclaimed):
+          #   native: xcodebuild, gradle, `mobile-native-client`, expo run, pod install. 1 slot, they fan out on their own.
+          #   light:  formatters, single linters, du. 2 slots, so cheap checks never queue behind test runs.
+          #   heavy:  everything else. HEAVY_SLOTS (default 4).
+          # Waiters are served first-come-first-served through a ticket queue, so nobody starves.
+          # The command runs under nice 19.
+          set -euo pipefail
+          [ $# -gt 0 ] || { echo "usage: heavy-slot <command...>" >&2; exit 2; }
+          # Re-entry guard: anything started inside a slot (including docker_prune's own docker calls)
+          # runs directly. Without it, docker routed back through heavy-slot made docker_prune's
+          # `docker ps -q` re-enter heavy-slot forever and exhausted the process table (2026-11-02).
+          if [ -n "${HEAVY_SLOT_ACTIVE:-}" ]; then exec "$@"; fi
+          case "$*" in *"docker ps -q"|*"docker ps") exec "$@" ;; esac
+          export HEAVY_SLOT_ACTIVE=1
+          case "$*" in
+            *mobile-native-client*|*xcodebuild*|*gradlew*|*"expo run:"*|*"pod install"*)
+              SLOTS="${HEAVY_NATIVE_SLOTS:-1}"; DIR="$HOME/.t3/heavy-slots-native" ;;
+            *prettier*|*oxfmt*|*"vp fmt"*|*"vp lint"*|*oxlint*|*"du -sh"*|*biome*)
+              SLOTS="${HEAVY_LIGHT_SLOTS:-2}"; DIR="$HOME/.t3/heavy-slots-light" ;;
+            *)
+              SLOTS="${HEAVY_SLOTS:-4}"; DIR="$HOME/.t3/heavy-slots" ;;
+          esac
+          QUEUE="$DIR/queue"
+          mkdir -p "$DIR" "$QUEUE"
+          # Machine-wide pause (disk or load emergency): new commands wait while this file exists.
+          PAUSE="$HOME/.t3/heavy-slots-paused"
+          paused=0
+          while [ -e "$PAUSE" ]; do
+            [ $((paused % 60)) -eq 0 ] && echo "heavy-slot: paused machine-wide ($(head -1 "$PAUSE" 2>/dev/null)), waiting (${paused}s)" >&2
+            sleep 5; paused=$((paused + 5))
+          done
+          ticket="$QUEUE/$(date +%s%N 2>/dev/null || date +%s)000-$$"
+          : > "$ticket"
+          held=""
+          # Docker leftovers filled the disk repeatedly, so a docker job prunes on exit, but only
+          # under disk pressure (<80 GB free) and when no container or other docker slot job is live.
+          CMD="$*"
+          docker_prune() {
+            case "$CMD" in *docker*) ;; *) return 0 ;; esac
+            local before after
+            before=$(df -k / | awk 'NR==2{print $4*1024}')
+            [ "$before" -lt 85899345920 ] || return 0
+            [ -z "$(docker ps -q 2>/dev/null)" ] || return 0
+            grep -qs docker "$HOME"/.t3/heavy-slots*/slot-*/cmd && return 0
+            # Only items older than 2h, so a build followed by a separate run keeps its fresh image.
+            docker builder prune -af --filter until=2h >/dev/null 2>&1
+            docker image prune -af --filter until=2h >/dev/null 2>&1
+            docker volume prune -f >/dev/null 2>&1
+            after=$(df -k / | awk 'NR==2{print $4*1024}')
+            echo "$(date -u +%FT%TZ) freed=$((after - before)) free=$after cmd=$CMD" >> "$HOME/.t3/heavy-slot-docker-prune.log"
+          }
+          release() {
+            rm -f "$ticket"; [ -n "$held" ] && rm -rf "$held"
+            ( set +e; HEAVY_SLOT_ACTIVE=1 docker_prune ) || true
+          }
+          # A signal must end the wrapper: a trap that only released would leave the wait loop
+          # spinning with no ticket, hanging the caller forever.
+          trap release EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          waited=0
+          while :; do
+            # Drop tickets whose owner died.
+            for t in "$QUEUE"/*; do
+              [ -e "$t" ] || continue
+              p="${t##*-}"
+              kill -0 "$p" 2>/dev/null || rm -f "$t"
+            done
+            free=0
+            for i in $(seq 1 "$SLOTS"); do
+              s="$DIR/slot-$i"
+              if [ -d "$s" ]; then
+                p=$(cat "$s/pid" 2>/dev/null || true)
+                if [ -n "$p" ] && ! kill -0 "$p" 2>/dev/null; then rm -rf "$s"; free=$((free + 1)); fi
+              else
+                free=$((free + 1))
+              fi
+            done
+            # Only the oldest `free` tickets may grab a slot.
+            pos=$(ls "$QUEUE" | sort | grep -n "^$(basename "$ticket")\$" | cut -d: -f1 || echo 999)
+            if [ "${pos:-999}" -le "$free" ]; then
+              for i in $(seq 1 "$SLOTS"); do
+                s="$DIR/slot-$i"
+                if mkdir "$s" 2>/dev/null; then
+                  echo "$$" > "$s/pid"; pwd > "$s/cwd"; printf '%s\n' "$*" > "$s/cmd"
+                  held="$s"; rm -f "$ticket"; break 2
+                fi
+              done
+            fi
+            [ $((waited % 60)) -eq 0 ] && echo "heavy-slot: $(basename "$DIR") busy, queue position ${pos:-?}, waiting (${waited}s)" >&2
+            sleep 3; waited=$((waited + 3))
+          done
+          echo "heavy-slot: got $(basename "$DIR")/$(basename "$held") after ${waited}s" >&2
+          nice -n 19 "$@"
+          SLOT
+          chmod +x "$RUNNER_TEMP/heavy-slot"
+          cat > "$RUNNER_TEMP/stress.py" <<'PYTHON'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import time
+          
+          root = Path.cwd()
+          evidence = Path(os.environ["PROOF_OUTPUT"])
+          evidence.mkdir(exist_ok=True)
+          node = subprocess.check_output(['which', 'node'], text=True).strip()
+          started = time.time()
+          deadline = time.monotonic() + 300
+          loads = []
+          runs = []
+          logs = []
+          receipt = {'head': subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(), 'blockSeconds': 300, 'startedAt': started, 'iterations': 20, 'parallel': 20, 'files': ['scripts/upstream-cache.test.ts', 'scripts/upstream-pending-attempts.test.ts', 'scripts/upstream-process-ownership.test.ts'], 'loads': [], 'runs': []}
+          try:
+              for index in range(1):
+                  code = """let rounds=0, checksum=0; console.log('ready'); function work(){for(let i=0;i<2000000;i++)checksum=Math.sqrt(i+checksum); rounds++;setImmediate(work)} setTimeout(()=>process.kill(process.pid,'SIGTERM'),300000); process.on('SIGTERM',()=>{console.log(JSON.stringify({rounds,checksum}));process.exit(0)});work();"""
+                  child = subprocess.Popen([node, '-e', code], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                  loads.append(child)
+                  assert child.stdout.readline().strip() == 'ready'
+                  receipt['loads'].append({'kind': 'CPU', 'pid': child.pid})
+              io_code = """import json,os,signal,sys,time
+          running=True
+          cycles=0
+          def stop(*args):
+           global running
+           running=False
+          signal.signal(signal.SIGTERM,stop)
+          payload=b'x'*(1024*1024)
+          with open(sys.argv[1],'wb') as f:
+           f.write(payload);f.flush();os.fsync(f.fileno())
+           print('ready',flush=True)
+           deadline=time.monotonic()+300
+           while running and time.monotonic()<deadline:
+            f.seek(0);f.write(payload);f.flush();os.fsync(f.fileno());cycles+=1;time.sleep(.05)
+          print(json.dumps({'cycles':cycles,'bytesWritten':(cycles+1)*len(payload)}),flush=True)
+          """
+              child = subprocess.Popen([sys.executable, '-c', io_code, str(evidence/'io-payload')], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+              loads.append(child)
+              assert child.stdout.readline().strip() == 'ready'
+              receipt['loads'].append({'kind': 'IO', 'pid': child.pid})
+              for index in range(20):
+                  log = (evidence/f'run-{index+1:02d}.log').open('w')
+                  logs.append(log)
+                  child = subprocess.Popen([node, '--test', *receipt['files']], cwd=root, stdout=log, stderr=subprocess.STDOUT)
+                  runs.append(child)
+                  receipt['runs'].append({'iteration': index+1, 'pid': child.pid, 'log': str(evidence/f'run-{index+1:02d}.log')})
+              (evidence/'running.json').write_text(json.dumps(receipt,indent=2)+'\n')
+              for child, record in zip(runs, receipt['runs']):
+                  record['exit'] = child.wait(timeout=max(1, deadline-time.monotonic()))
+          finally:
+              for child in runs:
+                  if child.poll() is None:
+                      child.terminate()
+                      child.wait()
+              for child, record in zip(loads, receipt['loads']):
+                  child.terminate()
+                  out, err = child.communicate(timeout=15)
+                  record.update(exit=child.returncode, result=out.strip(), stderr=err.strip(), stoppedByPid=child.pid)
+              for log in logs:
+                  log.close()
+              (evidence/'io-payload').unlink(missing_ok=True)
+              receipt.update(elapsedSeconds=time.time()-started, failures=sum(record.get('exit') != 0 for record in receipt['runs']))
+              (evidence/'result.json').write_text(json.dumps(receipt,indent=2)+'\n')
+          print(json.dumps(receipt,indent=2))
+          assert all(record['exit'] == 0 and not record['stderr'] for record in receipt['loads'])
+          assert len(receipt['runs']) == 20 and receipt['failures'] == 0
+          assert all(record['exit'] == 0 and not record['stderr'] for record in receipt['loads'])
+          PYTHON
+          HEAVY_SLOTS=6 "$RUNNER_TEMP/heavy-slot" python3 "$RUNNER_TEMP/stress.py"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cache-tests-${{ matrix.os }}
+          path: ${{ runner.temp }}/cache-tests-proof
+          if-no-files-found: error
