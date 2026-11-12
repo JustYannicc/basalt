@@ -17,7 +17,9 @@ export async function handleOwnerUsageImport(
     const bytes = await readBody(request, 3 * maximumImportBytes + 256_000);
     if (bytes === undefined)
       return fail(413, "invalid_query", "Import a smaller usage export page.");
-    const body: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    const body: unknown = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes),
+    );
     const payload =
       object(body) && typeof body.envelope === "string"
         ? await openEnvelope(access.signingKey, "sbs1", body.envelope, access.previousSigningKey)
