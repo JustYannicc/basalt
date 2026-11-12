@@ -11,6 +11,7 @@ import {
   historyBaseSchemaVersion,
   historySchemaStatements,
   historyAppSchemaVersion,
+  historyAccountTimeSchemaVersion,
   historySchemaVersion,
   migrateModelHistory,
   type HistoryDatabase,
@@ -66,7 +67,12 @@ test("app attribution upgrades additively and new Home attempts retain app perso
       (await db.query("SELECT name FROM basalt_model_history_migrations ORDER BY name")).rows.map(
         (row) => row.name,
       ),
-      [historyBaseSchemaVersion, historyAppSchemaVersion, historySchemaVersion],
+      [
+        historyBaseSchemaVersion,
+        historyAppSchemaVersion,
+        historyAccountTimeSchemaVersion,
+        historySchemaVersion,
+      ],
     );
     assert.deepEqual(
       (await readRequests(db, query)).records[0],
