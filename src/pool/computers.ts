@@ -248,13 +248,13 @@ export class Computers {
     return this.run((registry) => this.listLocked(registry, user));
   }
   /** Reconcile only pending computers against Home's successful, exact-key usage records. */
-  async observeUsage(keyId?: number): Promise<void> {
+  async observeUsage(keyId?: number, scheduled = false): Promise<void> {
     await this.run(async (registry) => {
       const events = await observePendingUsage(
         registry,
         (pool, keyId, since) => this.deps.home.observed(pool, keyId, since),
         () => this.now(),
-        { keyId },
+        { keyId, scheduled },
       );
       await this.save(registry);
       this.emitUsageEvents(events);

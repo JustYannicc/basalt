@@ -29,7 +29,7 @@ export async function observePendingUsage(
   registry: Record<string, UsageObservationComputer>,
   observed: (pool: string, keyId: number, since: string) => Promise<string | null>,
   now: () => number,
-  filter: { user?: string; pool?: string; keyId?: number } = {},
+  filter: { user?: string; pool?: string; keyId?: number; scheduled?: boolean } = {},
 ): Promise<UsageObservationEvent[]> {
   const computers = Object.values(registry);
   let checkedAt = computers.reduce(
@@ -45,7 +45,8 @@ export async function observePendingUsage(
         (filter.user === undefined || computer.user === filter.user) &&
         (filter.pool === undefined || computer.pool === filter.pool) &&
         (filter.keyId === undefined
-          ? computer.modelObservationRetryAt === undefined ||
+          ? filter.scheduled ||
+            computer.modelObservationRetryAt === undefined ||
             now() >= computer.modelObservationRetryAt
           : computer.keyId === filter.keyId),
     )

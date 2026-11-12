@@ -150,10 +150,11 @@ export async function insertRequests(
 ): Promise<number> {
   const existing = await existingRequests(db, records, preserveOriginalAttribution, strictContent);
   const missing = records.filter((row) => !existing.has(row.id));
-  if (!missing.length) return 0;
+  if (!records.length) return 0;
   const appAttribution = await appAttributionReady(db);
   if (!appAttribution && records.some((row) => row.appId != null || row.requirement != null))
     throw new Error("App model attribution migration is not ready");
+  if (!missing.length) return 0;
   const selected = columns + (appAttribution ? ", app_id, requirement" : "");
   const types =
     typedColumns + (appAttribution ? ", app_id varchar(256), requirement varchar(64)" : "");

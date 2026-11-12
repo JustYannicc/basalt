@@ -578,3 +578,18 @@ test("failed mint remains recoverable by the Home display tag before tools acces
   assert.deepEqual(f.home.revoked, [91]);
   assert.deepEqual(await revoked.json(), { toolsKeyId });
 });
+
+test("scheduled observation does not wait an extra period behind a newer list cache", async () => {
+  const f = await fixture();
+  const { value: issued } = await f.create();
+  assert.equal((await claim(f, issued.token)).status, 200);
+  f.home.observedResult = null;
+  f.advance(60_000);
+  await f.computers.list(owner);
+  assert.equal(f.home.observations.length, 1);
+  f.advance(4 * 60_000);
+  f.home.observedResult = modelObservedAt;
+  await f.computers.observeUsage(undefined, true);
+  assert.equal(f.home.observations.length, 2);
+  assert.deepEqual(f.productEvents, [["first_model_request", owner]]);
+});

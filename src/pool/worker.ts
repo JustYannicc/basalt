@@ -412,7 +412,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await this.memberships.tick();
     await this.computers.expire();
     await this.handoff.warm(() => this.lifecycle.then((lifecycle) => lifecycle.warm()));
-    await reportWhenDue(this.ctx.storage, "first-request", () => this.computers.observeUsage());
+    await reportWhenDue(this.ctx.storage, "first-request", () =>
+      this.computers.observeUsage(undefined, true),
+    );
     await this.control.expire();
     await this.prices.run();
     await this.overviewPrices.refresh();

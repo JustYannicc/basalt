@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
-import { test } from "node:test";
+import { after, test } from "node:test";
 
 const hooks = registerHooks({
   resolve(specifier, context, next) {
@@ -11,7 +11,7 @@ const hooks = registerHooks({
       };
     if (specifier === "pg")
       return {
-        url: "data:text/javascript,export default { Client: class { on() {} async connect() {} async query() { return { rows: [{ active: false }] }; } async end() {} } }",
+        url: "data:text/javascript,export default { Client: class { on() {} async connect() {} async query(text, values) { return { rows: text.includes('SELECT k.id') ? [{ id: String(values[0]).endsWith('74') ? 74 : 73, channels: [], username: null }] : [{ active: false }] }; } async end() {} } }",
         shortCircuit: true,
       };
     return next(specifier, context);
@@ -30,7 +30,7 @@ const {
     fetch(request: Request): Promise<Response>;
   };
 } = await import(workerModule);
-hooks.deregister();
+after(() => hooks.deregister());
 
 test("model responses reconcile successful Home usage without listing; alarm retries delayed usage", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-12T12:00:00Z") });
@@ -159,6 +159,7 @@ test("model responses reconcile successful Home usage without listing; alarm ret
     },
     POOL_DATABASE_URL: "postgres://fixture:fixture@database.invalid/fixture",
     POOL_MANAGEMENT_KEY: "fixture-management-key",
+    POOL_AUTH_DATABASE: { connectionString: "postgres://fixture" },
     POOL_APP_SIGNING_KEY: signingKey,
     POOL_IMAGE_HASH: "fixture-image",
     POSTHOG_PROJECT_KEY: "fixture-posthog-key",
@@ -186,19 +187,21 @@ test("model responses reconcile successful Home usage without listing; alarm ret
     worker.fetch(
       new Request(`https://pool.example${path}`, {
         method,
-        headers: { Authorization: "Bearer private-model-request-key" },
+        headers: {
+          Authorization: `Bearer private-model-request-key-${path === "/messages" ? 74 : 73}`,
+        },
         ...(method === "POST" ? { body: requestBody } : {}),
       }),
     );
+  await worker.alarm();
+  assert.deepEqual(homeReads, [73, 74, 75]);
   assert.equal((await modelRequest("/v1/responses")).status, 200);
   await drain();
   assert.deepEqual(
     trackedEvents().map((event) => [event.event, event.distinct_id]),
     [["first_model_request", "response-owner"]],
   );
-  assert.equal(homeReads.includes(73), true);
-  assert.equal(homeReads.includes(74), true);
-  assert.equal(homeReads.includes(75), true);
+  assert.deepEqual(homeReads, [73, 74, 75, 73], "legacy success bypasses only its exact key cache");
 
   const readsBeforeFailure = homeReads.length;
   assert.equal((await modelRequest("/chat/completions")).status, 502);
@@ -210,6 +213,7 @@ test("model responses reconcile successful Home usage without listing; alarm ret
   assert.equal((await modelRequest("/messages")).status, 200);
   await drain();
   assert.equal(trackedEvents().length, 1);
+  assert.deepEqual(homeReads, [73, 74, 75, 73, 74]);
   homeUsage.add(74); // Home persists the streamed success after the response headers.
   await worker.alarm();
   assert.equal(trackedEvents().length, 1, "negative observations wait for their own deadline");

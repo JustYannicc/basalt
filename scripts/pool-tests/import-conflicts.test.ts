@@ -50,6 +50,10 @@ test("external import rejects changed retained contents and conflicting duplicat
     assert.equal(await insertRequests(adapter, [row], false, true), 1);
     assert.equal(await insertRequests(adapter, [row], false, true), 0);
     assert.equal(inserts, 1, "a retained batch never reissues INSERT");
+    await assert.rejects(
+      insertRequests(adapter, [{ ...row, appId: "fixture-app" }]),
+      /App model attribution migration is not ready/,
+    );
     for (const changed of [
       { inputTokens: "101" },
       { timestamp: "2026-05-05T11:32:18.619000002Z" },
