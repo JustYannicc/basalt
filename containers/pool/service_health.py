@@ -6,6 +6,8 @@ import threading
 import time
 from collections.abc import Callable
 
+from .pool_contract import check_liveness, check_services
+
 
 class ServiceHealth:
     AUDIT_INTERVAL = 60
@@ -15,8 +17,8 @@ class ServiceHealth:
         self,
         key: str,
         node_id: str,
-        full_check: Callable[[str, str], bool],
-        fast_check: Callable[[str], bool],
+        full_check: Callable[[str, str], bool] | None = None,
+        fast_check: Callable[[str], bool] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         # Construction follows the generation's successful startup contract.
@@ -44,7 +46,11 @@ class ServiceHealth:
         with self._lock:
             if self._audit_error is not None:
                 raise self._audit_error
-        fast_ok = self._fast_check(self._key)
+        fast_ok = (
+            self._fast_check(self._key)
+            if self._fast_check is not None
+            else check_liveness(self._key)
+        )
         audit_epoch: int | None = None
         with self._lock:
             now = self._clock()
@@ -73,7 +79,11 @@ class ServiceHealth:
     def _audit(self, epoch: int, deadline: float) -> None:
         error = None
         try:
-            healthy = self._full_check(self._key, self._node_id)
+            healthy = (
+                self._full_check(self._key, self._node_id)
+                if self._full_check is not None
+                else check_services(self._key, self._node_id)
+            )
         except Exception as audit_error:
             healthy = False
             error = audit_error

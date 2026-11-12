@@ -16,7 +16,7 @@ class ServiceHealthTests(unittest.TestCase):
         self.clock = Clock()
         self.full = Mock(return_value=True)
         self.fast = Mock(return_value=True)
-        self.health = ServiceHealth("fixture", "node", self.full, self.fast, self.clock)
+        self.health = ServiceHealth("fixture", "node", clock=self.clock)
         self.pending: list[Callable[[], None]] = []
 
         def thread(*, target, args, daemon):
@@ -25,6 +25,10 @@ class ServiceHealthTests(unittest.TestCase):
         self.thread_patch = patch.object(service_health.threading, "Thread", thread)
 
     def setUp(self) -> None:
+        for name, value in [("check_services", self.full), ("check_liveness", self.fast)]:
+            probe = patch.object(service_health, name, value)
+            probe.start()
+            self.addCleanup(probe.stop)
         self.thread_patch.start()
         self.addCleanup(self.thread_patch.stop)
 

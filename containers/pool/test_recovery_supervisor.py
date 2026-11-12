@@ -136,7 +136,7 @@ class SupervisorTests(unittest.TestCase):
             if invalidate_startup_audit:
                 ready_instances[0].invalidate_policy()
                 ready_instances[0].refresh_policy_lease("b" * 32)
-            return service_health(*args)
+            return service_health(*args, health, health)
 
         def advance_phase(phase):
             if sum(child.name == "home" for child in launched) > 1:
@@ -187,7 +187,6 @@ class SupervisorTests(unittest.TestCase):
                 "apply_pool_config": lambda *_: advance_phase("config"),
                 "create_node_jwt": enroll,
                 "check_services": health,
-                "check_liveness": health,
                 "ServiceHealth": make_service_health,
                 "PolicyHealthMonitor": Mock(
                     return_value=SimpleNamespace(run=lambda _: None)

@@ -30,7 +30,6 @@ from .pool_contract import (
     atomic_write,
     boolean_env,
     bootstrap_yaml,
-    check_liveness,
     check_services,
     child_environment,
     cluster_yaml,
@@ -379,7 +378,7 @@ def main(stop: threading.Event | None = None) -> int:
             return node_id, successful_audit_revision
 
         node_id, audit_revision = launch_generation()
-        health = ServiceHealth(management_key, node_id, check_services, check_liveness)
+        health = ServiceHealth(management_key, node_id)
         recovery = HomeRecovery()
         category = FailureCategory.RUNTIME
         while not stop.wait(2):
@@ -410,9 +409,7 @@ def main(stop: threading.Event | None = None) -> int:
                                 readiness.begin_recovery()
                                 continue
                             episode.recovered()
-                            health = ServiceHealth(
-                                management_key, node_id, check_services, check_liveness
-                            )
+                            health = ServiceHealth(management_key, node_id)
                             break
                     except BaseException:
                         # Retain the absolute episode deadline through terminal cleanup.
