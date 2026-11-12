@@ -29,7 +29,9 @@ On your phone, download **Signalbox-android.apk** and open it.
 1. Android asks whether your browser may install apps. Tap **Settings**, turn on **Allow from this source**, then go back.
 2. Tap **Install**. If Play Protect warns that it doesn't recognize the app, tap **More details → Install anyway**.
 
-Later versions install over this one and keep your sign-in.
+Signalbox updates itself: new versions download in the app; tap **Install** on its home screen and confirm. The first time, Android asks you to allow installs from Signalbox: tap **Settings**, turn on **Allow from this source**, then go back. Updates keep your sign-in.
+
+If your copy doesn't offer updates, it's from before in-app updates: install this one once by hand, as above.
 
 ## iPhone and iPad
 

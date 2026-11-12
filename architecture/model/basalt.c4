@@ -231,11 +231,12 @@ model {
 
     clientMobile = module "Phone client" {
       #basalt #deep
-      description "Phone sign-in uses browser approval and stores its grant in device-only secure storage. The shared connection adapter streams models and calls cloud tools through the native tunnel. Tool approval and input continue the original request. Backgrounding interrupts active work; returning checks device access. The phone runs no local server or agent process."
+      description "Phone sign-in uses browser approval and stores its grant in device-only secure storage. The shared connection adapter streams models and calls cloud tools through the native tunnel. Tool approval and input continue the original request. Backgrounding interrupts active work; returning checks device access. The Android release app offers newer signed releases in-app from a manifest each release publishes, and the user confirms every install. The phone runs no local server or agent process."
       metadata {
         code "clients/mobile"
-        libraries "expo|expo-constants|expo-crypto|expo-dev-client|expo-network|expo-secure-store|expo-system-ui|expo-web-browser|react|react-native|react-native-safe-area-context|effect|node:path"
+        libraries "expo|expo-application|expo-constants|expo-crypto|expo-dev-client|expo-file-system|expo-intent-launcher|expo-network|expo-secure-store|expo-system-ui|expo-web-browser|react|react-native|react-native-safe-area-context|effect|node:path"
         endpointHosts "127.0.0.1|localhost"
+        bindings "globalThis=releaseSource"
       }
     }
 

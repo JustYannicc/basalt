@@ -1,0 +1,16 @@
+model {
+  extend basalt.clientMobile {
+    metadata {
+      constraint "Only Android release builds update themselves; development builds carry other identifiers and would install the release beside themselves. The app reads the newest release's update manifest on launch, on return at most every six hours and on demand. It accepts a manifest only over https, with a version code that matches its version, and an APK on the manifest's own host under that version's release, or in a test feed's own folder. It offers a version only when its version code is higher than the installed one. The download must match the manifest's size and SHA-256 before Install appears, and a mismatch is deleted. Android's installer then checks the release signature and asks the user to confirm. Background checks fail quietly and try again later; only a check the user started shows its failure."
+    }
+  }
+  extend basalt.build {
+    metadata {
+      constraint "Each clients release publishes an Android update manifest with its version, version code, APK address, size and SHA-256. Assembly refuses an APK whose package, version code or version name differs from the release. A build-only update feed moves the manifest and the APK it names into the feed's folder, and publishing refuses any manifest that doesn't name the release's own APK, so a test build can't be published."
+    }
+  }
+}
+
+model {
+  basalt.clientMobile -[sync]-> releaseSource "read the newest release's update manifest and APK"
+}
