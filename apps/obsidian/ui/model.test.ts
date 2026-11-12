@@ -123,3 +123,21 @@ test("in-page links round-trip vault paths, including spaces and unicode", () =>
   assert.equal(linkTarget("https://example.com"), null);
   assert.equal(linkTarget("#note=%E0%A4%A"), null);
 });
+
+test("a vault with no commits yet is never up to date, whatever its devices hold", () => {
+  const latest: Version = { ...oldPluginVersion, time: "2026-11-12T09:50:00Z" };
+  assert.equal(
+    vaultState({
+      status: complete,
+      hasFiles: true,
+      latest,
+      devices: {
+        head: null,
+        lastChangeAt: null,
+        devices: [{ agent: "g0", lastSyncAt: "2026-11-12T09:55:00Z", lastHead: "h1" }],
+      },
+      now,
+    }).kind,
+    "saved",
+  );
+});

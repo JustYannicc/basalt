@@ -5,7 +5,7 @@ import type { attachmentTools } from "../attachments.ts";
 import type { importTools } from "../imports.ts";
 
 const client = createAppClient();
-// The tools return their drive results unchanged; the page reads them as the tools declare.
+// The tools return their drive results unchanged; the page reads them as the drive types them.
 const run = <I, O>(reference: OperationReference<I, O, "query">, input: NoInfer<I>): Promise<O> =>
   client.query(reference, input, json() as unknown as Schema<O, boolean>);
 

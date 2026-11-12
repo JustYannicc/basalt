@@ -166,3 +166,21 @@ test("a single-app connection is a device only when scoped to sync tools and run
     ["g-plugin"],
   );
 });
+
+test("a device's sync against a vault with no head yet is never current", () => {
+  const [mac] = obsidianDevices(
+    vault,
+    [connection("mac", vault)],
+    [agent("g-mac", through("mac"), "2026-11-10T08:00:00.000Z")],
+  );
+  assert.deepEqual(
+    deviceSync(
+      {
+        head: null,
+        devices: [{ agent: "g-mac", lastSyncAt: "2026-11-12T09:59:00.000Z", lastHead: "h1" }],
+      },
+      mac!,
+    ),
+    { at: "2026-11-12T09:59:00.000Z", current: false },
+  );
+});
