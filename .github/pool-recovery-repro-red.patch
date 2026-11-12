@@ -1,0 +1,43 @@
+diff --git a/e2e/tests/pool-account-recovery.spec.ts b/e2e/tests/pool-account-recovery.spec.ts
+--- a/e2e/tests/pool-account-recovery.spec.ts
++++ b/e2e/tests/pool-account-recovery.spec.ts
+@@ -183,24 +183,23 @@
+             yield* record({ app: app.id });
+             yield* noRecovery;
+             yield* record({ app: app.id, version: app.activeVersion });
+-            yield* mutateIdentity([
+-              {
+-                sql: `update member set role = 'admin' where "organizationId" = $1 and "userId" = $2`,
+-                params: [actors.organization.id, owner],
+-              },
+-            ]);
++            yield* rows(
++              `update member set role = 'admin' where "organizationId" = $1 and "userId" = $2`,
++              [actors.organization.id, owner],
++            );
++            yield* rows(
++              `update hosted_provisioning set available_at = now() + interval '1 day'
++            where organization_id = $1 and user_id = $2 and kind = 'member' and status = 'queued'`,
++              [actors.organization.id, owner],
++            );
+             yield* noRecovery;
+-            yield* mutateIdentity([
+-              {
+-                sql: `update member set role = 'owner' where "organizationId" = $1 and "userId" = $2`,
+-                params: [actors.organization.id, owner],
+-              },
+-              { sql: `update "user" set "emailVerified" = false where id = $1`, params: [owner] },
+-            ]);
++            yield* rows(
++              `update member set role = 'owner' where "organizationId" = $1 and "userId" = $2`,
++              [actors.organization.id, owner],
++            );
++            yield* rows(`update "user" set "emailVerified" = false where id = $1`, [owner]);
+             yield* noRecovery;
+-            yield* mutateIdentity([
+-              { sql: `update "user" set "emailVerified" = true where id = $1`, params: [owner] },
+-            ]);
++            yield* rows(`update "user" set "emailVerified" = true where id = $1`, [owner]);
+           }),
+         );
+         // The app's second version models an owner-edited pool. Repair must keep that source.

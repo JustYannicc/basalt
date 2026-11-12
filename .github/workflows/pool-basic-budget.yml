@@ -2,6 +2,10 @@ name: Pool basic native budget
 on:
   workflow_dispatch:
     inputs:
+      fixture_proof:
+        description: Run only the isolated recovery fixture proof
+        type: boolean
+        default: false
       baseline:
         description: Baseline full commit
         default: 55eca77395e2fd411481013339c14a9d87cd9b09
@@ -18,6 +22,7 @@ permissions:
   contents: read
 jobs:
   budget:
+    if: github.event_name != 'workflow_dispatch' || inputs.fixture_proof != true
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -98,3 +103,43 @@ jobs:
           name: pool-basic-${{ matrix.version }}
           path: ${{ runner.temp }}/pool-budget/summary.json
           if-no-files-found: error
+
+  recovery-fixture-proof:
+    if: github.event_name == 'workflow_dispatch' && inputs.fixture_proof == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        case: [red, affected, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    env:
+      BASALT_CI_OMIT_RELEASE_DOWNLOADS: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.2
+      - run: npm run prepare:upstream
+      - run: bun run --cwd .upstream e2e:prepare
+      - uses: ./.github/actions/setup-browser
+      - name: Prove the isolated fixture with the real queue
+        env:
+          PROOF_CASE: ${{ matrix.case }}
+        run: node .github/pool-recovery-proof.mjs
+      - name: Retain bounded fixture proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pool-recovery-fixture-${{ matrix.case }}
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            proof-result.json
+            .generated/e2e-evidence/**/results.json
+            .generated/e2e-evidence/**/pool-recovery-*.json
+            .generated/e2e-evidence/**/initial-provisioning.json
+            .generated/e2e-evidence/**/requests.json
