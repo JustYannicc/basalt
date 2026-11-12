@@ -8,7 +8,12 @@ desktop="$(dirname "$here")"
 root="$(cd "$desktop/../.." && pwd)"
 out="$desktop/dist-packages"
 work="${RUNNER_TEMP:-$(mktemp -d)}/signalbox-mac"
-fail() { echo "::error::$1" >&2; exit 1; }
+# A refusal names itself in the job's error line and, on Actions, in the step summary too.
+fail() {
+  echo "::error::$1" >&2
+  [ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "$1" >> "$GITHUB_STEP_SUMMARY"
+  exit 1
+}
 for file in host.mjs connection.mjs; do
   [ -f "$desktop/.dist/$file" ] || fail "clients/desktop/.dist/$file is missing. Run bun run --cwd clients/desktop build first."
 done
