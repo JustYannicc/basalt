@@ -1169,13 +1169,6 @@ test(
           await session(
             async ({ page, frame, settled }) => {
               release();
-              // Tap positions below are laid out for 48 hours of readings in a 7-day range.
-              await frame.getByRole("radio", { name: "7 days", exact: true }).click();
-              await frame
-                .locator("#capacity")
-                .getByText(/last 7 days/)
-                .first()
-                .waitFor();
               const chart = frame.getByRole("group", { name: /^Codex weekly capacity\./ });
               await chart.waitFor();
               await settled();
@@ -1471,20 +1464,16 @@ test(
             const chart = frame.getByRole("group", { name: /^Codex weekly capacity\./ });
             await chart.waitFor();
             await settled();
-            // The overview opens on 30 days, and its first reads ask for 30 days.
             const range = frame.getByRole("radiogroup", { name: "Range" });
-            await range.getByRole("radio", { name: "30 days", checked: true }).waitFor();
+            await range.getByRole("radio", { name: "7 days", checked: true }).waitFor();
             assert.ok(capacityDays.length > 0 && usageSpans.length > 0);
-            assert.deepEqual([...new Set(capacityDays)], [30], "Initial capacity reads ask for 30");
+            assert.deepEqual(
+              [...new Set(capacityDays)],
+              [7],
+              "Initial capacity reads explicitly ask for 7",
+            );
             for (const span of usageSpans)
-              assert.ok(span >= 30 * day && span < 30 * day + hour, `Usage spans ${span} ms`);
-            await range.getByRole("radio", { name: "7 days", exact: true }).click();
-            await frame
-              .locator("#capacity")
-              .getByText(/last 7 days/)
-              .first()
-              .waitFor();
-            await settled();
+              assert.ok(span >= 7 * day && span < 7 * day + hour, `Usage spans ${span} ms`);
             assert.doesNotMatch(
               await chart.innerText(),
               /Readings since/,
@@ -1719,7 +1708,7 @@ test(
               accounts[0].windows.some((window) => window.windowSeconds === 18_000),
               expired,
             );
-            viewResult = { ok: true, value: { ...f.view, providers, accounts } };
+            viewResult = { ok: true, value: { ...f.view, accounts } };
             await session(
               async ({ page, frame, settled }) => {
                 release();
@@ -2000,8 +1989,7 @@ test(
       await t.test(`the sampled full quota reaches the capacity chart at ${width}px`, async () => {
         const f = quotaSamplingFixture(Date.now() - minute, samplerUsage);
         await f.usage.observe();
-        // The helper names providers by id; the real view carries display names.
-        viewResult = { ok: true, value: { ...f.view, providers } };
+        viewResult = { ok: true, value: f.view };
         await session(
           async ({ page, frame, settled }) => {
             release();
@@ -2128,7 +2116,7 @@ test(
             assert.equal(await who.getByText("Synthetic model", { exact: true }).isVisible(), true);
             if (width === 390) {
               // Phones keep the mock's columns; the range total above the table carries tokens.
-              assert.match(await who.innerText(), /128 tokens · 1 request in 30 days/);
+              assert.match(await who.innerText(), /128 tokens · 1 request in 7 days/);
             } else {
               assert.equal(
                 await who.locator('table [title="128 tokens"]').first().isVisible(),
@@ -2264,7 +2252,7 @@ test(
               usageResult = emptyUsage;
               await who.getByRole("button", { name: "Try again", exact: true }).click();
               await who
-                .getByText("No requests through this pool in the last 30 days.", { exact: true })
+                .getByText("No requests through this pool in the last 7 days.", { exact: true })
                 .waitFor();
               assert.equal(
                 await who
@@ -2326,7 +2314,7 @@ test(
               assert.equal(
                 await who
                   .getByText(
-                    "Your requests through this pool in the last 30 days. Nobody else's show here.",
+                    "Your requests through this pool in the last 7 days. Nobody else's show here.",
                     { exact: true },
                   )
                   .isVisible(),
@@ -2414,7 +2402,7 @@ test(
               assert.equal(
                 await who
                   .getByText(
-                    "Your requests through this pool in the last 30 days. Nobody else's show here.",
+                    "Your requests through this pool in the last 7 days. Nobody else's show here.",
                     { exact: true },
                   )
                   .isVisible(),
@@ -2482,12 +2470,11 @@ test(
               .waitFor();
             const enough = frame.getByRole("link", { name: /Enough accounts\?/ });
             assert.match(await enough.textContent(), /Reading/);
-            // The default range is 30 days; switching to 7 leaves 30-day reads in flight.
-            await frame.getByRole("radio", { name: "7 days", exact: true }).click();
-            await who.getByText(/1 request in 7 days/).waitFor();
-            const old = heldCapacity.filter((entry) => entry.input.days === 30);
+            await frame.getByRole("radio", { name: "30 days", exact: true }).click();
+            await who.getByText(/1 request in 30 days/).waitFor();
+            const old = heldCapacity.filter((entry) => entry.input.days === 7);
             assert.ok(old.length > 0, "The previous range has real capacity reads in flight");
-            heldCapacity = heldCapacity.filter((entry) => entry.input.days !== 30);
+            heldCapacity = heldCapacity.filter((entry) => entry.input.days !== 7);
             for (const entry of old)
               entry.response.end(JSON.stringify(capacityFixture(entry.input)));
             await settled();
@@ -2528,7 +2515,7 @@ test(
             );
             usageResult = usage;
             await who.getByRole("button", { name: "Try again", exact: true }).click();
-            await who.getByText(/1 request in 7 days/).waitFor();
+            await who.getByText(/1 request in 30 days/).waitFor();
             member = true;
             holdPersonal = true;
             await clock.runFor(5 * 60_000 + 50);
@@ -2551,7 +2538,7 @@ test(
             for (const entry of heldPersonal.splice(0)) entry.response.end(entry.reply);
             await who
               .getByText(
-                "Your requests through this pool in the last 7 days. Nobody else's show here.",
+                "Your requests through this pool in the last 30 days. Nobody else's show here.",
                 { exact: true },
               )
               .waitFor();
@@ -2841,7 +2828,7 @@ test(
           await session(
             async ({ frame }) => {
               const who = frame.locator("#who");
-              await who.getByText(/1 request in 30 days/).waitFor();
+              await who.getByText(/1 request in 7 days/).waitFor();
               const note = who.getByText(/Showing the first 10 pages/);
               assert.equal(await note.count(), next === null ? 0 : 1);
             },

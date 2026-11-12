@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Manager and personal pool overview reads accept 7, 30 and 90 days through the existing authenticated app-origin bridge. The exact range and signed caller survive forwarding; stale, anonymous and unauthorized reads remain refused. Longer ranges do not invent retained history or broaden account inspection."
+      constraint "Manager and personal pool overview reads accept 7, 30 and 90 days through the existing authenticated app-origin bridge. The screen opens on seven days and requests that range explicitly; optional API ranges default to thirty days. The exact range and signed caller survive forwarding; stale, anonymous and unauthorized reads remain refused. Longer ranges do not invent retained history or broaden account inspection."
     }
   }
 }

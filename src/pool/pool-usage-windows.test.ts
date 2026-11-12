@@ -54,12 +54,21 @@ test("90-day capacity reads preserve the requested bounds and real tracking star
     owner: "owner",
     organization: "synthetic",
   });
-  const request = (days: number) =>
+  const request = (days?: number) =>
     f.usage.handle(
-      new Request(`https://pool.example.test/pool/v1/usage/capacity?days=${days}`, {
-        headers: { authorization: `Bearer ${token}`, [callerHeader]: "owner" },
-      }),
+      new Request(
+        `https://pool.example.test/pool/v1/usage/capacity${days === undefined ? "" : `?days=${days}`}`,
+        {
+          headers: { authorization: `Bearer ${token}`, [callerHeader]: "owner" },
+        },
+      ),
     );
+  const defaultResponse = await request();
+  assert.equal(defaultResponse.status, 200);
+  assert.equal(
+    (await defaultResponse.json()).from,
+    Math.floor((at - 30 * 86400000) / 3600000) * 3600000,
+  );
   const response = await request(90);
   assert.equal(response.status, 200);
   const value = await response.json();

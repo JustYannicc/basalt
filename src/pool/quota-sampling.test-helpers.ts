@@ -97,7 +97,12 @@ export function quotaSamplingFixture(
   const history = new CapacityHistory(storage);
   const view = {
     isOwner: true,
-    providers: [{ id: provider, name: provider }],
+    providers: [
+      {
+        id: provider,
+        name: provider === "codex" ? "Codex" : provider === "claude" ? "Claude" : provider,
+      },
+    ],
     subscriptionAccountIds: [credential.credential_id],
     accounts: accountsView(files, [detail], new Set([credential.credential_id])),
   };
