@@ -966,7 +966,7 @@ function Tip({
         <span>
           {point.minimum.accountCount} {point.minimum.accountCount === 1 ? "account" : "accounts"}
           {point.minimum.unknownWeightCount > 0
-            ? ` · ${point.minimum.unknownWeightCount} with conservative estimates`
+            ? ` · ${point.minimum.unknownWeightCount} at an unverified 1x`
             : ""}
         </span>
         <span>

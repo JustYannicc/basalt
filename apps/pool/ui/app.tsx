@@ -55,7 +55,7 @@ export function App({
       );
   }, [view, measurable]);
   const now = useNow();
-  const [days, setDays] = useState<RangeDays>(7);
+  const [days, setDays] = useState<RangeDays>(30);
   const overview = useOverview(api, days);
   const [accountsHref, setAccountsHref] = useState<string>();
   const [shareHref, setShareHref] = useState<string>();
