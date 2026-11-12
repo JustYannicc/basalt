@@ -271,7 +271,7 @@ test("Details and the reset line quote the provider app's report, kinds and mode
   assert.deepEqual(reading?.observation, observation);
   assert.equal(reading?.state, "last-known");
   assert.deepEqual(reading?.failure, { at: "2026-11-12T11:59:00Z", outcome: "rate_limited" });
-  assert.equal(latestReading(accountReadings(native)), reading);
+  assert.deepEqual(latestReading(accountReadings(native)), reading);
   // A source with no reading yet keeps its row empty rather than borrowing the pool's.
   const unread = account("unread", {
     nativeView: available("unread", [
@@ -295,5 +295,15 @@ test("Details and the reset line quote the provider app's report, kinds and mode
   assert.equal(
     bankedResetLine(view([twice]), now)?.text,
     "2 weekly resets · 1 Fable reset available",
+  );
+  const mixed = account("mixed", {
+    nativeView: available("mixed", [
+      record({ result: { observedAt: "2026-11-12T11:50:00Z", observation } }),
+      failing,
+    ]),
+  });
+  assert.equal(
+    bankedResetLine(view([mixed]), now)?.text,
+    "Last known: 2 weekly resets · 1 Fable reset",
   );
 });

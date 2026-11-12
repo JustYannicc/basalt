@@ -1,7 +1,7 @@
 import { availableResetBalances } from "apps";
 import type { Account, PoolView, UsageWindow } from "../contract.ts";
 import type { BankedResetGroup } from "../reset-observation-contract.ts";
-import { inspection, readingFacts, type Reports } from "./account-view.ts";
+import { inspection, type Reports } from "./account-view.ts";
 import {
   resetCountText,
   type ReadingBalance,
@@ -105,7 +105,9 @@ export function resetSummary(view: PoolView, now: number): ResetSummary {
   return {
     parts,
     accounts,
-    lastKnown: accounts.filter((account) => readingFacts(account)?.current !== true).length,
+    lastKnown: accounts.filter(
+      (account) => latestReading(accountReadings(account))?.state !== "current",
+    ).length,
   };
 }
 
@@ -190,8 +192,7 @@ const nativeReading = (report: Reports[number], index: number): AccountReading =
   source: report.source.label,
   observation: report.result?.observation ?? null,
   observedAt: report.result?.observedAt ?? null,
-  state:
-    report.result === null ? "none" : report.freshness === "fresh" ? "current" : "last-known",
+  state: report.result === null ? "none" : report.freshness === "fresh" ? "current" : "last-known",
   failure:
     report.lastAttempt && report.lastAttempt.outcome !== "success"
       ? { at: report.lastAttempt.attemptedAt, outcome: report.lastAttempt.outcome }

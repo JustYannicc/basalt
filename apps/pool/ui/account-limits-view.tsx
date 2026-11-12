@@ -41,8 +41,7 @@ function readingNote(reading: AccountReading, now: number) {
 const modelRows = (observation: AccountReading["observation"]) => {
   const rows = orderedWindows(observation?.windows ?? []);
   return rows.filter(
-    (row) =>
-      row.entry.scope?.kind === "model" || rows.some((other) => other.within === row.entry),
+    (row) => row.entry.scope?.kind === "model" || rows.some((other) => other.within === row.entry),
   );
 };
 
@@ -188,34 +187,34 @@ export function ModelLimits({
       </div>
       <ul className="m-0 list-none border-t border-border p-0">
         {listed.map(({ account, reading, rows }) => (
-            <li key={account.id} className="border-b border-border">
-              <button
-                type="button"
-                aria-haspopup="dialog"
-                onClick={() => onOpen(account)}
-                className="grid w-full grid-cols-[minmax(0,14rem)_minmax(0,1fr)_auto] items-baseline gap-x-6 gap-y-1 px-1 py-3 text-left text-sm transition-colors duration-150 outline-none hover:bg-muted focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset max-[540px]:grid-cols-[minmax(0,1fr)_auto]"
-              >
-                <span className="min-w-0">
-                  <span className="block font-medium wrap-anywhere">{account.label}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {providerName(providers, account.provider)}
-                    {reading.state !== "current" && " · last known"}
+          <li key={account.id} className="border-b border-border">
+            <button
+              type="button"
+              aria-haspopup="dialog"
+              onClick={() => onOpen(account)}
+              className="grid w-full grid-cols-[minmax(0,14rem)_minmax(0,1fr)_auto] items-baseline gap-x-6 gap-y-1 px-1 py-3 text-left text-sm transition-colors duration-150 outline-none hover:bg-muted focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset max-[540px]:grid-cols-[minmax(0,1fr)_auto]"
+            >
+              <span className="min-w-0">
+                <span className="block font-medium wrap-anywhere">{account.label}</span>
+                <span className="text-xs text-muted-foreground">
+                  {providerName(providers, account.provider)}
+                  {reading.state !== "current" && " · last known"}
+                </span>
+              </span>
+              <span className="flex flex-wrap gap-x-4 gap-y-0.5 tabular-nums max-[540px]:col-span-full max-[540px]:row-start-2">
+                {rows.map(({ entry }) => (
+                  <span key={entry.id} className="whitespace-nowrap">
+                    <span className="text-muted-foreground">{entry.label}</span>{" "}
+                    {windowView(entry, now, format).detail}
                   </span>
-                </span>
-                <span className="flex flex-wrap gap-x-4 gap-y-0.5 tabular-nums max-[540px]:col-span-full max-[540px]:row-start-2">
-                  {rows.map(({ entry }) => (
-                    <span key={entry.id} className="whitespace-nowrap">
-                      <span className="text-muted-foreground">{entry.label}</span>{" "}
-                      {windowView(entry, now, format).detail}
-                    </span>
-                  ))}
-                </span>
-                <span className="text-xs text-muted-foreground underline underline-offset-2 max-[540px]:col-start-2 max-[540px]:row-start-1">
-                  Details
-                </span>
-              </button>
-            </li>
-          ))}
+                ))}
+              </span>
+              <span className="text-xs text-muted-foreground underline underline-offset-2 max-[540px]:col-start-2 max-[540px]:row-start-1">
+                Details
+              </span>
+            </button>
+          </li>
+        ))}
       </ul>
     </section>
   );
