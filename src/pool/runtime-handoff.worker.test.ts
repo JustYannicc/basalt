@@ -133,6 +133,7 @@ test("promotion keeps an old response body alive and refuses destruction until t
   const intent = await f.intent(),
     joined = await f.joined(grant);
   assert.equal((await f.command("promote", { proof: joined.envelope, intent })).status, 200);
+  f.reconstruct();
   assert.equal((await f.command("drain", { operationId: crypto.randomUUID() })).status, 409);
   assert.equal(f.old.calls.destroy, 0);
   const reader = oldResponse.body!.getReader();
@@ -141,6 +142,10 @@ test("promotion keeps an old response body alive and refuses destruction until t
   assert.equal(next.headers.get("X-Signalbox-Pool-Boot"), f.candidate.identity().bootId);
   await next.body?.cancel();
   await reader.cancel();
+  f.old.hooks.connections = async () => 1;
+  assert.equal((await f.command("drain", { operationId: crypto.randomUUID() })).status, 409);
+  assert.equal(f.old.calls.destroy, 0);
+  f.old.hooks.connections = async () => 0;
   const operationId = crypto.randomUUID();
   assert.equal((await f.command("drain", { operationId })).status, 200);
   assert.equal((await f.command("drain", { operationId })).status, 200);

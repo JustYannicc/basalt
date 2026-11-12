@@ -26,6 +26,15 @@ import {
   type NativeMembershipPolicy,
 } from "../../src/pool/membership-contract.ts";
 import { fixture, signingKey } from "../../src/pool/test/control.ts";
+import type { NativeStreamLease } from "../../src/pool/native-streams.ts";
+import { legacyDrainProgram } from "../../src/pool/runtime-slots/legacy-drain.ts";
+
+const responseModule = "../../src/pool/native-response.worker.ts";
+const {
+  nativeResponse,
+}: { nativeResponse(response: Response, lease: NativeStreamLease): Response } = await import(
+  responseModule
+);
 
 export function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -89,6 +98,7 @@ export async function handoffRuntime(
     health: async () => {},
     install: async (_policy: NativeMembershipPolicy) => {},
     model: async (_request: Request): Promise<Response | undefined> => undefined,
+    connections: async () => 0,
   };
   const ctx = {
     id: { toString: () => target.instanceId },
@@ -97,6 +107,19 @@ export async function handoffRuntime(
       background.push(work);
     },
     container: {
+      async exec(command: string[]) {
+        assert.deepEqual(command, ["python3", "-c", legacyDrainProgram]);
+        const connections = await hooks.connections();
+        return {
+          output: async () => ({
+            exitCode: 0,
+            stdout: new TextEncoder().encode(
+              JSON.stringify({ format: "legacy-drain-v1", connections }),
+            ),
+            stderr: new Uint8Array(),
+          }),
+        };
+      },
       get running() {
         return running;
       },
@@ -191,7 +214,13 @@ export async function handoffRuntime(
       },
     },
   };
-  const endpoint = new RuntimeEndpoint(ctx, env, options.role ?? "runtime", runtimeFixtureCode);
+  const endpoint = new RuntimeEndpoint(
+    ctx,
+    env,
+    options.role ?? "runtime",
+    runtimeFixtureCode,
+    nativeResponse,
+  );
   return {
     ctx,
     env,
@@ -201,6 +230,7 @@ export async function handoffRuntime(
     hooks,
     policies,
     endpoint,
+    wrap: nativeResponse,
     storage,
     identity: (): SlotIdentity => ({ ...target, bootId }),
     digest: () => configurationDigest(runtimeConfiguration(env)),

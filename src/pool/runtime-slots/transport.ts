@@ -99,6 +99,15 @@ export class BoundSlotDriver implements SlotDriver {
   async retire(target: SlotTarget, identity: SlotIdentity, signal: AbortSignal) {
     await (await this.call(target, "retire", { target, identity }, signal)).body?.cancel();
   }
+  async drain(identity: SlotIdentity, signal: AbortSignal) {
+    const response = await this.call(identity, "drain", { identity }, signal);
+    return Schema.decodeUnknownSync(
+      Schema.Struct({
+        active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+        known: Schema.Boolean,
+      }),
+    )(await response.json());
+  }
   fetch(identity: SlotIdentity, request: Request, port: 8317 | 8327 | 8318) {
     return this.forward(identity, request, port, false);
   }
@@ -184,6 +193,11 @@ export async function runtimeRequest(
       )(value);
       if (action === "/install") await endpoint.install(identity, policy, request.signal);
       else await endpoint.native(identity, policy, request.signal);
+    } else if (action === "/drain") {
+      const { identity } = Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(
+        value,
+      );
+      return Response.json(await endpoint.drain(identity, request.signal));
     } else if (action === "/retire") {
       const { target, identity } = Schema.decodeUnknownSync(
         Schema.Struct({ target: SlotTarget, identity: SlotIdentity }),

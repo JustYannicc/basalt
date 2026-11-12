@@ -20,6 +20,7 @@ import {
 import type { PoolStatus } from "../lifecycle.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import type { ControllerState } from "./runtime-state.ts";
+import { LegacyActivity } from "./legacy-activity.ts";
 
 export interface HandoffEnvironment extends EndpointEnvironment {}
 interface Options {
@@ -40,6 +41,7 @@ export class RuntimeHandoff {
   private ctx: ControllerState;
   private options: Options;
   private env: HandoffEnvironment;
+  private legacyActivity: LegacyActivity;
   constructor(
     ctx: ControllerState,
     env: HandoffEnvironment,
@@ -51,7 +53,8 @@ export class RuntimeHandoff {
     this.env = env;
     this.controllerCode = code;
     this.storage = new RuntimeSlotStorage(ctx.storage);
-    const local = new RuntimeEndpoint(ctx, env, "legacy", code);
+    this.legacyActivity = new LegacyActivity(ctx.storage);
+    const local = new RuntimeEndpoint(ctx, env, "legacy", code, options.wrap);
     this.driver = new BoundSlotDriver((target): RuntimeStub => {
       if (target.controllerId !== ctx.id.toString()) throw new SlotRefused("identity");
       if (
@@ -266,11 +269,23 @@ export class RuntimeHandoff {
     try {
       return await this.choose(
         async (prepared) => {
-          const response = await legacy(
-            new Request(request, { signal: pending.lease.signal }),
-            prepared,
-          );
-          return this.options.wrap(response, pending.lease);
+          const done = await this.legacyActivity.acquire();
+          try {
+            const response = await legacy(
+              new Request(request, { signal: pending.lease.signal }),
+              prepared,
+            );
+            return this.options.wrap(response, {
+              ...pending.lease,
+              release: () => {
+                this.ctx.waitUntil(done());
+                return pending.lease.release();
+              },
+            });
+          } catch (error) {
+            await done();
+            throw error;
+          }
         },
         async () => {
           pending.lease.release();

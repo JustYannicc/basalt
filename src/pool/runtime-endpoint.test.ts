@@ -18,6 +18,7 @@ import {
 import { slotSelectionKey } from "./runtime-slots/storage.ts";
 import { configurationDigest, runtimeConfiguration } from "./runtime-slots/configuration.ts";
 import { signEnvelope } from "./token.ts";
+import { SlotRefused } from "./runtime-slots/contract.ts";
 
 async function fixture() {
   const target = {
@@ -64,6 +65,69 @@ async function fixture() {
   };
 }
 
+test("a reconstructed endpoint waits for the actual response body before destroying its runtime", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  let terminal!: () => void;
+  f.hooks.model = async () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("data: started\n\n"));
+          terminal = () => controller.close();
+        },
+      }),
+    );
+  const response = await f.endpoint.fetch(identity, new Request("http://pool/v1/responses"), 8317);
+  const reconstructed = new RuntimeEndpoint(f.ctx, f.env, "runtime", runtimeFixtureCode, f.wrap);
+  assert.deepEqual(await reconstructed.drain(identity, AbortSignal.timeout(2_000)), {
+    active: 1,
+    known: true,
+  });
+  await assert.rejects(
+    reconstructed.retire(f.target, identity, AbortSignal.timeout(2_000)),
+    SlotRefused,
+  );
+  await assert.rejects(
+    f.endpoint.fetch(identity, new Request("http://pool/v1/responses"), 8317),
+    SlotRefused,
+  );
+  assert.equal(f.calls.model, 1);
+  assert.equal(f.calls.destroy, 0);
+  terminal();
+  assert.match(await response.text(), /started/);
+  assert.deepEqual(await reconstructed.drain(identity, AbortSignal.timeout(2_000)), {
+    active: 0,
+    known: true,
+  });
+  await reconstructed.retire(f.target, identity, AbortSignal.timeout(2_000));
+  assert.equal(f.calls.destroy, 1);
+  await assert.rejects(f.endpoint.retire(f.target, identity, AbortSignal.timeout(2_000)));
+  assert.equal(f.calls.destroy, 1);
+});
+
+test("a lost destroy reply is inspect-only after endpoint reconstruction", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  await f.endpoint.drain(identity, AbortSignal.timeout(2_000));
+  f.ctx.container.destroy = async () => {
+    f.calls.destroy++;
+    throw new Error("lost destroy response");
+  };
+  await assert.rejects(
+    f.endpoint.retire(f.target, identity, AbortSignal.timeout(2_000)),
+    /lost destroy/,
+  );
+  const reconstructed = new RuntimeEndpoint(f.ctx, f.env, "runtime", runtimeFixtureCode, f.wrap);
+  await assert.rejects(
+    reconstructed.retire(f.target, identity, AbortSignal.timeout(2_000)),
+    /uncertain/,
+  );
+  assert.equal(f.calls.destroy, 1);
+});
+
 test("actual runtime start retains its measured launch witness and settings through reconstruction", async (context) => {
   const f = await fixture();
   context.after(f.cleanup);
@@ -79,6 +143,7 @@ test("actual runtime start retains its measured launch witness and settings thro
     { ...f.env, POOL_MANAGEMENT_KEY: "fixture-new-key", POOL_IMAGE_HASH: "3".repeat(16) },
     "runtime",
     runtimeFixtureCode,
+    f.wrap,
   );
   assert.equal(
     (await reconstructed.health(first.identity, AbortSignal.timeout(2_000))).identity.bootId,
@@ -151,7 +216,7 @@ test("reconstruction observes a committed start and refuses a changed boot witho
   const f = await fixture();
   context.after(f.cleanup);
   await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
-  const reconstructed = new RuntimeEndpoint(f.ctx, f.env, "runtime", runtimeFixtureCode);
+  const reconstructed = new RuntimeEndpoint(f.ctx, f.env, "runtime", runtimeFixtureCode, f.wrap);
   const observed = await reconstructed.observe(f.target, AbortSignal.timeout(2_000));
   assert.equal(observed.identity.bootId, f.identity().bootId);
   assert.equal(f.calls.start, 1);

@@ -88,6 +88,7 @@ export interface SlotDriver {
     signal: AbortSignal,
   ): Promise<void>;
   fetch(identity: SlotIdentity, request: Request, port: 8317 | 8327): Promise<Response>;
+  drain(identity: SlotIdentity, signal: AbortSignal): Promise<{ active: number; known: boolean }>;
   retire(target: SlotTarget, identity: SlotIdentity, signal: AbortSignal): Promise<void>;
 }
 export interface SlotSnapshot {
