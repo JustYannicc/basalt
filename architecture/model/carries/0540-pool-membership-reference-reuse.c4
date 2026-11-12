@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.poolMembership {
     metadata {
-      constraint "Membership authority remains fresh under the existing exclusive reconciliation transaction. Only opaque reference material is reused after fresh row locks and exact metadata/ciphertext comparison. Registered acquisition configuration and credential-key epochs partition reuse through the preserved acquisition-host service identity; unknown hosts and missing references bypass it. The isolate bound is sixteen views of 256 KiB each. Legacy discovery never publishes a native handoff. Missing mirrors finish outside the org lock before reconciliation publishes its receiver callback; already-native reads prepare only on fresh drift, followed by a reread; signed response fields and five-second renewal remain unchanged."
+      constraint "Membership authority remains fresh under the existing exclusive reconciliation transaction. Only opaque reference material is reused after fresh row locks and exact metadata/ciphertext comparison. Registered acquisition configuration and credential-key epochs partition reuse through the preserved acquisition-host service identity; unknown hosts and missing references bypass it. The isolate bound is sixteen views of 256 KiB each. Mirror preparation runs outside the org lock only on fresh drift, followed by a reread; signed response fields and five-second renewal remain unchanged. Initial Worker membership reads are shared per pool, and callback-driven refresh waits for initialization before reading fresh authority. No host snapshot is reused for renewal."
     }
   }
 }

@@ -621,3 +621,61 @@ test("a native record from the previous layout retains retirement across a faile
   assert.deepEqual(f.alarms, alarms);
   await assert.rejects(memberships.authority("a"), /refreshing/);
 });
+
+test("a handoff callback waits for the initial host read before starting a fresh repair", async () => {
+  const f = fixture();
+  const initialRead = deferred<void>();
+  const releaseInitial = deferred<void>();
+  const callbackEntered = deferred<void>();
+  let reads = 0;
+  const memberships = new NativeMemberships({
+    ...f.deps,
+    read: async (pool, organization) => {
+      reads++;
+      const snapshot = await f.deps.read(pool, organization);
+      if (reads === 1) {
+        initialRead.resolve();
+        await releaseInitial.promise;
+      }
+      return snapshot;
+    },
+  });
+  const refresh = memberships.refresh.bind(memberships);
+  memberships.refresh = (pool) => {
+    const work = refresh(pool);
+    callbackEntered.resolve();
+    return work;
+  };
+  const first = memberships.ensure("a", "org");
+  await initialRead.promise;
+  await memberships.reserve(await f.request());
+  f.native.set("a", ["auth-current"]);
+  const callback = memberships.tick();
+  try {
+    await callbackEntered.promise;
+    // This queued read completes after any repair queued by the callback.
+    assert.equal(await memberships.configured(), true);
+    assert.equal(reads, 1, "the callback must not race the pending first host read");
+    await assert.rejects(memberships.authority("a"), /refreshing/);
+  } finally {
+    releaseInitial.resolve();
+    await Promise.all([first, callback]);
+  }
+  assert.equal(reads, 2, "the callback still renews authority from a fresh host read");
+  assert.deepEqual((await memberships.authority("a"))?.accounts, ["auth-current"]);
+});
+
+test("a failed initial host read releases initialization so the next request can recover", async () => {
+  const f = fixture();
+  let reads = 0;
+  const memberships = new NativeMemberships({
+    ...f.deps,
+    read: async (pool, organization) => {
+      if (++reads === 1) throw new Error("host temporarily unavailable");
+      return f.deps.read(pool, organization);
+    },
+  });
+  await assert.rejects(memberships.ensure("a", "org"), /temporarily unavailable/);
+  await memberships.ensure("a", "org");
+  assert.deepEqual((await memberships.authority("a"))?.accounts, ["auth-a"]);
+});
