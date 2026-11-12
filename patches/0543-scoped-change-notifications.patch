@@ -161,10 +161,10 @@ index 2544bf242ff978efe61739ec1bc211c8b630cf74..b36437b907c29e4dd18a1a712f73c579
    "schedule-wake",
 diff --git a/apps/hosted/cloud/src/infrastructure/change-revisions.ts b/apps/hosted/cloud/src/infrastructure/change-revisions.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..2984cd82bca3e22dd82d8c38821c783c9abd2663
+index 0000000000000000000000000000000000000000..dd421e73a70a1185cef38a37e2429ed377a2f045
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/change-revisions.ts
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,40 @@
 +import * as Cloudflare from "alchemy/Cloudflare";
 +import { RuntimeContext } from "alchemy";
 +import { Effect, Schema } from "effect";
@@ -186,9 +186,14 @@ index 0000000000000000000000000000000000000000..2984cd82bca3e22dd82d8c38821c783c
 +export const cloudChangeRevisions = Effect.gen(function* () {
 +  const supervisors = yield* appDataSupervisors;
 +  const environment = yield* Cloudflare.WorkerEnvironment;
-+  const namespace = Schema.decodeUnknownSync(NativeNamespace)(environment.AppDataSupervisor);
 +  return {
-+    handler: makeChangeRevisionHandler((scope, keys) => scopedDataChanges(namespace, scope, keys)),
++    handler: makeChangeRevisionHandler((scope, keys) =>
++      scopedDataChanges(
++        Schema.decodeUnknownSync(NativeNamespace)(environment.AppDataSupervisor),
++        scope,
++        keys,
++      ),
++    ),
 +    deliver: Effect.gen(function* () {
 +      const sql = yield* Effect.flatten(GroupDatabase);
 +      yield* makeChangeJournal(sql).deliver((scope, hint) =>
