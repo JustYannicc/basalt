@@ -1,6 +1,7 @@
 import type {
   OverviewApiPrice,
   OverviewMoneyMetric,
+  OverviewPriceIssue,
   PoolOverviewDirectory,
   PoolOverviewDirectoryInput,
   PoolOverviewInput,
@@ -63,6 +64,7 @@ const safeAddCount = (left: number, right: number) => {
 export interface OverviewReadInput extends PoolOverviewSignedInput {
   readonly prices: readonly OverviewApiPrice[];
   readonly pricesUnavailableReason?: string;
+  readonly priceIssues?: readonly OverviewPriceIssue[];
 }
 
 export interface OverviewPricesTarget {
@@ -316,6 +318,7 @@ export async function poolPersonalOverview(
   pricesRaw: readonly OverviewApiPrice[],
   pricesUnavailableReason?: string,
   transaction: "owned" | "caller" = "owned",
+  priceIssues: readonly OverviewPriceIssue[] = [],
 ): Promise<PoolPersonalOverviewResult> {
   const input = personalInput(raw);
   const range = interval(input);
@@ -525,7 +528,7 @@ export async function poolPersonalOverview(
     const noKindReason =
       "Some of your requests could not be classified from inspectable account history, so separate estimates are incomplete.";
     const official = await officialCosts(db, input, prices);
-    const apiBilled = officialCostMetric(official, prices, pricesUnavailableReason);
+    const apiBilled = officialCostMetric(official, prices, pricesUnavailableReason, priceIssues);
     const subscriptionValue = personalMoney(
       totals.subscriptionAmount,
       totals.subscriptionPriced,
@@ -566,7 +569,13 @@ export async function poolPersonalOverview(
         requestTokens,
         apiBilled,
         subscriptionValue,
-        usageSlices: officialCostSlices(official, prices, [input.person]).map((slice) => {
+        usageSlices: officialCostSlices(
+          official,
+          prices,
+          [input.person],
+          priceIssues,
+          pricesUnavailableReason,
+        ).map((slice) => {
           const known = usageSlices.find(
             (entry) => entry.provider === slice.provider && entry.model === slice.model,
           );
@@ -575,6 +584,9 @@ export async function poolPersonalOverview(
             subscriptionValue: known?.subscriptionValue ?? null,
             subscriptionPricedRequests: known?.subscriptionPricedRequests ?? 0,
             subscriptionUnpriced: known?.subscriptionUnpriced ?? 0,
+            ...(known?.subscriptionUnpriced && slice.apiReason
+              ? { subscriptionReason: slice.apiReason }
+              : {}),
           };
         }),
       },
@@ -721,9 +733,9 @@ function priceProvenance(prices: readonly OverviewApiPrice[]) {
   const asOf = prices
     .map((price) => price.asOf)
     .sort()
-    .at(-1);
-  return versions.size === 1 && asOf
-    ? { source: "models.dev", version: [...versions][0]!, asOf }
+    .at(0);
+  return versions.size > 0 && asOf
+    ? { source: "models.dev", version: [...versions].sort().join(","), asOf }
     : null;
 }
 
@@ -1152,8 +1164,14 @@ export async function poolUsageOverview(
         };
     }
     const official = await officialCosts(db, raw, prices);
-    apiBilled = officialCostMetric(official, prices, raw.pricesUnavailableReason);
-    const apiSlices = officialCostSlices(official, prices, hashes);
+    apiBilled = officialCostMetric(official, prices, raw.pricesUnavailableReason, raw.priceIssues);
+    const apiSlices = officialCostSlices(
+      official,
+      prices,
+      hashes,
+      raw.priceIssues,
+      raw.pricesUnavailableReason,
+    );
     const oldSlices = usageSlices;
     usageSlices =
       apiSlices.length > maxUsageSlices
@@ -1170,6 +1188,9 @@ export async function poolUsageOverview(
               subscriptionValue: known?.subscriptionValue ?? null,
               subscriptionPricedRequests: known?.subscriptionPricedRequests ?? 0,
               subscriptionUnpriced: known?.subscriptionUnpriced ?? 0,
+              ...(known?.subscriptionUnpriced && slice.apiReason
+                ? { subscriptionReason: slice.apiReason }
+                : {}),
             };
           });
     if (apiSlices.length > maxUsageSlices) partial = true;

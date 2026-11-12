@@ -1,6 +1,7 @@
 import type {
   OverviewApiPrice,
   OverviewMoneyMetric,
+  OverviewPriceIssue,
   OverviewUsageSlice,
 } from "../../../apps/pool/overview-contract.ts";
 import { digest } from "../backend-users.ts";
@@ -137,15 +138,41 @@ export async function officialCosts(
   }));
 }
 
+function missingCostReason(
+  rows: readonly OfficialCostRow[],
+  issues: readonly OverviewPriceIssue[],
+  unavailableReason?: string,
+) {
+  const reasons = new Set<string>();
+  for (const row of rows) {
+    if (row.priced === row.requests) continue;
+    if (row.model === null) {
+      reasons.add("Model not recorded; cost cannot be estimated");
+      continue;
+    }
+    if (row.missingTokens) reasons.add("Request token counts are missing or incomplete.");
+    if (row.missingPrices)
+      reasons.add(
+        unavailableReason ??
+          issues.find((issue) => issue.provider === row.provider && issue.model === row.model)
+            ?.reason ??
+          `No public price for ${row.model}`,
+      );
+    if (!row.missingTokens && !row.missingPrices)
+      reasons.add("Request tokens use an incomplete or unsupported accounting format.");
+  }
+  return [...reasons].join("; ");
+}
+
 export function officialCostMetric(
   rows: readonly OfficialCostRow[],
   prices: readonly OverviewApiPrice[],
   unavailableReason?: string,
+  issues: readonly OverviewPriceIssue[] = [],
 ): OverviewMoneyMetric {
   const requests = rows.reduce((n, row) => n + row.requests, 0),
     priced = rows.reduce((n, row) => n + row.priced, 0);
-  const missing = rows.reduce((n, row) => n + row.missingTokens, 0);
-  const missingPrices = rows.reduce((n, row) => n + row.missingPrices, 0);
+  const reason = missingCostReason(rows, issues, unavailableReason);
   const units = rows.reduce(
     (n, row) => n + (row.cost === null ? 0n : BigInt(row.cost.replace(".", ""))),
     0n,
@@ -160,15 +187,7 @@ export function officialCostMetric(
       pricedRequests: 0,
       excluded,
       price: null,
-      reason:
-        missing === requests
-          ? "Request token counts are missing or incomplete."
-          : missingPrices === requests
-            ? (unavailableReason ??
-              "No known official USD price matches these models or service tiers.")
-            : missingPrices === 0
-              ? "Request tokens use an incomplete or unsupported accounting format."
-              : "Requests lack a matching official USD price or usable token counts.",
+      reason,
     };
   const versions = [...new Set(prices.map((price) => price.version))].sort();
   return {
@@ -177,6 +196,7 @@ export function officialCostMetric(
     currency: "USD",
     pricedRequests: priced,
     excluded,
+    ...(reason ? { reason } : {}),
     price: prices.length
       ? {
           source: "models.dev",
@@ -192,6 +212,8 @@ export function officialCostSlices(
   rows: readonly OfficialCostRow[],
   prices: readonly OverviewApiPrice[],
   people: readonly string[],
+  issues: readonly OverviewPriceIssue[] = [],
+  unavailableReason?: string,
 ): OverviewUsageSlice[] {
   const groups = new Map<string, OfficialCostRow[]>();
   for (const row of rows) {
@@ -201,7 +223,7 @@ export function officialCostSlices(
   }
   return [...groups.values()].map((group) => {
     const first = group[0]!,
-      metric = officialCostMetric(group, prices);
+      metric = officialCostMetric(group, prices, unavailableReason, issues);
     return {
       person: first.person,
       provider: first.provider,
@@ -210,6 +232,7 @@ export function officialCostSlices(
       apiBilled: metric.amount,
       apiPricedRequests: metric.pricedRequests,
       apiUnpriced: metric.excluded.unpriced,
+      ...(metric.reason ? { apiReason: metric.reason } : {}),
       subscriptionValue: null,
       subscriptionPricedRequests: 0,
       subscriptionUnpriced: 0,

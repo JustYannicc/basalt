@@ -1690,6 +1690,149 @@ test(
           { viewport: { width, height: 860 }, usage: populatedUsage, capacityHeld: true },
         );
       });
+    for (const width of [1280, 390])
+      await t.test(`usage rows say why their cost is missing at ${width}px`, async () => {
+        const codexSeat = poolView(Date.now(), {
+          source: "live",
+          observedAgo: minute,
+          savedAgo: minute,
+          left: [
+            [0.5, 0.8],
+            [0.5, 0.8],
+            [0.5, 0.8],
+          ],
+        }).value.accounts[0];
+        viewResult = { ok: true, value: { ...empty, providers, accounts: [codexSeat] } };
+        const total = {
+          ...emptyUsage.value.total,
+          requests: 4,
+          cost: 3.4,
+          tokens: { ...emptyUsage.value.total.tokens, input: 400, output: 112, total: 512 },
+        };
+        const models = [
+          ["codex", "synthetic-priced"],
+          ["claude", null],
+          ["codex", "synthetic-unlisted"],
+          ["claude", "synthetic-tokenless"],
+        ];
+        const usage = {
+          ok: true,
+          value: {
+            ...emptyUsage.value,
+            total,
+            models: models.map(([provider, model]) => ({
+              ...total,
+              requests: 1,
+              provider,
+              model,
+            })),
+          },
+        };
+        const noPrice = "No public price for synthetic-unlisted";
+        const noModel = "Model not recorded; cost cannot be estimated";
+        const noTokens = "Request token counts are missing or incomplete.";
+        const slice = (provider, model, fields) => ({
+          person: null,
+          provider,
+          model,
+          requests: 1,
+          apiBilled: null,
+          apiPricedRequests: 0,
+          apiUnpriced: 0,
+          subscriptionValue: null,
+          subscriptionPricedRequests: 0,
+          subscriptionUnpriced: 0,
+          unknownKind: 0,
+          unknownKindValue: null,
+          price: null,
+          ...fields,
+        });
+        const overview = (value) => {
+          const price = { asOf: "2026-11-01T00:00:00Z", source: "models.dev", version: "fixture" };
+          const available = (amount) => ({
+            status: "available",
+            amount,
+            currency: "USD",
+            pricedRequests: 1,
+            excluded: { unknownKind: 0, unknownKindValue: null, unpriced: 3 },
+            price,
+          });
+          value.metrics.apiBilled = available("3.40");
+          value.metrics.subscriptionValue = available("1.20");
+          value.metrics.usageSlices = [
+            slice("codex", "synthetic-priced", {
+              apiBilled: "3.40",
+              apiPricedRequests: 1,
+              subscriptionValue: "1.20",
+              subscriptionPricedRequests: 1,
+            }),
+            slice("claude", null, {
+              apiUnpriced: 1,
+              apiReason: noModel,
+              subscriptionUnpriced: 1,
+              subscriptionReason: noModel,
+            }),
+            slice("codex", "synthetic-unlisted", {
+              apiUnpriced: 1,
+              apiReason: noPrice,
+              subscriptionUnpriced: 1,
+              subscriptionReason: noPrice,
+            }),
+            // Pure API traffic: no subscription use, so that column has nothing to explain.
+            slice("claude", "synthetic-tokenless", { apiUnpriced: 1, apiReason: noTokens }),
+          ];
+          return value;
+        };
+        await session(
+          async ({ page, frame, settled }) => {
+            release();
+            await frame.getByRole("radio", { name: "Models", exact: true }).click();
+            const who = frame.locator("#who");
+            const row = (name) =>
+              who.locator("tbody tr").filter({ has: frame.getByText(name, { exact: true }) });
+            await row("synthetic-priced").waitFor();
+            await row("Model not recorded").waitFor();
+            await who.locator("table").scrollIntoViewIfNeeded();
+            await settled();
+            await capture(page, `cost-reasons-${width}`);
+            for (const [name, reason] of [
+              ["Model not recorded", noModel],
+              ["synthetic-unlisted", noPrice],
+              ["synthetic-tokenless", noTokens],
+            ]) {
+              const cells = await row(name).getByText(reason, { exact: true }).all();
+              // Phones see the API reason stacked in the visible column; wide screens see both columns.
+              const shown = await Promise.all(cells.map((cell) => cell.isVisible()));
+              assert.ok(
+                shown.includes(true),
+                `${name} shows "${reason}" as text, not only a tooltip, at ${width}px`,
+              );
+              assert.doesNotMatch(
+                await row(name).innerText(),
+                /\$0\.00|unavailable/i,
+                `${name} never reads as zero or a blanket unavailable label`,
+              );
+            }
+            const priced = await row("synthetic-priced").innerText();
+            assert.match(priced, /\$1\.20/, "Subscription value stays visible");
+            assert.match(priced, /\$3\.40/, `API cost stays readable at ${width}px`);
+            assert.doesNotMatch(
+              await row("synthetic-tokenless").innerText(),
+              /No public price|Model not recorded/,
+              "A missing-token row keeps its own reason",
+            );
+            assert.deepEqual(
+              await who.evaluate((section) => {
+                const table = section.querySelector("table").getBoundingClientRect();
+                return table.right <= section.getBoundingClientRect().right + 0.5;
+              }),
+              true,
+              `The usage table stays inside the content column at ${width}px`,
+            );
+          },
+          { viewport: { width, height: 860 }, usage, overview },
+        );
+      });
     for (const width of [1440, 390])
       await t.test(
         `usage failure and retry stay usable without capacity at ${width}px`,

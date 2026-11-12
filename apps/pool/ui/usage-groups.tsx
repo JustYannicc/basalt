@@ -44,39 +44,76 @@ function TokenCell({ totals }: { totals: Totals }) {
   );
 }
 
+const noModel = "Model not recorded; cost cannot be estimated";
+const shownReasons = 2;
+
+// Each unpriced slice explains itself; the backend's reason wins, and an unrecorded model is the one
+// cause the row itself proves. Anything else stays unexplained rather than guessed.
+function reasonsFor(slices: readonly OverviewUsageSlice[], field: "api" | "subscription") {
+  const reasons = new Set<string>();
+  for (const slice of slices) {
+    const excluded =
+      (field === "api" ? slice.apiUnpriced : slice.subscriptionUnpriced) + slice.unknownKind;
+    if (excluded === 0) continue;
+    const reason =
+      (field === "api" ? slice.apiReason : slice.subscriptionReason) ??
+      (slice.model === null ? noModel : undefined);
+    if (reason) reasons.add(reason);
+  }
+  return [...reasons];
+}
+
+function Reasons({ reasons }: { reasons: readonly string[] }) {
+  if (!reasons.length) return null;
+  const rest = reasons.length - shownReasons;
+  return (
+    <span
+      className="mt-0.5 ml-auto grid max-w-48 justify-items-end gap-0.5 text-xs leading-snug max-[540px]:max-w-32 font-normal text-muted-foreground text-pretty [overflow-wrap:anywhere]"
+      title={rest > 0 ? reasons.join("\n") : undefined}
+    >
+      {reasons.slice(0, shownReasons).map((reason) => (
+        <span key={reason}>{reason}</span>
+      ))}
+      {rest > 0 && <span>+{rest} more · open the row</span>}
+    </span>
+  );
+}
+
 function MoneyCell({
   list,
   priced,
   excluded,
-  title,
+  reasons,
+  unavailable = false,
 }: {
   list: Totals["home"];
   priced: boolean;
   excluded: bigint;
-  title?: string;
+  reasons: readonly string[];
+  unavailable?: boolean;
 }) {
   if (list.length)
     return (
-      <span
-        title={`${moneyExact(list)}${excluded ? ` · ${excluded.toLocaleString()} excluded` : ""}`}
-      >
-        {moneyList(list)}
-        {excluded > 0n && (
-          <sup
-            aria-label={`${excluded.toLocaleString()} excluded`}
-            className="ml-0.5 text-[10px] text-muted-foreground"
-          >
-            †
-          </sup>
-        )}
-      </span>
+      <>
+        <span
+          title={`${moneyExact(list)}${excluded ? ` · ${excluded.toLocaleString()} excluded` : ""}`}
+        >
+          {moneyList(list)}
+          {excluded > 0n && (
+            <sup
+              aria-label={`${excluded.toLocaleString()} excluded`}
+              className="ml-0.5 text-[10px] text-muted-foreground"
+            >
+              †
+            </sup>
+          )}
+        </span>
+        <Reasons reasons={reasons} />
+      </>
     );
-  if (title)
-    return (
-      <span className="text-muted-foreground" title={title}>
-        unavailable
-      </span>
-    );
+  if (reasons.length) return <Reasons reasons={reasons} />;
+  // The table's footnote carries the whole-range reason, so the cell never relies on a tooltip.
+  if (unavailable) return <span className="text-muted-foreground">unavailable</span>;
   if (!priced && excluded > 0n) return <span className="text-muted-foreground">unpriced</span>;
   return dash;
 }
@@ -146,6 +183,8 @@ function rowMoney(row: Row, slices: readonly OverviewUsageSlice[]) {
       subscriptionCount: false,
       apiExcluded: 0n,
       subscriptionExcluded: 0n,
+      apiReasons: [],
+      subscriptionReasons: [],
     };
   const matches = slices.filter(
     (slice) =>
@@ -177,6 +216,8 @@ function rowMoney(row: Row, slices: readonly OverviewUsageSlice[]) {
       (count, slice) => count + BigInt(slice.subscriptionUnpriced) + BigInt(slice.unknownKind),
       0n,
     ),
+    apiReasons: reasonsFor(matches, "api"),
+    subscriptionReasons: reasonsFor(matches, "subscription"),
   };
 }
 
@@ -194,20 +235,27 @@ const percentileText = (values: {
 }) =>
   `p50 ${tokensShort(BigInt(values.p50))} · p90 ${tokensShort(BigInt(values.p90))} · p99 ${tokensShort(BigInt(values.p99))}`;
 
-const cells = (
-  row: Row,
-  slices: readonly OverviewUsageSlice[],
-  overview?: PoolOverviewResult,
-  personal?: PoolPersonalOverviewResult,
-) => {
+const cells = (row: Row, slices: readonly OverviewUsageSlice[], unavailable: Unavailable) => {
   const totals = row.totals;
   const moneyRows = rowMoney(row, slices);
-  const apiUnavailable =
-    personal?.metrics.apiBilled.status === "unavailable"
-      ? (personal.metrics.apiBilled.reason ?? null)
-      : overview?.metrics.apiBilled.status === "unavailable"
-        ? (overview.metrics.apiBilled.reason ?? null)
-        : null;
+  const api = (
+    <MoneyCell
+      list={moneyRows.apiBilled}
+      priced={moneyRows.apiCount}
+      excluded={moneyRows.apiExcluded}
+      reasons={moneyRows.apiReasons}
+      unavailable={unavailable.api !== null}
+    />
+  );
+  // Phones hide the API column, so its amount or reason stacks under subscription value instead.
+  // A reason the subscription cell already shows is not repeated.
+  const stackedApiReasons = moneyRows.apiReasons.filter(
+    (reason) => !moneyRows.subscriptionReasons.includes(reason),
+  );
+  const stackApi =
+    moneyRows.apiBilled.length > 0 ||
+    stackedApiReasons.length > 0 ||
+    (moneyRows.apiReasons.length === 0 && (unavailable.api !== null || moneyRows.apiExcluded > 0n));
   return (
     <>
       <td className="py-2.5 pr-2 text-right tabular-nums max-[540px]:hidden">
@@ -221,28 +269,36 @@ const cells = (
           list={moneyRows.subscriptionValue}
           priced={moneyRows.subscriptionCount}
           excluded={moneyRows.subscriptionExcluded}
-          title={
-            personal?.metrics.subscriptionValue.status === "unavailable"
-              ? personal.metrics.subscriptionValue.reason
-              : overview?.metrics.subscriptionValue.status === "unavailable"
-                ? overview.metrics.subscriptionValue.reason
-                : undefined
-          }
+          reasons={moneyRows.subscriptionReasons}
+          unavailable={unavailable.subscription !== null}
         />
+        {stackApi && (
+          <span className="mt-1 hidden text-xs text-muted-foreground max-[540px]:block">
+            API{" "}
+            <span className="text-foreground">
+              <MoneyCell
+                list={moneyRows.apiBilled}
+                priced={moneyRows.apiCount}
+                excluded={moneyRows.apiExcluded}
+                reasons={stackedApiReasons}
+                unavailable={unavailable.api !== null}
+              />
+            </span>
+          </span>
+        )}
       </td>
-      <td className="py-2.5 text-right tabular-nums max-[540px]:hidden">
-        {
-          <MoneyCell
-            list={moneyRows.apiBilled}
-            priced={moneyRows.apiCount}
-            excluded={moneyRows.apiExcluded}
-            title={apiUnavailable ?? undefined}
-          />
-        }
-      </td>
+      <td className="py-2.5 text-right tabular-nums max-[540px]:hidden">{api}</td>
     </>
   );
 };
+
+interface Unavailable {
+  readonly api: string | null;
+  readonly subscription: string | null;
+}
+
+const unavailableReason = (metric: OverviewMoneyMetric | undefined) =>
+  metric?.status === "unavailable" ? (metric.reason ?? "No reason was recorded.") : null;
 
 export function WhoUses({
   people,
@@ -278,6 +334,11 @@ export function WhoUses({
   // The Tokens column hides on narrow screens, so the range total stays readable above the rows.
   const sum = source?.ok && list.length ? total(source.value.groups) : null;
   const slices = personal?.metrics.usageSlices ?? overview?.metrics.usageSlices ?? [];
+  const metrics = personal?.metrics ?? overview?.metrics;
+  const unavailable: Unavailable = {
+    api: unavailableReason(metrics?.apiBilled),
+    subscription: unavailableReason(metrics?.subscriptionValue),
+  };
   const max = list.reduce((top, row) => (row.totals.tokens > top ? row.totals.tokens : top), 0n);
   const toggle = (id: string) =>
     setOpen((current) => {
@@ -421,7 +482,7 @@ export function WhoUses({
                       <td className="py-2.5 pr-2">
                         <Stack row={row} max={max} name={name} />
                       </td>
-                      {cells(row, slices, overview, personal)}
+                      {cells(row, slices, unavailable)}
                     </tr>
                     {expanded &&
                       row.children.map((child) => (
@@ -447,7 +508,7 @@ export function WhoUses({
                           <td className="py-[7px] pr-2">
                             <Stack row={child} max={max} name={name} />
                           </td>
-                          {cells(child, slices, overview, personal)}
+                          {cells(child, slices, unavailable)}
                         </tr>
                       ))}
                     {expanded && requestSize(row) && (
@@ -464,6 +525,7 @@ export function WhoUses({
           </table>
         </div>
       )}
+      {source?.ok && list.length > 0 && <UnavailableNote unavailable={unavailable} />}
       {requestTokens?.percentiles && (
         <p className="text-xs text-muted-foreground">
           Per request, everyone: {percentileText(requestTokens.percentiles)} tokens, across{" "}
@@ -485,6 +547,22 @@ export function WhoUses({
       {source?.ok && <Notes read={source.value} personal={personal !== undefined} />}
     </section>
   );
+}
+
+function UnavailableNote({ unavailable }: { unavailable: Unavailable }) {
+  const lines =
+    unavailable.api !== null && unavailable.api === unavailable.subscription
+      ? [`API cost and subscription value unavailable: ${unavailable.api}`]
+      : [
+          unavailable.subscription !== null &&
+            `Subscription value unavailable: ${unavailable.subscription}`,
+          unavailable.api !== null && `API cost unavailable: ${unavailable.api}`,
+        ].filter((line) => line !== false);
+  return lines.map((line) => (
+    <p key={line} className="text-xs text-muted-foreground text-pretty">
+      {line}
+    </p>
+  ));
 }
 
 function Notes({ read, personal = false }: { read: SeriesRead; personal?: boolean }) {
@@ -619,18 +697,10 @@ export function Money({
                     {provider ? (name?.(provider) ?? provider) : "Provider not recorded"}
                   </th>
                   <td className="border-b border-border py-2.5 pr-2 text-right tabular-nums">
-                    {api.amount !== null
-                      ? overviewAmount(api.amount)
-                      : api.excluded
-                        ? "excluded"
-                        : "—"}
+                    <LabAmount sum={api} reasons={reasonsFor(lab, "api")} />
                   </td>
                   <td className="border-b border-border py-2.5 text-right tabular-nums">
-                    {subscription.amount !== null
-                      ? overviewAmount(subscription.amount)
-                      : subscription.excluded
-                        ? "excluded"
-                        : "—"}
+                    <LabAmount sum={subscription} reasons={reasonsFor(lab, "subscription")} />
                   </td>
                 </tr>
               );
@@ -639,6 +709,22 @@ export function Money({
         </table>
       )}
     </section>
+  );
+}
+
+function LabAmount({
+  sum,
+  reasons,
+}: {
+  sum: ReturnType<typeof sumOverviewAmounts>;
+  reasons: readonly string[];
+}) {
+  if (sum.amount === null && reasons.length) return <Reasons reasons={reasons} />;
+  return (
+    <>
+      {sum.amount !== null ? overviewAmount(sum.amount) : sum.excluded ? "excluded" : "—"}
+      {sum.amount !== null && <Reasons reasons={reasons} />}
+    </>
   );
 }
 
