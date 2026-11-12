@@ -282,6 +282,22 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /retained snapshots and management reads/);
         assert.match(patch.retirement.requires, /default-off bounded diagnostic discovery/);
         assert.match(patch.retirement.requires, /no reset redemption/);
+      } else if (patch.identity === "cliproxy-home-incremental-usage") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0539-home-incremental-usage.patch");
+        assert.match(patch.retirement.requires, /narrow exact timestamp\/string-ID summary pages/);
+        assert.match(
+          patch.retirement.requires,
+          /transactional late-commit and attribution-repair pending work/,
+        );
+        assert.match(patch.retirement.requires, /token-fenced acknowledgement/);
+        assert.match(patch.retirement.requires, /exact portable queue restoration/);
+        assert.match(patch.retirement.requires, /retained v15 rows without legacy normalization/);
+        assert.match(
+          patch.retirement.requires,
+          /concurrent startup, interrupted-index repair and old-writer compatibility/,
+        );
+        assert.match(patch.retirement.requires, /strict native schema activation barrier/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
