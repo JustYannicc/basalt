@@ -1,0 +1,7 @@
+model {
+  extend basalt.catalog {
+    metadata {
+      constraint "Settings states where a catalog install stands instead of calling it an independent copy: on the catalog's version, a held-back update waiting in Versions, or changed so updates wait for review, by the same untouched rule the sweep decides with, plus the queued sweep's time while one waits. The status read is read-only and never changes what the sweep applies or offers; copies of anything else keep the independent-copy note."
+    }
+  }
+}

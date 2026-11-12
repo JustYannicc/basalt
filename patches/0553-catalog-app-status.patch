@@ -1,0 +1,342 @@
+diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
+--- a/apps/hosted/server/src/contracts/apps.ts
++++ b/apps/hosted/server/src/contracts/apps.ts
+@@ -101,6 +101,16 @@ export const CatalogAppUpdate = /* @__PURE__ */ (() =>
+     ),
+     touched: Schema.Boolean,
+   }))();
++/**
++ * Where a catalog copy stands: on the version the catalog last gave it, offered a held-back
++ * update, or changed by someone so updates are offered instead of applied. `nextCheckAt` is when
++ * the queued catalog sweep runs, while one is queued or running.
++ */
++export const CatalogAppStatus = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    state: Schema.Literals(["current", "offered", "changed"]),
++    nextCheckAt: Schema.NullOr(Schema.String),
++  }))();
+ /** No catalog update is offered, the workspace has changes, or the app changed meanwhile. */
+ export const CatalogUpdateUnavailable = /* @__PURE__ */ (() =>
+   ApiError.define({
+@@ -259,6 +269,18 @@ export const HostedApps = /* @__PURE__ */ (() =>
+           "A newer catalog source held back for this app, or null. Catalog apps update by themselves unless someone changed them or the update would leave linked accounts or requirements unusable: reconnect counts the linked accounts that stop working, reasons says why, and touched means applying it replaces the app's current version. apps.applyCatalogUpdate applies it.",
+         ),
+     )
++    .add(
++      HttpApiEndpoint.get("catalogStatus", `${prefix}/:app/catalog-status`, {
++        params: app,
++        success: Schema.NullOr(CatalogAppStatus),
++        error: [StorageError, AppNotFound, OrganizationForbidden],
++      })
++        .annotate(RequiredAction, "read")
++        .annotate(
++          OpenApi.Description,
++          "Where a catalog app stands, or null for an app not installed from the catalog. state is current while the app holds the catalog's version, offered while apps.catalogUpdate holds an update back, and changed once someone changed the app, so later updates are offered instead of applied. nextCheckAt is when the next catalog check runs, while one is queued.",
++        ),
++    )
+     .add(
+       HttpApiEndpoint.post("applyCatalogUpdate", `${prefix}/:app/catalog-update`, {
+         params: app,
+diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/src/implementation/apps.ts
+--- a/apps/hosted/server/src/implementation/apps.ts
++++ b/apps/hosted/server/src/implementation/apps.ts
+@@ -23,8 +23,8 @@ import type { DeployApp, InstallApp } from "../contracts/apps.ts";
+ import { executorCatalogPackage, HostedCatalog } from "../contracts/catalog.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { recordUsage } from "../contracts/product-analytics.ts";
+-import { appManagerOwner, currentOwner } from "./access.ts";
+-import { applyCatalogAppOffer, catalogAppOffer } from "./catalog-app-offers.ts";
++import { appManagerOwner, appReaderOwner, currentOwner } from "./access.ts";
++import { applyCatalogAppOffer, catalogAppOffer, catalogAppStatus } from "./catalog-app-offers.ts";
+ import { SqlClient } from "effect/sql";
+ 
+ /** Install a catalog entry as a new app without replacing an existing name. */
+@@ -172,6 +172,16 @@ export const catalogUpdate = (owner: OwnerId, app: AppId) =>
+       Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
+     );
+   });
++/** Where this catalog app stands and when the next catalog check runs. */
++export const catalogStatus = (owner: OwnerId, app: AppId) =>
++  Effect.gen(function* () {
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const { organization } = yield* CurrentOrganization;
++    const current = yield* executor.apps.get({ owner, app });
++    return yield* catalogAppStatus(executor, owner, organization, current).pipe(
++      Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
++    );
++  });
+ /** Deploy the held-back catalog source as the app's active version. */
+ export const applyCatalogUpdate = (app: AppId) =>
+   Effect.gen(function* () {
+@@ -262,6 +272,9 @@ export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handle
+     .handle("catalogUpdate", ({ params }) =>
+       Effect.flatMap(appManagerOwner(params.app), (owner) => catalogUpdate(owner, params.app)),
+     )
++    .handle("catalogStatus", ({ params }) =>
++      Effect.flatMap(appReaderOwner(params.app), (owner) => catalogStatus(owner, params.app)),
++    )
+     .handle("applyCatalogUpdate", ({ params }) =>
+       Effect.andThen(appManagerOwner(params.app), applyCatalogUpdate(params.app)),
+     )
+diff --git a/apps/hosted/server/src/implementation/catalog-app-offers.ts b/apps/hosted/server/src/implementation/catalog-app-offers.ts
+--- a/apps/hosted/server/src/implementation/catalog-app-offers.ts
++++ b/apps/hosted/server/src/implementation/catalog-app-offers.ts
+@@ -3,14 +3,18 @@ import type { Catalog } from "@executor-js/catalog/contracts";
+ import {
+   StorageError,
+   type App,
++  type VersionId,
+   type AppId,
+   type Executor,
+   type OwnerId,
+   type SourceFiles,
+ } from "@executor-js/sdk/core";
+ import { Effect } from "effect";
+-import { CatalogUpdateUnavailable } from "../contracts/apps.ts";
++import { SqlClient } from "effect/sql";
++import { type CatalogAppStatus, CatalogUpdateUnavailable } from "../contracts/apps.ts";
++import { catalogAppJobPrefix } from "../contracts/catalog-app-updates.ts";
+ import { type OrganizationId, organizationOwner } from "../contracts/organization.ts";
++import { decideCatalogOffer } from "./catalog-app-updates.ts";
+ import { activeSource, deployCatalogSource } from "./catalog-app-workspace.ts";
+ import {
+   recordOf,
+@@ -80,6 +84,48 @@ export const catalogAppOffer = (organization: OrganizationId, app: App) =>
+     return { reconnect: offer.reconnect, reasons: offer.reasons, touched: offer.touched };
+   }).pipe(Effect.mapError(() => new StorageError()));
+ 
++/**
++ * A catalog copy's state, by the rule the sweep decides with. An offer stands only for the
++ * active version it was made over.
++ */
++export const catalogAppState = (input: {
++  readonly recorded: Saved | undefined;
++  readonly active: VersionId;
++  readonly versions: number;
++}): (typeof CatalogAppStatus.Type)["state"] => {
++  const { recorded, active, versions } = input;
++  if (recorded?.offer !== undefined && recorded.offer.active === active) return "offered";
++  return decideCatalogOffer({ versions, active, recorded, breaking: false }).untouched
++    ? "current"
++    : "changed";
++};
++
++/** Where a catalog copy stands, and when the queued catalog sweep runs; null for other apps. */
++export const catalogAppStatus = (
++  executor: { readonly apps: Pick<Executor["apps"], "versions"> },
++  owner: OwnerId,
++  organization: OrganizationId,
++  app: App,
++) =>
++  Effect.gen(function* () {
++    if (feedEntry(app.copiedFrom?.reference) === undefined || app.activeVersion === null)
++      return null;
++    const recorded = recordOf(yield* savedRecords(organization), app.id);
++    // A recorded active version settles it; otherwise one version means nobody changed it.
++    const versions =
++      recorded?.version === app.activeVersion
++        ? 1
++        : (yield* executor.apps.versions({ owner, app: app.id, versionOwner: owner })).length;
++    const sql = yield* SqlClient.SqlClient;
++    const [due] = yield* sql<{ at: Date | string | null }>`select min(available_at) as at
++      from hosted_provisioning where organization_id = ${organization}
++        and status in ('queued', 'running') and starts_with(id, ${catalogAppJobPrefix})`;
++    return {
++      state: catalogAppState({ recorded, active: app.activeVersion, versions }),
++      nextCheckAt: due?.at == null ? null : new Date(due.at).toISOString(),
++    };
++  }).pipe(Effect.mapError(() => new StorageError()));
++
+ /** Apply the held-back update: read the catalog's current source, deploy it and record it. */
+ export const applyCatalogAppOffer = (
+   executor: Executor,
+diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
+--- a/apps/hosted/web/src/contracts/apps.ts
++++ b/apps/hosted/web/src/contracts/apps.ts
+@@ -96,6 +96,9 @@ const versionsQuery = Atom.family((key: AppKey) =>
+ const catalogUpdateQuery = Atom.family((key: AppKey) =>
+   HostedClient.query("apps", "catalogUpdate", hydrated({ params: key })).pipe(revalidated),
+ );
++const catalogStatusQuery = Atom.family((key: AppKey) =>
++  HostedClient.query("apps", "catalogStatus", hydrated({ params: key })).pipe(revalidated),
++);
+ const sourceQuery = Atom.family((key: SourceKey) =>
+   HostedClient.query(
+     "apps",
+@@ -185,6 +188,8 @@ const activateApp = Atom.family((key: AppKey) =>
+             get.refresh(toolsAtom(key));
+             get.refresh(versionsAtom(key));
+             get.refresh(catalogUpdateQuery(key));
++            get.refresh(catalogStatusQuery(key));
++          get.refresh(catalogStatusQuery(key));
+           }),
+         ),
+       ),
+@@ -200,6 +205,7 @@ const applyCatalogUpdate = Atom.family((key: AppKey) =>
+           get.refresh(toolsAtom(key));
+           get.refresh(versionsAtom(key));
+           get.refresh(catalogUpdateQuery(key));
++          get.refresh(catalogStatusQuery(key));
+         }),
+       ),
+     ),
+@@ -657,6 +663,11 @@ export const versionsAtom = (key: {
+   readonly organization: OrganizationReference;
+   readonly app: AppId;
+ }) => versionsQuery(new AppKey(key));
++/** Where a catalog app stands and when the next catalog check runs; null for other apps. */
++export const catalogStatusAtom = (key: {
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++}) => catalogStatusQuery(new AppKey(key));
+ /** A newer catalog version waiting in Versions, or null. */
+ export const catalogUpdateAtom = (key: {
+   readonly organization: OrganizationReference;
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -50,6 +50,7 @@ import { RenameApp } from "@executor-js/ui/dashboard/rename-app";
+ import { CopyApp } from "@executor-js/ui/dashboard/copy-app";
+ import { PublishApp, WhenPublishing } from "@executor-js/ui/dashboard/publish-app";
+ import { AppSettings } from "@executor-js/ui/dashboard/app-settings";
++import { CatalogAppNote } from "./catalog-app-status.tsx";
+ import { AppScreen, NoAppScreen } from "./app-screen.tsx";
+ import { useEvictAppFrame } from "../components/app-frames.tsx";
+ import { AppDetailLayout, appScreenTab } from "@executor-js/ui/dashboard/app-detail";
+@@ -348,6 +349,7 @@ export function AppDetailPage({
+               return (
+                 <AppSettings
+                   app={current}
++                  copiedNote={<CatalogAppNote app={current} />}
+                   copyAction={
+                     canManage ? (
+                       <CopyApp
+diff --git a/apps/hosted/web/src/implementation/pages/app-source.tsx b/apps/hosted/web/src/implementation/pages/app-source.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-source.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-source.tsx
+@@ -22,6 +22,7 @@ import {
+   activateAppAtom,
+   appAtom,
+   applyCatalogUpdateAtom,
++  catalogStatusAtom,
+   catalogUpdateAtom,
+   versionsAtom,
+   sourceAtom,
+@@ -267,6 +268,7 @@ export function AppSource({
+         acknowledgeApp(get, organization, saved);
+         get.refresh(versionsAtom({ organization, app: saved.id }));
+         get.refresh(toolsAtom({ organization, app: saved.id }));
++        get.refresh(catalogStatusAtom({ organization, app: saved.id }));
+       }}
+       view={view}
+       live={
+diff --git a/apps/hosted/web/src/implementation/pages/catalog-app-status.tsx b/apps/hosted/web/src/implementation/pages/catalog-app-status.tsx
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/catalog-app-status.tsx
+@@ -0,0 +1,67 @@
++import { useAtomValue } from "@effect/atom-react";
++import { Link } from "@tanstack/react-router";
++import { AsyncResult } from "effect/reactivity";
++import type { App } from "@executor-js/sdk";
++import { LocalTime, shortMoment } from "@executor-js/ui/components/local-time";
++import { Skeleton } from "@executor-js/ui/components/skeleton";
++import { independentCopyNote } from "@executor-js/ui/dashboard/app-settings";
++import { catalogStatusAtom } from "../../contracts/apps.ts";
++import { useOrganizationRoute } from "../components/organization.tsx";
++
++/**
++ * How a copy relates to its original in Settings. Catalog installs follow the catalog by
++ * themselves until someone changes them, so they say where they stand instead.
++ */
++export function CatalogAppNote({ app }: { readonly app: App }) {
++  const { organization, slug } = useOrganizationRoute();
++  const status = useAtomValue(catalogStatusAtom({ organization, app: app.id }));
++  if (AsyncResult.isInitial(status))
++    return (
++      <div role="status" aria-label="Loading update status" className="py-1">
++        <Skeleton className="h-3 w-72 max-w-full" />
++      </div>
++    );
++  // A copy of anything else, or a status that failed to load, makes no claim about updates.
++  if (!AsyncResult.isSuccess(status) || status.value === null) return independentCopyNote;
++  const { state, nextCheckAt } = status.value;
++  const versions = (
++    <Link
++      to="/org/$organizationSlug/apps/$appId"
++      params={{ organizationSlug: slug, appId: app.id }}
++      search={{ view: "versions" }}
++      className="font-medium text-foreground underline-offset-4 hover:underline"
++    >
++      Versions
++    </Link>
++  );
++  const due = nextCheckAt === null ? null : <LocalTime value={nextCheckAt} options={shortMoment} />;
++  const checking = nextCheckAt !== null && Date.parse(nextCheckAt) <= Date.now();
++  if (state === "current")
++    return (
++      <p>
++        {due === null ? (
++          "On the catalog’s current version. Catalog updates apply by themselves while nobody changes this app."
++        ) : checking ? (
++          "Checking the catalog for an update now. An update found applies by itself."
++        ) : (
++          <>Catalog update check due {due}. An update found then applies by itself.</>
++        )}
++      </p>
++    );
++  return (
++    <p>
++      {state === "offered" ? (
++        <>
++          A catalog update is waiting for review in {versions}. It didn’t apply by itself because
++          it changes this app’s accounts or replaces changes made here.
++        </>
++      ) : (
++        <>
++          This app was changed after it came from the catalog, so catalog updates wait for review
++          in {versions} instead of applying by themselves.
++        </>
++      )}
++      {due !== null && (checking ? " Checking the catalog now." : <> Next catalog check {due}.</>)}
++    </p>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/app-settings.tsx b/packages/ui/src/implementation/dashboard/app-settings.tsx
+--- a/packages/ui/src/implementation/dashboard/app-settings.tsx
++++ b/packages/ui/src/implementation/dashboard/app-settings.tsx
+@@ -3,16 +3,23 @@ import type { ReactNode } from "react";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ 
++/** What Settings says about a copy unless the product knows more about where it came from. */
++export const independentCopyNote =
++  "This app is an independent copy. Changes to the original do not update it.";
++
+ /** App metadata and removal live together; products supply only the actions they authorize. */
+ export function AppSettings({
+   app,
+   renameAction,
+   deleteAction,
+   copyAction,
++  copiedNote = independentCopyNote,
+   notice,
+   children,
+ }: {
+   readonly app: App;
++  /** How the copy relates to its original now, such as a product's own update behaviour. */
++  readonly copiedNote?: ReactNode;
+   readonly renameAction?: ReactNode;
+   readonly deleteAction?: ReactNode;
+   readonly copyAction?: ReactNode;
+@@ -55,9 +62,7 @@ export function AppSettings({
+                 </>
+               )}
+             </p>
+-            <p className="mt-3 text-xs text-muted-foreground">
+-              This app is an independent copy. Changes to the original do not update it.
+-            </p>
++            <div className="mt-3 text-xs leading-5 text-muted-foreground">{copiedNote}</div>
+           </section>
+         )}
+         {copyAction && (

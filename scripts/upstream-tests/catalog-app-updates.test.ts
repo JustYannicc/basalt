@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Cause, Effect, Exit, Logger, Schema } from "effect";
+import { SqlClient } from "effect/sql";
 
 const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
 const load = (path: string) => import(pathToFileURL(resolve(upstream, path)).href);
@@ -14,7 +15,7 @@ const { breakingChanges, catalogEntryId, decideCatalogOffer, decideCatalogUpdate
   `${implementation}catalog-app-updates.ts`,
 );
 const { sweepCatalogApp } = await load(`${implementation}catalog-app-defaults.ts`);
-const { applyCatalogUpdate } = await load(`${implementation}catalog-app-offers.ts`);
+const { applyCatalogUpdate, catalogAppState, catalogAppStatus } = await load(`${implementation}catalog-app-offers.ts`);
 const { AppVersionChanged } = await load("packages/sdk/src/contracts/version.ts");
 const { SourceError } = await load("packages/sdk/src/contracts/source.ts");
 const { AppInputs } = await load("packages/sdk/src/contracts/apps.ts");
@@ -261,6 +262,65 @@ test("the decision follows the product rules", () => {
     decideCatalogOffer({ ...base, versions: 2, recorded: { version: "v1" } }).decision,
     "apply",
   );
+});
+
+test("Settings states a catalog copy by the sweep's own rule", () => {
+  const offer = { source: "s", reconnect: 0, reasons: [], touched: true };
+  const state = (recorded: unknown, versions = 2) =>
+    catalogAppState({ recorded, active: "v2", versions });
+  assert.equal(state(undefined, 1), "current");
+  assert.equal(state(undefined), "changed");
+  assert.equal(state({ version: "v2" }), "current");
+  assert.equal(state({ version: "v1" }), "changed");
+  assert.equal(state({ version: "v1", offer: { ...offer, active: "v2" } }), "offered");
+  // An offer made over an earlier active version no longer stands.
+  assert.equal(state({ version: "v1", offer: { ...offer, active: "v1" } }), "changed");
+});
+
+test("Settings reads a catalog copy's state and the queued sweep's time", async () => {
+  const queries: { text: string; values: unknown[] }[] = [];
+  // Only the tagged-template call is used: the records read and the sweep queue read.
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = strings.join("?");
+    queries.push({ text, values });
+    return Effect.succeed(
+      text.includes("hosted_provisioning")
+        ? [{ at: new Date("2026-11-12T19:08:00Z") }]
+        : [{ apps: { app_catalog: { version: "dpl_1" } } }],
+    );
+  }) as unknown as SqlClient.SqlClient;
+  const executor = { apps: { versions: () => Effect.succeed([{ id: "dpl_1" }, { id: "dpl_2" }]) } };
+  const app = (reference: string, activeVersion: string | null = "dpl_1") => ({
+    id: "app_catalog",
+    activeVersion,
+    copiedFrom: { reference, name: "crm", commit: null },
+  });
+  const status = (copied: ReturnType<typeof app>) =>
+    Effect.runPromise(
+      catalogAppStatus(executor, "organization:team", "team", copied).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      ),
+    );
+  const catalog = "https://basalt.example/catalog/apps/crm.json";
+  assert.deepEqual(await status(app(catalog)), {
+    state: "current",
+    nextCheckAt: "2026-11-12T19:08:00.000Z",
+  });
+  assert.ok(
+    queries.some(
+      ({ text, values }) =>
+        /status in \('queued', 'running'\)/.test(text) && values.includes("basalt-catalog-apps:"),
+    ),
+  );
+  assert.deepEqual(await status(app(catalog, "dpl_2")), {
+    state: "changed",
+    nextCheckAt: "2026-11-12T19:08:00.000Z",
+  });
+  // A copy of another app, or one never deployed, makes no catalog claim.
+  queries.length = 0;
+  assert.equal(await status(app("https://example.com/apps/crm")), null);
+  assert.equal(await status(app(catalog, null)), null);
+  assert.equal(queries.length, 0);
 });
 
 test("breaking changes count accounts that stop working and name why", () => {
