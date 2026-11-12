@@ -47,10 +47,11 @@ export function startDatabaseObserver(root, out, id, observers) {
   observers.push(child);
 }
 export function statementDeltas(before, after) {
-  const baseline = new Map(before.statements.map((row) => [row.queryid, row]));
+  const identity = (row) => JSON.stringify([row.userid, row.dbid, row.toplevel, row.queryid]);
+  const baseline = new Map(before.statements.map((row) => [identity(row), row]));
   return after.statements
     .map((row) => {
-      const previous = baseline.get(row.queryid),
+      const previous = baseline.get(identity(row)),
         calls = row.calls - (previous?.calls ?? 0);
       return {
         ...row,
