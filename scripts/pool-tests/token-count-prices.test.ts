@@ -248,6 +248,7 @@ test("counter estimates preserve cache and reasoning once, use context bands, an
     const checks = [
       { row: base, expected: "9.580000000000" },
       {
+        // Compaction counters stay inclusive when their API metadata is lost.
         row: { ...base, inputTokens: "1500000", outputTokens: "250000", totalTokens: "1750000" },
         expected: "9.580000000000",
       },
@@ -256,7 +257,7 @@ test("counter estimates preserve cache and reasoning once, use context bands, an
         expected: "9.580000000000",
       },
       {
-        // A compact request uses the same inclusive shape after its API metadata was lost.
+        // Without a total, cache buckets larger than input identify separate counters.
         row: {
           ...base,
           inputTokens: "100000",
