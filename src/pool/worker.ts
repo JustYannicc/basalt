@@ -90,6 +90,8 @@ import {
   runtimeRecoveryPath,
 } from "./runtime-recovery.ts";
 import { poolRelease, poolReleasePath } from "./release.ts";
+import { historyTrafficPath } from "./model-history/traffic.ts";
+import { readPoolReliabilitySlo } from "./model-history/reliability-slo.ts";
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnvironment {
   PoolContainer: DurableObjectNamespace<PoolContainer>;
@@ -741,7 +743,14 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
             : singleton(this.env).deploymentReady(),
       );
     if (path === runtimeRecoveryPath) return singleton(this.env).fetch(request);
-    if ([historySchemaCatalogPath, historySchemaApplyPath, historyBackfillPath].includes(path))
+    if (
+      [
+        historySchemaCatalogPath,
+        historySchemaApplyPath,
+        historyBackfillPath,
+        historyTrafficPath,
+      ].includes(path)
+    )
       return handleModelHistoryOperation(request, this.env.POOL_AUTH_DATABASE?.connectionString);
     if (path !== "/codex-websockets") return new Response(null, { status: 404 });
     try {
@@ -777,7 +786,17 @@ export default {
   },
   async scheduled(event: ScheduledEvent, env: PoolEnvironment) {
     if (event.cron === availabilityCron) {
-      await runAvailabilityProbe(env, (pool) => singleton(env).availabilityProbe(pool));
+      await runAvailabilityProbe(
+        env,
+        (pool) => singleton(env).availabilityProbe(pool),
+        (pool) => {
+          if (env.POOL_MODEL_HISTORY_ENABLED !== "true")
+            throw new Error("Model request history is disabled");
+          return withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) =>
+            readPoolReliabilitySlo(db, pool),
+          );
+        },
+      );
       return;
     }
     if (event.cron === inventoryCron) {

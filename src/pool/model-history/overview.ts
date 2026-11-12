@@ -30,6 +30,8 @@ import {
   officialCostSlices,
 } from "./official-cost.ts";
 import { priceQuery, percentileSql } from "./overview-sql.ts";
+import { readPoolReliability } from "./reliability.ts";
+import { readPoolReliabilitySlo } from "./reliability-slo.ts";
 
 const homeSource = "home-local-v1";
 const gatewaySource = "pool-gateway-v1";
@@ -1192,6 +1194,10 @@ export async function poolUsageOverview(
     const consistency = sameSnapshot ? "consistent" : "changed";
     if (!sameSnapshot) partial = true;
     const result: PoolOverviewResult = {
+      reliability: {
+        range: await readPoolReliability(db, raw.pool, range.from, range.to),
+        slo: await readPoolReliabilitySlo(db, raw.pool, range.toMs, "caller"),
+      },
       from: range.from,
       to: range.to,
       asOf,

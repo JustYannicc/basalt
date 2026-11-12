@@ -1,6 +1,7 @@
 import type { NativeMembershipPolicy } from "./membership-contract.ts";
 import { poolFailureDiagnostic, type PoolFailureDiagnostic } from "./json.ts";
 import { validProbeTarget } from "./availability-config.ts";
+import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
 
 export const probeBudgetMs = 20_000;
 
@@ -11,6 +12,7 @@ export interface ProbeFailure {
     | "pool_view"
     | "membership"
     | "native_guard"
+    | "request_reliability"
     | PoolFailureDiagnostic["guard"];
   reason:
     | "invalid_target"
@@ -21,12 +23,15 @@ export interface ProbeFailure {
     | "dirty"
     | "unacknowledged"
     | "renewal_overdue"
+    | "below_target"
+    | "collection_unavailable"
     | PoolFailureDiagnostic["failure"];
   backendStatus?: number;
 }
 export interface ProbeResult {
   ok: boolean;
   failures: ProbeFailure[];
+  reliability?: PoolReliabilitySlo;
 }
 interface ProbePolicy extends NativeMembershipPolicy {
   native: boolean;

@@ -1,4 +1,5 @@
 import type { PoolUsageSeriesResult } from "./usage-series-contract.ts";
+import type { PoolReliability, PoolReliabilitySlo } from "./reliability-contract.ts";
 
 /** A member name supplied only after the hosted pool directory authorizes that member. */
 export interface PoolOverviewMember {
@@ -187,6 +188,8 @@ export interface PoolPersonalOverviewResult {
 }
 
 export interface PoolOverviewResult {
+  /** Absent in retained responses from servers predating explicit proof classification. */
+  readonly reliability?: { readonly range: PoolReliability; readonly slo: PoolReliabilitySlo };
   readonly from: string;
   readonly to: string;
   readonly asOf: string | null;

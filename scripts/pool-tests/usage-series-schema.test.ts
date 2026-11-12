@@ -8,6 +8,8 @@ import { digest } from "../../src/pool/backend-users.ts";
 import {
   appAttributionReady,
   historyAccountTimeStatements,
+  historyAccountTimeSchemaVersion,
+  historyTrafficStatements,
   historyAppSchemaVersion,
   historyBaseSchemaVersion,
   historySchemaMigrations,
@@ -21,11 +23,15 @@ import { poolUsageSeries } from "../../src/pool/model-history/series.ts";
 import { homeMetadataFixture } from "./history-fixture.ts";
 import { accountAuthority, authority, input, pool, seriesFixture } from "./series-fixture.ts";
 
-test("schema v3 adds only the account-time index; its dry run, repeat apply and old v2 collector leave retained rows intact", async () => {
+test("schema v2 upgrades add only the account-time index and purpose table without rewriting retained rows", async () => {
   await seriesFixture(async ({ db, insert }) => {
     await homeMetadataFixture(db);
     // Model a deployed v2 database, retaining its real migrations and append-only triggers.
     await db.query("DROP INDEX basalt_model_requests_account_time");
+    await db.query("DROP TABLE basalt_model_traffic");
+    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+      historyAccountTimeSchemaVersion,
+    ]);
     await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
       historySchemaVersion,
     ]);
@@ -40,11 +46,15 @@ test("schema v3 adds only the account-time index; its dry run, repeat apply and 
     ).rows;
     assert.equal(await appAttributionReady(db), true);
     const plan = await modelHistorySchemaPlan(db);
-    assert.equal(plan.version, "model_request_history_v3_account_time");
+    assert.equal(plan.version, historySchemaVersion);
     assert.equal(plan.writes, false);
     assert.equal(plan.additive, true);
     assert.equal(plan.automaticBackfill, false);
-    assert.deepEqual(plan.pendingMigrations, [historySchemaVersion]);
+    assert.deepEqual(plan.pendingMigrations, [
+      historyAccountTimeSchemaVersion,
+      historySchemaVersion,
+    ]);
+    assert.deepEqual(plan.catalogDiff.createTables, ["basalt_model_traffic"]);
     assert.deepEqual(plan.catalogDiff.addColumns, []);
     assert.deepEqual(plan.catalogDiff.addIndexes, ["basalt_model_requests_account_time"]);
     assert.equal(plan.lockTimeout, "500ms");
@@ -96,8 +106,15 @@ test("schema v3 adds only the account-time index; its dry run, repeat apply and 
       });
       const preview = await runHistoryOperator(options, "a".repeat(32), connect);
       assert.equal(writes, 0);
-      assert.deepEqual(preview.pendingDdl, historyAccountTimeStatements);
+      assert.deepEqual(preview.pendingDdl, [
+        ...historyAccountTimeStatements,
+        ...historyTrafficStatements,
+      ]);
       assert.deepEqual(preview.migrationMarkers, [
+        {
+          text: "INSERT INTO basalt_model_history_migrations (name) VALUES ($1)",
+          values: [historyAccountTimeSchemaVersion],
+        },
         {
           text: "INSERT INTO basalt_model_history_migrations (name) VALUES ($1)",
           values: [historySchemaVersion],
@@ -105,7 +122,9 @@ test("schema v3 adds only the account-time index; its dry run, repeat apply and 
       ]);
       assert.deepEqual(
         JSON.parse(await readFile(path, "utf8")).report.pendingDdl,
-        historyAccountTimeStatements,
+        [...historyAccountTimeStatements, ...historyTrafficStatements],
+        historyAccountTimeSchemaVersion,
+        historyTrafficStatements,
       );
       await runHistoryOperator({ ...options, apply: true }, "a".repeat(32), connect);
       assert.equal(writes, 1);
@@ -135,7 +154,12 @@ test("schema v3 adds only the account-time index; its dry run, repeat apply and 
       (await db.query("SELECT name FROM basalt_model_history_migrations ORDER BY name")).rows.map(
         (row) => row.name,
       ),
-      [historyBaseSchemaVersion, historyAppSchemaVersion, historySchemaVersion],
+      [
+        historyBaseSchemaVersion,
+        historyAppSchemaVersion,
+        historyAccountTimeSchemaVersion,
+        historySchemaVersion,
+      ],
     );
     assert.equal(await appAttributionReady(db), true);
     const after = await modelHistorySchemaPlan(db);
@@ -150,6 +174,34 @@ test("schema v3 adds only the account-time index; its dry run, repeat apply and 
       code: "55000",
     });
     await assert.rejects(db.query("TRUNCATE basalt_model_requests"), { code: "55000" });
+  });
+});
+
+test("a retained v3 database needs only the new purpose ledger", async () => {
+  await seriesFixture(async ({ db, insert }) => {
+    await homeMetadataFixture(db);
+    await insert({ inputTokens: "9007199254740993" });
+    const before = (
+      await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_requests r")
+    ).rows;
+    await db.query("DROP TABLE basalt_model_traffic");
+    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+      historySchemaVersion,
+    ]);
+    const plan = await modelHistorySchemaPlan(db);
+    assert.deepEqual(plan.pendingMigrations, [historySchemaVersion]);
+    assert.deepEqual(plan.catalogDiff.createTables, ["basalt_model_traffic"]);
+    assert.deepEqual(plan.catalogDiff.addIndexes, []);
+    assert.deepEqual(plan.catalogDiff.addColumns, []);
+    await migrateModelHistory(db);
+    assert.deepEqual(
+      (await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_requests r")).rows,
+      before,
+    );
+    assert.equal(
+      (await db.query("SELECT count(*)::text AS n FROM basalt_model_traffic")).rows[0]!.n,
+      "0",
+    );
   });
 });
 
