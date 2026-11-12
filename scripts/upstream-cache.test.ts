@@ -19,9 +19,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { installUpstreamDependencies } from "./upstream-dependencies.ts";
 import { prepareUpstreamCheckout, withCacheLock } from "./upstream-cache.ts";
+import { fixtureInventory } from "./upstream-fixture-inventory.ts";
 
 test("two carried checkouts share installed package bytes and retain their own workspace source", async (t) => {
-  const directory = mkdtempSync(join(tmpdir(), "basalt-upstream-share-"));
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), "basalt-upstream-share-")));
+  const inventory = fixtureInventory(t, directory, { processTable: true });
   t.after(() => {
     execFileSync("chmod", ["-R", "u+w", directory]);
     rmSync(directory, { recursive: true, force: true });
@@ -93,6 +95,7 @@ test("two carried checkouts share installed package bytes and retain their own w
     ],
     { stdio: ["ignore", "ignore", "inherit", "ipc"] },
   );
+  inventory.track(reader.pid!);
   t.after(() => {
     if (reader.exitCode === null && reader.signalCode === null) reader.kill("SIGKILL");
   });
