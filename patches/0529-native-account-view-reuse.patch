@@ -13105,10 +13105,27 @@ index 79ec8a6..5743b82 100644
  /** Only products supply the account's authorized reporter apps, as for credential checks. */
  export const AccountObservationInput = /* @__PURE__ */ (() =>
 diff --git a/packages/sdk/src/contracts/account.ts b/packages/sdk/src/contracts/account.ts
-index 569c80d..d9f288e 100644
+index 569c80d..4b4eeb4 100644
 --- a/packages/sdk/src/contracts/account.ts
 +++ b/packages/sdk/src/contracts/account.ts
-@@ -47,88 +47,13 @@ export const Account = /* @__PURE__ */ (() =>
+@@ -3,7 +3,6 @@ import { AccountCheckFailure } from "./account-check-failure.ts";
+ export { AccountCheckFailure } from "./account-check-failure.ts";
+ import { AccountAcquisitionUnavailable } from "./account-acquisition-driver.ts";
+ import { AccountObservationView, AccountObservationInput } from "./account-observation.ts";
+-import { ProviderError } from "apps/contracts";
+ import { InteractiveRetirementBusy, InteractiveRetirementFailed } from "./interactive-errors.ts";
+ import { UserFacingError } from "@executor-js/utils/user-facing-error";
+ import { ApiError } from "@executor-js/utils/api-error";
+@@ -11,7 +10,7 @@ import { ApiError } from "@executor-js/utils/api-error";
+ import { type Effect, type Redacted, Schema } from "effect";
+ import { AccessDependencyUnavailable, StorageError, CredentialsError } from "./shared.ts";
+ import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
+-import { AccountInfo, AccountStatus } from "apps/contracts";
++import { AccountInfo } from "apps/contracts";
+ import type { UiAccountProblem } from "apps/ui/contracts";
+ import type { App, AppAccounts } from "./apps.ts";
+ import { AccountId, AppId, JsonObject, OwnerId, ProviderId } from "./shared.ts";
+@@ -47,88 +46,13 @@ export const Account = /* @__PURE__ */ (() =>
  
  export type Account = typeof Account.Type;
  
