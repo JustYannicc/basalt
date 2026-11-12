@@ -23,6 +23,8 @@ export const knownTypes = new Set([
   "CloudflareError",
   "CloudflareRateLimited",
   "InvalidRoute",
+  // A declared bucket removed between the reads that observe it.
+  "NoSuchBucket",
   "WorkerNotFound",
   "WorkerVersionNotFound",
   "BadRequest",

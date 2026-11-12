@@ -104,7 +104,8 @@ export function releaseEvidence(directory: string, candidate: string, encryption
     async bucketRead(read: BucketRead) {
       const safe = Schema.decodeUnknownSync(
         Schema.Struct({
-          fqn: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.-]{1,128}$/u)),
+          // The plan's own resource name, such as "Storage/VaultAttachments"; never provider text.
+          fqn: Schema.NonEmptyString,
           attempt: Schema.Number.check(
             Schema.isInt(),
             Schema.isBetween({ minimum: 1, maximum: bucketReadAttempts }),
@@ -113,6 +114,7 @@ export function releaseEvidence(directory: string, candidate: string, encryption
             Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u),
           ),
           outcome: Schema.Literals(["ok", "refused", "unknown", ...knownTypes]),
+          refusal: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-z0-9-]{1,80}$/u))),
           reason: Schema.optional(
             Schema.Literals([
               "TransportError",

@@ -8,6 +8,8 @@ export interface BucketRead {
   readonly at: string;
   /** "ok", "refused" for a read that observed a refusal, or the failure's closed provider type. */
   readonly outcome: string;
+  /** The barrier's own closed refusal reason, for a read that observed one. */
+  readonly refusal?: string;
   readonly reason?: string;
   readonly status?: number;
 }
@@ -39,6 +41,9 @@ const retryable = (failure: ReturnType<typeof safeProviderFailure>) =>
   transient.has(failure.type) ||
   (failure.type === "HttpClientError" && failure.reason === "TransportError");
 
+/** Recording must never fail a release, so only a closed reason is copied. */
+const closedReason = /^[a-z0-9-]{1,80}$/u;
+
 const pause = (milliseconds: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
@@ -64,9 +69,12 @@ export function retryingBucketReads(
           fqn,
           attempt,
           at: new Date().toISOString(),
-          // A refusal is the observation itself (policy drift, an unknown location); its reason and
-          // exact change are in the refusal, so the attempt only notes that the read answered.
+          // A refusal is the observation itself (policy drift, an unknown location): final, with its
+          // exact change in the refusal and its closed reason here.
           outcome: refused ? "refused" : (failure?.type ?? "ok"),
+          ...(refused && closedReason.test((result.error as BarrierRefusal).reason)
+            ? { refusal: (result.error as BarrierRefusal).reason }
+            : {}),
           ...(failure?.reason === undefined ? {} : { reason: failure.reason }),
           ...(failure?.status === undefined ? {} : { status: failure.status }),
         });

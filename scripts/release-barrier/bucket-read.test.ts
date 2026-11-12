@@ -160,10 +160,95 @@ test("policy drift, refused access and writes are never retried", async () => {
       reads.map(({ outcome }) => outcome),
       [error === drift ? "refused" : "Forbidden"],
     );
+    assert.deepEqual(
+      reads.map(({ refusal }) => refusal),
+      [error === drift ? "declared-bucket-policy-drift" : undefined],
+    );
   }
   const { calls, base } = provider([]);
   const buckets = retryingBucketReads(base, { wait: async () => assert.fail("writes never wait") });
   await assert.rejects(buckets.create(target));
   await assert.rejects(buckets.configure(target));
   assert.deepEqual(calls, { read: 0, create: 1, configure: 1 });
+});
+
+test("a bucket removed between its reads is refused as NoSuchBucket, once", async () => {
+  // The real SDK: the bucket exists for the first read, then its domain listing finds it gone.
+  let calls = 0;
+  const client = HttpClient.make((request, url) =>
+    Effect.sync(() => {
+      calls++;
+      if (url.pathname.endsWith("/domains/managed"))
+        return HttpResponse.fromWeb(
+          request,
+          Response.json(
+            { success: false, errors: [{ code: 10006, message: "private provider text" }] },
+            { status: 404 },
+          ),
+        );
+      return HttpResponse.fromWeb(
+        request,
+        Response.json({
+          success: true,
+          errors: [],
+          messages: [],
+          result: { name: target.bucketName, jurisdiction: "eu", storage_class: "Standard" },
+        }),
+      );
+    }),
+  );
+  const real: BucketProvider = {
+    ...provider([]).base,
+    read: (bucket, fqn) =>
+      Effect.runPromise(
+        readDeclaredBucket(bucket, fqn).pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+          Effect.provideService(
+            Credentials,
+            Effect.succeed({
+              type: "apiToken",
+              apiToken: Redacted.make("synthetic-never-sent"),
+              apiBaseUrl: "https://api.cloudflare.com/client/v4",
+            }),
+          ),
+        ),
+      ),
+  };
+  const reads: BucketRead[] = [];
+  const buckets = retryingBucketReads(real, {
+    record: async (read) => void reads.push(read),
+    wait: async () => assert.fail("a missing bucket is final"),
+  });
+  const refusal = await bucketRead("VaultAttachments", () =>
+    buckets.read(target, "VaultAttachments"),
+  ).catch((error: unknown) => error);
+  assert.equal(calls, 2);
+  assert.deepEqual(changed(refusal), [
+    { path: "$operation", old: null, new: "read-bucket" },
+    { path: "$provider.type", old: null, new: "NoSuchBucket" },
+    { path: "$provider.codes.0", old: null, new: 10006 },
+  ]);
+  assert.deepEqual(
+    reads.map(({ outcome }) => outcome),
+    ["NoSuchBucket"],
+  );
+});
+
+test("plan resource names of any shape are recorded without failing the release", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "bucket-read-names-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const evidence = releaseEvidence(directory, "a".repeat(40));
+  for (const fqn of ["Storage/VaultAttachments", `Nested/${"Deep/".repeat(60)}Bucket`]) {
+    const { base } = provider([async () => observation]);
+    const buckets = retryingBucketReads(base, { record: evidence.bucketRead });
+    assert.equal(await buckets.read(target, fqn), observation);
+  }
+  const recorded = JSON.parse(await readFile(join(directory, "bucket-reads.json"), "utf8"));
+  assert.deepEqual(
+    recorded.reads.map(({ fqn, outcome }: BucketRead) => ({ fqn, outcome })),
+    [
+      { fqn: "Storage/VaultAttachments", outcome: "ok" },
+      { fqn: `Nested/${"Deep/".repeat(60)}Bucket`, outcome: "ok" },
+    ],
+  );
 });
