@@ -80,7 +80,7 @@ test("the dashboard installs the plugin release this checkout publishes", () => 
   assert.equal(link.protocol, "obsidian:");
   assert.equal(link.host || link.pathname.replace(/^\/+/u, ""), "brat");
   assert.equal(link.searchParams.get("plugin"), "owner/repo");
-  assert.equal(link.searchParams.get("version"), basaltSyncTag);
+  assert.equal(link.searchParams.get("version"), "latest");
 });
 
 test("BRAT is linked unless the release is known to be missing", () => {

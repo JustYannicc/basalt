@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The live host protocol's drive history takes an optional note path and returns each commit's server-written time, and a devices query reports the head, the last change time and each device grant's last sync with the head it saw. The host passes the caller it already authenticated to the vault object, which records a grant's sync only from the shapes of the plugin's sync calls (its one-entry heartbeat listing, change ranges and import calls), so no plugin update is needed and an agent's ordinary listings, reads and writes record nothing. The vault knows only the grant id, so an agent making one of those exact calls is recorded as well; the host, which knows each grant's connection, tells devices apart exactly. Protocols 38 to 40 keep their frozen drive and workflow-step commands. Connect Obsidian links BRAT on its latest track, not the dashboard's version: BRAT freezes any other version and skips it in its startup update, so an install would stay on the version it was connected with."
+    }
+  }
+}
