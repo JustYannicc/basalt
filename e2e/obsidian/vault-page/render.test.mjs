@@ -5,6 +5,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { MessageChannel as NodeMessageChannel } from "node:worker_threads";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "esbuild";
@@ -92,6 +93,26 @@ before(async () => {
   writeFileSync(bundle, result.outputFiles[0].text);
   GlobalRegistrator.register();
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  // React's development act() can't reach Node's timers from inside a bundle, so it queues each
+  // task on a new MessageChannel and posts once. Assigning onmessage keeps a Node port open
+  // forever, so this channel closes itself after that one delivery.
+  globalThis.MessageChannel = class extends NodeMessageChannel {
+    constructor() {
+      super();
+      const { port1, port2 } = this;
+      Object.defineProperty(port1, "onmessage", {
+        configurable: true,
+        set(handler) {
+          port1.addEventListener("message", (event) => {
+            port1.close();
+            port2.close();
+            handler(event);
+          });
+          port1.start();
+        },
+      });
+    }
+  };
   ui = await import(pathToFileURL(bundle).href);
 });
 
@@ -240,6 +261,8 @@ test("raw HTML never renders, only http(s) links stay links, and remote images n
     },
   );
   assert.equal(container.querySelector("script, b, [onerror]"), null);
+  // Dropped, as the dashboard drops it: not shown as text either.
+  assert.ok(!container.textContent.includes("<script>"), "raw HTML shown as text");
   assert.equal(container.querySelector("img"), null);
   assert.equal(container.querySelector(".embed-missing")?.textContent, "remote");
   assert.deepEqual(reads, []);
