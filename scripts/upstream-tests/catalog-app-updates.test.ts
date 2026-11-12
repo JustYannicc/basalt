@@ -15,7 +15,9 @@ const { breakingChanges, catalogEntryId, decideCatalogOffer, decideCatalogUpdate
   `${implementation}catalog-app-updates.ts`,
 );
 const { sweepCatalogApp } = await load(`${implementation}catalog-app-defaults.ts`);
-const { applyCatalogUpdate, catalogAppState, catalogAppStatus } = await load(`${implementation}catalog-app-offers.ts`);
+const { applyCatalogUpdate, catalogAppState, catalogAppStatus } = await load(
+  `${implementation}catalog-app-offers.ts`,
+);
 const { AppVersionChanged } = await load("packages/sdk/src/contracts/version.ts");
 const { SourceError } = await load("packages/sdk/src/contracts/source.ts");
 const { AppInputs } = await load("packages/sdk/src/contracts/apps.ts");

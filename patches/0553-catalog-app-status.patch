@@ -163,16 +163,15 @@ diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contrac
  const sourceQuery = Atom.family((key: SourceKey) =>
    HostedClient.query(
      "apps",
-@@ -185,6 +188,8 @@ const activateApp = Atom.family((key: AppKey) =>
+@@ -185,6 +188,7 @@ const activateApp = Atom.family((key: AppKey) =>
              get.refresh(toolsAtom(key));
              get.refresh(versionsAtom(key));
              get.refresh(catalogUpdateQuery(key));
 +            get.refresh(catalogStatusQuery(key));
-+          get.refresh(catalogStatusQuery(key));
            }),
          ),
        ),
-@@ -200,6 +205,7 @@ const applyCatalogUpdate = Atom.family((key: AppKey) =>
+@@ -200,6 +204,7 @@ const applyCatalogUpdate = Atom.family((key: AppKey) =>
            get.refresh(toolsAtom(key));
            get.refresh(versionsAtom(key));
            get.refresh(catalogUpdateQuery(key));
@@ -180,7 +179,7 @@ diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contrac
          }),
        ),
      ),
-@@ -657,6 +663,11 @@ export const versionsAtom = (key: {
+@@ -657,6 +662,11 @@ export const versionsAtom = (key: {
    readonly organization: OrganizationReference;
    readonly app: AppId;
  }) => versionsQuery(new AppKey(key));
@@ -289,13 +288,13 @@ new file mode 100644
 +    <p>
 +      {state === "offered" ? (
 +        <>
-+          A catalog update is waiting for review in {versions}. It didn’t apply by itself because
-+          it changes this app’s accounts or replaces changes made here.
++          A catalog update is waiting for review in {versions}. It didn’t apply by itself because it
++          changes this app’s accounts or replaces changes made here.
 +        </>
 +      ) : (
 +        <>
-+          This app was changed after it came from the catalog, so catalog updates wait for review
-+          in {versions} instead of applying by themselves.
++          This app was changed after it came from the catalog, so catalog updates wait for review in{" "}
++          {versions} instead of applying by themselves.
 +        </>
 +      )}
 +      {due !== null && (checking ? " Checking the catalog now." : <> Next catalog check {due}.</>)}
