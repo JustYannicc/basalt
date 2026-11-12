@@ -49,7 +49,11 @@ function fixture(t: TestContext) {
   });
   mkdirSync(consumer);
   writeFileSync(join(consumer, "package.json"), '{"name":"private-layout-fixture"}');
-  const { key } = dependencyIdentity(consumer, "fixture-pin");
+  const { key } = dependencyIdentity(
+    consumer,
+    "fixture-pin",
+    process.env.BASALT_CI_OMIT_RELEASE_DOWNLOADS === "true",
+  );
   const entry = join(cache, "prepared/fixture-pin", key);
   const store = join(entry, "generations/published");
   const bytes = join(store, "node_modules/.bun/fixture@1/node_modules/fixture");
