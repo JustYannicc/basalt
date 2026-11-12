@@ -459,7 +459,7 @@ diff --git a/e2e/tests/pool-account-selection.spec.ts b/e2e/tests/pool-account-s
  
  layer(HostedLive, { excludeTestServices: true })("Pool selection", (it) => {
    it.effect(scenarios.poolAccountSelection.title, (context) =>
-@@ -152,3 +159,432 @@
+@@ -152,3 +159,434 @@
      ),
    );
  });
@@ -676,12 +676,14 @@ diff --git a/e2e/tests/pool-account-selection.spec.ts b/e2e/tests/pool-account-s
 +          return pending.held;
 +        }).pipe(
 +          Effect.ensuring(
-+            browser.use("Release the held selection save", (page) => {
-+              pending.release();
-+              return note(page, balancedNote)
-+                .waitFor()
-+                .then(() => page.unroute("**/pool-selection-policy", pending.hold));
-+            }),
++            browser
++              .use("Release the held selection save", (page) => {
++                pending.release();
++                return note(page, balancedNote)
++                  .waitFor()
++                  .then(() => page.unroute("**/pool-selection-policy", pending.hold));
++              })
++              .pipe(Effect.orDie),
 +          ),
 +        );
 +        const [busy, chosen, locked, creditLocked, pendingShot] = pendingState;

@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-account-selection",
   "file": "0523-pool-account-selection.patch",
-  "content_sha256": "a34b28c9f8ac45b4b1d61660ed890d6dd50e7ce7e2593ae536114e8559f56a40",
+  "content_sha256": "1868ce9b673185b6e3298f540b7e41e192d86b135cca30c8a0c26eb11fb96158",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
