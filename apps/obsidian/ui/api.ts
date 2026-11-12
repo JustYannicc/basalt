@@ -1,32 +1,39 @@
-import { json, type Schema } from "apps";
+import { json, type QueryContext, type Schema } from "apps";
 import { createAppClient, queryReference, type OperationReference } from "apps/client";
+import type { ImportStatus, Version } from "./model.ts";
 import type { attachmentTools } from "../attachments.ts";
 import type { importTools } from "../imports.ts";
-import type { listNotes, readAttachment, readNote, searchNotes } from "../index.ts";
-import type { Devices, ImportStatus, Version } from "./model.ts";
 
 const client = createAppClient();
 // The tools return their drive results unchanged; the page reads them as the tools declare.
 const run = <I, O>(reference: OperationReference<I, O, "query">, input: NoInfer<I>): Promise<O> =>
   client.query(reference, input, json() as unknown as Schema<O, boolean>);
 
+// The app's note tools pass their input to the drive and return its answer, so the drive's own
+// method types describe them without the page reaching into the app's tool definitions.
+type Drive = QueryContext<{ drive: true }>["drive"];
+type Method = "list" | "read" | "search" | "attachment" | "history" | "devices";
+// A method without parameters (devices) is a tool that takes an empty object.
+type Input<M extends Method> =
+  Parameters<Drive[M]> extends [] ? Record<string, never> : NonNullable<Parameters<Drive[M]>[0]>;
+const driveTool = <M extends Method>(tool: string) =>
+  queryReference<never>(tool as never) as unknown as OperationReference<
+    Input<M>,
+    Awaited<ReturnType<Drive[M]>>,
+    "query"
+  >;
+
 const tools = {
-  listNotes: queryReference<typeof listNotes>("listNotes"),
-  readNote: queryReference<typeof readNote>("readNote"),
-  searchNotes: queryReference<typeof searchNotes>("searchNotes"),
-  readAttachment: queryReference<typeof readAttachment>("readAttachment"),
+  listNotes: driveTool<"list">("listNotes"),
+  readNote: driveTool<"read">("readNote"),
+  searchNotes: driveTool<"search">("searchNotes"),
+  readAttachment: driveTool<"attachment">("readAttachment"),
+  // An older server refuses `path` and has no `devices`; the page then degrades.
+  history: driveTool<"history">("history"),
+  devices: driveTool<"devices">("devices"),
   importStatus: queryReference<(typeof importTools)["importStatus"]>("importStatus"),
   fileInfo: queryReference<(typeof attachmentTools)["fileInfo"]>("fileInfo"),
 };
-// History filtered by note and device sync records come from the vault-storage server; an older
-// server refuses `path` and has no `devices`, and the page degrades.
-const named = <I, O>(tool: string) =>
-  queryReference<never>(tool as never) as unknown as OperationReference<I, O, "query">;
-const historyTool = named<
-  { readonly path?: string; readonly at?: string; readonly limit?: number },
-  readonly Version[]
->("history");
-const devicesTool = named<Record<string, never>, Devices>("devices");
 
 type ListPage = Awaited<ReturnType<typeof list>>;
 export type Entry = ListPage["entries"][number];
@@ -152,7 +159,7 @@ async function attachment(path: string, type: string): Promise<Blob | null> {
  * drive without per-file history refuses `path`, and one without commit times leaves `time` out.
  */
 async function noteHistory(path: string, limit: number): Promise<Version[] | null> {
-  const versions: readonly Version[] | null = await run(historyTool, { path, limit }).catch(
+  const versions: readonly Version[] | null = await run(tools.history, { path, limit }).catch(
     () => null,
   );
   return versions !== null && versions.every((version) => typeof version.time === "string")
@@ -170,9 +177,9 @@ export const vault = {
   noteHistory,
   /** The vault's newest version; dated once the server records commit times. */
   latest: (): Promise<Version | null> =>
-    run(historyTool, { limit: 1 })
+    run(tools.history, { limit: 1 })
       .then((versions: readonly Version[]) => versions[0] ?? null)
       .catch(() => null),
-  devices: () => run(devicesTool, {}).catch(() => null),
+  devices: () => run(tools.devices, {}).catch(() => null),
 };
 export type VaultApi = typeof vault;
