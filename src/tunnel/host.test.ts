@@ -56,3 +56,62 @@ test("any other Origin is refused before access is read", async () => {
       `Origin ${JSON.stringify(origin)}`,
     );
 });
+
+test("timing distinguishes a held access check from a held lease", async (context) => {
+  const events: { stage: string }[] = [];
+  context.mock.method(console, "info", (line: string) => {
+    if (line.startsWith("NATIVE_TUNNEL_TIMING ")) events.push(JSON.parse(line.slice(21)));
+  });
+  const access = Promise.withResolvers<Response>();
+  const lease = Promise.withResolvers<Response>();
+  const enteredLease = Promise.withResolvers<void>();
+  const pending = handleTunnel(
+    new Request(tunnelUrl, {
+      headers: {
+        upgrade: "websocket",
+        "sec-websocket-protocol": tunnelProtocol,
+        authorization: "Bearer synthetic-native-token",
+      },
+    }),
+    {
+      POOL_APP_SIGNING_KEY: "0".repeat(64),
+      TOOLS_SERVICE: { fetch: () => access.promise },
+      POOL_SERVICE: {
+        fetch: () => {
+          enteredLease.resolve();
+          return lease.promise;
+        },
+      },
+    },
+  );
+  try {
+    assert.deepEqual(
+      events.map((event) => event.stage),
+      ["start"],
+    );
+    access.resolve(
+      Response.json({
+        id: "native:test",
+        userId: "test",
+        clientId: "test",
+        expiresAt: Date.now() + 60_000,
+        policy: { kind: "native", computer: "test", pool: "test", models: true },
+      }),
+    );
+    await enteredLease.promise;
+    assert.deepEqual(
+      events.map((event) => event.stage),
+      ["start", "access"],
+    );
+    lease.reject(new Error("synthetic lease failure"));
+    assert.equal((await pending).status, 503);
+    assert.deepEqual(
+      events.map((event) => event.stage),
+      ["start", "access", "failed"],
+    );
+  } finally {
+    access.resolve(new Response(null, { status: 401 }));
+    lease.resolve(new Response(null, { status: 503 }));
+    await pending;
+  }
+});

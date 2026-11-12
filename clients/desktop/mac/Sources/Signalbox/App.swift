@@ -1,6 +1,7 @@
 import AppKit
 import ServiceManagement
 import SignalboxKit
+import Sparkle
 import SwiftUI
 
 @main
@@ -34,7 +35,14 @@ struct MenuBarIcon: View {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-  let shell = Shell()
+  let updater: Updater
+  let shell: Shell
+
+  override init() {
+    updater = Updater()
+    shell = Shell(updates: updater.updates)
+    super.init()
+  }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     // A write to a host that just exited must fail the request, not terminate the app.
@@ -42,6 +50,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     shell.start()
   }
 
+  /// Every quit lands here, including the updater's: its installer agent quits this app with
+  /// NSRunningApplication.terminate, a normal quit event, before it swaps the bundle and relaunches.
+  /// Stopping closes the host's stdin, which asks it to stop the connection it started and exit.
+  /// A host still running after 8 seconds gets SIGTERM, which it handles with the same close, so
+  /// the host and its connection can outlive this app until that close finishes.
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
     Task {
       await shell.stop()
@@ -51,18 +64,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 }
 
+/// Owns the one updater. Info.plist sets the signed feed, the hourly check and silent installs,
+/// so updates download in the background and install as soon as they're ready.
+@MainActor
+final class Updater: NSObject, SPUUpdaterDelegate, SPUStandardUserDriverDelegate {
+  let updates: AppUpdates
+  private var controller: SPUStandardUpdaterController?
+  private var observation: NSKeyValueObservation?
+
+  override init() {
+    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+    updates = AppUpdates(version: version ?? "unknown")
+    super.init()
+    let controller = SPUStandardUpdaterController(
+      startingUpdater: true, updaterDelegate: self, userDriverDelegate: self)
+    self.controller = controller
+    updates.check = { [weak controller] in controller?.checkForUpdates(nil) }
+    observation = controller.updater.observe(\.canCheckForUpdates, options: [.initial, .new]) {
+      [weak self] updater, _ in
+      MainActor.assumeIsolated { self?.updates.canCheck = updater.canCheckForUpdates }
+    }
+  }
+
+  /// A menu-bar app has no window to bring forward, so a scheduled update must not steal focus.
+  nonisolated var supportsGentleScheduledUpdateReminders: Bool { true }
+
+  /// Opens at login and rarely quits, so waiting for a quit could hold an update back for weeks.
+  /// Installing now quits through applicationShouldTerminate, the same stop as any quit, and the
+  /// relaunched app starts its own host.
+  func updater(
+    _ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
+    immediateInstallationBlock immediateInstallHandler: @escaping () -> Void
+  ) -> Bool {
+    immediateInstallHandler()
+    return true
+  }
+}
+
 @MainActor
 final class Shell {
   let location: HostLocation
   /// A separate --home is a test profile; it never registers the login item.
   let defaultProfile: Bool
   let model: PanelModel
+  let updates: AppUpdates
   private var host: HostProcess?
   private var poller: Task<Void, Never>?
   private var appsTask: Task<Void, Never>?
   private var visible = false
 
-  init() {
+  init(updates: AppUpdates) {
+    self.updates = updates
     location = HostLocation.resolve(bundle: .main, arguments: CommandLine.arguments)
     let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     defaultProfile = location.home == HostLocation.defaultHome(applicationSupport: support)
@@ -89,7 +141,8 @@ final class Shell {
       quit: { NSApp.terminate(nil) },
       openAtLogin: Binding(
         get: { SMAppService.mainApp.status == .enabled },
-        set: { [weak self] in self?.setLoginItem($0) }))
+        set: { [weak self] in self?.setLoginItem($0) }),
+      updates: updates)
   }
 
   func start() {

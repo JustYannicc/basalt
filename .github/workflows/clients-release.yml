@@ -36,6 +36,14 @@ on:
         description: Run id of a walked build of this workflow on main to publish; empty builds only.
         required: false
         default: ""
+      update_feed:
+        description: Test builds only. An https URL ending in /appcast.xml the Mac app checks instead of the Latest release's; publish refuses a run built with any feed but the Latest release's.
+        required: false
+        default: ""
+      test_version:
+        description: Test builds only, with an update_feed other than the Latest release's. Builds every client as this higher major.minor.patch version, for walking an update from this commit's version.
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -50,8 +58,29 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      feed: ${{ steps.feed.outputs.feed }}
+      android_folder: ${{ steps.android-feed.outputs.folder }}
+      android_manifest: ${{ steps.android-feed.outputs.manifest }}
     steps:
       - uses: actions/checkout@v4
+      # Every job that builds rewrites the checkout the same way, so the agreement check below and
+      # version.txt see the test version. Keeping it from shipping: test-version.sh refuses it unless
+      # update_feed names a feed other than the Latest release's, and publish refuses a run whose
+      # recorded feed isn't the Latest release's or whose version.txt differs from its commit's.
+      - name: Apply a test version
+        env:
+          TEST_VERSION: ${{ inputs.test_version }}
+          UPDATE_FEED: ${{ inputs.update_feed }}
+        run: bash clients/test-version.sh "$TEST_VERSION" "$UPDATE_FEED" "$GITHUB_REPOSITORY"
+      # Installed Mac apps check this feed for updates; publish refuses any feed but the Latest release's.
+      - id: feed
+        name: Choose the Mac update feed
+        env:
+          UPDATE_FEED: ${{ inputs.update_feed }}
+        run: |
+          # A bare assignment keeps the script's refusal status, so a bad URL fails the step.
+          feed="$(bash clients/desktop/mac/update-feed.sh url "$GITHUB_REPOSITORY" "$UPDATE_FEED")"
+          echo "feed=$feed" >> "$GITHUB_OUTPUT"
       - id: version
         name: Read the one clients version
         run: |
@@ -73,6 +102,20 @@ jobs:
             exit 1
           fi
           echo "version=$clients" >> "$GITHUB_OUTPUT"
+      # Installed Android apps read the Latest release's android-update.json, which names the APK
+      # pinned to its tag. A test feed (already checked above) hosts both in its own folder instead.
+      - id: android-feed
+        name: Choose the Android update manifest
+        env:
+          FEED: ${{ steps.feed.outputs.feed }}
+        run: |
+          if [ "$FEED" = "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/appcast.xml" ]; then
+            echo "manifest=https://github.com/$GITHUB_REPOSITORY/releases/latest/download/android-update.json" >> "$GITHUB_OUTPUT"
+          else
+            folder="${FEED%/appcast.xml}"
+            echo "folder=$folder" >> "$GITHUB_OUTPUT"
+            echo "manifest=$folder/android-update.json" >> "$GITHUB_OUTPUT"
+          fi
 
   desktop:
     needs: version
@@ -94,6 +137,13 @@ jobs:
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
+      # Same rewrite as the version job, so the packages carry the version assemble expects.
+      - name: Apply a test version
+        shell: bash
+        env:
+          TEST_VERSION: ${{ inputs.test_version }}
+          UPDATE_FEED: ${{ inputs.update_feed }}
+        run: bash clients/test-version.sh "$TEST_VERSION" "$UPDATE_FEED" "$GITHUB_REPOSITORY"
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.4
@@ -122,6 +172,7 @@ jobs:
         if: matrix.platform == 'mac'
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          FEED_URL: ${{ needs.version.outputs.feed }}
         run: bash clients/desktop/mac/package.sh "$VERSION"
       - name: Package the command line connection
         if: matrix.platform == 'linux'
@@ -168,11 +219,19 @@ jobs:
     timeout-minutes: 40
     env:
       SIGNALBOX_CLIENT_RELEASE: "true"
+      EXPO_PUBLIC_CLIENT_UPDATE_MANIFEST: ${{ needs.version.outputs.android_manifest }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
+      # Same rewrite as the version job; app.config.ts derives the APK's versionCode from it.
+      - name: Apply a test version
+        shell: bash
+        env:
+          TEST_VERSION: ${{ inputs.test_version }}
+          UPDATE_FEED: ${{ inputs.update_feed }}
+        run: bash clients/test-version.sh "$TEST_VERSION" "$UPDATE_FEED" "$GITHUB_REPOSITORY"
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.4
@@ -255,11 +314,77 @@ jobs:
           path: ${{ runner.temp }}/apk/Signalbox-android.apk
           if-no-files-found: error
 
+  # The update key never reaches a job that runs the branch's build code either: this job checks out
+  # only the feed script, signs the built Mac zip with Sparkle's pinned tool and writes appcast.xml.
+  sign-mac-update:
+    needs: [version, desktop]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_run == ''
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: clients/desktop/mac/update-feed.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: clients-mac
+          path: ${{ runner.temp }}/mac
+      # Keep the version in step with the Sparkle pin in clients/desktop/mac/Package.swift.
+      - name: Fetch Sparkle's signing tool
+        env:
+          SPARKLE_SHA256: 1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27
+        run: |
+          fail() {
+            echo "::error::$1"
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          archive="$RUNNER_TEMP/Sparkle-2.10.1.tar.xz"
+          curl -fsSL --retry 3 -o "$archive" https://github.com/sparkle-project/Sparkle/releases/download/2.10.1/Sparkle-2.10.1.tar.xz ||
+            fail "Sparkle-2.10.1.tar.xz couldn't be downloaded (error above)."
+          seen="$(shasum -a 256 "$archive" | cut -d' ' -f1)"
+          [ "$seen" = "$SPARKLE_SHA256" ] ||
+            fail "Sparkle-2.10.1.tar.xz has SHA-256 $seen, not the pinned $SPARKLE_SHA256."
+          mkdir -p "$RUNNER_TEMP/sparkle"
+          tar -xJf "$archive" -C "$RUNNER_TEMP/sparkle" ./bin/sign_update
+      - name: Sign the update and write its feed
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          # The public key every installed app verifies updates with (SUPublicEDKey in
+          # clients/desktop/mac/Info.plist); a fork that signs with its own key sets its own.
+          SPARKLE_PUBLIC_ED_KEY: j9lxkxFJVdfdorvdwagsmTe0yAteJMHGL+ySOkzfwyo=
+          VERSION: ${{ needs.version.outputs.version }}
+          FEED: ${{ needs.version.outputs.feed }}
+        run: |
+          if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then
+            message="Missing SPARKLE_ED_PRIVATE_KEY; the Mac update can't be signed, and installed apps refuse an unsigned one."
+            echo "::error::$message"
+            echo "$message" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/feed"
+          # The key goes to sign_update on stdin and is never written to disk.
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | SPARKLE_BIN="$RUNNER_TEMP/sparkle/bin" bash clients/desktop/mac/update-feed.sh appcast \
+            "$RUNNER_TEMP/mac/Signalbox-Client-$VERSION-mac-arm64.zip" "$VERSION" "$GITHUB_REPOSITORY" "$FEED" "$RUNNER_TEMP/feed/appcast.xml"
+          echo "Signed the Mac update for $VERSION; its appcast.xml is for $FEED." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clients-mac-update
+          path: ${{ runner.temp }}/feed/appcast.xml
+          if-no-files-found: error
+
   # One artifact holds the exact files a later publish run releases, with their hashes and source.
   assemble:
-    needs: [version, desktop, sign-android]
+    needs: [version, desktop, sign-android, sign-mac-update]
     runs-on: ubuntu-latest
     steps:
+      # Only the version-code helper: the release files come from the build jobs' artifacts.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: clients/version-code.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           pattern: clients-*
@@ -268,6 +393,8 @@ jobs:
       - name: Name the files and record their hashes
         env:
           VERSION: ${{ needs.version.outputs.version }}
+          FEED: ${{ needs.version.outputs.feed }}
+          ANDROID_FOLDER: ${{ needs.version.outputs.android_folder }}
           BUILT: ${{ runner.temp }}/built
           OUT: ${{ runner.temp }}/release
         run: |
@@ -290,11 +417,36 @@ jobs:
           take "Signalbox-Client-$VERSION-linux-amd64.deb" Signalbox-linux-amd64.deb
           take Signalbox-android.apk Signalbox-android.apk
           take "signalbox-client-$VERSION.tgz" signalbox-cli.tgz
+          take appcast.xml appcast.xml
+          # Installed Android apps read this from releases/latest to find, check and install the
+          # next version. Its versionCode follows app.config.ts, and the APK must agree.
+          fail() {
+            echo "::error::$1"
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+          apk="$OUT/Signalbox-android.apk"
+          code="$(bash clients/version-code.sh "$VERSION" 2>&1)" || fail "$code"
+          tools="$ANDROID_HOME/build-tools/$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort -V | tail -n1)"
+          badging="$("$tools/aapt2" dump badging "$apk")" || fail "aapt2 $(basename "$tools") couldn't read the signed APK's badging."
+          package="$(printf '%s\n' "$badging" | sed -n "s/^package: name='\([^']*\)' versionCode='\([^']*\)' versionName='\([^']*\)'.*/\1 \2 \3/p")"
+          [ "$package" = "run.signalbox.client $code $VERSION" ] ||
+            fail "The signed APK is '$package' (package versionCode versionName), not 'run.signalbox.client $code $VERSION'. Installed apps compare versionCode to decide on an update."
+          jq -n --arg version "$VERSION" --argjson versionCode "$code" \
+            --arg url "${ANDROID_FOLDER:-https://github.com/$GITHUB_REPOSITORY/releases/download/signalbox-clients-$VERSION}/Signalbox-android.apk" \
+            --arg sha256 "$(sha256sum "$apk" | cut -d' ' -f1)" --argjson size "$(stat -c %s "$apk")" \
+            '{version: $version, versionCode: $versionCode, url: $url, sha256: $sha256, size: $size}' > "$OUT/android-update.json"
           (cd "$OUT" && sha256sum -- * > SHA256SUMS.txt)
           printf '%s\n' "$VERSION" > "$RUNNER_TEMP/version.txt"
           printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/commit.txt"
+          # publish reads this to refuse a test build, whose Mac app checks a feed other than Latest's.
+          printf '%s\n' "$FEED" > "$RUNNER_TEMP/update-feed.txt"
           {
-            echo "Signalbox apps $VERSION from $GITHUB_SHA. Walk these files, then publish them with publish_run=$GITHUB_RUN_ID."
+            if [ "$FEED" = "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/appcast.xml" ]; then
+              echo "Signalbox apps $VERSION from $GITHUB_SHA. Walk these files, then publish them with publish_run=$GITHUB_RUN_ID."
+            else
+              echo "Test build of Signalbox apps $VERSION from $GITHUB_SHA. Its Mac app checks $FEED for updates, so this run can't be published."
+            fi
             echo '```'
             cat "$OUT/SHA256SUMS.txt"
             echo '```'
@@ -306,6 +458,7 @@ jobs:
             ${{ runner.temp }}/release/*
             ${{ runner.temp }}/version.txt
             ${{ runner.temp }}/commit.txt
+            ${{ runner.temp }}/update-feed.txt
           if-no-files-found: error
 
   publish:
@@ -337,7 +490,7 @@ jobs:
           gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name signalbox-clients --dir "$RUNNER_TEMP/walked" ||
             fail "Run $RUN's signalbox-clients artifact couldn't be downloaded; gh's error is above. Usually it's past the repository's artifact retention, or $RUN is a publish run rather than the walked build."
           # upload-artifact roots its paths at their common parent, so assemble's files and their
-          # sums arrive under release/ with version.txt and commit.txt beside it.
+          # sums arrive under release/ with version.txt, commit.txt and update-feed.txt beside it.
           cd "$RUNNER_TEMP/walked" || fail "The downloaded artifact folder is missing."
           held="$(find . -type f | sort | tr '\n' ' ')"
           for file in release/SHA256SUMS.txt version.txt commit.txt; do
@@ -345,6 +498,13 @@ jobs:
           done
           version="$(cat version.txt)"
           commit="$(cat commit.txt)"
+          # A test build's Mac app checks its own feed, so its installs would never see later releases.
+          # Runs from before update_feed existed record no feed and could only build the production one.
+          production="https://github.com/$GITHUB_REPOSITORY/releases/latest/download/appcast.xml"
+          feed="$production"
+          if [ -f update-feed.txt ]; then feed="$(cat update-feed.txt)"; fi
+          [ "$feed" = "$production" ] ||
+            fail "Run $RUN is a test build: its Mac app checks $feed for updates, not $production. Test builds can't be published; build again without update_feed."
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Run $RUN recorded version '$version', not major.minor.patch."
           if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || [ "$commit" != "$head" ]; then
             fail "Run $RUN recorded commit '$commit', but it built $head."
@@ -373,10 +533,48 @@ jobs:
             echo "$1" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
+          # A run built with test_version records a version its commit doesn't have.
+          committed="$(node -p 'require("./clients/package.json").version')"
+          [ "$committed" = "$VERSION" ] ||
+            fail "Run $RUN recorded version $VERSION, but clients/package.json at $COMMIT is $committed. A test_version build can't be published."
+          # Installed Android apps install whatever android-update.json names, so it must name this
+          # release's own APK. A build with update_feed set names its test feed instead.
+          # A run without the file predates in-app updates and still publishes: assemble writes it
+          # on every newer build and fails when it can't, so a new run never arrives without one,
+          # and removing it from a new run's artifact already fails the sums check.
+          if [ -f "$WALKED/android-update.json" ]; then
+            code="$(bash clients/version-code.sh "$VERSION" 2>&1)" || fail "$code"
+            expected="$(jq -cn --arg version "$VERSION" --argjson versionCode "$code" \
+              --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/signalbox-clients-$VERSION/Signalbox-android.apk" \
+              --arg sha256 "$(sha256sum "$WALKED/Signalbox-android.apk" | cut -d' ' -f1)" --argjson size "$(stat -c %s "$WALKED/Signalbox-android.apk")" \
+              '[$version, $versionCode, $url, $sha256, $size]')"
+            seen="$(jq -c '[.version, .versionCode, .url, .sha256, .size]' "$WALKED/android-update.json")" ||
+              fail "Run $RUN's android-update.json isn't JSON."
+            [ "$seen" = "$expected" ] ||
+              fail "Run $RUN's android-update.json has $seen, but publishing needs $expected (version, versionCode, url, sha256, size). Builds made with update_feed can't be published."
+          else
+            echo "Run $RUN has no android-update.json: it was built before in-app updates, so installed Android apps won't be offered $VERSION from inside the app." >> "$GITHUB_STEP_SUMMARY"
+          fi
           tag="signalbox-clients-$VERSION"
           state="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || echo missing)"
           [ "$state" != "false" ] ||
             fail "$tag is already published, and published versions never change. To publish $COMMIT, raise version in clients/package.json, clients/desktop/package.json, clients/mobile/package.json and clients/mobile/app.config.ts."
+          # Installed Mac apps read the Latest release's appcast.xml, so a clients Latest never moves
+          # back to an older version. A Latest that isn't a clients release is replaced as before.
+          if latest="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>"$RUNNER_TEMP/latest.err")"; then
+            :
+          elif grep -q "HTTP 404" "$RUNNER_TEMP/latest.err"; then
+            latest=""
+          else
+            fail "GitHub didn't return the Latest release: $(cat "$RUNNER_TEMP/latest.err")"
+          fi
+          if [[ "$latest" =~ ^signalbox-clients-([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            current="${BASH_REMATCH[1]}"
+            highest="$(printf '%s\n' "$current" "$VERSION" | sort -V | tail -n1)"
+            if [ "$VERSION" = "$current" ] || [ "$highest" != "$VERSION" ]; then
+              fail "Clients $VERSION is at or below the Latest release $latest, so publishing it would move Latest backwards. Raise the clients version above $current."
+            fi
+          fi
           # An interrupted create leaves a draft nobody can see; replace it with these files.
           if [ "$state" = "true" ]; then gh release delete "$tag" --yes; fi
           # A bare assignment keeps ls-remote's status; the peeled line, listed last, names the commit.

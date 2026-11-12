@@ -157,6 +157,9 @@ export const styles = StyleSheet.create({
   content: { padding: 24, gap: 24, width: "100%", maxWidth: 660, alignSelf: "center" },
   stack: { gap: 8 },
   group: { gap: 16 },
+  // Two buttons share a row on common phones and stack below ~350pt so labels never truncate.
+  row: { flexDirection: "row", flexWrap: "wrap", gap: 16 },
+  cell: { flexGrow: 1, flexBasis: 132 },
   card: { borderRadius: 16, borderWidth: 1, padding: 20, gap: 16 },
   button: {
     borderRadius: 12,

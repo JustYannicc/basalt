@@ -65,7 +65,6 @@ export async function forwardTunnelHttp(
   transport: DeviceTransport,
   capability: Capability,
   signal: AbortSignal,
-  ready: () => void,
 ) {
   const remote = operation(incoming, transport, capability, signal);
   const upload = (async () => {
@@ -80,7 +79,6 @@ export async function forwardTunnelHttp(
   void upload.catch(() => remote.close());
   try {
     const response = await remote.response;
-    ready();
     outgoing.writeHead(response.status, response.headers);
     outgoing.flushHeaders();
     for (;;) {
@@ -101,13 +99,11 @@ export async function forwardTunnelWebsocket(
   head: Buffer,
   transport: DeviceTransport,
   signal: AbortSignal,
-  ready: () => void,
 ) {
   const remote = operation(incoming, transport, "models", signal, true);
   let local: Awaited<ReturnType<typeof accept>> | undefined;
   try {
     const response = await remote.response;
-    ready();
     if (response.status !== 101) {
       const lines = [`HTTP/1.1 ${response.status} Remote response`, "Connection: close"];
       for (const [key, value] of Object.entries(response.headers)) lines.push(`${key}: ${value}`);

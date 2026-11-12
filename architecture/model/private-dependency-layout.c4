@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Prepared dependency generations retain immutable package bytes and directory modes. Private checkout copies make only their real directories owner-writable so subsequent prepares can replace them. Replacement also repairs directory modes in private layouts left by older or interrupted prepares. Traversal uses link metadata and never follows package or workspace symlinks; shared cache permissions and linked workspace source remain unchanged."
+    }
+  }
+}

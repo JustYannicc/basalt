@@ -1,0 +1,7 @@
+model {
+  extend basalt.nativeTunnel {
+    metadata {
+      constraint "Native tunnel timing records milestones immediately at access, lease, readiness, operation upload and downstream dispatch boundaries. Access and lease durations include the service's database and lock waits; they do not separate those waits from other service work. Each Worker isolate samples at most four tunnels per sixty-second admission window and the first eight operations in each sampled tunnel. Each stage logs once with a generated tunnel identifier, numeric operation identifier, fixed service and transport names and elapsed milliseconds. Logs exclude credentials, accounts, request paths, headers and payloads. Timing introduces no timers, retries, queues or waits and cannot block dispatch when its log sink fails. Latency acceptance still requires an instrumented reproduction or live recurrence."
+    }
+  }
+}

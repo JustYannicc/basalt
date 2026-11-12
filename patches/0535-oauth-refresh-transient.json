@@ -1,0 +1,9 @@
+{
+  "identity": "executor-oauth-refresh-transient",
+  "file": "0535-oauth-refresh-transient.patch",
+  "content_sha256": "2a829e36128f23a78e997b9621d6a2a551b97b331ce93276432927d44056369a",
+  "kind": "upstream",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
