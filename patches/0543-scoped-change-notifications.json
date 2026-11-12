@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-scoped-change-notifications",
+  "file": "0543-scoped-change-notifications.patch",
+  "content_sha256": "cf673c21bc03801c56074666618fc80ab267b3f78678a9b0578a2502d01207ef",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
