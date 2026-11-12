@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-current-retirement-storage",
+  "file": "0550-current-retirement-storage.patch",
+  "content_sha256": "d28937e4b5b8ae434d0efe7fc86c5320df62cc046f8a4700f197b5142b15f692",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

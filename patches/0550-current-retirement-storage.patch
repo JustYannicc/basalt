@@ -1,0 +1,46 @@
+diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
+index 588d343..7033b2d 100644
+--- a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
++++ b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
+@@ -1,4 +1,4 @@
+-import { AccountId, aesGcmCredentials } from "@executor-js/sdk/core";
++import { AccountId, aesGcmCredentials, currentStorageVersion } from "@executor-js/sdk/core";
+ import { verifyPoolToken } from "@executor-js/hosted-server/pool-token";
+ import { createHash } from "node:crypto";
+ import { Effect, Option, Redacted, Schema } from "effect";
+@@ -188,7 +188,7 @@ export const retirementReader = (
+               Schema.Struct({
+                 database: Identifier,
+                 snapshot: Identifier,
+-                version: Schema.Literal("4.0.29"),
++                version: Schema.Literal(currentStorageVersion),
+               }),
+             ),
+           ),
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index 9fa7e23..47c9bd9 100644
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -34,7 +34,7 @@ export {
+   type AppRuntime,
+   type ResolvedAppRuntime,
+ } from "./implementation/runtime.ts";
+-export { executorDatabase } from "./implementation/storage-migrations.ts";
++export { executorDatabase, currentStorageVersion } from "./implementation/storage-migrations.ts";
+ export { identifyProvider } from "./implementation/provider.ts";
+ export { StorageMigrationFailed } from "./implementation/storage-migration-error.ts";
+ export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
+diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
+index 96e9d69..ba33dab 100644
+--- a/packages/sdk/src/implementation/storage-migrations.ts
++++ b/packages/sdk/src/implementation/storage-migrations.ts
+@@ -834,6 +834,9 @@ export const storageSchemas = [
+   currentStorageSchema,
+ ] as const;
+ 
++/** Exact marker required by operations whose queries target the current registered layout. */
++export const currentStorageVersion = storageSchemas[storageSchemas.length - 1]!.version;
++
+ /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
+ export const trailingStorageIndexVersions = trailingIndexVersions(storageSchemas);
+ 

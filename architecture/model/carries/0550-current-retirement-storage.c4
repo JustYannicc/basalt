@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Retirement reads require the exact last registered SDK storage version, exposed through the public core API; older and unknown markers remain refused. Released 4.0.27 through 4.0.29 layouts stay immutable. Prelude fixtures bind explicitly to the released 4.0.29 index-only step and its 4.0.28 predecessor. Only trailing index-only steps defer: a later table or constraint change requires ordered migration through the earlier index step before hosted product work sees the current layout. Current-layout proof checks retained rows, queue indexes, the target-binding constraint, repeat runs and transactional failure recovery separately from the historical prelude locking proof."
+    }
+  }
+}
