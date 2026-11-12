@@ -1,0 +1,37 @@
+diff --git a/e2e/tests/account-usage-credits.spec.ts b/e2e/tests/account-usage-credits.spec.ts
+--- a/e2e/tests/account-usage-credits.spec.ts
++++ b/e2e/tests/account-usage-credits.spec.ts
+@@ -15,6 +15,7 @@
+ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { poolUsageBackend } from "../support/pool-usage-backend.ts";
+ import { serverControl } from "../support/server-control.ts";
++import { holdQuery } from "../support/query-transition.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const iso = (at: number) => new Date(at).toISOString();
+@@ -495,6 +496,11 @@
+             ),
+           );
+         yield* browser.login(actors.owner);
++        const resetOwner = yield* holdQuery(
++          /\/api\/organizations\/[^/]+\/resources\/accounts$/u,
++          "continue",
++          { allRequests: true },
++        );
+         const before = yield* browser.use("Open the pool's Accounts tab", (page) =>
+           page
+             .setViewportSize({ width: 1280, height: 900 })
+@@ -515,6 +521,13 @@
+           "Credits are used only when no account has plan quota.",
+           ["· Usable on credits", "· Usage unknown · last resort", "· Using plan quota"],
+         ]);
++        yield* resetOwner.requested;
++        yield* resetOwner.release;
++        yield* browser.use("Wait for the wallet's authorized reset control", (page) =>
++          tabRow(page, "App accounts", "Pool wallet")
++            .getByRole("button", { name: "1 banked reset. Use one", exact: true })
++            .waitFor(),
++        );
+         const wrapped = yield* browser.use("Measure the wallet row", (page) => {
+           const row = tabRow(page, "App accounts", "Pool wallet");
+           return Promise.all([
