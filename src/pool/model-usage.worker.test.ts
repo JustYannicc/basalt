@@ -1,3 +1,4 @@
+import { RuntimeMap } from "../../scripts/pool-tests/runtime-map.ts";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { after, test } from "node:test";
@@ -34,6 +35,7 @@ after(() => hooks.deregister());
 
 test("model responses reconcile successful Home usage without listing; alarm retries delayed usage", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-12T12:00:00Z") });
+  let alarm: number | null = null;
   const signingKey = "ab".repeat(32);
   const storage = new Map<string, unknown>();
   const waitUntil: Promise<unknown>[] = [];
@@ -129,19 +131,17 @@ test("model responses reconcile successful Home usage without listing; alarm ret
     },
   };
   const ctx = {
+    id: { toString: () => "a".repeat(64) },
     container,
     waitUntil: (work: Promise<unknown>) => {
       waitUntil.push(work);
     },
-    storage: {
-      get: async (key: string) =>
-        storage.has(key) ? structuredClone(storage.get(key)) : undefined,
-      put: async (key: string, value: unknown) => {
-        storage.set(key, structuredClone(value));
+    storage: Object.assign(new RuntimeMap(storage), {
+      getAlarm: async () => alarm,
+      setAlarm: async (at: number) => {
+        alarm = at;
       },
-      getAlarm: async () => null,
-      setAlarm: async () => {},
-    },
+    }),
   };
   let publications = 0;
   const worker = new PoolContainer(ctx, {
@@ -214,6 +214,8 @@ test("model responses reconcile successful Home usage without listing; alarm ret
   await worker.alarm();
   assert.equal(trackedEvents().length, 1, "negative observations wait for their own deadline");
   t.mock.timers.tick(5 * 60_000);
+  assert.equal(alarm, Date.now());
+  alarm = null;
   await worker.alarm();
   await drain();
   assert.equal(publications, 2);

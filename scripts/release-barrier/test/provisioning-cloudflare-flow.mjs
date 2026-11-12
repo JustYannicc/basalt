@@ -3,7 +3,13 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { Effect, FileSystem, Path, Redacted, ConfigProvider } from "effect";
+import { Effect, FileSystem, Path, Redacted, ConfigProvider, Layer } from "effect";
+import * as Cloudflare from "alchemy/Cloudflare";
+import { Stack, evalStack } from "alchemy/Stack";
+import { fleetInfrastructure } from "../../../src/pool/fleet-deployment.ts";
+import { withReleaseRuntime } from "../runtime.ts";
+import { provisionDeclaredRuntime } from "../provisioning-declarations.ts";
+import { applicationTemplateDigest, expectedApplicationRequest } from "../provisioning-wire.ts";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpResponse from "effect/http/HttpClientResponse";
 import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
@@ -13,6 +19,10 @@ import { provisionRuntime } from "../runtime-provisioning.ts";
 import { provisioningManifestDigest } from "../provisioning-contract.ts";
 import { provisioningFixture } from "./provisioning-fixtures.ts";
 const tree = process.argv[2];
+const resource = process.argv[3] ?? "PoolRuntime";
+const sourceDrift = process.argv[4] === "source-drift";
+const sourcePlan = process.argv[4] === "source" || sourceDrift;
+assert.ok(["PoolRuntime", "PoolRuntimeBlue", "PoolRuntimeGreen"].includes(resource));
 const load = (name) =>
   import(
     new URL(
@@ -46,7 +56,7 @@ const [
 globalThis.fetch = () => {
   throw new Error("REAL NETWORK DENIED");
 };
-const f = provisioningFixture();
+const f = provisioningFixture(resource);
 f.manifest.declaration.sdkSourceDigest = createHash("sha256")
   .update(
     readFileSync(
@@ -57,6 +67,20 @@ f.manifest.declaration.sdkSourceDigest = createHash("sha256")
     ),
   )
   .digest("hex");
+if (sourcePlan) {
+  assert.ok(resource === "PoolRuntimeBlue" || resource === "PoolRuntimeGreen");
+  f.manifest.declaration.props = {
+    ...f.manifest.declaration.props,
+    isExternal: true,
+    name: `basalt-production-pool-runtime-${resource === "PoolRuntimeBlue" ? "blue" : "green"}`,
+  };
+  f.manifest.applicationTemplateDigest = applicationTemplateDigest(
+    expectedApplicationRequest(f.manifest, f.namespaceId),
+    f.namespaceId,
+  );
+}
+if (sourceDrift)
+  f.manifest.declaration.props = { ...f.manifest.declaration.props, name: "foreign-declaration" };
 f.enable.manifest = provisioningManifestDigest(f.manifest);
 const account = f.manifest.declaration.accountId,
   script = f.baseline.scriptName;
@@ -146,7 +170,7 @@ const client = HttpClient.make((request, url) =>
       result = [
         { id: "legacy-namespace", script, class: "PoolContainer", use_sqlite: true },
         ...(deployed === "staged-version"
-          ? [{ id: f.namespaceId, script, class: "PoolRuntime", use_sqlite: true }]
+          ? [{ id: f.namespaceId, script, class: resource, use_sqlite: true }]
           : []),
       ];
     else if (
@@ -158,7 +182,7 @@ const client = HttpClient.make((request, url) =>
       assert.deepEqual(body.exports.default, baseline.exports.default);
       assert.deepEqual(body.containers, [
         { class_name: "PoolContainer" },
-        { class_name: "PoolRuntime" },
+        { class_name: resource },
       ]);
       staged = {
         ...body,
@@ -169,9 +193,9 @@ const client = HttpClient.make((request, url) =>
         bindings: [
           ...baseline.bindings,
           {
-            name: "PoolRuntime",
+            name: resource,
             type: "durable_object_namespace",
-            class_name: "PoolRuntime",
+            class_name: resource,
             namespace_id: f.namespaceId,
           },
         ],
@@ -252,11 +276,11 @@ const program = Effect.gen(function* () {
   const props = f.manifest.declaration.props;
   const plan = {
     resources: {
-      PoolRuntime: {
+      [resource]: {
         resource: {
           Type: "Cloudflare.Container",
-          LogicalId: "PoolRuntime",
-          FQN: "PoolRuntime",
+          LogicalId: resource,
+          FQN: resource,
           Props: props,
           Namespace: undefined,
           RemovalPolicy: "retain",
@@ -269,9 +293,9 @@ const program = Effect.gen(function* () {
         bindings: [
           {
             action: "create",
-            sid: "PoolWorker:PoolRuntime",
+            sid: `PoolWorker:${resource}`,
             source: "PoolWorker",
-            target: "PoolRuntime",
+            target: resource,
             data: { durableObjects: { namespaceId: f.namespaceId } },
           },
         ],
@@ -283,14 +307,6 @@ const program = Effect.gen(function* () {
     output: undefined,
     cycleMembers: new Set(),
   };
-  const adapter = yield* runtimeProvisioningProvider({
-    manifest: f.manifest,
-    enable: f.enable,
-    scriptName: script,
-    plan,
-    active: async () => f.manifest.active,
-    now: () => 100,
-  }).pipe(Effect.provideService(State, Effect.succeed(state)));
   const store = {
     exclusive: (work) => work(),
     read: async () => saved,
@@ -298,18 +314,66 @@ const program = Effect.gen(function* () {
       saved = structuredClone(value);
     },
   };
-  const receipt = yield* Effect.promise(() =>
-    provisionRuntime(f.manifest, store, adapter, f.enable, () => 100),
-  );
+  let compiled;
+  if (sourcePlan) {
+    const declaration = Stack(
+      "synthetic",
+      {
+        providers: LiveContainerProvider(),
+        state: Layer.succeed(State, Effect.succeed(state)),
+      },
+      Effect.gen(function* () {
+        const env = yield* fleetInfrastructure;
+        return yield* Cloudflare.Worker("PoolWorker", {
+          main: import.meta.filename,
+          env: { ...env },
+        });
+      }),
+    );
+    compiled = yield* evalStack(declaration, Effect.succeed, { stage: "production" }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({
+            env: {
+              POOL_FLEET_IMAGES: JSON.stringify({
+                blue: props.image,
+                green: props.image,
+              }),
+            },
+          }),
+        ),
+      ),
+      withReleaseRuntime,
+    );
+  }
+  const adapter = sourcePlan
+    ? undefined
+    : yield* runtimeProvisioningProvider({
+        manifest: f.manifest,
+        enable: f.enable,
+        scriptName: script,
+        plan,
+        active: async () => f.manifest.active,
+        now: () => 100,
+      }).pipe(Effect.provideService(State, Effect.succeed(state)));
+  const invoke = () =>
+    sourcePlan
+      ? provisionDeclaredRuntime(compiled, {
+          manifest: f.manifest,
+          enable: f.enable,
+          scriptName: script,
+          store,
+          active: async () => f.manifest.active,
+          now: () => 100,
+        }).pipe(Effect.provideService(State, Effect.succeed(state)))
+      : Effect.promise(() => provisionRuntime(f.manifest, store, adapter, f.enable, () => 100));
+  const receipt = yield* invoke();
   assert.equal(receipt.applicationId, "new-application");
   assert.equal(receipt.disposition, "idle");
-  assert.deepEqual(
-    yield* Effect.promise(() => provisionRuntime(f.manifest, store, adapter, f.enable, () => 100)),
-    receipt,
-  );
+  assert.deepEqual(yield* invoke(), receipt);
 });
-await Effect.runPromise(
-  program.pipe(
+const outcome = await Effect.runPromise(
+  Effect.exit(program).pipe(
     Effect.provide(LiveContainerProvider()),
     Retry.none,
     Effect.provideService(HttpClient.HttpClient, client),
@@ -332,7 +396,17 @@ await Effect.runPromise(
     Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
   ),
 );
+if (sourceDrift) {
+  assert.equal(outcome._tag, "Failure");
+  assert.deepEqual(calls, [], "source drift must refuse before namespace reads or writes");
+  assert.deepEqual(stateRows.synthetic.production.PoolContainer, legacy);
+  console.log("__PROVISIONING_SOURCE_REFUSED_BEFORE_IO__");
+  process.exit(0);
+}
+assert.equal(outcome._tag, "Success", outcome._tag === "Failure" ? String(outcome.cause) : "");
 assert.deepEqual(stateRows.synthetic.production.PoolContainer, legacy);
+if (sourcePlan)
+  assert.deepEqual(stateRows.synthetic.production[resource].downstream, ["PoolWorker"]);
 assert.deepEqual(
   calls.filter((call) => call.method !== "GET"),
   [

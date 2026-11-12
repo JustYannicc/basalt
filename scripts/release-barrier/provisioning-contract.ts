@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import { canonical, digest } from "./manifest.ts";
-import { RuntimeCreateDeclaration } from "./runtime-create-schema.ts";
+import { RuntimeCreateDeclaration, type RuntimeResourceName } from "./runtime-create-schema.ts";
 import { decodeProvisioningInput, provisioningRefusal } from "./provisioning-refusal.ts";
 
 const hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
@@ -65,7 +65,7 @@ export interface RuntimeProvisioningReceipt {
   schemaVersion: 3;
   candidate: string;
   manifest: string;
-  resource: "PoolRuntime";
+  resource: RuntimeResourceName;
   disposition: "idle";
   namespaceId: string;
   applicationId: string;

@@ -40,6 +40,7 @@ const container = Schema.Struct({
   imageConfigDigest: Schema.String,
   platform: Schema.Literal("linux/amd64"),
   capabilityLabel: Schema.Literal("1"),
+  preservedSourceInputHash: Schema.optional(Schema.String),
 });
 const description = {
   candidate: Schema.String,
@@ -168,6 +169,7 @@ const frozen = Schema.Struct({
   imageConfigDigest: Schema.String,
   platform: Schema.Literal("linux/amd64"),
   capabilityLabel: Schema.Literal("1"),
+  preservedSourceInputHash: Schema.optional(Schema.String),
 });
 export function readFrozenContainers(value: unknown) {
   const parsed = Schema.decodeUnknownSync(

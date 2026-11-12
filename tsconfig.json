@@ -25,6 +25,7 @@
     "src/pool/worker.ts",
     "src/pool/runtime.worker.ts",
     "src/pool/runtime-do.worker.ts",
+    "src/pool/home-peer.worker.ts",
     "src/pool/forward.worker.ts",
     "src/pool/native-response.worker.ts",
     "scripts/preview/stack",

@@ -1,5 +1,6 @@
 import * as Workers from "@distilled.cloud/cloudflare/workers";
 import { Schema } from "effect";
+import { BarrierRefusal } from "./refusal.ts";
 import { canonical, digest } from "./manifest.ts";
 import {
   assertProvisioningEnable,
@@ -46,7 +47,7 @@ export interface RuntimeProvisioningProvider {
   ): Promise<{ application: CreatedRuntimeApplication; digest: string }>;
 }
 
-/** No CLI, environment variable or ordinary release path supplies enable authority. */
+/** The dedicated provisioning workflow supplies a reviewed GO; ordinary releases never construct one. */
 export async function provisionRuntime(
   input: RuntimeProvisioningManifest,
   store: ProvisioningStore,
@@ -55,9 +56,37 @@ export async function provisionRuntime(
   now = Date.now,
 ): Promise<RuntimeProvisioningReceipt> {
   const manifest = structuredClone(decodeProvisioningManifest(input));
+  try {
+    return await provisionEnabled(manifest, input, store, provider, enable, now);
+  } catch (error) {
+    if (error instanceof BarrierRefusal)
+      throw new BarrierRefusal(
+        error.reason,
+        manifest.declaration.fqn,
+        error.delta ? { ...error.delta, fqn: manifest.declaration.fqn } : undefined,
+        error.refusals,
+        error.stateStore,
+      );
+    throw error;
+  }
+}
+
+async function provisionEnabled(
+  manifest: RuntimeProvisioningManifest,
+  input: RuntimeProvisioningManifest,
+  store: ProvisioningStore,
+  provider: RuntimeProvisioningProvider,
+  enable: ProvisioningEnable | undefined,
+  now: () => number,
+): Promise<RuntimeProvisioningReceipt> {
   assertProvisioningEnable(manifest, enable, now());
   const fingerprint = provisioningManifestDigest(manifest);
-  const journal = provisioningJournal(store, manifest.candidate, fingerprint);
+  const journal = provisioningJournal(
+    store,
+    manifest.candidate,
+    fingerprint,
+    manifest.declaration.fqn,
+  );
   const active = async () => {
     assertProvisioningEnable(manifest, enable, now());
     sameProvisioningValue("manifest", fingerprint, provisioningManifestDigest(input));
@@ -201,6 +230,11 @@ export async function provisionRuntime(
     application.configuration,
   );
   sameProvisioningValue(
+    "application.maxInstances",
+    manifest.declaration.props.maxInstances,
+    application.maxInstances,
+  );
+  sameProvisioningValue(
     "application.placement",
     manifest.declaration.props.constraints,
     application.constraints,
@@ -210,7 +244,7 @@ export async function provisionRuntime(
     schemaVersion: 3,
     candidate: manifest.candidate,
     manifest: fingerprint,
-    resource: "PoolRuntime",
+    resource: manifest.declaration.fqn,
     disposition: "idle",
     namespaceId: namespace.namespaceId,
     applicationId: application.applicationId,

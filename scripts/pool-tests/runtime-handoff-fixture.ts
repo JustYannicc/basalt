@@ -5,6 +5,7 @@ import { Schema } from "effect";
 import {
   RuntimeEndpoint,
   type EndpointEnvironment,
+  type EndpointOptions,
 } from "../../src/pool/runtime-slots/endpoint.ts";
 import { runtimeRequest } from "../../src/pool/runtime-slots/transport.ts";
 import {
@@ -26,6 +27,18 @@ import {
   type NativeMembershipPolicy,
 } from "../../src/pool/membership-contract.ts";
 import { fixture, signingKey } from "../../src/pool/test/control.ts";
+import type { NativeStreamLease } from "../../src/pool/native-streams.ts";
+import { legacyDrainProgram } from "../../src/pool/runtime-slots/legacy-drain.ts";
+import { peerBootstrapInspectionProgram } from "../../src/pool/runtime-slots/peer-bootstrap.ts";
+import peerProgram from "../../src/pool/home-peer-program.json" with { type: "json" };
+import type { HomePeerSource } from "../../src/pool/runtime-slots/peer-access.ts";
+
+const responseModule = "../../src/pool/native-response.worker.ts";
+const {
+  nativeResponse,
+}: { nativeResponse(response: Response, lease: NativeStreamLease): Response } = await import(
+  responseModule
+);
 
 export function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -57,6 +70,7 @@ export async function handoffRuntime(
     storage?: RuntimeSqlite;
     role?: "legacy" | "runtime";
     home?: Awaited<ReturnType<typeof fixture>>["home"];
+    endpoint?: EndpointOptions;
   } = {},
 ) {
   const home = options.home ?? (await fixture()).home;
@@ -74,6 +88,7 @@ export async function handoffRuntime(
     home: 0,
     model: 0,
     install: [] as NativeMembershipPolicy[],
+    interceptions: [] as { host: string; source: HomePeerSource }[],
   };
   let running = options.running ?? false,
     bootId = crypto.randomUUID();
@@ -85,18 +100,70 @@ export async function handoffRuntime(
     },
   };
   const policies = new Map<string, NativeMembershipPolicy>();
+  const helper = { starts: 0, witness: undefined as object | undefined };
   const hooks = {
     health: async () => {},
     install: async (_policy: NativeMembershipPolicy) => {},
     model: async (_request: Request): Promise<Response | undefined> => undefined,
+    connections: async () => 0,
   };
   const ctx = {
+    exports: { PoolHomePeer: ({ props }: { props: { source: HomePeerSource } }) => ({ props }) },
     id: { toString: () => target.instanceId },
     storage,
     waitUntil: (work: Promise<unknown>) => {
       background.push(work);
     },
     container: {
+      async interceptOutboundHttp(host: string, binding: { props: { source: HomePeerSource } }) {
+        calls.interceptions.push({ host, source: binding.props.source });
+      },
+      async exec(command: string[], options?: { stdout: "pipe"; stderr: "ignore" }) {
+        if (command[2] === peerProgram.program) {
+          assert.equal(command.length, 4);
+          assert.deepEqual(options, { stdout: "pipe", stderr: "ignore" });
+          helper.starts++;
+          helper.witness = { ...JSON.parse(command[3]!), pid: 7, startTicks: "12345", ready: true };
+          return {
+            pid: 40001,
+            stdout: new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode(JSON.stringify(helper.witness) + "\n"));
+                controller.close();
+              },
+            }),
+            output: async () => {
+              throw new Error("Cannot collect a running helper");
+            },
+          };
+        }
+        if (command[2] === peerBootstrapInspectionProgram) {
+          assert.deepEqual(command, ["python3", "-c", peerBootstrapInspectionProgram]);
+          return {
+            output: async () => ({
+              exitCode: 0,
+              stderr: new Uint8Array(),
+              stdout: new TextEncoder().encode(
+                JSON.stringify({
+                  live: !!helper.witness,
+                  ...(helper.witness ? { witness: helper.witness } : {}),
+                }),
+              ),
+            }),
+          };
+        }
+        assert.deepEqual(command, ["python3", "-c", legacyDrainProgram]);
+        const connections = await hooks.connections();
+        return {
+          output: async () => ({
+            exitCode: 0,
+            stdout: new TextEncoder().encode(
+              JSON.stringify({ format: "legacy-drain-v1", connections }),
+            ),
+            stderr: new Uint8Array(),
+          }),
+        };
+      },
       get running() {
         return running;
       },
@@ -191,7 +258,14 @@ export async function handoffRuntime(
       },
     },
   };
-  const endpoint = new RuntimeEndpoint(ctx, env, options.role ?? "runtime", runtimeFixtureCode);
+  const endpoint = new RuntimeEndpoint(
+    ctx,
+    env,
+    options.role ?? "runtime",
+    runtimeFixtureCode,
+    nativeResponse,
+    options.endpoint,
+  );
   return {
     ctx,
     env,
@@ -200,11 +274,24 @@ export async function handoffRuntime(
     calls,
     hooks,
     policies,
+    helper,
     endpoint,
+    wrap: nativeResponse,
     storage,
     identity: (): SlotIdentity => ({ ...target, bootId }),
-    digest: () => configurationDigest(runtimeConfiguration(env)),
+    digest: () =>
+      configurationDigest(
+        runtimeConfiguration({
+          ...env,
+          ...(target.homePeerOrdinal !== undefined
+            ? { POOL_HOME_PEER_ORDINAL: String(target.homePeerOrdinal) }
+            : {}),
+        }),
+      ),
     stub: { fetch: (request: Request) => runtimeRequest(request, endpoint) },
+    settle: async () => {
+      for (let index = 0; index < background.length; index++) await background[index];
+    },
     cleanup: async () => {
       for (let index = 0; index < background.length; index++) await background[index];
       await storage.close();

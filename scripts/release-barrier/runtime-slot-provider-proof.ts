@@ -1,4 +1,5 @@
 import { Config, Effect, Redacted } from "effect";
+import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
 import {
   ProviderApplicationProof,
   ProviderRuntimeProof,
@@ -13,18 +14,7 @@ import type { RuntimeHandoffManifest } from "./runtime-slot-manifest.ts";
 import { provisioningRefusal, sameProvisioningValue } from "./provisioning-refusal.ts";
 
 export function runtimeApplicationConfigDigest(application: ContainerAttributes) {
-  return digest(
-    canonical({
-      applicationName: application.applicationName,
-      configuration: application.configuration,
-      instances: application.instances,
-      maxInstances: application.maxInstances,
-      schedulingPolicy: application.schedulingPolicy,
-      constraints: application.constraints,
-      affinities: application.affinities,
-      durableObjects: application.durableObjects,
-    }),
-  );
+  return digest(canonical(runtimeApplicationSettings(application)));
 }
 
 const applicationProof = Schema.decodeUnknownSync(ProviderApplicationProof, {
@@ -32,7 +22,7 @@ const applicationProof = Schema.decodeUnknownSync(ProviderApplicationProof, {
 });
 const runtimeProof = Schema.decodeUnknownSync(ProviderRuntimeProof, { onExcessProperty: "error" });
 export const readRuntimeProviderProof = (
-  manifest: RuntimeHandoffManifest,
+  manifest: Pick<RuntimeHandoffManifest, "provider" | "target">,
   kind: "application" | "runtime",
   fetcher: Fetcher = fetch,
   now = Date.now,
@@ -97,11 +87,12 @@ export const readRuntimeProviderProof = (
           ),
       });
       sameProvisioningValue(
-        "handoff.provider.instances",
-        [manifest.target.instanceId],
-        result.instances,
+        "handoff.provider.instance",
+        manifest.target.instanceId,
+        result.instances.find((instance) => instance === manifest.target.instanceId),
       );
-      instances = result.instances;
+      // All siblings passed the same image check; list order is not application drift.
+      instances = [...result.instances].sort();
       const after = yield* observeContainer(target, fetcher);
       prove(after);
       sameProvisioningValue("handoff.provider.stableApplication", before, after);

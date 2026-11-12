@@ -40,12 +40,26 @@ export class SlotRetirement {
   }
   async run(role: "candidate" | "draining", operationId: string) {
     const key = this.key(operationId);
+    const pending = await this.storage.transact(async ({ selection }, transaction) => {
+      const previous = await transaction.get(key);
+      if (previous !== undefined)
+        return { receipt: Schema.decodeUnknownSync(RetirementReceipt)(previous) };
+      const slot = selection?.[role];
+      if (!slot?.identity || slot.retirement) throw new SlotRefused("uncertain");
+      if (role === "draining" && this.streams.active(executionKey(slot.identity)))
+        throw new SlotRefused("draining");
+      return { slot };
+    });
+    if (pending.receipt) return pending.receipt;
+    const drained = await this.driver.drain(pending.slot!.identity!, AbortSignal.timeout(2_000));
+    if (!drained.known || drained.active !== 0) throw new SlotRefused("draining");
     const started = await this.storage.transact(async ({ selection }, transaction) => {
       const previous = await transaction.get(key);
       if (previous !== undefined)
         return { receipt: Schema.decodeUnknownSync(RetirementReceipt)(previous) };
       const slot = selection?.[role];
       if (!selection || !slot) throw new SlotRefused("selection");
+      if (!sameIdentity(slot.identity, pending.slot!.identity!)) throw new SlotRefused("identity");
       // Unknown startup cannot be destroyed by guessing a boot. Keep it visibly pending.
       if (!slot.identity || slot.retirement) throw new SlotRefused("uncertain");
       if (role === "draining" && this.streams.active(executionKey(slot.identity)))

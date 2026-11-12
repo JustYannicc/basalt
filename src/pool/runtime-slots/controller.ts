@@ -20,6 +20,7 @@ import { SlotStreams } from "./streams.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import { SlotRetirement } from "./retirement.ts";
 import { SlotPromotion } from "./promotion.ts";
+import { SlotFirstStart } from "./first-start.ts";
 
 interface Dependencies {
   controllerId: string;
@@ -34,6 +35,7 @@ export class RuntimeSlots {
   private clock: SlotClock;
   private deps: Dependencies;
   readonly retirement: SlotRetirement;
+  readonly firstStart: SlotFirstStart;
   private promotion: SlotPromotion;
   constructor(deps: Dependencies) {
     this.deps = {
@@ -43,6 +45,7 @@ export class RuntimeSlots {
     this.clock = deps.clock ?? slotClock;
     this.promotion = new SlotPromotion(this.deps, this.clock);
     this.retirement = new SlotRetirement(deps.storage, deps.driver, deps.streams, this.clock);
+    this.firstStart = new SlotFirstStart(deps, this.clock);
   }
 
   async inspect() {

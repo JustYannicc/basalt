@@ -17,8 +17,12 @@ import type {
   PromotionIntent,
   SlotSelection,
   SlotTarget,
+  SlotIdentity,
 } from "../../src/pool/runtime-slots/contract.ts";
 import type { PoolView } from "../../apps/pool/contract.ts";
+import type { RuntimeStub } from "../../src/pool/runtime-slots/transport.ts";
+import type { HomePeerEndpoint } from "../../src/pool/runtime-fleet/peers.ts";
+type RuntimeWorker = RuntimeStub & HomePeerEndpoint;
 import type { ProbeResult } from "../../src/pool/availability.ts";
 
 const hooks = registerHooks({
@@ -39,12 +43,17 @@ const hooks = registerHooks({
 const workerPath = "../../src/pool/worker.ts";
 const {
   PoolContainer,
+  PoolRuntimeBlue,
+  PoolRuntimeGreen,
 }: {
+  PoolRuntimeBlue: new (ctx: object, env: object) => RuntimeWorker;
+  PoolRuntimeGreen: new (ctx: object, env: object) => RuntimeWorker;
   PoolContainer: new (
     ctx: object,
     env: object,
   ) => {
     fetch(request: Request): Promise<Response>;
+    alarm(): Promise<void>;
     runtimeHandoff(request: Request): Promise<Response>;
     deploymentReady(): Promise<{ bootId: string; instanceId: string }>;
     availabilityProbe(pool: string): Promise<ProbeResult>;
@@ -54,7 +63,21 @@ const {
 } = await import(workerPath);
 hooks.deregister();
 
-export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt?: boolean } = {}) {
+export const runtimeWorkerClasses = { blue: PoolRuntimeBlue, green: PoolRuntimeGreen };
+type RuntimeFixture = Awaited<ReturnType<typeof handoffRuntime>>;
+export async function handoffWorker(
+  options: {
+    rotateSigningKey?: boolean;
+    adopt?: boolean;
+    bindings?:
+      | Record<string, unknown>
+      | ((context: {
+          old: RuntimeFixture;
+          candidate: RuntimeFixture;
+          env: EndpointEnvironment;
+        }) => Promise<Record<string, unknown>>);
+  } = {},
+) {
   const oldTarget: SlotTarget = {
     format: "pool-runtime-slot-v1",
     controllerId: "a".repeat(64),
@@ -144,6 +167,10 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
     refusalsVersion: 2,
   });
   let loseStartReply = false;
+  const bindings =
+    typeof options.bindings === "function"
+      ? await options.bindings({ old, candidate, env: nextEnv })
+      : options.bindings;
   const workerEnv = {
     ...env,
     PoolRuntime: {
@@ -200,6 +227,7 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
         });
       },
     },
+    ...bindings,
   };
   let worker = new PoolContainer(old.ctx, workerEnv);
   const command = async (
@@ -209,6 +237,11 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
       target?: SlotTarget;
       intent?: PromotionIntent;
       operationId?: string;
+      identity?: SlotIdentity;
+      sourceSha?: string;
+      configurationFingerprint?: string;
+      configuration?: import("../../src/pool/runtime-fleet/configuration.ts").FleetConfiguration;
+      expectedDigest?: string;
     } = {},
   ) => {
     const at = Date.now();
@@ -234,7 +267,7 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
     assert.equal(adopted.status, 200, await adopted.clone().text());
     adoptionAck = await adopted.json();
   }
-  let currentEnv = { ...workerEnv, ...(options.adopt === false ? {} : nextEnv) };
+  let currentEnv = { ...workerEnv, ...(options.adopt === false ? {} : nextEnv), ...bindings };
   // Model and Home requests keep the admitted runtime settings after current bindings advance.
   worker = new PoolContainer(old.ctx, currentEnv);
   const token = await signPoolToken(env.POOL_APP_SIGNING_KEY, claims);
@@ -246,8 +279,8 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
     );
     return { response, body: (await response.json()) as PoolView };
   };
-  const model = () =>
-    worker.forward(new Request("https://pool.invalid/v1/models"), {
+  const model = (request = new Request("https://pool.invalid/v1/models")) =>
+    worker.forward(request, {
       pool: claims.pool,
       person: claims.owner,
     });
@@ -300,6 +333,10 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
     command,
     view,
     model,
+    alarm: async () => {
+      await old.storage.delete("fixture-alarm");
+      return worker.alarm();
+    },
     reserve,
     inspect,
     startGrant,
