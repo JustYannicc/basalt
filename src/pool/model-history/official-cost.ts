@@ -220,7 +220,10 @@ export function officialCostMetric(
     pricedRequests: priced,
     excluded,
     ...(reason ? { reason } : {}),
-    price: priceProvenance(relevant, rows.some((row) => (row.tokenCountEstimates ?? 0) > 0)),
+    price: priceProvenance(
+      relevant,
+      rows.some((row) => (row.tokenCountEstimates ?? 0) > 0),
+    ),
   };
 }
 

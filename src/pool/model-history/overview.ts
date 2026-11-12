@@ -1069,7 +1069,10 @@ export async function poolUsageOverview(
               ),
         };
       }
-      const price = priceProvenance(prices, asCount(totalsQuery.rows[0]?.token_count_estimates) > 0);
+      const price = priceProvenance(
+        prices,
+        asCount(totalsQuery.rows[0]?.token_count_estimates) > 0,
+      );
       const costRows = costs.rows.slice(0, maxUsageSlices);
       usageSlices = usageOverflow
         ? []
