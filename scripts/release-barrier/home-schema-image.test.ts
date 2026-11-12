@@ -7,7 +7,11 @@ import { Stack, evalStack } from "alchemy/Stack";
 import { State } from "alchemy/State/State";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { Effect, Layer } from "effect";
-import { inspectPoolImage } from "../deploy-safety/pool-image-metadata.ts";
+import {
+  inspectPoolImage,
+  PoolImageMetadataMismatchError,
+} from "../deploy-safety/pool-image-metadata.ts";
+import { reportRefusal } from "./refusal-report.ts";
 import { type ContainerAttributes } from "./container.ts";
 import { releaseHomeImage, type HomeImageDependencies } from "./home-schema-image.ts";
 import { BarrierRefusal } from "./refusal.ts";
@@ -272,6 +276,28 @@ test("read and metadata failures refuse without exposing provider diagnostics", 
     assert.doesNotMatch(error.message, /synthetic-private-provider-detail/);
     return true;
   });
+});
+
+test("Worker-only metadata identity failures keep known facts in the release job output", async () => {
+  for (const [property, expected, observed] of [
+    ["platform", "linux/amd64", "linux/arm64"],
+    ["digest", `sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`],
+    ["configDigest", `sha256:${"c".repeat(64)}`, `sha256:${"d".repeat(64)}`],
+  ] as const) {
+    const setup = await fixture();
+    setup.io.inspect = async () => {
+      throw new PoolImageMetadataMismatchError(property, expected, observed);
+    };
+    const failure = await Effect.runPromise(
+      releaseHomeImage(scope, candidate, setup.plan, setup.state, [], setup.io).pipe(Effect.flip),
+    );
+    assert.ok(failure instanceof BarrierRefusal);
+    const lines: string[] = [];
+    await reportRefusal(failure, undefined, (line) => lines.push(line));
+    assert.ok(lines.join("\n").includes(`image.${property}`));
+    assert.ok(lines.join("\n").includes(expected));
+    assert.ok(lines.join("\n").includes(observed));
+  }
 });
 
 test("mutable, mismatched and foreign-account image references cannot establish readiness", async () => {

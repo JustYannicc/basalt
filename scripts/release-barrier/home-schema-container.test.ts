@@ -20,6 +20,8 @@ import {
   type HomeContainerCommand,
 } from "./home-schema-container.ts";
 import { HomeSchemaCommandError } from "./home-schema-operation.ts";
+import { HomeImageMismatchError } from "./home-schema-image-identity.ts";
+import { reportRefusal } from "./refusal-report.ts";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const configDigest = `sha256:${"b".repeat(64)}`;
@@ -65,12 +67,25 @@ function fixture(
     startFailure?: "timeout" | "lost-reply";
     removeFailure?: boolean | "migration";
     response?: { code: number; stdout: string };
+    metadata?: { digest?: string; configDigest?: string; platform?: string };
   } = {},
 ) {
   const calls: Call[] = [];
   const containers = new Map<string, string>();
   let directory = "";
   let bootstrap = "";
+  let metadataLookups = 0;
+  const imageMetadata = async (ref: string, expected: string) => {
+    metadataLookups++;
+    assert.equal(ref, image.image);
+    assert.equal(expected, digest);
+    return {
+      digest,
+      configDigest,
+      platform: "linux/amd64",
+      ...options.metadata,
+    };
+  };
   const execute: HomeContainerCommand = async (args, settings) => {
     calls.push({ args, options: settings });
     directory = args[1];
@@ -140,6 +155,10 @@ function fixture(
     containers,
     execute,
     registry,
+    imageMetadata,
+    get metadataLookups() {
+      return metadataLookups;
+    },
     get directory() {
       return directory;
     },
@@ -151,18 +170,115 @@ function fixture(
 function run<T>(
   f: ReturnType<typeof fixture>,
   work: Parameters<typeof withCandidateHome<T>>[0]["work"],
+  admitted = image,
 ) {
   return withCandidateHome({
-    image,
+    image: admitted,
     credentials: { accountId: "fixture", apiToken: "synthetic-api-token" },
     databaseUrl: Redacted.make(databaseUrl),
     execute: f.execute,
     registry: f.registry,
+    imageMetadata: f.imageMetadata,
     work,
   });
 }
 const operations = (f: ReturnType<typeof fixture>, operation: string) =>
   f.calls.filter((call) => call.args[2] === operation);
+
+test("containerd manifest IDs retain independent config and platform verification", async () => {
+  const f = fixture({ config: digest });
+  await run(f, async (commands) => assert.deepEqual(commands.info, info));
+  assert.equal(f.metadataLookups, 1);
+  assert.equal(operations(f, "create").length, 1);
+  for (const metadata of [
+    { digest: `sha256:${"c".repeat(64)}` },
+    { configDigest: `sha256:${"c".repeat(64)}` },
+    { platform: "linux/arm64" },
+  ]) {
+    const refused = fixture({ config: digest, metadata });
+    await assert.rejects(
+      run(refused, async () => assert.fail("must not run")),
+      /image-mismatch/,
+    );
+    assert.equal(operations(refused, "create").length, 0);
+  }
+  const wrongConfig = fixture({ config: digest });
+  await assert.rejects(
+    run(wrongConfig, async () => assert.fail("must not run"), {
+      ...image,
+      imageConfigDigest: `sha256:${"c".repeat(64)}`,
+    }),
+    /image-mismatch/,
+  );
+  assert.equal(wrongConfig.metadataLookups, 1);
+  assert.equal(operations(wrongConfig, "create").length, 0);
+});
+
+test("image mismatch job lines and summaries name safe required and observed identities", async (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "home-image-refusal-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const other = `sha256:${"c".repeat(64)}`;
+  const unsafe = "https://fixture.invalid?token=synthetic-diagnostic-secret";
+  for (const [index, entry] of [
+    {
+      config: digest,
+      metadata: { digest: other },
+      property: "image.digest",
+      expected: digest,
+      observed: other,
+    },
+    {
+      config: digest,
+      metadata: { configDigest: other },
+      property: "image.configDigest",
+      expected: configDigest,
+      observed: other,
+    },
+    {
+      config: digest,
+      metadata: { platform: "linux/arm64" },
+      property: "image.platform",
+      expected: "linux/amd64",
+      observed: "linux/arm64",
+    },
+    { config: other, property: "image.localId", expected: configDigest, observed: other },
+    { config: unsafe, property: "image.localId", expected: configDigest, observed: "invalid" },
+    {
+      config: digest,
+      metadata: { platform: unsafe },
+      property: "image.platform",
+      expected: "linux/amd64",
+      observed: "invalid",
+    },
+  ].entries()) {
+    const f = fixture(entry);
+    let mismatch: HomeImageMismatchError | undefined;
+    await assert.rejects(
+      run(f, async () => assert.fail("must not run")),
+      (error) => {
+        assert.ok(error instanceof HomeImageMismatchError);
+        mismatch = error;
+        return true;
+      },
+    );
+    assert.ok(mismatch);
+    const summary = join(directory, `${index}.md`);
+    const lines: string[] = [];
+    await reportRefusal(mismatch.refusal, summary, (line) => lines.push(line));
+    for (const text of [
+      mismatch.refusal.message,
+      lines.join("\n"),
+      readFileSync(summary, "utf8"),
+    ]) {
+      assert.ok(text.includes(entry.property));
+      assert.ok(text.includes(entry.expected));
+      assert.ok(text.includes(entry.observed));
+      assert.ok(!text.includes(unsafe));
+      assert.ok(!text.includes("synthetic-diagnostic-secret"));
+    }
+    assert.equal(operations(f, "create").length, 0);
+  }
+});
 
 test("immutable image and config mismatches stop before native execution", async () => {
   const f = fixture({ config: `sha256:${"c".repeat(64)}` });

@@ -10,6 +10,7 @@ import { BarrierRefusal } from "./refusal.ts";
 import { equalContainerConfiguration } from "./container-configuration.ts";
 import type { HomeMigrationIdentity } from "./home-schema-operation.ts";
 import type { AdmittedHomeImage } from "./home-schema-container.ts";
+import { homeImageMetadataMismatch } from "./home-schema-image-identity.ts";
 
 const cached = Schema.Struct({
   accountId: Schema.String,
@@ -116,7 +117,9 @@ export const releaseHomeImage = (
     const credentials = { accountId: before.accountId, apiToken: token };
     const metadata = yield* Effect.tryPromise({
       try: () => io.inspect(before.configuration.image, digest, credentials),
-      catch: () => new BarrierRefusal("home-schema-image-admission-failed"),
+      catch: (error) =>
+        homeImageMetadataMismatch(error)?.refusal ??
+        new BarrierRefusal("home-schema-image-admission-failed"),
     });
     return {
       image: {

@@ -10,6 +10,7 @@ import { loadSqlSchemaExpectations } from "./sql-schema-expectations.ts";
 import { readSqlSchemas } from "./sql-schema-read.ts";
 import type { SqlSchemaReceipt } from "./sql-schema-contract.ts";
 import { withCandidateHome } from "./home-schema-container.ts";
+import { HomeImageMismatchError } from "./home-schema-image-identity.ts";
 import { homeSchemaAdmission } from "./home-schema-admission.ts";
 import { prepareHomeSchema, HomeSchemaCommandError } from "./home-schema-operation.ts";
 import { readSqlSchemaJournal } from "./sql-schema-journal.ts";
@@ -86,6 +87,7 @@ export const deploymentSqlSchemas = (options: {
         }),
       catch: (error) => {
         if (error instanceof BarrierRefusal) return error;
+        if (error instanceof HomeImageMismatchError) return error.refusal;
         if (error instanceof HomeSchemaCommandError) {
           const id =
             "containerId" in error &&

@@ -4,9 +4,10 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Redacted } from "effect";
-import { withPoolRegistryPull } from "../deploy-safety/pool-image-metadata.ts";
+import { inspectPoolImage, withPoolRegistryPull } from "../deploy-safety/pool-image-metadata.ts";
 import type { CloudflareCredentials } from "../deploy-safety/cloudflare.ts";
 import { poolDatabase } from "../../src/pool/database-settings.ts";
+import { assertLocalHomeImage } from "./home-schema-image-identity.ts";
 import {
   decodeHomeSchemaInfo,
   decodeHomeSchemaResult,
@@ -113,6 +114,11 @@ export async function withCandidateHome<T>(options: {
   work(commands: NativeHomeCommands & { info: HomeSchemaInfo }): Promise<T>;
   execute?: HomeContainerCommand;
   registry?: typeof withPoolRegistryPull;
+  imageMetadata?: (
+    imageRef: string,
+    expectedDigest: string,
+    credentials: CloudflareCredentials,
+  ) => Promise<{ digest: string; configDigest: string; platform: string }>;
 }): Promise<T> {
   if (
     !digestPattern.test(options.image.imageDigest) ||
@@ -158,8 +164,16 @@ export async function withCandidateHome<T>(options: {
           [...prefix, "image", "inspect", "--format", "{{.Id}}", options.image.image],
           { timeoutMs: 15_000 },
         );
-        if (inspected.code !== 0 || inspected.stdout.trim() !== options.image.imageConfigDigest)
-          throw new HomeSchemaCommandError("image-mismatch");
+        await assertLocalHomeImage(
+          options.image,
+          inspected.code === 0 ? inspected.stdout.trim() : undefined,
+          () =>
+            (options.imageMetadata ?? inspectPoolImage)(
+              options.image.image,
+              options.image.imageDigest,
+              options.credentials,
+            ),
+        );
         let migrationInvoked = false;
         const invoke = async (mode: Mode, allocated?: (containerId: string) => Promise<void>) => {
           if (mode === "-db-migrate") {

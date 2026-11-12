@@ -12,8 +12,30 @@ import type { CloudflareCredentials } from "./cloudflare.ts";
 
 const capabilityLabel = "io.signalbox.pool.oauth-completion-receipts";
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
+const platformPattern = /^(?:linux|windows|darwin)\/(?:amd64|arm64|arm|386|ppc64le|s390x|riscv64)$/;
 const manifestTypes =
   "application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json";
+
+export class PoolImageMetadataMismatchError extends SafetyGateError {
+  readonly property: "digest" | "configDigest" | "platform";
+  readonly expected: string;
+  readonly observed: string;
+  constructor(
+    property: PoolImageMetadataMismatchError["property"],
+    expected: string,
+    observed: string,
+  ) {
+    const pattern = property === "platform" ? platformPattern : digestPattern;
+    const required = pattern.test(expected) ? expected : "invalid";
+    const actual = pattern.test(observed) ? observed : "invalid";
+    super(
+      `${property === "platform" ? "Pool image platform mismatch" : "Pool image metadata bytes differ from the published digest"}; ${property} required=${required} observed=${actual}`,
+    );
+    this.property = property;
+    this.expected = required;
+    this.observed = actual;
+  }
+}
 
 async function boundedJson(
   fetcher: Fetcher,
@@ -21,6 +43,7 @@ async function boundedJson(
   init: RequestInit,
   expectedDigest?: string,
   acceptedStatuses: readonly number[] = [200],
+  digestProperty: "digest" | "configDigest" = "digest",
 ) {
   let response: Response;
   try {
@@ -51,11 +74,11 @@ async function boundedJson(
     await reader.cancel();
   }
   const bytes = Buffer.concat(chunks);
-  if (
-    expectedDigest &&
-    `sha256:${createHash("sha256").update(bytes).digest("hex")}` !== expectedDigest
-  )
-    throw new SafetyGateError("Pool image metadata bytes differ from the published digest");
+  if (expectedDigest) {
+    const observed = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    if (observed !== expectedDigest)
+      throw new PoolImageMetadataMismatchError(digestProperty, expectedDigest, observed);
+  }
   try {
     return record(JSON.parse(bytes.toString("utf8")), "Pool image metadata");
   } catch {
@@ -152,13 +175,17 @@ export async function inspectPoolImage(
         `${base}/blobs/${configDigest}`,
         { method: "GET", headers },
         configDigest,
+        [200],
+        "configDigest",
       );
       const platform = `${stringField(config.os, "Pool image OS")}/${stringField(config.architecture, "Pool image architecture")}`;
       const label = record(
         record(config.config, "Pool image configuration").Labels,
         "Pool image labels",
       )[capabilityLabel];
-      if (platform !== "linux/amd64" || label !== "1")
+      if (platform !== "linux/amd64")
+        throw new PoolImageMetadataMismatchError("platform", "linux/amd64", platform);
+      if (label !== "1")
         throw new SafetyGateError(
           "Pool image platform or OAuth completion capability label is missing",
         );
