@@ -236,3 +236,11 @@ public final class PanelModel {
       claude: configured.claude ? .keep : .undo, codex: configured.codex ? .keep : .undo)
   }
 }
+
+extension AppSummary.App {
+  /// "2 accounts · Cloud", as the approved panel shows where an app's accounts run. Every account
+  /// runs in the cloud until accounts on this Mac exist.
+  public var detail: String {
+    accounts == 0 ? "No accounts" : "\(accounts) account\(accounts == 1 ? "" : "s") · Cloud"
+  }
+}

@@ -8,7 +8,8 @@ struct HomeView: View {
     let presentation = model.presentation
     let snapshot = model.snapshot
     VStack(alignment: .leading, spacing: 0) {
-      Header(title: "Signalbox") {
+      // The approved panel is titled Apps once there is a list to show.
+      Header(title: model.apps == nil ? "Signalbox" : "Apps") {
         Text(model.machineName).font(.system(size: 12)).foregroundStyle(.secondary)
       }
       VStack(alignment: .leading, spacing: 10) {
@@ -38,6 +39,14 @@ struct HomeView: View {
         }
         if !presentation.starting && !presentation.signingIn {
           if model.apps != nil { AppList(model: model, actions: actions) }
+          if snapshot?.canSignOut == true {
+            // The web app's root opens this account's Apps, where adding an app starts.
+            Button("Add app…") { actions.open(model.webOrigin) }
+              .buttonStyle(.bordered)
+              .controlSize(.small)
+              .padding(.horizontal, 6)
+              .help("Opens Apps in your browser")
+          }
           VStack(spacing: 0) {
             if presentation.connected || presentation.hasSetup {
               NavRow(symbol: "terminal", title: "Connect your agents", detail: agentsDetail) {
@@ -47,14 +56,6 @@ struct HomeView: View {
             NavRow(symbol: "network", title: "Connection", detail: connectionDetail) {
               model.page = .connection
             }
-          }
-          if snapshot?.canSignOut == true {
-            // The web app's root opens this account's Apps, where adding an app starts.
-            Button("Add app…") { actions.open(model.webOrigin) }
-              .buttonStyle(.bordered)
-              .controlSize(.small)
-              .padding(.horizontal, 6)
-              .help("Opens Apps in your browser")
           }
         }
         if let message = model.message, !model.reviewing { NoticeView(notice: message) }
@@ -113,9 +114,7 @@ struct AppList: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 4) {
-      Text("Your apps").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
-        .padding(.horizontal, 6)
-      if (model.apps?.apps.count ?? 0) > 5 {
+      if !(model.apps?.apps.isEmpty ?? true) {
         TextField("Search apps", text: $model.appQuery)
           .textFieldStyle(.roundedBorder)
           .padding(.horizontal, 6)
@@ -131,8 +130,7 @@ struct AppList: View {
           ForEach(model.listedApps) { app in
             NavRow(
               symbol: nil, letter: String(app.name.prefix(1)).uppercased(), title: app.name,
-              detail: app.accounts == 0
-                ? "No accounts" : "\(app.accounts) account\(app.accounts == 1 ? "" : "s")",
+              detail: app.detail,
               trailing: app.accounts == 0 ? "Connect" : "›"
             ) {
               if let url = model.webURL(for: app) { actions.open(url) }

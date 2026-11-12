@@ -166,6 +166,13 @@ import Testing
     #expect(model.apps == nil)
   }
 
+  @Test("app rows say how many accounts an app has and where they run")
+  func appRowDetail() {
+    #expect(AppSummary.App(id: "a", name: "A", accounts: 0).detail == "No accounts")
+    #expect(AppSummary.App(id: "a", name: "A", accounts: 1).detail == "1 account · Cloud")
+    #expect(AppSummary.App(id: "a", name: "A", accounts: 2).detail == "2 accounts · Cloud")
+  }
+
   @Test("review is offered only when something would change") func reviewIsOfferedOnlyWhenSomethingWouldChange() {
     let model = Fixture.connected.model()
     #expect(model.selection == .init(claude: .keep, codex: .keep))
