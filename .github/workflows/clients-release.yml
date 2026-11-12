@@ -408,16 +408,22 @@ jobs:
           sha256sum --strict -c SHA256SUMS.txt || fail "Run $RUN's files don't match their recorded SHA256SUMS.txt."
           # Installed Android apps install whatever android-update.json names, so it must name this
           # release's own APK. A build with update_feed set names its test feed instead.
-          [ -f android-update.json ] || fail "Run $RUN's release/ has no android-update.json, so installed Android apps wouldn't find this version."
-          IFS=. read -r major minor patch <<< "$version"
-          expected="$(jq -cn --arg version "$version" --argjson versionCode "$((10#$major * 10000 + 10#$minor * 100 + 10#$patch))" \
-            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/signalbox-clients-$version/Signalbox-android.apk" \
-            --arg sha256 "$(sha256sum Signalbox-android.apk | cut -d' ' -f1)" --argjson size "$(stat -c %s Signalbox-android.apk)" \
-            '[$version, $versionCode, $url, $sha256, $size]')"
-          seen="$(jq -c '[.version, .versionCode, .url, .sha256, .size]' android-update.json)" ||
-            fail "Run $RUN's android-update.json isn't JSON."
-          [ "$seen" = "$expected" ] ||
-            fail "Run $RUN's android-update.json has $seen, but publishing needs $expected (version, versionCode, url, sha256, size). Builds made with update_feed can't be published."
+          # A run without the file predates in-app updates and still publishes: assemble writes it
+          # on every newer build and fails when it can't, so a new run never arrives without one,
+          # and removing it from a new run's artifact already fails the sums check above.
+          if [ -f android-update.json ]; then
+            IFS=. read -r major minor patch <<< "$version"
+            expected="$(jq -cn --arg version "$version" --argjson versionCode "$((10#$major * 10000 + 10#$minor * 100 + 10#$patch))" \
+              --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/signalbox-clients-$version/Signalbox-android.apk" \
+              --arg sha256 "$(sha256sum Signalbox-android.apk | cut -d' ' -f1)" --argjson size "$(stat -c %s Signalbox-android.apk)" \
+              '[$version, $versionCode, $url, $sha256, $size]')"
+            seen="$(jq -c '[.version, .versionCode, .url, .sha256, .size]' android-update.json)" ||
+              fail "Run $RUN's android-update.json isn't JSON."
+            [ "$seen" = "$expected" ] ||
+              fail "Run $RUN's android-update.json has $seen, but publishing needs $expected (version, versionCode, url, sha256, size). Builds made with update_feed can't be published."
+          else
+            echo "Run $RUN has no android-update.json: it was built before in-app updates, so installed Android apps won't be offered $version from inside the app." >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
           echo "COMMIT=$commit" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
