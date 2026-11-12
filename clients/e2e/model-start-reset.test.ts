@@ -5,10 +5,11 @@ import { createServer, request, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { deferred } from "./remote-fixture.ts";
+import { profileGate } from "./profile-gate.ts";
 import { fixtureHome } from "./support.ts";
 
 test(
-  "a socket error before a queued upgrade cannot stop the gateway",
+  "a socket error during an upgrade profile read cannot stop the gateway",
   { timeout: 30_000 },
   async () => {
     const started = deferred<void>();
@@ -33,6 +34,7 @@ test(
     const address = upstream.address();
     assert.ok(address && typeof address !== "string");
     const profile = await fixtureHome(`http://127.0.0.1:${address.port}`);
+    const gate = await profileGate(profile.home);
     const preload = join(profile.home, "reset-upgrade.mjs");
     // Node removes its HTTP socket error handler before handing the socket to an upgrade listener.
     await writeFile(
@@ -44,13 +46,13 @@ test(
       const result = emit.call(this, event, ...args);
       if (event === "upgrade") {
         const socket = args[1];
-        setImmediate(() => socket.destroy(new Error("Synthetic queued socket reset")));
+        setImmediate(() => socket.destroy(new Error("Synthetic socket reset during profile read")));
       }
       return result;
     };
   `,
     );
-    const gateway = await profile.start(["--import", preload]);
+    const gateway = await profile.start([...gate.execArgv, "--import", preload]);
     const token = await profile.secret("models");
     const start = () =>
       fetch(`${gateway.origin}/v1/responses`, {
@@ -65,6 +67,7 @@ test(
         const socket = request(`${gateway.origin}/v1/responses`, {
           headers: {
             authorization: `Bearer ${token}`,
+            "x-fixture-id": "upgrade",
             connection: "Upgrade",
             upgrade: "websocket",
             "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
@@ -72,12 +75,15 @@ test(
           },
         });
         socket.once("error", () => resolve());
-        socket.once("response", () => reject(new Error("The queued upgrade must be reset.")));
+        socket.once("response", () => reject(new Error("The pending upgrade must be reset.")));
         socket.once("upgrade", () =>
-          reject(new Error("The queued upgrade must not be dispatched.")),
+          reject(new Error("The cancelled upgrade must not be dispatched.")),
         );
         socket.end();
       });
+      await gate.held(gateway, "upgrade");
+      await gate.closed(gateway, "upgrade");
+      await gate.release();
       release = true;
       for (const response of pending) response.end("synthetic");
       await Promise.all(
@@ -93,6 +99,7 @@ test(
       assert.equal(received, 33);
       assert.equal(upgrades, 0, "The reset operation must never reach the upstream.");
     } finally {
+      await gate.release();
       release = true;
       for (const response of pending) response.end();
       await gateway.stop();

@@ -62,7 +62,6 @@ export async function forwardHttp(
   service: NonNullable<ServiceCredentials[Capability]>,
   capability: Capability,
   signal: AbortSignal,
-  ready: () => void,
 ): Promise<void> {
   const target = new URL(
     capability === "tools" && "path" in service ? service.path : (incoming.url ?? "/"),
@@ -92,7 +91,6 @@ export async function forwardHttp(
     };
     const remote = transport(target, { method: incoming.method, headers, signal }, (response) => {
       responseArrived = true;
-      ready();
       remote.setTimeout(0);
       outgoing.statusCode = response.statusCode ?? 502;
       for (const [name, value] of forwardedResponseHeaders(response.headers))

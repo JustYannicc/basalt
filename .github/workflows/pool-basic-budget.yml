@@ -2,6 +2,12 @@ name: Pool basic native budget
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Synthetic native gateway proof or existing container budget comparison
+        required: true
+        type: choice
+        default: runtime-budget
+        options: [runtime-budget, native-gateway]
       baseline:
         description: Baseline full commit
         default: 55eca77395e2fd411481013339c14a9d87cd9b09
@@ -18,6 +24,7 @@ permissions:
   contents: read
 jobs:
   budget:
+    if: github.event_name != 'workflow_dispatch' || inputs.mode != 'native-gateway'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -98,3 +105,52 @@ jobs:
           name: pool-basic-${{ matrix.version }}
           path: ${{ runner.temp }}/pool-budget/summary.json
           if-no-files-found: error
+
+  native-gateway:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'native-gateway'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        repeat: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Bind the proof to the exact dispatched head
+        env:
+          NATIVE_HEAD: ${{ inputs.candidate }}
+          DISPATCHED_HEAD: ${{ github.sha }}
+        run: |
+          test "$NATIVE_HEAD" = "$DISPATCHED_HEAD"
+          test "$(git rev-parse HEAD)" = "$NATIVE_HEAD"
+          test "$(uname -s)" = Linux
+          test "$(bun --version)" = 1.4.2
+      - name: Install only the public native CLI dependencies
+        run: |
+          bun install --cwd src/setup --frozen-lockfile
+          bun install --cwd clients --frozen-lockfile
+      - name: Run the complete independent synthetic native proof
+        env:
+          NATIVE_HEAD: ${{ inputs.candidate }}
+          NATIVE_OUTPUT: ${{ runner.temp }}/native-gateway-${{ matrix.repeat }}
+        run: |
+          ulimit -n 16384
+          node clients/e2e/model-scale.mjs "$NATIVE_OUTPUT" "$NATIVE_HEAD" complete
+      - name: Retain raw operations and gateway-only telemetry even after STOP
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-gateway-${{ inputs.candidate }}-${{ matrix.repeat }}
+          path: ${{ runner.temp }}/native-gateway-${{ matrix.repeat }}
+          if-no-files-found: error
+          retention-days: 30
