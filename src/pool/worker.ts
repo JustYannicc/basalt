@@ -413,23 +413,26 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await this.memberships.tick();
     await this.computers.expire();
     await this.handoff.warm(() => this.lifecycle.then((lifecycle) => lifecycle.warm()));
-    await reportWhenDue(this.ctx.storage, "first-request", () =>
-      this.computers.observeUsage(undefined, true),
+    await reportWhenDue(this.ctx.storage, "first-request", (progress) =>
+      this.computers.observeUsage(undefined, true, progress),
     );
     await this.control.expire();
     await this.prices.run();
     await this.overviewPrices.refresh();
     // Usage is a report: a slow or failing read must not hold the pool's own upkeep.
-    await reportWhenDue(this.ctx.storage, "usage", () => this.usage.observe()).catch(
-      (error: unknown) => console.error("Pool usage observation failed", error),
-    );
+    await reportWhenDue(this.ctx.storage, "usage", (progress) =>
+      this.usage.observe(progress),
+    ).catch((error: unknown) => console.error("Pool usage observation failed", error));
     await reportWhenDue(this.ctx.storage, "account-observations", () =>
       publishAccountObservations(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY),
     ).catch(() => console.error("POOL_ACCOUNT_OBSERVATIONS_PENDING"));
     if (this.env.POOL_MODEL_HISTORY_ENABLED === "true") {
       try {
-        await reportWhenDue(this.ctx.storage, "model-history", () =>
-          withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, captureHomeRequests),
+        await reportWhenDue(this.ctx.storage, "model-history", (progress) =>
+          withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, async (db) => {
+            const result = await captureHomeRequests(db);
+            progress.rows = result.state === "active" ? result.scanned : 0;
+          }),
         );
       } catch {
         console.error("POOL_MODEL_HISTORY_FAILURE count=1");

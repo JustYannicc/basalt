@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Home summary reads project only accounting and canonical attribution metadata, page by exact timestamp and string ID, and never expose diagnostic payloads or raw keys. A transactional pending-ID queue with changing acknowledgement tokens captures late commits and attribution repair; the single controller consumer commits rollups and deduplication receipts before acknowledging observed tokens. Existing rollups survive the capability-gated transition, one-time backfill and membership-scope reconciliation. Future retained timestamps queue once at installation, and v16 portable snapshots restore exactly the unacknowledged tokens. Native PostgreSQL v15-to-v16 setup skips inherited data normalizers. Six reporting indexes build concurrently outside schema transactions, serialize without waiting snapshots, repair interrupted matching builds and reject changed definitions. Activation requires the paired strict native schema barrier; a version marker alone is insufficient. First-success observation uses exact charged or legacy key identity, current credential membership and bound-at time without counting details. Reporting attempts emit closed content-free job, duration, row-count and outcome events while not-due ticks remain silent. Usage overview grouping and covering shapes adapt Home PR 171 while preserving fingerprint identity and accounting semantics."
+    }
+  }
+}

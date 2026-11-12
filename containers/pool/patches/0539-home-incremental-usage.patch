@@ -1,0 +1,2688 @@
+diff --git a/docs/management/api.md b/docs/management/api.md
+index 2002795..b3035ef 100644
+--- a/docs/management/api.md
++++ b/docs/management/api.md
+@@ -3204,6 +3204,14 @@ Top-level response fields:
+ | `top` | object | `users`, `client_keys`, `credentials`, `providers`, `models`, `endpoints`, and `errors`. |
+ | `activity` | array | Health activity series aligned one-for-one with the contiguous trend buckets. `status` is `empty` for zero requests, `healthy` below 5% errors, `degraded` from 5% to below 50% errors, and `unavailable` from 50% errors. |
+ 
++### Incremental usage summaries
++
++`GET /usage/summary-records` requires `from` and `to` (`[from,to)`), accepts `limit` up to 200, and returns narrow `items` with string IDs, exact timestamps, provider/model, tokens and token breakdown, client username, credential ID, and billing amount/rule. Diagnostics, raw keys, credential JSON, request content and balances are omitted. Continue with both `after_timestamp` and string `after_id` from `next`; order is timestamp then ID, ascending. `next: null` completes that fixed range. Requires `usage_summary_cursor_v1`.
++
++`GET /usage/summary-pending?to=<RFC3339>` returns up to 200 pending items with `pending_token` and `more`. Inserts and attribution repairs queue IDs in the source transaction, including late commits behind any cursor. Future timestamps remain queued until `to` passes them. Commit counters and deduplication receipts durably before `POST /usage/summary-ack` with `{"items":[{"id":"123","token":"<observed pending_token>"}]}`. At most 200 pairs; replay is safe. Only the observed token is removed, so a concurrent repair remains pending. There is one summary consumer per Home; this is not a broadcast feed. Requires `usage_summary_pending_v1`.
++
++`GET /usage/first-success` requires positive `client_key_id`, `from`, and repeated `credential_id` values (at most 500). Returns the earliest successful timestamp at or after `from`, restricted to those canonical credentials and the charged key (falling back to legacy key identity only when no charged key exists). Empty credentials or no match returns `{"timestamp":null}`. Requires `usage_first_success_v1`.
++
+ ### GET `/usage/records`
+ 
+ Returns the request record table with server-side pagination, filters, and sorting.
+diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
+index e265678..ac02dc0 100644
+--- a/docs/management/api_CN.md
++++ b/docs/management/api_CN.md
+@@ -3196,6 +3196,14 @@ Query 参数除汇总范围参数外还支持：
+ | `top` | object | `users`、`client_keys`、`credentials`、`providers`、`models`、`endpoints` 和 `errors`。 |
+ | `activity` | array | 与连续趋势桶一一对齐的健康活动序列。请求数为零时 `status` 为 `empty`；错误率低于 5% 为 `healthy`；5%（含）至 50%（不含）为 `degraded`；达到 50% 为 `unavailable`。 |
+ 
++### 增量用量汇总
++
++`GET /usage/summary-records` 必须提供 `from` 和 `to`，范围为 `[from,to)`，`limit` 最大 200。返回字符串 ID、精确时间戳、提供方/模型、Token 计数及分解、客户端用户名、凭据 ID、计费金额与规则；不返回诊断负载、原始密钥、凭据 JSON、请求内容或余额。按时间戳和 ID 升序分页，使用 `next` 的 `after_timestamp` 和字符串 `after_id` 继续，`next: null` 表示该固定范围结束。需 `usage_summary_cursor_v1` 能力。
++
++`GET /usage/summary-pending?to=<RFC3339>` 最多返回 200 条待处理记录及 `pending_token`、`more`。用量插入和归属修复在源事务内入队，游标之前的延迟提交也不会丢失；未来时间戳会保留至 `to` 超过其时间。先持久化汇总及去重凭证，再用 `POST /usage/summary-ack` 提交 `{"items":[{"id":"123","token":"<读取到的 pending_token>"}]}`，最多 200 对，可安全重试。仅删除匹配令牌，并发修复仍留在队列。每个 Home 仅有一个汇总消费者，不是广播流。需 `usage_summary_pending_v1` 能力。
++
++`GET /usage/first-success` 需正数 `client_key_id`、`from` 和重复的 `credential_id`（最多 500 个），返回该时间之后指定凭据及计费密钥的首个成功时间；无计费密钥时才回退旧密钥身份。凭据为空或无匹配返回 `{"timestamp":null}`。需 `usage_first_success_v1` 能力。
++
+ ### GET `/usage/records`
+ 
+ 返回请求明细表，服务端分页、筛选和排序。
+diff --git a/internal/cluster/billing.go b/internal/cluster/billing.go
+index f0198e8..9ee67f7 100644
+--- a/internal/cluster/billing.go
++++ b/internal/cluster/billing.go
+@@ -521,7 +521,6 @@ func (r *Repository) BillingOverview(ctx context.Context, query BillingOverviewQ
+ 	ctx = contextOrBackground(ctx)
+ 
+ 	chargeQuery := billingChargeQueryFromOverview(query)
+-	chargeScope := billingChargeQueryScope(db.WithContext(ctx).Model(&BillingChargeRecord{}), chargeQuery)
+ 	var chargeTotals struct {
+ 		TotalChargeAmount float64
+ 		RequestCount      int64
+@@ -532,18 +531,7 @@ func (r *Repository) BillingOverview(ctx context.Context, query BillingOverviewQ
+ 		MinCreatedAt      sql.NullString `gorm:"column:min_created_at"`
+ 		MaxCreatedAt      sql.NullString `gorm:"column:max_created_at"`
+ 	}
+-	if errScan := chargeScope.
+-		Joins(`LEFT JOIN "usage" AS "billing_usage" ON "billing_usage"."id" = "billing_charge"."usage_id"`).
+-		Select(`
+-		COALESCE(SUM("billing_charge"."amount"), 0) AS total_charge_amount,
+-		COUNT(*) AS request_count,
+-		COALESCE(SUM(` + billingDisplayTokenSQL("input_tokens") + `), 0) AS input_tokens,
+-		COALESCE(SUM(` + billingDisplayTokenSQL("output_tokens") + `), 0) AS output_tokens,
+-		COALESCE(SUM("billing_charge"."cache_tokens"), 0) AS cache_tokens,
+-		COUNT(DISTINCT "billing_charge"."user_id") AS active_user_count,
+-		MIN("billing_charge"."created_at") AS min_created_at,
+-		MAX("billing_charge"."created_at") AS max_created_at`,
+-		).Scan(&chargeTotals).Error; errScan != nil {
++	if errScan := billingOverviewTotalsQuery(db.WithContext(ctx), chargeQuery).Scan(&chargeTotals).Error; errScan != nil {
+ 		return BillingOverview{}, errScan
+ 	}
+ 
+@@ -564,13 +552,9 @@ func (r *Repository) BillingOverview(ctx context.Context, query BillingOverviewQ
+ 	if errTopUsers != nil {
+ 		return BillingOverview{}, errTopUsers
+ 	}
+-	topModels, errTopModels := billingTopModels(ctx, db, chargeQuery)
+-	if errTopModels != nil {
+-		return BillingOverview{}, errTopModels
+-	}
+-	topProviders, errTopProviders := billingTopProviders(ctx, db, chargeQuery)
+-	if errTopProviders != nil {
+-		return BillingOverview{}, errTopProviders
++	topModels, topProviders, errRankings := billingTopModelsAndProviders(ctx, db, chargeQuery)
++	if errRankings != nil {
++		return BillingOverview{}, errRankings
+ 	}
+ 	ledgerTotals, errLedger := billingLedgerTotals(ctx, db, query)
+ 	if errLedger != nil {
+diff --git a/internal/cluster/billing_overview_queries.go b/internal/cluster/billing_overview_queries.go
+new file mode 100644
+index 0000000..3891adf
+--- /dev/null
++++ b/internal/cluster/billing_overview_queries.go
+@@ -0,0 +1,105 @@
++package cluster
++
++import (
++	"context"
++	"fmt"
++	"strings"
++
++	"gorm.io/gorm"
++)
++
++func billingOverviewTotalsQuery(db *gorm.DB, query BillingChargeQuery) *gorm.DB {
++	scope := billingChargeQueryScope(db.Model(&BillingChargeRecord{}), query)
++	inputTokens := billingDisplayTokenSQL("input_tokens")
++	outputTokens := billingDisplayTokenSQL("output_tokens")
++	users := `COUNT(DISTINCT "billing_charge"."user_id") AS active_user_count`
++	isPostgres := usageObservabilityIsPostgres(db)
++	if isPostgres {
++		// Literal predicates let generic prepared plans use the partial index.
++		scope = scope.Joins(fmt.Sprintf(`LEFT JOIN "usage" AS "billing_usage"
++			ON "billing_usage"."id" = "billing_charge"."usage_id"
++			AND "billing_usage"."token_accounting_version" = %d
++			AND "billing_usage"."token_accounting_quality" = '%s'`,
++			UsageTokenAccountingSchemaVersion, UsageTokenAccountingQualityComplete))
++		// Row presence, rather than COALESCE(counter, fallback), preserves NULL counters.
++		inputTokens = `CASE WHEN "billing_usage"."id" IS NOT NULL THEN "billing_usage"."accounting_input_tokens" ELSE "billing_charge"."input_tokens" END`
++		outputTokens = `CASE WHEN "billing_usage"."id" IS NOT NULL THEN "billing_usage"."accounting_output_tokens" ELSE "billing_charge"."output_tokens" END`
++		users = `"billing_charge"."user_id" AS user_id`
++	} else {
++		scope = scope.Joins(`LEFT JOIN "usage" AS "billing_usage" ON "billing_usage"."id" = "billing_charge"."usage_id"`)
++	}
++	totals := scope.Select(fmt.Sprintf(`
++		COALESCE(SUM("billing_charge"."amount"), 0) AS total_charge_amount,
++		COUNT(*) AS request_count,
++		COALESCE(SUM(%s), 0) AS input_tokens,
++		COALESCE(SUM(%s), 0) AS output_tokens,
++		COALESCE(SUM("billing_charge"."cache_tokens"), 0) AS cache_tokens,
++		%s,
++		MIN("billing_charge"."created_at") AS min_created_at,
++		MAX("billing_charge"."created_at") AS max_created_at`, inputTokens, outputTokens, users))
++	if !isPostgres {
++		return totals
++	}
++	// Grouping the user identity avoids a DISTINCT sort of all joined columns.
++	totals = totals.Group(`"billing_charge"."user_id"`)
++	return db.Table("(?) AS grouped_users", totals).Select(`
++		COALESCE(SUM(total_charge_amount), 0) AS total_charge_amount,
++		COALESCE(SUM(request_count), 0) AS request_count,
++		COALESCE(SUM(input_tokens), 0) AS input_tokens,
++		COALESCE(SUM(output_tokens), 0) AS output_tokens,
++		COALESCE(SUM(cache_tokens), 0) AS cache_tokens,
++		COUNT(user_id) AS active_user_count,
++		MIN(min_created_at) AS min_created_at,
++		MAX(max_created_at) AS max_created_at`)
++}
++
++func billingTopModelsAndProviders(ctx context.Context, db *gorm.DB, query BillingChargeQuery) ([]BillingTopItem, []BillingTopItem, error) {
++	if !usageObservabilityIsPostgres(db) {
++		models, errModels := billingTopModels(ctx, db, query)
++		if errModels != nil {
++			return nil, nil, errModels
++		}
++		providers, errProviders := billingTopProviders(ctx, db, query)
++		return models, providers, errProviders
++	}
++	db = db.WithContext(contextOrBackground(ctx))
++	grouped := billingChargeQueryScope(db.Model(&BillingChargeRecord{}), query).
++		Select(`"billing_charge"."provider" AS provider, "billing_charge"."model" AS model,
++			GROUPING("billing_charge"."model") AS kind,
++			COALESCE(SUM("billing_charge"."amount"), 0) AS amount, COUNT(*) AS request_count`).
++		Group(`GROUPING SETS (("billing_charge"."provider", "billing_charge"."model"), ("billing_charge"."provider"))`)
++	// GROUPING distinguishes a real NULL model from the provider-only subtotal.
++	ranked := db.Table("(?) AS grouped", grouped).
++		Select(`grouped.*, ROW_NUMBER() OVER (
++			PARTITION BY kind ORDER BY amount DESC, request_count DESC, provider ASC, model ASC
++		) AS rank`)
++	var rows []struct {
++		Kind         int
++		Provider     string
++		Model        string
++		Amount       float64
++		RequestCount int64
++	}
++	if errScan := db.Table("(?) AS ranked", ranked).
++		Select("kind, provider, model, amount, request_count").
++		Where("rank <= ?", billingOverviewTopLimit).
++		Order("kind ASC, rank ASC").Scan(&rows).Error; errScan != nil {
++		return nil, nil, errScan
++	}
++	models := make([]BillingTopItem, 0, billingOverviewTopLimit)
++	providers := make([]BillingTopItem, 0, billingOverviewTopLimit)
++	for _, row := range rows {
++		provider := strings.TrimSpace(row.Provider)
++		if row.Kind == 1 {
++			providers = append(providers, BillingTopItem{ID: provider, Label: provider, Amount: row.Amount, RequestCount: row.RequestCount})
++			continue
++		}
++		model := strings.TrimSpace(row.Model)
++		id := model
++		if provider != "" && model != "" {
++			id = provider + "/" + model
++		}
++		models = append(models, BillingTopItem{ID: id, Label: model, Amount: row.Amount, RequestCount: row.RequestCount})
++	}
++	return models, providers, nil
++}
+diff --git a/internal/cluster/billing_overview_queries_test.go b/internal/cluster/billing_overview_queries_test.go
+new file mode 100644
+index 0000000..80a0c30
+--- /dev/null
++++ b/internal/cluster/billing_overview_queries_test.go
+@@ -0,0 +1,168 @@
++package cluster
++
++import (
++	"fmt"
++	"math"
++	"reflect"
++	"strings"
++	"testing"
++	"time"
++
++	"gorm.io/gorm"
++	"gorm.io/gorm/logger"
++)
++
++func TestBillingOverviewPostgresQueries(t *testing.T) {
++	repo := newPostgresQuiescenceRepository(t)
++	db, errDB := repo.database()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	// Exercise historical nullable counters without changing production constraints.
++	if errNullable := db.Exec(`ALTER TABLE usage ALTER COLUMN accounting_input_tokens DROP NOT NULL, ALTER COLUMN accounting_output_tokens DROP NOT NULL`).Error; errNullable != nil {
++		t.Fatal(errNullable)
++	}
++	from := time.Date(2026, 10, 31, 0, 0, 0, 0, time.UTC)
++	to := from.Add(72 * time.Hour)
++	users := make([]UserRecord, 16)
++	for i := range users {
++		users[i] = UserRecord{Username: fmt.Sprintf("finance-user-%02d", i), Credits: 100}
++	}
++	if errCreate := db.Create(&users).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	for i := 0; i < 96; i++ {
++		stamp := from.Add(time.Duration(i-1) * time.Hour)
++		usage := UsageRecord{Timestamp: stamp, CreatedAt: stamp, PayloadJSON: JSONB(`{}`),
++			TokenAccountingVersion: 2, TokenAccountingQuality: UsageTokenAccountingQualityComplete,
++			AccountingInputTokens: int64(1000 + i), AccountingOutputTokens: int64(100 + i)}
++		switch i % 8 {
++		case 1:
++			usage.AccountingInputTokens, usage.AccountingOutputTokens = 0, 0
++		case 2:
++			usage.TokenAccountingQuality = UsageTokenAccountingQualityUnclassified
++		case 3:
++			usage.TokenAccountingQuality = UsageTokenAccountingQualityInconsistent
++		case 4:
++			usage.TokenAccountingVersion = 0
++		case 5:
++			usage.TokenAccountingVersion = 3
++		}
++		if errCreate := db.Create(&usage).Error; errCreate != nil {
++			t.Fatal(errCreate)
++		}
++		charge := BillingChargeRecord{ID: fmt.Sprintf("finance-charge-%03d", i), PayloadHash: fmt.Sprintf("finance-hash-%03d", i),
++			UsageID: usage.ID, UserID: &users[i%len(users)].ID, Provider: fmt.Sprintf("provider-%02d", i%12), Model: fmt.Sprintf("model-%02d", i%17),
++			Amount: float64(i%4+1) / 8, InputTokens: int64(10 + i), OutputTokens: int64(3 + i), CacheTokens: int64(i % 7),
++			PriceSnapshot: JSONB(`{}`), CreatedAt: stamp}
++		if i%7 == 0 {
++			charge.UserID = nil
++		}
++		if errCreate := db.Create(&charge).Error; errCreate != nil {
++			t.Fatal(errCreate)
++		}
++		if i%8 == 7 {
++			if errDelete := db.Delete(&usage).Error; errDelete != nil {
++				t.Fatal(errDelete)
++			}
++		} else if i%8 == 6 {
++			if errNull := db.Model(&usage).Updates(map[string]any{"accounting_input_tokens": nil, "accounting_output_tokens": nil}).Error; errNull != nil {
++				t.Fatal(errNull)
++			}
++		}
++		// Real NULL and empty model/provider names must not become subtotal rows.
++		if i%11 == 0 {
++			if errNull := db.Model(&charge).Updates(map[string]any{"provider": nil, "model": nil}).Error; errNull != nil {
++				t.Fatal(errNull)
++			}
++		} else if i%13 == 0 {
++			if errEmpty := db.Model(&charge).Updates(map[string]any{"provider": "", "model": ""}).Error; errEmpty != nil {
++				t.Fatal(errEmpty)
++			}
++		}
++	}
++	if errDelete := db.Delete(&users[3]).Error; errDelete != nil {
++		t.Fatal(errDelete)
++	}
++	for _, tc := range []struct {
++		name  string
++		query BillingOverviewQuery
++	}{
++		{"all", BillingOverviewQuery{}},
++		{"user ID", BillingOverviewQuery{UserID: &users[0].ID}},
++		{"deleted user", BillingOverviewQuery{UserID: &users[3].ID}},
++		{"user text", BillingOverviewQuery{UserText: "finance-user-0"}},
++		{"user and text", BillingOverviewQuery{UserID: &users[0].ID, UserText: users[0].Username}},
++		{"provider", BillingOverviewQuery{Provider: "PROVIDER-01"}},
++		{"model", BillingOverviewQuery{Model: "model-01"}},
++		{"combined filters", BillingOverviewQuery{UserText: "finance-user", Provider: "provider-01", Model: "model"}},
++		{"wildcard", BillingOverviewQuery{Model: "%"}},
++		{"quoted filter", BillingOverviewQuery{Model: "model' OR '1'='1"}},
++		{"empty", BillingOverviewQuery{Provider: "missing"}},
++		{"timezone", BillingOverviewQuery{Timezone: "Asia/Shanghai"}},
++		{"DST", BillingOverviewQuery{Timezone: "America/Los_Angeles"}},
++		{"unbounded", BillingOverviewQuery{}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			query := tc.query
++			if tc.name != "unbounded" {
++				query.From, query.ToExclusive = &from, &to
++			}
++			counter := &overviewQueryCounter{Interface: logger.Default.LogMode(logger.Silent)}
++			got, errOverview := NewRepository(db.Session(&gorm.Session{Logger: counter})).BillingOverview(t.Context(), query)
++			if errOverview != nil {
++				t.Fatal(errOverview)
++			}
++			if counter.count > 7 {
++				t.Fatalf("executed %d SELECTs, want at most 7", counter.count)
++			}
++			chargeQuery := billingChargeQueryFromOverview(query)
++			var want struct {
++				Amount                             float64
++				Count, Input, Output, Cache, Users int64
++			}
++			// Keep the previous one-pass SQL as an independent aggregation oracle.
++			if errOracle := billingChargeQueryScope(db.Model(&BillingChargeRecord{}), chargeQuery).
++				Joins(`LEFT JOIN usage AS billing_usage ON billing_usage.id = billing_charge.usage_id`).
++				Select(`COALESCE(SUM(billing_charge.amount),0) AS amount, COUNT(*) AS count,
++					COALESCE(SUM(` + billingDisplayTokenSQL("input_tokens") + `),0) AS input,
++					COALESCE(SUM(` + billingDisplayTokenSQL("output_tokens") + `),0) AS output,
++					COALESCE(SUM(billing_charge.cache_tokens),0) AS cache,
++					COUNT(DISTINCT billing_charge.user_id) AS users`).Scan(&want).Error; errOracle != nil {
++				t.Fatal(errOracle)
++			}
++			if math.Abs(got.TotalChargeAmount-want.Amount) > 1e-10 || got.RequestCount != want.Count || got.InputTokens != want.Input || got.OutputTokens != want.Output || got.CacheTokens != want.Cache || got.ActiveUserCount != want.Users {
++				t.Fatalf("totals mismatch: got %+v, want %+v", got, want)
++			}
++			wantModels, errModels := billingTopModels(t.Context(), db, chargeQuery)
++			wantProviders, errProviders := billingTopProviders(t.Context(), db, chargeQuery)
++			wantUsers, errUsers := billingTopUsers(t.Context(), db, chargeQuery)
++			if errModels != nil || errProviders != nil || errUsers != nil {
++				t.Fatalf("ranking oracle: %v / %v / %v", errModels, errProviders, errUsers)
++			}
++			if !reflect.DeepEqual(got.TopModels, wantModels) || !reflect.DeepEqual(got.TopProviders, wantProviders) || !reflect.DeepEqual(got.TopUsers, wantUsers) {
++				t.Fatalf("ranking results/order changed: %+v", got)
++			}
++			var trendCount int64
++			var trendAmount float64
++			for _, point := range got.DailyTrend {
++				trendCount += point.RequestCount
++				trendAmount += point.ChargeAmount
++			}
++			if trendCount != got.RequestCount || math.Abs(trendAmount-got.TotalChargeAmount) > 1e-10 {
++				t.Fatal("trend no longer reconciles with totals")
++			}
++		})
++	}
++
++	// Generic plans must see literal accounting predicates, not bind parameters.
++	var rows []map[string]any
++	statement := billingOverviewTotalsQuery(db.Session(&gorm.Session{DryRun: true}), BillingChargeQuery{From: &from, ToExclusive: &to}).Find(&rows).Statement
++	text := statement.SQL.String()
++	if !strings.Contains(text, `"token_accounting_version" = 2`) || !strings.Contains(text, `"token_accounting_quality" = 'complete'`) {
++		t.Fatalf("partial-index predicate was parameterized: %s", text)
++	}
++	if strings.Contains(text, "COUNT(DISTINCT") {
++		t.Fatal("PostgreSQL totals still sort wide rows for DISTINCT")
++	}
++}
+diff --git a/internal/cluster/database_models.go b/internal/cluster/database_models.go
+index fa40f12..70d073e 100644
+--- a/internal/cluster/database_models.go
++++ b/internal/cluster/database_models.go
+@@ -10,7 +10,7 @@ import (
+ // currentDatabaseVersion is shared by the live schema migration gate and the
+ // portable snapshot format. Increment it for every required startup migration
+ // or snapshot format change, and retain mappings for prior snapshot formats.
+-const currentDatabaseVersion = 15
++const currentDatabaseVersion = 16
+ 
+ // databaseModel describes one managed Home database table.
+ type databaseModel struct {
+@@ -352,7 +352,7 @@ func currentDatabaseModels() []databaseModel {
+ 			models[index] = newDatabaseModel[ChannelGroupRecord]("channel_group", []string{"id"}, true, true)
+ 		}
+ 	}
+-	return models
++	return append(models, newDatabaseModel[UsageSummaryPendingRecord]("usage_summary_pending", []string{"usage_id"}, false, true))
+ }
+ 
+ func databaseSnapshotModels(formatVersion int) ([]databaseModel, bool) {
+@@ -369,6 +369,14 @@ func databaseSnapshotModels(formatVersion int) ([]databaseModel, bool) {
+ 		return databaseSnapshotV5Models, true
+ 	case 6, 7, 8, 9, 10, 11, 12, 13, 14:
+ 		return databaseSnapshotV14Models, true
++	case 15:
++		models := []databaseModel{}
++		for _, model := range homeDatabaseModels {
++			if model.name != "usage_summary_pending" {
++				models = append(models, model)
++			}
++		}
++		return models, true
+ 	case currentDatabaseVersion:
+ 		return homeDatabaseModels, true
+ 	default:
+diff --git a/internal/cluster/database_snapshot.go b/internal/cluster/database_snapshot.go
+index b77aa76..0feda96 100644
+--- a/internal/cluster/database_snapshot.go
++++ b/internal/cluster/database_snapshot.go
+@@ -1156,8 +1156,22 @@ func importDatabaseSnapshotRecords(ctx context.Context, tx *gorm.DB, snapshot *V
+ 	if errEmpty := ensureDatabaseSnapshotTargetEmpty(ctx, tx); errEmpty != nil {
+ 		return DatabaseSnapshotImportResult{}, errEmpty
+ 	}
++	// Install on the empty target before restoring acknowledged state. Later
++	// custom migrations must not enqueue already acknowledged future records.
++	if snapshot.manifest.FormatVersion >= 16 {
++		if errPrepare := migrateUsageSummaryPending(tx); errPrepare != nil {
++			return DatabaseSnapshotImportResult{}, errPrepare
++		}
++	}
+ 	for index, model := range snapshot.models {
+ 		manifestTable := snapshot.manifest.Tables[index]
++		// An already initialized target may have queued imported usage through its
++		// triggers. The final table restores the source's exact pending work instead.
++		if model.name == "usage_summary_pending" {
++			if errClear := tx.Exec("DELETE FROM usage_summary_pending").Error; errClear != nil {
++				return DatabaseSnapshotImportResult{}, errClear
++			}
++		}
+ 		tableResult := DatabaseSnapshotImportTableResult{Name: model.name}
+ 		if !model.restore {
+ 			tableResult.Skipped = manifestTable.Rows
+@@ -1178,6 +1192,18 @@ func importDatabaseSnapshotRecords(ctx context.Context, tx *gorm.DB, snapshot *V
+ 			progress(DatabaseSnapshotProgress{Operation: "import", Table: model.name, Rows: imported, Skipped: skipped})
+ 		}
+ 	}
++	if snapshot.manifest.FormatVersion < 16 {
++		// Older snapshots have no acknowledgements. Replaying retained IDs is safe
++		// because the consumer commits receipts before acknowledging a batch.
++		tokenSQL := "lower(hex(randomblob(16)))"
++		if usageObservabilityIsPostgres(tx) {
++			tokenSQL = "replace(gen_random_uuid()::text,'-','')"
++		}
++		if errQueue := tx.Exec(`INSERT INTO usage_summary_pending (usage_id,token)
++         SELECT id,`+tokenSQL+` FROM usage WHERE timestamp >= ? ON CONFLICT(usage_id) DO NOTHING`, now.Add(-31*24*time.Hour)).Error; errQueue != nil {
++			return DatabaseSnapshotImportResult{}, errQueue
++		}
++	}
+ 	if errRelationships := validateImportedDatabaseSnapshotRelationships(tx); errRelationships != nil {
+ 		return DatabaseSnapshotImportResult{}, errRelationships
+ 	}
+diff --git a/internal/cluster/db.go b/internal/cluster/db.go
+index db4a828..482aa7a 100644
+--- a/internal/cluster/db.go
++++ b/internal/cluster/db.go
+@@ -139,7 +139,10 @@ func AutoMigrateContext(ctx context.Context, db *gorm.DB) error {
+ 		if errMigrate := autoMigratePostgresContext(ctx, db, false, nil); errMigrate != nil {
+ 			return errMigrate
+ 		}
+-		return prepareDiagnosticsMetadataOnlyPrivacyMigration(ctx, db)
++		if errPrivacy := prepareDiagnosticsMetadataOnlyPrivacyMigration(ctx, db); errPrivacy != nil {
++			return errPrivacy
++		}
++		return migrateReportingIndexesOnline(ctx, db)
+ 	}
+ 
+ 	startedAt := time.Now()
+@@ -171,7 +174,7 @@ func autoMigratePostgresContext(ctx context.Context, db *gorm.DB, runWhenCurrent
+ 		schemaMigrationPollInterval,
+ 		schemaMigrationWaitTimeout,
+ 		runWhenCurrent,
+-		postgresSchemaMigrationOperations(db, startedAt, ctx, func(lockedCtx context.Context, tx *gorm.DB, _ int64, requiredVersion int64) error {
++		postgresSchemaMigrationOperations(db, startedAt, ctx, func(lockedCtx context.Context, tx *gorm.DB, fromVersion int64, requiredVersion int64) error {
+ 			lockedDB := tx.WithContext(lockedCtx)
+ 			// Acquire the binding lock before schema/row locks to match live API key writes.
+ 			if errLock := lockAPIKeyMutationTransaction(lockedDB); errLock != nil {
+@@ -185,7 +188,7 @@ func autoMigratePostgresContext(ctx context.Context, db *gorm.DB, runWhenCurrent
+ 					return errAfterSchema
+ 				}
+ 			}
+-			if errCustom := runCustomMigrations(lockedDB); errCustom != nil {
++			if errCustom := runCustomMigrationsAfterVersion(lockedDB, fromVersion); errCustom != nil {
+ 				return errCustom
+ 			}
+ 			if errVersion := writePostgresSchemaMigrationVersion(lockedCtx, lockedDB, requiredVersion); errVersion != nil {
+@@ -248,11 +251,16 @@ func autoMigrateSchema(db *gorm.DB) error {
+ }
+ 
+ func runCustomMigrations(db *gorm.DB) error {
++	return runCustomMigrationsAfterVersion(db, 0)
++}
++
++func runCustomMigrationsAfterVersion(db *gorm.DB, fromVersion int64) error {
+ 	isPostgres := db.Dialector.Name() == "postgres"
+-	migrations := []struct {
++	type migration struct {
+ 		name string
+ 		run  func(*gorm.DB) error
+-	}{
++	}
++	migrations := []migration{
+ 		{name: "migrate_cpa_node_primary_key", run: migrateCPANodePrimaryKey},
+ 		{name: "migrate_billing_indexes", run: migrateBillingIndexes},
+ 		{name: "migrate_billing_import_indexes", run: migrateBillingImportIndexes},
+@@ -270,11 +278,17 @@ func runCustomMigrations(db *gorm.DB) error {
+ 		{name: "migrate_deleted_access_group_bindings", run: migrateDeletedAccessGroupBindings},
+ 		{name: "migrate_oauth_excluded_models_attributes", run: migrateOAuthExcludedModelsAttributes},
+ 	}
+-	if isPostgres && DiagnosticsMetadataOnlyEnabled() {
+-		migrations = append(migrations, struct {
+-			name string
+-			run  func(*gorm.DB) error
+-		}{name: "install_diagnostics_metadata_only_guards", run: installDiagnosticsMetadataOnlyPostgresGuardsContext})
++	// Version 15 already ran the legacy normalizers. Replaying them during the
++	// additive reporting upgrade would rewrite retained rows unnecessarily.
++	if fromVersion >= 15 {
++		migrations = nil
++	}
++	migrations = append(migrations,
++		migration{name: "migrate_usage_summary_pending", run: migrateUsageSummaryPending},
++		migration{name: "migrate_usage_summary_attribution", run: migrateUsageSummaryAttribution},
++	)
++	if isPostgres && fromVersion < 15 && DiagnosticsMetadataOnlyEnabled() {
++		migrations = append(migrations, migration{name: "install_diagnostics_metadata_only_guards", run: installDiagnosticsMetadataOnlyPostgresGuardsContext})
+ 	}
+ 	for _, migration := range migrations {
+ 		stageStartedAt := time.Now()
+diff --git a/internal/cluster/management/usage_observability.go b/internal/cluster/management/usage_observability.go
+index 9fb76af..3ca0740 100644
+--- a/internal/cluster/management/usage_observability.go
++++ b/internal/cluster/management/usage_observability.go
+@@ -44,6 +44,9 @@ func (h *Handler) GetCapabilities(c *gin.Context) {
+ 			"usage":                                true,
+ 			"usage_overview":                       true,
+ 			"usage_records":                        true,
++			"usage_summary_cursor_v1":              true,
++			"usage_summary_pending_v1":             true,
++			"usage_first_success_v1":               true,
+ 			"usage_record_details":                 true,
+ 			"usage_aggregates":                     true,
+ 			"usage_export":                         true,
+diff --git a/internal/cluster/management/usage_summary_records.go b/internal/cluster/management/usage_summary_records.go
+new file mode 100644
+index 0000000..1eccdaa
+--- /dev/null
++++ b/internal/cluster/management/usage_summary_records.go
+@@ -0,0 +1,140 @@
++package management
++
++import (
++	"encoding/hex"
++	"net/http"
++	"strconv"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++func (h *Handler) ListUsageSummaryRecords(c *gin.Context) {
++	from, to, errRange := parseUsageTimeRange(c.Query("from"), c.Query("to"), time.UTC)
++	if errRange != nil {
++		respondUsageHTTPError(c, errRange)
++		return
++	}
++	if from == nil || to == nil {
++		respondUsageHTTPError(c, newUsageHTTPError("invalid_range", "from and to are required"))
++		return
++	}
++	limit, errLimit := parseUsageLimit(c.Query("limit"), 200, 200)
++	if errLimit != nil {
++		respondUsageHTTPError(c, errLimit)
++		return
++	}
++	query := cluster.UsageSummaryRecordQuery{From: *from, To: *to, Limit: limit}
++	rawAt, rawID := c.Query("after_timestamp"), c.Query("after_id")
++	if rawAt != "" || rawID != "" {
++		at, errAt := time.Parse(time.RFC3339Nano, rawAt)
++		id, errID := strconv.ParseUint(rawID, 10, 64)
++		if errAt != nil || errID != nil || id == 0 || at.Before(*from) || !at.Before(*to) {
++			respondUsageHTTPError(c, newUsageHTTPError("invalid_cursor", "cursor must identify a row in the requested range"))
++			return
++		}
++		query.After = &cluster.UsageSummaryCursor{Timestamp: at, ID: uint(id)}
++	}
++	ctx, cancel := h.requestContext(c)
++	defer cancel()
++	records, more, errRecords := h.repo.ListUsageSummaryRecords(ctx, query)
++	if errRecords != nil {
++		respondError(c, http.StatusInternalServerError, "usage_summary_load_failed", errRecords)
++		return
++	}
++	var next any
++	if more && len(records) > 0 {
++		last := records[len(records)-1]
++		next = gin.H{"timestamp": last.Timestamp.UTC().Format(time.RFC3339Nano), "id": last.ID}
++	}
++	c.JSON(http.StatusOK, gin.H{"items": usageSummaryItems(records), "next": next})
++}
++
++func usageSummaryItems(records []cluster.UsageObservabilityRecord) []gin.H {
++	items := make([]gin.H, 0, len(records))
++	for _, record := range records {
++		item := gin.H{
++			"id": record.ID, "timestamp": record.Timestamp.UTC().Format(time.RFC3339Nano),
++			"provider": record.Provider, "model": record.Model,
++			"tokens": gin.H{"input_tokens": record.Tokens.InputTokens, "output_tokens": record.Tokens.OutputTokens,
++				"cache_read_tokens": record.Tokens.CacheReadTokens, "cache_creation_tokens": record.Tokens.CacheCreationTokens, "total_tokens": record.Tokens.TotalTokens},
++			"token_breakdown": usageTokenBreakdownResponse(record.Tokens.TokenBreakdown),
++			"client":          gin.H{"username": record.Client.Username}, "credential": gin.H{"credential_id": record.Credential.CredentialID},
++			"billing": gin.H{"amount": record.Billing.Amount, "matched_price_rule": record.Billing.MatchedPriceRule},
++		}
++		if record.SummaryPendingToken != "" {
++			item["pending_token"] = record.SummaryPendingToken
++		}
++		items = append(items, item)
++	}
++	return items
++}
++
++func (h *Handler) ListPendingUsageSummaryRecords(c *gin.Context) {
++	to, errTo := time.Parse(time.RFC3339Nano, c.Query("to"))
++	if errTo != nil {
++		respondUsageHTTPError(c, newUsageHTTPError("invalid_range", "to is required"))
++		return
++	}
++	ctx, cancel := h.requestContext(c)
++	defer cancel()
++	records, more, errRead := h.repo.ListPendingUsageSummaryRecords(ctx, to)
++	if errRead != nil {
++		respondError(c, http.StatusInternalServerError, "usage_summary_load_failed", errRead)
++		return
++	}
++	c.JSON(http.StatusOK, gin.H{"items": usageSummaryItems(records), "more": more})
++}
++
++func (h *Handler) AcknowledgeUsageSummaryRecords(c *gin.Context) {
++	var body struct {
++		Items []struct {
++			ID    string `json:"id"`
++			Token string `json:"token"`
++		} `json:"items"`
++	}
++	if errBind := c.ShouldBindJSON(&body); errBind != nil || len(body.Items) > 200 {
++		respondUsageHTTPError(c, newUsageHTTPError("invalid_query", "at most 200 usage IDs are required"))
++		return
++	}
++	items := make([]cluster.UsageSummaryPendingRecord, 0, len(body.Items))
++	for _, item := range body.Items {
++		id, errID := strconv.ParseUint(item.ID, 10, strconv.IntSize)
++		decoded, errToken := hex.DecodeString(item.Token)
++		if errID != nil || id == 0 || errToken != nil || len(decoded) != 16 {
++			respondUsageHTTPError(c, newUsageHTTPError("invalid_query", "positive usage IDs are required"))
++			return
++		}
++		items = append(items, cluster.UsageSummaryPendingRecord{UsageID: uint(id), Token: item.Token})
++	}
++	ctx, cancel := h.requestContext(c)
++	defer cancel()
++	if errAck := h.repo.AcknowledgeUsageSummaryRecords(ctx, items); errAck != nil {
++		respondError(c, http.StatusInternalServerError, "usage_summary_ack_failed", errAck)
++		return
++	}
++	c.JSON(http.StatusOK, gin.H{"ok": true})
++}
++
++func (h *Handler) FirstSuccessfulKeyUsage(c *gin.Context) {
++	key, errKey := optionalUint(c.Query("client_key_id"), "client_key_id")
++	from, _, errRange := parseUsageTimeRange(c.Query("from"), "", time.UTC)
++	credentials := c.QueryArray("credential_id")
++	if errKey != nil || errRange != nil || key == nil || *key == 0 || from == nil || len(credentials) > 500 {
++		respondUsageHTTPError(c, newUsageHTTPError("invalid_query", "positive client_key_id, from and at most 500 credentials are required"))
++		return
++	}
++	ctx, cancel := h.requestContext(c)
++	defer cancel()
++	at, errRead := h.repo.FirstSuccessfulKeyUsage(ctx, *key, *from, credentials)
++	if errRead != nil {
++		respondError(c, http.StatusInternalServerError, "usage_first_success_load_failed", errRead)
++		return
++	}
++	var timestamp any
++	if at != nil {
++		timestamp = at.UTC().Format(time.RFC3339Nano)
++	}
++	c.JSON(http.StatusOK, gin.H{"timestamp": timestamp})
++}
+diff --git a/internal/cluster/management/usage_summary_records_test.go b/internal/cluster/management/usage_summary_records_test.go
+new file mode 100644
+index 0000000..a16a48e
+--- /dev/null
++++ b/internal/cluster/management/usage_summary_records_test.go
+@@ -0,0 +1,100 @@
++package management
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"strings"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++)
++
++func TestSummaryFeedKeepsDiagnosticsPrivateAndAcknowledgesObservedToken(t *testing.T) {
++	handler, closeRepo := newUsageObservabilityTestHandler(t)
++	defer closeRepo()
++	seedUsageObservabilityManagementRecord(t, handler)
++	gin.SetMode(gin.TestMode)
++	engine := gin.New()
++	engine.GET("/usage/summary-records", handler.ListUsageSummaryRecords)
++	engine.GET("/usage/summary-pending", handler.ListPendingUsageSummaryRecords)
++	engine.POST("/usage/summary-ack", handler.AcknowledgeUsageSummaryRecords)
++	engine.GET("/usage/first-success", handler.FirstSuccessfulKeyUsage)
++	request := func(method, path, body string) map[string]any {
++		t.Helper()
++		resp := httptest.NewRecorder()
++		req := httptest.NewRequest(method, path, strings.NewReader(body))
++		req.Header.Set("content-type", "application/json")
++		engine.ServeHTTP(resp, req)
++		if resp.Code != http.StatusOK {
++			t.Fatalf("%s %s: %d %s", method, path, resp.Code, resp.Body.String())
++		}
++		for _, private := range []string{"client-key-secret", "203.0.113.8", "hello", "Primary OAuth", "auth_json", "payload", "request_id", "balance_after"} {
++			if strings.Contains(resp.Body.String(), private) {
++				t.Fatalf("summary exposed %s", private)
++			}
++		}
++		var result map[string]any
++		if errDecode := json.Unmarshal(resp.Body.Bytes(), &result); errDecode != nil {
++			t.Fatal(errDecode)
++		}
++		return result
++	}
++	result := request(http.MethodGet, "/usage/summary-records?from=2026-06-10T00:00:00Z&to=2026-06-11T00:00:00Z&limit=1", "")
++	items := result["items"].([]any)
++	if len(items) != 1 || result["next"] != nil {
++		t.Fatalf("summary=%v", result)
++	}
++	item := items[0].(map[string]any)
++	tokens := item["tokens"].(map[string]any)
++	if tokens["input_tokens"] != float64(100) || tokens["output_tokens"] != float64(50) {
++		t.Fatalf("tokens changed: %v", tokens)
++	}
++	credential := item["credential"].(map[string]any)["credential_id"].(string)
++	success := request(http.MethodGet, "/usage/first-success?client_key_id=1&from=2026-06-10T00:00:00Z&credential_id="+url.QueryEscape(credential), "")
++	if success["timestamp"] != "2026-06-10T01:02:03Z" {
++		t.Fatalf("success=%v", success)
++	}
++	denied := request(http.MethodGet, "/usage/first-success?client_key_id=1&from=2026-06-10T00:00:00Z&credential_id=foreign", "")
++	if denied["timestamp"] != nil {
++		t.Fatalf("foreign credential leaked success: %v", denied)
++	}
++	pending := request(http.MethodGet, "/usage/summary-pending?to=2026-06-11T00:00:00Z", "")["items"].([]any)
++	row := pending[0].(map[string]any)
++	body, errEncode := json.Marshal(map[string]any{"items": []any{map[string]any{"id": row["id"], "token": row["pending_token"]}}})
++	if errEncode != nil {
++		t.Fatal(errEncode)
++	}
++	request(http.MethodPost, "/usage/summary-ack", string(body))
++	request(http.MethodPost, "/usage/summary-ack", string(body))
++	empty := request(http.MethodGet, "/usage/summary-pending?to=2026-06-11T00:00:00Z", "")["items"].([]any)
++	if len(empty) != 0 {
++		t.Fatalf("ack did not drain: %v", empty)
++	}
++}
++
++func TestSummaryFeedRejectsInvalidRangeCursorAndAcknowledgment(t *testing.T) {
++	handler, closeRepo := newUsageObservabilityTestHandler(t)
++	defer closeRepo()
++	gin.SetMode(gin.TestMode)
++	engine := gin.New()
++	engine.GET("/records", handler.ListUsageSummaryRecords)
++	engine.GET("/pending", handler.ListPendingUsageSummaryRecords)
++	engine.POST("/ack", handler.AcknowledgeUsageSummaryRecords)
++	engine.GET("/success", handler.FirstSuccessfulKeyUsage)
++	for _, path := range []string{"/records", "/records?from=2026-06-10&to=2026-06-11&after_id=1", "/records?from=2026-06-10&to=2026-06-11&after_id=0&after_timestamp=2026-06-10T01:00:00Z", "/records?from=2026-06-10&to=2026-06-11&limit=0", "/pending?to=invalid", "/success?client_key_id=0&from=2026-06-10"} {
++		resp := httptest.NewRecorder()
++		engine.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, path, nil))
++		if resp.Code != http.StatusBadRequest {
++			t.Fatalf("%s=%d", path, resp.Code)
++		}
++	}
++	resp := httptest.NewRecorder()
++	req := httptest.NewRequest(http.MethodPost, "/ack", strings.NewReader(`{"items":[{"id":"1","token":"bad"}]}`))
++	req.Header.Set("content-type", "application/json")
++	engine.ServeHTTP(resp, req)
++	if resp.Code != http.StatusBadRequest {
++		t.Fatalf("ack=%d", resp.Code)
++	}
++}
+diff --git a/internal/cluster/reporting_indexes.go b/internal/cluster/reporting_indexes.go
+new file mode 100644
+index 0000000..4f0c9ab
+--- /dev/null
++++ b/internal/cluster/reporting_indexes.go
+@@ -0,0 +1,133 @@
++package cluster
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"strings"
++	"time"
++
++	"gorm.io/gorm"
++)
++
++type reportingIndex struct {
++	name, table, columns, predicate string
++	keys                            int
++	unique                          bool
++	definition                      string
++}
++
++// The three covering shapes come from CLIProxyAPIHome PR 171. Build them online,
++// outside the schema transaction, so reporting cannot block live usage writes.
++var reportingIndexes = []reportingIndex{
++	{"idx_billing_charge_usage_cover_v1", "billing_charge", "usage_id,amount,user_id,api_key_id", "", 1, true,
++		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_billing_charge_usage_cover_v1 ON billing_charge (usage_id) INCLUDE (amount,user_id,api_key_id)`},
++	{"idx_billing_charge_overview_time_v1", "billing_charge", "created_at,usage_id,user_id,amount,input_tokens,output_tokens,cache_tokens", "", 1, false,
++		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_billing_charge_overview_time_v1 ON billing_charge (created_at) INCLUDE (usage_id,user_id,amount,input_tokens,output_tokens,cache_tokens)`},
++	{"idx_usage_billing_complete_v2", "usage", "id,accounting_input_tokens,accounting_output_tokens", "((token_accounting_version = 2) AND (token_accounting_quality = 'complete'::text))", 1, false,
++		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_usage_billing_complete_v2 ON usage (id) INCLUDE (accounting_input_tokens,accounting_output_tokens) WHERE token_accounting_version = 2 AND token_accounting_quality = 'complete'`},
++	{"idx_usage_summary_cursor_v1", "usage", "timestamp,id", "", 2, false,
++		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_usage_summary_cursor_v1 ON usage (timestamp,id)`},
++	{"idx_usage_key_success_time_v1", "usage", "api_key,timestamp", "(failed = false)", 2, false,
++		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_usage_key_success_time_v1 ON usage (api_key,timestamp) WHERE failed = false`},
++	{"idx_billing_charge_key_usage_v1", "billing_charge", "api_key_id,usage_id", "", 2, false,
++		`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_billing_charge_key_usage_v1 ON billing_charge (api_key_id,usage_id)`},
++}
++
++func reportingIndexState(db *gorm.DB, index reportingIndex) (bool, bool, error) {
++	var row struct {
++		Matches bool
++		Ready   bool
++	}
++	result := db.Raw(`SELECT
++		i.indisvalid AND i.indisready AS ready,
++		i.indrelid = to_regclass(?) AND i.indisunique = ? AND i.indnkeyatts = ?
++		AND i.indnatts = ? AND am.amname = 'btree' AND i.indexprs IS NULL
++		AND COALESCE(pg_get_expr(i.indpred,i.indrelid),'') = ?
++		AND NOT EXISTS (SELECT 1 FROM unnest(i.indoption) option WHERE option <> 0)
++        AND NOT EXISTS (SELECT 1 FROM unnest(i.indclass) opclass
++          JOIN pg_opclass op ON op.oid=opclass JOIN pg_namespace ns ON ns.oid=op.opcnamespace
++          WHERE NOT op.opcdefault OR ns.nspname <> 'pg_catalog')
++        AND NOT EXISTS (SELECT 1 FROM unnest(i.indcollation) WITH ORDINALITY co(collation_oid,position)
++          JOIN unnest(i.indkey) WITH ORDINALITY k(attnum,position) USING(position)
++          JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum WHERE co.collation_oid <> a.attcollation)
++		AND (SELECT string_agg(a.attname::text,',' ORDER BY k.position)
++		 FROM unnest(i.indkey) WITH ORDINALITY k(attnum,position)
++		 JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.attnum) = ? AS matches
++		FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid
++		JOIN pg_am am ON am.oid=c.relam WHERE i.indexrelid=to_regclass(?)`,
++		index.table, index.unique, index.keys, len(strings.Split(index.columns, ",")), index.predicate, index.columns, index.name).Scan(&row)
++	if result.Error != nil {
++		return false, false, result.Error
++	}
++	if !row.Matches && result.RowsAffected != 0 {
++		return false, false, fmt.Errorf("reporting index %s has an unexpected definition", index.name)
++	}
++	return row.Matches, row.Ready, nil
++}
++
++func migrateReportingIndexesOnline(ctx context.Context, db *gorm.DB) error {
++	if !usageObservabilityIsPostgres(db) {
++		return nil
++	}
++	ctx, cancel := context.WithTimeout(contextOrBackground(ctx), 10*time.Minute)
++	defer cancel()
++	// A transaction lock coordinates builders even through PgBouncer. Only the
++	// guard is transactional; index DDL uses a separate connection with no BEGIN.
++	busy := errors.New("reporting index builder is active")
++	for {
++		errBuild := db.WithContext(ctx).Transaction(func(guard *gorm.DB) error {
++			// A blocked SELECT holds a snapshot that CREATE INDEX CONCURRENTLY
++			// must wait for. The command-only DO also avoids a retained result
++			// portal on the successful guard connection through pgx.
++			if errLock := guard.Exec(`DO $lock$ BEGIN
++				IF NOT pg_try_advisory_xact_lock(hashtextextended('home-reporting-indexes-v1',0)) THEN
++					RAISE lock_not_available USING MESSAGE = 'reporting index builder is active';
++				END IF;
++			END $lock$`).Error; errLock != nil {
++				var postgresError interface{ SQLState() string }
++				if errors.As(errLock, &postgresError) && postgresError.SQLState() == "55P03" {
++					return busy
++				}
++				return errLock
++			}
++			return db.WithContext(ctx).Connection(func(builder *gorm.DB) error {
++				for _, index := range reportingIndexes {
++					exists, ready, errState := reportingIndexState(builder, index)
++					if errState != nil {
++						return errState
++					}
++					if exists && ready {
++						continue
++					}
++					if exists {
++						if errDrop := builder.Exec(`DROP INDEX CONCURRENTLY ` + index.name).Error; errDrop != nil {
++							return fmt.Errorf("repair reporting index %s: %w", index.name, errDrop)
++						}
++					}
++					if errCreate := builder.Exec(index.definition).Error; errCreate != nil {
++						return fmt.Errorf("build reporting index %s concurrently: %w", index.name, errCreate)
++					}
++					_, valid, errValidate := reportingIndexState(builder, index)
++					if errValidate != nil {
++						return errValidate
++					}
++					if !valid {
++						return fmt.Errorf("reporting index %s is not ready", index.name)
++					}
++				}
++				return nil
++			})
++		})
++		if !errors.Is(errBuild, busy) {
++			return errBuild
++		}
++		timer := time.NewTimer(schemaMigrationPollInterval)
++		select {
++		case <-ctx.Done():
++			timer.Stop()
++			return ctx.Err()
++		case <-timer.C:
++		}
++	}
++}
+diff --git a/internal/cluster/reporting_indexes_postgres_test.go b/internal/cluster/reporting_indexes_postgres_test.go
+new file mode 100644
+index 0000000..0b65b56
+--- /dev/null
++++ b/internal/cluster/reporting_indexes_postgres_test.go
+@@ -0,0 +1,125 @@
++package cluster
++
++import (
++	"context"
++	"database/sql"
++	"errors"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"gorm.io/gorm"
++)
++
++func TestReportingIndexesRemainOnlineAndRepairInterruptedBuild(t *testing.T) {
++	repo := newPostgresQuiescenceRepository(t)
++	db := repo.db
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
++	defer cancel()
++	index := reportingIndexes[3]
++	if errDrop := db.Exec("DROP INDEX " + index.name).Error; errDrop != nil {
++		t.Fatal(errDrop)
++	}
++	writer := db.WithContext(ctx).Begin()
++	if writer.Error != nil {
++		t.Fatal(writer.Error)
++	}
++	defer func() {
++		if errRollback := writer.Rollback().Error; errRollback != nil && !errors.Is(errRollback, sql.ErrTxDone) {
++			t.Error(errRollback)
++		}
++	}()
++	if errInsert := writer.Create(&UsageRecord{Timestamp: time.Now().UTC(), PayloadJSON: JSONB(`{}`)}).Error; errInsert != nil {
++		t.Fatal(errInsert)
++	}
++	var writerPID int
++	if errPID := writer.Raw("SELECT pg_backend_pid()").Scan(&writerPID).Error; errPID != nil {
++		t.Fatal(errPID)
++	}
++	holder := make(chan postgresBackendPIDResult, 1)
++	holder <- postgresBackendPIDResult{pid: writerPID}
++	builder := make(chan postgresBackendPIDResult, 1)
++	var observed sync.Once
++	hook := "reporting-index-builder-pid"
++	if errHook := db.Callback().Raw().Before("gorm:raw").Register(hook, func(tx *gorm.DB) {
++		if !strings.HasPrefix(tx.Statement.SQL.String(), "CREATE INDEX CONCURRENTLY") || !strings.Contains(tx.Statement.SQL.String(), index.name) {
++			return
++		}
++		observed.Do(func() {
++			var pid int
++			errPID := tx.Session(&gorm.Session{NewDB: true}).Raw("SELECT pg_backend_pid()").Scan(&pid).Error
++			builder <- postgresBackendPIDResult{pid: pid, err: errPID}
++		})
++	}); errHook != nil {
++		t.Fatal(errHook)
++	}
++	defer func() {
++		if errRemove := db.Callback().Raw().Remove(hook); errRemove != nil {
++			t.Error(errRemove)
++		}
++	}()
++	buildCtx, cancelBuild := context.WithCancel(ctx)
++	defer cancelBuild()
++	finished := make(chan error, 1)
++	go func() { finished <- migrateReportingIndexesOnline(buildCtx, db) }()
++	waitForPostgresContendersBlockedByHolder(t, ctx, repo, holder, builder)
++	// The real concurrent builder is waiting on the old writer; a new write still commits.
++	if errInsert := db.WithContext(ctx).Create(&UsageRecord{Timestamp: time.Now().UTC(), PayloadJSON: JSONB(`{}`)}).Error; errInsert != nil {
++		t.Fatalf("online index blocked a new usage write: %v", errInsert)
++	}
++	var locks []struct {
++		Mode    string
++		Granted bool
++	}
++	if errLocks := db.Raw("SELECT mode,granted FROM pg_locks WHERE relation=to_regclass('usage') ORDER BY mode,granted").Scan(&locks).Error; errLocks != nil {
++		t.Fatal(errLocks)
++	}
++	t.Logf("REPORTING_INDEX_LOCKS writer_and_builder=%v", locks)
++	cancelBuild()
++	select {
++	case errBuild := <-finished:
++		if errBuild == nil {
++			t.Fatal("interrupted build succeeded")
++		}
++	case <-ctx.Done():
++		t.Fatal(ctx.Err())
++	}
++	exists, ready, errState := reportingIndexState(db, index)
++	if errState != nil || !exists || ready {
++		t.Fatalf("interrupted state exists=%t ready=%t error=%v", exists, ready, errState)
++	}
++	if errRollback := writer.Rollback().Error; errRollback != nil {
++		t.Fatal(errRollback)
++	}
++	if errRepair := migrateReportingIndexesOnline(ctx, db); errRepair != nil {
++		t.Fatal(errRepair)
++	}
++	exists, ready, errState = reportingIndexState(db, index)
++	if errState != nil || !exists || !ready {
++		t.Fatalf("repaired state exists=%t ready=%t error=%v", exists, ready, errState)
++	}
++	if errAgain := migrateReportingIndexesOnline(ctx, db); errAgain != nil {
++		t.Fatal(errAgain)
++	}
++}
++
++func TestReportingIndexesRefuseWrongDefinitionsWithoutDroppingThem(t *testing.T) {
++	repo := newPostgresQuiescenceRepository(t)
++	db := repo.db
++	index := reportingIndexes[3]
++	if errReplace := db.Exec("DROP INDEX " + index.name + "; CREATE INDEX " + index.name + " ON usage(timestamp DESC,id)").Error; errReplace != nil {
++		t.Fatal(errReplace)
++	}
++	errMigrate := migrateReportingIndexesOnline(context.Background(), db)
++	if errMigrate == nil || !strings.Contains(errMigrate.Error(), index.name+" has an unexpected definition") {
++		t.Fatalf("unexpected index accepted: %v", errMigrate)
++	}
++	var definition string
++	if errRead := db.Raw("SELECT pg_get_indexdef(to_regclass(?))", index.name).Scan(&definition).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	if !strings.Contains(definition, "DESC") {
++		t.Fatalf("wrong index was replaced without authority: %s", definition)
++	}
++}
+diff --git a/internal/cluster/reporting_scale_metrics_test.go b/internal/cluster/reporting_scale_metrics_test.go
+new file mode 100644
+index 0000000..f8ab7e1
+--- /dev/null
++++ b/internal/cluster/reporting_scale_metrics_test.go
+@@ -0,0 +1,66 @@
++package cluster
++
++import (
++	"context"
++	"encoding/json"
++	"net"
++	"net/http"
++	"os"
++	"testing"
++)
++
++type reportingResources struct {
++	CPU       uint64
++	Anonymous uint64
++	FileCache uint64
++}
++
++// Optional fixture-only counters exclude the test host and SQL EXPLAIN instrumentation.
++func reportingResourceSample(t *testing.T) reportingResources {
++	t.Helper()
++	socket, container := os.Getenv("POOL_TEST_DOCKER_SOCKET"), os.Getenv("POOL_TEST_CONTAINER")
++	if socket == "" || container == "" {
++		return reportingResources{}
++	}
++	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
++		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
++	}}}
++	defer client.CloseIdleConnections()
++	response, errGet := client.Get("http://docker/containers/" + container + "/stats?stream=false&one-shot=true")
++	if errGet != nil {
++		t.Fatal(errGet)
++	}
++	defer func() {
++		if errClose := response.Body.Close(); errClose != nil {
++			t.Error(errClose)
++		}
++	}()
++	var stats struct {
++		CPU struct {
++			Usage struct {
++				Total uint64 `json:"total_usage"`
++			} `json:"cpu_usage"`
++		} `json:"cpu_stats"`
++		Memory struct {
++			Stats map[string]uint64 `json:"stats"`
++		} `json:"memory_stats"`
++	}
++	if errDecode := json.NewDecoder(response.Body).Decode(&stats); errDecode != nil {
++		t.Fatal(errDecode)
++	}
++	return reportingResources{CPU: stats.CPU.Usage.Total, Anonymous: stats.Memory.Stats["anon"], FileCache: stats.Memory.Stats["file"]}
++}
++
++func reportingOperatorMemory(plan map[string]any) (float64, float64) {
++	peak, disk := numberFromPlan(plan, "Peak Memory Usage"), numberFromPlan(plan, "Disk Usage")
++	if children, ok := plan["Plans"].([]any); ok {
++		for _, child := range children {
++			p, d := reportingOperatorMemory(child.(map[string]any))
++			if p > peak {
++				peak = p
++			}
++			disk += d
++		}
++	}
++	return peak, disk
++}
+diff --git a/internal/cluster/reporting_scale_postgres_test.go b/internal/cluster/reporting_scale_postgres_test.go
+new file mode 100644
+index 0000000..2b8cd2a
+--- /dev/null
++++ b/internal/cluster/reporting_scale_postgres_test.go
+@@ -0,0 +1,178 @@
++package cluster
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"strings"
++	"testing"
++	"time"
++
++	"gorm.io/gorm"
++	"gorm.io/gorm/logger"
++)
++
++type reportingSQLCapture struct {
++	logger.Interface
++	statements []string
++}
++
++func (capture *reportingSQLCapture) Trace(_ context.Context, _ time.Time, statement func() (string, int64), _ error) {
++	sql, _ := statement()
++	if strings.HasPrefix(sql, "SELECT") || strings.HasPrefix(sql, "DELETE") {
++		capture.statements = append(capture.statements, sql)
++	}
++}
++
++func reportingPlan(t *testing.T, db *gorm.DB, statement string) map[string]any {
++	t.Helper()
++	var raw string
++	if errPlan := db.Raw("EXPLAIN (ANALYZE,BUFFERS,MEMORY,FORMAT JSON) " + statement).Scan(&raw).Error; errPlan != nil {
++		t.Fatal(errPlan)
++	}
++	var plan []map[string]any
++	if errJSON := json.Unmarshal([]byte(raw), &plan); errJSON != nil {
++		t.Fatal(errJSON)
++	}
++	return plan[0]
++}
++
++func reportingScanRows(plan map[string]any) float64 {
++	var rows float64
++	if kind, _ := plan["Node Type"].(string); strings.Contains(kind, "Scan") {
++		rows = (numberFromPlan(plan, "Actual Rows") + numberFromPlan(plan, "Rows Removed by Filter")) * numberFromPlan(plan, "Actual Loops")
++	}
++	if children, ok := plan["Plans"].([]any); ok {
++		for _, child := range children {
++			rows += reportingScanRows(child.(map[string]any))
++		}
++	}
++	return rows
++}
++func numberFromPlan(plan map[string]any, key string) float64 {
++	value, _ := plan[key].(float64)
++	return value
++}
++
++// Focused, opt-in real-SQL load proof. Setup and backfill are excluded from steady-state work.
++func TestPoolReportingScaleMarginals(t *testing.T) {
++	for _, history := range []int{1000, 10000} {
++		for _, users := range []int{1, 10, 100} {
++			t.Run(fmt.Sprintf("users%d_history%d", users, history), func(t *testing.T) {
++				repo := newPostgresQuiescenceRepository(t)
++				db, errDB := repo.database()
++				if errDB != nil {
++					t.Fatal(errDB)
++				}
++				at := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
++				for user := 1; user <= users; user++ {
++					if errCreate := db.Create(&APIKeyRecord{ID: uint(user), APIKey: fmt.Sprintf("fixture-%d", user)}).Error; errCreate != nil {
++						t.Fatal(errCreate)
++					}
++				}
++				if errDisable := db.Exec(`ALTER TABLE usage DISABLE TRIGGER usage_summary_pending_insert`).Error; errDisable != nil {
++					t.Fatal(errDisable)
++				}
++				if errSeed := db.Exec(`INSERT INTO usage(timestamp,api_key,auth_index,payload,created_at,failed)
++			 SELECT ?::timestamptz - interval '1 day', 'fixture-'||((n-1)%?+1), 'allowed',
++			 jsonb_build_object('diagnostic',repeat('x',16384)),?::timestamptz,false
++			 FROM generate_series(1,?::int) n`, at, users, at, users*history).Error; errSeed != nil {
++					t.Fatal(errSeed)
++				}
++				if errEnable := db.Exec(`ALTER TABLE usage ENABLE TRIGGER usage_summary_pending_insert`).Error; errEnable != nil {
++					t.Fatal(errEnable)
++				}
++				if errSeed := db.Exec(`INSERT INTO usage(timestamp,api_key,auth_index,payload,created_at,failed)
++			 SELECT ?::timestamptz + interval '1 minute', 'fixture-'||((n-1)%?+1), 'foreign',
++			 jsonb_build_object('diagnostic',repeat('x',16384)),?::timestamptz,false
++			 FROM generate_series(1,?::int) n`, at, users, at, users*40).Error; errSeed != nil {
++					t.Fatal(errSeed)
++				}
++				if errAnalyze := db.Exec(`ANALYZE usage; ANALYZE usage_summary_pending; ANALYZE api_key`).Error; errAnalyze != nil {
++					t.Fatal(errAnalyze)
++				}
++				capture := &reportingSQLCapture{Interface: logger.Discard}
++				repo.db = db.Session(&gorm.Session{Logger: capture})
++				ctx := context.Background()
++				var returnedBytes, rowsRead, bufferHits, bufferReads, peakOperatorKiB, spillKiB float64
++				var cpuNS uint64
++				resourcesBefore := reportingResourceSample(t)
++				peakAnonymous := resourcesBefore.Anonymous
++				queries, records := 0, 0
++				for {
++					capture.statements = nil
++					sampleBefore := reportingResourceSample(t)
++					rows, more, errRead := repo.ListPendingUsageSummaryRecords(ctx, at.Add(5*time.Minute))
++					sampleAfter := reportingResourceSample(t)
++					cpuNS += sampleAfter.CPU - sampleBefore.CPU
++					if sampleAfter.Anonymous > peakAnonymous {
++						peakAnonymous = sampleAfter.Anonymous
++					}
++					if errRead != nil {
++						t.Fatal(errRead)
++					}
++					if len(capture.statements) != 1 {
++						t.Fatalf("pending read emitted %d statements", len(capture.statements))
++					}
++					plan := reportingPlan(t, db, capture.statements[0])
++					node := plan["Plan"].(map[string]any)
++					peak, spill := reportingOperatorMemory(node)
++					if peak > peakOperatorKiB {
++						peakOperatorKiB = peak
++					}
++					spillKiB += spill
++					rowsRead += reportingScanRows(node)
++					bufferHits += numberFromPlan(node, "Shared Hit Blocks")
++					bufferReads += numberFromPlan(node, "Shared Read Blocks")
++					encoded, _ := json.Marshal(rows)
++					returnedBytes += float64(len(encoded))
++					records += len(rows)
++					queries++
++					ids := make([]UsageSummaryPendingRecord, 0, len(rows))
++					for _, row := range rows {
++						ids = append(ids, UsageSummaryPendingRecord{UsageID: row.UsageID, Token: row.SummaryPendingToken})
++					}
++					if len(ids) > 0 {
++						sampleBefore = reportingResourceSample(t)
++						if errAck := repo.AcknowledgeUsageSummaryRecords(ctx, ids); errAck != nil {
++							t.Fatal(errAck)
++						}
++						sampleAfter = reportingResourceSample(t)
++						cpuNS += sampleAfter.CPU - sampleBefore.CPU
++						queries++
++					}
++					if !more {
++						break
++					}
++				}
++				if records != users*40 {
++					t.Fatalf("drained %d, want %d", records, users*40)
++				}
++				capture.statements = nil
++				checksBefore := reportingResourceSample(t)
++				for user := 1; user <= users; user++ {
++					found, errFind := repo.FirstSuccessfulKeyUsage(ctx, uint(user), at, []string{"allowed"})
++					if errFind != nil || found != nil {
++						t.Fatalf("first success = %v %v", found, errFind)
++					}
++				}
++				checksAfter := reportingResourceSample(t)
++				if len(capture.statements) != users {
++					t.Fatalf("pending checks emitted %d queries for %d users", len(capture.statements), users)
++				}
++				checkPlan := reportingPlan(t, db, capture.statements[0])
++				metrics := map[string]any{"users": users, "history_per_user": history, "new_requests": records, "source_queries": queries,
++					"queries_per_user": float64(queries) / float64(users), "queries_per_request": float64(queries) / float64(records),
++					"returned_bytes_per_user": returnedBytes / float64(users), "returned_bytes_per_request": returnedBytes / float64(records),
++					"scan_rows_per_user": rowsRead / float64(users), "scan_rows_per_request": rowsRead / float64(records),
++					"shared_hit_blocks": bufferHits, "shared_read_blocks": bufferReads, "first_success_plan": checkPlan,
++					"database_cpu_ns_per_user": float64(cpuNS) / float64(users), "database_cpu_ns_per_request": float64(cpuNS) / float64(records),
++					"first_success_cpu_ns_per_user": float64(checksAfter.CPU-checksBefore.CPU) / float64(users),
++					"anonymous_bytes_before":        resourcesBefore.Anonymous, "anonymous_bytes_after": checksAfter.Anonymous, "sampled_peak_anonymous_bytes": peakAnonymous,
++					"operator_peak_kib": peakOperatorKiB, "operator_spill_kib": spillKiB}
++				encoded, _ := json.Marshal(metrics)
++				t.Logf("REPORTING_SCALE %s", encoded)
++			})
++		}
++	}
++}
+diff --git a/internal/cluster/usage_observability.go b/internal/cluster/usage_observability.go
+index cb9fc79..5797076 100644
+--- a/internal/cluster/usage_observability.go
++++ b/internal/cluster/usage_observability.go
+@@ -248,34 +248,35 @@ type UsageObservabilityAggregateItem struct {
+ }
+ 
+ type UsageObservabilityRecord struct {
+-	ID                 string
+-	UsageID            uint
+-	Timestamp          time.Time
+-	RequestID          string
+-	SessionID          string
+-	ParentSessionID    string
+-	RootSessionID      string
+-	UpstreamRequestID  string
+-	EventType          string
+-	Status             string
+-	Failed             bool
+-	StatusCode         int
+-	UpstreamStatusCode int
+-	Source             string
+-	Provider           string
+-	Model              string
+-	OriginalModel      string
+-	Endpoint           string
+-	ServiceTier        string
+-	ReasoningEffort    string
+-	ExecutorType       string
+-	Tokens             UsageObservabilityTokens
+-	Performance        UsageObservabilityPerformance
+-	Client             UsageObservabilityClient
+-	Credential         UsageObservabilityCredential
+-	Billing            UsageObservabilityBilling
+-	Runtime            UsageObservabilityRuntime
+-	Error              *UsageObservabilityError
++	SummaryPendingToken string
++	ID                  string
++	UsageID             uint
++	Timestamp           time.Time
++	RequestID           string
++	SessionID           string
++	ParentSessionID     string
++	RootSessionID       string
++	UpstreamRequestID   string
++	EventType           string
++	Status              string
++	Failed              bool
++	StatusCode          int
++	UpstreamStatusCode  int
++	Source              string
++	Provider            string
++	Model               string
++	OriginalModel       string
++	Endpoint            string
++	ServiceTier         string
++	ReasoningEffort     string
++	ExecutorType        string
++	Tokens              UsageObservabilityTokens
++	Performance         UsageObservabilityPerformance
++	Client              UsageObservabilityClient
++	Credential          UsageObservabilityCredential
++	Billing             UsageObservabilityBilling
++	Runtime             UsageObservabilityRuntime
++	Error               *UsageObservabilityError
+ }
+ 
+ type UsageObservabilityTokens struct {
+@@ -353,6 +354,7 @@ type UsageObservabilityPayloadSummary struct {
+ }
+ 
+ type usageObservabilityRecordRow struct {
++	SummaryPendingToken        string          `gorm:"column:summary_pending_token"`
+ 	UsageID                    uint            `gorm:"column:usage_id"`
+ 	Timestamp                  time.Time       `gorm:"column:timestamp"`
+ 	LatencyMS                  int64           `gorm:"column:latency_ms"`
+@@ -1975,15 +1977,24 @@ func usageObservabilityPreAggregatedSQLOrder(metric string, direction string) st
+ 	return metricColumn + " " + sortDirection + ", scoped.last_used_at DESC, scoped.aggregate_label ASC"
+ }
+ 
+-func usageObservabilityAggregateP95Query(db *gorm.DB, query UsageObservabilityRecordQuery, groupBy string) *gorm.DB {
++func usageObservabilityAggregateP95Query(db *gorm.DB, query UsageObservabilityRecordQuery, groupBy string, aggregateIDs ...string) *gorm.DB {
+ 	base := usageObservabilityAggregateBaseQuery(db, query, groupBy)
+-	ranked := db.Table("(?) AS scoped_latency", base).
+-		Select(`
++	scope := db.Table("(?) AS scoped_latency", base).
++		Where("scoped_latency.latency_ms >= ?", 0)
++	if len(aggregateIDs) > 0 {
++		scope = scope.Where("scoped_latency.aggregate_id IN ?", aggregateIDs)
++	}
++	if usageObservabilityIsPostgres(db) {
++		// Match nearest-rank semantics without numbering every row in each partition.
++		return scope.Select("scoped_latency.aggregate_id AS aggregate_id, " +
++			usageObservabilityPostgresPercentile("scoped_latency.latency_ms", 95) + " AS p95_latency_ms").
++			Group("scoped_latency.aggregate_id")
++	}
++	ranked := scope.Select(`
+ 			scoped_latency.aggregate_id AS aggregate_id,
+ 			scoped_latency.latency_ms AS latency_ms,
+ 			COUNT(*) OVER (PARTITION BY scoped_latency.aggregate_id) AS latency_count,
+-			ROW_NUMBER() OVER (PARTITION BY scoped_latency.aggregate_id ORDER BY scoped_latency.latency_ms ASC) AS latency_rank`).
+-		Where("scoped_latency.latency_ms >= ?", 0)
++			ROW_NUMBER() OVER (PARTITION BY scoped_latency.aggregate_id ORDER BY scoped_latency.latency_ms ASC) AS latency_rank`)
+ 	return db.Table("(?) AS ranked_latency", ranked).
+ 		Select("ranked_latency.aggregate_id AS aggregate_id, MIN(ranked_latency.latency_ms) AS p95_latency_ms").
+ 		Where("ranked_latency.latency_rank * 100 >= ranked_latency.latency_count * 95").
+@@ -1994,24 +2005,11 @@ func usageObservabilityAggregateP95Values(db *gorm.DB, query UsageObservabilityR
+ 	if len(aggregateIDs) == 0 {
+ 		return map[string]sql.NullFloat64{}, nil
+ 	}
+-	base := usageObservabilityAggregateBaseQuery(db, query, groupBy)
+-	ranked := db.Table("(?) AS scoped_latency", base).
+-		Select(`
+-			scoped_latency.aggregate_id AS aggregate_id,
+-			scoped_latency.latency_ms AS latency_ms,
+-			COUNT(*) OVER (PARTITION BY scoped_latency.aggregate_id) AS latency_count,
+-			ROW_NUMBER() OVER (PARTITION BY scoped_latency.aggregate_id ORDER BY scoped_latency.latency_ms ASC) AS latency_rank`).
+-		Where("scoped_latency.latency_ms >= ?", 0).
+-		Where("scoped_latency.aggregate_id IN ?", aggregateIDs)
+-
+ 	var rows []struct {
+ 		AggregateID  string          `gorm:"column:aggregate_id"`
+ 		P95LatencyMS sql.NullFloat64 `gorm:"column:p95_latency_ms"`
+ 	}
+-	if errScan := db.Table("(?) AS ranked_latency", ranked).
+-		Select("ranked_latency.aggregate_id AS aggregate_id, MIN(ranked_latency.latency_ms) AS p95_latency_ms").
+-		Where("ranked_latency.latency_rank * 100 >= ranked_latency.latency_count * 95").
+-		Group("ranked_latency.aggregate_id").
++	if errScan := usageObservabilityAggregateP95Query(db, query, groupBy, aggregateIDs...).
+ 		Scan(&rows).Error; errScan != nil {
+ 		return nil, errScan
+ 	}
+@@ -2094,7 +2092,30 @@ func usageObservabilityAggregateBaseSelect(groupBy string) string {
+ 		%s AS metadata_auth_disabled,
+ 		%s AS metadata_auth_unavailable,
+ 		"usage"."provider" AS metadata_provider,
+-		CASE WHEN "usage"."failed" THEN 'failed' ELSE 'success' END AS metadata_status,
++		CASE WHEN "usage"."failed" THEN 'failed' ELSE 'success' END AS metadata_status`,
++		idExpr,
++		labelExpr,
++		clientUserIDExpr,
++		usernameExpr,
++		clientAPIKeyIDExpr,
++		clientAPIKeyLabelExpr,
++		clientAPIKeyMaskedExpr,
++		credentialTypeExpr,
++		credentialIDExpr,
++		authIndexExpr,
++		credentialProviderExpr,
++		credentialLabelExpr,
++		authUUIDExpr,
++		authNextRetryAtExpr,
++		authStatusExpr,
++		authDisabledExpr,
++		authUnavailableExpr,
++	) + "," + usageObservabilityAggregateMetricsBaseSelect()
++}
++
++// Share row-level token normalization across ordinary and combined rankings.
++func usageObservabilityAggregateMetricsBaseSelect() string {
++	return fmt.Sprintf(`
+ 		"usage"."timestamp" AS timestamp,
+ 		"usage"."latency_ms" AS latency_ms,
+ 		"usage"."failed" AS failed,
+@@ -2119,23 +2140,6 @@ func usageObservabilityAggregateBaseSelect(groupBy string) string {
+ 		%s AS cache_rate_tokens,
+ 		%s AS cache_rate_total_tokens,
+ 		"billing_charge"."amount" AS amount`,
+-		idExpr,
+-		labelExpr,
+-		clientUserIDExpr,
+-		usernameExpr,
+-		clientAPIKeyIDExpr,
+-		clientAPIKeyLabelExpr,
+-		clientAPIKeyMaskedExpr,
+-		credentialTypeExpr,
+-		credentialIDExpr,
+-		authIndexExpr,
+-		credentialProviderExpr,
+-		credentialLabelExpr,
+-		authUUIDExpr,
+-		authNextRetryAtExpr,
+-		authStatusExpr,
+-		authDisabledExpr,
+-		authUnavailableExpr,
+ 		usageObservabilitySQLDisplayTokens(`"usage"`, "input_tokens"),
+ 		usageObservabilitySQLDisplayTokens(`"usage"`, "output_tokens"),
+ 		usageObservabilitySQLCacheReadTokens(`"usage"`),
+@@ -2236,7 +2240,7 @@ func usageObservabilityAggregateSQLSelect(includeP95 bool) string {
+ 	if includeP95 {
+ 		p95Select = "MAX(p95.p95_latency_ms) AS p95_latency_ms"
+ 	}
+-	return fmt.Sprintf(`
++	return `
+ 		scoped.aggregate_id AS aggregate_id,
+ 		COALESCE(NULLIF(MAX(scoped.aggregate_label), ''), scoped.aggregate_id) AS aggregate_label,
+ 		MAX(scoped.metadata_user_id) AS metadata_user_id,
+@@ -2255,7 +2259,12 @@ func usageObservabilityAggregateSQLSelect(includeP95 bool) string {
+ 		MAX(CASE WHEN scoped.metadata_auth_disabled THEN 1 ELSE 0 END) AS metadata_auth_disabled,
+ 		MAX(CASE WHEN scoped.metadata_auth_unavailable THEN 1 ELSE 0 END) AS metadata_auth_unavailable,
+ 		MAX(scoped.metadata_provider) AS metadata_provider,
+-		MAX(scoped.metadata_status) AS metadata_status,
++		MAX(scoped.metadata_status) AS metadata_status,` + usageObservabilityAggregateMetricsSQLSelect(p95Select)
++}
++
++// Keep additive metrics and nullable latency/amount semantics identical for all rankings.
++func usageObservabilityAggregateMetricsSQLSelect(p95Select string) string {
++	return fmt.Sprintf(`
+ 		COUNT(*) AS request_count,
+ 		SUM(CASE WHEN scoped.failed THEN 0 ELSE 1 END) AS success_count,
+ 		SUM(CASE WHEN scoped.failed THEN 1 ELSE 0 END) AS failed_count,
+@@ -2431,11 +2440,15 @@ func usageObservabilityRecordScope(scope *gorm.DB, query UsageObservabilityRecor
+ 	scope = scope.
+ 		Joins(`LEFT JOIN "billing_charge" ON "billing_charge"."usage_id" = "usage"."id"`).
+ 		Joins(usageObservabilityAPIKeyJoinSQL).
+-		Joins(`LEFT JOIN "user" ON "user"."id" = COALESCE("billing_charge"."user_id", "api_key"."user_id")`).
++		Joins(`LEFT JOIN "user" ON "user"."id" = COALESCE("billing_charge"."user_id", "api_key"."user_id")`)
++	return usageObservabilityApplyRecordFilters(usageObservabilityAuthScope(scope), query)
++}
++
++func usageObservabilityAuthScope(scope *gorm.DB) *gorm.DB {
++	return scope.
+ 		Joins(`LEFT JOIN "auth" AS "auth_uuid" ON "auth_uuid"."deleted_at" IS NULL AND "auth_uuid"."uuid" = "usage"."auth_index"`).
+ 		Joins(`LEFT JOIN "auth" AS "auth_by_index" ON "auth_uuid"."uuid" IS NULL AND "auth_by_index"."deleted_at" IS NULL AND "auth_by_index"."index" = "usage"."auth_index"`).
+ 		Joins(`LEFT JOIN "auth" AS "auth_by_id" ON "auth_uuid"."uuid" IS NULL AND "auth_by_index"."uuid" IS NULL AND "auth_by_id"."deleted_at" IS NULL AND "auth_by_id"."id" = "usage"."auth_index"`)
+-	return usageObservabilityApplyRecordFilters(scope, query)
+ }
+ 
+ type usageObservabilityRecordQueryDependencies struct {
+diff --git a/internal/cluster/usage_overview_clients_postgres_test.go b/internal/cluster/usage_overview_clients_postgres_test.go
+new file mode 100644
+index 0000000..5c79a76
+--- /dev/null
++++ b/internal/cluster/usage_overview_clients_postgres_test.go
+@@ -0,0 +1,250 @@
++package cluster
++
++import (
++	"fmt"
++	"strconv"
++	"strings"
++	"testing"
++	"time"
++
++	"gorm.io/gorm"
++	"gorm.io/gorm/logger"
++)
++
++func TestUsageObservabilityOverviewClientGroupsPostgres(t *testing.T) {
++	repo := newPostgresQuiescenceRepository(t)
++	db, errDB := repo.database()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	from := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
++	to := from.Add(time.Hour)
++	deletedAt := gorm.DeletedAt{Time: from.Add(-time.Hour), Valid: true}
++	users := []UserRecord{
++		{Username: "original-owner"}, {Username: "current-owner"},
++		{Username: "deleted-owner", DeletedAt: deletedAt}, {Username: ""},
++	}
++	if errCreate := db.Create(&users).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	missingUserID, historicalKeyID, missingKeyID := uint(80), uint(90), uint(99)
++	keys := []APIKeyRecord{
++		{APIKey: "fixture-k1", UserID: &users[1].ID},
++		{APIKey: "fixture-k2", UserID: &users[0].ID},
++		{APIKey: "fixture-k3"},
++		{APIKey: "fixture-k4", UserID: &users[2].ID, DeletedAt: deletedAt},
++		{APIKey: "fixture-k5", UserID: &missingUserID},
++		{APIKey: "fixture-k6", UserID: &users[3].ID},
++	}
++	if errCreate := db.Create(&keys).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	latencies := make([]int64, 60)
++	for index := range latencies {
++		latencies[index] = int64(index/2) * 100
++	}
++	scenarios := []struct {
++		name      string
++		key       string
++		billed    bool
++		userID    *uint
++		keyID     *uint
++		latencies []int64
++	}{
++		{"frozen-owner", keys[0].APIKey, true, &users[0].ID, &historicalKeyID, latencies},
++		{"unbilled", keys[0].APIKey, false, nil, nil, []int64{0, 100, 200}},
++		{"null-user", keys[0].APIKey, true, nil, &historicalKeyID, []int64{1000, 5000}},
++		{"null-key", keys[0].APIKey, true, &users[0].ID, nil, []int64{100, 200}},
++		{"soft-deleted", keys[3].APIKey, false, nil, nil, []int64{-1, 0, 20}},
++		{"empty-username", keys[5].APIKey, false, nil, nil, []int64{40}},
++		{"missing-identities", "fixture-missing", true, &missingUserID, &missingKeyID, []int64{50, 60}},
++		{"unknown", "fixture-missing", false, nil, nil, []int64{-1, -2}},
++		{"negative-only", keys[2].APIKey, false, nil, nil, []int64{-1}},
++		{"zero-only", keys[4].APIKey, false, nil, nil, []int64{0}},
++	}
++	var nullLabelIDs, nullMaskIDs []uint
++	for _, scenario := range scenarios {
++		for index, latency := range scenario.latencies {
++			record := UsageRecord{
++				Timestamp: from.Add(time.Duration(index) * time.Second), CreatedAt: from,
++				APIKey: scenario.key, Model: scenario.name, Provider: "claude", ExecutorType: "ClaudeExecutor",
++				LatencyMS: latency, Failed: index%5 == 0, PayloadJSON: JSONB(`{}`),
++				InputTokens: int64(index + 10), OutputTokens: 5, ReasoningTokens: 2,
++				CachedTokens: 3, CacheCreationTokens: 4, CacheReadTokensPresent: index%2 == 0,
++			}
++			if index%3 != 0 {
++				record.TokenAccountingVersion = UsageTokenAccountingSchemaVersion
++				record.TokenAccountingQuality = UsageTokenAccountingQualityComplete
++				record.AccountingInputTokens, record.AccountingOutputTokens = 100, 20
++				record.AccountingTotalTokens = 120
++				record.UncachedInputTokens, record.AccountingCacheReadTokens, record.AccountingCacheWriteTokens = 85, 10, 5
++				record.NonReasoningOutputTokens, record.AccountingReasoningTokens = 18, 2
++			}
++			if index%11 == 0 {
++				record.TokenAccountingQuality = UsageTokenAccountingQualityInconsistent
++			} else if index%13 == 0 {
++				record.TokenAccountingQuality = UsageTokenAccountingQualityUnclassified
++				record.UnclassifiedTokens = 7
++			}
++			if errCreate := db.Create(&record).Error; errCreate != nil {
++				t.Fatal(errCreate)
++			}
++			if !scenario.billed {
++				continue
++			}
++			charge := BillingChargeRecord{
++				ID: fmt.Sprintf("charge-%d", record.ID), UsageID: record.ID, PayloadHash: fmt.Sprintf("hash-%d", record.ID),
++				UserID: scenario.userID, APIKeyID: scenario.keyID,
++				APIKeyLabel:  []string{"", "", "alpha", "zeta", "label", " "}[index%6],
++				APIKeyMasked: []string{"", "", "zz-mask", "aa-mask"}[index%4],
++				Amount:       float64(index%8) / 8, PriceSnapshot: JSONB(`{}`), CreatedAt: record.Timestamp,
++			}
++			if errCreate := db.Create(&charge).Error; errCreate != nil {
++				t.Fatal(errCreate)
++			}
++			if index%6 == 0 {
++				nullLabelIDs = append(nullLabelIDs, record.ID)
++			}
++			if index%4 == 0 {
++				nullMaskIDs = append(nullMaskIDs, record.ID)
++			}
++		}
++	}
++	// NULL and empty labels have different fallback rules in historical charges.
++	if errUpdate := db.Model(&BillingChargeRecord{}).Where("usage_id IN ?", nullLabelIDs).UpdateColumn("api_key_label", nil).Error; errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	if errUpdate := db.Model(&BillingChargeRecord{}).Where("usage_id IN ?", nullMaskIDs).UpdateColumn("api_key_masked", nil).Error; errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	for _, timestamp := range []time.Time{from.Add(-time.Second), to} {
++		record := UsageRecord{Timestamp: timestamp, APIKey: keys[0].APIKey, Model: "frozen-owner", LatencyMS: 999999, PayloadJSON: JSONB(`{}`)}
++		if errCreate := db.Create(&record).Error; errCreate != nil {
++			t.Fatal(errCreate)
++		}
++	}
++	for _, model := range []string{"", "frozen-owner", "null-user", "null-key", "soft-deleted", "empty-username", "unknown", "negative-only", "zero-only", "absent"} {
++		t.Run("model="+model, func(t *testing.T) {
++			got := assertOverviewClientGroupsPostgres(t, db, UsageObservabilityRecordQuery{From: &from, To: &to, Model: model})
++			switch model {
++			case "frozen-owner":
++				if len(got.Users) != 1 || got.Users[0].ID != strconv.FormatUint(uint64(users[0].ID), 10) || got.Users[0].RequestCount != 60 {
++					t.Fatalf("lost billed ownership or time bounds: %+v", got.Users)
++				}
++				if len(got.ClientKeys) != 1 || got.ClientKeys[0].ID != "90" || got.ClientKeys[0].P95LatencyMS == nil || *got.ClientKeys[0].P95LatencyMS != 2800 {
++					t.Fatalf("lost historical key or exact nearest-rank P95: %+v", got.ClientKeys)
++				}
++			case "unknown", "negative-only":
++				if len(got.Users) != 1 || got.Users[0].ID != "unknown" || got.Users[0].P95LatencyMS != nil || got.Users[0].TotalAmount != nil {
++					t.Fatalf("unknown/negative-only group changed: %+v", got.Users)
++				}
++			case "zero-only":
++				if len(got.ClientKeys) != 1 || got.ClientKeys[0].P95LatencyMS == nil || *got.ClientKeys[0].P95LatencyMS != 0 {
++					t.Fatalf("zero latency must remain a percentile sample: %+v", got.ClientKeys)
++				}
++			case "absent":
++				if len(got.Users) != 0 || len(got.ClientKeys) != 0 {
++					t.Fatalf("empty window produced groups: %+v", got)
++				}
++			}
++		})
++	}
++}
++
++func TestUsageObservabilityOverviewClientGroupsPostgresTopN(t *testing.T) {
++	repo := newPostgresQuiescenceRepository(t)
++	db, errDB := repo.database()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
++	var records []UsageRecord
++	for index := 1; index <= 14; index++ {
++		// Reverse user labels relative to key labels so each Top N has different IDs.
++		user := UserRecord{ID: uint(index), Username: fmt.Sprintf("user-%02d", 15-index)}
++		if errCreate := db.Create(&user).Error; errCreate != nil {
++			t.Fatal(errCreate)
++		}
++		key := APIKeyRecord{ID: uint(index), APIKey: fmt.Sprintf("fixture-key-%d", index), UserID: &user.ID}
++		if errCreate := db.Create(&key).Error; errCreate != nil {
++			t.Fatal(errCreate)
++		}
++		record := UsageRecord{Timestamp: at, APIKey: key.APIKey, LatencyMS: int64(index), PayloadJSON: JSONB(`{}`)}
++		if errCreate := db.Create(&record).Error; errCreate != nil {
++			t.Fatal(errCreate)
++		}
++		records = append(records, record)
++		charge := BillingChargeRecord{ID: fmt.Sprintf("charge-%d", index), UsageID: record.ID, PayloadHash: fmt.Sprintf("hash-%d", index),
++			UserID: &user.ID, APIKeyID: &key.ID, APIKeyLabel: fmt.Sprintf("key-%02d", index), PriceSnapshot: JSONB(`{}`), CreatedAt: at}
++		if errCreate := db.Create(&charge).Error; errCreate != nil {
++			t.Fatal(errCreate)
++		}
++	}
++	got := assertOverviewClientGroupsPostgres(t, db, UsageObservabilityRecordQuery{})
++	if len(got.Users) != 10 || len(got.ClientKeys) != 10 {
++		t.Fatalf("each ranking must have its own Top 10: users=%d keys=%d", len(got.Users), len(got.ClientKeys))
++	}
++	for index := 0; index < 10; index++ {
++		if got.Users[index].ID != strconv.Itoa(14-index) || got.ClientKeys[index].ID != strconv.Itoa(index+1) {
++			t.Fatalf("label ordering must precede Top N: users=%+v keys=%+v", got.Users, got.ClientKeys)
++		}
++	}
++	if errUpdate := db.Model(&UsageRecord{}).Where("id = ?", records[1].ID).UpdateColumn("timestamp", at.Add(time.Second)).Error; errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	got = assertOverviewClientGroupsPostgres(t, db, UsageObservabilityRecordQuery{})
++	if got.Users[0].ID != "2" || got.ClientKeys[0].ID != "2" {
++		t.Fatalf("last_used_at must precede label ordering: users=%+v keys=%+v", got.Users, got.ClientKeys)
++	}
++
++	var rows []usageObservabilityAggregateRow
++	statement := usageObservabilityOverviewClientGroupsPostgres(db.Session(&gorm.Session{DryRun: true}), UsageObservabilityRecordQuery{}).Find(&rows).Statement
++	sql := statement.SQL.String()
++	for _, fragment := range []string{`FROM "usage"`, `LEFT JOIN "billing_charge"`, `LEFT JOIN "api_key"`, `LEFT JOIN "user"`, "GROUPING SETS", "percentile_disc("} {
++		if strings.Count(sql, fragment) != 1 {
++			t.Fatalf("expected one %q in combined ranking SQL: %s", fragment, sql)
++		}
++	}
++	if strings.Index(sql, `LEFT JOIN "user"`) < strings.Index(sql, "GROUPING SETS") {
++		t.Fatalf("usernames must be joined after aggregation: %s", sql)
++	}
++}
++
++// Compare public results against the independent single-group query path and
++// ensure both rankings, including their percentiles, use one database statement.
++func assertOverviewClientGroupsPostgres(t *testing.T, db *gorm.DB, query UsageObservabilityRecordQuery) UsageObservabilityTopGroups {
++	t.Helper()
++	counter := &overviewQueryCounter{Interface: logger.Default.LogMode(logger.Silent)}
++	var rows []struct {
++		Kind int                            `gorm:"column:kind"`
++		Row  usageObservabilityAggregateRow `gorm:"embedded"`
++	}
++	if errScan := usageObservabilityOverviewClientGroupsPostgres(db.Session(&gorm.Session{Logger: counter}), query).Scan(&rows).Error; errScan != nil {
++		t.Fatal(errScan)
++	}
++	if counter.count != 1 {
++		t.Fatalf("combined rankings executed %d statements, want 1", counter.count)
++	}
++	got := UsageObservabilityTopGroups{Users: []UsageObservabilityAggregateItem{}, ClientKeys: []UsageObservabilityAggregateItem{}}
++	for _, row := range rows {
++		switch row.Kind {
++		case 0:
++			got.Users = append(got.Users, usageObservabilityAggregateItemFromRow(&row.Row, "user"))
++		case 1:
++			got.ClientKeys = append(got.ClientKeys, usageObservabilityAggregateItemFromRow(&row.Row, "client_key"))
++		default:
++			t.Fatalf("unexpected grouping discriminator %d", row.Kind)
++		}
++	}
++	for _, group := range []struct {
++		name  string
++		items []UsageObservabilityAggregateItem
++	}{{"user", got.Users}, {"client_key", got.ClientKeys}} {
++		want, errWant := usageObservabilityAggregateItemsSQL(db, query, group.name, "request_count", "desc", 10)
++		if errWant != nil {
++			t.Fatal(errWant)
++		}
++		assertOverviewJSONEqual(t, group.name, group.items, want)
++	}
++	return got
++}
+diff --git a/internal/cluster/usage_overview_postgres.go b/internal/cluster/usage_overview_postgres.go
+index 907032d..bc775a4 100644
+--- a/internal/cluster/usage_overview_postgres.go
++++ b/internal/cluster/usage_overview_postgres.go
+@@ -26,11 +26,24 @@ func usageObservabilityOverviewGroupsPostgres(db *gorm.DB, query UsageObservabil
+ 		Models: []UsageObservabilityAggregateItem{}, Endpoints: []UsageObservabilityAggregateItem{}, Errors: []UsageObservabilityAggregateItem{},
+ 	}
+ 	efficiency := []UsageObservabilityAggregateItem{}
++	var clientRows []struct {
++		Kind int                            `gorm:"column:kind"`
++		Row  usageObservabilityAggregateRow `gorm:"embedded"`
++	}
++	if errScan := usageObservabilityOverviewClientGroupsPostgres(db, query).Scan(&clientRows).Error; errScan != nil {
++		return UsageObservabilityTopGroups{}, nil, errScan
++	}
++	for _, row := range clientRows {
++		if row.Kind == 0 {
++			top.Users = append(top.Users, usageObservabilityAggregateItemFromRow(&row.Row, "user"))
++		} else {
++			top.ClientKeys = append(top.ClientKeys, usageObservabilityAggregateItemFromRow(&row.Row, "client_key"))
++		}
++	}
+ 	for _, group := range []struct {
+ 		name  string
+ 		items *[]UsageObservabilityAggregateItem
+ 	}{
+-		{"user", &top.Users}, {"client_key", &top.ClientKeys},
+ 		{"provider", &top.Providers}, {"endpoint", &top.Endpoints}, {"status_code", &top.Errors},
+ 	} {
+ 		metric := "request_count"
+@@ -84,6 +97,52 @@ func usageObservabilityOverviewGroupsPostgres(db *gorm.DB, query UsageObservabil
+ 	return top, efficiency, nil
+ }
+ 
++// usageObservabilityOverviewClientGroupsPostgres shares the detail scan between
++// both client rankings, retaining exact percentiles in the same aggregation pass.
++func usageObservabilityOverviewClientGroupsPostgres(db *gorm.DB, query UsageObservabilityRecordQuery) *gorm.DB {
++	_, keyLabel := usageObservabilityAggregateSQLIdentity("client_key")
++	base := usageObservabilityUsageBillingScope(db.Table("usage"), query).
++		Joins(usageObservabilityAPIKeyJoinSQL).
++		Select(fmt.Sprintf(`
++			COALESCE("billing_charge"."user_id", "api_key"."user_id") AS user_id,
++			COALESCE("billing_charge"."api_key_id", "api_key"."id") AS api_key_id,
++			%s AS client_key_label,
++			COALESCE("billing_charge"."api_key_label", CASE WHEN "api_key"."id" IS NULL THEN '' ELSE 'api-key-' || CAST("api_key"."id" AS TEXT) END) AS api_key_label,
++			"billing_charge"."api_key_masked" AS api_key_masked,
++			%s`, keyLabel, usageObservabilityAggregateMetricsBaseSelect()))
++	// GROUPING distinguishes a genuine unknown identity from the other subtotal.
++	// Keep numeric identities until after grouping and preserve billed ownership
++	// independently of the current API key's user or identity.
++	grouped := db.Table("(?) AS scoped", base).
++		Select(`
++			GROUPING(scoped.user_id) AS kind,
++			CASE WHEN GROUPING(scoped.user_id) = 0 THEN scoped.user_id ELSE scoped.api_key_id END AS numeric_id,
++			MAX(scoped.user_id) AS metadata_user_id,
++			MAX(scoped.api_key_id) AS metadata_api_key_id,
++			MAX(scoped.client_key_label) AS client_key_label,
++			MAX(scoped.api_key_label) AS metadata_api_key_label,
++			MAX(scoped.api_key_masked) AS metadata_api_key_masked,
++			` + usageObservabilityAggregateMetricsSQLSelect(usageObservabilityPostgresPercentile("scoped.latency_ms", 95)+" AS p95_latency_ms")).
++		Group("GROUPING SETS ((scoped.user_id), (scoped.api_key_id))")
++	// Usernames are needed only for grouped users, but must be resolved before
++	// Top N because the existing order uses the display label to break ties.
++	labeled := db.Table("(?) AS grouped", grouped).
++		Joins(`LEFT JOIN "user" ON grouped.kind = 0 AND "user"."id" = grouped.numeric_id`).
++		Select(`grouped.*,
++			COALESCE(CAST(grouped.numeric_id AS TEXT), 'unknown') AS aggregate_id,
++			CASE WHEN grouped.kind = 0
++				THEN COALESCE(NULLIF("user"."username", ''), COALESCE(CAST(grouped.numeric_id AS TEXT), 'unknown'))
++				ELSE grouped.client_key_label END AS aggregate_label,
++			CASE WHEN grouped.kind = 0 THEN "user"."username" ELSE '' END AS metadata_username`)
++	ranked := db.Table("(?) AS labeled", labeled).
++		Select(`labeled.*, ROW_NUMBER() OVER (
++			PARTITION BY kind ORDER BY request_count DESC, last_used_at DESC, aggregate_label ASC
++		) AS rank`)
++	return db.Table("(?) AS ranked", ranked).
++		Where("rank <= ?", 10).
++		Order("kind ASC, rank ASC")
++}
++
+ func usageObservabilityOverviewGroupPostgres(db *gorm.DB, query UsageObservabilityRecordQuery, group string) *gorm.DB {
+ 	base := usageObservabilityAggregateBaseQuery(db, query, group)
+ 	selectSQL := strings.Replace(usageObservabilityAggregateSQLSelect(false), "NULL AS p95_latency_ms", usageObservabilityPostgresPercentile("scoped.latency_ms", 95)+" AS p95_latency_ms", 1)
+diff --git a/internal/cluster/usage_overview_postgres_test.go b/internal/cluster/usage_overview_postgres_test.go
+index 0fcee2a..41219e0 100644
+--- a/internal/cluster/usage_overview_postgres_test.go
++++ b/internal/cluster/usage_overview_postgres_test.go
+@@ -68,7 +68,7 @@ func TestUsageObservabilityOverviewPostgres(t *testing.T) {
+ 			record.TokenAccountingQuality = UsageTokenAccountingQualityInconsistent
+ 		}
+ 		if i%13 == 0 {
+-			record.APIKey, record.AuthType, record.Endpoint = "missing-key", "api_key", "/v1/chat/completions"
++			record.APIKey, record.AuthType, record.Endpoint, record.HomeIP = "missing-key", "api_key", "/v1/chat/completions", "192.0.2.2"
+ 		}
+ 		records = append(records, record)
+ 	}
+@@ -90,25 +90,31 @@ func TestUsageObservabilityOverviewPostgres(t *testing.T) {
+ 	}
+ 
+ 	for _, filter := range []struct {
+-		name, provider, model, credentialType string
++		name, provider, model, credentialType, homeIP, endpoint string
+ 	}{
+ 		{name: "all"},
+ 		{name: "provider", provider: "claude"},
+ 		{name: "model", model: "model-02"},
+ 		{name: "credential type", credentialType: "api_key"},
++		{name: "home", homeIP: "192.0.2.2"},
++		{name: "endpoint", endpoint: "chat/completions"},
++		{name: "combined", provider: "claude", credentialType: "api_key", homeIP: "192.0.2.2", endpoint: "chat/completions"},
+ 		{name: "empty", provider: "missing"},
+ 	} {
+ 		t.Run(filter.name, func(t *testing.T) {
+ 			query := UsageObservabilityOverviewQuery{From: &from, To: &to, Interval: "hour", Timezone: "Asia/Shanghai",
+-				Provider: filter.provider, Model: filter.model, CredentialType: filter.credentialType}
++				Provider: filter.provider, Model: filter.model, CredentialType: filter.credentialType, HomeIP: filter.homeIP, Endpoint: filter.endpoint}
+ 			counter := &overviewQueryCounter{Interface: logger.Default.LogMode(logger.Silent)}
+ 			countedRepo := NewRepository(db.Session(&gorm.Session{Logger: counter}))
+ 			got, errOverview := countedRepo.UsageObservabilityOverview(ctx, query)
+ 			if errOverview != nil {
+ 				t.Fatal(errOverview)
+ 			}
+-			if counter.count > 12 {
+-				t.Fatalf("overview executed %d queries, want at most 12", counter.count)
++			if counter.count > 11 {
++				t.Fatalf("overview executed %d queries, want at most 11", counter.count)
++			}
++			if filter.name == "all" && counter.count != 11 {
++				t.Fatalf("nonempty overview executed %d queries, want 11", counter.count)
+ 			}
+ 			recordQuery := usageObservabilityOverviewRecordQuery(query)
+ 			wantTop, errTop := usageObservabilityTopSQL(db, recordQuery)
+diff --git a/internal/cluster/usage_summary_attribution.go b/internal/cluster/usage_summary_attribution.go
+new file mode 100644
+index 0000000..bcc27c6
+--- /dev/null
++++ b/internal/cluster/usage_summary_attribution.go
+@@ -0,0 +1,71 @@
++package cluster
++
++import "gorm.io/gorm"
++
++// Previously unknown records can become attributable after identity repair.
++// Requeue only affected IDs; ordinary credit/health updates leave the feed alone.
++func migrateUsageSummaryAttribution(db *gorm.DB) error {
++	if usageObservabilityIsPostgres(db) {
++		return db.Exec(`CREATE OR REPLACE FUNCTION home_usage_summary_attribution() RETURNS trigger
++		LANGUAGE plpgsql AS $function$ BEGIN
++		IF TG_TABLE_NAME = 'api_key' THEN
++			IF TG_OP='UPDATE' AND (NEW.api_key,NEW.diagnostic_fingerprint,NEW.user_id)
++				IS NOT DISTINCT FROM (OLD.api_key,OLD.diagnostic_fingerprint,OLD.user_id) THEN RETURN NEW; END IF;
++			INSERT INTO usage_summary_pending (usage_id,token) SELECT id,replace(gen_random_uuid()::text,'-','') FROM usage
++				WHERE api_key=NEW.api_key OR api_key=NEW.diagnostic_fingerprint ON CONFLICT(usage_id) DO UPDATE SET token=excluded.token;
++		ELSIF TG_TABLE_NAME = 'auth' THEN
++			IF TG_OP='UPDATE' AND (NEW.uuid,NEW.id,NEW.index,NEW.deleted_at)
++				IS NOT DISTINCT FROM (OLD.uuid,OLD.id,OLD.index,OLD.deleted_at) THEN RETURN NEW; END IF;
++			INSERT INTO usage_summary_pending (usage_id,token) SELECT id,replace(gen_random_uuid()::text,'-','') FROM usage
++				WHERE auth_index IN (NEW.uuid,NEW.id,NEW.index) ON CONFLICT(usage_id) DO UPDATE SET token=excluded.token;
++		ELSIF TG_TABLE_NAME = 'user' THEN
++			IF TG_OP='UPDATE' AND NEW.username IS NOT DISTINCT FROM OLD.username THEN RETURN NEW; END IF;
++			INSERT INTO usage_summary_pending (usage_id,token)
++ SELECT id,replace(gen_random_uuid()::text,'-','') FROM usage WHERE id IN (
++ SELECT usage_id FROM billing_charge WHERE user_id=NEW.id
++ UNION SELECT u.id FROM usage u JOIN api_key k ON u.api_key=k.api_key OR u.api_key=k.diagnostic_fingerprint WHERE k.user_id=NEW.id)
++ ON CONFLICT(usage_id) DO UPDATE SET token=excluded.token;
++		ELSE
++			IF TG_OP='UPDATE' AND (NEW.user_id,NEW.api_key_id) IS NOT DISTINCT FROM (OLD.user_id,OLD.api_key_id) THEN RETURN NEW; END IF;
++			INSERT INTO usage_summary_pending (usage_id,token) SELECT id,replace(gen_random_uuid()::text,'-','') FROM usage WHERE id=NEW.usage_id ON CONFLICT(usage_id) DO UPDATE SET token=excluded.token;
++		END IF;
++		RETURN NEW; END $function$;
++		CREATE OR REPLACE TRIGGER usage_summary_key_attribution AFTER INSERT OR UPDATE OF api_key,diagnostic_fingerprint,user_id ON api_key
++		 FOR EACH ROW EXECUTE FUNCTION home_usage_summary_attribution();
++		CREATE OR REPLACE TRIGGER usage_summary_auth_attribution AFTER INSERT OR UPDATE OF uuid,id,index,deleted_at ON auth
++		 FOR EACH ROW EXECUTE FUNCTION home_usage_summary_attribution();
++		CREATE OR REPLACE TRIGGER usage_summary_user_attribution AFTER INSERT OR UPDATE OF username ON "user"
++		 FOR EACH ROW EXECUTE FUNCTION home_usage_summary_attribution();
++		CREATE OR REPLACE TRIGGER usage_summary_charge_attribution AFTER INSERT OR UPDATE OF user_id,api_key_id ON billing_charge
++		 FOR EACH ROW EXECUTE FUNCTION home_usage_summary_attribution()`).Error
++	}
++	queries := []string{
++		`CREATE TRIGGER IF NOT EXISTS usage_summary_key_insert AFTER INSERT ON api_key BEGIN
++		 INSERT OR REPLACE INTO usage_summary_pending (usage_id,token) SELECT id,lower(hex(randomblob(16))) FROM usage WHERE api_key=NEW.api_key OR api_key=NEW.diagnostic_fingerprint; END`,
++		`CREATE TRIGGER IF NOT EXISTS usage_summary_key_update AFTER UPDATE OF api_key,diagnostic_fingerprint,user_id ON api_key
++		 WHEN NEW.api_key IS NOT OLD.api_key OR NEW.diagnostic_fingerprint IS NOT OLD.diagnostic_fingerprint OR NEW.user_id IS NOT OLD.user_id BEGIN
++		 INSERT OR REPLACE INTO usage_summary_pending (usage_id,token) SELECT id,lower(hex(randomblob(16))) FROM usage WHERE api_key=NEW.api_key OR api_key=NEW.diagnostic_fingerprint; END`,
++		`CREATE TRIGGER IF NOT EXISTS usage_summary_auth_insert AFTER INSERT ON auth BEGIN
++		 INSERT OR REPLACE INTO usage_summary_pending (usage_id,token) SELECT id,lower(hex(randomblob(16))) FROM usage WHERE auth_index IN(NEW.uuid,NEW.id,NEW."index"); END`,
++		`CREATE TRIGGER IF NOT EXISTS usage_summary_auth_update AFTER UPDATE OF uuid,id,"index",deleted_at ON auth
++		 WHEN NEW.uuid IS NOT OLD.uuid OR NEW.id IS NOT OLD.id OR NEW."index" IS NOT OLD."index" OR NEW.deleted_at IS NOT OLD.deleted_at BEGIN
++		 INSERT OR REPLACE INTO usage_summary_pending (usage_id,token) SELECT id,lower(hex(randomblob(16))) FROM usage WHERE auth_index IN(NEW.uuid,NEW.id,NEW."index"); END`,
++		`CREATE TRIGGER IF NOT EXISTS usage_summary_user_insert AFTER INSERT ON "user" BEGIN
++ INSERT OR REPLACE INTO usage_summary_pending (usage_id,token) SELECT id,lower(hex(randomblob(16))) FROM usage WHERE id IN(SELECT usage_id FROM billing_charge WHERE user_id=NEW.id
++ UNION SELECT u.id FROM usage u JOIN api_key k ON u.api_key=k.api_key OR u.api_key=k.diagnostic_fingerprint WHERE k.user_id=NEW.id); END`,
++		`CREATE TRIGGER IF NOT EXISTS usage_summary_user_update AFTER UPDATE OF username ON "user" WHEN NEW.username IS NOT OLD.username BEGIN
++		 INSERT OR REPLACE INTO usage_summary_pending (usage_id,token) SELECT id,lower(hex(randomblob(16))) FROM usage WHERE id IN(SELECT usage_id FROM billing_charge WHERE user_id=NEW.id
++ UNION SELECT u.id FROM usage u JOIN api_key k ON u.api_key=k.api_key OR u.api_key=k.diagnostic_fingerprint WHERE k.user_id=NEW.id); END`,
++		`CREATE TRIGGER IF NOT EXISTS usage_summary_charge_insert AFTER INSERT ON billing_charge BEGIN
++		 INSERT OR REPLACE INTO usage_summary_pending (usage_id,token) SELECT id,lower(hex(randomblob(16))) FROM usage WHERE id=NEW.usage_id; END`,
++		`CREATE TRIGGER IF NOT EXISTS usage_summary_charge_update AFTER UPDATE OF user_id,api_key_id ON billing_charge
++		 WHEN NEW.user_id IS NOT OLD.user_id OR NEW.api_key_id IS NOT OLD.api_key_id BEGIN
++		 INSERT OR REPLACE INTO usage_summary_pending (usage_id,token) SELECT id,lower(hex(randomblob(16))) FROM usage WHERE id=NEW.usage_id; END`,
++	}
++	for _, sql := range queries {
++		if errCreate := db.Exec(sql).Error; errCreate != nil {
++			return errCreate
++		}
++	}
++	return nil
++}
+diff --git a/internal/cluster/usage_summary_pending.go b/internal/cluster/usage_summary_pending.go
+new file mode 100644
+index 0000000..1419db7
+--- /dev/null
++++ b/internal/cluster/usage_summary_pending.go
+@@ -0,0 +1,113 @@
++package cluster
++
++import (
++	"context"
++	"time"
++
++	"gorm.io/gorm"
++)
++
++// The singleton rollup consumer acknowledges IDs only after its durable commit.
++// Replays are harmless; rows committed behind any cursor remain pending.
++type UsageSummaryPendingRecord struct {
++	UsageID uint   `gorm:"column:usage_id;primaryKey;autoIncrement:false"`
++	Token   string `gorm:"column:token;not null"`
++}
++
++func (UsageSummaryPendingRecord) TableName() string { return "usage_summary_pending" }
++
++func migrateUsageSummaryPending(db *gorm.DB) error {
++	return db.Transaction(installUsageSummaryPending)
++}
++
++func installUsageSummaryPending(db *gorm.DB) error {
++	var existing int64
++	if usageObservabilityIsPostgres(db) {
++		if errRead := db.Raw(`SELECT count(*) FROM pg_trigger WHERE tgrelid=to_regclass('usage') AND tgname='usage_summary_pending_insert'`).Scan(&existing).Error; errRead != nil {
++			return errRead
++		}
++	} else if errRead := db.Raw(`SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name='usage_summary_pending_insert'`).Scan(&existing).Error; errRead != nil {
++		return errRead
++	}
++	if usageObservabilityIsPostgres(db) {
++		if errTriggers := db.Exec(`CREATE OR REPLACE FUNCTION home_usage_summary_pending() RETURNS trigger
++			LANGUAGE plpgsql AS $function$ BEGIN
++			IF TG_OP = 'DELETE' THEN
++				DELETE FROM usage_summary_pending WHERE usage_id = OLD.id;
++				RETURN OLD;
++			END IF;
++			INSERT INTO usage_summary_pending (usage_id,token) VALUES (NEW.id,replace(gen_random_uuid()::text,'-',''))
++ ON CONFLICT(usage_id) DO UPDATE SET token=excluded.token;
++			RETURN NEW;
++		END $function$;
++		CREATE OR REPLACE TRIGGER usage_summary_pending_insert AFTER INSERT ON usage
++			FOR EACH ROW EXECUTE FUNCTION home_usage_summary_pending();
++		CREATE OR REPLACE TRIGGER usage_summary_pending_delete AFTER DELETE ON usage
++			FOR EACH ROW EXECUTE FUNCTION home_usage_summary_pending()`).Error; errTriggers != nil {
++			return errTriggers
++		}
++		if existing > 0 {
++			return nil
++		}
++		return db.Exec(`INSERT INTO usage_summary_pending(usage_id,token) SELECT id,replace(gen_random_uuid()::text,'-','') FROM usage WHERE timestamp >= CURRENT_TIMESTAMP ON CONFLICT(usage_id) DO NOTHING`).Error
++	}
++	for _, sql := range []string{
++		`CREATE TRIGGER IF NOT EXISTS usage_summary_pending_insert AFTER INSERT ON usage BEGIN
++		 INSERT OR REPLACE INTO usage_summary_pending (usage_id,token) VALUES (NEW.id,lower(hex(randomblob(16)))); END`,
++		`CREATE TRIGGER IF NOT EXISTS usage_summary_pending_delete AFTER DELETE ON usage BEGIN
++		 DELETE FROM usage_summary_pending WHERE usage_id = OLD.id; END`,
++	} {
++		if errCreate := db.Exec(sql).Error; errCreate != nil {
++			return errCreate
++		}
++	}
++	if existing > 0 {
++		return nil
++	}
++	return db.Exec(`INSERT OR IGNORE INTO usage_summary_pending(usage_id,token) SELECT id,lower(hex(randomblob(16))) FROM usage WHERE timestamp >= CURRENT_TIMESTAMP`).Error
++}
++
++func (r *Repository) ListPendingUsageSummaryRecords(ctx context.Context, to time.Time) ([]UsageObservabilityRecord, bool, error) {
++	db, errDB := r.database()
++	if errDB != nil {
++		return nil, false, errDB
++	}
++	// Bound the pending IDs before canonical joins. A merge join driven by usage
++	// would otherwise walk retained history before reaching the first pending ID.
++	page := db.WithContext(contextOrBackground(ctx)).Table("usage_summary_pending pending").
++		Select("pending.usage_id,pending.token").Where(`(SELECT u.timestamp FROM usage u WHERE u.id=pending.usage_id) < ?`, to).
++		Order("pending.usage_id").Limit(UsageObservabilityMaxRecordLimit + 1)
++	scope := usageObservabilityRecordScope(db.WithContext(contextOrBackground(ctx)).Table("(?) AS pending_page", page).
++		Joins(`JOIN "usage" ON "usage".id = pending_page.usage_id`), UsageObservabilityRecordQuery{})
++	var rows []usageObservabilityRecordRow
++	if errRead := scope.Select(usageSummaryRecordSelect() + ",pending_page.token AS summary_pending_token").Order(`"usage".id`).Limit(UsageObservabilityMaxRecordLimit + 1).Scan(&rows).Error; errRead != nil {
++		return nil, false, errRead
++	}
++	more := len(rows) > UsageObservabilityMaxRecordLimit
++	if more {
++		rows = rows[:UsageObservabilityMaxRecordLimit]
++	}
++	records := make([]UsageObservabilityRecord, 0, len(rows))
++	for index := range rows {
++		record := usageObservabilityRecordFromRow(&rows[index])
++		record.SummaryPendingToken = rows[index].SummaryPendingToken
++		records = append(records, record)
++	}
++	return records, more, nil
++}
++
++func (r *Repository) AcknowledgeUsageSummaryRecords(ctx context.Context, items []UsageSummaryPendingRecord) error {
++	if len(items) == 0 {
++		return nil
++	}
++	db, errDB := r.database()
++	if errDB != nil {
++		return errDB
++	}
++	pairs := make([][]any, 0, len(items))
++	for _, item := range items {
++		pairs = append(pairs, []any{item.UsageID, item.Token})
++	}
++	// A repair committed after the read has a different token and stays pending.
++	return db.WithContext(contextOrBackground(ctx)).Where("(usage_id,token) IN ?", pairs).Delete(&UsageSummaryPendingRecord{}).Error
++}
+diff --git a/internal/cluster/usage_summary_pending_test.go b/internal/cluster/usage_summary_pending_test.go
+new file mode 100644
+index 0000000..3644b1f
+--- /dev/null
++++ b/internal/cluster/usage_summary_pending_test.go
+@@ -0,0 +1,201 @@
++package cluster
++
++import (
++	"context"
++	"database/sql"
++	"errors"
++	"testing"
++	"time"
++)
++
++func TestUsageSummaryPendingSurvivesLateCommitAndIdempotentAcknowledgement(t *testing.T) {
++	repo := newPostgresQuiescenceRepository(t)
++	db, errDB := repo.database()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	ctx := context.Background()
++	at := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
++	late := db.Begin()
++	defer func() {
++		if errRollback := late.Rollback().Error; errRollback != nil && !errors.Is(errRollback, sql.ErrTxDone) {
++			t.Error(errRollback)
++		}
++	}()
++	first := UsageRecord{Timestamp: at.Add(-6 * time.Hour), AuthIndex: "first", PayloadJSON: JSONB(`{}`)}
++	if errCreate := late.Create(&first).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	second := UsageRecord{Timestamp: at, AuthIndex: "second", PayloadJSON: JSONB(`{}`)}
++	if errCreate := db.Create(&second).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	rows, more, errRead := repo.ListPendingUsageSummaryRecords(ctx, at.Add(time.Hour))
++	if errRead != nil || more || len(rows) != 1 || rows[0].UsageID != second.ID {
++		t.Fatalf("visible pending = %v %v %v", rows, more, errRead)
++	}
++	for range 2 {
++		if errAck := repo.AcknowledgeUsageSummaryRecords(ctx, []UsageSummaryPendingRecord{{UsageID: second.ID, Token: rows[0].SummaryPendingToken}}); errAck != nil {
++			t.Fatal(errAck)
++		}
++	}
++	if errCommit := late.Commit().Error; errCommit != nil {
++		t.Fatal(errCommit)
++	}
++	rows, more, errRead = repo.ListPendingUsageSummaryRecords(ctx, at.Add(time.Hour))
++	if errRead != nil || more || len(rows) != 1 || rows[0].UsageID != first.ID {
++		t.Fatalf("late pending = %v %v %v", rows, more, errRead)
++	}
++	if errDelete := db.Delete(&first).Error; errDelete != nil {
++		t.Fatal(errDelete)
++	}
++	var pending int64
++	if errCount := db.Model(&UsageSummaryPendingRecord{}).Count(&pending).Error; errCount != nil || pending != 0 {
++		t.Fatalf("pending count = %d %v", pending, errCount)
++	}
++}
++
++func TestUsageSummaryPendingRollsBackWithSourceAndRetainsFutureRows(t *testing.T) {
++	ctx := context.Background()
++	repo, closeRepo := newBillingTestRepository(t, ctx)
++	defer closeRepo()
++	db, errDB := repo.database()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	at := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
++	tx := db.Begin()
++	row := UsageRecord{Timestamp: at, PayloadJSON: JSONB(`{}`)}
++	if errCreate := tx.Create(&row).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	if errRollback := tx.Rollback().Error; errRollback != nil {
++		t.Fatal(errRollback)
++	}
++	future := UsageRecord{Timestamp: at.Add(time.Hour), PayloadJSON: JSONB(`{}`)}
++	if errCreate := db.Create(&future).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	rows, _, errRead := repo.ListPendingUsageSummaryRecords(ctx, at)
++	if errRead != nil || len(rows) != 0 {
++		t.Fatalf("early read = %v %v", rows, errRead)
++	}
++	rows, _, errRead = repo.ListPendingUsageSummaryRecords(ctx, at.Add(2*time.Hour))
++	if errRead != nil || len(rows) != 1 || rows[0].UsageID != future.ID {
++		t.Fatalf("future read = %v %v", rows, errRead)
++	}
++}
++
++func TestUsageSummaryRepairCannotBeAcknowledgedByAnEarlierRead(t *testing.T) {
++	for _, backend := range []string{"sqlite", "postgres"} {
++		t.Run(backend, func(t *testing.T) {
++			ctx := context.Background()
++			var repo *Repository
++			if backend == "postgres" {
++				repo = newPostgresQuiescenceRepository(t)
++			} else {
++				var closeRepo func()
++				repo, closeRepo = newBillingTestRepository(t, ctx)
++				defer closeRepo()
++			}
++			db, errDB := repo.database()
++			if errDB != nil {
++				t.Fatal(errDB)
++			}
++			at := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
++			source := UsageRecord{Timestamp: at, APIKey: "late-key", AuthIndex: "late-auth", PayloadJSON: JSONB(`{}`)}
++			if errCreate := db.Create(&source).Error; errCreate != nil {
++				t.Fatal(errCreate)
++			}
++			before, _, errRead := repo.ListPendingUsageSummaryRecords(ctx, at.Add(time.Hour))
++			if errRead != nil || len(before) != 1 {
++				t.Fatalf("before=%v %v", before, errRead)
++			}
++			key := APIKeyRecord{APIKey: "late-key"}
++			if errCreate := db.Create(&key).Error; errCreate != nil {
++				t.Fatal(errCreate)
++			}
++			if errAck := repo.AcknowledgeUsageSummaryRecords(ctx, []UsageSummaryPendingRecord{{UsageID: source.ID, Token: before[0].SummaryPendingToken}}); errAck != nil {
++				t.Fatal(errAck)
++			}
++			after, _, errRead := repo.ListPendingUsageSummaryRecords(ctx, at.Add(time.Hour))
++			if errRead != nil || len(after) != 1 || after[0].SummaryPendingToken == before[0].SummaryPendingToken {
++				t.Fatalf("repair lost: %v %v", after, errRead)
++			}
++			if errAck := repo.AcknowledgeUsageSummaryRecords(ctx, []UsageSummaryPendingRecord{{UsageID: source.ID, Token: after[0].SummaryPendingToken}}); errAck != nil {
++				t.Fatal(errAck)
++			}
++			// These common writes must not requeue retained usage.
++			if errUpdate := db.Model(&key).Update("display_name", "fixture-label").Error; errUpdate != nil {
++				t.Fatal(errUpdate)
++			}
++			if errUpdate := db.Model(&key).Update("api_key", key.APIKey).Error; errUpdate != nil {
++				t.Fatal(errUpdate)
++			}
++			user := UserRecord{Username: "fixture-user"}
++			if errCreate := db.Create(&user).Error; errCreate != nil {
++				t.Fatal(errCreate)
++			}
++			if errUpdate := db.Model(&user).Update("credits", 42).Error; errUpdate != nil {
++				t.Fatal(errUpdate)
++			}
++			empty, _, errRead := repo.ListPendingUsageSummaryRecords(ctx, at.Add(time.Hour))
++			if errRead != nil || len(empty) != 0 {
++				t.Fatalf("no-op requeued: %v %v", empty, errRead)
++			}
++			auth := AuthRecord{UUID: "late-auth", AuthJSON: JSONB(`{}`)}
++			if errCreate := db.Create(&auth).Error; errCreate != nil {
++				t.Fatal(errCreate)
++			}
++			repaired, _, errRead := repo.ListPendingUsageSummaryRecords(ctx, at.Add(time.Hour))
++			if errRead != nil || len(repaired) != 1 {
++				t.Fatalf("auth repair missing: %v %v", repaired, errRead)
++			}
++		})
++	}
++}
++
++func TestUsageSummaryInstallationQueuesLegacyFutureRowsOnce(t *testing.T) {
++	for _, backend := range []string{"sqlite", "postgres"} {
++		t.Run(backend, func(t *testing.T) {
++			ctx := context.Background()
++			var repo *Repository
++			if backend == "postgres" {
++				repo = newPostgresQuiescenceRepository(t)
++			} else {
++				var closeRepo func()
++				repo, closeRepo = newBillingTestRepository(t, ctx)
++				defer closeRepo()
++			}
++			db := repo.db
++			drop := "DROP TRIGGER usage_summary_pending_insert"
++			if backend == "postgres" {
++				drop += " ON usage"
++			}
++			if errDrop := db.Exec(drop).Error; errDrop != nil {
++				t.Fatal(errDrop)
++			}
++			future := UsageRecord{Timestamp: time.Now().UTC().Add(24 * time.Hour), PayloadJSON: JSONB(`{}`)}
++			if errCreate := db.Create(&future).Error; errCreate != nil {
++				t.Fatal(errCreate)
++			}
++			if errMigrate := migrateUsageSummaryPending(db); errMigrate != nil {
++				t.Fatal(errMigrate)
++			}
++			rows, _, errRead := repo.ListPendingUsageSummaryRecords(ctx, future.Timestamp.Add(time.Hour))
++			if errRead != nil || len(rows) != 1 || rows[0].UsageID != future.ID {
++				t.Fatalf("legacy future lost: %v %v", rows, errRead)
++			}
++			if errAck := repo.AcknowledgeUsageSummaryRecords(ctx, []UsageSummaryPendingRecord{{UsageID: future.ID, Token: rows[0].SummaryPendingToken}}); errAck != nil {
++				t.Fatal(errAck)
++			}
++			if errMigrate := migrateUsageSummaryPending(db); errMigrate != nil {
++				t.Fatal(errMigrate)
++			}
++			rows, _, errRead = repo.ListPendingUsageSummaryRecords(ctx, future.Timestamp.Add(time.Hour))
++			if errRead != nil || len(rows) != 0 {
++				t.Fatalf("installation repeated: %v %v", rows, errRead)
++			}
++		})
++	}
++}
+diff --git a/internal/cluster/usage_summary_records.go b/internal/cluster/usage_summary_records.go
+new file mode 100644
+index 0000000..42b8976
+--- /dev/null
++++ b/internal/cluster/usage_summary_records.go
+@@ -0,0 +1,100 @@
++package cluster
++
++import (
++	"context"
++	"strings"
++	"time"
++)
++
++type UsageSummaryCursor struct {
++	Timestamp time.Time `json:"timestamp"`
++	ID        uint      `json:"id"`
++}
++
++type UsageSummaryRecordQuery struct {
++	From  time.Time
++	To    time.Time
++	After *UsageSummaryCursor
++	Limit int
++}
++
++// This stream is for retained counters. Detailed diagnostics stay on the records API.
++func usageSummaryRecordSelect() string {
++	columns := []string{`"usage"."id" AS usage_id`, `"usage"."auth_index" AS usage_auth_index`}
++	for _, name := range []string{"timestamp", "provider", "model", "executor_type", "input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cache_read_tokens", "cache_read_tokens_present", "cache_creation_tokens", "total_tokens", "token_accounting_version", "token_accounting_quality", "accounting_total_tokens", "accounting_input_tokens", "uncached_input_tokens", "accounting_cache_read_tokens", "accounting_cache_write_tokens", "accounting_output_tokens", "non_reasoning_output_tokens", "accounting_reasoning_tokens", "unclassified_tokens"} {
++		columns = append(columns, `"usage"."`+name+`" AS `+name)
++	}
++	columns = append(columns,
++		usageObservabilitySQLDisplayTokens(`"usage"`, "input_tokens")+` AS display_input_tokens`,
++		usageObservabilitySQLDisplayTokens(`"usage"`, "output_tokens")+` AS display_output_tokens`,
++		`COALESCE("billing_charge"."api_key_id", "api_key"."id") AS client_api_key_id`,
++		`"user"."username" AS username`,
++		`"billing_charge"."id" AS charge_id`, `"billing_charge"."amount" AS amount`,
++		`"billing_charge"."matched_price_rule" AS matched_price_rule`,
++		usageObservabilitySQLAuthUUID()+` AS auth_uuid`, usageObservabilitySQLAuthID()+` AS auth_id`,
++		usageObservabilitySQLAuthIndex()+` AS auth_index`)
++	return strings.Join(columns, ",")
++}
++
++func (r *Repository) ListUsageSummaryRecords(ctx context.Context, query UsageSummaryRecordQuery) ([]UsageObservabilityRecord, bool, error) {
++	db, errDB := r.database()
++	if errDB != nil {
++		return nil, false, errDB
++	}
++	limit := query.Limit
++	if limit <= 0 || limit > UsageObservabilityMaxRecordLimit {
++		limit = UsageObservabilityMaxRecordLimit
++	}
++	scope := usageObservabilityRecordScope(db.WithContext(contextOrBackground(ctx)).Table("usage"), UsageObservabilityRecordQuery{From: &query.From, To: &query.To})
++	if query.After != nil {
++		scope = scope.Where(`("usage"."timestamp", "usage"."id") > (?, ?)`, query.After.Timestamp, query.After.ID)
++	}
++	var rows []usageObservabilityRecordRow
++	if errFind := scope.Select(usageSummaryRecordSelect()).Order(`"usage"."timestamp" ASC, "usage"."id" ASC`).Limit(limit + 1).Scan(&rows).Error; errFind != nil {
++		return nil, false, errFind
++	}
++	more := len(rows) > limit
++	if more {
++		rows = rows[:limit]
++	}
++	records := make([]UsageObservabilityRecord, 0, len(rows))
++	for index := range rows {
++		records = append(records, usageObservabilityRecordFromRow(&rows[index]))
++	}
++	return records, more, nil
++}
++
++// Candidate IDs start at the indexed key columns. A charge's key always wins over a current key.
++func usageExactClientKeyCandidates() string {
++	return `"usage"."id" IN (
++ SELECT c.usage_id FROM "billing_charge" c JOIN "usage" u ON u.id = c.usage_id
++ WHERE c.api_key_id = ? AND u.timestamp >= ? AND u.failed = false
++ UNION
++ SELECT u.id FROM "api_key" k JOIN "usage" u ON
++   (u.api_key = k.api_key AND COALESCE(u.payload->>'api_key_fingerprint','') = '') OR
++   (u.api_key = k.diagnostic_fingerprint AND u.payload->>'api_key_fingerprint' = u.api_key)
++ LEFT JOIN "billing_charge" c ON c.usage_id = u.id
++ WHERE k.id = ? AND c.api_key_id IS NULL AND u.timestamp >= ? AND u.failed = false)`
++}
++
++func (r *Repository) FirstSuccessfulKeyUsage(ctx context.Context, key uint, since time.Time, credentials []string) (*time.Time, error) {
++	if len(credentials) == 0 {
++		return nil, nil
++	}
++	db, errDB := r.database()
++	if errDB != nil {
++		return nil, errDB
++	}
++	scope := usageObservabilityApplyRecordFilters(usageObservabilityAuthScope(db.WithContext(contextOrBackground(ctx)).Table("usage")), UsageObservabilityRecordQuery{From: &since, Status: "success"})
++	scope = scope.Where(usageExactClientKeyCandidates(), key, since, key, since)
++	scope = scope.Where(usageObservabilitySQLCredentialID()+` IN ?`, credentials)
++	var rows []usageObservabilityRecordRow
++	if errFind := scope.Select(`"usage"."timestamp"`).Order(`"usage"."timestamp" ASC`).Limit(1).Scan(&rows).Error; errFind != nil {
++		return nil, errFind
++	}
++	if len(rows) == 0 {
++		return nil, nil
++	}
++	at := rows[0].Timestamp.UTC()
++	return &at, nil
++}
+diff --git a/internal/cluster/usage_summary_records_test.go b/internal/cluster/usage_summary_records_test.go
+new file mode 100644
+index 0000000..bcaf5cf
+--- /dev/null
++++ b/internal/cluster/usage_summary_records_test.go
+@@ -0,0 +1,117 @@
++package cluster
++
++import (
++	"context"
++	"log"
++	"reflect"
++	"strings"
++	"testing"
++	"time"
++
++	"gorm.io/gorm/logger"
++)
++
++func TestPoolSummaryCursorPreservesTokensAttributionAndBillingWithoutWideReads(t *testing.T) {
++	ctx := context.Background()
++	repo, closeRepo := newBillingTestRepository(t, ctx)
++	defer closeRepo()
++	db, errDB := repo.database()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	at := time.Date(2026, time.November, 12, 12, 0, 0, 123456000, time.UTC)
++	var records []UsageRecord
++	for i := 0; i < 9; i++ {
++		records = append(records, UsageRecord{Timestamp: at.Add(time.Duration(i/3) * time.Second), Provider: "anthropic", Model: "model", ExecutorType: "claude", AuthIndex: "credential", InputTokens: 100, OutputTokens: 20, CachedTokens: 30, CacheCreationTokens: 10, TotalTokens: 120, PayloadJSON: JSONB(`{}`), CreatedAt: at})
++	}
++	if errCreate := db.Create(&records).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	full, errFull := repo.ListUsageObservabilityRecords(ctx, UsageObservabilityRecordQuery{Sort: "timestamp_asc", Limit: 200})
++	if errFull != nil {
++		t.Fatal(errFull)
++	}
++	expected := map[string]UsageObservabilityRecord{}
++	for _, row := range full.Records {
++		expected[row.ID] = row
++	}
++	var statements strings.Builder
++	db.Logger = logger.New(log.New(&statements, "", 0), logger.Config{LogLevel: logger.Info})
++	query := UsageSummaryRecordQuery{From: at.Add(-time.Hour), To: at.Add(time.Hour), Limit: 2}
++	seen := map[string]bool{}
++	for page := 0; page < 8; page++ {
++		rows, more, errRead := repo.ListUsageSummaryRecords(ctx, query)
++		if errRead != nil {
++			t.Fatal(errRead)
++		}
++		for _, row := range rows {
++			old, ok := expected[row.ID]
++			if !ok || seen[row.ID] {
++				t.Fatalf("unexpected or repeated row %s", row.ID)
++			}
++			seen[row.ID] = true
++			if !reflect.DeepEqual(row.Tokens, old.Tokens) || row.Client.Username != old.Client.Username || row.Credential.CredentialID != old.Credential.CredentialID || !reflect.DeepEqual(row.Billing.Amount, old.Billing.Amount) || row.Billing.MatchedPriceRule != old.Billing.MatchedPriceRule {
++				t.Fatalf("summary changed values for %s", row.ID)
++			}
++		}
++		if !more {
++			break
++		}
++		last := rows[len(rows)-1]
++		query.After = &UsageSummaryCursor{Timestamp: last.Timestamp, ID: last.UsageID}
++	}
++	if len(seen) != len(expected) {
++		t.Fatalf("got %d rows, want %d", len(seen), len(expected))
++	}
++	sql := statements.String()
++	for _, wide := range []string{"COUNT(", "OFFSET", "auth_json", " AS payload_json"} {
++		if strings.Contains(sql, wide) {
++			t.Fatalf("stream still reads %s", wide)
++		}
++	}
++}
++
++func TestFirstSuccessfulKeyUsageUsesSinceMembershipAndChargePrecedence(t *testing.T) {
++	ctx := context.Background()
++	repo, closeRepo := newBillingTestRepository(t, ctx)
++	defer closeRepo()
++	db, errDB := repo.database()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	at := time.Date(2026, time.November, 12, 12, 0, 0, 0, time.UTC)
++	keys := []APIKeyRecord{{ID: 17, APIKey: "fixture-key"}, {ID: 18, APIKey: "other-key"}}
++	if errCreate := db.Create(&keys).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	rows := []UsageRecord{
++		{Timestamp: at.Add(-time.Hour), APIKey: "fixture-key", AuthIndex: "allowed", PayloadJSON: JSONB(`{}`)},
++		{Timestamp: at.Add(time.Minute), APIKey: "fixture-key", AuthIndex: "allowed", Failed: true, PayloadJSON: JSONB(`{}`)},
++		{Timestamp: at.Add(2 * time.Minute), APIKey: "fixture-key", AuthIndex: "other", PayloadJSON: JSONB(`{}`)},
++		{Timestamp: at.Add(3 * time.Minute), APIKey: "fixture-key", AuthIndex: "allowed", PayloadJSON: JSONB(`{}`)},
++		{Timestamp: at.Add(4 * time.Minute), APIKey: "fixture-key", AuthIndex: "allowed", PayloadJSON: JSONB(`{}`)},
++	}
++	if errCreate := db.Create(&rows).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	chargedKey := uint(18)
++	if errCreate := db.Create(&BillingChargeRecord{ID: "charge", UsageID: rows[3].ID, APIKeyID: &chargedKey, PayloadHash: "fixture-hash", PriceSnapshot: JSONB(`{}`)}).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	got, errRead := repo.FirstSuccessfulKeyUsage(ctx, 17, at, []string{"allowed"})
++	if errRead != nil {
++		t.Fatal(errRead)
++	}
++	want := at.Add(4 * time.Minute)
++	if got == nil || !got.Equal(want) {
++		t.Fatalf("first = %v, want %v", got, want)
++	}
++	missing, errMissing := repo.FirstSuccessfulKeyUsage(ctx, 999, at, []string{"allowed"})
++	if errMissing != nil || missing != nil {
++		t.Fatalf("missing = %v, %v", missing, errMissing)
++	}
++	empty, errEmpty := repo.FirstSuccessfulKeyUsage(ctx, 17, at, nil)
++	if errEmpty != nil || empty != nil {
++		t.Fatalf("empty = %v, %v", empty, errEmpty)
++	}
++}
+diff --git a/internal/cluster/usage_summary_snapshot_test.go b/internal/cluster/usage_summary_snapshot_test.go
+new file mode 100644
+index 0000000..a31e453
+--- /dev/null
++++ b/internal/cluster/usage_summary_snapshot_test.go
+@@ -0,0 +1,49 @@
++package cluster
++
++import (
++	"context"
++	"path/filepath"
++	"testing"
++	"time"
++)
++
++func TestUsageSummarySnapshotPreservesOnlyUnacknowledgedTokens(t *testing.T) {
++	ctx := context.Background()
++	source := openDatabaseSnapshotSQLiteTestDB(t, filepath.Join(t.TempDir(), "source.db"))
++	at := time.Now().UTC()
++	rows := []UsageRecord{{Timestamp: at, PayloadJSON: JSONB(`{}`)}, {Timestamp: at, PayloadJSON: JSONB(`{}`)}}
++	if errCreate := source.Create(&rows).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	if errDelete := source.Delete(&UsageSummaryPendingRecord{}, "usage_id = ?", rows[0].ID).Error; errDelete != nil {
++		t.Fatal(errDelete)
++	}
++	var before []UsageSummaryPendingRecord
++	if errRead := source.Find(&before).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	path := filepath.Join(t.TempDir(), "pending.snapshot.zip")
++	if _, errExport := ExportDatabaseSnapshot(ctx, source, DatabaseSnapshotExportOptions{Path: path}); errExport != nil {
++		t.Fatal(errExport)
++	}
++	snapshot, errOpen := OpenDatabaseSnapshot(ctx, path)
++	if errOpen != nil {
++		t.Fatal(errOpen)
++	}
++	defer func() {
++		if errClose := snapshot.Close(); errClose != nil {
++			t.Error(errClose)
++		}
++	}()
++	target := openDatabaseSnapshotSQLiteRawTestDB(t, filepath.Join(t.TempDir(), "target.db"))
++	if _, errImport := ImportDatabaseSnapshot(ctx, target, snapshot, nil); errImport != nil {
++		t.Fatal(errImport)
++	}
++	var after []UsageSummaryPendingRecord
++	if errRead := target.Find(&after).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	if len(after) != 1 || len(before) != 1 || after[0] != before[0] {
++		t.Fatalf("pending changed: before=%v after=%v", before, after)
++	}
++}
+diff --git a/internal/cluster/usage_summary_upgrade_postgres_test.go b/internal/cluster/usage_summary_upgrade_postgres_test.go
+new file mode 100644
+index 0000000..f3d610b
+--- /dev/null
++++ b/internal/cluster/usage_summary_upgrade_postgres_test.go
+@@ -0,0 +1,40 @@
++package cluster
++
++import (
++	"testing"
++	"time"
++)
++
++func TestUsageSummaryUpgradeFromV15PreservesLegacyRows(t *testing.T) {
++	repo := newPostgresQuiescenceRepository(t)
++	db := repo.db
++	row := UsageRecord{Timestamp: time.Now().UTC().Add(time.Hour), PayloadJSON: JSONB(`{"legacy":true}`)}
++	if errCreate := db.Create(&row).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	var before string
++	if errRead := db.Raw("SELECT to_jsonb(u)::text FROM usage u WHERE id=?", row.ID).Scan(&before).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	if errReset := db.Exec(`DROP TRIGGER usage_summary_pending_insert ON usage;
++		DROP TRIGGER usage_summary_pending_delete ON usage;
++		DROP TABLE usage_summary_pending;
++		UPDATE home_schema_migration SET version=15`).Error; errReset != nil {
++		t.Fatal(errReset)
++	}
++	if errMigrate := AutoMigrateContext(t.Context(), db); errMigrate != nil {
++		t.Fatal(errMigrate)
++	}
++	var after string
++	if errRead := db.Raw("SELECT to_jsonb(u)::text FROM usage u WHERE id=?", row.ID).Scan(&after).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	if before != after {
++		t.Fatalf("v15 retained row changed: before=%s after=%s", before, after)
++	}
++	assertPostgresSchemaMigrationVersion(t, db, 16)
++	var pending int64
++	if errCount := db.Model(&UsageSummaryPendingRecord{}).Where("usage_id=?", row.ID).Count(&pending).Error; errCount != nil || pending != 1 {
++		t.Fatalf("preexisting future row pending=%d error=%v", pending, errCount)
++	}
++}
+diff --git a/internal/managementhttp/server.go b/internal/managementhttp/server.go
+index adb9b16..a4d31d0 100644
+--- a/internal/managementhttp/server.go
++++ b/internal/managementhttp/server.go
+@@ -225,6 +225,10 @@ func registerClusterManagementRoutes(r *RouteRegistry, handler *clustermanagemen
+ 	r.Set(http.MethodPost, "/quota/collect", handler.CollectQuota)
+ 	r.Set(http.MethodGet, "/usage/overview", handler.GetUsageOverview)
+ 	r.Set(http.MethodGet, "/usage/records", handler.ListUsageRecords)
++	r.Set(http.MethodGet, "/usage/summary-records", handler.ListUsageSummaryRecords)
++	r.Set(http.MethodGet, "/usage/summary-pending", handler.ListPendingUsageSummaryRecords)
++	r.Set(http.MethodPost, "/usage/summary-ack", handler.AcknowledgeUsageSummaryRecords)
++	r.Set(http.MethodGet, "/usage/first-success", handler.FirstSuccessfulKeyUsage)
+ 	r.Set(http.MethodGet, "/usage/session-tree", handler.GetSessionTree)
+ 	r.Set(http.MethodGet, "/usage/records/:id", handler.GetUsageRecord)
+ 	r.Set(http.MethodGet, "/usage/aggregates", handler.ListUsageAggregates)

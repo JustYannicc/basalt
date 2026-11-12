@@ -194,6 +194,15 @@
             "mode": "manual",
             "requires": "Retire after the pinned source preserves generic model weekly windows and reset grant kind, scope, count, expiry and normalized effects through retained snapshots and management reads, with default-off bounded diagnostic discovery and no reset redemption."
           }
+        },
+        {
+          "identity": "cliproxy-home-incremental-usage",
+          "file": "0539-home-incremental-usage.patch",
+          "sha256": "a9fa5de8501c7b57e07676be79b336cc81ec5775885921df70710e12f35d19c0",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after pinned Home preserves narrow exact timestamp/string-ID summary pages, transactional late-commit and attribution-repair pending work with token-fenced acknowledgement, exact portable queue restoration, time-bounded first-success key identity, PR 171 overview semantics and online index readiness. Preserve retained v15 rows without legacy normalization, concurrent startup, interrupted-index repair and old-writer compatibility, and ship only with the strict native schema activation barrier."
+          }
         }
       ]
     },
