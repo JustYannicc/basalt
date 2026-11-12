@@ -2679,10 +2679,10 @@ index 0000000..ac5ed8b
 +});
 diff --git a/e2e/tests/pool-provider-native-presentation.spec.ts b/e2e/tests/pool-provider-native-presentation.spec.ts
 new file mode 100644
-index 0000000..c5e908c
+index 0000000..5a7c622
 --- /dev/null
 +++ b/e2e/tests/pool-provider-native-presentation.spec.ts
-@@ -0,0 +1,402 @@
+@@ -0,0 +1,400 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, FileSystem, Path, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -3013,19 +3013,17 @@ index 0000000..c5e908c
 +            theme: "light",
 +          },
 +        ];
-+        const providerFiles = home.sources
-+          .get("openai")!
-+          .files.map((file) =>
-+            file.path === "index.ts"
-+              ? {
-+                  ...file,
-+                  content: file.content.replace(
-+                    /icons: \[[^\n]*?\], app:/,
-+                    `icons: ${JSON.stringify(changedIcons)}, app:`,
-+                  ),
-+                }
-+              : file,
-+          );
++        const providerFiles = home.sources.get("openai")!.files.map((file) =>
++          file.path === "index.ts"
++            ? {
++                ...file,
++                content: file.content.replace(
++                  /icons: \[[^\n]*?\], app:/,
++                  `icons: ${JSON.stringify(changedIcons)}, app:`,
++                ),
++              }
++            : file,
++        );
 +        expect(providerFiles.find((file) => file.path === "index.ts")?.content).not.toBe(
 +          home.sources.get("openai")!.files.find((file) => file.path === "index.ts")?.content,
 +        );
