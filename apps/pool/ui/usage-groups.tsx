@@ -8,6 +8,7 @@ import type {
 } from "../overview-contract.ts";
 import { Button, Problem, Segmented, StateIcon } from "./controls.tsx";
 import { LabMark, labColor } from "./lab.tsx";
+import { noRecordedUsage } from "./usage-outcome.ts";
 import { PriceNote } from "./price-note.tsx";
 import { priceSentence, samePrice, slicePrice } from "./price-text.ts";
 import {
@@ -95,6 +96,7 @@ function MoneyCell({
   reasons,
   price = null,
   unavailable = false,
+  noUsage = false,
 }: {
   list: Totals["home"];
   priced: boolean;
@@ -102,7 +104,9 @@ function MoneyCell({
   reasons: readonly string[];
   price?: ReturnType<typeof slicePrice>;
   unavailable?: boolean;
+  noUsage?: boolean;
 }) {
+  if (noUsage) return <span className="text-muted-foreground">No usage recorded</span>;
   if (list.length)
     return (
       <>
@@ -254,8 +258,10 @@ const percentileText = (values: {
 const cells = (row: Row, slices: readonly OverviewUsageSlice[], unavailable: Unavailable) => {
   const totals = row.totals;
   const moneyRows = rowMoney(row, slices);
+  const noUsage = noRecordedUsage(totals);
   const api = (
     <MoneyCell
+      noUsage={noUsage}
       list={moneyRows.apiBilled}
       priced={moneyRows.apiCount}
       excluded={moneyRows.apiExcluded}
@@ -270,9 +276,11 @@ const cells = (row: Row, slices: readonly OverviewUsageSlice[], unavailable: Una
     (reason) => !moneyRows.subscriptionReasons.includes(reason),
   );
   const stackApi =
-    moneyRows.apiBilled.length > 0 ||
-    stackedApiReasons.length > 0 ||
-    (moneyRows.apiReasons.length === 0 && (unavailable.api !== null || moneyRows.apiExcluded > 0n));
+    !noUsage &&
+    (moneyRows.apiBilled.length > 0 ||
+      stackedApiReasons.length > 0 ||
+      (moneyRows.apiReasons.length === 0 &&
+        (unavailable.api !== null || moneyRows.apiExcluded > 0n)));
   return (
     <>
       <td className="py-2.5 pr-2 text-right tabular-nums max-[540px]:hidden">
@@ -283,6 +291,7 @@ const cells = (row: Row, slices: readonly OverviewUsageSlice[], unavailable: Una
       </td>
       <td className="py-2.5 pr-2 text-right tabular-nums">
         <MoneyCell
+          noUsage={noUsage}
           list={moneyRows.subscriptionValue}
           priced={moneyRows.subscriptionCount}
           excluded={moneyRows.subscriptionExcluded}

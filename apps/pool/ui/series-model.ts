@@ -1,3 +1,4 @@
+import { failedBucketWithoutUsage, noRecordedUsage } from "./usage-outcome.ts";
 import type { Result } from "../control.ts";
 import type { OverviewMoneyMetric, OverviewPriceProvenance } from "../overview-contract.ts";
 import type {
@@ -130,6 +131,7 @@ export interface Totals {
   requests: number;
   failed: number;
   unassignedFailures: number;
+  failedWithoutUsage: number;
   /** Requests from buckets the caller may count but not split (account mapping pending). */
   countsOnly: number;
   tokens: bigint;
@@ -232,6 +234,7 @@ export const emptyTotals = (): Totals => ({
   requests: 0,
   failed: 0,
   unassignedFailures: 0,
+  failedWithoutUsage: 0,
   countsOnly: 0,
   tokens: 0n,
   tokensKnown: 0,
@@ -264,6 +267,7 @@ export function addBucket(totals: Totals, bucket: SeriesBucket | SeriesCounts) {
     totals.countsOnly += bucket.requests;
     return;
   }
+  if (failedBucketWithoutUsage(bucket)) totals.failedWithoutUsage += bucket.requests;
   const total = bucket.tokens.total;
   if (total.sum !== null && /^\d+$/.test(total.sum)) totals.tokens += BigInt(total.sum);
   totals.tokensKnown += total.known;
@@ -280,6 +284,7 @@ export function addTotals(into: Totals, from: Totals) {
   into.requests += from.requests;
   into.failed += from.failed;
   into.unassignedFailures += from.unassignedFailures;
+  into.failedWithoutUsage += from.failedWithoutUsage;
   into.countsOnly += from.countsOnly;
   into.tokens += from.tokens;
   into.tokensKnown += from.tokensKnown;
@@ -404,6 +409,10 @@ function finish(drafts: Iterable<Draft>): Row[] {
   return [...drafts]
     .map((entry) => ({
       ...entry,
+      label:
+        entry.usageKey?.model === null && noRecordedUsage(entry.totals)
+          ? "Failed requests"
+          : entry.label,
       empty: entry.empty ?? entry.totals.requests === 0,
       requestTokens: entry.requestTokens ?? null,
       usageKey: entry.usageKey ?? {},

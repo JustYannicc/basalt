@@ -362,3 +362,40 @@ test("one bucket priced from token counts marks the whole sum, with its rate not
     calculation: "token-counts",
   });
 });
+
+test("unassigned failures without any usage stay distinct from missing model accounting", () => {
+  const failed = {
+    ...bucket({ requests: 153, failed: 153, tokens: null }),
+    unassignedFailures: 153,
+  };
+  const render = (...buckets: (SeriesBucket | SeriesCounts)[]) =>
+    rows([group({ model: null }, ...buckets)], "model", (provider) => provider)[0]!;
+  const outcome = render(failed);
+  assert.equal(outcome.label, "Failed requests");
+  assert.equal(outcome.totals.failedWithoutUsage, 153);
+  assert.equal(total([group({}, failed)]).failedWithoutUsage, 153);
+  for (const ordinary of [
+    { ...failed, unassignedFailures: 0 },
+    { ...failed, failed: 152 },
+    { ...failed, tokens: { ...failed.tokens, input: tokens("0") } },
+    { ...failed, tokens: { ...failed.tokens, output: tokens("4") } },
+    {
+      ...failed,
+      cost: {
+        ...failed.cost,
+        homeCharge: { amount: "0", currency: "credits", priced: 1, unpriced: 0 },
+      },
+    },
+  ]) {
+    const row = render(ordinary);
+    assert.equal(row.label, "Model not recorded");
+    assert.equal(row.totals.failedWithoutUsage, 0);
+  }
+  assert.equal(render(failed, bucket({})).label, "Model not recorded");
+  assert.equal(render(failed, counts(1)).label, "Model not recorded");
+  assert.equal(
+    rows([group({ model: "Model not recorded" }, failed)], "model", (provider) => provider)[0]!
+      .label,
+    "Model not recorded",
+  );
+});

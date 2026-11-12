@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-history-api-estimate-contract",
+  "file": "0557-history-api-estimate-contract.patch",
+  "content_sha256": "deba574e39100fc3fba9f2024111c3068e755dab2b011b56bd4c24944865176e",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
