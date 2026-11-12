@@ -214,7 +214,7 @@
         {
           "identity": "cliproxy-node-dispatch-timing-header",
           "file": "0516-node-dispatch-timing-header.patch",
-          "sha256": "f2018d965ad2126c4b092eb24ba6b201ed373c5c1913eabe54cc9c3f65c5d040",
+          "sha256": "388cfc96773d43031864ab0a3b26726ccf2ed6f43156cd298f3a9b68a29a94f4",
           "retirement": {
             "mode": "manual",
             "requires": "Retire only when the pinned sources preserve the opt-in primary dispatch reply, bounded closed timing transport, failure fencing, legacy compatibility and synthetic-provider response proof through Worker logs without exposing diagnostic headers to clients."
@@ -229,9 +229,7 @@
       "tag": "v1.0.5",
       "commit": "19d9868ffa24e94a2919ea1d1a761afa634de669",
       "sha256": "79b6ae8702b0ace76c10102d42a1401259e7dc772baacce2d47c90c33c6b25e7",
-      "auth_providers": [
-        "gemini-cli"
-      ]
+      "auth_providers": ["gemini-cli"]
     }
   }
 }

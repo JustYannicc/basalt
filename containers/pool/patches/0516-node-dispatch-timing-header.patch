@@ -55,19 +55,17 @@ diff --git a/internal/dispatchtiming/header.go b/internal/dispatchtiming/header.
 new file mode 100644
 --- /dev/null
 +++ b/internal/dispatchtiming/header.go
-@@ -0,0 +1,205 @@
+@@ -0,0 +1,218 @@
 +package dispatchtiming
 +
 +import (
-+	"bytes"
 +	"context"
-+	"encoding/json"
 +	"errors"
-+	"io"
 +	"net"
 +	"sync"
 +	"time"
 +
++	"github.com/MoeForge/moego/ojson"
 +	"github.com/gin-gonic/gin"
 +	"github.com/redis/go-redis/v9"
 +)
@@ -152,8 +150,13 @@ new file mode 100644
 +	if len(metrics) == 0 {
 +		return nil
 +	}
-+	payload, _ := json.Marshal(metrics)
-+	return payload
++	doc := ojson.NewDocString("[]")
++	for _, metric := range metrics {
++		if errSet := doc.Set("-1", metric); errSet != nil {
++			return nil
++		}
++	}
++	return doc.Bytes()
 +}
 +func Observe(ctx context.Context, stage Stage, started time.Time, err error) {
 +	FromContext(ctx).Record(stage, time.Since(started), err)
@@ -164,23 +167,33 @@ new file mode 100644
 +	if c == nil || len(raw) > 2048 {
 +		return
 +	}
-+	var records []struct {
-+		Stage      Stage  `json:"stage"`
-+		DurationMS *int64 `json:"duration_ms"`
-+		Outcome    string `json:"outcome"`
++	if !ojson.Valid(raw) {
++		return
 +	}
-+	decoder := json.NewDecoder(bytes.NewBufferString(raw))
-+	decoder.DisallowUnknownFields()
-+	if decoder.Decode(&records) != nil || len(records) > 4 || decoder.Decode(new(any)) != io.EOF {
++	parsed := ojson.Parse(raw)
++	if !parsed.IsArray() {
++		return
++	}
++	records := parsed.Array()
++	if len(records) > 4 {
 +		return
 +	}
 +	seen := make(map[Stage]bool)
 +	metrics := make([]Metric, 0, len(records))
 +	for _, record := range records {
-+		if record.DurationMS == nil {
++		if !record.IsObject() || len(record.Map()) != 3 {
 +			return
 +		}
-+		metric := Metric{record.Stage, *record.DurationMS, record.Outcome}
++		stage := record.Get("stage")
++		duration := record.Get("duration_ms")
++		outcome := record.Get("outcome")
++		if stage.Type != ojson.String || duration.Type != ojson.Number || outcome.Type != ojson.String {
++			return
++		}
++		if duration.Float() != float64(duration.Int()) {
++			return
++		}
++		metric := Metric{Stage(stage.String()), duration.Int(), outcome.String()}
 +		switch metric.Stage {
 +		case "authenticate", "selection", "admission", "reply_write":
 +		default:
@@ -265,12 +278,11 @@ diff --git a/internal/home/basalt_timing_header_test.go b/internal/home/basalt_t
 new file mode 100644
 --- /dev/null
 +++ b/internal/home/basalt_timing_header_test.go
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,132 @@
 +package home
 +
 +import (
 +	"context"
-+	"encoding/json"
 +	"fmt"
 +	"io"
 +	"net/http"
@@ -278,6 +290,7 @@ new file mode 100644
 +	"strings"
 +	"testing"
 +
++	"github.com/MoeForge/moego/ojson"
 +	"github.com/gin-gonic/gin"
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/dispatchtiming"
 +)
@@ -287,8 +300,7 @@ new file mode 100644
 +	for _, legacy := range []bool{false, true} {
 +		client, commands := newRedisCommandTestClient(t, func(args []string) string {
 +			if strings.EqualFold(args[0], "RPOP") {
-+				var request map[string]any
-+				if json.Unmarshal([]byte(args[1]), &request) != nil || request["dispatch_timing"] != true {
++				if !ojson.Valid(args[1]) || ojson.Get(args[1], "dispatch_timing").Type != ojson.True {
 +					t.Error("dispatch did not opt in")
 +				}
 +				primary := `{"credential":"synthetic"}`
@@ -322,7 +334,11 @@ new file mode 100644
 +				c.Status(500)
 +				return
 +			}
-+			defer response.Body.Close()
++			defer func() {
++				if errClose := response.Body.Close(); errClose != nil {
++					t.Error(errClose)
++				}
++			}()
 +			c.Status(response.StatusCode)
 +			_, _ = io.Copy(c.Writer, response.Body)
 +		})
@@ -332,8 +348,9 @@ new file mode 100644
 +		if recorder.Code != 200 || recorder.Body.String() != "data: synthetic-provider-terminal\n\n" || providerCalls != 1 {
 +			t.Fatal("provider response or call count changed")
 +		}
-+		var metrics []dispatchtiming.Metric
-+		if json.Unmarshal([]byte(recorder.Header().Get(dispatchtiming.Header)), &metrics) != nil {
++		header := recorder.Header().Get(dispatchtiming.Header)
++		metrics := ojson.Parse(header).Array()
++		if !ojson.Valid(header) || !ojson.Parse(header).IsArray() {
 +			t.Fatal("missing timing header")
 +		}
 +		want := 6
@@ -342,6 +359,13 @@ new file mode 100644
 +		}
 +		if len(metrics) != want {
 +			t.Fatalf("stages=%v, want %d", metrics, want)
++		}
++		if !legacy {
++			for index, stage := range []string{"authenticate", "selection", "admission", "reply_write"} {
++				if metrics[index].Get("stage").String() != stage || metrics[index].Get("duration_ms").Int() != int64(index+2) || metrics[index].Get("outcome").String() != "ok" {
++					t.Fatal("Home timing fields changed")
++				}
++			}
 +		}
 +		count := 0
 +		for _, command := range commands.All() {
@@ -356,12 +380,35 @@ new file mode 100644
 +}
 +
 +func TestBasaltNodeDispatchTimingInvalidTrailerPreservesPrimary(t *testing.T) {
-+	for _, trailer := range []string{"private-sentinel", `[{"stage":"selection","duration_ms":1,"outcome":"ok","private":"sentinel"}]`, `[{"stage":"selection","outcome":"ok"}]`, `[{"stage":"selection","duration_ms":null,"outcome":"ok"}]`, `[{"stage":"private-stage","duration_ms":1,"outcome":"ok"}]`, `[{"stage":"selection","duration_ms":1,"outcome":"ok"},{"stage":"selection","duration_ms":1,"outcome":"ok"}]`, strings.Repeat("x", 2049)} {
++	for _, trailer := range []string{"private-sentinel", `[{"stage":"selection","duration_ms":1,"outcome":"ok","private":"sentinel"}]`, `[{"stage":"selection","outcome":"ok"}]`, `[{"stage":"selection","duration_ms":null,"outcome":"ok"}]`, `[{"stage":"private-stage","duration_ms":1,"outcome":"ok"}]`, `[{"stage":"selection","duration_ms":1,"outcome":"ok"},{"stage":"selection","duration_ms":1,"outcome":"ok"}]`, `[{"stage":"selection","duration_ms":1.5,"outcome":"ok"}]`, `[{"stage":"selection","duration_ms":"1","outcome":"ok"}]`, `[{"stage":"selection","duration_ms":86400001,"outcome":"ok"}]`, `[{"stage":"selection","duration_ms":-1,"outcome":"ok"}]`, `[] null`, strings.Repeat("x", 2049)} {
 +		ctx, collector := dispatchtiming.WithCollector(context.Background())
 +		raw, err := dispatchtiming.DecodeReply(ctx, []any{"primary", trailer})
 +		if err != nil || string(raw) != "primary" || len(collector.JSON()) != 0 {
 +			t.Fatal("invalid diagnostic altered dispatch or escaped projection")
 +		}
++	}
++}
++
++func TestBasaltNodeDispatchTimingServerErrorRemainsDeterministic(t *testing.T) {
++	client, commands := newRedisCommandTestClient(t, func(args []string) string {
++		if strings.EqualFold(args[0], "RPOP") {
++			return "*2\r\n-ERR synthetic rejection\r\n$2\r\n[]\r\n"
++		}
++		return balanceTestRedisReply(args)
++	})
++	ctx, _ := dispatchtiming.WithCollector(context.Background())
++	_, errDispatch := client.RPopAuth(ctx, "synthetic-model", "", nil, 1)
++	if errDispatch == nil || isAmbiguousIssuedRPopAuthError(errDispatch) {
++		t.Fatal("complete server rejection became ambiguous")
++	}
++	count := 0
++	for _, command := range commands.All() {
++		if strings.EqualFold(command[0], "RPOP") {
++			count++
++		}
++	}
++	if count != 1 {
++		t.Fatal("failed dispatch replayed")
 +	}
 +}
 diff --git a/internal/home/client.go b/internal/home/client.go
