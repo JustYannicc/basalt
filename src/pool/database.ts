@@ -117,7 +117,15 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
     },
     memo: isPreview
       ? false
-      : { include: ["ensure-pool-database.ts", "pool-database-provisioning.ts"], lockfile: true },
+      : {
+          include: [
+            "ensure-pool-database.ts",
+            "pool-database-provisioning.ts",
+            "../src/pool/model-history/schema.ts",
+            "../src/pool/database-settings.ts",
+          ],
+          lockfile: true,
+        },
     // The script bounds itself at 132s (worstCaseMs in scripts/pool-database-provisioning.ts) and
     // exits with the step it failed at. This outer limit only catches a script that cannot exit.
     timeout: "3 minutes",
