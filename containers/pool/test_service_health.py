@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from . import pool_contract, service_health
 from .service_health import ServiceHealth
+from .readiness import Readiness
 from .test_recovery import Clock
 
 
@@ -78,6 +79,48 @@ class ServiceHealthTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "^fixture$"):
             self.health.check()
 
+    def test_unexpected_audit_error_is_delivered_even_when_fast_probes_fail(self) -> None:
+        self.clock.now = 60
+        self.health.check()
+        self.full.side_effect = RuntimeError("fixture")
+        self.finish_audit()
+        self.fast.return_value = False
+        with self.assertRaisesRegex(RuntimeError, "^fixture$"):
+            self.health.check()
+
+    def test_policy_transition_between_ticks_cannot_restore_cached_readiness(self) -> None:
+        ready = Readiness("fixture", lambda: int(self.clock.now * 1_000_000_000))
+        ready.refresh_policy_lease("a" * 32)
+        revision = ready.service_audit_revision()
+        ready.set_ready(True, audit_revision=revision)
+        self.assertTrue(ready.snapshot()[0])
+        ready.invalidate_policy()
+        ready.refresh_policy_lease("a" * 32)
+        self.assertFalse(ready.snapshot()[0])
+        self.assertNotEqual(ready.service_audit_revision(), revision)
+        self.health.invalidate()
+        revision = ready.service_audit_revision()
+        ready.set_ready(self.health.check(), audit_revision=revision)
+        self.assertFalse(ready.snapshot()[0])
+        self.finish_audit()
+        ready.set_ready(self.health.check(), audit_revision=revision)
+        self.assertTrue(ready.snapshot()[0])
+        ready.invalidate_policy()
+        ready.refresh_policy_lease("a" * 32)
+        ready.set_ready(True, audit_revision=revision)
+        self.assertFalse(ready.snapshot()[0])
+
+    def test_expired_policy_lease_between_ticks_invalidates_the_full_contract(self) -> None:
+        ready = Readiness("fixture", lambda: int(self.clock.now * 1_000_000_000))
+        ready.refresh_policy_lease("a" * 32)
+        revision = ready.service_audit_revision()
+        ready.set_ready(True, audit_revision=revision)
+        self.clock.now = 2
+        ready.refresh_policy_lease("a" * 32)
+        self.assertFalse(ready.snapshot()[0])
+        ready.set_ready(True, audit_revision=revision)
+        self.assertFalse(ready.snapshot()[0])
+
     def test_result_started_before_fast_failure_cannot_restore_readiness(self) -> None:
         self.clock.now = 60
         self.health.check()
@@ -97,6 +140,19 @@ class ServiceHealthTests(unittest.TestCase):
         self.assertFalse(self.health.check())
         self.assertEqual(len(self.pending), 1)
         self.assertEqual(self.fast.call_count, 2)
+
+    def test_late_audit_success_never_restores_readiness(self) -> None:
+        self.clock.now = 60
+        self.assertTrue(self.health.check())
+        self.clock.now = 64
+        self.assertFalse(self.health.check())
+        self.clock.now = 65
+        self.finish_audit()
+        self.assertFalse(self.health.check())
+        self.clock.now = 67
+        self.assertFalse(self.health.check())
+        self.finish_audit()
+        self.assertTrue(self.health.check())
 
     def test_old_home_generation_cannot_update_new_generation(self) -> None:
         self.clock.now = 60

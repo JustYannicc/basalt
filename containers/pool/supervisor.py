@@ -362,8 +362,9 @@ def main(stop: threading.Event | None = None) -> int:
                     operation_timeout(STARTUP_TIMEOUT_SECONDS)
                     if recovering and readiness.policy_fused():
                         raise StartupError("Policy fused during recovery")
+                    audit_revision = readiness.service_audit_revision()
                     services_ready = check_services(management_key, node_id)
-                    readiness.set_ready(services_ready)
+                    readiness.set_ready(services_ready, audit_revision=audit_revision)
                     if services_ready and readiness.snapshot()[0]:
                         break
                     stop.wait(operation_timeout(0.5))
@@ -377,7 +378,7 @@ def main(stop: threading.Event | None = None) -> int:
 
         node_id = launch_generation()
         health = ServiceHealth(management_key, node_id, check_services, check_liveness)
-        was_ready = readiness.snapshot()[0]
+        audit_revision = readiness.service_audit_revision()
         recovery = HomeRecovery()
         category = FailureCategory.RUNTIME
         while not stop.wait(2):
@@ -411,7 +412,7 @@ def main(stop: threading.Event | None = None) -> int:
                             health = ServiceHealth(
                                 management_key, node_id, check_services, check_liveness
                             )
-                            was_ready = readiness.snapshot()[0]
+                            audit_revision = readiness.service_audit_revision()
                             break
                     except BaseException:
                         # Retain the absolute episode deadline through terminal cleanup.
@@ -437,10 +438,11 @@ def main(stop: threading.Event | None = None) -> int:
                                 ready_server.server_close()
                         raise
                 continue
-            if was_ready and not readiness.snapshot()[0]:
+            current_revision = readiness.service_audit_revision()
+            if current_revision != audit_revision:
                 health.invalidate()
-            readiness.set_ready(health.check())
-            was_ready = readiness.snapshot()[0]
+                audit_revision = current_revision
+            readiness.set_ready(health.check(), audit_revision=audit_revision)
         return 0
     except RecoveryCancelled:
         return 0

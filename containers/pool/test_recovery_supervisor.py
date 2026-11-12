@@ -118,7 +118,7 @@ class SupervisorTests(unittest.TestCase):
 
         def ready_server(ready):
             ready_instances.append(ready)
-            ready.refresh_policy_lease("a" * 32)
+            ready.refresh_policy_lease("b" * 32)
 
         def health(*args):
             ready = ready_instances[0]

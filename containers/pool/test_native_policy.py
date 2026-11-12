@@ -67,6 +67,8 @@ class NativePolicyReadinessTests(unittest.TestCase):
             self.assertEqual(monitor.check_once(), "unavailable")
             self.assertFalse(ready.snapshot()[0])
             self.assertEqual(monitor.check_once(), "healthy")
+            self.assertFalse(ready.snapshot()[0])
+            ready.set_ready(True, audit_revision=ready.service_audit_revision())
             self.assertTrue(ready.snapshot()[0])
 
     def test_fuse_signal_latches_one_plugin_instance_until_reload(self) -> None:
@@ -95,6 +97,8 @@ class NativePolicyReadinessTests(unittest.TestCase):
         self.assertFalse(ready.refresh_policy_lease(INSTANCE_A))
         self.assertFalse(ready.snapshot()[0])
         self.assertTrue(ready.refresh_policy_lease(INSTANCE_B))
+        self.assertFalse(ready.snapshot()[0])
+        ready.set_ready(True, audit_revision=ready.service_audit_revision())
         self.assertTrue(ready.snapshot()[0])
 
     def test_probe_heartbeat_parser_accepts_only_native_plugin_info_records(self) -> None:
