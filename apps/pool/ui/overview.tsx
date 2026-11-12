@@ -24,6 +24,7 @@ import {
   peopleOfText,
 } from "./overview-attention.ts";
 import { currentCapacity } from "./overview-snapshot.ts";
+import { brokenAnswer, failureItems, legacyBrokenAnswer } from "./overview-reliability.ts";
 
 // The manager's App tab: four answers first, each linking down to its evidence. Per-account health,
 // resets and actions stay on the host's Accounts tab; this page only aggregates.
@@ -279,13 +280,23 @@ function Answers({
           (Number(top.reduce((acc, row) => acc + row.totals.tokens, 0n)) / Number(all)) * 100,
         )
       : 0;
-  const failedShare = sum && sum.requests ? (sum.failed / sum.requests) * 100 : null;
   const needYou = view ? accountsNeedingSomeone(view) : 0;
   const billed =
     usage?.metrics.apiBilled.status === "available" && usage.metrics.apiBilled.amount !== null
       ? usage.metrics.apiBilled.amount
       : null;
   const unpriced = usage ? usage.metrics.apiBilled.excluded.unpriced : 0;
+  const p95 = usage?.metrics.failureShareWorstHourP95;
+  const broken = usage?.reliability
+    ? brokenAnswer({ needYou, reliability: usage.reliability, viewRead: view !== undefined })
+    : legacyBrokenAnswer({
+        needYou,
+        sum,
+        read: read !== null,
+        usage: usage !== null,
+        viewRead: view !== undefined,
+        worstHourP95: p95?.status === "available" ? p95.p95 : null,
+      });
   return (
     <nav
       aria-label="At a glance"
@@ -342,41 +353,11 @@ function Answers({
       <Answer
         href="#attention"
         question="Anything broken?"
-        tone={
-          needYou
-            ? "bad"
-            : failedShare === null
-              ? undefined
-              : sum!.failed > 0
-                ? "warn"
-                : view
-                  ? "ok"
-                  : undefined
-        }
-        answer={
-          needYou
-            ? `${needYou} ${needYou === 1 ? "account needs" : "accounts need"} you`
-            : failedShare === null
-              ? read
-                ? "No requests yet"
-                : "Reading…"
-              : sum!.failed > 0
-                ? `${failedShare.toFixed(1)}% of requests failed`
-                : "Nothing broken"
-        }
+        tone={broken.tone}
+        answer={broken.answer}
       >
         <span className="text-[13px] text-muted-foreground text-pretty tabular-nums">
-          {[
-            needYou && failedShare !== null
-              ? `${failedShare.toFixed(1)}% of requests failed`
-              : null,
-            usage?.metrics.failureShareWorstHourP95.status === "available" &&
-            usage.metrics.failureShareWorstHourP95.p95 !== null
-              ? `worst hours p95 ${usage.metrics.failureShareWorstHourP95.p95.toFixed(1)}%`
-              : null,
-          ]
-            .filter(Boolean)
-            .join(" · ")}
+          {broken.sub.join(" · ")}
         </span>
       </Answer>
     </nav>
@@ -462,14 +443,18 @@ function Attention({
         });
     }
   }
+  const reliability = data.usage?.ok ? data.usage.value.reliability : undefined;
   const sum = data.people?.ok ? total(data.people.value.groups) : null;
-  if (sum?.failed)
+  if (reliability) items.push(...failureItems(reliability, days));
+  else if (sum?.failed)
     items.push({
       tone: "warn",
       text: `${sum.failed.toLocaleString()} of ${sum.requests.toLocaleString()} requests failed in ${days} days`,
-      sub: sum.unassignedFailures
-        ? `${sum.unassignedFailures.toLocaleString()} failed before reaching any account.`
-        : "Which accounts they hit is on the Accounts tab.",
+      sub: `${
+        sum.unassignedFailures
+          ? `${sum.unassignedFailures.toLocaleString()} failed before reaching any account.`
+          : "Which accounts they hit is on the Accounts tab."
+      } Includes proof checks; this read doesn't separate them.`,
     });
   return (
     <section
