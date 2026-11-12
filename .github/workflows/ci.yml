@@ -2207,8 +2207,6 @@ jobs:
           BASE_SHA: ${{ needs.select.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node scripts/batch-preflight.ts
-      - name: Install the Obsidian vault page's renderer packages for its render tests
-        run: bun install --cwd e2e/obsidian/vault-page --frozen-lockfile
       - name: Run focused owned unit tests
         if: needs.select.outputs.full_suite != 'true'
         env:

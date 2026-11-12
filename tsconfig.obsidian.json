@@ -2,38 +2,24 @@
   "extends": "./tsconfig.pool.json",
   "compilerOptions": {
     "paths": {
-      "apps": [
-        "./.upstream/packages/apps/dist/types/apps/src/index.d.ts"
-      ],
-      "apps/*": [
-        "./.upstream/packages/apps/dist/types/apps/src/*.d.ts"
-      ],
-      "react": [
-        "./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react"
-      ],
-      "react/*": [
-        "./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react/*"
-      ],
-      "react-dom": [
-        "./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react-dom"
-      ],
+      "apps": ["./.upstream/packages/apps/dist/types/apps/src/index.d.ts"],
+      "apps/*": ["./.upstream/packages/apps/dist/types/apps/src/*.d.ts"],
+      "react": ["./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react"],
+      "react/*": ["./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react/*"],
+      "react-dom": ["./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react-dom"],
       "react-dom/*": [
         "./.upstream/playground/demo-apps/live-inbox/node_modules/@types/react-dom/*"
       ],
-      "react-markdown": [
-        "./.upstream/packages/ui/node_modules/react-markdown"
+      "react-markdown": ["./e2e/obsidian/vault-page/node_modules/react-markdown"],
+      "remark-gfm": ["./e2e/obsidian/vault-page/node_modules/remark-gfm"],
+      "@flowershow/remark-wiki-link": [
+        "./e2e/obsidian/vault-page/node_modules/@flowershow/remark-wiki-link/dist/index.d.ts"
       ],
-      "remark-gfm": [
-        "./.upstream/packages/ui/node_modules/remark-gfm"
+      "@r4ai/remark-callout": [
+        "./e2e/obsidian/vault-page/node_modules/@r4ai/remark-callout/dist/index.d.ts"
       ]
     }
   },
-  "include": [
-    "apps/obsidian/**/*.ts",
-    "apps/obsidian/**/*.tsx",
-    "scripts/types/obsidian-markdown-plugins.d.ts"
-  ],
-  "exclude": [
-    "apps/obsidian/**/*.test.ts"
-  ]
+  "include": ["apps/obsidian/**/*.ts", "apps/obsidian/**/*.tsx"],
+  "exclude": ["apps/obsidian/**/*.test.ts"]
 }

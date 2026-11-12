@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import Markdown, { type Components } from "react-markdown";
+import Markdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { remarkCallout } from "@r4ai/remark-callout";
 import remarkWikiLink from "@flowershow/remark-wiki-link";
@@ -22,22 +22,16 @@ export function NoteMarkdown({
   readonly onOpen: (path: string) => void;
   readonly loadFile: (path: string) => Promise<Blob | null>;
 }) {
-  const plugins = useMemo(
-    () => [
-      remarkGfm,
-      remarkCallout,
-      [
-        remarkWikiLink,
-        {
-          format: "shortestPossible",
-          files: [...files],
-          urlResolver: ({ filePath, isEmbed }: { filePath: string; isEmbed: boolean }) =>
-            isEmbed ? fileHref(filePath) : noteHref(filePath),
-        },
-      ] as const,
-    ],
-    [files],
-  );
+  const plugins = useMemo((): NonNullable<Options["remarkPlugins"]> => {
+    // unified types a plugin's options as unknown; checking them against the plugin's own
+    // parameter type keeps a wrong option a type error.
+    const wiki: NonNullable<Parameters<typeof remarkWikiLink>[0]> = {
+      format: "shortestPossible",
+      files: [...files],
+      urlResolver: ({ filePath, isEmbed }) => (isEmbed ? fileHref(filePath) : noteHref(filePath)),
+    };
+    return [remarkGfm, remarkCallout, [remarkWikiLink, wiki]];
+  }, [files]);
   const components = useMemo<Components>(
     () => ({
       a: ({ href, children, className }: Anchor) => {
@@ -87,7 +81,7 @@ export function NoteMarkdown({
   );
   return (
     <div className="prose">
-      <Markdown remarkPlugins={plugins as never} skipHtml components={components}>
+      <Markdown remarkPlugins={plugins} skipHtml components={components}>
         {content}
       </Markdown>
     </div>

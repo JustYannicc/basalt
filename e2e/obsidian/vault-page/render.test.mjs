@@ -116,10 +116,14 @@ before(async () => {
   ui = await import(pathToFileURL(bundle).href);
 });
 
-after(async () => {
-  await GlobalRegistrator.unregister();
-  if (scratch) rmSync(scratch, { recursive: true, force: true });
-});
+// Cleanup is awaited in full; a cleanup that stops settling fails the run instead of hanging it.
+after(
+  async () => {
+    await GlobalRegistrator.unregister();
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+  },
+  { timeout: 10_000 },
+);
 
 const files = [
   "Projects/Seed order.md",
@@ -127,7 +131,7 @@ const files = [
   "Attachments/lot-sketch.png",
 ];
 
-/** Mount a note, let effects and image reads settle, and return its container. */
+/** Mount a note with its effects run, and return its container. */
 async function mount(content, { loadFile = async () => null, onOpen = () => {} } = {}) {
   const container = document.createElement("div");
   document.body.append(container);
@@ -135,10 +139,25 @@ async function mount(content, { loadFile = async () => null, onOpen = () => {} }
   await ui.act(async () => {
     root.render(ui.createElement(ui.NoteMarkdown, { content, files, onOpen, loadFile }));
   });
-  // Image reads resolve on later turns; flush until nothing is still loading.
-  for (let turn = 0; turn < 20 && container.querySelector(".embed-loading"); turn++)
-    await ui.act(() => new Promise((resolve) => setTimeout(resolve, 0)));
   return { container, unmount: () => ui.act(() => root.unmount()) };
+}
+
+/** A vault whose reads wait until the test answers them, in the order they were asked. */
+function heldVault() {
+  const reads = [];
+  return {
+    reads,
+    loadFile: (path) =>
+      new Promise((resolve) => {
+        reads.push({ path, resolve });
+      }),
+    /** Answer every pending read inside act, so the page's state updates are applied. */
+    answer: (blob) =>
+      ui.act(async () => {
+        for (const read of reads) read.resolve(blob);
+        await Promise.resolve();
+      }),
+  };
 }
 
 const png = () => new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" });
@@ -183,16 +202,20 @@ test("wikilinks resolve by Obsidian's shortest path, keep aliases, and leave mis
 });
 
 test("image embeds load from the vault at their Obsidian size; other embeds stay names", async () => {
-  const reads = [];
+  const vault = heldVault();
   const { container, unmount } = await mount(
     "![[lot-sketch.png|360]]\n\n![[lot-sketch.png|360x200]]\n\n![[clip.mp4]]",
-    {
-      loadFile: async (path) => {
-        reads.push(path);
-        return png();
-      },
-    },
+    { loadFile: vault.loadFile },
   );
+  // While the vault hasn't answered, each image holds a loading placeholder.
+  assert.equal(container.querySelectorAll(".embed-loading").length, 2);
+  assert.equal(container.querySelector("img"), null);
+  assert.deepEqual(
+    vault.reads.map((read) => read.path),
+    ["Attachments/lot-sketch.png", "Attachments/lot-sketch.png"],
+  );
+  await vault.answer(png());
+  assert.equal(container.querySelector(".embed-loading"), null);
   const images = [...container.querySelectorAll("img")];
   assert.deepEqual(
     images.map((image) => [
@@ -207,14 +230,19 @@ test("image embeds load from the vault at their Obsidian size; other embeds stay
       ["360", "200", "lot-sketch", "embed-image", true],
     ],
   );
-  assert.deepEqual(reads, ["Attachments/lot-sketch.png", "Attachments/lot-sketch.png"]);
   assert.equal(container.querySelector("video"), null);
   assert.equal(container.querySelector(".embed-chip")?.textContent, "clip.mp4");
   await unmount();
 });
 
 test("an embed the vault can't read shows its name instead of a broken image", async () => {
-  const { container, unmount } = await mount("![[lot-sketch.png|360]]");
+  const vault = heldVault();
+  const { container, unmount } = await mount("![[lot-sketch.png|360]]", {
+    loadFile: vault.loadFile,
+  });
+  assert.equal(container.querySelectorAll(".embed-loading").length, 1);
+  await vault.answer(null);
+  assert.equal(container.querySelector(".embed-loading"), null);
   assert.equal(container.querySelector("img"), null);
   assert.equal(container.querySelector(".embed-chip")?.textContent, "lot-sketch.png");
   await unmount();
