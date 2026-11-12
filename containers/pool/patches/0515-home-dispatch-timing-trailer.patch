@@ -1,0 +1,361 @@
+diff --git a/internal/dispatchtiming/trailer.go b/internal/dispatchtiming/trailer.go
+new file mode 100644
+--- /dev/null
++++ b/internal/dispatchtiming/trailer.go
+@@ -0,0 +1,88 @@
++package dispatchtiming
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"net"
++	"sync"
++	"time"
++)
++
++type Metric struct {
++	Stage      Stage  `json:"stage"`
++	DurationMS int64  `json:"duration_ms"`
++	Outcome    string `json:"outcome"`
++}
++type collectorKey struct{}
++type Collector struct {
++	mu      sync.Mutex
++	metrics map[Stage]Metric
++}
++
++func WithCollector(ctx context.Context) (context.Context, *Collector) {
++	c := &Collector{metrics: make(map[Stage]Metric)}
++	return context.WithValue(ctx, collectorKey{}, c), c
++}
++func FromContext(ctx context.Context) *Collector {
++	if ctx == nil {
++		return nil
++	}
++	c, _ := ctx.Value(collectorKey{}).(*Collector)
++	return c
++}
++func (c *Collector) Record(stage Stage, duration time.Duration, err error) {
++	if c == nil {
++		return
++	}
++	switch stage {
++	case Authenticate, Selection, Admission, ReplyWrite:
++	default:
++		return
++	}
++	ms := duration.Milliseconds()
++	if ms < 0 {
++		ms = 0
++	}
++	if ms > 86400000 {
++		ms = 86400000
++	}
++	outcome := "ok"
++	if err != nil {
++		outcome = "error"
++		var timeout net.Error
++		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() {
++			outcome = "timeout"
++		} else if errors.Is(err, context.Canceled) {
++			outcome = "cancelled"
++		}
++	}
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	previous := c.metrics[stage]
++	ms += previous.DurationMS
++	if ms > 86400000 {
++		ms = 86400000
++	}
++	if previous.Outcome != "" && previous.Outcome != "ok" {
++		outcome = previous.Outcome
++	}
++	c.metrics[stage] = Metric{stage, ms, outcome}
++}
++func (c *Collector) JSON() []byte {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	metrics := make([]Metric, 0, 4)
++	for _, stage := range []Stage{Authenticate, Selection, Admission, ReplyWrite} {
++		if metric, ok := c.metrics[stage]; ok {
++			metrics = append(metrics, metric)
++		}
++	}
++	payload, _ := json.Marshal(metrics)
++	return payload
++}
++func Observe(ctx context.Context, stage Stage, started time.Time, err error) {
++	duration := time.Since(started)
++	FromContext(ctx).Record(stage, duration, err)
++	RecordDuration(stage, duration, err)
++}
+diff --git a/internal/home/runtime.go b/internal/home/runtime.go
+--- a/internal/home/runtime.go
++++ b/internal/home/runtime.go
+@@ -970,7 +970,7 @@
+ 		}
+ 		selectionStarted := time.Now()
+ 		decision, errDispatch := r.coreManager.Dispatch(ctx, providers, reqModel, opts)
+-		dispatchtiming.Record(dispatchtiming.Selection, selectionStarted, errDispatch)
++		dispatchtiming.Observe(ctx, dispatchtiming.Selection, selectionStarted, errDispatch)
+ 		if errDispatch != nil {
+ 			if lastCandidateError != nil {
+ 				return nil, lastCandidateError
+@@ -1039,7 +1039,7 @@
+ 				ConnectedAt: concurrencyCtx.ConnectedAt, Controlled: concurrencyCtx.Controlled, ProtocolVersion: concurrencyCtx.ProtocolVersion,
+ 				SessionAffinity: binding,
+ 			})
+-			dispatchtiming.Record(dispatchtiming.Admission, admissionStarted, errAdmit)
++			dispatchtiming.Observe(ctx, dispatchtiming.Admission, admissionStarted, errAdmit)
+ 			if errAdmit != nil {
+ 				if errors.Is(errAdmit, coreauth.ErrSessionAffinityConflict) {
+ 					continue
+diff --git a/internal/respserver/basalt_timing_trailer_test.go b/internal/respserver/basalt_timing_trailer_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/respserver/basalt_timing_trailer_test.go
+@@ -0,0 +1,87 @@
++package respserver
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/dispatchtiming"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/respserver/dispatch"
++)
++
++func TestBasaltHomeDispatchTimingTrailerOptIn(t *testing.T) {
++	for _, optIn := range []bool{false, true} {
++		request := `{"type":"auth","dispatch_timing":false}`
++		if optIn {
++			request = `{"type":"auth","dispatch_timing":true}`
++		}
++		conn := &dispatchTimingConn{subscriptionTestConn: newSubscriptionTestConn("RPOP", request)}
++		server := New("", newSubscriptionTestRuntime(t, &blockingConfigAdapter{loadStarted: make(chan struct{})}))
++		server.registry = dispatch.NewRegistry()
++		server.SetClusterHandler(&blockingClusterHandler{lifetime: cluster.ConnectionLifetime{Fingerprint: peerCertificateFingerprint(conn), ConnectedAt: time.Now(), Controlled: true}})
++		calls := 0
++		if err := server.registry.RegisterDynamic("RPOP", "auth", func(ctx context.Context, _ dispatch.Env, _ []string) dispatch.Reply {
++			calls++
++			for _, stage := range []dispatchtiming.Stage{dispatchtiming.Authenticate, dispatchtiming.Selection, dispatchtiming.Admission} {
++				dispatchtiming.Observe(ctx, stage, time.Now(), nil)
++			}
++			return dispatch.BulkString([]byte("synthetic-primary"))
++		}); err != nil {
++			t.Fatal(err)
++		}
++		server.HandleConn(context.Background(), conn)
++		wire := conn.Output()
++		if calls != 1 {
++			t.Fatal("dispatch replayed")
++		}
++		if !optIn {
++			if wire != "$17\r\nsynthetic-primary\r\n" {
++				t.Fatalf("legacy reply changed: %q", wire)
++			}
++			continue
++		}
++		if !strings.HasPrefix(wire, "*2\r\n$17\r\nsynthetic-primary\r\n$") {
++			t.Fatalf("primary not preserved: %q", wire)
++		}
++		trailer := wire[strings.Index(wire, "[{\""):]
++		trailer = strings.TrimSuffix(trailer, "\r\n")
++		var metrics []dispatchtiming.Metric
++		if json.Unmarshal([]byte(trailer), &metrics) != nil || len(metrics) != 4 {
++			t.Fatalf("invalid trailer: %q", trailer)
++		}
++		for index, stage := range []dispatchtiming.Stage{dispatchtiming.Authenticate, dispatchtiming.Selection, dispatchtiming.Admission, dispatchtiming.ReplyWrite} {
++			if metrics[index].Stage != stage || metrics[index].Outcome != "ok" {
++				t.Fatalf("missing measured stage %s", stage)
++			}
++		}
++	}
++}
++
++type timingTrailerFailureWriter struct {
++	calls int
++	data  bytes.Buffer
++}
++
++func (w *timingTrailerFailureWriter) Write(p []byte) (int, error) {
++	w.calls++
++	// Prefix and primary succeed; the diagnostic trailer fails.
++	if w.calls == 3 {
++		return 0, errors.New("synthetic trailer failure")
++	}
++	return w.data.Write(p)
++}
++func TestBasaltHomeDispatchTimingTrailerFailureFences(t *testing.T) {
++	_, collector := dispatchtiming.WithCollector(context.Background())
++	fenced, closed := false, false
++	conn := &dispatch.ConnEnv{FenceFingerprint: func(context.Context, string) error { fenced = true; return nil }, CloseLocalFingerprint: func() { closed = true }}
++	writer := &timingTrailerFailureWriter{}
++	err := writeDispatchReplyWithFence(context.Background(), newSafeWriter(writer), dispatch.Reply{Kind: dispatch.ReplyKindBulkString, BulkString: []byte("synthetic-primary"), AccountedAdmission: true}, conn, true, collector)
++	if err == nil || !fenced || !closed {
++		t.Fatal("incomplete accounted response was not fenced")
++	}
++}
+diff --git a/internal/respserver/pop/dynamic/basalt_timing_trailer_test.go b/internal/respserver/pop/dynamic/basalt_timing_trailer_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/respserver/pop/dynamic/basalt_timing_trailer_test.go
+@@ -0,0 +1,31 @@
++package dynamic
++
++import (
++	"context"
++	"encoding/json"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/dispatchtiming"
++)
++
++func TestBasaltHomeDispatchTimingTrailerRealDispatchStages(t *testing.T) {
++	for _, failure := range []bool{false, true} {
++		runtime, admitter := newConcurrencyDispatchRuntime(t, []string{"synthetic-credential"})
++		if failure {
++			admitter.SetResult("synthetic-credential", context.DeadlineExceeded)
++		}
++		ctx, collector := dispatchtiming.WithCollector(context.Background())
++		_ = handleAuth(ctx, protocolOneDispatchEnv(runtime, "synthetic-fingerprint"), []string{"RPOP", `{"type":"auth","model":"gpt","concurrency_protocol":1,"headers":{"x-api-key":"dispatch-client-key"}}`})
++		var metrics []dispatchtiming.Metric
++		if json.Unmarshal(collector.JSON(), &metrics) != nil || len(metrics) != 3 {
++			t.Fatalf("missing runtime stages: %s", collector.JSON())
++		}
++		want := "ok"
++		if failure {
++			want = "timeout"
++		}
++		if metrics[0].Stage != dispatchtiming.Authenticate || metrics[1].Stage != dispatchtiming.Selection || metrics[2].Stage != dispatchtiming.Admission || metrics[2].Outcome != want {
++			t.Fatalf("incorrect runtime timing: %s", collector.JSON())
++		}
++	}
++}
+diff --git a/internal/respserver/pop/dynamic/dispatch.go b/internal/respserver/pop/dynamic/dispatch.go
+--- a/internal/respserver/pop/dynamic/dispatch.go
++++ b/internal/respserver/pop/dynamic/dispatch.go
+@@ -267,7 +267,7 @@
+ 	if authErr != nil {
+ 		authTimingError = authErr
+ 	}
+-	dispatchtiming.Record(dispatchtiming.Authenticate, authStarted, authTimingError)
++	dispatchtiming.Observe(ctx, dispatchtiming.Authenticate, authStarted, authTimingError)
+ 	if authErr != nil {
+ 		reply := dispatch.BulkString([]byte(buildAuthErrorJSON(authErr)))
+ 		return nil, "", &reply
+diff --git a/internal/respserver/safe_writer.go b/internal/respserver/safe_writer.go
+--- a/internal/respserver/safe_writer.go
++++ b/internal/respserver/safe_writer.go
+@@ -85,6 +85,19 @@
+ 	return w.Write([]byte(value))
+ }
+ 
++// The opt-in array keeps the primary reply intact and appends timing after its real write.
++func (w *safeWriter) WriteTimingPrefix() error {
++	w.mu.Lock()
++	defer w.mu.Unlock()
++	if w.w == nil {
++		return net.ErrClosed
++	}
++	if _, err := w.w.WriteString("*2\r\n"); err != nil {
++		return err
++	}
++	return w.w.Flush()
++}
++
+ // WriteRedisSimpleString writes a redis simple string.
+ func (w *safeWriter) WriteRedisSimpleString(value string) error {
+ 	w.mu.Lock()
+diff --git a/internal/respserver/server.go b/internal/respserver/server.go
+--- a/internal/respserver/server.go
++++ b/internal/respserver/server.go
+@@ -6,6 +6,7 @@
+ 	"crypto/sha256"
+ 	"crypto/tls"
+ 	"encoding/hex"
++	"encoding/json"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+@@ -246,15 +247,34 @@
+ 	return writer.WriteDispatchReply(reply)
+ }
+ 
+-func writeDispatchReplyWithFence(serverCtx context.Context, writer *safeWriter, reply dispatch.Reply, connEnv *dispatch.ConnEnv, timedDispatch bool) error {
++func writeDispatchReplyWithFence(serverCtx context.Context, writer *safeWriter, reply dispatch.Reply, connEnv *dispatch.ConnEnv, timedDispatch bool, timing ...*dispatchtiming.Collector) error {
+ 	started := time.Now()
+-	errWrite := buildOrWriteDispatchReply(writer, reply)
++	var collector *dispatchtiming.Collector
++	if len(timing) > 0 {
++		collector = timing[0]
++	}
++	var errWrite error
++	if collector != nil && reply.PreWriteError == nil {
++		errWrite = writer.WriteTimingPrefix()
++	}
++	if errWrite == nil {
++		errWrite = buildOrWriteDispatchReply(writer, reply)
++	}
+ 	elapsed := time.Since(started)
+ 	if errWrite != nil && reply.AccountedAdmission {
+ 		fenceAccountedDispatch(serverCtx, connEnv)
+ 	}
++	if collector != nil {
++		collector.Record(dispatchtiming.ReplyWrite, elapsed, errWrite)
++	}
+ 	if timedDispatch {
+ 		dispatchtiming.RecordDuration(dispatchtiming.ReplyWrite, elapsed, errWrite)
++	}
++	if errWrite == nil && collector != nil {
++		errWrite = writer.WriteRedisBulkString(collector.JSON())
++		if errWrite != nil && reply.AccountedAdmission {
++			fenceAccountedDispatch(serverCtx, connEnv)
++		}
+ 	}
+ 	return errWrite
+ }
+@@ -515,6 +535,17 @@
+ 			return
+ 		}
+ 
++		commandCtx := connectionCtx
++		var timing *dispatchtiming.Collector
++		if len(args) > 1 && strings.EqualFold(args[0], "RPOP") {
++			var opt struct {
++				Enabled bool `json:"dispatch_timing"`
++			}
++			jsonArg, _ := dispatch.ExtractJSONArgument(args, 1)
++			if json.Unmarshal([]byte(jsonArg), &opt) == nil && opt.Enabled {
++				commandCtx, timing = dispatchtiming.WithCollector(commandCtx)
++			}
++		}
+ 		finishHandler, errBeginHandler := tracked.BeginHandler()
+ 		if errBeginHandler != nil {
+ 			log.Warnf("failed to begin RESP handler: %v", errBeginHandler)
+@@ -624,7 +655,7 @@
+ 			}
+ 			reply = dispatch.Err("registry not ready")
+ 			if s.registry != nil {
+-				reply = s.registry.Execute(connectionCtx, dispatch.Env{
++				reply = s.registry.Execute(commandCtx, dispatch.Env{
+ 					Runtime:                      s.runtime,
+ 					ClientIP:                     clientIP,
+ 					NodeID:                       clientNodeID,
+@@ -663,7 +694,7 @@
+ 				return
+ 			}
+ 		}
+-		errWrite := writeDispatchReplyWithFence(ctx, writer, reply, connEnv, len(args) > 0 && strings.EqualFold(strings.TrimSpace(args[0]), "RPOP"))
++		errWrite := writeDispatchReplyWithFence(ctx, writer, reply, connEnv, len(args) > 0 && strings.EqualFold(strings.TrimSpace(args[0]), "RPOP"), timing)
+ 		if errWrite != nil {
+ 			if pendingConfigSubscriptionReady != nil {
+ 				close(pendingConfigSubscriptionAborted)

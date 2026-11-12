@@ -158,6 +158,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home recognizes the GrokPro paid subscription tier, preserves explicitly reported numeric weekly and product percentages, retains a closed malformed, missing, ambiguous, non-string or unknown-tier profile eligibility reason with fixed field-type flags only, and passes the real-collector, unknown-profile and free-profile regressions without changing Home database models or versions."
           }
+        },
+        {
+          "identity": "cliproxy-home-dispatch-timing-trailer",
+          "file": "0515-home-dispatch-timing-trailer.patch",
+          "sha256": "9c7759484c95ac6f7ee5ad55c005a6f8df75aba1a317040c9b75b97dde1d1eb7",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only when the pinned sources preserve the opt-in primary dispatch reply, bounded closed timing transport, failure fencing, legacy compatibility and synthetic-provider response proof through Worker logs without exposing diagnostic headers to clients."
+          }
         }
       ]
     },
@@ -200,6 +209,15 @@
           "retirement": {
             "mode": "manual",
             "requires": "Retire only when the pinned source emits the same closed stage timings and passes success, failure, privacy, duration-bound and real-child projection regressions without changing dispatch behavior."
+          }
+        },
+        {
+          "identity": "cliproxy-node-dispatch-timing-header",
+          "file": "0516-node-dispatch-timing-header.patch",
+          "sha256": "f2018d965ad2126c4b092eb24ba6b201ed373c5c1913eabe54cc9c3f65c5d040",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only when the pinned sources preserve the opt-in primary dispatch reply, bounded closed timing transport, failure fencing, legacy compatibility and synthetic-provider response proof through Worker logs without exposing diagnostic headers to clients."
           }
         }
       ]

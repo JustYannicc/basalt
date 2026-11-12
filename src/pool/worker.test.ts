@@ -45,6 +45,84 @@ const {
 } = await import(workerModule);
 hooks.deregister();
 
+test("the Worker logs dispatch timings and strips their header without changing the provider stream", async () => {
+  const header = "X-Signalbox-Pool-Dispatch-Timing";
+  const metrics = ["authenticate", "selection", "admission", "reply_write", "ping", "rpop"].map(
+    (stage, duration_ms) => ({ stage, duration_ms, outcome: "ok" }),
+  );
+  const logs: unknown[][] = [],
+    background: Promise<unknown>[] = [];
+  const original = console.info;
+  console.info = (...args: unknown[]) => {
+    logs.push(args);
+  };
+  let providerCalls = 0;
+  const values = new Map<string, unknown>();
+  const container = {
+    running: false,
+    start() {
+      this.running = true;
+    },
+    destroy: async () => {},
+    setInactivityTimeout: async () => {},
+    getTcpPort(port: number) {
+      return {
+        fetch: async () => {
+          if (port === 8318)
+            return Response.json({ boot_id: "synthetic-boot", started_at: "2026-11-01T00:00:00Z" });
+          providerCalls++;
+          return new Response("data: synthetic-provider-terminal\n\n", {
+            headers: { [header]: JSON.stringify(metrics), "Content-Type": "text/event-stream" },
+          });
+        },
+      };
+    },
+  };
+  try {
+    const worker = new PoolContainer(
+      {
+        container,
+        waitUntil: (work: Promise<unknown>) => {
+          background.push(work);
+        },
+        storage: {
+          get: async (name: string) => structuredClone(values.get(name)),
+          put: async (name: string, value: unknown) => {
+            values.set(name, structuredClone(value));
+          },
+          getAlarm: async () => null,
+          setAlarm: async () => {},
+        },
+      },
+      {
+        POOL_DATABASE_URL: "postgres://fixture",
+        POOL_MANAGEMENT_KEY: "fixture",
+        POOL_APP_SIGNING_KEY: "ab".repeat(32),
+        POOL_IMAGE_HASH: "fixture",
+        POOL_MODEL_HISTORY_ENABLED: "false",
+      },
+    );
+    const response = await worker.fetch(
+      new Request("https://pool.example/v1/messages", {
+        method: "POST",
+        body: "synthetic-request",
+      }),
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get(header), null);
+    assert.equal(response.headers.get("Content-Type"), "text/event-stream");
+    assert.equal(await response.text(), "data: synthetic-provider-terminal\n\n");
+    assert.equal(providerCalls, 1);
+    assert.deepEqual(
+      logs.filter(([marker]) => marker === "POOL_DISPATCH_TIMING"),
+      metrics.map((metric) => ["POOL_DISPATCH_TIMING", metric]),
+    );
+    await Promise.all(background);
+  } finally {
+    console.info = original;
+  }
+});
+
 const retainedMembershipHost = {
   fetch: async (input: string) => {
     if (new URL(input).pathname === "/api/internal/pool-organization")
