@@ -4,6 +4,50 @@ import { quotaObservation } from "../quota-observation.ts";
 import { capacityReadings } from "./normalize.ts";
 
 const now = Date.parse("2026-11-04T00:00:00Z");
+
+test("Home's xAI account week trains capacity once alongside its product breakdown", () => {
+  const weekly = {
+    id: "xai-weekly-usage",
+    label: "Weekly Limit",
+    scope: "account",
+    period_unit: "week",
+    period_value: 1,
+    mode: "fixed",
+    status: "healthy",
+    unit: "percentage",
+    used: 2,
+    remaining: 98,
+    limit: 100,
+    remaining_ratio: 0.98,
+    observed_at: new Date(now - 60000).toISOString(),
+    reset_at: new Date(now + 4 * 86400000).toISOString(),
+  };
+  const quota = quotaObservation({
+    collection: { status: "success", freshness: "fresh", observed_at: weekly.observed_at },
+    credential: { plan: { name: "Grok Pro" } },
+    windows: [
+      weekly,
+      { ...weekly, id: "xai-product-grokchat", scope: "model", scope_id: "grokchat" },
+    ],
+  });
+  const readings = capacityReadings("grok-seat", "xai", quota, now);
+  assert.equal(readings.length, 1);
+  assert.equal(readings[0]?.windowSeconds, 604800);
+  assert.equal(readings[0]?.remaining, 0.98);
+  assert.equal(readings[0]?.full, 1);
+  assert.equal(readings[0]?.mode, "fixed");
+  assert.equal(readings[0]?.resetAt, Date.parse(weekly.reset_at));
+  assert.equal(readings[0]?.knownWeight, false);
+  assert.deepEqual(
+    capacityReadings(
+      "grok-seat",
+      "xai",
+      { ...quota, windows: quota.windows.filter((window) => window.scope === "model") },
+      now,
+    ),
+    [],
+  );
+});
 function observation(overrides: Record<string, unknown> = {}, plan = "Max 5x") {
   return quotaObservation({
     observed_at: new Date(now - 60_000).toISOString(),

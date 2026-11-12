@@ -3,6 +3,7 @@ import { CapacityHistory } from "./capacity/history.ts";
 import { capacityOverview } from "./capacity/overview.ts";
 import { PoolUsage } from "./pool-usage.ts";
 import type { UsageStorage } from "./usage-storage.ts";
+import type { Json } from "./json.ts";
 
 class Memory implements UsageStorage {
   private values = new Map<string, unknown>();
@@ -18,7 +19,16 @@ class Memory implements UsageStorage {
 }
 
 /** Home's two-slot list omits the short allowance when account and model weekly windows occupy it. */
-export function quotaSamplingFixture(at: number, Usage = PoolUsage) {
+export function quotaSamplingFixture(
+  at: number,
+  Usage = PoolUsage,
+  options: {
+    provider?: string;
+    plan?: string;
+    windows?: Json[];
+  } = {},
+) {
+  const provider = options.provider ?? "codex";
   const iso = new Date(at).toISOString();
   const window = (id: string, seconds: number, remaining: number, scope = "account") => ({
     id,
@@ -39,18 +49,18 @@ export function quotaSamplingFixture(at: number, Usage = PoolUsage) {
   const spark = window("codex-spark", 604_800, 20, "model");
   const credential = {
     credential_id: "synthetic-codex",
-    plan: { name: "Plus" },
+    plan: { name: options.plan ?? "Plus" },
     freshness: "fresh",
     collection_status: "success",
     observed_at: iso,
-    primary_windows: [weekly, spark],
+    primary_windows: options.windows ?? [weekly, spark],
   };
   const detail = {
     credential,
     collection: { status: "success", freshness: "fresh", observed_at: iso },
-    windows: [short, weekly, spark],
+    windows: options.windows ?? [short, weekly, spark],
   };
-  const files = [{ id: credential.credential_id, provider: "codex", label: "Synthetic Codex" }];
+  const files = [{ id: credential.credential_id, provider, label: "Synthetic subscription" }];
   const calls: string[] = [];
   const client = new HomeClient(
     async (path) => {
@@ -87,7 +97,7 @@ export function quotaSamplingFixture(at: number, Usage = PoolUsage) {
   const history = new CapacityHistory(storage);
   const view = {
     isOwner: true,
-    providers: [{ id: "codex", name: "Codex" }],
+    providers: [{ id: provider, name: provider }],
     subscriptionAccountIds: [credential.credential_id],
     accounts: accountsView(files, [detail], new Set([credential.credential_id])),
   };

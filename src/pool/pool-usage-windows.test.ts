@@ -44,3 +44,57 @@ test("a failed detail collection leaves a capacity gap despite fresh credential 
   await f.usage.observe();
   assert.deepEqual(await f.history.read("fixture"), []);
 });
+
+test("the capacity RPC includes a measured Grok week and excludes its product breakdown", async () => {
+  const at = Date.parse("2026-11-12T08:01:00Z");
+  const weekly = {
+    id: "xai-weekly-usage",
+    label: "Weekly Limit",
+    scope: "account",
+    period_unit: "week",
+    period_value: 1,
+    mode: "fixed",
+    status: "healthy",
+    unit: "percentage",
+    used: 2,
+    remaining: 98,
+    limit: 100,
+    remaining_ratio: 0.98,
+    observed_at: new Date(at).toISOString(),
+    expires_at: new Date(at + 1800000).toISOString(),
+    reset_at: new Date(at + 4 * 86400000).toISOString(),
+  };
+  const f = quotaSamplingFixture(at, undefined, {
+    provider: "xai",
+    plan: "Grok Pro",
+    windows: [
+      weekly,
+      { ...weekly, id: "xai-product-grokchat", scope: "model", scope_id: "grokchat" },
+    ],
+  });
+  await f.usage.observe();
+  const token = await signPoolToken("ab".repeat(32), {
+    pool: "fixture",
+    owner: "owner",
+    organization: "synthetic",
+  });
+  const response = await f.usage.handle(
+    new Request("https://pool.example.test/pool/v1/usage/capacity?days=7", {
+      headers: { authorization: `Bearer ${token}`, [callerHeader]: "owner" },
+    }),
+  );
+  assert.equal(response.status, 200);
+  const value = await f.capacity(Math.floor((at - 7 * 86400000) / 3600000) * 3600000, at);
+  assert.deepEqual(await response.json(), value);
+  assert.equal(value.points.length, 1);
+  const point = value.points[0]!;
+  assert.equal(point.provider, "xai");
+  assert.equal(point.windowSeconds, 604800);
+  assert.equal(point.last.accountCount, 1);
+  assert.equal(point.last.remaining, 0.98);
+  assert.ok(value.forecasts.some((forecast) => forecast.provider === "xai"));
+  assert.equal(
+    f.calls.some((route) => route.endsWith("/collect")),
+    false,
+  );
+});

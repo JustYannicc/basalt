@@ -1,5 +1,6 @@
 import { usageCredits } from "./usage-credits.ts";
 import { object, text, type Json } from "./json.ts";
+import { quotaWindowSeconds } from "./quota-period.ts";
 
 const number = (value: unknown): number | null =>
   typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -119,7 +120,7 @@ export function quotaObservation(detail: Json): QuotaObservation {
         staleAt: text(window.expires_at),
         source: text(window.source),
         period: {
-          seconds: number(window.window_seconds),
+          seconds: quotaWindowSeconds(window),
           unit: text(window.period_unit),
           value: number(window.period_value),
           mode: text(period?.mode ?? window.mode),
