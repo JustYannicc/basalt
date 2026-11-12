@@ -31,7 +31,7 @@ export function priceQuery(personScoped = false, retained = false) {
 /** One request-level calculation is shared by overview, settings and retained history. */
 export function pricedRowsSql(selected = "selected", table = "$7", guard = "true", prefix = "") {
   return `priced AS (
-      SELECT s.*,p.price_version AS ${prefix}price_version,p.price_as_of AS ${prefix}price_as_of,
+      SELECT s.*,p.price_version AS ${prefix}price_version,p.price_as_of AS ${prefix}price_as_of,p.price_basis AS ${prefix}price_basis,p.price_refresh_failed AS ${prefix}price_refresh_failed,
         CASE WHEN p.price_version IS NULL OR s.token_quality NOT IN ('complete','legacy')
           OR s.input_tokens IS NULL OR s.output_tokens IS NULL OR s.cache_read_tokens IS NULL OR s.cache_write_tokens IS NULL
           OR (s.token_quality='complete' AND s.input_tokens::numeric < s.cache_read_tokens::numeric+s.cache_write_tokens::numeric)
@@ -51,10 +51,10 @@ export function pricedRowsSql(selected = "selected", table = "$7", guard = "true
           + s.cache_read_tokens::numeric*p.cache_read_rate + s.cache_write_tokens::numeric*p.cache_write_rate)/1000000 + p.request_rate
         ELSE NULL END AS api_cost
       FROM ${selected} s LEFT JOIN LATERAL (
-        SELECT version AS price_version,as_of AS price_as_of,input::numeric AS input_rate,output::numeric AS output_rate,
+        SELECT version AS price_version,as_of AS price_as_of,basis AS price_basis,refresh_failed AS price_refresh_failed,input::numeric AS input_rate,output::numeric AS output_rate,
           cache_read::numeric AS cache_read_rate,cache_write::numeric AS cache_write_rate,request::numeric AS request_rate
         FROM jsonb_to_recordset(${table}::jsonb) AS x(provider text,model text,currency text,input text,output text,
-          cache_read text,cache_write text,request text,tier text,min_input text,as_of text,source text,version text)
+          cache_read text,cache_write text,request text,tier text,min_input text,as_of text,source text,version text,basis text,refresh_failed boolean)
         WHERE x.provider=s.provider AND x.model=s.model AND x.currency='USD' AND x.source='models.dev'
           AND (x.tier='*' OR x.tier=coalesce(s.service_tier,'*')) AND x.min_input::numeric<=coalesce(s.context_input,0)
         ORDER BY (x.tier<>'*') DESC,x.min_input::numeric DESC LIMIT 1

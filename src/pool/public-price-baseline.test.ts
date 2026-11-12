@@ -53,3 +53,12 @@ test("snapshot generation rejects a whole model if any expensive context band is
     ["0", "2", "10", "0.2", "2.5", "0"],
   ]);
 });
+
+test("provider aliases reach unique whole-catalog prices and refuse ambiguous names", () => {
+  const mistral = baselinePrices(target("mistral-medium-2508", "openai"));
+  assert.equal(mistral.prices[0]!.input, "0.4");
+  assert.equal(mistral.prices[0]!.model, "mistral-medium-2508");
+  const ambiguous = baselinePrices(target("deepseek-chat", "custom-proxy"));
+  assert.equal(ambiguous.prices.length, 0);
+  assert.match(ambiguous.reason, /ambiguous/);
+});

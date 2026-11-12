@@ -24,6 +24,8 @@ export const officialPriceRows = (prices: readonly OverviewApiPrice[]) =>
     as_of: price.asOf,
     source: price.source,
     version: price.version,
+    basis: price.basis ?? "live",
+    refresh_failed: price.refreshFailed ?? false,
   }));
 
 /** Pool ownership and optional person scope are established by the caller before this read. */

@@ -76,6 +76,13 @@ function fixture() {
     stale() {
       stale = true;
     },
+    savedEmptyFailure() {
+      values.set(`pool-public-price-v1:${JSON.stringify([target.provider, target.model])}`, {
+        nextAttemptAt: start + 30 * 60_000,
+        prices: [],
+        reason: `Public price refresh failed; no saved price for ${target.model}.`,
+      });
+    },
     addModel() {
       extra = true;
       version = "new-model";
@@ -249,4 +256,47 @@ test("a Home response after the old four-second deadline can complete inside the
   const result = await new OverviewPrices(home, storage).readTable([target]);
   assert.equal(result.prices[0]!.version, "slow-source");
   assert.equal(result.prices[0]!.basis, "live");
+});
+
+test("an existing empty failed cache gains the shipped floor during its retained retry delay", async () => {
+  const f = fixture();
+  f.savedEmptyFailure();
+  const result = await f.prices.readTable([target]);
+  assert.equal(result.prices[0]!.basis, "baseline");
+  assert.equal(result.prices[0]!.refreshFailed, true);
+  assert.equal(result.prices[0]!.input, "2");
+  assert.deepEqual(result.issues, []);
+  assert.equal(f.requests.length, 0, "an upgrade preserves the existing outage backoff");
+});
+
+test("refresh diagnostics keep HTTP, decode and timeout causes without retaining backend text", async (t) => {
+  const seen: unknown[][] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    seen.push(args);
+  });
+  const privateText = "SYNTHETIC_BACKEND_PRIVATE_DETAILS";
+  const cases = [
+    { expected: "http", response: () => new Response(privateText, { status: 429 }) },
+    { expected: "decode", response: () => new Response(privateText) },
+    {
+      expected: "timeout",
+      response: (): Response => {
+        throw new DOMException(privateText, "TimeoutError");
+      },
+    },
+  ];
+  for (const scenario of cases) {
+    const storage = {
+      async get<T>(_key: string): Promise<T | undefined> {
+        return undefined;
+      },
+      async put() {},
+    };
+    const prices = new OverviewPrices(new HomeClient(async () => scenario.response()), storage);
+    assert.equal((await prices.read([target]))[0]!.basis, "baseline");
+    const diagnostic = seen.at(-1)![1] as { errorClass: string; backendStatus?: number };
+    assert.equal(diagnostic.errorClass, scenario.expected);
+    if (scenario.expected === "http") assert.equal(diagnostic.backendStatus, 429);
+    assert.equal(JSON.stringify(seen).includes(privateText), false);
+  }
 });

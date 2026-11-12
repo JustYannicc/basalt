@@ -154,7 +154,7 @@ export class OverviewPrices {
             prices: entry.retained.prices.map((price) => ({ ...price, refreshFailed: true })),
             reason: entry.retained.prices.length
               ? undefined
-              : baselinePrices(entry.target).reason.includes("unsupported")
+              : !baselinePrices(entry.target).reason.startsWith("No public price")
                 ? baselinePrices(entry.target).reason
                 : `Public price refresh failed; no saved price for ${entry.target.model}.`,
           };

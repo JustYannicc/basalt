@@ -113,6 +113,10 @@ export async function seriesQuery(
       ? [
           "round(sum(api_cost),12)::text AS api_amount",
           "count(api_cost)::text AS api_priced",
+          "min(public_price_as_of) FILTER (WHERE api_cost IS NOT NULL) AS api_price_as_of",
+          "string_agg(DISTINCT public_price_version, ',' ORDER BY public_price_version) FILTER (WHERE api_cost IS NOT NULL) AS api_price_version",
+          "bool_or(public_price_basis='baseline') FILTER (WHERE api_cost IS NOT NULL) AS api_price_baseline",
+          "bool_or(public_price_refresh_failed) FILTER (WHERE api_cost IS NOT NULL) AS api_price_refresh_failed",
           "count(*) FILTER (WHERE public_price_version IS NULL)::text AS api_missing_prices",
           "count(*) FILTER (WHERE input_tokens IS NULL OR output_tokens IS NULL OR cache_read_tokens IS NULL OR cache_write_tokens IS NULL OR token_quality NOT IN ('complete','legacy'))::text AS api_missing_tokens",
         ]

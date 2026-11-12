@@ -1,5 +1,5 @@
 import type { OverviewPriceTable } from "../../../apps/pool/overview-contract.ts";
-import { officialCostMetric, priceProvenance } from "./official-cost.ts";
+import { officialCostMetric } from "./official-cost.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import {
   apiEquivalentUnavailable,
@@ -106,13 +106,13 @@ function bucket(
               ),
               price:
                 requestCount(row.api_priced) > 0
-                  ? priceProvenance(
-                      prices.prices.filter(
-                        (price) =>
-                          (typeof key.provider !== "string" || price.provider === key.provider) &&
-                          (typeof key.model !== "string" || price.model === key.model),
-                      ),
-                    )
+                  ? {
+                      source: "models.dev",
+                      asOf: String(row.api_price_as_of),
+                      version: String(row.api_price_version),
+                      basis: row.api_price_baseline === true ? "baseline" : "live",
+                      ...(row.api_price_refresh_failed === true ? { refreshFailed: true } : {}),
+                    }
                   : null,
             },
           }

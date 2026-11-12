@@ -351,3 +351,54 @@ test("history public USD uses request-level rates while preserving native scope,
     assert.match(unknown.cost.apiEstimate!.reason!, /No public price for unpublished-model-9988/);
   });
 });
+
+test("history price dates and recovery state come only from rates used in each bucket", async () => {
+  await seriesFixture(async ({ db, insert }) => {
+    const native = await accountAuthority();
+    const { baselinePrices } = await import("../../src/pool/public-price-baseline.ts");
+    const first = baselinePrices({ provider: "claude", model: "claude-opus-5-5" }).prices.map(
+      (p) => ({ ...p, asOf: "2026-11-01T00:00:00.000Z", refreshFailed: true }),
+    );
+    const second = baselinePrices({ provider: "codex", model: "gpt-6.1-sol" }).prices.map((p) => ({
+      ...p,
+      basis: "live" as const,
+      asOf: "2026-11-12T14:00:00.000Z",
+      version: "fresh-live",
+    }));
+    const common = {
+      source: native.source,
+      account: native.visible,
+      apiType: "responses",
+      inputTokens: "100",
+      outputTokens: "20",
+      cacheReadTokens: "0",
+      cacheWriteTokens: "0",
+      tokenQuality: "complete" as const,
+    };
+    await insert(
+      { ...common, provider: "claude", model: "claude-opus-5-5" },
+      {
+        ...common,
+        provider: "codex",
+        model: "gpt-6.1-sol",
+        timestamp: timestamp("2026-01-02T00:45:00Z"),
+      },
+    );
+    const result = await poolUsageSeries(
+      db,
+      { ...input, to: "2026-01-03T00:00:00Z", bucket: "day", by: ["person"] },
+      native.authority,
+      "owned",
+      { prices: [...first, ...second], issues: [] },
+    );
+    const buckets = result.groups[0]!.buckets.map(full);
+    assert.equal(buckets[0]!.cost.apiEstimate!.price!.basis, "baseline");
+    assert.equal(buckets[0]!.cost.apiEstimate!.price!.refreshFailed, true);
+    assert.deepEqual(buckets[1]!.cost.apiEstimate!.price, {
+      source: "models.dev",
+      asOf: "2026-11-12T14:00:00.000Z",
+      version: "fresh-live",
+      basis: "live",
+    });
+  });
+});
