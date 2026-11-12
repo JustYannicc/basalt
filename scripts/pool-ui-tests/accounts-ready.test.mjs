@@ -212,6 +212,7 @@ test(
     let browser;
     let exited;
     let evidenceVideo;
+    let costReasonsVideo;
     t.after(async () => {
       const problems = [];
       const step = async (work) => {
@@ -230,6 +231,10 @@ test(
         response.end(JSON.stringify(failed));
       if (artifacts && evidenceVideo)
         await step(() => evidenceVideo.saveAs(join(artifacts, `${artifactLabel}-transition.webm`)));
+      if (artifacts && costReasonsVideo)
+        await step(() =>
+          costReasonsVideo.saveAs(join(artifacts, `${artifactLabel}-cost-reasons-390.webm`)),
+        );
       await step(() => browser?.close());
       await step(() => browserServer?.close());
       if (browserServer)
@@ -475,8 +480,10 @@ test(
               }
             : overviewShape(value),
         );
-        if (personal && holdPersonal) heldPersonal.push({ response, reply });
-        else response.end(reply);
+        if (personal && holdPersonal) {
+          heldPersonal.push({ response, reply });
+          arrived();
+        } else response.end(reply);
       } else if (request.url === "/_executor/api/query") {
         let body = "";
         for await (const chunk of request) body += chunk;
@@ -547,18 +554,19 @@ test(
     };
     const pending = (fresh) =>
       held.filter((entry) => fresh === undefined || entry.fresh === fresh).length;
-    const requests = (count, fresh) =>
+    const requests = (count, fresh, kind = "view") =>
       new Promise((resolve, reject) => {
+        const heldCount = () => (kind === "personal" ? heldPersonal.length : pending(fresh));
         const timer = setTimeout(() => {
           arrived = () => {};
           reject(
             new Error(
-              `Expected ${count} held${fresh ? " fresh" : ""} view request(s), saw ${pending(fresh)}`,
+              `Expected ${count} held${fresh ? " fresh" : ""} ${kind} request(s), saw ${heldCount()}`,
             ),
           );
         }, 10_000);
         arrived = () => {
-          if (pending(fresh) < count) return;
+          if (heldCount() < count) return;
           clearTimeout(timer);
           arrived = () => {};
           resolve();
@@ -591,6 +599,7 @@ test(
         partial = false,
         next = null,
         people,
+        touch = false,
       } = {},
     ) => {
       usageResult = usage;
@@ -611,6 +620,7 @@ test(
       answerFresh = false;
       const context = await browser.newContext({
         viewport,
+        hasTouch: touch,
         ...(artifacts
           ? { recordVideo: { dir: join(directory, "video"), size: { width: 1100, height: 860 } } }
           : {}),
@@ -1069,8 +1079,9 @@ test(
               else {
                 assert.doesNotMatch(body, /plan isn't recognised|plan unknown|flagged 1x/);
                 if (retained) {
-                  assert.match(body, /Max 20x counted conservatively/);
-                  assert.match(body, /conservative estimate · 1x/);
+                  assert.match(body, /Claude: no verified allowance multiple for Max 20x/);
+                  assert.match(body, /unverified · 1x/);
+                  assert.doesNotMatch(body, /conservative/i);
                 } else {
                   assert.match(
                     body,
@@ -1085,7 +1096,7 @@ test(
                     ),
                   );
                   assert.match(body, /Unit: Pro-eq\./);
-                  assert.doesNotMatch(body, /Max 20x counted conservatively/);
+                  assert.doesNotMatch(body, /no verified allowance multiple/);
                 }
               }
               assert.ok(
@@ -1140,6 +1151,533 @@ test(
           );
         }
       });
+
+    for (const width of [1280, 390])
+      await t.test(
+        `the weekly chart tooltip dismisses on leave and blur at ${width}px`,
+        async () => {
+          const value = poolView(Date.now(), {
+            source: "live",
+            observedAgo: 0,
+            savedAgo: 0,
+            left: [
+              [0.6, 0.5],
+              [0.6, 0.5],
+              [0.6, 0.5],
+            ],
+          }).value;
+          value.accounts = value.accounts.map((account) => ({
+            ...account,
+            provider: "codex",
+            plan: "Plus",
+          }));
+          value.providers = providers;
+          viewResult = { ok: true, value };
+          const weight = policyWeight("codex", "Plus", 604_800);
+          await session(
+            async ({ page, frame, settled }) => {
+              release();
+              const chart = frame.getByRole("group", { name: /^Codex weekly capacity\./ });
+              await chart.waitFor();
+              await settled();
+              const tooltip = chart.getByRole("tooltip");
+              const shown = async (why) => {
+                await tooltip.waitFor({ state: "visible", timeout: 2_000 }).catch(() => {});
+                assert.equal(await tooltip.count(), 1, why);
+                assert.match(await chart.getAttribute("aria-describedby"), /^capacity-tooltip-/);
+                return tooltip.innerText();
+              };
+              const hidden = async (why) => {
+                await tooltip.waitFor({ state: "detached", timeout: 2_000 }).catch(() => {});
+                assert.equal(await tooltip.count(), 0, why);
+                assert.equal(await chart.getAttribute("aria-describedby"), null, why);
+              };
+              const svg = chart.locator("svg");
+              const box = await svg.boundingBox();
+              assert.ok(box);
+              const hourAt = (share) => ({ x: 40 + (box.width - 48) * share, y: box.height / 2 });
+              const outside = frame.getByRole("heading", { name: "Codex", exact: true });
+
+              // Mouse: hovering reads an hour, and leaving the plot closes it.
+              await svg.hover({ position: hourAt(0.9) });
+              await shown("Hovering the chart shows the hour's details");
+              await outside.hover();
+              await settled();
+              await capture(page, `tooltip-mouse-left-${width}`);
+              await hidden("Moving the mouse off the chart closes the tooltip");
+
+              // A mouse click focuses the chart, but leaving still closes; clicking away blurs.
+              await svg.click({ position: hourAt(0.8) });
+              await shown("Clicking the chart shows the hour's details");
+              await outside.hover();
+              await hidden("A mouse-focused chart still closes when the mouse leaves");
+              await svg.hover({ position: hourAt(0.8) });
+              await shown("Hovering again reopens the tooltip");
+              await outside.click();
+              await hidden("Clicking elsewhere closes the tooltip");
+
+              // Keyboard: focus opens the latest hour and arrows move it; a mouse passing over the
+              // chart does not take the keyboard's tooltip away. Escape and blur close it.
+              await chart.focus();
+              await page.keyboard.press("ArrowLeft");
+              const keyed = await shown("Keyboard focus shows the hour's details");
+              await page.keyboard.press("Shift+ArrowLeft");
+              assert.notEqual(await shown("Shift+ArrowLeft keeps details open"), keyed);
+              await svg.hover({ position: hourAt(0.5) });
+              await outside.hover();
+              await settled();
+              await shown("A keyboard-focused chart keeps its tooltip when the mouse leaves");
+              await capture(page, `tooltip-keyboard-${width}`);
+              await page.keyboard.press("Escape");
+              await hidden("Escape closes the tooltip");
+              await page.keyboard.press("ArrowRight");
+              await shown("Arrow keys reopen the tooltip after Escape");
+              await chart.evaluate((node) => node.blur());
+              await hidden("Blurring the chart closes the tooltip");
+
+              // Touch: a tap keeps its details after the finger lifts, a second tap moves them, and
+              // tapping elsewhere closes them. The first tap lands before tracking began, so the
+              // focus handler's latest-hour fallback can't pass for it.
+              await svg.tap({ position: hourAt(0.3) });
+              await settled();
+              assert.match(
+                await shown("A tap keeps the hour's details after touchend"),
+                /Not tracked yet/,
+              );
+              await svg.tap({ position: hourAt(0.9) });
+              await settled();
+              assert.match(
+                await shown("A second tap shows another hour"),
+                /left at the hour's low/,
+              );
+              await capture(page, `tooltip-touch-tapped-${width}`);
+              await outside.tap();
+              await settled();
+              await capture(page, `tooltip-touch-away-${width}`);
+              await hidden("Tapping elsewhere closes the tooltip");
+
+              // Safari does not focus a tabindex element on tap. With focus pinned, a tap on
+              // nonfocusable content outside the chart must still close the tooltip.
+              await frame.evaluate(() => {
+                const keep = (event) => event.preventDefault();
+                document.addEventListener("mousedown", keep, true);
+                Reflect.set(window, "releaseFocus", () =>
+                  document.removeEventListener("mousedown", keep, true),
+                );
+              });
+              await svg.tap({ position: hourAt(0.9) });
+              await settled();
+              assert.equal(
+                await chart.evaluate((node) => node === document.activeElement),
+                false,
+                "The tap left the chart unfocused, as Safari does",
+              );
+              await shown("A tap shows details without focusing the chart");
+              await outside.tap();
+              await settled();
+              await capture(page, `tooltip-unfocused-tap-away-${width}`);
+              await hidden("A tap outside closes an unfocused chart's tooltip");
+              await frame.evaluate(() => Reflect.get(window, "releaseFocus")());
+
+              // A vertical swipe that starts on the chart becomes a page scroll: the browser
+              // cancels the pointer, and the hour it started on closes.
+              const touch = await page.context().newCDPSession(page);
+              await svg.scrollIntoViewIfNeeded();
+              const start = await svg.boundingBox();
+              assert.ok(start);
+              const at = (dy) => [
+                { x: start.x + 40 + (start.width - 48) * 0.9, y: start.y + start.height / 2 + dy },
+              ];
+              await touch.send("Input.dispatchTouchEvent", {
+                type: "touchStart",
+                touchPoints: at(0),
+              });
+              await shown("Touching the chart shows the hour's details");
+              for (let step = 1; step <= 8; step++)
+                await touch.send("Input.dispatchTouchEvent", {
+                  type: "touchMove",
+                  touchPoints: at(-12 * step),
+                });
+              await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+              await settled();
+              await hidden("A touch the browser cancels for scrolling closes the tooltip");
+              await touch.detach();
+              assert.ok(
+                await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+              );
+            },
+            {
+              viewport: { width, height: 1000 },
+              touch: true,
+              capacity: (input) => {
+                const result = capacityFixture(input);
+                const last = Math.floor(input.to / hour) * hour;
+                const full = weight.multiplier * 3;
+                result.value.points = Array.from({ length: 48 }, (_, index) => {
+                  const at = last - (47 - index) * hour;
+                  const reading = {
+                    remaining: full * (0.9 - index * 0.008),
+                    full,
+                    at,
+                    observedAt: { from: at, to: at },
+                    accountCount: 3,
+                    knownWeightCount: 3,
+                    unknownWeightCount: 0,
+                    weights: [
+                      { source: weight.source, revision: weight.revision, accountCount: 3 },
+                    ],
+                  };
+                  return {
+                    provider: "codex",
+                    windowSeconds: 604_800,
+                    mode: null,
+                    unit: { id: weight.unit.id, label: weight.unit.label },
+                    hour: at,
+                    minimum: reading,
+                    last: reading,
+                    plans: [{ plan: "Plus", minimum: reading, last: reading }],
+                  };
+                });
+                return result;
+              },
+            },
+          );
+        },
+      );
+
+    for (const width of [1280, 390])
+      await t.test(
+        `a plan without a verified allowance multiple says so at ${width}px`,
+        async () => {
+          const value = poolView(Date.now(), {
+            source: "live",
+            observedAgo: 0,
+            savedAgo: 0,
+            left: [
+              [0.6, 0.5],
+              [0.6, 0.5],
+              [0.6, 0.5],
+            ],
+          }).value;
+          // The provider's exact raw plan string, which the app names "Pro (Max)".
+          value.accounts = value.accounts.map((account) => ({
+            ...account,
+            provider: "codex",
+            plan: "promax",
+          }));
+          value.providers = providers;
+          viewResult = { ok: true, value };
+          await session(
+            async ({ frame, settled }) => {
+              release();
+              await frame.locator("#capacity article").waitFor();
+              const attention = frame.locator("#attention");
+              await attention.getByText(/^Codex: /).waitFor();
+              await attention.scrollIntoViewIfNeeded();
+              await settled();
+              if (artifacts) {
+                mkdirSync(artifacts, { recursive: true });
+                await attention.screenshot({
+                  path: join(artifacts, `${artifactLabel}-unverified-plan-attention-${width}.png`),
+                });
+              }
+              const items = await attention.innerText();
+              assert.match(items, /Codex: no verified allowance multiple for Pro \(Max\)/);
+              assert.ok(
+                items.includes(
+                  "Remaining percentages are measured. Totals use an unverified 1x allowance; account sizing is unavailable.",
+                ),
+                items,
+              );
+              // The chip and the chart's details say the same: the 1x is unverified, not a bound.
+              assert.match(
+                await frame.getByRole("list", { name: "Codex plans", exact: true }).innerText(),
+                /Pro \(Max\)\s+×3\s+· unverified · 1x/,
+              );
+              const chart = frame.getByRole("group", { name: /^Codex weekly capacity\./ });
+              await chart.focus();
+              const tip = await chart.getByRole("tooltip").innerText();
+              assert.match(tip, /Pro \(Max\) ×3\s+unverified · 1x/);
+              assert.match(tip, /3 accounts · 3 at an unverified 1x/);
+              await chart.scrollIntoViewIfNeeded();
+              await capture(frame.page(), `unverified-plan-tooltip-${width}`);
+              const body = await frame.locator("body").innerText();
+              assert.doesNotMatch(
+                `${body}\n${tip}`,
+                /conservative|where no verified weight was saved|plan isn't recognised|plan unknown/i,
+              );
+              assert.ok(
+                await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+              );
+            },
+            {
+              viewport: { width, height: 1000 },
+              capacity: (input) => {
+                const result = capacityFixture(input);
+                const at = Math.floor(input.to / hour) * hour;
+                const reading = {
+                  remaining: 1.5,
+                  full: 3,
+                  at,
+                  observedAt: { from: at, to: at },
+                  accountCount: 3,
+                  knownWeightCount: 0,
+                  unknownWeightCount: 3,
+                  weights: [{ source: "unknown-plan", revision: "2026-10-30", accountCount: 3 }],
+                };
+                result.value.points = [
+                  {
+                    provider: "codex",
+                    windowSeconds: 604_800,
+                    mode: null,
+                    unit: { id: "chatgpt-plus-equivalent", label: "Plus-eq" },
+                    hour: at,
+                    minimum: reading,
+                    last: reading,
+                    plans: [{ plan: "promax", minimum: reading, last: reading }],
+                  },
+                ];
+                return result;
+              },
+            },
+          );
+        },
+      );
+
+    for (const width of [1280, 390])
+      await t.test(`the 90-day range requests 90 days at ${width}px`, async () => {
+        const value = poolView(Date.now(), {
+          source: "live",
+          observedAgo: 0,
+          savedAgo: 0,
+          left: [
+            [0.6, 0.5],
+            [0.6, 0.5],
+            [0.6, 0.5],
+          ],
+        }).value;
+        value.accounts = value.accounts.map((account) => ({
+          ...account,
+          provider: "codex",
+          plan: "Plus",
+        }));
+        value.providers = providers;
+        viewResult = { ok: true, value };
+        let firstReading = null;
+        const capacityDays = [];
+        const usageSpans = [];
+        await session(
+          async ({ page, frame, settled }) => {
+            release();
+            const chart = frame.getByRole("group", { name: /^Codex weekly capacity\./ });
+            await chart.waitFor();
+            await settled();
+            const range = frame.getByRole("radiogroup", { name: "Range" });
+            await range.getByRole("radio", { name: "7 days", checked: true }).waitFor();
+            assert.ok(capacityDays.length > 0 && usageSpans.length > 0);
+            assert.deepEqual(
+              [...new Set(capacityDays)],
+              [7],
+              "Initial capacity reads explicitly ask for 7",
+            );
+            for (const span of usageSpans)
+              assert.ok(span >= 7 * day && span < 7 * day + hour, `Usage spans ${span} ms`);
+            assert.doesNotMatch(
+              await chart.innerText(),
+              /Readings since/,
+              "Seven days fully covered by readings show no coverage start",
+            );
+            const sentDays = [];
+            page.on("request", (request) => {
+              const path = new URL(request.url()).pathname;
+              const body = request.postData();
+              if (!body) return;
+              if (path === "/_executor/api/query") {
+                const { name, input } = JSON.parse(body);
+                if (name === "capacity") sentDays.push({ read: "capacity", input });
+              } else if (path === "/_executor/api/pool-usage/overview")
+                sentDays.push({ read: "overview", input: JSON.parse(body).input });
+            });
+            assert.deepEqual(
+              (await range.getByRole("radio").allInnerTexts()).map((label) => label.trim()),
+              ["7 days", "30 days", "90 days"],
+            );
+            await range.getByRole("radio", { name: "90 days", exact: true }).click();
+            await range.getByRole("radio", { name: "90 days", checked: true }).waitFor();
+            await frame
+              .locator("#capacity")
+              .getByText(/last 90 days/)
+              .first()
+              .waitFor();
+            await settled();
+            const capacity = sentDays.filter((entry) => entry.read === "capacity");
+            const overview = sentDays.filter((entry) => entry.read === "overview");
+            assert.ok(capacity.length > 0, "Choosing 90 days reads capacity again");
+            assert.ok(overview.length > 0, "Choosing 90 days reads usage again");
+            for (const entry of capacity) assert.equal(entry.input.days, 90);
+            for (const entry of overview) {
+              assert.equal(entry.input.days, 90);
+              const span = Date.parse(entry.input.to) - Date.parse(entry.input.from);
+              assert.ok(span >= 90 * day && span < 90 * day + hour, `Usage spans ${span} ms`);
+            }
+            // Fourteen days of readings in a 90-day range: the chart names where they start.
+            assert.ok(firstReading !== null);
+            const start = new Date(firstReading).toISOString().replace("T", " ").slice(0, 16);
+            await chart.getByText(`Readings since ${start} UTC`, { exact: true }).waitFor();
+            assert.equal(
+              await chart.locator("svg text", { hasText: "Not tracked yet" }).count(),
+              1,
+              "The untracked stretch stays marked",
+            );
+            assert.ok(
+              await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+            );
+            await page.locator("iframe").evaluate(
+              (iframe, height) => {
+                iframe.style.height = `${height}px`;
+              },
+              await frame.evaluate(() => document.documentElement.scrollHeight),
+            );
+            await settled();
+            await capture(page, `range-90-days-${width}`);
+          },
+          {
+            viewport: { width, height: 1000 },
+            // Two weeks of hourly readings, so the chart draws its axis across the whole range.
+            overview: (value) => {
+              usageSpans.push(Date.parse(value.to) - Date.parse(value.from));
+              return value;
+            },
+            capacity: (input) => {
+              capacityDays.push(input.days);
+              const result = capacityFixture(input);
+              const last = Math.floor(input.to / hour) * hour;
+              const points = Array.from({ length: 14 * 24 }, (_, index) => {
+                const at = last - (14 * 24 - 1 - index) * hour;
+                const reading = {
+                  remaining: 3 * (0.4 + 0.3 * Math.abs(Math.sin(index / 20))),
+                  full: 3,
+                  at,
+                  observedAt: { from: at, to: at },
+                  accountCount: 3,
+                  knownWeightCount: 3,
+                  unknownWeightCount: 0,
+                  weights: [{ source: "reference-plan", revision: "2026-10-30", accountCount: 3 }],
+                };
+                return {
+                  provider: "codex",
+                  windowSeconds: 604_800,
+                  mode: null,
+                  unit: { id: "chatgpt-plus-equivalent", label: "Plus-eq" },
+                  hour: at,
+                  minimum: reading,
+                  last: reading,
+                  plans: [{ plan: "Plus", minimum: reading, last: reading }],
+                };
+              });
+              result.value.points = points.filter((point) => point.hour >= result.value.from);
+              if (input.days === 90) firstReading = result.value.points[0].hour;
+              return result;
+            },
+          },
+        );
+      });
+
+    for (const width of [1280, 390])
+      await t.test(
+        `Grok's reported week reaches the overview through the sampler at ${width}px`,
+        async () => {
+          const at = Date.now() - minute;
+          // Home reports Grok's week as a period, not as window seconds.
+          const weekly = {
+            id: "xai-weekly-usage",
+            label: "Weekly Limit",
+            scope: "account",
+            period_unit: "week",
+            period_value: 1,
+            mode: "fixed",
+            status: "healthy",
+            unit: "percentage",
+            used: 2,
+            remaining: 98,
+            limit: 100,
+            remaining_ratio: 0.98,
+            observed_at: new Date(at).toISOString(),
+            expires_at: new Date(at + 30 * minute).toISOString(),
+            reset_at: new Date(at + 4 * day).toISOString(),
+          };
+          const f = quotaSamplingFixture(at, undefined, {
+            provider: "xai",
+            plan: "Grok Pro",
+            windows: [
+              weekly,
+              { ...weekly, id: "xai-product-grokchat", scope: "model", scope_id: "grokchat" },
+            ],
+          });
+          await f.usage.observe();
+          viewResult = { ok: true, value: { ...f.view, providers: [{ id: "xai", name: "Grok" }] } };
+          const served = [];
+          await session(
+            async ({ page, frame, settled }) => {
+              release();
+              const lab = frame.getByRole("article", { name: "Grok", exact: true });
+              await lab.waitFor({ timeout: 5_000 }).catch(() => {});
+              await settled();
+              await page.locator("iframe").evaluate(
+                (iframe, height) => {
+                  iframe.style.height = `${height}px`;
+                },
+                await frame.evaluate(() => document.documentElement.scrollHeight),
+              );
+              await settled();
+              await capture(page, `grok-weekly-${width}`);
+              assert.equal(await lab.count(), 1, "The Grok lab has a capacity panel");
+              const enough = frame.getByRole("link", { name: /Enough accounts\?/ });
+              assert.match(await enough.innerText(), /Grok: learning/);
+              assert.doesNotMatch(await frame.locator("body").innerText(), /no readings yet/);
+              // The grokchat product window shares the account's week; it is not a second account.
+              const panel = await lab.innerText();
+              assert.match(panel, /1 account · in account-eq/);
+              assert.match(panel, /Nominal 1\b/);
+              assert.doesNotMatch(panel, /2 accounts|Nominal 2/);
+              const chart = lab.getByRole("group", { name: /^Grok weekly\b[^.]* capacity\./ });
+              const since = new Date(at).toISOString().replace("T", " ").slice(0, 16);
+              assert.match(await chart.innerText(), new RegExp(`Readings since ${since} UTC`));
+              await chart.focus();
+              const tip = await chart.getByRole("tooltip").innerText();
+              assert.match(tip, /Weekly/);
+              // Chart amounts keep one decimal, so the measured 0.98 reads as 1 of 1.
+              assert.match(tip, /\b1 of 1 account-eq left/);
+              assert.match(tip, /Grok Pro ×1/);
+              assert.match(tip, /Total\s+1 \/ 1/);
+              assert.match(tip, /^1 account\b/m);
+              await capture(page, `grok-weekly-tooltip-${width}`);
+              // What the page rendered is the sampler's own reading: one account at 98% left.
+              assert.ok(served.length > 0);
+              for (const value of served) {
+                assert.equal(value.points.length, 1);
+                const point = value.points[0];
+                assert.equal(point.provider, "xai");
+                assert.equal(point.windowSeconds, 604_800);
+                assert.equal(point.last.accountCount, 1);
+                assert.equal(point.last.remaining, 0.98);
+                assert.equal(point.last.full, 1);
+              }
+            },
+            {
+              viewport: { width, height: 1000 },
+              capacity: async (input) => {
+                const value = await f.capacity(
+                  Math.floor((input.to - input.days * day) / hour) * hour,
+                  input.to,
+                );
+                served.push(value);
+                return { ok: true, value };
+              },
+            },
+          );
+        },
+      );
 
     for (const width of [1280, 390])
       await t.test(
@@ -1690,6 +2228,193 @@ test(
           { viewport: { width, height: 860 }, usage: populatedUsage, capacityHeld: true },
         );
       });
+    for (const width of [1280, 390])
+      await t.test(`usage rows say why their cost is missing at ${width}px`, async () => {
+        const codexSeat = poolView(Date.now(), {
+          source: "live",
+          observedAgo: minute,
+          savedAgo: minute,
+          left: [
+            [0.5, 0.8],
+            [0.5, 0.8],
+            [0.5, 0.8],
+          ],
+        }).value.accounts[0];
+        viewResult = { ok: true, value: { ...empty, providers, accounts: [codexSeat] } };
+        const total = {
+          ...emptyUsage.value.total,
+          requests: 4,
+          cost: 3.4,
+          tokens: { ...emptyUsage.value.total.tokens, input: 400, output: 112, total: 512 },
+        };
+        const models = [
+          ["codex", "synthetic-priced"],
+          ["claude", null],
+          ["codex", "synthetic-unlisted"],
+          ["codex", "synthetic-unlisted-two"],
+          ["codex", "synthetic-unlisted-three"],
+          ["claude", "synthetic-tokenless"],
+        ];
+        const usage = {
+          ok: true,
+          value: {
+            ...emptyUsage.value,
+            total,
+            models: models.map(([provider, model]) => ({
+              ...total,
+              requests: 1,
+              provider,
+              model,
+            })),
+          },
+        };
+        const noPrice = "No public price for synthetic-unlisted";
+        const noModel = "Model not recorded; cost cannot be estimated";
+        const noTokens = "Request token counts are missing or incomplete.";
+        const slice = (provider, model, fields) => ({
+          person: null,
+          provider,
+          model,
+          requests: 1,
+          apiBilled: null,
+          apiPricedRequests: 0,
+          apiUnpriced: 0,
+          subscriptionValue: null,
+          subscriptionPricedRequests: 0,
+          subscriptionUnpriced: 0,
+          unknownKind: 0,
+          unknownKindValue: null,
+          price: null,
+          ...fields,
+        });
+        const overview = (value) => {
+          const price = {
+            asOf: "2026-11-01T00:00:00Z",
+            source: "models.dev",
+            version: "a".repeat(64),
+          };
+          const available = (amount) => ({
+            status: "available",
+            amount,
+            currency: "USD",
+            pricedRequests: 1,
+            excluded: { unknownKind: 0, unknownKindValue: null, unpriced: 3 },
+            price,
+          });
+          value.metrics.apiBilled = available("3.40");
+          value.metrics.subscriptionValue = available("1.20");
+          value.metrics.usageSlices = [
+            slice("codex", "synthetic-priced", {
+              apiBilled: "3.40",
+              apiPricedRequests: 1,
+              subscriptionValue: "1.20",
+              subscriptionPricedRequests: 1,
+            }),
+            slice("claude", null, {
+              apiUnpriced: 1,
+              apiReason: noModel,
+              subscriptionUnpriced: 1,
+              subscriptionReason: noModel,
+            }),
+            slice("codex", "synthetic-unlisted", {
+              apiUnpriced: 1,
+              apiReason: noPrice,
+              subscriptionUnpriced: 1,
+              subscriptionReason: noPrice,
+            }),
+            ...["synthetic-unlisted-two", "synthetic-unlisted-three"].map((model) =>
+              slice("codex", model, {
+                apiUnpriced: 1,
+                apiReason: `No public price for ${model}`,
+                subscriptionUnpriced: 1,
+                subscriptionReason: `No public price for ${model}`,
+              }),
+            ),
+            // Pure API traffic: no subscription use, so that column has nothing to explain.
+            slice("claude", "synthetic-tokenless", { apiUnpriced: 1, apiReason: noTokens }),
+          ];
+          return value;
+        };
+        await session(
+          async ({ page, frame, settled }) => {
+            release();
+            await frame.getByRole("radio", { name: "Models", exact: true }).click();
+            const who = frame.locator("#who");
+            const row = (name) =>
+              who.locator("tbody tr").filter({ has: frame.getByText(name, { exact: true }) });
+            await row("synthetic-priced").waitFor();
+            await row("Model not recorded").waitFor();
+            await who.locator("table").scrollIntoViewIfNeeded();
+            await settled();
+            await capture(page, `cost-reasons-${width}`);
+            if (artifacts && width === 390) costReasonsVideo = page.video();
+            for (const [name, reason] of [
+              ["Model not recorded", noModel],
+              ["synthetic-unlisted", noPrice],
+              ["synthetic-tokenless", noTokens],
+            ]) {
+              const cells = await row(name).getByText(reason, { exact: true }).all();
+              // Phones see the API reason stacked in the visible column; wide screens see both columns.
+              const shown = await Promise.all(cells.map((cell) => cell.isVisible()));
+              assert.ok(
+                shown.includes(true),
+                `${name} shows "${reason}" as text, not only a tooltip, at ${width}px`,
+              );
+              assert.doesNotMatch(
+                await row(name).innerText(),
+                /\$0\.00|unavailable/i,
+                `${name} never reads as zero or a blanket unavailable label`,
+              );
+            }
+            const priced = await row("synthetic-priced").innerText();
+            assert.match(priced, /\$1\.20/, "Subscription value stays visible");
+            assert.match(priced, /\$3\.40/, `API cost stays readable at ${width}px`);
+            assert.doesNotMatch(
+              await row("synthetic-tokenless").innerText(),
+              /No public price|Model not recorded/,
+              "A missing-token row keeps its own reason",
+            );
+            assert.equal(
+              await frame
+                .locator("body")
+                .evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+              true,
+              "Real-length catalog hashes and row reasons fit the viewport",
+            );
+            const costs = frame.locator("section").filter({
+              has: frame.getByRole("heading", {
+                name: "API cost and subscription value",
+                exact: true,
+              }),
+            });
+            const lab = costs
+              .locator("tbody tr")
+              .filter({ has: frame.getByRole("rowheader", { name: "Codex", exact: true }) });
+            const apiCell = lab.locator("td").first();
+            const lastReason = apiCell.getByText("No public price for synthetic-unlisted-three", {
+              exact: true,
+            });
+            assert.equal(await lastReason.isVisible(), false);
+            await apiCell.getByRole("button", { name: "+1 more", exact: true }).click();
+            assert.equal(
+              await lastReason.isVisible(),
+              true,
+              "A non-expandable lab row exposes all reasons by touch",
+            );
+            await apiCell.getByRole("button", { name: "Show less", exact: true }).click();
+            assert.equal(await lastReason.isVisible(), false, "The reason disclosure closes again");
+            assert.deepEqual(
+              await who.evaluate((section) => {
+                const table = section.querySelector("table").getBoundingClientRect();
+                return table.right <= section.getBoundingClientRect().right + 0.5;
+              }),
+              true,
+              `The usage table stays inside the content column at ${width}px`,
+            );
+          },
+          { viewport: { width, height: 860 }, usage, overview },
+        );
+      });
     for (const width of [1440, 390])
       await t.test(
         `usage failure and retry stay usable without capacity at ${width}px`,
@@ -1995,6 +2720,7 @@ test(
                 { exact: true },
               )
               .waitFor();
+            await requests(1, undefined, "personal");
             assert.ok(
               heldPersonal.length > 0,
               "Personal usage stays held after the manager endpoint denies access",

@@ -491,7 +491,7 @@ export function verdict(
       [
         sizingDetail,
         flagged
-          ? `${flagged} of ${facts.latest.last.accountCount} accounts use a conservative 1x estimate. If their real weight is higher, the shortfall is smaller than shown.`
+          ? `${flagged} of ${facts.latest.last.accountCount} accounts count at an unverified 1x allowance, so the shortfall may be larger or smaller than shown.`
           : null,
       ]
         .filter(Boolean)
@@ -555,7 +555,7 @@ export const weightSourceLabel: Record<CapacityWeightSource, string> = {
   "published-weekly-multiplier": "published weekly multiplier",
   "plan-multiplier": "plan multiplier",
   "reported-absolute": "limit reported",
-  "unknown-plan": "conservative estimate · 1x",
+  "unknown-plan": "unverified · 1x",
 };
 
 export const planName = (plan: string | null, provider: string) =>
@@ -580,7 +580,7 @@ const forecastReasonLabels: Record<string, string> = {
   "partial-account-coverage": "some readings do not cover every account",
   "incomplete-current-week": "the current week is incomplete",
   "missing-account-reading": "an account has no current reading",
-  "unknown-account-weight": "an account has only a conservative weight estimate",
+  "unknown-account-weight": "an account's allowance multiple is unverified",
   "missing-reset-time": "an account reset time is unknown",
   "unhealthy-account": "an account is unavailable",
   "backtest-insufficient": "there is not enough held-out history to check the forecast",
@@ -595,7 +595,7 @@ const forecastReasonLabels: Record<string, string> = {
 export const forecastReasons = (reasons: readonly string[]) =>
   reasons.map((reason) => forecastReasonLabels[reason] ?? reason.replaceAll("-", " "));
 
-/** A conservative flag describes the saved weight, including readings from an older policy. */
+/** An unverified flag describes the saved weight, including readings from an older policy. */
 export function planChips(point: CapacityHistoryPoint | null): PlanChip[] {
   if (!point) return [];
   const groups = new Map<

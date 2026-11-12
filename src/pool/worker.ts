@@ -63,6 +63,7 @@ import {
   historySchemaCatalogPath,
 } from "./model-history/operator.ts";
 import { handleUsageImport, modelImportPath } from "./model-history/import-http.ts";
+import { handleOwnerUsageImport, ownerModelImportPath } from "./model-history/import-owner-http.ts";
 import { importAccountTargets } from "./model-history/import-account-targets.ts";
 import { handleSelfUsageImport, selfModelImportPath } from "./model-history/self-import-http.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
@@ -90,6 +91,8 @@ import {
   runtimeRecoveryPath,
 } from "./runtime-recovery.ts";
 import { poolRelease, poolReleasePath } from "./release.ts";
+import { historyTrafficPath } from "./model-history/traffic.ts";
+import { readPoolReliabilitySlo } from "./model-history/reliability-slo.ts";
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnvironment {
   PoolContainer: DurableObjectNamespace<PoolContainer>;
@@ -212,7 +215,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       });
     };
     this.mirrorHome = new HomeClient(home, Date.now, () => this.control.invalidateViews());
-    this.overviewPrices = new OverviewPrices(this.mirrorHome);
+    this.overviewPrices = new OverviewPrices(this.mirrorHome, ctx.storage);
     this.control = new PoolControl(ctx.storage, {
       signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
@@ -411,6 +414,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await this.computers.observeUsage();
     await this.control.expire();
     await this.prices.run();
+    await this.overviewPrices.refresh();
     // Usage is a report: a slow or failing read must not hold the pool's own upkeep.
     await this.usage
       .observe()
@@ -573,7 +577,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         signingKey: this.env.POOL_APP_SIGNING_KEY,
         previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
         connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
-        currentPrices: (targets) => this.overviewPrices.read(targets),
+        currentPrices: (targets) => this.overviewPrices.readTable(targets),
       });
     if (
       pathname === managedUsagePath ||
@@ -591,6 +595,13 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     }
     if (pathname === summaryPath || pathname === "/pool/v1/usage/capacity")
       return this.usage.handle(request);
+    if (pathname === ownerModelImportPath)
+      return handleOwnerUsageImport(request, {
+        signingKey: this.env.POOL_APP_SIGNING_KEY,
+        previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+        connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
+        importAccounts: (pool) => importAccountTargets(this.mirrorHome, pool),
+      });
     if (pathname === modelHistoryPath || pathname === modelImportPath)
       return (pathname === modelHistoryPath ? handleModelHistory : handleUsageImport)(request, {
         signingKey: this.env.POOL_APP_SIGNING_KEY,
@@ -741,7 +752,14 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
             : singleton(this.env).deploymentReady(),
       );
     if (path === runtimeRecoveryPath) return singleton(this.env).fetch(request);
-    if ([historySchemaCatalogPath, historySchemaApplyPath, historyBackfillPath].includes(path))
+    if (
+      [
+        historySchemaCatalogPath,
+        historySchemaApplyPath,
+        historyBackfillPath,
+        historyTrafficPath,
+      ].includes(path)
+    )
       return handleModelHistoryOperation(request, this.env.POOL_AUTH_DATABASE?.connectionString);
     if (path !== "/codex-websockets") return new Response(null, { status: 404 });
     try {
@@ -777,7 +795,17 @@ export default {
   },
   async scheduled(event: ScheduledEvent, env: PoolEnvironment) {
     if (event.cron === availabilityCron) {
-      await runAvailabilityProbe(env, (pool) => singleton(env).availabilityProbe(pool));
+      await runAvailabilityProbe(
+        env,
+        (pool) => singleton(env).availabilityProbe(pool),
+        (pool) => {
+          if (env.POOL_MODEL_HISTORY_ENABLED !== "true")
+            throw new Error("Model request history is disabled");
+          return withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) =>
+            readPoolReliabilitySlo(db, pool),
+          );
+        },
+      );
       return;
     }
     if (event.cron === inventoryCron) {

@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "Pool credit-policy geometry coverage holds the real saved-account ownership read, releases it after the initial policy and account statuses are visible, and waits for the authorized reset control before measuring the account band. Layout, policy save and failed-save assertions remain unchanged; no reset is spent and no timeout or retry is added."
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "scenarios": {
+    "poolOwnerImport": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "owner-session mapped history import preserves source and rejects managers and admins",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted owner sessions and organization access locks."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses runner-owned retained pool records and a signed loopback import backend."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolOwnerImport": [
+      "host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/pool-usage-import.ts",
+    ".upstream/apps/hosted/server/src/contracts/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-backend.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage-import.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage.ts",
+    "src/pool/model-history/**",
+    "src/pool/worker.ts"
+  ]
+}

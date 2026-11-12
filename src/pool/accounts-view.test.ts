@@ -7,6 +7,34 @@ import type { Json } from "./json.ts";
 const observedAt = "2026-10-24T11:00:00Z";
 const nextReadAt = "2026-10-24T11:05:00Z";
 const resetAt = "2026-10-24T14:00:00Z";
+
+test("xAI's reported week reaches the account view without counting product windows twice", () => {
+  const weekly = {
+    ...window("xai-weekly-usage", 604800),
+    window_seconds: null,
+    label: "Weekly Limit",
+    period_unit: "week",
+    period_value: 1,
+    remaining_ratio: 0.98,
+  };
+  const product = {
+    ...weekly,
+    id: "xai-product-grokchat",
+    label: "GrokChat",
+    scope: "model",
+    scope_id: "grokchat",
+  };
+  const result = view(detail({ windows: [weekly, product] }), "xai");
+  assert.equal(result.windows.length, 2);
+  assert.equal(result.windows.at(-1)?.id, "xai-weekly-usage");
+  assert.deepEqual(
+    result.windows.map((window) => window.windowSeconds),
+    [604800, 604800],
+  );
+  const [grok] = capacity([result]);
+  assert.equal(grok?.measured, 1);
+  assert.equal(grok?.left, 0.98);
+});
 function window(id: string, seconds: number, scope = "account", scopeId: string | null = null) {
   return {
     id,

@@ -1,4 +1,5 @@
 import type { PoolUsageSeriesResult } from "./usage-series-contract.ts";
+import type { PoolOverviewReliability } from "./reliability-contract.ts";
 
 /** A member name supplied only after the hosted pool directory authorizes that member. */
 export interface PoolOverviewMember {
@@ -105,6 +106,18 @@ export interface OverviewApiPrice {
   readonly version: string;
 }
 
+/** Trusted server diagnostics for a public rate lookup, separate from request accounting. */
+export interface OverviewPriceIssue {
+  readonly provider: string;
+  readonly model: string;
+  readonly reason: string;
+}
+
+export interface OverviewPriceTable {
+  readonly prices: readonly OverviewApiPrice[];
+  readonly issues: readonly OverviewPriceIssue[];
+}
+
 export type OverviewOffering = "subscription" | "metered_api" | "prepaid" | "other" | "unknown";
 
 /** This authority stays server-side in the signed native read. */
@@ -134,9 +147,11 @@ export interface OverviewUsageSlice {
   readonly apiBilled: string | null;
   readonly apiPricedRequests: number;
   readonly apiUnpriced: number;
+  readonly apiReason?: string;
   readonly subscriptionValue: string | null;
   readonly subscriptionPricedRequests: number;
   readonly subscriptionUnpriced: number;
+  readonly subscriptionReason?: string;
   readonly unknownKind: number;
   readonly unknownKindValue: string | null;
   readonly price: {
@@ -149,7 +164,7 @@ export interface OverviewUsageSlice {
 export interface PoolOverviewInput {
   readonly from: string;
   readonly to: string;
-  readonly days: 7 | 30;
+  readonly days: 7 | 30 | 90;
 }
 
 /** Added by the host after manager authorization. This is never accepted from the app browser. */
@@ -187,6 +202,8 @@ export interface PoolPersonalOverviewResult {
 }
 
 export interface PoolOverviewResult {
+  /** Absent in retained responses from servers predating explicit proof classification. */
+  readonly reliability?: PoolOverviewReliability;
   readonly from: string;
   readonly to: string;
   readonly asOf: string | null;

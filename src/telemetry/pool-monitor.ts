@@ -1,5 +1,6 @@
 import { eventId, sendEnvelope } from "./sentry-envelope.ts";
 import type { SentryEnv } from "./sentry-target.ts";
+import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
 
 const guards = new Set([
   "configuration",
@@ -11,6 +12,7 @@ const guards = new Set([
   "membership_body",
   "reconciliation",
   "native_policy_install",
+  "request_reliability",
 ]);
 const reasons = new Set([
   "invalid_target",
@@ -27,6 +29,8 @@ const reasons = new Set([
   "runtime_unhealthy",
   "storage",
   "unknown",
+  "below_target",
+  "collection_unavailable",
 ]);
 
 export async function startPoolMonitor(env: SentryEnv) {
@@ -50,6 +54,7 @@ export async function capturePoolMonitor(
   input: {
     ok: boolean;
     failures: readonly { guard: string; reason: string; backendStatus?: number }[];
+    reliability?: PoolReliabilitySlo;
   },
 ): Promise<boolean> {
   const failures = input.failures.slice(0, 8).map((failure) => ({
@@ -75,6 +80,13 @@ export async function capturePoolMonitor(
   });
   let event = Promise.resolve(true);
   if (!ok) {
+    const reliability = failures.find((failure) => failure.guard === "request_reliability");
+    const errorCode =
+      reliability?.reason === "below_target"
+        ? "pool_request_success_below_target"
+        : reliability?.reason === "collection_unavailable"
+          ? "pool_request_collection_unavailable"
+          : "pool_availability_failure";
     const id = eventId();
     event = sendEnvelope(env, {
       id,
@@ -84,18 +96,46 @@ export async function capturePoolMonitor(
         timestamp: new Date().toISOString(),
         platform: "javascript",
         level: "error",
-        message: `pool_availability_failure ${failures.map((failure) => `${failure.guard}:${failure.reason}${failure.backend_status ? `:HTTP${failure.backend_status}` : ""}`).join(" ") || "runtime:unknown"}`,
+        message: `${errorCode} ${failures.map((failure) => `${failure.guard}:${failure.reason}${failure.backend_status ? `:HTTP${failure.backend_status}` : ""}`).join(" ") || "runtime:unknown"}`,
         logger: "pool-availability",
-        fingerprint: ["basalt", "pool_availability_failure"],
+        fingerprint: ["basalt", errorCode],
         tags: {
-          error_code: "pool_availability_failure",
+          error_code: errorCode,
           guard: failures[0]?.guard ?? "runtime",
           reason: failures[0]?.reason ?? "unknown",
         },
-        contexts: { pool_probe: { check_in_id: receipt.id, failures } },
+        contexts: {
+          pool_probe: { check_in_id: receipt.id, failures },
+          ...(input.reliability
+            ? { request_reliability: reliabilityContext(input.reliability) }
+            : {}),
+        },
       },
     });
   }
   const results = await Promise.all([check, event]);
   return receipt.accepted && results.every(Boolean);
+}
+
+function reliabilityContext(slo: PoolReliabilitySlo) {
+  const count = (value: number) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
+  const window = (value: PoolReliabilitySlo["hour"]) => ({
+    requests: count(value.real.requests),
+    failed: count(value.real.failed),
+    proof_requests: count(value.proof.requests),
+    proof_failed: count(value.proof.failed),
+  });
+  return {
+    target: 99,
+    hour: window(slo.hour),
+    day: window(slo.day),
+    reason: [
+      "history_inactive",
+      "capture_stale",
+      "capture_lagging",
+      "classification_pending",
+    ].includes(slo.reason ?? "")
+      ? slo.reason
+      : null,
+  };
 }

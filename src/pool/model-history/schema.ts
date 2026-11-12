@@ -9,7 +9,8 @@ export interface HistoryDatabase {
 
 export const historyBaseSchemaVersion = "model_request_history_v1";
 export const historyAppSchemaVersion = "model_request_history_v2_app_attribution";
-export const historySchemaVersion = "model_request_history_v3_account_time";
+export const historyAccountTimeSchemaVersion = "model_request_history_v3_account_time";
+export const historySchemaVersion = "model_request_history_v4_traffic_purpose";
 
 /** Catalog-only preview. The same query works before any history table exists. */
 export async function planModelHistorySchema(db: HistoryDatabase) {
@@ -102,10 +103,21 @@ export const historyAppAttributionStatements = [
 export const historyAccountTimeStatements = [
   "CREATE INDEX basalt_model_requests_account_time ON basalt_model_requests (pool, account, timestamp)",
 ];
+export const historyTrafficStatements = [
+  `CREATE TABLE basalt_model_traffic (
+    pool varchar(16) NOT NULL, source char(64) NOT NULL, client_key char(64) NOT NULL,
+    purpose varchar(8) NOT NULL CHECK (purpose IN ('real','proof')),
+    evidence char(64) NOT NULL, changed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (pool,source,client_key),
+    CHECK (pool ~ '^[a-f0-9]{16}$' AND source ~ '^[a-f0-9]{64}$'
+      AND client_key ~ '^[a-f0-9]{64}$' AND evidence ~ '^[a-f0-9]{64}$')
+  )`,
+];
 export const historySchemaMigrations = [
   { name: historyBaseSchemaVersion, statements: historySchemaStatements },
   { name: historyAppSchemaVersion, statements: historyAppAttributionStatements },
-  { name: historySchemaVersion, statements: historyAccountTimeStatements },
+  { name: historyAccountTimeSchemaVersion, statements: historyAccountTimeStatements },
+  { name: historySchemaVersion, statements: historyTrafficStatements },
 ];
 /** Existing collectors keep working while the additive app migration awaits its approved apply. */
 export async function appAttributionReady(db: HistoryDatabase): Promise<boolean> {

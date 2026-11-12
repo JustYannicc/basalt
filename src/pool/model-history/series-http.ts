@@ -16,6 +16,8 @@ import {
 } from "./overview.ts";
 import type {
   OverviewApiPrice,
+  OverviewPriceIssue,
+  OverviewPriceTable,
   PoolOverviewSignedInput,
   PoolPersonalOverviewSignedInput,
 } from "../../../apps/pool/overview-contract.ts";
@@ -36,7 +38,7 @@ export async function handleUsageSeries(
     connectionString: string | undefined;
     currentPrices?: (
       targets: readonly { provider: string; model: string }[],
-    ) => Promise<readonly OverviewApiPrice[]>;
+    ) => Promise<OverviewPriceTable>;
   },
 ): Promise<Response> {
   try {
@@ -118,10 +120,13 @@ export async function handleUsageSeries(
               await db.query("SET LOCAL statement_timeout = '5s'");
               const priceTargets = await overviewTargets(db, overview);
               let prices: readonly OverviewApiPrice[] = [];
+              let priceIssues: readonly OverviewPriceIssue[] = [];
               let pricesUnavailableReason = priceTargets.unavailableReason;
               if (!pricesUnavailableReason && access.currentPrices) {
                 try {
-                  prices = await access.currentPrices(priceTargets.targets);
+                  ({ prices, issues: priceIssues } = await access.currentPrices(
+                    priceTargets.targets,
+                  ));
                 } catch {
                   pricesUnavailableReason = "Current API price data could not be read.";
                 }
@@ -132,6 +137,7 @@ export async function handleUsageSeries(
                 {
                   ...overview,
                   prices,
+                  priceIssues,
                   ...(pricesUnavailableReason ? { pricesUnavailableReason } : {}),
                 },
                 "caller",
@@ -150,10 +156,13 @@ export async function handleUsageSeries(
               await db.query("SET LOCAL statement_timeout = '5s'");
               const priceTargets = await personalOverviewTargets(db, overview);
               let prices: readonly OverviewApiPrice[] = [];
+              let priceIssues: readonly OverviewPriceIssue[] = [];
               let pricesUnavailableReason = priceTargets.unavailableReason;
               if (!pricesUnavailableReason && access.currentPrices) {
                 try {
-                  prices = await access.currentPrices(priceTargets.targets);
+                  ({ prices, issues: priceIssues } = await access.currentPrices(
+                    priceTargets.targets,
+                  ));
                 } catch {
                   pricesUnavailableReason = "Current API price data could not be read.";
                 }
@@ -165,6 +174,7 @@ export async function handleUsageSeries(
                 prices,
                 pricesUnavailableReason,
                 "caller",
+                priceIssues,
               );
               await db.query("COMMIT");
               return result;

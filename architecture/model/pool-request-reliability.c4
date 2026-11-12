@@ -1,0 +1,9 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Request reliability counts only the retained local model and gateway sources. Explicit purpose records match the exact pool, source and hashed client key; unclassified keys count as real. Proof counts remain visible separately, while token and cost totals retain every request. The same bounded SQL read supplies the overview and rolling one-hour and twenty-four-hour success objectives. Empty real traffic has no success rate. Optional reliability reads use a savepoint so an unavailable monitor cannot discard the usage, token or cost answers. Availability RPC failure retains an independently measured reliability verdict and both closed failure classes. An inactive, stale, lagging or unclassified capture cannot establish the objective. The existing once-per-minute availability monitor reports success below 99 percent and collection unavailability as separate error classes through its existing observability route. Counts and closed reasons leave the service; keys and request content do not."
+      constraint "The traffic-purpose schema is an additive named model-history migration applied only through the private reviewed schema operation. It never rewrites request history. Purpose changes use the private operations entrypoint with a dry run listing exact retained request identifiers, current classifications and an evidence hash. Applying requires the digest of that selection; a changed selection refuses. A started local receipt prevents replay after an unknown apply outcome. Restoring a proof key to real uses the same reviewed path. Public app and model routes cannot change purpose."
+    }
+  }
+  basalt.telemetry -[sync]-> basalt.pool "read request reliability contracts for monitor diagnostics"
+}

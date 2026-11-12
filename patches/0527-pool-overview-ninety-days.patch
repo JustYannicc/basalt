@@ -1,0 +1,83 @@
+diff --git a/apps/hosted/server/src/contracts/pool-usage-overview.ts b/apps/hosted/server/src/contracts/pool-usage-overview.ts
+--- a/apps/hosted/server/src/contracts/pool-usage-overview.ts
++++ b/apps/hosted/server/src/contracts/pool-usage-overview.ts
+@@ -13,7 +13,7 @@
+   Schema.Struct({
+     from: Schema.NonEmptyString,
+     to: Schema.NonEmptyString,
+-    days: Schema.Literals([7, 30]),
++    days: Schema.Literals([7, 30, 90]),
+   }))();
+ export type PoolOverviewInput = typeof PoolOverviewInput.Type;
+ 
+diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
+--- a/e2e/support/pool-usage-series-backend.ts
++++ b/e2e/support/pool-usage-series-backend.ts
+@@ -22,7 +22,7 @@
+ const PoolOverviewInput = Schema.Struct({
+   from: Schema.NonEmptyString,
+   to: Schema.NonEmptyString,
+-  days: Schema.Literals([7, 30]),
++  days: Schema.Literals([7, 30, 90]),
+   directory: PoolOverviewDirectory,
+ });
+ const PoolOverviewAssertion = Schema.Struct({
+@@ -37,7 +37,7 @@
+   person: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+   from: Schema.NonEmptyString,
+   to: Schema.NonEmptyString,
+-  days: Schema.Literals([7, 30]),
++  days: Schema.Literals([7, 30, 90]),
+   offerings: Schema.Array(
+     Schema.Struct({
+       history: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.spec.ts
+--- a/e2e/tests/pool-usage-series.spec.ts
++++ b/e2e/tests/pool-usage-series.spec.ts
+@@ -27,7 +27,7 @@
+   person: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+   from: Schema.String,
+   to: Schema.String,
+-  days: Schema.Literals([7, 30]),
++  days: Schema.Literals([7, 30, 90]),
+   offerings: Schema.Array(
+     Schema.Struct({
+       history: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+@@ -416,6 +416,37 @@
+           "overview-policy",
+           "overview-transaction",
+         ]);
++        const ninety = {
++          from: "2025-10-10T00:00:00Z",
++          to: "2026-01-08T00:00:00Z",
++          days: 90 as const,
++        };
++        for (const [session, endpoint, action] of [
++          [ownerApp, managerPath, "poolOverview"],
++          [memberApp, personalPath, "poolPersonalOverview"],
++        ] as const) {
++          const response = yield* postApp(session, endpoint, {
++            version: app.activeVersion,
++            input: ninety,
++          });
++          expect(response.status).toBe(200);
++          const forwarded = (yield* backend.calls).filter((call) => call.action === action).at(-1);
++          expect(forwarded?.input).toMatchObject(ninety);
++          if (action === "poolPersonalOverview")
++            expect(forwarded?.input).toMatchObject({ person: memberPerson });
++          expect(
++            (yield* postApp(session, endpoint, {
++              version: app.activeVersion,
++              input: { ...ninety, days: 91 },
++            })).status,
++          ).toBe(400);
++        }
++        expect(
++          (yield* postApp(memberApp, managerPath, {
++            version: app.activeVersion,
++            input: ninety,
++          })).status,
++        ).toBe(403);
+         const evidence = yield* Evidence;
+         yield* evidence.json("pool-overview-phase-headers.json", {
+           manager: { status: manager.status, phases: managerPhases },

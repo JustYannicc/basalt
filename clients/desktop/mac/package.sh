@@ -8,7 +8,12 @@ desktop="$(dirname "$here")"
 root="$(cd "$desktop/../.." && pwd)"
 out="$desktop/dist-packages"
 work="${RUNNER_TEMP:-$(mktemp -d)}/signalbox-mac"
-fail() { echo "::error::$1" >&2; exit 1; }
+# The step summary shows a refusal without opening the job log; local runs have no summary file.
+fail() {
+  echo "::error::$1" >&2
+  [ -z "${GITHUB_STEP_SUMMARY:-}" ] || echo "$1" >> "$GITHUB_STEP_SUMMARY"
+  exit 1
+}
 for file in host.mjs connection.mjs; do
   [ -f "$desktop/.dist/$file" ] || fail "clients/desktop/.dist/$file is missing. Run bun run --cwd clients/desktop build first."
 done
@@ -78,10 +83,21 @@ stage="$work/dmg"
 mkdir -p "$stage"
 cp -R "$app" "$stage/"
 ln -s /Applications "$stage/Applications"
+# -srcfolder alone lets hdiutil estimate the image size, and that estimate comes up short for this
+# bundle ("No space left on device" on the first attempts). Size it explicitly with headroom, and
+# refuse early, naming both numbers, when the volume really is too small.
+stage_kb="$(du -sk "$stage" | cut -f1)"
+image_kb=$((stage_kb * 5 / 4 + 20480))
+free_kb="$(df -Pk "$(dirname "$dmg")" | awk 'NR == 2 {print $4}')"
+# UDZO writes an uncompressed image first, then the compressed copy.
+[ "$free_kb" -ge $((image_kb * 2)) ] ||
+  fail "The disk image needs $((image_kb * 2)) KB free next to $dmg; the volume has $free_kb KB."
 # hdiutil sometimes reports a busy resource on a first attempt; retry before failing loudly.
+hdiutil_err="$work/hdiutil.err"
 for attempt in 1 2 3; do
-  hdiutil create -volname Signalbox -srcfolder "$stage" -ov -format UDZO "$dmg" >/dev/null && break
-  [ "$attempt" = 3 ] && fail "hdiutil could not create the disk image after 3 attempts; its error is above."
+  hdiutil create -volname Signalbox -srcfolder "$stage" -size "${image_kb}k" -ov -format UDZO "$dmg" >/dev/null 2>"$hdiutil_err" && break
+  cat "$hdiutil_err" >&2
+  [ "$attempt" = 3 ] && fail "hdiutil could not create a ${image_kb} KB disk image from $stage_kb KB of app after 3 attempts: $(tail -n 1 "$hdiutil_err")"
   sleep 5
 done
 echo "Signalbox.app $version: $(du -sh "$app" | cut -f1) installed, zip $(du -h "$zip" | cut -f1), dmg $(du -h "$dmg" | cut -f1)"

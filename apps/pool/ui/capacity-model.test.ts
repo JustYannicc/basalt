@@ -10,6 +10,7 @@ import {
   capacityLabs,
   candidateName,
   exclusionName,
+  forecastReasons,
   tooltipPlanRows,
   dailyRows,
   duration,
@@ -248,7 +249,7 @@ test("unknown plans are flagged on their chip", () => {
       plan: "No plan reported",
       accounts: 2,
       flagged: true,
-      note: "conservative estimate · 1x",
+      note: "unverified · 1x",
     },
   ]);
 });
@@ -374,7 +375,7 @@ test("plan aliases share one chip without changing capacity measurements", () =>
       plan: "Pro (Max)",
       accounts: 4,
       flagged: true,
-      note: "conservative estimate · 1x",
+      note: "unverified · 1x",
     },
   ]);
   assert.deepEqual(snapshot, original);
@@ -469,10 +470,10 @@ test("Max 20x policy and retained weekly readings keep their recorded provenance
     ],
   };
   const saved = aggregate(0.4, 1, 1);
-  for (const [reading, conservative, note] of [
+  for (const [reading, unverified, note] of [
     [policy, false, "plan multiplier"],
     [published, false, "published weekly multiplier"],
-    [saved, true, "conservative estimate · 1x"],
+    [saved, true, "unverified · 1x"],
   ] as const) {
     const snapshot = point(0, reading.remaining, {
       provider: "claude",
@@ -486,11 +487,36 @@ test("Max 20x policy and retained weekly readings keep their recorded provenance
         key: "Max 20x",
         plan: "Max 20x",
         accounts: reading.accountCount,
-        flagged: conservative,
+        flagged: unverified,
         note,
       },
     ]);
   }
+});
+
+test("an unverified 1x weight is never described as a conservative bound", () => {
+  const unverified = aggregate(2, 4, 2);
+  const projection = {
+    ...forecast(604800, start + 24 * hourMs),
+    reasons: ["unknown-account-weight" as const],
+  };
+  const snapshot = point(0, 2, {
+    minimum: unverified,
+    last: unverified,
+    plans: [{ plan: "promax", minimum: unverified, last: unverified }],
+  });
+  const line = capacityLabs(history([snapshot], [projection]))[0]!.lines[0]!;
+  const result = verdict(line, lineFacts(line, start + 24 * hourMs), 7);
+  assert.equal(
+    result.detail,
+    "2 of 2 accounts count at an unverified 1x allowance, so the shortfall may be larger or smaller than shown.",
+  );
+  assert.deepEqual(forecastReasons(["unknown-account-weight"]), [
+    "an account's allowance multiple is unverified",
+  ]);
+  assert.equal(planChips(snapshot)[0]!.note, "unverified · 1x");
+  const shown = [result.short, result.text, result.detail, ...forecastReasons(projection.reasons)];
+  assert.doesNotMatch(shown.join(" "), /conservative/i);
 });
 
 test("supported five-hour limits stay selectable without inventing measured capacity", () => {
