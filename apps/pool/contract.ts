@@ -19,6 +19,7 @@ export function isControlPath(pathname: string): boolean {
 export interface Provider {
   readonly id: string;
   readonly name: string;
+  readonly icons?: readonly import("apps").AppIcon[];
   readonly protocol?: "typesafe-systemone";
   readonly description?: string;
 }
@@ -61,6 +62,10 @@ export interface BankedResets {
 
 export interface Account {
   readonly id: string;
+  /** Exact native selection for presentation only. Null withholds an unproved binding. */
+  readonly nativeAccountId?: string | null;
+  /** The exact provider app's authorized native view, independent of routing state. */
+  readonly nativeView?: import("apps/contracts").SelectedAccountView;
   readonly provider: string;
   /** The account's email or the backend's label for it. */
   readonly label: string;

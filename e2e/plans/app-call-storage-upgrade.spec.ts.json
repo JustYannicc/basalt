@@ -1,0 +1,33 @@
+{
+  "scenarios": {
+    "appCallStorageUpgrade": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "Connection storage upgrades preserve released rows and old clients through failed migration retry and exact target collections",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Reconstructs the released constraint and a failed migration in a runner-owned database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted organization account and app-connection policy."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appCallStorageUpgrade": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/packages/sdk/src/implementation/app-connections.ts",
+    ".upstream/packages/sdk/src/implementation/storage-current.ts",
+    ".upstream/packages/sdk/src/implementation/storage-migrations.ts",
+    ".upstream/packages/sdk/src/implementation/storage-runtime.ts"
+  ]
+}

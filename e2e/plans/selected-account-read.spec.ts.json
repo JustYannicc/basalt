@@ -1,0 +1,36 @@
+{
+  "scenarios": {
+    "selectedAccountRead": {
+      "fixtures": "actors",
+      "title": "selected account reads preserve native reports and the original viewer across app delegation and refuse unlinked selections",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a loopback observation service and a held read."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted organization account and app-connection policy."
+        }
+      }
+    }
+  },
+  "runs": {
+    "selectedAccountRead": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/account-source-authority.ts",
+    ".upstream/apps/hosted/server/src/implementation/selected-account-read.ts",
+    ".upstream/packages/apps/src/contracts/provider.ts",
+    ".upstream/packages/apps/src/contracts/selected-account-read.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/apps/src/implementation/workflow-rpc.ts",
+    ".upstream/packages/sdk/src/implementation/app-call-protection.ts",
+    ".upstream/packages/sdk/src/implementation/selected-account-read.ts"
+  ]
+}
