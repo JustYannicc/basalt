@@ -32,34 +32,6 @@ export async function startGitLabInstance({ dcr, mcpEnabled = true }) {
   const codes = new Map();
   let registrations = 0;
   let origin;
-  const document = () => ({
-    openapi: "3.0.3",
-    info: { title: "GitLab fixture", version: "1" },
-    servers: [{ url: origin }],
-    components: {
-      securitySchemes: {
-        apiKey: { type: "apiKey", name: "PRIVATE-TOKEN", in: "header" },
-        http: { type: "http", scheme: "bearer" },
-      },
-    },
-    security: [{ apiKey: [] }, { http: [] }],
-    paths: {
-      "/fixture/write": {
-        post: { operationId: "fixture_write", responses: { 200: { description: "OK" } } },
-      },
-      "/fixture/read": {
-        get: {
-          operationId: "fixture_read",
-          responses: {
-            200: {
-              description: "OK",
-              content: { "application/json": { schema: { type: "object" } } },
-            },
-          },
-        },
-      },
-    },
-  });
   const handle = async (request, response) => {
     const url = new URL(request.url, origin);
     const authorization = request.headers.authorization;
@@ -163,8 +135,11 @@ export async function startGitLabInstance({ dcr, mcpEnabled = true }) {
         expires_in: 7200,
       });
     }
-    if (url.pathname === "/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml")
-      return json(response, document());
+    if (url.pathname === "/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml") {
+      calls.push({ transport: "rest", phase: "definition_on_tenant" });
+      response.writeHead(302, { location: `${origin}/users/sign_in`, "content-type": "text/html" });
+      return response.end("<html>Sign in</html>");
+    }
     if (url.pathname === "/api/v4/mcp") {
       if (authorization !== `Bearer ${mcpToken}`) {
         response.setHeader(

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Tool browsers and connection consent pickers share case-insensitive word-wise AND matching over tool names, titles and descriptions. Exact names and titles rank before prefixes, then other matches, retaining catalog order for ties. Searching shows a ranked list across groups; clearing the query restores the catalog tree and its saved collapse state. Tool availability and permission filters remain authoritative. Native mobile uses the existing indexed MCP search rather than a second client-side filter."
+    }
+  }
+}

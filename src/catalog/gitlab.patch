@@ -45,7 +45,7 @@
    auth: {
      token: secrets({
        label: "Access token",
-@@ -36,29 +38,55 @@
+@@ -36,29 +38,51 @@
      }),
    },
    async health({ account, fetch, signal }) {
@@ -81,14 +81,10 @@
 +            id: account.id,
 +            discover: () => {
 +              const site = account.site ?? "https://gitlab.com";
-+              const documentUrl = new URL(
-+                "/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml",
-+                site,
-+              ).href;
 +              return withApprovals(
 +                liveOpenapiRouter({
 +                  ...options,
-+                  source: { ...options.source, url: documentUrl },
++                  // Self-managed instances do not host GitLab's public source repository.
 +                  allowedOrigin: site,
 +                  baseUrl: site,
 +                  cache,

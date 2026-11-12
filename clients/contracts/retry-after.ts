@@ -1,5 +1,4 @@
-/** Wait only for an idempotent authorization read; never replay application work. */
-export async function waitForRetryAfter(headers: Headers, signal: AbortSignal) {
+export function retryAfterDelay(headers: Headers) {
   const raw = headers.get("retry-after") ?? headers.get("x-retry-after");
   const seconds = raw === null || !raw.trim() ? NaN : Number(raw);
   const delay = Number.isFinite(seconds)
@@ -9,7 +8,12 @@ export async function waitForRetryAfter(headers: Headers, signal: AbortSignal) {
     : raw !== null && Number.isFinite(Date.parse(raw))
       ? Math.max(0, Date.parse(raw) - Date.now())
       : 1000;
-  const deadline = performance.now() + delay;
+  return delay;
+}
+
+/** Wait only for an idempotent authorization read; never replay application work. */
+export async function waitForRetryAfter(headers: Headers, signal: AbortSignal) {
+  const deadline = performance.now() + retryAfterDelay(headers);
   do {
     signal.throwIfAborted();
     await new Promise<void>((resolve, reject) => {

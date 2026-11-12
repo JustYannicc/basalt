@@ -10,7 +10,10 @@ export const gitlabHostedClient = {
 };
 
 const instanceClients = {
-  legacy: { clientId: "synthetic-gitlab-legacy-client", clientSecret: "synthetic-gitlab-legacy-secret" },
+  legacy: {
+    clientId: "synthetic-gitlab-legacy-client",
+    clientSecret: "synthetic-gitlab-legacy-secret",
+  },
   "instance-a": {
     clientId: "synthetic-gitlab-instance-a-client",
     clientSecret: "synthetic-gitlab-instance-a-secret",
@@ -40,10 +43,14 @@ const readBody = async (request) => {
     : Object.fromEntries(new URLSearchParams(raw));
 };
 
-const scopesOf = (value) => String(value ?? "").split(/\s+/u).filter(Boolean).sort();
+const scopesOf = (value) =>
+  String(value ?? "")
+    .split(/\s+/u)
+    .filter(Boolean)
+    .sort();
 const challengeOf = (value) => createHash("sha256").update(value).digest("base64url");
 
-/** Three loopback origins: two approved instances and one private redirect target that stays denied. */
+/** Separate loopback origins for tenant APIs, the public definition and denied redirects. */
 export async function startGitLabFixtures() {
   const observations = [];
   const sites = [];
@@ -52,7 +59,6 @@ export async function startGitLabFixtures() {
   const accessTokens = new Map();
   const refreshTokens = new Map();
   const patTokens = new Map();
-  let sequence = 0;
 
   const issueTokens = (site, client, flow, generation, response) => {
     const accessToken = "synthetic-gitlab-access-" + site.id + "-" + randomUUID();
@@ -92,13 +98,26 @@ export async function startGitLabFixtures() {
           security: [{ apiKey: [] }, { http: [] }],
           requestBody: {
             required: true,
-            content: { "application/json": { schema: {
-              type: "object", properties: { name: { type: "string" } }, required: ["name"],
-            } } },
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: { name: { type: "string" } },
+                  required: ["name"],
+                },
+              },
+            },
           },
-          responses: { "201": { description: "Created", content: {
-            "application/json": { schema: { type: "object", properties: { id: { type: "integer" } } } },
-          } } },
+          responses: {
+            201: {
+              description: "Created",
+              content: {
+                "application/json": {
+                  schema: { type: "object", properties: { id: { type: "integer" } } },
+                },
+              },
+            },
+          },
         },
         get: {
           operationId: "getApiV4Projects",
@@ -106,7 +125,7 @@ export async function startGitLabFixtures() {
           summary: "List projects for this synthetic instance",
           security: [{ apiKey: [] }, { http: [] }],
           responses: {
-            "200": {
+            200: {
               description: "Projects",
               content: {
                 "application/json": {
@@ -140,7 +159,13 @@ export async function startGitLabFixtures() {
   });
 
   const startSite = async (id) => {
-    const site = { id, origin: undefined, host: undefined, redirectHealthTo: undefined, requests: [] };
+    const site = {
+      id,
+      origin: undefined,
+      host: undefined,
+      redirectHealthTo: undefined,
+      requests: [],
+    };
     const server = createServer(async (request, response) => {
       const url = new URL(request.url ?? "/", site.origin ?? "http://fixture.invalid");
       const pathname = url.pathname;
@@ -152,10 +177,33 @@ export async function startGitLabFixtures() {
       };
       site.requests.push(baseEvent);
 
-      if (request.method === "GET" &&
-        pathname === "/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml") {
-        observations.push({ ...baseEvent, phase: "specification" });
-        return json(response, 200, specification(site));
+      if (
+        request.method === "GET" &&
+        pathname === "/openapi/gitlab.json" &&
+        site.id === "specification"
+      ) {
+        observations.push({
+          ...baseEvent,
+          phase: "public_specification",
+          credentialFree:
+            !request.headers.authorization &&
+            !request.headers["private-token"] &&
+            url.search === "",
+        });
+        return json(response, 200, specification({ origin: "https://gitlab.com" }));
+      }
+      if (
+        request.method === "GET" &&
+        pathname === "/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml"
+      ) {
+        observations.push({ ...baseEvent, phase: "tenant_specification" });
+        // Only the public-service legacy fixture contains the public source repository.
+        if (site.id === "legacy") return json(response, 200, specification(site));
+        response.writeHead(302, {
+          location: site.origin + "/users/sign_in",
+          "content-type": "text/html",
+        });
+        return response.end("<html>Sign in</html>");
       }
 
       if (request.method === "GET" && pathname === "/oauth/authorize") {
@@ -165,7 +213,8 @@ export async function startGitLabFixtures() {
         const redirectUri = url.searchParams.get("redirect_uri") ?? "";
         const codeChallenge = url.searchParams.get("code_challenge") ?? "";
         const scopes = scopesOf(url.searchParams.get("scope"));
-        const valid = client !== undefined &&
+        const valid =
+          client !== undefined &&
           suppliedId === client.clientId &&
           state !== "" &&
           redirectUri !== "" &&
@@ -201,7 +250,8 @@ export async function startGitLabFixtures() {
         const client = instanceClients[site.id];
         const suppliedId = String(payload.client_id ?? "");
         const secretSupplied = Object.hasOwn(payload, "client_secret");
-        const secretMatches = client !== undefined &&
+        const secretMatches =
+          client !== undefined &&
           suppliedId === client.clientId &&
           payload.client_secret === client.clientSecret;
         const event = {
@@ -211,7 +261,8 @@ export async function startGitLabFixtures() {
           clientId: suppliedId,
           clientSecretSupplied: secretSupplied,
           clientSecretMatches: secretMatches,
-          sharedClientAttempt: suppliedId === gitlabHostedClient.id ||
+          sharedClientAttempt:
+            suppliedId === gitlabHostedClient.id ||
             payload.client_secret === gitlabHostedClient.secret,
           contentType: String(request.headers["content-type"] ?? "").toLowerCase(),
           authorizationHeaderPresent: request.headers.authorization !== undefined,
@@ -222,11 +273,17 @@ export async function startGitLabFixtures() {
 
         if (payload.grant_type === "authorization_code") {
           const code = codes.get(String(payload.code ?? ""));
-          const verifierMatches = code !== undefined &&
+          const verifierMatches =
+            code !== undefined &&
             challengeOf(String(payload.code_verifier ?? "")) === code.codeChallenge;
           const redirectMatches = code !== undefined && payload.redirect_uri === code.redirectUri;
-          if (!code || code.siteId !== site.id || code.clientId !== suppliedId ||
-            !verifierMatches || !redirectMatches) {
+          if (
+            !code ||
+            code.siteId !== site.id ||
+            code.clientId !== suppliedId ||
+            !verifierMatches ||
+            !redirectMatches
+          ) {
             observations.push({ ...baseEvent, phase: "rejected_token_exchange" });
             return json(response, 400, { error: "invalid_grant" });
           }
@@ -240,19 +297,30 @@ export async function startGitLabFixtures() {
         if (payload.grant_type === "refresh_token") {
           const refreshToken = String(payload.refresh_token ?? "");
           const prior = refreshTokens.get(refreshToken);
-          if (!prior || prior.siteId !== site.id || prior.clientId !== suppliedId ||
-            prior.clientSecret !== payload.client_secret) {
+          if (
+            !prior ||
+            prior.siteId !== site.id ||
+            prior.clientId !== suppliedId ||
+            prior.clientSecret !== payload.client_secret
+          ) {
             observations.push({ ...baseEvent, phase: "rejected_token_refresh" });
             return json(response, 400, { error: "invalid_grant" });
           }
           event.refreshTokenSiteMatches = prior.siteId === site.id;
           event.redirectUriMatched = payload.redirect_uri === prior.redirectUri;
-          const rotated = issueTokens(site, client, {
-            redirectUri: prior.redirectUri,
-            previousAccessToken: [...accessTokens.entries()]
-              .find(([, value]) => value === prior)?.[0],
-            previousRefreshToken: refreshToken,
-          }, prior.generation + 1, response);
+          const rotated = issueTokens(
+            site,
+            client,
+            {
+              redirectUri: prior.redirectUri,
+              previousAccessToken: [...accessTokens.entries()].find(
+                ([, value]) => value === prior,
+              )?.[0],
+              previousRefreshToken: refreshToken,
+            },
+            prior.generation + 1,
+            response,
+          );
           event.rotated = rotated.refreshToken !== refreshToken;
           return;
         }
@@ -263,11 +331,10 @@ export async function startGitLabFixtures() {
       const bearer = String(request.headers.authorization ?? "").match(/^Bearer\s+(.+)$/iu)?.[1];
       const privateToken = request.headers["private-token"];
       const oauthGrant = bearer === undefined ? undefined : accessTokens.get(bearer);
-      const patSite = typeof privateToken === "string"
-        ? patTokens.get(privateToken)
-        : undefined;
+      const patSite = typeof privateToken === "string" ? patTokens.get(privateToken) : undefined;
       const credentialSite = oauthGrant?.siteId ?? patSite;
-      const authenticated = credentialSite === site.id &&
+      const authenticated =
+        credentialSite === site.id &&
         (oauthGrant === undefined || oauthGrant.expiresAt > Date.now());
       observations.push({
         ...baseEvent,
@@ -297,12 +364,14 @@ export async function startGitLabFixtures() {
       }
       if (request.method === "GET" && pathname === "/api/v4/projects") {
         const marker = "synthetic_gitlab_" + site.id + "_project";
-        return json(response, 200, [{
-          id: site.id === "instance-a" ? 5101 : site.id === "instance-b" ? 5202 : 5303,
-          name: marker,
-          path_with_namespace: "fixture/" + site.id + "/" + marker,
-          web_url: site.origin + "/fixture/" + site.id + "/" + marker,
-        }]);
+        return json(response, 200, [
+          {
+            id: site.id === "instance-a" ? 5101 : site.id === "instance-b" ? 5202 : 5303,
+            name: marker,
+            path_with_namespace: "fixture/" + site.id + "/" + marker,
+            web_url: site.origin + "/fixture/" + site.id + "/" + marker,
+          },
+        ]);
       }
       return json(response, 404, { error: "unmocked synthetic GitLab route" });
     });
@@ -326,8 +395,25 @@ export async function startGitLabFixtures() {
   await startSite("instance-b");
   await startSite("unapproved");
   await startSite("legacy");
+  const publicSpec = await startSite("specification");
   return {
     sites,
+    filesAtPublicSpec(files) {
+      return files.map((file) => {
+        if (file.path !== "openapi.ts") return file;
+        const source =
+          "https://gitlab.com/gitlab-org/gitlab/-/raw/master/doc/api/openapi/openapi_v3.yaml";
+        assert.equal(
+          file.content.split(source).length - 1,
+          1,
+          "The GitLab public definition source changed",
+        );
+        return {
+          ...file,
+          content: file.content.replace(source, publicSpec.origin + "/openapi/gitlab.json"),
+        };
+      });
+    },
     site(id) {
       const site = sites.find((candidate) => candidate.id === id);
       assert.ok(site, "Unknown synthetic GitLab site: " + id);
@@ -335,10 +421,15 @@ export async function startGitLabFixtures() {
     },
     observations,
     async stop() {
-      await Promise.all(servers.map((server) => new Promise((resolve, reject) => {
-        server.close((error) => error ? reject(error) : resolve());
-        server.closeAllConnections();
-      })));
+      await Promise.all(
+        servers.map(
+          (server) =>
+            new Promise((resolve, reject) => {
+              server.close((error) => (error ? reject(error) : resolve()));
+              server.closeAllConnections();
+            }),
+        ),
+      );
     },
   };
 }
