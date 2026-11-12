@@ -343,10 +343,11 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
  import { basaltSyncVersion } from "./obsidian-plugin-version.ts";
  
  /**
-@@ -15,16 +15,6 @@ export const basaltSyncFiles = ["main.js", "manifest.json", "styles.css"] as con
+@@ -14,16 +14,6 @@
+ export const basaltSyncFiles = ["main.js", "manifest.json", "styles.css"] as const;
  /** BRAT is the community plugin that installs a plugin from a GitHub release. */
  export const bratStoreLink = "obsidian://show-plugin?id=obsidian42-brat";
- 
+-
 -const githubRepository =
 -  /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/u;
 -
@@ -356,15 +357,13 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
 - */
 -export const basaltSyncRepository = (source: string | undefined): string | null =>
 -  source === undefined ? null : (githubRepository.exec(source)?.[1] ?? null);
--
- /** Opens BRAT's add dialog for this exact published version. */
- export const bratInstallLink = (repository: string) =>
-   `obsidian://brat?plugin=${repository}&version=${basaltSyncTag}`;
-@@ -55,67 +45,18 @@ export function basaltSyncReleaseStatus(status: number | null, body: unknown): B
-   return basaltSyncFiles.every((file) => names.has(file)) ? "available" : "unavailable";
+ 
+ /**
+  * Opens BRAT's add dialog on its "latest" track. Any other version is one BRAT freezes and never
+@@ -59,66 +49,17 @@
  }
  
--/**
+ /**
 - * GitHub answers with Access-Control-Allow-Origin "*", which a browser refuses for a credentialed
 - * request, and its preflight rejects Effect's trace headers. So the release is read as a plain
 - * anonymous request: no credentials, no trace headers, no extra headers, through the page's
@@ -377,7 +376,7 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
 -  ),
 -);
 -
- /**
+-/**
   * A published release never changes, so finding it holds for the browser session. A missing one
   * may still be published under this tag, so only "available" is remembered.
   */

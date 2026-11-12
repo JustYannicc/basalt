@@ -2,6 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Effect } from "effect";
 import {
+  basaltSyncReleaseCheck,
+  basaltSyncRepository,
+  basaltSyncTag,
+  bratInstallLink,
+} from "../.upstream/apps/hosted/web/src/contracts/obsidian-plugin.ts";
+import {
   isMacBrowser,
   signalboxAppAssets,
   signalboxAppDownload,
@@ -18,6 +24,60 @@ const latest = (assets: readonly string[] = allAssets, tag = "signalbox-clients-
   tag_name: tag,
   published_at: "2026-11-12T09:44:39Z",
   assets: assets.map((name) => ({ name })),
+});
+
+test("Obsidian installs the plugin while app downloads read the clients release", async () => {
+  const stored = new Map<string, string>();
+  const original = {
+    fetch: globalThis.fetch,
+    storage: Object.getOwnPropertyDescriptor(globalThis, "sessionStorage"),
+  };
+  const calls: { url: string; init: RequestInit | undefined }[] = [];
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => void stored.set(key, value),
+    },
+  });
+  globalThis.fetch = async (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    calls.push({ url, init });
+    const body =
+      url === "https://api.github.com/repos/JustYannicc/basalt/releases/latest"
+        ? latest()
+        : {
+            tag_name: basaltSyncTag,
+            assets: ["main.js", "manifest.json", "styles.css"].map((name) => ({ name })),
+          };
+    return new Response(JSON.stringify(body), { status: 200 });
+  };
+  try {
+    const install = new URL(bratInstallLink(basaltSyncRepository));
+    assert.equal(install.searchParams.get("plugin"), "JustYannicc/signalbox-sync");
+    assert.equal(install.searchParams.get("version"), "latest");
+    const plugin = () => Effect.runPromise(basaltSyncReleaseCheck(basaltSyncRepository));
+    const clients = () => Effect.runPromise(signalboxAppsReleaseCheck("JustYannicc/basalt"));
+    assert.equal(await plugin(), "available");
+    assert.equal(signalboxAppsVersionLine(await clients()), "Version 0.2.0 · released 12 Nov");
+    assert.equal(await plugin(), "available");
+    assert.equal(signalboxAppsVersionLine(await clients()), "Version 0.2.0 · released 12 Nov");
+    assert.deepEqual(
+      calls.map((call) => call.url),
+      [
+        `https://api.github.com/repos/JustYannicc/signalbox-sync/releases/tags/${basaltSyncTag}`,
+        "https://api.github.com/repos/JustYannicc/basalt/releases/latest",
+      ],
+    );
+    for (const call of calls) {
+      assert.equal(call.init?.credentials, "omit");
+      assert.deepEqual([...new Headers(call.init?.headers).keys()], []);
+    }
+  } finally {
+    globalThis.fetch = original.fetch;
+    if (original.storage) Object.defineProperty(globalThis, "sessionStorage", original.storage);
+    else delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
+  }
 });
 
 test("downloads use the version-free names of the latest release", () => {

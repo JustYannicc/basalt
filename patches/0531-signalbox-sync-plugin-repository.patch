@@ -1,7 +1,11 @@
 diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/src/contracts/obsidian-plugin.ts
 --- a/apps/hosted/web/src/contracts/obsidian-plugin.ts
 +++ b/apps/hosted/web/src/contracts/obsidian-plugin.ts
-@@ -5,25 +5,22 @@ import { browserOnly } from "@executor-js/ui/contracts/http";
+@@ -1,19 +1,25 @@
+-import { Effect } from "effect";
+ import { Atom } from "effect/reactivity";
+ import { browserOnly } from "@executor-js/ui/contracts/http";
+ import { githubReleaseRead } from "./github-source.ts";
  import { basaltSyncVersion } from "./obsidian-plugin-version.ts";
  
  /**
@@ -18,25 +22,18 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
  export const basaltSyncFiles = ["main.js", "manifest.json", "styles.css"] as const;
  /** BRAT is the community plugin that installs a plugin from a GitHub release. */
  export const bratStoreLink = "obsidian://show-plugin?id=obsidian42-brat";
- 
--const githubRepository =
--  /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/u;
--
- /**
-- * Where Signalbox Sync is published: the deployment's own public source repository, when that is
-- * on GitHub. Anything else has nowhere to install from.
++
++/**
 + * Where Signalbox Sync is published: its own repository, holding only plugin releases, so BRAT's
 + * latest release there is always the plugin's. Every deployment installs the same plugin.
-  */
--export const basaltSyncRepository = (source: string | undefined): string | null =>
--  source === undefined ? null : (githubRepository.exec(source)?.[1] ?? null);
++ */
 +export const basaltSyncRepository = "JustYannicc/signalbox-sync";
  
  /**
   * Opens BRAT's add dialog on its "latest" track. Any other version is one BRAT freezes and never
-@@ -120,16 +117,7 @@ export const basaltSyncReleaseCheck = (repository: string) =>
-     Effect.provide(anonymousGitHubClient),
-   );
+@@ -61,16 +67,7 @@
+     recall: (stored) => (stored === "available" ? stored : null),
+   });
  
 -/**
 - * Read in the browser once per repository; the dialog refreshes it on "Check again". A
@@ -57,16 +54,27 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
 diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
 --- a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
 +++ b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
-@@ -132,7 +132,7 @@ function ConnectObsidian({ app }: { readonly app: App }) {
+@@ -22,9 +22,9 @@
+   prepareObsidianConnectionAtom,
+   type ObsidianProtocolUnavailable,
+ } from "../../contracts/obsidian-sync.ts";
+-import { githubSourceRepository } from "../../contracts/github-source.ts";
+ import {
+   basaltSyncReleaseAtom,
++  basaltSyncRepository,
+   bratInstallLink,
+   bratStoreLink,
+ } from "../../contracts/obsidian-plugin.ts";
+@@ -124,7 +124,7 @@
            </ul>
            {/* Mounted only while open, so the release is checked when someone is connecting. */}
            <ConnectSteps
--            repository={basaltSyncRepository(brand.source)}
+-            repository={githubSourceRepository(brand.source)}
 +            repository={basaltSyncRepository}
              step={step}
              onConnect={() => void connect()}
            />
-@@ -168,7 +168,7 @@ function ConnectSteps({
+@@ -160,7 +160,7 @@
    step,
    onConnect,
  }: {
@@ -75,7 +83,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/app
    readonly step: Step;
    readonly onConnect: () => void;
  }) {
-@@ -198,14 +198,12 @@ function ConnectSteps({
+@@ -190,14 +190,12 @@
            </div>
          ) : !AsyncResult.isSuccess(release) ? (
            <p className="text-muted-foreground">Checking for Signalbox Sync…</p>
