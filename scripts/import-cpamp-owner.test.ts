@@ -24,6 +24,7 @@ test("owner sign-in applies an unchanged mapped manifest and resumes a partial i
     viewer = "fixture-owner",
     importCalls = 0,
     applies = 0;
+  let targetOrigin = "";
   const server = createServer(async (request, response) => {
     response.setHeader("content-type", "application/json");
     const ownerRequest = request.url !== "/pool/v1/usage/import";
@@ -34,7 +35,7 @@ test("owner sign-in applies an unchanged mapped manifest and resumes a partial i
         response.end(JSON.stringify({ userId: viewer }));
         return;
       }
-      assert.equal(request.headers.origin, `http://127.0.0.1:${address.port}`);
+      assert.equal(request.headers.origin, targetOrigin);
       assert.equal(
         request.url,
         "/api/organizations/fixture-org/apps/fixture-pool/pool-usage/import",
@@ -74,10 +75,11 @@ test("owner sign-in applies an unchanged mapped manifest and resumes a partial i
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   assert.ok(address && typeof address !== "string");
+  targetOrigin = `http://127.0.0.1:${address.port}`;
   const common = [
     "scripts/import-cpamp.ts",
     "--target",
-    `http://127.0.0.1:${address.port}`,
+    targetOrigin,
     "--caller",
     "fixture-owner",
     "--source",
