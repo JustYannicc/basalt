@@ -13,7 +13,7 @@ struct AgentsPage: View {
     let presentation = model.presentation
     let configured = model.configured
     VStack(alignment: .leading, spacing: 0) {
-      Header(title: "Connect your agents", back: { model.page = .home })
+      Header(title: "Connect your agents", back: { model.page = .home }, backTitle: model.homeTitle)
       VStack(alignment: .leading, spacing: 12) {
         VStack(alignment: .leading, spacing: 4) {
           Text("Connect your agents").font(.system(size: 15, weight: .semibold))

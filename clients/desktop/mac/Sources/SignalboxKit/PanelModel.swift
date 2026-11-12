@@ -110,6 +110,9 @@ public final class PanelModel {
 
   public var configured: DesktopSnapshot.Configured { snapshot?.configured ?? .none }
 
+  /// Titled Apps once the account's app list is known.
+  public var homeTitle: String { apps == nil ? "Signalbox" : "Apps" }
+
   /// The panel's own notice wins; otherwise the connection's last error shows.
   public var message: Notice? { notice ?? snapshot?.error.map(Notice.error) }
 
@@ -234,5 +237,13 @@ public final class PanelModel {
   private func resetSelection(_ configured: DesktopSnapshot.Configured) {
     selection = AgentSelection(
       claude: configured.claude ? .keep : .undo, codex: configured.codex ? .keep : .undo)
+  }
+}
+
+extension AppSummary.App {
+  /// Every account runs in the cloud until accounts on this Mac exist; the summary carries no
+  /// location yet.
+  public var detail: String {
+    accounts == 0 ? "No accounts" : "\(accounts) account\(accounts == 1 ? "" : "s") · Cloud"
   }
 }
