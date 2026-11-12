@@ -40,6 +40,7 @@ export function serveTunnel(
     stopped = true;
     timing?.mark("closed");
     clearTimeout(deadline);
+    // oxlint-disable-next-line unicorn/no-useless-spread -- Stop removes entries from the active map.
     for (const operation of [...operations.values()]) operation.stop();
     operations.clear();
     try {
