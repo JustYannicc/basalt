@@ -1,7 +1,7 @@
 {
   "identity": "executor-organization-shared-read-authority",
   "file": "0544-organization-shared-read-authority.patch",
-  "content_sha256": "145ad09331639ea3eb712a1e7558d342702788ec8bc46aa5c1b8cebc7ee94a90",
+  "content_sha256": "d49e30073772d246eeea5ca4d0c2daf4f1a590d68c55715355b8c3c3b9b88642",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
