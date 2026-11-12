@@ -3,6 +3,12 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "apps": "0.0.1-beta.104-basalt.15"
+    "@flowershow/remark-wiki-link": "3.4.0",
+    "@r4ai/remark-callout": "0.6.2",
+    "apps": "0.0.1-beta.104-basalt.15",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
   }
 }

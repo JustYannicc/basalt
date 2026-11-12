@@ -1,0 +1,618 @@
+diff --git a/apps/hosted/web/src/contracts/obsidian-devices.ts b/apps/hosted/web/src/contracts/obsidian-devices.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/obsidian-devices.ts
+@@ -0,0 +1,110 @@
++import { Schema } from "effect";
++import type { AppId } from "@executor-js/sdk";
++import { obsidianTools } from "./obsidian-connection.ts";
++import type { ConnectedAgent } from "@executor-js/mcp-auth/agents";
++import type { Connection, ConnectionId } from "@executor-js/mcp-auth/connections";
++import type { GrantId } from "@executor-js/mcp-auth/grants";
++
++/** One device's sync access to a vault: the grant Connect Obsidian's scoped connection holds. */
++export interface ObsidianDevice {
++  readonly agent: GrantId;
++  readonly connection: ConnectionId;
++  readonly label: string;
++  readonly connectedAt: string;
++  readonly lastActiveAt: string | null;
++}
++
++/** The plugin's self-declared client name, identical on every device it runs on. */
++const pluginClientNames = new Set(["Signalbox Obsidian Sync", "Basalt Sync"]);
++
++/** The plugin's sync tools, any version; Connect Obsidian scopes each device to a subset. */
++const syncTools = new Set<string>(obsidianTools);
++
++/**
++ * A connection Connect Obsidian made for this vault: this one app, run as the app, limited to
++ * sync tools. A broader connection that happens to include the app belongs to an agent.
++ */
++const isVaultConnection = (app: AppId, connection: Connection) => {
++  const [only, ...rest] = connection.policy.apps;
++  return (
++    only !== undefined &&
++    rest.length === 0 &&
++    only.app === app &&
++    only.runsAs.length === 1 &&
++    only.runsAs[0]?.kind === "app" &&
++    only.tools.kind === "selected" &&
++    only.tools.names.length > 0 &&
++    only.tools.names.every((name) => syncTools.has(name))
++  );
++};
++
++/**
++ * The member's devices syncing this app's vault, oldest first: grants held through a connection
++ * Connect Obsidian made for it. Other grants, and connections for other apps or wider access,
++ * are not this vault's devices.
++ */
++export function obsidianDevices(
++  app: AppId,
++  connections: readonly Connection[],
++  agents: readonly ConnectedAgent[],
++): ObsidianDevice[] {
++  const vault = new Set(
++    connections
++      .filter((connection) => isVaultConnection(app, connection))
++      .map((connection) => connection.id),
++  );
++  const devices = agents
++    .flatMap((agent) =>
++      agent.access.kind === "connection" && vault.has(agent.access.connection)
++        ? [{ agent, connection: agent.access.connection }]
++        : [],
++    )
++    .sort((a, b) => a.agent.connectedAt.localeCompare(b.agent.connectedAt));
++  const generic = (name: string | null) => name === null || pluginClientNames.has(name.trim());
++  const shared = devices.filter(({ agent }) => generic(agent.name)).length;
++  let index = 0;
++  return devices.map(({ agent, connection }) => ({
++    agent: agent.id,
++    connection,
++    // Until devices report their own names, number them in the order they connected.
++    label: generic(agent.name)
++      ? shared > 1
++        ? `Obsidian device ${++index}`
++        : "Obsidian device"
++      : agent.name!.trim(),
++    connectedAt: agent.connectedAt,
++    lastActiveAt: agent.lastActiveAt,
++  }));
++}
++
++/** The header offers another device once one syncs this vault. */
++export const connectLabel = (devices: readonly ObsidianDevice[]) =>
++  devices.length > 0 ? "Connect another device" : "Connect Obsidian";
++
++/** What the vault's drive records from ordinary sync calls: each caller's last sync and head. */
++export const VaultSync = Schema.Struct({
++  head: Schema.NullOr(Schema.String),
++  devices: Schema.Array(
++    Schema.Struct({ agent: Schema.String, lastSyncAt: Schema.String, lastHead: Schema.String }),
++  ),
++});
++export type VaultSync = typeof VaultSync.Type;
++
++export interface DeviceSync {
++  readonly at: string;
++  /** The device has seen the vault's current head on its last sync. */
++  readonly current: boolean;
++}
++
++/** A device's own sync record, matched by grant; null when it hasn't synced since recording began. */
++export const deviceSync = (sync: VaultSync, device: ObsidianDevice): DeviceSync | null => {
++  const entry = sync.devices.find((item) => item.agent === device.agent);
++  return entry === undefined
++    ? null
++    : { at: entry.lastSyncAt, current: sync.head !== null && entry.lastHead === sync.head };
++};
++
++/** The app tool that reports the drive's sync records. */
++export const syncTool = "devices";
++export const hasSyncTool = (tools: readonly { readonly name: string }[]) =>
++  tools.some((tool) => tool.name === syncTool);
+diff --git a/apps/hosted/web/src/contracts/obsidian-vault-sync.ts b/apps/hosted/web/src/contracts/obsidian-vault-sync.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/obsidian-vault-sync.ts
+@@ -0,0 +1,40 @@
++import { Effect, Option, Schema } from "effect";
++import { Atom } from "effect/reactivity";
++import { ToolName, type AppId, type VersionId } from "@executor-js/sdk";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++import { browserOnly } from "@executor-js/ui/contracts/http";
++import { HostedClient } from "./api.ts";
++import { syncTool, VaultSync } from "./obsidian-devices.ts";
++
++const decode = Schema.decodeUnknownOption(VaultSync);
++interface Key {
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++  readonly version?: VersionId | undefined;
++}
++
++/**
++ * The app's sync records, read by running its `devices` query as the signed-in person.
++ * Undefined while unread, and when the read fails or answers another shape: devices then show
++ * without sync times.
++ */
++const vaultSync = Atom.family((key: string) => {
++  const { organization, app, version } = JSON.parse(key) as Key;
++  return browserOnly(
++    HostedClient.runtime.atom(
++      Effect.flatMap(HostedClient, (client) =>
++        client.tools.run({
++          params: { organization, app },
++          payload: { tool: ToolName.make(syncTool), kind: "query", input: {}, version },
++        }),
++      ).pipe(
++        Effect.map((run) =>
++          run.status === "completed" ? Option.getOrUndefined(decode(run.value)) : undefined,
++        ),
++        Effect.catch(() => Effect.succeed(undefined)),
++      ),
++    ),
++  );
++});
++// String keys, so the family reuses one read per app version.
++export const vaultSyncAtom = (key: Key) => vaultSync(JSON.stringify(key));
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -72,6 +72,7 @@ import {
+ import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
+ import { AppTools } from "./app-tools.tsx";
+ import { ObsidianConnect } from "./obsidian-connect.tsx";
++import { ObsidianDeviceList, ObsidianVault } from "./obsidian-devices.tsx";
+ import { AppSource, AppVersions } from "./app-source.tsx";
+ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
+@@ -530,7 +531,21 @@ export function AppDetailPage({
+                       Failure={HostedFailure}
+                     />
+                   }
+-                  accounts={<AppOverviewAccounts app={current} requirements={requirements} />}
++                  accounts={
++                    // An Obsidian vault's syncing devices are its accounts.
++                    <ObsidianVault
++                      app={current}
++                      fallback={<AppOverviewAccounts app={current} requirements={requirements} />}
++                    >
++                      {(vault) =>
++                        requirements.length === 0 ? (
++                          <ObsidianDeviceList vault={vault} manage={false} />
++                        ) : (
++                          <AppOverviewAccounts app={current} requirements={requirements} />
++                        )
++                      }
++                    </ObsidianVault>
++                  }
+                   tools={
+                     <AppOverviewTools
+                       app={current}
+@@ -568,17 +583,33 @@ export function AppDetailPage({
+                   }
+                 />
+               );
++            const accountsView = (
++              <AppAccounts
++                app={current}
++                appLinks={linked.app}
++                userLinks={linked.user}
++                canManage={canManage}
++                accounts={inventory.accounts}
++                inventory={inventory}
++                redirectUri={inventory.accountSetup.redirectUri}
++              />
++            );
+             return (
+               <div className="max-w-3xl space-y-4 p-5 max-[740px]:p-4">
+-                <AppAccounts
+-                  app={current}
+-                  appLinks={linked.app}
+-                  userLinks={linked.user}
+-                  canManage={canManage}
+-                  accounts={inventory.accounts}
+-                  inventory={inventory}
+-                  redirectUri={inventory.accountSetup.redirectUri}
+-                />
++                {/* A vault's devices are its connection, so Accounts lists them with Disconnect. */}
++                <ObsidianVault app={current} fallback={null}>
++                  {(vault) => (
++                    <section aria-label="Obsidian devices">
++                      <h2 className="mb-2 text-xs font-medium text-muted-foreground">
++                        Obsidian devices
++                      </h2>
++                      <ObsidianDeviceList vault={vault} manage />
++                    </section>
++                  )}
++                </ObsidianVault>
++                <ObsidianVault app={current} fallback={accountsView}>
++                  {() => (requirements.length === 0 ? null : accountsView)}
++                </ObsidianVault>
+               </div>
+             );
+           }}
+diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
+--- a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
++++ b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
+@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router";
+ import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+ import { Cause, Exit, Option } from "effect";
+ import { AsyncResult } from "effect/reactivity";
+-import { ToolName, type App } from "@executor-js/sdk";
++import type { App } from "@executor-js/sdk";
+ import { ConnectionId } from "@executor-js/mcp-auth/connections";
+ import { Button } from "@executor-js/ui/components/button";
+ import { Skeleton } from "@executor-js/ui/components/skeleton";
+@@ -14,12 +14,10 @@ import {
+   DialogFooter,
+   DialogTitle,
+ } from "@executor-js/ui/components/dialog";
+-import { useQuery } from "@executor-js/ui/dashboard/context";
+ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
+-import { connectionToolListAtom } from "../../contracts/apps.ts";
+ import { appError, type HostedError } from "../../contracts/errors.ts";
+-import { obsidianTools, supportsObsidian } from "../../contracts/obsidian-connection.ts";
++import { connectLabel } from "../../contracts/obsidian-devices.ts";
+ import {
+   prepareObsidianConnectionAtom,
+   type ObsidianProtocolUnavailable,
+@@ -31,35 +29,29 @@ import {
+   bratStoreLink,
+ } from "../../contracts/obsidian-plugin.ts";
+ import { useOrganizationRoute } from "../components/organization.tsx";
++import { ObsidianVault } from "./obsidian-devices.tsx";
+ 
+ /**
+- * Connect Obsidian, shown only for apps that speak the plugin's sync protocol. The drive and
+- * account checks need no read, so other apps never load their tool list for this.
++ * Connect Obsidian, shown only for apps that speak the plugin's sync protocol. Once a device
++ * syncs the vault it offers another device instead. The drive and account checks need no read,
++ * so other apps never load their tool list for this.
+  */
+ export function ObsidianConnect({ app }: { readonly app: App }) {
+-  // Every protocol tool present: what remains is the app's own drive and account requirements.
+-  const eligible = supportsObsidian(
+-    app,
+-    obsidianTools.map((name) => ({ name: ToolName.make(name) })),
+-  );
+-  return eligible ? (
+-    <ObsidianConnectWhenSupported key={`${app.id}:${app.activeVersion}`} app={app} />
+-  ) : null;
+-}
+-
+-function ObsidianConnectWhenSupported({ app }: { readonly app: App }) {
+-  const { organization } = useOrganizationRoute();
+-  const tools = useQuery(
+-    connectionToolListAtom({ organization, app: app.id, version: app.activeVersion ?? undefined }),
++  return (
++    <ObsidianVault app={app} fallback={null}>
++      {(vault) =>
++        vault.kind === "failed" ? (
++          <Button variant="outline" size="sm" onClick={vault.retry}>
++            Retry Obsidian check
++          </Button>
++        ) : vault.kind === "pending" ? (
++          <Skeleton className="h-9 w-36 max-[740px]:h-11" />
++        ) : (
++          <ConnectObsidian app={app} label={connectLabel(vault.devices)} />
++        )
++      }
++    </ObsidianVault>
+   );
+-  if (AsyncResult.isFailure(tools.result))
+-    return (
+-      <Button variant="outline" size="sm" onClick={() => tools.refresh()}>
+-        Retry Obsidian check
+-      </Button>
+-    );
+-  if (Option.isNone(tools.data)) return <Skeleton className="h-9 w-36 max-[740px]:h-11" />;
+-  return supportsObsidian(app, tools.data.value) ? <ConnectObsidian app={app} /> : null;
+ }
+ 
+ type Step =
+@@ -75,7 +67,7 @@ const failureMessage = (cause: Cause.Cause<HostedError | ObsidianProtocolUnavail
+     onNone: () => "The connection couldn't be prepared. Try again.",
+   });
+ 
+-function ConnectObsidian({ app }: { readonly app: App }) {
++function ConnectObsidian({ app, label }: { readonly app: App; readonly label: string }) {
+   const brand = useProductBrand();
+   const { organization, slug: organizationSlug } = useOrganizationRoute();
+   const prepare = useAtomSet(prepareObsidianConnectionAtom(organization), { mode: "promiseExit" });
+@@ -99,7 +91,7 @@ function ConnectObsidian({ app }: { readonly app: App }) {
+   return (
+     <>
+       <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
+-        Connect Obsidian
++        {label}
+       </Button>
+       <Dialog
+         open={open}
+diff --git a/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx b/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx
+@@ -0,0 +1,278 @@
++import { useState, type ReactNode } from "react";
++import { useAtomSet, useAtomValue } from "@effect/atom-react";
++import { Exit, Option } from "effect";
++import { AsyncResult } from "effect/reactivity";
++import { ToolName, type App } from "@executor-js/sdk";
++import { Button } from "@executor-js/ui/components/button";
++import {
++  Dialog,
++  DialogContent,
++  DialogDescription,
++  DialogFooter,
++  DialogHeader,
++  DialogTitle,
++} from "@executor-js/ui/components/dialog";
++import { LocalTime, RelativeTime, shortMoment } from "@executor-js/ui/components/local-time";
++import { Skeleton } from "@executor-js/ui/components/skeleton";
++import { useQuery } from "@executor-js/ui/dashboard/context";
++import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { connectionToolListAtom } from "../../contracts/apps.ts";
++import {
++  mcpAgentsAtom,
++  mcpConnectionsAtom,
++  revokeMcpAgentAtom,
++} from "../../contracts/mcp-connections.ts";
++import { obsidianTools, supportsObsidian } from "../../contracts/obsidian-connection.ts";
++import {
++  deviceSync,
++  hasSyncTool,
++  obsidianDevices,
++  type ObsidianDevice,
++  type VaultSync,
++} from "../../contracts/obsidian-devices.ts";
++import { vaultSyncAtom } from "../../contracts/obsidian-vault-sync.ts";
++import { HostedFailure } from "../components/dashboard-bindings.tsx";
++import { useOrganizationRoute } from "../components/organization.tsx";
++
++type Vault =
++  | { readonly kind: "pending" }
++  | { readonly kind: "failed"; readonly retry: () => void }
++  | {
++      readonly kind: "ready";
++      readonly devices: readonly ObsidianDevice[];
++      /** The drive's sync records; undefined until read, or where the app can't report them. */
++      readonly sync: VaultSync | undefined;
++    };
++
++/**
++ * Renders `children` with this vault's devices for apps that speak the Obsidian sync protocol,
++ * and `fallback` for every other app. Other apps never read their tool list or grants for this.
++ */
++export function ObsidianVault({
++  app,
++  fallback,
++  children,
++}: {
++  readonly app: App;
++  readonly fallback: ReactNode;
++  readonly children: (vault: Vault) => ReactNode;
++}) {
++  const possible = supportsObsidian(
++    app,
++    obsidianTools.map((name) => ({ name: ToolName.make(name) })),
++  );
++  return possible ? (
++    <WhenSupported key={`${app.id}:${app.activeVersion}`} app={app} fallback={fallback}>
++      {children}
++    </WhenSupported>
++  ) : (
++    fallback
++  );
++}
++
++function WhenSupported({
++  app,
++  fallback,
++  children,
++}: {
++  readonly app: App;
++  readonly fallback: ReactNode;
++  readonly children: (vault: Vault) => ReactNode;
++}) {
++  const { organization } = useOrganizationRoute();
++  const tools = useQuery(
++    connectionToolListAtom({ organization, app: app.id, version: app.activeVersion ?? undefined }),
++  );
++  if (AsyncResult.isFailure(tools.result))
++    return children({ kind: "failed", retry: () => tools.refresh() });
++  if (Option.isNone(tools.data)) return children({ kind: "pending" });
++  if (!supportsObsidian(app, tools.data.value)) return fallback;
++  return hasSyncTool(tools.data.value) ? (
++    <Synced app={app}>
++      {(sync) => (
++        <Devices app={app} sync={sync}>
++          {children}
++        </Devices>
++      )}
++    </Synced>
++  ) : (
++    <Devices app={app} sync={undefined}>
++      {children}
++    </Devices>
++  );
++}
++
++function Synced({
++  app,
++  children,
++}: {
++  readonly app: App;
++  readonly children: (sync: VaultSync | undefined) => ReactNode;
++}) {
++  const { organization } = useOrganizationRoute();
++  const sync = useQuery(
++    vaultSyncAtom({ organization, app: app.id, version: app.activeVersion ?? undefined }),
++  );
++  return children(Option.getOrUndefined(sync.data));
++}
++
++function Devices({
++  app,
++  sync,
++  children,
++}: {
++  readonly app: App;
++  readonly sync: VaultSync | undefined;
++  readonly children: (vault: Vault) => ReactNode;
++}) {
++  const { organization } = useOrganizationRoute();
++  const connections = useQuery(mcpConnectionsAtom(organization));
++  const agents = useQuery(mcpAgentsAtom(organization));
++  if (AsyncResult.isFailure(connections.result) || AsyncResult.isFailure(agents.result))
++    return children({
++      kind: "failed",
++      retry: () => {
++        connections.refresh();
++        agents.refresh();
++      },
++    });
++  if (Option.isNone(connections.data) || Option.isNone(agents.data))
++    return children({ kind: "pending" });
++  return children({
++    kind: "ready",
++    devices: obsidianDevices(app.id, connections.data.value, agents.data.value),
++    sync,
++  });
++}
++
++/**
++ * The vault's devices where the page lists accounts. `manage` adds Disconnect: revoking a
++ * device's grant ends its sync at once; its notes stay on the device and in the vault.
++ */
++export function ObsidianDeviceList({
++  vault,
++  manage,
++}: {
++  readonly vault: Vault;
++  readonly manage: boolean;
++}) {
++  const brand = useProductBrand();
++  const { organization } = useOrganizationRoute();
++  const revoke = revokeMcpAgentAtom(organization);
++  const submit = useAtomSet(revoke, { mode: "promiseExit" });
++  const state = useAtomValue(revoke);
++  const [disconnecting, setDisconnecting] = useState<ObsidianDevice>();
++  if (vault.kind === "pending")
++    return (
++      <div role="status" aria-label="Loading devices" className="flex items-center gap-4 py-2.5">
++        <div className="min-w-0 flex-1 space-y-2">
++          <Skeleton className="h-3 w-32" />
++          <Skeleton className="h-2.5 w-56 max-w-[70%]" />
++        </div>
++      </div>
++    );
++  if (vault.kind === "failed")
++    return (
++      <div className="flex items-center gap-3 py-2.5 text-[13px] text-muted-foreground">
++        Devices couldn't be loaded.
++        <Button variant="outline" size="sm" onClick={vault.retry}>
++          Try again
++        </Button>
++      </div>
++    );
++  if (vault.devices.length === 0)
++    return (
++      <p className="py-2.5 text-[13px] text-muted-foreground">
++        No device is syncing this vault. Choose Connect Obsidian to add one.
++      </p>
++    );
++  return (
++    <>
++      <ul className="divide-y">
++        {vault.devices.map((device) => (
++          <li key={device.agent} className="flex items-center gap-4 py-2.5">
++            <div className="min-w-0 flex-1">
++              <p className="truncate text-[13px] font-medium">{device.label}</p>
++              <p className="mt-0.5 truncate text-xs text-muted-foreground">
++                <SyncState device={device} sync={vault.sync} />
++                {" · Connected "}
++                <LocalTime value={device.connectedAt} options={shortMoment} />
++              </p>
++            </div>
++            {manage && (
++              <Button variant="outline" size="sm" onClick={() => setDisconnecting(device)}>
++                Disconnect<span className="sr-only"> {device.label}</span>
++              </Button>
++            )}
++          </li>
++        ))}
++      </ul>
++      <Dialog
++        open={disconnecting !== undefined}
++        onOpenChange={(open) => {
++          if (!open && !state.waiting) setDisconnecting(undefined);
++        }}
++      >
++        <DialogContent>
++          <DialogHeader>
++            <DialogTitle>Disconnect {disconnecting?.label}?</DialogTitle>
++            <DialogDescription>
++              {disconnecting?.label} stops syncing with {brand.name}. Its notes stay on the device,
++              and the vault stays here
++              {vault.kind === "ready" && vault.devices.length > 1
++                ? " with your other devices. To sync it again, choose Connect another device."
++                : ". To sync a device again, choose Connect Obsidian."}
++            </DialogDescription>
++          </DialogHeader>
++          {AsyncResult.isFailure(state) && <HostedFailure cause={state.cause} />}
++          <DialogFooter>
++            <Button
++              variant="outline"
++              disabled={state.waiting}
++              onClick={() => setDisconnecting(undefined)}
++            >
++              Cancel
++            </Button>
++            <Button
++              variant="destructive"
++              loading={state.waiting}
++              disabled={state.waiting}
++              onClick={async () => {
++                if (disconnecting === undefined) return;
++                if (Exit.isSuccess(await submit(disconnecting.agent))) setDisconnecting(undefined);
++              }}
++            >
++              Disconnect
++            </Button>
++          </DialogFooter>
++        </DialogContent>
++      </Dialog>
++    </>
++  );
++}
++
++function SyncState({
++  device,
++  sync,
++}: {
++  readonly device: ObsidianDevice;
++  readonly sync: VaultSync | undefined;
++}) {
++  const own = sync === undefined ? null : deviceSync(sync, device);
++  if (own !== null)
++    return (
++      <>
++        {own.current ? "Up to date · synced " : "Synced "}
++        <RelativeTime value={own.at} />
++      </>
++    );
++  // Before the drive recorded syncs, the grant's token refresh is the only sign of life.
++  if (device.lastActiveAt !== null)
++    return (
++      <>
++        {"Active "}
++        <RelativeTime value={device.lastActiveAt} />
++      </>
++    );
++  return <>No sync yet</>;
++}
