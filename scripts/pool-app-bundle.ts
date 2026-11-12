@@ -12,7 +12,7 @@ export interface PoolAppFile {
 export const poolFrameworkVersion = servedFrameworkVersion;
 
 const fontFiles = ["geist-sans.woff2", "geist-mono.woff2", "LICENSE.txt"];
-const sharedObservationFiles = [
+export const sharedObservationFiles = [
   "account-observation-text.ts",
   "account-observation-readings-view.tsx",
 ];
