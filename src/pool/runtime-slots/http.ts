@@ -1,8 +1,23 @@
 import { Schema } from "effect";
 import { openEnvelope } from "../token.ts";
-import { sameControllerCode, type ControllerCode } from "./contract.ts";
+import { sameControllerCode, type ControllerCode, type SlotIdentity } from "./contract.ts";
 import { decodeRuntimeHandoffCommand, runtimeHandoffCommandPrefix } from "./handoff-command.ts";
 import type { RuntimeHandoff } from "./integration.ts";
+import type {
+  RuntimeFleetConfiguration,
+  FleetConfiguration,
+} from "../runtime-fleet/configuration.ts";
+
+export interface HandoffFleet {
+  configure(
+    operationId: string,
+    configuration: FleetConfiguration,
+  ): ReturnType<RuntimeFleetConfiguration["configure"]>;
+  inspect(operationId?: string): Promise<unknown>;
+  disable?(operationId: string, expectedDigest: string): Promise<unknown>;
+  assertPrimaryChange?(): Promise<void>;
+  replace?(operationId: string, identity: SlotIdentity): Promise<unknown>;
+}
 
 /** Reuses the private deployment bridge. Commands cannot grant provider-write authority. */
 export async function handleRuntimeHandoff(
@@ -10,6 +25,7 @@ export async function handleRuntimeHandoff(
   handoff: RuntimeHandoff,
   code: ControllerCode,
   secret: string,
+  fleet?: HandoffFleet,
 ) {
   if (request.method !== "POST") return new Response(null, { status: 405 });
   try {
@@ -22,8 +38,28 @@ export async function handleRuntimeHandoff(
       await openEnvelope(secret, runtimeHandoffCommandPrefix, envelope),
     );
     if (!sameControllerCode(value.controllerCode, code)) return new Response(null, { status: 409 });
+    if (
+      ["adopt", "stage", "promote", "drain", "discard", "fence", "unfence"].includes(value.action)
+    )
+      await fleet?.assertPrimaryChange?.();
     let result: unknown;
     switch (value.action) {
+      case "fleet-configure":
+        if (!fleet) throw new Error("Runtime fleet unavailable");
+        result = await fleet.configure(value.operationId, value.configuration);
+        break;
+      case "fleet-inspect":
+        if (!fleet) throw new Error("Runtime fleet unavailable");
+        result = await fleet.inspect(value.operationId);
+        break;
+      case "fleet-disable":
+        if (!fleet?.disable) throw new Error("Runtime fleet unavailable");
+        result = await fleet.disable(value.operationId, value.expectedDigest);
+        break;
+      case "fleet-replace":
+        if (!fleet?.replace) throw new Error("Runtime fleet unavailable");
+        result = await fleet.replace(value.operationId, value.identity);
+        break;
       case "inspect":
         result = await handoff.slots.inspect();
         break;
@@ -59,6 +95,9 @@ export async function handleRuntimeHandoff(
         break;
       case "unfence":
         await handoff.slots.unfence(value.identity);
+        break;
+      case "peer-bootstrap":
+        result = await handoff.bootstrapPeer(value, request.signal);
         break;
     }
     return Response.json({ result: result ?? null }, { headers: { "Cache-Control": "no-store" } });

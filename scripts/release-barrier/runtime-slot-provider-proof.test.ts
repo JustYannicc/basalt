@@ -1,14 +1,33 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ConfigProvider, Effect } from "effect";
-import { readRuntimeProviderProof } from "./runtime-slot-provider-proof.ts";
+import {
+  readRuntimeProviderProof,
+  runtimeApplicationConfigDigest,
+} from "./runtime-slot-provider-proof.ts";
+import { decodeApplication } from "./container-observation.ts";
 import { runtimeProofFixture } from "./test/runtime-proof-fixture.ts";
 import type { Fetcher } from "../deploy-safety/http.ts";
 
 async function reader(
-  options: { wrongInstance?: boolean; changeVersion?: boolean; changeConfiguration?: boolean } = {},
+  options: {
+    wrongInstance?: boolean;
+    changeVersion?: boolean;
+    changeConfiguration?: boolean;
+    sibling?: boolean;
+    wrongSiblingImage?: boolean;
+    rollout?: boolean;
+  } = {},
 ) {
   const f = await runtimeProofFixture();
+  if (options.sibling) f.raw.max_instances = 64;
+  const manifest = {
+    ...f.manifest,
+    provider: {
+      ...f.manifest.provider,
+      applicationConfigDigest: runtimeApplicationConfigDigest(decodeApplication(f.raw)),
+    },
+  };
   const calls: string[] = [];
   let applicationReads = 0;
   const fetcher: Fetcher = async (input, init) => {
@@ -34,6 +53,17 @@ async function reader(
             ? { ...f.raw.configuration, environment_variables: [] }
             : f.raw.configuration,
         };
+    if (instances && Array.isArray(result) && options.sibling)
+      result.push({
+        id: "4".repeat(64),
+        application_id: f.raw.id,
+        status: { state: "running" },
+        image: options.wrongSiblingImage
+          ? f.raw.configuration.image.replace(/a{64}$/, "b".repeat(64))
+          : f.raw.configuration.image,
+      });
+    if (!instances && options.rollout)
+      Object.assign(result, { active_rollout_id: "active-rollout" });
     return Response.json({
       success: true,
       errors: [],
@@ -43,7 +73,7 @@ async function reader(
   };
   const run = (kind: "application" | "runtime") =>
     Effect.runPromise(
-      readRuntimeProviderProof(f.manifest, kind, fetcher, () => f.now).pipe(
+      readRuntimeProviderProof(manifest, kind, fetcher, () => f.now).pipe(
         Effect.provide(
           ConfigProvider.layer(
             ConfigProvider.fromEnv({ env: { CLOUDFLARE_API_TOKEN: "synthetic-provider-token" } }),
@@ -66,6 +96,21 @@ test("provider proof reads actual application settings and exact running instanc
   assert.equal(runtime.applicationConfigDigest, h.manifest.provider.applicationConfigDigest);
   assert.notEqual(app.observationDigest, runtime.observationDigest);
   assert.equal(h.calls.filter((path) => path.endsWith("/instances-v2")).length, 1);
+});
+
+test("named runtime proof permits several verified instances in the same application", async () => {
+  const h = await reader({ sibling: true });
+  const proof = await h.run("runtime");
+  assert.equal("instanceId" in proof ? proof.instanceId : undefined, h.manifest.target.instanceId);
+});
+
+test("siblings never substitute for the target or hide a wrong image or active rollout", async () => {
+  for (const options of [
+    { sibling: true, wrongInstance: true },
+    { sibling: true, wrongSiblingImage: true },
+    { sibling: true, rollout: true },
+  ])
+    await assert.rejects((await reader(options)).run("runtime"));
 });
 
 test("different runtime instance, changing app version and startup app settings refuse provider proof", async () => {

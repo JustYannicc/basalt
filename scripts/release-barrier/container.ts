@@ -11,6 +11,7 @@ import {
   type PreparedContainerPublication,
 } from "alchemy/Cloudflare/Containers/ContainerPublicationHook";
 import { containerDeclarationChanged } from "./container-declaration.ts";
+import { pinnedLegacyDeclaration, preserveLegacyPublication } from "./legacy-image.ts";
 import { Config, Effect, Redacted } from "effect";
 import { inspectPoolImage } from "../deploy-safety/pool-image-metadata.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
@@ -49,6 +50,7 @@ export interface FrozenContainer {
   readonly imageConfigDigest: string;
   readonly platform: "linux/amd64";
   readonly capabilityLabel: "1";
+  readonly preservedSourceInputHash?: string;
 }
 export interface StagedContainer {
   readonly publication: PreparedContainerPublication;
@@ -95,6 +97,9 @@ export const describeContainer = (value: FrozenContainer) => ({
   imageConfigDigest: value.imageConfigDigest,
   platform: value.platform,
   capabilityLabel: value.capabilityLabel,
+  ...(value.preservedSourceInputHash
+    ? { preservedSourceInputHash: value.preservedSourceInputHash }
+    : {}),
 });
 
 export function imageDigest(image: string) {
@@ -140,7 +145,12 @@ export function assertImageOnlyPublication(
       changed: changedProps(expected, actual),
     });
   };
-  if (publication.id !== "PoolContainer" || !olds || containerDeclarationChanged(props, olds))
+  if (
+    publication.id !== "PoolContainer" ||
+    !olds ||
+    (containerDeclarationChanged(props, olds) &&
+      !pinnedLegacyDeclaration(props, olds, publication.previous.configuration.image))
+  )
     refuse("unsupported-container-declaration-change", olds, props);
   if (
     props.instanceType !== "basic" ||
@@ -257,44 +267,49 @@ export const stageContainer = (
   inspect = inspectContainer,
 ) =>
   Effect.gen(function* () {
-    assertImageOnlyPublication(publication, props, olds, cached);
-    yield* publication.verifySource;
-    const metadata = yield* inspect(publication);
+    const preservation = preserveLegacyPublication(publication, props, olds);
+    const candidate = preservation.publication;
+    assertImageOnlyPublication(candidate, props, olds, cached);
+    yield* candidate.verifySource;
+    const metadata = yield* inspect(candidate);
     if (
-      metadata.digest !== publication.proposed.hash?.digest ||
+      metadata.digest !== candidate.proposed.hash?.digest ||
       !digestPattern.test(metadata.configDigest) ||
       metadata.platform !== "linux/amd64" ||
       metadata.capabilityLabel !== "1"
     )
-      throw new BarrierRefusal("invalid-container-image-metadata", publication.id);
+      throw new BarrierRefusal("invalid-container-image-metadata", candidate.id);
     const frozen: FrozenContainer = {
-      id: publication.id,
-      baseline: containerSnapshot(publication.previous),
-      configuration: structuredClone(publication.proposed.configuration),
-      rolloutRequest: structuredClone(publication.rolloutRequest),
-      baselineInputHash: publication.previous.hash!.image!,
-      inputHash: publication.proposed.hash!.image!,
+      id: candidate.id,
+      baseline: containerSnapshot(candidate.previous),
+      configuration: structuredClone(candidate.proposed.configuration),
+      rolloutRequest: structuredClone(candidate.rolloutRequest),
+      baselineInputHash: candidate.previous.hash!.image!,
+      inputHash: candidate.proposed.hash!.image!,
       imageDigest: metadata.digest,
       imageConfigDigest: metadata.configDigest,
       platform: "linux/amd64",
       capabilityLabel: "1",
+      ...(preservation.preservedSourceInputHash
+        ? { preservedSourceInputHash: preservation.preservedSourceInputHash }
+        : {}),
     };
     const changed = changedProps(
       { ...containerSnapshot(cached), configuration: cached.configuration },
       {
-        ...containerSnapshot(publication.previous),
-        configuration: publication.previous.configuration,
+        ...containerSnapshot(candidate.previous),
+        configuration: candidate.previous.configuration,
       },
     );
     return {
-      publication,
+      publication: candidate,
       frozen,
       ...(changed.length
         ? {
             normalization: {
               disposition: "observed-baseline" as const,
               recordedVersion: cached.version,
-              observedVersion: publication.previous.version,
+              observedVersion: candidate.previous.version,
               imageDigest: imageDigest(cached.configuration.image),
               changed,
             },

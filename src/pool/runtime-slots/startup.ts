@@ -33,6 +33,7 @@ export async function startRuntime(
   record: WitnessRecord,
   configuration: RuntimeConfiguration,
   signal: AbortSignal,
+  afterWitness?: (witness: StartupWitness) => Promise<void>,
 ) {
   const target = record.authorization.target;
   const { ledger, binding } = runtimeLaunch(ctx, record);
@@ -45,6 +46,9 @@ export async function startRuntime(
       POOL_APP_SIGNING_KEY_PREVIOUS: configuration.previousSigningKey,
       POOL_IMAGE_HASH: configuration.imageInput,
       ...(configuration.claudeQuotaDiagnostic ? { POOL_CLAUDE_QUOTA_DIAGNOSTIC: "true" } : {}),
+      ...(configuration.homePeerOrdinal !== undefined
+        ? { POOL_HOME_PEER_ORDINAL: String(configuration.homePeerOrdinal) }
+        : {}),
     },
     {
       ledger,
@@ -69,6 +73,7 @@ export async function startRuntime(
           },
         };
         await store.put(target, { ...record, witness });
+        await afterWitness?.(witness);
       },
     },
   );

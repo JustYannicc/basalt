@@ -1,6 +1,7 @@
-import { Schema } from "effect";
+import { Schema, Tuple } from "effect";
 import { ControllerCode, PromotionIntent, SlotIdentity, SlotTarget } from "./contract.ts";
 import { deploymentReadinessPrefix } from "../deployment-readiness.ts";
+import { FleetConfiguration } from "../runtime-fleet/configuration.ts";
 
 export const runtimeHandoffPath = "/runtime-handoff";
 export const runtimeHandoffCommandPrefix = deploymentReadinessPrefix;
@@ -10,7 +11,39 @@ const Milliseconds = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrE
 const fields = { controllerCode: ControllerCode, at: Milliseconds, expiresAt: Milliseconds };
 
 /** The existing bridge authenticates a closed command; the inner proof has its separate allocated kind. */
+export const RuntimeFleetOperationPayload = Schema.Union([
+  Schema.Struct({
+    controllerCode: ControllerCode,
+    action: Schema.Literal("fleet-configure"),
+    operationId: OperationId,
+    configuration: FleetConfiguration,
+  }),
+  Schema.Struct({
+    controllerCode: ControllerCode,
+    action: Schema.Literal("fleet-inspect"),
+    operationId: Schema.optional(OperationId),
+  }),
+  Schema.Struct({
+    controllerCode: ControllerCode,
+    action: Schema.Literal("fleet-disable"),
+    operationId: OperationId,
+    expectedDigest: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+  }),
+  Schema.Struct({
+    controllerCode: ControllerCode,
+    action: Schema.Literal("fleet-replace"),
+    operationId: OperationId,
+    identity: SlotIdentity,
+  }),
+]);
+export type RuntimeFleetOperationPayload = typeof RuntimeFleetOperationPayload.Type;
+export const RuntimeFleetCommand = RuntimeFleetOperationPayload.mapMembers(
+  Tuple.map(Schema.fieldsAssign({ at: Milliseconds, expiresAt: Milliseconds })),
+);
+export type RuntimeFleetCommand = typeof RuntimeFleetCommand.Type;
+
 export const RuntimeHandoffCommand = Schema.Union([
+  ...RuntimeFleetCommand.members,
   Schema.Struct({ ...fields, action: Schema.Literals(["inspect", "observe"]) }),
   Schema.Struct({
     ...fields,
@@ -29,6 +62,14 @@ export const RuntimeHandoffCommand = Schema.Union([
     ...fields,
     action: Schema.Literals(["fence", "unfence"]),
     identity: SlotIdentity,
+  }),
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literal("peer-bootstrap"),
+    operationId: OperationId,
+    identity: SlotIdentity,
+    configurationFingerprint: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+    sourceSha: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
   }),
 ]);
 export type RuntimeHandoffCommand = typeof RuntimeHandoffCommand.Type;

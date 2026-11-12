@@ -4,6 +4,17 @@ import { fileURLToPath } from "node:url";
 import { discoverContainerBarrierProof } from "../architecture/native-stack.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
+test("actual root deployStack preserves the legacy image and runtime input while the container source advances", () => {
+  const result = discoverContainerBarrierProof(root, "preserve-legacy-image");
+  assert.equal(result.succeeded, true);
+  assert.equal(result.workerInputMatches, true);
+  assert.equal(result.applicationWrites, 0);
+  assert.equal(result.rollouts, 0);
+  assert.equal(result.dockerCalls, 0);
+  assert.ok(result.events.includes("container:serving"));
+  // The source declaration still advances, so every later release revalidates preservation.
+  assert.equal(result.unchangedAction, "update");
+});
 for (const scenario of [
   "success",
   "activated-worker-attributes",

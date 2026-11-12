@@ -6,7 +6,11 @@ import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpResponse from "effect/http/HttpClientResponse";
-import { runtimeNamespaceRequest, assertRuntimeNamespace } from "./provisioning-namespace.ts";
+import {
+  runtimeNamespaceRequest,
+  assertRuntimeNamespace,
+  decodeNamespaceBaseline,
+} from "./provisioning-namespace.ts";
 import { readRuntimeExports } from "./provisioning-exports.ts";
 
 import { runtimeDeclaration, namespaceBaseline } from "./test/provisioning-fixtures.ts";
@@ -155,4 +159,136 @@ test("namespace readback requires legacy IDs unchanged and one new exact SQLite 
       }),
     /provisioning-namespace-unconfirmed/,
   );
+});
+
+test("green namespace provisioning retains an already provisioned blue namespace and both legacy module bytes", () => {
+  const baseline = namespaceBaseline();
+  const blue = runtimeNamespaceRequest(
+    baseline,
+    runtimeDeclaration("PoolRuntimeBlue"),
+    "blue-operation",
+  );
+  const { accountId: _account, workerId: _worker, deploy: _deploy, ...blueSettings } = blue;
+  const next = decodeNamespaceBaseline({
+    ...baseline,
+    version: {
+      ...baseline.version,
+      ...blueSettings,
+      id: "blue-version",
+      bindings: [
+        ...baseline.version.bindings!,
+        {
+          name: "PoolRuntimeBlue",
+          type: "durable_object_namespace" as const,
+          className: "PoolRuntimeBlue",
+          namespaceId: "blue-namespace",
+        },
+      ],
+    },
+    containers: blue.containers!,
+    namespaces: [
+      ...baseline.namespaces,
+      {
+        id: "blue-namespace",
+        className: "PoolRuntimeBlue",
+        binding: "PoolRuntimeBlue",
+        storage: "sqlite" as const,
+      },
+    ],
+  });
+  const green = runtimeNamespaceRequest(
+    next,
+    runtimeDeclaration("PoolRuntimeGreen"),
+    "green-operation",
+  );
+  assert.deepEqual(green.exports, {
+    ...blue.exports,
+    PoolRuntimeGreen: {
+      type: "durable-object",
+      storage: "sqlite",
+      container: "PoolRuntimeGreen",
+      state: "created",
+    },
+  });
+  assert.deepEqual(green.modules!.slice(1, -1), blue.modules!.slice(1));
+  const observation = {
+    accountId: baseline.accountId,
+    scriptName: baseline.scriptName,
+    versionId: "green-version",
+    deploymentId: "green-deployment",
+    exports: readRuntimeExports(green.exports),
+    containers: green.containers!,
+    namespaces: [
+      ...next.namespaces,
+      {
+        id: "green-namespace",
+        className: "PoolRuntimeGreen",
+        binding: "PoolRuntimeGreen",
+        storage: "sqlite" as const,
+      },
+    ],
+  };
+  assert.equal(
+    assertRuntimeNamespace(next, green, "green-version", observation).namespaceId,
+    "green-namespace",
+  );
+  assert.throws(
+    () => runtimeNamespaceRequest(next, runtimeDeclaration("PoolRuntimeBlue"), "repeat"),
+    /provisioning-namespace-baseline-unsupported/,
+  );
+  assert.throws(
+    () =>
+      assertRuntimeNamespace(next, green, "green-version", {
+        ...observation,
+        namespaces: observation.namespaces.map((row) =>
+          row.className === "PoolRuntimeBlue" ? { ...row, id: "crossed" } : row,
+        ),
+      }),
+    /provisioning-input-drift/,
+  );
+});
+
+test("a current Worker bundle with unbound runtime exports provisions metadata without replacing code or adding duplicate exports", () => {
+  for (const code of [
+    "export class PoolContainer {}\nexport class PoolRuntimeBlue {}\nexport class PoolRuntimeGreen {}\nexport default {};\n",
+    "class A{}; class B{}; class C{}; export { A as PoolContainer, B as PoolRuntimeBlue, C as PoolRuntimeGreen }; export default {};\n",
+  ]) {
+    const baseline = namespaceBaseline();
+    const main = baseline.version.modules![0]!;
+    main.contentBase64 = Buffer.from(code).toString("base64");
+    for (const name of ["PoolRuntimeBlue", "PoolRuntimeGreen"] as const) {
+      const request = runtimeNamespaceRequest(
+        baseline,
+        runtimeDeclaration(name),
+        `existing-${name}`,
+      );
+      assert.deepEqual(request.modules, baseline.version.modules);
+      assert.equal(request.modules!.length, 2);
+      assert.deepEqual(readRuntimeExports(request.exports)[name], {
+        type: "durable-object",
+        storage: "sqlite",
+        container: name,
+        state: "created",
+      });
+    }
+  }
+});
+
+test("an ambiguous or malformed bundle cannot silently replace a runtime export", () => {
+  for (const code of [
+    "export * from './opaque.mjs'; export default {};",
+    "export class PoolRuntimeBlue {",
+  ]) {
+    const baseline = namespaceBaseline();
+    baseline.version.modules![0]!.contentBase64 = Buffer.from(code).toString("base64");
+    assert.throws(
+      () =>
+        runtimeNamespaceRequest(
+          baseline,
+          runtimeDeclaration("PoolRuntimeBlue"),
+          "unconfirmed-export",
+        ),
+      /provisioning-namespace-module-unsupported/,
+    );
+  }
 });

@@ -4,10 +4,10 @@ import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/impl
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import { RuntimeSlotStorage } from "../../src/pool/runtime-slots/storage.ts";
 import {
-  RuntimeAttestation,
+  VerifiedRuntimeAttestation,
   decodeAdmissionProof,
   runtimeAttestationFormat,
-  type StartAuthorization,
+  type LaunchAuthorization,
 } from "../../src/pool/runtime-slots/admission-proof.ts";
 import { signEnvelope } from "../../src/pool/token.ts";
 import type { handoffRuntime } from "./runtime-handoff-fixture.ts";
@@ -42,7 +42,7 @@ export async function selectionProof(storage: RuntimeSqlite) {
 export async function runtimeGrant(
   runtime: Awaited<ReturnType<typeof handoffRuntime>>,
   controller: RuntimeSqlite,
-  kind: "start" | "unattested-active",
+  kind: "start" | "initial-start" | "unattested-active",
 ) {
   const now = Date.now();
   const proof = decodeAdmissionProof({
@@ -77,15 +77,15 @@ export async function runtimeGrant(
 export async function joinedRuntimeProof(
   runtime: Awaited<ReturnType<typeof handoffRuntime>>,
   controller: RuntimeSqlite,
-  authorization: StartAuthorization,
+  authorization: LaunchAuthorization,
 ) {
   const observed = await runtime.endpoint.witness(runtime.target);
   assert.equal(observed.kind, "witness");
   assert.ok("witness" in observed && observed.witness?.bootId);
   const now = Date.now();
-  const proof = Schema.decodeUnknownSync(RuntimeAttestation)({
+  const proof = Schema.decodeUnknownSync(VerifiedRuntimeAttestation)({
     ...authorization,
-    kind: "attested",
+    kind: authorization.kind === "initial-start" ? "initial-attested" : "attested",
     bootId: observed.witness.bootId,
     launch: observed.witness.launch,
     selection: await selectionProof(controller),

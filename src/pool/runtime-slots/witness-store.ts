@@ -1,9 +1,9 @@
 import { Schema } from "effect";
 import { SlotIdentity, SlotRefused, SlotTarget, sameTarget } from "./contract.ts";
 import {
-  StartAuthorization,
+  LaunchAuthorization,
   StartupWitness,
-  RuntimeAttestation,
+  VerifiedRuntimeAttestation,
   UnattestedActive,
   launchWitnessKey,
 } from "./admission-proof.ts";
@@ -15,13 +15,13 @@ import {
 } from "./configuration.ts";
 import type { RuntimeState } from "./runtime-state.ts";
 
-const Authorization = Schema.Union([StartAuthorization, UnattestedActive]);
+const Authorization = Schema.Union([LaunchAuthorization, UnattestedActive]);
 const WitnessRecord = Schema.Struct({
   authorization: Authorization,
   sealed: Schema.Struct({ iv: Schema.String, ciphertext: Schema.String }),
   identity: Schema.optional(SlotIdentity),
   witness: Schema.optional(StartupWitness),
-  attestation: Schema.optional(RuntimeAttestation),
+  attestation: Schema.optional(VerifiedRuntimeAttestation),
   retired: Schema.optional(Schema.Boolean),
 });
 export type WitnessRecord = typeof WitnessRecord.Type;

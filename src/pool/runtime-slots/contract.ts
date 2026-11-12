@@ -12,6 +12,9 @@ export const SlotTarget = Schema.Struct({
   instanceId: Identifier,
   imageDigest: Schema.String.check(Schema.isPattern(/^sha256:[a-f0-9]{64}$/u)),
   imageInput: Identifier,
+  homePeerOrdinal: Schema.optional(
+    Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 128 })),
+  ),
 });
 export type SlotTarget = typeof SlotTarget.Type;
 export const SlotIdentity = Schema.Struct({ ...SlotTarget.fields, bootId: Identifier });
@@ -88,6 +91,7 @@ export interface SlotDriver {
     signal: AbortSignal,
   ): Promise<void>;
   fetch(identity: SlotIdentity, request: Request, port: 8317 | 8327): Promise<Response>;
+  drain(identity: SlotIdentity, signal: AbortSignal): Promise<{ active: number; known: boolean }>;
   retire(target: SlotTarget, identity: SlotIdentity, signal: AbortSignal): Promise<void>;
 }
 export interface SlotSnapshot {

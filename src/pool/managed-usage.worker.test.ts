@@ -31,7 +31,11 @@ const {
 } = await import(workerModule);
 hooks.deregister();
 
-test("public managed usage and cap routes require signed host authority and keep setup private", async () => {
+test("public managed usage and cap routes require signed host authority and keep setup private", async (context) => {
+  const background: Promise<unknown>[] = [];
+  context.after(async () => {
+    await Promise.all(background);
+  });
   let reads = 0,
     writes = 0;
   const f = fixture({
@@ -55,7 +59,14 @@ test("public managed usage and cap routes require signed host authority and keep
     },
   });
   const worker = new PoolContainer(
-    { container: {}, storage: f.storage, id: { toString: () => "fixture" } },
+    {
+      container: {},
+      storage: f.storage,
+      id: { toString: () => "fixture" },
+      waitUntil: (work: Promise<unknown>) => {
+        background.push(work);
+      },
+    },
     {
       POOL_DATABASE_URL: "postgres://fixture",
       POOL_MANAGEMENT_KEY: "fixture",

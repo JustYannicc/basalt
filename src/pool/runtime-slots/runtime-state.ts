@@ -1,4 +1,5 @@
 import type { TransactionStorage } from "./storage.ts";
+import type { DrainExecutor } from "./legacy-drain.ts";
 
 /** Narrow platform boundary shared by the local controller runtime and its private sibling DO. */
 export interface RuntimeState {
@@ -17,6 +18,7 @@ export interface RuntimeState {
     getTcpPort(port: number): {
       fetch(input: string | Request, init?: RequestInit): Promise<Response>;
     };
+    exec?: DrainExecutor["exec"];
   };
   waitUntil(work: Promise<unknown>): void;
 }

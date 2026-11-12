@@ -276,6 +276,7 @@ model {
   basalt.deployment -[sync]-> containerRegistry "verify published image metadata"
   basalt.build -[sync]-> packageSource "install build packages"
   basalt.deployment -[sync]-> packageSource "install deployment packages"
+  basalt.modelGateway -[sync]-> deploymentProvider "read application settings and named runtime images with an account-scoped observation credential"
   basalt.deployment -[sync]-> deploymentProvider "freeze Worker uploads, validate provider startup, activate immutable versions and provision source namespace"
   basalt.deployment -[sync]-> databaseProvider "provision database resources"
   extend basalt.modelGateway {

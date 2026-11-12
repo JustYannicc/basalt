@@ -46,6 +46,7 @@ const pinFiles = ["releases.json", "sources.json", "typesafe/go.mod", "typesafe/
 /** Real root declarations and native Plan/Apply run end to end. Only control-plane effects, builds and stored state are synthetic. */
 export const proveContainerStack = (source, recompile, scenario) =>
   Effect.gen(function* () {
+    const preservingLegacy = scenario === "preserve-legacy-image";
     const context = join(mkdtempSync(join(tmpdir(), "container-root-")), "containers/pool");
     mkdirSync(context, { recursive: true });
     for (const file of execFileSync("git", ["ls-files", "containers/pool"], {
@@ -77,6 +78,20 @@ export const proveContainerStack = (source, recompile, scenario) =>
       ...value,
       resources: {
         ...value.resources,
+        PoolWorker: {
+          ...value.resources.PoolWorker,
+          Props: {
+            ...value.resources.PoolWorker.Props,
+            env: {
+              ...Object.fromEntries(
+                Object.entries(value.resources.PoolWorker.Props.env).filter(
+                  ([name]) => name !== "POOL_PRESERVE_LEGACY_IMAGE",
+                ),
+              ),
+              ...(preservingLegacy ? { POOL_PRESERVE_LEGACY_IMAGE: "true" } : {}),
+            },
+          },
+        },
         PoolContainer: {
           ...value.resources.PoolContainer,
           Props: { ...value.resources.PoolContainer.Props, context },
@@ -689,7 +704,15 @@ export const proveContainerStack = (source, recompile, scenario) =>
         if (recordedBaseline) {
           assert.equal(publications[0].baselineVersion, 26);
           assert.equal(publications[0].baselineDigest, staged.previous.hash.digest);
-          assert.equal(publications[0].imageDigest === publications[0].baselineDigest, sameDigest);
+          assert.equal(
+            publications[0].imageDigest === publications[0].baselineDigest,
+            sameDigest || preservingLegacy,
+          );
+          if (preservingLegacy) {
+            assert.equal(capturedPoolInput, baselinePoolInput);
+            assert.ok(publications[0].preservedSourceInputHash);
+            assert.notEqual(publications[0].preservedSourceInputHash, baselinePoolInput);
+          }
           assert.equal(normalizations.length, 1);
           assert.equal(normalizations[0].recordedVersion, 25);
           assert.equal(normalizations[0].observedVersion, 26);
@@ -704,6 +727,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
         }
         const succeeded = Exit.isSuccess(exit);
         const expectedSuccess = [
+          "preserve-legacy-image",
           "success",
           "activated-worker-attributes",
           "latest-upload-baseline",
@@ -732,8 +756,8 @@ export const proveContainerStack = (source, recompile, scenario) =>
               lastManifest.workers.find((worker) => worker.id === "PoolWorker").baselineImageHash,
               baselinePoolInput,
             );
-          assert.equal(api.writes, sameDigest ? 0 : 1);
-          assert.equal(api.rollouts, sameDigest ? 0 : 1);
+          assert.equal(api.writes, sameDigest || preservingLegacy ? 0 : 1);
+          assert.equal(api.rollouts, sameDigest || preservingLegacy ? 0 : 1);
           assert.equal(api.app.configuration.image, staged.proposed.configuration.image);
           const allWorkers = Object.values(stack.resources).filter(
             (resource) => resource.Type === "Cloudflare.Worker",
@@ -791,7 +815,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
           attachmentPending = false;
           const next = yield* run(Plan.make(stack));
           unchangedAction = next.resources.PoolContainer.action;
-          assert.equal(unchangedAction, "noop");
+          assert.equal(unchangedAction, preservingLegacy ? "update" : "noop");
           if (scenario === "updating-forward") {
             const key = { stack: stack.name, stage: stack.stage, fqn: "PoolContainer" };
             const saved = yield* memory.get(key);

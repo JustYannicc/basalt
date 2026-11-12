@@ -1,3 +1,4 @@
+import { canonicalProviderValue } from "../../src/pool/runtime-provider/canonical.ts";
 import type { PendingPlacementRepair } from "./pending-placement.ts";
 import type * as Workers from "@distilled.cloud/cloudflare/workers";
 import { createHash } from "node:crypto";
@@ -33,18 +34,11 @@ export interface ReleaseManifest {
 }
 
 export function canonical(value: unknown): string {
-  if (value === null || typeof value === "string" || typeof value === "boolean")
-    return JSON.stringify(value);
-  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map((item) => canonical(item)).join(",")}]`;
-  if (typeof value === "object" && value !== null) {
-    return `{${Object.entries(value)
-      .filter(([, item]) => item !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
-      .join(",")}}`;
+  try {
+    return canonicalProviderValue(value);
+  } catch {
+    throw new BarrierRefusal("unsupported-manifest-value");
   }
-  throw new BarrierRefusal("unsupported-manifest-value");
 }
 
 export const digest = (value: string | Uint8Array) =>

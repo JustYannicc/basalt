@@ -11,6 +11,9 @@ import {
   decodeAdmissionProof,
   runtimeAttestationFormat,
   type AdmissionProof,
+  isLaunchAuthorization,
+  isRuntimeAttestation,
+  type StartupWitness,
 } from "./admission-proof.ts";
 import { RuntimeWitnessStore, type WitnessRecord } from "./witness-store.ts";
 import { RuntimeChannel } from "./channel.ts";
@@ -19,31 +22,44 @@ import {
   runtimeConfiguration,
   type RuntimeEnvironment,
 } from "./configuration.ts";
-import type { RuntimeState } from "./runtime-state.ts";
+import type { ControllerState } from "./runtime-state.ts";
 import type { PoolStatus } from "../lifecycle.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import { startRuntime, verifyRuntimeLaunch } from "./startup.ts";
 import { openEnvelope } from "../token.ts";
+import { RuntimeActivity } from "./activity.ts";
+import type { NativeStreamLease } from "../native-streams.ts";
+import { proveLegacyDrain } from "./legacy-drain.ts";
+import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 
 export interface EndpointEnvironment extends RuntimeEnvironment {
   POOL_RUNTIME_APPLICATION_ID?: string;
   POOL_CONTAINER_APPLICATION_ID?: string;
 }
+export interface EndpointOptions {
+  beforeStart?(witness: StartupWitness): Promise<void>;
+  beforeBootstrap?(identity: SlotIdentity): Promise<void>;
+}
 
 /** Reads never start compute. Start owns one durable launch, and attestation never grants routing. */
 export class RuntimeEndpoint {
-  private ctx: RuntimeState;
+  private ctx: ControllerState;
   private env: EndpointEnvironment;
   private role: "legacy" | "runtime";
   private code: ControllerCode;
   private store: RuntimeWitnessStore;
   private channel: RuntimeChannel;
+  private activity: RuntimeActivity;
+  private wrap: (response: Response, lease: NativeStreamLease) => Response;
   private queue: Promise<unknown> = Promise.resolve();
+  private options: EndpointOptions;
   constructor(
-    ctx: RuntimeState,
+    ctx: ControllerState,
     env: EndpointEnvironment,
     role: "legacy" | "runtime",
     code: ControllerCode,
+    wrap: (response: Response, lease: NativeStreamLease) => Response,
+    options: EndpointOptions = {},
   ) {
     this.ctx = ctx;
     this.env = env;
@@ -51,6 +67,9 @@ export class RuntimeEndpoint {
     this.code = code;
     this.store = new RuntimeWitnessStore(ctx.storage, env.POOL_DEPLOYMENT_KEY ?? "");
     this.channel = new RuntimeChannel(ctx, env);
+    this.activity = new RuntimeActivity(ctx.storage);
+    this.wrap = wrap;
+    this.options = options;
   }
   private serialize<T>(work: () => Promise<T>): Promise<T> {
     const pending = this.queue.then(work);
@@ -81,7 +100,7 @@ export class RuntimeEndpoint {
   admit(envelope: string) {
     return this.serialize(async () => {
       const proof = await this.proof(envelope);
-      if (proof.kind === "attested") throw new SlotRefused("identity");
+      if (isRuntimeAttestation(proof)) throw new SlotRefused("identity");
       const retained = await this.store.retained(proof.target.slotId);
       if (retained && !retained.retired) {
         const { record } = await this.store.read(proof.target);
@@ -100,7 +119,12 @@ export class RuntimeEndpoint {
           throw new SlotRefused("identity");
         return;
       }
-      const configuration = runtimeConfiguration(this.env);
+      const configuration = runtimeConfiguration({
+        ...this.env,
+        ...(proof.target.homePeerOrdinal !== undefined
+          ? { POOL_HOME_PEER_ORDINAL: String(proof.target.homePeerOrdinal) }
+          : {}),
+      });
       if (
         configuration.imageInput !== proof.target.imageInput ||
         (await configurationDigest(configuration)) !== proof.configurationFingerprint
@@ -121,8 +145,16 @@ export class RuntimeEndpoint {
       signal.throwIfAborted();
       const { record, configuration } = await this.store.read(target);
       if (record.identity) return this.health(record.identity, signal);
-      if (record.authorization.kind !== "start") throw new SlotRefused("uncertain");
-      await startRuntime(this.ctx, this.code, this.store, record, configuration, signal);
+      if (!isLaunchAuthorization(record.authorization)) throw new SlotRefused("uncertain");
+      await startRuntime(
+        this.ctx,
+        this.code,
+        this.store,
+        record,
+        configuration,
+        signal,
+        this.options.beforeStart,
+      );
       signal.throwIfAborted();
       return this.complete(target, signal);
     });
@@ -130,7 +162,7 @@ export class RuntimeEndpoint {
   private checked(record: WitnessRecord, status: PoolStatus) {
     if (record.identity && status.boot_id !== record.identity.bootId)
       throw new SlotRefused("identity");
-    if (record.authorization.kind === "start") {
+    if (isLaunchAuthorization(record.authorization)) {
       const witness = record.witness;
       if (
         !witness ||
@@ -152,8 +184,9 @@ export class RuntimeEndpoint {
     const { record, configuration } = await this.store.read(target);
     const status = await this.channel.health(configuration, signal);
     const health = this.checked(record, status);
-    if (record.authorization.kind === "start") {
+    if (isLaunchAuthorization(record.authorization)) {
       await verifyRuntimeLaunch(this.ctx, record, status);
+      if (!record.identity) await this.activity.initialize(health.identity, true);
       await this.store.put(target, {
         ...record,
         identity: health.identity,
@@ -193,12 +226,13 @@ export class RuntimeEndpoint {
   attest(envelope: string) {
     return this.serialize(async () => {
       const proof = await this.proof(envelope);
-      if (proof.kind !== "attested") throw new SlotRefused("identity");
+      if (!isRuntimeAttestation(proof)) throw new SlotRefused("identity");
       const { record } = await this.store.read(proof.target),
         witness = record.witness;
       const previous = record.authorization;
       if (
-        previous.kind !== "start" ||
+        !isLaunchAuthorization(previous) ||
+        (previous.kind === "initial-start") !== (proof.kind === "initial-attested") ||
         !witness?.bootId ||
         !record.identity ||
         proof.bootId !== witness.bootId ||
@@ -244,18 +278,83 @@ export class RuntimeEndpoint {
     port: 8317 | 8327 | 8318,
     readOnly = false,
   ) {
-    const { configuration } = await this.store.read(identity);
-    await this.health(identity, request.signal);
-    if (!readOnly && port !== 8318) await this.channel.keepAlive();
-    return this.channel.fetch(configuration, request, port);
+    if (readOnly && port === 8317) throw new SlotRefused("identity");
+    if (readOnly || port !== 8317) {
+      const { configuration } = await this.store.read(identity);
+      await this.health(identity, request.signal);
+      if (!readOnly && port !== 8318) await this.channel.keepAlive();
+      return this.channel.fetch(configuration, request, port);
+    }
+    const { configuration, done } = await this.serialize(async () => {
+      this.bound(identity);
+      const { record, configuration } = await this.store.read(identity);
+      if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
+      request.signal.throwIfAborted();
+      return { configuration, done: await this.activity.acquire(identity) };
+    });
+    const release = () => {
+      this.ctx.waitUntil(done());
+      return true;
+    };
+    try {
+      await this.health(identity, request.signal);
+      await this.channel.keepAlive();
+      request.signal.throwIfAborted();
+      return this.wrap(await this.channel.fetch(configuration, request, port), {
+        signal: request.signal,
+        release,
+        onClose: () => {},
+      });
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+  drain(identity: SlotIdentity, signal: AbortSignal) {
+    return this.serialize(async () => {
+      await this.health(identity, signal);
+      signal.throwIfAborted();
+      const state = await this.activity.drain(identity);
+      if (state.known || state.active !== 0 || this.role !== "legacy") return state;
+      if (
+        !(await proveLegacyDrain(this.ctx, identity, signal, () => this.health(identity, signal)))
+      )
+        return state;
+      return this.activity.reconcileDrained(identity);
+    });
+  }
+  async bootstrapPeer(input: PeerBootstrapInput, signal: AbortSignal) {
+    if (this.role !== "legacy") throw new SlotRefused("identity");
+    const { record, configuration } = await this.store.read(input.identity);
+    if (
+      !sameIdentity(record.identity, input.identity) ||
+      configuration.homePeerOrdinal !== undefined ||
+      record.authorization.configurationFingerprint !== input.configurationFingerprint
+    )
+      throw new SlotRefused("identity");
+    await this.health(input.identity, signal);
+    await this.options.beforeBootstrap?.(input.identity);
+    return new PeerBootstrap(this.ctx, (identity, signal) => this.health(identity, signal)).run(
+      input,
+      signal,
+    );
   }
   retire(target: SlotTarget, identity: SlotIdentity, signal: AbortSignal) {
     return this.serialize(async () => {
       const { record } = await this.store.read(target);
       await this.health(identity, signal);
       signal.throwIfAborted();
+      if (!sameTarget(target, identity)) throw new SlotRefused("identity");
+      await this.activity.retire(identity);
+      signal.throwIfAborted();
       await this.ctx.container!.destroy();
       await this.store.put(target, { ...record, retired: true });
     });
+  }
+  async retirement(identity: SlotIdentity) {
+    this.bound(identity);
+    const record = await this.store.retained(identity.slotId);
+    if (!record || !sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
+    return { identity, retired: record.retired === true, running: this.ctx.container!.running };
   }
 }

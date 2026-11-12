@@ -77,6 +77,7 @@ export class RuntimeChannel {
     });
     if (port === 8327) headers.set("X-Management-Key", configuration.managementKey);
     if (port === 8318) headers.set("Authorization", `Bearer ${configuration.managementKey}`);
-    return this.ctx.container!.getTcpPort(port).fetch(new Request(request, { headers }));
+    const target = port === 8327 && configuration.homePeerOrdinal !== undefined ? 8329 : port;
+    return this.ctx.container!.getTcpPort(target).fetch(new Request(request, { headers }));
   }
 }
