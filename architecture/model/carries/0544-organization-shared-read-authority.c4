@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Pool usage reporting and idempotent history imports explicitly take a shared organization transaction advisory lock before freshly reading membership FOR SHARE. Both locks remain held through the signed receiver acknowledgment, failure or timeout. Policy writers and native membership reconciliation remain exclusive. Series, overview, personal overview and credit routing still call reconciliation and remain exclusive until a separate pure read resolver exists. Shared operations must never call an exclusive nested helper or upgrade the lock."
+    }
+  }
+}
