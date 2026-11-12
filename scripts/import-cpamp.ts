@@ -12,6 +12,9 @@ const { values } = parseArgs({
   options: {
     target: { type: "string" },
     "pool-token-file": { type: "string" },
+    "owner-session-file": { type: "string" },
+    organization: { type: "string" },
+    pool: { type: "string" },
     caller: { type: "string" },
     source: { type: "string" },
     file: { type: "string" },
@@ -29,14 +32,15 @@ seenIds.exec("PRAGMA cache_size=-4096; CREATE TABLE ids(id TEXT PRIMARY KEY) WIT
 const retainId = seenIds.prepare("INSERT INTO ids(id) VALUES (?)");
 
 async function main() {
-  if (
-    !values.target ||
-    !values["pool-token-file"] ||
-    !values.caller ||
-    !values.source ||
-    !values.file
-  )
+  if (!values.target || !values.caller || !values.source || !values.file)
     throw new Error("Missing import arguments");
+  const ownerSession = values["owner-session-file"];
+  if (Boolean(ownerSession) === Boolean(values["pool-token-file"]))
+    throw new Error("Choose an owner session or a pool transport credential");
+  if (ownerSession && (!values.organization || !values.pool))
+    throw new Error("Owner imports require an organization and pool");
+  if (!ownerSession && (values.organization || values.pool))
+    throw new Error("Organization and pool select the owner-session route");
   const target = serviceOrigin(values.target),
     applying = values["apply-report"] !== undefined;
   if (
@@ -44,7 +48,31 @@ async function main() {
     (applying && (!values.approve || !values.receipts))
   )
     throw new Error("Choose dry-run report or approved apply-report with receipts");
-  const token = await privateCredential(values["pool-token-file"]);
+  const credential = await privateCredential(ownerSession ?? values["pool-token-file"]!);
+  const headers = new Headers({ "content-type": "application/json" });
+  if (ownerSession) {
+    headers.set("cookie", credential);
+    headers.set("origin", target.origin);
+  } else {
+    headers.set("authorization", `Bearer ${credential}`);
+    headers.set("x-signalbox-caller", values.caller);
+  }
+  const importPath = ownerSession
+    ? `/api/organizations/${encodeURIComponent(values.organization!)}/apps/${encodeURIComponent(values.pool!)}/pool-usage/import`
+    : "/pool/v1/usage/import";
+  if (ownerSession) {
+    const viewer = await globalThis.fetch(new URL("/api/viewer", target), {
+      headers,
+      redirect: "error",
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!viewer.ok) {
+      await viewer.body?.cancel();
+      throw new Error("Owner sign-in refused");
+    }
+    if (historyObject(await viewer.json()).userId !== values.caller)
+      throw new Error("The signed-in owner does not match the approved caller");
+  }
   const source = await metadataInput(values.file);
   const sourceHash = await source.digest();
   const mapFile = values["account-map-file"];
@@ -108,15 +136,11 @@ async function main() {
     await output.sync();
   }
   async function request(input: Record<string, unknown>) {
-    const response = await globalThis.fetch(new URL("/pool/v1/usage/import", target), {
+    const response = await globalThis.fetch(new URL(importPath, target), {
       method: "POST",
       redirect: "error",
       signal: AbortSignal.timeout(30_000),
-      headers: {
-        authorization: `Bearer ${token}`,
-        "x-signalbox-caller": values.caller!,
-        "content-type": "application/json",
-      },
+      headers,
       body: JSON.stringify(input),
     });
     if (!response.ok) {

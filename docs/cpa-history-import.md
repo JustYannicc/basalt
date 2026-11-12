@@ -47,8 +47,24 @@ generations. The current ledger stores neither a requested/resolved-model pair
 nor the source generation flag, so retain that distinction in the source receipt.
 
 For each metadata page, `node scripts/import-cpamp.ts` takes `--target`,
-`--pool-token-file`, `--caller`, `--source`, `--file` and `--report` for its dry
-run. A multi-page JSONL file is streamed with at most 200 rows per HTTP request.
+`--caller`, `--source`, `--file` and `--report` for its dry run. Use
+`--owner-session-file` with `--organization` and `--pool` to authenticate as the
+recorded pool owner. The private file contains the Cookie header from that
+owner's normal signed-in session, with no newline. It must be a regular file
+readable only by its owner. Never print it or put it in a command argument.
+The CLI checks `/api/viewer` against `--caller` before sending a page; the host
+checks current owner and app-management permission on every dry run and apply.
+An organization administrator or app manager who is not that pool owner cannot
+import. No model API key or new import credential is created.
+
+Existing internal operators may still supply `--pool-token-file` instead of the
+session arguments. Both transports use the same source namespace, mapped records
+and exact-ID manifest. The owner route is
+`POST /api/organizations/:organization/apps/:app/pool-usage/import`, with
+`mode` set to `dry-run` or `apply`. It preserves account attribution; the
+self-service import route has its own attribution and source rules.
+
+A multi-page JSONL file is streamed with at most 200 rows per HTTP request.
 The complete report binds the source file digest, caller, destination and exact
 request IDs. A temporary disk-backed index rejects repeated IDs across the whole
 export and approved manifest before any apply request. It contains no bearer credential or reusable page approval.

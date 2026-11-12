@@ -1,0 +1,534 @@
+diff --git a/apps/hosted/server/src/contracts/pool-usage-import.ts b/apps/hosted/server/src/contracts/pool-usage-import.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/pool-usage-import.ts
+@@ -0,0 +1,54 @@
++import { ApiError } from "@executor-js/utils/api-error";
++import { Schema } from "effect";
++
++const count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
++const hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
++const label = Schema.NonEmptyString.check(Schema.isMaxLength(256));
++export const PoolUsageImportInput = Schema.Struct({
++  source: Schema.String.check(Schema.isPattern(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u)),
++  format: Schema.Literal("cpamp-v1-jsonl"),
++  data: Schema.String.check(Schema.isMaxLength(8 * 1024 * 1024)),
++  offset: Schema.optionalKey(count),
++  mode: Schema.Literals(["dry-run", "apply"]),
++  approval: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(4096))),
++  accountMappings: Schema.optionalKey(
++    Schema.Array(
++      Schema.Struct({
++        sourceAccountRef: hash,
++        targetAccountId: label,
++        provider: label,
++      }),
++    ).check(Schema.isMaxLength(500)),
++  ),
++});
++export type PoolUsageImportInput = typeof PoolUsageImportInput.Type;
++
++export const PoolUsageImportResult = Schema.Struct({
++  mode: Schema.Literals(["dry-run", "apply"]),
++  format: Schema.Literal("cpamp-v1-jsonl"),
++  accountMappingDigest: Schema.optionalKey(hash),
++  totalDetails: count,
++  pageDetails: count,
++  aggregateOnlyNotImportable: Schema.String,
++  indistinguishableDetails: count,
++  unpriced: count,
++  missingProvider: count,
++  missingEndpoint: count,
++  missingLatency: count,
++  missingPriceSnapshot: count,
++  existing: count,
++  wouldInsert: count,
++  inserted: count,
++  ids: Schema.Array(hash).check(Schema.isMaxLength(200)),
++  next: Schema.NullOr(count),
++  approval: Schema.NullOr(Schema.String),
++});
++
++export const PoolUsageImportRejected = ApiError.define({
++  tag: "PoolUsageImportRejected",
++  status: 409,
++  message: "Usage import was refused. Check the source and mapping, then run a new dry run.",
++  fields: {
++    reason: Schema.Literals(["invalid_query", "identity_conflict", "unauthorized", "unavailable"]),
++  },
++});
+diff --git a/apps/hosted/server/src/contracts/pool-usage.ts b/apps/hosted/server/src/contracts/pool-usage.ts
+--- a/apps/hosted/server/src/contracts/pool-usage.ts
++++ b/apps/hosted/server/src/contracts/pool-usage.ts
+@@ -4,7 +4,12 @@
+ import { Context, Schema } from "effect";
+ import type { Redacted } from "effect";
+ import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+-import { Principal } from "./auth.ts";
++import { BrowserSessionOnly, Principal, RequireUser } from "./auth.ts";
++import {
++  PoolUsageImportInput,
++  PoolUsageImportResult,
++  PoolUsageImportRejected,
++} from "./pool-usage-import.ts";
+ import { RequiredAction } from "./authorization.ts";
+ import {
+   LastSuccessAt,
+@@ -129,6 +134,26 @@
+ export const HostedPoolUsage = /* @__PURE__ */ (() =>
+   HttpApiGroup.make("poolUsage")
+     .add(
++      HttpApiEndpoint.post(
++        "importMapped",
++        "/api/organizations/:organization/apps/:app/pool-usage/import",
++        {
++          params,
++          payload: PoolUsageImportInput,
++          success: PoolUsageImportResult,
++          error: [
++            OrganizationForbidden,
++            StorageError,
++            PoolUsageUnavailable,
++            PoolUsageImportRejected,
++          ],
++        },
++      )
++        .annotate(RequiredAction, "manage")
++        .annotate(BrowserSessionOnly, true)
++        .middleware(RequireUser),
++    )
++    .add(
+       HttpApiEndpoint.get(
+         "accountRouting",
+         "/api/organizations/:organization/apps/:app/pool-credit-policy",
+diff --git a/apps/hosted/server/src/implementation/pool-backend.ts b/apps/hosted/server/src/implementation/pool-backend.ts
+--- a/apps/hosted/server/src/implementation/pool-backend.ts
++++ b/apps/hosted/server/src/implementation/pool-backend.ts
+@@ -1,6 +1,6 @@
+ import { AppId, StorageError } from "@executor-js/sdk/core";
+ import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
+-import { FetchHttpClient, HttpBody, HttpClient, HttpClientResponse } from "effect/http";
++import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
+ import { Principal } from "../contracts/auth.ts";
+ import { PoolUsageBackend, PoolUsageUnavailable } from "../contracts/pool-usage.ts";
+ import { applicationAudiences } from "./application-audience.ts";
+@@ -22,19 +22,18 @@
+   return { key: key.value, origin: origin.value };
+ }).pipe(Effect.catch(() => new PoolUsageUnavailable()));
+ 
+-export const sendPoolCommand = <A>(
+-  action:
+-    | "accountRouting"
+-    | "setCreditPolicy"
+-    | "managed-usage"
+-    | "managed-cap"
+-    | "poolUsageSeries"
+-    | "lastSuccessAt"
+-    | "poolOverview"
+-    | "poolPersonalOverview",
+-  payload: Record<string, unknown>,
+-  responseSchema: Schema.ConstraintDecoder<A, never>,
+-) =>
++type PoolCommand =
++  | "importUsage"
++  | "accountRouting"
++  | "setCreditPolicy"
++  | "managed-usage"
++  | "managed-cap"
++  | "poolUsageSeries"
++  | "lastSuccessAt"
++  | "poolOverview"
++  | "poolPersonalOverview";
++
++export const sendPoolCommandResponse = (action: PoolCommand, payload: Record<string, unknown>) =>
+   Effect.gen(function* () {
+     const { key, origin } = yield* backend;
+     const now = yield* Clock.currentTimeMillis;
+@@ -48,25 +47,37 @@
+     const client = yield* HttpClient.HttpClient;
+     // Match the public pool usage paths in Basalt's src/pool/model-history/series-http.ts.
+     const path =
+-      action === "poolUsageSeries"
+-        ? "/pool/v1/usage/series"
+-        : action === "lastSuccessAt"
+-          ? "/pool/v1/usage/last-success"
+-          : action === "poolOverview"
+-            ? "/pool/v1/usage/overview"
+-            : action === "poolPersonalOverview"
+-              ? "/pool/v1/usage/personal-overview"
+-              : `/pool/v1/${action}`;
++      action === "importUsage"
++        ? "/pool/v1/usage/import/owner"
++        : action === "poolUsageSeries"
++          ? "/pool/v1/usage/series"
++          : action === "lastSuccessAt"
++            ? "/pool/v1/usage/last-success"
++            : action === "poolOverview"
++              ? "/pool/v1/usage/overview"
++              : action === "poolPersonalOverview"
++                ? "/pool/v1/usage/personal-overview"
++                : `/pool/v1/${action}`;
+     const response = yield* client.post(new URL(path, origin).href, {
+       body: HttpBody.jsonUnsafe({ envelope }),
+     });
+-    if (response.status !== 200) return yield* new PoolUsageUnavailable();
+-    return yield* HttpClientResponse.schemaBodyJson(responseSchema)(response);
++    return { status: response.status, body: yield* response.json };
+   }).pipe(
+     Effect.timeout("10 seconds"),
+     Effect.provide(FetchHttpClient.layer),
+     Effect.catch(() => new PoolUsageUnavailable()),
+   );
++
++export const sendPoolCommand = <A>(
++  action: PoolCommand,
++  payload: Record<string, unknown>,
++  responseSchema: Schema.ConstraintDecoder<A, never>,
++) =>
++  Effect.gen(function* () {
++    const response = yield* sendPoolCommandResponse(action, payload);
++    if (response.status !== 200) return yield* new PoolUsageUnavailable();
++    return yield* Schema.decodeUnknownEffect(responseSchema)(response.body);
++  }).pipe(Effect.catch(() => new PoolUsageUnavailable()));
+ 
+ /** The native policy and external cap write share the organization access lock. */
+ export const withPool = <A, E, R>(
+diff --git a/apps/hosted/server/src/implementation/pool-usage-import.ts b/apps/hosted/server/src/implementation/pool-usage-import.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-usage-import.ts
+@@ -0,0 +1,45 @@
++import type { AppId } from "@executor-js/sdk/core";
++import { StorageError } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { OrganizationForbidden } from "../contracts/organization.ts";
++import {
++  PoolUsageImportRejected,
++  PoolUsageImportResult,
++  type PoolUsageImportInput,
++} from "../contracts/pool-usage-import.ts";
++import { PoolUsageUnavailable } from "../contracts/pool-usage.ts";
++import { sendPoolCommandResponse, withPool } from "./pool-backend.ts";
++
++const Refusal = Schema.Struct({
++  error: Schema.Literals(["invalid_query", "identity_conflict", "unauthorized"]),
++});
++
++/** App managers cannot import on behalf of a different recorded pool owner. */
++export const importPoolUsage = (app: AppId, input: PoolUsageImportInput) =>
++  withPool(app, (pool) =>
++    Effect.gen(function* () {
++      if (pool.user !== pool.owner) return yield* new OrganizationForbidden();
++      const response = yield* sendPoolCommandResponse("importUsage", {
++        pool: pool.pool,
++        organization: pool.organization,
++        owner: pool.owner,
++        user: pool.user,
++        input,
++      });
++      if (response.status !== 200) {
++        const refused = Schema.decodeUnknownOption(Refusal)(response.body);
++        return yield* new PoolUsageImportRejected({
++          reason: refused._tag === "Some" ? refused.value.error : "unavailable",
++        });
++      }
++      return yield* Schema.decodeUnknownEffect(PoolUsageImportResult)(response.body);
++    }),
++  ).pipe(
++    Effect.flatMap((result) =>
++      result === null ? Effect.fail(new OrganizationForbidden()) : Effect.succeed(result),
++    ),
++    Effect.catchTags({
++      SqlError: () => new StorageError(),
++      SchemaError: () => new PoolUsageUnavailable(),
++    }),
++  );
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -1,5 +1,6 @@
+ import { sendPoolCommand, withPool } from "./pool-backend.ts";
+ import { poolAccountRouting, setPoolCreditPolicy } from "./pool-credit-routing.ts";
++import { importPoolUsage } from "./pool-usage-import.ts";
+ import { AppId, StorageError, StorageHost } from "@executor-js/sdk/core";
+ import { Effect, Schema } from "effect";
+ import { HttpApiBuilder } from "effect/http-api";
+@@ -239,6 +240,7 @@
+ 
+ export const hostedPoolUsageHandlers = HttpApiBuilder.group(HostedApi, "poolUsage", (handlers) =>
+   handlers
++    .handle("importMapped", ({ params, payload }) => importPoolUsage(params.app, payload))
+     .handle("accountRouting", ({ params }) => poolAccountRouting(params.app))
+     .handle("setCreditPolicy", ({ params, payload }) =>
+       setPoolCreditPolicy(params.app, payload.usageCreditPolicy),
+diff --git a/e2e/support/pool-usage-import-backend.ts b/e2e/support/pool-usage-import-backend.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/pool-usage-import-backend.ts
+@@ -0,0 +1,115 @@
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Clock, Effect, Layer, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createHash, createHmac, timingSafeEqual } from "node:crypto";
++import { createServer } from "node:http";
++
++const Input = Schema.Struct({
++  source: Schema.String,
++  format: Schema.Literal("cpamp-v1-jsonl"),
++  data: Schema.String,
++  mode: Schema.Literals(["dry-run", "apply"]),
++  approval: Schema.optionalKey(Schema.String),
++  accountMappings: Schema.Array(
++    Schema.Struct({
++      sourceAccountRef: Schema.String,
++      targetAccountId: Schema.String,
++      provider: Schema.String,
++    }),
++  ),
++});
++const Assertion = Schema.Struct({
++  action: Schema.Literal("importUsage"),
++  pool: Schema.String,
++  organization: Schema.String,
++  owner: Schema.String,
++  user: Schema.String,
++  expiresAt: Schema.Number,
++  input: Input,
++});
++const hash = (value: string) => createHash("sha256").update(value).digest("hex");
++
++/** The real hosted product talks to this loopback implementation of the pool boundary. */
++export const poolUsageImportBackend = (owner: string) =>
++  Effect.gen(function* () {
++    const calls = yield* Ref.make<readonly (typeof Assertion.Type)[]>([]);
++    const retained = yield* Ref.make<ReadonlySet<string>>(new Set());
++    const handler = Effect.gen(function* () {
++      const request = yield* HttpServerRequest.HttpServerRequest;
++      const body = yield* request.json.pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))),
++      );
++      const [prefix, encoded, signature, extra] = body.envelope.split(".");
++      if (prefix !== "sbs1" || !encoded || !signature || extra !== undefined)
++        return HttpServerResponse.empty({ status: 401 });
++      const actual = Buffer.from(signature, "base64url"),
++        expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++          .update(`${prefix}.${encoded}`)
++          .digest();
++      if (actual.length !== expected.length || !timingSafeEqual(actual, expected))
++        return HttpServerResponse.empty({ status: 401 });
++      const assertion = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Assertion))(
++        Buffer.from(encoded, "base64url").toString(),
++      );
++      const now = yield* Clock.currentTimeMillis;
++      if (
++        assertion.owner !== owner ||
++        assertion.user !== owner ||
++        assertion.expiresAt <= now ||
++        assertion.expiresAt > now + 30_000
++      )
++        return HttpServerResponse.empty({ status: 401 });
++      yield* Ref.update(calls, (calls) => [...calls, assertion]);
++      const input = assertion.input,
++        data = input.data.split("\n"),
++        ids = data.map((row) => hash(JSON.stringify([input.source, row])));
++      const approval = hash(
++        JSON.stringify({
++          source: input.source,
++          data: input.data,
++          accountMappings: input.accountMappings,
++        }),
++      );
++      if (input.mode === "apply" && input.approval !== approval)
++        return HttpServerResponse.jsonUnsafe({ error: "invalid_query" }, { status: 409 });
++      const before = yield* Ref.get(retained),
++        missing = ids.filter((id) => !before.has(id));
++      if (input.mode === "apply")
++        yield* Ref.update(retained, (saved) => new Set([...saved, ...ids]));
++      return HttpServerResponse.jsonUnsafe({
++        mode: input.mode,
++        format: input.format,
++        accountMappingDigest: hash(JSON.stringify(input.accountMappings)),
++        totalDetails: ids.length,
++        pageDetails: ids.length,
++        aggregateOnlyNotImportable: "0",
++        indistinguishableDetails: 0,
++        unpriced: ids.length,
++        missingProvider: 0,
++        missingEndpoint: 0,
++        missingLatency: 0,
++        missingPriceSnapshot: ids.length,
++        existing: ids.length - missing.length,
++        wouldInsert: missing.length,
++        inserted: input.mode === "apply" ? missing.length : 0,
++        ids,
++        next: null,
++        approval: input.mode === "dry-run" ? approval : null,
++      });
++    });
++    const services = yield* Layer.build(
++      HttpRouter.serve(HttpRouter.add("POST", "/pool/v1/usage/import/owner", handler), {
++        disableLogger: true,
++        disableListenLog: true,
++      }).pipe(
++        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++      ),
++    );
++    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++    if (!("port" in server.address)) return yield* Effect.die("Import fixture requires TCP");
++    return {
++      origin: `http://127.0.0.1:${server.address.port}`,
++      calls: Ref.get(calls),
++      retained: Ref.get(retained),
++    };
++  });
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9742,6 +9742,17 @@
+       cloud: na("Uses runner-owned retained pool records and a signed loopback usage backend."),
+     },
+   },
++  poolOwnerImport: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "pool-owner-import.spec.ts",
++    title: "owner-session mapped history import preserves source and rejects managers and admins",
++    targets: {
++      "self-host": scheduled,
++      local: na("Uses hosted owner sessions and organization access locks."),
++      cloud: na("Uses runner-owned retained pool records and a signed loopback import backend."),
++    },
++  },
+   poolUsageSeries: {
+     fixtures: "actors",
+     legacyStorage: true,
+diff --git a/e2e/tests/pool-owner-import.spec.ts b/e2e/tests/pool-owner-import.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/pool-owner-import.spec.ts
+@@ -0,0 +1,125 @@
++import { createHash } from "node:crypto";
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { App } from "../support/contracts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { poolUsageImportBackend } from "../support/pool-usage-import-backend.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const source = `import {defineApp,query,object,router} from "apps";
++export default defineApp({},{tools:router({identity:query({input:object({})},async()=>"allowed")})});`;
++const Result = Schema.Struct({
++  ids: Schema.Array(Schema.String),
++  inserted: Schema.Number,
++  wouldInsert: Schema.Number,
++  accountMappingDigest: Schema.String,
++  approval: Schema.NullOr(Schema.String),
++});
++
++layer(RuntimeLive, { excludeTestServices: true })("Pool owner import", (it) => {
++  it.effect(scenarios.poolOwnerImport.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const viewer = yield* api
++          .request(actors.owner, "GET", "/api/viewer")
++          .pipe(
++            Effect.flatMap((response) => body(Schema.Struct({ userId: Schema.String }), response)),
++          );
++        const backend = yield* poolUsageImportBackend(viewer.userId),
++          prefix = `/api/organizations/${actors.organization.id}`;
++        const app = yield* api
++          .request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++            name: "Mapped history fixture",
++            files: [{ path: "index.ts", content: source }, appsManifest],
++          })
++          .pipe(Effect.flatMap((response) => body(App, response)));
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          {
++            sql: `update organization set metadata=jsonb_set(coalesce(metadata::jsonb,'{}'::jsonb),'{basaltPools}',$1::jsonb)::text where id=$2`,
++            params: [
++              JSON.stringify({
++                [viewer.userId]: {
++                  app: app.id,
++                  version: "retained-version",
++                  authorization: "executor-app-v1",
++                  membership: "executor-links-v1",
++                },
++              }),
++              actors.organization.id,
++            ],
++          },
++        ]);
++        yield* serverControl("environment", 200, {
++          POOL_APP_SIGNING_KEY: "ab".repeat(32),
++          BASALT_POOL_ORIGIN: backend.origin,
++        });
++        yield* serverControl("start");
++        yield* Effect.addFinalizer(() => serverControl("start").pipe(Effect.orDie));
++        const path = `${prefix}/apps/${app.id}/pool-usage/import`;
++        const input = {
++          source: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
++          format: "cpamp-v1-jsonl",
++          mode: "dry-run",
++          data: JSON.stringify({
++            event_hash: "b".repeat(64),
++            timestamp: "2026-05-05T11:32:18.619Z",
++            failed: false,
++          }),
++          accountMappings: [
++            {
++              sourceAccountRef: "a".repeat(64),
++              targetAccountId: "fixture-credential",
++              provider: "codex",
++            },
++          ],
++        };
++        expect((yield* api.request(actors.member, "POST", path, input)).status).toBe(403);
++        expect((yield* api.request(actors.admin, "POST", path, input)).status).toBe(403);
++        expect(
++          (yield* api.request(actors.owner, "POST", path, input, {
++            authorization: "Bearer refused-grant",
++          })).status,
++        ).toBe(401);
++        expect((yield* backend.calls).length).toBe(0);
++        const response = yield* api.request(actors.owner, "POST", path, input);
++        expect(response.status).toBe(200);
++        const dry = yield* body(Result, response);
++        expect(dry.wouldInsert).toBe(1);
++        expect((yield* backend.retained).size).toBe(0);
++        const calls = yield* backend.calls;
++        expect(calls[0]?.input).toEqual(input);
++        expect(calls[0]?.pool).toBe(app.id);
++        expect(calls[0]?.organization).toBe(actors.organization.id);
++        expect(calls[0]?.owner).toBe(viewer.userId);
++        expect(dry.accountMappingDigest).toBe(
++          createHash("sha256").update(JSON.stringify(input.accountMappings)).digest("hex"),
++        );
++        expect(
++          (yield* api.request(actors.owner, "POST", path, { ...input, mode: "apply" })).status,
++        ).toBe(409);
++        for (const expected of [1, 0]) {
++          const applied = yield* api.request(actors.owner, "POST", path, {
++            ...input,
++            mode: "apply",
++            approval: dry.approval,
++          });
++          expect(applied.status).toBe(200);
++          const result = yield* body(Result, applied);
++          expect(result.ids).toEqual(dry.ids);
++          expect(result.inserted).toBe(expected);
++        }
++        expect((yield* backend.retained).size).toBe(1);
++      }),
++    ),
++  );
++});
