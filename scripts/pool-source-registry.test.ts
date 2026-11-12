@@ -282,6 +282,19 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /retained snapshots and management reads/);
         assert.match(patch.retirement.requires, /default-off bounded diagnostic discovery/);
         assert.match(patch.retirement.requires, /no reset redemption/);
+      } else if (patch.identity === "node-usage-api-shape") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0554-node-usage-api-shape.patch");
+        assert.match(patch.retirement.requires, /allowlisted canonical API paths/);
+        assert.match(patch.retirement.requires, /detached context/);
+        assert.match(
+          patch.retirement.requires,
+          /omits arbitrary paths and all other request metadata/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /context, queue publication and fresh Home-capture regressions/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
