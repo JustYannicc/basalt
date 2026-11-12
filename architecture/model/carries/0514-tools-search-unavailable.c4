@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "MCP discovery reads linked account metadata in one owner-scoped batch, retaining each account's execution target and omitting removed accounts. It must not spend every source's discovery wait on repeated account reads. Search retains source failures separately from matches; clients show incomplete searches with an explicit retry and never describe them as complete searches with no matches. Kept, authorized listings remain reusable without refreshing every source."
+      constraint "MCP discovery reads linked account metadata in one owner-scoped batch, retaining each account's execution target and omitting removed accounts. It must not spend every source's discovery wait on repeated account reads. Search retains source failures separately from matches; clients show incomplete searches with an explicit retry and never describe them as complete searches with no matches. App-scoped tool browsers name failed routers and offer refresh alongside healthy tools; only complete catalogs can establish an empty state. Kept, authorized listings remain reusable without refreshing every source."
     }
   }
 }

@@ -50,3 +50,108 @@ index c8470ab..13f42c0 100644
        ),
        Effect.provideContext(context),
      ),
+diff --git a/packages/ui/src/implementation/dashboard/tool-router-failures.tsx b/packages/ui/src/implementation/dashboard/tool-router-failures.tsx
+new file mode 100644
+index 0000000..97e5f93
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/tool-router-failures.tsx
+@@ -0,0 +1,40 @@
++import { AccountUnavailable, type ToolRouter } from "@executor-js/sdk";
++import { Schema } from "effect";
++import { Button } from "../components/button.tsx";
++import { CompactFailure } from "./error-notice.tsx";
++
++export function ToolRouterFailures({
++  routers,
++  retry,
++  retrying,
++}: {
++  readonly routers: readonly ToolRouter[];
++  readonly retry: () => void;
++  readonly retrying: boolean;
++}) {
++  // Account failures already have notices with their own recovery actions.
++  const failed = routers.filter(
++    (router) => router.error !== undefined && !Schema.is(AccountUnavailable)(router.error),
++  );
++  if (failed.length === 0) return null;
++  return (
++    <ul
++      aria-label="Sources whose tools could not load"
++      className="max-h-72 shrink-0 space-y-3 overflow-y-auto border-b px-4 py-3 max-[740px]:px-3"
++    >
++      {failed.map((router) => (
++        <li key={router.path} className="max-w-3xl min-w-0">
++          <CompactFailure
++            title={`Couldn't load ${router.title || router.path || "this source"} tools.`}
++            busy={retrying}
++          >
++            <p>Some tools may be missing. Refresh to try this source again.</p>
++            <Button type="button" size="xs" variant="outline" disabled={retrying} onClick={retry}>
++              {retrying ? "Refreshing tools…" : "Refresh tools"}
++            </Button>
++          </CompactFailure>
++        </li>
++      ))}
++    </ul>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/tools.tsx b/packages/ui/src/implementation/dashboard/tools.tsx
+index cf27eaa..45f66af 100644
+--- a/packages/ui/src/implementation/dashboard/tools.tsx
++++ b/packages/ui/src/implementation/dashboard/tools.tsx
+@@ -35,6 +35,7 @@ import {
+   unavailableAccounts,
+   type ToolAccountLabel,
+ } from "./tool-account-failures.tsx";
++import { ToolRouterFailures } from "./tool-router-failures.tsx";
+ 
+ type ToolBrowserProps<E> = QueryProps<ToolCatalog, E> & {
+   /** Undefined when the tool left the catalog after the list was read. */
+@@ -97,13 +98,17 @@ function Browser<E, F>({
+   const catalogRouters = Option.isSome(data) ? data.value.routers : [];
+   const routers = new Map(catalogRouters.map((router) => [router.path, router]));
+   const unavailable = unavailableAccounts(catalogRouters);
+-  const accountFailures = (
+-    <ToolAccountFailures
+-      failures={unavailable}
+-      accounts={accounts}
+-      retry={refresh}
+-      retrying={result.waiting}
+-    />
++  const hasSourceFailures = catalogRouters.some((router) => router.error !== undefined);
++  const sourceFailures = (
++    <>
++      <ToolAccountFailures
++        failures={unavailable}
++        accounts={accounts}
++        retry={refresh}
++        retrying={result.waiting}
++      />
++      <ToolRouterFailures routers={catalogRouters} retry={refresh} retrying={result.waiting} />
++    </>
+   );
+   // Until the setting is read, a manager sees the ordinary browser rather than guessed switches.
+   const state = availability?.state;
+@@ -259,9 +264,9 @@ function Browser<E, F>({
+                 <AppSectionTitle>Tools</AppSectionTitle>
+                 <span className="text-muted-foreground">0</span>
+               </AppSectionHeader>
+-              {accountFailures}
+-              {/* The account notices say why nothing listed; "No tools" would contradict them. */}
+-              {(empty !== undefined || unavailable.length === 0) && (
++              {sourceFailures}
++              {/* Source failures cannot establish an empty catalog. */}
++              {!hasSourceFailures && (
+                 <div className="p-6">
+                   {empty ?? (
+                     <Empty title="No tools">
+@@ -273,7 +278,7 @@ function Browser<E, F>({
+             </>
+           ) : (
+             <>
+-              {accountFailures}
++              {sourceFailures}
+               <div className="grid min-h-0 flex-1 grid-cols-[var(--app-tools-list-width)_minmax(0,1fr)] overflow-hidden max-[740px]:grid-cols-1">
+                 <aside className="flex min-h-0 flex-col bg-muted/15 max-[740px]:hidden">
+                   {list()}
