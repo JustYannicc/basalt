@@ -1,4 +1,4 @@
-/** In-page targets for wikilinks and embeds; hash links survive react-markdown's URL filter. */
+/** In-page targets for wikilinks and embeds; the note components only follow these and http(s). */
 export const noteHref = (path: string) => `#note=${encodeURIComponent(path)}`;
 export const fileHref = (path: string) => `#file=${encodeURIComponent(path)}`;
 

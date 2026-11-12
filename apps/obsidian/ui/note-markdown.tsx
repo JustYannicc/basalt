@@ -47,11 +47,19 @@ export function NoteMarkdown({
           </a>
         );
       },
-      img: ({ src, alt, "data-fs-width": width }: Image) => {
+      img: ({ src, alt, "data-fs-width": width, "data-fs-height": height }: Image) => {
         const target = linkTarget(typeof src === "string" ? src : undefined);
         // `![[sketch.png|360]]` sizes the image, as in Obsidian.
         if (target?.kind === "file")
-          return <VaultImage path={target.path} alt={alt ?? ""} width={width} load={loadFile} />;
+          return (
+            <VaultImage
+              path={target.path}
+              alt={alt ?? ""}
+              width={width}
+              height={height}
+              load={loadFile}
+            />
+          );
         return <span className="embed-missing">{alt || "Image"}</span>;
       },
       iframe: ({ src }: Media) => <EmbedChip src={src} />,
@@ -68,7 +76,7 @@ export function NoteMarkdown({
 }
 
 type Anchor = { href?: string; className?: string; children?: ReactNode };
-type Image = { src?: string; alt?: string; "data-fs-width"?: string };
+type Image = { src?: string; alt?: string; "data-fs-width"?: string; "data-fs-height"?: string };
 type Media = { src?: string };
 
 function EmbedChip({ src }: { readonly src?: string | undefined }): ReactNode {
@@ -82,11 +90,13 @@ function VaultImage({
   path,
   alt,
   width,
+  height,
   load,
 }: {
   readonly path: string;
   readonly alt: string;
   readonly width?: string | number | undefined;
+  readonly height?: string | number | undefined;
   readonly load: (path: string) => Promise<Blob | null>;
 }) {
   const [url, setUrl] = useState<string | null | undefined>(undefined);
@@ -107,5 +117,5 @@ function VaultImage({
   }, [path, load]);
   if (url === undefined) return <span className="embed-loading" aria-label={`Loading ${alt}`} />;
   if (url === null) return <span className="embed-chip">{path.split("/").pop()}</span>;
-  return <img src={url} alt={alt} width={width} className="embed-image" />;
+  return <img src={url} alt={alt} width={width} height={height} className="embed-image" />;
 }
