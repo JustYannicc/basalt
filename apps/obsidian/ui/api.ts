@@ -2,7 +2,7 @@ import { json, type Schema } from "apps";
 import { createAppClient, queryReference, type OperationReference } from "apps/client";
 import type { attachmentTools } from "../attachments.ts";
 import type { importTools } from "../imports.ts";
-import type { history, listNotes, readAttachment, readNote, searchNotes } from "../index.ts";
+import type { listNotes, readAttachment, readNote, searchNotes } from "../index.ts";
 import type { Devices, ImportStatus, Version } from "./model.ts";
 
 const client = createAppClient();
@@ -15,16 +15,18 @@ const tools = {
   readNote: queryReference<typeof readNote>("readNote"),
   searchNotes: queryReference<typeof searchNotes>("searchNotes"),
   readAttachment: queryReference<typeof readAttachment>("readAttachment"),
-  history: queryReference<typeof history>("history"),
   importStatus: queryReference<(typeof importTools)["importStatus"]>("importStatus"),
   fileInfo: queryReference<(typeof attachmentTools)["fileInfo"]>("fileInfo"),
 };
-// Device sync records arrive with a later server; until then this tool doesn't exist.
-const devicesTool = queryReference<never>("devices" as never) as unknown as OperationReference<
-  Record<string, never>,
-  Devices,
-  "query"
->;
+// History filtered by note and device sync records come from the vault-storage server; an older
+// server refuses `path` and has no `devices`, and the page degrades.
+const named = <I, O>(tool: string) =>
+  queryReference<never>(tool as never) as unknown as OperationReference<I, O, "query">;
+const historyTool = named<
+  { readonly path?: string; readonly at?: string; readonly limit?: number },
+  readonly Version[]
+>("history");
+const devicesTool = named<Record<string, never>, Devices>("devices");
 
 type ListPage = Awaited<ReturnType<typeof list>>;
 export type Entry = ListPage["entries"][number];
@@ -150,7 +152,7 @@ async function attachment(path: string, type: string): Promise<Blob | null> {
  * drive without per-file history refuses `path`, and one without commit times leaves `time` out.
  */
 async function noteHistory(path: string, limit: number): Promise<Version[] | null> {
-  const versions: readonly Version[] | null = await run(tools.history, { path, limit }).catch(
+  const versions: readonly Version[] | null = await run(historyTool, { path, limit }).catch(
     () => null,
   );
   return versions !== null && versions.every((version) => typeof version.time === "string")
@@ -168,7 +170,7 @@ export const vault = {
   noteHistory,
   /** The vault's newest version; dated once the server records commit times. */
   latest: (): Promise<Version | null> =>
-    run(tools.history, { limit: 1 })
+    run(historyTool, { limit: 1 })
       .then((versions: readonly Version[]) => versions[0] ?? null)
       .catch(() => null),
   devices: () => run(devicesTool, {}).catch(() => null),
