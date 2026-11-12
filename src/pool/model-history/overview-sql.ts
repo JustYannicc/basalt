@@ -25,8 +25,13 @@ export function priceQuery(personScoped = false, retained = false) {
         AND r.timestamp_exact >= $4 AND r.timestamp_exact < $5
         ${retained ? "" : "AND (r.account IS NULL OR refs.account IS NOT NULL)"}
         ${personScoped ? "AND r.person = ANY($9::character(64)[]) AND r.attribution IS DISTINCT FROM 'import-owner'" : ""}
-    ), priced AS (
-      SELECT s.*,p.price_version,p.price_as_of,
+    ), ${pricedRowsSql()} `;
+}
+
+/** One request-level calculation is shared by overview, settings and retained history. */
+export function pricedRowsSql(selected = "selected", table = "$7", guard = "true", prefix = "") {
+  return `priced AS (
+      SELECT s.*,p.price_version AS ${prefix}price_version,p.price_as_of AS ${prefix}price_as_of,
         CASE WHEN p.price_version IS NULL OR s.token_quality NOT IN ('complete','legacy')
           OR s.input_tokens IS NULL OR s.output_tokens IS NULL OR s.cache_read_tokens IS NULL OR s.cache_write_tokens IS NULL
           OR (s.token_quality='complete' AND s.input_tokens::numeric < s.cache_read_tokens::numeric+s.cache_write_tokens::numeric)
@@ -45,16 +50,16 @@ export function priceQuery(personScoped = false, retained = false) {
           (s.input_tokens::numeric*p.input_rate + s.output_tokens::numeric*p.output_rate
           + s.cache_read_tokens::numeric*p.cache_read_rate + s.cache_write_tokens::numeric*p.cache_write_rate)/1000000 + p.request_rate
         ELSE NULL END AS api_cost
-      FROM selected s LEFT JOIN LATERAL (
+      FROM ${selected} s LEFT JOIN LATERAL (
         SELECT version AS price_version,as_of AS price_as_of,input::numeric AS input_rate,output::numeric AS output_rate,
           cache_read::numeric AS cache_read_rate,cache_write::numeric AS cache_write_rate,request::numeric AS request_rate
-        FROM jsonb_to_recordset($7::jsonb) AS x(provider text,model text,currency text,input text,output text,
+        FROM jsonb_to_recordset(${table}::jsonb) AS x(provider text,model text,currency text,input text,output text,
           cache_read text,cache_write text,request text,tier text,min_input text,as_of text,source text,version text)
         WHERE x.provider=s.provider AND x.model=s.model AND x.currency='USD' AND x.source='models.dev'
           AND (x.tier='*' OR x.tier=coalesce(s.service_tier,'*')) AND x.min_input::numeric<=coalesce(s.context_input,0)
         ORDER BY (x.tier<>'*') DESC,x.min_input::numeric DESC LIMIT 1
-      ) p ON true
-    ) `;
+      ) p ON ${guard}
+    )`;
 }
 
 export const percentileSql = (

@@ -164,6 +164,19 @@ function missingCostReason(
   return [...reasons].join("; ");
 }
 
+export function priceProvenance(prices: readonly OverviewApiPrice[]) {
+  if (!prices.length) return null;
+  return {
+    source: "models.dev",
+    version: [...new Set(prices.map((price) => price.version))].sort().join(","),
+    asOf: prices.map((price) => price.asOf).sort()[0]!,
+    ...(prices.some((price) => price.basis === "baseline")
+      ? { basis: "baseline" as const }
+      : { basis: "live" as const }),
+    ...(prices.some((price) => price.refreshFailed) ? { refreshFailed: true } : {}),
+  };
+}
+
 export function officialCostMetric(
   rows: readonly OfficialCostRow[],
   prices: readonly OverviewApiPrice[],
@@ -189,7 +202,11 @@ export function officialCostMetric(
       price: null,
       reason,
     };
-  const versions = [...new Set(prices.map((price) => price.version))].sort();
+  const relevant = prices.filter((price) =>
+    rows.some(
+      (row) => row.priced > 0 && row.provider === price.provider && row.model === price.model,
+    ),
+  );
   return {
     status: "available",
     amount,
@@ -197,13 +214,7 @@ export function officialCostMetric(
     pricedRequests: priced,
     excluded,
     ...(reason ? { reason } : {}),
-    price: prices.length
-      ? {
-          source: "models.dev",
-          version: versions.join(","),
-          asOf: prices.map((price) => price.asOf).sort()[0]!,
-        }
-      : null,
+    price: priceProvenance(relevant),
   };
 }
 

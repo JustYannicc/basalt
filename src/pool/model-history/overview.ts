@@ -27,6 +27,7 @@ import { homeAccountMappingProven } from "./series-mapping.ts";
 import {
   officialCosts,
   officialCostMetric,
+  priceProvenance,
   officialCostTargets,
   officialCostSlices,
 } from "./official-cost.ts";
@@ -727,17 +728,6 @@ function unavailableMoney(
     excluded,
     price: null,
   };
-}
-
-function priceProvenance(prices: readonly OverviewApiPrice[]) {
-  const versions = new Set(prices.map((price) => price.version));
-  const asOf = prices
-    .map((price) => price.asOf)
-    .sort()
-    .at(0);
-  return versions.size > 0 && asOf
-    ? { source: "models.dev", version: [...versions].sort().join(","), asOf }
-    : null;
 }
 
 /** Reads one repeatable-read overview. Raw requests stay inside SQL and only bounded groups leave it. */

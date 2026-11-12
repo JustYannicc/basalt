@@ -1,3 +1,6 @@
+import type { OverviewPriceTable } from "../../../apps/pool/overview-contract.ts";
+import { officialPriceRows } from "./official-cost.ts";
+import { pricedRowsSql } from "./overview-sql.ts";
 import { digest } from "../backend-users.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import { appAttributionReady } from "./schema.ts";
@@ -31,6 +34,7 @@ export async function seriesQuery(
   authority: SeriesAuthority,
   after?: SeriesCursor,
   personScope?: string,
+  prices?: OverviewPriceTable,
 ) {
   const source = await digest("home-local-v1"),
     gateway = await digest("pool-gateway-v1");
@@ -80,6 +84,9 @@ export async function seriesQuery(
     values.push(personScope);
     personalWhere = ` AND r.person = $${values.length}::character(64) AND r.attribution IS DISTINCT FROM 'import-owner'`;
   }
+  const priceParameter = prices
+    ? `$${values.push(JSON.stringify(officialPriceRows(prices.prices)))}`
+    : undefined;
   const columns = Object.entries(tokenColumns).flatMap(([name, column]) => [
     `sum(${column})::text AS "${name}Sum"`,
     `count(${column})::text AS "${name}Known"`,
@@ -102,6 +109,14 @@ export async function seriesQuery(
     ...["charge-snapshot", "key-at-capture", "import-owner", "unknown"].map(
       (kind) => `count(*) FILTER (WHERE attribution = '${kind}')::text AS "${kind}"`,
     ),
+    ...(prices
+      ? [
+          "round(sum(api_cost),12)::text AS api_amount",
+          "count(api_cost)::text AS api_priced",
+          "count(*) FILTER (WHERE public_price_version IS NULL)::text AS api_missing_prices",
+          "count(*) FILTER (WHERE input_tokens IS NULL OR output_tokens IS NULL OR cache_read_tokens IS NULL OR cache_write_tokens IS NULL OR token_quality NOT IN ('complete','legacy'))::text AS api_missing_tokens",
+        ]
+      : []),
     "bool_or(counts_only) AS counts_only",
   ];
   const key = ["'currency'", "currency"];
@@ -127,7 +142,9 @@ export async function seriesQuery(
     redactedKey.push("'attribution'", "NULL");
   const app = (await appAttributionReady(db)) ? "r.app_id" : "NULL::text AS app_id";
   const prefix = `WITH bindings AS (SELECT * FROM jsonb_to_recordset($4::jsonb) AS b(history text,saved text)),
-    selected AS (SELECT r.*, $6::text AS gateway_source, ${app === "r.app_id" ? "" : `${app},`}
+    selected AS (SELECT r.*, $6::text AS gateway_source,
+      CASE WHEN r.token_quality='complete' OR r.token_quality='legacy' AND r.api_type IN ('responses','responses-compact') THEN r.input_tokens::numeric
+        WHEN r.token_quality='legacy' AND r.api_type='messages' THEN r.input_tokens::numeric+coalesce(r.cache_read_tokens,0)::numeric+coalesce(r.cache_write_tokens,0)::numeric ELSE NULL END AS context_input, ${app === "r.app_id" ? "" : `${app},`}
       CASE WHEN r.account IS NULL THEN NULL WHEN NOT ${nativeAccount} OR NOT $7::boolean OR b.history IS NULL THEN 'unmapped'
         WHEN b.saved IS NULL THEN 'otherAccounts' ELSE b.saved END AS saved_account,
       ${personScope === undefined ? `(${nativeAccount} AND r.account IS NOT NULL AND (NOT $7::boolean OR b.history IS NULL OR b.saved IS NULL))` : "false"} AS counts_only
@@ -136,10 +153,11 @@ export async function seriesQuery(
         AND r.timestamp >= $2::text::timestamptz - interval '1 microsecond'
         AND r.timestamp < $3::text::timestamptz + interval '1 microsecond'
         AND r.timestamp_exact >= $2::text AND r.timestamp_exact < $3::text${where}${personalWhere}ACCOUNT_FILTER),
+    ${prices ? `${pricedRowsSql("selected", priceParameter!, "s.source=$5 AND NOT s.counts_only", "public_")},` : ""}
     keyed AS (SELECT *, CASE WHEN counts_only THEN jsonb_build_object(${redactedKey.join(", ")})
       ELSE jsonb_build_object(${key.join(", ")}) END::text COLLATE "C" AS group_key,
       date_trunc('${input.bucket}', left(timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' AS bucket_at
-      FROM selected)`;
+      FROM ${prices ? "priced" : "selected"})`;
   const aggregate = `${prefix.replace("ACCOUNT_FILTER", accountWhere)}, aggregated AS (SELECT group_key, bucket_at, ${aggregates.join(",\n      ")}
       FROM keyed GROUP BY group_key,bucket_at)
     SELECT *, ${utcSql("bucket_at")} AS at FROM aggregated`;
@@ -164,6 +182,8 @@ export async function seriesQuery(
       count(*) FILTER (WHERE NOT counts_only AND cost_basis <> 'unpriced' AND price_version IS NULL)::text AS missing_version
       FROM keyed GROUP BY source ORDER BY source LIMIT 501`,
     coverageValues: values.slice(0, after ? -2 : undefined),
+    targetsText: `${prefix.replace("ACCOUNT_FILTER", accountWhere)} SELECT DISTINCT provider,model FROM keyed WHERE NOT counts_only AND source=$5 AND provider IS NOT NULL AND model IS NOT NULL ORDER BY provider,model LIMIT 101`,
+    targetsValues: values.slice(0, after ? -2 : undefined),
     homeSource: source,
     gatewaySource: gateway,
   };
