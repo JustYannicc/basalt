@@ -144,25 +144,33 @@ test("a read that stays stalled refuses after three attempts, naming its type in
   );
 });
 
-test("policy drift, refused access and writes are never retried", async () => {
+test("policy drift, refused access and writes are never retried", async (context) => {
   const drift = new BarrierRefusal("declared-bucket-policy-drift", "VaultAttachments");
   const forbidden = Object.assign(new Error("private"), { _tag: "Forbidden" });
   for (const error of [drift, forbidden]) {
-    const reads: BucketRead[] = [];
+    // Through the real evidence writer, so a recording it refuses would surface here.
+    const directory = await mkdtemp(join(tmpdir(), "bucket-read-final-"));
+    context.after(() => rm(directory, { recursive: true, force: true }));
+    const evidence = releaseEvidence(directory, "a".repeat(40));
     const { calls, base } = provider([() => Promise.reject(error), async () => observation]);
     const buckets = retryingBucketReads(base, {
-      record: async (read) => void reads.push(read),
+      record: evidence.bucketRead,
       wait: async () => assert.fail("no wait before a final failure"),
     });
     await assert.rejects(buckets.read(target, "VaultAttachments"), (thrown) => thrown === error);
     assert.equal(calls.read, 1);
+    const recorded = JSON.parse(await readFile(join(directory, "bucket-reads.json"), "utf8"));
     assert.deepEqual(
-      reads.map(({ outcome }) => outcome),
-      [error === drift ? "refused" : "Forbidden"],
-    );
-    assert.deepEqual(
-      reads.map(({ refusal }) => refusal),
-      [error === drift ? "declared-bucket-policy-drift" : undefined],
+      recorded.reads.map(({ attempt, outcome, refusal }: BucketRead) => ({
+        attempt,
+        outcome,
+        refusal,
+      })),
+      [
+        error === drift
+          ? { attempt: 1, outcome: "refused", refusal: "declared-bucket-policy-drift" }
+          : { attempt: 1, outcome: "Forbidden", refusal: undefined },
+      ],
     );
   }
   const { calls, base } = provider([]);
