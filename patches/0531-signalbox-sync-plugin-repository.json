@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-signalbox-sync-plugin-repository",
+  "file": "0531-signalbox-sync-plugin-repository.patch",
+  "content_sha256": "f1eb9dfa447a20a7f7664692d0711e11bb36ef6d15c8de5476b5231a7d2d211b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

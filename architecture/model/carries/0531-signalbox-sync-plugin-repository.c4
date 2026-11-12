@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Connect Obsidian installs Signalbox Sync from the plugin's own public repository, JustYannicc/signalbox-sync, whose releases are only plugin builds tagged with the bare manifest version, so BRAT's latest release there is always the newest plugin. Basalt's plugin release workflow checks its key to that repository before publishing anywhere, pushes each build and its tag there, and finishes only once that repository's tag workflow has published a release with the same files; a version already there must match byte for byte."
+    }
+  }
+}

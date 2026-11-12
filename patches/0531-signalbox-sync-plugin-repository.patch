@@ -1,0 +1,96 @@
+diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/src/contracts/obsidian-plugin.ts
+--- a/apps/hosted/web/src/contracts/obsidian-plugin.ts
++++ b/apps/hosted/web/src/contracts/obsidian-plugin.ts
+@@ -5,25 +5,22 @@ import { browserOnly } from "@executor-js/ui/contracts/http";
+ import { basaltSyncVersion } from "./obsidian-plugin-version.ts";
+ 
+ /**
+- * The Signalbox Sync version this dashboard connects to; it names the plugin's release tag. Basalt's
+- * upstream preparation generates it from the plugin manifest, so a plugin bump needs no carry.
++ * The Signalbox Sync version this dashboard connects to, and its release tag in the plugin's
++ * repository. Basalt's upstream preparation generates it from the plugin manifest, so a plugin bump
++ * needs no carry.
+  */
+ export { basaltSyncVersion };
+-export const basaltSyncTag = `signalbox-sync-${basaltSyncVersion}`;
++export const basaltSyncTag = basaltSyncVersion;
+ /** Obsidian downloads exactly these files when it installs a plugin. */
+ export const basaltSyncFiles = ["main.js", "manifest.json", "styles.css"] as const;
+ /** BRAT is the community plugin that installs a plugin from a GitHub release. */
+ export const bratStoreLink = "obsidian://show-plugin?id=obsidian42-brat";
+ 
+-const githubRepository =
+-  /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/u;
+-
+ /**
+- * Where Signalbox Sync is published: the deployment's own public source repository, when that is
+- * on GitHub. Anything else has nowhere to install from.
++ * Where Signalbox Sync is published: its own repository, holding only plugin releases, so BRAT's
++ * latest release there is always the plugin's. Every deployment installs the same plugin.
+  */
+-export const basaltSyncRepository = (source: string | undefined): string | null =>
+-  source === undefined ? null : (githubRepository.exec(source)?.[1] ?? null);
++export const basaltSyncRepository = "JustYannicc/signalbox-sync";
+ 
+ /**
+  * Opens BRAT's add dialog on its "latest" track. Any other version is one BRAT freezes and never
+@@ -120,16 +117,7 @@ export const basaltSyncReleaseCheck = (repository: string) =>
+     Effect.provide(anonymousGitHubClient),
+   );
+ 
+-/**
+- * Read in the browser once per repository; the dialog refreshes it on "Check again". A
+- * deployment without a public GitHub source has nothing to install from.
+- */
+-export const basaltSyncReleaseAtom = Atom.family((repository: string | null) =>
+-  browserOnly(
+-    Atom.make(
+-      repository === null
+-        ? Effect.succeed<BasaltSyncRelease>("unavailable")
+-        : basaltSyncReleaseCheck(repository),
+-    ),
+-  ),
++/** Read in the browser once per repository; the dialog refreshes it on "Check again". */
++export const basaltSyncReleaseAtom = Atom.family((repository: string) =>
++  browserOnly(Atom.make(basaltSyncReleaseCheck(repository))),
+ );
+diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
+--- a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
++++ b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
+@@ -132,7 +132,7 @@ function ConnectObsidian({ app }: { readonly app: App }) {
+           </ul>
+           {/* Mounted only while open, so the release is checked when someone is connecting. */}
+           <ConnectSteps
+-            repository={basaltSyncRepository(brand.source)}
++            repository={basaltSyncRepository}
+             step={step}
+             onConnect={() => void connect()}
+           />
+@@ -168,7 +168,7 @@ function ConnectSteps({
+   step,
+   onConnect,
+ }: {
+-  readonly repository: string | null;
++  readonly repository: string;
+   readonly step: Step;
+   readonly onConnect: () => void;
+ }) {
+@@ -198,14 +198,12 @@ function ConnectSteps({
+           </div>
+         ) : !AsyncResult.isSuccess(release) ? (
+           <p className="text-muted-foreground">Checking for Signalbox Sync…</p>
+-        ) : !installable || repository === null ? (
++        ) : !installable ? (
+           <div className="flex flex-wrap items-center gap-2">
+             <p className="text-muted-foreground">Signalbox Sync isn't available to install yet.</p>
+-            {repository !== null && (
+-              <Button variant="outline" size="sm" onClick={refresh}>
+-                Check again
+-              </Button>
+-            )}
++            <Button variant="outline" size="sm" onClick={refresh}>
++              Check again
++            </Button>
+           </div>
+         ) : (
+           <ol className="space-y-2">
