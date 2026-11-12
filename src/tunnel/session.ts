@@ -6,6 +6,7 @@ import {
 import type { TunnelAccess, TunnelEnvironment } from "./access.ts";
 import { TunnelOperation } from "./operation.ts";
 import type { TunnelSocket } from "./platform.ts";
+import type { TunnelTiming } from "./timing.ts";
 
 export function serveTunnel(
   socket: TunnelSocket,
@@ -14,6 +15,7 @@ export function serveTunnel(
   env: TunnelEnvironment,
   access: TunnelAccess,
   keepAlive: (work: Promise<unknown>) => void,
+  timing?: TunnelTiming,
 ) {
   let stopped = false;
   let lastId = 0;
@@ -36,6 +38,7 @@ export function serveTunnel(
   const close = (code = 1000) => {
     if (stopped) return;
     stopped = true;
+    timing?.mark("closed");
     clearTimeout(deadline);
     for (const operation of [...operations.values()]) operation.stop();
     operations.clear();
@@ -71,7 +74,12 @@ export function serveTunnel(
           send({ v: 1, type: "error", id: frame.id, code: "refused", outcome: "not-started" });
           return;
         }
-        const operation = new TunnelOperation(frame, send, () => operations.delete(frame.id));
+        const operation = new TunnelOperation(
+          frame,
+          send,
+          () => operations.delete(frame.id),
+          timing?.operation(frame),
+        );
         operations.set(frame.id, operation);
         operation.begin();
         keepAlive(operation.run(request, env));
@@ -94,5 +102,8 @@ export function serveTunnel(
   lease.accept();
   socket.accept();
   if (request.signal.aborted || Date.now() >= expiresAt) close(1008);
-  else send({ v: 1, type: "ready", expiresAt, limits: tunnelLimits });
+  else {
+    send({ v: 1, type: "ready", expiresAt, limits: tunnelLimits });
+    timing?.mark("ready");
+  }
 }

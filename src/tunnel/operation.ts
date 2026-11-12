@@ -15,6 +15,7 @@ import { TunnelInput, TunnelOutput } from "./flow.ts";
 import { upgradedSocket } from "./platform.ts";
 import { TunnelWebSocket } from "./websocket.ts";
 import { recordTunnelFailure, tunnelFailure } from "./failure.ts";
+import type { OperationTiming } from "./timing.ts";
 
 export class TunnelOperation {
   readonly output = new TunnelOutput();
@@ -28,10 +29,18 @@ export class TunnelOperation {
   private open: TunnelOpen;
   private send: (frame: TunnelServerFrame) => void;
   private done: () => void;
-  constructor(open: TunnelOpen, send: (frame: TunnelServerFrame) => void, done: () => void) {
+  private timing: OperationTiming | undefined;
+  constructor(
+    open: TunnelOpen,
+    send: (frame: TunnelServerFrame) => void,
+    done: () => void,
+    timing?: OperationTiming,
+  ) {
     this.open = open;
     this.send = send;
     this.done = done;
+    this.timing = timing;
+    this.timing?.("open");
     if (open.operation.transport === "http" && open.operation.method === "POST") {
       this.input = new TunnelInput((bytes) =>
         this.send({ v: 1, type: "credit", id: open.id, bytes }),
@@ -51,6 +60,7 @@ export class TunnelOperation {
     this.ended = true;
     if (this.open.operation.transport === "websocket") this.stop();
     else this.input?.end();
+    if (this.open.operation.transport === "http") this.timing?.("upload-end");
   }
   private error(code: "unavailable" | "limit") {
     if (!this.stopped)
@@ -66,6 +76,7 @@ export class TunnelOperation {
   stop() {
     if (this.stopped) return;
     this.stopped = true;
+    this.timing?.("stopped");
     this.abort.abort();
     this.input?.abort();
     this.output.abort();
@@ -90,10 +101,12 @@ export class TunnelOperation {
         ...(this.input ? { body: this.input.stream, duplex: "half" } : {}),
       });
       this.started = true;
+      this.timing?.("dispatch");
       const response =
         this.open.operation.service === "models"
           ? await nativeModelRequest(target, env)
           : await env.TOOLS_SERVICE.fetch(target);
+      this.timing?.("headers");
       if (this.stopped) {
         await response.body?.cancel();
         return;
@@ -153,7 +166,10 @@ export class TunnelOperation {
           }
         }
       }
-      if (!this.stopped) this.send({ v: 1, type: "end", id: this.open.id });
+      if (!this.stopped) {
+        this.timing?.("response-end");
+        this.send({ v: 1, type: "end", id: this.open.id });
+      }
       this.stop();
     } catch (error) {
       if (!this.stopped) recordTunnelFailure(this.open.id, tunnelFailure(error, "http", "error"));
