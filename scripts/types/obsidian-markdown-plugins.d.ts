@@ -1,10 +1,9 @@
 // The vault page's Obsidian Markdown plugins resolve in the app's own build, not in this
-// workspace; the page passes them to react-markdown as plugins.
+// workspace. The page applies them straight to the Markdown tree, without unified.
 declare module "@flowershow/remark-wiki-link" {
-  const plugin: (options?: unknown) => void;
-  export default plugin;
+  export function syntax(options?: unknown): import("micromark-util-types").Extension;
+  export function fromMarkdown(options?: unknown): import("mdast-util-from-markdown").Extension;
 }
 declare module "@r4ai/remark-callout" {
-  const plugin: (options?: unknown) => void;
-  export default plugin;
+  export function remarkCallout(options?: unknown): (tree: import("mdast").Root) => void;
 }
