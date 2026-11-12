@@ -44,11 +44,14 @@ for (const status of ["online", "offline", "unavailable", "disabled"] as const)
     await Effect.runPromise(
       fixture(({ app, saved }) =>
         Effect.gen(function* () {
-          saved[0]!.execution = {
-            kind: "device",
-            device: "fixture-device",
-            deviceName: "Fixture computer",
-            status,
+          saved[0] = {
+            ...saved[0]!,
+            execution: {
+              kind: "device",
+              device: "fixture-device",
+              deviceName: "Fixture computer",
+              status,
+            },
           };
           const executor = yield* Effect.flatten(HostedExecutor);
           const backend = yield* hostedMcpBackend.pipe(
