@@ -213,7 +213,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       });
     };
     this.mirrorHome = new HomeClient(home, Date.now, () => this.control.invalidateViews());
-    this.overviewPrices = new OverviewPrices(this.mirrorHome);
+    this.overviewPrices = new OverviewPrices(this.mirrorHome, ctx.storage);
     this.control = new PoolControl(ctx.storage, {
       signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
@@ -412,6 +412,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await this.computers.observeUsage();
     await this.control.expire();
     await this.prices.run();
+    await this.overviewPrices.refresh();
     // Usage is a report: a slow or failing read must not hold the pool's own upkeep.
     await this.usage
       .observe()
@@ -574,7 +575,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         signingKey: this.env.POOL_APP_SIGNING_KEY,
         previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
         connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
-        currentPrices: (targets) => this.overviewPrices.read(targets),
+        currentPrices: (targets) => this.overviewPrices.readTable(targets),
       });
     if (
       pathname === managedUsagePath ||

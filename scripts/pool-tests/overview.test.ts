@@ -17,6 +17,8 @@ import { pool, seriesFixture } from "./series-fixture.ts";
 import { pricedSummary } from "../../src/pool/model-history/priced-summary.ts";
 import { homeRequest } from "../../src/pool/model-history/home.ts";
 import { poolGroupPrefix } from "../../src/pool/control.ts";
+import { OverviewPrices } from "../../src/pool/overview-prices.ts";
+import { HomeClient } from "../../src/pool/control.ts";
 import { UsageLedger } from "../../src/pool/usage-summary.ts";
 import type { UsageStorage } from "../../src/pool/usage-storage.ts";
 
@@ -558,7 +560,7 @@ test("unknown official prices are unpriced in Settings and overview, never Home 
     assert.equal(overview.metrics.apiBilled.status, "unavailable");
     assert.equal(overview.metrics.apiBilled.amount, null);
     assert.equal(overview.metrics.apiBilled.excluded.unpriced, 1);
-    assert.match(overview.metrics.apiBilled.reason!, /No known official USD price/);
+    assert.match(overview.metrics.apiBilled.reason!, /No public price for unknown-model/);
     const tokens = { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120 };
     const summary = {
       scope: "pool" as const,
@@ -649,5 +651,156 @@ test("official USD totals keep unknown models separate and personal Settings can
     );
     assert.equal(settings.total.cost, Number(personal.metrics.apiBilled.amount));
     assert.equal(settings.total.unpriced, 1);
+  });
+});
+
+test("public Claude prices reach both value columns and match a hand calculation with reasoning counted once", async () => {
+  await seriesFixture(async (fixture) => {
+    const fingerprint = await prepareHomeSource(
+      fixture.client,
+      await backendUserName("member", pool),
+    );
+    const source = await digest(homeSourceName);
+    const subscription = (await reference(source, "account", "price-fixture"))!;
+    await addHomeRequest(fixture, fingerprint, 1, subscription, from, {
+      provider: "claude",
+      model: "claude-opus-5-5",
+      inputTokens: "1000000",
+      outputTokens: "200000",
+      cacheReadTokens: "400000",
+      cacheWriteTokens: "100000",
+      reasoningTokens: "50000",
+      totalTokens: "1200000",
+      tokenQuality: "complete",
+    });
+    const values = new Map<string, unknown>();
+    const storage = {
+      async get<T>(key: string) {
+        return structuredClone(values.get(key)) as T | undefined;
+      },
+      async put(key: string, value: unknown) {
+        values.set(key, structuredClone(value));
+      },
+    };
+    const start = Date.parse("2026-11-12T08:00:00Z");
+    let completed = start;
+    const prices = new OverviewPrices(
+      new HomeClient(async () => {
+        completed += 500;
+        return Response.json({
+          source: "models.dev",
+          atomic: true,
+          source_version: "public-fixture",
+          source_fetched_at: new Date(completed).toISOString(),
+          rows: [
+            {
+              provider: "claude",
+              model: "claude-opus-5-5",
+              service_tier: "*",
+              min_input_tokens: 0,
+              status: "matched",
+              official: { input: 4, output: 20, cache_read: 0.2, cache_write: 5, request: 0 },
+            },
+          ],
+        });
+      }),
+      storage,
+      () => completed,
+    );
+    const table = await prices.readTable([{ provider: "claude", model: "claude-opus-5-5" }]);
+    const signed = await input({
+      canManage: true,
+      mappingProven: homeAccountMappingProven,
+      accounts: [{ account: "price-fixture", history: [subscription], offering: "subscription" }],
+    });
+    const result = await poolUsageOverview(fixture.db, {
+      ...signed,
+      prices: table.prices,
+      priceIssues: table.issues,
+    });
+    // 500k uncached * $4/M + 200k output * $20/M + 400k reads * $0.20/M + 100k writes * $5/M = $6.58.
+    // The 50k reasoning tokens already belong to the 200k output tokens.
+    assert.equal(result.metrics.apiBilled.amount, "6.580000000000");
+    assert.equal(result.metrics.subscriptionValue.amount, "6.580000000000");
+    assert.equal(result.metrics.usageSlices[0]!.apiBilled, "6.580000000000");
+    assert.equal(result.metrics.usageSlices[0]!.subscriptionValue, "6.580000000000");
+  });
+});
+
+test("mixed last-good catalog versions retain subscription values and the oldest source date", async () => {
+  await seriesFixture(async (fixture) => {
+    const fingerprint = await prepareHomeSource(
+      fixture.client,
+      await backendUserName("member", pool),
+    );
+    const source = await digest(homeSourceName),
+      subscription = (await reference(source, "account", "mixed-prices"))!;
+    await addHomeRequest(fixture, fingerprint, 1, subscription, from);
+    const signed = await input({
+      canManage: true,
+      mappingProven: homeAccountMappingProven,
+      accounts: [{ account: "mixed-prices", history: [subscription], offering: "subscription" }],
+    });
+    const result = await poolUsageOverview(fixture.db, {
+      ...signed,
+      prices: [
+        rates("0", "10"),
+        {
+          ...rates("0", "20"),
+          model: "other-model",
+          version: "new-version",
+          asOf: "2026-11-12T08:00:00.000Z",
+        },
+      ],
+    });
+    assert.equal(result.metrics.subscriptionValue.status, "available");
+    assert.equal(result.metrics.subscriptionValue.price?.asOf, priceDate);
+    assert.equal(result.metrics.subscriptionValue.price?.version, "fixture-v1,new-version");
+  });
+});
+
+test("missing model and failed public source have specific row reasons, while good models keep their numbers", async () => {
+  await seriesFixture(async (fixture) => {
+    await prepareHomeSource(fixture.client, await backendUserName("member", pool));
+    const base = {
+      source: await digest(homeSourceName),
+      pool: (await digest(pool)).slice(0, 16),
+      person: await digest("member"),
+      provider: "provider-alias",
+      model: "model-fixture",
+      apiType: "responses",
+      inputTokens: "100",
+      outputTokens: "20",
+      cacheReadTokens: "0",
+      cacheWriteTokens: "0",
+      totalTokens: "120",
+      tokenQuality: "complete" as const,
+    };
+    await fixture.insert(base, { ...base, model: null }, { ...base, model: "source-failed" });
+    const signed = await input({ canManage: true, mappingProven: true, accounts: [] });
+    const result = await poolUsageOverview(fixture.db, {
+      ...signed,
+      prices: [rates("0", "10")],
+      priceIssues: [
+        {
+          provider: base.provider,
+          model: "source-failed",
+          reason: "Public price refresh failed; no saved price for source-failed.",
+        },
+      ],
+    });
+    const slices = result.metrics.usageSlices;
+    assert.equal(
+      slices.find((slice) => slice.model === null)!.apiReason,
+      "Model not recorded; cost cannot be estimated",
+    );
+    assert.match(
+      slices.find((slice) => slice.model === "source-failed")!.apiReason!,
+      /Public price refresh failed/,
+    );
+    assert.equal(
+      slices.find((slice) => slice.model === "model-fixture")!.apiBilled,
+      "0.001600000000",
+    );
   });
 });
