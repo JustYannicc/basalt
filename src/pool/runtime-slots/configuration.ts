@@ -7,6 +7,7 @@ export const RuntimeConfiguration = Schema.Struct({
   signingKey: Schema.String,
   previousSigningKey: Schema.optional(Schema.String),
   imageInput: Schema.String,
+  claudeQuotaDiagnostic: Schema.optional(Schema.Boolean),
   databaseOwner: Schema.Literal(poolDatabase.owner),
 });
 export type RuntimeConfiguration = typeof RuntimeConfiguration.Type;
@@ -15,6 +16,7 @@ export interface RuntimeEnvironment {
   POOL_MANAGEMENT_KEY: string;
   POOL_APP_SIGNING_KEY: string;
   POOL_APP_SIGNING_KEY_PREVIOUS?: string;
+  POOL_CLAUDE_QUOTA_DIAGNOSTIC?: string;
   POOL_IMAGE_HASH: string;
   POOL_DEPLOYMENT_KEY?: string;
 }
@@ -27,6 +29,7 @@ export function runtimeConfiguration(env: RuntimeEnvironment): RuntimeConfigurat
       ? { previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS }
       : {}),
     imageInput: env.POOL_IMAGE_HASH,
+    ...(env.POOL_CLAUDE_QUOTA_DIAGNOSTIC === "true" ? { claudeQuotaDiagnostic: true } : {}),
     databaseOwner: poolDatabase.owner,
   });
 }
@@ -43,6 +46,7 @@ export function runtimeStartOptions(value: RuntimeConfiguration): StartupOptions
       POOL_MANAGEMENT_KEY: value.managementKey,
       POOL_MANAGEMENT_ALLOW_REMOTE: "true",
       POOL_APP_SIGNING_KEY: value.signingKey,
+      ...(value.claudeQuotaDiagnostic ? { POOL_CLAUDE_QUOTA_DIAGNOSTIC: "true" } : {}),
       ...(value.previousSigningKey
         ? { POOL_APP_SIGNING_KEY_PREVIOUS: value.previousSigningKey }
         : {}),

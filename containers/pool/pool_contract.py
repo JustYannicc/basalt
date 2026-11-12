@@ -263,6 +263,8 @@ def child_environment(
     if kind == "home":
         env["MANAGEMENT_PASSWORD"] = management_key
         env["POOL_NATIVE_POLICY_SOCKET"] = str(NATIVE_POLICY_SOCKET)
+        if os.environ.get("POOL_CLAUDE_QUOTA_DIAGNOSTIC") == "true":
+            env["POOL_CLAUDE_QUOTA_DIAGNOSTIC"] = "true"
         for name in ("POOL_APP_SIGNING_KEY", "POOL_APP_SIGNING_KEY_PREVIOUS"):
             value = os.environ.get(name, "").strip()
             if value:

@@ -13,6 +13,8 @@
   --color-accent: var(--accent);
   --color-destructive: var(--destructive);
   --color-warning: var(--warning);
+  /* The host's Details table marks last-known read times with this token. */
+  --color-sign-in-warning: var(--warning);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);

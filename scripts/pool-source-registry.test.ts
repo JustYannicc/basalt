@@ -271,6 +271,17 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /admission, privacy, policy and repeated-boot regressions/,
         );
+      } else if (patch.identity === "cliproxy-home-scoped-limits-resets") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0526-home-scoped-limits-resets.patch");
+        assert.match(patch.retirement.requires, /generic model weekly windows/);
+        assert.match(
+          patch.retirement.requires,
+          /kind, scope, count, expiry and normalized effects/,
+        );
+        assert.match(patch.retirement.requires, /retained snapshots and management reads/);
+        assert.match(patch.retirement.requires, /default-off bounded diagnostic discovery/);
+        assert.match(patch.retirement.requires, /no reset redemption/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&

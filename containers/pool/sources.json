@@ -185,6 +185,15 @@
             "mode": "manual",
             "requires": "Retire only after the pinned Home preserves eligible sticky and parent sessions, prefers the earliest fresh account-wide weekly reset among plan-funded candidates with five-hour fallback, keeps model limits as eligibility gates and credits last, supports reversible per-pool balanced selection, migrates retained v14 data additively and passes admission, privacy, policy and repeated-boot regressions."
           }
+        },
+        {
+          "identity": "cliproxy-home-scoped-limits-resets",
+          "file": "0526-home-scoped-limits-resets.patch",
+          "sha256": "53fb8f12d458871ff259db6f17084be0f6a221af55c45cb28ae2a3dd733b0864",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after the pinned source preserves generic model weekly windows and reset grant kind, scope, count, expiry and normalized effects through retained snapshots and management reads, with default-off bounded diagnostic discovery and no reset redemption."
+          }
         }
       ]
     },
@@ -247,7 +256,9 @@
       "tag": "v1.0.5",
       "commit": "19d9868ffa24e94a2919ea1d1a761afa634de669",
       "sha256": "79b6ae8702b0ace76c10102d42a1401259e7dc772baacce2d47c90c33c6b25e7",
-      "auth_providers": ["gemini-cli"]
+      "auth_providers": [
+        "gemini-cli"
+      ]
     }
   }
 }

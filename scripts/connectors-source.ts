@@ -2,6 +2,7 @@
 import { execFileSync } from "node:child_process";
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -11,7 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { bundlePoolApp } from "./pool-app-bundle.ts";
+import { bundlePoolApp, sharedObservationFiles } from "./pool-app-bundle.ts";
 import { poolWorkerRevisionPath, poolWorkerRevisionSource } from "./pool-worker-revision.ts";
 import {
   obsidianPluginVersionPath,
@@ -25,12 +26,14 @@ export function verifyConnectorsSource(root: string): { commit: string; patches:
   const pin = JSON.parse(readFileSync(join(root, "upstream.json"), "utf8")) as { commit: string };
   if (!/^[a-f0-9]{40}$/.test(pin.commit))
     throw new Error("Expected an immutable tools runtime pin");
-  const git = (args: string[], env: NodeJS.ProcessEnv = process.env) =>
-    execFileSync("git", ["-C", upstream, ...args], {
+  const git = (args: string[], env: NodeJS.ProcessEnv = process.env, trim = true) => {
+    const output = execFileSync("git", ["-C", upstream, ...args], {
       encoding: "utf8",
       env,
       stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    });
+    return trim ? output.trim() : output;
+  };
   if (git(["rev-parse", "HEAD"]) !== pin.commit)
     throw new Error("Prepared tools runtime does not match upstream.json");
   const patches = readdirSync(join(root, "patches"))
@@ -88,6 +91,12 @@ export function verifyConnectorsSource(root: string): { commit: string; patches:
     writeFileSync(framework, git(["show", ":packages/apps/package.json"], expected));
     const fonts = "packages/ui/src/implementation/styles/fonts";
     cpSync(join(upstream, fonts), join(generatedUpstream, fonts), { recursive: true });
+    if (existsSync(join(generatedRoot, "apps/pool/ui/observation-readings.ts")))
+      for (const file of sharedObservationFiles) {
+        const path = `packages/ui/src/implementation/dashboard/${file}`;
+        mkdirSync(dirname(join(generatedUpstream, path)), { recursive: true });
+        writeFileSync(join(generatedUpstream, path), git(["show", `:${path}`], expected, false));
+      }
     bundlePoolApp(generatedRoot, generatedUpstream);
     const generated = [
       "apps/hosted/server/src/implementation/pool-app-source.ts",

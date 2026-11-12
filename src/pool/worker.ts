@@ -102,6 +102,7 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnviron
   POOL_MANAGEMENT_KEY: string;
   POOL_APP_SIGNING_KEY: string;
   POOL_APP_SIGNING_KEY_PREVIOUS?: string;
+  POOL_CLAUDE_QUOTA_DIAGNOSTIC?: string;
   POOL_IMAGE_HASH: string;
   POOL_DEPLOYMENT_KEY?: string;
   POOL_MODEL_HISTORY_ENABLED?: string;
