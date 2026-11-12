@@ -14,6 +14,7 @@ import {
 import { tunnelPath, nativeTunnelReadyTimeoutMs } from "../contracts/tunnel.ts";
 import { authRequest, tokenRequest } from "./device-oauth.ts";
 import { nativeAccess } from "./native-access.ts";
+import { untilAborted } from "./abort.ts";
 import { openTunnel } from "./tunnel.ts";
 import type { SocketFactory } from "../contracts/transport.ts";
 
@@ -36,6 +37,7 @@ export function deviceConnection(
     remove(): Promise<void>;
   },
   socket: SocketFactory,
+  onRetryAfter?: (timestamp: number) => void,
 ): CredentialSource {
   let saved: DeviceCredentials | undefined = initial;
   let access: NativeAccess | undefined;
@@ -52,9 +54,14 @@ export function deviceConnection(
           ...(access.policy.toolsOrganization ? ["tools" as const] : []),
         ]
       : [];
+  const checkCurrent = (generation: number, signal: AbortSignal) => {
+    signal.throwIfAborted();
+    if (generation !== epoch) throw new Error("Connection state changed.");
+  };
   const renew = async (current: DeviceCredentials, signal: AbortSignal, generation: number) => {
     // Persist intent first: a lost refresh response must not be repeated after restart.
     await store.write(JSON.stringify({ ...current, refreshPending: true }));
+    checkCurrent(generation, signal);
     saved = { ...current, refreshPending: true };
     const tokens = await tokenRequest(
       current.origin,
@@ -67,8 +74,9 @@ export function deviceConnection(
       signal,
     );
     const next = { ...current, ...tokens, refreshPending: false };
-    if (generation !== epoch) throw new Error("Connection state changed.");
+    checkCurrent(generation, signal);
     await store.write(JSON.stringify(next));
+    checkCurrent(generation, signal);
     saved = next;
   };
   const readAccess = async (signal: AbortSignal) => {
@@ -91,9 +99,12 @@ export function deviceConnection(
         )
           throw new Error("Connection state changed.");
         if (!pending && credential.expiresAt <= Date.now() + nativeTunnelReadyTimeoutMs) {
-          pending = renew(credential, signal, generation).finally(() => {
-            pending = undefined;
-          });
+          const renewal = untilAborted(renew(credential, signal, generation), signal).finally(
+            () => {
+              if (pending === renewal) pending = undefined;
+            },
+          );
+          pending = renewal;
         }
         await pending;
         signal.throwIfAborted();
@@ -101,7 +112,8 @@ export function deviceConnection(
           throw new Error("Connection state changed.");
         return saved.accessToken;
       };
-      const response = await nativeAccess(current.origin, bearer, signal);
+      const response = await nativeAccess(current.origin, bearer, signal, onRetryAfter);
+      checkCurrent(generation, signal);
       const next = saved;
       if (!next || generation !== epoch) throw new Error("Connection state changed.");
       if (!response.ok) {
@@ -111,6 +123,7 @@ export function deviceConnection(
         throw new Error("Native access is unavailable.");
       }
       const checked = readNativeAccess(await response.json());
+      checkCurrent(generation, signal);
       if (
         checked.clientId !== next.clientId ||
         checked.expiresAt <= Date.now() ||
@@ -121,8 +134,10 @@ export function deviceConnection(
       access = checked;
       display = checked.display;
     } catch (error) {
-      if (state === "connected" && saved?.refreshPending && !pending) state = "sign-in-required";
-      if (!signal.aborted || state !== "connected") access = undefined;
+      if (generation === epoch) {
+        if (state === "connected" && saved?.refreshPending && !pending) state = "sign-in-required";
+        if (!signal.aborted || state !== "connected") access = undefined;
+      }
       throw error;
     }
   };
@@ -136,17 +151,16 @@ export function deviceConnection(
     )
       return;
     // A cancelled caller must not cancel the grant refresh shared by sibling operations.
-    validation ??= readAccess(validationAbort.signal).finally(() => {
-      validation = undefined;
-    });
-    await new Promise<void>((resolve, reject) => {
-      const abort = () => reject(signal.reason);
-      signal.addEventListener("abort", abort, { once: true });
-      void validation!
-        .then(resolve, reject)
-        .finally(() => signal.removeEventListener("abort", abort));
-      if (signal.aborted) abort();
-    });
+    if (!validation) {
+      const active = untilAborted(
+        readAccess(validationAbort.signal),
+        validationAbort.signal,
+      ).finally(() => {
+        if (validation === active) validation = undefined;
+      });
+      validation = active;
+    }
+    await untilAborted(validation, signal);
   };
   const clearAccess = () => {
     access = undefined;
@@ -231,18 +245,33 @@ export function deviceConnection(
       await pending?.catch(() => undefined);
     },
     reconnect: async (signal = new AbortController().signal) => {
+      const generation = ++epoch;
       clearAccess();
-      await validation?.catch(() => undefined);
-      await pending?.catch(() => undefined);
-      const raw = await store.read();
-      saved = raw === undefined ? undefined : readDeviceCredentials(JSON.parse(raw));
-      state = "connected";
-      signal.throwIfAborted();
-      // Reconnect owns this validation, so backgrounding can cancel its network reads.
-      validation = readAccess(AbortSignal.any([signal, validationAbort.signal])).finally(() => {
-        validation = undefined;
-      });
-      await validation;
+      const activeSignal = AbortSignal.any([signal, validationAbort.signal]);
+      const cancel = () => {
+        if (generation !== epoch) return;
+        epoch++;
+        access = undefined;
+        // A cancelled rotating exchange can have succeeded remotely. Never replay it.
+        if (saved?.refreshPending) state = "sign-in-required";
+      };
+      activeSignal.addEventListener("abort", cancel, { once: true });
+      try {
+        activeSignal.throwIfAborted();
+        await untilAborted(validation?.catch(() => undefined) ?? Promise.resolve(), activeSignal);
+        await untilAborted(pending?.catch(() => undefined) ?? Promise.resolve(), activeSignal);
+        const raw = await untilAborted(store.read(), activeSignal);
+        checkCurrent(generation, activeSignal);
+        saved = raw === undefined ? undefined : readDeviceCredentials(JSON.parse(raw));
+        state = "connected";
+        const active = untilAborted(readAccess(activeSignal), activeSignal).finally(() => {
+          if (validation === active) validation = undefined;
+        });
+        validation = active;
+        await active;
+      } finally {
+        activeSignal.removeEventListener("abort", cancel);
+      }
     },
     signOut: async () => {
       epoch++;

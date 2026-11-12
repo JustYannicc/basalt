@@ -56,20 +56,22 @@ export function mobileController(ports: MobilePorts) {
     random: () => Math.random(),
     attempt: async (signal) => {
       await source?.reconnect(signal);
+      signal.throwIfAborted();
       health?.reset();
     },
     changed: (reconnecting, error) => publish({ reconnecting, error }),
   });
-  const recover = () => {
+  const recover = (restart = false) => {
     if (activeOperations > 0) {
       recoveryDeferred = true;
       return Promise.resolve();
     }
     recoveryDeferred = false;
-    return recovery.request();
+    return restart ? recovery.restart() : recovery.request();
   };
   const attach = (credentials: Parameters<typeof deviceConnection>[0]) => {
-    source = deviceConnection(credentials, ports.store, ports.socket);
+    recovery.reset();
+    source = deviceConnection(credentials, ports.store, ports.socket, recovery.retryAfter);
     health = connectionHealth(source);
   };
   const perform = async (name: string, action: (signal: AbortSignal) => Promise<void>) => {
@@ -100,7 +102,7 @@ export function mobileController(ports: MobilePorts) {
     if (!foreground || !automatic || command || !source || terminal()) return;
     if (online) {
       if (recovery.needed() || recoveryDeferred || source.view().capabilities.length === 0)
-        void recover();
+        void recover(true);
     } else {
       void recover();
     }
