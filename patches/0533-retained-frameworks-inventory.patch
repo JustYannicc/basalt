@@ -229,11 +229,12 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-framew
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks.ts
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,237 @@
 +/** Read retained identities without returning or evaluating any compiled module. */
-+import { StoredWorkerBuild, frameworkIdentity } from "@executor-js/sdk/workerd";
++import { WorkerBundle } from "@executor-js/app-data/worker-bundle";
 +import { Effect, Schema } from "effect";
 +import { ProductionOperationRefused } from "./contracts.ts";
++import { sha256 } from "./crypto.ts";
 +
 +export const retainedFrameworkBounds = {
 +  records: 2000,
@@ -276,12 +277,33 @@ new file mode 100644
 +  | ({ readonly complete: true } & Identity)
 +  | { readonly complete: false; readonly reason: IncompleteReason };
 +
++// This inventory decodes the retained storage fields it needs, without importing a runner or
++// compiler. The portable module codec remains shared with storage; UI metadata is not selected.
++const Protocol = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
++const Fields = { ...WorkerBundle.fields, database: Schema.Boolean };
++const StoredRecord = Schema.Union([
++  Schema.Struct({
++    ...Fields,
++    format: Schema.Literal(2),
++    framework: Schema.Struct({
++      version: Schema.NonEmptyString,
++      sha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
++    }),
++    protocol: Protocol,
++  }),
++  Schema.Struct({
++    ...Fields,
++    format: Schema.Literal(1).pipe(Schema.withDecodingDefaultKey(Effect.succeed(1 as const))),
++    protocol: Protocol.pipe(Schema.withDecodingDefaultKey(Effect.succeed(1))),
++  }),
++]);
++
 +/** Decode failures discard their schema diagnostics, which can contain module text. */
 +const project = (body: Uint8Array, split: boolean, frameworks: readonly FrameworkMetadata[]) =>
 +  Effect.gen(function* () {
 +    const decoded = yield* Effect.try(() =>
 +      JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)),
-+    ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(StoredWorkerBuild)));
++    ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(StoredRecord)));
 +    if (split && decoded.format !== 2)
 +      return { complete: false, reason: "malformed_record" } as const;
 +    if (!split && decoded.format !== 1)
@@ -305,8 +327,14 @@ new file mode 100644
 +        modules[name] = module;
 +    if (Object.keys(modules).length === 0)
 +      return { complete: false, reason: "missing_framework_modules" } as const;
-+    const { sha256 } = yield* frameworkIdentity({ version: "unlabelled", modules });
-+    const matches = frameworks.filter((object) => frameworkName.exec(object.key)?.[2] === sha256);
++    const hash = sha256(
++      JSON.stringify(
++        Object.keys(modules)
++          .sort()
++          .map((name) => [name, modules[name]]),
++      ),
++    );
++    const matches = frameworks.filter((object) => frameworkName.exec(object.key)?.[2] === hash);
 +    if (matches.length !== 1)
 +      return {
 +        complete: false,
@@ -315,7 +343,7 @@ new file mode 100644
 +    return {
 +      complete: true,
 +      version: frameworkName.exec(matches[0]!.key)![1]!,
-+      sha256,
++      sha256: hash,
 +      protocol: decoded.protocol,
 +    } as const;
 +  }).pipe(
