@@ -72,11 +72,10 @@ export function App({ api }: { readonly api: VaultApi }) {
   return (
     <div className={`vault ${selected === null ? "" : "has-note"}`}>
       <Summary
-        name={loaded.devices?.vault.name ?? "Your vault"}
+        name="Your vault"
         state={state}
         files={files.length || null}
         latest={loaded.latest}
-        devices={loaded.devices}
         now={now}
       />
       <div className="browser">
@@ -94,7 +93,6 @@ export function App({ api }: { readonly api: VaultApi }) {
             api={api}
             path={selected}
             files={files}
-            devices={loaded.devices}
             onOpen={setSelected}
             onBack={() => setSelected(null)}
           />

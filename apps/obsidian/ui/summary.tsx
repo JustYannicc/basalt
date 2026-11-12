@@ -1,4 +1,4 @@
-import { ago, deviceLabels, type Devices, type VaultState, type Version } from "./model.ts";
+import { ago, type VaultState, type Version } from "./model.ts";
 
 const count = (files: number) => `${files} ${files === 1 ? "file" : "files"}`;
 
@@ -7,22 +7,17 @@ export function Summary({
   state,
   files,
   latest,
-  devices,
   now,
 }: {
   readonly name: string;
   readonly state: VaultState;
   readonly files: number | null;
   readonly latest: Version | null;
-  readonly devices: Devices | null;
   readonly now: number;
 }) {
   const known =
-    state.kind === "up-to-date" || state.kind === "behind" || state.kind === "saved"
-      ? (state.files ?? files)
-      : null;
+    state.kind === "up-to-date" || state.kind === "saved" ? (state.files ?? files) : null;
   const change = latest?.time === undefined ? null : `Last change ${ago(latest.time, now)}`;
-  const labels = devices === null ? [] : deviceLabels(devices.devices);
   return (
     <section className="summary">
       <div className="min-w-0">
@@ -62,23 +57,9 @@ export function Summary({
       </div>
       <div className="devices">
         <h2>Devices</h2>
-        {devices !== null && devices.devices.length > 0 ? (
-          devices.devices.map((device, index) => (
-            <div className="device" key={device.connection}>
-              <span className="device-name">{labels[index]}</span>
-              <span className="device-when">
-                {device.lastSyncAt === null
-                  ? "Not synced yet"
-                  : `Synced ${ago(device.lastSyncAt, now)}`}
-              </span>
-            </div>
-          ))
-        ) : (
-          <p className="hint">
-            Connected devices, and Disconnect, are on the Accounts tab.
-            {devices === null && " Update Signalbox Sync to see device names and sync times here."}
-          </p>
-        )}
+        <p className="hint">
+          The devices syncing this vault, their last sync and Disconnect are on the Accounts tab.
+        </p>
       </div>
     </section>
   );
@@ -88,13 +69,11 @@ function Status({ state }: { readonly state: VaultState }) {
   const [dot, label] =
     state.kind === "up-to-date"
       ? ["ok", "Up to date"]
-      : state.kind === "behind"
-        ? ["busy", "Syncing"]
-        : state.kind === "importing"
-          ? ["busy", `Importing · ${state.confirmed} of ${count(state.files)}`]
-          : state.kind === "stuck"
-            ? ["warn", "Needs attention"]
-            : ["ok", "Saved in Signalbox"];
+      : state.kind === "importing"
+        ? ["busy", `Importing · ${state.confirmed} of ${count(state.files)}`]
+        : state.kind === "stuck"
+          ? ["warn", "Needs attention"]
+          : ["ok", "Saved in Signalbox"];
   return (
     <span className="state">
       <span className={`dot ${dot}`} aria-hidden />

@@ -6,6 +6,8 @@ import { ConnectionId, type Connection } from "@executor-js/mcp-auth/connections
 import { GrantId } from "@executor-js/mcp-auth/grants";
 import {
   connectLabel,
+  deviceSync,
+  hasSyncTool,
   obsidianDevices,
 } from "../../.upstream/apps/hosted/web/src/contracts/obsidian-devices.ts";
 
@@ -87,4 +89,33 @@ test("the header offers another device only once one syncs the vault, and return
     connectLabel(obsidianDevices(vault, [connection("pending", vault)], [])),
     "Connect Obsidian",
   );
+});
+
+test("a device's sync comes from the drive's record for its own grant, never another caller's", () => {
+  const [mac, phone] = obsidianDevices(
+    vault,
+    [connection("mac", vault), connection("phone", vault)],
+    [
+      agent("g-mac", through("mac"), "2026-11-10T08:00:00.000Z"),
+      agent("g-phone", through("phone"), "2026-11-10T09:00:00.000Z"),
+    ],
+  );
+  const sync = {
+    head: "h2",
+    devices: [
+      { agent: "g-mac", lastSyncAt: "2026-11-12T09:59:00.000Z", lastHead: "h2" },
+      // An agent using the tools syncs too; it is not one of this vault's devices.
+      { agent: "g-claude", lastSyncAt: "2026-11-12T09:58:00.000Z", lastHead: "h1" },
+    ],
+  };
+  assert.deepEqual(deviceSync(sync, mac!), { at: "2026-11-12T09:59:00.000Z", current: true });
+  // The phone hasn't synced since the drive began recording: no record, not stale.
+  assert.equal(deviceSync(sync, phone!), null);
+  assert.deepEqual(deviceSync({ ...sync, head: "h3" }, mac!), {
+    at: "2026-11-12T09:59:00.000Z",
+    current: false,
+  });
+  // Apps from before the drive reported syncs have no such tool; devices show without times.
+  assert.equal(hasSyncTool([{ name: "listNotes" }, { name: "history" }]), false);
+  assert.equal(hasSyncTool([{ name: "devices" }]), true);
 });

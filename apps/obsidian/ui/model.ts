@@ -11,24 +11,19 @@ export interface ImportStatus {
   readonly omitted: number;
 }
 
+/** One caller's last sync, as the drive records it from ordinary sync calls. */
 export interface Device {
-  readonly connection: string;
-  readonly agent: string | null;
-  readonly name: string;
-  readonly lastSyncAt: string | null;
-  readonly pluginVersion: string | null;
+  /** The caller's grant: the host's mcp-agents id. */
+  readonly agent: string;
+  readonly lastSyncAt: string;
+  readonly lastHead: string;
 }
 
 export interface Devices {
-  readonly vault: { readonly name: string | null };
+  readonly head: string;
+  readonly lastChangeAt: string | null;
   readonly devices: readonly Device[];
 }
-
-export type Author =
-  | { readonly kind: "device"; readonly connection: string }
-  | { readonly kind: "agent"; readonly name: string }
-  | { readonly kind: "import" }
-  | null;
 
 export interface Version {
   readonly oid: string;
@@ -36,7 +31,6 @@ export interface Version {
   readonly message: string;
   /** Absent before the server recorded commit times. */
   readonly time?: string;
-  readonly author?: Author;
 }
 
 export type VaultState =
@@ -49,7 +43,6 @@ export type VaultState =
       readonly since: string | null;
     }
   | { readonly kind: "up-to-date"; readonly files: number | null }
-  | { readonly kind: "behind"; readonly files: number | null }
   | { readonly kind: "saved"; readonly files: number | null };
 
 /** A device that hasn't synced for this long during an unfinished import counts as stuck. */
@@ -67,7 +60,7 @@ export function vaultState(input: {
   const files = status === null ? null : status.confirmed + status.omitted;
   if (status !== null && status.state !== "complete") {
     const synced = (devices?.devices ?? [])
-      .map((device) => (device.lastSyncAt === null ? Number.NaN : Date.parse(device.lastSyncAt)))
+      .map((device) => Date.parse(device.lastSyncAt))
       .filter((time) => !Number.isNaN(time));
     const last = synced.length ? Math.max(...synced) : null;
     // Without check-ins there is no clock to judge by, so an unfinished import reads as moving.
@@ -81,41 +74,11 @@ export function vaultState(input: {
     return { kind: "importing", confirmed: status.confirmed, files: status.files };
   }
   if (status === null && !input.hasFiles && latest === null) return { kind: "empty" };
-  const latestTime = latest?.time === undefined ? null : Date.parse(latest.time);
-  if (devices === null || devices.devices.length === 0 || latestTime === null)
-    return { kind: "saved", files };
-  const allFetched = devices.devices.every(
-    (device) => device.lastSyncAt !== null && Date.parse(device.lastSyncAt) >= latestTime,
-  );
-  return { kind: allFetched ? "up-to-date" : "behind", files };
-}
-
-/** Old plugins register every device under one client name; number them in connection order. */
-export function deviceLabels<T extends { readonly name: string | null }>(
-  devices: readonly T[],
-): string[] {
-  const counts = new Map<string, number>();
-  for (const device of devices) {
-    const name = device.name ?? "";
-    counts.set(name, (counts.get(name) ?? 0) + 1);
-  }
-  const seen = new Map<string, number>();
-  return devices.map((device) => {
-    const name = device.name?.trim() || "Obsidian device";
-    if ((counts.get(device.name ?? "") ?? 0) < 2) return name;
-    const index = (seen.get(name) ?? 0) + 1;
-    seen.set(name, index);
-    return `${name} ${index}`;
-  });
-}
-
-export function authorLabel(author: Author | undefined, devices: Devices | null): string {
-  if (author === undefined || author === null) return "Unknown";
-  if (author.kind === "agent") return author.name;
-  if (author.kind === "import") return "Imported";
-  return (
-    devices?.devices.find((device) => device.connection === author.connection)?.name ?? "A device"
-  );
+  // Up to date only when every caller that synced holds the current head. Agents using the
+  // tools may be among them; a lagging one only withholds "up to date", never claims it.
+  if (devices === null || devices.devices.length === 0) return { kind: "saved", files };
+  const current = devices.devices.every((device) => device.lastHead === devices.head);
+  return { kind: current ? "up-to-date" : "saved", files };
 }
 
 const minute = 60 * 1000;

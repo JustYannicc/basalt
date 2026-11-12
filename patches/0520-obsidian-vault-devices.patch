@@ -2,7 +2,8 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-devices.ts b/apps/hosted/web
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/obsidian-devices.ts
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,88 @@
++import { Schema } from "effect";
 +import type { AppId } from "@executor-js/sdk";
 +import type { ConnectedAgent } from "@executor-js/mcp-auth/agents";
 +import type { Connection, ConnectionId } from "@executor-js/mcp-auth/connections";
@@ -62,6 +63,79 @@ new file mode 100644
 +/** The header offers another device once one syncs this vault. */
 +export const connectLabel = (devices: readonly ObsidianDevice[]) =>
 +  devices.length > 0 ? "Connect another device" : "Connect Obsidian";
++
++/** What the vault's drive records from ordinary sync calls: each caller's last sync and head. */
++export const VaultSync = Schema.Struct({
++  head: Schema.String,
++  devices: Schema.Array(
++    Schema.Struct({ agent: Schema.String, lastSyncAt: Schema.String, lastHead: Schema.String }),
++  ),
++});
++export type VaultSync = typeof VaultSync.Type;
++
++export interface DeviceSync {
++  readonly at: string;
++  /** The device holds the vault's current head. */
++  readonly current: boolean;
++}
++
++/** A device's own sync record, matched by grant; null when it hasn't synced since recording began. */
++export const deviceSync = (sync: VaultSync, device: ObsidianDevice): DeviceSync | null => {
++  const entry = sync.devices.find((item) => item.agent === device.agent);
++  return entry === undefined
++    ? null
++    : { at: entry.lastSyncAt, current: entry.lastHead === sync.head };
++};
++
++/** The app tool that reports the drive's sync records. */
++export const syncTool = "devices";
++export const hasSyncTool = (tools: readonly { readonly name: string }[]) =>
++  tools.some((tool) => tool.name === syncTool);
+diff --git a/apps/hosted/web/src/contracts/obsidian-vault-sync.ts b/apps/hosted/web/src/contracts/obsidian-vault-sync.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/obsidian-vault-sync.ts
+@@ -0,0 +1,40 @@
++import { Effect, Option, Schema } from "effect";
++import { Atom } from "effect/reactivity";
++import { ToolName, type AppId, type VersionId } from "@executor-js/sdk";
++import type { OrganizationReference } from "@executor-js/hosted-server/organization";
++import { browserOnly } from "@executor-js/ui/contracts/http";
++import { HostedClient } from "./api.ts";
++import { syncTool, VaultSync } from "./obsidian-devices.ts";
++
++const decode = Schema.decodeUnknownOption(VaultSync);
++interface Key {
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++  readonly version?: VersionId | undefined;
++}
++
++/**
++ * The app's sync records, read by running its `devices` query as the signed-in person.
++ * Undefined while unread, and when the read fails or answers another shape: devices then show
++ * without sync times.
++ */
++const vaultSync = Atom.family((key: string) => {
++  const { organization, app, version } = JSON.parse(key) as Key;
++  return browserOnly(
++    HostedClient.runtime.atom(
++      Effect.flatMap(HostedClient, (client) =>
++        client.tools.run({
++          params: { organization, app },
++          payload: { tool: ToolName.make(syncTool), kind: "query", input: {}, version },
++        }),
++      ).pipe(
++        Effect.map((run) =>
++          run.status === "completed" ? Option.getOrUndefined(decode(run.value)) : undefined,
++        ),
++        Effect.catch(() => Effect.succeed(undefined)),
++      ),
++    ),
++  );
++});
++// String keys, so the family reuses one read per app version.
++export const vaultSyncAtom = (key: Key) => vaultSync(JSON.stringify(key));
 diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
 --- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
@@ -241,7 +315,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx b/app
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx
-@@ -0,0 +1,230 @@
+@@ -0,0 +1,289 @@
 +import { useState, type ReactNode } from "react";
 +import { Link } from "@tanstack/react-router";
 +import { useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -268,14 +342,26 @@ new file mode 100644
 +  revokeMcpAgentAtom,
 +} from "../../contracts/mcp-connections.ts";
 +import { obsidianTools, supportsObsidian } from "../../contracts/obsidian-connection.ts";
-+import { obsidianDevices, type ObsidianDevice } from "../../contracts/obsidian-devices.ts";
++import {
++  deviceSync,
++  hasSyncTool,
++  obsidianDevices,
++  type ObsidianDevice,
++  type VaultSync,
++} from "../../contracts/obsidian-devices.ts";
++import { vaultSyncAtom } from "../../contracts/obsidian-vault-sync.ts";
 +import { HostedFailure } from "../components/dashboard-bindings.tsx";
 +import { useOrganizationRoute } from "../components/organization.tsx";
 +
 +type Vault =
 +  | { readonly kind: "pending" }
 +  | { readonly kind: "failed"; readonly retry: () => void }
-+  | { readonly kind: "ready"; readonly devices: readonly ObsidianDevice[] };
++  | {
++      readonly kind: "ready";
++      readonly devices: readonly ObsidianDevice[];
++      /** The drive's sync records; undefined until read, or where the app can't report them. */
++      readonly sync: VaultSync | undefined;
++    };
 +
 +/**
 + * Renders `children` with this vault's devices for apps that speak the Obsidian sync protocol,
@@ -319,18 +405,43 @@ new file mode 100644
 +  if (AsyncResult.isFailure(tools.result))
 +    return children({ kind: "failed", retry: () => tools.refresh() });
 +  if (Option.isNone(tools.data)) return children({ kind: "pending" });
-+  return supportsObsidian(app, tools.data.value) ? (
-+    <Devices app={app}>{children}</Devices>
++  if (!supportsObsidian(app, tools.data.value)) return fallback;
++  return hasSyncTool(tools.data.value) ? (
++    <Synced app={app}>
++      {(sync) => (
++        <Devices app={app} sync={sync}>
++          {children}
++        </Devices>
++      )}
++    </Synced>
 +  ) : (
-+    fallback
++    <Devices app={app} sync={undefined}>
++      {children}
++    </Devices>
 +  );
 +}
 +
-+function Devices({
++function Synced({
 +  app,
 +  children,
 +}: {
 +  readonly app: App;
++  readonly children: (sync: VaultSync | undefined) => ReactNode;
++}) {
++  const { organization } = useOrganizationRoute();
++  const sync = useQuery(
++    vaultSyncAtom({ organization, app: app.id, version: app.activeVersion ?? undefined }),
++  );
++  return children(Option.getOrUndefined(sync.data));
++}
++
++function Devices({
++  app,
++  sync,
++  children,
++}: {
++  readonly app: App;
++  readonly sync: VaultSync | undefined;
 +  readonly children: (vault: Vault) => ReactNode;
 +}) {
 +  const { organization } = useOrganizationRoute();
@@ -349,6 +460,7 @@ new file mode 100644
 +  return children({
 +    kind: "ready",
 +    devices: obsidianDevices(app.id, connections.data.value, agents.data.value),
++    sync,
 +  });
 +}
 +
@@ -403,14 +515,9 @@ new file mode 100644
 +            <div className="min-w-0 flex-1">
 +              <p className="truncate text-[13px] font-medium">{device.label}</p>
 +              <p className="mt-0.5 truncate text-xs text-muted-foreground">
-+                {"Connected "}
++                <SyncState device={device} sync={vault.sync} />
++                {" · Connected "}
 +                <LocalTime value={device.connectedAt} options={shortMoment} />
-+                {device.lastActiveAt !== null && (
-+                  <>
-+                    {" · Active "}
-+                    <RelativeTime value={device.lastActiveAt} />
-+                  </>
-+                )}
 +              </p>
 +            </div>
 +            {manage && (
@@ -471,4 +578,30 @@ new file mode 100644
 +      </Dialog>
 +    </>
 +  );
++}
++
++function SyncState({
++  device,
++  sync,
++}: {
++  readonly device: ObsidianDevice;
++  readonly sync: VaultSync | undefined;
++}) {
++  const own = sync === undefined ? null : deviceSync(sync, device);
++  if (own !== null)
++    return (
++      <>
++        {own.current ? "Up to date · synced " : "Synced "}
++        <RelativeTime value={own.at} />
++      </>
++    );
++  // Before the drive recorded syncs, the grant's token refresh is the only sign of life.
++  if (device.lastActiveAt !== null)
++    return (
++      <>
++        {"Active "}
++        <RelativeTime value={device.lastActiveAt} />
++      </>
++    );
++  return <>No sync yet</>;
 +}

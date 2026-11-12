@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { VaultApi } from "./api.ts";
 import { imageType } from "./links.ts";
-import { authorLabel, when, isNote, noteTitle, type Devices, type Version } from "./model.ts";
+import { when, isNote, noteTitle, type Version } from "./model.ts";
 import { NoteMarkdown } from "./note-markdown.tsx";
 
 type Load<T> =
@@ -44,14 +44,12 @@ export function Reader({
   api,
   path,
   files,
-  devices,
   onOpen,
   onBack,
 }: {
   readonly api: VaultApi;
   readonly path: string;
   readonly files: readonly string[];
-  readonly devices: Devices | null;
   readonly onOpen: (path: string) => void;
   readonly onBack: () => void;
 }) {
@@ -84,11 +82,7 @@ export function Reader({
         </button>
         {parts.length > 0 && <p className="crumb">{parts.join(" / ")}</p>}
         <h2 className="title">{isNote(name) ? noteTitle(name) : name}</h2>
-        {current?.time !== undefined && (
-          <p className="meta">
-            Changed {when(current.time)} · {authorLabel(current.author, devices)}
-          </p>
-        )}
+        {current?.time !== undefined && <p className="meta">Changed {when(current.time)}</p>}
         {isNote(path) && (
           <div className="seg" role="tablist">
             <button
@@ -116,7 +110,6 @@ export function Reader({
         ) : view === "history" ? (
           <History
             versions={versions}
-            devices={devices}
             onPick={(picked) => {
               setVersion(picked.oid === current?.oid ? null : picked);
               setView("note");
@@ -126,10 +119,7 @@ export function Reader({
           <>
             {version !== null && (
               <div className="banner">
-                <span>
-                  You're reading the version from {when(version.time ?? "")}, by{" "}
-                  {authorLabel(version.author, devices)}.
-                </span>
+                <span>You're reading the version saved {when(version.time ?? "")}.</span>
                 <button type="button" className="btn sm" onClick={() => setVersion(null)}>
                   Back to current
                 </button>
@@ -163,11 +153,9 @@ export function Reader({
 
 function History({
   versions,
-  devices,
   onPick,
 }: {
   readonly versions: Load<Version[] | null>;
-  readonly devices: Devices | null;
   readonly onPick: (version: Version) => void;
 }) {
   if (versions.kind === "loading") return <p className="muted">Loading…</p>;
@@ -181,11 +169,9 @@ function History({
           <button type="button" onClick={() => onPick(version)}>
             <span className={`pip ${index === 0 ? "current" : ""}`} aria-hidden />
             <span className="who">
-              {authorLabel(version.author, devices)}
-              {version.author?.kind === "agent" && <span className="tag">Agent</span>}
+              {when(version.time ?? "")}
               {index === 0 && <span className="tag">Current</span>}
             </span>
-            <span className="t">{when(version.time ?? "")}</span>
           </button>
         </li>
       ))}

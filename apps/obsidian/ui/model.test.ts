@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { linkTarget, noteHref, fileHref } from "./links.ts";
 import {
-  authorLabel,
-  deviceLabels,
   sortEntries,
   stuckAfterMs,
   vaultState,
@@ -53,16 +51,9 @@ test("an unfinished import without check-ins reads as importing, with its counts
 test("an unfinished import is stuck once no device has synced for ten minutes", () => {
   const status: ImportStatus = { state: "ready", files: 133, confirmed: 0, omitted: 0 };
   const synced = (ms: number): Devices => ({
-    vault: { name: "Garden Notes" },
-    devices: [
-      {
-        connection: "c1",
-        agent: null,
-        name: "Mac",
-        lastSyncAt: new Date(now - ms).toISOString(),
-        pluginVersion: "0.2.3",
-      },
-    ],
+    head: "h1",
+    lastChangeAt: null,
+    devices: [{ agent: "g-mac", lastSyncAt: new Date(now - ms).toISOString(), lastHead: "h0" }],
   });
   assert.equal(
     vaultState({ status, hasFiles: false, latest: null, devices: synced(60_000), now }).kind,
@@ -78,51 +69,24 @@ test("an unfinished import is stuck once no device has synced for ten minutes", 
   assert.equal(stuck.kind, "stuck");
 });
 
-test("up to date only when every device fetched the latest change", () => {
-  const latest: Version = { ...oldPluginVersion, time: "2026-11-12T09:50:00Z", author: null };
-  const devices = (times: (string | null)[]): Devices => ({
-    vault: { name: null },
-    devices: times.map((lastSyncAt, index) => ({
-      connection: `c${index}`,
-      agent: null,
-      name: "Signalbox Obsidian Sync",
-      lastSyncAt,
-      pluginVersion: null,
+test("up to date only when every syncing caller holds the current head", () => {
+  const latest: Version = { ...oldPluginVersion, time: "2026-11-12T09:50:00Z" };
+  const devices = (heads: string[]): Devices => ({
+    head: "h2",
+    lastChangeAt: "2026-11-12T09:50:00Z",
+    devices: heads.map((lastHead, index) => ({
+      agent: `g${index}`,
+      lastSyncAt: "2026-11-12T09:55:00Z",
+      lastHead,
     })),
   });
-  const state = (times: (string | null)[]) =>
-    vaultState({ status: complete, hasFiles: true, latest, devices: devices(times), now }).kind;
-  assert.equal(state(["2026-11-12T09:55:00Z", "2026-11-12T09:50:00Z"]), "up-to-date");
-  assert.equal(state(["2026-11-12T09:55:00Z", "2026-11-12T08:00:00Z"]), "behind");
-  assert.equal(state(["2026-11-12T09:55:00Z", null]), "behind");
+  const state = (heads: string[]) =>
+    vaultState({ status: complete, hasFiles: true, latest, devices: devices(heads), now }).kind;
+  assert.equal(state(["h2", "h2"]), "up-to-date");
+  // A device (or an agent using the tools) that hasn't fetched the head withholds the claim.
+  assert.equal(state(["h2", "h1"]), "saved");
+  // No sync recorded since the release: nothing to claim either way.
   assert.equal(state([]), "saved");
-});
-
-test("devices registered under one client name are numbered; distinct names stay", () => {
-  assert.deepEqual(
-    deviceLabels([
-      { name: "Signalbox Obsidian Sync" },
-      { name: "Signalbox Obsidian Sync" },
-      { name: "Studio MacBook" },
-      { name: null },
-    ]),
-    ["Signalbox Obsidian Sync 1", "Signalbox Obsidian Sync 2", "Studio MacBook", "Obsidian device"],
-  );
-});
-
-test("history authors read plainly, and undated old commits are Unknown", () => {
-  const devices: Devices = {
-    vault: { name: null },
-    devices: [
-      { connection: "c1", agent: null, name: "Pixel phone", lastSyncAt: null, pluginVersion: null },
-    ],
-  };
-  assert.equal(authorLabel(null, devices), "Unknown");
-  assert.equal(authorLabel(undefined, null), "Unknown");
-  assert.equal(authorLabel({ kind: "agent", name: "Planning agent" }, null), "Planning agent");
-  assert.equal(authorLabel({ kind: "import" }, null), "Imported");
-  assert.equal(authorLabel({ kind: "device", connection: "c1" }, devices), "Pixel phone");
-  assert.equal(authorLabel({ kind: "device", connection: "gone" }, devices), "A device");
 });
 
 test("the tree lists folders first, then names in natural order", () => {

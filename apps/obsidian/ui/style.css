@@ -121,7 +121,7 @@ button.row:hover { background: var(--accent); }
 .banner span { flex: 1; min-width: 200px; }
 .versions { list-style: none; margin: 0; padding: 0; max-width: 680px; }
 .versions li + li { border-top: 1px solid var(--border); }
-.versions button { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 12px; align-items: center; width: 100%; padding: 10px 0; font-size: 13px; }
+.versions button { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 12px; align-items: center; width: 100%; padding: 10px 0; font-size: 13px; }
 .versions button:hover .who { text-decoration: underline; text-underline-offset: 2px; }
 .pip { width: 9px; height: 9px; border-radius: 99px; border: 1.5px solid var(--muted-foreground); }
 .pip.current { background: var(--foreground); border-color: var(--foreground); }
@@ -151,7 +151,7 @@ button.row:hover { background: var(--accent); }
 .embed-chip, .embed-missing { display: inline-block; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12.5px; color: var(--muted-foreground); }
 .embed-loading { display: inline-block; width: 120px; height: 80px; border-radius: 6px; background: var(--accent); }
 [data-callout] { margin: 0 0 0.8em; padding: 10px 14px; border-radius: 8px; background: color-mix(in srgb, var(--callout, #3b82f6) 9%, var(--background)); border: 1px solid color-mix(in srgb, var(--callout, #3b82f6) 25%, var(--border)); }
-[data-callout-title] { font-weight: 600; color: var(--callout, #3b82f6); text-transform: capitalize; }
+[data-callout-title] { font-weight: 600; color: var(--callout, #3b82f6); }
 [data-callout-body] > :last-child { margin-bottom: 0; }
 [data-callout-type="tip"], [data-callout-type="success"], [data-callout-type="check"], [data-callout-type="done"] { --callout: #1a7f37; }
 [data-callout-type="warning"], [data-callout-type="caution"], [data-callout-type="attention"], [data-callout-type="question"], [data-callout-type="help"], [data-callout-type="faq"] { --callout: #b7791f; }
@@ -183,6 +183,7 @@ button.row:hover { background: var(--accent); }
   .vault.has-note .summary, .vault.has-note .side { display: none; }
   .vault:not(.has-note) .reader { display: none; }
   .back { display: inline-flex; align-items: center; min-height: 44px; }
+  .crumb { display: none; }
   .reader-head { padding: 4px 16px 0; }
   .reader-body { padding: 12px 16px 24px; }
   .prose { font-size: 15px; }
