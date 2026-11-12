@@ -91,6 +91,20 @@ function readonlyTree(path: string) {
   chmodSync(path, 0o555);
 }
 
+function writablePrivateDirectories(path: string) {
+  const entry = lstatSync(path, { throwIfNoEntry: false });
+  if (!entry?.isDirectory()) return;
+  // Copied directory modes are immutable too; package and workspace links must stay untouched.
+  if (!(entry.mode & 0o200)) chmodSync(path, (entry.mode & 0o7777) | 0o200);
+  for (const child of readdirSync(path, { withFileTypes: true }))
+    if (child.isDirectory()) writablePrivateDirectories(join(path, child.name));
+}
+
+function removePrivateTree(path: string) {
+  writablePrivateDirectories(path);
+  rmSync(path, { recursive: true, force: true });
+}
+
 async function prepareDependencyGeneration(root: string, pin: string, cacheHitOnly: boolean) {
   const omitReleaseDownloads = process.env.BASALT_CI_OMIT_RELEASE_DOWNLOADS === "true";
   const { files, key } = dependencyIdentity(root, pin, omitReleaseDownloads);
@@ -159,7 +173,7 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
           const source = join(store, tree),
             destination = join(root, tree);
           const temporary = `${destination}.basalt-new`;
-          rmSync(temporary, { recursive: true, force: true });
+          removePrivateTree(temporary);
           mkdirSync(dirname(destination), { recursive: true });
           cpSync(source, temporary, {
             recursive: true,
@@ -176,8 +190,9 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
               else symlinkSync(join(bun, entry), target, "dir");
             }
           }
+          writablePrivateDirectories(temporary);
           // Dependencies contain relative workspace links; the copied link layout keeps source worktree-local.
-          rmSync(destination, { recursive: true, force: true });
+          removePrivateTree(destination);
           renameSync(temporary, destination);
         }
         atomicStoreJson(join(root, ".basalt-dependencies.json"), { key, store });
