@@ -1,0 +1,1049 @@
+diff --git a/apps/hosted/server/src/contracts/pool-usage.ts b/apps/hosted/server/src/contracts/pool-usage.ts
+--- a/apps/hosted/server/src/contracts/pool-usage.ts
++++ b/apps/hosted/server/src/contracts/pool-usage.ts
+@@ -1,4 +1,4 @@
+-import { UsageCreditPolicy, AccountUsageRouting } from "apps/contracts";
++import { AccountSelectionPolicy, UsageCreditPolicy, AccountUsageRouting } from "apps/contracts";
+ import { AccountId, AppId, StorageError } from "@executor-js/sdk/core";
+ import { ApiError } from "@executor-js/utils/api-error";
+ import { Context, Schema } from "effect";
+@@ -117,9 +117,10 @@
+ export const PoolCreditPolicyUnavailable = ApiError.define({
+   tag: "PoolCreditPolicyUnavailable",
+   status: 503,
+-  message: "Pool credit policy could not be confirmed. Try again.",
++  message: "Pool routing policy could not be confirmed. Try again.",
+ });
+ export const PoolAccountRouting = Schema.Struct({
++  accountSelectionPolicy: AccountSelectionPolicy,
+   usageCreditPolicy: UsageCreditPolicy,
+   canEdit: Schema.Boolean,
+   accounts: Schema.Record(AccountId, AccountUsageRouting),
+@@ -146,6 +147,18 @@
+         {
+           params,
+           payload: Schema.Struct({ usageCreditPolicy: UsageCreditPolicy }),
++          success: Schema.Struct({ success: Schema.Literal(true) }),
++          error: [OrganizationForbidden, StorageError, PoolCreditPolicyUnavailable],
++        },
++      ).annotate(RequiredAction, "manage"),
++    )
++    .add(
++      HttpApiEndpoint.patch(
++        "setSelectionPolicy",
++        "/api/organizations/:organization/apps/:app/pool-selection-policy",
++        {
++          params,
++          payload: Schema.Struct({ accountSelectionPolicy: AccountSelectionPolicy }),
+           success: Schema.Struct({ success: Schema.Literal(true) }),
+           error: [OrganizationForbidden, StorageError, PoolCreditPolicyUnavailable],
+         },
+diff --git a/apps/hosted/server/src/implementation/pool-backend.ts b/apps/hosted/server/src/implementation/pool-backend.ts
+--- a/apps/hosted/server/src/implementation/pool-backend.ts
++++ b/apps/hosted/server/src/implementation/pool-backend.ts
+@@ -26,6 +26,7 @@
+   action:
+     | "accountRouting"
+     | "setCreditPolicy"
++    | "setSelectionPolicy"
+     | "managed-usage"
+     | "managed-cap"
+     | "poolUsageSeries"
+diff --git a/apps/hosted/server/src/implementation/pool-credit-routing.ts b/apps/hosted/server/src/implementation/pool-credit-routing.ts
+--- a/apps/hosted/server/src/implementation/pool-credit-routing.ts
++++ b/apps/hosted/server/src/implementation/pool-credit-routing.ts
+@@ -1,5 +1,5 @@
+ import { StorageHost, type AppId } from "@executor-js/sdk/core";
+-import type { UsageCreditPolicy } from "apps/contracts";
++import type { AccountSelectionPolicy, UsageCreditPolicy } from "apps/contracts";
+ import { Effect, Schema } from "effect";
+ import { PoolAccountRouting, PoolCreditPolicyUnavailable } from "../contracts/pool-usage.ts";
+ import { OrganizationForbidden } from "../contracts/organization.ts";
+@@ -64,6 +64,37 @@
+     }),
+   );
+ 
++export const setPoolSelectionPolicy = (
++  app: AppId,
++  accountSelectionPolicy: AccountSelectionPolicy,
++) =>
++  withPool(app, (pool) =>
++    Effect.gen(function* () {
++      if (pool.owner !== pool.user) return yield* new OrganizationForbidden();
++      yield* sendPoolCommand(
++        "setSelectionPolicy",
++        {
++          pool: pool.pool,
++          organization: pool.organization,
++          user: pool.user,
++          owner: pool.owner,
++          accountSelectionPolicy,
++        },
++        Schema.Struct({ success: Schema.Literal(true) }),
++      );
++      return { success: true as const };
++    }),
++  ).pipe(
++    Effect.flatMap((result) =>
++      result === null ? new OrganizationForbidden() : Effect.succeed(result),
++    ),
++    Effect.catchTags({
++      SqlError: () => new PoolCreditPolicyUnavailable(),
++      SchemaError: () => new PoolCreditPolicyUnavailable(),
++      PoolUsageUnavailable: () => new PoolCreditPolicyUnavailable(),
++    }),
++  );
++
+ const tracked = <A, E, R>(read: Effect.Effect<A, E, R>) =>
+   Effect.gen(function* () {
+     const executor = yield* Effect.flatten(HostedExecutor);
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -1,5 +1,9 @@
+ import { sendPoolCommand, withPool } from "./pool-backend.ts";
+-import { poolAccountRouting, setPoolCreditPolicy } from "./pool-credit-routing.ts";
++import {
++  poolAccountRouting,
++  setPoolCreditPolicy,
++  setPoolSelectionPolicy,
++} from "./pool-credit-routing.ts";
+ import { AppId, StorageError, StorageHost } from "@executor-js/sdk/core";
+ import { Effect, Schema } from "effect";
+ import { HttpApiBuilder } from "effect/http-api";
+@@ -243,6 +247,9 @@
+     .handle("setCreditPolicy", ({ params, payload }) =>
+       setPoolCreditPolicy(params.app, payload.usageCreditPolicy),
+     )
++    .handle("setSelectionPolicy", ({ params, payload }) =>
++      setPoolSelectionPolicy(params.app, payload.accountSelectionPolicy),
++    )
+     .handle("poolUsageSeries", ({ params, payload }) => poolUsageSeries(params.app, payload))
+     .handle("lastSuccessAt", ({ params, payload }) => lastSuccessAt(params.app, payload))
+     .handle("get", ({ params, query }) => poolUsage(params.app, query.after))
+diff --git a/apps/hosted/web/src/contracts/pool-credit-routing.ts b/apps/hosted/web/src/contracts/pool-credit-routing.ts
+--- a/apps/hosted/web/src/contracts/pool-credit-routing.ts
++++ b/apps/hosted/web/src/contracts/pool-credit-routing.ts
+@@ -6,7 +6,7 @@
+ import { AsyncResult, Atom } from "effect/reactivity";
+ import type { AppId } from "@executor-js/sdk";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+-import type { UsageCreditPolicy } from "apps/contracts";
++import type { AccountSelectionPolicy, UsageCreditPolicy } from "apps/contracts";
+ import { HostedClient } from "./api.ts";
+ import { protectedQuery } from "./protected-query.ts";
+ 
+@@ -61,3 +61,18 @@
+   readonly organization: OrganizationReference;
+   readonly app: AppId;
+ }) => setPolicy(new PoolKey(key));
++
++const setSelectionPolicy = Atom.family((key: PoolKey) =>
++  HostedClient.runtime.fn((policy: AccountSelectionPolicy, get) =>
++    Effect.flatMap(HostedClient, (client) =>
++      client.poolUsage.setSelectionPolicy({
++        params: { organization: key.organization, app: key.app },
++        payload: { accountSelectionPolicy: policy },
++      }),
++    ).pipe(Effect.ensuring(Effect.sync(() => get.refresh(source(key))))),
++  ),
++);
++export const setPoolSelectionPolicyAtom = (key: {
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++}) => setSelectionPolicy(new PoolKey(key));
+diff --git a/apps/hosted/web/src/implementation/pages/pool-credit-policy.tsx b/apps/hosted/web/src/implementation/pages/pool-credit-policy.tsx
+--- a/apps/hosted/web/src/implementation/pages/pool-credit-policy.tsx
++++ b/apps/hosted/web/src/implementation/pages/pool-credit-policy.tsx
+@@ -1,16 +1,20 @@
+ import { useAtomSet } from "@effect/atom-react";
+ import { Cause, Exit, Option } from "effect";
+ import { AsyncResult } from "effect/reactivity";
+-import { useState } from "react";
++import { useEffect, useRef, useState, type ReactNode } from "react";
+ import type { AccountId, App } from "@executor-js/sdk";
+ import { useQuery } from "@executor-js/ui/dashboard/context";
+-import type { UsageCreditPolicy } from "apps/contracts";
+-import { UsageCreditPolicySetting } from "@executor-js/ui/dashboard/account-usage-credits-view";
++import type { AccountSelectionPolicy, UsageCreditPolicy } from "apps/contracts";
++import {
++  AccountSelectionPolicySetting,
++  UsageCreditPolicySetting,
++} from "@executor-js/ui/dashboard/account-usage-credits-view";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import {
+   poolAccountRoutingAtom,
+   setPoolCreditPolicyAtom,
++  setPoolSelectionPolicyAtom,
+ } from "../../contracts/pool-credit-routing.ts";
+ import type { HostedError } from "../../contracts/errors.ts";
+ 
+@@ -23,30 +27,110 @@
+ }
+ 
+ /**
+- * The pool's Subscription credits setting above its accounts. Other apps read null and show
+- * nothing; people who use the pool but can't edit it see the policy that applies to them.
++ * One pool policy's save: the choice in flight, a failure with its retry, and the value to show.
++ * Each policy owns its own, so saving one never holds or fails the other.
++ */
++function usePolicySave<P extends string>(
++  current: P,
++  read: object,
++  save: (policy: P) => Promise<Exit.Exit<unknown, HostedError>>,
++) {
++  // A save in flight, with the policy the pool reported when it started and, once acknowledged,
++  // the read that was current then.
++  const [pending, setPending] = useState<{
++    readonly policy: P;
++    readonly from: P;
++    readonly settledOn?: object;
++  }>();
++  const [error, setError] = useState<{
++    readonly policy: P;
++    readonly cause: Cause.Cause<HostedError>;
++  }>();
++  const latestRead = useRef(read);
++  useEffect(() => {
++    latestRead.current = read;
++  }, [read]);
++  // The chosen policy shows until the pool reports a different one than when the save began, so it
++  // never flickers back before the reread. An acknowledged save ends at the next read either way,
++  // so a later change from elsewhere, even back to the old value, shows and stays editable.
++  const live =
++    pending !== undefined &&
++    current === pending.from &&
++    (pending.settledOn === undefined || pending.settledOn === read);
++  const saving = live ? pending.policy : undefined;
++  useEffect(() => {
++    if (pending !== undefined && !live) setPending(undefined);
++  }, [pending, live]);
++  const change = async (policy: P) => {
++    const started = { policy, from: current };
++    setPending(started);
++    setError(undefined);
++    const exit = await save(policy);
++    if (Exit.isFailure(exit)) {
++      setPending((now) => (now === started ? undefined : now));
++      setError({ policy, cause: exit.cause });
++    } else
++      setPending((now) => (now === started ? { ...started, settledOn: latestRead.current } : now));
++  };
++  const failure: ReactNode =
++    error === undefined ? undefined : (
++      <HostedFailure
++        cause={error.cause}
++        retry={() => void change(error.policy)}
++        retrying={saving !== undefined}
++        layout="compact"
++      />
++    );
++  return { policy: saving ?? current, pending: saving !== undefined, change, failure };
++}
++
++type PoolKey = Parameters<typeof poolAccountRoutingAtom>[0];
++const ownerOnly = { disabledReason: "Only the pool's owner can change this." };
++
++function SelectionPolicy(props: {
++  readonly poolKey: PoolKey;
++  readonly current: AccountSelectionPolicy;
++  /** The routing read `current` came from; each new read is a new object. */
++  readonly read: object;
++  readonly canEdit: boolean;
++}) {
++  const save = useAtomSet(setPoolSelectionPolicyAtom(props.poolKey), { mode: "promiseExit" });
++  const { change, ...shown } = usePolicySave(props.current, props.read, save);
++  return (
++    <AccountSelectionPolicySetting
++      {...shown}
++      {...(props.canEdit ? { onChange: (policy) => void change(policy) } : ownerOnly)}
++    />
++  );
++}
++
++function CreditPolicy(props: {
++  readonly poolKey: PoolKey;
++  readonly current: UsageCreditPolicy;
++  /** The routing read `current` came from; each new read is a new object. */
++  readonly read: object;
++  readonly canEdit: boolean;
++}) {
++  const save = useAtomSet(setPoolCreditPolicyAtom(props.poolKey), { mode: "promiseExit" });
++  const { change, ...shown } = usePolicySave(props.current, props.read, save);
++  return (
++    <UsageCreditPolicySetting
++      {...shown}
++      {...(props.canEdit ? { onChange: (policy) => void change(policy) } : ownerOnly)}
++    />
++  );
++}
++
++/**
++ * The pool's routing settings above its accounts: Account selection, then Subscription credits.
++ * Other apps read null and show nothing; people who use the pool but can't edit it see the
++ * policies that apply to them.
+  */
+ export function PoolCreditPolicy({ app }: { readonly app: App }) {
+   const { organization } = useOrganizationRoute();
+   const key = { organization, app: app.id };
+   const { data, result, refresh } = useQuery(poolAccountRoutingAtom(key));
+-  const save = useAtomSet(setPoolCreditPolicyAtom(key), { mode: "promiseExit" });
+-  // A save in flight, with the policy the pool reported when it started.
+-  const [pending, setPending] = useState<{
+-    readonly policy: UsageCreditPolicy;
+-    readonly from: UsageCreditPolicy;
+-  }>();
+-  const [error, setError] = useState<{
+-    readonly policy: UsageCreditPolicy;
+-    readonly cause: Cause.Cause<HostedError>;
+-  }>();
+   const routing = Option.getOrNull(data);
+-  // The chosen policy shows until the pool reports a different one than when the save began, so it
+-  // never flickers back before the reread, and any later change from elsewhere still shows.
+-  const saving =
+-    pending !== undefined && routing !== null && routing.usageCreditPolicy === pending.from
+-      ? pending.policy
+-      : undefined;
+   // A pool that can't be reached says so; any other app, or a caller without access, shows nothing.
+   const unreachable =
+     AsyncResult.isFailure(result) &&
+@@ -65,33 +149,19 @@
+         />
+       </div>
+     ) : null;
+-  const change = async (policy: UsageCreditPolicy) => {
+-    setPending({ policy, from: routing.usageCreditPolicy });
+-    setError(undefined);
+-    const exit = await save(policy);
+-    if (Exit.isFailure(exit)) {
+-      setPending(undefined);
+-      setError({ policy, cause: exit.cause });
+-    }
+-  };
+   return (
+-    <div className="mb-6">
+-      <UsageCreditPolicySetting
+-        policy={saving ?? routing.usageCreditPolicy}
+-        pending={saving !== undefined}
+-        {...(routing.canEdit
+-          ? { onChange: (policy: UsageCreditPolicy) => void change(policy) }
+-          : { disabledReason: "Only the pool's owner can change this." })}
+-        failure={
+-          error === undefined ? undefined : (
+-            <HostedFailure
+-              cause={error.cause}
+-              retry={() => void change(error.policy)}
+-              retrying={saving !== undefined}
+-              layout="compact"
+-            />
+-          )
+-        }
++    <div className="mb-6 grid gap-4">
++      <SelectionPolicy
++        poolKey={key}
++        current={routing.accountSelectionPolicy}
++        read={routing}
++        canEdit={routing.canEdit}
++      />
++      <CreditPolicy
++        poolKey={key}
++        current={routing.usageCreditPolicy}
++        read={routing}
++        canEdit={routing.canEdit}
+       />
+     </div>
+   );
+diff --git a/e2e/support/pool-usage-backend.ts b/e2e/support/pool-usage-backend.ts
+--- a/e2e/support/pool-usage-backend.ts
++++ b/e2e/support/pool-usage-backend.ts
+@@ -5,7 +5,13 @@
+ import { createServer } from "node:http";
+ 
+ const Assertion = Schema.Struct({
+-  action: Schema.Literals(["managed-usage", "managed-cap", "accountRouting", "setCreditPolicy"]),
++  action: Schema.Literals([
++    "managed-usage",
++    "managed-cap",
++    "accountRouting",
++    "setCreditPolicy",
++    "setSelectionPolicy",
++  ]),
+   pool: Schema.NonEmptyString,
+   organization: Schema.NonEmptyString,
+   owner: Schema.NonEmptyString,
+@@ -13,6 +19,7 @@
+   expiresAt: Schema.Finite,
+   members: Schema.optionalKey(Schema.Array(Schema.String)),
+   member: Schema.optionalKey(Schema.String),
++  accountSelectionPolicy: Schema.optionalKey(Schema.Literals(["reset_aware", "balanced"])),
+   usageCreditPolicy: Schema.optionalKey(Schema.Literals(["last_resort", "never"])),
+   canEdit: Schema.optionalKey(Schema.Boolean),
+   accounts: Schema.optionalKey(
+@@ -25,6 +32,7 @@
+ export const poolUsageBackend = Effect.gen(function* () {
+   const calls = yield* Ref.make<readonly (typeof Assertion.Type)[]>([]);
+   const caps = new Map<string, number>();
++  const selectionPolicies = new Map<string, "reset_aware" | "balanced">();
+   const creditPolicies = new Map<string, "last_resort" | "never">();
+   let creditAccounts: Record<
+     string,
+@@ -75,9 +83,16 @@
+       creditPolicies.set(value.pool, value.usageCreditPolicy);
+       return HttpServerResponse.jsonUnsafe({ success: true });
+     }
++    if (value.action === "setSelectionPolicy") {
++      if (value.user !== value.owner || value.accountSelectionPolicy === undefined)
++        return HttpServerResponse.empty({ status: 403 });
++      selectionPolicies.set(value.pool, value.accountSelectionPolicy);
++      return HttpServerResponse.jsonUnsafe({ success: true });
++    }
+     if (value.action === "accountRouting") {
+       const policy = creditPolicies.get(value.pool) ?? "last_resort";
+       return HttpServerResponse.jsonUnsafe({
++        accountSelectionPolicy: selectionPolicies.get(value.pool) ?? "reset_aware",
+         usageCreditPolicy: policy,
+         canEdit: value.canEdit === true,
+         accounts: Object.fromEntries(
+@@ -160,6 +175,7 @@
+         HttpRouter.add("POST", "/pool/v1/managed-cap", handler),
+         HttpRouter.add("POST", "/pool/v1/accountRouting", handler),
+         HttpRouter.add("POST", "/pool/v1/setCreditPolicy", handler),
++        HttpRouter.add("POST", "/pool/v1/setSelectionPolicy", handler),
+       ),
+       { disableLogger: true, disableListenLog: true },
+     ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3923,6 +3923,18 @@
+       local: na("Uses hosted organization and pool policy."),
+     },
+   },
++  poolAccountSelectionPolicy: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "pool-account-selection.spec.ts",
++    title:
++      "a pool owner switches Account selection between Use quota before it resets and Balance across accounts beside Subscription credits, a held save shows as saving, a failed save keeps the pool's choice until retried, both choices survive a reload, and members see the choice but cannot change it",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Uses loopback allowance and pool services."),
++      local: na("Exercises hosted pool settings."),
++    },
++  },
+   providerApps: {
+     fixtures: "actors",
+     legacyStorage: true,
+diff --git a/e2e/tests/account-usage-credits.spec.ts b/e2e/tests/account-usage-credits.spec.ts
+--- a/e2e/tests/account-usage-credits.spec.ts
++++ b/e2e/tests/account-usage-credits.spec.ts
+@@ -674,7 +674,7 @@
+               )
+               .then(() =>
+                 setting(page)
+-                  .getByText("Pool credit policy could not be confirmed", { exact: false })
++                  .getByText("Pool routing policy could not be confirmed", { exact: false })
+                   .waitFor(),
+               )
+               .then(() =>
+diff --git a/e2e/tests/pool-account-selection.spec.ts b/e2e/tests/pool-account-selection.spec.ts
+--- a/e2e/tests/pool-account-selection.spec.ts
++++ b/e2e/tests/pool-account-selection.spec.ts
+@@ -11,6 +11,13 @@
+ import { serverControl } from "../support/server-control.ts";
+ import { providerImportJourney } from "../support/provider-import-journey.ts";
+ import { scenarios } from "../test-plan.ts";
++import type { Page, Route } from "playwright";
++import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { observationBackend } from "../support/account-observation-fixture.ts";
++import { trafficPool } from "../support/account-traffic.ts";
++import { poolFixtureSigningKey } from "../support/cloud-pool-gateway.ts";
++import { poolUsageBackend } from "../support/pool-usage-backend.ts";
+ 
+ layer(HostedLive, { excludeTestServices: true })("Pool selection", (it) => {
+   it.effect(scenarios.poolAccountSelection.title, (context) =>
+@@ -152,3 +159,378 @@
+     ),
+   );
+ });
++
++const Access = Schema.Struct({ revision: Schema.String });
++
++layer(HostedLive, { excludeTestServices: true })("Pool account selection policy", (it) => {
++  it.effect(scenarios.poolAccountSelectionPolicy.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser,
++          evidence = yield* Evidence,
++          observed = yield* observationBackend,
++          pool = yield* poolUsageBackend;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const { app } = yield* trafficPool({
++          name: "Selection pool",
++          origin: observed.origin,
++          labels: ["Selection plan"],
++        });
++        // Members reach the pool's Accounts tab through the app's own sharing.
++        const access = yield* body(
++          Access,
++          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app}/access`),
++        );
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app}/access`, {
++            revision: access.revision,
++            audience: { kind: "everyone" },
++          })).status,
++        ).toBe(200);
++        const viewer = yield* body(
++          Schema.Struct({ userId: Schema.String }),
++          yield* api.request(actors.owner, "GET", "/api/viewer"),
++        );
++        const pools = (value: object) => ({
++          sql: `update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', $1::jsonb)::text where id=$2`,
++          params: [JSON.stringify(value), actors.organization.id],
++        });
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          pools({
++            [viewer.userId]: {
++              app,
++              version: "retained-version",
++              authorization: "executor-app-v1",
++              membership: "executor-links-v1",
++            },
++          }),
++        ]);
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* serverControl("stop");
++            yield* legacyStorage([pools({})]);
++            yield* serverControl("start");
++          }).pipe(Effect.orDie),
++        );
++        yield* serverControl("environment", 200, {
++          POOL_APP_SIGNING_KEY: poolFixtureSigningKey,
++          BASALT_POOL_ORIGIN: pool.origin,
++        });
++        yield* serverControl("start");
++
++        const poolTab = `/org/${actors.organization.slug}/apps/${app}?view=accounts`;
++        const selection = (page: Page) =>
++          page.getByRole("region", { name: "Account selection", exact: true });
++        const credits = (page: Page) =>
++          page.getByRole("region", { name: "Subscription credits", exact: true });
++        const radio = (page: Page, name: string) =>
++          selection(page).getByRole("radio", { name, exact: true });
++        const note = (page: Page, text: string) =>
++          selection(page).locator("[data-account-selection-policy-note]", { hasText: text });
++        const resetNote = "New sessions start on the account whose weekly quota resets soonest.";
++        const balancedNote = "New sessions are spread across the accounts that have quota.";
++        /** What the tab shows: each choice's state, the note, and the credit setting beside it. */
++        const shown = (page: Page) =>
++          Promise.all([
++            radio(page, "Use quota before it resets").getAttribute("aria-checked"),
++            radio(page, "Balance across accounts").getAttribute("aria-checked"),
++            selection(page).locator("[data-account-selection-policy-note]").innerText(),
++            credits(page)
++              .getByRole("radio", { name: "Allow as last resort", exact: true })
++              .getAttribute("aria-checked"),
++          ]);
++        const capture = (name: string) =>
++          Effect.gen(function* () {
++            for (const width of [1280, 390]) {
++              yield* browser.use(`Show the settings at ${width}px`, (page) =>
++                page
++                  .setViewportSize({ width, height: 900 })
++                  .then(() => credits(page).scrollIntoViewIfNeeded()),
++              );
++              yield* evidence.attach(
++                `${name}-${width}.png`,
++                "image/png",
++                yield* browser.use(`Capture ${name} at ${width}px`, (page) =>
++                  page.screenshot({ fullPage: true }),
++                ),
++              );
++              const overflow = yield* browser.use("Measure horizontal overflow", (page) =>
++                page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
++              );
++              expect(overflow, `no horizontal scroll at ${width}px`).toBeLessThanOrEqual(0);
++            }
++            yield* browser.use("Back to desktop width", (page) =>
++              page.setViewportSize({ width: 1280, height: 900 }),
++            );
++          });
++        const saves = (action: "setSelectionPolicy" | "setCreditPolicy") =>
++          pool.calls.pipe(
++            Effect.map((calls) =>
++              calls
++                .filter((call) => call.action === action)
++                .map((call) =>
++                  action === "setSelectionPolicy"
++                    ? call.accountSelectionPolicy
++                    : call.usageCreditPolicy,
++                ),
++            ),
++          );
++
++        yield* browser.login(actors.owner);
++        yield* browser.use("Open the pool's Accounts tab", (page) =>
++          page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() => page.goto(poolTab))
++            .then(() => credits(page).waitFor()),
++        );
++        // Captured before asserting, so a run against a tab without the setting keeps its picture.
++        yield* capture("accounts-tab-default");
++        expect(yield* browser.use("Read the default", shown)).toEqual([
++          "true",
++          "false",
++          resetNote,
++          "true",
++        ]);
++        const order = yield* browser.use("Read where the setting sits", (page) =>
++          Promise.all([selection(page).boundingBox(), credits(page).boundingBox()]),
++        );
++        expect(
++          order[1]!.y,
++          "Account selection sits right above Subscription credits",
++        ).toBeGreaterThan(order[0]!.y + order[0]!.height);
++        expect(order[1]!.y - (order[0]!.y + order[0]!.height)).toBeLessThan(40);
++
++        // A save in flight shows the chosen value as saving, holds only this setting, and settles
++        // once the pool confirms it.
++        const pending = yield* browser.use(
++          "Choose Balance across accounts while the save is held",
++          (page) => {
++            let release: () => void = () => undefined;
++            const released = new Promise<void>((resolve) => (release = resolve));
++            let arrived: () => void = () => undefined;
++            const reached = new Promise<void>((resolve) => (arrived = resolve));
++            const hold = (route: Route) => {
++              arrived();
++              return released.then(() => route.continue());
++            };
++            return page
++              .route("**/pool-selection-policy", hold)
++              .then(() => radio(page, "Balance across accounts").click())
++              .then(() => reached)
++              .then(() => note(page, "Saving…").waitFor())
++              .then(() =>
++                Promise.all([
++                  selection(page).getAttribute("aria-busy"),
++                  radio(page, "Balance across accounts").getAttribute("aria-checked"),
++                  radio(page, "Use quota before it resets").isDisabled(),
++                  credits(page)
++                    .getByRole("radio", { name: "Never use credits", exact: true })
++                    .isDisabled(),
++                  page.screenshot({ fullPage: true }),
++                ]),
++              )
++              .finally(() => release())
++              .then((held) =>
++                note(page, balancedNote)
++                  .waitFor()
++                  .then(() => page.unroute("**/pool-selection-policy", hold))
++                  .then(() => held),
++              );
++          },
++        );
++        const [busy, chosen, locked, creditLocked, pendingShot] = pending;
++        yield* evidence.attach("account-selection-saving-1280.png", "image/png", pendingShot);
++        expect([busy, chosen, locked, creditLocked]).toEqual(["true", "true", true, false]);
++        expect(yield* saves("setSelectionPolicy")).toEqual(["balanced"]);
++
++        // Another device changes the policy after this save settled. The same mounted page shows
++        // the pool's value on its next read and stays editable; the earlier save never returns.
++        const elsewhere = (policy: "reset_aware" | "balanced") =>
++          Effect.map(
++            api.request(actors.owner, "PATCH", `${prefix}/apps/${app}/pool-selection-policy`, {
++              accountSelectionPolicy: policy,
++            }),
++            (response) => response.status,
++          );
++        const editable = (page: Page) =>
++          Promise.all([
++            shown(page),
++            radio(page, "Use quota before it resets").isDisabled(),
++            radio(page, "Balance across accounts").isDisabled(),
++            selection(page).getAttribute("aria-busy"),
++          ]);
++        const returnTo = (label: string, text: string) =>
++          browser.use(label, (page) =>
++            page
++              .evaluate(() => window.dispatchEvent(new Event("visibilitychange")))
++              .then(() => note(page, text).waitFor())
++              .then(() => editable(page)),
++          );
++        const resetShown = [["true", "false", resetNote, "true"], false, false, "false"];
++        expect(yield* elsewhere("reset_aware")).toBe(200);
++        yield* capture("account-selection-before-external-read");
++        expect(
++          yield* returnTo("Return to the tab after another device chose reset", resetNote),
++        ).toEqual(resetShown);
++        yield* capture("account-selection-external-reset");
++        // Saving the value already shown elsewhere changes nothing here and stays truthful.
++        expect(yield* elsewhere("reset_aware")).toBe(200);
++        expect(
++          yield* returnTo("Return to the tab after the same value was saved again", resetNote),
++        ).toEqual(resetShown);
++        const again = yield* browser.use("Choose Balance across accounts again", (page) =>
++          radio(page, "Balance across accounts")
++            .click()
++            .then(() => note(page, balancedNote).waitFor())
++            .then(() => editable(page)),
++        );
++        expect(again).toEqual([["false", "true", balancedNote, "true"], false, false, "false"]);
++        expect(yield* saves("setSelectionPolicy")).toEqual([
++          "balanced",
++          "reset_aware",
++          "reset_aware",
++          "balanced",
++        ]);
++
++        // The credit policy saves on its own and leaves Account selection alone.
++        const independent = yield* browser.use("Choose Never use credits", (page) =>
++          credits(page)
++            .getByRole("radio", { name: "Never use credits", exact: true })
++            .click()
++            .then(() =>
++              credits(page)
++                .locator("[data-usage-credit-policy-note]", {
++                  hasText: "Accounts with unknown usage are skipped.",
++                })
++                .waitFor(),
++            )
++            .then(() => shown(page)),
++        );
++        expect(independent).toEqual(["false", "true", balancedNote, "false"]);
++        expect(yield* saves("setCreditPolicy")).toEqual(["never"]);
++        expect(yield* saves("setSelectionPolicy")).toEqual([
++          "balanced",
++          "reset_aware",
++          "reset_aware",
++          "balanced",
++        ]);
++
++        // Both choices come back from the pool after a reload.
++        const reloaded = yield* browser.use("Reload the tab", (page) =>
++          page
++            .reload()
++            .then(() => note(page, balancedNote).waitFor())
++            .then(() => shown(page)),
++        );
++        expect(reloaded).toEqual(["false", "true", balancedNote, "false"]);
++        yield* capture("account-selection-balanced");
++
++        // A failed save names the failure, keeps the pool's choice and offers a retry.
++        yield* pool.unavailable(true);
++        const failed = yield* browser.use(
++          "Choose Use quota before it resets while the pool is down",
++          (page) =>
++            radio(page, "Use quota before it resets")
++              .click()
++              .then(() =>
++                selection(page)
++                  .getByText("Pool routing policy could not be confirmed", { exact: false })
++                  .waitFor(),
++              )
++              .then(() =>
++                Promise.all([
++                  shown(page),
++                  credits(page)
++                    .getByText("Pool routing policy could not be confirmed", { exact: false })
++                    .count(),
++                ]),
++              ),
++        );
++        expect(failed).toEqual([["false", "true", balancedNote, "false"], 0]);
++        yield* capture("account-selection-save-failed");
++        yield* pool.unavailable(false);
++        const retried = yield* browser.use("Try the save again", (page) =>
++          selection(page)
++            .getByRole("button", { name: "Retry", exact: true })
++            .click()
++            .then(() => note(page, resetNote).waitFor())
++            .then(() =>
++              Promise.all([
++                shown(page),
++                selection(page)
++                  .getByText("Pool routing policy could not be confirmed", { exact: false })
++                  .count(),
++              ]),
++            ),
++        );
++        expect(retried).toEqual([["true", "false", resetNote, "false"], 0]);
++        expect(yield* saves("setSelectionPolicy")).toEqual([
++          "balanced",
++          "reset_aware",
++          "reset_aware",
++          "balanced",
++          "reset_aware",
++          "reset_aware",
++        ]);
++        const back = yield* browser.use("Reload after switching back", (page) =>
++          page
++            .reload()
++            .then(() => note(page, resetNote).waitFor())
++            .then(() => shown(page)),
++        );
++        expect(back).toEqual(["true", "false", resetNote, "false"]);
++
++        // A member sees the pool's effective choice and that only its owner changes it; the
++        // server refuses the member's own save.
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "PATCH",
++            `${prefix}/apps/${app}/pool-selection-policy`,
++            {
++              accountSelectionPolicy: "balanced",
++            },
++          )).status,
++        ).toBe(200);
++        yield* browser.login(actors.member);
++        const member = yield* browser.use("Open the pool as a member", (page) =>
++          page
++            .goto(poolTab)
++            .then(() => note(page, balancedNote).waitFor())
++            .then(() =>
++              Promise.all([
++                shown(page),
++                radio(page, "Use quota before it resets").isDisabled(),
++                selection(page).getByText("Only the pool's owner can change this.").count(),
++              ]),
++            ),
++        );
++        expect(member).toEqual([["false", "true", balancedNote, "false"], true, 1]);
++        yield* capture("account-selection-member");
++        expect(
++          (yield* api.request(
++            actors.member,
++            "PATCH",
++            `${prefix}/apps/${app}/pool-selection-policy`,
++            {
++              accountSelectionPolicy: "reset_aware",
++            },
++          )).status,
++        ).toBe(403);
++        expect(yield* saves("setSelectionPolicy")).toEqual([
++          "balanced",
++          "reset_aware",
++          "reset_aware",
++          "balanced",
++          "reset_aware",
++          "reset_aware",
++          "balanced",
++        ]);
++      }),
++    ),
++  );
++});
+diff --git a/packages/apps/src/contracts/account-observation.ts b/packages/apps/src/contracts/account-observation.ts
+--- a/packages/apps/src/contracts/account-observation.ts
++++ b/packages/apps/src/contracts/account-observation.ts
+@@ -27,6 +27,10 @@
+ export const UsageCreditPolicy = Schema.Literals(["last_resort", "never"]);
+ /** A pool policy for spending subscription usage credits. */
+ export type UsageCreditPolicy = typeof UsageCreditPolicy.Type;
++
++/** How a pool orders accounts when a session has no eligible binding. */
++export const AccountSelectionPolicy = Schema.Literals(["reset_aware", "balanced"]);
++export type AccountSelectionPolicy = typeof AccountSelectionPolicy.Type;
+ 
+ const creditAmount = Schema.String.check(
+   Schema.isMaxLength(80),
+diff --git a/packages/ui/src/implementation/dashboard/account-usage-credits-view.tsx b/packages/ui/src/implementation/dashboard/account-usage-credits-view.tsx
+--- a/packages/ui/src/implementation/dashboard/account-usage-credits-view.tsx
++++ b/packages/ui/src/implementation/dashboard/account-usage-credits-view.tsx
+@@ -4,9 +4,8 @@
+ import type { DisplayFormat } from "../../contracts/display.ts";
+ import { cn } from "../lib/utils.ts";
+ import { radioClass, radioDot } from "./radio-choice.ts";
+-import { UsageCreditPolicy } from "apps/contracts";
++import { AccountSelectionPolicy, UsageCreditPolicy } from "apps/contracts";
+ import type { AccountUsageRouting, UsageCredits } from "apps/contracts";
+-import { Schema } from "effect";
+ import {
+   creditDetails,
+   creditLine,
+@@ -154,25 +153,40 @@
+   });
+ }
+ 
+-/**
+- * The pool's Subscription credits policy. It steers routing in this pool only; the provider's own
+- * setting is the only absolute guarantee, which the disclosure says.
+- */
+-export function UsageCreditPolicySetting({
++type PolicyControl<P extends string> = {
++  readonly policy: P;
++  /** Absent for a caller who may not change the pool's policy. */
++  readonly onChange?: ((policy: P) => void) | undefined;
++  readonly pending?: boolean;
++  /** Why the caller can't change it, shown under the choices. */
++  readonly disabledReason?: string | undefined;
++  /** A save that failed, with its retry, in the host's failure layout. */
++  readonly failure?: ReactNode;
++};
++
++/** One pool-wide routing choice: its name, a radio per value, what the current value does. */
++function PoolPolicySetting<P extends string>({
++  name,
++  title,
++  summary,
++  choices,
++  labels,
++  notes,
++  about,
+   policy,
+   onChange,
+   pending = false,
+   disabledReason,
+   failure,
+-}: {
+-  readonly policy: UsageCreditPolicy;
+-  /** Absent for a caller who may not change the pool's policy. */
+-  readonly onChange?: ((policy: UsageCreditPolicy) => void) | undefined;
+-  readonly pending?: boolean;
+-  /** Why the caller can't change it, shown under the choices. */
+-  readonly disabledReason?: string | undefined;
+-  /** A save that failed, with its retry, in the host's failure layout. */
+-  readonly failure?: ReactNode;
++}: PolicyControl<P> & {
++  /** The data attribute stem tests and styles find this setting by. */
++  readonly name: string;
++  readonly title: string;
++  readonly summary: string;
++  readonly choices: readonly P[];
++  readonly labels: Readonly<Record<P, string>>;
++  readonly notes: Readonly<Record<P, string>>;
++  readonly about: { readonly summary: string; readonly body: string };
+ }) {
+   const heading = useId();
+   const note = useId();
+@@ -180,16 +194,14 @@
+     <section
+       aria-labelledby={heading}
+       aria-busy={pending}
+-      data-usage-credit-policy={policy}
++      {...{ [`data-${name}`]: policy }}
+       className="grid grid-cols-[minmax(240px,_1fr)_minmax(300px,_1fr)] gap-x-7 gap-y-2.5 rounded-lg border bg-card p-4 max-[850px]:grid-cols-1 max-[640px]:p-3.5"
+     >
+       <div className="min-w-0">
+         <h2 id={heading} className="text-[15px] font-semibold">
+-          Subscription credits
++          {title}
+         </h2>
+-        <p className="mt-0.5 text-xs text-muted-foreground">
+-          Accounts with plan quota are always used first.
+-        </p>
++        <p className="mt-0.5 text-xs text-muted-foreground">{summary}</p>
+       </div>
+       <div className="grid min-w-0 gap-1.5">
+         <RadioGroup.Root
+@@ -198,11 +210,12 @@
+           aria-describedby={note}
+           disabled={onChange === undefined || pending}
+           onValueChange={(value) => {
+-            if (Schema.is(UsageCreditPolicy)(value)) onChange?.(value);
++            const chosen = choices.find((choice) => choice === value);
++            if (chosen !== undefined) onChange?.(chosen);
+           }}
+           className="flex min-h-7 flex-wrap items-center gap-x-5 gap-y-2.5 max-[640px]:flex-col max-[640px]:items-start"
+         >
+-          {UsageCreditPolicy.literals.map((choice) => (
++          {choices.map((choice) => (
+             <label
+               key={choice}
+               className="flex min-h-7 cursor-pointer items-center gap-2 text-[13px] has-disabled:cursor-default"
+@@ -210,12 +223,12 @@
+               <RadioGroup.Item value={choice} className={radioClass}>
+                 <RadioGroup.Indicator className={radioDot} />
+               </RadioGroup.Item>
+-              {policyLabels[choice]}
++              {labels[choice]}
+             </label>
+           ))}
+         </RadioGroup.Root>
+-        <p id={note} className="text-xs text-muted-foreground" data-usage-credit-policy-note>
+-          {pending ? "Saving…" : policyNotes[policy]}
++        <p id={note} className="text-xs text-muted-foreground" {...{ [`data-${name}-note`]: "" }}>
++          {pending ? "Saving…" : notes[policy]}
+         </p>
+         {disabledReason !== undefined && (
+           <p className="text-xs text-muted-foreground">{disabledReason}</p>
+@@ -224,14 +237,63 @@
+       </div>
+       <details className="col-span-full text-xs text-muted-foreground">
+         <summary className="w-fit cursor-pointer underline underline-offset-3">
+-          About this limit
++          {about.summary}
+         </summary>
+-        <p className="max-w-[75ch] pt-1.5">
+-          This controls routing in this pool. A request can cross the provider's quota limit while
+-          it runs. For an absolute no-charge guarantee, turn off extra usage or credits in the
+-          provider's settings.
+-        </p>
++        <p className="max-w-[75ch] pt-1.5">{about.body}</p>
+       </details>
+     </section>
+   );
+ }
++
++/**
++ * The pool's Subscription credits policy. It steers routing in this pool only; the provider's own
++ * setting is the only absolute guarantee, which the disclosure says.
++ */
++export function UsageCreditPolicySetting(props: PolicyControl<UsageCreditPolicy>) {
++  return (
++    <PoolPolicySetting
++      {...props}
++      name="usage-credit-policy"
++      title="Subscription credits"
++      summary="Accounts with plan quota are always used first."
++      choices={UsageCreditPolicy.literals}
++      labels={policyLabels}
++      notes={policyNotes}
++      about={{
++        summary: "About this limit",
++        body: "This controls routing in this pool. A request can cross the provider's quota limit while it runs. For an absolute no-charge guarantee, turn off extra usage or credits in the provider's settings.",
++      }}
++    />
++  );
++}
++
++const selectionLabels: Record<AccountSelectionPolicy, string> = {
++  reset_aware: "Use quota before it resets",
++  balanced: "Balance across accounts",
++};
++const selectionNotes: Record<AccountSelectionPolicy, string> = {
++  reset_aware: "New sessions start on the account whose weekly quota resets soonest.",
++  balanced: "New sessions are spread across the accounts that have quota.",
++};
++
++/**
++ * Which account a new session starts on. Ranking only weighs account-wide weekly resets; every
++ * other limit still decides whether an account can be used at all, which the disclosure says.
++ */
++export function AccountSelectionPolicySetting(props: PolicyControl<AccountSelectionPolicy>) {
++  return (
++    <PoolPolicySetting
++      {...props}
++      name="account-selection-policy"
++      title="Account selection"
++      summary="A session keeps the account it started on."
++      choices={AccountSelectionPolicy.literals}
++      labels={selectionLabels}
++      notes={selectionNotes}
++      about={{
++        summary: "How accounts are chosen",
++        body: "Only new sessions are placed; a running session stays on its account. Each account's weekly reset date sets the order, and when a date isn't known new sessions are spread instead. Every limit still applies, including short and per-model limits, so an account at any limit is skipped until it frees up. Resets for a single model and banked resets never change the order.",
++      }}
++    />
++  );
++}

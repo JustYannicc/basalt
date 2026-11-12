@@ -3,8 +3,13 @@ import type { HomeClient } from "./control.ts";
 import { poolCreditRouting, setPoolCreditPolicy } from "./credit-policy.ts";
 import { fail, failureResponse, json, object, readBody } from "./json.ts";
 import { openEnvelope } from "./token.ts";
+import { setPoolSelectionPolicy } from "./selection-policy.ts";
 
-export const creditRoutingPaths = new Set(["/pool/v1/accountRouting", "/pool/v1/setCreditPolicy"]);
+export const creditRoutingPaths = new Set([
+  "/pool/v1/accountRouting",
+  "/pool/v1/setCreditPolicy",
+  "/pool/v1/setSelectionPolicy",
+]);
 const rank = (value: AccountUsageRouting) =>
   !value.eligible ? 3 : value.use === "plan" ? 0 : value.use === "credits" ? 1 : 2;
 
@@ -29,10 +34,10 @@ export async function handleCreditRouting(
       object(body) && typeof body.envelope === "string"
         ? await openEnvelope(access.signingKey, "sbs1", body.envelope, access.previousSigningKey)
         : undefined;
-    const action =
-      new URL(request.url).pathname === "/pool/v1/accountRouting"
-        ? "accountRouting"
-        : "setCreditPolicy";
+    const path = new URL(request.url).pathname;
+    if (!creditRoutingPaths.has(path))
+      return fail(404, "not_found", "This pool endpoint does not exist.");
+    const action = path.slice("/pool/v1/".length);
     if (
       !object(payload) ||
       payload.action !== action ||
@@ -49,11 +54,15 @@ export async function handleCreditRouting(
       !payload.owner
     )
       return fail(401, "unauthorized", "A valid host policy assertion is required.");
-    if (action === "setCreditPolicy" && payload.user !== payload.owner)
-      return fail(403, "not_owner", "Only the pool owner can change subscription credit policy.");
+    if (action !== "accountRouting" && payload.user !== payload.owner)
+      return fail(403, "not_owner", "Only the pool owner can change routing policy.");
     await access.ensure?.(payload.pool, payload.organization);
     if (action === "setCreditPolicy")
       return json(await setPoolCreditPolicy(access.home, payload.pool, payload.usageCreditPolicy));
+    if (action === "setSelectionPolicy")
+      return json(
+        await setPoolSelectionPolicy(access.home, payload.pool, payload.accountSelectionPolicy),
+      );
     if (
       typeof payload.canEdit !== "boolean" ||
       payload.canEdit !== (payload.owner === payload.user) ||
@@ -83,6 +92,7 @@ export async function handleCreditRouting(
     }
     return json({
       usageCreditPolicy: result.usageCreditPolicy,
+      accountSelectionPolicy: result.accountSelectionPolicy,
       canEdit: payload.canEdit,
       accounts,
     });

@@ -1,0 +1,1425 @@
+diff --git a/internal/cliproxy/auth/options.go b/internal/cliproxy/auth/options.go
+--- a/internal/cliproxy/auth/options.go
++++ b/internal/cliproxy/auth/options.go
+@@ -40,12 +40,13 @@
+ // This is a deliberately small subset of CPA's execution options: CLIProxyAPIHome only needs
+ // headers / query / raw request bytes for selector decisions, and a generic metadata bag.
+ type Options struct {
+-	CandidateFilter func([]*Auth, map[string]string) ([]*Auth, error)
+-	Headers         http.Header
+-	Query           url.Values
+-	OriginalRequest []byte
+-	Metadata        map[string]any
+-	SessionAffinity *SessionAffinitySelection
++	AccountSelection *AccountSelection
++	CandidateFilter  func([]*Auth, map[string]string) ([]*Auth, error)
++	Headers          http.Header
++	Query            url.Values
++	OriginalRequest  []byte
++	Metadata         map[string]any
++	SessionAffinity  *SessionAffinitySelection
+ }
+ 
+ func requestRetryRoundFromOptions(opts Options) int {
+diff --git a/internal/cliproxy/auth/quota_selection.go b/internal/cliproxy/auth/quota_selection.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cliproxy/auth/quota_selection.go
+@@ -0,0 +1,59 @@
++package auth
++
++import (
++	"math"
++	"time"
++)
++
++type QuotaResetRank struct {
++	ResetAt   time.Time
++	ExpiresAt time.Time
++	Headroom  float64
++	WindowID  string
++}
++
++// AccountSelection is request-owned. The funding read fills it before selection;
++// affinity bypasses ordering when its existing binding remains eligible.
++type AccountSelection struct {
++	Policy     string
++	PlanFunded bool
++	Ranks      map[string]QuotaResetRank
++	Reason     string
++}
++
++func quotaOrderedCandidates(available []*Auth, selection *AccountSelection, now time.Time) []*Auth {
++	if selection == nil {
++		return available
++	}
++	if selection.Reason == "pinned" {
++		return available
++	}
++	selection.Reason = "balanced"
++	if selection.Policy != "reset_aware" {
++		return available
++	}
++	selection.Reason = "funding_fallback"
++	if !selection.PlanFunded {
++		return available
++	}
++	selection.Reason = "reset_unknown"
++	var best QuotaResetRank
++	for _, candidate := range available {
++		rank, ok := selection.Ranks[candidate.ID]
++		if !ok || !rank.ResetAt.After(now) || !rank.ExpiresAt.After(now) || rank.Headroom <= 0 || rank.Headroom > 1 || math.IsNaN(rank.Headroom) || math.IsInf(rank.Headroom, 0) {
++			return available
++		}
++		if best.ResetAt.IsZero() || rank.ResetAt.Before(best.ResetAt) || rank.ResetAt.Equal(best.ResetAt) && rank.Headroom < best.Headroom {
++			best = rank
++		}
++	}
++	selected := make([]*Auth, 0, len(available))
++	for _, candidate := range available {
++		rank := selection.Ranks[candidate.ID]
++		if rank.ResetAt.Equal(best.ResetAt) && rank.Headroom == best.Headroom {
++			selected = append(selected, candidate)
++		}
++	}
++	selection.Reason = "reset_deadline"
++	return selected
++}
+diff --git a/internal/cliproxy/auth/quota_selection_test.go b/internal/cliproxy/auth/quota_selection_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cliproxy/auth/quota_selection_test.go
+@@ -0,0 +1,134 @@
++package auth
++
++import (
++	"context"
++	"net/http"
++	"testing"
++	"time"
++)
++
++func TestQuotaResetOrderingAndBalancedFallback(t *testing.T) {
++	now := time.Now()
++	accounts := []*Auth{{ID: "a", Status: StatusActive}, {ID: "b", Status: StatusActive}, {ID: "c", Status: StatusActive}}
++	ranks := func() map[string]QuotaResetRank {
++		return map[string]QuotaResetRank{
++			"a": {ResetAt: now.Add(4 * time.Hour), ExpiresAt: now.Add(time.Minute), Headroom: .8, WindowID: "weekly"},
++			"b": {ResetAt: now.Add(time.Hour), ExpiresAt: now.Add(time.Minute), Headroom: .8, WindowID: "weekly"},
++			"c": {ResetAt: now.Add(time.Hour), ExpiresAt: now.Add(time.Minute), Headroom: .4, WindowID: "weekly"},
++		}
++	}
++	for _, test := range []struct {
++		name   string
++		change func(*AccountSelection)
++		want   string
++	}{
++		{"earliest-weekly-then-headroom", func(*AccountSelection) {}, "c"},
++		{"balanced", func(s *AccountSelection) { s.Policy = "balanced" }, "a"},
++		{"credits-retain-order", func(s *AccountSelection) { s.PlanFunded = false }, "a"},
++		{"unknown", func(s *AccountSelection) { delete(s.Ranks, "a") }, "a"},
++		{"stale", func(s *AccountSelection) { r := s.Ranks["a"]; r.ExpiresAt = now.Add(-time.Second); s.Ranks["a"] = r }, "a"},
++		{"reset-already-passed", func(s *AccountSelection) { r := s.Ranks["a"]; r.ResetAt = now.Add(-time.Second); s.Ranks["a"] = r }, "a"},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			selection := &AccountSelection{Policy: "reset_aware", PlanFunded: true, Ranks: ranks()}
++			test.change(selection)
++			picked, errPick := (&RoundRobinSelector{}).Pick(t.Context(), "claude", "opus", Options{AccountSelection: selection}, accounts)
++			if errPick != nil || picked.ID != test.want {
++				t.Fatalf("picked=%v error=%v, want %s", picked, errPick, test.want)
++			}
++		})
++	}
++}
++
++func TestQuotaResetOrderingKeepsAffinityAndAdmissionCandidate(t *testing.T) {
++	now := time.Now()
++	selection := &AccountSelection{Policy: "reset_aware", PlanFunded: true, Ranks: map[string]QuotaResetRank{
++		"a": {ResetAt: now.Add(time.Hour), ExpiresAt: now.Add(time.Minute), Headroom: .5},
++		"b": {ResetAt: now.Add(2 * time.Hour), ExpiresAt: now.Add(time.Minute), Headroom: .5},
++	}}
++	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}})
++	t.Cleanup(selector.Stop)
++	accounts := []*Auth{{ID: "a", Status: StatusActive}, {ID: "b", Status: StatusActive}}
++	opts := Options{AccountSelection: selection, Headers: http.Header{"X-Session-Id": []string{"synthetic-sticky"}}}
++	first, errFirst := selector.Pick(context.Background(), "claude", "opus", opts, accounts)
++	if errFirst != nil || first.ID != "a" {
++		t.Fatalf("first=%v error=%v", first, errFirst)
++	}
++	rank := selection.Ranks["b"]
++	rank.ResetAt = now.Add(30 * time.Minute)
++	selection.Ranks["b"] = rank
++	second, errSecond := selector.Pick(context.Background(), "claude", "opus", opts, accounts)
++	if errSecond != nil || second.ID != "a" {
++		t.Fatalf("sticky account moved: %v error=%v", second, errSecond)
++	}
++	opts.Headers.Set("X-Session-Id", "synthetic-new-session")
++	opts.SessionAffinity = &SessionAffinitySelection{}
++	third, errThird := selector.Pick(context.Background(), "claude", "opus", opts, accounts)
++	if errThird != nil || third.ID != "b" || opts.SessionAffinity.Commit == nil || opts.SessionAffinity.Commit.AuthID != "b" {
++		t.Fatalf("new session did not propose earliest account for atomic admission: %v error=%v", third, errThird)
++	}
++}
++
++func TestQuotaResetOrderingRespectsExistingSelectorsAndPriority(t *testing.T) {
++	for name, newSelector := range map[string]func() Selector{
++		"round-robin": func() Selector { return &RoundRobinSelector{} },
++		"fill-first":  func() Selector { return &FillFirstSelector{} },
++		"weighted":    func() Selector { return &WeightedRoundRobinSelector{} },
++	} {
++		t.Run(name, func(t *testing.T) {
++			now := time.Now()
++			ranks := map[string]QuotaResetRank{
++				"a": {ResetAt: now.Add(time.Hour), ExpiresAt: now.Add(time.Minute), Headroom: .5},
++				"b": {ResetAt: now.Add(2 * time.Hour), ExpiresAt: now.Add(time.Minute), Headroom: .5},
++			}
++			accounts := []*Auth{{ID: "a", Status: StatusActive, Attributes: map[string]string{"weight": "1"}}, {ID: "b", Status: StatusActive, Attributes: map[string]string{"weight": "4"}}}
++			selection := &AccountSelection{Policy: "reset_aware", PlanFunded: true, Ranks: ranks}
++			picked, errPick := newSelector().Pick(t.Context(), "claude", "opus", Options{AccountSelection: selection}, accounts)
++			if errPick != nil || picked.ID != "a" {
++				t.Fatalf("reset selection: %v %v", picked, errPick)
++			}
++			accounts[1].Attributes["priority"] = "10"
++			picked, errPick = newSelector().Pick(t.Context(), "claude", "opus", Options{AccountSelection: selection}, accounts)
++			if errPick != nil || picked.ID != "b" {
++				t.Fatalf("priority overridden: %v %v", picked, errPick)
++			}
++			delete(accounts[1].Attributes, "priority")
++			rank := ranks["b"]
++			rank.ResetAt = ranks["a"].ResetAt
++			ranks["b"] = rank
++			withPolicy, withoutPolicy := newSelector(), newSelector()
++			for index := 0; index < 12; index++ {
++				got, errGot := withPolicy.Pick(t.Context(), "claude", "opus", Options{AccountSelection: selection}, accounts)
++				want, errWant := withoutPolicy.Pick(t.Context(), "claude", "opus", Options{}, accounts)
++				if errGot != nil || errWant != nil || got.ID != want.ID {
++					t.Fatalf("tied reset changed selector at %d: got=%v want=%v errors=%v %v", index, got, want, errGot, errWant)
++				}
++			}
++		})
++	}
++}
++
++func TestQuotaResetOrderingPreservesParentAffinity(t *testing.T) {
++	now := time.Now()
++	selection := &AccountSelection{Policy: "reset_aware", PlanFunded: true, Ranks: map[string]QuotaResetRank{
++		"a": {ResetAt: now.Add(time.Hour), ExpiresAt: now.Add(time.Minute), Headroom: .5},
++		"b": {ResetAt: now.Add(2 * time.Hour), ExpiresAt: now.Add(time.Minute), Headroom: .5},
++	}}
++	selector := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}})
++	t.Cleanup(selector.Stop)
++	accounts := []*Auth{{ID: "a", Status: StatusActive}, {ID: "b", Status: StatusActive}}
++	opts := Options{AccountSelection: selection, Headers: http.Header{"X-Session-Id": []string{"synthetic-parent"}}}
++	first, errFirst := selector.Pick(t.Context(), "claude", "opus", opts, accounts)
++	if errFirst != nil || first.ID != "a" {
++		t.Fatal(first, errFirst)
++	}
++	rank := selection.Ranks["b"]
++	rank.ResetAt = now.Add(30 * time.Minute)
++	selection.Ranks["b"] = rank
++	opts.Headers.Set("X-Session-Id", "synthetic-child")
++	opts.Headers.Set("X-Parent-Session-Id", "synthetic-parent")
++	child, errChild := selector.Pick(t.Context(), "claude", "opus", opts, accounts)
++	if errChild != nil || child.ID != "a" || selection.Reason != "parent_affinity" {
++		t.Fatalf("parent moved: %v %v reason=%s", child, errChild, selection.Reason)
++	}
++}
+diff --git a/internal/cliproxy/auth/selector.go b/internal/cliproxy/auth/selector.go
+--- a/internal/cliproxy/auth/selector.go
++++ b/internal/cliproxy/auth/selector.go
+@@ -301,6 +301,7 @@
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	available = quotaOrderedCandidates(available, opts.AccountSelection, now)
+ 	key := provider + ":" + canonicalModelKey(model)
+ 	s.mu.Lock()
+ 	if s.cursors == nil {
+@@ -336,6 +337,7 @@
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	available = quotaOrderedCandidates(available, opts.AccountSelection, now)
+ 	return available[0], nil
+ }
+ 
+@@ -479,6 +481,9 @@
+ 			for _, auth := range available {
+ 				if auth.ID == binding.AuthID {
+ 					selected = auth
++					if opts.AccountSelection != nil {
++						opts.AccountSelection.Reason = "affinity"
++					}
+ 					break
+ 				}
+ 			}
+@@ -492,6 +497,9 @@
+ 				for _, auth := range available {
+ 					if auth.ID == parent.AuthID {
+ 						selected = auth
++						if opts.AccountSelection != nil {
++							opts.AccountSelection.Reason = "parent_affinity"
++						}
+ 						break
+ 					}
+ 				}
+diff --git a/internal/cliproxy/auth/selector_weighted.go b/internal/cliproxy/auth/selector_weighted.go
+--- a/internal/cliproxy/auth/selector_weighted.go
++++ b/internal/cliproxy/auth/selector_weighted.go
+@@ -59,6 +59,7 @@
+ 	if errAvailable != nil {
+ 		return nil, errAvailable
+ 	}
++	available = quotaOrderedCandidates(available, opts.AccountSelection, time.Now())
+ 	stateModel := model
+ 	if requested, ok := opts.Metadata[RequestedModelMetadataKey].(string); ok && strings.TrimSpace(requested) != "" {
+ 		stateModel = requested
+diff --git a/internal/cluster/account_routing.go b/internal/cluster/account_routing.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/account_routing.go
+@@ -0,0 +1,97 @@
++package cluster
++
++import (
++	"context"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++)
++
++func (r *Repository) accountRoutingPoliciesForAPIKey(ctx context.Context, apiKey, model string) (string, string, error) {
++	db, errDB := r.database()
++	if errDB != nil {
++		return "", "", errDB
++	}
++	key, errKey := r.findAPIKeyForAccess(ctx, db, apiKey)
++	if errKey != nil {
++		return "", "", errKey
++	}
++	channels, errChannels := apiKeyChannelsFromJSON(key.Channels)
++	if errChannels != nil {
++		return "", "", errChannels
++	}
++	modelDetails, _, errDetails := allowedModelGroupDetailsForAPIKeyRecord(ctx, db, &key)
++	if errDetails != nil {
++		return "", "", errDetails
++	}
++	modelChannels, restricted, errModel := modelChannelGroupIDsFromDetails(modelDetails, model)
++	if errModel != nil {
++		return "", "", errModel
++	}
++	if restricted {
++		channels = append(channels, modelChannels...)
++	}
++	credits, selection := "last_resort", "reset_aware"
++	if len(channels) == 0 {
++		return credits, selection, nil
++	}
++	var groups []ChannelGroupRecord
++	if errGroups := db.WithContext(ctx).Where("id IN ? AND disabled = ?", channels, false).Find(&groups).Error; errGroups != nil {
++		return "", "", errGroups
++	}
++	for _, group := range groups {
++		if group.UsageCreditPolicy != "" && group.UsageCreditPolicy != "last_resort" {
++			credits = "never"
++		}
++		policy, errPolicy := NormalizeAccountSelectionPolicy(group.AccountSelectionPolicy)
++		if errPolicy != nil {
++			return "", "", errPolicy
++		}
++		if policy == "balanced" {
++			selection = policy
++		}
++	}
++	return credits, selection, nil
++}
++
++func (a *RuntimeAdapter) UsageCreditRoutingForAPIKey(ctx context.Context, apiKey, model string, models map[string]string) (map[string]int, coreauth.AccountSelection, error) {
++	selection := coreauth.AccountSelection{}
++	policy, ordering, errPolicy := a.repo.accountRoutingPoliciesForAPIKey(ctx, apiKey, model)
++	if errPolicy != nil {
++		return nil, selection, errPolicy
++	}
++	selected := make(map[string]struct{}, len(models))
++	for id := range models {
++		selected[id] = struct{}{}
++	}
++	now := time.Now().UTC()
++	items, errItems := a.repo.loadFundingCredentials(ctx, now, selected)
++	if errItems != nil {
++		return nil, selection, errItems
++	}
++	selection.Policy = ordering
++	selection.Ranks = make(map[string]coreauth.QuotaResetRank, len(items))
++	tiers := make(map[string]int, len(models))
++	for _, item := range items {
++		tier := usageCreditFundingTier(item, models[item.CredentialID], now)
++		if policy == "never" && tier > 0 {
++			tier = 3
++		}
++		tiers[item.CredentialID] = tier
++		if tier == 0 {
++			if rank, ok := quotaSelectionRank(item, models[item.CredentialID], now); ok {
++				selection.Ranks[item.CredentialID] = rank
++			}
++		}
++	}
++	for id := range models {
++		if _, ok := tiers[id]; !ok {
++			if policy == "never" {
++				tiers[id] = 3
++			} else {
++				tiers[id] = 2
++			}
++		}
++	}
++	return tiers, selection, nil
++}
+diff --git a/internal/cluster/account_selection_postgres_test.go b/internal/cluster/account_selection_postgres_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/account_selection_postgres_test.go
+@@ -0,0 +1,108 @@
++package cluster
++
++import (
++	"context"
++	"os"
++	"strconv"
++	"strings"
++	"testing"
++	"time"
++
++	"gorm.io/driver/postgres"
++	"gorm.io/gorm"
++)
++
++func TestAccountSelectionPostgresV14ToV15RetainsRowsAndChoice(t *testing.T) {
++	dsn := strings.TrimSpace(os.Getenv("CLIPROXY_HOME_TEST_POSTGRES_DSN"))
++	if dsn == "" {
++		t.Skip("CLIPROXY_HOME_TEST_POSTGRES_DSN is not configured")
++	}
++	admin, errOpen := gorm.Open(postgres.Open(dsn), databaseGORMConfig(defaultDatabaseSlowQueryThreshold))
++	if errOpen != nil {
++		t.Fatal(errOpen)
++	}
++	adminSQL, errSQL := admin.DB()
++	if errSQL != nil {
++		t.Fatal(errSQL)
++	}
++	t.Cleanup(func() { _ = adminSQL.Close() })
++	schema := "account_selection_" + strconv.FormatInt(time.Now().UnixNano(), 10)
++	if errCreate := admin.Exec("CREATE SCHEMA " + schema).Error; errCreate != nil {
++		t.Fatal(errCreate)
++	}
++	t.Cleanup(func() {
++		if errDrop := admin.Exec("DROP SCHEMA " + schema + " CASCADE").Error; errDrop != nil {
++			t.Error(errDrop)
++		}
++	})
++	db, errSchema := gorm.Open(postgres.Open(postgresDSNWithSearchPath(dsn, schema)), databaseGORMConfig(defaultDatabaseSlowQueryThreshold))
++	if errSchema != nil {
++		t.Fatal(errSchema)
++	}
++	sqlDB, errDB := db.DB()
++	if errDB != nil {
++		t.Fatal(errDB)
++	}
++	t.Cleanup(func() { _ = sqlDB.Close() })
++	if errMigrate := AutoMigrateContext(t.Context(), db); errMigrate != nil {
++		t.Fatal(errMigrate)
++	}
++	repo := NewRepository(db)
++	seedQuotaSnapshotAuth(t, repo, "retained-selection-account", "claude", "synthetic", map[string]any{"type": "claude", "auth_kind": "oauth"})
++	for _, statement := range []string{
++		"ALTER TABLE channel_group DROP COLUMN account_selection_policy",
++		"UPDATE home_schema_migration SET version = 14",
++		"INSERT INTO channel_group (id,channel_name,disabled,usage_credit_policy) VALUES (47,'retained-pool',false,'never'), (48,'disabled-pool',true,'last_resort')",
++		"INSERT INTO channel_group_detail (channel_group_id,auth_id) VALUES (47,'retained-selection-account')",
++		"INSERT INTO quota_snapshot (credential_id,quota_status,collection_status,source,plan_name,reset_credits,usage_credits) VALUES ('retained-selection-account','healthy','success','active_probe','synthetic-plan','{\"available_count\":3}','{\"state\":\"disabled\"}')",
++	} {
++		if errStatement := db.Exec(statement).Error; errStatement != nil {
++			t.Fatal(errStatement)
++		}
++	}
++	if errMigrate := AutoMigrateContext(context.Background(), db); errMigrate != nil {
++		t.Fatal(errMigrate)
++	}
++	assertPostgresSchemaMigrationVersion(t, db, 15)
++	for id, disabled := range map[uint]bool{47: false, 48: true} {
++		group, errRead := repo.GetChannelGroup(t.Context(), id)
++		if errRead != nil || group.Disabled != disabled || group.AccountSelectionPolicy != "reset_aware" {
++			t.Fatalf("retained group %d=%v error=%v", id, group, errRead)
++		}
++		if id == 47 && (group.ChannelName != "retained-pool" || group.UsageCreditPolicy != "never") {
++			t.Fatal("retained credit policy or name changed")
++		}
++	}
++	var snapshot QuotaSnapshotRecord
++	if errRead := db.Where("credential_id = ?", "retained-selection-account").First(&snapshot).Error; errRead != nil {
++		t.Fatal(errRead)
++	}
++	if snapshot.PlanName != "synthetic-plan" || !strings.Contains(string(snapshot.ResetCredits), "3") || string(snapshot.UsageCredits) != `{"state": "disabled"}` && string(snapshot.UsageCredits) != `{"state":"disabled"}` {
++		t.Fatal("retained quota/credit/reset data changed")
++	}
++	var count int64
++	if errCount := db.Model(&ChannelGroupDetailRecord{}).Where("channel_group_id = ? AND auth_id = ?", 47, "retained-selection-account").Count(&count).Error; errCount != nil || count != 1 {
++		t.Fatal("membership changed", errCount)
++	}
++	choice := "balanced"
++	if _, errUpdate := repo.UpdateChannelGroup(t.Context(), 47, ChannelGroupUpdate{AccountSelectionPolicy: &choice}); errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	for range 2 {
++		if errMigrate := AutoMigrateContext(t.Context(), db); errMigrate != nil {
++			t.Fatal("repeated boot", errMigrate)
++		}
++		group, errRead := repo.GetChannelGroup(t.Context(), 47)
++		if errRead != nil || group.AccountSelectionPolicy != "balanced" || group.UsageCreditPolicy != "never" {
++			t.Fatal("repeated boot reset saved choice", errRead)
++		}
++	}
++	// Existing servers update their known fields without deleting the added policy.
++	if errOldWrite := db.Model(&ChannelGroupRecord{}).Where("id = ?", 47).Update("channel_name", "old-server-write").Error; errOldWrite != nil {
++		t.Fatal(errOldWrite)
++	}
++	group, errRead := repo.GetChannelGroup(t.Context(), 47)
++	if errRead != nil || group.AccountSelectionPolicy != "balanced" {
++		t.Fatal("existing field write lost policy", errRead)
++	}
++}
+diff --git a/internal/cluster/account_selection_snapshot.go b/internal/cluster/account_selection_snapshot.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/account_selection_snapshot.go
+@@ -0,0 +1,32 @@
++package cluster
++
++import (
++	"gorm.io/gorm"
++	"time"
++)
++
++// Pre-v15 archives omit the new non-null column. Restoring their frozen shape
++// lets the migrated database apply its reset-aware default to those rows.
++type databaseSnapshotV14ChannelGroupRecord struct {
++	UsageCreditPolicy string         `gorm:"column:usage_credit_policy;not null;default:last_resort;size:16"`
++	ID                uint           `gorm:"column:id;primaryKey;autoIncrement;index:idx_channel_group_active_order,priority:2;index:idx_channel_group_enabled_order,priority:3"`
++	ChannelName       string         `gorm:"column:channel_name;not null"`
++	Disabled          bool           `gorm:"column:disabled;not null;default:false;index:idx_channel_group_enabled_order,priority:2"`
++	CreatedAt         time.Time      `gorm:"column:created_at"`
++	UpdatedAt         time.Time      `gorm:"column:updated_at"`
++	DeletedAt         gorm.DeletedAt `gorm:"column:deleted_at;index;index:idx_channel_group_active_order,priority:1;index:idx_channel_group_enabled_order,priority:1"`
++}
++
++func (databaseSnapshotV14ChannelGroupRecord) TableName() string { return "channel_group" }
++
++func databaseSnapshotV14ModelRegistry() []databaseModel {
++	models := currentDatabaseModels()
++	for index := range models {
++		if models[index].name == "channel_group" {
++			models[index] = newDatabaseModel[databaseSnapshotV14ChannelGroupRecord]("channel_group", []string{"id"}, true, true)
++		}
++	}
++	return models
++}
++
++var databaseSnapshotV14Models = databaseSnapshotV14ModelRegistry()
+diff --git a/internal/cluster/account_selection_snapshot_test.go b/internal/cluster/account_selection_snapshot_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/account_selection_snapshot_test.go
+@@ -0,0 +1,88 @@
++package cluster
++
++import (
++	"bytes"
++	"encoding/json"
++	"fmt"
++	"path/filepath"
++	"testing"
++)
++
++func TestAccountSelectionRestoresPreV15Snapshots(t *testing.T) {
++	for _, version := range []int{13, 14, 15} {
++		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
++			ctx := t.Context()
++			source := openDatabaseSnapshotSQLiteTestDB(t, filepath.Join(t.TempDir(), "source.db"))
++			group := ChannelGroupRecord{ID: 47, ChannelName: "retained-pool", Disabled: true, UsageCreditPolicy: "never", AccountSelectionPolicy: "balanced"}
++			if err := source.Create(&group).Error; err != nil {
++				t.Fatal(err)
++			}
++			current := filepath.Join(t.TempDir(), "current.zip")
++			if _, err := exportDatabaseSnapshotVersion(ctx, source, current, currentDatabaseVersion); err != nil {
++				t.Fatal(err)
++			}
++			input := current
++			if version < 15 {
++				legacyRows := filepath.Join(t.TempDir(), "old-rows.zip")
++				// The old exporter did not have the added column. Keep every other field
++				// and the real archive checksum/row-count validation intact.
++				rewriteDatabaseSnapshotTable(t, current, legacyRows, "channel_group", func(raw []byte) []byte {
++					var output bytes.Buffer
++					for _, line := range bytes.Split(bytes.TrimSpace(raw), []byte{'\n'}) {
++						var record map[string]json.RawMessage
++						if err := json.Unmarshal(line, &record); err != nil {
++							t.Fatal(err)
++						}
++						delete(record, "AccountSelectionPolicy")
++						encoded, err := json.Marshal(record)
++						if err != nil {
++							t.Fatal(err)
++						}
++						output.Write(encoded)
++						output.WriteByte('\n')
++					}
++					return output.Bytes()
++				})
++				input = filepath.Join(t.TempDir(), "legacy.zip")
++				rewriteDatabaseSnapshotZIP(t, legacyRows, input, func(name string, raw []byte) []byte {
++					if name != databaseSnapshotManifestName {
++						return raw
++					}
++					var manifest DatabaseSnapshotManifest
++					if err := json.Unmarshal(raw, &manifest); err != nil {
++						t.Fatal(err)
++					}
++					manifest.FormatVersion = version
++					encoded, err := json.Marshal(manifest)
++					if err != nil {
++						t.Fatal(err)
++					}
++					return encoded
++				}, "")
++			}
++			snapshot, err := OpenDatabaseSnapshot(ctx, input)
++			if err != nil {
++				t.Fatal("open portable snapshot", err)
++			}
++			defer snapshot.Close()
++			target := openDatabaseSnapshotSQLiteRawTestDB(t, filepath.Join(t.TempDir(), "target.db"))
++			if _, err := ImportDatabaseSnapshot(ctx, target, snapshot, nil); err != nil {
++				t.Fatal("restore portable snapshot", err)
++			}
++			repo := NewRepository(target)
++			expected := "reset_aware"
++			if version == 15 {
++				expected = "balanced"
++			}
++			for range 2 {
++				if err := AutoMigrateContext(ctx, target); err != nil {
++					t.Fatal(err)
++				}
++				restored, err := repo.GetChannelGroup(ctx, 47)
++				if err != nil || restored.ChannelName != group.ChannelName || !restored.Disabled || restored.UsageCreditPolicy != "never" || restored.AccountSelectionPolicy != expected {
++					t.Fatalf("restored=%+v error=%v", restored, err)
++				}
++			}
++		})
++	}
++}
+diff --git a/internal/cluster/channel_groups.go b/internal/cluster/channel_groups.go
+--- a/internal/cluster/channel_groups.go
++++ b/internal/cluster/channel_groups.go
+@@ -12,9 +12,10 @@
+ )
+ 
+ type ChannelGroupUpdate struct {
+-	UsageCreditPolicy *string
+-	ChannelName       *string
+-	Disabled          *bool
++	AccountSelectionPolicy *string
++	UsageCreditPolicy      *string
++	ChannelName            *string
++	Disabled               *bool
+ }
+ 
+ type ChannelGroupDetailUpdate struct {
+@@ -107,6 +108,16 @@
+ 		}
+ 		if update.Disabled != nil {
+ 			record.Disabled = *update.Disabled
++		}
++		if update.AccountSelectionPolicy != nil {
++			if *update.AccountSelectionPolicy == "" {
++				return fmt.Errorf("invalid account selection policy")
++			}
++			policy, errPolicy := NormalizeAccountSelectionPolicy(*update.AccountSelectionPolicy)
++			if errPolicy != nil {
++				return errPolicy
++			}
++			record.AccountSelectionPolicy = policy
+ 		}
+ 		if update.UsageCreditPolicy != nil {
+ 			policy := *update.UsageCreditPolicy
+diff --git a/internal/cluster/dashboard_indexes_test.go b/internal/cluster/dashboard_indexes_test.go
+--- a/internal/cluster/dashboard_indexes_test.go
++++ b/internal/cluster/dashboard_indexes_test.go
+@@ -123,14 +123,18 @@
+ func TestDatabaseSnapshotIndexOnlyVersionsRemainCompatible(t *testing.T) {
+ 	t.Parallel()
+ 
+-	for _, version := range []int{6, 7, 8, 9, 10, 11, 12, 13, currentDatabaseVersion} {
++	for _, version := range []int{6, 7, 8, 9, 10, 11, 12, 13, 14, currentDatabaseVersion} {
+ 		models, okModels := databaseSnapshotModels(version)
+ 		if !okModels || len(models) != len(homeDatabaseModels) {
+ 			t.Fatalf("snapshot version %d registry is incompatible", version)
+ 		}
+ 		for index, model := range models {
+ 			current := homeDatabaseModels[index]
+-			if model.name != current.name || reflect.TypeOf(model.newRecord()) != reflect.TypeOf(current.newRecord()) {
++			expectedType := reflect.TypeOf(current.newRecord())
++			if version < 15 && current.name == "channel_group" {
++				expectedType = reflect.TypeOf(&databaseSnapshotV14ChannelGroupRecord{})
++			}
++			if model.name != current.name || reflect.TypeOf(model.newRecord()) != expectedType {
+ 				t.Fatalf("snapshot version %d model %d differs from current table shape", version, index)
+ 			}
+ 		}
+diff --git a/internal/cluster/database_models.go b/internal/cluster/database_models.go
+--- a/internal/cluster/database_models.go
++++ b/internal/cluster/database_models.go
+@@ -10,7 +10,7 @@
+ // currentDatabaseVersion is shared by the live schema migration gate and the
+ // portable snapshot format. Increment it for every required startup migration
+ // or snapshot format change, and retain mappings for prior snapshot formats.
+-const currentDatabaseVersion = 14
++const currentDatabaseVersion = 15
+ 
+ // databaseModel describes one managed Home database table.
+ type databaseModel struct {
+@@ -237,7 +237,7 @@
+ 	newDatabaseModel[UserSecurityTokenRecord]("user_security_token", []string{"id"}, true, false),
+ 	newDatabaseModel[UserMailJobRecord]("user_mail_job", []string{"id"}, true, false),
+ 	newDatabaseModel[UserSecurityThrottleRecord]("user_security_throttle", []string{"key"}, false, false),
+-	newDatabaseModel[ChannelGroupRecord]("channel_group", []string{"id"}, true, true),
++	newDatabaseModel[databaseSnapshotV14ChannelGroupRecord]("channel_group", []string{"id"}, true, true),
+ 	newDatabaseModel[ModelGroupRecord]("model_group", []string{"id"}, true, true),
+ 	newDatabaseModel[databaseSnapshotV3APIKeyRecord]("api_key", []string{"id"}, true, true),
+ 	newDatabaseModel[ChannelGroupDetailRecord]("channel_group_detail", []string{"id"}, true, true),
+@@ -348,6 +348,8 @@
+ 		switch models[index].name {
+ 		case "usage":
+ 			models[index] = newDatabaseModel[UsageRecord]("usage", []string{"id"}, true, true)
++		case "channel_group":
++			models[index] = newDatabaseModel[ChannelGroupRecord]("channel_group", []string{"id"}, true, true)
+ 		}
+ 	}
+ 	return models
+@@ -365,9 +367,9 @@
+ 		return databaseSnapshotV4Models, true
+ 	case 5:
+ 		return databaseSnapshotV5Models, true
+-	case 6, 7, 8, 9, 10, 11, 12, 13, currentDatabaseVersion:
+-		// Versions 7 through 13 add migrations, indexes, and transient tables;
+-		// portable table shapes still match v6.
++	case 6, 7, 8, 9, 10, 11, 12, 13, 14:
++		return databaseSnapshotV14Models, true
++	case currentDatabaseVersion:
+ 		return homeDatabaseModels, true
+ 	default:
+ 		return nil, false
+diff --git a/internal/cluster/management/channel_groups.go b/internal/cluster/management/channel_groups.go
+--- a/internal/cluster/management/channel_groups.go
++++ b/internal/cluster/management/channel_groups.go
+@@ -11,11 +11,12 @@
+ )
+ 
+ type channelGroupWriteRequest struct {
+-	UsageCreditPolicy *string `json:"usage_credit_policy"`
+-	ChannelName       *string `json:"channel_name"`
+-	Name              *string `json:"name"`
+-	Disabled          *bool   `json:"disabled"`
+-	Enabled           *bool   `json:"enabled"`
++	AccountSelectionPolicy *string `json:"account_selection_policy"`
++	UsageCreditPolicy      *string `json:"usage_credit_policy"`
++	ChannelName            *string `json:"channel_name"`
++	Name                   *string `json:"name"`
++	Disabled               *bool   `json:"disabled"`
++	Enabled                *bool   `json:"enabled"`
+ }
+ 
+ type channelGroupDetailWriteRequest struct {
+@@ -96,7 +97,7 @@
+ 		respondError(c, http.StatusBadRequest, "invalid body", errBindJSON)
+ 		return
+ 	}
+-	update := cluster.ChannelGroupUpdate{UsageCreditPolicy: body.UsageCreditPolicy}
++	update := cluster.ChannelGroupUpdate{UsageCreditPolicy: body.UsageCreditPolicy, AccountSelectionPolicy: body.AccountSelectionPolicy}
+ 	if body.ChannelName != nil || body.Name != nil {
+ 		channelName := body.channelName()
+ 		update.ChannelName = &channelName
+@@ -317,14 +318,15 @@
+ 		return gin.H{}
+ 	}
+ 	return gin.H{
+-		"id":                  record.ID,
+-		"channel_name":        record.ChannelName,
+-		"usage_credit_policy": record.UsageCreditPolicy,
+-		"disabled":            record.Disabled,
+-		"enabled":             !record.Disabled,
+-		"created_at":          record.CreatedAt,
+-		"updated_at":          record.UpdatedAt,
+-		"deleted_at":          deletedAtValue(record.DeletedAt),
++		"id":                       record.ID,
++		"channel_name":             record.ChannelName,
++		"usage_credit_policy":      record.UsageCreditPolicy,
++		"account_selection_policy": record.AccountSelectionPolicy,
++		"disabled":                 record.Disabled,
++		"enabled":                  !record.Disabled,
++		"created_at":               record.CreatedAt,
++		"updated_at":               record.UpdatedAt,
++		"deleted_at":               deletedAtValue(record.DeletedAt),
+ 	}
+ }
+ 
+diff --git a/internal/cluster/management/usage_credits.go b/internal/cluster/management/usage_credits.go
+--- a/internal/cluster/management/usage_credits.go
++++ b/internal/cluster/management/usage_credits.go
+@@ -5,6 +5,7 @@
+ 	"time"
+ 
+ 	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
+ )
+ 
+ func (h *Handler) GetChannelGroupCreditRouting(c *gin.Context) {
+@@ -28,5 +29,10 @@
+ 	if policy == "" {
+ 		policy = "last_resort"
+ 	}
+-	c.JSON(http.StatusOK, gin.H{"usageCreditPolicy": policy, "accounts": routing})
++	selection, errSelection := cluster.NormalizeAccountSelectionPolicy(group.AccountSelectionPolicy)
++	if errSelection != nil {
++		respondError(c, http.StatusServiceUnavailable, "account_selection_policy_unavailable", errSelection)
++		return
++	}
++	c.JSON(http.StatusOK, gin.H{"usageCreditPolicy": policy, "accountSelectionPolicy": selection, "accounts": routing})
+ }
+diff --git a/internal/cluster/models.go b/internal/cluster/models.go
+--- a/internal/cluster/models.go
++++ b/internal/cluster/models.go
+@@ -455,13 +455,14 @@
+ }
+ 
+ type ChannelGroupRecord struct {
+-	UsageCreditPolicy string         `gorm:"column:usage_credit_policy;not null;default:last_resort;size:16"`
+-	ID                uint           `gorm:"column:id;primaryKey;autoIncrement;index:idx_channel_group_active_order,priority:2;index:idx_channel_group_enabled_order,priority:3"`
+-	ChannelName       string         `gorm:"column:channel_name;not null"`
+-	Disabled          bool           `gorm:"column:disabled;not null;default:false;index:idx_channel_group_enabled_order,priority:2"`
+-	CreatedAt         time.Time      `gorm:"column:created_at"`
+-	UpdatedAt         time.Time      `gorm:"column:updated_at"`
+-	DeletedAt         gorm.DeletedAt `gorm:"column:deleted_at;index;index:idx_channel_group_active_order,priority:1;index:idx_channel_group_enabled_order,priority:1"`
++	AccountSelectionPolicy string         `gorm:"column:account_selection_policy;not null;default:reset_aware;size:16"`
++	UsageCreditPolicy      string         `gorm:"column:usage_credit_policy;not null;default:last_resort;size:16"`
++	ID                     uint           `gorm:"column:id;primaryKey;autoIncrement;index:idx_channel_group_active_order,priority:2;index:idx_channel_group_enabled_order,priority:3"`
++	ChannelName            string         `gorm:"column:channel_name;not null"`
++	Disabled               bool           `gorm:"column:disabled;not null;default:false;index:idx_channel_group_enabled_order,priority:2"`
++	CreatedAt              time.Time      `gorm:"column:created_at"`
++	UpdatedAt              time.Time      `gorm:"column:updated_at"`
++	DeletedAt              gorm.DeletedAt `gorm:"column:deleted_at;index;index:idx_channel_group_active_order,priority:1;index:idx_channel_group_enabled_order,priority:1"`
+ }
+ 
+ // TableName returns the database table name.
+diff --git a/internal/cluster/quota_selection.go b/internal/cluster/quota_selection.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/quota_selection.go
+@@ -0,0 +1,99 @@
++package cluster
++
++import (
++	"fmt"
++	"math"
++	"strings"
++	"time"
++	"unicode"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++)
++
++func NormalizeAccountSelectionPolicy(policy string) (string, error) {
++	switch policy {
++	case "", "reset_aware":
++		return "reset_aware", nil
++	case "balanced":
++		return policy, nil
++	default:
++		return "", fmt.Errorf("invalid account selection policy")
++	}
++}
++
++// Only an account-wide weekly refill replaces the pool's weekly capacity.
++// Model-specific windows still gate funding through usageCreditWindowApplies.
++func quotaSelectionRank(item QuotaCredentialSnapshot, model string, now time.Time) (coreauth.QuotaResetRank, bool) {
++	if item.Provider != "codex" && item.Provider != "claude" || item.CredentialType == "provider_api_key" || usageCreditFundingTier(item, model, now) != 0 || item.ExpiresAt == nil || !item.ExpiresAt.After(now) {
++		return coreauth.QuotaResetRank{}, false
++	}
++	deadline := *item.ExpiresAt
++	headroom := 1.0
++	var weekly, short *QuotaWindow
++	for index := range item.Windows {
++		window := &item.Windows[index]
++		if !usageCreditWindowApplies(*window, model) || window.IsUnlimited {
++			continue
++		}
++		if window.ObservedAt.After(now) || window.ExpiresAt != nil && !window.ExpiresAt.After(now) || window.RemainingRatio == nil || *window.RemainingRatio <= 0 || *window.RemainingRatio > 1 || math.IsNaN(*window.RemainingRatio) || math.IsInf(*window.RemainingRatio, 0) {
++			return coreauth.QuotaResetRank{}, false
++		}
++		if *window.RemainingRatio < headroom {
++			headroom = *window.RemainingRatio
++		}
++		if window.ExpiresAt != nil && window.ExpiresAt.Before(deadline) {
++			deadline = *window.ExpiresAt
++		}
++		if window.Scope != "account" {
++			continue
++		}
++		switch quotaWindowDurationRank(*window) {
++		case 7 * 24 * 60 * 60:
++			if weekly == nil || earlierQuotaReset(window, weekly) {
++				weekly = window
++			}
++		case 5 * 60 * 60:
++			if short == nil || earlierQuotaReset(window, short) {
++				short = window
++			}
++		}
++	}
++	window := weekly
++	if window == nil {
++		window = short
++	}
++	if window == nil || window.ResetAt == nil || !window.ResetAt.After(now) {
++		return coreauth.QuotaResetRank{}, false
++	}
++	return coreauth.QuotaResetRank{ResetAt: *window.ResetAt, ExpiresAt: deadline, Headroom: headroom, WindowID: window.ID}, true
++}
++
++func earlierQuotaReset(left, right *QuotaWindow) bool {
++	// Missing reset data invalidates ordering rather than hiding an unknown bucket.
++	return left.ResetAt == nil || right.ResetAt != nil && left.ResetAt.Before(*right.ResetAt)
++}
++
++func quotaModelScopeApplies(scope, model string) bool {
++	tokens := func(value string) []string {
++		return strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
++			return !unicode.IsLetter(r) && !unicode.IsDigit(r)
++		})
++	}
++	family, requested := tokens(scope), tokens(model)
++	if len(family) == 0 || len(family) > len(requested) {
++		return false
++	}
++	for start := 0; start <= len(requested)-len(family); start++ {
++		matched := true
++		for index, part := range family {
++			if requested[start+index] != part {
++				matched = false
++				break
++			}
++		}
++		if matched {
++			return true
++		}
++	}
++	return false
++}
+diff --git a/internal/cluster/quota_selection_test.go b/internal/cluster/quota_selection_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/quota_selection_test.go
+@@ -0,0 +1,132 @@
++package cluster
++
++import (
++	"testing"
++	"time"
++)
++
++func selectionWindow(id, scope, family string, seconds int64, remaining float64, reset, observed, expires time.Time) QuotaWindow {
++	window := QuotaWindow{ID: id, Scope: scope, WindowSeconds: &seconds, RemainingRatio: &remaining, ResetAt: &reset, ObservedAt: observed, ExpiresAt: &expires}
++	if family != "" {
++		window.ScopeID = &family
++	}
++	return window
++}
++
++func TestQuotaSelectionWeeklyOrderAndEveryWindowGate(t *testing.T) {
++	now := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
++	observed, expires := now.Add(-time.Minute), now.Add(time.Minute)
++	weekReset, modelReset, shortReset := now.Add(4*24*time.Hour), now.Add(24*time.Hour), now.Add(time.Hour)
++	fixture := func() QuotaCredentialSnapshot {
++		return QuotaCredentialSnapshot{Provider: "claude", CredentialType: "oauth", CredentialStatus: "enabled", Freshness: "fresh", ObservedAt: &observed, ExpiresAt: &expires,
++			Windows: []QuotaWindow{
++				selectionWindow("claude-seven-day", "account", "", 604800, .8, weekReset, observed, expires),
++				selectionWindow("claude-five-hour", "account", "", 18000, .5, shortReset, observed, expires),
++				selectionWindow("claude-seven-day-fable", "model", "fable", 604800, .3, modelReset, observed, expires),
++			}}
++	}
++	for _, test := range []struct {
++		name     string
++		change   func(*QuotaCredentialSnapshot)
++		valid    bool
++		deadline time.Time
++	}{
++		{"weekly-beats-short-and-model-reset", func(*QuotaCredentialSnapshot) {}, true, weekReset},
++		{"short-exhaustion-gates", func(s *QuotaCredentialSnapshot) { s.Windows[1].RemainingRatio = float64Ptr(0) }, false, time.Time{}},
++		{"model-exhaustion-gates", func(s *QuotaCredentialSnapshot) { s.Windows[2].RemainingRatio = float64Ptr(0) }, false, time.Time{}},
++		{"unrelated-model-does-not-gate", func(s *QuotaCredentialSnapshot) {
++			family := "other"
++			s.Windows[2].ScopeID = &family
++			s.Windows[2].RemainingRatio = float64Ptr(0)
++		}, true, weekReset},
++		{"only-short-window", func(s *QuotaCredentialSnapshot) { s.Windows = s.Windows[1:2] }, true, shortReset},
++		{"model-weekly-is-never-account-weekly", func(s *QuotaCredentialSnapshot) { s.Windows = s.Windows[1:] }, true, shortReset},
++		{"only-model-windows-have-no-ordering-deadline", func(s *QuotaCredentialSnapshot) { s.Windows = s.Windows[2:] }, false, time.Time{}},
++		{"unknown-weekly-does-not-use-short-reset", func(s *QuotaCredentialSnapshot) { s.Windows[0].ResetAt = nil }, false, time.Time{}},
++		{"expired-weekly-reset", func(s *QuotaCredentialSnapshot) { s.Windows[0].ResetAt = &observed }, false, time.Time{}},
++		{"stale-window", func(s *QuotaCredentialSnapshot) { s.Windows[1].ExpiresAt = &observed }, false, time.Time{}},
++		{"stale-snapshot", func(s *QuotaCredentialSnapshot) { s.Freshness = "stale" }, false, time.Time{}},
++		{"future-snapshot", func(s *QuotaCredentialSnapshot) { s.ObservedAt = &expires }, false, time.Time{}},
++		{"banked-reset-expiry-does-not-order", func(s *QuotaCredentialSnapshot) {
++			s.ResetCredits = &QuotaResetCredits{ObservedAt: observed, Credits: []QuotaResetCredit{{ID: "model-reset", ExpiresAt: &shortReset}}}
++		}, true, weekReset},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			item := fixture()
++			test.change(&item)
++			rank, valid := quotaSelectionRank(item, "claude-fable-5", now)
++			if valid != test.valid || valid && !rank.ResetAt.Equal(test.deadline) {
++				t.Fatalf("rank=(%v,%t), want deadline=%v valid=%t", rank, valid, test.deadline, test.valid)
++			}
++		})
++	}
++	rank, ok := quotaSelectionRank(fixture(), "claude-fable-5", now)
++	if !ok || rank.Headroom != .3 || !rank.ExpiresAt.Equal(expires) {
++		t.Fatal("all applicable windows must constrain headroom and freshness")
++	}
++}
++
++func TestUsageCreditModelScopeTokenBoundaries(t *testing.T) {
++	for _, test := range []struct {
++		scope, model string
++		want         bool
++	}{
++		{"fable", "claude-fable-5", true},
++		{"fable", "claude-fablex-5", false},
++		{"fable-plus", "claude-fable-plus-5", true},
++		{"fable-plus", "claude-fableplus-5", false},
++		{"opus", "claude-opus-5-5", true},
++		{"opus", "claude-superopus-5-5", false},
++		{"codex_spark", "gpt-6.1-spark", true},
++		{"sonnet", "claude_opus_5", false},
++		{"", "claude-opus-5", false},
++		{"Fable Plus", "claude_fable.plus_5", true},
++	} {
++		t.Run(test.scope+"/"+test.model, func(t *testing.T) {
++			scope := test.scope
++			window := QuotaWindow{ID: "synthetic-model-window", Scope: "model", ScopeID: &scope}
++			if got := usageCreditWindowApplies(window, test.model); got != test.want {
++				t.Fatalf("scope=%q model=%q applies=%t, want %t", scope, test.model, got, test.want)
++			}
++		})
++	}
++}
++
++func TestAccountSelectionPolicyIsolationAndModelBindings(t *testing.T) {
++	repo := newCredentialFoundationTestRepository(t)
++	ctx := t.Context()
++	reset, errReset := repo.CreateChannelGroup(ctx, "reset", false)
++	if errReset != nil {
++		t.Fatal(errReset)
++	}
++	balanced, errBalanced := repo.CreateChannelGroup(ctx, "balanced", false)
++	if errBalanced != nil {
++		t.Fatal(errBalanced)
++	}
++	if reset.AccountSelectionPolicy != "reset_aware" {
++		t.Fatal("default must be reset-aware")
++	}
++	policy := "balanced"
++	if _, errUpdate := repo.UpdateChannelGroup(ctx, balanced.ID, ChannelGroupUpdate{AccountSelectionPolicy: &policy}); errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	for key, channels := range map[string][]uint{"reset-key": {reset.ID}, "balanced-key": {balanced.ID}, "mixed-key": {reset.ID, balanced.ID}} {
++		if _, errKey := repo.CreateAPIKey(ctx, APIKeyEntryUpdate{APIKey: key, Channels: &channels}); errKey != nil {
++			t.Fatal(errKey)
++		}
++	}
++	for key, want := range map[string]string{"reset-key": "reset_aware", "balanced-key": "balanced", "mixed-key": "balanced"} {
++		credit, selection, errRead := repo.accountRoutingPoliciesForAPIKey(ctx, key, "model")
++		if errRead != nil || selection != want || credit != "last_resort" {
++			t.Fatalf("%s=%s/%s err=%v", key, credit, selection, errRead)
++		}
++	}
++	invalid := "fill-first"
++	if _, errUpdate := repo.UpdateChannelGroup(ctx, reset.ID, ChannelGroupUpdate{AccountSelectionPolicy: &invalid}); errUpdate == nil {
++		t.Fatal("invalid policy accepted")
++	}
++	group, errRead := repo.GetChannelGroup(ctx, reset.ID)
++	if errRead != nil || group.AccountSelectionPolicy != "reset_aware" {
++		t.Fatal("failed update changed policy")
++	}
++}
+diff --git a/internal/cluster/usage_credits.go b/internal/cluster/usage_credits.go
+--- a/internal/cluster/usage_credits.go
++++ b/internal/cluster/usage_credits.go
+@@ -44,77 +44,13 @@
+ 
+ // A client key inherits the strictest policy of its server-owned channel groups.
+ func (r *Repository) usageCreditPolicyForAPIKey(ctx context.Context, apiKey, model string) (string, error) {
+-	db, errDB := r.database()
+-	if errDB != nil {
+-		return "", errDB
+-	}
+-	key, errKey := r.findAPIKeyForAccess(ctx, db, apiKey)
+-	if errKey != nil {
+-		return "", errKey
+-	}
+-	channels, errChannels := apiKeyChannelsFromJSON(key.Channels)
+-	if errChannels != nil {
+-		return "", errChannels
+-	}
+-	modelDetails, _, errDetails := allowedModelGroupDetailsForAPIKeyRecord(ctx, db, &key)
+-	if errDetails != nil {
+-		return "", errDetails
+-	}
+-	modelChannels, restricted, errModel := modelChannelGroupIDsFromDetails(modelDetails, model)
+-	if errModel != nil {
+-		return "", errModel
+-	}
+-	if restricted {
+-		channels = append(channels, modelChannels...)
+-	}
+-	if len(channels) == 0 {
+-		return "last_resort", nil
+-	}
+-	var groups []ChannelGroupRecord
+-	if errGroups := db.WithContext(ctx).Where("id IN ? AND disabled = ?", channels, false).Find(&groups).Error; errGroups != nil {
+-		return "", errGroups
+-	}
+-	for _, group := range groups {
+-		if group.UsageCreditPolicy != "" && group.UsageCreditPolicy != "last_resort" {
+-			return "never", nil
+-		}
+-	}
+-	return "last_resort", nil
++	credits, _, errPolicy := r.accountRoutingPoliciesForAPIKey(ctx, apiKey, model)
++	return credits, errPolicy
+ }
+ 
+ func (a *RuntimeAdapter) UsageCreditTiersForAPIKey(ctx context.Context, apiKey, model string, models map[string]string) (map[string]int, error) {
+-	policy, errPolicy := a.repo.usageCreditPolicyForAPIKey(ctx, apiKey, model)
+-	if errPolicy != nil {
+-		return nil, errPolicy
+-	}
+-	selected := make(map[string]struct{}, len(models))
+-	for id := range models {
+-		selected[id] = struct{}{}
+-	}
+-	now := time.Now().UTC()
+-	items, errItems := a.repo.loadFundingCredentials(ctx, now, selected)
+-	if errItems != nil {
+-		return nil, errItems
+-	}
+-	tiers := make(map[string]int, len(models))
+-	for _, item := range items {
+-		tier := usageCreditFundingTier(item, models[item.CredentialID], now)
+-		if policy == "never" && tier > 0 {
+-			tier = 3
+-		}
+-		tiers[item.CredentialID] = tier
+-	}
+-	// A missing subscription observation is unknown, never proof of plan quota.
+-	for id := range models {
+-		if _, ok := tiers[id]; !ok {
+-			if policy == "never" {
+-				tiers[id] = 3
+-			} else {
+-				tiers[id] = 2
+-			}
+-		}
+-	}
+-	return tiers, nil
++	tiers, _, errRouting := a.UsageCreditRoutingForAPIKey(ctx, apiKey, model, models)
++	return tiers, errRouting
+ }
+ 
+ // 0 = included plan, 1 = confirmed credits, 2 = unknown funding, 3 = unavailable.
+@@ -182,8 +118,7 @@
+ 		return false
+ 	}
+ 	scope := strings.TrimPrefix(strings.ToLower(*window.ScopeID), "codex_")
+-	normalized := strings.NewReplacer("-", "_", ".", "_").Replace(strings.ToLower(model))
+-	return scope == normalized || scope == "spark" && strings.HasSuffix(normalized, "_spark") || (scope == "opus" || scope == "sonnet") && strings.Contains(normalized, scope)
++	return quotaModelScopeApplies(scope, model)
+ }
+ 
+ type AccountUsageRouting struct {
+diff --git a/internal/cluster/usage_credits_postgres_test.go b/internal/cluster/usage_credits_postgres_test.go
+--- a/internal/cluster/usage_credits_postgres_test.go
++++ b/internal/cluster/usage_credits_postgres_test.go
+@@ -62,7 +62,7 @@
+ 	if errMigrate := AutoMigrateContext(context.Background(), db); errMigrate != nil {
+ 		t.Fatal(errMigrate)
+ 	}
+-	assertPostgresSchemaMigrationVersion(t, db, 14)
++	assertPostgresSchemaMigrationVersion(t, db, currentDatabaseVersion)
+ 	var group ChannelGroupRecord
+ 	if errRead := db.First(&group, 47).Error; errRead != nil {
+ 		t.Fatal(errRead)
+diff --git a/internal/home/account_selection.go b/internal/home/account_selection.go
+new file mode 100644
+--- /dev/null
++++ b/internal/home/account_selection.go
+@@ -0,0 +1,29 @@
++package home
++
++import (
++	"context"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/logging"
++	log "github.com/sirupsen/logrus"
++)
++
++func recordAccountSelection(ctx context.Context, credential string, selection *coreauth.AccountSelection) {
++	if selection == nil {
++		return
++	}
++	fields := log.Fields{
++		"account_selection_policy": selection.Policy,
++		"account_selection_reason": selection.Reason,
++		"credential_id":            credential,
++		"request_id":               logging.GetRequestID(ctx),
++	}
++	if selection.PlanFunded {
++		if rank, ok := selection.Ranks[credential]; ok {
++			fields["quota_window_id"] = rank.WindowID
++			fields["quota_reset_at"] = rank.ResetAt.UTC().Format(time.RFC3339Nano)
++		}
++	}
++	log.WithFields(fields).Info("pool account selected")
++}
+diff --git a/internal/home/account_selection_test.go b/internal/home/account_selection_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/home/account_selection_test.go
+@@ -0,0 +1,143 @@
++package home
++
++import (
++	"context"
++	"net/http"
++	"reflect"
++	"testing"
++	"time"
++
++	log "github.com/sirupsen/logrus"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/registry"
++)
++
++type selectionStore struct {
++	ClusterAdapter
++	tiers     map[string]int
++	selection coreauth.AccountSelection
++}
++
++func (s *selectionStore) UsageCreditRoutingForAPIKey(context.Context, string, string, map[string]string) (map[string]int, coreauth.AccountSelection, error) {
++	return s.tiers, s.selection, nil
++}
++
++type selectionReceiptHook struct{ entries []log.Fields }
++
++func (h *selectionReceiptHook) Levels() []log.Level { return log.AllLevels }
++func (h *selectionReceiptHook) Fire(entry *log.Entry) error {
++	if entry.Message == "pool account selected" {
++		h.entries = append(h.entries, entry.Data)
++	}
++	return nil
++}
++
++type selectionAdmissionFull struct{}
++
++func (selectionAdmissionFull) Error() string           { return "synthetic account full" }
++func (selectionAdmissionFull) ConcurrencyType() string { return "credential_concurrency_exceeded" }
++
++func TestAccountSelectionRechecksAdmissionAndKeepsCreditsLast(t *testing.T) {
++	hook := &selectionReceiptHook{}
++	logger := log.StandardLogger()
++	oldHooks := logger.ReplaceHooks(make(log.LevelHooks))
++	logger.AddHook(hook)
++	t.Cleanup(func() { logger.ReplaceHooks(oldHooks) })
++	now := time.Now()
++	store := &selectionStore{tiers: map[string]int{"plan-a": 0, "plan-b": 0, "credits": 1}, selection: coreauth.AccountSelection{Policy: "reset_aware", Ranks: map[string]coreauth.QuotaResetRank{
++		"plan-a":  {ResetAt: now.Add(4 * time.Hour), ExpiresAt: now.Add(time.Minute), Headroom: .6},
++		"plan-b":  {ResetAt: now.Add(time.Hour), ExpiresAt: now.Add(time.Minute), Headroom: .6},
++		"credits": {ResetAt: now.Add(time.Second), ExpiresAt: now.Add(time.Minute), Headroom: .6},
++	}}}
++	manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
++	for _, id := range []string{"plan-a", "plan-b", "credits"} {
++		auth := &coreauth.Auth{ID: id, Provider: "codex", Status: coreauth.StatusActive, Attributes: map[string]string{"auth_kind": "oauth"}}
++		registry.GetGlobalRegistry().RegisterClient(id, "codex", []*registry.ModelInfo{{ID: "gpt"}})
++		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
++		if _, errRegister := manager.Register(t.Context(), auth); errRegister != nil {
++			t.Fatal(errRegister)
++		}
++	}
++	runtime := &Runtime{coreManager: manager, clusterAdapter: store}
++	var attempted []string
++	runtime.SetConcurrencyAdmitter(ConcurrencyAdmitterFunc(func(_ context.Context, request ConcurrencyAdmissionRequest) (ConcurrencyAdmissionResult, error) {
++		attempted = append(attempted, request.CredentialID)
++		if request.CredentialID == "plan-b" {
++			return ConcurrencyAdmissionResult{}, selectionAdmissionFull{}
++		}
++		return ConcurrencyAdmissionResult{CredentialID: request.CredentialID, Model: request.Model}, nil
++	}))
++	result, errDispatch := runtime.DispatchForAPIKeyWithConcurrency(t.Context(), "gpt", nil, "synthetic-pool-key", "", nil, "", DispatchConcurrencyContext{})
++	if errDispatch != nil || result.AuthID != "plan-a" || !reflect.DeepEqual(attempted, []string{"plan-b", "plan-a"}) {
++		t.Fatalf("admission attempts=%v result=%v error=%v", attempted, result, errDispatch)
++	}
++	store.tiers["plan-a"], store.tiers["plan-b"] = 3, 3
++	result, errDispatch = runtime.DispatchForAPIKeyWithConcurrency(t.Context(), "gpt", nil, "synthetic-pool-key", "", nil, "", DispatchConcurrencyContext{})
++	if errDispatch != nil || result.AuthID != "credits" {
++		t.Fatal("credits unavailable after plans exhausted", errDispatch)
++	}
++	store.selection.Policy = "balanced"
++	result, errDispatch = runtime.DispatchForAPIKeyWithConcurrency(t.Context(), "gpt", nil, "synthetic-pool-key", "", nil, "", DispatchConcurrencyContext{})
++	if errDispatch != nil || result.AuthID != "credits" {
++		t.Fatal("balanced changed funding priority", errDispatch)
++	}
++	if len(hook.entries) != 3 {
++		t.Fatalf("want one receipt per successful admission: %v", hook.entries)
++	}
++	for _, fields := range hook.entries {
++		for key := range fields {
++			switch key {
++			case "account_selection_policy", "account_selection_reason", "credential_id", "request_id", "quota_window_id", "quota_reset_at":
++			default:
++				t.Fatalf("unexpected receipt field %s", key)
++			}
++		}
++		if fields["credential_id"] == "plan-b" {
++			t.Fatal("refused admission emitted a selection receipt")
++		}
++	}
++	if hook.entries[0]["account_selection_reason"] != "reset_deadline" || hook.entries[0]["credential_id"] != "plan-a" {
++		t.Fatal("successful fallback receipt has wrong reason or account", hook.entries[0])
++	}
++}
++
++func TestAccountSelectionPublicDispatchPreservesEligibleStickyAndPinned(t *testing.T) {
++	now := time.Now()
++	selector := coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{Fallback: &coreauth.RoundRobinSelector{}})
++	t.Cleanup(selector.Stop)
++	manager := coreauth.NewManager(nil, selector, nil)
++	store := &selectionStore{tiers: map[string]int{"sticky-a": 0, "sticky-b": 0}, selection: coreauth.AccountSelection{Policy: "reset_aware", Ranks: map[string]coreauth.QuotaResetRank{
++		"sticky-a": {ResetAt: now.Add(time.Hour), ExpiresAt: now.Add(time.Minute), Headroom: .5},
++		"sticky-b": {ResetAt: now.Add(2 * time.Hour), ExpiresAt: now.Add(time.Minute), Headroom: .5},
++	}}}
++	for _, id := range []string{"sticky-a", "sticky-b"} {
++		registry.GetGlobalRegistry().RegisterClient(id, "codex", []*registry.ModelInfo{{ID: "gpt"}})
++		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
++		if _, errRegister := manager.Register(t.Context(), &coreauth.Auth{ID: id, Provider: "codex", Status: coreauth.StatusActive, Attributes: map[string]string{"auth_kind": "oauth"}}); errRegister != nil {
++			t.Fatal(errRegister)
++		}
++	}
++	runtime := &Runtime{coreManager: manager, clusterAdapter: store}
++	headers := http.Header{"X-Session-Id": []string{"synthetic-existing"}}
++	first, errFirst := runtime.DispatchForAPIKeyWithConcurrency(t.Context(), "gpt", headers, "synthetic-pool-key", "", nil, "", DispatchConcurrencyContext{})
++	if errFirst != nil || first.AuthID != "sticky-a" {
++		t.Fatal("initial selection failed", errFirst)
++	}
++	rank := store.selection.Ranks["sticky-b"]
++	rank.ResetAt = now.Add(30 * time.Minute)
++	store.selection.Ranks["sticky-b"] = rank
++	second, errSecond := runtime.DispatchForAPIKeyWithConcurrency(t.Context(), "gpt", headers, "synthetic-pool-key", "", nil, "", DispatchConcurrencyContext{})
++	if errSecond != nil || second.AuthID != "sticky-a" {
++		t.Fatal("existing sticky account moved", errSecond)
++	}
++	pinned, errPinned := runtime.DispatchForAPIKeyWithConcurrency(t.Context(), "gpt", nil, "synthetic-pool-key", "", nil, "sticky-a", DispatchConcurrencyContext{FundingCheck: true})
++	if errPinned != nil || pinned.AuthID != "sticky-a" || pinned.Concurrency.Accounted {
++		t.Fatal("retained funding check moved or readmitted", errPinned)
++	}
++	headers.Set("X-Session-Id", "synthetic-new")
++	third, errThird := runtime.DispatchForAPIKeyWithConcurrency(t.Context(), "gpt", headers, "synthetic-pool-key", "", nil, "", DispatchConcurrencyContext{})
++	if errThird != nil || third.AuthID != "sticky-b" {
++		t.Fatal("new session did not use earlier reset", errThird)
++	}
++}
+diff --git a/internal/home/runtime.go b/internal/home/runtime.go
+--- a/internal/home/runtime.go
++++ b/internal/home/runtime.go
+@@ -1078,6 +1078,7 @@
+ 				continue
+ 			}
+ 		}
++		recordAccountSelection(ctx, auth.ID, opts.AccountSelection)
+ 		return result, nil
+ 	}
+ }
+diff --git a/internal/home/usage_credits.go b/internal/home/usage_credits.go
+--- a/internal/home/usage_credits.go
++++ b/internal/home/usage_credits.go
+@@ -10,7 +10,7 @@
+ )
+ 
+ type usageCreditStore interface {
+-	UsageCreditTiersForAPIKey(context.Context, string, string, map[string]string) (map[string]int, error)
++	UsageCreditRoutingForAPIKey(context.Context, string, string, map[string]string) (map[string]int, coreauth.AccountSelection, error)
+ }
+ 
+ type usageCreditCollector interface {
+@@ -64,12 +64,14 @@
+ 	if !ok || strings.TrimSpace(apiKey) == "" {
+ 		return false
+ 	}
++	selection := &coreauth.AccountSelection{}
++	opts.AccountSelection = selection
+ 	opts.CandidateFilter = func(candidates []*coreauth.Auth, models map[string]string) ([]*coreauth.Auth, error) {
+ 		ids := make([]string, 0, len(candidates))
+ 		for _, auth := range candidates {
+ 			ids = append(ids, auth.ID)
+ 		}
+-		tiers, errTiers := store.UsageCreditTiersForAPIKey(ctx, apiKey, model, models)
++		tiers, routing, errTiers := store.UsageCreditRoutingForAPIKey(ctx, apiKey, model, models)
+ 		if errTiers != nil {
+ 			return nil, &coreauth.Error{Code: "usage_credit_policy_unavailable", Message: "Pool funding policy could not be read.", HTTPStatus: 503, Retryable: true}
+ 		}
+@@ -80,6 +82,9 @@
+ 				best = tier
+ 			}
+ 		}
++		*selection = routing
++		selection.PlanFunded = best == 0
++		selection.Reason = "existing_selector"
+ 		if best >= 3 {
+ 			if errRefresh := r.requestUsageCreditRefresh(ctx, ids); errRefresh != nil {
+ 				return nil, &coreauth.Error{Code: "usage_credit_policy_unavailable", Message: "A fresh pool funding reading could not be queued.", HTTPStatus: 503, Retryable: true}
+@@ -96,6 +101,7 @@
+ 		}
+ 		for _, auth := range eligible {
+ 			if auth.ID == pinned {
++				selection.Reason = "pinned"
+ 				return []*coreauth.Auth{auth}, nil
+ 			}
+ 		}
+diff --git a/internal/home/usage_credits_test.go b/internal/home/usage_credits_test.go
+--- a/internal/home/usage_credits_test.go
++++ b/internal/home/usage_credits_test.go
+@@ -13,8 +13,8 @@
+ 	tiers map[string]int
+ }
+ 
+-func (s *creditTierStore) UsageCreditTiersForAPIKey(context.Context, string, string, map[string]string) (map[string]int, error) {
+-	return s.tiers, nil
++func (s *creditTierStore) UsageCreditRoutingForAPIKey(context.Context, string, string, map[string]string) (map[string]int, coreauth.AccountSelection, error) {
++	return s.tiers, coreauth.AccountSelection{Policy: "reset_aware"}, nil
+ }
+ 
+ type creditStickySelector struct{}

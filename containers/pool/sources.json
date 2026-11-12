@@ -176,6 +176,15 @@
             "mode": "manual",
             "requires": "Retire when the pinned Home reads credential identity, quota snapshots and quota windows for funding selection in one authoritative SQL statement, preserving old-result parity, soft deletion, expiry and missing-data semantics, with PostgreSQL concurrent-update and query-budget proof. Admission and management loaders remain unchanged."
           }
+        },
+        {
+          "identity": "cliproxy-home-reset-aware-selection",
+          "file": "0522-home-reset-aware-selection.patch",
+          "sha256": "20ecbbfaa54ec5da72484e512831f9a8e4e6391fb2280165056ab075d99efca2",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only after the pinned Home preserves eligible sticky and parent sessions, prefers the earliest fresh account-wide weekly reset among plan-funded candidates with five-hour fallback, keeps model limits as eligibility gates and credits last, supports reversible per-pool balanced selection, migrates retained v14 data additively and passes admission, privacy, policy and repeated-boot regressions."
+          }
         }
       ]
     },
@@ -238,9 +247,7 @@
       "tag": "v1.0.5",
       "commit": "19d9868ffa24e94a2919ea1d1a761afa634de669",
       "sha256": "79b6ae8702b0ace76c10102d42a1401259e7dc772baacce2d47c90c33c6b25e7",
-      "auth_providers": [
-        "gemini-cli"
-      ]
+      "auth_providers": ["gemini-cli"]
     }
   }
 }
