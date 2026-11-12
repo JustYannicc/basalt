@@ -4,7 +4,7 @@ import { callerHeader } from "../../apps/pool/contract.ts";
 import { ComputerHome } from "./computer-home.ts";
 import { Computers, type ComputerStorage } from "./computers.ts";
 import { digest } from "./computer-home.ts";
-import { setupTtl, signIntent } from "./setup-links.ts";
+import { setupTtl } from "./setup-links.ts";
 import { signEnvelope, signPoolToken } from "./token.ts";
 import { HomeClient } from "./control.ts";
 

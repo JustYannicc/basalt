@@ -205,7 +205,11 @@ export async function readRequests(db: HistoryDatabase, query: HistoryQuery) {
   const rows = result.rows.slice(0, historyBatchSize);
   const last = rows.at(-1);
   return {
-    records: rows.map(({ page_timestamp: _, ...row }) => row),
+    records: rows.map((record) => {
+      const row = { ...record };
+      delete row.page_timestamp;
+      return row;
+    }),
     next:
       result.rows.length > historyBatchSize && last
         ? { timestamp: String(last.page_timestamp), id: String(last.id) }
