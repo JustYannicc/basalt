@@ -18,6 +18,13 @@ const pool = defineProvider({
 });
 
 export const requirements = {
+  dependencies: {
+    accountView: {
+      scope: "app" as const,
+      cardinality: "many" as const,
+      tools: { accountView: { kind: "query" as const } },
+    },
+  },
   app: {
     accounts: {
       pool,

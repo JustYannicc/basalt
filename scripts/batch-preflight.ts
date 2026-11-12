@@ -3,6 +3,7 @@ import { run } from "./process.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const upstream = fileURLToPath(new URL("../.upstream/", import.meta.url));
+run("node", ["scripts/check-git-secrets.ts"], root);
 run("node", ["e2e/check-boundary.ts"], upstream);
 run("node", ["scripts/ci/style.ts"], root);
 run("bun", ["run", "mcp:apps", "--check"], upstream);

@@ -219,6 +219,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     this.mirrorHome = new HomeClient(home, Date.now, () => this.control.invalidateViews());
     this.overviewPrices = new OverviewPrices(this.mirrorHome, ctx.storage);
     this.control = new PoolControl(ctx.storage, {
+      nativeMembership: (pool, organization) =>
+        readNativeMembership(env.TOOLS_SERVICE, env.POOL_APP_SIGNING_KEY, pool, organization),
       signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       audience: (pool) => this.computers.audience(pool),

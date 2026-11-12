@@ -8,17 +8,18 @@ import { Effect } from "effect";
 import { generateMigrationFromSchema } from "fumadb-effect/migration";
 import { schema } from "fumadb-effect/schema";
 import { renderStatements, sqliteTransformer } from "fumadb-effect/sql";
-import { currentStorageSchema } from "../../.upstream/packages/sdk/src/implementation/storage-current.ts";
+import { storage4028Schema } from "../../.upstream/packages/sdk/src/implementation/storage-current.ts";
 import { storageSchemas } from "../../.upstream/packages/sdk/src/implementation/storage-migrations.ts";
 
 // The current local product uses PGlite. These are native SQLite SQL/locking checks,
 // not proof of the local product or of an Effect SQLite driver's transaction behavior.
-assert.equal(storageSchemas.at(-1)?.version, "4.0.29", "Apply the prelude source patch first");
+const preludeSchema = storageSchemas.find((entry) => entry.version === "4.0.29");
+assert.ok(preludeSchema, "Apply the prelude source patch first");
 const empty = schema({ version: "0.0.0", tables: {} });
-const generated = generateMigrationFromSchema(empty, currentStorageSchema, { provider: "sqlite" });
+const generated = generateMigrationFromSchema(empty, storage4028Schema, { provider: "sqlite" });
 const operations = sqliteTransformer.afterAuto!(generated, {
   prev: empty,
-  next: currentStorageSchema,
+  next: storage4028Schema,
   options: {},
 });
 const baseline = await Effect.runPromise(
@@ -29,9 +30,7 @@ const baseline = await Effect.runPromise(
     }),
   ),
 );
-const queueOperations = await Effect.runPromise(
-  storageSchemas.at(-1)!.up!({ auto: Effect.succeed([]) }),
-);
+const queueOperations = await Effect.runPromise(preludeSchema.up!({ auto: Effect.succeed([]) }));
 assert.equal(queueOperations.length, 3);
 const queueSql = queueOperations.map((operation) => {
   assert.equal(operation.type, "custom");

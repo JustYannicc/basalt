@@ -69,6 +69,8 @@ const unknownReadingRef = process.env.POOL_UI_UNKNOWN_READING_REF;
 // Optional baseline: build that commit's overview, attention and app files, which summed every
 // banked reset into one total, to capture the old reset line. Reset assertions are skipped.
 const resetsRef = process.env.POOL_UI_RESETS_REF;
+// Compare provider presentation against a frozen implementation with the same source replies.
+const nativeViewRef = process.env.POOL_UI_NATIVE_VIEW_REF;
 const historicalOverview = Boolean(planBaseline || peopleCopyRef || learningRef);
 const requestWindow = historicalOverview ? "in" : "· last";
 const baselineRef = sourceRef ?? peopleCopyRef ?? learningRef ?? resetsRef;
@@ -380,6 +382,18 @@ test(
           join(app, file),
           execFileSync("git", ["-C", root, "show", `${resetsRef}:apps/pool/${file}`]),
         );
+    if (nativeViewRef)
+      for (const file of [
+        "ui/lab.tsx",
+        "ui/overview-attention.ts",
+        "ui/overview.tsx",
+        "ui/capacity-view.tsx",
+        "ui/usage-groups.tsx",
+      ])
+        writeFileSync(
+          join(app, file),
+          execFileSync("git", ["-C", root, "show", `${nativeViewRef}:apps/pool/${file}`]),
+        );
     writeFileSync(
       join(app, "deployment.ts"),
       `export const poolOrigin = ${JSON.stringify(parentOrigin)}; export const productName = "Signalbox";`,
@@ -626,6 +640,7 @@ test(
         usage = emptyUsage,
         capacityHeld = false,
         capacity = capacityFixture,
+        colorScheme = "light",
         overview = (value) => value,
         personal = false,
         partial = false,
@@ -653,6 +668,7 @@ test(
       const context = await browser.newContext({
         viewport,
         hasTouch: touch,
+        colorScheme,
         ...(artifacts
           ? { recordVideo: { dir: join(directory, "video"), size: { width: 1100, height: 860 } } }
           : {}),
@@ -2462,6 +2478,315 @@ test(
           },
         );
       });
+
+    // Provider apps own lab marks and account readings; the pool keeps membership and forecasts.
+    const mark = (fill) =>
+      `data:image/svg+xml;base64,${Buffer.from(
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="${fill}"/></svg>`,
+      ).toString("base64")}`;
+    const lightMark = mark("#0b6e4f");
+    const darkMark = mark("#9be7c4");
+    for (const width of [1280, 390])
+      await t.test(
+        `provider apps supply lab marks and account readings at ${width}px`,
+        async () => {
+          const f = quotaSamplingFixture(Date.now() - minute, samplerUsage);
+          await f.usage.observe();
+          const at = new Date(Date.now() - minute).toISOString();
+          const base = f.view.accounts[0];
+          const report = (attempt) => ({
+            source: { kind: "app", id: "provider-app", label: "Provider", version: "1.0.0" },
+            credentialGeneration: 1,
+            result: {
+              observedAt: at,
+              observation: {
+                offering: "subscription",
+                plan: { observedAt: at, label: "Pro (Max)" },
+                // A model's own limit beside the account limit it counts toward.
+                windows: [
+                  {
+                    observedAt: at,
+                    id: "weekly",
+                    label: "Weekly",
+                    scope: { kind: "account" },
+                    measure: { unit: "%", remainingRatio: 0.6 },
+                    period: { seconds: 7 * 24 * 3600 },
+                  },
+                  {
+                    observedAt: at,
+                    id: "weekly-synthetic",
+                    label: "Synthetic model weekly",
+                    scope: { kind: "model", id: "synthetic-model" },
+                    measure: { unit: "%", remainingRatio: 0.98 },
+                    period: { seconds: 7 * 24 * 3600 },
+                  },
+                ],
+                // Reset kinds stay apart: never "3 resets".
+                balances: [
+                  {
+                    observedAt: at,
+                    id: "weekly-resets",
+                    label: "Weekly resets",
+                    unit: "resets",
+                    available: 2,
+                    scope: { kind: "account" },
+                    reset: { kind: "weekly" },
+                  },
+                  {
+                    observedAt: at,
+                    id: "synthetic-resets",
+                    label: "Synthetic model resets",
+                    unit: "resets",
+                    available: 1,
+                    scope: { kind: "model", id: "synthetic-model" },
+                    reset: { kind: "model" },
+                  },
+                ],
+              },
+            },
+            checkedAt: at,
+            lastAttempt: { attemptedAt: at, outcome: attempt },
+            freshness: "fresh",
+            collecting: false,
+            nextAllowedAt: null,
+          });
+          const available = (id, canInspect, reports) => ({
+            state: "available",
+            account: { id: `acc_${id}`, label: `${id}@source.example`, method: "oauth" },
+            sourceApp: { id: "provider-app", version: "1.0.0", name: "Provider" },
+            health: { account: `acc_${id}`, info: null, infoCheckedAt: null, apps: [] },
+            canInspect,
+            observations: { account: `acc_${id}`, reports },
+          });
+          const member = (id, overrides) => ({
+            ...base,
+            id,
+            label: `${id}@pool.example`,
+            state: "active",
+            freshness: "fresh",
+            readingFailed: false,
+            credentialFailure: undefined,
+            ...overrides,
+          });
+          const accounts = [
+            // Several provider apps hold this one, so no source is chosen: today's presentation stays.
+            member("ambiguous", { bankedResets: { available: 1, nextExpiresAt: null } }),
+            // The pool's copy says fine with 5 resets; the source says its last refresh failed, 2 left.
+            member("native", {
+              readingFailed: false,
+              bankedResets: { available: 5, nextExpiresAt: null },
+              nativeView: available("native", true, [report("rate_limited")]),
+            }),
+            // Refused inspection never falls back to the pool's copy.
+            member("denied", {
+              readingFailed: true,
+              freshness: "stale",
+              bankedResets: { available: 7, nextExpiresAt: null },
+              nativeView: { state: "denied", account: { id: "acc_denied" } },
+            }),
+            member("hidden", {
+              readingFailed: true,
+              freshness: "stale",
+              bankedResets: { available: 11, nextExpiresAt: null },
+              nativeView: available("hidden", false, [report("success")]),
+            }),
+          ];
+          const pool = (icons) => ({
+            ...f.view,
+            providers: f.view.providers.map((provider) => ({
+              ...provider,
+              ...(icons ? { icons } : {}),
+            })),
+            subscriptionAccountIds: accounts.map((account) => account.id),
+            accounts,
+          });
+          const capacity = async (input) => ({
+            ok: true,
+            value: await f.capacity(
+              Math.floor((input.to - input.days * day) / hour) * hour,
+              input.to,
+            ),
+          });
+          const total = {
+            ...emptyUsage.value.total,
+            requests: 1,
+            cost: 0.02,
+            tokens: { ...emptyUsage.value.total.tokens, input: 100, output: 28, total: 128 },
+          };
+          const usage = {
+            ok: true,
+            value: {
+              ...emptyUsage.value,
+              total,
+              models: [{ ...total, provider: "codex", model: "Synthetic model" }],
+            },
+          };
+          const scenarios = [
+            {
+              scheme: "light",
+              icons: [{ src: darkMark, theme: "dark" }, { src: lightMark }],
+              src: lightMark,
+            },
+            {
+              scheme: "dark",
+              icons: [{ src: darkMark, theme: "dark" }, { src: lightMark }],
+              src: darkMark,
+            },
+            { scheme: "light", icons: undefined, src: null },
+          ];
+          for (const scenario of scenarios) {
+            viewResult = { ok: true, value: pool(scenario.icons) };
+            await session(
+              async ({ page, frame, settled }) => {
+                release();
+                const lab = frame.getByRole("article", { name: "Codex", exact: true });
+                await lab.waitFor();
+                await frame
+                  .getByRole("heading", { name: "Needs attention", exact: true })
+                  .waitFor();
+                await frame
+                  .getByText("4 subscription accounts across 1 lab", { exact: false })
+                  .waitFor();
+                const glance = frame.getByRole("navigation", { name: "At a glance" });
+                await glance.getByText(/^Codex:/).waitFor();
+                // Labs grouping marks its rows with the same source icon.
+                const who = frame.locator("#who");
+                await frame.getByRole("radio", { name: "Labs", exact: true }).click();
+                await who.getByText("Codex", { exact: true }).first().waitFor();
+                await settled();
+                if (nativeViewRef) {
+                  assert.equal(await frame.locator("[data-lab-mark]").count(), 0);
+                  assert.equal(await lab.getByText("C", { exact: true }).count(), 1);
+                  assert.ok(
+                    await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+                  );
+                  await page.locator("iframe").evaluate(
+                    (iframe, height) => {
+                      iframe.style.height = `${height}px`;
+                    },
+                    await frame.evaluate(() => document.documentElement.scrollHeight),
+                  );
+                  await settled();
+                  await capture(
+                    page,
+                    `provider-app-reuse-${scenario.src === null ? "no-icon" : scenario.scheme}-${width}`,
+                  );
+                  return;
+                }
+                const marks = frame.locator("[data-lab-mark]");
+                for (const scope of [lab, glance, who]) {
+                  const own = scope.locator("[data-lab-mark]");
+                  assert.equal(await own.count(), 1, "Each lab entry shows one mark");
+                  assert.equal(await own.innerText(), "", "A lab mark never shows an initial");
+                }
+                if (scenario.src === null) {
+                  assert.equal(await frame.locator('[data-lab-mark="icon"]').count(), 0);
+                  assert.ok((await frame.locator('[data-lab-mark="unavailable"]').count()) >= 2);
+                } else {
+                  assert.equal(await frame.locator('[data-lab-mark="unavailable"]').count(), 0);
+                  await frame.waitForFunction(() =>
+                    [...document.querySelectorAll("[data-lab-mark] img")].every(
+                      (image) => image.complete && image.naturalWidth > 0,
+                    ),
+                  );
+                  const sources = await marks
+                    .locator("img")
+                    .evaluateAll((images) => images.map((image) => image.currentSrc));
+                  assert.ok(sources.length >= 2);
+                  assert.deepEqual(
+                    [...new Set(sources)],
+                    [scenario.src],
+                    `The ${scenario.scheme} scheme shows the provider app's ${scenario.scheme} icon`,
+                  );
+                }
+                const text = await frame.locator("body").innerText();
+                // Membership and routing are the pool's: all four accounts count, whatever inspection.
+                assert.match(text, /4 subscription accounts across 1 lab/);
+                // Native facts replace the pool's copy; withheld accounts add nothing.
+                assert.match(text, /(?<!\d)1 account failed its latest usage check/);
+                // Kinds apart: the source's weekly and model resets, the ambiguous account's own one.
+                const resets = frame.getByRole("button", {
+                  name: "2 weekly resets · 1 Synthetic model reset · 1 reset with unknown scope available",
+                  exact: true,
+                });
+                await resets.waitFor();
+                assert.match(text, /(?<!\d)1 account needs you/);
+                assert.doesNotMatch(text, /stale or missing readings/);
+                assert.doesNotMatch(text, /accounts failed their latest usage check/);
+                assert.ok(
+                  await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+                  "Overview fits at phone and desktop widths",
+                );
+                // Ambiguity keeps its old model limit; the resolved source replaces its copy.
+                const limitRows = frame
+                  .getByRole("region", { name: "Model limits" })
+                  .getByRole("button");
+                assert.equal(await limitRows.count(), 2);
+                const fallbackText = await limitRows
+                  .filter({ hasText: "ambiguous@pool.example" })
+                  .innerText();
+                assert.match(fallbackText, /Weekly 20% remaining/);
+                assert.doesNotMatch(fallbackText, /Synthetic model weekly/);
+                const limitText = await limitRows
+                  .filter({ hasText: "native@pool.example" })
+                  .innerText();
+                assert.match(limitText, /native@pool\.example/);
+                assert.match(limitText, /Synthetic model weekly 98% remaining/);
+                if (scenario.src !== null) {
+                  // Details are the source's report through the shared table, failed refresh kept.
+                  await resets.click();
+                  const dialog = frame.getByRole("dialog", { name: "Banked resets" });
+                  await dialog.waitFor();
+                  const details = await dialog.innerText();
+                  assert.doesNotMatch(details, /denied@pool\.example|hidden@pool\.example/);
+                  assert.doesNotMatch(details, /\b(5|7|11) resets\b/);
+                  const native = dialog.locator("section", {
+                    has: frame.getByRole("heading", { name: "native@pool.example" }),
+                  });
+                  assert.match(
+                    await native.innerText(),
+                    /Latest check failed .*the source was rate limited\. Showing the last reading\./,
+                  );
+                  const rows = await native.locator("tbody tr").allInnerTexts();
+                  const names = rows.map(rowName);
+                  assert.deepEqual(names, [
+                    "Plan",
+                    "Weekly",
+                    "Synthetic model weekly",
+                    "Weekly resets",
+                    "Synthetic model resets",
+                  ]);
+                  const row = (name) => rows[names.indexOf(name)];
+                  assert.match(row("Plan"), /Pro/);
+                  assert.match(row("Synthetic model weekly"), /98% remaining/);
+                  assert.match(
+                    row("Synthetic model weekly"),
+                    /This model's own limit\. Its use also counts toward the weekly limit\./,
+                  );
+                  assert.match(row("Weekly resets"), /\b2 resets\b/);
+                  assert.match(row("Synthetic model resets"), /\b1 reset\b/);
+                  assert.ok(await fitsWithin(frame, dialog), `Native Details fit at ${width}px`);
+                  await capture(page, `provider-app-details-${scenario.scheme}-${width}`);
+                  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+                  await dialog.waitFor({ state: "hidden" });
+                }
+                await page.locator("iframe").evaluate(
+                  (iframe, height) => {
+                    iframe.style.height = `${height}px`;
+                  },
+                  await frame.evaluate(() => document.documentElement.scrollHeight),
+                );
+                await settled();
+                await capture(
+                  page,
+                  `provider-app-reuse-${scenario.src === null ? "no-icon" : scenario.scheme}-${width}`,
+                );
+              },
+              { viewport: { width, height: 1000 }, colorScheme: scenario.scheme, capacity, usage },
+            );
+          }
+        },
+      );
 
     for (const width of [1440, 390])
       await t.test(`usage loads while capacity is held at ${width}px`, async () => {

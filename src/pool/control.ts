@@ -1,3 +1,4 @@
+import { nativeAccountView } from "./native-account-view.ts";
 import { poolCreditRouting, setPoolCreditPolicy } from "./credit-policy.ts";
 import { setPoolSelectionPolicy } from "./selection-policy.ts";
 import { usageTimestampOrder } from "./usage-feed.ts";
@@ -52,6 +53,11 @@ import { emitProductEvent, type ProductEventCallback } from "../setup/product-ev
 export { accountsView } from "./accounts-view.ts";
 
 export interface HomeDependencies {
+  /** The existing signed membership reader supplies identity without exposing backend references. */
+  nativeMembership?: (
+    pool: string,
+    organization: string,
+  ) => Promise<import("./membership-contract.ts").NativeMembershipSnapshot>;
   signingKey: string;
   previousSigningKey?: string;
   home: (path: string, init?: RequestInit) => Promise<Response>;
@@ -723,6 +729,7 @@ export class PoolHome {
   }
 }
 interface RouteContext {
+  organization: string;
   request: Request;
   url: URL;
   deps: ControlDependencies;
@@ -781,14 +788,15 @@ const routes: Record<string, Route> = {
   },
   "GET /accounts/:id/observations": (ctx) => observeAccount(ctx, false),
   "POST /accounts/:id/observations/refresh": (ctx) => observeAccount(ctx, true),
-  "GET /pool": async ({ home, isOwner, deps, pool, url }) => {
-    const view = await home.view(
-      isOwner,
-      deps.views,
-      url.searchParams.get("fresh") === "true",
-      deps.now,
+  "GET /pool": async ({ home, isOwner, deps, pool, organization, url }) => {
+    const [view, membership] = await Promise.all([
+      home.view(isOwner, deps.views, url.searchParams.get("fresh") === "true", deps.now),
+      deps.nativeMembership?.(pool, organization).catch(() => undefined),
+    ]);
+    const presented = deps.nativeMembership ? nativeAccountView(view, membership) : view;
+    return json(
+      isOwner && deps.removals ? { ...presented, removals: await deps.removals(pool) } : presented,
     );
-    return json(isOwner && deps.removals ? { ...view, removals: await deps.removals(pool) } : view);
   },
   "GET /usage": async ({ home, url }) => json(await home.usage(await usageQuery(url))),
   "GET /accounts/:id/export": async ({ url, client, home }) => exportLoginFile(url, client, home),
@@ -948,6 +956,7 @@ export async function handleControl(
         client,
         home,
         pool: claims.pool,
+        organization: claims.organization,
         accountId: claims.owner,
         isOwner,
         now: deps.now?.() ?? new Date(),
