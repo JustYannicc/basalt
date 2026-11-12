@@ -189,7 +189,9 @@ test("a missing observation secret cannot launch and the same cell activates whe
   assert.equal(f.calls.start, 0);
   assert.equal(await f.cell.selected(), undefined);
   f.secret("synthetic-provider-token");
-  assert.equal((await f.cell.start(f.target)).bootId, f.identity().bootId);
+  assert.equal(await f.cell.observe(f.target), undefined);
+  assert.equal(f.calls.start, 0);
+  assert.equal((await f.cell.observe(f.target, true))?.bootId, f.identity().bootId);
   assert.equal(f.calls.start, 1);
 });
 

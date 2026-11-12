@@ -11,7 +11,7 @@ import { FleetDispatches } from "./dispatches.ts";
 
 export interface FleetCell {
   start(target: SlotTarget): Promise<SlotIdentity>;
-  observe(target: SlotTarget): Promise<SlotIdentity | undefined>;
+  observe(target: SlotTarget, retryUnsent?: boolean): Promise<SlotIdentity | undefined>;
   selected(): Promise<SlotIdentity | undefined>;
   forward(
     request: Request,
@@ -215,7 +215,7 @@ export class RuntimeFleet {
         }
         await this.start(row.target);
       } else if (row.phase === "warming" || row.phase === "uncertain") {
-        const observed = await cell.observe(row.target);
+        const observed = await cell.observe(row.target, this.deps.enabled?.() !== false);
         if (observed) await this.deps.state.ready(observed);
       } else if (
         row.phase === "ready" &&
