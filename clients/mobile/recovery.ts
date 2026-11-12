@@ -4,6 +4,7 @@ import { untilAborted } from "../connection/abort.ts";
 export function reconnectRecovery(ports: {
   allowed(): boolean;
   terminal(): boolean;
+  retryable?(error: unknown): boolean;
   attempt(signal: AbortSignal): Promise<void>;
   changed(reconnecting: boolean, error?: string): void;
   random(): number;
@@ -52,8 +53,13 @@ export function reconnectRecovery(ports: {
         failures = 0;
         notBefore = 0;
         ports.changed(false);
-      } catch {
+      } catch (error) {
         if (signal.aborted && !timedOut) return;
+        if (ports.retryable?.(error) === false) {
+          needed = false;
+          ports.changed(false, "Refresh has not been confirmed. Automatic retries paused.");
+          return;
+        }
         needed = !ports.terminal();
         ports.changed(
           needed,

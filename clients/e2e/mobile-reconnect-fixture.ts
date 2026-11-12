@@ -25,6 +25,8 @@ export function fixture(t: TestContext) {
   let refreshHeld: Promise<void> | undefined;
   let refreshReads = 0;
   let refreshError: Error | undefined;
+  let refreshRefusal: { status: number; code: string } | undefined;
+  const refreshTokens: string[] = [];
   let rotationWrite: Promise<void> | undefined;
   let notSentWrite: Promise<void> | undefined;
   let storeRead: Promise<void> | undefined;
@@ -49,8 +51,11 @@ export function fixture(t: TestContext) {
       const refresh = new URLSearchParams(String(init?.body)).get("grant_type") === "refresh_token";
       if (refresh) {
         refreshReads++;
+        refreshTokens.push(new URLSearchParams(String(init?.body)).get("refresh_token")!);
         await refreshHeld;
         if (refreshError) throw refreshError;
+        if (refreshRefusal)
+          return Response.json({ error: refreshRefusal.code }, { status: refreshRefusal.status });
       }
       return Response.json({
         access_token: refresh ? "fixture-next-access" : "fixture-signed-in-access",
@@ -176,6 +181,13 @@ export function fixture(t: TestContext) {
       refreshHeld = value;
     },
     refreshReads: () => refreshReads,
+    refreshTokens,
+    allowRefresh: () => {
+      refreshRefusal = undefined;
+    },
+    refuseRefresh: (status: number, code: string) => {
+      refreshRefusal = { status, code };
+    },
     failRefresh: (error: Error | undefined) => {
       refreshError = error;
     },

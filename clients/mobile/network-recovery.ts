@@ -11,7 +11,7 @@ const setup = `    com.facebook.react.modules.network.OkHttpClientProvider.setOk
           object : okhttp3.EventListener() {
             override fun requestHeadersStart(call: okhttp3.Call) { headersStarted.set(true) }
             override fun callEnd(call: okhttp3.Call) { attempts.remove(call) }
-            override fun callFailed(call: okhttp3.Call, failure: java.io.IOException) { attempts.remove(call) }
+            override fun callFailed(call: okhttp3.Call, ioe: java.io.IOException) { attempts.remove(call) }
           }
         }
         .addInterceptor { chain ->

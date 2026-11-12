@@ -11,9 +11,11 @@ const grantType = "urn:ietf:params:oauth:grant-type:device_code";
 const readFailure = Schema.decodeUnknownSync(Schema.Struct({ error: Schema.String }));
 export class DeviceOAuthError extends Error {
   readonly code: string;
-  constructor(code: string) {
+  readonly status: number | undefined;
+  constructor(code: string, status?: number) {
     super("Native sign-in could not finish.");
     this.code = code;
+    this.status = status;
   }
 }
 type NativeAuthPath =
@@ -56,7 +58,7 @@ export async function tokenRequest(
     signal,
   );
   const value: unknown = await response.json();
-  if (!response.ok) throw new DeviceOAuthError(readFailure(value).error);
+  if (!response.ok) throw new DeviceOAuthError(readFailure(value).error, response.status);
   const token = readToken(value);
   const scopes = token.scope.split(" ");
   if (

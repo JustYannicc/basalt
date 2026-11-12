@@ -13,7 +13,7 @@ import {
 } from "../contracts/device.ts";
 import { tunnelPath, nativeTunnelReadyTimeoutMs } from "../contracts/tunnel.ts";
 import { authRequest } from "./device-oauth.ts";
-import { refreshDeviceCredentials } from "./device-refresh.ts";
+import { deviceRefresh } from "./device-refresh.ts";
 import { nativeAccess } from "./native-access.ts";
 import { untilAborted } from "./abort.ts";
 import { orderedDeviceStore } from "./device-store.ts";
@@ -46,10 +46,18 @@ export function deviceConnection(
   let access: NativeAccess | undefined;
   let display: NativeAccess["display"];
   let state: ConnectionView["state"] = "connected";
-  let pending: Promise<void> | undefined;
   let validation: Promise<void> | undefined;
   let validationAbort = new AbortController();
   let epoch = 0;
+  const rotation = deviceRefresh({
+    store,
+    changed: (credentials) => {
+      saved = credentials;
+    },
+    unavailable: (next) => {
+      state = next;
+    },
+  });
   const capabilities = (): Capability[] =>
     access
       ? [
@@ -61,18 +69,11 @@ export function deviceConnection(
     signal.throwIfAborted();
     if (generation !== epoch) throw new Error("Connection state changed.");
   };
-  const renew = (current: DeviceCredentials, signal: AbortSignal, generation: number) =>
-    refreshDeviceCredentials(current, signal, async (next) => {
-      checkCurrent(generation, signal);
-      await store.write(JSON.stringify(next));
-      checkCurrent(generation, signal);
-      saved = next;
-    });
   const readAccess = async (signal: AbortSignal) => {
     signal.throwIfAborted();
     const current = saved;
     if (state !== "connected") throw new Error("The connection is not connected.");
-    if (!current || (current.refreshPending === true && !pending)) {
+    if (!current) {
       state = "sign-in-required";
       throw new Error("Sign in again before using this device.");
     }
@@ -80,22 +81,14 @@ export function deviceConnection(
     try {
       const bearer = async () => {
         const credential = saved;
-        if (
-          !credential ||
-          (credential.refreshPending === true && !pending) ||
-          generation !== epoch ||
-          state !== "connected"
-        )
+        if (!credential || generation !== epoch || state !== "connected")
           throw new Error("Connection state changed.");
-        if (!pending && credential.expiresAt <= Date.now() + nativeTunnelReadyTimeoutMs) {
-          const renewal = untilAborted(renew(credential, signal, generation), signal).finally(
-            () => {
-              if (pending === renewal) pending = undefined;
-            },
-          );
-          pending = renewal;
-        }
-        await pending;
+        if (
+          credential.refreshPending ||
+          credential.expiresAt <= Date.now() + nativeTunnelReadyTimeoutMs
+        )
+          await untilAborted(rotation.start(credential), signal);
+        else await rotation.wait(signal);
         signal.throwIfAborted();
         if (generation !== epoch || state !== "connected" || !saved)
           throw new Error("Connection state changed.");
@@ -124,8 +117,6 @@ export function deviceConnection(
       display = checked.display;
     } catch (error) {
       if (generation === epoch) {
-        if (state === "connected" && saved?.refreshPending === true && !pending)
-          state = "sign-in-required";
         if (!signal.aborted || state !== "connected") access = undefined;
       }
       throw error;
@@ -137,6 +128,7 @@ export function deviceConnection(
     if (
       access &&
       saved &&
+      !saved.refreshPending &&
       Math.min(access.expiresAt, saved.expiresAt) > Date.now() + nativeTunnelReadyTimeoutMs
     )
       return;
@@ -229,10 +221,11 @@ export function deviceConnection(
     },
     disconnect: async () => {
       epoch++;
+      rotation.stop();
       state = "disconnected";
       clearAccess();
       await validation?.catch(() => undefined);
-      await pending?.catch(() => undefined);
+      await rotation.wait().catch(() => undefined);
     },
     reconnect: async (signal = new AbortController().signal) => {
       const generation = ++epoch;
@@ -242,14 +235,12 @@ export function deviceConnection(
         if (generation !== epoch) return;
         epoch++;
         access = undefined;
-        // A cancelled rotating exchange can have succeeded remotely. Never replay it.
-        if (saved?.refreshPending === true) state = "sign-in-required";
       };
       activeSignal.addEventListener("abort", cancel, { once: true });
       try {
         activeSignal.throwIfAborted();
         await untilAborted(validation?.catch(() => undefined) ?? Promise.resolve(), activeSignal);
-        await untilAborted(pending?.catch(() => undefined) ?? Promise.resolve(), activeSignal);
+        await rotation.wait(activeSignal);
         const raw = await untilAborted(store.read(), activeSignal);
         checkCurrent(generation, activeSignal);
         saved = raw === undefined ? undefined : readDeviceCredentials(JSON.parse(raw));
@@ -265,11 +256,12 @@ export function deviceConnection(
     },
     signOut: async () => {
       epoch++;
+      rotation.stop();
       state = "sign-in-required";
       clearAccess();
       await validation?.catch(() => undefined);
       display = undefined;
-      await pending?.catch(() => undefined);
+      await rotation.wait().catch(() => undefined);
       saved = undefined;
       await store.remove();
     },
@@ -288,6 +280,7 @@ export function deviceConnection(
         throw new Error("Device revocation is unconfirmed. Check your account before retrying.");
       epoch++;
       state = "revoked";
+      rotation.stop();
       clearAccess();
       display = undefined;
       saved = undefined;
