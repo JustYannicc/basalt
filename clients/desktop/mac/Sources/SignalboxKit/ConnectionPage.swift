@@ -67,6 +67,8 @@ struct ConnectionPage: View {
         Toggle("Open at login", isOn: actions.openAtLogin)
           .toggleStyle(.checkbox)
           .padding(.horizontal, 6)
+        UpdateRow(updates: actions.updates)
+          .padding(.horizontal, 6)
         DisclosureGroup("Connection details") {
           VStack(alignment: .leading, spacing: 8) {
             if let origin = snapshot?.localOrigin {
@@ -128,6 +130,23 @@ struct ConnectionPage: View {
     if presentation.connected && !presentation.modelAccess { return "Not included in this connection" }
     if let pool = view?.display?.pool.name.nonEmpty { return pool }
     return view?.mode == .direct ? "Your direct key" : "Reconnect to load pool details"
+  }
+}
+
+/// Updates install on their own; this is for checking now. Disabled while one is under way.
+struct UpdateRow: View {
+  let updates: AppUpdates
+  var body: some View {
+    HStack(spacing: 8) {
+      Button("Check for Updates…") { updates.check() }
+        .buttonStyle(.link)
+        .font(.system(size: 12))
+        .disabled(!updates.canCheck)
+      Text("Version \(updates.version)")
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .textSelection(.enabled)
+    }
   }
 }
 

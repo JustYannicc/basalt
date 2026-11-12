@@ -16,5 +16,10 @@
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
+  <key>SUFeedURL</key><string>FEED_URL</string>
+  <key>SUPublicEDKey</key><string>j9lxkxFJVdfdorvdwagsmTe0yAteJMHGL+ySOkzfwyo=</string>
+  <key>SUEnableAutomaticChecks</key><true/>
+  <key>SUAutomaticallyUpdate</key><true/>
+  <key>SUScheduledCheckInterval</key><integer>3600</integer>
 </dict>
 </plist>
