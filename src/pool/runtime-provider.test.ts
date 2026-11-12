@@ -158,3 +158,46 @@ test("retirement releases no resource guard until the exact provider instance is
     );
   }
 });
+
+test("missing and unreadable secrets report unknown without a provider call or absence proof", async () => {
+  const f = await fixture();
+  for (const credential of [
+    undefined,
+    { get: async () => null },
+    {
+      get: async (): Promise<string> => {
+        throw new Error("synthetic-secret-error");
+      },
+    },
+  ]) {
+    let requests = 0;
+    const reader = new RuntimeProviderReader(credential, async () => {
+      requests++;
+      throw new Error("Missing secret cannot reach the provider");
+    });
+    await assert.rejects(reader.observe(f.expected), (error: unknown) => {
+      assert.ok(error instanceof Error && "status" in error);
+      assert.equal(error.status, "unknown");
+      assert.equal(error.message, "Pool provider observation refused");
+      return true;
+    });
+    assert.equal(await reader.absent(f.expected, f.manifest.target.instanceId), false);
+    assert.equal(requests, 0);
+  }
+});
+
+test("a stalled secret read respects the observation abort and never calls the provider", async () => {
+  const f = await fixture();
+  const controller = new AbortController();
+  const pending = Promise.withResolvers<string | null>();
+  let reads = 0;
+  const reader = new RuntimeProviderReader({ get: () => pending.promise }, async () => {
+    reads++;
+    throw new Error("An aborted secret read cannot call the provider");
+  });
+  const observation = reader.observe(f.expected, undefined, controller.signal);
+  controller.abort();
+  await assert.rejects(observation, /provider observation refused/);
+  pending.resolve("synthetic-provider-token");
+  assert.equal(reads, 0);
+});

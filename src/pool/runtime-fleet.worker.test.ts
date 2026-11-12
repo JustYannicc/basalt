@@ -332,3 +332,20 @@ test(
     assert.equal(f.old.calls.destroy, 0);
   },
 );
+
+test("the actual controller refuses an absent named secret and observes it without reconstruction", async (context) => {
+  const f = await fleetWorkerFixture();
+  context.after(f.cleanup);
+  await f.bootstrap();
+  f.secretAvailable(false);
+  const before = f.providerReads.length;
+  const fields = { operationId: "secret-recovery", configuration: f.configuration };
+  assert.equal((await f.command("fleet-configure", fields)).status, 409);
+  assert.equal(f.providerReads.length, before);
+  assert.deepEqual(await new RuntimeFleetState(f.old.storage, 4).inspect(), []);
+  assert.equal(f.instances.size, 0);
+  f.secretAvailable(true);
+  assert.equal((await f.command("fleet-configure", fields)).status, 200);
+  assert.ok(f.providerReads.length > before);
+  assert.equal(f.instances.size, 0);
+});

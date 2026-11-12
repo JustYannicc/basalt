@@ -76,7 +76,9 @@ export class FleetHandoffCell implements FleetCell {
   drain(identity: SlotIdentity) {
     return this.deps.driver.drain(identity, AbortSignal.timeout(2_000));
   }
-  async retire(identity: SlotIdentity) {
+  async retire(identity: SlotIdentity, begin: () => Promise<void>) {
+    await this.deps.provider.observe(this.deps.application, identity.instanceId);
+    await begin();
     await this.deps.driver.retire(identity, identity, AbortSignal.timeout(2_000));
     if (!(await this.retired(identity))) throw new SlotRefused("uncertain");
   }

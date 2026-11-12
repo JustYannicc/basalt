@@ -9,6 +9,7 @@ import { verifyRuntimeDatabaseBudget } from "./database-budget.ts";
 import { poolDatabaseInfrastructure } from "./database.ts";
 import { euPlacement } from "./placement.ts";
 import { fleetInfrastructure } from "./fleet-deployment.ts";
+import { bindPoolObservationSecret } from "./fleet-observation.ts";
 import { poolWorkerDatabase } from "./worker-database.ts";
 import { telemetryBindings, workerObservability } from "../telemetry/deployment.ts";
 import { validSentryDsn } from "../telemetry/sentry-target.ts";
@@ -84,6 +85,7 @@ export const poolWorker = Effect.gen(function* () {
       ...(recoveryTarget ? { POOL_AUTOMATIC_RECOVERY_TARGET: recoveryTarget } : {}),
     },
   });
+  if (fleet) yield* bindPoolObservationSecret(worker);
   yield* verifyRuntimeDatabaseBudget("PoolBackendBudget", {
     adminUrl: database.adminUrl,
     runtimeLogin: database.runtimeRole,

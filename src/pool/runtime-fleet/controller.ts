@@ -22,7 +22,7 @@ export interface FleetCell {
   install(policy: NativeMembershipPolicy): Promise<void>;
   abortPool(pool: string): void;
   drain(identity: SlotIdentity): Promise<{ active: number; known: boolean }>;
-  retire(identity: SlotIdentity): Promise<void>;
+  retire(identity: SlotIdentity, begin: () => Promise<void>): Promise<void>;
   retired(identity: SlotIdentity): Promise<boolean>;
 }
 interface Dependencies {
@@ -229,8 +229,8 @@ export class RuntimeFleet {
       } else if (row.phase === "draining" && row.identity) {
         const actual = await this.drain(row.identity);
         if (row.active !== 0 || actual.active !== 0 || !actual.known) continue;
-        await this.deps.state.beginRetirement(row.identity);
-        await cell.retire(row.identity);
+        const identity = row.identity;
+        await cell.retire(identity, () => this.deps.state.beginRetirement(identity));
         this.cells.delete(row.target.slotId);
         await this.deps.state.retired(row.identity);
         this.atCapacity = false;

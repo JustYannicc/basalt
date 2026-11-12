@@ -2,7 +2,6 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Output from "alchemy/Output";
 import { retain } from "alchemy/RemovalPolicy";
 import { euPlacement } from "./placement.ts";
-import { poolObservationTokenProps } from "./fleet-observation.ts";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, Schema } from "effect";
 
@@ -51,10 +50,6 @@ export const fleetInfrastructure = Effect.gen(function* () {
     green = declare("green");
   const blueApplication = yield* blue.Application.pipe(retain());
   const greenApplication = yield* green.Application.pipe(retain());
-  const observation = yield* Cloudflare.ApiToken.AccountApiToken(
-    "PoolProviderObservationToken",
-    poolObservationTokenProps(accountId, stage),
-  ).pipe(retain());
   const imageInput = (application: typeof blueApplication) =>
     application.hash.pipe(
       Output.map((hash) => {
@@ -70,6 +65,5 @@ export const fleetInfrastructure = Effect.gen(function* () {
     POOL_BLUE_IMAGE_HASH: imageInput(blueApplication),
     POOL_GREEN_APPLICATION_ID: greenApplication.applicationId,
     POOL_GREEN_IMAGE_HASH: imageInput(greenApplication),
-    POOL_PROVIDER_OBSERVATION_TOKEN: observation.value,
   };
 });

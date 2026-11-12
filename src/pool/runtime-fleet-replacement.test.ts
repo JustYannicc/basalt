@@ -56,7 +56,8 @@ async function fixture() {
         drains++;
         return { active: 0, known: true };
       },
-      retire: async () => {
+      retire: async (_identity, begin) => {
+        await begin();
         retires++;
       },
       retired: async () => true,

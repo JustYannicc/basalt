@@ -5,10 +5,11 @@ import * as Output from "alchemy/Output";
 import { State } from "alchemy/State/State";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { Stack, evalStack } from "alchemy/Stack";
-import { ConfigProvider, Effect, Layer, Redacted } from "effect";
+import { ConfigProvider, Effect, Layer } from "effect";
 import { decodeRuntimeCreate } from "../../scripts/release-barrier/runtime-create-schema.ts";
 import { runtimeDeclaration } from "../../scripts/release-barrier/test/provisioning-fixtures.ts";
 import { withReleaseRuntime } from "../../scripts/release-barrier/runtime.ts";
+import { bindPoolObservationSecret } from "./fleet-observation.ts";
 import { decodeFleetDeploymentImages, fleetInfrastructure } from "./fleet-deployment.ts";
 
 const accountId = "1".repeat(32);
@@ -25,10 +26,12 @@ async function declarations(input = "") {
     },
     Effect.gen(function* () {
       const env = yield* fleetInfrastructure;
-      return yield* Cloudflare.Worker("PoolWorker", {
+      const worker = yield* Cloudflare.Worker("PoolWorker", {
         main: import.meta.filename,
         env: { ...env },
       });
+      if (env) yield* bindPoolObservationSecret(worker);
+      return worker;
     }),
   );
   return Effect.runPromise(
@@ -48,7 +51,7 @@ test("ordinary deployments without fleet pins declare no fleet applications or o
   assert.deepEqual(stack.resources.PoolWorker!.Props.env, {});
 });
 
-test("fleet declarations keep independent immutable images, exact namespaces, zero instances and a direct narrow secret", async () => {
+test("fleet declarations keep independent immutable images, exact namespaces, zero instances and a named Secrets Store binding", async () => {
   const stack = await declarations(JSON.stringify(images));
   for (const [resource, image] of [
     ["PoolRuntimeBlue", images.blue],
@@ -74,30 +77,33 @@ test("fleet declarations keep independent immutable images, exact namespaces, ze
       observability: { logs: { enabled: true } },
     });
   }
-  const credential = stack.resources.PoolProviderObservationToken!;
-  assert.equal(credential.Type, "Cloudflare.ApiToken.AccountApiToken");
-  assert.deepEqual(credential.Props, {
-    accountId,
-    name: "basalt-synthetic-pool-provider-observation",
-    policies: [
-      {
-        effect: "allow",
-        permissionGroups: [{ id: "cfd39eebc07c4e3ea849e4b3d2644637" }],
-        resources: { [`com.cloudflare.api.account.${accountId}`]: "*" },
-      },
-    ],
-  });
+  assert.equal(stack.resources.PoolProviderObservationToken, undefined);
+  const store = stack.resources.PoolObservationSecrets!;
+  assert.equal(store.Type, "Cloudflare.SecretsStore");
+  assert.equal(store.RemovalPolicy, "retain");
   const env = stack.resources.PoolWorker!.Props.env;
   assert.ok(env && typeof env === "object");
   assert.equal("CLOUDFLARE_API_TOKEN" in env, false);
-  const secret = Redacted.make("synthetic-read-only");
+  assert.equal("POOL_PROVIDER_OBSERVATION_TOKEN" in env, false);
+  const observation = stack.bindings.PoolWorker!.find(
+    (binding) => binding.sid === "pool-provider-observation",
+  );
+  assert.ok(observation);
   const resolved = await Effect.runPromise(
-    Output.evaluate(env.POOL_PROVIDER_OBSERVATION_TOKEN, {
-      PoolProviderObservationToken: { value: secret },
+    Output.evaluate(observation.data, {
+      PoolObservationSecrets: { storeId: "2".repeat(32) },
     }).pipe(Effect.provideService(State, Effect.die("Unexpected external reference"))),
   );
-  assert.equal(resolved, secret);
-  assert.equal(Redacted.isRedacted(resolved), true);
+  assert.deepEqual(resolved, {
+    bindings: [
+      {
+        type: "secrets_store_secret",
+        name: "POOL_PROVIDER_OBSERVATION_TOKEN",
+        storeId: "2".repeat(32),
+        secretName: "basalt-synthetic-pool-provider-observation",
+      },
+    ],
+  });
   for (const [binding, resource] of [
     ["POOL_BLUE_IMAGE_HASH", "PoolRuntimeBlue"],
     ["POOL_GREEN_IMAGE_HASH", "PoolRuntimeGreen"],
@@ -123,7 +129,6 @@ test("fleet declarations keep independent immutable images, exact namespaces, ze
       "POOL_BLUE_IMAGE_HASH",
       "POOL_GREEN_APPLICATION_ID",
       "POOL_GREEN_IMAGE_HASH",
-      "POOL_PROVIDER_OBSERVATION_TOKEN",
     ].sort(),
   );
 });

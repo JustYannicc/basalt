@@ -30,6 +30,7 @@ const Instance = Schema.Struct({
 });
 const Pagination = Schema.Struct({ next_page_token: Schema.optional(Schema.String) });
 export class ProviderObservationRefused extends Error {
+  readonly status = "unknown";
   constructor() {
     super("Pool provider observation refused");
   }
@@ -37,22 +38,43 @@ export class ProviderObservationRefused extends Error {
 
 /** A read-only credential observes actual provider state; desired bindings never stand in for it. */
 export class RuntimeProviderReader {
-  private token: string;
+  private token: string | { get(): Promise<string | null> } | undefined;
   private fetcher: Fetcher;
   private now: () => number;
-  constructor(token: string, fetcher: Fetcher = fetch, now = Date.now) {
+  constructor(token: RuntimeProviderReader["token"], fetcher: Fetcher = fetch, now = Date.now) {
     this.token = token;
     this.fetcher = fetcher;
     this.now = now;
   }
+  private async credential(signal: AbortSignal) {
+    signal.throwIfAborted();
+    if (typeof this.token === "string") return this.token;
+    const pending = this.token?.get();
+    return new Promise<string | null | undefined>((resolve, reject) => {
+      const abort = () => reject(new ProviderObservationRefused());
+      signal.addEventListener("abort", abort, { once: true });
+      Promise.resolve(pending).then(
+        (value) => {
+          signal.removeEventListener("abort", abort);
+          resolve(value);
+        },
+        () => {
+          signal.removeEventListener("abort", abort);
+          reject(new ProviderObservationRefused());
+        },
+      );
+    });
+  }
   private async read(url: string, signal: AbortSignal) {
-    if (!this.token) throw new ProviderObservationRefused();
     try {
+      // Resolve on each observation so provisioning or rotation needs no Worker restart.
+      const token = await this.credential(signal);
+      if (!token) throw new ProviderObservationRefused();
       const response = await this.fetcher(url, {
         method: "GET",
         redirect: "error",
         signal,
-        headers: { authorization: `Bearer ${this.token}`, accept: "application/json" },
+        headers: { authorization: `Bearer ${token}`, accept: "application/json" },
       });
       if (response.status !== 200 || !response.body) {
         await response.body?.cancel();

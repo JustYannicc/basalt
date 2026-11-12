@@ -110,7 +110,7 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnviron
   POOL_BLUE_IMAGE_HASH?: string;
   POOL_GREEN_APPLICATION_ID?: string;
   POOL_GREEN_IMAGE_HASH?: string;
-  POOL_PROVIDER_OBSERVATION_TOKEN?: string;
+  POOL_PROVIDER_OBSERVATION_TOKEN?: { get(): Promise<string | null> };
   POOL_DATABASE_URL: string;
   POOL_AUTH_DATABASE?: Hyperdrive;
   POOL_MANAGEMENT_KEY: string;
@@ -177,7 +177,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       code: { candidate: productionOpsRelease, workerInput: poolWorkerRevision },
       handoff: this.handoff,
       namespaces: () => this.fleetNamespaces(),
-      provider: new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN ?? ""),
+      provider: new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN),
       currentRequests: () => this.modelStreams.active,
       wrap: nativeResponse,
       schedule: (at) => this.alarms.schedule("fleet", at),

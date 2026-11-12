@@ -65,7 +65,8 @@ export async function fleetWorkerFixture() {
   let model: (instance: Runtime, request: Request) => Promise<Response | undefined> = async () =>
     undefined;
   const fetchBefore = globalThis.fetch;
-  let providerAvailable = true;
+  let providerAvailable = true,
+    secretAvailable = true;
   const providerReads: string[] = [];
   globalThis.fetch = async (input, init) => {
     assert.equal(typeof input, "string");
@@ -188,7 +189,9 @@ export async function fleetWorkerFixture() {
           POOL_BLUE_IMAGE_HASH: applications[0]!.imageInput,
           POOL_GREEN_APPLICATION_ID: applications[1]!.applicationId,
           POOL_GREEN_IMAGE_HASH: applications[1]!.imageInput,
-          POOL_PROVIDER_OBSERVATION_TOKEN: "synthetic-provider-read",
+          POOL_PROVIDER_OBSERVATION_TOKEN: {
+            get: async () => (secretAvailable ? "synthetic-provider-read" : null),
+          },
         };
       },
     });
@@ -267,6 +270,9 @@ export async function fleetWorkerFixture() {
         sourceSha: peerProgram.sourceSha,
         configurationFingerprint: await f.old.digest(),
       }),
+    secretAvailable: (available: boolean) => {
+      secretAvailable = available;
+    },
     providerAvailable: (available: boolean) => {
       providerAvailable = available;
     },
