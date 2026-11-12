@@ -40,7 +40,7 @@ export class FleetHandoffCell implements FleetCell {
     if (!selected || !sameTarget(selected, target)) throw new SlotRefused("identity");
     return selected;
   }
-  async observe(target: SlotTarget) {
+  async observe(target: SlotTarget, retryUnsent = false) {
     const selected = await this.selected();
     if (selected) {
       if (!sameTarget(selected, target)) throw new SlotRefused("identity");
@@ -48,7 +48,8 @@ export class FleetHandoffCell implements FleetCell {
       return selected;
     }
     const initial = await this.deps.handoff.slots.firstStart.inspect();
-    if (!initial) return undefined;
+    // The durable first-start intent precedes every compute start, so absence proves it was unsent.
+    if (!initial) return retryUnsent ? this.start(target) : undefined;
     if (!sameTarget(initial.target, target)) throw new SlotRefused("identity");
     await this.deps.handoff.slots.firstStart.observe();
     return this.activate(target);
