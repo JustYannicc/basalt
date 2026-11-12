@@ -23,10 +23,8 @@ case "$feed_host" in
   github.com | *.github.com | githubusercontent.com | *.githubusercontent.com)
     fail "test_version $test_version needs an update_feed off GitHub; '$feed' is on $feed_host, where it could reach the real feed." ;;
 esac
-[[ "$test_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] ||
-  fail "test_version must be major.minor.patch; it is '$test_version'."
-[ "$((10#${BASH_REMATCH[2]}))" -lt 100 ] && [ "$((10#${BASH_REMATCH[3]}))" -lt 100 ] ||
-  fail "test_version $test_version needs minor and patch below 100, so its build number major*10000+minor*100+patch stays unique."
+code="$(bash "$(dirname "$0")/version-code.sh" "$test_version" 2>&1)" ||
+  fail "test_version '$test_version' has no build number: $code"
 
 # node reads and writes the fields the same way the version job and app.config.ts read them.
 result="$(mktemp)"

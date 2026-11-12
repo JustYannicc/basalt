@@ -7,7 +7,6 @@ import {
   Platform,
   ScrollView,
   StatusBar,
-  StyleSheet,
   View,
 } from "react-native";
 import Constants from "expo-constants";
@@ -16,15 +15,12 @@ import { controller } from "./native.ts";
 import { Button, Card, Field, Label, Notice, ThemeProvider, styles, useTheme } from "./ui.tsx";
 import { ModelScreen } from "./ModelScreen.tsx";
 import { ToolsScreen } from "./ToolsScreen.tsx";
+import { updates } from "./update-native.ts";
+import { UpdateBanner, UpdatesCard, useUpdates } from "./UpdateViews.tsx";
 
 const defaults = Constants.expoConfig?.extra;
 const brandName = typeof defaults?.brandName === "string" ? defaults.brandName : "Signalbox";
 const defaultOrigin = typeof defaults?.serverOrigin === "string" ? defaults.serverOrigin : "";
-// Two buttons share a row on common phones and stack below ~350pt so labels never truncate.
-const local = StyleSheet.create({
-  row: { flexDirection: "row", flexWrap: "wrap", gap: 16 },
-  cell: { flexGrow: 1, flexBasis: 132 },
-});
 export default function App() {
   return (
     <SafeAreaProvider>
@@ -37,6 +33,7 @@ export default function App() {
 function Home() {
   const theme = useTheme();
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+  const update = useUpdates(updates);
   const [draft, setDraft] = useState<{ value: string; origin: string | undefined }>();
   const [customServer, setCustomServer] = useState(!defaultOrigin);
   const [screen, setScreen] = useState<"home" | "model" | "tools">("home");
@@ -61,8 +58,10 @@ function Home() {
     connection.capabilities.length > 0;
   useEffect(() => {
     void controller.initialize();
+    void updates?.launch();
     const subscription = AppState.addEventListener("change", (state) => {
       void controller.foreground(state === "active");
+      if (state === "active") void updates?.foreground();
     });
     const timer = setInterval(() => {
       void controller.checkHealth();
@@ -133,6 +132,9 @@ function Home() {
                 <Label title>{brandName}</Label>
                 <Label muted>Your models and tools, wherever you are.</Label>
               </View>
+              {updates && update && (
+                <UpdateBanner updates={updates} snapshot={update} brandName={brandName} />
+              )}
               <Card>
                 <View style={styles.stack} accessibilityLiveRegion="polite">
                   <Label>{state}</Label>
@@ -187,8 +189,8 @@ function Home() {
                   </>
                 )}
                 {ready && !terminal && (
-                  <View style={local.row}>
-                    <View style={local.cell}>
+                  <View style={styles.row}>
+                    <View style={styles.cell}>
                       <Button
                         label="Reconnect"
                         secondary
@@ -199,7 +201,7 @@ function Home() {
                         }}
                       />
                     </View>
-                    <View style={local.cell}>
+                    <View style={styles.cell}>
                       <Button
                         label="Disconnect"
                         secondary
@@ -306,6 +308,10 @@ function Home() {
                     />
                   )}
                 </View>
+              )}
+              {/* The app has no settings screen; updates sit last on home, like the account actions. */}
+              {updates && update && (
+                <UpdatesCard updates={updates} snapshot={update} brandName={brandName} />
               )}
             </>
           )}
