@@ -91,7 +91,9 @@ function Node(props: {
           onClick={() => onSelect(entry.path)}
         >
           <span className="icon file" aria-hidden />
-          <span className="label">{/\.md$/i.test(entry.name) ? noteTitle(entry.name) : entry.name}</span>
+          <span className="label">
+            {/\.md$/i.test(entry.name) ? noteTitle(entry.name) : entry.name}
+          </span>
         </button>
       </li>
     );

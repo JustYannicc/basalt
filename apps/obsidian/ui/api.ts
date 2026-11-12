@@ -147,7 +147,11 @@ export const vault = {
   read,
   search,
   /** Vault-wide when path is omitted. Servers without per-note history reject `path`. */
-  history: async (input: { path?: string; at?: string; limit: number }): Promise<Version[] | null> => {
+  history: async (input: {
+    path?: string;
+    at?: string;
+    limit: number;
+  }): Promise<Version[] | null> => {
     try {
       const result = await call<unknown>("history", input);
       return Array.isArray(result) ? (result as Version[]) : null;

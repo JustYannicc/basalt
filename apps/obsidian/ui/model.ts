@@ -42,7 +42,12 @@ export interface Version {
 export type VaultState =
   | { readonly kind: "empty" }
   | { readonly kind: "importing"; readonly confirmed: number; readonly files: number }
-  | { readonly kind: "stuck"; readonly confirmed: number; readonly files: number; readonly since: string | null }
+  | {
+      readonly kind: "stuck";
+      readonly confirmed: number;
+      readonly files: number;
+      readonly since: string | null;
+    }
   | { readonly kind: "up-to-date"; readonly files: number | null }
   | { readonly kind: "behind"; readonly files: number | null }
   | { readonly kind: "saved"; readonly files: number | null };
@@ -108,7 +113,9 @@ export function authorLabel(author: Author | undefined, devices: Devices | null)
   if (author === undefined || author === null) return "Unknown";
   if (author.kind === "agent") return author.name;
   if (author.kind === "import") return "Imported";
-  return devices?.devices.find((device) => device.connection === author.connection)?.name ?? "A device";
+  return (
+    devices?.devices.find((device) => device.connection === author.connection)?.name ?? "A device"
+  );
 }
 
 const minute = 60 * 1000;
@@ -146,7 +153,9 @@ export const isNote = (path: string) => /\.md$/i.test(path);
 export const noteTitle = (name: string) => name.replace(/\.md$/i, "");
 
 /** Quartz Explorer's order: folders first, then names, case-insensitively and numerically. */
-export const sortEntries = <T extends { readonly kind: "file" | "directory"; readonly name: string }>(
+export const sortEntries = <
+  T extends { readonly kind: "file" | "directory"; readonly name: string },
+>(
   entries: readonly T[],
 ): T[] =>
   [...entries].sort(

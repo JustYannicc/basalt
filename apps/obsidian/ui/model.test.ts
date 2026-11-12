@@ -23,10 +23,10 @@ test("a vault synced by an old plugin shows as saved with its file count, never 
     { kind: "saved", files: 133 },
   );
   // Files synced outside the import still count as a vault.
-  assert.deepEqual(
-    vaultState({ status: null, hasFiles: true, latest: null, devices: null, now }),
-    { kind: "saved", files: null },
-  );
+  assert.deepEqual(vaultState({ status: null, hasFiles: true, latest: null, devices: null, now }), {
+    kind: "saved",
+    files: null,
+  });
 });
 
 test("a vault that never synced is the only empty state", () => {
@@ -35,7 +35,8 @@ test("a vault that never synced is the only empty state", () => {
     { kind: "empty" },
   );
   assert.notEqual(
-    vaultState({ status: null, hasFiles: false, latest: oldPluginVersion, devices: null, now }).kind,
+    vaultState({ status: null, hasFiles: false, latest: oldPluginVersion, devices: null, now })
+      .kind,
     "empty",
   );
 });
@@ -54,14 +55,26 @@ test("an unfinished import is stuck once no device has synced for ten minutes", 
   const synced = (ms: number): Devices => ({
     vault: { name: "Garden Notes" },
     devices: [
-      { connection: "c1", agent: null, name: "Mac", lastSyncAt: new Date(now - ms).toISOString(), pluginVersion: "0.2.3" },
+      {
+        connection: "c1",
+        agent: null,
+        name: "Mac",
+        lastSyncAt: new Date(now - ms).toISOString(),
+        pluginVersion: "0.2.3",
+      },
     ],
   });
   assert.equal(
     vaultState({ status, hasFiles: false, latest: null, devices: synced(60_000), now }).kind,
     "importing",
   );
-  const stuck = vaultState({ status, hasFiles: false, latest: null, devices: synced(stuckAfterMs + 1), now });
+  const stuck = vaultState({
+    status,
+    hasFiles: false,
+    latest: null,
+    devices: synced(stuckAfterMs + 1),
+    now,
+  });
   assert.equal(stuck.kind, "stuck");
 });
 
@@ -100,7 +113,9 @@ test("devices registered under one client name are numbered; distinct names stay
 test("history authors read plainly, and undated old commits are Unknown", () => {
   const devices: Devices = {
     vault: { name: null },
-    devices: [{ connection: "c1", agent: null, name: "Pixel phone", lastSyncAt: null, pluginVersion: null }],
+    devices: [
+      { connection: "c1", agent: null, name: "Pixel phone", lastSyncAt: null, pluginVersion: null },
+    ],
   };
   assert.equal(authorLabel(null, devices), "Unknown");
   assert.equal(authorLabel(undefined, null), "Unknown");

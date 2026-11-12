@@ -38,8 +38,8 @@ export function Summary({
               <i style={{ width: `${state.files ? (100 * state.confirmed) / state.files : 0}%` }} />
             </div>
             <p className="hint">
-              Keep Obsidian open on the device that started the import until it finishes. It
-              resumes if interrupted. Files show up below as they arrive.
+              Keep Obsidian open on the device that started the import until it finishes. It resumes
+              if interrupted. Files show up below as they arrive.
             </p>
           </div>
         )}
@@ -67,7 +67,9 @@ export function Summary({
             <div className="device" key={device.connection}>
               <span className="device-name">{labels[index]}</span>
               <span className="device-when">
-                {device.lastSyncAt === null ? "Not synced yet" : `Synced ${ago(device.lastSyncAt, now)}`}
+                {device.lastSyncAt === null
+                  ? "Not synced yet"
+                  : `Synced ${ago(device.lastSyncAt, now)}`}
               </span>
             </div>
           ))

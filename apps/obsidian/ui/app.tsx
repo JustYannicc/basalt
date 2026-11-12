@@ -10,6 +10,8 @@ interface Loaded {
   readonly root: readonly Entry[];
   readonly latest: Version | null;
   readonly devices: Devices | null;
+  /** When these reads answered; relative times on the page count from it. */
+  readonly at: number;
 }
 
 export function App({ api }: { readonly api: VaultApi }) {
@@ -19,13 +21,21 @@ export function App({ api }: { readonly api: VaultApi }) {
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
-    setLoaded(null);
     Promise.all([api.importStatus(), api.list(undefined), api.history({ limit: 1 }), api.devices()])
       .then(([status, root, history, devices]) => {
         if (cancelled) return;
-        setLoaded({ status, root: root.entries, latest: history?.[0] ?? null, devices });
+        setLoaded({
+          status,
+          root: root.entries,
+          latest: history?.[0] ?? null,
+          devices,
+          at: Date.now(),
+        });
         // Wikilinks resolve against every path; the tree itself loads folder by folder.
-        api.walk().then((paths) => !cancelled && setFiles(paths), () => undefined);
+        api.walk().then(
+          (paths) => !cancelled && setFiles(paths),
+          () => undefined,
+        );
       })
       .catch(() => !cancelled && setLoaded("failed"));
     return () => {
@@ -38,12 +48,19 @@ export function App({ api }: { readonly api: VaultApi }) {
     return (
       <div className="page-message">
         <p>Couldn't load the vault.</p>
-        <button type="button" className="btn" onClick={() => setAttempt((value) => value + 1)}>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => {
+            setLoaded(null);
+            setAttempt((value) => value + 1);
+          }}
+        >
           Try again
         </button>
       </div>
     );
-  const now = Date.now();
+  const now = loaded.at;
   const state = vaultState({
     status: loaded.status,
     hasFiles: loaded.root.length > 0,
@@ -73,6 +90,7 @@ export function App({ api }: { readonly api: VaultApi }) {
           </div>
         ) : (
           <Reader
+            key={selected}
             api={api}
             path={selected}
             files={files}
@@ -123,16 +141,21 @@ function Search({
   readonly onSelect: (path: string) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [text, setText] = useState<readonly Match[] | "loading" | "failed">([]);
+  const [answer, setAnswer] = useState<{
+    readonly query: string;
+    readonly result: readonly Match[] | "failed";
+  } | null>(null);
   const trimmed = query.trim();
+  // Only the answer for the current query counts; anything else is still searching.
+  const text: readonly Match[] | "loading" | "failed" =
+    trimmed.length < 2 ? [] : answer?.query === trimmed ? answer.result : "loading";
   useEffect(() => {
-    if (trimmed.length < 2) return setText([]);
+    if (trimmed.length < 2) return;
     let cancelled = false;
-    setText("loading");
     const timer = setTimeout(() => {
       api.search(trimmed).then(
-        (matches) => !cancelled && setText(matches),
-        () => !cancelled && setText("failed"),
+        (matches) => !cancelled && setAnswer({ query: trimmed, result: matches }),
+        () => !cancelled && setAnswer({ query: trimmed, result: "failed" }),
       );
     }, 300);
     return () => {
@@ -142,7 +165,9 @@ function Search({
   }, [api, trimmed]);
   const names = useMemo(() => {
     const needle = trimmed.toLowerCase();
-    return needle.length < 1 ? [] : files.filter((path) => path.toLowerCase().includes(needle)).slice(0, 20);
+    return needle.length < 1
+      ? []
+      : files.filter((path) => path.toLowerCase().includes(needle)).slice(0, 20);
   }, [files, trimmed]);
   const pick = useCallback(
     (path: string) => {
@@ -151,7 +176,9 @@ function Search({
     },
     [onSelect],
   );
-  const textMatches = Array.isArray(text) ? text.filter((match) => !names.includes(match.path)) : [];
+  const textMatches = Array.isArray(text)
+    ? text.filter((match) => !names.includes(match.path))
+    : [];
   return (
     <div className="search">
       <input
@@ -174,16 +201,18 @@ function Search({
           {textMatches.map((match) => (
             <li key={`text:${match.path}:${match.line}`}>
               <button type="button" onClick={() => pick(match.path)}>
-                <span className="label">{noteTitle(match.path.split("/").pop() ?? match.path)}</span>
+                <span className="label">
+                  {noteTitle(match.path.split("/").pop() ?? match.path)}
+                </span>
                 <span className="excerpt">{match.excerpt}</span>
               </button>
             </li>
           ))}
           {text === "loading" && <li className="muted">Searching…</li>}
           {text === "failed" && <li className="muted">Search didn't finish. Try again.</li>}
-          {Array.isArray(text) && trimmed.length >= 2 && names.length + textMatches.length === 0 && (
-            <li className="muted">No notes match.</li>
-          )}
+          {Array.isArray(text) &&
+            trimmed.length >= 2 &&
+            names.length + textMatches.length === 0 && <li className="muted">No notes match.</li>}
         </ul>
       )}
     </div>

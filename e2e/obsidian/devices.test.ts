@@ -35,7 +35,11 @@ const through = (id: string) =>
   ({ kind: "connection", connection: ConnectionId.make(id), name: `Obsidian · ${id}` }) as const;
 
 test("a vault's devices are the grants held through its own scoped connections", () => {
-  const connections = [connection("mac", vault), connection("phone", vault), connection("x", other)];
+  const connections = [
+    connection("mac", vault),
+    connection("phone", vault),
+    connection("x", other),
+  ];
   const agents = [
     agent("g-phone", through("phone"), "2026-11-10T09:00:00.000Z"),
     agent("g-mac", through("mac"), "2026-11-10T08:30:00.000Z"),
@@ -51,9 +55,10 @@ test("a vault's devices are the grants held through its own scoped connections",
       ["g-phone", "phone", "Obsidian device 2"],
     ],
   );
-  assert.deepEqual(obsidianDevices(other, connections, agents).map((device) => device.label), [
-    "Obsidian device",
-  ]);
+  assert.deepEqual(
+    obsidianDevices(other, connections, agents).map((device) => device.label),
+    ["Obsidian device"],
+  );
 });
 
 test("a device that names itself keeps its name; unnamed ones are numbered among themselves", () => {
@@ -63,11 +68,10 @@ test("a device that names itself keeps its name; unnamed ones are numbered among
     agent("g-b", through("b"), "2026-11-10T09:00:00.000Z", "Studio MacBook"),
     agent("g-c", through("c"), "2026-11-10T10:00:00.000Z", null),
   ]);
-  assert.deepEqual(devices.map((device) => device.label), [
-    "Obsidian device 1",
-    "Studio MacBook",
-    "Obsidian device 2",
-  ]);
+  assert.deepEqual(
+    devices.map((device) => device.label),
+    ["Obsidian device 1", "Studio MacBook", "Obsidian device 2"],
+  );
 });
 
 test("the header offers another device only once one syncs the vault, and returns after the last disconnects", () => {
@@ -79,5 +83,8 @@ test("the header offers another device only once one syncs the vault, and return
   // Disconnect revokes the grant; the agents list no longer holds it.
   assert.equal(connectLabel(obsidianDevices(vault, connections, [])), "Connect Obsidian");
   // A connection whose plugin never approved holds no grant and is not a device.
-  assert.equal(connectLabel(obsidianDevices(vault, [connection("pending", vault)], [])), "Connect Obsidian");
+  assert.equal(
+    connectLabel(obsidianDevices(vault, [connection("pending", vault)], [])),
+    "Connect Obsidian",
+  );
 });

@@ -4,22 +4,33 @@ import { imageType } from "./links.ts";
 import { authorLabel, when, isNote, noteTitle, type Devices, type Version } from "./model.ts";
 import { NoteMarkdown } from "./note-markdown.tsx";
 
-type Load<T> = { readonly kind: "loading" } | { readonly kind: "failed" } | { readonly kind: "ready"; readonly value: T };
+type Load<T> =
+  | { readonly kind: "loading" }
+  | { readonly kind: "failed" }
+  | { readonly kind: "ready"; readonly value: T };
 
-function useLoad<T>(load: () => Promise<T>, key: string): [Load<T>, () => void] {
-  const [state, setState] = useState<Load<T>>({ kind: "loading" });
+/** Loads whenever `load` changes identity; a result for an older `load` is never shown. */
+function useLoad<T>(load: () => Promise<T>): [Load<T>, () => void] {
+  const [settled, setSettled] = useState<{
+    readonly load: () => Promise<T>;
+    readonly attempt: number;
+    readonly state: Load<T>;
+  } | null>(null);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
-    setState({ kind: "loading" });
-    load()
-      .then((value) => !cancelled && setState({ kind: "ready", value }))
-      .catch(() => !cancelled && setState({ kind: "failed" }));
+    load().then(
+      (value) => !cancelled && setSettled({ load, attempt, state: { kind: "ready", value } }),
+      () => !cancelled && setSettled({ load, attempt, state: { kind: "failed" } }),
+    );
     return () => {
       cancelled = true;
     };
-    // `key` names everything `load` reads, so a new closure alone doesn't reload.
-  }, [key, attempt]);
+  }, [load, attempt]);
+  const state: Load<T> =
+    settled !== null && settled.load === load && settled.attempt === attempt
+      ? settled.state
+      : { kind: "loading" };
   return [state, () => setAttempt((value) => value + 1)];
 }
 
@@ -44,19 +55,15 @@ export function Reader({
   readonly onOpen: (path: string) => void;
   readonly onBack: () => void;
 }) {
+  // The parent keys this reader by path, so a new note starts on its current text.
   const [view, setView] = useState<"note" | "history">("note");
   const [version, setVersion] = useState<Version | null>(null);
-  useEffect(() => {
-    setView("note");
-    setVersion(null);
-  }, [path]);
   const [versions] = useLoad(
-    () => api.history({ path, limit: 50 }).then(datedVersions),
-    `history:${path}`,
+    useCallback(() => api.history({ path, limit: 50 }).then(datedVersions), [api, path]),
   );
+  const at = version?.oid;
   const [content, retry] = useLoad(
-    () => (isNote(path) ? api.read(path, version?.oid) : Promise.resolve(null)),
-    `read:${path}:${version?.oid ?? ""}`,
+    useCallback(() => (isNote(path) ? api.read(path, at) : Promise.resolve(null)), [api, path, at]),
   );
   const loadFile = useCallback(
     async (file: string) => {
@@ -84,10 +91,20 @@ export function Reader({
         )}
         {isNote(path) && (
           <div className="seg" role="tablist">
-            <button type="button" role="tab" aria-selected={view === "note"} onClick={() => setView("note")}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === "note"}
+              onClick={() => setView("note")}
+            >
               Note
             </button>
-            <button type="button" role="tab" aria-selected={view === "history"} onClick={() => setView("history")}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={view === "history"}
+              onClick={() => setView("history")}
+            >
               History{dated !== null ? ` · ${dated.length}` : ""}
             </button>
           </div>
@@ -130,7 +147,12 @@ export function Reader({
             ) : content.value === null ? (
               <p className="muted">This note isn't in the vault any more.</p>
             ) : (
-              <NoteMarkdown content={content.value} files={files} onOpen={onOpen} loadFile={loadFile} />
+              <NoteMarkdown
+                content={content.value}
+                files={files}
+                onOpen={onOpen}
+                loadFile={loadFile}
+              />
             )}
           </>
         )}
@@ -182,7 +204,6 @@ function FilePreview({
   useEffect(() => {
     let made: string | null = null;
     let cancelled = false;
-    setUrl(undefined);
     load(path)
       .then((blob) => {
         if (cancelled) return;
@@ -196,6 +217,7 @@ function FilePreview({
     };
   }, [path, load]);
   if (url === undefined) return <p className="muted">Loading…</p>;
-  if (url === null) return <p className="muted">This file can't be shown here. Open it in Obsidian.</p>;
+  if (url === null)
+    return <p className="muted">This file can't be shown here. Open it in Obsidian.</p>;
   return <img src={url} alt={path.split("/").pop()} className="embed-image" />;
 }
