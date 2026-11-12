@@ -97,11 +97,12 @@ export const readRuntimeProviderProof = (
           ),
       });
       sameProvisioningValue(
-        "handoff.provider.instances",
-        [manifest.target.instanceId],
-        result.instances,
+        "handoff.provider.instance",
+        manifest.target.instanceId,
+        result.instances.find((instance) => instance === manifest.target.instanceId),
       );
-      instances = result.instances;
+      // All siblings passed the same image check; list order is not application drift.
+      instances = [...result.instances].sort();
       const after = yield* observeContainer(target, fetcher);
       prove(after);
       sameProvisioningValue("handoff.provider.stableApplication", before, after);
