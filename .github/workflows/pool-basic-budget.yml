@@ -5,6 +5,10 @@ on:
       source:
         description: Full source commit to measure
         required: true
+      workers:
+        description: Worker count, empty uses the original runner default
+        default: ''
+        required: false
       trials:
         description: JSON array of independent trials
         default: '[1]'
@@ -22,6 +26,7 @@ jobs:
     env:
       BASALT_CI_OMIT_RELEASE_DOWNLOADS: "true"
       SOURCE_REF: ${{ inputs.source }}
+      WORKERS: ${{ inputs.workers }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,7 +53,10 @@ jobs:
           PYTHON
       - name: Run the unchanged deadline
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts dashboard-batch:google-byo-oauth-through-the-real-self-host-flow)"
+        run: |
+          args=()
+          if [ -n "$WORKERS" ]; then args+=(--workers "$WORKERS"); fi
+          bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts dashboard-batch:google-byo-oauth-through-the-real-self-host-flow)" "${args[@]}"
       - name: Retain only closed timing fields
         if: always()
         run: |
@@ -70,7 +78,7 @@ jobs:
                   trials.append(row)
           if len(trials) != 1:
               raise SystemExit(f'Expected one measured scenario, found {len(trials)}')
-          result = dict(source=os.environ['SOURCE_REF'], trials=trials)
+          result = dict(source=os.environ['SOURCE_REF'], workers=os.environ['WORKERS'], trials=trials)
           (output / 'timing.json').write_text(json.dumps(result, indent=2) + '\n')
           print(json.dumps(result, indent=2))
           PYTHON
