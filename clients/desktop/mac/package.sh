@@ -20,13 +20,9 @@ fail() {
 feed="${FEED_URL:-}"
 bash "$here/update-feed.sh" check "$feed" || exit 1
 # The updater installs a feed item only when its integer is higher than the running app's, so one
-# version maps to one number, the same formula as Android's versionCode in clients/mobile/app.config.ts.
-[[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] ||
-  fail "package.sh needs a major.minor.patch version; it got '$version'."
-major=$((10#${BASH_REMATCH[1]})) minor=$((10#${BASH_REMATCH[2]})) patch=$((10#${BASH_REMATCH[3]}))
-[ "$minor" -lt 100 ] && [ "$patch" -lt 100 ] ||
-  fail "Version $version doesn't fit the bundle version major*10000+minor*100+patch: minor and patch must be below 100."
-bundle_version=$((major * 10000 + minor * 100 + patch))
+# version maps to one number: the clients build number, shared with Android's versionCode.
+bundle_version="$(bash "$root/clients/version-code.sh" "$version" 2>&1)" ||
+  fail "package.sh can't make a bundle version from '$version': $bundle_version"
 for file in host.mjs connection.mjs; do
   [ -f "$desktop/.dist/$file" ] || fail "clients/desktop/.dist/$file is missing. Run bun run --cwd clients/desktop build first."
 done

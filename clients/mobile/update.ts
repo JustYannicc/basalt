@@ -135,6 +135,9 @@ export function appUpdates(ports: UpdatePorts) {
   };
   // Cleanup is best effort too: a leftover file in the cache directory never blocks an update.
   const tidy = (keep?: number) => {
+    // Android's installer may still be reading an offered file through its content URI; the next
+    // check tidies once the install has finished.
+    if (installing) return;
     try {
       ports.files.clear(keep);
     } catch {}
