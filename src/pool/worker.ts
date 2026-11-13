@@ -1,3 +1,4 @@
+import { stripModelLifetimeRequest } from "./model-lifetime-contract.ts";
 import { reportWhenDue } from "./reporting.ts";
 import { UsageAccountLabels } from "./usage-account-labels.ts";
 import { handleUsageAccountLabel, usageAccountLabelPath } from "./usage-account-label-http.ts";
@@ -691,6 +692,7 @@ export async function handlePoolWorkerRequest(
   env: PoolEnvironment,
   lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
 ): Promise<Response> {
+  request = stripModelLifetimeRequest(request);
   const pathname = new URL(request.url).pathname;
   // Answered here, without waking the container.
   if (pathname === poolReleasePath) return poolRelease(request, env);
