@@ -1,5 +1,6 @@
 import type { OverviewMoneyMetric } from "./overview-contract.ts";
 import type { UsageForecasts } from "./usage-forecast-contract.ts";
+import type { UsageAccountDisplay } from "./usage-account-label-contract.ts";
 
 export const seriesDimensions = [
   "account",
@@ -100,6 +101,7 @@ export interface SeriesKey {
 }
 export interface SeriesGroup {
   key: SeriesKey;
+  accountDisplay?: UsageAccountDisplay;
   buckets: (SeriesBucket | SeriesCounts)[];
 }
 export interface SeriesCoverage {
@@ -109,6 +111,15 @@ export interface SeriesCoverage {
     firstAt: string | null;
     lastAt: string | null;
     backfillComplete: boolean | null;
+    completion?: {
+      frozenFrom: string;
+      frozenTo: string;
+      upperSourceId: string;
+      manifestDigest: string;
+      accountMappingDigest: string;
+      idsDigest: string;
+      verifiedRows: string;
+    };
     sweep: { id: string; upper: string } | null;
   }[];
   firstAt: string | null;

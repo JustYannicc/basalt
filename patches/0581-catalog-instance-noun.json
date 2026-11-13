@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-catalog-instance-noun",
+  "file": "0581-catalog-instance-noun.patch",
+  "content_sha256": "d3b1303a820cf0b2d40f542974479178ff4ed7eb759fcf815f25365bfa7a4d35",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

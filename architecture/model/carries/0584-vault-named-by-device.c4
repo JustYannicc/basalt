@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A device asking to connect may report its name and what it connects as optional fields; servers and devices that predate them still work unchanged. They are untrusted labels: kept without control or formatting characters, spacing collapsed, at most 80 characters, shown escaped on the approval page as the device's own claim, and never used to decide access. After a person approves a device for an Obsidian vault connection, the page asks to rename that vault's app after the reported vault, exactly as the Rename button does, so its slug follows the name; the server applies it only while the app still has the catalog's name, under the approver's own permission to manage the app, and any failure leaves the approval standing. Any app rename may require the current name, and a rename records the service's name on an install that lacks it. Devices that report the same name are numbered in the order they connected."
+    }
+  }
+}

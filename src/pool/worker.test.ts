@@ -1536,7 +1536,7 @@ test("five-second membership alarms run persisted reporting jobs only every five
     },
   };
   const instance = () => ({
-    ctx: { storage },
+    ctx: { storage, waitUntil: async (work: Promise<unknown>) => await work },
     env: {
       POOL_MODEL_HISTORY_ENABLED: "false",
       POOL_APP_SIGNING_KEY: "ab".repeat(32),
@@ -1561,6 +1561,7 @@ test("five-second membership alarms run persisted reporting jobs only every five
     },
     handoff: { warm: async () => {} },
     control: { expire: async () => {} },
+    allowances: { refresh: async () => {} },
     prices: { run: async () => {} },
     overviewPrices: { refresh: async () => {} },
     usage: {

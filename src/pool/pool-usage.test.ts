@@ -573,7 +573,7 @@ test("alarm never collects connector credentials or explicitly unlimited model a
 test("the alarm shares detailed quota reads across pools and stale accounts leave gaps", async () => {
   const { CapacityHistory } = await import("./capacity/history.ts");
   const storage = new Memory();
-  let clock = now,
+  let clock = new Date("2026-11-13T12:00:00Z"),
     stale = false;
   const calls: string[] = [];
   const client = new HomeClient(
@@ -687,7 +687,9 @@ test("capacity history requires management rather than model-use authority and l
   assert.equal((await read(b, token, "91")).status, 400);
   const response = await read(b);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
+  const { allowanceCatalog, ...history } = await response.json();
+  assert.ok(Array.isArray(allowanceCatalog.entries));
+  assert.deepEqual(history, {
     from: now.getTime() - 7 * 86_400_000,
     to: now.getTime(),
     points: [],

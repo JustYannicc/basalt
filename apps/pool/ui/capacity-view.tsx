@@ -5,6 +5,7 @@ import type { Result } from "../index.ts";
 import { providerName } from "./accounts.tsx";
 import { CapacityChart } from "./capacity-chart.tsx";
 import {
+  allowanceRows,
   amount,
   candidateName,
   capacityLabs,
@@ -18,6 +19,7 @@ import {
   pressing,
   verdict,
   whenLabel,
+  type AllowanceRow,
   type CapacityLab,
   type CapacityLine,
   type LineFacts,
@@ -289,14 +291,10 @@ function Panel({
             {chips.map((chip) => (
               <li
                 key={chip.key}
-                className={`inline-flex min-h-[22px] max-w-full flex-wrap items-center gap-1 rounded-sm border px-[7px] text-xs break-words [overflow-wrap:anywhere] ${chip.flagged ? "border-dashed border-warning/45" : "border-border"}`}
+                className="inline-flex min-h-[22px] max-w-full flex-wrap items-center gap-1 rounded-sm border border-border px-[7px] text-xs break-words [overflow-wrap:anywhere]"
               >
                 {chip.plan} <span className="text-muted-foreground">×{chip.accounts}</span>
-                {chip.note && (
-                  <span className={chip.flagged ? "text-warning" : "text-muted-foreground"}>
-                    · {chip.note}
-                  </span>
-                )}
+                {chip.note && <span className="text-muted-foreground">· {chip.note}</span>}
               </li>
             ))}
           </ul>
@@ -331,6 +329,7 @@ function Panel({
               from={history.from}
               to={history.to}
               forecast={coherent ? <ForecastCaption line={displayLine} /> : null}
+              allowances={allowanceRows(facts.latest, history.to)}
             />
           </div>
         </>
@@ -539,16 +538,64 @@ function Legend({ color, facts, line }: { color: string; facts: LineFacts; line:
   );
 }
 
+function AllowanceSources({ rows }: { rows: readonly AllowanceRow[] }) {
+  return (
+    <section aria-label="Allowance sources" className="mt-4 grid gap-2 text-[13px]">
+      <h4 className="m-0 text-xs font-medium text-muted-foreground">
+        Allowance sources at the latest reading
+      </h4>
+      <ul className="m-0 grid list-none gap-2.5 p-0">
+        {rows.map((row) => (
+          <li key={row.key} className="grid gap-0.5 break-words [overflow-wrap:anywhere]">
+            <span>
+              {row.plan} <span className="text-muted-foreground">×{row.accounts}</span> ·{" "}
+              {row.basis}
+            </span>
+            {[row.detail, row.checked, row.expires, row.retrieved].some(Boolean) && (
+              <span className="text-xs text-muted-foreground">
+                {[row.detail, row.checked, row.expires, row.retrieved].filter(Boolean).join(" · ")}
+              </span>
+            )}
+            {row.sources.length > 0 && (
+              <span className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                {row.sources.map((source) =>
+                  source.href ? (
+                    <a
+                      key={source.label}
+                      href={source.href}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex min-h-6 items-center underline underline-offset-2 hover:text-foreground"
+                    >
+                      {source.label}
+                    </a>
+                  ) : (
+                    <span key={source.label} className="inline-flex min-h-6 items-center">
+                      {source.label}
+                    </span>
+                  ),
+                )}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function Daily({
   line,
   from,
   to,
   forecast,
+  allowances,
 }: {
   line: CapacityLine;
   from: number;
   to: number;
   forecast: ReactNode;
+  allowances: readonly AllowanceRow[];
 }) {
   const [open, setOpen] = useState(false);
   const end = Math.max(to, ...(line.forecast?.points.map((point) => point.at + 3_600_000) ?? []));
@@ -573,7 +620,9 @@ function Daily({
             strokeLinejoin="round"
           />
         </svg>
-        Forecast details and daily table
+        {allowances.length > 0
+          ? "Forecast, daily table and allowance sources"
+          : "Forecast details and daily table"}
       </summary>
       {open && forecast}
       {open && (
@@ -663,6 +712,7 @@ function Daily({
           </table>
         </div>
       )}
+      {open && allowances.length > 0 && <AllowanceSources rows={allowances} />}
       {open && refills.length > 0 && (
         <ul className="mt-3 pl-4 text-xs text-muted-foreground" aria-label="Refill events">
           {refills.map((event, index) => (

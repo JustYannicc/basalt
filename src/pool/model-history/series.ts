@@ -29,6 +29,7 @@ import { HistoryInputError, historyObject, timestamp } from "./record.ts";
 import { digest } from "../backend-users.ts";
 import { seriesUsageForecasts } from "./usage-forecasts.ts";
 import { homeCaptureCoverage } from "./capture-coverage.ts";
+import { importedAccountPattern } from "../usage-account-labels.ts";
 
 function bucket(
   row: Record<string, unknown>,
@@ -148,6 +149,7 @@ async function readUsageSeries(
   priceInput?:
     | OverviewPriceTable
     | ((targets: readonly { provider: string; model: string }[]) => Promise<OverviewPriceTable>),
+  labels: Readonly<Record<string, string>> = {},
 ): Promise<PoolUsageSeriesResult> {
   const input = seriesInput(raw);
   if (personScope === undefined) authorizeSeries(input, authority);
@@ -205,8 +207,19 @@ async function readUsageSeries(
         known = groups.get(key);
       if (index === maxSeriesRows || (!known && groups.size === maxSeriesGroups)) break;
       const value = bucket(row, input, prices);
+      const groupKey = historyObject(JSON.parse(key)) as unknown as SeriesKey;
       const group = known ?? {
-        key: historyObject(JSON.parse(key)) as unknown as SeriesKey,
+        key: groupKey,
+        ...(typeof groupKey.account === "string" && importedAccountPattern.test(groupKey.account)
+          ? {
+              accountDisplay: {
+                kind: "imported-only" as const,
+                label: labels[groupKey.account] ?? null,
+              },
+            }
+          : groupKey.account === null
+            ? { accountDisplay: { kind: "no-account-recorded" as const, label: null } }
+            : {}),
         buckets: [],
       };
       // Include group framing, commas, the complete cursor, and its JSON escaping in the byte bound.
@@ -269,8 +282,9 @@ export async function poolUsageSeries(
   prices?:
     | OverviewPriceTable
     | ((targets: readonly { provider: string; model: string }[]) => Promise<OverviewPriceTable>),
+  labels: Readonly<Record<string, string>> = {},
 ): Promise<PoolUsageSeriesResult> {
-  return readUsageSeries(db, raw, authority, transaction, undefined, prices);
+  return readUsageSeries(db, raw, authority, transaction, undefined, prices, labels);
 }
 
 /** Signed personal overview only: account bindings stay absent and the caller hash is the SQL scope. */

@@ -36,7 +36,14 @@ export const createAppListAtoms = () => ({
 export const groupsAtom = () => fixtureAtom("groups");`,
   "pages/app-screen.tsx": `export const AppScreenBadge = () => null;`,
   "@tanstack/react-router": `import { createElement } from "react";
-export const Link = ({ children }) => createElement("a", null, children);`,
+const path = (to, params = {}) => to.replace(/\\$(\\w+)/g, (_, key) => params[key] ?? "");
+export const Link = ({ children, to, params, search, className }) =>
+  createElement(
+    "a",
+    { className, href: to && path(to, params) + (search ? "?" + new URLSearchParams(search) : "") },
+    children,
+  );
+export const useNavigate = () => () => undefined;`,
   "contracts/apps.ts": `import { fixtureAtom } from "fixture-atoms";
 export const connectionToolListAtom = (key) => fixtureAtom("tools:" + key.app);`,
   "contracts/mcp-connections.ts": `import { fixtureAtom, pendingAtom } from "fixture-atoms";
@@ -45,7 +52,13 @@ export const mcpAgentsAtom = () => fixtureAtom("agents");
 export const revokeMcpAgentAtom = () => pendingAtom;`,
   "contracts/obsidian-vault-sync.ts": `import { fixtureAtom } from "fixture-atoms";
 export const vaultSyncAtom = (key) => fixtureAtom("sync:" + key.app);`,
-  "components/dashboard-bindings.tsx": `export const HostedFailure = () => null;`,
+  "components/dashboard-bindings.tsx": `import { fixtureAtom, pendingAtom } from "fixture-atoms";
+export const HostedFailure = () => null;
+export const useDashboardAtoms = () => ({
+  catalog: fixtureAtom("catalog"),
+  inventory: fixtureAtom("inventory"),
+  install: () => pendingAtom,
+});`,
   "components/organization.tsx": `export const useOrganizationRoute = () => ({
   organization: "org_fixture",
   slug: "fixture",
@@ -56,7 +69,8 @@ export const vaultSyncAtom = (key) => fixtureAtom("sync:" + key.app);`,
  * Bundle `exports` (export statements resolved from the hosted pages directory) with React, the
  * atom registry and the dashboard provider, register a virtual DOM, and load the bundle.
  */
-export async function loadHostedPages(exports) {
+export async function loadHostedPages(exports, extra = {}) {
+  const modules = { ...replaced, ...extra };
   const scratch = mkdtempSync(join(tmpdir(), "hosted-render-"));
   const result = await build({
     stdin: {
@@ -65,6 +79,7 @@ export async function loadHostedPages(exports) {
         'export { DashboardProvider } from "@executor-js/ui/dashboard/context";',
         'export { resetFixtureAtoms } from "fixture-atoms";',
         'export { RegistryProvider } from "@effect/atom-react";',
+        'export { productBrandAtom } from "@executor-js/ui/contracts/product-brand";',
         'export { Atom, AsyncResult } from "effect/reactivity";',
         'export { Cause } from "effect";',
         'export { act, createElement } from "react";',
@@ -80,7 +95,11 @@ export async function loadHostedPages(exports) {
     platform: "browser",
     conditions: ["import", "browser"],
     jsx: "automatic",
-    define: { "import.meta.env.DEV": "false", "process.env.NODE_ENV": '"development"' },
+    define: {
+      "import.meta.env.DEV": "false",
+      "import.meta.env.SSR": "false",
+      "process.env.NODE_ENV": '"development"',
+    },
     loader: { ".svg": "dataurl", ".png": "dataurl", ".css": "empty" },
     logLevel: "silent",
     plugins: [
@@ -94,11 +113,11 @@ export async function loadHostedPages(exports) {
           builder.onResolve({ filter: /(?:\.tsx?|^@tanstack\/react-router)$/ }, (args) => {
             if (!args.importer.startsWith(pages)) return undefined;
             const target = args.path.startsWith(".") ? join(args.resolveDir, args.path) : args.path;
-            const name = Object.keys(replaced).find((suffix) => target.endsWith(suffix));
+            const name = Object.keys(modules).find((suffix) => target.endsWith(suffix));
             return name ? { path: name, namespace: "fixture" } : undefined;
           });
           builder.onLoad({ filter: /.*/, namespace: "fixture" }, (args) => ({
-            contents: args.path === "fixture-atoms" ? fixtureAtoms : replaced[args.path],
+            contents: args.path === "fixture-atoms" ? fixtureAtoms : modules[args.path],
             resolveDir: pages,
             loader: "tsx",
           }));
@@ -140,7 +159,7 @@ export async function loadHostedPages(exports) {
    * (keyed like the replaced atoms; any other query stays pending), run `read` on the mounted
    * container, then unmount.
    */
-  const render = async (results, element, read) => {
+  const render = async (results, element, read, { brand } = {}) => {
     ui.resetFixtureAtoms();
     globalThis.hostedFixture = { read: (key) => results[key] ?? ui.AsyncResult.initial() };
     const AppLink = ({ app: id, view, tool: _tool, children, ...props }) =>
@@ -152,7 +171,7 @@ export async function loadHostedPages(exports) {
       root.render(
         ui.createElement(
           ui.RegistryProvider,
-          null,
+          brand === undefined ? null : { initialValues: [[ui.productBrandAtom, brand]] },
           ui.createElement(
             ui.DashboardProvider,
             {
@@ -169,7 +188,7 @@ export async function loadHostedPages(exports) {
         ),
       );
     });
-    const result = read(container);
+    const result = await read(container);
     await ui.act(async () => root.unmount());
     container.remove();
     return result;

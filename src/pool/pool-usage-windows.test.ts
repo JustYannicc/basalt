@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { callerHeader } from "../../apps/pool/contract.ts";
 import { quotaSamplingFixture } from "./quota-sampling.test-helpers.ts";
+import { seedCatalog } from "./allowances/data.ts";
 import { signPoolToken } from "./token.ts";
 
 test("the alarm retains a five-hour allowance crowded out of Home's list summary", async () => {
@@ -24,7 +25,10 @@ test("the alarm retains a five-hour allowance crowded out of Home's list summary
   );
   assert.equal(response.status, 200);
   const value = await f.capacity(Math.floor((at - 7 * 86_400_000) / 3_600_000) * 3_600_000, at);
-  assert.deepEqual(await response.json(), value);
+  assert.deepEqual(await response.json(), {
+    ...value,
+    allowanceCatalog: { entries: seedCatalog.entries },
+  });
   assert.deepEqual(
     value.points.map((point) => point.windowSeconds).sort((a, b) => a - b),
     [18_000, 604_800],
@@ -124,7 +128,10 @@ test("the capacity RPC includes a measured Grok week and excludes its product br
   );
   assert.equal(response.status, 200);
   const value = await f.capacity(Math.floor((at - 7 * 86400000) / 3600000) * 3600000, at);
-  assert.deepEqual(await response.json(), value);
+  assert.deepEqual(await response.json(), {
+    ...value,
+    allowanceCatalog: { entries: seedCatalog.entries },
+  });
   assert.equal(value.points.length, 1);
   const point = value.points[0]!;
   assert.equal(point.provider, "xai");
