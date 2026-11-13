@@ -1,0 +1,752 @@
+--- a/apps/hosted/cloud/src/app-ui.ts
++++ b/apps/hosted/cloud/src/app-ui.ts
+@@ -1,3 +1,4 @@
++import { appCatalogBinding } from "./infrastructure/app-catalog.ts";
+ import {
+   McpAppAssets,
+   appSandboxAddress,
+@@ -137,6 +138,7 @@
+         ...(yield* telemetryBindings),
+         ...(yield* sentryBindings).env,
+         ...(yield* productBrandBindings),
++        ...(yield* appCatalogBinding),
+       },
+       compatibility: {
+         date: "2026-09-08",
+--- a/apps/hosted/cloud/src/infrastructure/serving-product.ts
++++ b/apps/hosted/cloud/src/infrastructure/serving-product.ts
+@@ -1,6 +1,10 @@
+ /** App pages and MCP sessions serve deployed apps over the shared executor, and nothing else. */
+ import type * as Cloudflare from "alchemy/Cloudflare";
+-import { Effect } from "effect";
++import { Config, Effect, Layer, Option } from "effect";
++import { catalogReadLive } from "@executor-js/hosted-server";
++import { cloudEgress } from "./egress.ts";
++import { cloudHosts } from "./stage.ts";
++import { cachedFeedClient } from "../implementation/catalog-feed-cache.ts";
+ import { cloudProductServices } from "./product-services.ts";
+ import type { AppSources } from "./source.ts";
+ import type { AppDataSupervisor } from "./app-data.ts";
+@@ -29,4 +33,18 @@
+  * source, management, provisioning and removal code the API Worker composes.
+  */
+ export const cloudServingProduct = (databases: Cloudflare.DurableObject<AppDataSupervisor>) =>
+-  cloudProductServices(databases, servingSources).pipe(Effect.map(({ services }) => services));
++  Effect.gen(function* () {
++    const { services } = yield* cloudProductServices(databases, servingSources);
++    const feedUrl = Option.getOrUndefined(
++      yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option),
++    );
++    const egress = yield* cloudEgress;
++    const origin = (yield* cloudHosts.pipe(Effect.orDie)).resourceOrigins.api[0];
++    const catalog = catalogReadLive(
++      feedUrl === undefined
++        ? egress
++        : { ...egress, client: cachedFeedClient(origin, feedUrl, egress.client) },
++      feedUrl,
++    );
++    return Layer.mergeAll(services, catalog);
++  });
+--- a/apps/hosted/cloud/src/mcp-server.ts
++++ b/apps/hosted/cloud/src/mcp-server.ts
+@@ -1,3 +1,4 @@
++import { appCatalogBinding } from "./infrastructure/app-catalog.ts";
+ import { makeWorkflowDisplayRpc } from "./infrastructure/workflow-display-server.ts";
+ /**
+  * Private entry point for MCP session objects. An object that wakes in a fresh isolate loads and
+@@ -75,6 +76,7 @@
+         ...(yield* telemetryBindings),
+         ...(yield* sentryBindings).env,
+         ...(yield* productBrandBindings),
++        ...(yield* appCatalogBinding),
+       },
+     };
+   }),
+--- a/apps/hosted/self-host/src/implementation/routes.ts
++++ b/apps/hosted/self-host/src/implementation/routes.ts
+@@ -171,20 +171,19 @@
+     const organizationChanges = makeOrganizationChanges();
+     const mcp = yield* selfHostMcp.pipe(Effect.provide(HttpServer.layerServices));
+     const document = lazyHostedApiDocument(() => executorSelfHostApiDocument(auth.origin));
++    const catalog = catalogLive(
++      document.document,
++      egress,
++      clientMetadata,
++      auth.origin,
++      Option.getOrUndefined(yield* catalogFeedUrl),
++    );
+     const api = selfHostApi(document).pipe(
+       Layer.provide(frameworkDocumentation(Effect.succeed(skills))),
+       HttpRouter.provideRequest(localSourceFormatter),
+       Layer.provide(appUi.dashboard),
+       HttpRouter.provideRequest(auth.appSessions),
+-      HttpRouter.provideRequest(
+-        catalogLive(
+-          document.document,
+-          egress,
+-          clientMetadata,
+-          auth.origin,
+-          Option.getOrUndefined(yield* catalogFeedUrl),
+-        ),
+-      ),
++      HttpRouter.provideRequest(catalog),
+       Layer.provide(hostedMiddlewareLive),
+       // Organization middleware reads the product's removal tombstones when it is built.
+       Layer.provide(executorServices),
+@@ -207,6 +206,7 @@
+     ).pipe(
+       HttpRouter.provideRequest(executorServices),
+       HttpRouter.provideRequest(auth.mcpIdentity),
++      HttpRouter.provideRequest(catalog),
+     );
+     const authoring = gitRoutes.pipe(
+       HttpRouter.provideRequest(hostedAppGitAccess),
+@@ -262,7 +262,9 @@
+       HttpRouter.add("GET", "*", dashboard),
+     );
+     const notFound = HttpServerResponse.empty({ status: 404 });
+-    const appServices = requestServices(Layer.mergeAll(auth.appSessions, executorServices));
++    const appServices = requestServices(
++      Layer.mergeAll(auth.appSessions, executorServices, catalog),
++    );
+     const appRoutes = Layer.mergeAll(
+       HttpApiBuilder.layer(AppUiApi).pipe(
+         Layer.provide(appUi.calls),
+--- a/apps/hosted/server/src/implementation/app-data.ts
++++ b/apps/hosted/server/src/implementation/app-data.ts
+@@ -24,7 +24,8 @@
+   type OrganizationId,
+ } from "../contracts/organization.ts";
+ import { Authentication, ApiAuthentication, Unauthorized } from "../contracts/auth.ts";
+-import { currentOwner, selectedApp } from "./access.ts";
++import { withPoolViewCache } from "./pool-view-cache.ts";
++import { currentOwner, selectedApp, usableApp } from "./access.ts";
+ import { stillLinked } from "./app-accounts.ts";
+
+ /** Recheck both login and membership on long-lived streams; initial middleware is not a saved grant. */
+@@ -79,13 +80,18 @@
+       return yield* new OrganizationForbidden();
+     const owner = yield* currentOwner;
+     const executor = yield* Effect.flatten(HostedExecutor);
+-    const { app, accounts } = yield* selectedApp(executor, owner, input.app);
+-    return yield* withAppDataReads(
+-      executor,
+-      app,
+-      accounts,
+-      executor.appData[kind]({ ...input, accounts }),
+-    );
++    const read = Effect.gen(function* () {
++      const { app, accounts } = yield* selectedApp(executor, owner, input.app);
++      return yield* withAppDataReads(
++        executor,
++        app,
++        accounts,
++        executor.appData[kind]({ ...input, accounts }),
++      );
++    });
++    if (kind !== "query" || input.name !== "view") return yield* read;
++    const app = yield* usableApp(executor, owner, input.app);
++    return yield* withPoolViewCache(app, { ...input, input: input.input ?? {} }, read);
+   });
+ /** Shared routes; the host supplies request-owned SDK and authentication services. */
+ export const hostedAppDataHandlers = HttpApiBuilder.group(HostedApi, "appData", (handlers) =>
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -10,6 +10,7 @@
+ } from "./pool-app-ui.ts";
+ import { queryDispatch, queryPhase } from "./app-ui-query-timing.ts";
+ import { appUiPhase, appUiPhaseHeaders } from "./app-ui-phase-timing.ts";
++import { withPoolViewCache } from "./pool-view-cache.ts";
+ import { makeAppChanges } from "./pool-app-changes.ts";
+ import { visibleObservationHealth } from "./account-observation-policy.ts";
+ import { visibleAccountStatuses } from "./account-identity.ts";
+@@ -493,8 +494,8 @@
+   const data = (kind: "query" | "mutate", payload: typeof UiOperation.Type) =>
+     Effect.gen(function* () {
+       const current = yield* CurrentAppUi;
+-      const { input } = yield* dataInput(payload, current, kind);
+       const dispatch = Effect.gen(function* () {
++        const { input } = yield* dataInput(payload, current, kind);
+         const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
+         return yield* executor.appData[kind](input).pipe(
+           withSelectedAccountInspection,
+@@ -505,7 +506,19 @@
+           Effect.mapError(dataFailure),
+         );
+       });
+-      return yield* kind === "query" ? queryPhase("dispatch", queryDispatch(dispatch)) : dispatch;
++      return yield* kind === "query"
++        ? queryPhase(
++            "dispatch",
++            queryDispatch(
++              withPoolViewCache(current.app, payload, dispatch).pipe(
++                Effect.provideService(CurrentOrganization, current.access),
++                Effect.provideService(CurrentAuthorization, fullAuthority),
++                Effect.provideService(CurrentUserId, current.access.userId),
++                Effect.mapError(dataFailure),
++              ),
++            ),
++          )
++        : dispatch;
+     });
+   const calls = HttpApiBuilder.group(AppUiApi, "ui", (handlers) =>
+     handlers
+--- a/apps/hosted/server/src/implementation/catalog.ts
++++ b/apps/hosted/server/src/implementation/catalog.ts
+@@ -78,3 +78,7 @@
+       });
+     }),
+   );
++
++/** Serving Workers resolve saved provider sources without composing authoring or API documents. */
++export const catalogReadLive = (egress: HostEgress, feedUrl?: string) =>
++  Layer.succeed(HostedCatalog, createCatalog({ egress, feedUrl }));
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-view-cache.ts
+@@ -0,0 +1,185 @@
++import { Clock, Effect, Schema, Semaphore } from "effect";
++import { StorageError, type App } from "@executor-js/sdk/core";
++import { HttpServerRequest } from "effect/http";
++import { CurrentAuthorization } from "../contracts/authorization.ts";
++import { CurrentOrganization } from "../contracts/organization.ts";
++import { CurrentUserId } from "../contracts/auth.ts";
++import { GroupDatabase } from "../contracts/groups.ts";
++import { makeChangeJournal } from "./change-revisions.ts";
++import { organizationChangeSources } from "./organization-changes.ts";
++import { ChangeSnapshot, changeIdentity } from "./scoped-changes.ts";
++import { registeredPool } from "./provider-account-policy.ts";
++import { sendPoolCommand } from "./pool-backend.ts";
++
++type Snapshot = typeof ChangeSnapshot.Type;
++const reusable = (value: Schema.Json): boolean => {
++  if (value === null || typeof value !== "object") return true;
++  if (("ok" in value && value.ok === false) || ("state" in value && value.state === "denied"))
++    return false;
++  return Object.values(value).every(reusable);
++};
++const fingerprint = (head: Snapshot) => JSON.stringify([head.identity, head.revisions]);
++
++/** Expiry changes the presentation even without a write to the change journal. */
++const presentationDeadline = (value: Schema.Json, now: number): number => {
++  if (value === null || typeof value !== "object") return Infinity;
++  return Math.min(
++    ...Object.entries(value).map(([key, child]) => {
++      const deadline =
++        typeof child === "string" && ["staleAt", "expiresAt", "resetsAt", "resetAt"].includes(key)
++          ? Date.parse(child)
++          : NaN;
++      return Number.isFinite(deadline) && deadline > now
++        ? deadline
++        : presentationDeadline(child, now);
++    }),
++  );
++};
++
++/** Callers authorize each request first. Only equal authoritative heads can reuse a result. */
++export const makePoolViewCache = () => {
++  const entries = new Map<
++    string,
++    { value: Schema.Json; head: string; until: number; bytes: number }
++  >();
++  let bytes = 0;
++  const locks = new Map<string, { semaphore: Semaphore.Semaphore; users: number }>();
++  const drop = (key: string) => {
++    bytes -= entries.get(key)?.bytes ?? 0;
++    entries.delete(key);
++  };
++  const load = <E, R, E2, R2, E3, R3>(
++    key: string,
++    guard: Effect.Effect<Snapshot, E, R>,
++    read: Effect.Effect<Schema.Json, E2, R2>,
++    eligible: Effect.Effect<boolean, E3, R3>,
++  ) =>
++    Effect.gen(function* () {
++      if (!entries.has(key) && !(yield* eligible)) return yield* read;
++      const head = yield* guard.pipe(Effect.onError(() => Effect.sync(() => drop(key))));
++      const now = yield* Clock.currentTimeMillis;
++      if (head.validUntil !== undefined && head.validUntil <= now) {
++        drop(key);
++        return yield* new StorageError();
++      }
++      const saved = entries.get(key);
++      if (saved && saved.head === fingerprint(head) && saved.until > now) {
++        // Refresh insertion order for the bounded LRU; never share mutable runtime results.
++        entries.delete(key);
++        entries.set(key, saved);
++        return structuredClone(saved.value);
++      }
++      drop(key);
++      if (!(yield* eligible)) return yield* read;
++      const value = yield* read;
++      const after = yield* guard;
++      const completed = yield* Clock.currentTimeMillis;
++      if (
++        fingerprint(head) !== fingerprint(after) ||
++        (after.validUntil !== undefined && after.validUntil <= completed)
++      )
++        return yield* new StorageError();
++      const size = new TextEncoder().encode(JSON.stringify(value)).byteLength;
++      const until = Math.min(
++        head.validUntil ?? Infinity,
++        after.validUntil ?? Infinity,
++        presentationDeadline(value, completed),
++      );
++      if (reusable(value) && size <= 1024 * 1024 && until > completed) {
++        while (entries.size >= 64 || bytes + size > 16 * 1024 * 1024) {
++          const oldest = entries.keys().next().value;
++          if (oldest === undefined) break;
++          drop(oldest);
++        }
++        entries.set(key, {
++          value: structuredClone(value),
++          head: fingerprint(after),
++          until,
++          bytes: size,
++        });
++        bytes += size;
++      }
++      return value;
++    });
++  return <E, R, E2, R2, E3 = never, R3 = never>(
++    key: string,
++    guard: Effect.Effect<Snapshot, E, R>,
++    read: Effect.Effect<Schema.Json, E2, R2>,
++    eligible: Effect.Effect<boolean, E3, R3> = Effect.succeed(true),
++  ) =>
++    Effect.suspend(() => {
++      const lock = locks.get(key) ?? { semaphore: Semaphore.makeUnsafe(1), users: 0 };
++      if (!locks.has(key) && locks.size >= 64) return read;
++      locks.set(key, lock);
++      lock.users++;
++      return lock.semaphore.withPermit(load(key, guard, read, eligible)).pipe(
++        Effect.ensuring(
++          Effect.sync(() => {
++            lock.users--;
++            if (lock.users === 0) locks.delete(key);
++          }),
++        ),
++      );
++    });
++};
++const cached = makePoolViewCache();
++
++/** Four hosted heads plus Home's history head; no selected-account or provider reads. */
++const current = (app: App) =>
++  Effect.gen(function* () {
++    const access = yield* CurrentOrganization;
++    const user = yield* CurrentUserId;
++    if (user === undefined) return yield* new StorageError();
++    const sql = yield* Effect.flatten(GroupDatabase);
++    const hosted = organizationChangeSources(access.organization, user);
++    const native = yield* sendPoolCommand("changeRevisions", { pool: app.id }, ChangeSnapshot);
++    return {
++      ...native,
++      revisions: [
++        ...native.revisions,
++        ...(yield* Effect.forEach(hosted, (source) =>
++          makeChangeJournal(sql).current(source.scope, source.keys),
++        )).flat(),
++      ],
++    };
++  }).pipe(Effect.catch(() => new StorageError()));
++
++export const withPoolViewCache = <E, R>(
++  app: App,
++  operation: {
++    readonly name: string;
++    readonly version?: string | undefined;
++    readonly input: Schema.Json;
++  },
++  read: Effect.Effect<Schema.Json, E, R>,
++) =>
++  Effect.gen(function* () {
++    // The shape is a cheap candidate filter; a miss checks the saved pool registration.
++    if (
++      operation.name !== "view" ||
++      app.requirements.dependencies?.accountView === undefined ||
++      app.requirements.accounts.pool === undefined ||
++      (operation.version !== undefined && operation.version !== app.activeVersion)
++    )
++      return yield* read;
++    const request = yield* Effect.serviceOption(HttpServerRequest.HttpServerRequest);
++    if (request._tag === "None") return yield* read;
++    const organization = yield* CurrentOrganization;
++    const user = yield* CurrentUserId;
++    if (user === undefined) return yield* read;
++    const policy = yield* CurrentAuthorization;
++    const key = yield* changeIdentity([
++      request.value.originalUrl.split("?")[0]!,
++      request.value.headers.host ?? "",
++      request.value.headers.authorization ?? "",
++      request.value.headers.cookie ?? "",
++      organization.organization,
++      organization.role,
++      user,
++      JSON.stringify(policy),
++      app.id,
++      app.activeVersion ?? "",
++      JSON.stringify(operation.input),
++    ]);
++    return yield* cached(key, current(app), read, registeredPool(app.id));
++  });
+--- a/apps/hosted/server/src/index.ts
++++ b/apps/hosted/server/src/index.ts
+@@ -6,7 +6,7 @@
+ export { HostedApi } from "./contracts/api.ts";
+ export { HostedCatalog } from "./contracts/catalog.ts";
+ export { hostedHandlers } from "./implementation/api.ts";
+-export { catalogLive } from "./implementation/catalog.ts";
++export { catalogLive, catalogReadLive } from "./implementation/catalog.ts";
+ export {
+   hostedApiDocumentRoute,
+   lazyHostedApiDocument,
+--- a/e2e/support/provider-account-product.ts
++++ b/e2e/support/provider-account-product.ts
+@@ -41,7 +41,7 @@
+     parent = parent.value.parent;
+   }
+   const [text] = statement.compile();
+-  appendFileSync(measurement, JSON.stringify({ trace: span.traceId, select: /^\\s*select\\b/iu.test(text), sdk }) + "\\n");
++  appendFileSync(measurement, JSON.stringify({ trace: span.traceId, select: /^\\s*select\\b/iu.test(text), head: /from hosted_change_heads/iu.test(text), sdk }) + "\\n");
+   return statement;
+ });`
+     : ""
+--- a/e2e/support/provider-apps-catalog.ts
++++ b/e2e/support/provider-apps-catalog.ts
+@@ -88,6 +88,8 @@
+   const poolView = yield* Ref.make<
+     { readonly token: string; readonly value: Schema.Json } | undefined
+   >(undefined);
++  const poolHead = yield* Ref.make(0);
++  const poolHeadCalls = yield* Ref.make(0);
+   const poolViewCallers = yield* Ref.make<readonly (string | null)[]>([]);
+   const checkAnswer = yield* Ref.make<Schema.Json>(null);
+   const checkGate = yield* Ref.make<
+@@ -100,6 +102,47 @@
+   const xaiComplete = yield* Ref.make(false);
+   const sequence = yield* Ref.make(0);
+   const routes = Layer.mergeAll(
++    HttpRouter.add(
++      "POST",
++      "/pool/v1/changeRevisions",
++      Effect.gen(function* () {
++        const { envelope } = yield* HttpServerRequest.schemaBodyJson(
++          Schema.Struct({ envelope: Schema.String }),
++        );
++        const [prefix, payload, signature, extra] = envelope.split(".");
++        if (
++          prefix !== "sbs1" ||
++          payload === undefined ||
++          signature === undefined ||
++          extra !== undefined
++        )
++          return HttpServerResponse.empty({ status: 401 });
++        const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++          .update(`${prefix}.${payload}`)
++          .digest();
++        const actual = Buffer.from(signature, "base64url");
++        if (actual.byteLength !== expected.byteLength || !timingSafeEqual(actual, expected))
++          return HttpServerResponse.empty({ status: 401 });
++        const input = yield* Schema.decodeUnknownEffect(
++          Schema.fromJsonString(
++            Schema.Struct({
++              action: Schema.Literal("changeRevisions"),
++              pool: Schema.String,
++              expiresAt: Schema.Number,
++            }),
++          ),
++        )(Buffer.from(payload, "base64url").toString());
++        if (input.expiresAt <= (yield* Clock.currentTimeMillis))
++          return HttpServerResponse.empty({ status: 401 });
++        yield* Ref.update(poolHeadCalls, (count) => count + 1);
++        const revision = String(yield* Ref.get(poolHead));
++        return HttpServerResponse.jsonUnsafe({
++          revisions: ["pool-readings", "pool-usage", "pool-samples", "pool-prices"].map(
++            (topic) => ({ topic, resource: input.pool, revision }),
++          ),
++        });
++      }),
++    ),
+     HttpRouter.add(
+       "GET",
+       "/pool/v1/pool",
+@@ -324,7 +367,9 @@
+       return { started: Deferred.await(started), release: resume };
+     }),
+     observation: (value: Schema.Json) => Ref.set(observation, value),
+-    poolView: (token: string, value: Schema.Json) => Ref.set(poolView, { token, value }),
++    poolView: (token: string, value: Schema.Json) =>
++      Ref.set(poolView, { token, value }).pipe(Effect.andThen(Ref.update(poolHead, (n) => n + 1))),
++    poolHeadCalls: Ref.get(poolHeadCalls),
+     poolViewCallers: Ref.get(poolViewCallers),
+     advance: (milliseconds: number) => Ref.update(clockOffset, (offset) => offset + milliseconds),
+   };
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3916,7 +3916,7 @@
+     legacyStorage: true,
+     file: "pool-provider-native-presentation.spec.ts",
+     title:
+-      "Packaged pool keeps Home model windows and banked resets without provider read fanout, while Accounts keeps provider logos",
++      "Packaged pool uses provider readings and logos with revision-guarded warm reads, model limits and banked resets",
+     targets: {
+       "self-host": scheduled,
+       cloud: na(
+--- a/e2e/tests/pool-provider-native-presentation.spec.ts
++++ b/e2e/tests/pool-provider-native-presentation.spec.ts
+@@ -19,7 +19,7 @@
+
+ const Native = Schema.Struct({
+   state: Schema.String,
+-  account: Resource,
++  account: Schema.Struct({ id: Schema.String, label: Schema.optionalKey(Schema.String) }),
+   sourceApp: Schema.optionalKey(
+     Schema.Struct({
+       id: Schema.String,
+@@ -198,6 +198,10 @@
+             yield* browser.use("Capture Accounts provider logo", (page) => page.screenshot()),
+           );
+         }
++        // Release the Accounts change stream before the stopped-database fixture phase.
++        yield* browser.use("Leave Accounts before seeding stopped storage", (page) =>
++          page.goto("about:blank"),
++        );
+         const owner = (yield* body(
+           Schema.Struct({ userId: Schema.String }),
+           yield* api.request(actors.owner, "GET", "/api/viewer"),
+@@ -322,8 +326,29 @@
+           observation: {
+             offering: "subscription",
+             plan: { label: "Provider plan", observedAt: at },
+-            windows: [],
+-            balances: [],
++            windows: windows.map((window) => ({
++              id: window.id,
++              label: window.label,
++              scope: window.scope,
++              observedAt: at,
++              staleAt: resetAt,
++              measure: { unit: "ratio", remainingRatio: window.remainingRatio },
++              period: { seconds: window.windowSeconds },
++              resetsAt: resetAt,
++            })),
++            balances: [
++              {
++                id: "weekly-resets",
++                label: "Weekly resets",
++                unit: "resets",
++                available: 2,
++                observedAt: at,
++                staleAt: resetAt,
++                expiresAt: resetAt,
++                scope: { kind: "account" },
++                reset: { kind: "weekly", clears: ["weekly"] },
++              },
++            ],
+           },
+         });
+         expect(
+@@ -356,6 +381,12 @@
+         });
+
+         const readsBefore = (yield* home.calls).filter((call) => call.action === "observe").length;
++        const query = () =>
++          api.request(actors.owner, "POST", `${poolPath}/data/query`, { name: "view", input: {} });
++        const cold = yield* query();
++        expect(cold.status, JSON.stringify(cold.body)).toBe(200);
++        const homeReads = (yield* home.poolViewCallers).length;
++        const headsBefore = yield* home.poolHeadCalls;
+         const started = yield* Clock.currentTimeMillis;
+         const response = yield* api.request(actors.owner, "POST", `${poolPath}/data/query`, {
+           name: "view",
+@@ -367,24 +398,29 @@
+         const trace = (yield* evidence.requests)
+           .filter((request) => request.path.endsWith("/data/query"))
+           .at(-1)!.traceId;
+-        const records = (yield* fs.readFileString(
+-          path.join((yield* Target).directory, "provider-query-statements.jsonl"),
+-        ))
+-          .trim()
+-          .split("\n")
+-          .filter(Boolean)
+-          .map((line) =>
+-            Schema.decodeUnknownSync(
+-              Schema.fromJsonString(
+-                Schema.Struct({
+-                  trace: Schema.String,
+-                  select: Schema.Boolean,
+-                  sdk: Schema.Boolean,
+-                }),
+-              ),
+-            )(line),
+-          )
+-          .filter((record) => record.trace === trace);
++        const statements = (trace: string) =>
++          Effect.gen(function* () {
++            return (yield* fs.readFileString(
++              path.join((yield* Target).directory, "provider-query-statements.jsonl"),
++            ))
++              .trim()
++              .split("\n")
++              .filter(Boolean)
++              .map((line) =>
++                Schema.decodeUnknownSync(
++                  Schema.fromJsonString(
++                    Schema.Struct({
++                      trace: Schema.String,
++                      select: Schema.Boolean,
++                      sdk: Schema.Boolean,
++                      head: Schema.Boolean,
++                    }),
++                  ),
++                )(line),
++              )
++              .filter((record) => record.trace === trace);
++          });
++        const records = yield* statements(trace);
+         const selects = records.filter((record) => record.select).length;
+         yield* evidence.json("overview-statements.json", {
+           accounts: 1,
+@@ -399,7 +435,7 @@
+         expect(selects).toBeGreaterThan(0);
+         expect(
+           selects,
+-          "The direct Home view must not fan out into provider account reads",
++          "A warm overview uses the ingress checks and four hosted heads, without provider-account fanout",
+         ).toBeLessThanOrEqual(24);
+         expect(reply.value.accounts).toHaveLength(1);
+         expect(reply.value.accounts[0]).toMatchObject({
+@@ -409,9 +445,14 @@
+           windows,
+           bankedResets,
+         });
+-        expect(reply.value.accounts[0]?.nativeView).toBeUndefined();
+-        expect(reply.value.providers).toEqual([{ id: "codex", name: "OpenAI" }]);
+-        expect(JSON.stringify(response.body)).not.toContain("Provider plan");
++        expect(reply.value.accounts[0]?.nativeView?.observations?.reports).toEqual(
++          direct.observations?.reports,
++        );
++        expect(reply.value.accounts[0]?.nativeView?.sourceApp?.id).toBe(provider);
++        expect(reply.value.providers[0]?.icons?.length).toBeGreaterThan(0);
++        expect((yield* home.poolViewCallers).length).toBe(homeReads);
++        expect((yield* home.poolHeadCalls) - headsBefore).toBe(1);
++        expect(records.filter((record) => record.head)).toHaveLength(4);
+         expect((yield* home.calls).filter((call) => call.action === "observe")).toHaveLength(
+           readsBefore,
+         );
+@@ -420,8 +461,46 @@
+           poolBefore,
+         );
+
++        const renamed = yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${account}`, {
++          label: "Renamed source",
++        });
++        expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
++        const changed = yield* body(PoolReply, yield* query());
++        expect(JSON.stringify(changed.value.accounts[0]?.nativeView)).toContain("Renamed source");
++        const policy = yield* body(
++          Revision,
++          yield* api.request(actors.owner, "GET", `${accountPath}/observations/access`),
++        );
++        expect(
++          (yield* api.request(actors.owner, "PUT", `${accountPath}/observations/access`, {
++            revision: policy.revision,
++            read: { kind: "everyone" },
++            refresh: { kind: "owners" },
++          })).status,
++        ).toBe(200);
++        const memberQuery = () =>
++          api.request(actors.member, "POST", `${poolPath}/data/query`, { name: "view", input: {} });
++        const allowed = yield* body(PoolReply, yield* memberQuery());
++        expect(allowed.value.accounts[0]?.nativeView?.canInspect).toBe(true);
++        const currentPolicy = yield* body(
++          Revision,
++          yield* api.request(actors.owner, "GET", `${accountPath}/observations/access`),
++        );
++        expect(
++          (yield* api.request(actors.owner, "PUT", `${accountPath}/observations/access`, {
++            revision: currentPolicy.revision,
++            read: { kind: "owners" },
++            refresh: { kind: "owners" },
++          })).status,
++        ).toBe(200);
++        const denied = yield* body(PoolReply, yield* memberQuery());
++        expect(denied.value.accounts[0]?.nativeView?.canInspect).toBe(false);
++        expect(denied.value.accounts[0]?.windows).toEqual([]);
++        expect(denied.value.accounts[0]?.bankedResets).toBeNull();
++
+         const url = yield* waitForAppUrl(actors.owner, `${poolPath}/ui`);
+         yield* openPrivateApp(url);
++
+         for (const width of [1280, 390]) {
+           const overviewFits = yield* browser.use(
+             `Read Home model limits and resets at ${width}px`,
+@@ -446,7 +525,9 @@
+           yield* evidence.attach(
+             `pool-model-limits-${width}.png`,
+             "image/png",
+-            yield* browser.use("Capture Home model limits", (page) => page.screenshot()),
++            yield* browser.use("Capture Home model limits", (page) =>
++              page.screenshot({ fullPage: true, animations: "disabled" }),
++            ),
+           );
+           const details = yield* browser.use(`Open model-limit Details at ${width}px`, (page) => {
+             const dialog = page.getByRole("dialog", { name: "Account limits", exact: true });
+@@ -470,12 +551,56 @@
+           yield* evidence.attach(
+             `pool-account-limits-details-${width}.png`,
+             "image/png",
+-            yield* browser.use("Capture Home limits Details", (page) => page.screenshot()),
++            yield* browser.use("Capture Home limits Details", (page) =>
++              page
++                .getByRole("dialog", { name: "Account limits", exact: true })
++                .screenshot({ animations: "disabled" }),
++            ),
+           );
+           yield* browser.use("Close limits Details", (page) =>
+             page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click(),
+           );
+         }
++        const privateTrace = randomUUID().replaceAll("-", "");
++        const privateReply = yield* browser.use("Measure a warm private app query", (page) =>
++          page.evaluate((trace) => {
++            const context = JSON.parse(
++              document.getElementById("executor-context")?.textContent ?? "{}",
++            );
++            const payload = JSON.stringify({
++              version: context.version ?? context.deployment,
++              name: "view",
++              input: { fresh: true },
++            });
++            const read = (measured: boolean) =>
++              fetch("/_executor/api/query", {
++                method: "POST",
++                headers: {
++                  "content-type": "application/json",
++                  ...(measured ? { traceparent: `00-${trace}-0564056405640564-01` } : {}),
++                },
++                body: payload,
++              }).then((response) =>
++                response.json().then((body) => ({ status: response.status, body })),
++              );
++            return read(false).then(() => read(true));
++          }, privateTrace),
++        );
++        expect(privateReply.status).toBe(200);
++        const privateBody = yield* Schema.decodeUnknownEffect(PoolReply)(privateReply.body);
++        expect(privateBody.value.accounts[0]?.nativeView?.observations?.reports).toEqual(
++          direct.observations?.reports,
++        );
++        const privateStatements = yield* statements(privateTrace);
++        yield* evidence.json("private-overview-statements.json", {
++          statements: privateStatements.length,
++          selects: privateStatements.filter((entry) => entry.select).length,
++          hostedHeads: privateStatements.filter((entry) => entry.head).length,
++          sdkDataSelects: privateStatements.filter((entry) => entry.sdk && entry.select).length,
++        });
++        expect(privateStatements.filter((entry) => entry.head)).toHaveLength(4);
++        expect(privateStatements.filter((entry) => entry.sdk && entry.select)).toHaveLength(0);
++        expect(privateStatements.filter((entry) => entry.select).length).toBeLessThanOrEqual(24);
+       }),
+     ),
+   );
