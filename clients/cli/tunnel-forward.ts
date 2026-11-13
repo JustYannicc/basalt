@@ -119,10 +119,16 @@ export async function forwardTunnelWebsocket(
       socket.end();
       return;
     }
-    local = await accept(incoming, socket, head);
+    local = await accept(
+      incoming,
+      socket,
+      head,
+      remote.websocketMessageBytes ?? tunnelLimits.windowBytes,
+    );
     const peer = local;
     let pending = Promise.resolve(),
-      queued = 0;
+      queued = 0,
+      messages = 0;
     peer.on("message", (value, binary) => {
       const bytes = Array.isArray(value)
         ? Buffer.concat(value)
@@ -130,7 +136,9 @@ export async function forwardTunnelWebsocket(
           ? Buffer.from(value)
           : value;
       queued += Math.max(1, bytes.length);
-      if (queued > tunnelLimits.windowBytes) {
+      messages++;
+      const messageBytes = remote.websocketMessageBytes ?? tunnelLimits.windowBytes;
+      if (queued > messageBytes || (messageBytes > tunnelLimits.windowBytes && messages > 256)) {
         remote.close();
         peer.terminate();
         return;
@@ -140,6 +148,7 @@ export async function forwardTunnelWebsocket(
         .then(() => remote.send(bytes, !binary, true))
         .then(() => {
           queued -= Math.max(1, bytes.length);
+          messages--;
           if (!queued) peer.resume();
         });
       void pending.catch(() => {
@@ -168,10 +177,10 @@ export async function forwardTunnelWebsocket(
     local?.terminate();
   }
 }
-function accept(incoming: IncomingMessage, socket: Duplex, head: Buffer) {
+function accept(incoming: IncomingMessage, socket: Duplex, head: Buffer, messageBytes: number) {
   const server = new WebSocketServer({
     noServer: true,
-    maxPayload: tunnelLimits.windowBytes,
+    maxPayload: messageBytes,
     perMessageDeflate: false,
   });
   return new Promise<import("ws").WebSocket>((resolve, reject) => {
@@ -186,6 +195,7 @@ async function receiveMessages(
   remote: ClientOperation,
   deliver: (bytes: Uint8Array, text: boolean) => Promise<void>,
 ) {
+  const messageBytes = remote.websocketMessageBytes ?? tunnelLimits.windowBytes;
   let parts: Uint8Array[] = [],
     size = 0,
     text: boolean | undefined;
@@ -198,10 +208,14 @@ async function receiveMessages(
     if (text !== undefined && text !== part.text) throw new Error("Invalid message continuation.");
     text = part.text;
     size += part.bytes.length;
-    if (size > tunnelLimits.windowBytes || (part.more && !part.bytes.length))
+    if (size > messageBytes || (part.more && !part.bytes.length))
       throw new Error("Remote message exceeds its limit.");
     parts.push(part.bytes);
-    if (part.more) continue;
+    if (part.more) {
+      if (messageBytes !== tunnelLimits.windowBytes && part.bytes.length)
+        remote.consumed(part.bytes.length);
+      continue;
+    }
     const bytes = new Uint8Array(size);
     let offset = 0;
     for (const chunk of parts) {
@@ -210,7 +224,8 @@ async function receiveMessages(
     }
     if (text) new TextDecoder("utf-8", { fatal: true }).decode(bytes);
     await deliver(bytes, text);
-    if (size) remote.consumed(size);
+    const consumed = messageBytes === tunnelLimits.windowBytes ? size : part.bytes.length;
+    if (consumed) remote.consumed(consumed);
     parts = [];
     size = 0;
     text = undefined;

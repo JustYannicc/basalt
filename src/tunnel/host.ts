@@ -1,4 +1,9 @@
-import { tunnelProtocol } from "../../clients/contracts/tunnel.ts";
+import {
+  tunnelProtocol,
+  tunnelMessageProtocol,
+  tunnelLimits,
+  tunnelMessageLimits,
+} from "../../clients/contracts/tunnel.ts";
 import { tunnelAccess, tunnelLease, type TunnelEnvironment } from "./access.ts";
 import { tunnelPair, tunnelUpgrade } from "./platform.ts";
 import { serveTunnel } from "./session.ts";
@@ -16,10 +21,11 @@ export async function handleTunnel(
   // Native clients send no Origin (Node) or this server's own (React Native adds it and an app
   // can't remove it). Any other Origin, including "null", is a browser page elsewhere.
   const origin = request.headers.get("origin");
+  const protocol = request.headers.get("sec-websocket-protocol");
   if (
     url.search ||
     (origin !== null && origin !== url.origin) ||
-    request.headers.get("sec-websocket-protocol") !== tunnelProtocol
+    (protocol !== tunnelProtocol && protocol !== tunnelMessageProtocol)
   )
     return new Response(null, { status: 400 });
   const timing = sampleTunnelTiming();
@@ -34,8 +40,17 @@ export async function handleTunnel(
     const lease = await tunnelLease(request, env, access);
     timing?.mark("lease");
     const pair = tunnelPair();
-    serveTunnel(pair[1], lease, request, env, access, (work) => context?.waitUntil(work), timing);
-    return tunnelUpgrade(pair[0], tunnelProtocol);
+    serveTunnel(
+      pair[1],
+      lease,
+      request,
+      env,
+      access,
+      (work) => context?.waitUntil(work),
+      timing,
+      protocol === tunnelMessageProtocol ? tunnelMessageLimits : tunnelLimits,
+    );
+    return tunnelUpgrade(pair[0], protocol);
   } catch {
     timing?.mark("failed");
     return new Response(null, { status: 503, headers: { "cache-control": "no-store" } });

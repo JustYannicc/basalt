@@ -2,6 +2,7 @@ import {
   decodeTunnelFrame,
   tunnelLimits,
   type TunnelServerFrame,
+  type TunnelLimits,
 } from "../../clients/contracts/tunnel.ts";
 import type { TunnelAccess, TunnelEnvironment } from "./access.ts";
 import { TunnelOperation } from "./operation.ts";
@@ -16,6 +17,7 @@ export function serveTunnel(
   access: TunnelAccess,
   keepAlive: (work: Promise<unknown>) => void,
   timing?: TunnelTiming,
+  limits: TunnelLimits = tunnelLimits,
 ) {
   let stopped = false;
   let lastId = 0;
@@ -80,6 +82,7 @@ export function serveTunnel(
           send,
           () => operations.delete(frame.id),
           timing?.operation(frame),
+          limits,
         );
         operations.set(frame.id, operation);
         operation.begin();
@@ -104,7 +107,7 @@ export function serveTunnel(
   socket.accept();
   if (request.signal.aborted || Date.now() >= expiresAt) close(1008);
   else {
-    send({ v: 1, type: "ready", expiresAt, limits: tunnelLimits });
+    send({ v: 1, type: "ready", expiresAt, limits });
     if (!stopped) timing?.mark("ready");
   }
 }
