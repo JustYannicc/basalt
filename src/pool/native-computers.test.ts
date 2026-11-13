@@ -8,6 +8,7 @@ import {
   nativeModelPrefix,
 } from "./native-contract.ts";
 import { signEnvelope } from "./token.ts";
+import { modelDrainProtocol } from "./model-drain-contract.ts";
 
 function protocol() {
   const f = fixture();
@@ -95,6 +96,37 @@ test("native registration retains the model key on the server and survives resta
     /no longer connected/,
   );
   await assert.rejects(p.model(computer.id, { method: "GET" }), /another request/);
+});
+
+test("only a signed native v2 choice selects the internal model drain protocol", async () => {
+  const p = protocol();
+  const registered = await p.register();
+  for (const selected of [false, true]) {
+    const assertion = await signEnvelope(signingKey, nativeModelPrefix, {
+      user: owner,
+      grant: p.grant,
+      computer: registered.computer.id,
+      pool: pool.pool,
+      method: "GET",
+      path: "/v1/responses",
+      expiresAt: p.f.now() + 10_000,
+      ...(selected ? { modelDrain: modelDrainProtocol } : {}),
+    });
+    const lease = await p.f.nativeModel(
+      new Request("https://pool.example/v1/responses", {
+        headers: {
+          [nativeModelHeader]: assertion,
+          "sec-websocket-protocol": modelDrainProtocol,
+          upgrade: "websocket",
+        },
+      }),
+    );
+    assert.equal(
+      lease.request.headers.get("sec-websocket-protocol"),
+      selected ? modelDrainProtocol : null,
+    );
+    lease.release();
+  }
 });
 
 test("native revocation aborts active model access before failed backend cleanup", async () => {

@@ -22,6 +22,7 @@ export interface OpsInput {
   readonly planSha256: string;
   readonly go: string;
   readonly previous?: unknown;
+  readonly continuation?: unknown;
 }
 
 export async function productionOperation(
@@ -70,6 +71,7 @@ export async function productionOperation(
     selection: input.selection,
     request,
     recipient: input.recipient,
+    ...(input.continuation === undefined ? {} : { continuation: input.continuation }),
   };
   if (input.selection === importRemovalName && action === "inventory" && input.planSha256) {
     if (!/^[a-f0-9]{64}$/.test(input.planSha256))

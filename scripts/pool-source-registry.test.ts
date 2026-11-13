@@ -373,6 +373,15 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         );
         assert.match(patch.retirement.requires, /no empty periodic writes/);
         assert.match(patch.retirement.requires, /without a schema or lease change/);
+      } else if (patch.identity === "cliproxy-node-model-drain") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0574-node-model-drain.patch");
+        assert.match(patch.retirement.requires, /exact-length read receipts/);
+        assert.match(patch.retirement.requires, /unbuffered private input handoff/);
+        assert.match(
+          patch.retirement.requires,
+          /raw Responses compatibility and no inference replay/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&

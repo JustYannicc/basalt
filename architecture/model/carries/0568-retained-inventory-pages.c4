@@ -1,0 +1,7 @@
+model {
+  extend basalt.productionOps {
+    metadata {
+      constraint "Retained inventory reads at most 64 distinct scoped build IDs per request and preserves every copied and inactive deployment association within a 2000-reference page bound. Each page closes its read-only SQL snapshot before object reads and retains the existing four-read concurrency, 18-second read phase and 25-second operation deadlines. Sealed one-hour continuations bind target, release, organization, recipient, stable database identity, reference snapshot, metadata, prior page hash and strictly increasing build cursor without storing server progress. Initial and final SQL fingerprints refuse changed associations. A cumulative count and fixed-size association checksum also bind the rows observed by every page to the initial snapshot, including temporary edits that revert before the final check. The Node-only workflow operator saves each encrypted page before sending the next signed request and stops on the first refusal without retrying or rereading completed builds. Local decryption accepts only a complete contiguous chain with matching scope and metadata, then recomputes all referenced tuples. Closed reason codes survive runtime wrappers, HTTP receipts, workflow errors and summaries without object keys or provider messages. SQL diagnostic receipts retain the allowlisted reason code and SQL state class while keeping diagnostic text private."
+    }
+  }
+}

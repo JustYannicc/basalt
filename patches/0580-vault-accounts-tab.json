@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-vault-accounts-tab",
+  "file": "0580-vault-accounts-tab.patch",
+  "content_sha256": "66405c81dd4d46378fe27909b43cc886126fc3547d14a9dcfa7c5397698d37df",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

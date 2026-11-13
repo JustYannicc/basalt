@@ -10,6 +10,7 @@ import {
 import { modelPaths, rewriteCapResponse } from "./cap-message.ts";
 import { containerRequest } from "./container-request.ts";
 import { nativeModelHeader } from "./native-contract.ts";
+import { modelDrainProtocol } from "./model-drain-contract.ts";
 import { nativeResponse } from "./native-response.worker.ts";
 import {
   gatewayUnavailable,
@@ -62,6 +63,16 @@ export async function forwardPoolRequest(
     if (request.headers.has(nativeModelHeader)) {
       native = await deps.computers.nativeModel(request);
       request = native.request;
+    } else if (request.headers.has("sec-websocket-protocol")) {
+      const headers = new Headers(request.headers);
+      const protocols = headers
+        .get("sec-websocket-protocol")!
+        .split(",")
+        .map((value) => value.trim())
+        .filter((value) => value !== modelDrainProtocol);
+      if (protocols.length) headers.set("sec-websocket-protocol", protocols.join(", "));
+      else headers.delete("sec-websocket-protocol");
+      request = new Request(request, { headers });
     }
     if (isPublicModelPath(pathname)) {
       guard = "model_membership";

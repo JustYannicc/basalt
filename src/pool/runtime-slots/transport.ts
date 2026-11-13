@@ -1,3 +1,4 @@
+import { runtimeOperation } from "../runtime-endpoint-failure.ts";
 import { Schema } from "effect";
 import {
   SlotIdentity,
@@ -201,7 +202,8 @@ export async function runtimeRequest(
       await endpoint.retire(target, identity, request.signal);
     } else return new Response(null, { status: 404 });
     return new Response(null, { status: 204 });
-  } catch {
+  } catch (error) {
+    endpoint.recordFailure(runtimeOperation(request), error);
     return Response.json({ error: "runtime-refused" }, { status: 409 });
   }
 }

@@ -291,6 +291,15 @@
             "mode": "manual",
             "requires": "Retire after metadata-only Node usage publication preserves only allowlisted canonical API paths in its detached context, omits arbitrary paths and all other request metadata, and passes context, queue publication and fresh Home-capture regressions."
           }
+        },
+        {
+          "identity": "cliproxy-node-model-drain",
+          "file": "0574-node-model-drain.patch",
+          "sha256": "b4367d6f9bd3d9f28cc172a8996a1b2ad93e0cc26f01842a5df890bf09453cd1",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only after the pinned node preserves the opt-in basalt.model-drain.v1 sequence and exact-length read receipts, unbuffered private input handoff, bounded messages, raw Responses compatibility and no inference replay, with the native v2 slow-consumer and real node reader proofs."
+          }
         }
       ]
     }

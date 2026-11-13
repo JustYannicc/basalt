@@ -103,9 +103,21 @@ export class PoolUsage {
         group.channel_name.slice(poolGroupPrefix.length),
       ]),
     );
+    for (const pool of byGroup.values()) pools.set(pool, new Set());
     for (const member of membership.members) {
       const pool = byGroup.get(member.channel_group_id);
       if (pool !== undefined) pools.set(pool, (pools.get(pool) ?? new Set()).add(member.auth_id));
+    }
+    for (const [pool, accounts] of pools) {
+      if (accounts.size) continue;
+      await this.capacity.observe(pool, {
+        at: (this.deps.now?.() ?? new Date()).getTime(),
+        expected: [],
+        readings: [],
+        accountStates: [],
+        unclassifiedAccounts: [],
+      });
+      pools.delete(pool);
     }
     if (!pools.size) return;
     const ids = new Set([...pools.values()].flatMap((set) => [...set]));
@@ -221,6 +233,13 @@ export class PoolUsage {
                 account.credentialFailure === undefined &&
                 !account.readingFailed &&
                 account.freshness === "fresh",
+              sourceContinuous:
+                account.credentialFailure === undefined &&
+                !account.readingFailed &&
+                ["success", "partial"].includes(quota.collection.status ?? "") &&
+                ["healthy", "low", "exhausted"].includes(String(window.raw.status)) &&
+                Number.isFinite(Date.parse(window.observedAt ?? "")) &&
+                Date.parse(window.observedAt ?? "") <= now.getTime(),
               bankedAvailable: account.bankedResets?.available ?? null,
               bankedUsed: resetReceipts.get(account.id) ?? [],
             })),
