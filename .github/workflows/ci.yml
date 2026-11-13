@@ -2150,6 +2150,9 @@ jobs:
   fast:
     needs: select
     runs-on: ubuntu-latest
+    env:
+      # Bytecode inside the pool context changes its reviewed publication identity.
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
         with:
