@@ -157,7 +157,7 @@ export async function seriesQuery(
         AND r.timestamp >= $2::text::timestamptz - interval '1 microsecond'
         AND r.timestamp < $3::text::timestamptz + interval '1 microsecond'
         AND r.timestamp_exact >= $2::text AND r.timestamp_exact < $3::text${where}${personalWhere}ACCOUNT_FILTER),
-    ${prices ? `${pricedRowsSql("selected", priceParameter!, "s.source=$5 AND NOT s.counts_only", "public_")},` : ""}
+    ${prices ? `${pricedRowsSql("selected", priceParameter!, "(s.source=$5 OR s.attribution='import-owner') AND NOT s.counts_only", "public_")},` : ""}
     keyed AS (SELECT *, CASE WHEN counts_only THEN jsonb_build_object(${redactedKey.join(", ")})
       ELSE jsonb_build_object(${key.join(", ")}) END::text COLLATE "C" AS group_key,
       date_trunc('${input.bucket}', left(timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' AS bucket_at
@@ -186,7 +186,7 @@ export async function seriesQuery(
       count(*) FILTER (WHERE NOT counts_only AND cost_basis <> 'unpriced' AND price_version IS NULL)::text AS missing_version
       FROM keyed GROUP BY source ORDER BY source LIMIT 501`,
     coverageValues: values.slice(0, after ? -2 : undefined),
-    targetsText: `${prefix.replace("ACCOUNT_FILTER", accountWhere)} SELECT DISTINCT provider,model FROM keyed WHERE NOT counts_only AND source=$5 AND provider IS NOT NULL AND model IS NOT NULL ORDER BY provider,model LIMIT 101`,
+    targetsText: `${prefix.replace("ACCOUNT_FILTER", accountWhere)} SELECT DISTINCT provider,model FROM keyed WHERE NOT counts_only AND (source=$5 OR attribution='import-owner') AND provider IS NOT NULL AND model IS NOT NULL ORDER BY provider,model LIMIT 101`,
     targetsValues: values.slice(0, after ? -2 : undefined),
     homeSource: source,
     gatewaySource: gateway,

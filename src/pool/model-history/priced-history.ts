@@ -23,7 +23,9 @@ export async function readPricedRequests(
   const targets = [
     ...new Map(
       page.records.flatMap((row) =>
-        row.source === source && typeof row.provider === "string" && typeof row.model === "string"
+        (row.source === source || row.attribution === "import-owner") &&
+        typeof row.provider === "string" &&
+        typeof row.model === "string"
           ? [
               [
                 JSON.stringify([row.provider, row.model]),
@@ -64,7 +66,7 @@ export async function readPricedRequests(
       SELECT r.* FROM unnest($1::character(64)[]) AS ids(id)
       CROSS JOIN LATERAL (SELECT * FROM basalt_model_requests
         WHERE id=ids.id AND pool=$4 AND ($5::text IS NULL OR person=$5) LIMIT 1) r
-    ), ${pricedRowsSql("selected", "$2", "s.source=$3", "public_")}
+    ), ${pricedRowsSql("selected", "$2", "s.source=$3 OR s.attribution='import-owner'", "public_")}
     SELECT id,round(api_cost,12)::text AS amount,token_count_estimate,
       public_price_version,public_price_as_of,public_price_basis,public_price_refresh_failed
     FROM priced`,
@@ -83,18 +85,21 @@ export async function readPricedRequests(
     records: page.records.map((record) => {
       const row = estimates.get(record.id);
       const amount = typeof row?.amount === "string" ? row.amount : null;
+      const missingCounters = Object.entries({
+        input_tokens: record.input_tokens,
+        output_tokens: record.output_tokens,
+        cache_read_tokens: record.cache_read_tokens,
+        cache_write_tokens: record.cache_write_tokens,
+      })
+        .filter(([, value]) => value === null)
+        .map(([name]) => name);
       const missing =
-        record.source !== source
-          ? "Current API estimates are unavailable for imported records."
+        record.source !== source && record.attribution !== "import-owner"
+          ? "This request source does not support current API estimates."
           : record.model === null
             ? "Model not recorded; cost cannot be estimated."
-            : [
-                  record.input_tokens,
-                  record.output_tokens,
-                  record.cache_read_tokens,
-                  record.cache_write_tokens,
-                ].some((value) => value === null)
-              ? "Request token counts are missing or incomplete."
+            : missingCounters.length
+              ? `Request token counts are missing or incomplete: ${missingCounters.join(", ")}.`
               : row?.public_price_version == null
                 ? (table.issues.find(
                     (issue) => issue.provider === record.provider && issue.model === record.model,
