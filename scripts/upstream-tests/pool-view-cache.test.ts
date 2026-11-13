@@ -6,6 +6,7 @@ import { SqlClient } from "effect/sql";
 import { makePoolViewCache } from "../../.upstream/apps/hosted/server/src/implementation/pool-view-cache.ts";
 import { makeChangeJournal } from "../../.upstream/apps/hosted/server/src/implementation/change-revisions.ts";
 import { fixture, key } from "./account-change-fixture.ts";
+import { UiFailed, UiVersionChanged } from "../../.upstream/packages/apps/src/contracts/ui.ts";
 
 test("unchanged real journal heads skip source work; saved source and permission writes invalidate it", () =>
   fixture(
@@ -245,3 +246,21 @@ test("an app without a pool registration executes normally without contacting Ho
       assert.deepEqual(yield* load(), { count: 2 });
     }),
   ));
+
+for (const eligible of [false, true]) {
+  for (const error of [new UiFailed({ reason: "account_required" }), new UiVersionChanged()]) {
+    test(`a ${eligible ? "cacheable" : "non-pool"} read preserves ${error._tag} recovery`, () =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const cache = makePoolViewCache();
+          const failure = yield* cache(
+            "caller",
+            Effect.succeed({ revisions: [] }),
+            Effect.fail(error),
+            Effect.succeed(eligible),
+          ).pipe(Effect.flip);
+          assert.equal(failure, error);
+        }),
+      ));
+  }
+}
