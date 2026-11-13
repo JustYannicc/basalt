@@ -320,6 +320,15 @@
           }
         },
         {
+          "identity": "cliproxy-node-terminal-request-id",
+          "file": "0592-node-terminal-request-id.patch",
+          "sha256": "1212239730812b277f6cc5007024e9f2f24c68910eb6f0e92c84db735bfce42b",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after the pinned Node propagates validated per-request terminal correlation identities through HTTP, multiplexed Responses and duplex successor usage, preserves independent trace and billing execution identities through metadata-only reporting, and passes the request, privacy and model-drain regressions."
+          }
+        },
+        {
           "identity": "cliproxy-node-model-lifetime",
           "file": "0593-node-model-lifetime.patch",
           "sha256": "a6ec0a5c13987b2c1ce65a62e39cf76986962f798b8924fc5d0fe77fd3129ef4",

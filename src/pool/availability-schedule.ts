@@ -29,6 +29,8 @@ export async function runAvailabilityProbe(
       if (measured) result.reliability = measured;
       if (measured?.state === "breached")
         result.failures.push({ guard: "request_reliability", reason: "below_target" });
+      if (measured?.current?.classification === "ready" && measured.current.real.failed)
+        result.failures.push({ guard: "request_reliability", reason: "failing_now" });
       if (measured === null || measured?.state === "unavailable")
         result.failures.push({ guard: "request_reliability", reason: "collection_unavailable" });
     }

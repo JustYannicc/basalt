@@ -42,9 +42,9 @@ async function fixture() {
   });
   const request = (path: string) => mf.dispatchFetch(`https://fixture${path}`);
   assert.equal((await request("/seed")).status, 200);
-  const connect = async (native = false, legacy = false, unleased = false) => {
+  const connect = async (native = false, legacy = false, unleased = false, observed = false) => {
     const response = await mf.dispatchFetch(
-      `https://fixture/v1/lifetime-fixture${legacy ? `?legacy=1${unleased ? "&unleased=1" : ""}` : ""}`,
+      `https://fixture${observed ? "/v1/responses" : "/v1/lifetime-fixture"}${legacy ? `?legacy=1${unleased ? "&unleased=1" : ""}` : ""}`,
       {
         headers: {
           Upgrade: "websocket",
@@ -206,3 +206,28 @@ test("unleased legacy raw sockets preserve their existing native path without a 
     await f.mf.dispose();
   }
 });
+
+for (const legacy of [false, true])
+  test(`terminal observation preserves native and membership lifetimes on the ${legacy ? "legacy" : "selected"} Responses socket`, async () => {
+    const f = await fixture();
+    try {
+      const socket = await f.connect(true, legacy, false, true);
+      assert.deepEqual(await (await f.request("/state")).json(), {
+        ...empty,
+        native: 1,
+        model: 1,
+        old: legacy ? 0 : 1,
+      });
+      const echo = socket.receive();
+      socket.ws.send("raw observed frame");
+      assert.equal(await echo, "raw observed frame");
+      socket.ws.send("finish");
+      assert.equal((await socket.closed).code, 1000);
+      assert.deepEqual(await (await f.request("/settled")).json(), empty);
+      assert.partialDeepStrictEqual(await (await f.request("/node-state")).json(), {
+        dispatches: 1,
+      });
+    } finally {
+      await f.mf.dispose();
+    }
+  });

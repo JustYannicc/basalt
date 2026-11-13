@@ -15,7 +15,6 @@ import { handleTrafficOperation, historyTrafficPath } from "./traffic.ts";
 import {
   historySchemaMigrations,
   historyAppSchemaVersion,
-  historyAccountTimeSchemaVersion,
   historySchemaVersion,
   migrateModelHistory,
   planModelHistorySchema,
@@ -31,15 +30,20 @@ export const historyBackfillVersion = "model_request_backfill_v1";
 export async function modelHistorySchemaPlan(db: HistoryDatabase) {
   const catalog = await planModelHistorySchema(db);
   const history = await planHomeBackfill(db);
-  const existing = new Set(
+  const existingTables = new Set(
     catalog.relations
       .filter((row) => row.kind === "r" || row.kind === "p")
+      .map((row) => String(row.name)),
+  );
+  const existingIndexes = new Set(
+    catalog.relations
+      .filter((row) => row.kind === "i" || row.kind === "I")
       .map((row) => String(row.name)),
   );
   await db.query("BEGIN TRANSACTION READ ONLY");
   try {
     await db.query("SET LOCAL statement_timeout = '3s'");
-    const markers = existing.has("basalt_model_history_migrations")
+    const markers = existingTables.has("basalt_model_history_migrations")
       ? new Set(
           (
             await db.query(
@@ -52,7 +56,6 @@ export async function modelHistorySchemaPlan(db: HistoryDatabase) {
     const pending = historySchemaMigrations.filter((migration) => !markers.has(migration.name));
     const applied = pending.length === 0;
     const appApplied = markers.has(historyAppSchemaVersion);
-    const accountTimeApplied = markers.has(historyAccountTimeSchemaVersion);
     const neededTables = [
       { name: "basalt_model_history_migrations", ifNotExists: true },
       ...pending.flatMap((migration) =>
@@ -62,7 +65,13 @@ export async function modelHistorySchemaPlan(db: HistoryDatabase) {
         }),
       ),
     ].sort((a, b) => a.name.localeCompare(b.name));
-    const ledgerRows = existing.has("basalt_model_requests")
+    const neededIndexes = pending.flatMap((migration) =>
+      migration.statements.flatMap((sql) => {
+        const name = /^CREATE INDEX ([a-z0-9_]+)/.exec(sql)?.[1];
+        return name ? [name] : [];
+      }),
+    );
+    const ledgerRows = existingTables.has("basalt_model_requests")
       ? String(
           (await db.query("SELECT count(*)::text AS rows FROM basalt_model_requests")).rows[0]!
             .rows,
@@ -79,15 +88,18 @@ export async function modelHistorySchemaPlan(db: HistoryDatabase) {
       applied,
       catalogDiff: {
         createTables: neededTables
-          .filter((table) => !existing.has(table.name))
+          .filter((table) => !existingTables.has(table.name))
           .map((table) => table.name),
         addColumns: appApplied
           ? []
           : ["basalt_model_requests.app_id", "basalt_model_requests.requirement"],
-        addIndexes: accountTimeApplied ? [] : ["basalt_model_requests_account_time"],
-        conflicts: neededTables
-          .filter((table) => existing.has(table.name) && !table.ifNotExists)
-          .map((table) => table.name),
+        addIndexes: neededIndexes.filter((name) => !existingIndexes.has(name)),
+        conflicts: [
+          ...neededTables
+            .filter((table) => existingTables.has(table.name) && !table.ifNotExists)
+            .map((table) => table.name),
+          ...neededIndexes.filter((name) => existingIndexes.has(name)),
+        ],
       },
       pendingMigrations: pending.map((migration) => migration.name),
       lockTimeout: "500ms",

@@ -1,0 +1,1029 @@
+diff --git a/internal/logging/requestid.go b/internal/logging/requestid.go
+index 4c55e06..ba6b282 100644
+--- a/internal/logging/requestid.go
++++ b/internal/logging/requestid.go
+@@ -12,6 +12,54 @@ import (
+ // requestIDKey is the context key for storing/retrieving request IDs.
+ type requestIDKey struct{}
+ 
++const (
++	BasaltRequestIDHeader        = "X-Basalt-Request-Id"
++	BasaltTerminalProtocolHeader = "X-Basalt-Terminal-Protocol"
++)
++
++type terminalRequestIDKey struct{}
++
++// ParseTerminalRequestID accepts only a canonical UUID supplied by the pool Worker.
++func ParseTerminalRequestID(value string) string {
++	value = strings.TrimSpace(value)
++	id, err := uuid.Parse(value)
++	if err != nil || id.String() != value {
++		return ""
++	}
++	return value
++}
++
++// WithTerminalRequestID tags one model execution without replacing the HTTP trace ID.
++func WithTerminalRequestID(ctx context.Context, requestID string) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	requestID = ParseTerminalRequestID(requestID)
++	if requestID == "" {
++		return ctx
++	}
++	return context.WithValue(ctx, terminalRequestIDKey{}, requestID)
++}
++
++// WithoutTerminalRequestID starts a new websocket response scope without inheriting its predecessor's ID.
++func WithoutTerminalRequestID(ctx context.Context) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, terminalRequestIDKey{}, "")
++}
++
++// TerminalRequestIDFromContext returns the Worker correlation ID for one model execution.
++func TerminalRequestIDFromContext(ctx context.Context) string {
++	if ctx == nil {
++		return ""
++	}
++	if id, ok := ctx.Value(terminalRequestIDKey{}).(string); ok {
++		return id
++	}
++	return ""
++}
++
+ // ginRequestIDKey is the Gin context key for request IDs.
+ const ginRequestIDKey = "__request_id__"
+ 
+diff --git a/internal/logging/requestid_terminal_test.go b/internal/logging/requestid_terminal_test.go
+new file mode 100644
+index 0000000..b6d92bd
+--- /dev/null
++++ b/internal/logging/requestid_terminal_test.go
+@@ -0,0 +1,37 @@
++package logging
++
++import (
++	"context"
++	"testing"
++)
++
++func TestTerminalRequestIDStaysSeparateFromTraceID(t *testing.T) {
++	const (
++		traceID    = "node-trace-id"
++		terminalID = "018f3a5b-1234-7abc-def0-12345678abcd"
++	)
++	ctx := WithRequestID(context.Background(), traceID)
++	ctx = WithTerminalRequestID(ctx, terminalID)
++
++	if got := TerminalRequestIDFromContext(ctx); got != terminalID {
++		t.Fatalf("terminal ID = %q, want %q", got, terminalID)
++	}
++	if got := GetRequestID(ctx); got != traceID {
++		t.Fatalf("trace ID = %q, want %q", got, traceID)
++	}
++	if got := TerminalRequestIDFromContext(WithoutTerminalRequestID(ctx)); got != "" {
++		t.Fatalf("cleared terminal ID = %q, want empty", got)
++	}
++}
++
++func TestParseTerminalRequestIDRequiresCanonicalUUID(t *testing.T) {
++	const valid = "018f3a5b-1234-7abc-def0-12345678abcd"
++	if got := ParseTerminalRequestID(valid); got != valid {
++		t.Fatalf("valid UUID = %q", got)
++	}
++	for _, candidate := range []string{"", "not-a-uuid", "018F3A5B-1234-7ABC-DEF0-12345678ABCD"} {
++		if got := ParseTerminalRequestID(candidate); got != "" {
++			t.Errorf("ParseTerminalRequestID(%q) = %q, want empty", candidate, got)
++		}
++	}
++}
+diff --git a/internal/redisqueue/plugin.go b/internal/redisqueue/plugin.go
+index 202b641..528ca74 100644
+--- a/internal/redisqueue/plugin.go
++++ b/internal/redisqueue/plugin.go
+@@ -73,10 +73,13 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
+ 			isNativeKey = coreusage.IsNativeAccessProvider(accessProvider)
+ 		}
+ 	}
+-	requestID := strings.TrimSpace(internallogging.GetRequestID(ctx))
+ 	traceID := strings.TrimSpace(record.TraceID)
+ 	if traceID == "" {
+-		traceID = requestID
++		traceID = strings.TrimSpace(internallogging.GetRequestID(ctx))
++	}
++	requestID := strings.TrimSpace(internallogging.TerminalRequestIDFromContext(ctx))
++	if requestID == "" {
++		requestID = strings.TrimSpace(internallogging.GetRequestID(ctx))
+ 	}
+ 	executionID := strings.TrimSpace(record.RequestID)
+ 	if executionID == "" {
+diff --git a/internal/redisqueue/plugin_test.go b/internal/redisqueue/plugin_test.go
+index 0b34177..981a16e 100644
+--- a/internal/redisqueue/plugin_test.go
++++ b/internal/redisqueue/plugin_test.go
+@@ -90,6 +90,33 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
+ 	})
+ }
+ 
++func TestUsageQueuePluginSeparatesTerminalAndExecutionIDs(t *testing.T) {
++	withEnabledQueue(t, func() {
++		const (
++			terminalID  = "018f3a5b-1234-7abc-def0-12345678abcd"
++			executionID = "7c9a1f40-209d-4b83-8f9c-eaef07268439"
++			traceID     = "node-trace-id"
++		)
++		ctx := internallogging.WithRequestID(context.Background(), traceID)
++		ctx = internallogging.WithTerminalRequestID(ctx, terminalID)
++		ctx = internallogging.WithResponseStatusHolder(ctx)
++		internallogging.SetResponseStatus(ctx, http.StatusOK)
++
++		(&usageQueuePlugin{}).HandleUsage(ctx, coreusage.Record{
++			RequestID: executionID,
++			TraceID:   traceID,
++			Provider:  "openai",
++			Model:     "gpt-6-astra",
++			Detail:    coreusage.Detail{InputTokens: 2, OutputTokens: 1, TotalTokens: 3},
++		})
++
++		payload := popSinglePayload(t)
++		requireStringField(t, payload, "request_id", terminalID)
++		requireStringField(t, payload, "execution_id", executionID)
++		requireStringField(t, payload, "trace_id", traceID)
++	})
++}
++
+ func TestUsageQueuePluginNormalizesDirectSDKUsageByProvider(t *testing.T) {
+ 	tests := []struct {
+ 		provider  string
+diff --git a/internal/runtime/executor/codex_websockets_duplex.go b/internal/runtime/executor/codex_websockets_duplex.go
+index 29cd156..780b2e4 100644
+--- a/internal/runtime/executor/codex_websockets_duplex.go
++++ b/internal/runtime/executor/codex_websockets_duplex.go
+@@ -13,6 +13,7 @@ import (
+ 
+ 	"github.com/MoeForge/moego/ojson"
+ 	"github.com/gorilla/websocket"
++	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+@@ -31,6 +32,16 @@ func (e *codexDuplexConnectionError) Error() string         { return e.cause.Err
+ func (e *codexDuplexConnectionError) Unwrap() error         { return e.cause }
+ func (e *codexDuplexConnectionError) IsRequestScoped() bool { return true }
+ 
++type codexDuplexPendingCreate struct {
++	payload           []byte
++	terminalRequestID string
++}
++
++func codexDuplexRequestContext(ctx context.Context, requestID string) context.Context {
++	ctx = internallogging.WithoutTerminalRequestID(ctx)
++	return internallogging.WithTerminalRequestID(ctx, requestID)
++}
++
+ // streamCodexDuplex owns the already authenticated socket until downstream
+ // disconnect. A response terminal event is not a connection terminal event:
+ // accepted steering may produce a successor or wait for client tool results.
+@@ -144,7 +155,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 	// request may retry on another credential using the same input channel.
+ 	inputReady := make(chan struct{})
+ 	writerDone := make(chan struct{})
+-	var pendingCreates [][]byte
++	var pendingCreates []codexDuplexPendingCreate
+ 	// Only the writer mutates this; the loss path reads it after joining writerDone.
+ 	// A message the writer took from input but neither sent nor queued was never written.
+ 	var consumedPayload []byte
+@@ -200,6 +211,27 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 				return false
+ 			}
+ 		}
++		emitRequestStarted := func(requestID string) bool {
++			requestID = internallogging.ParseTerminalRequestID(requestID)
++			if requestID == "" {
++				return true
++			}
++			payload, err := json.Marshal(struct {
++				Type      string `json:"type"`
++				RequestID string `json:"request_id"`
++			}{Type: "basalt.request_started", RequestID: requestID})
++			if err != nil {
++				fail(err)
++				return false
++			}
++			// The normal Responses forwarder writes this through the model-drain transport.
++			select {
++			case out <- cliproxyexecutor.StreamChunk{Payload: payload}:
++				return true
++			case <-streamCtx.Done():
++				return false
++			}
++		}
+ 		reject := func(message string) bool {
+ 			return emitDuplexError(http.StatusBadRequest, "invalid_request_error", "", "", message, "")
+ 		}
+@@ -356,11 +388,16 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 			}
+ 			return payload, curHeaders, true, true
+ 		}
+-		processCreatePayload := func(payload []byte) bool {
++		processCreatePayload := func(payload []byte, terminalRequestID string) bool {
+ 			consumedPayload = payload
+ 			if allowed, keepOpen := authorizePayload(payload, false); !allowed {
+ 				return keepOpen
+ 			}
++			terminalRequestID = internallogging.ParseTerminalRequestID(terminalRequestID)
++			if !emitRequestStarted(terminalRequestID) {
++				return false
++			}
++			writerRequestContext := codexDuplexRequestContext(writerFollowupCtx, terminalRequestID)
+ 			eventID := strings.Clone(strings.TrimSpace(ojson.GetBytesNoCopy(payload, "event_id").String()))
+ 			metadataMu.Lock()
+ 			isAppend := ojson.GetBytesNoCopy(payload, "type").String() == "response.append"
+@@ -535,7 +572,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 				metadataMu.Lock()
+ 				localCompactionDeliveredAny = false
+ 				metadataMu.Unlock()
+-				compactionResp, errCompact := e.CodexExecutor.executeCodexResponsesCompaction(writerFollowupCtx, auth, nextReq, nextOpts)
++				compactionResp, errCompact := e.CodexExecutor.executeCodexResponsesCompaction(writerRequestContext, auth, nextReq, nextOpts)
+ 				if errCompact != nil {
+ 					if streamCtx.Err() != nil {
+ 						return false
+@@ -614,6 +651,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 				fail(errPrepare)
+ 				return false
+ 			}
++			prepared.terminalRequestID = terminalRequestID
+ 			if prepared.wsURL != initial.wsURL {
+ 				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
+ 				return false
+@@ -649,8 +687,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 			for len(pendingCreates) > 0 && readyForCreate() {
+ 				item := pendingCreates[0]
+ 				pendingCreates = pendingCreates[1:]
+-				consumedPayload = item
+-				if !processCreatePayload(item) {
++				consumedPayload = item.payload
++				if !processCreatePayload(item.payload, item.terminalRequestID) {
+ 					return false
+ 				}
+ 			}
+@@ -779,7 +817,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 
+ 				case "response.create", "response.append":
+ 					if len(pendingCreates) == 0 && readyForCreate() {
+-						if !processCreatePayload(payload) {
++						if !processCreatePayload(payload, message.TerminalRequestID) {
+ 							return
+ 						}
+ 					} else {
+@@ -787,7 +825,9 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 							fail(fmt.Errorf("too many outstanding response.create requests"))
+ 							return
+ 						}
+-						pendingCreates = append(pendingCreates, payload)
++						pendingCreates = append(pendingCreates, codexDuplexPendingCreate{
++							payload: payload, terminalRequestID: message.TerminalRequestID,
++						})
+ 						consumedPayload = nil
+ 					}
+ 					continue
+@@ -821,6 +861,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 			}
+ 		}
+ 		reporter := initialReporter
++		reporterCtx := ctx
+ 		outputItems := make(map[int64][]byte)
+ 		var outputFallback [][]byte
+ 		// A business rejection followed by EOF with nothing outstanding stays terminal.
+@@ -878,7 +919,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 							}
+ 						}
+ 						for _, queued := range pendingCreates {
+-							abandon(queued, true)
++							abandon(queued.payload, true)
+ 						}
+ 						abandon(consumedPayload, !localCompactionDeliveredAny)
+ 						if !firstResponse && !responseActive && len(consumedPayload) > 0 && len(turnErr.Abandoned) == 0 && !localCompactionDeliveredAny {
+@@ -901,7 +942,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 							connectionErr = turnErr
+ 						}
+ 					}
+-					reporter.PublishFailure(ctx, connectionErr)
++					reporter.PublishFailure(reporterCtx, connectionErr)
+ 					send(cliproxyexecutor.StreamChunk{Err: connectionErr})
+ 				}
+ 				return
+@@ -928,7 +969,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 					if settings == nil {
+ 						metadataMu.Unlock()
+ 						connectionErr := &codexDuplexConnectionError{cause: fmt.Errorf("automatic successor has no retained parent settings")}
+-						reporter.PublishFailure(ctx, connectionErr)
++						reporter.PublishFailure(reporterCtx, connectionErr)
+ 						send(cliproxyexecutor.StreamChunk{Err: connectionErr})
+ 						return
+ 					}
+@@ -943,8 +984,10 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 				}
+ 				waitingParent = ""
+ 				automaticActive = !firstResponse && len(pending) == 0
++				terminalRequestID := ""
+ 				if len(pending) > 0 {
+ 					current, pending = pending[0], pending[1:]
++					terminalRequestID = current.terminalRequestID
+ 				}
+ 				responseID = createdResponseID
+ 				latestTurnResponseID = createdResponseID
+@@ -971,7 +1014,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 				metadataMu.Unlock()
+ 				wakeWriter()
+ 				if !wasFirstResponse {
+-					reporter = helps.NewExecutorUsageReporter(followupCtx, e, req.Model, auth)
++					reporterCtx = codexDuplexRequestContext(followupCtx, terminalRequestID)
++					reporter = helps.NewExecutorUsageReporter(reporterCtx, e, req.Model, auth)
+ 					reporter.SetTranslatedReasoningEffort(current.clientBody, current.to.String())
+ 					reporter.StartResponseTTFT()
+ 				}
+@@ -1036,7 +1080,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 					// Account health is independent of which queued request failed.
+ 					// The conductor records the original classification without replaying
+ 					// this already-started stream on another credential.
+-					reporter.PublishFailure(ctx, credentialErr)
++					reporter.PublishFailure(reporterCtx, credentialErr)
+ 					if send(cliproxyexecutor.StreamChunk{Payload: payload}) {
+ 						send(cliproxyexecutor.StreamChunk{Err: credentialErr})
+ 					}
+@@ -1044,6 +1088,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 				}
+ 			}
+ 			eventPrepared, eventReporter := current, reporter
++			eventReporterCtx := reporterCtx
+ 			if !isInitialResponse && (eventType == "response.failed" || eventType == "error") {
+ 				failedID := ojson.GetBytesNoCopy(payload, "response.id").String()
+ 				if failedID == "" {
+@@ -1057,7 +1102,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 				ambiguous := failedID == "" && ((len(pending) > 0 && responseActive) || len(unacknowledgedSteers) > 0)
+ 				if len(pending) > 0 && !currentFailure && !ambiguous {
+ 					eventPrepared, pending = pending[0], pending[1:]
+-					eventReporter = helps.NewExecutorUsageReporter(followupCtx, e, req.Model, auth)
++					eventReporterCtx = codexDuplexRequestContext(followupCtx, eventPrepared.terminalRequestID)
++					eventReporter = helps.NewExecutorUsageReporter(eventReporterCtx, e, req.Model, auth)
+ 					eventReporter.SetTranslatedReasoningEffort(eventPrepared.clientBody, eventPrepared.to.String())
+ 					terminalDeliveryPending = true
+ 				} else if !ambiguous {
+@@ -1072,7 +1118,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 					// either request. Preserve the event and fail the socket without
+ 					// guessing a scope, replaying input, or cooling the credential.
+ 					connectionErr := &codexDuplexConnectionError{cause: fmt.Errorf("cannot associate websocket failure with a response or pending create")}
+-					reporter.PublishFailure(ctx, connectionErr)
++					reporter.PublishFailure(reporterCtx, connectionErr)
+ 					if send(cliproxyexecutor.StreamChunk{Payload: payload}) {
+ 						send(cliproxyexecutor.StreamChunk{Err: connectionErr})
+ 					}
+@@ -1094,7 +1140,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 			}
+ 			if replayErr != nil {
+ 				helps.RecordAPIWebsocketError(ctx, e.cfg, "replay_clear_error", replayErr)
+-				eventReporter.PublishFailure(ctx, replayErr)
++				eventReporter.PublishFailure(eventReporterCtx, replayErr)
+ 				send(cliproxyexecutor.StreamChunk{Err: replayErr})
+ 				return
+ 			}
+@@ -1102,7 +1148,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 				var status interface{ StatusCode() int }
+ 				terminalBusinessRejection = errors.As(terminalErr, &status) && status.StatusCode() == http.StatusBadRequest
+ 				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", terminalErr)
+-				eventReporter.PublishFailure(ctx, terminalErr)
++				eventReporter.PublishFailure(eventReporterCtx, terminalErr)
+ 				if isInitialResponse {
+ 					send(cliproxyexecutor.StreamChunk{Err: terminalErr})
+ 					return
+@@ -1144,11 +1190,11 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 					cacheCodexReasoningReplayFromCompleted(current.replayScope, payload)
+ 				}
+ 				if detail, ok := helps.ParseCodexUsageWithOutputItems(payload, outputItems, outputFallback); ok {
+-					reporter.Publish(ctx, detail)
++					reporter.Publish(reporterCtx, detail)
+ 				} else {
+-					reporter.EnsurePublished(ctx)
++					reporter.EnsurePublished(reporterCtx)
+ 				}
+-				publishCodexImageToolUsageWithOutputItems(ctx, reporter, current.clientBody, payload, outputItems, outputFallback)
++				publishCodexImageToolUsageWithOutputItems(reporterCtx, reporter, current.clientBody, payload, outputItems, outputFallback)
+ 				if e.duplexStateObserver != nil {
+ 					e.duplexStateObserver("terminal_pending", false)
+ 				}
+diff --git a/internal/runtime/executor/codex_websockets_duplex_terminal_test.go b/internal/runtime/executor/codex_websockets_duplex_terminal_test.go
+new file mode 100644
+index 0000000..1927ae4
+--- /dev/null
++++ b/internal/runtime/executor/codex_websockets_duplex_terminal_test.go
+@@ -0,0 +1,221 @@
++package executor
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++	"time"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/gorilla/websocket"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	core "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
++)
++
++type codexDuplexTerminalUsage struct {
++	terminalRequestID string
++	record            coreusage.Record
++}
++
++type codexDuplexTerminalUsageCapture struct {
++	alias   string
++	records chan codexDuplexTerminalUsage
++}
++
++func (c *codexDuplexTerminalUsageCapture) HandleUsage(ctx context.Context, record coreusage.Record) {
++	if record.Alias != c.alias {
++		return
++	}
++	select {
++	case c.records <- codexDuplexTerminalUsage{
++		terminalRequestID: internallogging.TerminalRequestIDFromContext(ctx),
++		record:            record,
++	}:
++	default:
++	}
++}
++
++type codexDuplexTerminalUsageNoop struct{}
++
++func (codexDuplexTerminalUsageNoop) HandleUsage(context.Context, coreusage.Record) {}
++
++func (c *codexDuplexTerminalUsageCapture) await(t *testing.T) codexDuplexTerminalUsage {
++	t.Helper()
++	select {
++	case usage := <-c.records:
++		return usage
++	case <-time.After(5 * time.Second):
++		t.Fatal("timed out waiting for duplex usage record")
++		return codexDuplexTerminalUsage{}
++	}
++}
++
++func TestCodexDuplexSuccessorsKeepTerminalAndExecutionIDsSeparate(t *testing.T) {
++	const (
++		alias       = "codex-duplex-terminal-context-test"
++		initialID   = "018f3a5b-1234-7abc-def0-12345678abcd"
++		firstID     = "018f3a5b-1234-7abc-def0-12345678abce"
++		secondID    = "018f3a5b-1234-7abc-def0-12345678abcf"
++		traceID     = "node-trace-id"
++		initialResp = "resp-1"
++		firstResp   = "resp-2"
++		secondResp  = "resp-3"
++	)
++	capture := &codexDuplexTerminalUsageCapture{alias: alias, records: make(chan codexDuplexTerminalUsage, 4)}
++	coreusage.RegisterNamedPlugin(t.Name(), capture)
++	t.Cleanup(func() { coreusage.RegisterNamedPlugin(t.Name(), codexDuplexTerminalUsageNoop{}) })
++
++	serverDone := make(chan struct{})
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		defer close(serverDone)
++		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
++		if err != nil {
++			t.Errorf("upgrade upstream websocket: %v", err)
++			return
++		}
++		defer conn.Close()
++		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
++		readRequest := func() []byte {
++			_, payload, errRead := conn.ReadMessage()
++			if errRead != nil {
++				t.Errorf("read upstream request: %v", errRead)
++			}
++			return payload
++		}
++		writeResponse := func(id string) {
++			for _, payload := range [][]byte{
++				[]byte(`{"type":"response.created","response":{"id":"` + id + `","output":[]}}`),
++				[]byte(`{"type":"response.completed","response":{"id":"` + id + `","output":[],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}`),
++			} {
++				if errWrite := conn.WriteMessage(websocket.TextMessage, payload); errWrite != nil {
++					t.Errorf("write upstream response: %v", errWrite)
++					return
++				}
++			}
++		}
++
++		if got := ojson.GetBytes(readRequest(), "type").String(); got != "response.create" {
++			t.Errorf("initial request type = %q", got)
++		}
++		writeResponse(initialResp)
++		if got := ojson.GetBytes(readRequest(), "type").String(); got != "response.create" {
++			t.Errorf("first successor type = %q", got)
++		}
++		writeResponse(firstResp)
++		if got := ojson.GetBytes(readRequest(), "type").String(); got != "response.create" {
++			t.Errorf("second successor type = %q", got)
++		}
++		writeResponse(secondResp)
++		_, _, _ = conn.ReadMessage()
++	}))
++	defer server.Close()
++
++	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
++	defer cancel()
++	ctx = coreusage.WithRequestedModelAlias(ctx, alias)
++	ctx = coreusage.WithHomeSelection(ctx, coreusage.HomeSelection{Model: "home-route"})
++	ctx = internallogging.WithRequestID(ctx, traceID)
++	ctx = internallogging.WithTerminalRequestID(ctx, initialID)
++	input := make(chan core.WebsocketInput, 4)
++	ctx = core.WithWebsocketInput(core.WithDownstreamWebsocket(ctx), input)
++
++	exec := NewCodexWebsocketsExecutor(&config.Config{Codex: config.CodexConfig{ResponseSteering: true}})
++	exec.store = &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
++	auth := &cliproxyauth.Auth{ID: "terminal-id-test", Provider: "codex", Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL, "websockets": "true"}}
++	req := core.Request{Model: "gpt-6-astra", Payload: []byte(`{"model":"gpt-6-astra","input":[]}`)}
++	opts := core.Options{SourceFormat: sdktranslator.FromString("codex"), Metadata: map[string]any{core.ExecutionSessionMetadataKey: "terminal-id-test"}}
++	result, err := exec.ExecuteStream(ctx, auth, req, opts)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	started := make(map[string]bool)
++	completed := make(map[string]bool)
++	for len(completed) < 3 {
++		select {
++		case chunk, ok := <-result.Chunks:
++			if !ok {
++				t.Fatal("duplex stream ended before all responses")
++			}
++			if chunk.Err != nil {
++				t.Fatal(chunk.Err)
++			}
++			eventType := ojson.GetBytes(chunk.Payload, "type").String()
++			if eventType == "basalt.request_started" {
++				id := ojson.GetBytes(chunk.Payload, "request_id").String()
++				if id != firstID && id != secondID {
++					t.Fatalf("unexpected successor terminal ID %q", id)
++				}
++				if started[id] {
++					t.Fatalf("duplicate request-start marker for %q", id)
++				}
++				started[id] = true
++				continue
++			}
++			if eventType != "response.completed" {
++				continue
++			}
++			responseID := ojson.GetBytes(chunk.Payload, "response.id").String()
++			if completed[responseID] {
++				t.Fatalf("duplicate terminal response %q", responseID)
++			}
++			completed[responseID] = true
++			switch responseID {
++			case initialResp:
++				input <- core.WebsocketInput{Payload: []byte(`{"type":"response.create","model":"gpt-6-astra","input":[{"role":"user","content":"second turn"}]}`), TerminalRequestID: firstID}
++			case firstResp:
++				input <- core.WebsocketInput{Payload: []byte(`{"type":"response.create","model":"gpt-6-astra","input":[{"role":"user","content":"third turn"}]}`), TerminalRequestID: secondID}
++			case secondResp:
++				cancel()
++			default:
++				t.Fatalf("unexpected response ID %q", responseID)
++			}
++		case <-ctx.Done():
++			t.Fatal(ctx.Err())
++		}
++	}
++
++	if !started[firstID] || !started[secondID] {
++		t.Fatalf("successor markers = %v", started)
++	}
++	select {
++	case <-serverDone:
++	case <-time.After(3 * time.Second):
++		t.Fatal("upstream did not close")
++	}
++	for range result.Chunks {
++	}
++
++	usageRecords := make([]codexDuplexTerminalUsage, 0, 3)
++	for range 3 {
++		usageRecords = append(usageRecords, capture.await(t))
++	}
++	select {
++	case extra := <-capture.records:
++		t.Fatalf("unexpected extra usage record: %+v", extra)
++	default:
++	}
++	terminalByID := make(map[string]coreusage.Record, 3)
++	executionIDs := make(map[string]bool, 3)
++	for _, usage := range usageRecords {
++		if usage.record.RequestID == "" || usage.record.RequestID == usage.terminalRequestID || executionIDs[usage.record.RequestID] {
++			t.Fatalf("execution ID was replaced or reused: %+v", usage)
++		}
++		if usage.record.TraceID != traceID {
++			t.Fatalf("trace ID = %q, want %q", usage.record.TraceID, traceID)
++		}
++		if usage.record.HomeSelection == nil || usage.record.HomeSelection.Model != "home-route" {
++			t.Fatalf("home selection changed: %+v", usage.record.HomeSelection)
++		}
++		executionIDs[usage.record.RequestID] = true
++		terminalByID[usage.terminalRequestID] = usage.record
++	}
++	if len(terminalByID) != 3 || terminalByID[initialID].HomeSelection.Reused || !terminalByID[firstID].HomeSelection.Reused || !terminalByID[secondID].HomeSelection.Reused {
++		t.Fatalf("terminal IDs or reused-selection counts changed: %+v", terminalByID)
++	}
++}
+diff --git a/internal/runtime/executor/codex_websockets_stream.go b/internal/runtime/executor/codex_websockets_stream.go
+index e01dc78..83b7263 100644
+--- a/internal/runtime/executor/codex_websockets_stream.go
++++ b/internal/runtime/executor/codex_websockets_stream.go
+@@ -861,6 +861,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
+ // codexWebsocketPrepared contains the request pipeline output shared by the
+ // ordinary per-response stream and subsequent creates on a duplex connection.
+ type codexWebsocketPrepared struct {
++	terminalRequestID    string
+ 	from                 sdktranslator.Format
+ 	responseFormat       sdktranslator.Format
+ 	to                   sdktranslator.Format
+diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
+index 3627848..148bc77 100644
+--- a/sdk/api/handlers/handlers.go
++++ b/sdk/api/handlers/handlers.go
+@@ -653,6 +653,16 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
+ 			parentCtx = logging.WithRequestID(parentCtx, requestID)
+ 		}
+ 	}
++	if c != nil && c.Request != nil {
++		if requestID := logging.ParseTerminalRequestID(c.Request.Header.Get(logging.BasaltRequestIDHeader)); requestID != "" {
++			if logging.TerminalRequestIDFromContext(parentCtx) == "" {
++				parentCtx = logging.WithTerminalRequestID(parentCtx, requestID)
++			}
++			if !websocket.IsWebSocketUpgrade(c.Request) {
++				c.Writer.Header().Set(logging.BasaltRequestIDHeader, requestID)
++			}
++		}
++	}
+ 	newCtx, cancel := context.WithCancel(parentCtx)
+ 
+ 	endpoint := ""
+diff --git a/sdk/api/handlers/handlers_metadata_test.go b/sdk/api/handlers/handlers_metadata_test.go
+index bf5d47a..2cbaf64 100644
+--- a/sdk/api/handlers/handlers_metadata_test.go
++++ b/sdk/api/handlers/handlers_metadata_test.go
+@@ -42,6 +42,26 @@ func TestGetContextWithCancelCapturesClientRequestMetadata(t *testing.T) {
+ 	}
+ }
+ 
++func TestGetContextWithCancelAcknowledgesTerminalRequestID(t *testing.T) {
++	gin.SetMode(gin.TestMode)
++	const terminalID = "018f3a5b-1234-7abc-def0-12345678abcd"
++	recorder := httptest.NewRecorder()
++	ginCtx, _ := gin.CreateTestContext(recorder)
++	ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
++	ginCtx.Request.Header.Set(logging.BasaltRequestIDHeader, terminalID)
++
++	handler := &BaseAPIHandler{Cfg: &config.SDKConfig{}}
++	ctx, cancel := handler.GetContextWithCancel(nil, ginCtx, context.Background())
++	defer cancel()
++
++	if got := recorder.Header().Get(logging.BasaltRequestIDHeader); got != terminalID {
++		t.Fatalf("acknowledged terminal ID = %q, want %q", got, terminalID)
++	}
++	if got := logging.TerminalRequestIDFromContext(ctx); got != terminalID {
++		t.Fatalf("context terminal ID = %q, want %q", got, terminalID)
++	}
++}
++
+ func TestGetContextWithCancelCapturesResolvedClientIP(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 	ginCtx, engine := gin.CreateTestContext(httptest.NewRecorder())
+diff --git a/sdk/api/handlers/openai/openai_responses_websocket.go b/sdk/api/handlers/openai/openai_responses_websocket.go
+index 5febcc2..762fbe5 100644
+--- a/sdk/api/handlers/openai/openai_responses_websocket.go
++++ b/sdk/api/handlers/openai/openai_responses_websocket.go
+@@ -471,9 +471,10 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+ 	localInterrupt := newResponsesLocalInterrupt()
+ 	// Advanced on every upstream loss: input read under an older epoch predates the loss.
+ 	var inputEpoch atomic.Uint64
++	terminalBaseID := logging.ParseTerminalRequestID(c.Request.Header.Get(logging.BasaltRequestIDHeader))
+ 	input, inputDone := readResponsesWebsocketInput(socketCtx, cancelSocket, conn, func(payload []byte) error {
+ 		return h.forwardResponsesWebsocketInterrupt(socketCtx, passthroughSessionID, payload)
+-	}, localInterrupt, writer, wsTimelineLog, &inputEpoch)
++	}, localInterrupt, writer, wsTimelineLog, &inputEpoch, terminalBaseID)
+ 	var duplexInput <-chan cliproxyexecutor.WebsocketInput
+ 	if codexResponseSteering {
+ 		duplexInput = input
+@@ -618,6 +619,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+ 		var msgType int
+ 		var payload []byte
+ 		var msgEpoch uint64
++		var terminalRequestID string
+ 		var errReadMessage error
+ 		select {
+ 		case message, ok := <-input:
+@@ -633,6 +635,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+ 					continue
+ 				}
+ 				msgType, payload, msgEpoch, errReadMessage = websocket.TextMessage, message.Payload, message.Epoch, message.Err
++				terminalRequestID = message.TerminalRequestID
+ 			}
+ 		case <-socketCtx.Done():
+ 			errReadMessage = context.Cause(socketCtx)
+@@ -701,6 +704,21 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+ 			continue
+ 		}
+ 		executionParent := context.WithValue(c.Request.Context(), "gin", c)
++		if terminalRequestID != "" {
++			executionParent = logging.WithTerminalRequestID(executionParent, terminalRequestID)
++			marker, errMarker := json.Marshal(struct {
++				Type      string `json:"type"`
++				RequestID string `json:"request_id"`
++			}{Type: "basalt.request_started", RequestID: terminalRequestID})
++			if errMarker != nil {
++				wsTerminateErr = errMarker
++				return
++			}
++			if errWrite := writeResponsesWebsocketPayload(writer, wsTimelineLog, marker, time.Now()); errWrite != nil {
++				wsTerminateErr = errWrite
++				return
++			}
++		}
+ 		executionParent, routeOverridesModelResolution := h.PrepareStreamModelRoute(
+ 			executionParent,
+ 			h.HandlerType(),
+@@ -1253,6 +1271,9 @@ func websocketUpgradeHeaders(req *http.Request) http.Header {
+ 	if turnState != "" {
+ 		headers.Set(wsTurnStateHeader, turnState)
+ 	}
++	if logging.ParseTerminalRequestID(req.Header.Get(logging.BasaltRequestIDHeader)) != "" {
++		headers.Set(logging.BasaltTerminalProtocolHeader, "1")
++	}
+ 	return headers
+ }
+ 
+diff --git a/sdk/api/handlers/openai/openai_responses_websocket_input.go b/sdk/api/handlers/openai/openai_responses_websocket_input.go
+index d74211c..d286466 100644
+--- a/sdk/api/handlers/openai/openai_responses_websocket_input.go
++++ b/sdk/api/handlers/openai/openai_responses_websocket_input.go
+@@ -14,8 +14,10 @@ import (
+ 	"time"
+ 
+ 	"github.com/MoeForge/moego/ojson"
++	"github.com/google/uuid"
+ 	"github.com/gorilla/websocket"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
++	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
+ 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ )
+@@ -150,7 +152,13 @@ func (s *responsesLocalInterrupt) takeClaimed() []byte {
+ // readResponsesWebsocketInput is the only downstream reader. Interrupts are
+ // handled immediately so they are not queued behind an active response.
+ // The bounded queue backpressures clients instead of retaining unlimited input.
+-func readResponsesWebsocketInput(ctx context.Context, cancel context.CancelCauseFunc, conn *websocket.Conn, interrupt func([]byte) error, local *responsesLocalInterrupt, writer *responsesWebsocketWriter, timeline websocketTimelineAppender, epoch *atomic.Uint64) (<-chan cliproxyexecutor.WebsocketInput, <-chan struct{}) {
++func readResponsesWebsocketInput(ctx context.Context, cancel context.CancelCauseFunc, conn *websocket.Conn, interrupt func([]byte) error, local *responsesLocalInterrupt, writer *responsesWebsocketWriter, timeline websocketTimelineAppender, epoch *atomic.Uint64, terminalBaseIDs ...string) (<-chan cliproxyexecutor.WebsocketInput, <-chan struct{}) {
++	terminalBaseID := ""
++	if len(terminalBaseIDs) > 0 {
++		terminalBaseID = internallogging.ParseTerminalRequestID(terminalBaseIDs[0])
++	}
++	terminalBase, _ := uuid.Parse(terminalBaseID)
++	var terminalSequence uint64
+ 	capacity := 16
+ 	if conn.Subprotocol() == basaltModelDrainProtocol {
+ 		capacity = 0
+@@ -179,9 +187,14 @@ func readResponsesWebsocketInput(ctx context.Context, cancel context.CancelCause
+ 			if kind != websocket.TextMessage && kind != websocket.BinaryMessage {
+ 				continue
+ 			}
++			isJSON := json.Valid(payload)
++			requestType := ""
++			if isJSON {
++				requestType = responsesWebsocketInputType(payload)
++			}
+ 			// Control frames bypass response.create normalization. The original
+ 			// response_id, mode, and extension fields must reach upstream unchanged.
+-			if json.Valid(payload) && ojson.GetBytesNoCopy(payload, "type").String() == "response.interrupt" {
++			if isJSON && requestType == "response.interrupt" {
+ 				appendResponsesInterruptDiagnostic(timeline, payload, "")
+ 				errInterrupt := interrupt(payload)
+ 				switch {
+@@ -206,7 +219,17 @@ func readResponsesWebsocketInput(ctx context.Context, cancel context.CancelCause
+ 					continue
+ 				}
+ 			}
+-			message := cliproxyexecutor.WebsocketInput{Payload: payload, Epoch: msgEpoch}
++			terminalRequestID := ""
++			if terminalBaseID != "" && (requestType == wsRequestTypeCreate || requestType == wsRequestTypeAppend) &&
++				terminalSequence < maxTerminalRequestSequence {
++				terminalSequence++
++				terminalRequestID = terminalRequestIDForSequence(terminalBase, terminalSequence)
++			}
++			message := cliproxyexecutor.WebsocketInput{
++				Payload:           payload,
++				Epoch:             msgEpoch,
++				TerminalRequestID: terminalRequestID,
++			}
+ 			select {
+ 			case input <- message:
+ 			case <-ctx.Done():
+@@ -217,6 +240,36 @@ func readResponsesWebsocketInput(ctx context.Context, cancel context.CancelCause
+ 	return input, done
+ }
+ 
++const maxTerminalRequestSequence uint64 = (1 << 48) - 1
++
++func terminalRequestIDForSequence(base uuid.UUID, sequence uint64) string {
++	if sequence == 0 || sequence > maxTerminalRequestSequence {
++		return ""
++	}
++	tail := uint64(base[10])<<40 | uint64(base[11])<<32 | uint64(base[12])<<24 |
++		uint64(base[13])<<16 | uint64(base[14])<<8 | uint64(base[15])
++	tail = (tail + sequence) & maxTerminalRequestSequence
++	for index := 15; index >= 10; index-- {
++		base[index] = byte(tail)
++		tail >>= 8
++	}
++	return base.String()
++}
++
++// The reader has already validated JSON. View the existing first root value rather
++// than decoding/copying earlier fields, which may contain a large conversation.
++func responsesWebsocketInputType(payload []byte) string {
++	payload = bytes.TrimSpace(payload)
++	if len(payload) == 0 || payload[0] != '{' {
++		return ""
++	}
++	value := ojson.GetBytesNoCopy(payload, "type")
++	if value.Type != ojson.String || len(value.Str) > 256 {
++		return ""
++	}
++	return strings.Trim(value.Str, " \t\r\n")
++}
++
+ func appendResponsesInterruptDiagnostic(timeline websocketTimelineAppender, payload []byte, outcome string) {
+ 	if timeline == nil {
+ 		return
+diff --git a/sdk/api/handlers/openai/openai_responses_websocket_terminal_test.go b/sdk/api/handlers/openai/openai_responses_websocket_terminal_test.go
+new file mode 100644
+index 0000000..d12089f
+--- /dev/null
++++ b/sdk/api/handlers/openai/openai_responses_websocket_terminal_test.go
+@@ -0,0 +1,92 @@
++package openai
++
++import (
++	"bytes"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/google/uuid"
++	"github.com/gorilla/websocket"
++	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
++)
++
++func TestResponsesWebsocketInputTypeUsesFirstBoundedRootString(t *testing.T) {
++	tests := []struct {
++		name string
++		body string
++		want string
++	}{
++		{name: "root field", body: `{"type":" response.create\r\n","nested":{"type":"response.interrupt"}}`, want: "response.create"},
++		{name: "first duplicate wins", body: `{"type":"response.interrupt","type":"response.create"}`, want: "response.interrupt"},
++		{name: "escaped decoded length", body: `{"type":"` + strings.Repeat(`\u0020`, 240) + `\u0072\u0065\u0073\u0070\u006f\u006e\u0073\u0065\u002e\u0063\u0072\u0065\u0061\u0074\u0065"}`, want: "response.create"},
++		{name: "case sensitive key", body: `{"Type":"response.create"}`, want: ""},
++		{name: "non string", body: `{"type":4}`, want: ""},
++		{name: "untrimmed limit", body: `{"type":"` + strings.Repeat(" ", 250) + `response.create"}`, want: ""},
++		{name: "unicode whitespace remains", body: `{"type":" response.create "}`, want: " response.create "},
++	}
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			if got := responsesWebsocketInputType([]byte(test.body)); got != test.want {
++				t.Fatalf("input type = %q, want %q", got, test.want)
++			}
++		})
++	}
++}
++
++func TestTerminalRequestIDSequenceIsUniqueAndPreservesUUIDPrefix(t *testing.T) {
++	base := uuid.MustParse("018f3a5b-1234-7abc-def0-12345678abcd")
++	first, errFirst := uuid.Parse(terminalRequestIDForSequence(base, 1))
++	second, errSecond := uuid.Parse(terminalRequestIDForSequence(base, 2))
++	if errFirst != nil || errSecond != nil {
++		t.Fatalf("derived IDs were invalid UUIDs: %v / %v", errFirst, errSecond)
++	}
++	if first == second || first == base || second == base {
++		t.Fatal("sequence did not produce distinct IDs")
++	}
++	if !bytes.Equal(first[:10], base[:10]) || !bytes.Equal(second[:10], base[:10]) {
++		t.Fatal("sequence changed the UUID prefix")
++	}
++}
++
++func TestResponsesWebsocketTerminalProtocolIsAcknowledgedIn101(t *testing.T) {
++	const terminalID = "018f3a5b-1234-7abc-def0-12345678abcd"
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		conn, err := responsesWebsocketUpgrader.Upgrade(w, r, websocketUpgradeHeaders(r))
++		if err != nil {
++			return
++		}
++		_ = conn.Close()
++	}))
++	defer server.Close()
++
++	requestHeader := http.Header{}
++	requestHeader.Set(internallogging.BasaltRequestIDHeader, terminalID)
++	client, response, err := (&websocket.Dialer{}).Dial("ws"+strings.TrimPrefix(server.URL, "http"), requestHeader)
++	if err != nil {
++		t.Fatalf("websocket upgrade failed: %v", err)
++	}
++	defer client.Close()
++	if response.StatusCode != http.StatusSwitchingProtocols {
++		t.Fatalf("status = %d, want 101", response.StatusCode)
++	}
++	if got := response.Header.Get(internallogging.BasaltTerminalProtocolHeader); got != "1" {
++		t.Fatalf("terminal protocol acknowledgement = %q, want 1", got)
++	}
++}
++
++func TestTerminalRequestClassifierDoesNotCopyIgnoredContent(t *testing.T) {
++	payload := []byte(`{"input":"` + strings.Repeat("x", 4<<20) + `","type":"response.create"}`)
++	result := testing.Benchmark(func(b *testing.B) {
++		b.ReportAllocs()
++		for i := 0; i < b.N; i++ {
++			if responsesWebsocketInputType(payload) != "response.create" {
++				b.Fatal("lost root request type")
++			}
++		}
++	})
++	if result.AllocedBytesPerOp() > 64<<10 {
++		t.Fatalf("request classifier allocated %d bytes for ignored content", result.AllocedBytesPerOp())
++	}
++}
+diff --git a/sdk/cliproxy/executor/websocket_input.go b/sdk/cliproxy/executor/websocket_input.go
+index 31e2a25..f20f08f 100644
+--- a/sdk/cliproxy/executor/websocket_input.go
++++ b/sdk/cliproxy/executor/websocket_input.go
+@@ -22,6 +22,8 @@ type WebsocketInput struct {
+ 	Err     error
+ 	// Epoch is the downstream input epoch at read time; a loss advances it.
+ 	Epoch uint64
++	// TerminalRequestID is private Worker metadata for this create/append execution.
++	TerminalRequestID string
+ }
+ type websocketInputKey struct{}
+ 
+diff --git a/sdk/cliproxy/usage/metadata_only.go b/sdk/cliproxy/usage/metadata_only.go
+index 3313038..ccf829a 100644
+--- a/sdk/cliproxy/usage/metadata_only.go
++++ b/sdk/cliproxy/usage/metadata_only.go
+@@ -167,6 +167,9 @@ func RedactForMetadataOnly(ctx context.Context, record Record) (context.Context,
+ 	cleanCtx := context.WithValue(context.Background(), metadataOnlySanitizedContextKey{}, true)
+ 	cleanCtx = internallogging.WithRequestID(cleanCtx, record.TraceID)
+ 	cleanCtx = WithExecutionRequestID(cleanCtx, record.RequestID)
++	if terminalRequestID := internallogging.TerminalRequestIDFromContext(ctx); terminalRequestID != "" {
++		cleanCtx = internallogging.WithTerminalRequestID(cleanCtx, terminalRequestID)
++	}
+ 	if endpoint := diagnosticEndpoint(internallogging.GetEndpoint(ctx)); endpoint != "" {
+ 		cleanCtx = internallogging.WithEndpoint(cleanCtx, endpoint)
+ 	}
+diff --git a/sdk/cliproxy/usage/metadata_only_test.go b/sdk/cliproxy/usage/metadata_only_test.go
+index 4344c6d..f98f01d 100644
+--- a/sdk/cliproxy/usage/metadata_only_test.go
++++ b/sdk/cliproxy/usage/metadata_only_test.go
+@@ -53,6 +53,7 @@ func TestMetadataOnlyPublishDetachesContextAndKeepsSafeFields(t *testing.T) {
+ 
+ 	requestID := "7c9a1f40-209d-4b83-8f9c-eaef07268439"
+ 	traceID := "018f3a5b-1234-7abc-def0-12345678abcd"
++	terminalID := "018f3a5b-1234-7abc-def0-12345678abce"
+ 	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+ 	ginCtx.Request = httptest.NewRequest(http.MethodPost, "https://proxy.invalid/v1/chat/completions", strings.NewReader(requestSecret))
+ 	ginCtx.Request.Header.Set("Authorization", authSecret)
+@@ -61,6 +62,7 @@ func TestMetadataOnlyPublishDetachesContextAndKeepsSafeFields(t *testing.T) {
+ 	ctx := context.WithValue(context.Background(), "gin", ginCtx)
+ 	ctx = context.WithValue(ctx, metadataOnlyContextKey{}, freeTextSecret)
+ 	ctx = internallogging.WithRequestID(ctx, traceID)
++	ctx = internallogging.WithTerminalRequestID(ctx, terminalID)
+ 	ctx = WithExecutionRequestID(ctx, requestID)
+ 	ctx = WithAPIKey(ctx, rawAPIKey)
+ 	ctx = WithAccessProvider(ctx, freeTextSecret)
+@@ -140,6 +142,9 @@ func TestMetadataOnlyPublishDetachesContextAndKeepsSafeFields(t *testing.T) {
+ 	if internallogging.GetRequestID(got.ctx) != traceID || ExecutionRequestIDFromContext(got.ctx) != requestID {
+ 		t.Fatal("detached context lost safe generated identifiers")
+ 	}
++	if internallogging.TerminalRequestIDFromContext(got.ctx) != terminalID {
++		t.Fatal("detached context lost the terminal correlation ID")
++	}
+ 	_, redactedAgain := RedactForMetadataOnly(got.ctx, got.record)
+ 	if redactedAgain.APIKey != got.record.APIKey {
+ 		t.Fatalf("repeated queue-boundary sanitization changed client fingerprint from %q to %q", got.record.APIKey, redactedAgain.APIKey)

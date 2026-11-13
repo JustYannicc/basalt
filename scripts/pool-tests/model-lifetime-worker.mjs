@@ -164,7 +164,10 @@ export class Proxy extends DurableObject {
       }
     }
     return forwardPoolRequest(request, 8317, {
-      env: { POOL_APP_SIGNING_KEY: "ab".repeat(32) },
+      env: {
+        POOL_APP_SIGNING_KEY: "ab".repeat(32),
+        ...(path === "/v1/responses" ? { POOL_MODEL_HISTORY_ENABLED: "true" } : {}),
+      },
       streams: this.model,
       memberships: {
         configured: async () => !url.searchParams.has("unleased"),

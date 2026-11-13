@@ -25,8 +25,14 @@ import type { NativeMemberships } from "./membership.ts";
 import type { NativeStreams } from "./native-streams.ts";
 import { ProtectionRefusal, type RuntimeProtection } from "./runtime-protection.ts";
 import { dispatchTimingHeader, logDispatchTiming } from "./dispatch-timing.ts";
+import { requestTerminal, type TerminalRecorder } from "./terminal-recording.worker.ts";
+import { terminalResponse, type TerminalFinish } from "./terminal-response.worker.ts";
+import { digest } from "./backend-users.ts";
+import { endpointMetadata } from "./model-history/record.ts";
+import { terminalSocket } from "./terminal-socket.worker.ts";
 
 interface Dependencies {
+  terminal?: TerminalRecorder;
   appModel?: import("./model-membership.ts").ModelIdentity;
   env: Parameters<typeof gatewayUnavailable>[0] & { POOL_APP_SIGNING_KEY: string };
   computers: Pick<Computers, "nativeModel" | "observeUsage">;
@@ -57,10 +63,43 @@ export async function forwardPoolRequest(
   const pathname = new URL(request.url).pathname;
   if (isModelLifetimePath(pathname)) return new Response(null, { status: 404 });
   request = stripModelLifetimeRequest(request);
+  const requestId = crypto.randomUUID();
+  const endpoint = endpointMetadata(pathname);
+  const modelCall =
+    (request.method === "POST" &&
+      (modelPaths.has(pathname) ||
+        (endpoint.endpoint !== null && endpoint.apiType !== "video-retrieve") ||
+        pathname === "/v1/systemone" ||
+        pathname === "/typesafe/v1/systemone")) ||
+    (request.method === "GET" && endpoint.apiType === "video-retrieve");
+  const socketCall =
+    request.method === "GET" &&
+    pathname === "/v1/responses" &&
+    request.headers.get("Upgrade")?.toLowerCase() === "websocket";
+  const observing = !!deps.terminal || deps.env.POOL_MODEL_HISTORY_ENABLED === "true";
+  let terminal: TerminalFinish | undefined;
   let native: Awaited<ReturnType<Computers["nativeModel"]>> | undefined;
   let identity: RefusalIdentity | undefined;
   let modelLease: ReturnType<NativeStreams["acquire"]> | undefined;
   const started = performance.now();
+  const resolveIdentity = async () => {
+    if (identity) return identity;
+    const known = native ?? deps.appModel;
+    if (known) return { ...known, person: await digest(known.person) };
+    const scope = await modelKeyScope(deps.env.POOL_AUTH_DATABASE?.connectionString, request);
+    return scope?.pools.length === 1
+      ? { pool: scope.pools[0]!, person: scope.person, keyId: scope.keyId }
+      : undefined;
+  };
+  const observe = (id: string) =>
+    requestTerminal(
+      deps.env,
+      id,
+      pathname,
+      resolveIdentity,
+      (work) => deps.defer(work),
+      deps.terminal,
+    );
   let dispatched = false;
   let guard: GatewayFailureDiagnostic["guard"] = "native_identity";
   try {
@@ -104,6 +143,7 @@ export async function forwardPoolRequest(
     const beforeDispatch = () => {
       guard = "upstream_dispatch";
       dispatched = true;
+      if (modelCall && !terminal) terminal = observe(requestId);
     };
     const legacy = async (forwarded: Request, prepared: () => void = () => {}) => {
       guard = "runtime_readiness";
@@ -124,20 +164,23 @@ export async function forwardPoolRequest(
       dispatch();
       return deps.fetch(forwarded, port);
     };
-    const outbound = containerRequest(request, "http://pool");
+    const outboundHeaders = new Headers(request.headers);
+    outboundHeaders.delete("X-Basalt-Request-Id");
+    if (modelCall || (socketCall && observing)) {
+      outboundHeaders.set("X-Request-Id", requestId);
+      outboundHeaders.set("X-Basalt-Request-Id", requestId);
+    }
+    const outbound = containerRequest(
+      new Request(request, { headers: outboundHeaders }),
+      "http://pool",
+    );
     const upstream = deps.route
       ? await deps.route(outbound, port, identity?.pool, legacy, beforeDispatch)
       : await legacy(outbound);
     guard = "upstream_response";
     logDispatchTiming(upstream.headers.get(dispatchTimingHeader));
     let response = await rewriteCapResponse(upstream, pathname);
-    if (
-      request.method === "POST" &&
-      (modelPaths.has(pathname) ||
-        pathname === "/v1/systemone" ||
-        pathname === "/typesafe/v1/systemone") &&
-      response.ok
-    )
+    if (modelCall && request.method === "POST" && response.ok)
       deps.defer(
         (async () => {
           // Legacy pools have no membership identity. Resolve only after the reply, off admission's path.
@@ -158,11 +201,27 @@ export async function forwardPoolRequest(
           new Response(null, { status: 101, headers, webSocket: response.webSocket }),
         );
       }
-      const forwarded = native === undefined ? response : nativeResponse(response, native);
+      const observed =
+        socketCall && observing
+          ? terminalSocket(
+              response,
+              requestId,
+              observe,
+              response.headers.get("X-Basalt-Terminal-Protocol") === "1",
+            )
+          : response;
+      const forwarded = native === undefined ? observed : nativeResponse(observed, native);
       return modelLease === undefined ? forwarded : nativeResponse(forwarded, modelLease);
     }
+    if (terminal && upstream.headers.get("X-Basalt-Request-Id") !== requestId) {
+      terminal("unavailable", response.status, 0);
+      terminal = undefined;
+    }
     const headers = new Headers(response.headers);
+    headers.delete("X-Basalt-Request-Id");
+    headers.delete("X-Basalt-Terminal-Protocol");
     headers.delete(dispatchTimingHeader);
+    if (modelCall) headers.set("X-Request-Id", requestId);
     const observedBoot = upstream.headers.get("X-Signalbox-Pool-Boot") ?? boot;
     if (observedBoot) headers.set("X-Signalbox-Pool-Boot", observedBoot);
     const forwarded = new Response(response.body, {
@@ -170,7 +229,17 @@ export async function forwardPoolRequest(
       statusText: response.statusText,
       headers,
     });
-    const delivered = native === undefined ? forwarded : nativeResponse(forwarded, native);
+    const observed = terminal
+      ? terminalResponse(
+          forwarded,
+          terminal,
+          request.signal,
+          pathname,
+          // A status poll delivers job state, including failure; it does not execute the job again.
+          request.method === "GET" && endpoint.apiType === "video-retrieve" ? "delivery" : "model",
+        )
+      : forwarded;
+    const delivered = native === undefined ? observed : nativeResponse(observed, native);
     return modelLease === undefined ? delivered : nativeResponse(delivered, modelLease);
   } catch (error) {
     native?.release();
@@ -193,8 +262,16 @@ export async function forwardPoolRequest(
                     ? "Error"
                     : "unknown",
     };
-    if (dispatched && isPublicModelPath(pathname))
-      return gatewayOutcomeUnknown(deps.env, request, (work) => deps.defer(work), diagnostic);
+    if (dispatched && isPublicModelPath(pathname)) {
+      terminal?.("unavailable", request.signal.aborted ? 499 : 502, 0);
+      return gatewayOutcomeUnknown(
+        deps.env,
+        request,
+        (work) => deps.defer(work),
+        diagnostic,
+        requestId,
+      );
+    }
     if (error instanceof ModelMembershipUnavailable) identity = error.identity;
     if (error instanceof ControlFailure) return failureResponse(error);
     if (error instanceof PoolRuntimeUnhealthy || isPublicModelPath(pathname))
@@ -205,6 +282,7 @@ export async function forwardPoolRequest(
         started,
         (work) => deps.defer(work),
         diagnostic,
+        requestId,
       );
     // Startup and port errors are fixed runtime messages without request data or credentials.
     console.error(
