@@ -1,3 +1,4 @@
+import { retainRuntimeFailure, runtimeFailureHeaders } from "../runtime-route-diagnostic.ts";
 import { Schema } from "effect";
 import {
   SlotIdentity,
@@ -41,7 +42,7 @@ export class BoundSlotDriver implements SlotDriver {
     );
     if (!response.ok) {
       await response.body?.cancel();
-      throw new SlotRefused("uncertain");
+      throw retainRuntimeFailure(response, new SlotRefused("uncertain"));
     }
     return response;
   }
@@ -216,7 +217,10 @@ export async function runtimeRequest(
       await endpoint.retire(target, identity, request.signal);
     } else return new Response(null, { status: 404 });
     return new Response(null, { status: 204 });
-  } catch {
-    return Response.json({ error: "runtime-refused" }, { status: 409 });
+  } catch (error) {
+    return Response.json(
+      { error: "runtime-refused" },
+      { status: 409, headers: runtimeFailureHeaders(error, "endpoint_route") },
+    );
   }
 }

@@ -1,3 +1,4 @@
+import { refuseRuntime, rememberRuntimeFailure } from "../runtime-route-diagnostic.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import {
@@ -144,13 +145,15 @@ export class RuntimeFleet {
           : this.deps.state.acquire(Number.MAX_SAFE_INTEGER),
       );
     } catch (error) {
-      if (!(error instanceof FleetRefused) || error.reason !== "capacity") throw error;
+      if (!(error instanceof FleetRefused) || error.reason !== "capacity")
+        refuseRuntime("fleet_acquire", error);
       // Start legacy admission before reading pressure so the triggering request is counted too.
       const response = legacy();
       this.grow();
       return response;
     }
     const { reservation, dispatched } = acquired;
+    let step: "fleet_identity" | "fleet_forward" = "fleet_identity";
     this.grow();
     try {
       if (reservation.kind === "primary") {
@@ -167,6 +170,7 @@ export class RuntimeFleet {
       const cell = this.cell(reservation.identity);
       if (!sameIdentity(await cell.selected(), reservation.identity))
         throw new FleetRefused("uncertain");
+      step = "fleet_forward";
       const response = await cell.forward(request, 8317, pool, () => {
         beforeDispatch();
         dispatched();
@@ -180,7 +184,12 @@ export class RuntimeFleet {
         },
       });
     } catch (error) {
-      await reservation.release();
+      rememberRuntimeFailure(step, error);
+      try {
+        await reservation.release();
+      } catch (releaseError) {
+        refuseRuntime("fleet_release", releaseError);
+      }
       throw error;
     } finally {
       dispatched();
