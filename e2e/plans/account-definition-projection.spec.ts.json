@@ -6,12 +6,19 @@
       "job": "host-managed-accounts-runtime",
       "config": "account-definition.config.ts",
       "titles": [
-        "host-added Google metadata preserves retained and current account-check definitions"
+        "host-added Google metadata preserves retained and current account-check definitions",
+        "a current app runs when a retained host declaration ignores observation metadata"
       ]
     }
   ],
   "inputs": [
     ".upstream/packages/sdk/src/implementation/app-account-projection.ts",
-    ".upstream/packages/sdk/src/implementation/app-runner.ts"
+    ".upstream/packages/sdk/src/implementation/app-runner.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/contracts/protocols/released.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/sdk/src/contracts/apps.ts",
+    ".upstream/packages/sdk/src/implementation/apps.ts",
+    ".upstream/e2e/support/account-definition-host.ts"
   ]
 }
