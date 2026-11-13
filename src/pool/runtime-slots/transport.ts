@@ -3,6 +3,8 @@ import {
   SlotIdentity,
   SlotTarget,
   SlotRefused,
+  sameTarget,
+  sameIdentity,
   type SlotHealth,
   type SlotDriver,
 } from "./contract.ts";
@@ -53,8 +55,16 @@ export class BoundSlotDriver implements SlotDriver {
     if (policyLeaseUntil <= performance.now()) throw new SlotRefused("unhealthy");
     return { identity: health.identity, policyLeaseUntil };
   }
-  start(target: SlotTarget, signal: AbortSignal) {
-    return this.read(target, "start", signal);
+  async start(target: SlotTarget, signal: AbortSignal) {
+    const response = await this.call(target, "start", { target }, signal);
+    const started = Schema.decodeUnknownSync(Health)(await response.json());
+    if (!sameTarget(started.identity, target)) throw new SlotRefused("identity");
+    signal.throwIfAborted();
+    // Cold startup is not health transport time. Acquire a fresh lease without repeating start.
+    const health = await this.health(started.identity, signal);
+    signal.throwIfAborted();
+    if (!sameIdentity(health.identity, started.identity)) throw new SlotRefused("identity");
+    return health;
   }
   warm(identity: SlotIdentity, signal: AbortSignal) {
     return this.read(identity, "warm", signal);
