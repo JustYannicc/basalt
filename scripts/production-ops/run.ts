@@ -118,6 +118,17 @@ try {
       mode: 0o600,
       flag: "wx",
     });
+    if (safe.retainedRead) {
+      const work = safe.retainedRead.work;
+      const counts =
+        work === undefined
+          ? ""
+          : ` Work: ${work.references} references, ${work.builds} builds, ${work.metadataAttempts} metadata attempts, ${work.metadataPages} pages, ${work.metadataObjects} metadata objects, ${work.recordAttempts} record attempts, ${work.completedBuilds} completed builds.`;
+      const detail = `Retained frameworks refused at ${safe.retainedRead.objectClass}/${safe.retainedRead.readPhase} after ${safe.retainedRead.elapsedMs} ms.${counts}`;
+      process.stderr.write(`::error::${detail}\n`);
+      if (process.env.GITHUB_STEP_SUMMARY)
+        appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n${detail}\n`);
+    }
   } catch {
     process.stderr.write("Safe failure receipt could not be saved.\n");
   }
