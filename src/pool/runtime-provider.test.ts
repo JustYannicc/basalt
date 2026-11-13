@@ -6,7 +6,7 @@ import { runtimeApplicationConfigDigest } from "../../scripts/release-barrier/ru
 import { decodeProviderApplication } from "./runtime-provider/application.ts";
 import { providerDigest } from "./runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "./runtime-provider/settings.ts";
-import { RuntimeProviderReader } from "./runtime-provider/read.ts";
+import { RuntimeProviderReader, ProviderObservationRefused } from "./runtime-provider/read.ts";
 
 async function fixture(
   options: {
@@ -33,7 +33,7 @@ async function fixture(
     "synthetic-only-provider-token",
     async (input, init) => {
       assert.equal(init.method, "GET");
-      assert.equal(init.redirect, "error");
+      assert.equal(init.redirect, "manual");
       assert.ok(init.signal);
       const url = new URL(input);
       assert.equal(url.origin, "https://api.cloudflare.com");
@@ -200,4 +200,30 @@ test("a stalled secret read respects the observation abort and never calls the p
   await assert.rejects(observation, /provider observation refused/);
   pending.resolve("synthetic-provider-token");
   assert.equal(reads, 0);
+});
+
+test("synchronous and asynchronous fetch exceptions retain a closed cause without a raw error", async () => {
+  const f = await fixture();
+  const marker = "private-provider-or-credential";
+  for (const fetcher of [
+    (): Promise<Response> => {
+      throw new Error(marker);
+    },
+    async (): Promise<Response> => {
+      throw new Error(marker);
+    },
+  ]) {
+    await assert.rejects(
+      new RuntimeProviderReader(marker, fetcher).observe(f.expected),
+      (error: unknown) => {
+        assert.ok(error instanceof ProviderObservationRefused);
+        assert.equal(error.code, "provider_fetch_failed");
+        assert.equal(error.status, "unknown");
+        assert.equal(error.message, "Pool provider observation refused");
+        assert.equal("cause" in error, false);
+        assert.equal(JSON.stringify(error).includes(marker), false);
+        return true;
+      },
+    );
+  }
 });

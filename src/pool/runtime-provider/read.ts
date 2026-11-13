@@ -31,8 +31,10 @@ const Instance = Schema.Struct({
 const Pagination = Schema.Struct({ next_page_token: Schema.optional(Schema.String) });
 export class ProviderObservationRefused extends Error {
   readonly status = "unknown";
-  constructor() {
+  readonly code: "provider_observation_refused" | "provider_fetch_failed";
+  constructor(code: ProviderObservationRefused["code"] = "provider_observation_refused") {
     super("Pool provider observation refused");
+    this.code = code;
   }
 }
 
@@ -41,8 +43,13 @@ export class RuntimeProviderReader {
   private token: string | { get(): Promise<string | null> } | undefined;
   private fetcher: Fetcher;
   private now: () => number;
-  constructor(token: RuntimeProviderReader["token"], fetcher: Fetcher = fetch, now = Date.now) {
+  constructor(
+    token: RuntimeProviderReader["token"],
+    fetcher: Fetcher = (input, init) => fetch(input, init),
+    now = Date.now,
+  ) {
     this.token = token;
+    // Native fetch rejects a reader instance as its receiver.
     this.fetcher = fetcher;
     this.now = now;
   }
@@ -65,14 +72,22 @@ export class RuntimeProviderReader {
       );
     });
   }
+  private async fetchResponse(url: string, init: RequestInit) {
+    try {
+      const fetcher = this.fetcher;
+      return await fetcher(url, init);
+    } catch {
+      throw new ProviderObservationRefused("provider_fetch_failed");
+    }
+  }
   private async read(url: string, signal: AbortSignal) {
     try {
       // Resolve on each observation so provisioning or rotation needs no Worker restart.
       const token = await this.credential(signal);
       if (!token) throw new ProviderObservationRefused();
-      const response = await this.fetcher(url, {
+      const response = await this.fetchResponse(url, {
         method: "GET",
-        redirect: "error",
+        redirect: "manual",
         signal,
         headers: { authorization: `Bearer ${token}`, accept: "application/json" },
       });
@@ -99,7 +114,8 @@ export class RuntimeProviderReader {
       const result = Schema.decodeUnknownSync(Envelope)(JSON.parse(text));
       if (result.errors.length) throw new ProviderObservationRefused();
       return result;
-    } catch {
+    } catch (error) {
+      if (error instanceof ProviderObservationRefused) throw error;
       throw new ProviderObservationRefused();
     }
   }
@@ -144,7 +160,8 @@ export class RuntimeProviderReader {
       return instanceId === undefined
         ? Schema.decodeUnknownSync(ProviderApplicationProof)(proof)
         : Schema.decodeUnknownSync(ProviderRuntimeProof)({ ...proof, instanceId });
-    } catch {
+    } catch (error) {
+      if (error instanceof ProviderObservationRefused) throw error;
       throw new ProviderObservationRefused();
     }
   }
