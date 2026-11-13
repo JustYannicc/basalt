@@ -10,12 +10,14 @@ import {
   historyAccountTimeStatements,
   historyAccountTimeSchemaVersion,
   historyTrafficStatements,
+  historyTrafficSchemaVersion,
   historyAppSchemaVersion,
   historyBaseSchemaVersion,
   historySchemaMigrations,
   historySchemaVersion,
   migrateModelHistory,
 } from "../../src/pool/model-history/schema.ts";
+import { historyBulkStatements } from "../../src/pool/model-history/bulk-schema.ts";
 import { modelHistorySchemaPlan } from "../../src/pool/model-history/operator.ts";
 import { historyOperatorOptions, runHistoryOperator } from "../pool-history-operator.ts";
 import { seriesQuery } from "../../src/pool/model-history/series-query.ts";
@@ -23,17 +25,16 @@ import { poolUsageSeries } from "../../src/pool/model-history/series.ts";
 import { homeMetadataFixture } from "./history-fixture.ts";
 import { accountAuthority, authority, input, pool, seriesFixture } from "./series-fixture.ts";
 
-test("schema v2 upgrades add only the account-time index and purpose table without rewriting retained rows", async () => {
+test("schema v2 upgrades add the account-time index, purpose and import tables without rewriting retained rows", async () => {
   await seriesFixture(async ({ db, insert }) => {
     await homeMetadataFixture(db);
     // Model a deployed v2 database, retaining its real migrations and append-only triggers.
     await db.query("DROP INDEX basalt_model_requests_account_time");
     await db.query("DROP TABLE basalt_model_traffic");
-    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
-      historyAccountTimeSchemaVersion,
-    ]);
-    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
-      historySchemaVersion,
+    await db.query("DROP TABLE basalt_model_import_receipts");
+    await db.query("DROP TABLE basalt_model_import_jobs");
+    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=ANY($1::text[])", [
+      [historyAccountTimeSchemaVersion, historyTrafficSchemaVersion, historySchemaVersion],
     ]);
     await insert({ inputTokens: "9007199254740993" });
     const rows = (
@@ -52,9 +53,15 @@ test("schema v2 upgrades add only the account-time index and purpose table witho
     assert.equal(plan.automaticBackfill, false);
     assert.deepEqual(plan.pendingMigrations, [
       historyAccountTimeSchemaVersion,
+      historyTrafficSchemaVersion,
       historySchemaVersion,
     ]);
-    assert.deepEqual(plan.catalogDiff.createTables, ["basalt_model_traffic"]);
+    assert.deepEqual(plan.catalogDiff.createTables, [
+      "basalt_model_import_jobs",
+      "basalt_model_import_receipts",
+      "basalt_model_traffic",
+    ]);
+    assert.deepEqual(plan.catalogDiff.conflicts, []);
     assert.deepEqual(plan.catalogDiff.addColumns, []);
     assert.deepEqual(plan.catalogDiff.addIndexes, ["basalt_model_requests_account_time"]);
     assert.equal(plan.lockTimeout, "500ms");
@@ -109,11 +116,16 @@ test("schema v2 upgrades add only the account-time index and purpose table witho
       assert.deepEqual(preview.pendingDdl, [
         ...historyAccountTimeStatements,
         ...historyTrafficStatements,
+        ...historyBulkStatements,
       ]);
       assert.deepEqual(preview.migrationMarkers, [
         {
           text: "INSERT INTO basalt_model_history_migrations (name) VALUES ($1)",
           values: [historyAccountTimeSchemaVersion],
+        },
+        {
+          text: "INSERT INTO basalt_model_history_migrations (name) VALUES ($1)",
+          values: [historyTrafficSchemaVersion],
         },
         {
           text: "INSERT INTO basalt_model_history_migrations (name) VALUES ($1)",
@@ -123,6 +135,7 @@ test("schema v2 upgrades add only the account-time index and purpose table witho
       assert.deepEqual(JSON.parse(await readFile(path, "utf8")).report.pendingDdl, [
         ...historyAccountTimeStatements,
         ...historyTrafficStatements,
+        ...historyBulkStatements,
       ]);
       await runHistoryOperator({ ...options, apply: true }, "a".repeat(32), connect);
       assert.equal(writes, 1);
@@ -156,6 +169,7 @@ test("schema v2 upgrades add only the account-time index and purpose table witho
         historyBaseSchemaVersion,
         historyAppSchemaVersion,
         historyAccountTimeSchemaVersion,
+        historyTrafficSchemaVersion,
         historySchemaVersion,
       ],
     );
@@ -175,7 +189,7 @@ test("schema v2 upgrades add only the account-time index and purpose table witho
   });
 });
 
-test("a retained v3 database needs only the new purpose ledger", async () => {
+test("a retained v3 database needs only the purpose and import ledgers", async () => {
   await seriesFixture(async ({ db, insert }) => {
     await homeMetadataFixture(db);
     await insert({ inputTokens: "9007199254740993" });
@@ -183,12 +197,19 @@ test("a retained v3 database needs only the new purpose ledger", async () => {
       await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_requests r")
     ).rows;
     await db.query("DROP TABLE basalt_model_traffic");
-    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
-      historySchemaVersion,
+    await db.query("DROP TABLE basalt_model_import_receipts");
+    await db.query("DROP TABLE basalt_model_import_jobs");
+    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=ANY($1::text[])", [
+      [historyTrafficSchemaVersion, historySchemaVersion],
     ]);
     const plan = await modelHistorySchemaPlan(db);
-    assert.deepEqual(plan.pendingMigrations, [historySchemaVersion]);
-    assert.deepEqual(plan.catalogDiff.createTables, ["basalt_model_traffic"]);
+    assert.deepEqual(plan.pendingMigrations, [historyTrafficSchemaVersion, historySchemaVersion]);
+    assert.deepEqual(plan.catalogDiff.createTables, [
+      "basalt_model_import_jobs",
+      "basalt_model_import_receipts",
+      "basalt_model_traffic",
+    ]);
+    assert.deepEqual(plan.catalogDiff.conflicts, []);
     assert.deepEqual(plan.catalogDiff.addIndexes, []);
     assert.deepEqual(plan.catalogDiff.addColumns, []);
     await migrateModelHistory(db);
@@ -200,6 +221,155 @@ test("a retained v3 database needs only the new purpose ledger", async () => {
       (await db.query("SELECT count(*)::text AS n FROM basalt_model_traffic")).rows[0]!.n,
       "0",
     );
+  });
+});
+
+test("a retained v4 database adds import tables, preserves existing rows and safely repeats without a bulk marker", async () => {
+  await seriesFixture(async ({ db, insert }) => {
+    await homeMetadataFixture(db);
+    await insert({ inputTokens: "9007199254740993" });
+    await db.query(
+      "INSERT INTO basalt_model_traffic (pool,source,client_key,purpose,evidence) VALUES ($1,$2,$3,'real',$4)",
+      ["a".repeat(16), "b".repeat(64), "c".repeat(64), "d".repeat(64)],
+    );
+    await db.query("DROP TABLE basalt_model_import_receipts");
+    await db.query("DROP TABLE basalt_model_import_jobs");
+    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+      historySchemaVersion,
+    ]);
+    const requests = (
+      await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_requests r ORDER BY id")
+    ).rows;
+    const traffic = (
+      await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_traffic r")
+    ).rows;
+    const plan = await modelHistorySchemaPlan(db);
+    assert.equal(plan.applied, false);
+    assert.equal(plan.additive, true);
+    assert.equal(plan.writes, false);
+    assert.equal(plan.ledgerRows, "1");
+    assert.deepEqual(plan.pendingMigrations, [historySchemaVersion]);
+    assert.deepEqual(plan.catalogDiff, {
+      createTables: ["basalt_model_import_jobs", "basalt_model_import_receipts"],
+      addColumns: [],
+      addIndexes: [],
+      conflicts: [],
+    });
+    await migrateModelHistory(db);
+    assert.deepEqual(
+      (
+        await db.query(
+          "SELECT row_to_json(r)::text AS row FROM basalt_model_requests r ORDER BY id",
+        )
+      ).rows,
+      requests,
+    );
+    assert.deepEqual(
+      (await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_traffic r")).rows,
+      traffic,
+    );
+    await db.query(
+      `INSERT INTO basalt_model_import_jobs
+      (id,pool,organization,owner,manifest_digest,map_digest,total_rows,total_chunks)
+      VALUES ($1,'fixture-pool','fixture-org','fixture-owner',$2,$3,1,1)`,
+      ["e".repeat(64), "f".repeat(64), "a".repeat(64)],
+    );
+    await db.query(
+      `INSERT INTO basalt_model_import_receipts
+      (job,chunk,input_sha,ids_sha,rows,inserted,existing) VALUES ($1,0,$2,$3,1,1,0)`,
+      ["e".repeat(64), "b".repeat(64), "c".repeat(64)],
+    );
+    const jobs = (
+      await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_import_jobs r")
+    ).rows;
+    const receipts = (
+      await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_import_receipts r")
+    ).rows;
+    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+      historySchemaVersion,
+    ]);
+    const retry = await modelHistorySchemaPlan(db);
+    assert.equal(retry.applied, false);
+    assert.deepEqual(retry.pendingMigrations, [historySchemaVersion]);
+    assert.deepEqual(retry.catalogDiff, {
+      createTables: [],
+      addColumns: [],
+      addIndexes: [],
+      conflicts: [],
+    });
+    await migrateModelHistory(db);
+    const markers = (
+      await db.query(
+        "SELECT name,completed_at::text FROM basalt_model_history_migrations ORDER BY name",
+      )
+    ).rows;
+    await migrateModelHistory(db);
+    assert.deepEqual(
+      (
+        await db.query(
+          "SELECT name,completed_at::text FROM basalt_model_history_migrations ORDER BY name",
+        )
+      ).rows,
+      markers,
+      "a repeat apply must preserve completed migration receipts",
+    );
+    assert.deepEqual(
+      markers.map((row) => row.name),
+      [
+        historyBaseSchemaVersion,
+        historyAppSchemaVersion,
+        historyAccountTimeSchemaVersion,
+        historyTrafficSchemaVersion,
+        historySchemaVersion,
+      ],
+    );
+    assert.deepEqual(
+      (await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_import_jobs r")).rows,
+      jobs,
+    );
+    assert.deepEqual(
+      (await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_import_receipts r"))
+        .rows,
+      receipts,
+    );
+    const after = await modelHistorySchemaPlan(db);
+    assert.equal(after.applied, true);
+    assert.deepEqual(after.pendingMigrations, []);
+    assert.deepEqual(after.catalogDiff, {
+      createTables: [],
+      addColumns: [],
+      addIndexes: [],
+      conflicts: [],
+    });
+  });
+});
+
+test("missing non-idempotent migration markers retain table collision refusals even with the latest marker", async () => {
+  await seriesFixture(async ({ db }) => {
+    await homeMetadataFixture(db);
+    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+      historyTrafficSchemaVersion,
+    ]);
+    const traffic = await modelHistorySchemaPlan(db);
+    assert.equal(traffic.applied, false);
+    assert.deepEqual(traffic.pendingMigrations, [historyTrafficSchemaVersion]);
+    assert.deepEqual(traffic.catalogDiff.createTables, []);
+    assert.deepEqual(traffic.catalogDiff.conflicts, ["basalt_model_traffic"]);
+    await db.query("INSERT INTO basalt_model_history_migrations (name) VALUES ($1)", [
+      historyTrafficSchemaVersion,
+    ]);
+    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+      historyBaseSchemaVersion,
+    ]);
+    const base = await modelHistorySchemaPlan(db);
+    assert.equal(base.applied, false);
+    assert.deepEqual(base.pendingMigrations, [historyBaseSchemaVersion]);
+    assert.deepEqual(base.catalogDiff.createTables, []);
+    assert.equal(base.catalogDiff.conflicts.length, 18);
+    assert.ok(base.catalogDiff.conflicts.includes("basalt_model_requests"));
+    assert.ok(base.catalogDiff.conflicts.includes("basalt_model_requests_0"));
+    assert.ok(base.catalogDiff.conflicts.includes("basalt_model_history_cursor"));
+    assert.equal(base.catalogDiff.conflicts.includes("basalt_model_history_migrations"), false);
   });
 });
 

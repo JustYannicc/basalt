@@ -25,11 +25,19 @@
     ]
   },
   "inputs": [
+    ".upstream/apps/hosted/cloud/src/main.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/routes.ts",
+    ".upstream/apps/hosted/server/src/contracts/pool-usage-bulk-import.ts",
     ".upstream/apps/hosted/server/src/contracts/pool-usage-import.ts",
     ".upstream/apps/hosted/server/src/contracts/pool-usage.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-backend.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage-bulk-import.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-usage-import.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/index.ts",
+    "scripts/import-cpamp-bulk.ts",
+    "scripts/usage-import-bulk.ts",
+    "src/pool/deployment.ts",
     "src/pool/model-history/**",
     "src/pool/worker.ts"
   ]

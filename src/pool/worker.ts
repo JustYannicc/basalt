@@ -97,11 +97,17 @@ import {
 } from "./runtime-recovery.ts";
 import { poolRelease, poolReleasePath } from "./release.ts";
 import { historyTrafficPath } from "./model-history/traffic.ts";
+export { BulkUsageImport } from "./model-history/bulk-do.worker.ts";
+import type { BulkUsageImport } from "./model-history/bulk-do.worker.ts";
+import { routeBulkImport } from "./model-history/bulk-http.ts";
+import { bulkImportPath } from "./model-history/bulk-contract.ts";
 import { readPoolReliabilitySlo } from "./model-history/reliability-slo.ts";
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnvironment {
   PoolContainer: DurableObjectNamespace<PoolContainer>;
   PoolRuntime?: DurableObjectNamespace<PoolRuntime>;
+  BulkUsageImport?: DurableObjectNamespace<BulkUsageImport>;
+  UsageImportArtifacts?: R2Bucket;
   POOL_DATABASE_URL: string;
   POOL_AUTH_DATABASE?: Hyperdrive;
   POOL_MANAGEMENT_KEY: string;
@@ -694,6 +700,12 @@ export async function handlePoolWorkerRequest(
 ): Promise<Response> {
   request = stripModelLifetimeRequest(request);
   const pathname = new URL(request.url).pathname;
+  if (pathname === bulkImportPath)
+    return routeBulkImport(request, {
+      signingKey: env.POOL_APP_SIGNING_KEY,
+      previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
+      jobs: env.BulkUsageImport,
+    });
   // Answered here, without waking the container.
   if (pathname === poolReleasePath) return poolRelease(request, env);
   if (
