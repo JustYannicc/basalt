@@ -78,7 +78,7 @@ for (const direction of ["extra-to-legacy", "legacy-to-extra"]) {
         assert.ok(socket);
         const messages: unknown[] = [];
         let next: (() => void) | undefined;
-        socket.addEventListener("message", (event) => {
+        socket.addEventListener("message", (event: { data: unknown }) => {
           messages.push(event.data);
           next?.();
         });
@@ -102,7 +102,7 @@ for (const direction of ["extra-to-legacy", "legacy-to-extra"]) {
           assert.deepEqual(new Uint8Array(reply), bytes);
         }
         const closed = new Promise<number>((resolve) =>
-          socket.addEventListener("close", (event) => resolve(event.code)),
+          socket.addEventListener("close", (event: { code: number }) => resolve(event.code)),
         );
         socket.send(JSON.stringify({ fin: true }));
         while (
