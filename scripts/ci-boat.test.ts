@@ -124,21 +124,30 @@ test("pool fixture networking is scoped to Boat and checked before the original 
   );
 });
 
-test("signed migration proofs stay hosted with their original commands and budgets", () => {
+test("signed migration proofs stay hosted with both bounded adoption shards", () => {
   const job = workflow.jobs["production-ops-migrations"];
   assert.equal(job["runs-on"], "ubuntu-latest");
   assert.ok(!boatJobs.includes("production-ops-migrations"));
-  assert.equal(job["timeout-minutes"], 14);
-  const adoption = job.steps.find(
-    (step: { name?: string }) =>
-      step.name === "Verify exact provider account adoption through signed operations",
+  assert.equal(job["timeout-minutes"], 20);
+  const adoption = job.steps.filter((step: { run?: string }) =>
+    step.run?.startsWith("node scripts/production-ops/prove-provider-adoption.ts"),
   );
+  assert.equal(adoption.length, 2);
+  for (const shard of [1, 2]) {
+    const step = job.steps.find(
+      (step: { name?: string }) =>
+        step.name === `Verify provider account adoption through signed operations, shard ${shard}`,
+    );
+    assert.equal(step["timeout-minutes"], 5);
+    assert.equal(
+      step.run,
+      `node scripts/production-ops/prove-provider-adoption.ts --shard ${shard}/2`,
+    );
+  }
   const migrations = job.steps.find(
     (step: { name?: string }) =>
       step.name === "Verify migration ownership through signed apply verification and replay",
   );
-  assert.equal(adoption["timeout-minutes"], 5);
-  assert.equal(adoption.run, "node scripts/production-ops/prove-provider-adoption.ts");
   assert.equal(migrations["timeout-minutes"], 5);
   assert.equal(
     migrations.run,
