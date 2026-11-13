@@ -710,7 +710,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_error_contr
 new file mode 100644
 --- /dev/null
 +++ b/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,165 @@
 +package openai
 +
 +import (
@@ -823,7 +823,11 @@ new file mode 100644
 +			if errResponse != nil {
 +				t.Fatal(errResponse)
 +			}
-+			defer response.Body.Close()
++			defer func() {
++				if errClose := response.Body.Close(); errClose != nil {
++					t.Errorf("response body close: %v", errClose)
++				}
++			}()
 +			body, errRead := io.ReadAll(response.Body)
 +			if errRead != nil {
 +				t.Fatal(errRead)
@@ -876,7 +880,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_validation_
 new file mode 100644
 --- /dev/null
 +++ b/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,147 @@
 +package openai
 +
 +import (
@@ -975,7 +979,11 @@ new file mode 100644
 +			if errResponse != nil {
 +				t.Fatal(errResponse)
 +			}
-+			defer response.Body.Close()
++			defer func() {
++				if errClose := response.Body.Close(); errClose != nil {
++					t.Errorf("response body close: %v", errClose)
++				}
++			}()
 +			body, errRead := io.ReadAll(response.Body)
 +			if errRead != nil {
 +				t.Fatal(errRead)
