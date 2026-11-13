@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Deferred, Effect, Fiber, Redacted } from "effect";
 import { CurrentTransformer } from "effect/sql/Statement";
-import { app, organization, postgresFixture, until } from "./org-lock-postgres-fixture.ts";
+import { app, postgresFixture, until } from "./org-lock-postgres-fixture.ts";
 import { home, membership, nativeRead, runtime, seed } from "./pool-membership-query-fixture.ts";
 
 test("native membership evaluates policy once on PostgreSQL and refreshes exact references", async () => {
