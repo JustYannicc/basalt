@@ -1,0 +1,40 @@
+diff --git a/apps/hosted/web/src/contracts/obsidian-connection.ts b/apps/hosted/web/src/contracts/obsidian-connection.ts
+--- a/apps/hosted/web/src/contracts/obsidian-connection.ts
++++ b/apps/hosted/web/src/contracts/obsidian-connection.ts
+@@ -49,13 +49,35 @@ export const obsidianConnectionInput = (
+   ],
+ });
+ 
+-export function obsidianConnectLink(app: Pick<App, "id" | "slug">, connection: string) {
++/** The catalog entry's name for a new Obsidian app, before anyone names it after its vault. */
++const catalogName = "Obsidian";
++/** The plugin's longest accepted vault name; a longer one is dropped rather than truncated. */
++const vaultNameLimit = 255;
++
++/**
++ * The vault an Obsidian app stands for: one app is one vault, named after it. An app that still
++ * has the catalog's name stands for no vault yet, so its first device may connect from any vault.
++ */
++const appVaultName = (app: Pick<App, "name">) => {
++  const name = app.name.trim();
++  return name === catalogName || name.length === 0 || name.length > vaultNameLimit ? null : name;
++};
++
++/**
++ * A link the plugin opens to connect one device. It names the app's vault as `vaultName`, so the
++ * plugin warns before a device in a different vault connects and imports into this one, and the person
++ * can still connect. Obsidian itself routes `vault=` to that vault's window, or refuses the
++ * link when no such vault exists, before the plugin could warn.
++ */
++export function obsidianConnectLink(app: Pick<App, "id" | "slug" | "name">, connection: string) {
+   const url = new URL(connection);
+   url.searchParams.set("elicitation_mode", "native");
++  const vault = appVaultName(app);
+   const query = new URLSearchParams({
+     connection: url.toString(),
+     appId: app.id,
+     appSlug: app.slug,
++    ...(vault === null ? {} : { vaultName: vault }),
+   });
+   return `obsidian://signalbox-sync?${query.toString().replace(/\+/gu, "%20")}`;
+ }
