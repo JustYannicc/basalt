@@ -27,6 +27,8 @@ import { requestCount, seriesCoverage } from "./series-coverage.ts";
 import { seriesQuery, tokenColumns } from "./series-query.ts";
 import { HistoryInputError, historyObject, timestamp } from "./record.ts";
 import { digest } from "../backend-users.ts";
+import { seriesUsageForecasts } from "./usage-forecasts.ts";
+import { homeCaptureCoverage } from "./capture-coverage.ts";
 
 function bucket(
   row: Record<string, unknown>,
@@ -40,9 +42,13 @@ function bucket(
     failed = requestCount(row.failed);
   const counts: SeriesCounts = {
     at,
-    partial: nanos(at) < nanos(bounds.from) || nanos(at) + span > nanos(bounds.to),
+    ...(input.timezone && typeof row.end_at === "string" ? { end: timestamp(row.end_at) } : {}),
+    partial:
+      nanos(at) < nanos(bounds.from) ||
+      (typeof row.end_at === "string" ? nanos(row.end_at) : nanos(at) + span) > nanos(bounds.to),
     requests,
     failed,
+    ...(input.timezone ? { limited: requestCount(row.limited ?? "0") } : {}),
     unassignedFailures: requestCount(row.unassigned),
     successRate: successRate(requests, failed),
   };
@@ -183,6 +189,7 @@ async function readUsageSeries(
       from: input.from,
       to: input.to,
       bucket: input.bucket,
+      ...(input.timezone ? { timezone: input.timezone } : {}),
       ...(input.window ? { window: input.window } : {}),
       asOf,
       coverage,
@@ -190,7 +197,8 @@ async function readUsageSeries(
       next: null,
     };
     let last: Record<string, unknown> | undefined;
-    let used = new TextEncoder().encode(JSON.stringify(result)).byteLength;
+    let used =
+      new TextEncoder().encode(JSON.stringify(result)).byteLength + (input.forecast ? 8192 : 0);
     const groups = new Map<string, (typeof result.groups)[number]>();
     for (const [index, row] of rows.entries()) {
       const key = String(row.group_key),
@@ -222,6 +230,26 @@ async function readUsageSeries(
     if (count < rows.length) {
       if (!last) throw new Error("Usage coverage exceeds the page byte bound");
       result.next = writeSeriesCursor(scope, String(last.group_key), String(last.at));
+    }
+    if (input.forecast) {
+      const native = coverage.sources.find((source) => source.kind === "home");
+      const capture =
+        native?.backfillComplete === true && result.next === null
+          ? await homeCaptureCoverage(
+              db,
+              String(query.values[0]),
+              query.homeSource,
+              input.from,
+              input.to,
+            )
+          : undefined;
+      result.forecasts = seriesUsageForecasts(result, capture);
+      if (new TextEncoder().encode(JSON.stringify(result)).byteLength > maxSeriesBytes)
+        result.forecasts = {
+          ...result.forecasts,
+          series: [],
+          warnings: ["Forecasts exceed the response budget. Use a shorter training range."],
+        };
     }
     if (new TextEncoder().encode(JSON.stringify(result)).byteLength > maxSeriesBytes)
       throw new Error("Usage page exceeds its byte bound");

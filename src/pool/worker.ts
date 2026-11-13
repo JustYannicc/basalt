@@ -1,5 +1,11 @@
 import { stripModelLifetimeRequest } from "./model-lifetime-contract.ts";
 import { reportWhenDue } from "./reporting.ts";
+import { PoolChanges, publishPoolChanges } from "./change-revisions.ts";
+import { poolChangesPath, readCommittedPoolChanges } from "./change-http.ts";
+import {
+  readPoolHistorySnapshot,
+  deliverPoolHistoryChanges,
+} from "./model-history/change-revisions.ts";
 import { creditRoutingPaths, handleCreditRouting } from "./credit-routing-http.ts";
 export { PoolRuntime } from "./runtime-do.worker.ts";
 import type { PoolRuntime } from "./runtime-do.worker.ts";
@@ -130,9 +136,16 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private protection: RuntimeProtection;
   private importRemoval: ImportRemoval;
   private recovery: RuntimeRecovery;
+  private changes: PoolChanges;
 
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
     super(ctx, env);
+    this.changes = new PoolChanges(
+      ctx.storage,
+      (changes) => publishPoolChanges(env.TOOLS_SERVICE, env.POOL_APP_SIGNING_KEY, changes),
+      () =>
+        ctx.waitUntil(this.changes.deliver().catch(() => console.error("POOL_CHANGES_PENDING"))),
+    );
     this.handoff = new RuntimeHandoff(
       ctx,
       env,
@@ -218,7 +231,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       });
     };
     this.mirrorHome = new HomeClient(home, Date.now, () => this.control.invalidateViews());
-    this.overviewPrices = new OverviewPrices(this.mirrorHome, ctx.storage);
+    this.overviewPrices = new OverviewPrices(this.mirrorHome, this.changes.storage);
     this.control = new PoolControl(ctx.storage, {
       nativeMembership: (pool, organization) =>
         readNativeMembership(env.TOOLS_SERVICE, env.POOL_APP_SIGNING_KEY, pool, organization),
@@ -234,7 +247,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       ctx.storage,
     );
     this.usage = new PoolUsage({
-      storage: ctx.storage,
+      storage: this.changes.storage,
       client: new HomeClient(home, Date.now, () => this.control.invalidateViews()),
       signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
@@ -412,6 +425,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async alarm() {
+    await this.changes.deliver().catch(() => console.error("POOL_CHANGES_PENDING"));
     await this.appModels.tick().catch(() => console.error("POOL_APP_MODEL_KEY_CLEANUP_PENDING"));
     await this.memberships.tick();
     await this.computers.expire();
@@ -435,6 +449,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, async (db) => {
             const result = await captureHomeRequests(db);
             progress.rows = result.state === "active" ? result.scanned : 0;
+            await deliverPoolHistoryChanges(db, result.pending, (changes) =>
+              publishPoolChanges(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY, changes),
+            );
           }),
         );
       } catch {
@@ -483,6 +500,21 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   async fetch(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
+    if (pathname === poolChangesPath)
+      return readCommittedPoolChanges(request, {
+        signingKey: this.env.POOL_APP_SIGNING_KEY,
+        previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+        current: async (pool) => {
+          const snapshot = await withHistoryDatabase(
+            this.env.POOL_AUTH_DATABASE?.connectionString,
+            (db) => readPoolHistorySnapshot(db, pool),
+          );
+          return {
+            revisions: [...(await this.changes.current(pool)), ...snapshot.revisions],
+            ...(snapshot.deadline ? { validUntil: Date.parse(snapshot.deadline) } : {}),
+          };
+        },
+      });
     try {
       await requireActivePoolOrganization(request, {
         signingKey: this.env.POOL_APP_SIGNING_KEY,

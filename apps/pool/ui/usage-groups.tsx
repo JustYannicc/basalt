@@ -1,4 +1,5 @@
 import { Fragment, useState } from "react";
+import type { Provider } from "../contract.ts";
 import type { Result } from "../index.ts";
 import type {
   PoolOverviewResult,
@@ -164,7 +165,17 @@ function Stack({ row, max, name }: { row: Row; max: bigint; name: (id: string) =
   );
 }
 
-function Name({ row, by, name }: { row: Row; by: Grouping; name: (id: string) => string }) {
+function Name({
+  row,
+  by,
+  name,
+  lab,
+}: {
+  row: Row;
+  by: Grouping;
+  name: (id: string) => string;
+  lab?: ((id: string) => Provider | undefined) | undefined;
+}) {
   const meta = row.countsOnly
     ? "Counted, not split until account mapping lands"
     : by === "person" && row.empty
@@ -175,7 +186,7 @@ function Name({ row, by, name }: { row: Row; by: Grouping; name: (id: string) =>
   return (
     <span className="flex min-w-0 items-center gap-2">
       {by === "provider" && row.provider ? (
-        <LabMark provider={row.provider} name={row.label} small />
+        <LabMark provider={lab?.(row.provider)} small />
       ) : by === "model" && !row.countsOnly ? (
         <span
           className="size-2 shrink-0 rounded-[2px]"
@@ -341,6 +352,7 @@ export function WhoUses({
   models,
   days,
   name,
+  lab,
   onRetry,
   overview,
   personal,
@@ -350,6 +362,8 @@ export function WhoUses({
   models: Result<SeriesRead> | undefined;
   days: number;
   name: (id: string) => string;
+  /** The provider entry for a lab id, whose app icons mark Labs rows. */
+  lab?: (id: string) => Provider | undefined;
   onRetry: () => void;
   overview?: PoolOverviewResult;
   personal?: PoolPersonalOverviewResult;
@@ -507,11 +521,11 @@ export function WhoUses({
                                 strokeLinejoin="round"
                               />
                             </svg>
-                            <Name row={row} by={by} name={name} />
+                            <Name row={row} by={by} name={name} lab={lab} />
                           </button>
                         ) : (
                           <span className="block pl-[22px]">
-                            <Name row={row} by={by} name={name} />
+                            <Name row={row} by={by} name={name} lab={lab} />
                           </span>
                         )}
                       </th>

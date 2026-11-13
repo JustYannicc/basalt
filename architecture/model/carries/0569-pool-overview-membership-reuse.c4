@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.poolMembership {
+    metadata {
+      constraint "An authenticated overview acquires native membership and its current fingerprint once inside the existing locked transaction, then reuses that snapshot for account offerings and the private history-reference projection. Every per-account inspection, opaque-reference check, count bound and receiver acknowledgment remains inside that transaction. Standalone usage reads acquire their own fresh membership. No membership SQL, lock mode, migration or protocol changes."
+    }
+  }
+}

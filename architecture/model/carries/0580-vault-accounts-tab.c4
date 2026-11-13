@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A vault app's Accounts tab is titled Devices syncing and the app's name, lists the devices from the same read its Apps card summarises, and counts them beside the tab's label without changing the tab's accessible name; apps that are not vaults get neither. A device idle more than two days reads Last active or Last synced in the warning color, and a vault card turns to the warning color when even its newest device has been idle that long. Any app's layout can show such a count, and any card line can take the warning color."
+    }
+  }
+}

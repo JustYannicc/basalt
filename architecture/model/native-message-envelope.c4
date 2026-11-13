@@ -1,0 +1,7 @@
+model {
+  extend basalt.nativeTunnel {
+    metadata {
+      constraint "Native tunnel v2 bounds each WebSocket message at 16 MiB independently of its unchanged 64 KiB transport credit window. Chunk consumption returns credit during bounded message reassembly only while no completed input awaits its actual consumer receipt. Completed input resumes credit only on an exact sequence and length receipt from the negotiated node reader; void socket sends and arbitrary provider output never count as consumption. Unacknowledged messages plus one native credit window stay bounded. There is no lifetime cumulative WebSocket input cap. Provider output buffers at most one message budget and 256 pending messages; overflow closes with an unknown dispatched outcome instead of replaying inference. The v1 limits, frames and cumulative budget remain unchanged for installed clients. New desktop, CLI and mobile connections try v2 and may fall back to v1 only after an unaccepted handshake, before any server frame or operation. Server access, revocation, lease expiry and policy checks are unchanged. Source and local synthetic proofs do not establish deployed or installed-client acceptance."
+    }
+  }
+}

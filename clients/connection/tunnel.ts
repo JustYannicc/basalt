@@ -4,6 +4,7 @@ import {
   decodeTunnelFrame,
   encodeTunnelBytes,
   tunnelLimits,
+  tunnelMessageLimits,
   nativeTunnelReadyTimeoutMs,
   type TunnelClientFrame,
   type TunnelData,
@@ -49,6 +50,8 @@ export function openTunnel(
   let outputCredit: number = tunnelLimits.windowBytes;
   let acknowledged = 0,
     sent = 0;
+  let messageBytes: number = tunnelLimits.windowBytes;
+  let messageEnvelope = false;
   let wake: (() => void) | undefined, wakeSend: (() => void) | undefined;
   const send = (frame: TunnelClientFrame) => {
     if (stopped) throw failure ?? new Error("Tunnel interrupted; operation was not replayed.");
@@ -97,10 +100,14 @@ export function openTunnel(
           frame.expiresAt <= Date.now() ||
           Object.entries(tunnelLimits).some(
             ([key, value]) => frame.limits[key as keyof typeof tunnelLimits] !== value,
-          )
+          ) ||
+          (frame.limits.websocketMessageBytes !== undefined &&
+            frame.limits.websocketMessageBytes !== tunnelMessageLimits.websocketMessageBytes)
         )
           throw new Error("Incompatible tunnel session.");
         clearTimeout(timer);
+        messageEnvelope = frame.limits.websocketMessageBytes !== undefined;
+        messageBytes = frame.limits.websocketMessageBytes ?? tunnelLimits.windowBytes;
         started = true;
         send({ v: 1, type: "open", id: 1, ...open });
         send({ v: 1, type: "credit", id: 1, bytes: tunnelLimits.windowBytes });
@@ -160,14 +167,19 @@ export function openTunnel(
   signal.addEventListener("abort", fail, { once: true });
   if (signal.aborted) fail();
   return {
+    get websocketMessageBytes() {
+      return messageBytes;
+    },
     response: response.promise,
     send: async (bytes, text = false, message = false) => {
       await ready.promise;
-      if (inputEnded || (message && bytes.length > tunnelLimits.windowBytes))
+      if (inputEnded || (message && bytes.length > messageBytes))
         throw new Error("Request message exceeds its limit.");
-      sent += bytes.length;
-      if (sent > (message ? tunnelLimits.websocketRequestBytes : tunnelLimits.requestBytes))
-        throw new Error("Request exceeds its limit.");
+      if (!message || !messageEnvelope) {
+        sent += bytes.length;
+        if (sent > (message ? tunnelLimits.websocketRequestBytes : tunnelLimits.requestBytes))
+          throw new Error("Request exceeds its limit.");
+      }
       if (message && bytes.length === 0)
         send({ v: 1, type: "data", id: 1, bytes: "", text, more: false });
       for (let offset = 0; offset < bytes.length;) {
