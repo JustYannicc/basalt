@@ -17,6 +17,7 @@ import { upgradedSocket } from "./platform.ts";
 import { TunnelWebSocket } from "./websocket.ts";
 import { recordTunnelFailure, tunnelFailure } from "./failure.ts";
 import type { OperationTiming } from "./timing.ts";
+import { modelDrainProtocol } from "../pool/model-drain-contract.ts";
 
 export class TunnelOperation {
   readonly output = new TunnelOutput();
@@ -108,7 +109,12 @@ export class TunnelOperation {
       this.timing?.("dispatch");
       const response =
         this.open.operation.service === "models"
-          ? await nativeModelRequest(target, env)
+          ? await nativeModelRequest(
+              target,
+              env,
+              this.limits.websocketMessageBytes !== undefined &&
+                this.open.operation.transport === "websocket",
+            )
           : await env.TOOLS_SERVICE.fetch(target);
       this.timing?.("headers");
       if (this.stopped) {
@@ -118,6 +124,13 @@ export class TunnelOperation {
       if (this.open.operation.transport === "websocket" && response.status === 101) {
         const socket = upgradedSocket(response);
         if (!socket) throw new Error("Missing model socket");
+        if (
+          this.limits.websocketMessageBytes !== undefined &&
+          response.headers.get("sec-websocket-protocol") !== modelDrainProtocol
+        ) {
+          socket.close(1000, "Model consumer protocol unavailable");
+          throw new Error("Model consumer protocol unavailable");
+        }
         this.socket = new TunnelWebSocket(
           socket,
           this.open.id,

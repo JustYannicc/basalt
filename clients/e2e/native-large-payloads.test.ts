@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { once } from "node:events";
 import { WebSocket } from "ws";
 import { envelopeFixture } from "./native-envelope-fixture.ts";
+import { deferred } from "./remote-fixture.ts";
 
 for (const size of [65_535, 65_536, 65_537, 1_048_577, 16_777_216])
   test(`native public bridge round trips a ${size}-byte context as one WebSocket message`, async () => {
@@ -130,11 +131,39 @@ test("overflow after dispatch closes the native operation without another infere
   try {
     await once(socket, "open");
     const closed = once(socket, "close");
-    f.models[0]!.dispatchEvent(new MessageEvent("message", { data: new ArrayBuffer(16_777_217) }));
+    f.models[0]!.dispatchEvent(new MessageEvent("message", { data: new ArrayBuffer(16_777_218) }));
     await closed;
     assert.equal(f.models.length, 1);
     assert.deepEqual(f.protocols, ["basalt.tunnel.v2"]);
     assert.equal(f.models[0]!.closed, true);
+  } finally {
+    socket.terminate();
+    await f.close();
+  }
+});
+
+test("a stalled model consumer holds native input at one credit window until actual read receipts", async () => {
+  const f = await envelopeFixture();
+  const socket = new WebSocket(f.origin, { perMessageDeflate: false });
+  try {
+    await once(socket, "open");
+    const model = f.models[0]!;
+    model.paused = true;
+    const complete = deferred<void>();
+    let received = 0;
+    socket.on("message", (data) => {
+      assert.deepEqual(data, Buffer.alloc(16_384, 137));
+      if (++received === 8) complete.resolve();
+    });
+    for (let index = 0; index < 8; index++) socket.send(Buffer.alloc(16_384, 137));
+    await model.fullWindow.promise;
+    assert.equal(model.pending.length, 4);
+    assert.equal(model.messages.length, 0, "Queued bytes are not a consumer read.");
+    model.paused = false;
+    model.consume();
+    await complete.promise;
+    assert.equal(model.messages.length, 8);
+    assert.equal(f.models.length, 1);
   } finally {
     socket.terminate();
     await f.close();

@@ -24,13 +24,49 @@ class ModelPeer extends EventTarget implements TunnelSocket {
   closed = false;
   messages: (string | ArrayBuffer)[] = [];
   received = deferred<void>();
+  fullWindow = deferred<void>();
+  paused = false;
+  pending: ArrayBuffer[] = [];
+  private framed: boolean;
+  constructor(framed = false) {
+    super();
+    this.framed = framed;
+  }
   accept() {}
   send(data: Parameters<TunnelSocket["send"]>[0]) {
     if (typeof data !== "string" && !(data instanceof ArrayBuffer))
       throw new Error("Invalid fixture message.");
-    this.messages.push(data);
-    this.received.resolve();
-    queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data })));
+    if (!this.framed) {
+      this.messages.push(data);
+      this.received.resolve();
+      queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data })));
+      return;
+    }
+    if (!(data instanceof ArrayBuffer)) throw new Error("Expected private consumer frame.");
+    this.pending.push(data);
+    if (this.pending.reduce((sum, frame) => sum + frame.byteLength - 5, 0) >= 65_536)
+      this.fullWindow.resolve();
+    queueMicrotask(() => this.consume());
+  }
+  consume() {
+    if (this.paused || this.closed) return;
+    for (const data of this.pending.splice(0)) {
+      const frame = new Uint8Array(data),
+        body = frame.subarray(5);
+      const sequence = new DataView(data).getUint32(1);
+      this.messages.push(frame[0] === 0 ? new TextDecoder().decode(body) : body.slice().buffer);
+      this.received.resolve();
+      const ack = new Uint8Array(9);
+      ack[0] = 2;
+      const view = new DataView(ack.buffer);
+      view.setUint32(1, sequence);
+      view.setUint32(5, body.length);
+      this.dispatchEvent(new MessageEvent("message", { data: ack.buffer }));
+      const output = new Uint8Array(1 + body.length);
+      output[0] = frame[0]!;
+      output.set(body, 1);
+      this.dispatchEvent(new MessageEvent("message", { data: output.buffer }));
+    }
   }
   close() {
     if (this.closed) return;
@@ -103,9 +139,11 @@ export async function envelopeFixture(legacyOnly = false) {
           TOOLS_SERVICE: { fetch: async () => Response.json(access) },
           POOL_SERVICE: {
             fetch: async () => {
-              const model = new ModelPeer();
+              const model = new ModelPeer(protocol === "basalt.tunnel.v2");
               models.push(model);
               const response = new Response(null);
+              if (protocol === "basalt.tunnel.v2")
+                response.headers.set("sec-websocket-protocol", "basalt.model-drain.v1");
               Object.defineProperties(response, {
                 status: { value: 101 },
                 webSocket: { value: model },

@@ -1,0 +1,280 @@
+diff --git a/sdk/api/handlers/openai/basalt_model_drain.go b/sdk/api/handlers/openai/basalt_model_drain.go
+new file mode 100644
+index 0000000..491501c
+--- /dev/null
++++ b/sdk/api/handlers/openai/basalt_model_drain.go
+@@ -0,0 +1,59 @@
++package openai
++
++import (
++	"encoding/binary"
++	"errors"
++	"github.com/gorilla/websocket"
++)
++
++const basaltModelDrainProtocol = "basalt.model-drain.v1"
++const basaltModelDrainBytes = 16 * 1024 * 1024
++
++// The private transport acknowledges an actual socket read, not inference success.
++func readBasaltModelDrain(conn *websocket.Conn, kind int, payload []byte, sequence *uint32) (int, []byte, error) {
++	if conn.Subprotocol() != basaltModelDrainProtocol {
++		return kind, payload, nil
++	}
++	if kind != websocket.BinaryMessage || len(payload) < 5 || len(payload) > basaltModelDrainBytes+5 || payload[0] > 1 {
++		return 0, nil, errors.New("invalid model consumer frame")
++	}
++	next := binary.BigEndian.Uint32(payload[1:5])
++	if next != *sequence+1 || next > 0x7fffffff {
++		return 0, nil, errors.New("invalid model consumer sequence")
++	}
++	*sequence = next
++	kind = websocket.TextMessage
++	if payload[0] == 1 {
++		kind = websocket.BinaryMessage
++	}
++	return kind, payload[5:], nil
++}
++
++func (w *responsesWebsocketWriter) acknowledgeBasaltModelDrain(sequence uint32, size int) error {
++	if w.conn.Subprotocol() != basaltModelDrainProtocol {
++		return nil
++	}
++	frame := make([]byte, 9)
++	frame[0] = 2
++	binary.BigEndian.PutUint32(frame[1:5], sequence)
++	binary.BigEndian.PutUint32(frame[5:9], uint32(size))
++	w.writeMu.Lock()
++	defer w.writeMu.Unlock()
++	if w.closing.Load() {
++		return websocket.ErrCloseSent
++	}
++	return w.conn.WriteMessage(websocket.BinaryMessage, frame)
++}
++
++// Caller owns writeMu, just as on the raw Responses transport.
++func (w *responsesWebsocketWriter) writeBasaltModelPayload(payload []byte) error {
++	if w.conn.Subprotocol() != basaltModelDrainProtocol {
++		return w.conn.WriteMessage(websocket.TextMessage, payload)
++	}
++	if len(payload) > basaltModelDrainBytes {
++		return errors.New("model consumer output exceeded")
++	}
++	frame := make([]byte, 1+len(payload))
++	copy(frame[1:], payload)
++	return w.conn.WriteMessage(websocket.BinaryMessage, frame)
++}
+diff --git a/sdk/api/handlers/openai/basalt_model_drain_test.go b/sdk/api/handlers/openai/basalt_model_drain_test.go
+new file mode 100644
+index 0000000..15d7fc1
+--- /dev/null
++++ b/sdk/api/handlers/openai/basalt_model_drain_test.go
+@@ -0,0 +1,129 @@
++package openai
++
++import (
++	"bytes"
++	"context"
++	"encoding/binary"
++	"github.com/gorilla/websocket"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++func basaltModelDrainPair(t *testing.T, protocol string) (*websocket.Conn, *websocket.Conn) {
++	t.Helper()
++	accepted := make(chan *websocket.Conn, 1)
++	closed := make(chan struct{})
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		upgrader := websocket.Upgrader{Subprotocols: []string{protocol}}
++		conn, err := upgrader.Upgrade(w, r, nil)
++		if err != nil {
++			return
++		}
++		accepted <- conn
++		<-closed
++		_ = conn.Close()
++	}))
++	dialer := websocket.Dialer{Subprotocols: []string{protocol}}
++	client, _, err := dialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	peer := <-accepted
++	t.Cleanup(func() { _ = client.Close(); close(closed); server.Close() })
++	return client, peer
++}
++
++func TestBasaltModelDrainReadCompletion(t *testing.T) {
++	client, peer := basaltModelDrainPair(t, basaltModelDrainProtocol)
++	ctx, cancel := context.WithCancelCause(context.Background())
++	defer cancel(nil)
++	var epoch atomic.Uint64
++	input, done := readResponsesWebsocketInput(ctx, cancel, peer, nil, newResponsesLocalInterrupt(), newResponsesWebsocketWriter(peer), nil, &epoch)
++	if cap(input) != 0 {
++		t.Fatal("private consumer must not retain a 16-message queue")
++	}
++	payload := []byte(`{"type":"response.create","model":"synthetic","input":[]}`)
++	frame := make([]byte, 5+len(payload))
++	binary.BigEndian.PutUint32(frame[1:5], 1)
++	copy(frame[5:], payload)
++	if err := client.WriteMessage(websocket.BinaryMessage, frame); err != nil {
++		t.Fatal(err)
++	}
++	select {
++	case item := <-input:
++		if !bytes.Equal(item.Payload, payload) {
++			t.Fatal("private envelope reached model input")
++		}
++	case <-time.After(time.Second):
++		t.Fatal("consumer did not read the input")
++	}
++	_ = client.SetReadDeadline(time.Now().Add(time.Second))
++	kind, ack, err := client.ReadMessage()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if kind != websocket.BinaryMessage || len(ack) != 9 || ack[0] != 2 || binary.BigEndian.Uint32(ack[1:5]) != 1 || binary.BigEndian.Uint32(ack[5:9]) != uint32(len(payload)) {
++		t.Fatal("invalid read-completion receipt")
++	}
++	_ = client.Close()
++	<-done
++}
++
++func TestBasaltModelDrainRawTransportIsUnchanged(t *testing.T) {
++	client, peer := basaltModelDrainPair(t, "raw-fixture")
++	ctx, cancel := context.WithCancelCause(context.Background())
++	defer cancel(nil)
++	var epoch atomic.Uint64
++	writer := newResponsesWebsocketWriter(peer)
++	input, done := readResponsesWebsocketInput(ctx, cancel, peer, nil, newResponsesLocalInterrupt(), writer, nil, &epoch)
++	if cap(input) != 16 {
++		t.Fatal("raw queue changed")
++	}
++	payload := []byte(`{"type":"response.create","input":[]}`)
++	if err := client.WriteMessage(websocket.TextMessage, payload); err != nil {
++		t.Fatal(err)
++	}
++	if item := <-input; !bytes.Equal(item.Payload, payload) {
++		t.Fatal("raw input changed")
++	}
++	if err := writeResponsesWebsocketPayload(writer, nil, payload, time.Now()); err != nil {
++		t.Fatal(err)
++	}
++	kind, actual, err := client.ReadMessage()
++	if err != nil || kind != websocket.TextMessage || !bytes.Equal(actual, payload) {
++		t.Fatal("raw output or receipt behavior changed")
++	}
++	_ = client.Close()
++	<-done
++}
++
++func TestBasaltModelDrainOutputAndSequence(t *testing.T) {
++	client, peer := basaltModelDrainPair(t, basaltModelDrainProtocol)
++	writer := newResponsesWebsocketWriter(peer)
++	payload := []byte(`{"type":"response.completed"}`)
++	if err := writeResponsesWebsocketPayload(writer, nil, payload, time.Now()); err != nil {
++		t.Fatal(err)
++	}
++	kind, actual, err := client.ReadMessage()
++	if err != nil || kind != websocket.BinaryMessage || actual[0] != 0 || !bytes.Equal(actual[1:], payload) {
++		t.Fatal("private output framing changed model bytes")
++	}
++	var sequence uint32
++	frame := []byte{1, 0, 0, 0, 1, 0, 255}
++	originalKind, original, err := readBasaltModelDrain(peer, websocket.BinaryMessage, frame, &sequence)
++	if err != nil || originalKind != websocket.BinaryMessage || !bytes.Equal(original, frame[5:]) {
++		t.Fatal("binary model input changed")
++	}
++	if _, _, err := readBasaltModelDrain(peer, websocket.BinaryMessage, frame, &sequence); err == nil {
++		t.Fatal("duplicate sequence accepted")
++	}
++	for _, bad := range [][]byte{{}, {2, 0, 0, 0, 2}, {0, 0, 0, 0, 3}} {
++		if _, _, err := readBasaltModelDrain(peer, websocket.BinaryMessage, bad, &sequence); err == nil {
++			t.Fatal("invalid private frame accepted")
++		}
++	}
++}
+diff --git a/sdk/api/handlers/openai/openai_responses_websocket.go b/sdk/api/handlers/openai/openai_responses_websocket.go
+index 6fdabe7..5febcc2 100644
+--- a/sdk/api/handlers/openai/openai_responses_websocket.go
++++ b/sdk/api/handlers/openai/openai_responses_websocket.go
+@@ -251,7 +251,7 @@ func (w *responsesWebsocketWriter) closeWithPayload(payload []byte) (bool, error
+ 	}
+ 	defer w.writeMu.Unlock()
+ 
+-	errWrite := w.conn.WriteMessage(websocket.TextMessage, payload)
++	errWrite := w.writeBasaltModelPayload(payload)
+ 	errClose := w.conn.Close()
+ 	if errWrite != nil {
+ 		return false, errWrite
+@@ -420,11 +420,17 @@ func (h *OpenAIResponsesAPIHandler) authenticateResponsesWebsocketTurn(c *gin.Co
+ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+ 	upgrader := responsesWebsocketUpgrader
+ 	upgrader.EnableCompression = responsesWebsocketCompressionEnabled.Load()
++	if c.Request.Header.Get("Sec-WebSocket-Protocol") == basaltModelDrainProtocol {
++		upgrader.Subprotocols = []string{basaltModelDrainProtocol}
++	}
+ 	conn, err := upgrader.Upgrade(c.Writer, c.Request, websocketUpgradeHeaders(c.Request))
+ 	if err != nil {
+ 		return
+ 	}
+ 	writer := newResponsesWebsocketWriter(conn)
++	if conn.Subprotocol() == basaltModelDrainProtocol {
++		conn.SetReadLimit(basaltModelDrainBytes + 5)
++	}
+ 	passthroughSessionID := uuid.NewString()
+ 	// After the upgrade, error-only HTTP logs cannot consume deferred bodies.
+ 	// Apply the policy before routing so plugin callbacks inherit it as well.
+diff --git a/sdk/api/handlers/openai/openai_responses_websocket_input.go b/sdk/api/handlers/openai/openai_responses_websocket_input.go
+index 5e14b9f..d74211c 100644
+--- a/sdk/api/handlers/openai/openai_responses_websocket_input.go
++++ b/sdk/api/handlers/openai/openai_responses_websocket_input.go
+@@ -151,17 +151,30 @@ func (s *responsesLocalInterrupt) takeClaimed() []byte {
+ // handled immediately so they are not queued behind an active response.
+ // The bounded queue backpressures clients instead of retaining unlimited input.
+ func readResponsesWebsocketInput(ctx context.Context, cancel context.CancelCauseFunc, conn *websocket.Conn, interrupt func([]byte) error, local *responsesLocalInterrupt, writer *responsesWebsocketWriter, timeline websocketTimelineAppender, epoch *atomic.Uint64) (<-chan cliproxyexecutor.WebsocketInput, <-chan struct{}) {
+-	input := make(chan cliproxyexecutor.WebsocketInput, 16)
++	capacity := 16
++	if conn.Subprotocol() == basaltModelDrainProtocol {
++		capacity = 0
++	}
++	input := make(chan cliproxyexecutor.WebsocketInput, capacity)
+ 	done := make(chan struct{})
+ 	go func() {
+ 		defer close(done)
+ 		defer close(input)
++		var drainSequence uint32
+ 		for {
+ 			kind, payload, errRead := conn.ReadMessage()
+ 			if errRead != nil {
+ 				cancel(errRead)
+ 				return
+ 			}
++			kind, payload, errRead = readBasaltModelDrain(conn, kind, payload, &drainSequence)
++			if errRead == nil {
++				errRead = writer.acknowledgeBasaltModelDrain(drainSequence, len(payload))
++			}
++			if errRead != nil {
++				cancel(errRead)
++				return
++			}
+ 			msgEpoch := epoch.Load()
+ 			if kind != websocket.TextMessage && kind != websocket.BinaryMessage {
+ 				continue
+diff --git a/sdk/api/handlers/openai/openai_responses_websocket_timeline.go b/sdk/api/handlers/openai/openai_responses_websocket_timeline.go
+index ef2fc84..467929c 100644
+--- a/sdk/api/handlers/openai/openai_responses_websocket_timeline.go
++++ b/sdk/api/handlers/openai/openai_responses_websocket_timeline.go
+@@ -303,7 +303,7 @@ func writeResponsesWebsocketPayload(writer *responsesWebsocketWriter, wsTimeline
+ 	if writer.closing.Load() {
+ 		return websocket.ErrCloseSent
+ 	}
+-	return writer.conn.WriteMessage(websocket.TextMessage, payload)
++	return writer.writeBasaltModelPayload(payload)
+ }
+ 
+ func appendWebsocketTimelineDisconnect(timeline websocketTimelineAppender, err error, timestamp time.Time) {
