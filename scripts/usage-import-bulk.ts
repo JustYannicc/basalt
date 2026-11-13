@@ -1,5 +1,8 @@
+import { privateJson, fail } from "./bulk-cli-input.ts";
+export { BulkCliError, privateJson } from "./bulk-cli-input.ts";
+export { bulkStatus, readGuard } from "./bulk-cli-protocol.ts";
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { resolve } from "node:path";
 import { metadataInput, metadataLines, fileDigest } from "./usage-import-stream.ts";
@@ -12,9 +15,7 @@ import {
   maximumBulkRows,
   maximumBulkChunkBytes,
   type BulkDefinition,
-  type BulkGuard,
   type BulkManifest,
-  type BulkStatus,
 } from "../src/pool/model-history/bulk-contract.ts";
 
 export const hash = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -33,16 +34,6 @@ export interface BulkDescriptor {
   version: 1;
   files: BulkFiles;
   definition: BulkDefinition;
-}
-export class BulkCliError extends Error {}
-const fail = (message: string): never => {
-  throw new BulkCliError(message);
-};
-export async function privateJson(path: string, limit: number) {
-  const info = await stat(path);
-  if (!info.isFile() || info.size > limit || (info.mode & 0o077) !== 0)
-    return fail("JSON input must be private and bounded");
-  return JSON.parse(await readFile(path, "utf8")) as unknown;
 }
 function filesInput(raw: unknown): BulkFiles {
   const value = historyObject(raw);
@@ -229,100 +220,4 @@ export async function readDescriptor(path: string): Promise<BulkDescriptor> {
 export async function verifyDescriptor(descriptor: BulkDescriptor) {
   const current = await prepareBulk(descriptor.files);
   if (JSON.stringify(current) !== JSON.stringify(descriptor)) fail("Descriptor input changed");
-}
-export function bulkStatus(raw: unknown, definition: BulkDefinition): BulkStatus {
-  const value = historyObject(raw);
-  if (
-    value.job !== definition.job ||
-    value.manifestDigest !== definition.manifestDigest ||
-    value.accountMappingDigest !== definition.accountMappingDigest ||
-    value.totalRows !== definition.manifest.totalRows ||
-    value.totalChunks !== definition.manifest.chunks.length ||
-    !["uploading", "running", "paused", "completed"].includes(String(value.state)) ||
-    !["uploadedChunks", "committedChunks", "inserted", "existing"].every(
-      (key) =>
-        typeof value[key] === "number" &&
-        Number.isSafeInteger(value[key]) &&
-        Number(value[key]) >= 0,
-    ) ||
-    Number(value.uploadedChunks) > Number(value.totalChunks) ||
-    Number(value.committedChunks) > Number(value.uploadedChunks) ||
-    Number(value.inserted) + Number(value.existing) > Number(value.totalRows) ||
-    (value.state === "completed" &&
-      (value.committedChunks !== value.totalChunks ||
-        Number(value.inserted) + Number(value.existing) !== value.totalRows))
-  )
-    fail("Server did not acknowledge the exact manifest and account map");
-  const reasons = [
-    "operator_paused",
-    "guard_paused",
-    "chunk_unavailable",
-    "chunk_invalid",
-    "admission_failed",
-    "commit_failed",
-  ];
-  if (value.reason !== null && !reasons.includes(String(value.reason)))
-    fail("Unknown bulk pause reason");
-  return {
-    job: definition.job,
-    state: String(value.state),
-    manifestDigest: definition.manifestDigest,
-    accountMappingDigest: definition.accountMappingDigest,
-    totalRows: Number(value.totalRows),
-    totalChunks: Number(value.totalChunks),
-    uploadedChunks: Number(value.uploadedChunks),
-    committedChunks: Number(value.committedChunks),
-    inserted: Number(value.inserted),
-    existing: Number(value.existing),
-    reason: value.reason === null ? null : String(value.reason),
-  };
-}
-/** No timestamp or CPU reading is refreshed locally; missing fields revoke readiness. */
-export async function readGuard(path: string): Promise<BulkGuard> {
-  const stopped: BulkGuard = {
-    observedAt: 0,
-    expiresAt: 0,
-    ready: false,
-    cpu: 0,
-    poolErrors: 0,
-    queryErrors: 0,
-  };
-  try {
-    const value = historyObject(await privateJson(path, 16_384));
-    for (const key of ["observedAt", "expiresAt", "poolErrors", "queryErrors"])
-      if (
-        typeof value[key] !== "number" ||
-        !Number.isSafeInteger(value[key]) ||
-        Number(value[key]) < 0
-      )
-        return stopped;
-    if (
-      typeof value.ready !== "boolean" ||
-      typeof value.cpu !== "number" ||
-      !Number.isFinite(value.cpu) ||
-      value.cpu < 0
-    )
-      return stopped;
-    const guard: BulkGuard = {
-      observedAt: Number(value.observedAt),
-      expiresAt: Number(value.expiresAt),
-      ready: value.ready,
-      cpu: value.cpu,
-      poolErrors: Number(value.poolErrors),
-      queryErrors: Number(value.queryErrors),
-    };
-    const now = Date.now();
-    guard.ready =
-      guard.ready &&
-      guard.observedAt <= now &&
-      guard.expiresAt > now &&
-      guard.expiresAt - guard.observedAt <= 90_000 &&
-      now - guard.observedAt <= 90_000 &&
-      guard.cpu <= 100 &&
-      guard.poolErrors === 0 &&
-      guard.queryErrors === 0;
-    return guard;
-  } catch {
-    return stopped;
-  }
 }

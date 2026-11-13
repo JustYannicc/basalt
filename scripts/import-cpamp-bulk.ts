@@ -3,6 +3,7 @@ import { open } from "node:fs/promises";
 import { setTimeout } from "node:timers/promises";
 import { historyObject } from "../src/pool/model-history/record.ts";
 import type { BulkStatus } from "../src/pool/model-history/bulk-contract.ts";
+import { freshObservation } from "../src/pool/model-history/bulk-load.ts";
 import { privateCredential } from "./usage-import-source.ts";
 import { fileDigest } from "./usage-import-stream.ts";
 import {
@@ -38,11 +39,13 @@ watch --descriptor JSON --owner-session-file PRIVATE_COOKIE --receipts NEW_JSONL
   [--guard-file PRIVATE_GUARD_JSON --approve EXACT_MANIFEST_DIGEST]
   Without a guard, watch only observes. Supplying a guard requires explicit approval.
 
-Guard JSON must have observedAt/expiresAt Unix milliseconds, ready boolean, cpu number,
-poolErrors and queryErrors nonnegative integer counts. All fields are mandatory.
+Guard JSON requires observedAt/expiresAt/cpuAt Unix milliseconds, ready, cpu,
+releaseReadComplete/releaseWindowActive booleans, poolErrors and queryErrors.
 Use observations from the external guardian. Never rewrite times or assume missing errors
 are zero. Observations expire within 90 seconds. Missing, stale or unsafe guard data sends
-ready=false and pauses the job. Watch stops; resume explicitly after the guardian recovers.
+ready=false and pauses the job. Automatic load pauses recover from fresh observations;
+operator pauses and critical stops need explicit owner resume. Optional serving telemetry
+is unavailable until configured; once configured, stale or failed reads pause.
 
 Each receipts file is new, private and fsynced before and after requests. HTTP mutations
 are never retried automatically. After an uncertain result, use status with a new receipt
@@ -221,16 +224,17 @@ async function main() {
     const guard = async () => {
       const observation = await readGuard(values["guard-file"]!);
       const observed = await request("guard", { observation });
-      if (observation.ready) return observed;
-      const paused = await request("pause");
-      console.log(JSON.stringify(paused));
-      throw new BulkCliError("External guard missing, stale or unsafe; job paused");
+      if (!freshObservation(observation, Date.now()))
+        throw new BulkCliError("External guard missing or stale; job paused");
+      return observed;
     };
     const watch = async (initial: BulkStatus) => {
       let status = initial;
       console.log(JSON.stringify(status));
       while (status.state !== "completed") {
-        if (status.state === "paused") return status;
+        if (status.state === "stopped")
+          throw new BulkCliError(`Bulk import stopped and needs attention: ${status.reason}`);
+        if (status.state === "paused" && status.reason === "operator_paused") return status;
         await setTimeout(5000);
         if (guarded) status = await guard();
         status = await request("status");

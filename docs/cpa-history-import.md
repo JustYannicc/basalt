@@ -113,16 +113,36 @@ manifest alone does not start the bulk job.
 Run `apply` with the same descriptor and owner session, a new receipts path,
 `--approve` set to the exact `manifestDigest`, and `--guard-file` pointing to
 fresh observations from the external guardian. The guard JSON requires
-`observedAt` and `expiresAt` in Unix milliseconds, `ready`, `cpu`, `poolErrors`
-and `queryErrors`. Observations expire within ninety seconds. Never refresh
+`observedAt`, `expiresAt` and `cpuAt` in Unix milliseconds, `ready`, `cpu`,
+`releaseReadComplete`, `releaseWindowActive`, `poolErrors` and `queryErrors`. Observations expire within ninety seconds. Never refresh
 the timestamps yourself or replace missing error counts with zero. The guardian
 continues to enforce its CPU/error pause and recovery policy. Missing, stale or
 unsafe observations pause the job, including when the operator client stops.
 
-The EU job processes one bounded chunk per alarm. Every new chunk rechecks the
+The EU job starts SQL batches at 500 rows and adjusts toward 500 milliseconds of
+database work, bounded between 100 and 5,000 rows. A persisted cooldown separates
+batches. CPU at least 70 percent pauses work until below 60 percent. Two minutes
+at least 90 percent or any database error stops the job for operator attention.
+Release and backup windows pause work. Status retains batch size, observed rate
+and the throttle reason; a stopped job requires explicit owner resume.
+
+Serving telemetry is optional until a verified source is configured. Status says
+not available when none exists. A configured source is binding, with a frozen
+pre-import, non-release five-minute baseline per route and stream mode. P99 needs
+at least 20 successful completions, with 100 preferred. Thresholds are the greater
+of 1.25 times baseline p99 and baseline p99 plus 100 milliseconds, or baseline
+failure rate plus one percentage point. Two regressed fresh checks at least sixty
+seconds apart pause work. Any new 5xx against a zero-5xx baseline pauses immediately.
+Failed retrieval or observations/computations older than 120 seconds also pause.
+These tolerances are engineering policy, not measured safe constants. Model
+completion timing and separately labeled serving-dependency timing stay distinct;
+control/session durations never substitute for model completions. No probe traffic
+is needed or generated. Counts, windows, thresholds and unavailable state persist.
+
+The EU job processes one bounded SQL batch per alarm. Every new chunk rechecks the
 current owner's authority and the mapped targets' enabled, selected,
-same-provider state. Its transaction saves the chunk receipt with the request
-rows. Replaying an identical chunk returns that receipt's original counts;
+same-provider state. Its transaction saves the exact artifact subrange receipt with the request
+rows. Replaying an identical subrange returns that receipt's original counts;
 changed input or retained contents refuses. Existing imported rows and live
 capture keep the same event identities, so overlap does not add duplicate usage.
 

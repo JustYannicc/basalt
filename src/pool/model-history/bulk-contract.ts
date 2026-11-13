@@ -1,6 +1,8 @@
 import { digest } from "../backend-users.ts";
 import { historyObject, invalidHistory } from "./record.ts";
 import { importAccountMappings, type ImportAccountMapping } from "./import-account-mapping.ts";
+import type { ServingObservation } from "./bulk-serving-contract.ts";
+import type { ServingState } from "./bulk-serving.ts";
 
 export const bulkImportPath = "/pool/v1/usage/import/bulk";
 export const maximumBulkRows = 5000;
@@ -38,6 +40,10 @@ export interface BulkGuard {
   expiresAt: number;
   ready: boolean;
   cpu: number;
+  cpuAt: number;
+  releaseReadComplete: boolean;
+  releaseWindowActive: boolean;
+  serving?: ServingObservation;
   poolErrors: number;
   queryErrors: number;
 }
@@ -53,6 +59,11 @@ export interface BulkStatus {
   inserted: number;
   existing: number;
   reason: string | null;
+  chunkSize: number;
+  rateRowsPerSecond: number;
+  nextBatchAt: number;
+  requiresAttention: boolean;
+  serving: ServingState;
 }
 export function bulkHash(raw: unknown): string {
   if (typeof raw !== "string" || !/^[a-f0-9]{64}$/.test(raw)) return invalidHistory();

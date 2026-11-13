@@ -176,6 +176,10 @@ test("bulk CLI preserves accepted IDs, separates upload from approval, and stops
     if (input.operation === "approve") {
       assert.equal(input.manifestDigest, definition.manifestDigest);
       assert.equal(input.accountMappingDigest, definition.accountMappingDigest);
+      current.state = "completed";
+      current.reason = null;
+      current.committedChunks = 2;
+      current.inserted = 5001;
     }
     if (input.operation === "resume") {
       current.state = "completed";
@@ -241,6 +245,22 @@ test("bulk CLI preserves accepted IDs, separates upload from approval, and stops
       inserted: 0,
       existing: 0,
       reason: null,
+      chunkSize: 500,
+      rateRowsPerSecond: 0,
+      nextBatchAt: 0,
+      requiresAttention: false,
+      serving: {
+        source: null,
+        kind: null,
+        status: "not available",
+        baseline: null,
+        thresholds: [],
+        window: null,
+        observedAt: null,
+        computedAt: null,
+        regressionAt: null,
+        consecutiveRegressions: 0,
+      },
     };
     const uploaded = await command("upload");
     assert.equal(uploaded.code, 0, uploaded.output);
@@ -298,13 +318,16 @@ test("bulk CLI preserves accepted IDs, separates upload from approval, and stops
       guard,
     ]);
     assert.equal(paused.code, 1, paused.output);
-    assert.deepEqual(operations.slice(beforeGuard), ["status", "guard", "pause"]);
+    assert.deepEqual(operations.slice(beforeGuard), ["status", "guard"]);
     const now = Date.now();
     expectedGuard = {
       observedAt: now,
       expiresAt: now + 90_000,
       ready: true,
       cpu: 5,
+      cpuAt: now,
+      releaseReadComplete: true,
+      releaseWindowActive: false,
       poolErrors: 0,
       queryErrors: 0,
     };
@@ -317,8 +340,21 @@ test("bulk CLI preserves accepted IDs, separates upload from approval, and stops
       guard,
     ]);
     assert.equal(applied.code, 0, applied.output);
-    assert.deepEqual(operations.slice(beforeApply), ["status", "guard", "approve", "resume"]);
+    assert.deepEqual(operations.slice(beforeApply), ["status", "guard", "approve"]);
     assert.match(applied.output, /"state":"completed"/);
+    const beforeResume = operations.length;
+    assert.equal(
+      (
+        await command("resume", [
+          "--approve",
+          String(definition.manifestDigest),
+          "--guard-file",
+          guard,
+        ])
+      ).code,
+      0,
+    );
+    assert.deepEqual(operations.slice(beforeResume), ["status", "guard", "resume"]);
     dropUpload = true;
     const beforeDrop = operations.length;
     const uncertain = await command("upload");

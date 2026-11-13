@@ -1,5 +1,16 @@
 import type { BulkDefinition, BulkGuard, BulkIdentity, BulkStatus } from "./bulk-contract.ts";
 import { maximumBulkChunkBytes, maximumBulkRows } from "./bulk-contract.ts";
+import {
+  initialLoad,
+  initialChunkRows,
+  targetChunkMs,
+  observeLoad,
+  criticalLoad,
+  automaticThrottle,
+  resizeChunk,
+  type BulkLoad,
+} from "./bulk-load.ts";
+import { initialServing, observeServing, type ServingState } from "./bulk-serving.ts";
 
 interface Storage {
   get<T>(key: string): Promise<T | undefined>;
@@ -9,10 +20,17 @@ interface Counts {
   inserted: number;
   existing: number;
   count: number;
+  elapsedMs?: number;
 }
 interface JobState {
   definition: BulkDefinition;
-  state: "uploading" | "running" | "paused" | "completed";
+  state: "uploading" | "running" | "paused" | "stopped" | "completed";
+  load: BulkLoad;
+  chunkSize: number;
+  rateRowsPerSecond: number;
+  nextBatchAt: number;
+  startedAt: number;
+  serving: ServingState;
   approved: boolean;
   uploaded: boolean[];
   receipts: (Counts | null)[];
@@ -28,7 +46,13 @@ export interface BulkJobDependencies {
   };
   validateChunk(definition: BulkDefinition, index: number, data: string): Promise<void>;
   /** Commits rows and their replay receipt in one transaction, returning the original counts. */
-  commitChunk(definition: BulkDefinition, index: number, data: string): Promise<Counts>;
+  commitChunk(
+    definition: BulkDefinition,
+    index: number,
+    data: string,
+    start: number,
+    rows: number,
+  ): Promise<Counts>;
   admit(definition: BulkDefinition): Promise<void>;
   now(): number;
   intervalMs?: 100 | 1000;
@@ -36,21 +60,10 @@ export interface BulkJobDependencies {
 const key = "model-history-bulk-job-v1";
 const sameIdentity = (a: BulkIdentity, b: BulkIdentity) =>
   a.pool === b.pool && a.organization === b.organization && a.owner === b.owner;
-const freshGuard = (guard: BulkGuard | null, now: number): guard is BulkGuard =>
-  guard !== null &&
-  guard.ready === true &&
-  [guard.observedAt, guard.expiresAt, guard.cpu, guard.poolErrors, guard.queryErrors].every(
-    Number.isFinite,
-  ) &&
-  guard.cpu >= 0 &&
-  guard.cpu <= 100 &&
-  guard.poolErrors === 0 &&
-  guard.queryErrors === 0 &&
-  guard.observedAt <= now &&
-  guard.expiresAt > now &&
-  guard.expiresAt - guard.observedAt <= 90_000 &&
-  now - guard.observedAt <= 90_000;
-
+const complete = (state: JobState) =>
+  state.receipts.every(
+    (receipt, index) => receipt?.count === state.definition.manifest.chunks[index]!.rows,
+  );
 /** The root authenticates every command and constructs its identity from the authenticated owner. */
 export class BulkJob {
   private tail: Promise<unknown> = Promise.resolve();
@@ -75,9 +88,9 @@ export class BulkJob {
   private save(state: JobState) {
     return this.dependencies.storage.put(key, state);
   }
-  private arm() {
+  private arm(at = 0) {
     return this.dependencies.setAlarm(
-      this.dependencies.now() + (this.dependencies.intervalMs ?? 1000),
+      Math.max(at, this.dependencies.now() + (this.dependencies.intervalMs ?? 1000)),
     );
   }
   private summary(state: JobState): BulkStatus {
@@ -89,10 +102,17 @@ export class BulkJob {
       totalRows: state.definition.manifest.totalRows,
       totalChunks: state.uploaded.length,
       uploadedChunks: state.uploaded.filter(Boolean).length,
-      committedChunks: state.receipts.filter(Boolean).length,
+      committedChunks: state.receipts.filter(
+        (receipt, index) => receipt?.count === state.definition.manifest.chunks[index]!.rows,
+      ).length,
       inserted: state.receipts.reduce((sum, receipt) => sum + (receipt?.inserted ?? 0), 0),
       existing: state.receipts.reduce((sum, receipt) => sum + (receipt?.existing ?? 0), 0),
       reason: state.reason,
+      chunkSize: state.chunkSize,
+      rateRowsPerSecond: state.state === "running" ? state.rateRowsPerSecond : 0,
+      nextBatchAt: state.nextBatchAt,
+      requiresAttention: state.state === "stopped",
+      serving: structuredClone(state.serving),
     };
   }
   async begin(definition: BulkDefinition): Promise<BulkStatus> {
@@ -107,6 +127,12 @@ export class BulkJob {
       }
       const state: JobState = {
         definition: immutable,
+        load: initialLoad(),
+        chunkSize: initialChunkRows,
+        rateRowsPerSecond: 0,
+        nextBatchAt: 0,
+        startedAt: this.dependencies.now(),
+        serving: initialServing(),
         state: "uploading",
         approved: false,
         uploaded: immutable.manifest.chunks.map(() => false),
@@ -156,8 +182,9 @@ export class BulkJob {
       if (!state.approved) {
         state.approved = true;
         if (state.reason !== "operator_paused") {
-          state.state = "running";
-          state.reason = null;
+          const reason = this.safety(state, state.guard);
+          state.state = criticalLoad(reason) ? "stopped" : reason ? "paused" : "running";
+          state.reason = reason;
         }
         await this.save(state);
       }
@@ -169,15 +196,18 @@ export class BulkJob {
     const observation = structuredClone(guard);
     return this.serialized(async () => {
       const state = await this.load(identity);
-      const ready = freshGuard(observation, this.dependencies.now());
-      state.guard = ready ? observation : null;
-      if (state.approved && state.state !== "completed") {
-        if (!ready && state.state === "running") {
-          state.state = "paused";
-          state.reason = "guard_paused";
-        } else if (ready && state.state === "paused" && state.reason === "guard_paused") {
-          state.state = "running";
-          state.reason = null;
+      state.guard = observation;
+      const reason = this.safety(state, observation);
+      if (state.approved && state.state !== "completed" && state.state !== "stopped") {
+        if (criticalLoad(reason)) {
+          state.state = "stopped";
+          state.reason = reason;
+        } else if (
+          state.reason !== "operator_paused" &&
+          (state.state === "running" || automaticThrottle(state.reason))
+        ) {
+          state.state = reason ? "paused" : "running";
+          state.reason = reason;
         }
       }
       await this.save(state);
@@ -188,7 +218,7 @@ export class BulkJob {
   pause(identity: BulkIdentity): Promise<BulkStatus> {
     return this.serialized(async () => {
       const state = await this.load(identity);
-      if (state.state !== "completed") {
+      if (state.state !== "completed" && state.state !== "stopped") {
         state.state = "paused";
         state.reason = "operator_paused";
         await this.save(state);
@@ -201,9 +231,9 @@ export class BulkJob {
       const state = await this.load(identity);
       if (!state.approved) throw new Error("Bulk job requires manifest approval");
       if (state.state !== "completed") {
-        if (!freshGuard(state.guard, this.dependencies.now()))
+        if (this.safety(state, state.guard) !== null)
           throw new Error("Bulk job requires a fresh ready guard");
-        state.state = state.receipts.every(Boolean) ? "completed" : "running";
+        state.state = complete(state) ? "completed" : "running";
         state.reason = null;
         await this.save(state);
         if (state.state === "running") await this.arm();
@@ -221,14 +251,25 @@ export class BulkJob {
     });
     return this.ticking;
   }
+  private safety(state: JobState, guard: BulkGuard | null) {
+    const now = this.dependencies.now();
+    const load = observeLoad(state.load, guard, now);
+    const serving = observeServing(state.serving, guard?.serving, now, state.startedAt);
+    return load ?? serving;
+  }
   private async ready() {
     return this.serialized(async () => {
       const state = await this.load();
       if (state.state !== "running" || !state.approved) return null;
-      if (!freshGuard(state.guard, this.dependencies.now())) {
-        state.state = "paused";
-        state.reason = "guard_paused";
+      const reason = this.safety(state, state.guard);
+      if (reason) {
+        state.state = criticalLoad(reason) ? "stopped" : "paused";
+        state.reason = reason;
         await this.save(state);
+        return null;
+      }
+      if (this.dependencies.now() < state.nextBatchAt) {
+        await this.arm(state.nextBatchAt);
         return null;
       }
       return state;
@@ -239,7 +280,9 @@ export class BulkJob {
     if (!initial) return;
     // Persist the recovery wake before external I/O. Reboots replay only the atomic SQL receipt.
     await this.arm();
-    const index = initial.receipts.findIndex((receipt) => receipt === null);
+    const index = initial.receipts.findIndex(
+      (receipt, index) => receipt?.count !== initial.definition.manifest.chunks[index]!.rows,
+    );
     if (index < 0) return;
     const definition = initial.definition;
     let reason = "chunk_unavailable";
@@ -259,28 +302,50 @@ export class BulkJob {
       await this.dependencies.admit(structuredClone(definition));
       if (!(await this.ready())) return;
       reason = "commit_failed";
-      const receipt = await this.dependencies.commitChunk(structuredClone(definition), index, data);
+      const start = initial.receipts[index]?.count ?? 0;
+      const rows = Math.min(initial.chunkSize, chunk.rows - start);
+      const startedAt = this.dependencies.now();
+      const receipt = await this.dependencies.commitChunk(
+        structuredClone(definition),
+        index,
+        data,
+        start,
+        rows,
+      );
+      const elapsedMs = Math.max(1, receipt.elapsedMs ?? this.dependencies.now() - startedAt);
       if (
         ![receipt.inserted, receipt.existing, receipt.count].every(
           (value) => Number.isSafeInteger(value) && value >= 0,
         ) ||
-        receipt.count !== chunk.rows ||
+        receipt.count !== rows ||
+        !Number.isFinite(elapsedMs) ||
+        elapsedMs <= 0 ||
         receipt.inserted + receipt.existing !== receipt.count
       )
         throw new Error("Invalid bulk receipt");
       await this.serialized(async () => {
         const state = await this.load();
-        state.receipts[index] = { ...receipt };
-        if (state.state === "running" && state.receipts.every(Boolean)) state.state = "completed";
+        const previous = state.receipts[index];
+        if ((previous?.count ?? 0) !== start) return;
+        state.receipts[index] = {
+          inserted: (previous?.inserted ?? 0) + receipt.inserted,
+          existing: (previous?.existing ?? 0) + receipt.existing,
+          count: start + receipt.count,
+        };
+        if (rows === initial.chunkSize) state.chunkSize = resizeChunk(rows, elapsedMs);
+        const cooldownMs = Math.max(targetChunkMs, this.dependencies.intervalMs ?? 1000);
+        state.rateRowsPerSecond = (receipt.count * 1000) / (elapsedMs + cooldownMs);
+        state.nextBatchAt = this.dependencies.now() + cooldownMs;
+        if (state.state === "running" && complete(state)) state.state = "completed";
         await this.save(state);
-        if (state.state === "running") await this.arm();
+        if (state.state === "running") await this.arm(state.nextBatchAt);
       });
     } catch {
       await this.serialized(async () => {
         const state = await this.load();
         if (state.state === "running") {
-          state.state = "paused";
-          state.reason = reason;
+          state.state = reason === "commit_failed" ? "stopped" : "paused";
+          state.reason = reason === "commit_failed" ? "database_error" : reason;
           await this.save(state);
         }
       });

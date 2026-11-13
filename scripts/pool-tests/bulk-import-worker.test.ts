@@ -39,10 +39,13 @@ import { BulkUsageImport } from "./src/pool/model-history/bulk-do.worker.ts";
 import { routeBulkImport } from "./src/pool/model-history/bulk-http.ts";
 export { BulkUsageImport };
 export class FixtureBulkUsageImport extends BulkUsageImport {
+  offset = 0;
+  now() { return Date.now() + this.offset; }
   // Dispatch the production callback explicitly so timer races cannot hide a failed guard.
   async alarm() {}
   async fetch(request) {
     if (new URL(request.url).pathname === "/__fixture/tick") {
+      this.offset += 1000;
       await super.alarm();
       return new Response(null, { status: 204 });
     }
@@ -133,7 +136,10 @@ const readyGuard = () => {
     observedAt: now,
     expiresAt: now + 90_000,
     ready: true,
-    cpu: 95,
+    cpu: 50,
+    cpuAt: now,
+    releaseReadComplete: true,
+    releaseWindowActive: false,
     poolErrors: 0,
     queryErrors: 0,
   };
@@ -372,7 +378,7 @@ test("bulk signed HTTP commands run through SQLite DO, R2 and real PostgreSQL re
       await stage(mapped);
       await db.query("UPDATE auth SET disabled=true WHERE id=$1", [mapping.targetAccountId]);
       await tick(mapped.definition);
-      assert.equal((await status(mapped.definition)).reason, "commit_failed");
+      assert.equal((await status(mapped.definition)).reason, "database_error");
       assert.equal(await countRows(), 4);
       assert.deepEqual(await receipts(mapped.definition), []);
       await db.query("UPDATE auth SET disabled=false WHERE id=$1", [mapping.targetAccountId]);
@@ -386,7 +392,7 @@ test("bulk signed HTTP commands run through SQLite DO, R2 and real PostgreSQL re
       );
       await stage(changed);
       await tick(changed.definition);
-      assert.equal((await status(changed.definition)).reason, "commit_failed");
+      assert.equal((await status(changed.definition)).reason, "database_error");
       assert.deepEqual(await receipts(changed.definition), []);
       assert.equal(await countRows(), 5);
       assert.equal(
@@ -404,6 +410,13 @@ test("bulk signed HTTP commands run through SQLite DO, R2 and real PostgreSQL re
       await stage(maximum);
       const started = performance.now();
       await tick(maximum.definition);
+      assert.equal((await status(maximum.definition)).inserted, 500);
+      for (
+        let batch = 0;
+        batch < 50 && (await status(maximum.definition)).state !== "completed";
+        batch++
+      )
+        await tick(maximum.definition);
       const maximumStatus = await status(maximum.definition);
       assert.equal(maximumStatus.state, "completed");
       assert.equal(maximumStatus.inserted, 5000);

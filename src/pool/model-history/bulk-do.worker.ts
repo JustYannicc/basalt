@@ -9,6 +9,7 @@ import { fail, json } from "../json.ts";
 import { signEnvelope } from "../token.ts";
 import { HistoryInputError, historyObject } from "./record.ts";
 import { importFailure } from "./import-page.ts";
+import { servingObservation } from "./bulk-serving-contract.ts";
 
 export interface BulkEnvironment {
   POOL_APP_SIGNING_KEY: string;
@@ -38,11 +39,21 @@ export class BulkUsageImport extends DurableObject<BulkEnvironment> {
       validateChunk: async (definition, index, data) => {
         await parseBulkChunk(definition, index, data);
       },
-      commitChunk: (definition, index, data) =>
-        commitBulkChunk(env.POOL_AUTH_DATABASE?.connectionString, definition, index, data),
+      commitChunk: (definition, index, data, start, rows) =>
+        commitBulkChunk(
+          env.POOL_AUTH_DATABASE?.connectionString,
+          definition,
+          index,
+          data,
+          start,
+          rows,
+        ),
       admit: (definition) => this.admit(definition),
-      now: Date.now,
+      now: () => this.now(),
     });
+  }
+  protected now() {
+    return Date.now();
   }
   private async admit(definition: BulkDefinition) {
     const at = Date.now();
@@ -95,13 +106,22 @@ export class BulkUsageImport extends DurableObject<BulkEnvironment> {
           break;
         case "guard": {
           const raw = historyObject(input.observation);
-          if (typeof raw.ready !== "boolean" || typeof raw.cpu !== "number")
+          if (
+            typeof raw.ready !== "boolean" ||
+            typeof raw.cpu !== "number" ||
+            typeof raw.releaseReadComplete !== "boolean" ||
+            typeof raw.releaseWindowActive !== "boolean"
+          )
             throw new HistoryInputError();
           const observation: BulkGuard = {
             observedAt: bulkInteger(raw.observedAt, 0, Number.MAX_SAFE_INTEGER),
             expiresAt: bulkInteger(raw.expiresAt, 0, Number.MAX_SAFE_INTEGER),
             ready: raw.ready,
             cpu: raw.cpu,
+            cpuAt: bulkInteger(raw.cpuAt, 0, Number.MAX_SAFE_INTEGER),
+            releaseReadComplete: raw.releaseReadComplete,
+            releaseWindowActive: raw.releaseWindowActive,
+            serving: servingObservation(raw.serving),
             poolErrors: bulkInteger(raw.poolErrors, 0, Number.MAX_SAFE_INTEGER),
             queryErrors: bulkInteger(raw.queryErrors, 0, Number.MAX_SAFE_INTEGER),
           };

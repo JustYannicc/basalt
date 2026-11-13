@@ -4,7 +4,7 @@ import { BulkJob, type BulkJobDependencies } from "./model-history/bulk-job.ts";
 import type { BulkDefinition, BulkGuard } from "./model-history/bulk-contract.ts";
 
 const identity = { pool: "fixture-pool", organization: "fixture-org", owner: "fixture-owner" };
-function definition(count = 2): BulkDefinition {
+function definition(count = 2, rows = 1): BulkDefinition {
   return {
     job: "fixture-job",
     identity: { ...identity },
@@ -17,11 +17,11 @@ function definition(count = 2): BulkDefinition {
       sourceHash: "source-hash",
       approvedManifestSha256: "approved-hash",
       accountMappingDigest: "map-digest",
-      totalRows: count,
+      totalRows: count * rows,
       chunks: Array.from({ length: count }, (_, index) => ({
         sha256: `chunk-${index}`,
         idsSha256: `ids-${index}`,
-        rows: 1,
+        rows,
         bytes: 1,
       })),
     },
@@ -34,11 +34,11 @@ function deferred() {
   });
   return { promise, resolve };
 }
-function fixture(count = 2) {
+function fixture(count = 2, rows = 1) {
   let now = 1_000_000;
   const values = new Map<string, unknown>();
   const artifacts = new Map<string, string>();
-  const sqlReceipts = new Map<number, { inserted: number; existing: number; count: number }>();
+  const sqlReceipts = new Map<string, { inserted: number; existing: number; count: number }>();
   const alarms: number[] = [];
   const calls: number[] = [];
   let admitted = true;
@@ -77,11 +77,15 @@ function fixture(count = 2) {
       admissionCalls++;
       if (!admitted) throw new Error("Secret database admission details");
     },
-    async commitChunk(_definition, index) {
+    async commitChunk(_definition, index, _data, start = 0, size = rows) {
       calls.push(index);
       await beforeCommit?.();
-      const receipt = sqlReceipts.get(index) ?? { inserted: 1, existing: 0, count: 1 };
-      sqlReceipts.set(index, receipt);
+      const receipt = sqlReceipts.get(`${index}:${start}`) ?? {
+        inserted: size,
+        existing: 0,
+        count: size,
+      };
+      sqlReceipts.set(`${index}:${start}`, receipt);
       await afterCommit?.();
       if (lostReply) {
         lostReply = false;
@@ -97,7 +101,10 @@ function fixture(count = 2) {
     observedAt: now,
     expiresAt: now + 90_000,
     ready: true,
-    cpu: 95,
+    cpu: 50,
+    cpuAt: now,
+    releaseReadComplete: true,
+    releaseWindowActive: false,
     poolErrors: 0,
     queryErrors: 0,
   });
@@ -137,7 +144,7 @@ function fixture(count = 2) {
       return job;
     },
     async stage() {
-      const value = definition(count);
+      const value = definition(count, rows);
       await job.begin(value);
       for (let index = 0; index < count; index++) await job.upload(identity, index, String(index));
       await job.observe(identity, guard());
@@ -183,8 +190,24 @@ test("each alarm commits one chunk and a cold controller retains exact progress"
     inserted: 1,
     existing: 0,
     reason: null,
+    chunkSize: 500,
+    rateRowsPerSecond: 1000 / 501,
+    nextBatchAt: 1_000_500,
+    requiresAttention: false,
+    serving: {
+      source: null,
+      kind: null,
+      status: "not available",
+      baseline: null,
+      thresholds: [],
+      window: null,
+      observedAt: null,
+      computedAt: null,
+      regressionAt: null,
+      consecutiveRegressions: 0,
+    },
   });
-  f.advance(100);
+  f.advance(1000);
   await f.restart().tick();
   assert.deepEqual(f.calls, [0, 1]);
   assert.equal((await f.job.status(identity)).state, "completed");
@@ -197,10 +220,10 @@ test("lost SQL replies pause safely and receipt replay retains the original coun
   f.loseReply();
   await f.job.tick();
   assert.equal(f.sqlReceipts.size, 1);
-  assert.equal((await f.job.status(identity)).reason, "commit_failed");
+  assert.equal((await f.job.status(identity)).reason, "database_error");
   assert.equal((await f.job.status(identity)).inserted, 0);
   await f.restart().observe(identity, f.guard());
-  assert.equal((await f.job.status(identity)).state, "paused");
+  assert.equal((await f.job.status(identity)).state, "stopped");
   await f.job.resume(identity);
   await f.job.tick();
   const status = await f.job.status(identity);
@@ -248,7 +271,6 @@ test("expired or invalid guards fail closed without renewing themselves", async 
     { cpu: NaN },
     { cpu: 101 },
     { poolErrors: -1 },
-    { queryErrors: 1 },
     { ready: false },
     { expiresAt: f.guard().expiresAt + 1 },
     { observedAt: f.guard().observedAt + 1 },
@@ -268,6 +290,7 @@ test("admission is fresh for each chunk and a guard can expire during admission"
   await f.stage();
   await f.job.tick();
   f.admit(false);
+  f.advance(1000);
   await f.job.tick();
   assert.equal(f.admissionCalls, 2);
   assert.deepEqual(f.calls, [0]);
@@ -304,4 +327,193 @@ test("a process lost after SQL commit replays only through its atomic receipt", 
   assert.deepEqual(f.calls, [0, 0]);
   abandoned.resolve();
   await oldTick;
+});
+
+test("adaptive import throttles at max load, resumes below the low watermark and pauses releases", async () => {
+  const f = fixture();
+  await f.stage();
+  await f.job.observe(identity, { ...f.guard(), cpu: 70 });
+  await f.job.tick();
+  assert.equal((await f.job.status(identity)).reason, "cpu_high");
+  assert.deepEqual(f.calls, []);
+  await f.job.observe(identity, { ...f.guard(), cpu: 65 });
+  assert.equal((await f.job.status(identity)).state, "paused");
+  await f.job.observe(identity, { ...f.guard(), cpu: 59 });
+  assert.equal((await f.job.status(identity)).state, "running");
+  await f.job.tick();
+  assert.deepEqual(f.calls, [0]);
+  await f.job.observe(identity, { ...f.guard(), ready: false, releaseWindowActive: true });
+  assert.equal((await f.job.status(identity)).reason, "release_backup");
+  f.advance(1000);
+  await f.job.tick();
+  assert.deepEqual(f.calls, [0]);
+  await f.job.observe(identity, f.guard());
+  await f.job.tick();
+  assert.deepEqual(f.calls, [0, 1]);
+});
+
+test("sustained critical CPU and DB errors stop durably and never auto-resume", async () => {
+  const f = fixture();
+  await f.stage();
+  for (let sample = 0; sample < 3; sample++) {
+    if (sample) f.advance(60_000);
+    await f.job.observe(identity, { ...f.guard(), cpu: 90 });
+  }
+  const stopped = await f.job.status(identity);
+  assert.equal(stopped.state, "stopped");
+  assert.equal(stopped.reason, "critical_cpu");
+  assert.equal(stopped.requiresAttention, true);
+  await f.restart().observe(identity, f.guard());
+  await f.job.tick();
+  assert.equal((await f.job.status(identity)).state, "stopped");
+  assert.deepEqual(f.calls, []);
+  await f.job.resume(identity);
+  await f.job.observe(identity, { ...f.guard(), queryErrors: 1, ready: false });
+  assert.equal((await f.job.status(identity)).state, "stopped");
+  assert.equal((await f.job.status(identity)).reason, "database_error");
+});
+
+test("adaptive SQL batches resize toward chunk time and retain pacing across restart", async () => {
+  const f = fixture(1, 5000);
+  await f.stage();
+  f.beforeCommit(async () => f.advance(250));
+  await f.job.tick();
+  let status = await f.job.status(identity);
+  assert.equal(status.inserted, 500);
+  assert.equal(status.committedChunks, 0);
+  assert.equal(status.chunkSize, 1000);
+  assert.ok(status.rateRowsPerSecond > 0);
+  await f.restart().tick();
+  assert.equal((await f.job.status(identity)).inserted, 500);
+  f.advance(1000);
+  await f.job.observe(identity, f.guard());
+  f.beforeCommit(async () => f.advance(1000));
+  await f.job.tick();
+  status = await f.job.status(identity);
+  assert.equal(status.inserted, 1500);
+  assert.equal(status.chunkSize, 500);
+  assert.ok(status.nextBatchAt > f.guard().observedAt);
+});
+
+function serving(now: number, baselineTo: number, p99Ms = 100, serverErrors = 0) {
+  const row = {
+    route: "/v1/responses",
+    streamMode: "stream" as const,
+    successful: 100,
+    failures: serverErrors,
+    serverErrors,
+    total: 100 + serverErrors,
+    p99Ms,
+  };
+  return {
+    source: "fixture-model-completions-v1",
+    kind: "model-completion" as const,
+    available: true,
+    observedAt: now,
+    computedAt: now,
+    baseline: {
+      from: baselineTo - 300_000,
+      to: baselineTo,
+      nonRelease: true as const,
+      routes: [{ ...row, failures: 0, serverErrors: 0, total: 100, p99Ms: 100 }],
+    },
+    window: { from: now - 300_000, to: now, routes: [row] },
+  };
+}
+test("no serving source runs on CPU guards and reports not available", async () => {
+  const f = fixture();
+  await f.stage();
+  await f.job.tick();
+  assert.deepEqual(f.calls, [0]);
+  assert.equal((await f.job.status(identity)).serving.status, "not available");
+});
+test("configured serving telemetry binds frozen thresholds, yields and resumes only on a fresh healthy signal", async () => {
+  const f = fixture(4);
+  const baselineTo = f.guard().observedAt - 1;
+  await f.stage();
+  const observe = (p99 = 100, errors = 0) =>
+    f.job.observe(identity, {
+      ...f.guard(),
+      serving: serving(f.guard().observedAt, baselineTo, p99, errors),
+    });
+  await observe(250);
+  assert.equal((await f.job.status(identity)).state, "running");
+  f.advance(60_000);
+  await observe(250);
+  assert.equal((await f.job.status(identity)).reason, "serving_regressed");
+  const frozen = (await f.job.status(identity)).serving.thresholds;
+  assert.equal(frozen[0]!.maximumP99Ms, 200);
+  assert.equal(frozen[0]!.successful, 100);
+  const inflated = serving(f.guard().observedAt, baselineTo, 250);
+  inflated.baseline.routes[0]!.p99Ms = 1000;
+  await f.job.observe(identity, { ...f.guard(), serving: inflated });
+  assert.deepEqual((await f.job.status(identity)).serving.thresholds, frozen);
+  const stale = serving(f.guard().observedAt, baselineTo);
+  f.advance(121_000);
+  await f.job.observe(identity, { ...f.guard(), serving: stale });
+  assert.equal((await f.job.status(identity)).reason, "serving_stale");
+  await f.restart().observe(identity, f.guard());
+  assert.equal((await f.job.status(identity)).reason, "serving_stale");
+  await observe();
+  assert.equal((await f.job.status(identity)).state, "running");
+  f.advance(60_000);
+  await observe(100, 1);
+  assert.equal((await f.job.status(identity)).reason, "serving_regressed");
+  assert.equal((await f.job.status(identity)).serving.consecutiveRegressions, 1);
+});
+
+test("serving gaps break consecutive regressions and reused computations cannot resume", async () => {
+  const f = fixture();
+  await f.stage();
+  const baselineTo = f.guard().observedAt - 1;
+  const observe = (signal: ReturnType<typeof serving>) =>
+    f.job.observe(identity, { ...f.guard(), serving: signal });
+  await observe(serving(f.guard().observedAt, baselineTo, 250));
+  f.advance(60_000);
+  const failed = serving(f.guard().observedAt, baselineTo);
+  failed.available = false;
+  await observe(failed);
+  assert.equal((await f.job.status(identity)).reason, "serving_unavailable");
+  assert.equal((await f.job.status(identity)).serving.consecutiveRegressions, 0);
+  f.advance(60_000);
+  await observe(serving(f.guard().observedAt, baselineTo, 250));
+  assert.equal((await f.job.status(identity)).state, "running");
+  f.advance(60_000);
+  await observe(serving(f.guard().observedAt, baselineTo, 250));
+  assert.equal((await f.job.status(identity)).reason, "serving_regressed");
+  await observe(serving(f.guard().observedAt, baselineTo));
+  assert.equal((await f.job.status(identity)).reason, "serving_stale");
+  f.advance(60_000);
+  await observe(serving(f.guard().observedAt, baselineTo));
+  assert.equal((await f.job.status(identity)).state, "running");
+});
+
+test("sparse dependency telemetry stays labeled and a zero-baseline server error yields immediately", async () => {
+  const f = fixture();
+  await f.stage();
+  const signal = serving(f.guard().observedAt, f.guard().observedAt - 1);
+  const dependency = {
+    ...signal,
+    source: "fixture-membership-completions-v1",
+    kind: "serving-dependency" as const,
+  };
+  dependency.baseline.routes[0]!.successful = 20;
+  dependency.baseline.routes[0]!.total = 20;
+  dependency.window.routes[0]!.successful = 3;
+  dependency.window.routes[0]!.total = 3;
+  await f.job.observe(identity, { ...f.guard(), serving: dependency });
+  assert.equal((await f.job.status(identity)).reason, "serving_unavailable");
+  assert.equal((await f.job.status(identity)).serving.kind, "serving-dependency");
+  assert.equal((await f.job.status(identity)).serving.thresholds[0]!.sampleQuality, "noisy");
+  f.advance(60_000);
+  dependency.computedAt = dependency.observedAt = dependency.window.to = f.guard().observedAt;
+  dependency.window.from = dependency.window.to - 300_000;
+  dependency.window.routes[0]!.failures = 1;
+  dependency.window.routes[0]!.serverErrors = 1;
+  dependency.window.routes[0]!.total = 4;
+  await f.job.observe(identity, { ...f.guard(), serving: dependency });
+  assert.equal((await f.job.status(identity)).reason, "serving_regressed");
+  f.advance(60_000);
+  await f.job.observe(identity, f.guard());
+  assert.equal((await f.job.status(identity)).reason, "serving_stale");
 });

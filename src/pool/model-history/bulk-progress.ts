@@ -56,10 +56,23 @@ export async function commitBulkChunk(
   definition: BulkDefinition,
   index: number,
   data: string,
+  start = 0,
+  size?: number,
 ) {
-  const records = await parseBulkChunk(definition, index, data);
+  const parsed = await parseBulkChunk(definition, index, data);
+  const rows = size ?? parsed.length;
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(rows) ||
+    start < 0 ||
+    rows < 1 ||
+    start + rows > parsed.length
+  )
+    throw new HistoryConflict();
+  const records = parsed.slice(start, start + rows);
   const chunk = definition.manifest.chunks[index]!;
   return withHistoryDatabase(connectionString, async (db) => {
+    const startedAt = Date.now();
     await db.query("BEGIN");
     try {
       await db.query("SET LOCAL lock_timeout = '500ms'");
@@ -103,16 +116,16 @@ export async function commitBulkChunk(
         throw new HistoryConflict();
       const saved = (
         await db.query(
-          `SELECT input_sha,ids_sha,rows,inserted,existing
-        FROM basalt_model_import_receipts WHERE job=$1 AND chunk=$2`,
-          [definition.job, index],
+          `SELECT input_sha,ids_sha,rows,inserted,existing,elapsed_ms
+        FROM basalt_model_import_receipts WHERE job=$1 AND chunk=$2 AND start_row=$3`,
+          [definition.job, index, start],
         )
       ).rows[0];
       if (saved) {
         if (
           saved.input_sha !== chunk.sha256 ||
           saved.ids_sha !== chunk.idsSha256 ||
-          Number(saved.rows) !== chunk.rows
+          Number(saved.rows) !== rows
         )
           throw new HistoryConflict();
         await db.query("COMMIT");
@@ -120,26 +133,37 @@ export async function commitBulkChunk(
           inserted: Number(saved.inserted),
           existing: Number(saved.existing),
           count: Number(saved.rows),
+          elapsedMs: Number(saved.elapsed_ms),
         };
       }
+      const committed = (
+        await db.query(
+          "SELECT COALESCE(sum(rows),0)::int AS rows FROM basalt_model_import_receipts WHERE job=$1 AND chunk=$2",
+          [definition.job, index],
+        )
+      ).rows[0];
+      if (Number(committed?.rows) !== start) throw new HistoryConflict();
       await eligibleTargets(db, definition);
       const result = await insertBulkRequests(db, records);
-      if (result.count !== chunk.rows) throw new HistoryConflict();
+      if (result.count !== rows) throw new HistoryConflict();
+      const elapsedMs = Math.max(1, Date.now() - startedAt);
       await db.query(
         `INSERT INTO basalt_model_import_receipts
-        (job,chunk,input_sha,ids_sha,rows,inserted,existing) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+        (job,chunk,start_row,input_sha,ids_sha,rows,inserted,existing,elapsed_ms) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [
           definition.job,
           index,
+          start,
           chunk.sha256,
           chunk.idsSha256,
-          chunk.rows,
+          rows,
           result.inserted,
           result.existing,
+          elapsedMs,
         ],
       );
       await db.query("COMMIT");
-      return result;
+      return { ...result, elapsedMs };
     } catch (error) {
       await db.query("ROLLBACK").catch(() => {});
       throw error;
