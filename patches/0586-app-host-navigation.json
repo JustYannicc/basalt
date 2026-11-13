@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-host-navigation",
   "file": "0586-app-host-navigation.patch",
-  "content_sha256": "fe422191b14b9d82e2aabf3dd97f82127bb7024c1ab01a47970e41b10786de07",
+  "content_sha256": "5bb372ddd2d6de02cf9b6386e7278be3369af37c2eea6149e7d40a48432ffbff",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
