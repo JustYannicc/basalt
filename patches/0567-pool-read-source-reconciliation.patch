@@ -130,7 +130,7 @@ diff --git a/e2e/support/pool-source-query-proof.ts b/e2e/support/pool-source-qu
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/pool-source-query-proof.ts
-@@ -0,0 +1,104 @@
+@@ -0,0 +1,113 @@
 +import { expect } from "@effect/vitest";
 +import { Clock, Effect, FileSystem, Path, Schema } from "effect";
 +import type { Session } from "./api.ts";
@@ -209,7 +209,11 @@ new file mode 100644
 +          .map((line) =>
 +            Schema.decodeUnknownSync(
 +              Schema.fromJsonString(
-+                Schema.Struct({ trace: Schema.String, writeLock: Schema.Boolean }),
++                Schema.Struct({
++                  trace: Schema.String,
++                  writeLock: Schema.Boolean,
++                  advisoryLock: Schema.Boolean,
++                }),
 +              ),
 +            )(line),
 +          )
@@ -220,6 +224,7 @@ new file mode 100644
 +          phases: responses.queries.map((query) => query.timing),
 +          statements: records.length,
 +          writeLocks: records.filter((record) => record.writeLock).length,
++          advisoryLocks: records.filter((record) => record.advisoryLock).length,
 +        });
 +        for (const trace of traces) {
 +          expect(trace).toMatch(/^[a-f0-9]{32}$/u);
@@ -232,6 +237,10 @@ new file mode 100644
 +          records.filter((record) => record.writeLock),
 +          "Existing source selections must not acquire write locks during concurrent queries",
 +        ).toEqual([]);
++        expect(
++          records.filter((record) => record.advisoryLock),
++          "Existing source selections must not acquire advisory locks during concurrent queries",
++        ).toEqual([]);
 +        return responses.replies;
 +      });
 +  });
@@ -243,7 +252,7 @@ diff --git a/e2e/support/provider-account-product.ts b/e2e/support/provider-acco
    }
    const [text] = statement.compile();
 -  appendFileSync(measurement, JSON.stringify({ trace: span.traceId, select: /^\\s*select\\b/iu.test(text), head: /from hosted_change_heads/iu.test(text), sdk }) + "\\n");
-+  appendFileSync(measurement, JSON.stringify({ trace: span.traceId, select: /^\\s*select\\b/iu.test(text), head: /from hosted_change_heads/iu.test(text), writeLock: /pg_advisory_xact_lock\\s*\\(|\\bfor\\s+(?:no\\s+key\\s+)?update\\b/iu.test(text), sdk }) + "\\n");
++  appendFileSync(measurement, JSON.stringify({ trace: span.traceId, select: /^\\s*select\\b/iu.test(text), head: /from hosted_change_heads/iu.test(text), writeLock: /pg_advisory_xact_lock\\s*\\(|\\bfor\\s+(?:no\\s+key\\s+)?update\\b/iu.test(text), advisoryLock: /pg_advisory_xact_lock(?:_shared)?\\s*\\(/iu.test(text), sdk }) + "\\n");
    return statement;
  });`
      : ""
