@@ -5,10 +5,11 @@ import { decodeCreatedRuntime } from "./provisioning-apply.ts";
 import { provisioningFixture } from "./test/provisioning-fixtures.ts";
 import { decodeNamespaceBaseline } from "./provisioning-namespace.ts";
 import { readRuntimeExports } from "./provisioning-exports.ts";
+import { decodeRuntimeCreate, type RuntimeResourceName } from "./runtime-create-schema.ts";
 import type { ProvisioningRecord, ProvisioningStore } from "./provisioning-journal.ts";
 
-function harness() {
-  const f = provisioningFixture();
+function harness(name: RuntimeResourceName = "PoolRuntime") {
+  const f = provisioningFixture(name);
   const counts = { baseline: 0, stage: 0, activate: 0, create: 0, reads: 0 };
   let activated = false;
   let current = f.baseline.version.id;
@@ -25,9 +26,9 @@ function harness() {
       bindings: [
         ...f.baseline.version.bindings!,
         {
-          name: "PoolRuntime",
+          name,
           type: "durable_object_namespace",
-          className: "PoolRuntime",
+          className: name,
           namespaceId: f.namespaceId,
         },
       ],
@@ -40,7 +41,7 @@ function harness() {
     version: 1,
     createdAt: "2026-11-09T00:00:00Z",
     instances: 0,
-    maxInstances: 1,
+    maxInstances: f.manifest.declaration.props.maxInstances,
     schedulingPolicy: "default",
     constraints: f.manifest.declaration.props.constraints,
     configuration: {
@@ -83,8 +84,8 @@ function harness() {
             ...f.baseline.namespaces,
             {
               id: f.namespaceId,
-              className: "PoolRuntime",
-              binding: "PoolRuntime",
+              className: name,
+              binding: name,
               storage: "sqlite",
             },
           ]
@@ -199,4 +200,54 @@ test("provider configuration readback cannot drop settings or introduce a secret
   });
   await assert.rejects(h.run(), /provisioning-input-drift/);
   assert.equal(h.counts.create, 1);
+});
+
+for (const name of ["PoolRuntimeBlue", "PoolRuntimeGreen"] as const) {
+  test(`${name} provisions only its observed namespace, an idle four-instance application and its own journal`, async () => {
+    const h = harness(name);
+    const receipt = await h.run();
+    assert.equal(receipt.resource, name);
+    assert.equal(h.application.instances, 0);
+    assert.equal(h.application.maxInstances, 4);
+    assert.equal(h.record()!.resource, name);
+    assert.deepEqual(await h.run(), receipt);
+    assert.equal(h.counts.create, 1);
+    assert.equal(h.counts.activate, 1);
+  });
+}
+
+test("runtime declarations reject crossed identities, an expanded cap and a nonzero initial allocation", () => {
+  const declaration = harness("PoolRuntimeBlue").manifest.declaration;
+  for (const changed of [
+    { ...declaration, fqn: "PoolRuntimeGreen" },
+    { ...declaration, namespace: { ...declaration.namespace, binding: "PoolRuntimeGreen" } },
+    { ...declaration, props: { ...declaration.props, className: "PoolRuntimeGreen" } },
+    { ...declaration, props: { ...declaration.props, maxInstances: 5 } },
+    { ...declaration, props: { ...declaration.props, instances: 1 } },
+  ])
+    assert.throws(() => decodeRuntimeCreate(changed), /runtime-private-input-invalid/);
+});
+
+test("a provider's lower or higher application cap does not acknowledge the reviewed declaration", async () => {
+  const h = harness("PoolRuntimeBlue");
+  const application = { ...h.application, maxInstances: 1 as const };
+  h.provider.createApplication = async () => application;
+  h.provider.nativeState = async () => ({ application, digest: "1".repeat(64) });
+  h.provider.readApplication = async () => application;
+  await assert.rejects(h.run(), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /provisioning-input-drift \(PoolRuntimeBlue\)/);
+    return true;
+  });
+});
+
+test("mutating the supplied fleet declaration after its first read cannot change or dispatch the frozen operation", async () => {
+  const h = harness("PoolRuntimeBlue");
+  h.provider.active = async () => {
+    Reflect.set(h.manifest.declaration.props, "name", "changed-after-freeze");
+    return h.manifest.active;
+  };
+  await assert.rejects(h.run(), /provisioning-input-drift/);
+  assert.equal(h.counts.stage, 0);
+  assert.equal(h.counts.create, 0);
 });

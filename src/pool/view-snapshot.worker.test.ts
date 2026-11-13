@@ -1,3 +1,4 @@
+import { RuntimeMap } from "../../scripts/pool-tests/runtime-map.ts";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
@@ -151,21 +152,17 @@ async function fixture() {
   };
   const worker = new PoolContainer(
     {
+      id: { toString: () => "a".repeat(64) },
       container: runtime,
       waitUntil: (work: Promise<unknown>) => {
         background.push(work);
       },
-      storage: {
-        get: async (key: string) => {
+      storage: Object.assign(
+        new RuntimeMap(values, (key) => {
           reads.push(key);
-          return structuredClone(values.get(key));
-        },
-        put: async (key: string, value: unknown) => {
-          values.set(key, structuredClone(value));
-        },
-        getAlarm: async () => null,
-        setAlarm: async () => {},
-      },
+        }),
+        { getAlarm: async () => null, setAlarm: async () => {} },
+      ),
     },
     {
       POOL_DATABASE_URL: "postgres://snapshot:fixture@database.invalid/snapshot",

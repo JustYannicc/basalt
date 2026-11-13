@@ -2,7 +2,8 @@ import * as Workers from "@distilled.cloud/cloudflare/workers";
 import { Schema } from "effect";
 import { canonical, digest } from "./manifest.ts";
 import { provisioningRefusal, sameProvisioningValue } from "./provisioning-refusal.ts";
-import type { RuntimeCreateDeclaration } from "./runtime-create-schema.ts";
+import { RuntimeResourceName, type RuntimeCreateDeclaration } from "./runtime-create-schema.ts";
+import { runtimeModuleExports } from "./provisioning-module.ts";
 import { readRuntimeExports } from "./provisioning-exports.ts";
 
 export interface NamespaceBaseline {
@@ -44,6 +45,7 @@ export function runtimeNamespaceRequest(
   operationId: string,
 ) {
   const source = baseline.version;
+  const name = declaration.namespace.className;
   const exports = readRuntimeExports(source.exports);
   if (
     baseline.accountId !== declaration.accountId ||
@@ -51,16 +53,16 @@ export function runtimeNamespaceRequest(
     !source.exports ||
     !source.mainModule ||
     !source.modules?.length ||
-    exports.PoolRuntime ||
-    (source.bindings ?? []).some((binding) => binding.name === "PoolRuntime") ||
-    baseline.containers.some((container) => container.className === "PoolRuntime") ||
-    baseline.namespaces.some((namespace) => namespace.className === "PoolRuntime") ||
+    exports[name] ||
+    (source.bindings ?? []).some((binding) => binding.name === name) ||
+    baseline.containers.some((container) => container.className === name) ||
+    baseline.namespaces.some((namespace) => namespace.className === name) ||
     source.urls.length
   )
     throw provisioningRefusal(
       "provisioning-namespace-baseline-unsupported",
       "namespace.baseline",
-      "exact-existing-Worker-without-PoolRuntime",
+      `exact-existing-Worker-without-${name}`,
       {
         accountId: baseline.accountId,
         version: source.id,
@@ -105,9 +107,10 @@ export function runtimeNamespaceRequest(
       "unique-javascript-module",
       source.mainModule,
     );
-  const suffix = `\nexport { PoolRuntime } from ${JSON.stringify(`./${"../".repeat(source.mainModule.split("/").length - 1)}${module}`)};\n`;
+  const existingExport = runtimeModuleExports(main.name, main.contentBase64, name);
+  const suffix = `\nexport { ${name} } from ${JSON.stringify(`./${"../".repeat(source.mainModule.split("/").length - 1)}${module}`)};\n`;
   const modules = source.modules.map((part) =>
-    part === main
+    part === main && !existingExport
       ? {
           ...part,
           contentBase64: Buffer.concat([
@@ -117,13 +120,14 @@ export function runtimeNamespaceRequest(
         }
       : { ...part },
   );
-  modules.push({
-    name: module,
-    contentType: "application/javascript+module",
-    contentBase64: Buffer.from(
-      "import { DurableObject } from 'cloudflare:workers';\nexport class PoolRuntime extends DurableObject {}\n",
-    ).toString("base64"),
-  });
+  if (!existingExport)
+    modules.push({
+      name: module,
+      contentType: "application/javascript+module",
+      contentBase64: Buffer.from(
+        `import { DurableObject } from 'cloudflare:workers';\nexport class ${name} extends DurableObject {}\n`,
+      ).toString("base64"),
+    });
   return Schema.decodeUnknownSync(Schema.toType(Workers.CreateBetaWorkerVersionRequest), {
     onExcessProperty: "error",
   })({
@@ -138,18 +142,18 @@ export function runtimeNamespaceRequest(
         name: binding.name,
         versionId: source.id,
       })),
-      { type: "durable_object_namespace", name: "PoolRuntime", className: "PoolRuntime" },
+      { type: "durable_object_namespace", name, className: name },
     ],
     cacheOptions: source.cacheOptions ?? undefined,
     compatibilityDate: source.compatibilityDate ?? undefined,
     compatibilityFlags: source.compatibilityFlags ?? undefined,
-    containers: [...existingContainers, { className: "PoolRuntime" }],
+    containers: [...existingContainers, { className: name }],
     exports: {
       ...exports,
-      PoolRuntime: {
+      [name]: {
         type: "durable-object",
         storage: "sqlite",
-        container: "PoolRuntime",
+        container: name,
         state: "created",
       },
     },
@@ -188,11 +192,21 @@ export function assertRuntimeNamespace(
   );
   sameProvisioningValue("namespace.exports", request.exports, observed.exports);
   sameProvisioningValue("namespace.containers", request.containers, observed.containers);
+  const before = readRuntimeExports(baseline.version.exports);
+  const additions = Object.keys(readRuntimeExports(request.exports)).filter(
+    (key) => !Object.hasOwn(before, key),
+  );
+  if (additions.length !== 1 || !Schema.is(RuntimeResourceName)(additions[0]))
+    throw provisioningRefusal(
+      "provisioning-namespace-unconfirmed",
+      "namespace.request",
+      "one-runtime-class",
+      additions,
+    );
+  const name = additions[0];
   const added = observed.namespaces.filter(
     (namespace) =>
-      namespace.className === "PoolRuntime" &&
-      namespace.binding === "PoolRuntime" &&
-      namespace.storage === "sqlite",
+      namespace.className === name && namespace.binding === name && namespace.storage === "sqlite",
   );
   if (added.length !== 1 || !added[0]!.id || !observed.deploymentId)
     throw provisioningRefusal(

@@ -44,6 +44,20 @@
       ]
     },
     {
+      "baselineInputHash": "776158b6965a4dc3",
+      "candidateInputHash": "25f1b8918cedcf21",
+      "fromVersions": [15, 16],
+      "targetVersion": 16,
+      "requiredIndexes": [
+        "idx_billing_charge_usage_cover_v1",
+        "idx_billing_charge_overview_time_v1",
+        "idx_usage_billing_complete_v2",
+        "idx_usage_summary_cursor_v1",
+        "idx_usage_key_success_time_v1",
+        "idx_billing_charge_key_usage_v1"
+      ]
+    },
+    {
       "baselineInputHash": "5f82807410b4ebd6",
       "candidateInputHash": "776158b6965a4dc3",
       "fromVersions": [15, 16],

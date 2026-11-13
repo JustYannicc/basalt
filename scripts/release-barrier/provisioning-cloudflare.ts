@@ -21,12 +21,12 @@ type Services =
   | Effect.Services<ReturnType<typeof applyRuntimeCreate>>
   | Effect.Services<ReturnType<typeof Workers.getBetaWorkerVersion>>;
 
-/** No live caller is installed until the separate provisioning enable decision. */
+/** The separate main-only provisioning workflow admits this provider under its exact reviewed GO. */
 export const runtimeProvisioningProvider = (input: {
   manifest: RuntimeProvisioningManifest;
   enable: ProvisioningEnable | undefined;
   scriptName: string;
-  plan: Plan.Plan;
+  plan: Plan.Plan | ((namespaceId: string) => Promise<Plan.Plan>);
   active: RuntimeProvisioningProvider["active"];
   now?: () => number;
 }) =>
@@ -173,8 +173,10 @@ export const runtimeProvisioningProvider = (input: {
         );
         return !apps.some((app) => app.name === manifest.declaration.props.name);
       },
-      createApplication: (namespaceId) =>
-        run(applyRuntimeCreate(input.plan, manifest, namespaceId, input.enable, now)),
+      createApplication: async (namespaceId) => {
+        const plan = typeof input.plan === "function" ? await input.plan(namespaceId) : input.plan;
+        return run(applyRuntimeCreate(plan, manifest, namespaceId, input.enable, now));
+      },
       readApplication: async (applicationId) =>
         decodeCreatedRuntime(
           containerAttributes(

@@ -26,6 +26,7 @@ import { uploadFailure } from "./upload-failure.ts";
 import { verificationAdmissions, type VerificationAdmission } from "./plan-admission.ts";
 import { finishPlan } from "./alchemy-plan.ts";
 import { planStack } from "./plan-stack.ts";
+import { preserveLegacyPlan } from "./legacy-image-plan.ts";
 import {
   readActivePlacements,
   readBaseline,
@@ -121,7 +122,7 @@ type Services = Effect.Services<ReturnType<typeof readBaseline> | ReturnType<typ
 /** The ordinary release entry uses this full-stack path, including transitive Commands. */
 export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =>
   Effect.gen(function* () {
-    const evaluatedPlan = yield* planStack(stack);
+    const evaluatedPlan = preserveLegacyPlan(yield* planStack(stack));
     assertSupportedPlan(evaluatedPlan, new Map(), options.declarations);
     const context = yield* Effect.context<Services>();
     const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>

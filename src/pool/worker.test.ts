@@ -1,3 +1,4 @@
+import { RuntimeMap } from "../../scripts/pool-tests/runtime-map.ts";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
@@ -81,18 +82,15 @@ test("the Worker logs dispatch timings and strips their header without changing 
   try {
     const worker = new PoolContainer(
       {
+        id: { toString: () => "a".repeat(64) },
         container,
         waitUntil: (work: Promise<unknown>) => {
           background.push(work);
         },
-        storage: {
-          get: async (name: string) => structuredClone(values.get(name)),
-          put: async (name: string, value: unknown) => {
-            values.set(name, structuredClone(value));
-          },
+        storage: Object.assign(new RuntimeMap(values), {
           getAlarm: async () => null,
           setAlarm: async () => {},
-        },
+        }),
       },
       {
         POOL_DATABASE_URL: "postgres://fixture",
@@ -241,14 +239,10 @@ test("the owner controller restarts the exact runtime once and serves models aft
       id: { toString: () => instanceId },
       container,
       waitUntil: () => {},
-      storage: {
-        get: async (name: string) => structuredClone(values.get(name)),
-        put: async (name: string, value: unknown) => {
-          values.set(name, structuredClone(value));
-        },
+      storage: Object.assign(new RuntimeMap(values), {
         getAlarm: async () => null,
         setAlarm: async () => {},
-      },
+      }),
     },
     {
       POOL_DATABASE_URL: "postgres://fixture",
@@ -319,6 +313,7 @@ test("the Durable Object alarm provisions pending pool members", async () => {
     ],
   ]);
   const users: Record<string, unknown>[] = [];
+  const background: Promise<unknown>[] = [];
   let alarm: number | null = null;
   const runtime = {
     running: false,
@@ -345,18 +340,17 @@ test("the Durable Object alarm provisions pending pool members", async () => {
   };
   const worker = new PoolContainer(
     {
+      id: { toString: () => "a".repeat(64) },
       container: runtime,
-      waitUntil: () => {},
-      storage: {
-        get: async (key: string) => structuredClone(values.get(key)),
-        put: async (key: string, value: unknown) => {
-          values.set(key, structuredClone(value));
-        },
+      waitUntil: (work: Promise<unknown>) => {
+        background.push(work);
+      },
+      storage: Object.assign(new RuntimeMap(values), {
         getAlarm: async () => alarm,
         setAlarm: async (time: number) => {
           alarm = time;
         },
-      },
+      }),
     },
     {
       POOL_DATABASE_URL: "postgres://fake:fake@database.invalid/fake",
@@ -366,6 +360,7 @@ test("the Durable Object alarm provisions pending pool members", async () => {
     },
   );
   await worker.alarm();
+  await Promise.all(background);
   assert.equal(users.length, 1);
   const state = values.get("pool-directory-v1") as {
     pools: Record<string, { pending: string[]; provisioned: string[] }>;
@@ -390,6 +385,7 @@ test("reconstructing a running or stopped object without a request leaves comput
   const object = (running: boolean) =>
     new PoolContainer(
       {
+        id: { toString: () => "a".repeat(64) },
         container: {
           running,
           setInactivityTimeout: async (ms: number) => {
@@ -425,7 +421,11 @@ test("reconstructing a running or stopped object without a request leaves comput
   assert.equal(destroys, 0);
 });
 
-test("signed access changes reach the computer queue before generic pool-token control routing", async () => {
+test("signed access changes reach the computer queue before generic pool-token control routing", async (context) => {
+  const background: Promise<unknown>[] = [];
+  context.after(async () => {
+    await Promise.all(background);
+  });
   const signingKey = "ab".repeat(32);
   const values = new Map<string, unknown>();
   const env = {
@@ -437,7 +437,11 @@ test("signed access changes reach the computer queue before generic pool-token c
   };
   const container = new PoolContainer(
     {
+      id: { toString: () => "a".repeat(64) },
       container: {},
+      waitUntil: (work: Promise<unknown>) => {
+        background.push(work);
+      },
       storage: {
         get: async (key: string) => structuredClone(values.get(key)),
         put: async (key: string, value: unknown) => {
@@ -558,6 +562,7 @@ test("native pool use is required before control, setup and usage can reach Home
   ]);
   const worker = new PoolContainer(
     {
+      id: { toString: () => "a".repeat(64) },
       container: {},
       waitUntil: () => {},
       storage: {
@@ -660,18 +665,15 @@ test("opening Connect starts a stopped pool without waiting for it, and only for
   const background: Promise<unknown>[] = [];
   const worker = new PoolContainer(
     {
+      id: { toString: () => "a".repeat(64) },
       container,
       waitUntil: (work: Promise<unknown>) => {
         background.push(work);
       },
-      storage: {
-        get: async (key: string) => structuredClone(values.get(key)),
-        put: async (key: string, value: unknown) => {
-          values.set(key, structuredClone(value));
-        },
+      storage: Object.assign(new RuntimeMap(values), {
         getAlarm: async () => null,
         setAlarm: async () => {},
-      },
+      }),
     },
     {
       POOL_DATABASE_URL: "postgres://fake:fake@database.invalid/fake",
@@ -684,6 +686,7 @@ test("opening Connect starts a stopped pool without waiting for it, and only for
   const token = await signPoolToken(signingKey, claims);
   const read = (headers: Record<string, string>) =>
     worker.fetch(new Request("https://pool.example/pool/v1/setup-context", { headers }));
+  await Promise.all(background.splice(0));
   // Rejected reads never touch the shared container.
   for (const headers of [
     {} as Record<string, string>,
@@ -760,18 +763,15 @@ test("management calls share readiness for 30 seconds and rewarm when the contai
     },
   };
   const ctx = {
+    id: { toString: () => "a".repeat(64) },
     container,
     waitUntil: () => {},
-    storage: {
-      get: async (key: string) => storage.get(key),
-      put: async (key: string, value: unknown) => {
-        storage.set(key, structuredClone(value));
-      },
+    storage: Object.assign(new RuntimeMap(storage), {
       getAlarm: async () => alarm,
       setAlarm: async (time: number) => {
         alarm = time;
       },
-    },
+    }),
   };
   // Only the native runtime's constructor types are substituted in this Node test.
   const worker = new PoolContainer(ctx, {
@@ -833,6 +833,7 @@ test("old pool tools cannot acquire credentials or start the runtime through the
   });
   let backendCalls = 0;
   const ctx = {
+    id: { toString: () => "a".repeat(64) },
     container: {
       running: false,
       start() {
@@ -918,20 +919,17 @@ test("an unhealthy warm runtime returns a retryable 503 before another model dis
   };
   const worker = new PoolContainer(
     {
+      id: { toString: () => "a".repeat(64) },
       container,
       waitUntil: (work: Promise<unknown>) => {
         background.push(work);
       },
-      storage: {
-        get: async (name: string) => structuredClone(values.get(name)),
-        put: async (name: string, value: unknown) => {
-          values.set(name, structuredClone(value));
-        },
+      storage: Object.assign(new RuntimeMap(values), {
         getAlarm: async () => alarm,
         setAlarm: async (at: number) => {
           alarm = at;
         },
-      },
+      }),
     },
     {
       POOL_DATABASE_URL: "postgres://fixture",
@@ -1022,6 +1020,7 @@ for (const retire of [false, true])
         });
       const worker = new PoolContainer(
         {
+          id: { toString: () => "a".repeat(64) },
           container: {
             running: true,
             start() {
@@ -1076,17 +1075,12 @@ for (const retire of [false, true])
           waitUntil: (work: Promise<unknown>) => {
             background.push(work);
           },
-          storage: {
-            get: async (name: string) => structuredClone(values.get(name)),
-            put: async (name: string, value: unknown) => {
-              values.set(name, structuredClone(value));
-            },
-            delete: async (name: string) => values.delete(name),
+          storage: Object.assign(new RuntimeMap(values), {
             getAlarm: async () => alarm,
             setAlarm: async (at: number) => {
               alarm = at;
             },
-          },
+          }),
         },
         {
           POOL_DATABASE_URL: "postgres://fixture",
@@ -1147,14 +1141,16 @@ for (const retire of [false, true])
       const firing = worker.alarm();
       t.mock.timers.tick(8_800);
       release.resolve();
-      await Promise.all([firing, ...background]);
+      await firing;
+      await Promise.all(background);
       assert.equal(reads, 1, "the alarm must join the background repair");
       if (retire) {
         assert.equal(installed.at(-1)?.dirty, true);
         assert.equal(alarm, Date.now() + 300_000, "only runtime upkeep remains after deletion");
-        t.mock.timers.tick(60_000);
+        t.mock.timers.tick(300_000);
         alarm = null;
         await worker.alarm();
+        await Promise.all(background);
         assert.equal(reads, 1, "retired pools must not be read by later alarms");
         const reserve = async () => {
           const envelope = await signEnvelope(key, membershipPrefix, {
@@ -1196,6 +1192,7 @@ for (const retire of [false, true])
       t.mock.timers.tick(5_000);
       alarm = null;
       await worker.alarm();
+      await Promise.all(background);
       assert.equal(reads, 2, "the restored alarm must perform a fresh repair");
       assert.ok(installed.at(-1)!.expiresAt > firstExpiry, "the next pass renews native authority");
       assert.equal(alarm, Date.now() + 5_000);
@@ -1240,20 +1237,17 @@ test("native SQL writes to a running container require the exact policy install 
   };
   const worker = new PoolContainer(
     {
+      id: { toString: () => "a".repeat(64) },
       container,
       waitUntil: (work: Promise<unknown>) => {
         background.push(work);
       },
-      storage: {
-        get: async (name: string) => structuredClone(values.get(name)),
-        put: async (name: string, value: unknown) => {
-          values.set(name, structuredClone(value));
-        },
+      storage: Object.assign(new RuntimeMap(values), {
         getAlarm: async () => alarm,
         setAlarm: async (at: number) => {
           alarm = at;
         },
-      },
+      }),
     },
     {
       POOL_DATABASE_URL: "postgres://fixture",
@@ -1322,18 +1316,15 @@ test("uncertain container model sends suppress retries while definite Home refus
   };
   const worker = new PoolContainer(
     {
+      id: { toString: () => "a".repeat(64) },
       container,
       waitUntil: (work: Promise<unknown>) => {
         background.push(work);
       },
-      storage: {
-        get: async (name: string) => structuredClone(values.get(name)),
-        put: async (name: string, value: unknown) => {
-          values.set(name, structuredClone(value));
-        },
+      storage: Object.assign(new RuntimeMap(values), {
         getAlarm: async () => null,
         setAlarm: async () => {},
-      },
+      }),
     },
     {
       POOL_DATABASE_URL: "postgres://fixture",
@@ -1418,7 +1409,11 @@ test("deployment readiness cannot be invoked on public routes or without the rel
   assert.equal(warms, 0);
 });
 
-test("the actual controller reports its code identity without reading startup state", async () => {
+test("the actual controller reports its code identity without reading startup state", async (context) => {
+  const background: Promise<unknown>[] = [];
+  context.after(async () => {
+    await Promise.all(background);
+  });
   const { productionOpsRelease } =
     await import("../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts");
   const { poolWorkerRevision } =
@@ -1427,6 +1422,9 @@ test("the actual controller reports its code identity without reading startup st
   const pool = new PoolContainer(
     {
       id: { toString: () => instanceId },
+      waitUntil: (work: Promise<unknown>) => {
+        background.push(work);
+      },
       storage: {
         get() {
           throw new Error("Code identity must not read startup state");
@@ -1516,41 +1514,64 @@ test("five-second membership alarms run persisted reporting jobs only every five
       saved.set(key, value);
     },
   };
-  const instance = () => ({
-    ctx: { storage },
-    env: {
-      POOL_MODEL_HISTORY_ENABLED: "false",
-      POOL_APP_SIGNING_KEY: "ab".repeat(32),
-      TOOLS_SERVICE: {
-        fetch: async () => {
-          calls.publish++;
-          return new Response(null, { status: 204 });
+  const background: Promise<unknown>[] = [];
+  const instance = () =>
+    Object.setPrototypeOf(
+      {
+        ctx: {
+          storage,
+          waitUntil: (work: Promise<unknown>) => {
+            background.push(work);
+          },
+        },
+        alarms: {
+          inspect: async () => ({
+            homeDeadline: Date.now(),
+            fleetDeadline: null,
+            nativeDeadline: null,
+          }),
+          take: async () => ({ home: true, fleet: false }),
+          rearm: async () => {},
+        },
+        env: {
+          POOL_MODEL_HISTORY_ENABLED: "false",
+          POOL_APP_SIGNING_KEY: "ab".repeat(32),
+          TOOLS_SERVICE: {
+            fetch: async () => {
+              calls.publish++;
+              return new Response(null, { status: 204 });
+            },
+          },
+        },
+        changes: { deliver: async () => {} },
+        appModels: { tick: async () => {} },
+        memberships: {
+          tick: async () => {
+            calls.membership++;
+          },
+        },
+        computers: {
+          expire: async () => {},
+          observeUsage: async () => {
+            calls.computers++;
+          },
+        },
+        handoff: { warm: async () => {} },
+        control: { expire: async () => {} },
+        prices: { run: async () => {} },
+        overviewPrices: { refresh: async () => {} },
+        usage: {
+          observe: async () => {
+            calls.usage++;
+          },
         },
       },
-    },
-    appModels: { tick: async () => {} },
-    memberships: {
-      tick: async () => {
-        calls.membership++;
-      },
-    },
-    computers: {
-      expire: async () => {},
-      observeUsage: async () => {
-        calls.computers++;
-      },
-    },
-    handoff: { warm: async () => {} },
-    control: { expire: async () => {} },
-    prices: { run: async () => {} },
-    overviewPrices: { refresh: async () => {} },
-    usage: {
-      observe: async () => {
-        calls.usage++;
-      },
-    },
-  });
-  const fire = async () => Reflect.apply(PoolContainer.prototype.alarm, instance(), []);
+      PoolContainer.prototype,
+    );
+  const fire = async () => {
+    await Reflect.apply(PoolContainer.prototype.alarm, instance(), []);
+    await Promise.all(background.splice(0));
+  };
   for (let i = 0; i < 60; i++) {
     await fire();
     t.mock.timers.tick(5_000);
@@ -1558,4 +1579,118 @@ test("five-second membership alarms run persisted reporting jobs only every five
   assert.deepEqual(calls, { membership: 60, computers: 1, usage: 1, publish: 1 });
   await fire();
   assert.deepEqual(calls, { membership: 61, computers: 2, usage: 2, publish: 2 });
+});
+
+test("failed background Home maintenance retains a five-second retry and permits a fresh task", async (t) => {
+  const now = Date.parse("2026-11-13T00:00:00Z");
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const background: Promise<unknown>[] = [];
+  const deadlines: number[] = [];
+  let calls = 0;
+  const worker = Object.setPrototypeOf(
+    {
+      ctx: {
+        waitUntil: (work: Promise<unknown>) => {
+          background.push(work);
+        },
+      },
+      alarms: {
+        inspect: async () => ({ homeDeadline: now, fleetDeadline: null, nativeDeadline: null }),
+        take: async () => ({ home: true, fleet: false }),
+        rearm: async () => {},
+        schedule: async (owner: string, at: number) => {
+          assert.equal(owner, "home");
+          deadlines.push(at);
+        },
+      },
+      homeUpkeep: async () => {
+        if (++calls === 1) throw Error("synthetic-private-home-error");
+      },
+    },
+    PoolContainer.prototype,
+  );
+  await Reflect.apply(PoolContainer.prototype.alarm, worker, []);
+  await Promise.all(background.splice(0));
+  assert.deepEqual(deadlines, [now + 5_000]);
+  await Reflect.apply(PoolContainer.prototype.alarm, worker, []);
+  await Promise.all(background.splice(0));
+  assert.equal(calls, 2);
+  assert.equal(deadlines.length, 1, "successful upkeep must retain its ordinary scheduling");
+});
+
+test("committed change delivery survives a shared Home task without delaying fleet alarms", async (t) => {
+  const now = Date.parse("2026-11-13T12:00:00Z");
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const background: Promise<unknown>[] = [];
+  const delivery = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  const counts = { deliveries: 0, fleet: 0, membership: 0 };
+  let alarm: number | null = null;
+  const storage = Object.assign(new RuntimeMap(new Map()), {
+    getAlarm: async () => alarm,
+    setAlarm: async (at: number) => {
+      alarm = at;
+    },
+  });
+  const { PoolAlarms } = await import("./alarms.ts");
+  const alarms = new PoolAlarms(storage);
+  const worker = Object.setPrototypeOf(
+    {
+      ctx: {
+        storage,
+        waitUntil: (work: Promise<unknown>) => {
+          background.push(work);
+        },
+      },
+      env: {
+        POOL_MODEL_HISTORY_ENABLED: "false",
+        POOL_APP_SIGNING_KEY: "ab".repeat(32),
+        TOOLS_SERVICE: { fetch: async () => new Response(null, { status: 204 }) },
+      },
+      alarms,
+      changes: {
+        deliver: async () => {
+          counts.deliveries++;
+          started.resolve();
+          await delivery.promise;
+        },
+      },
+      fleet: {
+        upkeep: async () => {
+          counts.fleet++;
+        },
+      },
+      appModels: { tick: async () => {} },
+      memberships: {
+        tick: async () => {
+          counts.membership++;
+        },
+      },
+      computers: { expire: async () => {}, observeUsage: async () => {} },
+      handoff: { warm: async () => {} },
+      control: { expire: async () => {} },
+      prices: { run: async () => {} },
+      overviewPrices: { refresh: async () => {} },
+      usage: { observe: async () => {} },
+    },
+    PoolContainer.prototype,
+  );
+  try {
+    await alarms.schedule("home", now);
+    await alarms.schedule("fleet", now);
+    alarm = null;
+    await worker.alarm();
+    await started.promise;
+    t.mock.timers.tick(10);
+    await alarms.schedule("home", Date.now());
+    await alarms.schedule("fleet", Date.now());
+    alarm = null;
+    await worker.alarm();
+    assert.deepEqual(counts, { deliveries: 1, fleet: 2, membership: 0 });
+    assert.equal((await alarms.inspect()).homeDeadline, Date.now() + 5_000);
+  } finally {
+    delivery.resolve();
+    await Promise.all(background);
+  }
+  assert.deepEqual(counts, { deliveries: 1, fleet: 2, membership: 1 });
 });

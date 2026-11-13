@@ -1,3 +1,12 @@
+import { homeResponse } from "../home-response.ts";
+import { awaitProbe } from "../availability.ts";
+import {
+  retainRuntimeFailure,
+  runtimeFailureHeaders,
+  runtimeFailureDiagnostic,
+  runtimeFailureCode,
+  runtimeResponseDiagnostic,
+} from "../runtime-route-diagnostic.ts";
 import { Schema } from "effect";
 import {
   SlotIdentity,
@@ -33,17 +42,21 @@ export class BoundSlotDriver implements SlotDriver {
     this.endpoint = endpoint;
   }
   private async call(target: SlotTarget, action: string, value: unknown, signal: AbortSignal) {
-    const response = await this.endpoint(target).fetch(
-      new Request(`http://runtime/${action}`, {
-        method: "POST",
-        signal,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(value),
-      }),
+    const response = await homeResponse(
+      () =>
+        this.endpoint(target).fetch(
+          new Request(`http://runtime/${action}`, {
+            method: "POST",
+            signal,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(value),
+          }),
+        ),
+      signal,
     );
     if (!response.ok) {
-      await response.body?.cancel();
-      throw new SlotRefused("uncertain");
+      void response.body?.cancel().catch(() => {});
+      throw retainRuntimeFailure(response, new SlotRefused("uncertain"));
     }
     return response;
   }
@@ -107,7 +120,29 @@ export class BoundSlotDriver implements SlotDriver {
     await (await this.call(identity, "native", { identity, policy }, signal)).body?.cancel();
   }
   async retire(target: SlotTarget, identity: SlotIdentity, signal: AbortSignal) {
-    await (await this.call(target, "retire", { target, identity }, signal)).body?.cancel();
+    const response = await this.call(target, "retire", { target, identity }, signal);
+    await awaitProbe(() => response.body?.cancel() ?? Promise.resolve(), signal);
+  }
+  async drain(identity: SlotIdentity, signal: AbortSignal) {
+    const response = await this.call(identity, "drain", { identity }, signal);
+    return Schema.decodeUnknownSync(
+      Schema.Struct({
+        active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+        known: Schema.Boolean,
+      }),
+    )(await response.json());
+  }
+  async retirement(identity: SlotIdentity, signal: AbortSignal) {
+    const response = await this.call(identity, "retirement", { identity }, signal);
+    return Schema.decodeUnknownSync(
+      Schema.Struct({ identity: SlotIdentity, retired: Schema.Boolean, running: Schema.Boolean }),
+    )(await retirementBody(response, signal));
+  }
+  async failed(identity: SlotIdentity, signal: AbortSignal) {
+    const response = await this.call(identity, "failed", { identity }, signal);
+    return Schema.decodeUnknownSync(
+      Schema.Struct({ identity: SlotIdentity, stopped: Schema.Boolean }),
+    )(await retirementBody(response, signal));
   }
   fetch(identity: SlotIdentity, request: Request, port: 8317 | 8327 | 8318) {
     return this.forward(identity, request, port, false);
@@ -115,7 +150,7 @@ export class BoundSlotDriver implements SlotDriver {
   probeFetch(identity: SlotIdentity, request: Request, port: 8318 | 8327) {
     return this.forward(identity, request, port, true);
   }
-  private forward(
+  private async forward(
     identity: SlotIdentity,
     request: Request,
     port: 8317 | 8327 | 8318,
@@ -126,7 +161,12 @@ export class BoundSlotDriver implements SlotDriver {
     headers.set("X-Signalbox-Runtime-Port", String(port));
     if (readOnly) headers.set("X-Signalbox-Runtime-Read-Only", "1");
     else headers.delete("X-Signalbox-Runtime-Read-Only");
-    return this.endpoint(identity).fetch(new Request(request, { headers }));
+    const response = await this.endpoint(identity).fetch(new Request(request, { headers }));
+    if (response.status === 409 && runtimeResponseDiagnostic(response)) {
+      void response.body?.cancel().catch(() => {});
+      throw retainRuntimeFailure(response, new SlotRefused("uncertain"));
+    }
+    return response;
   }
 }
 
@@ -146,7 +186,7 @@ export async function runtimeRequest(
       headers.delete("X-Signalbox-Runtime-Port");
       const readOnly = headers.get("X-Signalbox-Runtime-Read-Only") === "1";
       headers.delete("X-Signalbox-Runtime-Read-Only");
-      return endpoint.fetch(identity, new Request(request, { headers }), port, readOnly);
+      return await endpoint.fetch(identity, new Request(request, { headers }), port, readOnly);
     }
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const value: unknown = await request.json();
@@ -194,6 +234,18 @@ export async function runtimeRequest(
       )(value);
       if (action === "/install") await endpoint.install(identity, policy, request.signal);
       else await endpoint.native(identity, policy, request.signal);
+    } else if (action === "/drain") {
+      const { identity } = Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(
+        value,
+      );
+      return Response.json(await endpoint.drain(identity, request.signal));
+    } else if (action === "/retirement" || action === "/failed") {
+      const { identity } = Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(
+        value,
+      );
+      return Response.json(
+        await endpoint[action === "/failed" ? "failed" : "retirement"](identity, request.signal),
+      );
     } else if (action === "/retire") {
       const { target, identity } = Schema.decodeUnknownSync(
         Schema.Struct({ target: SlotTarget, identity: SlotIdentity }),
@@ -201,7 +253,41 @@ export async function runtimeRequest(
       await endpoint.retire(target, identity, request.signal);
     } else return new Response(null, { status: 404 });
     return new Response(null, { status: 204 });
-  } catch {
-    return Response.json({ error: "runtime-refused" }, { status: 409 });
+  } catch (error) {
+    return Response.json(
+      {
+        error: "runtime-refused",
+        reason: runtimeFailureCode(runtimeFailureDiagnostic(error, "endpoint_route")),
+      },
+      { status: 409, headers: runtimeFailureHeaders(error, "endpoint_route") },
+    );
+  }
+}
+
+async function retirementBody(response: Response, signal: AbortSignal): Promise<unknown> {
+  const reader = response.body?.getReader();
+  const cancel = () => {
+    void reader?.cancel().catch(() => {});
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    return await awaitProbe(async () => {
+      const decoder = new TextDecoder();
+      let text = "";
+      while (reader) {
+        const next = await reader.read();
+        signal.throwIfAborted();
+        if (next.done) break;
+        text += decoder.decode(next.value, { stream: true });
+      }
+      signal.throwIfAborted();
+      return JSON.parse(text + decoder.decode());
+    }, signal);
+  } catch (error) {
+    cancel();
+    throw error;
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    reader?.releaseLock();
   }
 }

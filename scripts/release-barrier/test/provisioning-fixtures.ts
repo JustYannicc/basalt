@@ -5,25 +5,25 @@ import {
   provisioningManifestDigest,
 } from "../provisioning-contract.ts";
 import { applicationTemplateDigest, expectedApplicationRequest } from "../provisioning-wire.ts";
-import { decodeRuntimeCreate } from "../runtime-create-schema.ts";
+import { decodeRuntimeCreate, type RuntimeResourceName } from "../runtime-create-schema.ts";
 import { decodeNamespaceBaseline } from "../provisioning-namespace.ts";
-export const runtimeDeclaration = () =>
+export const runtimeDeclaration = (name: RuntimeResourceName = "PoolRuntime") =>
   decodeRuntimeCreate({
     action: "create-container",
     type: "Cloudflare.Container",
-    fqn: "PoolRuntime",
+    fqn: name,
     disposition: "provision-only",
     baseline: "absent",
     accountId: "1".repeat(32),
     instanceId: "2".repeat(32),
-    namespace: { workerFqn: "PoolWorker", className: "PoolRuntime", binding: "PoolRuntime" },
+    namespace: { workerFqn: "PoolWorker", className: name, binding: name },
     props: {
       name: "synthetic-runtime",
-      className: "PoolRuntime",
+      className: name,
       image: `registry.cloudflare.com/${"1".repeat(32)}/synthetic@sha256:${"a".repeat(64)}`,
       instanceType: "basic",
       instances: 0,
-      maxInstances: 1,
+      maxInstances: name === "PoolRuntime" ? 1 : 4,
       schedulingPolicy: "default",
       constraints: { jurisdiction: "eu", regions: ["EEUR", "WEUR"] },
       observability: { logs: { enabled: true } },
@@ -99,9 +99,9 @@ export const namespaceBaseline = () =>
     ],
   });
 
-export function provisioningFixture() {
+export function provisioningFixture(name: RuntimeResourceName = "PoolRuntime") {
   const baseline = namespaceBaseline();
-  const declaration = runtimeDeclaration();
+  const declaration = runtimeDeclaration(name);
   const request = runtimeNamespaceRequest(baseline, declaration, "synthetic-operation");
   const manifest = decodeProvisioningManifest({
     schemaVersion: 3,

@@ -3,18 +3,76 @@ import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/imple
 import { DurableObject } from "cloudflare:workers";
 import { RuntimeEndpoint, type EndpointEnvironment } from "./runtime-slots/endpoint.ts";
 import { runtimeRequest } from "./runtime-slots/transport.ts";
+import { nativeResponse } from "./native-response.worker.ts";
+import { RuntimeHomePeerTransport } from "./home-peer.worker.ts";
+import type { HomePeerSource } from "./runtime-slots/peer-access.ts";
+import type { SlotTarget } from "./runtime-slots/contract.ts";
+import { handleHomePeerUpgrade, homePeerPath } from "./home-peer-transport.ts";
 
 /** Code only. The admitted release path must separately create and bind this class. */
 export class PoolRuntime extends DurableObject<EndpointEnvironment> {
   private endpoint: RuntimeEndpoint;
+  private peers: RuntimeHomePeerTransport;
   constructor(ctx: DurableObjectState, env: EndpointEnvironment) {
     super(ctx, env);
-    this.endpoint = new RuntimeEndpoint(ctx, env, "runtime", {
-      candidate: productionOpsRelease,
-      workerInput: poolWorkerRevision,
-    });
+    this.peers = new RuntimeHomePeerTransport(ctx, env.POOL_DEPLOYMENT_KEY ?? "", (identity) =>
+      this.endpoint.health(identity, AbortSignal.timeout(2_000)),
+    );
+    this.endpoint = new RuntimeEndpoint(
+      ctx,
+      env,
+      "runtime",
+      {
+        candidate: productionOpsRelease,
+        workerInput: poolWorkerRevision,
+      },
+      nativeResponse,
+      { beforeStart: (witness) => this.peers.configure({ kind: "runtime", witness }) },
+    );
+    ctx.waitUntil(this.peers.restore().catch(() => {}));
   }
   fetch(request: Request) {
+    if (new URL(request.url).pathname.startsWith(`${homePeerPath}/`))
+      return handleHomePeerUpgrade(request, {
+        open: (source) => {
+          if (source.kind !== "runtime") throw new Error("Runtime peer source required");
+          return this.peers.open(source);
+        },
+      });
     return runtimeRequest(request, this.endpoint);
+  }
+  alarm() {
+    return this.endpoint.alarm();
+  }
+  homePeerSource(target: SlotTarget) {
+    return this.peers.source(target);
+  }
+  assertHomePeer(source: HomePeerSource) {
+    return this.peers.assert(source);
+  }
+}
+
+interface FleetRuntimeEnvironment extends EndpointEnvironment {
+  POOL_BLUE_APPLICATION_ID?: string;
+  POOL_BLUE_IMAGE_HASH?: string;
+  POOL_GREEN_APPLICATION_ID?: string;
+  POOL_GREEN_IMAGE_HASH?: string;
+}
+export class PoolRuntimeBlue extends PoolRuntime {
+  constructor(ctx: DurableObjectState, env: FleetRuntimeEnvironment) {
+    super(ctx, {
+      ...env,
+      POOL_RUNTIME_APPLICATION_ID: env.POOL_BLUE_APPLICATION_ID,
+      POOL_IMAGE_HASH: env.POOL_BLUE_IMAGE_HASH ?? "",
+    });
+  }
+}
+export class PoolRuntimeGreen extends PoolRuntime {
+  constructor(ctx: DurableObjectState, env: FleetRuntimeEnvironment) {
+    super(ctx, {
+      ...env,
+      POOL_RUNTIME_APPLICATION_ID: env.POOL_GREEN_APPLICATION_ID,
+      POOL_IMAGE_HASH: env.POOL_GREEN_IMAGE_HASH ?? "",
+    });
   }
 }

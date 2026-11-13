@@ -1,14 +1,12 @@
 import { Schema } from "effect";
 import {
   decodeRuntimeHandoffCommand,
-  runtimeHandoffCommandPrefix,
-  runtimeHandoffPath,
   type RuntimeHandoffCommand,
 } from "../../src/pool/runtime-slots/handoff-command.ts";
 import { StartupWitness } from "../../src/pool/runtime-slots/admission-proof.ts";
 import { ControllerCode } from "../../src/pool/runtime-slots/contract.ts";
-import { signEnvelope } from "../../src/pool/token.ts";
-import { openPoolOperations, type PoolOperationsTarget } from "../pool-operations.ts";
+import type { PoolOperationsTarget } from "../pool-operations.ts";
+import { sendRuntimeCommand } from "./runtime-command-rpc.ts";
 import type { ProvisioningEnable } from "./provisioning-contract.ts";
 import {
   assertRuntimeBridgeKey,
@@ -44,31 +42,9 @@ export async function runtimeHandoffRequest(
     accountId: target.accountId,
     scriptName: target.worker,
   });
-  const envelope = await signEnvelope(signingKey, runtimeHandoffCommandPrefix, frozen);
-  const bridge = await openPoolOperations(target);
-  try {
+  return sendRuntimeCommand(frozen, signingKey, target, () => {
     assertRuntimeProofEnable(manifest, enable, now());
-    const response = await bridge.service.fetch(
-      new Request(`https://pool-operations.invalid${runtimeHandoffPath}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ envelope }),
-        signal: AbortSignal.timeout(15_000),
-      }),
-    );
-    if (response.status !== 200) {
-      await response.body?.cancel();
-      throw provisioningRefusal(
-        "runtime-handoff-response-refused",
-        "handoff.response.status",
-        200,
-        response.status,
-      );
-    }
-    return (await response.json()) as unknown;
-  } finally {
-    await bridge.close();
-  }
+  });
 }
 
 const witnessResponse = Schema.decodeUnknownSync(

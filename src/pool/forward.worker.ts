@@ -1,3 +1,9 @@
+import {
+  refuseRuntime,
+  runtimeRouteDiagnostic,
+  runtimeResponseDiagnostic,
+  stripRuntimeFailureHeaders,
+} from "./runtime-route-diagnostic.ts";
 import { modelKeyScope } from "./key-scope.ts";
 import type { Computers } from "./computers.ts";
 import { ControlFailure, failureResponse } from "./json.ts";
@@ -84,7 +90,7 @@ export async function forwardPoolRequest(
       return new Response(null, { status: 204 });
     }
     guard = "runtime_port";
-    if (!port) throw new Error("Pool container port unavailable");
+    if (!port) refuseRuntime("port_lookup", new Error("Pool container port unavailable"));
     let boot: string | undefined;
     const beforeDispatch = () => {
       guard = "upstream_dispatch";
@@ -109,6 +115,13 @@ export async function forwardPoolRequest(
       ? await deps.route(outbound, port, identity?.pool, legacy, beforeDispatch)
       : await legacy(outbound);
     guard = "upstream_response";
+    const runtimeRefusal = runtimeResponseDiagnostic(upstream);
+    if (runtimeRefusal)
+      console.error("POOL_RUNTIME_ROUTE_FAILURE", {
+        code: "runtime-refused",
+        status: upstream.status,
+        ...runtimeRefusal,
+      });
     logDispatchTiming(upstream.headers.get(dispatchTimingHeader));
     let response = await rewriteCapResponse(upstream, pathname);
     if (
@@ -140,6 +153,7 @@ export async function forwardPoolRequest(
     }
     const headers = new Headers(response.headers);
     headers.delete(dispatchTimingHeader);
+    stripRuntimeFailureHeaders(headers);
     const observedBoot = upstream.headers.get("X-Signalbox-Pool-Boot") ?? boot;
     if (observedBoot) headers.set("X-Signalbox-Pool-Boot", observedBoot);
     const forwarded = new Response(response.body, {
@@ -153,6 +167,7 @@ export async function forwardPoolRequest(
     native?.release();
     modelLease?.release();
     const diagnostic: GatewayFailureDiagnostic = {
+      ...runtimeRouteDiagnostic(error),
       guard,
       refusalReason: error instanceof ProtectionRefusal ? error.reason : guard,
       cause:

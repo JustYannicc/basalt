@@ -1,3 +1,4 @@
+import { runtimeFailureCode, type RuntimeRouteDiagnostic } from "./runtime-route-diagnostic.ts";
 import { upstreamOutcomeUnknown } from "../../clients/contracts/model-error.ts";
 import { captureError } from "../telemetry/sentry.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
@@ -17,7 +18,7 @@ export interface RefusalIdentity {
   appId?: string;
   requirement?: string;
 }
-export interface GatewayFailureDiagnostic {
+export interface GatewayFailureDiagnostic extends Partial<RuntimeRouteDiagnostic> {
   guard:
     | "native_identity"
     | "model_membership"
@@ -83,6 +84,14 @@ export function gatewayUnavailable(
         code: "pool_protection_unavailable",
         type: "server_error",
         retryable: true,
+        ...(diagnostic.runtimeStep && diagnostic.runtimeReason
+          ? {
+              reason: runtimeFailureCode({
+                runtimeStep: diagnostic.runtimeStep,
+                runtimeReason: diagnostic.runtimeReason,
+              }),
+            }
+          : {}),
         message: "The pool's account protection is temporarily unavailable. Retry shortly.",
       },
     },

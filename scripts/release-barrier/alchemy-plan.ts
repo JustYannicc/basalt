@@ -122,7 +122,7 @@ export const preparePlan = (
                     });
                   containers.set(fqn, staged);
                   inputs.set(fqn, { news: input.news, bindings: input.bindings });
-                  return publication.proposed;
+                  return staged.publication.proposed;
                 }),
             }),
           );
