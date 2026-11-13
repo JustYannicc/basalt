@@ -52,6 +52,15 @@ export function seriesInput(raw: unknown): PoolUsageSeriesInput {
     bucket: value.bucket,
     by: seriesDimensions.filter((key) => by.includes(key)),
   };
+  if (value.timezone !== undefined) {
+    if (value.timezone !== "UTC" && value.timezone !== "Europe/Zurich") return invalidHistory();
+    if (value.bucket !== "day" && value.timezone !== "UTC") return invalidHistory();
+    input.timezone = value.timezone;
+  }
+  if (value.forecast !== undefined) {
+    if (typeof value.forecast !== "boolean") return invalidHistory();
+    input.forecast = value.forecast;
+  }
   if (value.accounts !== undefined) input.accounts = seriesIds(value.accounts);
   if (value.sources !== undefined) {
     input.sources = seriesIds(value.sources);
@@ -68,6 +77,18 @@ export function seriesInput(raw: unknown): PoolUsageSeriesInput {
     if (typeof value.after !== "string" || value.after.length > 8_192) return invalidHistory();
     input.after = value.after;
   }
+  if (
+    input.forecast &&
+    (input.bucket !== "day" ||
+      input.timezone !== "Europe/Zurich" ||
+      input.by.length !== 1 ||
+      input.by[0] !== "provider" ||
+      input.accounts !== undefined ||
+      input.sources !== undefined ||
+      input.window !== undefined ||
+      input.after !== undefined)
+  )
+    return invalidHistory();
   return input;
 }
 
