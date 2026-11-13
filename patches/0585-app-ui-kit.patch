@@ -1741,7 +1741,7 @@ diff --git a/e2e/tests/app-ui-kit.spec.ts b/e2e/tests/app-ui-kit.spec.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/app-ui-kit.spec.ts
-@@ -0,0 +1,383 @@
+@@ -0,0 +1,398 @@
 +/** An app's page uses the dashboard's controls through `apps/ui`, built by the product's compiler. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -2051,6 +2051,21 @@ new file mode 100644
 +            page.evaluate(() => document.activeElement?.closest('[role="dialog"]') !== null),
 +          ),
 +        ).toBe(true);
++        yield* browser.use("The dialog finishes opening before its checkpoint", (page) =>
++          page.waitForFunction(() => {
++            const layers = document.querySelectorAll(
++              '[data-slot="dialog-content"][data-state="open"], [data-slot="dialog-overlay"][data-state="open"]',
++            );
++            return (
++              layers.length === 2 &&
++              [...layers].every(
++                (node) =>
++                  getComputedStyle(node).opacity === "1" &&
++                  node.getAnimations().every((animation) => animation.playState === "finished"),
++              )
++            );
++          }),
++        );
 +        yield* browser.checkpoint("The dialog opens over the app page");
 +        yield* browser.use("Escape closes the dialog", (page) => page.keyboard.press("Escape"));
 +        yield* browser.use("The dialog closes", (page) =>
