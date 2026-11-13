@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Legacy pool handoff fixtures create the saved pool, provider apps and selected accounts through public HTTP in a separate bounded native setup hook. Setup assertions and scenario-scoped cleanup remain mandatory. The unchanged sixty-second case deadline covers the historical handoff and every behaviour assertion, while lifecycle timings start at case entry so fixture work cannot consume or inflate its measured budget."
+    }
+  }
+}

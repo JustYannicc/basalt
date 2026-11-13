@@ -1,0 +1,331 @@
+diff --git a/e2e/support/case.ts b/e2e/support/case.ts
+--- a/e2e/support/case.ts
++++ b/e2e/support/case.ts
+@@ -18,6 +18,7 @@
+ ) =>
+   Effect.gen(function* () {
+     const lifetime = scenarioLifetime(context);
++    lifetime.started();
+     const target = lifetime.target;
+     const scope = yield* Scope.fork(lifetime.scope);
+     const runtime = SessionClients.layer.pipe(Layer.provideMerge(Layer.succeed(Target, target)));
+diff --git a/e2e/support/lifecycle.ts b/e2e/support/lifecycle.ts
+--- a/e2e/support/lifecycle.ts
++++ b/e2e/support/lifecycle.ts
+@@ -22,6 +22,7 @@
+   readonly scope: Scope.Closeable;
+   readonly actors: typeof Actors.Service | undefined;
+   readonly sdkScenarios: ReadonlyArray<SdkScenarioFixture>;
++  readonly started: () => void;
+   readonly completed: (exit: Exit.Exit<unknown, unknown>) => void;
+ }
+ 
+@@ -150,12 +151,14 @@
+             (directory) => fs.remove(directory, { recursive: true }),
+             { discard: true },
+           ).pipe(Effect.orDie);
+-          readyAt = yield* Clock.currentTimeMillis;
+           context.executorScenario = {
+             target,
+             scope,
+             actors,
+             sdkScenarios,
++            started: () => {
++              readyAt = Date.now();
++            },
+             completed: (exit) => {
+               outcome = exit;
+               completedAt = Date.now();
+diff --git a/e2e/support/legacy-pool-handoff-setup.ts b/e2e/support/legacy-pool-handoff-setup.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/legacy-pool-handoff-setup.ts
+@@ -0,0 +1,150 @@
++import { expect, beforeEach, type TestContext } from "vitest";
++import { Effect, FileSystem, Path, Schema, Scope, Exit } from "effect";
++import { Actors } from "./actors.ts";
++import { SessionClients, body } from "./api.ts";
++import { cloudLocks } from "./cloud-locks.ts";
++import { scenarioLifetime } from "./lifecycle.ts";
++import { RuntimeLive, Target } from "./platform.ts";
++
++const Resource = Schema.Struct({ id: Schema.String });
++const App = Schema.Struct({ id: Schema.String, name: Schema.String });
++const Source = Schema.Struct({
++  files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
++});
++const Links = Schema.Array(Schema.Struct({ requirement: Schema.String, account: Resource }));
++
++const prepare = (diagnostic: string) =>
++  Effect.gen(function* () {
++    const api = yield* SessionClients,
++      actors = yield* Actors,
++      database = yield* cloudLocks,
++      fs = yield* FileSystem.FileSystem,
++      path = yield* Path.Path;
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const viewer = yield* body(
++      Schema.Struct({ userId: Schema.String }),
++      yield* api.request(actors.owner, "GET", "/api/viewer"),
++    );
++    yield* database.run({
++      sql: `update "user" set "emailVerified" = true where id=$1`,
++      params: [viewer.userId],
++    });
++    const created = yield* api.request(actors.owner, "POST", `${prefix}/pools`, {
++      name: "Retained pool",
++      requestId: crypto.randomUUID(),
++      newInstance: true,
++    });
++    if (created.status !== 200)
++      yield* fs.writeFileString(
++        diagnostic,
++        JSON.stringify({
++          created: created.body,
++          events: (yield* api.request(
++            actors.owner,
++            "GET",
++            "/native-provider-fixture/backend-events",
++          )).body,
++          release: (yield* api.request(actors.owner, "GET", "/pool/v1/release")).body,
++        }),
++        { mode: 0o600 },
++      );
++    expect(created.status, JSON.stringify(created.body)).toBe(200);
++    const pool = yield* body(App, created);
++    const appPath = `${prefix}/apps/${pool.id}`;
++    const accounts: { id: string; requirement: string }[] = [];
++    for (const [requirement, method, count] of [
++      ["openai", "codex", 1],
++      ["anthropic", "claude", 3],
++    ] as const) {
++      const source = yield* fs
++        .readFileString(path.resolve(`../src/catalog/provider-apps/${requirement}.json`))
++        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Source))));
++      const provider = yield* body(
++        Resource,
++        yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: `Retained ${requirement}`,
++          files: source.files,
++        }),
++      );
++      for (let index = 0; index < count; index++) {
++        const connection = yield* body(
++          Resource,
++          yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/apps/${provider.id}/accounts/app/${requirement}/connections`,
++            { destination: { kind: "personal" } },
++          ),
++        );
++        const interactive = `${prefix}/connections/${connection.id}/interactive`;
++        expect(
++          (yield* api.request(actors.owner, "POST", `${interactive}/start`, { method })).status,
++        ).toBe(200);
++        const connected = yield* body(
++          Schema.Struct({ state: Schema.Literal("connected"), account: Resource }),
++          yield* api.request(actors.owner, "GET", `${interactive}/status`),
++        );
++        accounts.push({ id: connected.account.id, requirement });
++        expect(
++          (yield* api.request(
++            actors.owner,
++            "PUT",
++            `${appPath}/accounts/app/${requirement}/${connected.account.id}`,
++          )).status,
++        ).toBe(200);
++      }
++    }
++    const links = () =>
++      api
++        .request(actors.owner, "GET", `${appPath}/accounts/app`)
++        .pipe(Effect.flatMap((response) => body(Links, response)));
++    const beforeLinks = yield* links();
++    expect(beforeLinks.filter((link) => link.requirement === "pool")).toHaveLength(1);
++    expect(beforeLinks).toHaveLength(5);
++    const control = beforeLinks.find((link) => link.requirement === "pool")!.account.id;
++    const controlState = () =>
++      database.run({
++        sql: `select id, owner, provider, method, credential_generation, md5(encrypted_credentials::text) as credentials_hash from executor_accounts where id=$1`,
++        params: [control],
++      });
++    const beforeControl = yield* controlState();
++    expect(beforeControl).toHaveLength(1);
++
++    return { pool, accounts, beforeLinks, control, beforeControl, database };
++  });
++
++type Prepared = Effect.Success<ReturnType<typeof prepare>>;
++const fixtures = new WeakMap<TestContext, Prepared>();
++
++export const legacyPoolHandoffFixture = (context: TestContext) => {
++  const fixture = fixtures.get(context);
++  if (fixture === undefined) throw new Error("Legacy pool handoff requires its bounded setup hook");
++  return fixture;
++};
++
++// The native hook owns fixture preparation; Effect Vitest still owns the strict case deadline.
++/* oxlint-disable executor/no-manual-effect-runtime-in-tests */
++export const installLegacyPoolHandoffSetup = () =>
++  beforeEach((context) => {
++    const lifetime = scenarioLifetime(context);
++    if (lifetime.actors === undefined)
++      throw new Error("Legacy pool setup requires scenario actors");
++    const diagnostic = `${lifetime.target.directory}/report/lifecycle/${context.task.id}-pool-setup.json`;
++    return Effect.runPromise(
++      prepare(diagnostic).pipe(
++        Effect.tap((fixture) => Effect.sync(() => fixtures.set(context, fixture))),
++        Effect.provideService(Actors, lifetime.actors),
++        Effect.provide(SessionClients.layer),
++        Effect.provideService(Target, lifetime.target),
++        Effect.provide(RuntimeLive),
++        Scope.provide(lifetime.scope),
++        Effect.onExit((exit) =>
++          Effect.sync(() => {
++            if (Exit.isFailure(exit)) lifetime.completed(exit);
++          }),
++        ),
++      ),
++      { signal: context.signal },
++    );
++  }, 60_000);
++/* oxlint-enable executor/no-manual-effect-runtime-in-tests */
+diff --git a/e2e/tests/pool-legacy-handoff.spec.ts b/e2e/tests/pool-legacy-handoff.spec.ts
+--- a/e2e/tests/pool-legacy-handoff.spec.ts
++++ b/e2e/tests/pool-legacy-handoff.spec.ts
+@@ -1,10 +1,13 @@
+ import { expect, layer } from "@effect/vitest";
+-import { Effect, FileSystem, Path, Schema } from "effect";
++import { Effect, Schema } from "effect";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+-import { cloudLocks } from "../support/cloud-locks.ts";
++import {
++  installLegacyPoolHandoffSetup,
++  legacyPoolHandoffFixture,
++} from "../support/legacy-pool-handoff-setup.ts";
+ import { Evidence } from "../support/evidence.ts";
+ import { legacyPoolHome } from "../support/legacy-pool-home.ts";
+ import { legacyPoolKey } from "../support/legacy-pool-key.ts";
+@@ -13,10 +16,6 @@
+ import { scenarios } from "../test-plan.ts";
+ 
+ const Resource = Schema.Struct({ id: Schema.String });
+-const App = Schema.Struct({ id: Schema.String, name: Schema.String });
+-const Source = Schema.Struct({
+-  files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
+-});
+ const Links = Schema.Array(Schema.Struct({ requirement: Schema.String, account: Resource }));
+ const View = Schema.Struct({
+   ok: Schema.Literal(true),
+@@ -24,103 +23,29 @@
+ });
+ 
+ layer(HostedLive, { excludeTestServices: true })("Legacy pool membership handoff", (it) => {
++  installLegacyPoolHandoffSetup();
+   it.effect(scenarios.poolLegacyHandoff.title, (context) =>
+     withHostedCase(
+       context,
+       Effect.gen(function* () {
+         const api = yield* Api,
+-          actors = yield* Actors,
+-          database = yield* cloudLocks;
++          actors = yield* Actors;
+         const target = yield* Target,
+           evidence = yield* Evidence,
+           browser = yield* Browser;
+-        const fs = yield* FileSystem.FileSystem,
+-          path = yield* Path.Path;
+         const prefix = `/api/organizations/${actors.organization.id}`;
+-        const viewer = yield* body(
+-          Schema.Struct({ userId: Schema.String }),
+-          yield* api.request(actors.owner, "GET", "/api/viewer"),
+-        );
+-        yield* database.run({
+-          sql: `update "user" set "emailVerified" = true where id=$1`,
+-          params: [viewer.userId],
+-        });
+-        const created = yield* api.request(actors.owner, "POST", `${prefix}/pools`, {
+-          name: "Retained pool",
+-          requestId: crypto.randomUUID(),
+-          newInstance: true,
+-        });
+-        if (created.status !== 200)
+-          yield* evidence.json("pool-creation-receiver-diagnostic.json", {
+-            created: created.body,
+-            events: (yield* api.request(
+-              actors.owner,
+-              "GET",
+-              "/native-provider-fixture/backend-events",
+-            )).body,
+-            release: (yield* api.request(actors.owner, "GET", "/pool/v1/release")).body,
+-          });
+-        expect(created.status, JSON.stringify(created.body)).toBe(200);
+-        const pool = yield* body(App, created);
++        const { pool, accounts, beforeLinks, control, beforeControl, database } =
++          legacyPoolHandoffFixture(context);
+         const appPath = `${prefix}/apps/${pool.id}`;
+-        const accounts: { id: string; requirement: string }[] = [];
+-        for (const [requirement, method, count] of [
+-          ["openai", "codex", 1],
+-          ["anthropic", "claude", 3],
+-        ] as const) {
+-          const source = yield* fs
+-            .readFileString(path.resolve(`../src/catalog/provider-apps/${requirement}.json`))
+-            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Source))));
+-          const provider = yield* body(
+-            Resource,
+-            yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+-              name: `Retained ${requirement}`,
+-              files: source.files,
+-            }),
+-          );
+-          for (let index = 0; index < count; index++) {
+-            const connection = yield* body(
+-              Resource,
+-              yield* api.request(
+-                actors.owner,
+-                "POST",
+-                `${prefix}/apps/${provider.id}/accounts/app/${requirement}/connections`,
+-                { destination: { kind: "personal" } },
+-              ),
+-            );
+-            const interactive = `${prefix}/connections/${connection.id}/interactive`;
+-            expect(
+-              (yield* api.request(actors.owner, "POST", `${interactive}/start`, { method })).status,
+-            ).toBe(200);
+-            const connected = yield* body(
+-              Schema.Struct({ state: Schema.Literal("connected"), account: Resource }),
+-              yield* api.request(actors.owner, "GET", `${interactive}/status`),
+-            );
+-            accounts.push({ id: connected.account.id, requirement });
+-            expect(
+-              (yield* api.request(
+-                actors.owner,
+-                "PUT",
+-                `${appPath}/accounts/app/${requirement}/${connected.account.id}`,
+-              )).status,
+-            ).toBe(200);
+-          }
+-        }
+         const links = () =>
+           api
+             .request(actors.owner, "GET", `${appPath}/accounts/app`)
+             .pipe(Effect.flatMap((response) => body(Links, response)));
+-        const beforeLinks = yield* links();
+-        expect(beforeLinks.filter((link) => link.requirement === "pool")).toHaveLength(1);
+-        expect(beforeLinks).toHaveLength(5);
+-        const control = beforeLinks.find((link) => link.requirement === "pool")!.account.id;
+         const controlState = () =>
+           database.run({
+             sql: `select id, owner, provider, method, credential_generation, md5(encrypted_credentials::text) as credentials_hash from executor_accounts where id=$1`,
+             params: [control],
+           });
+-        const beforeControl = yield* controlState();
+-        expect(beforeControl).toHaveLength(1);
+         // This is the only historical state: an existing registration predating the membership marker.
+         const legacy = () =>
+           database.run({
