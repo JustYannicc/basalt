@@ -26,6 +26,7 @@ export async function assertReleaseImageCapacity(client: RuntimeReleaseClient) {
         "Raise the fleet cap explicitly to at least 2 before upgrading a selected non-legacy primary.",
       ],
     });
+  return fleet.permission;
 }
 
 /** Provider mutation remains in the ordinary barrier; this owns only its inactive-application admission. */
@@ -38,11 +39,10 @@ export const runtimeReleaseImage = (input: {
   Effect.gen(function* () {
     const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
     const prepare = async (container: FrozenContainer) => {
-      await assertReleaseImageCapacity(input.client);
+      const permission = await assertReleaseImageCapacity(input.client);
       const record = input.read();
       if (container.id !== input.resource)
         throw new BarrierRefusal("runtime-release-image-target", container.id);
-      const permission = (await input.client.fleet()).permission;
       const baseline = permission?.configuration.applications.find(
         (app) => app.applicationId === container.baseline.applicationId,
       );

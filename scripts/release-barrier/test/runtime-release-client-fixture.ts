@@ -171,6 +171,7 @@ export async function runtimeReleaseClientFixture(
   if (fault === "public") f.onPublicProbe(async () => new Response(null, { status: 503 }));
   return {
     ...f,
+    state,
     client,
     commands,
     attempts,
