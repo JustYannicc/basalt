@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-api-startup-margin",
+  "file": "0601-api-startup-margin.patch",
+  "content_sha256": "289eb2909e47eda408757d4101870c3ab15e3f0d3384e359a65b6f02ac076ddd",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
