@@ -108,7 +108,8 @@ const body = String.raw`
       return result('refused_ownership');
     tokenId = actual.id;
     if (secret && !ownedSecret(secret,tokenId)) return result('refused_ownership');
-    if (plan.mode === 'inspect') return result(secret ? 'stored' : 'owned_token');
+    // Metadata cannot prove that the store holds the current value after an uncertain rotation.
+    if (plan.mode === 'inspect') return result('owned_token');
     if (plan.mode === 'revoke') {
       phase = 'revoke';
       await request({method:'DELETE',path:base + '/tokens/' + tokenId});

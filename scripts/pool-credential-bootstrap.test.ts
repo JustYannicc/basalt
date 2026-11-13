@@ -62,7 +62,7 @@ for (const failure of ["failStore", "loseStoreReply"] as const)
     assert.ok(!JSON.stringify(result).includes(provider.leaked));
     const id = provider.tokens[0]!.id;
     const inspected = await provider.run(recovery("inspect", id));
-    assert.equal(inspected.outcome, failure === "failStore" ? "owned_token" : "stored");
+    assert.equal(inspected.outcome, "owned_token");
     options.failStore = false;
     options.loseStoreReply = false;
     assert.equal((await provider.run(recovery("rotate", id))).outcome, "stored");
@@ -83,6 +83,22 @@ test("a lost revoke reply settles by exact token absence without another DELETE"
   assert.equal(provider.calls.filter((call) => call.method === "DELETE").length, 1);
   assert.equal(provider.secrets.length, 1);
 });
+
+for (const failure of ["loseRotateReply", "failPatch"] as const)
+  test(`${failure} cannot turn unchanged secret metadata into proof of rotated-value custody`, async () => {
+    const provider = providerFixture({ [failure]: true });
+    const stored = await provider.run();
+    assert.equal(stored.outcome, "stored");
+    const rotated = await provider.run(recovery("rotate", stored.tokenId));
+    assert.equal(
+      rotated.outcome,
+      failure === "loseRotateReply" ? "unknown_rotate" : "unknown_store",
+    );
+    assert.equal(provider.rotations, 1);
+    assert.equal(provider.values.get(provider.secrets[0]!.id), provider.leaked);
+    assert.equal((await provider.run(recovery("inspect", stored.tokenId))).outcome, "owned_token");
+    assert.equal(provider.rotations, 1);
+  });
 
 test("target drift, incomplete inventory and provider errors refuse without writes or diagnostic values", async () => {
   for (const options of [{ wrongStore: true }, { unboundedInventory: true }, { throwRead: true }]) {

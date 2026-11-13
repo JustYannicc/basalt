@@ -151,6 +151,14 @@ test("only a retained inspection of the exact owned token permits a separate rec
       mode: "inspect",
       tokenId: null,
     };
+    await assert.rejects(
+      recordBootstrap(directory, inspect, {
+        tokenId: id,
+        secretName: secretName(create.target),
+        outcome: "stored",
+      }),
+      /inspection-cannot-prove-custody/,
+    );
     await recordBootstrap(directory, inspect, {
       tokenId: id,
       secretName: secretName(create.target),

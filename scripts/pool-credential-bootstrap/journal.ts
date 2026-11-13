@@ -117,7 +117,7 @@ export async function armBootstrap(directory: string, value: unknown, now = Date
       if (
         result.tokenId === plan.tokenId &&
         result.secretName === secretName(plan.target) &&
-        (result.outcome === "stored" || result.outcome === "owned_token")
+        result.outcome === "owned_token"
       )
         owned = true;
     }
@@ -150,6 +150,8 @@ export function inspectBootstrap(plan: BootstrapPlan, now = Date.now()) {
 
 export async function recordBootstrap(directory: string, plan: BootstrapPlan, value: unknown) {
   const result = decodeResult(value);
+  if (plan.mode === "inspect" && result.outcome === "stored")
+    throw new BootstrapRefusal("inspection-cannot-prove-custody");
   if (
     result.secretName !== secretName(plan.target) ||
     (plan.tokenId !== null && plan.tokenId !== result.tokenId)

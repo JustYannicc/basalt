@@ -58,6 +58,8 @@ export function providerFixture(
     unboundedInventory?: boolean;
     throwRead?: boolean;
     loseRevokeReply?: boolean;
+    loseRotateReply?: boolean;
+    failPatch?: boolean;
   } = {},
 ) {
   const plan = fixturePlan(),
@@ -118,8 +120,11 @@ export function providerFixture(
         if (options.loseRevokeReply) throw new Error(leaked);
         return envelope({ id: token.id });
       }
-      if (input.method === "PUT" && input.path.endsWith("/value"))
-        return envelope(leaked + "-rotation-" + ++rotations);
+      if (input.method === "PUT" && input.path.endsWith("/value")) {
+        const value = leaked + "-rotation-" + ++rotations;
+        if (options.loseRotateReply) throw new Error(leaked);
+        return envelope(value);
+      }
     }
     if (input.path === secretPath && input.method === "POST") {
       if (options.failStore) throw new Error(leaked);
@@ -141,6 +146,7 @@ export function providerFixture(
     }
     const secret = secrets.find((row) => input.path === `${secretPath}/${row.id}`);
     if (secret && input.method === "PATCH") {
+      if (options.failPatch) throw new Error(leaked);
       const body = record(input.body);
       values.set(secret.id, text(body.value));
       return envelope(structuredClone(secret));
