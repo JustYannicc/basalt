@@ -1,6 +1,6 @@
 {
   "name": "@signalbox/mobile-client",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Use your Signalbox models and tools on your phone.",
   "license": "Apache-2.0",
