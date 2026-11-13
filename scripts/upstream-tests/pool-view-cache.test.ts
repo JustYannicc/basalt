@@ -154,6 +154,40 @@ for (const homeDeadline of [undefined, 900_000]) {
         assert.equal(calls, 2, "a safely stale result is reusable with unchanged heads");
       }).pipe(Effect.provide(TestClock.layer())),
     ));
+
+  test(`a fill crossing the source cutoff cannot cache a fresh report with ${homeDeadline === undefined ? "no" : "a later"} Home deadline`, () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const cache = makePoolViewCache();
+        const guard = Effect.succeed({ revisions: [], validUntil: homeDeadline });
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const result = {
+          observedAt: "1970-01-01T00:00:00.000Z",
+          observation: { offering: "subscription", windows: [], balances: [] },
+        };
+        const view = (freshness: string) => ({ reports: [{ result, freshness }] });
+        let calls = 0;
+        const read = Effect.gen(function* () {
+          calls++;
+          const now = yield* Clock.currentTimeMillis;
+          const snapshot = view(now < 300_000 ? "fresh" : "stale");
+          yield* Deferred.succeed(started, undefined);
+          yield* Deferred.await(release);
+          return snapshot;
+        });
+        const load = () => cache("caller", guard, read);
+        yield* TestClock.adjust(299_999);
+        const fill = yield* load().pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        yield* TestClock.adjust(2);
+        yield* Deferred.succeed(release, undefined);
+        assert.deepEqual(yield* Fiber.join(fill), view("fresh"));
+        assert.deepEqual(yield* load(), view("stale"));
+        assert.deepEqual(yield* load(), view("stale"));
+        assert.equal(calls, 2, "the expired fill is discarded and its stale replacement is reused");
+      }).pipe(Effect.provide(TestClock.layer())),
+    ));
 }
 
 test("overlapping unchanged requests share one source fill", () =>

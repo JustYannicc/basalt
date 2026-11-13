@@ -203,7 +203,7 @@
 +  Layer.succeed(HostedCatalog, createCatalog({ egress, feedUrl }));
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-view-cache.ts
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,190 @@
 +import { Clock, Effect, Schema, Semaphore } from "effect";
 +import { StorageError, observationDeadline, type App } from "@executor-js/sdk/core";
 +import { AccountObservationResult } from "apps/contracts";
@@ -290,10 +290,11 @@
 +      )
 +        return yield* new StorageError();
 +      const size = new TextEncoder().encode(JSON.stringify(value)).byteLength;
++      // A cutoff crossed during the fill must still prevent caching its old verdict.
 +      const until = Math.min(
 +        head.validUntil ?? Infinity,
 +        after.validUntil ?? Infinity,
-+        presentationDeadline(value, completed),
++        presentationDeadline(value, now),
 +      );
 +      if (reusable(value) && size <= 1024 * 1024 && until > completed) {
 +        while (entries.size >= 64 || bytes + size > 16 * 1024 * 1024) {
