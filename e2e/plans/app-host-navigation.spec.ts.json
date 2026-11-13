@@ -42,6 +42,11 @@
     ".upstream/apps/hosted/web/src/implementation/components/organization.tsx",
     ".upstream/apps/hosted/cloud/web/src/implementation/routes/__root.tsx",
     ".upstream/apps/hosted/self-host/web/src/implementation/routes/__root.tsx",
-    ".upstream/e2e/support/app-host-navigation.ts"
+    ".upstream/e2e/support/app-host-navigation.ts",
+    ".upstream/packages/apps/src/implementation/ui-serving.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-ui.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-sessions.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-ui.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/auth-database.ts"
   ]
 }
