@@ -26,7 +26,12 @@ test("missing v5 applies after retained v8 and publishes real history writes wit
       const poolHash = (await digest(pool)).slice(0, 16);
       const [old] = await insert({ pool: poolHash });
       assert.ok(old);
-      await homeMetadataFixture(db);
+      await db.query("SET ROLE basalt_pool_owner");
+      try {
+        await homeMetadataFixture(db);
+      } finally {
+        await db.query("RESET ROLE");
+      }
       const retained = (
         await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_requests r")
       ).rows;
