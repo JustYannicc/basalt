@@ -120,10 +120,10 @@ test("snapshot miss waits for the complete view and persists it across restarts"
   assert.deepEqual(snapshot.data.readAt, result.data.readAt);
   next.resolve(data("New"));
   const fresh = await restored.view("pool-a", true, async () => {
-    return data("Current");
+    throw Error("must join revalidation");
   });
   assert.equal(fresh.source, "live");
-  assert.equal(fresh.data.accounts[0]!.label, "Current");
+  assert.equal(fresh.data.accounts[0]!.label, "New");
 });
 
 test("a large complete Home result persists without exceeding the storage value limit", async () => {
@@ -143,7 +143,7 @@ test("a large complete Home result persists without exceeding the storage value 
   assert.deepEqual(result.data, large);
 });
 
-test("snapshot requests coalesce while a fresh follow-up starts after its baseline", async () => {
+test("snapshot requests and fresh follow-ups share one revalidation per pool", async () => {
   const cache = new PoolViewSnapshots(new MemoryStorage(), () => {});
   await cache.view("a", false, async () => data());
   const pending = gate<HomeViewData>();
@@ -160,7 +160,7 @@ test("snapshot requests coalesce while a fresh follow-up starts after its baseli
   const fresh = cache.view("a", true, read);
   pending.resolve(data("New"));
   assert.equal((await fresh).data.accounts[0]!.label, "New");
-  assert.equal(reads, 2);
+  assert.equal(reads, 1);
 });
 
 test("an explicit fresh read never reuses a completed abandoned revalidation", async () => {
@@ -184,9 +184,7 @@ test("failed revalidation preserves the snapshot and reports stale rather than s
   await cache.view("a", false, async () => data());
   const pending = gate<HomeViewData>();
   await cache.view("a", false, () => pending.promise);
-  const fresh = cache.view("a", true, async () => {
-    throw Error("Home still unavailable");
-  });
+  const fresh = cache.view("a", true, async () => data("Unexpected retry"));
   pending.reject(Error("Home unavailable"));
   const result = await fresh;
   assert.equal(result.source, "snapshot");
@@ -214,7 +212,7 @@ test("invalidation survives restart, is scoped, and fences an in-flight old resu
   const fresh = cache.view("a", true, read);
   pending.resolve(data("Obsolete"));
   assert.equal((await fresh).data.accounts[0]!.label, "After change");
-  assert.equal(reads, 3);
+  assert.equal(reads, 2);
   const restored = new PoolViewSnapshots(storage, () => {});
   assert.equal((await restored.view("b", false, async () => data())).source, "snapshot");
   await restored.invalidate();
@@ -299,7 +297,7 @@ test("a failed Home branch drains the remaining reads before another revalidatio
   const result = await followUp;
   assert.equal(result.reading?.revalidationFailed, true);
   assert.equal(result.reading?.source, "snapshot");
-  assert.equal(reads, 2);
+  assert.equal(reads, 1);
 });
 
 test("Home writes invalidate before and after success or uncertain failure", async () => {
@@ -398,56 +396,4 @@ test("PoolControl persists only public in-pool data, rejects bad tokens, and str
   assert.equal((await control.handle(request("owner", "bad"))).status, 401);
   assert.equal(homeReads, beforeRefusal);
   assert.ok(homeReads > 0);
-});
-
-test("a fresh revision-fenced request never joins a body captured before its baseline", async () => {
-  const cache = new PoolViewSnapshots(new MemoryStorage(), () => {});
-  await cache.view("a", false, async () => data("Saved"));
-  const oldBody = gate<HomeViewData>();
-  const started = gate<void>();
-  await cache.view("a", false, () => {
-    started.resolve();
-    return oldBody.promise;
-  });
-  await started.promise;
-  // The collector has committed before the caller reads its first revision head.
-  let currentReads = 0;
-  const fresh = cache.view("a", true, async () => {
-    currentReads++;
-    return data("Committed");
-  });
-  oldBody.resolve(data("Before commit"));
-  const result = await fresh;
-  assert.equal(result.source, "live");
-  assert.equal(result.data.accounts[0]!.label, "Committed");
-  assert.equal(currentReads, 1);
-});
-
-test("a fresh view reloads group policy changed by another Home writer", async () => {
-  let policy = "last_resort";
-  let groupReads = 0;
-  const client = new HomeClient(async (path) => {
-    if (path.endsWith("/channel-groups")) {
-      groupReads++;
-      return Response.json({
-        channel_groups: [
-          { id: 1, channel_name: "signalbox-pool-pool-a", usage_credit_policy: policy },
-        ],
-      });
-    }
-    if (path.includes("/channel-group-details?"))
-      return Response.json({ channel_group_details: [] });
-    if (path.endsWith("/credentials")) return Response.json({ files: [] });
-    throw Error("Unexpected Home read");
-  });
-  const cache = new PoolViewSnapshots(new MemoryStorage(), () => {});
-  const home = new PoolHome(client, "pool-a");
-  assert.equal((await home.view(false, cache, true)).usageCreditPolicy, "last_resort");
-  policy = "never";
-  assert.equal((await home.view(false, cache, true)).usageCreditPolicy, "never");
-  assert.equal(
-    groupReads,
-    2,
-    "a committed change's fresh read cannot reuse process-local group metadata",
-  );
 });

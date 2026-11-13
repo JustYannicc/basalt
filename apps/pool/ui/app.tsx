@@ -1,5 +1,5 @@
 import { overviewAccounts } from "./overview-accounts.ts";
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PoolView } from "../contract.ts";
 import type { PoolApi } from "./api.ts";
 import { poolOrigin, productName } from "../deployment.ts";
@@ -39,9 +39,7 @@ export function App({
     window.addEventListener("hashchange", readRoute);
     return () => window.removeEventListener("hashchange", readRoute);
   }, []);
-  const { view, error, updating, revoked, reload, measurable } = usePool(api);
-  const changes = api.changes();
-  const stream = useSyncExternalStore(changes.onStatus, changes.status);
+  const { view, error, updating, reload, measurable } = usePool(api);
   const accountsReady = useRef(false);
   useLayoutEffect(() => {
     if (!measurable || view === undefined || accountsReady.current) return;
@@ -62,8 +60,7 @@ export function App({
   const [accountsHref, setAccountsHref] = useState<string>();
   const [shareHref, setShareHref] = useState<string>();
   // Only the owner's context carries the share page; computers live on Connect. Its signed
-  // intent lasts five minutes, so it is renewed well before that. This renews a link's expiry,
-  // not pool data; data reads follow the change feed.
+  // intent lasts five minutes, so it is renewed well before that.
   useEffect(() => {
     let live = true;
     const read = () =>
@@ -89,7 +86,6 @@ export function App({
   if (route === "history")
     return (
       <History
-        changes={api.changes}
         series={api.series}
         publicHistory={publicHistory}
         directory={overview.usage?.ok ? overview.usage.value.directory.members : []}
@@ -151,9 +147,7 @@ export function App({
             <h1 className="text-2xl font-semibold tracking-[-0.025em]">Overview</h1>
             <p className="text-sm text-muted-foreground text-pretty">
               {view === undefined
-                ? revoked
-                  ? null
-                  : "Loading this pool…"
+                ? "Loading this pool…"
                 : [
                     count === 0
                       ? "No accounts yet"
@@ -167,13 +161,9 @@ export function App({
           {view !== undefined && (
             <Freshness
               view={view}
-              updating={updating || overview.updating}
+              updating={updating}
               now={now}
               onRetry={error ? undefined : () => void reload()}
-              paused={stream === "paused"}
-              onReconnect={changes.reconnect}
-              stale={overview.failed}
-              onStaleRetry={() => void overview.reload()}
             />
           )}
         </section>
@@ -181,11 +171,9 @@ export function App({
         {error && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 px-4 py-3">
             <Problem>{error}</Problem>
-            {!revoked && (
-              <Button size="sm" variant="outline" onClick={() => void reload()}>
-                Try again
-              </Button>
-            )}
+            <Button size="sm" variant="outline" onClick={() => void reload()}>
+              Try again
+            </Button>
           </div>
         )}
         {view && count === 0 && <Empty view={view} accountsHref={accountsHref} />}

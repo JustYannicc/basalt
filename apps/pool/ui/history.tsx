@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import type { Provider } from "../contract.ts";
 import type { PoolApi } from "./api.ts";
 import { providerName as displayProvider } from "./accounts.tsx";
@@ -35,14 +35,12 @@ function requestTime(value: string): string {
 }
 
 export function History({
-  changes,
   series,
   publicHistory,
   directory,
   providers,
   onBack,
 }: {
-  changes: PoolApi["changes"];
   series: PoolApi["series"];
   publicHistory?: PublicHistoryReader;
   directory: readonly MemberDirectoryEntry[];
@@ -58,19 +56,13 @@ export function History({
     loaded,
     loading,
     loadError,
-    newer,
-    updating,
-    failed,
-    retry,
     pageError,
     loadingNext,
     page,
     reload,
     nextPage,
     previousPage,
-  } = useHistory(changes, series, publicHistory, filter);
-  const feed = changes();
-  const stream = useSyncExternalStore(feed.onStatus, feed.status);
+  } = useHistory(series, publicHistory, filter);
 
   const applyDates = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -202,23 +194,6 @@ export function History({
           )}
           <div className="flex flex-wrap items-start justify-between gap-3 text-xs text-muted-foreground">
             <span>{currentRange}</span>
-            {updating && <span role="status">Updating…</span>}
-            {failed && (
-              <span role="status">
-                <span className="text-destructive">{failed}</span> ·{" "}
-                <Button size="inline" variant="link" className="text-xs" onClick={retry}>
-                  Try again
-                </Button>
-              </span>
-            )}
-            {stream === "paused" && (
-              <span role="status">
-                Live updates paused ·{" "}
-                <Button size="inline" variant="link" className="text-xs" onClick={feed.reconnect}>
-                  Try again
-                </Button>
-              </span>
-            )}
             {loaded && (
               <Button size="sm" variant="ghost" onClick={reload}>
                 Reload
@@ -262,14 +237,6 @@ export function History({
                 >
                   Grouped totals are partial. Narrow the date range for complete totals; all request
                   pages remain available.
-                </p>
-              )}
-              {newer && (
-                <p
-                  role="status"
-                  className="border-b border-border py-3 text-sm text-muted-foreground"
-                >
-                  Newer usage arrived. Reload to include it.
                 </p>
               )}
               {loaded.series.changed && (

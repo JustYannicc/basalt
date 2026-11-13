@@ -221,14 +221,11 @@ test(
     let heldPersonal = [];
     let views = [];
     let contextReads = 0;
-    const streams = new Set();
-    const pendingHandshakes = new Set();
     let browserServer;
     let browser;
     let exited;
     let evidenceVideo;
     let costReasonsVideo;
-    let progressiveVideo;
     t.after(async () => {
       const problems = [];
       const step = async (work) => {
@@ -247,12 +244,6 @@ test(
         response.end(JSON.stringify(failed));
       if (artifacts && evidenceVideo)
         await step(() => evidenceVideo.saveAs(join(artifacts, `${artifactLabel}-transition.webm`)));
-      if (artifacts && progressiveVideo)
-        await step(() =>
-          progressiveVideo.saveAs(
-            join(artifacts, `${artifactLabel}-usage-before-capacity-390.webm`),
-          ),
-        );
       if (artifacts && costReasonsVideo)
         await step(() =>
           costReasonsVideo.saveAs(join(artifacts, `${artifactLabel}-cost-reasons-390.webm`)),
@@ -292,12 +283,6 @@ test(
 
     let childOrigin = "";
     const parent = createServer((request, response) => {
-      if (request.url === "/_fixture/ready") {
-        for (const start of pendingHandshakes) start();
-        pendingHandshakes.clear();
-        response.writeHead(204).end();
-        return;
-      }
       response.setHeader("content-type", "text/html");
       if (request.url === "/spoof") {
         response.end(
@@ -315,7 +300,6 @@ test(
         const data = event.data;
         if (data.version !== 2 || typeof data.snapshot !== 'boolean' || Object.keys(data).length !== 3) { window.rejected++; return; }
         window.readiness.push({ data, at: performance.now() });
-      if (data.snapshot) void fetch("/_fixture/ready");
       });
     </script><iframe src="${childOrigin}"></iframe>`);
     });
@@ -451,7 +435,6 @@ test(
     let freshResult;
     // When set, fresh view requests are answered as they arrive instead of held.
     let answerFresh = false;
-    let automaticFresh = false;
     let usageResult = emptyUsage;
     // Reshapes the manager overview reply, e.g. into partial coverage of one snapshot.
     let overviewShape = (value) => value;
@@ -465,44 +448,8 @@ test(
       entry.response.end(
         JSON.stringify(entry.fresh && freshResult !== undefined ? freshResult : viewResult),
       );
-    let revision = 1;
-    const revisions = () =>
-      [
-        "accounts",
-        "apps",
-        "membership",
-        "session",
-        "pool-readings",
-        "pool-usage",
-        "pool-samples",
-        "pool-prices",
-      ].map((topic) => ({ topic, resource: "fixture", revision: String(revision) }));
-    const heads = () => ({ revisions: revisions(), identity: "fixture-viewer" });
     const child = createServer(async (request, response) => {
-      if (request.url === "/_executor/api/changes/current") {
-        response.setHeader("content-type", "application/json");
-        response.end(JSON.stringify(heads()));
-      } else if (request.url === "/_executor/api/changes") {
-        response.setHeader("content-type", "text/event-stream");
-        const start = () =>
-          response.write(
-            `event: current\ndata: ${JSON.stringify({ kind: "current", ...heads(), snapshotRequired: true })}\n\n`,
-          );
-        streams.add(response);
-        response.on("close", () => {
-          streams.delete(response);
-          pendingHandshakes.delete(start);
-        });
-        if (viewResult.ok && viewResult.value.reading?.source === "snapshot")
-          pendingHandshakes.add(start);
-        else start();
-      } else if (request.url === "/_fixture/change") {
-        revision++;
-        for (const stream of streams)
-          for (const hint of revisions())
-            stream.write(`event: changed\ndata: ${JSON.stringify({ kind: "changed", hint })}\n\n`);
-        response.writeHead(204).end();
-      } else if (request.url === "/main.js") {
+      if (request.url === "/main.js") {
         response.setHeader("content-type", "application/javascript");
         response.end(javascript);
       } else if (request.url === "/main.css" && stylesheet !== null) {
@@ -580,14 +527,11 @@ test(
         response.setHeader("content-type", "application/json");
         if (name === "capacity" && holdCapacity) {
           heldCapacity.push({ response, input });
-          arrived();
         } else if (name === "view") {
           const entry = { response, fresh: input?.fresh === true };
           views.push({ fresh: entry.fresh });
-          if (entry.fresh && (answerFresh || automaticFresh)) {
-            automaticFresh = false;
-            answer(entry);
-          } else held.push(entry);
+          if (entry.fresh && answerFresh) answer(entry);
+          else held.push(entry);
           arrived();
         } else
           response.end(
@@ -640,7 +584,6 @@ test(
 
     const release = (fresh) => {
       if (fresh === undefined) {
-        automaticFresh = !views.some((view) => view.fresh);
         holdCapacity = false;
         holdPersonal = false;
         for (const entry of heldPersonal.splice(0)) entry.response.end(entry.reply);
@@ -657,12 +600,7 @@ test(
       held.filter((entry) => fresh === undefined || entry.fresh === fresh).length;
     const requests = (count, fresh, kind = "view") =>
       new Promise((resolve, reject) => {
-        const heldCount = () =>
-          kind === "personal"
-            ? heldPersonal.length
-            : kind === "capacity"
-              ? heldCapacity.length
-              : pending(fresh);
+        const heldCount = () => (kind === "personal" ? heldPersonal.length : pending(fresh));
         const timer = setTimeout(() => {
           arrived = () => {};
           reject(
@@ -693,7 +631,6 @@ test(
         animations: "disabled",
       });
       if (name === "snapshot-updating") evidenceVideo = page.video();
-      if (name === "usage-awaits-provider-names-390") progressiveVideo = page.video();
     };
     const session = async (
       work,
@@ -728,7 +665,6 @@ test(
       contextReads = 0;
       freshResult = undefined;
       answerFresh = false;
-      automaticFresh = false;
       const context = await browser.newContext({
         viewport,
         hasTouch: touch,
@@ -750,8 +686,6 @@ test(
         await page.addInitScript(instrument);
         await page.goto(parentOrigin);
         await requests(2, false); // Development StrictMode replays the real mount effect.
-        if (!(viewResult.ok && viewResult.value.reading?.source === "snapshot"))
-          await requests(1, true);
         const frame = page.frames().find((frame) => frame.url() === `${childOrigin}/`);
         assert.ok(frame);
         const accepted = () => page.evaluate(() => Reflect.get(window, "readiness"));
@@ -2545,7 +2479,7 @@ test(
         );
       });
 
-    // Overview marks reuse provider icons and keep a label badge when no icon is available.
+    // Overview badges use provider labels; supplied native readings still control inspection.
     const mark = (fill) =>
       `data:image/svg+xml;base64,${Buffer.from(
         `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="${fill}"/></svg>`,
@@ -2554,7 +2488,7 @@ test(
     const darkMark = mark("#9be7c4");
     for (const width of [1280, 390])
       await t.test(
-        `overview reuses provider icons and keeps fallback badges at ${width}px`,
+        `overview letter badges are independent of provider icons at ${width}px`,
         async () => {
           const f = quotaSamplingFixture(Date.now() - minute, samplerUsage);
           await f.usage.observe();
@@ -2737,17 +2671,15 @@ test(
                   );
                   return;
                 }
+                assert.equal(await frame.locator("[data-lab-mark]").count(), 0);
                 for (const scope of [lab, glance, who]) {
-                  if (scenario.src === null) {
-                    assert.equal(await scope.getByText("C", { exact: true }).count(), 1);
-                    assert.equal(await scope.locator("picture").count(), 0);
-                  } else {
-                    assert.equal(await scope.locator('[data-lab-mark="icon"]').count(), 1);
-                    assert.equal(
-                      await scope.locator("img").evaluate((image) => image.currentSrc),
-                      scenario.src,
-                    );
-                  }
+                  const badge = scope.getByText("C", { exact: true });
+                  assert.equal(
+                    await badge.count(),
+                    1,
+                    "Each lab entry shows the provider label's initial regardless of icons",
+                  );
+                  assert.equal(await scope.locator("picture").count(), 0);
                 }
                 const text = await frame.locator("body").innerText();
                 // Membership and routing are the pool's: all four accounts count, whatever inspection.
@@ -2888,13 +2820,12 @@ test(
             await frame.waitForFunction(
               () =>
                 Reflect.get(window, "completedQueries").filter((name) => name === "overviewUsage")
-                  .length >= 1,
+                  .length >= 2,
             );
             await settled();
             await capture(page, `usage-awaits-provider-names-${width}`);
             const who = frame.locator("#who");
             const money = frame.locator("#cost");
-            await requests(1, undefined, "capacity");
             assert.ok(heldCapacity.length > 0, "Every capacity response stays held");
             assert.deepEqual(
               await Promise.all([
@@ -2981,7 +2912,7 @@ test(
             await frame.waitForFunction(
               () =>
                 Reflect.get(window, "completedQueries").filter((name) => name === "capacity")
-                  .length >= 1,
+                  .length >= 2,
             );
             await settled();
             assert.match(
@@ -3225,11 +3156,10 @@ test(
               await frame.waitForFunction(
                 () =>
                   Reflect.get(window, "completedQueries").filter((name) => name === "overviewUsage")
-                    .length >= 1,
+                    .length >= 2,
               );
               await settled();
               const who = frame.locator("#who");
-              await requests(1, undefined, "capacity");
               assert.ok(heldCapacity.length > 0);
               assert.equal(
                 await who
@@ -3458,7 +3388,7 @@ test(
           },
         };
         await session(
-          async ({ frame, settled }) => {
+          async ({ frame, settled, clock }) => {
             const who = frame.locator("#who");
             await who
               .getByText(/128 tokens/)
@@ -3501,7 +3431,7 @@ test(
             answerFresh = true;
             usageResult = failed;
             holdCapacity = true;
-            await frame.evaluate(() => fetch("/_fixture/change", { method: "POST" }));
+            await clock.runFor(5 * 60_000 + 50);
             await who
               .getByText("Overview could not be read. Reload and try again.", { exact: true })
               .waitFor();
@@ -3514,7 +3444,7 @@ test(
             await who.getByText(/1 request in 30 days/).waitFor();
             member = true;
             holdPersonal = true;
-            await frame.evaluate(() => fetch("/_fixture/change", { method: "POST" }));
+            await clock.runFor(5 * 60_000 + 50);
             await frame
               .getByText(
                 "Shared with you. You use its accounts without seeing their credentials.",
@@ -3701,8 +3631,23 @@ test(
             }).value.reading;
           viewResult = recovery ? failed : { ok: true, value };
           await session(async ({ page, frame, accepted, marks, committedAtReady }) => {
-            const changed = () =>
-              frame.evaluate(() => fetch("/_fixture/change", { method: "POST" }));
+            const poll = async () => {
+              await frame.evaluate(() => {
+                const now = Date.now();
+                Date.now = () => now + 60_001;
+              });
+              await page.evaluate((origin) => {
+                const frame = document.querySelector("iframe");
+                frame.contentWindow.postMessage(
+                  { type: "executor:app-active", active: false },
+                  origin,
+                );
+                frame.contentWindow.postMessage(
+                  { type: "executor:app-active", active: true },
+                  origin,
+                );
+              }, childOrigin);
+            };
             assert.deepEqual(await accepted(), []);
             release();
             const visible = populated
@@ -3721,7 +3666,7 @@ test(
                   .locator("..")
                   .getByRole("button", { name: "Try again", exact: true })
                   .click();
-              else await changed();
+              else await poll();
               await requests(1, true);
               release();
               await frame.getByText(visible, { exact: true }).waitFor();
@@ -3753,7 +3698,7 @@ test(
             assert.ok((await committedAtReady())?.includes(visible));
             // A view from a pool without retained views is live.
             assert.deepEqual(await marks(), [{ source: "live" }]);
-            assert.deepEqual(sent(), { retained: 2, fresh: 1 });
+            assert.deepEqual(sent(), { retained: 2, fresh: 0 });
             // Unrelated sources and unsupported contracts cannot satisfy the parent probe.
             await page.evaluate((data) => window.postMessage(data, location.origin), ready);
             const invalid = [
@@ -3776,7 +3721,7 @@ test(
               invalid.length + 1,
             );
             assert.equal((await accepted()).length, 1);
-            await changed();
+            await poll();
             await requests(1, true);
             viewResult = { ok: true, value: empty };
             release();
@@ -3985,9 +3930,6 @@ test(
 
     await t.test("the sender targets the exact configured parent origin", async () => {
       viewResult = { ok: true, value: empty };
-      freshResult = undefined;
-      answerFresh = false;
-      automaticFresh = false;
       held = [];
       views = [];
       const context = await browser.newContext();

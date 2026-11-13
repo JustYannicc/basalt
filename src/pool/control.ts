@@ -1,4 +1,3 @@
-import { nativeAccountView } from "./native-account-view.ts";
 import { poolCreditRouting, setPoolCreditPolicy } from "./credit-policy.ts";
 import { setPoolSelectionPolicy } from "./selection-policy.ts";
 import { usageTimestampOrder } from "./usage-feed.ts";
@@ -543,9 +542,7 @@ export class PoolHome {
         emitProductEvent(this.onProductEvent, "account_connected", this.accountId);
     }
   }
-  async readView(now: () => Date, fresh = false): Promise<HomeViewData> {
-    // Another Home writer can change a group's policy without touching this process cache.
-    if (fresh) this.client.invalidateGroups();
+  async readView(now: () => Date): Promise<HomeViewData> {
     const readAt: HomeViewData["readAt"] = { membership: "" };
     const controller = new AbortController();
     const membership = timePoolRead(
@@ -609,12 +606,8 @@ export class PoolHome {
     now = () => new Date(),
   ): Promise<PoolView> {
     const result = views
-      ? await views.view(this.pool, fresh, () => this.readView(now, fresh))
-      : {
-          data: await this.readView(now, fresh),
-          source: "live" as const,
-          revalidationFailed: false,
-        };
+      ? await views.view(this.pool, fresh, () => this.readView(now))
+      : { data: await this.readView(now), source: "live" as const, revalidationFailed: false };
     const accounts = result.data.accounts.map((account) =>
       result.source === "snapshot" ? retainedAccount(account, now().getTime()) : account,
     );
@@ -794,15 +787,14 @@ const routes: Record<string, Route> = {
   },
   "GET /accounts/:id/observations": (ctx) => observeAccount(ctx, false),
   "POST /accounts/:id/observations/refresh": (ctx) => observeAccount(ctx, true),
-  "GET /pool": async ({ home, isOwner, deps, pool, organization, url }) => {
-    const [view, membership] = await Promise.all([
-      home.view(isOwner, deps.views, url.searchParams.get("fresh") === "true", deps.now),
-      deps.nativeMembership?.(pool, organization).catch(() => undefined),
-    ]);
-    const presented = deps.nativeMembership ? nativeAccountView(view, membership) : view;
-    return json(
-      isOwner && deps.removals ? { ...presented, removals: await deps.removals(pool) } : presented,
+  "GET /pool": async ({ home, isOwner, deps, pool, url }) => {
+    const view = await home.view(
+      isOwner,
+      deps.views,
+      url.searchParams.get("fresh") === "true",
+      deps.now,
     );
+    return json(isOwner && deps.removals ? { ...view, removals: await deps.removals(pool) } : view);
   },
   "GET /usage": async ({ home, url }) => json(await home.usage(await usageQuery(url))),
   "GET /accounts/:id/export": async ({ url, client, home }) => exportLoginFile(url, client, home),

@@ -1,7 +1,0 @@
-model {
-  extend basalt.toolsGateway.appCalls {
-    metadata {
-      constraint "Current saved account-view selections, including disabled connections and revoked selections, skip legacy source reconciliation write locks. Missing selections retain the existing locked, authorized, unambiguous backfill and under-lock recheck. No account authority is cached; account resolution and source access remain current on every request."
-    }
-  }
-}

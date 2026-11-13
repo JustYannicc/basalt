@@ -663,7 +663,7 @@ jobs:
       - name: Install the scenarios' browser engine
         uses: ./.github/actions/setup-browser
       - name: Verify the pool accounts-ready measurement contract
-        run: node --test scripts/pool-ui-tests/accounts-ready.test.mjs scripts/pool-ui-tests/history-coverage.test.mjs scripts/pool-ui-tests/history-activity.test.mjs
+        run: node --test scripts/pool-ui-tests/accounts-ready.test.mjs scripts/pool-ui-tests/history-coverage.test.mjs
       - name: Verify tool search and incomplete catalogs
         run: node --test scripts/pool-ui-tests/tool-router-failures.test.ts scripts/pool-ui-tests/tool-search.test.ts
       - name: Verify app query phase diagnostics
@@ -1757,8 +1757,6 @@ jobs:
         run: node e2e/pool-reset-checks.mjs .generated/pool-reset-checks/ci
       - name: Verify the banked reset control in a browser with a synthetic provider
         run: node e2e/pool-reset-ui.mjs .generated/pool-reset-ui/ci
-      - name: Verify scoped account and pool updates without idle polling
-        run: node e2e/scoped-change-consumers.mjs .generated/scoped-change-consumers/ci
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -1783,9 +1781,6 @@ jobs:
             .generated/pool-reset-ui/**/report.json
             .generated/pool-reset-ui/**/failure.json
             .generated/pool-reset-ui/**/*.png
-            .generated/scoped-change-consumers/**/report.json
-            .generated/scoped-change-consumers/**/failure.json
-            .generated/scoped-change-consumers/**/*.png
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
@@ -2334,10 +2329,6 @@ jobs:
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
-      - name: Prove committed change lock ordering on PostgreSQL
-        env:
-          POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
-        run: node --experimental-transform-types --test scripts/upstream-tests/account-change-postgres.test.ts
       - name: Stage the pinned app release for provider fixtures
         working-directory: .upstream
         run: bun run e2e:prepare

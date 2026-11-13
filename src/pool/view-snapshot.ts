@@ -95,10 +95,6 @@ export class PoolViewSnapshots {
       return { data: saved.data, source: "snapshot" as const, revalidationFailed: false };
     }
     try {
-      if (fresh) {
-        // A prior read may have captured its body before the caller's revision baseline.
-        await this.revalidations.get(pool)?.catch(() => {});
-      }
       const data = await this.revalidate(pool, read);
       return { data, source: "live" as const, revalidationFailed: false };
     } catch (error) {

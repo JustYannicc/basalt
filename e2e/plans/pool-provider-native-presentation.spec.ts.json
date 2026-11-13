@@ -3,7 +3,7 @@
     "poolProviderNativePresentation": {
       "fixtures": "actors",
       "legacyStorage": true,
-      "title": "Packaged pool uses provider readings and logos with revision-guarded warm reads, model limits and banked resets",
+      "title": "Packaged pool keeps Home model windows and banked resets without provider read fanout, while Accounts keeps provider logos",
       "targets": {
         "self-host": {
           "status": "scheduled"
@@ -23,11 +23,7 @@
     "poolProviderNativePresentation": ["declared:self-host"]
   },
   "inputs": [
-    ".upstream/apps/hosted/cloud/src/infrastructure/serving-product.ts",
     ".upstream/apps/hosted/server/src/implementation/account-source-connections.ts",
-    ".upstream/apps/hosted/server/src/implementation/app-data.ts",
-    ".upstream/apps/hosted/server/src/implementation/app-ui.ts",
-    ".upstream/apps/hosted/server/src/implementation/pool-view-cache.ts",
     ".upstream/apps/hosted/server/src/implementation/selected-account-read.ts",
     ".upstream/e2e/support/provider-account-product.ts",
     ".upstream/e2e/support/provider-apps-catalog.ts",
