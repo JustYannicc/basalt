@@ -1,0 +1,674 @@
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3916,7 +3916,7 @@
+     legacyStorage: true,
+     file: "pool-provider-native-presentation.spec.ts",
+     title:
+-      "Packaged pool view reuses generated provider reports and icons without a pool edit and withholds denied copied allowance",
++      "Packaged pool keeps Home model windows and banked resets without provider read fanout, while Accounts keeps provider logos",
+     targets: {
+       "self-host": scheduled,
+       cloud: na(
+--- a/e2e/tests/pool-provider-native-presentation.spec.ts
++++ b/e2e/tests/pool-provider-native-presentation.spec.ts
+@@ -1,12 +1,16 @@
+ import { expect, layer } from "@effect/vitest";
+-import { Effect, FileSystem, Path, Schema } from "effect";
++import { Clock, Effect, FileSystem, Path, Schema } from "effect";
+ import { randomUUID } from "node:crypto";
+ import { Actors } from "../support/actors.ts";
+-import { Api, body, type Session } from "../support/api.ts";
+-import { withHostedHttpCase } from "../support/case.ts";
++import { Api, body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { accountRow } from "../support/account-rows.ts";
++import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
+ import { Resource } from "../support/contracts.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+-import { RuntimeLive } from "../support/platform.ts";
++import { Target } from "../support/platform.ts";
+ import { PoolSeedApp, PoolSeedFiles } from "../support/pool-seed.ts";
+ import { providerAccountProduct } from "../support/provider-account-product.ts";
+ import { providerAppsCatalog } from "../support/provider-apps-catalog.ts";
+@@ -32,7 +36,11 @@
+   ok: Schema.Literal(true),
+   value: Schema.Struct({
+     providers: Schema.Array(
+-      Schema.Struct({ id: Schema.String, icons: Schema.optionalKey(Schema.Array(Schema.Json)) }),
++      Schema.Struct({
++        id: Schema.String,
++        name: Schema.String,
++        icons: Schema.optionalKey(Schema.Array(Schema.Json)),
++      }),
+     ),
+     accounts: Schema.Array(
+       Schema.Struct({
+@@ -51,14 +59,16 @@
+ });
+ const Revision = Schema.Struct({ revision: Schema.String });
+
+-layer(RuntimeLive, { excludeTestServices: true })("Packaged pool native presentation", (it) => {
++layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentation", (it) => {
+   it.effect(scenarios.poolProviderNativePresentation.title, (context) =>
+-    withHostedHttpCase(
++    withHostedCase(
+       context,
+       Effect.gen(function* () {
+         const api = yield* Api,
+           actors = yield* Actors,
+-          home = yield* providerAppsCatalog;
++          home = yield* providerAppsCatalog,
++          browser = yield* Browser,
++          evidence = yield* Evidence;
+         const fs = yield* FileSystem.FileSystem,
+           path = yield* Path.Path;
+         const prefix = `/api/organizations/${actors.organization.id}`;
+@@ -73,7 +83,13 @@
+               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
+           }).pipe(Effect.orDie),
+         );
+-        yield* providerAccountProduct(home.origin, `${home.origin}/catalog/index.json`);
++        yield* providerAccountProduct(
++          home.origin,
++          `${home.origin}/catalog/index.json`,
++          true,
++          serverControl,
++          true,
++        );
+         const directory = path.resolve("apps/hosted/cloud/.generated/pool-app");
+         const bundles = (yield* fs.readDirectory(directory)).filter((name) =>
+           /^pool-app-[a-f0-9]+\.json$/.test(name),
+@@ -83,7 +99,7 @@
+           .readFileString(path.join(directory, bundles[0]!))
+           .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(PoolSeedFiles))));
+         expect(packaged.some((file) => file.path === "provider-account-view.ts")).toBe(true);
+-        // Only the external backend address changes. The shipped pool query and its reuse adapter execute unchanged.
++        // Keep the shipped pool query and UI; substitute only the external Home backend.
+         const poolFiles = packaged.map((file) =>
+           file.path === "deployment.ts"
+             ? {
+@@ -152,6 +168,36 @@
+         const account = (yield* body(Schema.Struct({ account: Resource }), connected)).account.id;
+         accounts.push(account);
+         const accountPath = `${prefix}/accounts/${account}`;
++        const accountLabel = "Synthetic reusable provider account";
++        expect(
++          (yield* api.request(actors.owner, "PATCH", accountPath, { label: accountLabel })).status,
++        ).toBe(200);
++        yield* browser.login(actors.owner);
++        for (const width of [1280, 390]) {
++          const logo = yield* browser.use(`Open Accounts provider logo at ${width}px`, (page) => {
++            const row = accountRow(page, accountLabel);
++            const image = row.locator('img[data-icon="app"]');
++            return page
++              .setViewportSize({ width, height: 900 })
++              .then(() => page.goto(`/org/${actors.organization.slug}/accounts`))
++              .then(() => row.waitFor())
++              .then(() => image.waitFor())
++              .then(() => image.evaluate((element) => (element as HTMLImageElement).decode()))
++              .then(() =>
++                image.evaluate((element) => ({
++                  loaded: (element as HTMLImageElement).naturalWidth > 0,
++                  declared: element.getAttribute("data-icon"),
++                  fits: document.documentElement.scrollWidth <= window.innerWidth,
++                })),
++              );
++          });
++          expect(logo).toEqual({ loaded: true, declared: "app", fits: true });
++          yield* evidence.attach(
++            `accounts-provider-logo-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture Accounts provider logo", (page) => page.screenshot()),
++          );
++        }
+         const owner = (yield* body(
+           Schema.Struct({ userId: Schema.String }),
+           yield* api.request(actors.owner, "GET", "/api/viewer"),
+@@ -200,269 +246,236 @@
+             .status,
+         ).toBe(200);
+         const poolBefore = (yield* api.request(actors.owner, "GET", `${poolPath}/source`)).body;
++        const bindings = yield* body(
++          Schema.Struct({
++            connections: Schema.Array(
++              Schema.Struct({ dependency: Schema.String, target: Schema.String }),
++            ),
++          }),
++          yield* api.request(actors.owner, "GET", `${poolPath}/connections`),
++        );
++        expect(
++          bindings.connections.some(
++            (binding) => binding.dependency === "accountView" && binding.target === provider,
++          ),
++        ).toBe(true);
+         const at = new Date().toISOString(),
+           resetAt = new Date(Date.parse(at) + 86_400_000).toISOString();
+-        const reading = (label: string, ratio: number, resets: number, observedAt: string) => ({
+-          observedAt,
+-          observation: {
+-            offering: "subscription",
+-            plan: { label, observedAt },
+-            windows: [
+-              {
+-                id: "model-week",
+-                label: "Model weekly limit",
+-                scope: { kind: "model", id: "fixture-model" },
+-                observedAt,
+-                measure: { unit: "requests", remainingRatio: ratio },
+-                period: { mode: "rolling", seconds: 604800 },
+-                resetsAt: resetAt,
+-              },
+-            ],
+-            balances: [
+-              {
+-                id: "banked-resets",
+-                label: "Banked resets",
+-                unit: "resets",
+-                available: resets,
+-                observedAt,
+-                expiresAt: resetAt,
+-              },
+-            ],
+-          },
+-        });
++        const windows = [
++          {
++            id: "weekly",
++            label: "Weekly",
++            scope: { kind: "account" },
++            remainingRatio: 0.8,
++            resetAt,
++            windowSeconds: 604800,
++            observedAt: at,
++          },
++          {
++            id: "fable-weekly",
++            label: "Fable weekly",
++            scope: { kind: "model", id: "fable" },
++            remainingRatio: 0.35,
++            resetAt,
++            windowSeconds: 604800,
++            observedAt: at,
++          },
++        ];
++        const bankedResets = {
++          available: 2,
++          nextExpiresAt: resetAt,
++          groups: [
++            {
++              label: "Weekly resets",
++              available: 2,
++              expiresAt: resetAt,
++              scope: { kind: "account" },
++              reset: { kind: "weekly", clears: ["weekly"] },
++            },
++          ],
++        };
+         const backendRow = {
+           id: "backend-subscription",
+           nativeAccountId: account,
+           provider: "codex",
+-          label: "Copied backend label",
+-          plan: "COPIED_PRIVATE_PLAN",
++          label: "Home subscription",
++          plan: "Home plan",
+           state: "active",
+           message: null,
+-          windows: [
+-            {
+-              id: "copied-private-window",
+-              label: "COPIED_PRIVATE_WINDOW",
+-              remainingRatio: 0.123,
+-              resetAt,
+-              windowSeconds: 18000,
+-              observedAt: at,
+-            },
+-          ],
++          windows,
+           observedAt: at,
+           freshness: "fresh",
+           staleAt: resetAt,
+           readingFailed: false,
+           nextReadAt: resetAt,
+           earliestResetAt: resetAt,
+-          bankedResets: { available: 99, nextExpiresAt: resetAt },
+-          usageCredits: { privateSentinel: "COPIED_PRIVATE_CREDITS" },
+-          collection: { status: "COPIED_PRIVATE_COLLECTION", errorCode: null, lastAttemptAt: at },
++          bankedResets,
+         };
+         yield* home.poolView(token, {
+           isOwner: true,
+-          providers: [{ id: "codex", name: "Old backend brand" }],
++          providers: [{ id: "codex", name: "OpenAI" }],
+           accounts: [backendRow],
+           subscriptionAccountIds: [backendRow.id],
+         });
+-        const refresh = () =>
+-          api.request(actors.owner, "POST", `${accountPath}/observations/refresh`);
+-        const native = () =>
+-          api
+-            .request(actors.owner, "GET", `${accountPath}/observations`)
+-            .pipe(
+-              Effect.flatMap((response) =>
+-                body(Schema.Struct({ reports: Schema.Array(Schema.Json) }), response),
+-              ),
+-            );
+-        const direct = (actor: Session = actors.owner) =>
+-          api
+-            .request(actor, "POST", `${providerPath}/tools/call`, {
+-              tool: "accountView",
+-              kind: "query",
+-              input: { account },
+-            })
+-            .pipe(Effect.flatMap((response) => body(Native, response)));
+-        const view = (actor: Session = actors.owner) =>
+-          Effect.gen(function* () {
+-            const response = yield* api.request(actor, "POST", `${poolPath}/tools/call`, {
+-              tool: "view",
+-              kind: "query",
+-              input: {},
+-            });
+-            const parsed = yield* body(PoolReply, response);
+-            return { ...parsed, raw: response.body };
+-          });
+-        const firstReading = reading("Native first plan", 0.8, 2, at);
+-        yield* home.observation(firstReading);
+-        expect((yield* refresh()).status).toBe(200);
+-        const firstNative = yield* native(),
+-          firstDirect = yield* direct(),
+-          firstPool = yield* view();
+-        expect(firstNative.reports).not.toEqual([]);
+-        expect(firstDirect.observations?.reports).toEqual(firstNative.reports);
+-        expect(firstPool.value.accounts[0]?.nativeView?.observations?.reports).toEqual(
+-          firstNative.reports,
+-        );
+-        expect(firstPool.value.providers[0]?.icons).toEqual(firstDirect.sourceApp?.icons);
+-        expect(firstDirect.sourceApp?.icons?.length).toBeGreaterThan(0);
+-        expect(firstPool.value.accounts[0]?.nativeView?.observations?.reports).toEqual(
+-          expect.arrayContaining([expect.objectContaining({ result: firstReading })]),
+-        );
+-
+-        yield* serverControl("stop");
+-        yield* serverControl("clock/advance", 200, { milliseconds: 6 * 60_000 });
+-        yield* home.advance(6 * 60_000);
+-        yield* serverControl("start");
+-        const secondReading = reading(
+-          "Native changed plan",
+-          0.35,
+-          1,
+-          new Date(Date.parse(at) + 6 * 60_000).toISOString(),
+-        );
+-        yield* home.observation(secondReading);
+-        expect((yield* refresh()).status).toBe(200);
+-        const changedIcons = [
+-          {
+-            src: "https://icons.example.test/native-presentation-v2.svg",
+-            mimeType: "image/svg+xml",
+-            theme: "light",
+-          },
+-        ];
+-        const providerFiles = home.sources.get("openai")!.files.map((file) =>
+-          file.path === "index.ts"
+-            ? {
+-                ...file,
+-                content: file.content.replace(
+-                  /icons: \[[^\n]*?\], app:/,
+-                  `icons: ${JSON.stringify(changedIcons)}, app:`,
+-                ),
+-              }
+-            : file,
+-        );
+-        expect(providerFiles.find((file) => file.path === "index.ts")?.content).not.toBe(
+-          home.sources.get("openai")!.files.find((file) => file.path === "index.ts")?.content,
+-        );
+-        const updated = yield* api.request(actors.owner, "POST", `${providerPath}/deploy`, {
+-          files: providerFiles,
+-        });
+-        expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+-        const secondNative = yield* native(),
+-          secondDirect = yield* direct(),
+-          secondPool = yield* view();
+-        expect(secondNative.reports).not.toEqual(firstNative.reports);
+-        expect(secondDirect.observations?.reports).toEqual(secondNative.reports);
+-        expect(secondPool.value.accounts[0]?.nativeView?.observations?.reports).toEqual(
+-          secondNative.reports,
+-        );
+-        expect(secondPool.value.providers[0]?.icons).toEqual(changedIcons);
+-        expect(secondPool.value.providers[0]?.icons).toEqual(secondDirect.sourceApp?.icons);
+-        expect(secondPool.value.accounts[0]?.nativeView?.observations?.reports).toEqual(
+-          expect.arrayContaining([expect.objectContaining({ result: secondReading })]),
+-        );
+-        expect((yield* api.request(actors.owner, "GET", `${poolPath}/source`)).body).toEqual(
+-          poolBefore,
+-        );
+-        const readCount = (yield* home.calls).filter((call) => call.action === "observe").length;
+-        yield* view();
+-        expect((yield* home.calls).filter((call) => call.action === "observe")).toHaveLength(
+-          readCount,
+-        );
+-
+-        // Same account and same authorizer, original member inspection is denied by the default owners policy.
+-        const deniedDirect = yield* direct(actors.member),
+-          deniedPool = yield* view(actors.member);
+-        expect(deniedDirect).toMatchObject({
++        yield* home.observation({
++          observedAt: at,
++          observation: {
++            offering: "subscription",
++            plan: { label: "Provider plan", observedAt: at },
++            windows: [],
++            balances: [],
++          },
++        });
++        expect(
++          (yield* api.request(actors.owner, "POST", `${accountPath}/observations/refresh`)).status,
++        ).toBe(200);
++        const direct = yield* body(
++          Native,
++          yield* api.request(actors.owner, "POST", `${providerPath}/tools/call`, {
++            tool: "accountView",
++            kind: "query",
++            input: { account },
++          }),
++        );
++        expect(direct.state).toBe("available");
++        expect(direct.canInspect).toBe(true);
++        expect(direct.sourceApp?.icons?.length).toBeGreaterThan(0);
++        expect(direct.observations?.reports.length).toBeGreaterThan(0);
++        const memberDirect = yield* body(
++          Native,
++          yield* api.request(actors.member, "POST", `${providerPath}/tools/call`, {
++            tool: "accountView",
++            kind: "query",
++            input: { account },
++          }),
++        );
++        expect(memberDirect).toMatchObject({
+           state: "available",
+           canInspect: false,
+           observations: null,
+         });
+-        expect(deniedPool.value.accounts[0]?.nativeView).toMatchObject({
+-          state: "available",
+-          canInspect: false,
+-          observations: null,
+-        });
+-        expect(deniedPool.value.accounts[0]).toMatchObject({
++
++        const readsBefore = (yield* home.calls).filter((call) => call.action === "observe").length;
++        const started = yield* Clock.currentTimeMillis;
++        const response = yield* api.request(actors.owner, "POST", `${poolPath}/data/query`, {
++          name: "view",
++          input: {},
++        });
++        const elapsed = (yield* Clock.currentTimeMillis) - started;
++        expect(response.status, JSON.stringify(response.body)).toBe(200);
++        const reply = yield* body(PoolReply, response);
++        const trace = (yield* evidence.requests)
++          .filter((request) => request.path.endsWith("/data/query"))
++          .at(-1)!.traceId;
++        const records = (yield* fs.readFileString(
++          path.join((yield* Target).directory, "provider-query-statements.jsonl"),
++        ))
++          .trim()
++          .split("\n")
++          .filter(Boolean)
++          .map((line) =>
++            Schema.decodeUnknownSync(
++              Schema.fromJsonString(
++                Schema.Struct({
++                  trace: Schema.String,
++                  select: Schema.Boolean,
++                  sdk: Schema.Boolean,
++                }),
++              ),
++            )(line),
++          )
++          .filter((record) => record.trace === trace);
++        const selects = records.filter((record) => record.select).length;
++        yield* evidence.json("overview-statements.json", {
++          accounts: 1,
++          milliseconds: elapsed,
++          statements: records.length,
++          selects,
++          sdkStatements: records.filter((record) => record.sdk).length,
++          sdkSelects: records.filter((record) => record.sdk && record.select).length,
++          windowCount: reply.value.accounts[0]?.windows.length ?? 0,
++          bankedResets: reply.value.accounts[0]?.bankedResets ?? null,
++        });
++        expect(selects).toBeGreaterThan(0);
++        expect(
++          selects,
++          "The direct Home view must not fan out into provider account reads",
++        ).toBeLessThanOrEqual(24);
++        expect(reply.value.accounts).toHaveLength(1);
++        expect(reply.value.accounts[0]).toMatchObject({
+           id: backendRow.id,
+           nativeAccountId: account,
+-          plan: null,
+-          windows: [],
+-          observedAt: null,
+-          bankedResets: null,
+-        });
+-        expect(deniedPool.value.accounts[0]?.usageCredits).toBeUndefined();
+-        expect(deniedPool.value.accounts[0]?.collection).toBeUndefined();
+-        expect(JSON.stringify(deniedPool.raw)).not.toContain("COPIED_PRIVATE_");
+-        expect(JSON.stringify(deniedPool.raw)).not.toContain(secondReading.observation.plan.label);
++          plan: "Home plan",
++          windows,
++          bankedResets,
++        });
++        expect(reply.value.accounts[0]?.nativeView).toBeUndefined();
++        expect(reply.value.providers).toEqual([{ id: "codex", name: "OpenAI" }]);
++        expect(JSON.stringify(response.body)).not.toContain("Provider plan");
++        expect((yield* home.calls).filter((call) => call.action === "observe")).toHaveLength(
++          readsBefore,
++        );
+         expect(yield* home.poolViewCallers).toContain(owner);
++        expect((yield* api.request(actors.owner, "GET", `${poolPath}/source`)).body).toEqual(
++          poolBefore,
++        );
+
+-        // Revoking a saved source is a refusal, not a new ambiguous source choice.
+-        const bindings = yield* body(
+-          Schema.Struct({
+-            connections: Schema.Array(
+-              Schema.Struct({
+-                dependency: Schema.String,
+-                target: Schema.String,
+-                revision: Schema.Number,
+-              }),
+-            ),
+-          }),
+-          yield* api.request(actors.owner, "GET", `${poolPath}/connections`),
+-        );
+-        const binding = bindings.connections.find(
+-          (entry) => entry.dependency === "accountView" && entry.target === provider,
+-        )!;
+-        expect(binding).toBeDefined();
+-        expect(
+-          (yield* api.request(
+-            actors.owner,
+-            "DELETE",
+-            `${poolPath}/connections/accountView?scope=app&target=${encodeURIComponent(provider)}&revision=${binding.revision}`,
+-          )).status,
+-        ).toBe(200);
+-        const assertWithheld = (reply: typeof deniedPool) => {
+-          expect(reply.value.accounts[0]?.nativeView).toMatchObject({ state: "denied" });
+-          expect(reply.value.accounts[0]).toMatchObject({
+-            id: backendRow.id,
+-            nativeAccountId: account,
+-            plan: null,
+-            windows: [],
+-            observedAt: null,
+-            bankedResets: null,
++        const url = yield* waitForAppUrl(actors.owner, `${poolPath}/ui`);
++        yield* openPrivateApp(url);
++        for (const width of [1280, 390]) {
++          const overviewFits = yield* browser.use(
++            `Read Home model limits and resets at ${width}px`,
++            (page) => {
++              const limits = page.getByRole("region", { name: "Model limits", exact: true });
++              return page
++                .setViewportSize({ width, height: 900 })
++                .then(() => page.goto(url))
++                .then(() => limits.getByText("Fable weekly", { exact: true }).waitFor())
++                .then(() =>
++                  page
++                    .getByRole("button", { name: "2 weekly resets available", exact: true })
++                    .waitFor(),
++                )
++                .then(() => limits.scrollIntoViewIfNeeded())
++                .then(() =>
++                  page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++                );
++            },
++          );
++          expect(overviewFits).toBe(true);
++          yield* evidence.attach(
++            `pool-model-limits-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture Home model limits", (page) => page.screenshot()),
++          );
++          const details = yield* browser.use(`Open model-limit Details at ${width}px`, (page) => {
++            const dialog = page.getByRole("dialog", { name: "Account limits", exact: true });
++            return page
++              .getByRole("region", { name: "Model limits", exact: true })
++              .getByRole("button", { name: /Details/ })
++              .click()
++              .then(() => dialog.waitFor())
++              .then(() =>
++                Promise.all([
++                  dialog.innerText(),
++                  page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
++                ]),
++              )
++              .then(([text, fits]) => ({ text, fits }));
+           });
+-          expect(reply.value.accounts[0]?.usageCredits).toBeUndefined();
+-          expect(reply.value.accounts[0]?.collection).toBeUndefined();
+-          expect(JSON.stringify(reply.raw)).not.toContain("COPIED_PRIVATE_");
+-          expect(JSON.stringify(reply.raw)).not.toContain(secondReading.observation.plan.label);
+-        };
+-        assertWithheld(yield* view());
+-        const version = yield* body(
+-          Schema.Struct({ activeVersion: Schema.String }),
+-          yield* api.request(actors.owner, "GET", providerPath),
+-        );
+-        expect(
+-          (yield* api.request(
+-            actors.owner,
+-            "PUT",
+-            `${poolPath}/accounts/app/openai/${account}/source`,
+-            { app: provider, version: version.activeVersion, scope: "app", requirement: "openai" },
+-          )).status,
+-        ).toBe(200);
+-        expect((yield* view()).value.accounts[0]?.nativeView?.observations?.reports).toEqual(
+-          secondNative.reports,
+-        );
+-        expect(
+-          (yield* api.request(
+-            actors.owner,
+-            "DELETE",
+-            `${providerPath}/accounts/app/openai/${account}`,
+-          )).status,
+-        ).toBe(200);
+-        assertWithheld(yield* view());
+-        const members = yield* body(
+-          Schema.Array(Schema.Struct({ account: Resource })),
+-          yield* api.request(actors.owner, "GET", `${poolPath}/accounts/app`),
+-        );
+-        expect(members.map((member) => member.account.id)).toContain(account);
++          expect(details.text).toContain("Fable weekly");
++          expect(details.text).toContain("Weekly resets");
++          expect(details.text).toContain("2 resets");
++          expect(details.fits).toBe(true);
++          yield* evidence.attach(
++            `pool-account-limits-details-${width}.png`,
++            "image/png",
++            yield* browser.use("Capture Home limits Details", (page) => page.screenshot()),
++          );
++          yield* browser.use("Close limits Details", (page) =>
++            page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click(),
++          );
++        }
+       }),
+     ),
+   );
+--- a/e2e/support/provider-account-product.ts
++++ b/e2e/support/provider-account-product.ts
+@@ -9,6 +9,7 @@
+   catalog?: string,
+   keyAvailable = true,
+   control: typeof serverControl = serverControl,
++  measureQueries = false,
+ ) =>
+   Effect.gen(function* () {
+     const target = yield* Target,
+@@ -26,11 +27,30 @@
+ import { makeAccountImports } from "@executor-js/sdk/account-imports";
+ import { AccountAcquisitionConfiguration } from "@executor-js/sdk/core";
+ import { Effect, Option, Redacted } from "effect";
++${
++  measureQueries
++    ? `import * as Statement from "effect/sql/Statement";
++import { appendFileSync, writeFileSync } from "node:fs";
++const measurement = ${JSON.stringify(path.join(target.directory, "provider-query-statements.jsonl"))};
++writeFileSync(measurement, "");
++const transformer: Statement.Transformer = (statement, _sql, _fiber, span) => Effect.sync(() => {
++  let parent: Option.Option<import("effect").Tracer.AnySpan> = Option.some(span);
++  let sdk = false;
++  while (Option.isSome(parent) && parent.value._tag === "Span") {
++    if (parent.value.name === "sdk.data.query") sdk = true;
++    parent = parent.value.parent;
++  }
++  const [text] = statement.compile();
++  appendFileSync(measurement, JSON.stringify({ trace: span.traceId, select: /^\\s*select\\b/iu.test(text), sdk }) + "\\n");
++  return statement;
++});`
++    : ""
++}
+ ${catalog === undefined ? "" : `process.env.EXECUTOR_CATALOG_URL = ${JSON.stringify(catalog)};`}
+ Runtime.runMain(Effect.gen(function* () {
+   const acquisition = yield* poolAccountAcquisition(${keyAvailable ? 'Option.some(Redacted.make("ab".repeat(32)))' : "Option.none()"}, ${JSON.stringify(origin)}, { makeImports: makeAccountImports, loginFile: providerLoginFile });
+   return yield* main.pipe(Effect.provideService(AccountAcquisitionConfiguration, acquisition));
+-}).pipe(Effect.provide(NodeCrypto.layer)));
++}).pipe(Effect.provide(NodeCrypto.layer)${measureQueries ? ", Effect.provideService(Statement.CurrentTransformer, transformer)" : ""}));
+ `,
+     );
+     const links = path.join(target.directory, "node_modules", "@executor-js");
+--- a/e2e/support/provider-apps-catalog.ts
++++ b/e2e/support/provider-apps-catalog.ts
+@@ -31,11 +31,21 @@
+   const fs = yield* FileSystem.FileSystem,
+     path = yield* Path.Path;
+   const sources = new Map<string, typeof Source.Type>();
++  const icons = new Map<string, readonly Schema.Json[]>();
+   for (const lab of ["openai", "anthropic", "xai", "jev", "gemini"]) {
+     const content = yield* fs.readFileString(
+       path.resolve("..", "src/catalog/provider-apps", `${lab}.json`),
+     );
+     const source = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Source))(content);
++    const iconJson = source.files
++      .find((file) => file.path === "index.ts")
++      ?.content.match(/export const requirements = \{ icons: (\[[^\r\n]*\]), app:/)?.[1];
++    if (iconJson === undefined)
++      return yield* Effect.die(`Canonical ${lab} provider source is missing its declared icons`);
++    icons.set(
++      lab,
++      yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.Json)))(iconJson),
++    );
+     sources.set(lab, {
+       ...source,
+       files: source.files.map((file) =>
+@@ -180,7 +190,7 @@
+                 kind: "interactive",
+               },
+             ],
+-            icons: [],
++            icons: icons.get(lab === "openai-tools" ? "openai" : lab) ?? [],
+             source: `apps/provider-${lab}.json`,
+           })),
+         }),

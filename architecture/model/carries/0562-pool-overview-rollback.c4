@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.appCalls {
+    metadata {
+      constraint "The pool overview reads its existing Home view directly, preserving model limits, scoped banked resets and letter badges without selected-account or provider-app reads. Dashboard account presentation and reusable source authorization retain their separate paths. Provider enrichment returns only after scoped account, access, app and Home history revisions can invalidate its cached readings."
+    }
+  }
+}

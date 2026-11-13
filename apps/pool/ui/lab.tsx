@@ -1,10 +1,5 @@
-import { useState } from "react";
-import type { Provider } from "../contract.ts";
-import { iconSources, type Icons } from "./lab-icon.ts";
-
-// A lab's series colour in charts and bars. State (out, flagged, failing) always uses the
-// destructive and warning tokens with an icon and words, so a lab hue never has to say anything on
-// its own. The mark itself is the provider app's icon, never this colour.
+// A lab's identity colour. State (out, flagged, failing) always uses the destructive and warning
+// tokens with an icon and words, so a lab hue never has to say anything on its own.
 const colors: Record<string, string> = {
   codex: "var(--lab-codex)",
   claude: "var(--lab-claude)",
@@ -15,51 +10,23 @@ const colors: Record<string, string> = {
 export const labColor = (provider: string | null) =>
   (provider && colors[provider]) || "color-mix(in srgb, var(--foreground) 55%, transparent)";
 
-/** The pool's provider entry for a lab id, carrying the icons its provider app declares. */
-export const labProvider =
-  (providers: readonly Provider[] | undefined) =>
-  (id: string): Provider | undefined =>
-    providers?.find((provider) => provider.id === id);
-
-/**
- * The provider app's own icon. Until the pool view names the provider, or when its app declares no
- * loadable icon, a neutral tile holds the place: never an initial or a made-up brand.
- */
+/** A lab's colour and initial, using its provider label. */
 export function LabMark({
   provider,
+  name,
   small = false,
 }: {
-  provider: { readonly icons?: Icons } | undefined;
+  provider: string;
+  name: string;
   small?: boolean;
 }) {
-  const sources = iconSources(provider?.icons);
-  const [broken, setBroken] = useState<string>();
-  const size = small ? "size-[18px] rounded-[5px]" : "size-6 rounded-md";
-  if (sources === null || broken === `${sources.light} ${sources.dark}`)
-    return (
-      <span
-        aria-hidden="true"
-        data-lab-mark="unavailable"
-        // A borderless fill: an outlined square beside a label reads as a checkbox.
-        className={`shrink-0 bg-foreground/10 ${size}`}
-      />
-    );
   return (
-    <picture
+    <span
       aria-hidden="true"
-      data-lab-mark="icon"
-      className={`block shrink-0 overflow-hidden ${size}`}
+      className={`grid shrink-0 place-items-center font-semibold text-white ${small ? "size-[18px] rounded-[5px] text-[10px]" : "size-6 rounded-md text-xs"}`}
+      style={{ background: labColor(provider) }}
     >
-      {sources.dark !== sources.light && (
-        <source media="(prefers-color-scheme: dark)" srcSet={sources.dark} />
-      )}
-      <img
-        src={sources.light}
-        alt=""
-        draggable={false}
-        className="block size-full object-contain"
-        onError={() => setBroken(`${sources.light} ${sources.dark}`)}
-      />
-    </picture>
+      {name.slice(0, 1).toUpperCase()}
+    </span>
   );
 }
