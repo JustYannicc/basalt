@@ -1,6 +1,8 @@
 model {
   extend basalt {
     build = module "Build" {
+      // Signed provider-adoption proofs partition every declared case exactly once, balancing
+      // each spec across two independently bounded steps while retaining every case deadline.
       // Connector tool-resolution proofs await the naming health response before counting API calls.
       // Connector TLS fixtures forward over fresh upstream connections; each viewport releases
       // its new account links on failure so a transport error cannot contaminate the next viewport.
