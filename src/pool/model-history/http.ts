@@ -3,7 +3,6 @@ import type { PoolPermissions } from "../authorization.ts";
 import { digest } from "../backend-users.ts";
 import { fail, failureResponse, json } from "../json.ts";
 import { verifyPoolToken } from "../token.ts";
-import { withHistoryDatabase } from "./database.ts";
 import { HistoryInputError, historyObject, timestamp } from "./record.ts";
 import { readPricedRequests, type HistoryPrices } from "./priced-history.ts";
 
@@ -54,18 +53,16 @@ export async function handleModelHistory(
     }
     const pool = (await digest(claims.pool)).slice(0, 16),
       person = canManage ? undefined : await digest(caller);
-    const result = await withHistoryDatabase(access.connectionString, (db) =>
-      readPricedRequests(
-        db,
-        {
-          pool,
-          person,
-          from,
-          to,
-          after,
-        },
-        access.currentPrices,
-      ),
+    const result = await readPricedRequests(
+      access.connectionString,
+      {
+        pool,
+        person,
+        from,
+        to,
+        after,
+      },
+      access.currentPrices,
     );
     return json(result);
   } catch (error) {

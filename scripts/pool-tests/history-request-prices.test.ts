@@ -194,6 +194,11 @@ test("request estimates price only the cursor page, batch new targets and retain
     });
     const batches: (readonly { provider: string; model: string }[])[] = [];
     const currentPrices = async (targets: readonly { provider: string; model: string }[]) => {
+      const sessions = await f.db.query(
+        "SELECT count(*)::int AS count FROM pg_stat_activity WHERE application_name=$1",
+        [f.schema],
+      );
+      assert.equal(sessions.rows[0]?.count, 0, "Price fetches hold no History database session");
       batches.push(targets);
       assert.ok(targets.length <= 100);
       return {
@@ -204,8 +209,11 @@ test("request estimates price only the cursor page, batch new targets and retain
         issues: [],
       };
     };
+    const url = new URL(process.env.POOL_TEST_ADMIN_URL!);
+    url.searchParams.set("options", `-c search_path=${f.schema}`);
+    url.searchParams.set("application_name", f.schema);
     const query = { pool: (await digest(pool)).slice(0, 16), from, to };
-    const first = await readPricedRequests(f.db, query, currentPrices);
+    const first = await readPricedRequests(url.toString(), query, currentPrices);
     assert.equal(first.records.length, 200);
     assert.ok(first.next);
     const imported = first.records.find((row) => row.model === "imported-model")!;
@@ -224,7 +232,11 @@ test("request estimates price only the cursor page, batch new targets and retain
         .sort(),
       home.map((row) => row.model).sort(),
     );
-    const next = await readPricedRequests(f.db, { ...query, after: first.next! }, currentPrices);
+    const next = await readPricedRequests(
+      url.toString(),
+      { ...query, after: first.next! },
+      currentPrices,
+    );
     assert.equal(next.records.length, 2);
     assert.equal(next.next, null);
     assert.ok(next.records.every((row) => !first.records.some((prior) => prior.id === row.id)));

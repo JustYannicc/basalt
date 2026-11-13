@@ -5,16 +5,20 @@ import type {
 import { digest } from "../backend-users.ts";
 import { officialPriceRows } from "./official-cost.ts";
 import { pricedRowsSql } from "./overview-sql.ts";
-import type { HistoryDatabase } from "./schema.ts";
+import { withHistoryDatabase } from "./database.ts";
 import { readRequests, type HistoryQuery } from "./store.ts";
 
 export type HistoryPrices = (
   targets: readonly { provider: string; model: string }[],
 ) => Promise<OverviewPriceTable>;
 
-async function pricedPage(db: HistoryDatabase, query: HistoryQuery, currentPrices?: HistoryPrices) {
-  const page = await readRequests(db, query);
-  if (!page.records.length) return page;
+export async function readPricedRequests(
+  connectionString: string | undefined,
+  query: HistoryQuery,
+  currentPrices?: HistoryPrices,
+) {
+  const page = await withHistoryDatabase(connectionString, (db) => readRequests(db, query));
+  if (!page.records.length) return { ...page, records: [] };
   const source = await digest("home-local-v1");
   const targets = [
     ...new Map(
@@ -54,8 +58,9 @@ async function pricedPage(db: HistoryDatabase, query: HistoryQuery, currentPrice
     }
   }
   // Price only the already-authorized page IDs. Each lookup uses the ledger's primary key.
-  const result = await db.query(
-    `WITH selected AS (
+  const result = await withHistoryDatabase(connectionString, (db) =>
+    db.query(
+      `WITH selected AS (
       SELECT r.* FROM unnest($1::character(64)[]) AS ids(id)
       CROSS JOIN LATERAL (SELECT * FROM basalt_model_requests
         WHERE id=ids.id AND pool=$4 AND ($5::text IS NULL OR person=$5) LIMIT 1) r
@@ -63,13 +68,14 @@ async function pricedPage(db: HistoryDatabase, query: HistoryQuery, currentPrice
     SELECT id,round(api_cost,12)::text AS amount,token_count_estimate,
       public_price_version,public_price_as_of,public_price_basis,public_price_refresh_failed
     FROM priced`,
-    [
-      page.records.map((row) => row.id),
-      JSON.stringify(officialPriceRows(table.prices)),
-      source,
-      query.pool,
-      query.person ?? null,
-    ],
+      [
+        page.records.map((row) => row.id),
+        JSON.stringify(officialPriceRows(table.prices)),
+        source,
+        query.pool,
+        query.person ?? null,
+      ],
+    ),
   );
   const estimates = new Map(result.rows.map((row) => [row.id, row]));
   return {
@@ -114,24 +120,11 @@ async function pricedPage(db: HistoryDatabase, query: HistoryQuery, currentPrice
                 ...(row.token_count_estimate === true ? { calculation: "token-counts" } : {}),
               },
       };
-      return { ...record, api_estimate: metric };
+      const enriched: typeof record & { api_estimate: OverviewMoneyMetric } = {
+        ...record,
+        api_estimate: metric,
+      };
+      return enriched;
     }),
   };
-}
-
-/** A page's retained metadata and current valuation share one bounded read snapshot. */
-export async function readPricedRequests(
-  db: HistoryDatabase,
-  query: HistoryQuery,
-  prices?: HistoryPrices,
-) {
-  await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
-  try {
-    const result = await pricedPage(db, query, prices);
-    await db.query("COMMIT");
-    return result;
-  } catch (error) {
-    await db.query("ROLLBACK").catch(() => {});
-    throw error;
-  }
 }
