@@ -1,3 +1,4 @@
+import { refuseRuntime } from "../runtime-route-diagnostic.ts";
 import {
   SlotIdentity,
   SlotRefused,
@@ -200,10 +201,14 @@ export class RuntimeEndpoint {
     return this.serialize(() => this.complete(target, signal));
   }
   async health(identity: SlotIdentity, signal: AbortSignal) {
-    this.bound(identity);
-    const { record, configuration } = await this.store.read(identity);
-    if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
-    return this.checked(record, await this.channel.health(configuration, signal));
+    try {
+      this.bound(identity);
+      const { record, configuration } = await this.store.read(identity);
+      if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
+      return this.checked(record, await this.channel.health(configuration, signal));
+    } catch (error) {
+      refuseRuntime("endpoint_identity", error);
+    }
   }
   async warm(identity: SlotIdentity, signal: AbortSignal) {
     const health = await this.health(identity, signal);
@@ -291,7 +296,7 @@ export class RuntimeEndpoint {
       if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
       request.signal.throwIfAborted();
       return { configuration, done: await this.activity.acquire(identity) };
-    });
+    }).catch((error: unknown) => refuseRuntime("endpoint_admission", error));
     const release = () => {
       this.ctx.waitUntil(done());
       return true;

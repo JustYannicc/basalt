@@ -1,3 +1,4 @@
+import { refuseRuntime, runtimeRouteDiagnostic } from "./runtime-route-diagnostic.ts";
 import { modelKeyScope } from "./key-scope.ts";
 import type { Computers } from "./computers.ts";
 import { ControlFailure, failureResponse } from "./json.ts";
@@ -84,7 +85,7 @@ export async function forwardPoolRequest(
       return new Response(null, { status: 204 });
     }
     guard = "runtime_port";
-    if (!port) throw new Error("Pool container port unavailable");
+    if (!port) refuseRuntime("port_lookup", new Error("Pool container port unavailable"));
     let boot: string | undefined;
     const beforeDispatch = () => {
       guard = "upstream_dispatch";
@@ -153,6 +154,7 @@ export async function forwardPoolRequest(
     native?.release();
     modelLease?.release();
     const diagnostic: GatewayFailureDiagnostic = {
+      ...runtimeRouteDiagnostic(error),
       guard,
       refusalReason: error instanceof ProtectionRefusal ? error.reason : guard,
       cause:

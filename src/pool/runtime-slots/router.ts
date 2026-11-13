@@ -1,3 +1,4 @@
+import { refuseRuntime, type RuntimeRouteDiagnostic } from "../runtime-route-diagnostic.ts";
 import { RuntimeProtection } from "../runtime-protection.ts";
 import { PoolRuntimeUnhealthy } from "../lifecycle.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
@@ -32,8 +33,10 @@ export class RuntimeSlotRouter {
     beforeDispatch: () => void = () => {},
   ): Promise<Response> {
     const pending = this.deps.streams.acquire(pool ?? "", request.signal);
+    let step: RuntimeRouteDiagnostic["runtimeStep"] = "slot_authorize";
     try {
       request = await authorize(pending.lease.signal);
+      step = "slot_selection";
       const identity = await this.deps.storage.transact(async ({ selection, policies }) => {
         const active = selection?.active;
         if (
@@ -49,6 +52,7 @@ export class RuntimeSlotRouter {
         pending.bind(executionKey(active.identity));
         return active.identity;
       });
+      step = "slot_health";
       const status = healthy(
         await this.deps.driver.health(
           identity,
@@ -57,13 +61,16 @@ export class RuntimeSlotRouter {
         identity,
         this.deps.clock,
       );
+      step = "slot_protection";
       this.guard(identity).admit({
         boot_id: identity.bootId,
         started_at: "slot",
         policyLeaseUntil: status.policyLeaseUntil,
       });
+      step = "slot_pre_send";
       pending.lease.signal.throwIfAborted();
       beforeDispatch();
+      step = "slot_port";
       const upstream = await this.deps.driver.fetch(
         identity,
         new Request(request, { signal: pending.lease.signal }),
@@ -82,7 +89,7 @@ export class RuntimeSlotRouter {
       return this.deps.wrap(tagged, pending.lease);
     } catch (error) {
       pending.lease.release();
-      throw error;
+      refuseRuntime(step, error);
     }
   }
 
