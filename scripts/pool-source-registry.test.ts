@@ -382,6 +382,24 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /raw Responses compatibility and no inference replay/,
         );
+      } else if (patch.identity === "cliproxy-home-oauth-dispatch-expiry") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0600-home-oauth-dispatch-expiry.patch");
+        assert.match(patch.retirement.requires, /five-minute dispatch safety window/);
+        assert.match(
+          patch.retirement.requires,
+          /scheduler, full-credential and affinity admission/,
+        );
+        assert.match(patch.retirement.requires, /no stale upstream dispatch/);
+        assert.match(
+          patch.retirement.requires,
+          /next-account fallback, clean temporary unavailability/,
+        );
+        assert.match(patch.retirement.requires, /same-UUID fresh replacement/);
+        assert.match(
+          patch.retirement.requires,
+          /quota-deadline compatibility through native public requests/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
