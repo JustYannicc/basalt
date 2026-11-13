@@ -1,6 +1,6 @@
 import type { PoolReliabilitySlo } from "../../../apps/pool/reliability-contract.ts";
 import { digest } from "../backend-users.ts";
-import { historySchemaVersion, type HistoryDatabase } from "./schema.ts";
+import { historyTerminalIntegrityVersion, type HistoryDatabase } from "./schema.ts";
 import { readPoolReliability, terminalCollectionReady } from "./reliability.ts";
 
 export function reliabilityState(
@@ -108,7 +108,7 @@ export async function readPoolReliabilitySlo(
                 )
             ) AS unmatched_home
           FROM basalt_model_history_migrations m WHERE m.name=$4`,
-            [(await digest(pool)).slice(0, 16), to, homeSource, historySchemaVersion],
+            [(await digest(pool)).slice(0, 16), to, homeSource, historyTerminalIntegrityVersion],
           )
         ).rows[0]
       : undefined;

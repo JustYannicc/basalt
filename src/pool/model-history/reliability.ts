@@ -3,7 +3,7 @@ import type {
   ReliabilityCounts,
 } from "../../../apps/pool/reliability-contract.ts";
 import { digest } from "../backend-users.ts";
-import { historySchemaVersion, type HistoryDatabase } from "./schema.ts";
+import { historyTerminalIntegrityVersion, type HistoryDatabase } from "./schema.ts";
 import { HistoryInputError, timestamp } from "./record.ts";
 import { requestCount } from "./series-coverage.ts";
 
@@ -14,7 +14,7 @@ export async function terminalCollectionReady(db: HistoryDatabase): Promise<bool
       AND to_regclass('basalt_model_history_migrations') IS NOT NULL AS ready`);
   if (catalog.rows[0]?.ready !== true) return false;
   const marker = await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name=$1", [
-    historySchemaVersion,
+    historyTerminalIntegrityVersion,
   ]);
   return marker.rows.length === 1;
 }
