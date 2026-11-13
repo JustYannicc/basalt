@@ -112,6 +112,20 @@
         "idx_usage_key_success_time_v1",
         "idx_billing_charge_key_usage_v1"
       ]
+    },
+    {
+      "baselineInputHash": "ac20cb6439fbe828",
+      "candidateInputHash": "a50ed5b1aa4ec5f7",
+      "fromVersions": [15, 16],
+      "targetVersion": 16,
+      "requiredIndexes": [
+        "idx_billing_charge_usage_cover_v1",
+        "idx_billing_charge_overview_time_v1",
+        "idx_usage_billing_complete_v2",
+        "idx_usage_summary_cursor_v1",
+        "idx_usage_key_success_time_v1",
+        "idx_billing_charge_key_usage_v1"
+      ]
     }
   ]
 }
