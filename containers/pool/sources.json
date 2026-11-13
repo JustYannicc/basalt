@@ -230,6 +230,15 @@
             "mode": "manual",
             "requires": "Retire after pinned Home publishes steady single-part PostgreSQL observations in one statement with fresh membership authority, post-lock database time and a concurrent-attempt snapshot guard; preserves cold, multipart, invalid, replay and stale-revision behavior; renews exact Home incarnations in one locked statement; and persists semantic node changes with bounded nonempty retention refresh and no empty periodic writes. Preserve observation, liveness, fencing and draining bounds without a schema or lease change."
           }
+        },
+        {
+          "identity": "cliproxy-home-quota-deadline",
+          "file": "0572-home-quota-deadline.patch",
+          "sha256": "bb2af25c1bb73037314823972d04f5a979d970d2045b7991df00f1eff6ec08c8",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only after the pinned selector preserves forecast-paced quota deadlines, retained smooth weighted credits, fallback and affinity safety, admission retry, bounded private decision evidence and current read-only snapshots. Prove staggered-reset availability and independent capacity-shortfall classification through the public pool API without exposing uninspectable account facts."
+          }
         }
       ]
     },
