@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { SqlClient } from "effect/sql";
 import { fumadb } from "fumadb-effect";
 import { sqlAdapter } from "fumadb-effect/sql";
@@ -20,7 +20,29 @@ const SqliteClient: typeof import("../../.upstream/packages/fumadb-effect/node_m
 // Product hosts use PostgreSQL. This driver proves the additive SQLite upgrade.
 const historicalDatabase = fumadb({
   namespace: "executor",
-  schemas: storageSchemas.filter((entry) => entry.version !== "4.0.29"),
+  schemas: storageSchemas.slice(
+    0,
+    storageSchemas.findIndex((entry) => entry.version === "4.0.29"),
+  ),
+});
+
+const preludeDatabase = fumadb({
+  namespace: "executor",
+  schemas: storageSchemas.slice(
+    0,
+    storageSchemas.findIndex((entry) => entry.version === "4.0.29") + 1,
+  ),
+});
+const migratePrelude = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const migrator = yield* preludeDatabase.client(sqlAdapter({ provider: "sqlite" })).createMigrator;
+  const version = yield* migrator.version;
+  if (Option.isSome(version) && version.value === "4.0.29") return;
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* (yield* migrator.up()).execute;
+    }),
+  );
 });
 
 const inSqlite = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>, filename = ":memory:") =>
@@ -65,7 +87,6 @@ const historicalLayout = Effect.gen(function* () {
     .createMigrator;
   yield* (yield* migrator.migrateToLatest()).execute;
   const storage = yield* makeExecutorStorage({ provider: "sqlite" });
-  yield* storage.migrateTables;
   assert.equal(yield* storage.version, "4.0.28");
   assert.deepEqual(yield* queueIndexes, []);
   yield* sql`insert into executor_providers (id, definition) values ('prv_fixture', '{}')`;
@@ -89,7 +110,7 @@ const historicalLayout = Effect.gen(function* () {
   return storage;
 });
 
-test("the SDK defers SQLite indexes, commits them with the marker and reopens unchanged", async () => {
+test("the historical SQLite prelude commits indexes with its marker and reopens before the current table upgrade", async () => {
   const directory = mkdtempSync(join(tmpdir(), "storage-prelude-driver-"));
   const filename = join(directory, "fixture.sqlite");
   try {
@@ -97,10 +118,9 @@ test("the SDK defers SQLite indexes, commits them with the marker and reopens un
       Effect.gen(function* () {
         const storage = yield* historicalLayout;
         const rows = yield* retained;
-        yield* storage.migrateTables;
         assert.equal(yield* storage.version, "4.0.28");
         assert.deepEqual(yield* queueIndexes, []);
-        yield* storage.migrate;
+        yield* migratePrelude;
         assert.equal(yield* storage.version, "4.0.29");
         assert.deepEqual(yield* retained, rows);
         return { rows, indexes: yield* assertIndexes };
@@ -111,9 +131,18 @@ test("the SDK defers SQLite indexes, commits them with the marker and reopens un
       Effect.gen(function* () {
         const storage = yield* makeExecutorStorage({ provider: "sqlite" });
         yield* storage.checkMigration;
-        yield* storage.migrate;
+        yield* migratePrelude;
         assert.equal(yield* storage.version, "4.0.29");
         assert.deepEqual(yield* retained, before.rows);
+        assert.deepEqual(yield* queueIndexes, before.indexes);
+        yield* storage.migrateTables;
+        assert.equal(yield* storage.version, "4.0.30");
+        const { tables: _beforeTables, ...beforeRows } = before.rows;
+        const { tables: _afterTables, ...afterRows } = yield* retained;
+        assert.deepEqual(afterRows, beforeRows);
+        assert.deepEqual(yield* queueIndexes, before.indexes);
+        yield* storage.migrate;
+        assert.equal(yield* storage.version, "4.0.30");
         assert.deepEqual(yield* queueIndexes, before.indexes);
         const runtime = yield* makeExecutorRuntimeStorage({ provider: "sqlite" });
         const orm = runtime.orm("4.0.28");
@@ -130,22 +159,45 @@ test("the SDK defers SQLite indexes, commits them with the marker and reopens un
   }
 });
 
-test("the SDK rolls back SQLite index DDL and its marker together, then retries", async () => {
+test("the historical SQLite prelude rolls back index DDL and its marker together, then retries", async () => {
   await inSqlite(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const storage = yield* historicalLayout;
       const before = yield* retained;
       yield* sql`alter table executor_account_checks rename to fixture_account_checks`;
-      assert.equal((yield* Effect.exit(storage.migrate))._tag, "Failure");
+      assert.equal((yield* Effect.exit(migratePrelude))._tag, "Failure");
       assert.equal(yield* storage.version, "4.0.28");
       assert.deepEqual(yield* queueIndexes, []);
       yield* sql`alter table fixture_account_checks rename to executor_account_checks`;
       assert.deepEqual(yield* retained, before);
-      yield* storage.migrate;
+      yield* migratePrelude;
       assert.equal(yield* storage.version, "4.0.29");
       yield* assertIndexes;
       assert.deepEqual(yield* retained, before);
+    }),
+  );
+});
+
+test("the current SDK rolls back the ordered SQLite upgrade and retries without losing retained rows", async () => {
+  await inSqlite(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const storage = yield* historicalLayout;
+      const { tables: _beforeTables, ...beforeRows } = yield* retained;
+      yield* sql`alter table executor_account_checks rename to fixture_account_checks`;
+      assert.equal((yield* Effect.exit(storage.migrateTables))._tag, "Failure");
+      assert.equal(yield* storage.version, "4.0.28");
+      assert.deepEqual(yield* queueIndexes, []);
+      yield* sql`alter table fixture_account_checks rename to executor_account_checks`;
+      yield* storage.migrateTables;
+      assert.equal(yield* storage.version, "4.0.30");
+      const { tables: _afterTables, ...afterRows } = yield* retained;
+      assert.deepEqual(afterRows, beforeRows);
+      const indexes = yield* assertIndexes;
+      yield* storage.migrate;
+      assert.deepEqual(yield* queueIndexes, indexes);
+      assert.equal(yield* storage.version, "4.0.30");
     }),
   );
 });

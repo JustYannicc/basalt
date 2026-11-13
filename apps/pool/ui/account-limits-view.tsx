@@ -1,6 +1,6 @@
 import type { Account, Provider } from "../contract.ts";
 import { providerName } from "./accounts.tsx";
-import { isModelWindow, poolObservation } from "./account-limits.ts";
+import { accountReadings, latestReading, type AccountReading } from "./account-limits.ts";
 import { Button, Dialog } from "./controls.tsx";
 import { ObservationReadingsTable } from "./observation-readings.ts";
 import { orderedWindows, windowView } from "./observation-text.ts";
@@ -11,6 +11,39 @@ const format = (() => {
   const options = new Intl.DateTimeFormat().resolvedOptions();
   return { locale: options.locale, timeZone: options.timeZone };
 })();
+
+const ago = (at: string, now: number) =>
+  now - Date.parse(at) < 60_000 ? "just now" : `${duration(now - Date.parse(at))} ago`;
+
+const readAge = (at: string | null, now: number) =>
+  at === null || Number.isNaN(Date.parse(at)) ? "not read yet" : `read ${ago(at, now)}`;
+
+const outcomes: Readonly<Record<string, string>> = {
+  unavailable: "the source was unavailable",
+  rate_limited: "the source was rate limited",
+  invalid: "the source sent an invalid reply",
+  timed_out: "the source timed out",
+};
+
+/** Why a reading is not current, or null when it is. */
+function readingNote(reading: AccountReading, now: number) {
+  if (reading.failure)
+    return `Latest check failed ${ago(reading.failure.at, now)}: ${
+      outcomes[reading.failure.outcome] ?? "the check did not finish"
+    }. ${reading.observation ? "Showing the last reading." : "No reading yet."}`;
+  if (reading.state === "current") return null;
+  return reading.state === "none"
+    ? "No current reading yet."
+    : "Last known reading, not current. Counts and limits may have changed since.";
+}
+
+/** A reading's model limits, with the account limit each counts toward. */
+const modelRows = (observation: AccountReading["observation"]) => {
+  const rows = orderedWindows(observation?.windows ?? []);
+  return rows.filter(
+    (row) => row.entry.scope?.kind === "model" || rows.some((other) => other.within === row.entry),
+  );
+};
 
 /**
  * Read-only Details for a few accounts, inside the pool. Every row is the host's Details table:
@@ -67,12 +100,8 @@ function AccountDetails({
   provider: string;
   now: number;
 }) {
-  const read = account.observedAt ? Date.parse(account.observedAt) : Number.NaN;
-  const readText = Number.isNaN(read)
-    ? "not read yet"
-    : now - read < 60_000
-      ? "read just now"
-      : `read ${duration(now - read)} ago`;
+  const readings = accountReadings(account);
+  const latest = latestReading(readings);
   const id = `limits-${account.id}`;
   return (
     <section
@@ -86,24 +115,38 @@ function AccountDetails({
         </h3>
         <span
           className="text-xs text-muted-foreground tabular-nums"
-          title={account.observedAt ? exactTime(account.observedAt) : undefined}
+          title={latest?.observedAt ? exactTime(latest.observedAt) : undefined}
         >
-          {provider} · {readText}
+          {readings === null
+            ? provider
+            : `${provider} · ${readAge(latest?.observedAt ?? null, now)}`}
         </span>
       </div>
-      {account.freshness !== "fresh" && (
-        <p className="m-0 text-xs text-warning text-pretty">
-          {account.freshness === "never"
-            ? "No current reading yet."
-            : "Last known reading, not current. Counts and limits may have changed since."}
+      {readings === null ? (
+        <p className="m-0 text-xs text-muted-foreground text-pretty">
+          Its provider app doesn't share this account's readings here.
         </p>
+      ) : (
+        readings.map((reading) => {
+          const note = readingNote(reading, now);
+          return (
+            <div key={reading.key} className="grid gap-2">
+              {note && <p className="m-0 text-xs text-warning text-pretty">{note}</p>}
+              {reading.observation && (
+                <ObservationReadingsTable
+                  observation={reading.observation}
+                  {...(readings.length > 1 && reading.source
+                    ? { caption: `Readings from ${reading.source}` }
+                    : {})}
+                  stale={reading.state !== "current"}
+                  now={now}
+                  format={format}
+                />
+              )}
+            </div>
+          );
+        })
       )}
-      <ObservationReadingsTable
-        observation={poolObservation(account)}
-        stale={account.freshness !== "fresh"}
-        now={now}
-        format={format}
-      />
     </section>
   );
 }
@@ -123,7 +166,13 @@ export function ModelLimits({
   now: number;
   onOpen: (account: Account) => void;
 }) {
-  const listed = accounts.filter((account) => account.windows.some(isModelWindow));
+  const listed = accounts.flatMap((account) => {
+    const reading = latestReading(accountReadings(account));
+    const rows = reading ? modelRows(reading.observation) : [];
+    return reading && rows.some((row) => row.entry.scope?.kind === "model")
+      ? [{ account, reading, rows }]
+      : [];
+  });
   if (listed.length === 0) return null;
   return (
     <section aria-labelledby="model-limits-heading" className="grid gap-2 pt-6">
@@ -137,42 +186,35 @@ export function ModelLimits({
         </p>
       </div>
       <ul className="m-0 list-none border-t border-border p-0">
-        {listed.map((account) => {
-          const rows = orderedWindows(poolObservation(account).windows);
-          const shown = rows.filter(
-            (row) =>
-              row.entry.scope?.kind === "model" || rows.some((other) => other.within === row.entry),
-          );
-          return (
-            <li key={account.id} className="border-b border-border">
-              <button
-                type="button"
-                aria-haspopup="dialog"
-                onClick={() => onOpen(account)}
-                className="grid w-full grid-cols-[minmax(0,14rem)_minmax(0,1fr)_auto] items-baseline gap-x-6 gap-y-1 px-1 py-3 text-left text-sm transition-colors duration-150 outline-none hover:bg-muted focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset max-[540px]:grid-cols-[minmax(0,1fr)_auto]"
-              >
-                <span className="min-w-0">
-                  <span className="block font-medium wrap-anywhere">{account.label}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {providerName(providers, account.provider)}
-                    {account.freshness !== "fresh" && " · last known"}
+        {listed.map(({ account, reading, rows }) => (
+          <li key={account.id} className="border-b border-border">
+            <button
+              type="button"
+              aria-haspopup="dialog"
+              onClick={() => onOpen(account)}
+              className="grid w-full grid-cols-[minmax(0,14rem)_minmax(0,1fr)_auto] items-baseline gap-x-6 gap-y-1 px-1 py-3 text-left text-sm transition-colors duration-150 outline-none hover:bg-muted focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:ring-inset max-[540px]:grid-cols-[minmax(0,1fr)_auto]"
+            >
+              <span className="min-w-0">
+                <span className="block font-medium wrap-anywhere">{account.label}</span>
+                <span className="text-xs text-muted-foreground">
+                  {providerName(providers, account.provider)}
+                  {reading.state !== "current" && " · last known"}
+                </span>
+              </span>
+              <span className="flex flex-wrap gap-x-4 gap-y-0.5 tabular-nums max-[540px]:col-span-full max-[540px]:row-start-2">
+                {rows.map(({ entry }) => (
+                  <span key={entry.id} className="whitespace-nowrap">
+                    <span className="text-muted-foreground">{entry.label}</span>{" "}
+                    {windowView(entry, now, format).detail}
                   </span>
-                </span>
-                <span className="flex flex-wrap gap-x-4 gap-y-0.5 tabular-nums max-[540px]:col-span-full max-[540px]:row-start-2">
-                  {shown.map(({ entry }) => (
-                    <span key={entry.id} className="whitespace-nowrap">
-                      <span className="text-muted-foreground">{entry.label}</span>{" "}
-                      {windowView(entry, now, format).detail}
-                    </span>
-                  ))}
-                </span>
-                <span className="text-xs text-muted-foreground underline underline-offset-2 max-[540px]:col-start-2 max-[540px]:row-start-1">
-                  Details
-                </span>
-              </button>
-            </li>
-          );
-        })}
+                ))}
+              </span>
+              <span className="text-xs text-muted-foreground underline underline-offset-2 max-[540px]:col-start-2 max-[540px]:row-start-1">
+                Details
+              </span>
+            </button>
+          </li>
+        ))}
       </ul>
     </section>
   );

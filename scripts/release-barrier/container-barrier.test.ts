@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { releaseWorkers } from "./barrier.ts";
+import { readySqlSchemas } from "./sql-schema-fixture.ts";
 import { containerRelease } from "./test/container-fixture.ts";
 
 test("all image and Worker admissions precede database work and every activation", async () => {
@@ -38,7 +39,10 @@ test("new image inputs that publish the existing digest do not PATCH or roll out
   };
   const result = await releaseWorkers(
     { ...proof.manifest, containers: [container] },
-    proof.options,
+    {
+      ...proof.options,
+      sqlSchemas: async () => readySqlSchemas(proof.manifest.candidate, container.imageDigest),
+    },
   );
   assert.ok(
     !proof.events.some((event) =>

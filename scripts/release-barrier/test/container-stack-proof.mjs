@@ -26,6 +26,7 @@ import { attributes, preparedUpload } from "../fixture.ts";
 import { describeContainer, sameContainerState, containerSnapshot } from "../container.ts";
 import { decodeApplication } from "../container-cloudflare.ts";
 import { deployStack } from "../deploy-stack.ts";
+import { readySqlSchemas } from "../sql-schema-fixture.ts";
 import { resumeForwardRelease } from "../forward-resume.ts";
 import { verifyContainerHealth } from "../container-health.ts";
 import { RuntimeRecovery } from "../../../src/pool/runtime-recovery.ts";
@@ -105,6 +106,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
     let releaseStarted = false;
     let attachmentPending = scenario === "dependency-only";
     let writes = 0,
+      resourceWrites = 0,
       dockerCalls = 0;
     const docker = {
       image: {
@@ -256,6 +258,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
       set: (input) =>
         Effect.gen(function* () {
           writes++;
+          resourceWrites++;
           const result = yield* memory.set(input);
           if (
             releaseStarted &&
@@ -408,6 +411,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
         api.writes = 0;
         api.rollouts = 0;
         writes = 0;
+        resourceWrites = 0;
         events.length = 0;
         if (!sameDigest) api.publishedDigest = digest("3");
         releaseStarted = true;
@@ -417,9 +421,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
               stack,
               (replayOptions = {
                 candidate: "a".repeat(40),
-                ...(scenario === "partial-worker-forward"
-                  ? { forwardEncryptionKey: "b".repeat(64) }
-                  : {}),
+                forwardEncryptionKey: "b".repeat(64),
                 record: async (receipt) => {
                   receipts.push(receipt);
                 },
@@ -443,6 +445,8 @@ export const proveContainerStack = (source, recompile, scenario) =>
                   events.push("image:retained");
                 },
                 io: {
+                  sqlSchemas: async () =>
+                    readySqlSchemas("a".repeat(40), lastManifest.containers[0].imageDigest),
                   placements: (_worker, baseline) =>
                     Effect.succeed(
                       baseline.map(({ versionId }) => ({
@@ -863,7 +867,7 @@ export const proveContainerStack = (source, recompile, scenario) =>
             ].includes(scenario)
           ) {
             assert.ok(!events.some((event) => event.startsWith("command:")));
-            assert.equal(writes, 0);
+            assert.equal(resourceWrites, 0);
             if (recordedBaseline) {
               const saved = yield* memory.get({
                 stack: stack.name,

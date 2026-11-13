@@ -1,3 +1,4 @@
+import { readySqlSchemas } from "../sql-schema-fixture.ts";
 import { placementRepairFixture } from "./placement-repair-fixture.ts";
 import { readActivePlacements, uploadVersion } from "../cloudflare.ts";
 import { CloudflareHttpError } from "@distilled.cloud/cloudflare/Errors";
@@ -247,6 +248,7 @@ export const fixture = (
         releasePlanning = true;
         return yield* deployStack(compiled, {
           candidate: "a".repeat(40),
+          forwardEncryptionKey: "1".repeat(64),
           namespaceRead: options.namespaceRead,
           record: async (receipt) => {
             receipts.push(receipt);
@@ -254,6 +256,7 @@ export const fixture = (
           },
           manifest: options.evidence?.manifest ?? (async () => {}),
           io: {
+            sqlSchemas: async () => readySqlSchemas("a".repeat(40)),
             namespace: (account, token) =>
               cloudflareArtifactsApi(account, token, async (_input, init) => {
                 assert.equal(init?.method, "GET");

@@ -5,6 +5,8 @@ import { test } from "node:test";
 import { Deferred, Effect, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import pg from "pg";
+import { fumadb } from "fumadb-effect";
+import { sqlAdapter } from "fumadb-effect/sql";
 import { makeExecutorStorage } from "../../.upstream/packages/sdk/src/implementation/storage.ts";
 import { makeExecutorRuntimeStorage } from "../../.upstream/packages/sdk/src/implementation/storage-runtime.ts";
 import {
@@ -13,7 +15,10 @@ import {
   historicalLayout,
   queueIndexes,
   retained,
+  preludeSchemas,
 } from "./storage-prelude-fixture.ts";
+
+const preludeDatabase = fumadb({ namespace: "executor", schemas: preludeSchemas });
 
 const adminUrl = process.env.MIGRATION_TEST_ADMIN_URL;
 const local =
@@ -48,7 +53,6 @@ test(
           Effect.gen(function* () {
             yield* historicalLayout("4.0.28");
             const storage = yield* makeExecutorStorage({ provider: "postgresql" });
-            yield* storage.migrateTables;
             assert.equal(yield* storage.version, "4.0.28");
             assert.deepEqual(yield* queueIndexes, []);
             return yield* retained;
@@ -71,7 +75,9 @@ test(
               yield* sql`set local lock_timeout = '5s'`;
               yield* sql`set local statement_timeout = '60s'`;
               const storage = yield* makeExecutorStorage({ provider: "postgresql" });
-              yield* storage.migrate;
+              const migrator = yield* preludeDatabase.client(sqlAdapter({ provider: "postgresql" }))
+                .createMigrator;
+              yield* (yield* migrator.up()).execute;
               assert.equal(yield* storage.version, "4.0.29");
               yield* assertQueueIndexes;
               yield* Deferred.succeed(indexesBuilt, undefined);
@@ -133,7 +139,9 @@ test(
           assert.deepEqual(yield* orm.findMany("accounts"), accounts);
           const restarted = yield* makeExecutorStorage({ provider: "postgresql" });
           yield* restarted.checkMigration;
-          yield* restarted.migrate;
+          const migrator = yield* preludeDatabase.client(sqlAdapter({ provider: "postgresql" }))
+            .createMigrator;
+          yield* (yield* migrator.migrateToLatest()).execute;
           assert.deepEqual(yield* queueIndexes, indexes);
           yield* assertRetained(before);
         }),

@@ -278,6 +278,7 @@
     ".upstream/packages/sdk/src/implementation/interactive-state.ts",
     ".upstream/packages/sdk/src/implementation/oauth-connection-plan.ts",
     ".upstream/packages/sdk/src/implementation/oauth-consent-state.ts",
+    ".upstream/packages/sdk/src/implementation/oauth-consent-targets.ts",
     ".upstream/packages/sdk/src/implementation/oauth-grant-bindings.ts",
     ".upstream/packages/sdk/src/implementation/oauth-grant-reuse.ts",
     ".upstream/packages/sdk/src/implementation/oauth-protocol-native.ts",

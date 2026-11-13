@@ -1,0 +1,178 @@
+diff --git a/e2e/tests/account-consent.spec.ts b/e2e/tests/account-consent.spec.ts
+--- a/e2e/tests/account-consent.spec.ts
++++ b/e2e/tests/account-consent.spec.ts
+@@ -434,6 +434,40 @@
+               yield* product.request("GET", `/v1/account-connections/${connection}`),
+             )).state.status,
+           ).toBe("cancelled");
++        const overlapApp = yield* product.deploy(issuer.origin, "Overlapping scope writer", [
++          "write",
++        ]);
++        const movedApp = yield* product.deploy(issuer.origin, "Overlapping scope target", [
++          "read",
++          "new-access",
++        ]);
++        const overlap = yield* product.connection(overlapApp);
++        const moved = yield* product.connection(movedApp);
++        const overlapAuth = yield* product.authorize(overlap, {
++          sourceAccount: source.id,
++          additionalConnections: [{ connection: moved, method: "oauth" }],
++        });
++        yield* product.deploy(
++          issuer.origin,
++          "Overlapping scope writer",
++          ["write", "new-access"],
++          {},
++          overlapApp,
++        );
++        expect((yield* product.complete(overlap, overlapAuth)).status).not.toBe(200);
++        expect((yield* product.read(overlapApp)).status).not.toBe(200);
++        expect((yield* product.read(movedApp)).status).not.toBe(200);
++        expect((yield* product.read(readApp)).status).toBe(200);
++        expect(
++          (yield* product.request("POST", `/v1/account-connections/${overlap}/cancel`)).status,
++        ).toBe(200);
++        for (const connection of [overlap, moved])
++          expect(
++            (yield* body(
++              State,
++              yield* product.request("GET", `/v1/account-connections/${connection}`),
++            )).state.status,
++          ).toBe("cancelled");
+       }),
+     ),
+   );
+diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+--- a/packages/sdk/src/contracts/oauth.ts
++++ b/packages/sdk/src/contracts/oauth.ts
+@@ -1534,6 +1534,16 @@
+   /** The identity declaration and requested access frozen before the browser leaves. */
+   identity: Schema.optionalKey(Schema.Struct({ issuer: HttpUrl, name: Schema.NonEmptyString })),
+   requestedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  /** Per-target access approved before authorization; never inferred from the batch union. */
++  consentTargets: Schema.optionalKey(
++    Schema.Array(
++      Schema.Struct({
++        connection: AccountConnectionId,
++        method: Schema.NonEmptyString,
++        scopes: Schema.Array(Schema.String),
++      }),
++    ),
++  ),
+   consentSource: Schema.optionalKey(OAuthConsentSource),
+   additionalConnections: Schema.optionalKey(Schema.Array(OAuthAdditionalConnection)),
+ };
+diff --git a/packages/sdk/src/implementation/oauth-consent-state.ts b/packages/sdk/src/implementation/oauth-consent-state.ts
+--- a/packages/sdk/src/implementation/oauth-consent-state.ts
++++ b/packages/sdk/src/implementation/oauth-consent-state.ts
+@@ -40,6 +40,7 @@
+   grantBindings,
+ } from "./oauth-grant-bindings.ts";
+ import { canonical } from "./provider.ts";
++import { requireOAuthConsentTargets } from "./oauth-consent-targets.ts";
+ 
+ /** All selected requests lock in the same order; each remains independently authorized and cancellable. */
+ export const lockOAuthConnections = (
+@@ -284,6 +285,8 @@
+       }),
+     );
+     yield* query(() => db.deleteMany("oauthGrants", { where: (b) => b("id", "=", primary.id) }));
++    // Grant locks precede target app locks, matching ordinary connection completion.
++    yield* requireOAuthConsentTargets(db, attempt);
+     const selections = [
+       { connection: attempt.connection, method: attempt.method },
+       ...(attempt.additionalConnections ?? []),
+diff --git a/packages/sdk/src/implementation/oauth-consent-targets.ts b/packages/sdk/src/implementation/oauth-consent-targets.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/oauth-consent-targets.ts
+@@ -0,0 +1,58 @@
++import { Effect } from "effect";
++import { AccountConnectionTargetChanged } from "../contracts/account-connection.ts";
++import { OAuthCompletionFailed, type OAuthAttemptRecord } from "../contracts/oauth.ts";
++import { lockApp } from "./apps.ts";
++import { readConnection } from "./connection-state.ts";
++import { requireTargetProvider } from "./connection-target.ts";
++import type { Query } from "./database.ts";
++
++export const oauthConsentScopesGrew = (approved: readonly string[], current: readonly string[]) =>
++  current.some((scope) => !approved.includes(scope));
++
++/** Provider continuity does not carry a target's consent forward to newly requested access. */
++export const requireOAuthConsentTargets = (db: Query, attempt: typeof OAuthAttemptRecord.Type) =>
++  Effect.gen(function* () {
++    if (attempt.consentSource === undefined && (attempt.additionalConnections?.length ?? 0) === 0)
++      return;
++    const changed = () => new OAuthCompletionFailed({ reason: "grant_changed" });
++    const selections = [
++      { connection: attempt.connection, method: attempt.method },
++      ...(attempt.additionalConnections ?? []),
++    ];
++    const approved = attempt.consentTargets;
++    // A pre-upgrade pending batch has no per-target authorization proof; it needs fresh consent.
++    if (approved === undefined || approved.length !== selections.length) return yield* changed();
++    const rows = yield* Effect.forEach(selections, (selection) =>
++      readConnection(db, { connection: selection.connection, owner: attempt.owner }),
++    );
++    const targets = [...new Map(rows.map((row) => [row.target.app, row.target])).values()].sort(
++      (first, second) => first.app.localeCompare(second.app),
++    );
++    // Keep deployments behind these locks until the entire grant and every binding commit.
++    for (const target of targets)
++      yield* lockApp(db, { app: target.app, owner: target.owner }).pipe(
++        Effect.catchTag("AppNotFound", () =>
++          Effect.fail(
++            new AccountConnectionTargetChanged({
++              app: target.app,
++              requirement: target.requirement,
++            }),
++          ),
++        ),
++      );
++    for (let index = 0; index < selections.length; index++) {
++      const selection = selections[index]!;
++      const snapshot = approved.find(
++        (entry) => entry.connection === selection.connection && entry.method === selection.method,
++      );
++      const target = yield* requireTargetProvider(db, rows[index]!);
++      const method = target.definition.auth[selection.method];
++      if (
++        snapshot === undefined ||
++        method?.type !== "oauth2" ||
++        method.grant === "client_credentials" ||
++        oauthConsentScopesGrew(snapshot.scopes, method.scopes ?? [])
++      )
++        return yield* changed();
++    }
++  });
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -1852,6 +1852,15 @@
+       }
+       const source = prepared?.source?.status === "ready" ? prepared.source : undefined;
+       const consent = {
++        ...(prepared === undefined
++          ? {}
++          : {
++              consentTargets: prepared.entries.map(({ row, method, methodName }) => ({
++                connection: row.id,
++                method: methodName,
++                scopes: method.scopes ?? [],
++              })),
++            }),
+         ...(source === undefined
+           ? {}
+           : {
+@@ -2152,7 +2161,10 @@
+     redirect: URL | undefined,
+     response: JsonObject,
+     identity: typeof OAuthAttempt.Type.identity,
+-    consent: Pick<typeof OAuthAttempt.Type, "consentSource" | "additionalConnections"> = {},
++    consent: Pick<
++      typeof OAuthAttempt.Type,
++      "consentSource" | "additionalConnections" | "consentTargets"
++    > = {},
+     loginHint?: string,
+   ) =>
+     Effect.gen(function* () {

@@ -1,4 +1,5 @@
 import { assertReleaseStateVersion } from "./release-state-version.ts";
+import { homeSchemaRetryAuthorization } from "./home-schema-retry.ts";
 import { loadDeclaredChanges } from "./declared-file.ts";
 import { undoForwardAdoption } from "./forward-undo.ts";
 import { resumeForwardRelease } from "./forward-resume.ts";
@@ -25,6 +26,7 @@ if (
   throw new Error("Release barrier requires GitHub Actions and an immutable candidate");
 if (process.env.ALCHEMY_STAGE !== "production")
   throw new Error("Release barrier requires the production stage");
+const homeSchemaRetryIntent = homeSchemaRetryAuthorization(process.env);
 const args = process.argv.slice(2);
 const undoPath = args[0] === "--undo-forward" && args.length === 2 ? resolve(args[1]!) : undefined;
 if (args.length && !undoPath && (args.length !== 3 || args[0] !== "--recover"))
@@ -112,6 +114,7 @@ process.exitCode = await releaseOutcome(evidence, process.env.GITHUB_STEP_SUMMAR
                       expansion: evidence.expansion,
                       forwardInput: forward?.continuation,
                       forwardEncryptionKey: process.env.EXECUTOR_ENCRYPTION_KEY,
+                      homeSchemaRetryIntent,
                       record: evidence.record,
                       publication: evidence.publication,
                       admission: evidence.admission,

@@ -12,3 +12,13 @@ for (const tree of ["src", "lib"])
     );
     assert.match(output, /__CONTAINER_PROOF_PASS__/);
   });
+
+for (const tree of ["src", "lib"])
+  test(`the real ${tree} publication hash reaches Home admission without another hash algorithm`, () => {
+    const output = execFileSync(
+      "bun",
+      [fileURLToPath(new URL("./test/provider-admission-proof.mjs", import.meta.url)), tree],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    assert.match(output, /__PROVIDER_ADMISSION_PASS__/);
+  });

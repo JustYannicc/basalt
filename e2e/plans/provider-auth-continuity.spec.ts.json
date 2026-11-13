@@ -88,6 +88,7 @@
     ".upstream/packages/sdk/src/implementation/provider.ts",
     ".upstream/packages/sdk/src/implementation/provider-continuity.ts",
     ".upstream/packages/sdk/src/implementation/database.ts",
-    ".upstream/packages/sdk/src/implementation/storage-runtime.ts"
+    ".upstream/packages/sdk/src/implementation/storage-runtime.ts",
+    ".upstream/packages/sdk/src/implementation/provider*.ts"
   ]
 }

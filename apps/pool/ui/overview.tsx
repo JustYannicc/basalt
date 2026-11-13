@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react";
 import type { Account, PoolView, Provider } from "../contract.ts";
 import { accountWindows } from "./account-limits.ts";
 import { AccountLimitsDialog, ModelLimits } from "./account-limits-view.tsx";
+import { capacityInputs } from "./account-view.ts";
 import type { Result } from "../index.ts";
 import type { PoolPersonalOverviewResult } from "../overview-contract.ts";
 import { capacityLabs, duration, gaps, hourMs, planChips } from "./capacity-model.ts";
@@ -14,7 +15,7 @@ import {
   type Tone,
 } from "./capacity-view.tsx";
 import { StateIcon } from "./controls.tsx";
-import { LabMark } from "./lab.tsx";
+import { LabMark, labProvider } from "./lab.tsx";
 import { seriesRead, type Overview, type RangeDays } from "./overview-data.ts";
 import { rows, total } from "./series-model.ts";
 import { Money, WhoUses } from "./usage-groups.tsx";
@@ -65,8 +66,9 @@ export function ManagerOverview({
 }) {
   const name = namer(providers);
   const current = { ...data, capacity: currentCapacity(data.capacity, view) };
-  // A model's own limit is inside its account's allowance, never extra lab capacity.
-  const capacityAccounts = overviewAccounts(view).map(accountWindows);
+  // A model's own limit is inside its account's allowance, never extra lab capacity. A source that
+  // withholds inspection lends no plan or window either.
+  const capacityAccounts = capacityInputs(overviewAccounts(view)).map(accountWindows);
   const labs =
     providers && current.coherent === true && current.capacity?.ok
       ? labSummaries(current.capacity.value, days, capacityAccounts)
@@ -104,7 +106,14 @@ export function ManagerOverview({
           </button>
         </p>
       )}
-      <Answers data={current} labs={labs} days={days} name={name} view={view} />
+      <Answers
+        data={current}
+        labs={labs}
+        days={days}
+        name={name}
+        lab={labProvider(providers)}
+        view={view}
+      />
       <CapacitySection
         result={current.capacity?.ok && !providers ? undefined : current.capacity}
         empty={view !== undefined && overviewAccounts(view).length === 0}
@@ -121,6 +130,7 @@ export function ManagerOverview({
         onOpen={(account) => openDetails("Account limits", [account])}
       />
       <WhoUses
+        lab={labProvider(providers)}
         overview={data.usage?.ok ? data.usage.value : undefined}
         people={data.people}
         models={data.models}
@@ -199,6 +209,7 @@ export function PersonalOverview({
         </p>
       )}
       <WhoUses
+        lab={labProvider(providers)}
         overview={undefined}
         personal={data.value}
         people={read}
@@ -247,12 +258,14 @@ function Answers({
   labs,
   days,
   name,
+  lab: provider,
   view,
 }: {
   data: Overview;
   labs: readonly LabSummary[];
   days: number;
   name: (id: string) => string;
+  lab: (id: string) => Provider | undefined;
   view: PoolView | undefined;
 }) {
   const worst = labs.find((entry) => entry.verdict.tone === "warn" || entry.verdict.tone === "bad");
@@ -340,7 +353,7 @@ function Answers({
         <span className="grid gap-0.5 text-[13px]">
           {labs.map(({ lab, verdict }) => (
             <span key={lab.provider} className="flex min-w-0 items-center gap-1.5">
-              <LabMark provider={lab.provider} name={name(lab.provider)} small />
+              <LabMark provider={provider(lab.provider)} small />
               <span className={toneText[verdict.tone]}>
                 {name(lab.provider)}: {verdict.short.toLowerCase()}
               </span>

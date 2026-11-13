@@ -1,3 +1,4 @@
+import { readySqlSchemas } from "../sql-schema-fixture.ts";
 import { retainedRemovedBucket, driftNativeProvider } from "./declared-state.ts";
 import { nativeBucketProvider } from "./native-bucket-provider.ts";
 import assert from "node:assert/strict";
@@ -202,6 +203,7 @@ export function provisioning(
         };
         const releaseOptions = {
           candidate: "a".repeat(40),
+          forwardEncryptionKey: "1".repeat(64),
           declarations: options.multipleMissing
             ? decodeDeclaredChanges({
                 ...declarations,
@@ -224,6 +226,7 @@ export function provisioning(
           },
           manifest: async () => {},
           io: {
+            sqlSchemas: async () => readySqlSchemas("a".repeat(40)),
             baseline: () => Effect.succeed([{ versionId: "previous", percentage: 100 }]),
             upload: () =>
               Effect.sync(() => {

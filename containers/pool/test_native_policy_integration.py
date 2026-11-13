@@ -153,7 +153,8 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
                     for plugin in plugin_state.get("plugins", [])
                 )
             )
-            ready.set_ready(True)
+            startup_audit_revision = ready.service_audit_revision()
+            ready.set_ready(True, audit_revision=startup_audit_revision)
 
             def capture_print(*args: object, **_kwargs: object) -> None:
                 with capture_lock:
@@ -273,6 +274,17 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
 
                 helper_request("/native-policy-test/enable")
                 self.assertEqual(monitor.check_once(), "healthy")
+                status, payload, lease = ready_request(ready_host, ready_port)
+                self.assertEqual(status, 503, "a recovered policy lease cannot restore the service audit")
+                self.assertIsNone(lease)
+                self.assertEqual(set(payload), {"boot_id", "started_at"})
+                ready.set_ready(True, audit_revision=startup_audit_revision)
+                self.assertEqual(ready_request(ready_host, ready_port)[0], 503)
+
+                # The fixture bypasses the supervisor loop, which publishes a fresh service audit after recovery.
+                recovery_audit_revision = ready.service_audit_revision()
+                self.assertGreater(recovery_audit_revision, startup_audit_revision)
+                ready.set_ready(True, audit_revision=recovery_audit_revision)
                 status, payload, lease = ready_request(ready_host, ready_port)
                 self.assertEqual(status, 200)
                 self.assertIsNotNone(lease)

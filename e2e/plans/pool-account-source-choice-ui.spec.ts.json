@@ -1,0 +1,37 @@
+{
+  "scenarios": {
+    "poolAccountSourceChoiceUi": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "Pools ask which provider app supplies an account held by several and name the chosen app",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses a runner-owned loopback catalog for the provider apps."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted organization account policies."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolAccountSourceChoiceUi": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/account-source-connections.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-source-options.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-account-links.ts",
+    ".upstream/apps/hosted/web/src/contracts/app-accounts.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx",
+    ".upstream/packages/ui/src/contracts/app-accounts.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/account-source-choice.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-accounts.tsx"
+  ]
+}

@@ -89,6 +89,10 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
         ),
       });
   files.push({
+    path: "cloudflare-scopes.ts",
+    content: readFileSync(join(root, "src/pool/provider-accounts/cloudflare-scopes.ts"), "utf8"),
+  });
+  files.push({
     path: "provider-definitions.ts",
     content: readFileSync(join(root, "src/pool/provider-accounts/definitions.ts"), "utf8"),
   });
@@ -129,6 +133,10 @@ export function bundlePoolApp(root: string, upstream: string): readonly PoolAppF
   copyFileSync(
     join(root, "src/pool/native-contract.ts"),
     join(dirname(destination), "native-contract.ts"),
+  );
+  copyFileSync(
+    join(root, "src/pool/provider-accounts/cloudflare-scopes.ts"),
+    join(dirname(destination), "cloudflare-scopes.ts"),
   );
   copyFileSync(
     join(root, "src/pool/provider-accounts/definitions.ts"),

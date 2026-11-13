@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Home liveness renewal uses one atomic PostgreSQL statement per beat, locks the exact membership before its Home incarnation and evaluates database time after lock waits. It refuses changed or fenced lifetimes before PONG while retaining the three-second heartbeat timeout, five-second cancellation bound and SQLite transaction. The internal process-health route accesses neither database nor management configuration and grants no readiness authority. The supervisor keeps its two-second process polling and existing probe budgets; full database-backed node checks gate startup, replacement and readiness recovery using a producer invalidation revision checked again at publication and run every sixty seconds off the child-exit path. Failed, expired, old-transition or old-generation audit results cannot publish readiness. The loaded plugin-host integration fixture keeps recovered policy readiness unavailable until a fresh current-revision service audit is published, and rejects the pre-fuse audit. Native policy freshness and the bounded recovery episode remain independent. No schema or lease transition is introduced."
+    }
+  }
+}

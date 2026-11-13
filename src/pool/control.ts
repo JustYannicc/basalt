@@ -1,5 +1,7 @@
+import { nativeAccountView } from "./native-account-view.ts";
 import { poolCreditRouting, setPoolCreditPolicy } from "./credit-policy.ts";
 import { setPoolSelectionPolicy } from "./selection-policy.ts";
+import { usageTimestampOrder } from "./usage-feed.ts";
 import {
   retainCollectionDiagnostic,
   type CollectionDiagnosticStorage,
@@ -51,6 +53,11 @@ import { emitProductEvent, type ProductEventCallback } from "../setup/product-ev
 export { accountsView } from "./accounts-view.ts";
 
 export interface HomeDependencies {
+  /** The existing signed membership reader supplies identity without exposing backend references. */
+  nativeMembership?: (
+    pool: string,
+    organization: string,
+  ) => Promise<import("./membership-contract.ts").NativeMembershipSnapshot>;
   signingKey: string;
   previousSigningKey?: string;
   home: (path: string, init?: RequestInit) => Promise<Response>;
@@ -107,6 +114,7 @@ const usageMaxLimit = 200;
 interface UsageQuery {
   session?: string;
   key?: number;
+  from?: string;
   limit: number;
   status?: string;
 }
@@ -629,6 +637,7 @@ export class PoolHome {
     if (query.session) params.set("session_id", query.session);
     if (query.key !== undefined) params.set("client_key_id", String(query.key));
     if (query.status) params.set("status", query.status);
+    if (query.from) params.set("from", query.from);
     let offset = 0;
     let total = Infinity;
     // At most five Home pages, or 1,000 scanned rows, per request.
@@ -668,6 +677,39 @@ export class PoolHome {
     }
     return { records: [...records.values()] };
   }
+  async firstSuccessfulUsage(key: number, since: string): Promise<string | null> {
+    const accounts = [
+      ...new Set((await this.membership()).members.map((member) => member.auth_id)),
+    ];
+    if (!accounts.length) return null;
+    const capabilities = await this.client.data("/capabilities");
+    if (
+      !object(capabilities.capabilities) ||
+      capabilities.capabilities.usage_first_success_v1 !== true
+    ) {
+      const response = await this.usage({ key, from: since, status: "success", limit: 20 });
+      return (
+        response.records
+          .map((row) => row.at)
+          .filter((at) => Date.parse(at) >= Date.parse(since))
+          .sort(usageTimestampOrder)[0] ?? null
+      );
+    }
+    let first: string | null = null;
+    // Keep credential lists below request URL limits without relaxing membership scope.
+    for (let offset = 0; offset < accounts.length; offset += 100) {
+      const params = new URLSearchParams({ client_key_id: String(key), from: since });
+      for (const account of accounts.slice(offset, offset + 100))
+        params.append("credential_id", account);
+      const response = await this.client.data(`/usage/first-success?${params}`);
+      if (response.timestamp === null) continue;
+      const at = text(response.timestamp);
+      if (!at || !Number.isFinite(Date.parse(at)) || Date.parse(at) < Date.parse(since))
+        return unavailable();
+      if (first === null || usageTimestampOrder(at, first) < 0) first = at;
+    }
+    return first;
+  }
   async remove(id: string, detached: () => Promise<void>): Promise<void> {
     const members = (await this.membership()).members.filter((member) => member.auth_id === id);
     if (!members.length) return fail(404, "not_found", "This account is not in this pool.");
@@ -687,6 +729,7 @@ export class PoolHome {
   }
 }
 interface RouteContext {
+  organization: string;
   request: Request;
   url: URL;
   deps: ControlDependencies;
@@ -745,14 +788,15 @@ const routes: Record<string, Route> = {
   },
   "GET /accounts/:id/observations": (ctx) => observeAccount(ctx, false),
   "POST /accounts/:id/observations/refresh": (ctx) => observeAccount(ctx, true),
-  "GET /pool": async ({ home, isOwner, deps, pool, url }) => {
-    const view = await home.view(
-      isOwner,
-      deps.views,
-      url.searchParams.get("fresh") === "true",
-      deps.now,
+  "GET /pool": async ({ home, isOwner, deps, pool, organization, url }) => {
+    const [view, membership] = await Promise.all([
+      home.view(isOwner, deps.views, url.searchParams.get("fresh") === "true", deps.now),
+      deps.nativeMembership?.(pool, organization).catch(() => undefined),
+    ]);
+    const presented = deps.nativeMembership ? nativeAccountView(view, membership) : view;
+    return json(
+      isOwner && deps.removals ? { ...presented, removals: await deps.removals(pool) } : presented,
     );
-    return json(isOwner && deps.removals ? { ...view, removals: await deps.removals(pool) } : view);
   },
   "GET /usage": async ({ home, url }) => json(await home.usage(await usageQuery(url))),
   "GET /accounts/:id/export": async ({ url, client, home }) => exportLoginFile(url, client, home),
@@ -912,6 +956,7 @@ export async function handleControl(
         client,
         home,
         pool: claims.pool,
+        organization: claims.organization,
         accountId: claims.owner,
         isOwner,
         now: deps.now?.() ?? new Date(),

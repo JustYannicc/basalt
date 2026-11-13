@@ -1,3 +1,4 @@
+import { readySqlSchemas } from "../sql-schema-fixture.ts";
 import type { PreparedContainerPublication } from "alchemy/Cloudflare/Containers/ContainerPublicationHook";
 import { Effect } from "effect";
 import type { BarrierReceipt, ContainerVersionProvider, VersionProvider } from "../barrier.ts";
@@ -146,6 +147,7 @@ export function containerRelease() {
     },
   };
   const options = {
+    sqlSchemas: async () => readySqlSchemas(manifest.candidate, setup.frozen.imageDigest),
     provider,
     containers,
     async record(value: BarrierReceipt) {

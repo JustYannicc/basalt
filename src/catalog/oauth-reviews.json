@@ -975,10 +975,13 @@
       "package": "@executor.sh/cloudflare",
       "methods": {
         "oauth": {
-          "kind": "deferred",
-          "message": "Signalbox has not verified one-click sign-in for Cloudflare yet. You can connect with your own OAuth app."
+          "kind": "automatic",
+          "protocol": "cimd",
+          "metadata": "https://mcp.cloudflare.com/.well-known/oauth-authorization-server",
+          "metadataSha256": "d3d40fdfe4c2c544a49020b7469907eeb3c861276248be4dfec3f2dff86013ff"
         }
-      }
+      },
+      "sourceSha256": "e8608e001491d8765449f0696ab1e5ddc5ce2f8daa225295e4e40370f309055f"
     },
     {
       "entry": "cloudinary",

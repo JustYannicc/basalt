@@ -81,6 +81,7 @@ export function verifyConnectorsSource(root: string): { commit: string; patches:
       "src/pool/providers.json",
       "src/pool/account-acquisition-contract.ts",
       "src/pool/provider-accounts/definitions.ts",
+      "src/pool/provider-accounts/cloudflare-scopes.ts",
       "src/pool/provider-accounts/capabilities.ts",
     ]) {
       mkdirSync(dirname(join(generatedRoot, path)), { recursive: true });
@@ -105,6 +106,7 @@ export function verifyConnectorsSource(root: string): { commit: string; patches:
       "apps/hosted/server/src/implementation/native-contract.ts",
       "apps/hosted/server/src/implementation/pool-account-acquisition-contract.ts",
       "apps/hosted/server/src/implementation/pool-provider-definitions.ts",
+      "apps/hosted/server/src/implementation/cloudflare-scopes.ts",
       "apps/hosted/server/src/implementation/pool-provider-capabilities.ts",
     ];
     for (const path of generated) {

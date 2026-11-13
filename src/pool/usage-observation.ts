@@ -1,4 +1,4 @@
-import { reportingCadence } from "./reporting.ts";
+import { reportingCadence, type ReportingProgress } from "./reporting.ts";
 import { hasTools } from "./computer-registry.ts";
 export interface UsageObservationComputer {
   id: string;
@@ -30,6 +30,7 @@ export async function observePendingUsage(
   observed: (pool: string, keyId: number, since: string) => Promise<string | null>,
   now: () => number,
   filter: { user?: string; pool?: string; keyId?: number; scheduled?: boolean } = {},
+  progress?: ReportingProgress,
 ): Promise<UsageObservationEvent[]> {
   const computers = Object.values(registry);
   let checkedAt = computers.reduce(
@@ -58,8 +59,10 @@ export async function observePendingUsage(
     )
     .slice(0, batchSize);
 
+  if (progress) progress.rows = 0;
   const events: UsageObservationEvent[] = [];
   for (const computer of pending) {
+    if (progress) progress.rows = (progress.rows ?? 0) + 1;
     checkedAt = Math.max(checkedAt + 1, now());
     computer.modelObservationCheckedAt = checkedAt;
     computer.modelObservationRetryAt = now() + reportingCadence;
@@ -67,6 +70,7 @@ export async function observePendingUsage(
     try {
       observedAt = await observed(computer.pool, computer.keyId!, computer.boundAt);
     } catch {
+      if (progress) progress.outcome = "partial";
       continue;
     }
     if (!observedAt) continue;
