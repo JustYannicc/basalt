@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "Home excludes known OAuth expiry at or inside its five-minute dispatch safety window before model-state shortcuts, scheduler admission and affinity reuse. Full credential resolution revalidates expiry at current time, valid alternatives remain selectable, and an unsafe-only pool refuses temporarily without provider dispatch. Refresh remains Home-owned; fresh replacement under the same credential identity restores eligibility without changing Node payloads, quota-deadline allocation, API-key policy or unknown-expiry behavior. The source image build runs the four TestDispatchExpiry regressions before publication."
+    }
+  }
+}

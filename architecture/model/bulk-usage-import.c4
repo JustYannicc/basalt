@@ -1,19 +1,18 @@
 model {
   extend basalt {
     bulkUsageImport = actor "Bulk usage import" {
-      #basalt #v1 #deep
+      #basalt #v1 #deep #planned
       description "One EU job owns immutable metadata chunks, exact manifest approval and resumable progress. SQL batches start at 500 rows and adapt toward 500 milliseconds between 100 and 5,000 rows, with persisted pacing and atomic subrange receipts. CPU at least 70 percent throttles until below 60; two minutes at least 90 percent or database errors stop for operator attention. Release and backup windows pause new batches. Serving telemetry is optional until configured, then binding with frozen per-route and stream-mode baselines, sample counts and thresholds. Genuine model completions and serving-dependency observations remain distinct; stale or failed configured reads pause without substituting control durations. Each bounded chunk requires fresh owner admission and an external load guard. Mapped Home targets stay locked through the atomic history-and-receipt commit; a scoped fingerprint reuses mapping validation only after a fresh eligibility read. One transaction-level advisory lock admits a bulk writer without changing live capture or legacy import identity."
       metadata {
         code "src/pool/model-history/bulk-contract.ts|src/pool/model-history/bulk-load.ts|src/pool/model-history/bulk-serving.ts|src/pool/model-history/bulk-serving-contract.ts|src/pool/model-history/bulk-do.worker.ts|src/pool/model-history/bulk-job.ts|src/pool/model-history/bulk-parser.ts|src/pool/model-history/bulk-progress.ts|src/pool/model-history/bulk-schema.ts|src/pool/model-history/bulk-store.ts"
         jurisdiction "eu"
-        resources "resource-39aaf5da0aa90abe20204d4834f474ea6149d8da965638f3e4af78e068b32120"
         bindings "TOOLS_SERVICE=basalt.toolsGateway|UsageImportArtifacts=basalt.usageImportArtifacts|POOL_AUTH_DATABASE=databaseService"
       }
     }
     usageImportArtifacts = store "Usage import chunks" {
-      #basalt #v1
+      #basalt #v1 #planned
       description "Immutable NDJSON chunks in EU record storage contain only validated scalar metadata. Each chunk has an approved byte digest, exact-ID digest and row count, with at most 5,000 rows and 8 MiB. Upload is separate from approval. The accepted original manifest and metadata remain the operator's recovery inputs."
-      metadata { jurisdiction "eu"; resources "resource-8b145eda56e5de69b2bb9265850f96752fc533d6a24710194156854acecfc701" }
+      metadata { jurisdiction "eu" }
     }
     usageBulkImportClient = adapter "Bulk usage import client" {
       #basalt
@@ -22,7 +21,7 @@ model {
     }
   }
 
-  basalt.modelGateway -[sync]-> basalt.bulkUsageImport "route signed bulk commands to the EU job without waking the pool controller"
+  basalt.modelGateway -[sync]-> basalt.bulkUsageImport "refuse signed bulk commands as not provisioned before any job or artifact work"
   basalt.bulkUsageImport -[sync]-> basalt.modelGateway "reuse exact history parsing, signed envelopes, database sessions and durable chunk storage"
   basalt.bulkUsageImport -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: fresh signed owner admission before every chunk; host transaction ends before reply"
   basalt.bulkUsageImport -[sync]-> basalt.usageImportArtifacts "store and reload immutable metadata chunks"
@@ -35,6 +34,4 @@ model {
   basalt.usageBulkImportClient -[sync]-> basalt.usageExportClient "validate target origin and private owner credential file"
   basalt.build -[sync]-> basalt.bulkUsageImport "verify bounded chunks, atomic receipts and real durable-job recovery"
   basalt.build -[sync]-> basalt.usageBulkImportClient "verify accepted-manifest reuse and explicit operator recovery"
-  basalt.deployment -[sync]-> basalt.bulkUsageImport "declare dedicated job actor in the existing pool Worker"
-  basalt.deployment -[sync]-> basalt.usageImportArtifacts "provision retained EU chunk storage"
 }

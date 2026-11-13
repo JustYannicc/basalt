@@ -1,7 +1,6 @@
 model {
   extend basalt.build {
     metadata {
-      code ".github/workflows/framework-rebuild.yml"
       constraint "Historical framework reconstruction runs only by manual dispatch on main, on the logged Linux x64 toolchain and checkout layout. Generation sources pin the logged UUID and refuse a different calculated dependency key before installation; direct-install sources have neither field. Temporary preparation changes are restored before building only the framework and its package formats. Evidence contains module-map, package, declaration and prepared-source hashes, never bundle bodies, raw logs, credentials or production reads. Hash equality does not replace compatibility or native execution proof."
     }
   }
