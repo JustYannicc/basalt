@@ -13,7 +13,10 @@ export function date(value: unknown): number {
   return Number.isFinite(at) && new Date(at).toISOString().slice(0, 10) === value ? at : NaN;
 }
 export const https = (value: unknown): value is string =>
-  typeof value === "string" && value.length <= 2048 && value.startsWith("https://");
+  typeof value === "string" &&
+  value.length <= 2048 &&
+  URL.canParse(value) &&
+  new URL(value).protocol === "https:";
 export const seedCatalog = seed as PlanAllowanceCatalog;
 export const allowanceKey = (entry: Pick<PlanAllowance, "vendor" | "plan" | "windowSeconds">) =>
   JSON.stringify([entry.vendor, entry.plan, entry.windowSeconds]);
