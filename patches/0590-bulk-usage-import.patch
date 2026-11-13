@@ -134,7 +134,7 @@ index 0000000..55260b7
 +});
 +export type PoolUsageBulkImportStatus = typeof PoolUsageBulkImportStatus.Type;
 diff --git a/apps/hosted/server/src/contracts/pool-usage.ts b/apps/hosted/server/src/contracts/pool-usage.ts
-index 24de837..7ad1669 100644
+index 2d1168c..80df8cb 100644
 --- a/apps/hosted/server/src/contracts/pool-usage.ts
 +++ b/apps/hosted/server/src/contracts/pool-usage.ts
 @@ -10,6 +10,7 @@ import {
@@ -145,7 +145,7 @@ index 24de837..7ad1669 100644
  import { RequiredAction } from "./authorization.ts";
  import {
    LastSuccessAt,
-@@ -134,6 +135,26 @@ export const PoolAccountRouting = Schema.Struct({
+@@ -136,6 +137,26 @@ export const PoolAccountRouting = Schema.Struct({
  const params = { organization: OrganizationReference, app: AppId };
  export const HostedPoolUsage = /* @__PURE__ */ (() =>
    HttpApiGroup.make("poolUsage")
@@ -173,18 +173,18 @@ index 24de837..7ad1669 100644
        HttpApiEndpoint.post(
          "importMapped",
 diff --git a/apps/hosted/server/src/implementation/pool-backend.ts b/apps/hosted/server/src/implementation/pool-backend.ts
-index 483b256..691beb5 100644
+index 1dd0d83..95fe200 100644
 --- a/apps/hosted/server/src/implementation/pool-backend.ts
 +++ b/apps/hosted/server/src/implementation/pool-backend.ts
-@@ -29,6 +29,7 @@ const backend = Effect.gen(function* () {
- 
+@@ -30,6 +30,7 @@ const backend = Effect.gen(function* () {
  type PoolCommand =
+   | "routingDecisions"
    | "importUsage"
 +  | "importUsageBulk"
    | "accountRouting"
    | "setCreditPolicy"
    | "setSelectionPolicy"
-@@ -55,15 +56,17 @@ export const sendPoolCommandResponse = (action: PoolCommand, payload: Record<str
+@@ -56,15 +57,17 @@ export const sendPoolCommandResponse = (action: PoolCommand, payload: Record<str
      const path =
        action === "importUsage"
          ? "/pool/v1/usage/import/owner"
@@ -327,10 +327,10 @@ index 0000000..e6605d3
 +  Effect.catch(() => Effect.succeed(admissionResponse(503))),
 +);
 diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
-index eeaddf6..4aa69e5 100644
+index f6cca00..95f8725 100644
 --- a/apps/hosted/server/src/implementation/pool-usage.ts
 +++ b/apps/hosted/server/src/implementation/pool-usage.ts
-@@ -5,6 +5,7 @@ import {
+@@ -6,6 +6,7 @@ import {
    setPoolSelectionPolicy,
  } from "./pool-credit-routing.ts";
  import { importPoolUsage } from "./pool-usage-import.ts";
@@ -338,14 +338,14 @@ index eeaddf6..4aa69e5 100644
  import { AppId, StorageError, StorageHost } from "@executor-js/sdk/core";
  import { Effect, Schema } from "effect";
  import { HttpApiBuilder } from "effect/http-api";
-@@ -244,6 +245,7 @@ export const poolPersonalUsageOverview = (app: AppId, input: PoolOverviewInput)
+@@ -245,6 +246,7 @@ export const poolPersonalUsageOverview = (app: AppId, input: PoolOverviewInput)
  
  export const hostedPoolUsageHandlers = HttpApiBuilder.group(HostedApi, "poolUsage", (handlers) =>
    handlers
 +    .handle("importBulk", ({ params, payload }) => importPoolUsageBulk(params.app, payload))
      .handle("importMapped", ({ params, payload }) => importPoolUsage(params.app, payload))
      .handle("accountRouting", ({ params }) => poolAccountRouting(params.app))
-     .handle("setCreditPolicy", ({ params, payload }) =>
+     .handle("routingDecisions", ({ params }) => poolRoutingDecisions(params.app))
 diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
 index 2aec499..b2f4ffe 100644
 --- a/apps/hosted/server/src/index.ts
