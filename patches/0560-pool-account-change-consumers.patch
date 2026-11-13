@@ -330,10 +330,10 @@ index 04760454c58f3ac4a2b41788fc63d910e5914fba..cc3ee7175528f786abda0d14be688b3b
  
 diff --git a/apps/hosted/server/src/implementation/account-change-schema.ts b/apps/hosted/server/src/implementation/account-change-schema.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..871569f4f9cadee330bbf45b53706a663549f39d
+index 0000000000000000000000000000000000000000..42f2e7d65379f101629e97e12e045fb64e6dd72c
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-change-schema.ts
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,111 @@
 +import { Effect } from "effect";
 +import { SqlClient } from "effect/sql";
 +
@@ -392,9 +392,13 @@ index 0000000000000000000000000000000000000000..871569f4f9cadee330bbf45b53706a66
 +  const triggers = [
 +    ["executor_accounts", "owner", "accounts", "owner", "encrypted_credentials"],
 +    ["executor_account_checks", "account", "accounts", "account", ""],
++    ["executor_account_reports", "owner", "accounts", "owner", "lease,lease_until"],
++    ["executor_account_driver_checks", "owner", "accounts", "owner", ""],
++    ["executor_account_targets", "owner", "accounts", "owner", ""],
 +    ["executor_account_observations", "owner", "accounts", "owner", "lease,lease_until"],
 +    ["executor_account_acquisitions", "owner", "accounts", "owner", ""],
 +    ["executor_account_connections", "owner", "accounts", "owner", ""],
++    ["executor_app_connections", "owner", "accounts,apps", "owner", "updated_at"],
 +    ["executor_account_identities", "owner", "accounts", "owner", ""],
 +    ["executor_oauth_grants", "grant", "accounts", "id", "encrypted,updated_at"],
 +    ["executor_apps", "owner", "apps,accounts", "owner", ""],

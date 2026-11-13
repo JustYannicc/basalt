@@ -2,52 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
-import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
-import { makeExecutorStorage } from "../../.upstream/packages/sdk/src/implementation/storage.ts";
 import { migrateAccountChanges } from "../../.upstream/apps/hosted/server/src/implementation/account-change-schema.ts";
-import { migrateChangeRevisions } from "../../.upstream/apps/hosted/server/src/implementation/change-revision-schema.ts";
 import { makeChangeJournal } from "../../.upstream/apps/hosted/server/src/implementation/change-revisions.ts";
-
-const fixture = <A, E>(work: Effect.Effect<A, E, SqlClient.SqlClient>) =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* (yield* makeExecutorStorage({ provider: "postgresql" })).migrate;
-      for (const ddl of [
-        'create table "user" (id text primary key, name text, "updatedAt" timestamptz)',
-        'create table session (id text primary key, "userId" text, "expiresAt" timestamptz, "updatedAt" timestamptz)',
-        'create table verification (id text primary key, identifier text, value text, "expiresAt" timestamptz, "updatedAt" timestamptz)',
-        'create table member (id text primary key, "organizationId" text, "userId" text, role text)',
-        "create table organization (id text primary key, metadata text)",
-        "create table hosted_app_account_links (app text, account text, subject text, requirement text)",
-        "create table hosted_app_access (id text, organization_id text, audience text)",
-        "create table hosted_account_access (account_id text, organization_id text, audience text)",
-        "create table hosted_account_observation_access (account_id text, organization_id text, read_audience jsonb)",
-        "create table hosted_account_rechecks (account_id text, organization_id text, outcome text, lease text, lease_until timestamptz)",
-        "create table hosted_app_groups (app_id text, organization_id text, group_id text)",
-        "create table hosted_account_groups (account_id text, organization_id text, group_id text)",
-        "create table hosted_model_bindings (app_id text, pool_id text)",
-        "create table hosted_groups (id text, organization_id text, name text)",
-        "create table hosted_group_members (group_id text, member_id text)",
-        "create table hosted_provisioning (organization_id text, status text, attempts int, updated_at timestamptz)",
-        "create table hosted_organization_removal (organization_id text, status text)",
-      ])
-        yield* sql.unsafe(ddl);
-      yield* sql`insert into executor_providers (id,definition) values ('prv_a','{}')`;
-      yield* sql`insert into executor_accounts (id,owner,provider,method,label,encrypted_credentials,created_at)
-      values ('acc_a','organization:team-a','prv_a','key','Retained',${new Uint8Array([1])},now())`;
-      yield* sql`insert into executor_apps (id,code,owner,name,slug,created_at)
-      values ('app_a','code_fixture','organization:team-a','Pool','pool',now())`;
-      yield* sql`insert into organization values ('team-a','{}')`;
-      yield* sql`insert into "user" values ('viewer-a','Viewer',now())`;
-      yield* sql`insert into member values ('member-a','team-a','viewer-a','member')`;
-      yield* sql`insert into session values ('session-a','viewer-a',now()+interval '1 hour',now())`;
-      yield* migrateChangeRevisions;
-      yield* migrateAccountChanges;
-      return yield* work;
-    }).pipe(Effect.provide(pgliteLayer())),
-  );
-const key = (topic: string) => ({ topic, resource: "*" });
+import { fixture, key } from "./account-change-fixture.ts";
 
 test("migration 20 preserves saved accounts and repeated setup; real account, binding and observation writes move the head", () =>
   fixture(
@@ -132,3 +89,71 @@ test("roles, groups, sharing, provisioning and session revocation have durable s
       yield* journal.deliver(() => Effect.die("acknowledged hints cannot deliver twice"));
     }),
   ));
+
+for (const writer of [
+  {
+    name: "personal-data reporting",
+    table: "executor_account_reports",
+    insert: `insert into executor_account_reports
+      (id,owner,client_fingerprint,credential_generation,status)
+      values ('acc_a','organization:team-a','synthetic-client',0,'active')`,
+    change: "update executor_account_reports set status='refresh_pending'",
+    bookkeeping:
+      "update executor_account_reports set lease='reporting',lease_until=now()+interval '1 minute'",
+  },
+  {
+    name: "driver health",
+    table: "executor_account_driver_checks",
+    insert: `insert into executor_account_driver_checks
+      (account,owner,driver,driver_revision,binding_revision,generation,checkable,status,checked_at)
+      values ('acc_a','organization:team-a','synthetic-driver','1','1',0,true,'healthy',now())`,
+    change:
+      "update executor_account_driver_checks set status='credentials_rejected',message='Synthetic grant revoked'",
+    bookkeeping: undefined,
+  },
+  {
+    name: "execution target",
+    table: "executor_account_targets",
+    insert: `insert into executor_account_targets
+      (account,owner,revision,mode,enabled,device,device_name,binding,manifest_revision)
+      values ('acc_a','organization:team-a',1,'device',true,'synthetic-device','Fixture device','synthetic-binding','1')`,
+    change: "update executor_account_targets set enabled=false,revision=2",
+    bookkeeping: undefined,
+  },
+])
+  test(`${writer.name} commits invalidate account reads without crossing owners`, () =>
+    fixture(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const journal = makeChangeJournal(sql);
+        const read = () => journal.current("organization:team-a", [key("accounts")]);
+        yield* sql.unsafe(writer.insert);
+        const before = yield* read();
+        yield* sql.unsafe(writer.change);
+        const changed = yield* read();
+        assert.equal(BigInt(changed[0]!.revision), BigInt(before[0]!.revision) + 1n);
+        yield* sql.unsafe(writer.change);
+        assert.deepEqual(yield* read(), changed, "identical persisted state is not a change");
+        if (writer.bookkeeping !== undefined) {
+          yield* sql.unsafe(writer.bookkeeping);
+          assert.deepEqual(yield* read(), changed, "reporting leases do not change the report");
+        }
+        yield* sql
+          .withTransaction(
+            sql.unsafe(`delete from ${writer.table}`).pipe(Effect.andThen(Effect.fail("rollback"))),
+          )
+          .pipe(Effect.result);
+        assert.deepEqual(yield* read(), changed, "rollback preserves source and revision");
+        yield* sql.unsafe(`delete from ${writer.table}`);
+        const removed = yield* read();
+        assert.equal(BigInt(removed[0]!.revision), BigInt(changed[0]!.revision) + 1n);
+        const delivered: string[] = [];
+        yield* journal.deliver((scope) =>
+          Effect.sync(() => {
+            delivered.push(scope);
+          }),
+        );
+        assert.ok(delivered.length > 0);
+        assert.ok(delivered.every((scope) => scope === "organization:team-a"));
+      }),
+    ));
