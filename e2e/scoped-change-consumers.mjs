@@ -146,6 +146,8 @@ const program = Effect.gen(function* () {
     yield* browserWork(() => splitRoutedReads(context, h.origin));
     const page = yield* browserWork(() => context.newPage());
     let reads = 0;
+    diagnostics.accountProgress = { width, phase: "initial", responses: [], heads: [] };
+    const progress = diagnostics.accountProgress;
     const inFlight = new Set(),
       idleWaiters = new Set();
     const finished = (request) => {
@@ -169,8 +171,30 @@ const program = Effect.gen(function* () {
     });
     const currentReads = [];
     page.on("response", (response) => {
-      if (new URL(response.url()).pathname.endsWith("/changes/current"))
+      const pathname = new URL(response.url()).pathname;
+      if (pathname.endsWith("/changes/current")) {
         currentReads.push(response);
+        void response
+          .json()
+          .then((body) =>
+            progress.heads.push({
+              status: response.status(),
+              revisions: body.revisions?.map(({ topic, revision }) => ({ topic, revision })),
+            }),
+          )
+          .catch(() => undefined);
+      }
+      if (resources(new URL(response.url()))) {
+        void response
+          .json()
+          .then((body) =>
+            progress.responses.push({
+              status: response.status(),
+              labels: Array.isArray(body) ? body.map(({ label }) => label) : [],
+            }),
+          )
+          .catch(() => undefined);
+      }
     });
     let gate;
     const activeHolds = new Set();
@@ -277,14 +301,17 @@ const program = Effect.gen(function* () {
         0,
       );
       await shot("updating");
+      progress.phase = "release-held-browser-request";
       const answered = page.waitForResponse(
         (response) => response.request().method() === "GET" && resources(new URL(response.url())),
       );
       gate.release();
       assert.equal((await answered).status(), 200, "the released browser read is authenticated");
+      progress.phase = "await-new-label";
     });
     yield* browserWork(async () => {
       await row(nextLabel).waitFor();
+      progress.phase = "await-updating-hidden";
       await updating.waitFor({ state: "hidden" });
       await resourceIdle();
       await flush();

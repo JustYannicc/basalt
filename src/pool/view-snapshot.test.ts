@@ -422,3 +422,32 @@ test("a fresh revision-fenced request never joins a body captured before its bas
   assert.equal(result.data.accounts[0]!.label, "Committed");
   assert.equal(currentReads, 1);
 });
+
+test("a fresh view reloads group policy changed by another Home writer", async () => {
+  let policy = "last_resort";
+  let groupReads = 0;
+  const client = new HomeClient(async (path) => {
+    if (path.endsWith("/channel-groups")) {
+      groupReads++;
+      return Response.json({
+        channel_groups: [
+          { id: 1, channel_name: "signalbox-pool-pool-a", usage_credit_policy: policy },
+        ],
+      });
+    }
+    if (path.includes("/channel-group-details?"))
+      return Response.json({ channel_group_details: [] });
+    if (path.endsWith("/credentials")) return Response.json({ files: [] });
+    throw Error("Unexpected Home read");
+  });
+  const cache = new PoolViewSnapshots(new MemoryStorage(), () => {});
+  const home = new PoolHome(client, "pool-a");
+  assert.equal((await home.view(false, cache, true)).usageCreditPolicy, "last_resort");
+  policy = "never";
+  assert.equal((await home.view(false, cache, true)).usageCreditPolicy, "never");
+  assert.equal(
+    groupReads,
+    2,
+    "a committed change's fresh read cannot reuse process-local group metadata",
+  );
+});
