@@ -50,6 +50,7 @@ const baseline = [{ versionId: "b80-pool-version", percentage: 100 }];
 const versions = [
   {
     id: "b80-pool-version",
+    placement: undefined,
     bindings: [{ type: "plain_text", name: "POOL_IMAGE_HASH", text: "c1fbe678054e1f4d" }],
   },
 ];
