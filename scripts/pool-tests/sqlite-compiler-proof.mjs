@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Miniflare } from "../pool-test-runtime/index.ts";
 import { createRequire } from "node:module";
 import { readFileSync, readdirSync, mkdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
@@ -8,10 +9,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const require = createRequire(join(root, ".upstream/package.json"));
 const sdk = createRequire(join(root, ".upstream/packages/sdk/package.json"));
-const { Miniflare } = require("miniflare");
 const { build } = sdk("esbuild");
-const workerd = require("workerd");
-process.env.MINIFLARE_WORKERD_PATH = typeof workerd === "string" ? workerd : workerd.default;
 const sqlite =
   process.env.SQLITE_WASM_PACKAGE ??
   dirname(require.resolve("@sqlite.org/sqlite-wasm/package.json"));

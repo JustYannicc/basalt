@@ -1,7 +1,15 @@
+import { StateStoreError } from "alchemy/State/State";
 import { Cause, Effect } from "effect";
 import { BarrierRefusal } from "./refusal.ts";
+import { migrationCommandFailure, type MigrationDiagnostic } from "./migration-failure.ts";
 
 export type ReleaseOperation =
+  | "plan-read-state"
+  | "apply-read-state"
+  | "apply-write-state"
+  | "read-release-journal"
+  | "write-release-journal"
+  | "record-release-journal"
   | "plan-stack"
   | "plan-read-resource"
   | "plan-diff-resource"
@@ -12,11 +20,20 @@ export type ReleaseOperation =
   | "deploy-class-expansion"
   | "stage-class-baseline-clone"
   | "record-class-expansion"
+  | "check-source-namespace"
+  | "read-native-state"
+  | "verify-native-state"
+  | "check-declared-buckets"
+  | "check-declared-databases"
+  | "apply-database-resource"
+  | "apply-database-plan"
+  | "before-activation"
   | "release-stack";
 
 export const knownTypes = new Set([
   // Effect's own timeout, raised by a provider call's bounded wait.
   "TimeoutError",
+  "StateStoreError",
   "CloudflareHttpError",
   "CloudflareParseError",
   "UnknownCloudflareError",
@@ -64,13 +81,27 @@ const field = (value: unknown, key: string): unknown =>
 const integer = (value: unknown, minimum: number, maximum: number): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= minimum && value <= maximum;
 
-/** Provider messages, bodies, URLs and stacks can contain credentials. Copy only closed types and numeric diagnostics. */
-export function safeProviderFailure(error: unknown) {
+export interface ProviderFailure {
+  type: string;
+  reason?: string;
+  status?: number;
+  codes?: number[];
+  exitCode?: number | null;
+  migration?: MigrationDiagnostic;
+}
+
+/** Provider messages, bodies, URLs and stacks can contain credentials. Copy only closed diagnostics. */
+export function safeProviderFailure(error: unknown): ProviderFailure {
+  const migration = migrationCommandFailure(error);
+  if (migration) return migration;
   const tag = field(error, "_tag") ?? field(error, "name");
   const type = typeof tag === "string" && knownTypes.has(tag) ? tag : "unknown";
   const httpReason = type === "HttpClientError" ? field(error, "reason") : undefined;
   const reason = field(httpReason, "_tag");
-  const status = field(error, "status") ?? field(field(httpReason, "response"), "status");
+  const status =
+    field(error, "status") ??
+    field(field(httpReason, "response"), "status") ??
+    (type === "StateStoreError" ? field(field(error, "http"), "status") : undefined);
   const entries = field(error, "errors");
   const codes = [
     ...new Set(
@@ -106,10 +137,27 @@ export class ReleaseOperationFailure extends BarrierRefusal {
   }
 }
 
+/** Preserve State's declared error channel while carrying the sanitized release diagnostic. */
+export class ReleaseStateStoreFailure extends StateStoreError {
+  readonly failure: ReleaseOperationFailure;
+  constructor(error: StateStoreError, resource: string, operation: ReleaseOperation) {
+    super({
+      message: "Release State operation failed",
+      ...(error.http ? { http: error.http } : {}),
+    });
+    this.failure =
+      error instanceof ReleaseStateStoreFailure
+        ? error.failure
+        : new ReleaseOperationFailure(error, resource, operation);
+  }
+}
+
 export const operationFailure = (error: unknown, resource: string, operation: ReleaseOperation) =>
-  error instanceof ReleaseOperationFailure
-    ? error
-    : new ReleaseOperationFailure(error, resource, operation);
+  error instanceof ReleaseStateStoreFailure
+    ? error.failure
+    : error instanceof ReleaseOperationFailure
+      ? error
+      : new ReleaseOperationFailure(error, resource, operation);
 
 export const withOperation =
   (resource: string, operation: ReleaseOperation) =>

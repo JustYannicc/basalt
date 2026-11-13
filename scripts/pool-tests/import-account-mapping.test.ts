@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { callerHeader } from "../../apps/pool/contract.ts";
+import { digest } from "../../src/pool/backend-users.ts";
+import { importedAccountPattern } from "../../src/pool/usage-account-labels.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
 import { parseUsageImport } from "../../src/pool/model-history/import.ts";
 import { handleUsageImport } from "../../src/pool/model-history/import-http.ts";
@@ -141,7 +143,7 @@ test("mapped imports feed account counts, ticks, success, window tokens and last
       "omitting the map cannot replace mapped content",
     );
     const native = await accountAuthority();
-    await insert({
+    const [foreignRecord] = await insert({
       account: native.visible,
       failed: false,
       attribution: "unknown",
@@ -196,8 +198,28 @@ test("mapped imports feed account counts, ticks, success, window tokens and last
     const applied = await post({ ...plain, mode: "apply", approval: plainReport.approval });
     assert.equal(applied.status, 200);
     const foreign = await poolUsageSeries(db, { ...input, by: ["account"] }, native.authority);
+    const plainRecord = (await parseUsageImport(plain, { pool, person: owner })).records[0]!;
+    const importedKeys = await Promise.all(
+      [foreignRecord!, plainRecord].map(
+        async (record) =>
+          `imported:${await digest(`${record.pool}:${record.source}:${record.account}`)}`,
+      ),
+    );
+    const imported = foreign.groups.filter((group) =>
+      importedAccountPattern.test(group.key.account ?? ""),
+    );
+    assert.deepEqual(
+      foreign.groups.map((group) => group.key.account).sort(),
+      ["saved-visible", ...importedKeys].sort(),
+    );
+    assert.equal(imported.length, 2);
+    for (const group of imported) {
+      assert.equal(group.buckets.length, 1);
+      assert.equal(group.buckets[0]!.requests, 1);
+      assert.deepEqual(group.accountDisplay, { kind: "imported-only", label: null });
+    }
     assert.equal(
-      foreign.groups.find((group) => group.key.account === "unmapped")!.buckets[0]!.requests,
+      imported.flatMap((group) => group.buckets).reduce((n, bucket) => n + bucket.requests, 0),
       2,
     );
 

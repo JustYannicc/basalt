@@ -1,6 +1,7 @@
 import { eventId, sendEnvelope } from "./sentry-envelope.ts";
 import type { SentryEnv } from "./sentry-target.ts";
 import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
+import { probeRuntimeContext, type ProbeRuntimeIdentity } from "./pool-probe-identity.ts";
 
 const guards = new Set([
   "configuration",
@@ -31,6 +32,7 @@ const reasons = new Set([
   "unknown",
   "below_target",
   "collection_unavailable",
+  "failing_now",
 ]);
 
 export async function startPoolMonitor(env: SentryEnv) {
@@ -55,6 +57,8 @@ export async function capturePoolMonitor(
     ok: boolean;
     failures: readonly { guard: string; reason: string; backendStatus?: number }[];
     reliability?: PoolReliabilitySlo;
+    release?: string;
+    runtime?: ProbeRuntimeIdentity;
   },
 ): Promise<boolean> {
   const failures = input.failures.slice(0, 8).map((failure) => ({
@@ -86,8 +90,11 @@ export async function capturePoolMonitor(
   for (const failure of reliability)
     if (failure.reason === "below_target")
       events.push(report("pool_request_success_below_target", [failure]));
-  // Issue notifications can page on any level, so unknown collection stays in Worker logs.
-  if (reliability.some((failure) => failure.reason !== "below_target")) {
+    else if (failure.reason === "failing_now")
+      events.push(report("pool_request_failing_now", [failure]));
+    else events.push(report("pool_request_reliability_unavailable", [failure]));
+  // Missing evidence is a reliability incident, independently of synthetic availability.
+  if (reliability.some((failure) => failure.reason === "collection_unavailable")) {
     const context = input.reliability ? reliabilityContext(input.reliability) : undefined;
     console.warn("POOL_REQUEST_RELIABILITY_UNKNOWN", {
       ...context,
@@ -101,6 +108,7 @@ export async function capturePoolMonitor(
 
   function report(errorCode: string, diagnostics: typeof failures) {
     const id = eventId();
+    const runtime = probeRuntimeContext(input.runtime);
     return sendEnvelope(env, {
       id,
       type: "event",
@@ -111,14 +119,19 @@ export async function capturePoolMonitor(
         level: "error",
         message: `${errorCode} ${diagnostics.map((failure) => `${failure.guard}:${failure.reason}${failure.backend_status ? `:HTTP${failure.backend_status}` : ""}`).join(" ") || "runtime:unknown"}`,
         logger: "pool-availability",
+        ...(/^[a-f0-9]{40}$/.test(input.release ?? "") ? { release: input.release } : {}),
         fingerprint: ["basalt", errorCode],
         tags: {
           error_code: errorCode,
           guard: diagnostics[0]?.guard ?? "runtime",
           reason: diagnostics[0]?.reason ?? "unknown",
+          probe_origin: "availability_cron",
+          runtime_source: runtime.source,
+          application_version: runtime.application_version,
+          boot_id: runtime.boot_id,
         },
         contexts: {
-          pool_probe: { check_in_id: receipt.id, failures },
+          pool_probe: { check_in_id: receipt.id, failures, runtime },
           ...(input.reliability
             ? { request_reliability: reliabilityContext(input.reliability) }
             : reliability.length
@@ -143,11 +156,14 @@ function reliabilityContext(slo: PoolReliabilitySlo) {
     state: ["ok", "breached", "no_traffic", "unavailable"].includes(slo.state) ? slo.state : null,
     hour: window(slo.hour),
     day: window(slo.day),
+    ...(slo.current ? { current: window(slo.current) } : {}),
     reason: [
       "history_inactive",
       "capture_stale",
       "capture_lagging",
       "classification_pending",
+      "terminal_collection_pending",
+      "terminal_collection_unavailable",
     ].includes(slo.reason ?? "")
       ? slo.reason
       : null,

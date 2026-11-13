@@ -12,6 +12,7 @@ export interface WireSocket {
 export type SocketFactory = (url: string, token: string) => WireSocket;
 export type TunnelPart = { bytes: Uint8Array; text: boolean; more: boolean };
 export interface ClientOperation {
+  readonly websocketMessageBytes?: number;
   response: Promise<Extract<TunnelServerFrame, { type: "response" }>>;
   send(bytes: Uint8Array, text?: boolean, message?: boolean): Promise<void>;
   end(): Promise<void>;

@@ -193,10 +193,12 @@ test(
         )
       ).rows;
       const own = after.filter((row) => row.scope === "organization:team-a");
+      // Account label edits publish a separate observations head alongside the account directory.
       assert.deepEqual(own, [
         { scope: "organization:team-a", topic: "accounts", resource: "*", revision: "2" },
         { scope: "organization:team-a", topic: "apps", resource: "*", revision: "2" },
         { scope: "organization:team-a", topic: "membership", resource: "*", revision: "1" },
+        { scope: "organization:team-a", topic: "observations", resource: "*", revision: "1" },
       ]);
       const applied = (
         await observer.query("select scope,topic,resource from head_order order by id")
@@ -207,7 +209,7 @@ test(
           "en",
         ),
       );
-      assert.equal(applied.length, 11);
+      assert.equal(applied.length, 12);
       assert.deepEqual(applied, expected, "The one flush applies every key in canonical order");
       assert.equal(
         (await observer.query("select count(*)::int as count from hosted_change_batches")).rows[0]

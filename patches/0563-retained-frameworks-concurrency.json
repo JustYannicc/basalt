@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-retained-frameworks-record-concurrency",
+  "file": "0563-retained-frameworks-concurrency.patch",
+  "content_sha256": "9be291fcb7d470425cb54600c769b37f5a1748ad6f4345926c82686acc48bf9c",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

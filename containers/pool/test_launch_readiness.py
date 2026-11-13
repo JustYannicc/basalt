@@ -47,6 +47,40 @@ class LaunchReadinessTests(unittest.TestCase):
         self.assertEqual(status, 503)
         self.assertNotIn("X-Signalbox-Launch-Generation", headers)
 
+    def test_persistent_clients_are_told_to_close_every_control_response(self) -> None:
+        ready = Readiness("fixture", lambda: 1_000_000_000)
+        handler = type("Handler", (ReadyHandler,), {"readiness": ready})
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 1)
+        self.addCleanup(server.shutdown)
+        ready.refresh_policy_lease("b" * 32)
+        client = http.client.HTTPConnection(*server.server_address, timeout=1)
+        self.addCleanup(client.close)
+        for method, path, key, healthy, expected in [
+            ("GET", "/ready", "fixture", True, 200),
+            ("GET", "/ready", "fixture", False, 503),
+            ("GET", "/ready", "wrong", True, 401),
+            ("GET", "/missing", "fixture", True, 404),
+            ("POST", "/native-policy", "fixture", True, 400),
+            ("POST", "/native-policy/check", "fixture", True, 400),
+            ("POST", "/native-policy", "wrong", True, 401),
+            ("POST", "/missing", "fixture", True, 404),
+        ]:
+            with self.subTest(method=method, path=path, status=expected):
+                ready.set_ready(healthy)
+                client.request(method, path, body="{}" if method == "POST" else None,
+                               headers={"Authorization": f"Bearer {key}", "Connection": "keep-alive"})
+                response = client.getresponse()
+                body = response.read()
+                self.assertEqual(response.status, expected)
+                self.assertEqual(len(body), int(response.getheader("Content-Length")))
+                self.assertEqual(response.getheader("Connection"), "close")
+                self.assertTrue(response.will_close)
+                self.assertIsNone(client.sock)
+
     def test_partial_or_malformed_launch_input_refuses_with_a_fixed_error(self) -> None:
         for generation, token in [("1", None), (None, "a" * 64), ("0", "a" * 64), ("01", "a" * 64), ("9007199254740992", "a" * 64), ("1", "secret")]:
             with self.subTest(generation=generation):

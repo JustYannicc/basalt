@@ -1,4 +1,3 @@
-import { nativeAccountView } from "./native-account-view.ts";
 import { poolCreditRouting, setPoolCreditPolicy } from "./credit-policy.ts";
 import { setPoolSelectionPolicy } from "./selection-policy.ts";
 import { usageTimestampOrder } from "./usage-feed.ts";
@@ -94,6 +93,7 @@ export interface Group {
   usageCreditPolicy?: import("../../apps/pool/usage-credits-contract.ts").UsageCreditPolicy;
   id: number;
   channel_name: string;
+  disabled?: boolean;
 }
 export interface Member {
   id: number;
@@ -324,6 +324,7 @@ export class HomeClient {
           {
             id: row.id,
             channel_name: row.channel_name,
+            ...(typeof row.disabled === "boolean" ? { disabled: row.disabled } : {}),
             ...(row.usage_credit_policy === "last_resort" || row.usage_credit_policy === "never"
               ? { usageCreditPolicy: row.usage_credit_policy }
               : {}),
@@ -544,7 +545,7 @@ export class PoolHome {
     }
   }
   async readView(now: () => Date, fresh = false): Promise<HomeViewData> {
-    // Another Home writer can change a group's policy without touching this process cache.
+    // Another Home writer can change a group policy without touching this process cache.
     if (fresh) this.client.invalidateGroups();
     const readAt: HomeViewData["readAt"] = { membership: "" };
     const controller = new AbortController();
@@ -794,15 +795,14 @@ const routes: Record<string, Route> = {
   },
   "GET /accounts/:id/observations": (ctx) => observeAccount(ctx, false),
   "POST /accounts/:id/observations/refresh": (ctx) => observeAccount(ctx, true),
-  "GET /pool": async ({ home, isOwner, deps, pool, organization, url }) => {
-    const [view, membership] = await Promise.all([
-      home.view(isOwner, deps.views, url.searchParams.get("fresh") === "true", deps.now),
-      deps.nativeMembership?.(pool, organization).catch(() => undefined),
-    ]);
-    const presented = deps.nativeMembership ? nativeAccountView(view, membership) : view;
-    return json(
-      isOwner && deps.removals ? { ...presented, removals: await deps.removals(pool) } : presented,
+  "GET /pool": async ({ home, isOwner, deps, pool, url }) => {
+    const view = await home.view(
+      isOwner,
+      deps.views,
+      url.searchParams.get("fresh") === "true",
+      deps.now,
     );
+    return json(isOwner && deps.removals ? { ...view, removals: await deps.removals(pool) } : view);
   },
   "GET /usage": async ({ home, url }) => json(await home.usage(await usageQuery(url))),
   "GET /accounts/:id/export": async ({ url, client, home }) => exportLoginFile(url, client, home),

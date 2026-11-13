@@ -1,3 +1,4 @@
+import type { AllowanceProvenance, PlanAllowanceCatalog } from "apps";
 import type { QuotaObservation, QuotaWindowObservation } from "../quota-observation.ts";
 import { capacityWeight, capacityWeightRevision, type CapacityWeight } from "./weights.ts";
 
@@ -17,6 +18,7 @@ export interface CapacityReading {
   readonly source: CapacityWeight["source"] | "reported-absolute";
   readonly knownWeight: boolean;
   readonly revision: string;
+  readonly allowance?: AllowanceProvenance;
 }
 
 const absoluteUnits = new Set(["tokens", "requests", "credits"]);
@@ -54,6 +56,7 @@ export function capacityReadings(
   provider: string,
   quota: QuotaObservation,
   now: number,
+  catalog?: PlanAllowanceCatalog,
 ): CapacityReading[] {
   const collectedAt = time(quota.observedAt);
   if (collectedAt === null || collectedAt > now) return [];
@@ -68,15 +71,22 @@ export function capacityReadings(
     if (observedAt === null || observedAt > now || (staleAt !== null && staleAt <= now)) return [];
     if (!["healthy", "low", "exhausted"].includes(String(window.raw.status))) return [];
     const plan = quota.plan?.name ?? null;
-    const weight = capacityWeight(provider, plan, window.period.seconds!);
+    const weight = capacityWeight(provider, plan, window.period.seconds!, { catalog, now });
+    const ratio =
+      window.remainingRatio ?? (window.usedRatio === null ? null : 1 - window.usedRatio);
+    const absoluteRemaining =
+      window.remaining ??
+      (window.limit !== null && window.used !== null
+        ? window.limit - window.used
+        : positive(window.limit) && ratio !== null
+          ? window.limit * ratio
+          : null);
     const absolute =
       absoluteUnits.has(window.unit ?? "") &&
       positive(window.limit) &&
-      window.remaining !== null &&
-      window.remaining >= 0 &&
-      window.remaining <= window.limit;
-    const ratio =
-      window.remainingRatio ?? (window.usedRatio === null ? null : 1 - window.usedRatio);
+      absoluteRemaining !== null &&
+      absoluteRemaining >= 0 &&
+      absoluteRemaining <= window.limit;
     if (!absolute && (ratio === null || ratio < 0 || ratio > 1)) return [];
     return [
       {
@@ -90,7 +100,7 @@ export function capacityReadings(
         staleAt,
         observationSource: window.source ?? quota.source,
         full: absolute ? window.limit! : weight.multiplier,
-        remaining: absolute ? window.remaining! : weight.multiplier * ratio!,
+        remaining: absolute ? absoluteRemaining! : weight.multiplier * ratio!,
         unit: absolute
           ? {
               id: JSON.stringify([
@@ -107,6 +117,16 @@ export function capacityReadings(
         source: absolute ? ("reported-absolute" as const) : weight.source,
         knownWeight: absolute || weight.known,
         revision: absolute ? capacityWeightRevision : weight.revision,
+        allowance: absolute
+          ? {
+              kind: "account-absolute",
+              verification: "verified",
+              sources: [window.source ?? quota.source ?? "urn:basalt:account-usage-api"],
+              checkedAt: observedAt,
+              fetchedAt: collectedAt,
+              expiresAt: staleAt,
+            }
+          : weight.allowance,
       },
     ];
   });

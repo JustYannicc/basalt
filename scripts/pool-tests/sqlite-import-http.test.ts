@@ -25,13 +25,6 @@ test(
     const dir = mkdtempSync(join(tmpdir(), "sqlite-import-")),
       path = join(dir, "usage.sqlite");
     const schema = `sqlite_import_${randomUUID().replaceAll("-", "")}`;
-    const db = new pg.Client({ connectionString: admin });
-    await db.connect();
-    await historySchemaFixture(db, schema);
-    await db.query(`SET search_path TO ${schema}`);
-    await homeMetadataFixture(db);
-    await migrateModelHistory(db);
-    await db.end();
     const url = new URL(admin!);
     url.searchParams.set("options", `-c search_path=${schema}`);
     const query = async (sql: string) => {
@@ -46,6 +39,16 @@ test(
     const count = async () =>
       Number((await query("SELECT count(*) AS n FROM basalt_model_requests")).rows[0].n);
     try {
+      const db = new pg.Client({ connectionString: admin });
+      try {
+        await db.connect();
+        await historySchemaFixture(db, schema);
+        await db.query(`SET search_path TO ${schema}`);
+        await homeMetadataFixture(db);
+        await migrateModelHistory(db);
+      } finally {
+        await db.end();
+      }
       managerBackup(path);
       const signingKey = "ab".repeat(32);
       const token = await signPoolToken(signingKey, {
@@ -121,8 +124,11 @@ test(
       assert.equal(session.snapshot.added, 0);
       assert.equal(session.snapshot.existing, 401);
     } finally {
-      await query(`DROP SCHEMA ${schema} CASCADE`);
-      rmSync(dir, { recursive: true });
+      try {
+        await query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      } finally {
+        rmSync(dir, { recursive: true });
+      }
     }
   },
 );

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A catalog entry may name what one installed copy of its service is called and how to name a new one. Add another then says Add another with that noun, titles and labels the copy with it, shows the naming guidance, and counts copies with its plural; an entry without a noun keeps the service's name and the generic copy. A catalog row lists its copies' names, and Add another names the existing copies when there are few. An Add app link that names an entry with at least one copy may open its Add another directly; any other link opens the plain catalog. The Obsidian entry calls its copies vaults, and each vault app's Accounts tab links to that entry's Add another."
+    }
+  }
+}

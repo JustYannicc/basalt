@@ -233,6 +233,11 @@ export async function nativeFixture(
     return json(404, {});
   });
   server.on("upgrade", (request, socket, head) => {
+    // This external peer is a frozen v1 server, including its pre-authorization refusal.
+    if (request.headers["sec-websocket-protocol"] !== "basalt.tunnel.v1") {
+      socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      return;
+    }
     if (offline) {
       socket.destroy();
       return;

@@ -1,4 +1,5 @@
 import type { Result } from "./control.ts";
+import type { OverviewMoneyMetric } from "./overview-contract.ts";
 
 export interface HistoryBounds {
   readonly from: string;
@@ -39,6 +40,7 @@ export interface PublicHistoryRecord {
   readonly cost: string | null;
   readonly currency: string | null;
   readonly cost_basis: "home-charge" | "historical-api-price" | "unpriced";
+  readonly api_estimate?: OverviewMoneyMetric;
   readonly attribution: "charge-snapshot" | "key-at-capture" | "import-owner" | "unknown";
 }
 

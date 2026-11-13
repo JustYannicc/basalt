@@ -1,6 +1,13 @@
 import { Fragment, useState } from "react";
-import { failedRecordWithoutUsage } from "./usage-outcome.ts";
+import { failedRecordWithoutUsage, requestTitle } from "./usage-outcome.ts";
+import {
+  recordedCost,
+  requestEstimate,
+  requestEstimateBasis,
+  type RequestEstimate,
+} from "./history-request-cost.ts";
 import { Badge, Button } from "./controls.tsx";
+import { PriceNote } from "./price-note.tsx";
 import type { MemberDirectoryEntry } from "./series-model.ts";
 import type { PublicHistoryRecord } from "./history-model.ts";
 
@@ -21,13 +28,6 @@ function timestamp(value: string): string {
       timeZone: "UTC",
     }).format(parsed) + " UTC"
   );
-}
-
-function cost(record: PublicHistoryRecord): string {
-  if (failedRecordWithoutUsage(record)) return "No usage recorded";
-  if (record.cost_basis === "unpriced" || record.cost === null) return "Unpriced";
-  const currency = ` ${record.currency ?? "currency not recorded"}`;
-  return `${record.cost}${currency} · ${record.cost_basis === "home-charge" ? "Home charge" : "Historical API price"}`;
 }
 
 function personName(
@@ -105,17 +105,19 @@ export function HistoryRequests({
                 <th scope="col" className="py-2 pr-3 text-right font-medium">
                   Tokens
                 </th>
-                <th scope="col" className="py-2 text-right font-medium max-[540px]:hidden">
-                  Cost
+                <th
+                  scope="col"
+                  className="py-2 text-right font-medium whitespace-nowrap max-[540px]:hidden"
+                >
+                  API est. (USD)
                 </th>
               </tr>
             </thead>
             <tbody>
               {visible.map((record) => {
                 const expanded = open?.page === page && open.id === record.id;
-                const model = failedRecordWithoutUsage(record)
-                  ? "Failed request"
-                  : (record.model ?? "Model not recorded");
+                const model = requestTitle(record);
+                const estimate = requestEstimate(record);
                 const provider = record.provider
                   ? providerName(record.provider)
                   : "Provider not recorded";
@@ -138,7 +140,18 @@ export function HistoryRequests({
                             {provider} · {timestamp(record.timestamp)}
                           </span>
                           <span className="block text-xs text-muted-foreground min-[541px]:hidden">
-                            {completed ? "Completed" : "Failed"} · {cost(record)}
+                            {completed ? "Completed" : "Failed"} ·{" "}
+                            {failedRecordWithoutUsage(record) ? (
+                              estimate.text
+                            ) : (
+                              <>
+                                API est.{" "}
+                                <span className={estimate.priced ? "text-foreground" : undefined}>
+                                  {estimate.text}
+                                </span>
+                              </>
+                            )}
+                            {estimate.priced && <PriceNote price={estimate.price} start />}
                           </span>
                         </button>
                       </th>
@@ -151,7 +164,7 @@ export function HistoryRequests({
                         {count(record.total_tokens)}
                       </td>
                       <td className="py-3 text-right text-xs text-muted-foreground max-[540px]:hidden">
-                        {cost(record)}
+                        <EstimateCell estimate={estimate} />
                       </td>
                     </tr>
                     {expanded && (
@@ -192,7 +205,12 @@ export function HistoryRequests({
                               value={record.status_code?.toString() ?? "—"}
                             />
                             <Detail label="Token quality" value={record.token_quality} />
-                            <Detail label="Cost" value={cost(record)} />
+                            <Detail label="API est. (USD)" value={estimate.text} />
+                            <Detail
+                              label="Estimate basis"
+                              value={requestEstimateBasis(estimate) ?? "—"}
+                            />
+                            <Detail label="Recorded cost" value={recordedCost(record)} />
                           </dl>
                         </td>
                       </tr>
@@ -234,6 +252,17 @@ export function HistoryRequests({
         </span>
       </nav>
     </section>
+  );
+}
+
+function EstimateCell({ estimate }: { estimate: RequestEstimate }) {
+  return (
+    <span className="grid justify-items-end" title={estimate.reason ?? undefined}>
+      <span className={estimate.priced ? "tabular-nums text-foreground" : undefined}>
+        {estimate.text}
+      </span>
+      {estimate.priced && <PriceNote price={estimate.price} />}
+    </span>
   );
 }
 

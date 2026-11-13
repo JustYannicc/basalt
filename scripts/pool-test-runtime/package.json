@@ -1,0 +1,9 @@
+{
+  "name": "basalt-pool-test-runtime",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "miniflare": "4.20260730.0",
+    "workerd": "1.20261113.1"
+  }
+}

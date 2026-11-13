@@ -13,7 +13,7 @@ const { chromium } = require("playwright");
 const { build, stop } = require("esbuild");
 
 /** Real history UI, with source metadata supplied at its ordinary reader boundary. */
-export async function historyFixture({ sourceRef } = {}) {
+export async function historyFixture({ sourceRef, initialRequests, pageSize } = {}) {
   const built = await build({
     plugins: sourceRef
       ? [
@@ -61,8 +61,8 @@ window.showTab=()=>{
  document.dispatchEvent(new Event('visibilitychange'));
 };
 createRoot(document.getElementById('root')).render(<History changes={pool.changes} series={pool.series}
- publicHistory={pool.publicHistory} directory={[]}
- providers={[{id:'codex',name:'ChatGPT'}]} onBack={()=>{}}/>);`,
+ publicHistory={pool.publicHistory}
+ providers={[{id:'codex',name:'ChatGPT'}]}/>);`,
       resolveDir: root,
       loader: "tsx",
     },
@@ -75,6 +75,7 @@ createRoot(document.getElementById('root')).render(<History changes={pool.change
   });
   const javascript = built.outputFiles[0].text;
   const styles = await build({
+    conditions: ["style"],
     entryPoints: [join(root, "apps/pool/ui/style.css")],
     bundle: true,
     write: false,
@@ -93,7 +94,7 @@ createRoot(document.getElementById('root')).render(<History changes={pool.change
   const stylesheet =
     "@font-face{font-family:Geist;src:url(/font.woff2);font-weight:100 900}" +
     (await compile(styles.outputFiles[0].text)).build(candidates);
-  const backend = await historyBackend();
+  const backend = await historyBackend({ initialRequests, pageSize });
   const server = await chromium.launchServer({ headless: true }).catch(async (error) => {
     await backend.close();
     throw error;
@@ -108,7 +109,8 @@ createRoot(document.getElementById('root')).render(<History changes={pool.change
     waitFor: backend.waitFor,
     hold: backend.hold,
     release: backend.release,
-    async page(width) {
+    change: backend.change,
+    async page(width, { search = "" } = {}) {
       backend.reset();
       const context = await browser.newContext({
         viewport: { width, height: 1000 },
@@ -138,7 +140,7 @@ createRoot(document.getElementById('root')).render(<History changes={pool.change
         if (path === "/")
           return route.fulfill({
             contentType: "text/html",
-            body: '<!doctype html><iframe title="Pool" src="/history" style="width:100%;height:1000px;border:0"></iframe>',
+            body: `<!doctype html><iframe title="Pool" src="/history${search}" style="width:100%;height:1000px;border:0"></iframe>`,
           });
         if (path === "/history")
           return route.fulfill({
@@ -149,7 +151,7 @@ createRoot(document.getElementById('root')).render(<History changes={pool.change
       });
       await page.goto(backend.origin);
       const host = page;
-      const frame = page.frames().find((frame) => frame.url().endsWith("/history"));
+      const frame = page.frames().find((frame) => new URL(frame.url()).pathname === "/history");
       assert.ok(frame);
       const active = async (value) => {
         await host.evaluate((value) => {

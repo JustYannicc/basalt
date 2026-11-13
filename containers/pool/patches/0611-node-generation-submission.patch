@@ -1,0 +1,3061 @@
+diff --git a/internal/pluginhost/adapters_executors.go b/internal/pluginhost/adapters_executors.go
+index 48771f958d..1a202ee5ed 100644
+--- a/internal/pluginhost/adapters_executors.go
++++ b/internal/pluginhost/adapters_executors.go
+@@ -936,7 +936,7 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req
+ 		reporter.StartResponseTTFT()
+ 	}
+ 
+-	pluginResp, errExecute := a.executor.Execute(ctx, buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
++	pluginResp, errExecute := a.executor.Execute(withGenerationHTTP(ctx), buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
+ 	if errExecute != nil {
+ 		return coreexecutor.Response{}, errExecute
+ 	}
+@@ -994,7 +994,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
+ 		reporter.StartResponseTTFT()
+ 	}
+ 
+-	pluginResp, errExecuteStream := a.executor.ExecuteStream(ctx, buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
++	pluginResp, errExecuteStream := a.executor.ExecuteStream(withGenerationHTTP(ctx), buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
+ 	if errExecuteStream != nil {
+ 		return nil, errExecuteStream
+ 	}
+diff --git a/internal/pluginhost/host_callbacks.go b/internal/pluginhost/host_callbacks.go
+index 58dd95bfb0..c732d7496d 100644
+--- a/internal/pluginhost/host_callbacks.go
++++ b/internal/pluginhost/host_callbacks.go
+@@ -28,6 +28,7 @@ type rpcHostHTTPRequest struct {
+ 	Body           []byte                     `json:"body,omitempty"`
+ 	WireProfile    *pluginapi.HTTPWireProfile `json:"wire_profile,omitempty"`
+ 	Request        *httpRequest               `json:"request,omitempty"`
++	Auxiliary      bool                       `json:"auxiliary,omitempty"`
+ }
+ 
+ type httpHeader map[string][]string
+@@ -38,6 +39,7 @@ type httpRequest struct {
+ 	Headers     httpHeader                 `json:"headers,omitempty"`
+ 	Body        []byte                     `json:"body,omitempty"`
+ 	WireProfile *pluginapi.HTTPWireProfile `json:"wire_profile,omitempty"`
++	Auxiliary   bool                       `json:"auxiliary,omitempty"`
+ }
+ 
+ type rpcHostHTTPStreamResponse struct {
+@@ -362,6 +364,7 @@ func decodeHostHTTPRequestWithOperationID(raw []byte) (pluginapi.HTTPRequest, st
+ 			Headers:     map[string][]string(req.Request.Headers),
+ 			Body:        append([]byte(nil), req.Request.Body...),
+ 			WireProfile: cloneWireProfile(wireProfile),
++			Auxiliary:   req.Request.Auxiliary || req.Auxiliary,
+ 		}, req.HostCallbackID, strings.TrimSpace(req.OperationID), nil
+ 	}
+ 	return pluginapi.HTTPRequest{
+@@ -370,6 +373,7 @@ func decodeHostHTTPRequestWithOperationID(raw []byte) (pluginapi.HTTPRequest, st
+ 		Headers:     map[string][]string(req.Headers),
+ 		Body:        append([]byte(nil), req.Body...),
+ 		WireProfile: cloneWireProfile(req.WireProfile),
++		Auxiliary:   req.Auxiliary,
+ 	}, req.HostCallbackID, strings.TrimSpace(req.OperationID), nil
+ }
+ 
+diff --git a/internal/pluginhost/http_bridge.go b/internal/pluginhost/http_bridge.go
+index d5b8f906f5..574c82b8a6 100644
+--- a/internal/pluginhost/http_bridge.go
++++ b/internal/pluginhost/http_bridge.go
+@@ -21,12 +21,23 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+ 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
+ 	log "github.com/sirupsen/logrus"
+ 	"golang.org/x/net/proxy"
+ )
+ 
++type generationHTTPKey struct{}
++
++// The invocation role reaches RPC callbacks; refresh and catalog calls omit it.
++func withGenerationHTTP(ctx context.Context) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, generationHTTPKey{}, true)
++}
++
+ type hostHTTPClient struct {
+ 	host            *Host
+ 	auth            *coreauth.Auth
+@@ -167,6 +178,11 @@ func (c *hostHTTPClient) doHTTP(ctx context.Context, req pluginapi.HTTPRequest)
+ 		client = &http.Client{}
+ 	}
+ 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
++	if generation, _ := ctx.Value(generationHTTPKey{}).(bool); generation && !req.Auxiliary {
++		generationClient := *client
++		generationClient.Transport = httptransport.GenerationTransport(ctx, client.Transport)
++		client = &generationClient
++	}
+ 	resp, errDo := client.Do(httpReq)
+ 	if errDo != nil {
+ 		if cleanup != nil {
+diff --git a/internal/pluginhost/submission_boundary_test.go b/internal/pluginhost/submission_boundary_test.go
+new file mode 100644
+index 0000000000..7431c46e57
+--- /dev/null
++++ b/internal/pluginhost/submission_boundary_test.go
+@@ -0,0 +1,147 @@
++package pluginhost
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"sync/atomic"
++	"testing"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
++)
++
++func TestPluginSubmissionGenerationAndAuxiliaryBoundaries(t *testing.T) {
++	for _, profile := range []bool{false, true} {
++		for _, stream := range []bool{false, true} {
++			for _, auxiliary := range []bool{false, true} {
++				t.Run(fmt.Sprintf("profile=%t/stream=%t/auxiliary=%t", profile, stream, auxiliary), func(t *testing.T) {
++					var tokens, generations atomic.Int32
++					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++						_, _ = io.Copy(io.Discard, r.Body)
++						if r.URL.Path == "/token" {
++							tokens.Add(1)
++							_, _ = io.WriteString(w, `{"access_token":"synthetic"}`)
++							return
++						}
++						count := generations.Add(1)
++						if auxiliary && count == 1 {
++							w.WriteHeader(http.StatusTooManyRequests)
++							return
++						}
++						_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"safe-fallback"}}]}`)
++					}))
++					defer upstream.Close()
++					const provider = "plugin-submission-boundary"
++					const model = "plugin-submission-model"
++					record := normalizeTestCapabilityRecord(capabilityRecord{id: "plugin-submission-" + t.Name()})
++					host := newHostWithRecords(record)
++					exec := &fakeExecutor{identifier: provider, execute: func(ctx context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {
++						if auxiliary {
++							doc := ojson.NewDocString(`{}`)
++							prefix := ""
++							if profile {
++								prefix = "request."
++							}
++							if err := doc.Set(prefix+"method", http.MethodPost); err != nil {
++								return pluginapi.ExecutorResponse{}, err
++							}
++							if err := doc.Set(prefix+"auxiliary", true); err != nil {
++								return pluginapi.ExecutorResponse{}, err
++							}
++							if err := doc.Set(prefix+"url", upstream.URL+"/token"); err != nil {
++								return pluginapi.ExecutorResponse{}, err
++							}
++							tokenReq, errDecode := decodeHostHTTPRequest(doc.Bytes())
++							if errDecode != nil {
++								return pluginapi.ExecutorResponse{}, errDecode
++							}
++							if _, err := req.HTTPClient.Do(ctx, tokenReq); err != nil {
++								return pluginapi.ExecutorResponse{}, err
++							}
++						}
++						generation := pluginapi.HTTPRequest{Method: http.MethodPost, URL: upstream.URL + "/generate", Body: []byte(`{}`)}
++						if profile {
++							generation.WireProfile = &pluginapi.HTTPWireProfile{HTTP1Only: true}
++						}
++						var resp pluginapi.HTTPResponse
++						var err error
++						if stream {
++							var streamed pluginapi.HTTPStreamResponse
++							streamed, err = req.HTTPClient.DoStream(ctx, generation)
++							resp.StatusCode = streamed.StatusCode
++							if err == nil {
++								for chunk := range streamed.Chunks {
++									resp.Body = append(resp.Body, chunk.Payload...)
++									if chunk.Err != nil {
++										err = chunk.Err
++									}
++								}
++							}
++						} else {
++							resp, err = req.HTTPClient.Do(ctx, generation)
++						}
++						if err != nil {
++							return pluginapi.ExecutorResponse{}, err
++						}
++						if auxiliary && resp.StatusCode == 200 {
++							return pluginapi.ExecutorResponse{Payload: resp.Body}, nil
++						}
++						status := 503
++						if auxiliary {
++							status = resp.StatusCode
++						}
++						return pluginapi.ExecutorResponse{}, testHostStatusError{error: errors.New("synthetic plugin failure"), status: status}
++					}}
++					adapter := newExecutorAdapterForRecordForTest(host, record, exec, []sdktranslator.Format{sdktranslator.FormatOpenAI}, []sdktranslator.Format{sdktranslator.FormatOpenAI})
++					adapter.provider = provider
++					manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++					manager.SetRetryConfig(0, 0, 0)
++					manager.RegisterExecutor(adapter)
++					for _, suffix := range []string{"a", "b"} {
++						auth := &coreauth.Auth{ID: t.Name() + suffix, Provider: provider, Status: coreauth.StatusActive, ProxyURL: "direct"}
++						if _, err := manager.Register(context.Background(), auth); err != nil {
++							t.Fatal(err)
++						}
++						registry.GetGlobalRegistry().RegisterClient(auth.ID, provider, []*registry.ModelInfo{{ID: model}})
++						t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++					}
++					_, err := manager.Execute(context.Background(), []string{provider}, coreexecutor.Request{Model: model, Payload: []byte(`{"messages":[{"role":"user","content":"hello"}]}`)}, coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI})
++					t.Logf("token POSTs=%d generation POSTs=%d error=%v", tokens.Load(), generations.Load(), err)
++					if auxiliary {
++						if err != nil || tokens.Load() != 2 || generations.Load() != 2 {
++							t.Fatalf("auxiliary token prevented generation failover: %v", err)
++						}
++					} else if generations.Load() != 1 || !httptransport.IsOutcomeUnknown(err) {
++						t.Fatalf("plugin replayed an accepted local failure: %v", err)
++					}
++				})
++			}
++		}
++	}
++}
++
++func TestPluginSubmissionCredentialHTTPIsAuxiliaryByDefault(t *testing.T) {
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = io.Copy(io.Discard, r.Body)
++		_, _ = io.WriteString(w, `{"access_token":"synthetic"}`)
++	}))
++	defer server.Close()
++	ctx := httptransport.WithSubmissionTracking(context.Background())
++	_, err := New().newHTTPClient(nil).Do(ctx, pluginapi.HTTPRequest{Method: http.MethodPost, URL: server.URL})
++	if err != nil {
++		t.Fatal(err)
++	}
++	local := errors.New("model was not sent")
++	if httptransport.ClassifySubmissionError(ctx, local) != local {
++		t.Fatal("credential HTTP accepted a generation")
++	}
++}
+diff --git a/internal/runtime/executor/aistudio_executor.go b/internal/runtime/executor/aistudio_executor.go
+index 7acfd20b6a..d6f8d17f7a 100644
+--- a/internal/runtime/executor/aistudio_executor.go
++++ b/internal/runtime/executor/aistudio_executor.go
+@@ -189,7 +189,7 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
+ 		if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, body.replayScope, wsResp.Status, wsResp.Body); errClear != nil {
+ 			logAntigravityReasoningReplayDegraded(body.replayScope, "invalidate", errClear)
+ 		}
+-		return resp, statusErr{code: wsResp.Status, msg: string(wsResp.Body)}
++		return resp, statusErr{code: wsResp.Status, msg: string(wsResp.Body), providerErrorPayload: wsResp.Status >= 400 && wsResp.Status < 600}
+ 	}
+ 	if body.action != "countTokens" {
+ 		cacheAntigravityReasoningReplayFromResponse(ctx, body.replayScope, body.replayRequestPayload, wsResp.Body)
+@@ -300,7 +300,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
+ 			if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, body.replayScope, firstEvent.Status, errBody.Bytes()); errClear != nil {
+ 				logAntigravityReasoningReplayDegraded(body.replayScope, "invalidate", errClear)
+ 			}
+-			return nil, statusErr{code: firstEvent.Status, msg: errBody.String()}
++			return nil, statusErr{code: firstEvent.Status, msg: errBody.String(), providerErrorPayload: firstEvent.Status >= 400 && firstEvent.Status < 600}
+ 		}
+ 		for event := range wsStream {
+ 			if event.Err != nil {
+@@ -327,7 +327,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
+ 		if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, body.replayScope, firstEvent.Status, errBody.Bytes()); errClear != nil {
+ 			logAntigravityReasoningReplayDegraded(body.replayScope, "invalidate", errClear)
+ 		}
+-		return nil, statusErr{code: firstEvent.Status, msg: errBody.String()}
++		return nil, statusErr{code: firstEvent.Status, msg: errBody.String(), providerErrorPayload: firstEvent.Status >= 400 && firstEvent.Status < 600}
+ 	}
+ 	replayAccumulator := newAntigravityReasoningReplayAccumulator(body.replayScope, body.replayRequestPayload)
+ 	out := make(chan cliproxyexecutor.StreamChunk, 1)
+@@ -465,7 +465,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
+ 					if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, body.replayScope, event.Status, event.Payload); errClear != nil {
+ 						logAntigravityReasoningReplayDegraded(body.replayScope, "invalidate", errClear)
+ 					}
+-					errResponse := statusErr{code: event.Status, msg: string(event.Payload)}
++					errResponse := statusErr{code: event.Status, msg: string(event.Payload), providerErrorPayload: event.Status >= 400 && event.Status < 600}
+ 					helps.RecordAPIResponseError(ctx, e.cfg, errResponse)
+ 					reporter.PublishFailure(ctx, errResponse)
+ 					select {
+diff --git a/internal/runtime/executor/antigravity_executor_credits.go b/internal/runtime/executor/antigravity_executor_credits.go
+index 2e4e6230f6..a7122b6479 100644
+--- a/internal/runtime/executor/antigravity_executor_credits.go
++++ b/internal/runtime/executor/antigravity_executor_credits.go
+@@ -356,7 +356,7 @@ func antigravityHasExplicitCreditsBalanceExhaustedReason(body []byte) bool {
+ }
+ 
+ func newAntigravityStatusErr(statusCode int, body []byte) statusErr {
+-	err := statusErr{code: statusCode, msg: string(body)}
++	err := statusErr{code: statusCode, msg: string(body), providerErrorPayload: helps.IsProviderErrorPayload(body)}
+ 	if statusCode == http.StatusTooManyRequests {
+ 		if retryAfter, parseErr := helps.ParseRetryDelay(body); parseErr == nil && retryAfter != nil {
+ 			err.retryAfter = retryAfter
+diff --git a/internal/runtime/executor/antigravity_executor_execute.go b/internal/runtime/executor/antigravity_executor_execute.go
+index 7a55bc5555..d5bd8141db 100644
+--- a/internal/runtime/executor/antigravity_executor_execute.go
++++ b/internal/runtime/executor/antigravity_executor_execute.go
+@@ -464,7 +464,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
+ 		return resp, scanErr
+ 	}
+ 	if pendingFilterMsg != "" {
+-		filterErr := statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg}
++		filterErr := statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg, providerErrorPayload: true}
+ 		helps.RecordAPIResponseError(ctx, e.cfg, filterErr)
+ 		reporter.PublishFailure(ctx, filterErr)
+ 		return resp, filterErr
+diff --git a/internal/runtime/executor/antigravity_executor_stream.go b/internal/runtime/executor/antigravity_executor_stream.go
+index 835b3279b3..475356b576 100644
+--- a/internal/runtime/executor/antigravity_executor_stream.go
++++ b/internal/runtime/executor/antigravity_executor_stream.go
+@@ -391,7 +391,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
+ 			}
+ 		}
+ 		if pendingFilterMsg != "" && scanner.Err() == nil && !terminalDelivered {
+-			streamErr = statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg}
++			streamErr = statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg, providerErrorPayload: true}
+ 			stopDeliverySupport()
+ 			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+ 			select {
+diff --git a/internal/runtime/executor/claude_executor_diagnostics.go b/internal/runtime/executor/claude_executor_diagnostics.go
+index 47b05df8de..72a33f15a4 100644
+--- a/internal/runtime/executor/claude_executor_diagnostics.go
++++ b/internal/runtime/executor/claude_executor_diagnostics.go
+@@ -161,9 +161,9 @@ func observeClaudeSSEEvent(rawEvent []byte, messageID *string, completed *bool,
+ 	observeClaudeStreamJSONPayload(joined, true, messageID, completed)
+ 	if streamErr != nil && *streamErr == nil {
+ 		if util.ParseGJSONBytesNoCopy(joined).Get("type").String() == "error" {
+-			*streamErr = statusErr{code: 502, msg: string(joined)}
++			*streamErr = statusErr{code: 502, msg: string(joined), providerErrorPayload: helps.IsProviderErrorPayload(joined)}
+ 		} else if refusalMsg, blocked := clienterror.ClaudePolicyRefusalMessage(joined); blocked {
+-			*streamErr = statusErr{code: 400, msg: refusalMsg}
++			*streamErr = statusErr{code: 400, msg: refusalMsg, providerErrorPayload: true}
+ 		}
+ 	}
+ }
+diff --git a/internal/runtime/executor/claude_executor_execute.go b/internal/runtime/executor/claude_executor_execute.go
+index f0eb97c91e..d06d0fa77e 100644
+--- a/internal/runtime/executor/claude_executor_execute.go
++++ b/internal/runtime/executor/claude_executor_execute.go
+@@ -433,7 +433,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
+ 			return resp, wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errRestore)
+ 		}
+ 		if refusalMsg, blocked := clienterror.ClaudePolicyRefusalMessage(data); blocked {
+-			errRefusal := wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, statusErr{code: http.StatusBadRequest, msg: refusalMsg})
++			errRefusal := wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, statusErr{code: http.StatusBadRequest, msg: refusalMsg, providerErrorPayload: true})
+ 			helps.RecordAPIResponseError(ctx, e.cfg, errRefusal)
+ 			reporter.PublishFailureWithDetail(ctx, helps.ParseClaudeUsage(data), errRefusal)
+ 			return resp, errRefusal
+diff --git a/internal/runtime/executor/claude_executor_request.go b/internal/runtime/executor/claude_executor_request.go
+index 5a11869a7d..f172599244 100644
+--- a/internal/runtime/executor/claude_executor_request.go
++++ b/internal/runtime/executor/claude_executor_request.go
+@@ -891,7 +891,7 @@ func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header,
+ 	if statusCode == http.StatusTooManyRequests || (statusCode >= 400 && statusCode < 600) {
+ 		retryAfter = helps.ParseClaudeRateLimitResetForError(headers, body, time.Now())
+ 	}
+-	err := statusErr{code: statusCode, msg: string(body), retryAfter: retryAfter}
++	err := statusErr{code: statusCode, msg: string(body), retryAfter: retryAfter, providerErrorPayload: helps.IsProviderErrorPayload(body)}
+ 	if statusCode == http.StatusTooManyRequests {
+ 		if !modelLevelCooling && helps.ClaudeHeadersIndicateUnifiedRateLimitRejection(headers) {
+ 			return claudeRateLimitError{statusErr: err, credentialScoped: true}
+diff --git a/internal/runtime/executor/claude_executor_stream.go b/internal/runtime/executor/claude_executor_stream.go
+index bdffd8cbfb..b16f4f95c1 100644
+--- a/internal/runtime/executor/claude_executor_stream.go
++++ b/internal/runtime/executor/claude_executor_stream.go
+@@ -619,7 +619,7 @@ func validateClaudeStreamingResponse(data []byte) error {
+ 			if message == "" {
+ 				message = "unknown upstream error"
+ 			}
+-			return statusErr{code: http.StatusBadGateway, msg: "claude executor: upstream returned error event: " + message}
++			return statusErr{code: http.StatusBadGateway, msg: "claude executor: upstream returned error event: " + message, providerErrorPayload: helps.IsProviderErrorPayload(payload)}
+ 		case "message_start":
+ 			message := root.Get("message")
+ 			if strings.TrimSpace(message.Get("id").String()) == "" || strings.TrimSpace(message.Get("model").String()) == "" {
+diff --git a/internal/runtime/executor/codex_executor_stream.go b/internal/runtime/executor/codex_executor_stream.go
+index 3223e020a1..d071d5f392 100644
+--- a/internal/runtime/executor/codex_executor_stream.go
++++ b/internal/runtime/executor/codex_executor_stream.go
+@@ -291,7 +291,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
+ 							// transparently retry on another credential, and report the status the
+ 							// upstream refused to put on the wire.
+ 							helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d buffered lines, failing over", bufferedFrames)
+-							return nil, newCodexBootstrapOverloadErr(terminalBody)
++							return nil, newCodexBootstrapOverloadErr(terminalBody, streamErr)
+ 						}
+ 						helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d lines / %v, time budget exhausted; delivering in-stream", bufferedFrames, timeSinceStart)
+ 					}
+diff --git a/internal/runtime/executor/codex_executor_terminal.go b/internal/runtime/executor/codex_executor_terminal.go
+index 6e513dd646..9bb1b4f6ff 100644
+--- a/internal/runtime/executor/codex_executor_terminal.go
++++ b/internal/runtime/executor/codex_executor_terminal.go
+@@ -161,7 +161,9 @@ func codexTerminalStreamErrWithCooling(eventData []byte, modelLevelCooling bool)
+ 	if !ok || !codexTerminalStreamErrShouldHandle(body) {
+ 		return statusErr{}, nil, false
+ 	}
+-	return newCodexStatusErrWithCooling(http.StatusBadRequest, body, modelLevelCooling), body, true
++	err := newCodexStatusErrWithCooling(http.StatusBadRequest, body, modelLevelCooling)
++	err.providerErrorPayload = helps.IsProviderErrorPayload(eventData)
++	return err, body, true
+ }
+ 
+ func codexTerminalFailureErr(eventData []byte) (statusErr, []byte, bool) {
+@@ -176,7 +178,9 @@ func codexTerminalFailureErrWithCooling(eventData []byte, modelLevelCooling bool
+ 	if !ok {
+ 		return statusErr{}, nil, false
+ 	}
+-	return newCodexStatusErrWithCooling(codexTerminalFailureStatus(body), body, modelLevelCooling), body, true
++	err := newCodexStatusErrWithCooling(codexTerminalFailureStatus(body), body, modelLevelCooling)
++	err.providerErrorPayload = helps.IsProviderErrorPayload(eventData)
++	return err, body, true
+ }
+ 
+ func codexTerminalFailureStatus(body []byte) int {
+@@ -334,6 +338,7 @@ func newCodexStatusErrWithCooling(statusCode int, body []byte, modelLevelCooling
+ }
+ 
+ func newCodexStatusErrWithHeadersAndCooling(statusCode int, headers http.Header, body []byte, modelLevelCooling bool) statusErr {
++	providerErrorPayload := helps.IsProviderErrorPayload(body)
+ 	errCode := statusCode
+ 	isUsageLimit := isCodexUsageLimitError(body)
+ 	credentialScoped := isUsageLimit && !modelLevelCooling
+@@ -342,7 +347,7 @@ func newCodexStatusErrWithHeadersAndCooling(statusCode int, headers http.Header,
+ 		errCode = http.StatusTooManyRequests
+ 	}
+ 	body = classifyCodexStatusError(errCode, body)
+-	err := statusErr{code: errCode, msg: string(body), credentialScoped: credentialScoped, transientRateLimit: transientCapacity && errCode == http.StatusTooManyRequests}
++	err := statusErr{code: errCode, msg: string(body), providerErrorPayload: providerErrorPayload, credentialScoped: credentialScoped, transientRateLimit: transientCapacity && errCode == http.StatusTooManyRequests}
+ 	// A usage_limit_reached body reset describes quota recovery and wins over
+ 	// the generic Retry-After header. Every other 429 honours the upstream
+ 	// header so per-turn admission limits cool until their real deadline.
+@@ -720,8 +725,11 @@ func observeCodexTokenEvent(reporter *helps.UsageReporter, payload []byte) {
+ // is shared with the unbuffered path, where the rejection is delivered in-stream and a status
+ // change would alter cooldown classification and retry-after parsing for everyone. Keeping 503
+ // scoped to this path means disabling the feature restores the previous behaviour exactly.
+-func newCodexBootstrapOverloadErr(body []byte) statusErr {
+-	return newCodexStatusErr(http.StatusServiceUnavailable, body)
++func newCodexBootstrapOverloadErr(body []byte, source statusErr) statusErr {
++	err := newCodexStatusErr(http.StatusServiceUnavailable, body)
++	// The body may be a normalized fallback; only the original event grants replay.
++	err.providerErrorPayload = source.providerErrorPayload
++	return err
+ }
+ 
+ // isCodexOverloadBootstrapFailure reports whether a terminal failure delivered inside an HTTP 200
+diff --git a/internal/runtime/executor/codex_websockets_connection.go b/internal/runtime/executor/codex_websockets_connection.go
+index 05d22e9b05..ec6be337d3 100644
+--- a/internal/runtime/executor/codex_websockets_connection.go
++++ b/internal/runtime/executor/codex_websockets_connection.go
+@@ -20,6 +20,7 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
+ 	log "github.com/sirupsen/logrus"
+ 	"golang.org/x/net/proxy"
+@@ -56,7 +57,7 @@ func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *
+ 	return conn, closer, resp, err
+ }
+ 
+-func writeWebsocketPayloadMessage(provider string, sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) error {
++func writeWebsocketPayloadMessage(ctx context.Context, provider string, sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) error {
+ 	provider = strings.TrimSpace(provider)
+ 	if provider == "" {
+ 		provider = "codex"
+@@ -69,14 +70,31 @@ func writeWebsocketPayloadMessage(provider string, sess *codexWebsocketSession,
+ 	payloadBytes := len(payload)
+ 	start := time.Now()
+ 	log.Debugf("%s websockets: write payload started session=%s session_object=%s bytes=%d", provider, sessionID, sessionKind, payloadBytes)
+-	var errSend error
++	if conn == nil {
++		return fmt.Errorf("%s websockets executor: websocket conn is nil", provider)
++	}
+ 	if sess != nil {
+-		errSend = sess.writeMessage(conn, websocket.TextMessage, payload)
+-	} else if conn == nil {
+-		errSend = fmt.Errorf("%s websockets executor: websocket conn is nil", provider)
+-	} else {
+-		errSend = conn.WriteMessage(websocket.TextMessage, payload)
++		sess.connMu.Lock()
++		current := sess.conn == conn
++		sess.connMu.Unlock()
++		if !current {
++			return fmt.Errorf("%s websockets executor: connection was replaced before write: %w", provider, net.ErrClosed)
++		}
++	}
++	write := func() error {
++		if sess != nil {
++			return sess.writeMessage(conn, websocket.TextMessage, payload)
++		}
++		return conn.WriteMessage(websocket.TextMessage, payload)
++	}
++	var errSend error
++	switch ojson.GetBytesNoCopy(payload, "type").String() {
++	case "response.create", "response.append":
++		errSend = httptransport.WriteGeneration(ctx, write)
++	default:
++		errSend = write()
+ 	}
++
+ 	if errSend != nil {
+ 		log.Warnf("%s websockets: write payload failed session=%s session_object=%s bytes=%d duration=%v err=%v", provider, sessionID, sessionKind, payloadBytes, time.Since(start), errSend)
+ 	} else {
+@@ -85,12 +103,12 @@ func writeWebsocketPayloadMessage(provider string, sess *codexWebsocketSession,
+ 	return errSend
+ }
+ 
+-func writeCodexWebsocketMessage(sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) error {
+-	return writeWebsocketPayloadMessage("codex", sess, conn, payload)
++func writeCodexWebsocketMessage(ctx context.Context, sess *codexWebsocketSession, conn *websocket.Conn, payload []byte) error {
++	return writeWebsocketPayloadMessage(ctx, "codex", sess, conn, payload)
+ }
+ 
+ func mapCodexWebsocketWriteError(sess *codexWebsocketSession, conn *websocket.Conn, err error) error {
+-	if err == nil || sess == nil || conn == nil {
++	if err == nil || httptransport.IsOutcomeUnknown(err) || sess == nil || conn == nil {
+ 		return err
+ 	}
+ 	upstreamErr := sess.upstreamDisconnectError(conn)
+@@ -138,6 +156,9 @@ func codexWebsocketTurnTransportError(err error) error {
+ 	if err == nil || cliproxyexecutor.IsUpstreamWebsocketTurnError(err) {
+ 		return err
+ 	}
++	if httptransport.IsOutcomeUnknown(err) {
++		return &cliproxyexecutor.UpstreamWebsocketTurnError{Cause: err}
++	}
+ 	var status interface{ StatusCode() int }
+ 	if errors.As(err, &status) && status.StatusCode() != 0 {
+ 		return err
+diff --git a/internal/runtime/executor/codex_websockets_duplex.go b/internal/runtime/executor/codex_websockets_duplex.go
+index 29cd1569f2..f719403343 100644
+--- a/internal/runtime/executor/codex_websockets_duplex.go
++++ b/internal/runtime/executor/codex_websockets_duplex.go
+@@ -638,7 +638,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 			helps.RecordAPIWebsocketRequest(streamCtx, e.cfg, helps.UpstreamRequestLog{
+ 				URL: initial.wsURL, Method: "WEBSOCKET", Body: payload, Provider: e.Identifier(), AuthID: auth.ID,
+ 			})
+-			if errWrite := writeCodexWebsocketMessage(sess, conn, payload); errWrite != nil {
++			if errWrite := writeCodexWebsocketMessage(streamCtx, sess, conn, payload); errWrite != nil {
+ 				fail(mapCodexWebsocketWriteError(sess, conn, errWrite))
+ 				return false
+ 			}
+@@ -770,7 +770,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 					helps.RecordAPIWebsocketRequest(streamCtx, e.cfg, helps.UpstreamRequestLog{
+ 						URL: initial.wsURL, Method: "WEBSOCKET", Body: payload, Provider: e.Identifier(), AuthID: auth.ID,
+ 					})
+-					if errWrite := writeCodexWebsocketMessage(sess, conn, payload); errWrite != nil {
++					if errWrite := writeCodexWebsocketMessage(streamCtx, sess, conn, payload); errWrite != nil {
+ 						fail(mapCodexWebsocketWriteError(sess, conn, errWrite))
+ 						return
+ 					}
+diff --git a/internal/runtime/executor/codex_websockets_errors.go b/internal/runtime/executor/codex_websockets_errors.go
+index 0e30d98080..3f2541d00a 100644
+--- a/internal/runtime/executor/codex_websockets_errors.go
++++ b/internal/runtime/executor/codex_websockets_errors.go
+@@ -49,10 +49,11 @@ func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool)
+ 	isUsageLimit := isCodexUsageLimitError(out)
+ 	transientCapacity := !isUsageLimit && isCodexTransientCapacityError(out)
+ 	statusError := statusErr{
+-		code:               status,
+-		msg:                string(out),
+-		credentialScoped:   isUsageLimit && !modelLevelCooling,
+-		transientRateLimit: transientCapacity && status == http.StatusTooManyRequests,
++		code:                 status,
++		providerErrorPayload: helps.IsProviderErrorPayload(payload),
++		msg:                  string(out),
++		credentialScoped:     isUsageLimit && !modelLevelCooling,
++		transientRateLimit:   transientCapacity && status == http.StatusTooManyRequests,
+ 	}
+ 	// Hint precedence: the quota body reset wins, then the connection-limit
+ 	// immediate-retry contract, then the generic Retry-After header.
+diff --git a/internal/runtime/executor/codex_websockets_execute.go b/internal/runtime/executor/codex_websockets_execute.go
+index e1b44ebbcd..07adbd22d7 100644
+--- a/internal/runtime/executor/codex_websockets_execute.go
++++ b/internal/runtime/executor/codex_websockets_execute.go
+@@ -236,7 +236,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
+ 	restoreMultiAgentV2 := !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(conn))
+ 
+ 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
+-	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
++	if errSend := writeCodexWebsocketMessage(ctx, sess, conn, wsReqBody); errSend != nil {
+ 		errSend = mapCodexWebsocketWriteError(sess, conn, errSend)
+ 		if sess != nil && !isEphemeralSession {
+ 			if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
+@@ -284,7 +284,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
+ 				recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
+ 				reporter.StartResponseTTFT()
+ 				cliproxyexecutor.MarkUpstreamAttempt(ctx)
+-				if errSendRetry := writeCodexWebsocketMessage(sess, conn, wsReqBodyRetry); errSendRetry == nil {
++				if errSendRetry := writeCodexWebsocketMessage(ctx, sess, conn, wsReqBodyRetry); errSendRetry == nil {
+ 					wsReqBody = wsReqBodyRetry
+ 				} else {
+ 					errSendRetry = mapCodexWebsocketWriteError(sess, connRetry, errSendRetry)
+diff --git a/internal/runtime/executor/codex_websockets_executor.go b/internal/runtime/executor/codex_websockets_executor.go
+index 199bb2d8f7..befd252d36 100644
+--- a/internal/runtime/executor/codex_websockets_executor.go
++++ b/internal/runtime/executor/codex_websockets_executor.go
+@@ -270,7 +270,7 @@ func (e *CodexWebsocketsExecutor) InterruptExecutionSession(ctx context.Context,
+ 	if !authEnabled {
+ 		return fmt.Errorf("websocket credential is no longer enabled")
+ 	}
+-	if errWrite := writeCodexWebsocketMessage(sess, conn, payload); errWrite != nil {
++	if errWrite := writeCodexWebsocketMessage(ctx, sess, conn, payload); errWrite != nil {
+ 		return errWrite
+ 	}
+ 	log.WithField("outcome", "forwarded").Debug("codex websockets: response.interrupt handled")
+diff --git a/internal/runtime/executor/codex_websockets_executor_test.go b/internal/runtime/executor/codex_websockets_executor_test.go
+index 4d9d28fa73..a876d292ab 100644
+--- a/internal/runtime/executor/codex_websockets_executor_test.go
++++ b/internal/runtime/executor/codex_websockets_executor_test.go
+@@ -25,6 +25,7 @@ import (
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+ 	log "github.com/sirupsen/logrus"
+ )
+@@ -3349,7 +3350,7 @@ func TestCodexWebsockets_SendErrorLogsSessionObject(t *testing.T) {
+ 	}
+ }
+ 
+-func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *testing.T) {
++func TestCodexWebsocketWriteFailureRecordedWithoutReconnectWhenRequestLogDisabled(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+ 
+@@ -3366,7 +3367,11 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+ 					if errUpgrade != nil {
+ 						return
+ 					}
+-					defer func() { _ = conn.Close() }()
++					defer func() {
++						if errClose := conn.Close(); errClose != nil {
++							t.Logf("close synthetic websocket: %v", errClose)
++						}
++					}()
+ 					for {
+ 						if _, _, errRead := conn.ReadMessage(); errRead != nil {
+ 							return
+@@ -3417,8 +3422,8 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+ 			} else {
+ 				_, errExec = exec.Execute(ctx, auth, req, opts)
+ 			}
+-			if errExec == nil {
+-				t.Fatal("expected reconnect upgrade rejection to fail")
++			if !httptransport.IsOutcomeUnknown(errExec) {
++				t.Fatal("expected terminal unknown outcome after failed generation write")
+ 			}
+ 
+ 			value, exists := ginCtx.Get(logging.DeferredAPIResponseContextKey)
+@@ -3434,17 +3439,17 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+ 				"=== API RESPONSE 1 ===",
+ 				"Status: 101",
+ 				"Error: send:",
+-				"=== API RESPONSE 2 ===",
+-				"Status: 403",
+-				"Retry-After: 11",
+-				`{"error":{"message":"codex websocket reconnect forbidden"}}`,
+-				"Error: dial_retry:",
++				"upstream_outcome_unknown",
+ 			} {
+ 				if !strings.Contains(rendered, want) {
+ 					t.Fatalf("deferred API response missing %q:\n%s", want, rendered)
+ 				}
+ 			}
+ 
++			if dials.Load() != 1 || writes.Load() != 1 {
++				t.Fatalf("ambiguous write retried: dials=%d writes=%d", dials.Load(), writes.Load())
++			}
++
+ 			var transportDials atomic.Int32
+ 			transportServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+ 				if transportDials.Add(1) == 1 {
+@@ -3452,7 +3457,11 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+ 					if errUpgrade != nil {
+ 						return
+ 					}
+-					defer func() { _ = conn.Close() }()
++					defer func() {
++						if errClose := conn.Close(); errClose != nil {
++							t.Logf("close synthetic websocket: %v", errClose)
++						}
++					}()
+ 					for {
+ 						if _, _, errRead := conn.ReadMessage(); errRead != nil {
+ 							return
+@@ -3486,8 +3495,8 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+ 			} else {
+ 				_, errExec = exec.Execute(subCtx, subAuth, req, subOpts)
+ 			}
+-			if errExec == nil {
+-				t.Fatal("expected transport reconnect failure")
++			if !httptransport.IsOutcomeUnknown(errExec) {
++				t.Fatal("expected terminal unknown outcome after transport write failure")
+ 			}
+ 			subVal, ok := subGinCtx.Get(logging.DeferredAPIResponseContextKey)
+ 			if !ok {
+@@ -3496,15 +3505,19 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+ 			subRendered := string(subVal.(logging.DeferredAPIResponse).RenderAPIResponse())
+ 			for _, want := range []string{
+ 				"=== API RESPONSE 1 ===",
++				"Status: 101",
+ 				"Error: send:",
+-				"=== API RESPONSE 2 ===",
+-				"Error: dial_retry:",
++				"upstream_outcome_unknown",
+ 			} {
+ 				if !strings.Contains(subRendered, want) {
+ 					t.Fatalf("transport reconnect response missing %q:\n%s", want, subRendered)
+ 				}
+ 			}
+ 
++			if transportDials.Load() != 1 || writes.Load() != 1 {
++				t.Fatalf("ambiguous transport write retried: dials=%d writes=%d", transportDials.Load(), writes.Load())
++			}
++
+ 			initServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+ 				hijacker, ok := w.(http.Hijacker)
+ 				if !ok {
+diff --git a/internal/runtime/executor/codex_websockets_stream.go b/internal/runtime/executor/codex_websockets_stream.go
+index e01dc786f6..edad91bcfa 100644
+--- a/internal/runtime/executor/codex_websockets_stream.go
++++ b/internal/runtime/executor/codex_websockets_stream.go
+@@ -205,7 +205,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
+ 		}
+ 	}
+ 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
+-	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
++	if errSend := writeCodexWebsocketMessage(ctx, sess, conn, wsReqBody); errSend != nil {
+ 		errSend = mapCodexWebsocketWriteError(sess, conn, errSend)
+ 		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
+ 		if sess != nil && !isEphemeralSession && cliproxyexecutor.DownstreamWebsocket(ctx) {
+@@ -272,7 +272,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
+ 			recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
+ 			reporter.StartResponseTTFT()
+ 			cliproxyexecutor.MarkUpstreamAttempt(ctx)
+-			if errSendRetry := writeCodexWebsocketMessage(sess, conn, wsReqBodyRetry); errSendRetry != nil {
++			if errSendRetry := writeCodexWebsocketMessage(ctx, sess, conn, wsReqBodyRetry); errSendRetry != nil {
+ 				errSendRetry = mapCodexWebsocketWriteError(sess, conn, errSendRetry)
+ 				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
+ 				e.invalidateUpstreamConn(sess, conn, "send_error", errSendRetry)
+@@ -499,7 +499,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
+ 					// status the upstream refused to put on the wire.
+ 					helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap overload rejection after %d messages read, failing over", bufferedFrames)
+ 					if overloadFailover {
+-						return nil, newCodexBootstrapOverloadErr(terminalBody)
++						return nil, newCodexBootstrapOverloadErr(terminalBody, streamErr)
+ 					}
+ 					return nil, streamErr
+ 				}
+diff --git a/internal/runtime/executor/devin_executor.go b/internal/runtime/executor/devin_executor.go
+index 9726f35228..8345f6aab0 100644
+--- a/internal/runtime/executor/devin_executor.go
++++ b/internal/runtime/executor/devin_executor.go
+@@ -3084,7 +3084,7 @@ func newDevinStatusError(code int, headers http.Header, body []byte) statusErr {
+ // (non-trailer) upstream failure. Daily/weekly quota exhaustion becomes
+ // credential-scoped and, when auth is known, retries at the observed reset.
+ func newDevinStatusErrorForAuth(code int, headers http.Header, body []byte, auth *cliproxyauth.Auth) statusErr {
+-	err := statusErr{code: code, msg: string(body)}
++	err := statusErr{code: code, msg: string(body), providerErrorPayload: helps.IsProviderErrorPayload(body)}
+ 	if code == http.StatusTooManyRequests && headers != nil {
+ 		if raw := strings.TrimSpace(headers.Get("Retry-After")); raw != "" {
+ 			if seconds, errParse := strconv.ParseInt(raw, 10, 64); errParse == nil && seconds >= 0 {
+diff --git a/internal/runtime/executor/gemini_executor.go b/internal/runtime/executor/gemini_executor.go
+index 8c57616bc3..3922dadc10 100644
+--- a/internal/runtime/executor/gemini_executor.go
++++ b/internal/runtime/executor/gemini_executor.go
+@@ -264,7 +264,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
+ 	}
+ 	reporter.ObserveResponseModel(data)
+ 	if blockMsg, blocked := geminiPromptBlockErrorMessage(data); blocked {
+-		err = statusErr{code: http.StatusBadGateway, msg: blockMsg}
++		err = statusErr{code: http.StatusBadGateway, msg: blockMsg, providerErrorPayload: true}
+ 		helps.RecordAPIResponseError(ctx, e.cfg, err)
+ 		reporter.PublishFailureWithDetail(ctx, helps.ParseGeminiUsage(data), err)
+ 		return cliproxyexecutor.Response{}, err
+@@ -490,7 +490,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+ 			}
+ 			streamUsage.ObserveGeminiStream(rawPayload)
+ 			if blockMsg, blocked := geminiPromptBlockErrorMessage(rawPayload); blocked {
+-				blockErr := statusErr{code: http.StatusBadGateway, msg: blockMsg}
++				blockErr := statusErr{code: http.StatusBadGateway, msg: blockMsg, providerErrorPayload: true}
+ 				helps.RecordAPIResponseError(ctx, e.cfg, blockErr)
+ 				if !streamUsage.PublishFailure(ctx, reporter, blockErr) {
+ 					reporter.PublishFailure(ctx, blockErr)
+@@ -516,7 +516,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+ 			}
+ 		}
+ 		if pendingFilterMsg != "" && scanner.Err() == nil && !sawFinishReason {
+-			filterErr := statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg}
++			filterErr := statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg, providerErrorPayload: true}
+ 			helps.RecordAPIResponseError(ctx, e.cfg, filterErr)
+ 			if !streamUsage.PublishFailure(ctx, reporter, filterErr) {
+ 				reporter.PublishFailure(ctx, filterErr)
+@@ -594,7 +594,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+ }
+ 
+ func geminiPromptBlockErrorMessage(payload []byte) (string, bool) {
+-	if len(payload) == 0 {
++	if !ojson.ValidBytes(payload) {
+ 		return "", false
+ 	}
+ 	for _, cPath := range []string{"candidates", "response.candidates"} {
+diff --git a/internal/runtime/executor/gemini_vertex_executor.go b/internal/runtime/executor/gemini_vertex_executor.go
+index ff87112937..df555c5949 100644
+--- a/internal/runtime/executor/gemini_vertex_executor.go
++++ b/internal/runtime/executor/gemini_vertex_executor.go
+@@ -572,7 +572,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
+ 	}
+ 
+ 	if blockMsg, blocked := geminiPromptBlockErrorMessage(data); blocked {
+-		err = statusErr{code: http.StatusBadGateway, msg: blockMsg}
++		err = statusErr{code: http.StatusBadGateway, msg: blockMsg, providerErrorPayload: true}
+ 		helps.RecordAPIResponseError(ctx, e.cfg, err)
+ 		reporter.PublishFailureWithDetail(ctx, helps.ParseGeminiUsage(data), err)
+ 		return cliproxyexecutor.Response{}, err
+@@ -739,7 +739,7 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
+ 	}
+ 	reporter.ObserveResponseModel(data)
+ 	if blockMsg, blocked := geminiPromptBlockErrorMessage(data); blocked {
+-		err = statusErr{code: http.StatusBadGateway, msg: blockMsg}
++		err = statusErr{code: http.StatusBadGateway, msg: blockMsg, providerErrorPayload: true}
+ 		helps.RecordAPIResponseError(ctx, e.cfg, err)
+ 		reporter.PublishFailureWithDetail(ctx, helps.ParseGeminiUsage(data), err)
+ 		return cliproxyexecutor.Response{}, err
+@@ -960,7 +960,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
+ 			}
+ 			streamUsage.ObserveGeminiStream(line)
+ 			if blockMsg, blocked := geminiPromptBlockErrorMessage(rawPayload); blocked {
+-				blockErr := statusErr{code: http.StatusBadGateway, msg: blockMsg}
++				blockErr := statusErr{code: http.StatusBadGateway, msg: blockMsg, providerErrorPayload: true}
+ 				helps.RecordAPIResponseError(ctx, e.cfg, blockErr)
+ 				if !streamUsage.PublishFailure(ctx, reporter, blockErr) {
+ 					reporter.PublishFailure(ctx, blockErr)
+@@ -981,7 +981,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
+ 			}
+ 		}
+ 		if pendingFilterMsg != "" && scanner.Err() == nil && !sawFinishReason {
+-			filterErr := statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg}
++			filterErr := statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg, providerErrorPayload: true}
+ 			helps.RecordAPIResponseError(ctx, e.cfg, filterErr)
+ 			if !streamUsage.PublishFailure(ctx, reporter, filterErr) {
+ 				reporter.PublishFailure(ctx, filterErr)
+@@ -1248,7 +1248,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
+ 			}
+ 			streamUsage.ObserveGeminiStream(line)
+ 			if blockMsg, blocked := geminiPromptBlockErrorMessage(rawPayload); blocked {
+-				blockErr := statusErr{code: http.StatusBadGateway, msg: blockMsg}
++				blockErr := statusErr{code: http.StatusBadGateway, msg: blockMsg, providerErrorPayload: true}
+ 				helps.RecordAPIResponseError(ctx, e.cfg, blockErr)
+ 				if !streamUsage.PublishFailure(ctx, reporter, blockErr) {
+ 					reporter.PublishFailure(ctx, blockErr)
+@@ -1269,7 +1269,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
+ 			}
+ 		}
+ 		if pendingFilterMsg != "" && scanner.Err() == nil && !sawFinishReason {
+-			filterErr := statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg}
++			filterErr := statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg, providerErrorPayload: true}
+ 			helps.RecordAPIResponseError(ctx, e.cfg, filterErr)
+ 			if !streamUsage.PublishFailure(ctx, reporter, filterErr) {
+ 				reporter.PublishFailure(ctx, filterErr)
+diff --git a/internal/runtime/executor/gemini_vertex_submission_token_test.go b/internal/runtime/executor/gemini_vertex_submission_token_test.go
+new file mode 100644
+index 0000000000..e8a9457d40
+--- /dev/null
++++ b/internal/runtime/executor/gemini_vertex_submission_token_test.go
+@@ -0,0 +1,96 @@
++package executor
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"sync/atomic"
++	"testing"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
++)
++
++type vertexSubmissionRoute struct {
++	next     http.RoundTripper
++	target   *url.URL
++	prewrite *atomic.Bool
++}
++
++func (r vertexSubmissionRoute) RoundTrip(req *http.Request) (*http.Response, error) {
++	if r.prewrite != nil && req.URL.Path != "/token" && r.prewrite.CompareAndSwap(false, true) {
++		return nil, errors.New("synthetic failure before model write")
++	}
++	clone := req.Clone(req.Context())
++	clone.URL.Scheme = r.target.Scheme
++	clone.URL.Host = r.target.Host
++	return r.next.RoundTrip(clone)
++}
++
++func TestVertexSubmissionTokenSuccessDoesNotBlockModelFailover(t *testing.T) {
++	for _, refusal := range []int{429, 503, 0} {
++		t.Run(fmt.Sprint(refusal), func(t *testing.T) {
++			var tokens, generations atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				w.Header().Set("Content-Type", "application/json")
++				if r.URL.Path == "/token" {
++					tokens.Add(1)
++					_, _ = io.WriteString(w, `{"access_token":"synthetic","token_type":"Bearer","expires_in":3600}`)
++					return
++				}
++				if generations.Add(1) == 1 && refusal != 0 {
++					w.WriteHeader(refusal)
++					_, _ = io.WriteString(w, `{"error":{"code":429,"message":"provider rejected generation"}}`)
++					return
++				}
++				_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"safe-fallback"}]},"finishReason":"STOP"}]}`)
++			}))
++			defer upstream.Close()
++			sa := map[string]any{}
++			for k, v := range ojson.ParseBytes(testVertexServiceAccountJSON(t, upstream.URL+"/token")).Map() {
++				sa[k] = v.String()
++			}
++			manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++			manager.SetRetryConfig(0, 0, 0)
++			manager.RegisterExecutor(NewGeminiVertexExecutor(&config.Config{}))
++			const model = "gemini-2.5-flash"
++			for _, suffix := range []string{"a", "b"} {
++				auth := &coreauth.Auth{ID: t.Name() + suffix, Provider: "vertex", Status: coreauth.StatusActive, ProxyURL: "direct", Metadata: map[string]any{"project_id": "synthetic", "service_account": sa}}
++				if _, err := manager.Register(context.Background(), auth); err != nil {
++					t.Fatal(err)
++				}
++				registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
++				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++			}
++			target, _ := url.Parse(upstream.URL)
++			var prewrite atomic.Bool
++			ctx := httptransport.WithDecorator(context.Background(), func(next http.RoundTripper) http.RoundTripper {
++				var failure *atomic.Bool
++				if refusal == 0 {
++					failure = &prewrite
++				}
++				return vertexSubmissionRoute{next, target, failure}
++			})
++			resp, err := manager.Execute(ctx, []string{"vertex"}, coreexecutor.Request{Model: model, Payload: []byte(`{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hello"}]}`)}, coreexecutor.Options{SourceFormat: translator.FormatOpenAI})
++			t.Logf("token POSTs=%d generation POSTs=%d error=%v", tokens.Load(), generations.Load(), err)
++			wantGenerations := int32(2)
++			if refusal == 0 {
++				wantGenerations = 1
++			}
++			if err != nil || generations.Load() != wantGenerations || tokens.Load() != 2 {
++				t.Fatalf("token success suppressed safe model failover: %v payload=%s", err, resp.Payload)
++			}
++		})
++	}
++}
+diff --git a/internal/runtime/executor/helps/provider_error.go b/internal/runtime/executor/helps/provider_error.go
+new file mode 100644
+index 0000000000..f4909a1572
+--- /dev/null
++++ b/internal/runtime/executor/helps/provider_error.go
+@@ -0,0 +1,51 @@
++package helps
++
++import (
++	"strings"
++
++	"github.com/MoeForge/moego/ojson"
++)
++
++// IsProviderErrorPayload is used only on upstream bytes, before translation.
++// Locally generated error envelopes cannot establish a provider refusal.
++func IsProviderErrorPayload(payload []byte) bool {
++	return IsProviderErrorEventPayload("", payload)
++}
++
++// IsProviderErrorEventPayload accepts supported top-level details only within
++// an explicit provider error event, never from a generated fallback envelope.
++func IsProviderErrorEventPayload(eventName string, payload []byte) bool {
++	if !ojson.ValidBytes(payload) {
++		return false
++	}
++	for _, path := range []string{"error", "response.error", "body.error"} {
++		err := ojson.GetBytesNoCopy(payload, path)
++		if err.Type == ojson.String && strings.TrimSpace(err.String()) != "" {
++			return true
++		}
++		if !err.IsObject() {
++			continue
++		}
++		for _, field := range []string{"message", "type", "code", "status"} {
++			if value := err.Get(field); value.Type == ojson.String && strings.TrimSpace(value.String()) != "" ||
++				(field == "code" || field == "status") && value.Type == ojson.Number {
++				return true
++			}
++		}
++	}
++	for _, event := range []string{eventName, ojson.GetBytesNoCopy(payload, "type").String()} {
++		switch strings.ToLower(strings.TrimSpace(event)) {
++		case "error", "response.error", "response.failed":
++			for _, field := range []string{"message", "code", "error_type"} {
++				value := ojson.GetBytesNoCopy(payload, field)
++				if value.Type == ojson.String && strings.TrimSpace(value.String()) != "" || field == "code" && value.Type == ojson.Number {
++					return true
++				}
++			}
++		}
++	}
++	code := ojson.GetBytesNoCopy(payload, "code")
++	message := ojson.GetBytesNoCopy(payload, "message")
++	return (code.Type == ojson.Number || code.Type == ojson.String && strings.TrimSpace(code.String()) != "") &&
++		message.Type == ojson.String && strings.TrimSpace(message.String()) != ""
++}
+diff --git a/internal/runtime/executor/helps/provider_error_test.go b/internal/runtime/executor/helps/provider_error_test.go
+new file mode 100644
+index 0000000000..2d620fa7aa
+--- /dev/null
++++ b/internal/runtime/executor/helps/provider_error_test.go
+@@ -0,0 +1,44 @@
++package helps
++
++import "testing"
++
++func TestProviderErrorPayloadRequiresParsedErrorDetails(t *testing.T) {
++	for _, tc := range []struct {
++		payload string
++		want    bool
++	}{
++		{`{"error":{"message":"overloaded"}}`, true},
++		{`{"type":"error","error":{"type":"overloaded_error"}}`, true},
++		{`{"error":{"code":503,"status":"UNAVAILABLE"}}`, true},
++		{`{"response":{"error":{"code":"capacity"}}}`, true},
++		{`{"code":503,"message":"unavailable"}`, true},
++		{`{"error":"refused"}`, true},
++		{`{"type":"error","message":"provider overloaded"}`, true},
++		{`{"type":"error","code":"overloaded"}`, true},
++		{`{"type":"error","error_type":"overloaded"}`, true},
++		{`{"message":"ordinary content"}`, false},
++		{`{"error":{"message":"truncated"}`, false},
++		{`{"type":"error"}`, false},
++		{`{"error":{}}`, false},
++		{`{"error":{"message":42,"type":7}}`, false},
++		{`{"code":"","message":"unclassified"}`, false},
++		{`{"error":{"code":{},"message":[]}}`, false},
++		{`{"code":{},"message":"bad"}`, false},
++		{`{"candidates":[{"finishReason":"STOP"}]}`, false},
++		{`Invalid apply_patch tool arguments received from upstream.`, false},
++	} {
++		if got := IsProviderErrorPayload([]byte(tc.payload)); got != tc.want {
++			t.Errorf("payload=%s providerError=%t, want %t", tc.payload, got, tc.want)
++		}
++	}
++}
++
++func TestProviderErrorEventContextIsRequiredForBareDetails(t *testing.T) {
++	payload := []byte(`{"message":"provider overloaded"}`)
++	if !IsProviderErrorEventPayload("error", payload) || IsProviderErrorEventPayload("message", payload) {
++		t.Fatal("top-level message lost its explicit provider event context")
++	}
++	if IsProviderErrorEventPayload("error", []byte(`{"message":"truncated"`)) {
++		t.Fatal("error event name granted replay to malformed JSON")
++	}
++}
+diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime/executor/helps/usage_helpers.go
+index 8a9faebdbf..64a2d7d642 100644
+--- a/internal/runtime/executor/helps/usage_helpers.go
++++ b/internal/runtime/executor/helps/usage_helpers.go
+@@ -27,6 +27,7 @@ import (
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	log "github.com/sirupsen/logrus"
+ )
+ 
+@@ -888,7 +889,7 @@ type usageTTFTRoundTripper struct {
+ func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+ 	cliproxyexecutor.MarkUpstreamAttempt(req.Context())
+ 	t.reporter.StartResponseTTFT()
+-	resp, errRoundTrip := t.base.RoundTrip(req)
++	resp, errRoundTrip := httptransport.GenerationTransport(req.Context(), t.base).RoundTrip(req)
+ 	if errRoundTrip != nil {
+ 		return resp, errRoundTrip
+ 	}
+diff --git a/internal/runtime/executor/meta_executor_execute.go b/internal/runtime/executor/meta_executor_execute.go
+index b08b534358..85ec6a2ee4 100644
+--- a/internal/runtime/executor/meta_executor_execute.go
++++ b/internal/runtime/executor/meta_executor_execute.go
+@@ -475,7 +475,7 @@ func isMetaSubscriptionUsageEvent(eventType string, eventData []byte) bool {
+ }
+ 
+ func wrapMetaUpstreamError(statusCode int, body []byte) error {
+-	se := statusErr{code: statusCode, msg: string(body)}
++	se := statusErr{code: statusCode, msg: string(body), providerErrorPayload: helps.IsProviderErrorPayload(body)}
+ 	if statusCode == http.StatusTooManyRequests {
+ 		if retryAfter := parseMetaRetryAfter(statusCode, body, time.Now()); retryAfter != nil {
+ 			se.retryAfter = retryAfter
+diff --git a/internal/runtime/executor/openai_compat_executor.go b/internal/runtime/executor/openai_compat_executor.go
+index f257f63099..edef7b8dfc 100644
+--- a/internal/runtime/executor/openai_compat_executor.go
++++ b/internal/runtime/executor/openai_compat_executor.go
+@@ -251,7 +251,7 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth
+ 	var param any
+ 	out := sdktranslator.TranslateNonStream(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, body, &param)
+ 	if helps.ApplyPatchTranslationError(param) != nil || len(out) == 0 {
+-		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
++		return cliproxyexecutor.Response{}, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage, streamTruncated: len(body) == 0}
+ 	}
+ 	reporter.Publish(ctx, helps.ParseOpenAIUsage(body))
+ 	if responseFormat == sdktranslator.FormatOpenAIResponse {
+@@ -615,7 +615,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
+ 				continue
+ 			}
+ 			if bytes.HasPrefix(trimmedLine, []byte("{")) || bytes.HasPrefix(trimmedLine, []byte("[")) {
+-				publishStreamError(statusErr{code: http.StatusBadGateway, msg: string(trimmedLine)}, true)
++				publishStreamError(statusErr{code: http.StatusBadGateway, msg: string(trimmedLine), providerErrorPayload: helps.IsProviderErrorPayload(trimmedLine)}, true)
+ 				break
+ 			}
+ 		}
+@@ -1272,16 +1272,17 @@ func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, b
+ 	if status < http.StatusBadRequest || status > 599 {
+ 		status = http.StatusBadGateway
+ 	}
+-	return statusErr{code: status, msg: string(payload)}, true
++	return statusErr{code: status, msg: string(payload), providerErrorPayload: helps.IsProviderErrorEventPayload(eventName, payload)}, true
+ }
+ 
+ type statusErr struct {
+-	code               int
+-	msg                string
+-	retryAfter         *time.Duration
+-	credentialScoped   bool
+-	streamTruncated    bool
+-	transientRateLimit bool
++	code                 int
++	msg                  string
++	retryAfter           *time.Duration
++	credentialScoped     bool
++	streamTruncated      bool
++	providerErrorPayload bool
++	transientRateLimit   bool
+ 	// diagnostic is a content-free detail for logs only; it never reaches clients.
+ 	diagnostic string
+ }
+@@ -1303,6 +1304,9 @@ func (e statusErr) LogDiagnostic() string { return e.diagnostic }
+ // upstream stream that ended without its terminal frame.
+ func (e statusErr) IsStreamTruncated() bool { return e.streamTruncated }
+ 
++// IsProviderErrorPayload distinguishes a parsed upstream refusal from local failures.
++func (e statusErr) IsProviderErrorPayload() bool { return e.providerErrorPayload }
++
+ // IsTransientRateLimit marks a transient per-model capacity/admission 429
+ // that must not be recorded as credential quota exhaustion.
+ func (e statusErr) IsTransientRateLimit() bool { return e.transientRateLimit }
+@@ -1311,9 +1315,10 @@ const openAICompatTPMFallbackRetryAfter = time.Minute
+ 
+ func newOpenAICompatStatusError(status int, headers http.Header, body []byte) statusErr {
+ 	return statusErr{
+-		code:       status,
+-		msg:        string(body),
+-		retryAfter: openAICompatRetryAfter(status, headers, body, time.Now()),
++		code:                 status,
++		msg:                  string(body),
++		providerErrorPayload: helps.IsProviderErrorPayload(body),
++		retryAfter:           openAICompatRetryAfter(status, headers, body, time.Now()),
+ 	}
+ }
+ 
+diff --git a/internal/runtime/executor/submission_classification_test.go b/internal/runtime/executor/submission_classification_test.go
+new file mode 100644
+index 0000000000..381af4ae12
+--- /dev/null
++++ b/internal/runtime/executor/submission_classification_test.go
+@@ -0,0 +1,86 @@
++package executor
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
++)
++
++func TestAcceptedExecutorErrorClassification(t *testing.T) {
++	codexErr := func(payload string) error {
++		err, _, ok := codexTerminalFailureErr([]byte(payload))
++		if !ok {
++			t.Fatalf("Codex fixture did not reach its terminal error parser: %s", payload)
++		}
++		return err
++	}
++	xaiErr := func(payload string) error {
++		err, ok := xaiTerminalFailureErr("error", []byte(payload))
++		if !ok {
++			t.Fatalf("xAI fixture did not reach its terminal error parser: %s", payload)
++		}
++		return err
++	}
++	openaiErr, ok := openAICompatStreamDataError([]byte(`{"error":{"message":"refused","code":503}}`), "error")
++	if !ok {
++		t.Fatal("OpenAI fixture did not reach its error parser")
++	}
++	for _, tc := range []struct {
++		name     string
++		err      error
++		provider bool
++	}{
++		{"local translation", statusErr{code: 502, msg: helps.ApplyPatchUpstreamErrorMessage}, false},
++		{"local error envelope", statusErr{code: 502, msg: `{"error":{"message":"local failure"}}`}, false},
++		{"Claude local validation", validateClaudeStreamingResponse([]byte("data: {\"type\":\"message_start\",\"message\":{}}\n\n")), false},
++		{"Codex synthesized error", codexErr(`{"type":"response.failed","response":{}}`), false},
++		{"Codex malformed source", codexErr(`{"type":"response.failed","response":{"error":{"message":"broken"}}`), false},
++		{"xAI synthesized error", xaiErr(`{"type":"response.failed","response":{}}`), false},
++		{"xAI malformed source", xaiErr(`{"error":{"message":"broken"}`), false},
++		{"Meta synthesized error", metaStreamEventError([]byte(`{"type":"response.failed"}`)), false},
++		{"OpenAI provider error", openaiErr, true},
++		{"Codex top-level provider message", codexErr(`{"type":"error","message":"provider overloaded"}`), true},
++		{"xAI top-level provider message", xaiErr(`{"type":"error","message":"provider overloaded"}`), true},
++		{"Claude provider error", validateClaudeStreamingResponse([]byte("data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"refused\"}}\n\n")), true},
++		{"Codex provider error", codexErr(`{"type":"response.failed","response":{"error":{"code":"server_error","message":"refused"}}}`), true},
++		{"xAI provider error", xaiErr(`{"type":"error","error":{"message":"refused"}}`), true},
++		{"Meta provider error", metaStreamEventError([]byte(`{"type":"response.failed","response":{"error":{"message":"refused"}}}`)), true},
++		{"Antigravity provider error", newAntigravityStatusErr(503, []byte(`{"error":{"code":503,"message":"refused"}}`)), true},
++		{"Devin provider error", newDevinStatusError(503, nil, []byte(`{"error":{"message":"refused"}}`)), true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			if tc.err == nil {
++				t.Fatal("fixture produced no error")
++			}
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				w.WriteHeader(http.StatusOK)
++			}))
++			defer server.Close()
++			ctx := httptransport.WithSubmissionTracking(context.Background())
++			client := *server.Client()
++			client.Transport = httptransport.GenerationTransport(ctx, client.Transport)
++			response, errDo := client.Post(server.URL, "application/json", strings.NewReader(`{}`))
++			if errDo != nil {
++				t.Fatal(errDo)
++			}
++			if errClose := response.Body.Close(); errClose != nil {
++				t.Fatal(errClose)
++			}
++			classified := httptransport.ClassifySubmissionError(ctx, tc.err)
++			if tc.provider {
++				if classified != tc.err {
++					t.Fatalf("parsed provider error changed: %v", classified)
++				}
++			} else if !httptransport.IsOutcomeUnknown(classified) {
++				t.Fatalf("local executor error escaped accepted default: %v", classified)
++			}
++		})
++	}
++}
+diff --git a/internal/runtime/executor/websocket_session_target_test.go b/internal/runtime/executor/websocket_session_target_test.go
+index 2141331174..d9ec62ff0d 100644
+--- a/internal/runtime/executor/websocket_session_target_test.go
++++ b/internal/runtime/executor/websocket_session_target_test.go
+@@ -22,6 +22,7 @@ import (
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+ )
+ 
+@@ -129,7 +130,7 @@ func TestClearRetryActiveStateClearsOriginalConnection(t *testing.T) {
+ 	}
+ }
+ 
+-func TestWebsocketRetryBindFailureClearsActiveSessionState(t *testing.T) {
++func TestWebsocketWriteFailureClearsActiveSessionState(t *testing.T) {
+ 	tests := []struct {
+ 		name string
+ 		run  func(t *testing.T, baseURL string) (func(cliproxyexecutor.Options) error, *codexWebsocketSession)
+@@ -242,14 +243,15 @@ func TestWebsocketRetryBindFailureClearsActiveSessionState(t *testing.T) {
+ 					t.Errorf("upgrade websocket: %v", errUpgrade)
+ 					return
+ 				}
+-				defer func() { _ = conn.Close() }()
++				defer func() {
++					if errClose := conn.Close(); errClose != nil {
++						t.Logf("close synthetic websocket: %v", errClose)
++					}
++				}()
+ 				if connection == 1 {
+ 					_, _, _ = conn.ReadMessage()
+ 					return
+ 				}
+-				if connection == 2 {
+-					return
+-				}
+ 				if _, _, errRead := conn.ReadMessage(); errRead != nil {
+ 					return
+ 				}
+@@ -263,25 +265,25 @@ func TestWebsocketRetryBindFailureClearsActiveSessionState(t *testing.T) {
+ 			lifecycle := &rejectSecondBindLifecycle{}
+ 			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, ResponseFormat: sdktranslator.FormatOpenAIResponse, ExecutionLifecycle: lifecycle, Metadata: map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: "retry-bind"}}
+ 			run, sess := test.run(t, server.URL)
+-			if errRun := run(opts); errRun == nil {
+-				t.Fatal("first request error = nil, want retry lifecycle bind rejection")
++			if errRun := run(opts); !httptransport.IsOutcomeUnknown(errRun) {
++				t.Fatal("first request must report an unknown outcome")
+ 			}
+-			if got := lifecycle.binds.Load(); got != 2 {
+-				t.Fatalf("lifecycle binds = %d, want 2", got)
++			if got := lifecycle.binds.Load(); got != 1 {
++				t.Fatalf("lifecycle binds = %d, want 1 without automatic retry", got)
+ 			}
+ 			sess.activeMu.Lock()
+ 			active := sess.activeConn != nil || sess.activeCh != nil || sess.activeDone != nil || sess.activeCancel != nil
+ 			sess.activeMu.Unlock()
+ 			if active {
+-				t.Fatal("retry bind failure left the old active websocket state")
++				t.Fatal("ambiguous write left the old active websocket state")
+ 			}
+ 
+ 			opts.ExecutionLifecycle = nil
+ 			if errRun := run(opts); errRun != nil {
+ 				t.Fatalf("second request error = %v", errRun)
+ 			}
+-			if got := connections.Load(); got != 3 {
+-				t.Fatalf("websocket connections = %d, want 3 after retry bind failure", got)
++			if got := connections.Load(); got != 2 {
++				t.Fatalf("websocket connections = %d, want one per explicit request", got)
+ 			}
+ 		})
+ 	}
+diff --git a/internal/runtime/executor/websocket_submission_test.go b/internal/runtime/executor/websocket_submission_test.go
+new file mode 100644
+index 0000000000..0cd9f451b4
+--- /dev/null
++++ b/internal/runtime/executor/websocket_submission_test.go
+@@ -0,0 +1,237 @@
++package executor
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/gorilla/websocket"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/wsrelay"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
++	log "github.com/sirupsen/logrus"
++)
++
++func TestWebsocketSubmissionDisconnectAndPrewriteFailover(t *testing.T) {
++	for _, provider := range []string{"aistudio", "xai", "codex"} {
++		for _, mode := range []string{"close", "prewrite", "refusal", "malformed"} {
++			if provider == "aistudio" && mode == "malformed" {
++				continue
++			}
++			prewrite := mode == "prewrite"
++			refusal := mode == "refusal"
++			t.Run(fmt.Sprintf("%s/%s", provider, mode), func(t *testing.T) {
++				var frames atomic.Int32
++				authIDs := []string{t.Name() + "a", t.Name() + "b"}
++				manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++				manager.SetRetryConfig(0, 0, 0)
++				model := "grok-4"
++				if provider == "codex" {
++					model = "gpt-5"
++				}
++				baseURL := ""
++				firstURL := ""
++				if provider == "aistudio" {
++					model = "gemini-2.5-flash"
++					connected := make(chan string, 2)
++					relay := wsrelay.NewManager(wsrelay.Options{ProviderFactory: func(r *http.Request) (string, error) { return r.URL.Query().Get("id"), nil }, OnConnected: func(id string) { connected <- id }})
++					server := httptest.NewServer(relay.Handler())
++					t.Cleanup(server.Close)
++					t.Cleanup(func() { _ = relay.Stop(context.Background()) })
++					for index, id := range authIDs {
++						if prewrite && index == 0 {
++							continue
++						}
++						conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+relay.Path()+"?id="+id, nil)
++						if err != nil {
++							t.Fatal(err)
++						}
++						t.Cleanup(func() { _ = conn.Close() })
++						<-connected
++						go func() {
++							_, payload, errRead := conn.ReadMessage()
++							if errRead != nil {
++								return
++							}
++							id := ojson.GetBytesNoCopy(payload, "id").String()
++							frames.Add(1)
++							if refusal && index == 0 {
++								_ = writeSubmissionRelayResponse(conn, id, 503, `{"error":{"code":503,"message":"provider refused generation"}}`)
++								return
++							}
++							if !prewrite && !refusal {
++								_ = conn.Close()
++								return
++							}
++							body := `{"candidates":[{"content":{"role":"model","parts":[{"text":"safe-fallback"}]},"finishReason":"STOP"}]}`
++							if errWrite := writeSubmissionRelayResponse(conn, id, 200, body); errWrite != nil {
++								t.Error(errWrite)
++							}
++						}()
++					}
++					manager.RegisterExecutor(NewAIStudioExecutor(&config.Config{}, provider, relay))
++				} else {
++					upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
++					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++						conn, err := upgrader.Upgrade(w, r, nil)
++						if err != nil {
++							t.Error(err)
++							return
++						}
++						defer func() {
++							if errClose := conn.Close(); errClose != nil {
++								log.Errorf("close synthetic websocket: %v", errClose)
++							}
++						}()
++						if _, _, errRead := conn.ReadMessage(); errRead != nil {
++							t.Error(errRead)
++							return
++						}
++						count := frames.Add(1)
++						if mode == "malformed" {
++							_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","status":503,"error":{}}`))
++							return
++						}
++						if refusal && count == 1 {
++							_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","status":503,"error":{"code":"server_error","message":"provider refused generation"}}`))
++							return
++						}
++						if !prewrite && !refusal {
++							return
++						}
++						if r.Header.Get("Authorization") != "Bearer synthetic-b" {
++							t.Error("safe failover did not reach second credential")
++						}
++						_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"safe-fallback","output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`))
++					}))
++					t.Cleanup(server.Close)
++					baseURL = server.URL
++					if prewrite {
++						listener, err := net.Listen("tcp", "127.0.0.1:0")
++						if err != nil {
++							t.Fatal(err)
++						}
++						firstURL = "http://" + listener.Addr().String()
++						if errClose := listener.Close(); errClose != nil {
++							t.Fatal(errClose)
++						}
++					}
++					if provider == "codex" {
++						manager.RegisterExecutor(NewCodexWebsocketsExecutor(&config.Config{}))
++					} else {
++						manager.RegisterExecutor(NewXAIWebsocketsExecutor(&config.Config{}))
++					}
++				}
++				for index, id := range authIDs {
++					attrs := map[string]string{"base_url": baseURL, "websockets": "true"}
++					if index == 0 && firstURL != "" {
++						attrs["base_url"] = firstURL
++					}
++					token := "synthetic-a"
++					if index == 1 {
++						token = "synthetic-b"
++					}
++					auth := &coreauth.Auth{ID: id, Provider: provider, Status: coreauth.StatusActive, ProxyURL: "direct", Attributes: attrs, Metadata: map[string]any{"access_token": token}}
++					if _, err := manager.Register(context.Background(), auth); err != nil {
++						t.Fatal(err)
++					}
++					registry.GetGlobalRegistry().RegisterClient(id, provider, []*registry.ModelInfo{{ID: model}})
++					t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
++				}
++				payload := []byte(`{"input":"hello","stream":true}`)
++				result, err := manager.ExecuteStream(context.Background(), []string{provider}, coreexecutor.Request{Model: model, Payload: payload}, coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, ResponseFormat: sdktranslator.FormatOpenAIResponse, Stream: true})
++				if result != nil {
++					for chunk := range result.Chunks {
++						if chunk.Err != nil {
++							err = chunk.Err
++						}
++					}
++				}
++				t.Logf("generation frames=%d error=%v", frames.Load(), err)
++				if prewrite || refusal {
++					want := int32(1)
++					if refusal {
++						want = 2
++					}
++					if err != nil || frames.Load() != want {
++						t.Fatalf("safe failover failed: frames=%d err=%v", frames.Load(), err)
++					}
++				} else if frames.Load() != 1 || err == nil || !strings.Contains(err.Error(), "upstream_outcome_unknown") {
++					t.Fatalf("post-write close replayed or lost unknown outcome: frames=%d err=%v", frames.Load(), err)
++				}
++			})
++		}
++	}
++}
++
++func TestWebsocketSubmissionIgnoresHandshakeAndControlFrames(t *testing.T) {
++	received := make(chan struct{}, 2)
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
++		if err != nil {
++			t.Error(err)
++			return
++		}
++		defer func() {
++			if errClose := conn.Close(); errClose != nil {
++				log.Errorf("close synthetic websocket: %v", errClose)
++			}
++		}()
++		for range 2 {
++			if _, _, errRead := conn.ReadMessage(); errRead != nil {
++				t.Error(errRead)
++				return
++			}
++			received <- struct{}{}
++		}
++	}))
++	defer server.Close()
++	ctx := httptransport.WithSubmissionTracking(context.Background())
++	conn, _, err := websocket.DefaultDialer.DialContext(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer func() {
++		if errClose := conn.Close(); errClose != nil {
++			log.Errorf("close synthetic websocket: %v", errClose)
++		}
++	}()
++	if errClassify := httptransport.ClassifySubmissionError(ctx, io.EOF); httptransport.IsOutcomeUnknown(errClassify) {
++		t.Fatal("handshake marked accepted")
++	}
++	if errWrite := writeWebsocketPayloadMessage(ctx, "codex", nil, conn, []byte(`{"type":"session.update"}`)); errWrite != nil {
++		t.Fatal(errWrite)
++	}
++	<-received
++	if errClassify := httptransport.ClassifySubmissionError(ctx, io.EOF); httptransport.IsOutcomeUnknown(errClassify) {
++		t.Fatal("control frame marked accepted")
++	}
++	if errWrite := writeWebsocketPayloadMessage(ctx, "codex", nil, conn, []byte(`{"type":"response.create"}`)); errWrite != nil {
++		t.Fatal(errWrite)
++	}
++	<-received
++	if errClassify := httptransport.ClassifySubmissionError(ctx, io.EOF); !httptransport.IsOutcomeUnknown(errClassify) {
++		t.Fatalf("generation frame was not marked accepted: %v", errClassify)
++	}
++}
++
++func writeSubmissionRelayResponse(conn *websocket.Conn, id string, status int, body string) error {
++	doc := ojson.NewDoc([]byte(`{}`))
++	_ = doc.Set("id", id)
++	_ = doc.Set("type", wsrelay.MessageTypeHTTPResp)
++	_ = doc.Set("payload.status", status)
++	_ = doc.Set("payload.body", body)
++	return conn.WriteMessage(websocket.TextMessage, doc.Bytes())
++}
+diff --git a/internal/runtime/executor/websocket_submission_write_error_test.go b/internal/runtime/executor/websocket_submission_write_error_test.go
+new file mode 100644
+index 0000000000..5ebfbc2a91
+--- /dev/null
++++ b/internal/runtime/executor/websocket_submission_write_error_test.go
+@@ -0,0 +1,191 @@
++package executor
++
++import (
++	"context"
++	"errors"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++
++	"github.com/gorilla/websocket"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
++)
++
++type submissionFaultConn struct {
++	net.Conn
++	armed    atomic.Bool
++	partial  bool
++	received <-chan struct{}
++	wrote    atomic.Int32
++}
++
++func (c *submissionFaultConn) Write(payload []byte) (int, error) {
++	if !c.armed.CompareAndSwap(true, false) {
++		return c.Conn.Write(payload)
++	}
++	if c.partial && len(payload) > 8 {
++		payload = payload[:8]
++	}
++	n, errWrite := c.Conn.Write(payload)
++	c.wrote.Add(int32(n))
++	if errWrite != nil {
++		return n, errWrite
++	}
++	if !c.partial {
++		<-c.received
++	}
++	return n, errors.New("synthetic write error after delivery")
++}
++
++func TestWebsocketSubmissionWriteErrorDoesNotResend(t *testing.T) {
++	for _, provider := range []string{"codex", "xai"} {
++		for _, mode := range []string{"delivered", "partial", "prewrite"} {
++			t.Run(provider+"/"+mode, func(t *testing.T) {
++				var frames, dials atomic.Int32
++				received := make(chan struct{})
++				var receivedOnce sync.Once
++				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					dials.Add(1)
++					conn, errUpgrade := (&websocket.Upgrader{}).Upgrade(w, r, nil)
++					if errUpgrade != nil {
++						t.Error(errUpgrade)
++						return
++					}
++					defer func() {
++						if errClose := conn.Close(); errClose != nil {
++							t.Logf("close peer: %v", errClose)
++						}
++					}()
++					if _, _, errRead := conn.ReadMessage(); errRead != nil {
++						return
++					}
++					count := frames.Add(1)
++					if mode == "delivered" && count == 1 {
++						receivedOnce.Do(func() { close(received) })
++						_, _, _ = conn.ReadMessage()
++						return
++					}
++					if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.completed","response":{"id":"safe-fallback","output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)); errWrite != nil {
++						t.Error(errWrite)
++					}
++				}))
++				defer server.Close()
++				wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/responses"
++				sessionID := t.Name()
++				store := &codexWebsocketSessionStore{sessions: make(map[string]*codexWebsocketSession)}
++				var executor coreauth.ProviderExecutor
++				var sess *codexWebsocketSession
++				if provider == "codex" {
++					exec := NewCodexWebsocketsExecutor(&config.Config{})
++					exec.store = store
++					executor = exec
++					sess = exec.getOrCreateSession(sessionID)
++					t.Cleanup(func() { exec.CloseExecutionSession(sessionID) })
++				} else {
++					exec := NewXAIWebsocketsExecutor(&config.Config{})
++					exec.store = store
++					exec.idStore = &xaiWebsocketIDStateStore{sessions: make(map[string]*xaiWebsocketIDState)}
++					executor = exec
++					sess = exec.getOrCreateSession(sessionID)
++					t.Cleanup(func() { exec.CloseExecutionSession(sessionID) })
++				}
++				firstURL := server.URL
++				var fault *submissionFaultConn
++				if mode == "prewrite" {
++					listener, errListen := net.Listen("tcp", "127.0.0.1:0")
++					if errListen != nil {
++						t.Fatal(errListen)
++					}
++					firstURL = "http://" + listener.Addr().String()
++					if errClose := listener.Close(); errClose != nil {
++						t.Fatal(errClose)
++					}
++				} else {
++					dialer := websocket.Dialer{NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
++						conn, errDial := (&net.Dialer{}).DialContext(ctx, network, address)
++						if errDial != nil {
++							return nil, errDial
++						}
++						fault = &submissionFaultConn{Conn: conn, partial: mode == "partial", received: received}
++						return fault, nil
++					}}
++					conn, _, errDial := dialer.Dial(wsURL, nil)
++					if errDial != nil {
++						t.Fatal(errDial)
++					}
++					fault.armed.Store(true)
++					sess.conn = conn
++					sess.connCloser = newWebsocketConnectionCloser(conn)
++					sess.authID = sessionID + "a"
++					sess.wsURL = wsURL
++					sess.proxyURL = "direct"
++				}
++				manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++				manager.SetRetryConfig(0, 0, 0)
++				manager.RegisterExecutor(executor)
++				model := "gpt-5"
++				if provider == "xai" {
++					model = "grok-4"
++				}
++				for index, suffix := range []string{"a", "b"} {
++					baseURL := server.URL
++					if index == 0 {
++						baseURL = firstURL
++					}
++					auth := &coreauth.Auth{ID: sessionID + suffix, Provider: provider, Status: coreauth.StatusActive, ProxyURL: "direct", Attributes: map[string]string{"base_url": baseURL, "api_key": "synthetic", "websockets": "true"}, Metadata: map[string]any{"access_token": "synthetic"}}
++					if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++						t.Fatal(errRegister)
++					}
++					registry.GetGlobalRegistry().RegisterClient(auth.ID, provider, []*registry.ModelInfo{{ID: model}})
++					t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++				}
++				result, errExecute := manager.ExecuteStream(context.Background(), []string{provider}, coreexecutor.Request{Model: model, Payload: []byte(`{"input":"hello","stream":true}`)}, coreexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse, ResponseFormat: sdktranslator.FormatOpenAIResponse, Stream: true, Metadata: map[string]any{coreexecutor.ExecutionSessionMetadataKey: sessionID}})
++				if result != nil {
++					for chunk := range result.Chunks {
++						if chunk.Err != nil {
++							errExecute = chunk.Err
++						}
++					}
++				}
++				bytesWritten := int32(0)
++				if fault != nil {
++					bytesWritten = fault.wrote.Load()
++				}
++				t.Logf("dials=%d received_frames=%d fault_bytes_written=%d error=%v", dials.Load(), frames.Load(), bytesWritten, errExecute)
++				if mode == "prewrite" {
++					if errExecute != nil || frames.Load() != 1 || dials.Load() != 1 {
++						t.Fatalf("provably pre-write failure lost safe failover: %v", errExecute)
++					}
++					return
++				}
++				wantFrames := int32(1)
++				if mode == "partial" {
++					wantFrames = 0
++				}
++				if bytesWritten == 0 || dials.Load() != 1 || frames.Load() != wantFrames || errExecute == nil || !strings.Contains(errExecute.Error(), "upstream_outcome_unknown") {
++					t.Fatalf("ambiguous write replayed or lost unknown outcome: dials=%d frames=%d bytes=%d error=%v", dials.Load(), frames.Load(), bytesWritten, errExecute)
++				}
++			})
++		}
++	}
++}
++
++func TestWebsocketSubmissionMissingConnectionIsPrewrite(t *testing.T) {
++	for _, sess := range []*codexWebsocketSession{nil, {}} {
++		ctx := httptransport.WithSubmissionTracking(context.Background())
++		errWrite := writeWebsocketPayloadMessage(ctx, "codex", sess, nil, []byte(`{"type":"response.create"}`))
++		if errWrite == nil || httptransport.IsOutcomeUnknown(httptransport.ClassifySubmissionError(ctx, errWrite)) {
++			t.Fatalf("missing connection was submitted: %v", errWrite)
++		}
++	}
++}
+diff --git a/internal/runtime/executor/xai_executor_response.go b/internal/runtime/executor/xai_executor_response.go
+index fdb538ccb9..43c087b277 100644
+--- a/internal/runtime/executor/xai_executor_response.go
++++ b/internal/runtime/executor/xai_executor_response.go
+@@ -1347,7 +1347,9 @@ func xaiTerminalFailureErr(eventName string, eventData []byte) (statusErr, bool)
+ 		return statusErr{}, false
+ 	}
+ 	status := xaiTerminalFailureStatus(eventData, doc)
+-	return xaiStatusErr(status, doc.Bytes()), true
++	err := xaiStatusErr(status, doc.Bytes())
++	err.providerErrorPayload = helps.IsProviderErrorEventPayload(eventName, eventData)
++	return err, true
+ }
+ 
+ func xaiTerminalFailureDoc(eventName string, eventData []byte) (*ojson.Doc, bool) {
+@@ -1585,7 +1587,7 @@ func xaiTerminalFailureStatus(eventData []byte, doc *ojson.Doc) int {
+ //
+ // Generic 429s stay without an explicit retry hint so conductor backoff still applies.
+ func xaiStatusErr(code int, body []byte) statusErr {
+-	err := statusErr{code: code, msg: string(body)}
++	err := statusErr{code: code, msg: string(body), providerErrorPayload: helps.IsProviderErrorPayload(body)}
+ 	if len(body) == 0 {
+ 		return err
+ 	}
+diff --git a/internal/runtime/executor/xai_websockets_executor.go b/internal/runtime/executor/xai_websockets_executor.go
+index 09943aaac7..239df72ac7 100644
+--- a/internal/runtime/executor/xai_websockets_executor.go
++++ b/internal/runtime/executor/xai_websockets_executor.go
+@@ -606,7 +606,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
+ 	}
+ 
+ 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
+-	if errSend := writeWebsocketPayloadMessage("xai", sess, conn, wsReqBody); errSend != nil {
++	if errSend := writeWebsocketPayloadMessage(ctx, "xai", sess, conn, wsReqBody); errSend != nil {
+ 		errSend = mapXAIWebsocketWriteError(sess, conn, errSend)
+ 		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
+ 		if sess != nil && !isEphemeralSession {
+@@ -661,7 +661,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
+ 			recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
+ 			reporter.StartResponseTTFT()
+ 			cliproxyexecutor.MarkUpstreamAttempt(ctx)
+-			if errSendRetry := writeWebsocketPayloadMessage("xai", sess, conn, wsReqBodyRetry); errSendRetry != nil {
++			if errSendRetry := writeWebsocketPayloadMessage(ctx, "xai", sess, conn, wsReqBodyRetry); errSendRetry != nil {
+ 				errSendRetry = mapXAIWebsocketWriteError(sess, connRetry, errSendRetry)
+ 				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
+ 				e.invalidateUpstreamConn(sess, connRetry, "send_error", errSendRetry)
+diff --git a/internal/runtime/executor/xai_websockets_executor_test.go b/internal/runtime/executor/xai_websockets_executor_test.go
+index e65295c2a1..d2ff4218bf 100644
+--- a/internal/runtime/executor/xai_websockets_executor_test.go
++++ b/internal/runtime/executor/xai_websockets_executor_test.go
+@@ -22,6 +22,7 @@ import (
+ 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+ )
+ 
+@@ -2649,7 +2650,7 @@ func TestApplyXAIWebsocketHeaders_UserAgent(t *testing.T) {
+ 	})
+ }
+ 
+-func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *testing.T) {
++func TestXAIWebsocketWriteFailureRecordedWithoutReconnectWhenRequestLogDisabled(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+ 	var dials atomic.Int32
+@@ -2659,7 +2660,11 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
+ 			if errUpgrade != nil {
+ 				return
+ 			}
+-			defer func() { _ = conn.Close() }()
++			defer func() {
++				if errClose := conn.Close(); errClose != nil {
++					t.Logf("close synthetic websocket: %v", errClose)
++				}
++			}()
+ 			for {
+ 				if _, _, errRead := conn.ReadMessage(); errRead != nil {
+ 					return
+@@ -2708,8 +2713,8 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
+ 			},
+ 		},
+ 	)
+-	if errExec == nil {
+-		t.Fatal("expected ExecuteStream reconnect rejection to fail")
++	if !httptransport.IsOutcomeUnknown(errExec) {
++		t.Fatal("expected terminal unknown outcome after failed generation write")
+ 	}
+ 
+ 	value, exists := ginCtx.Get(logging.DeferredAPIResponseContextKey)
+@@ -2725,18 +2730,18 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
+ 		"=== API RESPONSE 1 ===",
+ 		"Status: 101",
+ 		"Error: send:",
+-		"=== API RESPONSE 2 ===",
+-		"Status: 429",
+-		"Retry-After: 9",
+-		`{"error":{"message":"xai websocket reconnect rate limited"}}`,
+-		"Error: dial_retry:",
++		"upstream_outcome_unknown",
+ 	} {
+ 		if !strings.Contains(rendered, want) {
+ 			t.Fatalf("deferred API response missing %q:\n%s", want, rendered)
+ 		}
+ 	}
+ 
+-	t.Run("reconnect transport failure without HTTP response", func(t *testing.T) {
++	if dials.Load() != 1 || writes.Load() != 1 {
++		t.Fatalf("ambiguous write retried: dials=%d writes=%d", dials.Load(), writes.Load())
++	}
++
++	t.Run("write failure prevents transport reconnect", func(t *testing.T) {
+ 		var transportDials atomic.Int32
+ 		var transportServer *httptest.Server
+ 		transportServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+@@ -2745,7 +2750,11 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
+ 				if errUpgrade != nil {
+ 					return
+ 				}
+-				defer func() { _ = conn.Close() }()
++				defer func() {
++					if errClose := conn.Close(); errClose != nil {
++						t.Logf("close synthetic websocket: %v", errClose)
++					}
++				}()
+ 				for {
+ 					if _, _, errRead := conn.ReadMessage(); errRead != nil {
+ 						return
+@@ -2795,8 +2804,8 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
+ 				},
+ 			},
+ 		)
+-		if errSub == nil {
+-			t.Fatal("expected transport reconnect failure")
++		if !httptransport.IsOutcomeUnknown(errSub) {
++			t.Fatal("expected terminal unknown outcome after transport write failure")
+ 		}
+ 		subVal, ok := subGinCtx.Get(logging.DeferredAPIResponseContextKey)
+ 		if !ok {
+@@ -2805,14 +2814,17 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
+ 		subRendered := string(subVal.(logging.DeferredAPIResponse).RenderAPIResponse())
+ 		for _, want := range []string{
+ 			"=== API RESPONSE 1 ===",
++			"Status: 101",
+ 			"Error: send:",
+-			"=== API RESPONSE 2 ===",
+-			"Error: dial_retry:",
++			"upstream_outcome_unknown",
+ 		} {
+ 			if !strings.Contains(subRendered, want) {
+ 				t.Fatalf("transport reconnect response missing %q:\n%s", want, subRendered)
+ 			}
+ 		}
++		if transportDials.Load() != 1 || transportWrites.Load() != 1 {
++			t.Fatalf("ambiguous transport write retried: dials=%d writes=%d", transportDials.Load(), transportWrites.Load())
++		}
+ 	})
+ 
+ 	t.Run("initial handshake failure with HTTP response records dial error", func(t *testing.T) {
+diff --git a/internal/wsrelay/session.go b/internal/wsrelay/session.go
+index 571997aa2a..4f2a65a42c 100644
+--- a/internal/wsrelay/session.go
++++ b/internal/wsrelay/session.go
+@@ -9,6 +9,7 @@ import (
+ 
+ 	"github.com/gorilla/websocket"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ )
+ 
+ const (
+@@ -341,7 +342,14 @@ func (s *session) send(ctx context.Context, msg Message) error {
+ 		return fmt.Errorf("set write deadline: %w", err)
+ 	}
+ 	cliproxyexecutor.MarkUpstreamAttempt(ctx)
+-	if err := s.conn.WriteJSON(msg); err != nil {
++	write := func() error { return s.conn.WriteJSON(msg) }
++	var err error
++	if msg.Type == MessageTypeHTTPReq {
++		err = httptransport.WriteGeneration(ctx, write)
++	} else {
++		err = write()
++	}
++	if err != nil {
+ 		return fmt.Errorf("write json: %w", err)
+ 	}
+ 	return nil
+diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
+index ea0cbe18a9..48d675e4b9 100644
+--- a/sdk/api/handlers/handlers.go
++++ b/sdk/api/handlers/handlers.go
+@@ -6,6 +6,7 @@ package handlers
+ import (
+ 	"bytes"
+ 	"encoding/json"
++	"errors"
+ 	"fmt"
+ 	"net"
+ 	"net/http"
+@@ -84,6 +85,10 @@ func BuildErrorResponseBodyWithError(status int, errText string, err error) []by
+ 
+ 	trimmed := strings.TrimSpace(errText)
+ 
++	var turnErr *coreexecutor.UpstreamWebsocketTurnError
++	if errors.As(err, &turnErr) {
++		return []byte(turnErr.Error())
++	}
+ 	if httptransport.IsOutcomeUnknown(err) {
+ 		return []byte((&httptransport.OutcomeUnknownError{}).Error())
+ 	}
+diff --git a/sdk/api/handlers/openai/http_submission_accepted_default_test.go b/sdk/api/handlers/openai/http_submission_accepted_default_test.go
+new file mode 100644
+index 0000000000..04401a0eb7
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_accepted_default_test.go
+@@ -0,0 +1,68 @@
++package openai
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++func TestHTTPSubmissionGeminiApplyPatchTranslationDoesNotReplay(t *testing.T) {
++	var submissions atomic.Int32
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if _, errRead := io.Copy(io.Discard, r.Body); errRead != nil {
++			t.Error(errRead)
++			return
++		}
++		submissions.Add(1)
++		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, ":generateContent") {
++			t.Errorf("unexpected upstream method=%s path=%s", r.Method, r.URL.Path)
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"functions__apply_patch","args":{"input":1}}}]},"finishReason":"STOP"}]}`)
++	}))
++	defer upstream.Close()
++	manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++	manager.RegisterExecutor(runtimeexecutor.NewGeminiExecutor(&config.Config{}))
++	model := "gemini-accepted-" + strings.ReplaceAll(t.Name(), "/", "-")
++	for _, suffix := range []string{"a", "b"} {
++		auth := &coreauth.Auth{ID: model + suffix, Provider: "gemini", Status: coreauth.StatusActive,
++			ProxyURL: "direct", Attributes: map[string]string{"base_url": upstream.URL, "api_key": "synthetic"}}
++		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++			t.Fatal(errRegister)
++		}
++		registry.GetGlobalRegistry().RegisterClient(auth.ID, "gemini", []*registry.ModelInfo{{ID: model}})
++		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++	}
++	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++	router := gin.New()
++	router.POST("/v1/responses", NewOpenAIResponsesAPIHandler(base).Responses)
++	body := ojson.NewDocString(`{"model":"","input":"make a patch","stream":false,"tools":[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"apply_patch","format":{"type":"grammar","definition":"start: patch"}}]}]}`)
++	if errSet := body.Set("model", model); errSet != nil {
++		t.Fatal(errSet)
++	}
++	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body.String()))
++	request.Header.Set("Content-Type", "application/json")
++	response := httptest.NewRecorder()
++	router.ServeHTTP(response, request)
++	t.Logf("accepted=%d status=%d retry=%q body=%s", submissions.Load(), response.Code, response.Header().Get("x-should-retry"), response.Body.String())
++	if got := submissions.Load(); got != 1 {
++		t.Errorf("accepted upstream POSTs=%d, want 1", got)
++	}
++	if response.Code != http.StatusBadGateway || ojson.Get(response.Body.String(), "error.code").String() != "upstream_outcome_unknown" || ojson.Get(response.Body.String(), "error.retryable").Raw != "false" || response.Header().Get("x-should-retry") != "false" {
++		t.Fatal("local translation failure lost the nonretryable unknown outcome")
++	}
++}
+diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go b/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go
+--- a/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go
++++ b/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go
+@@ -2,8 +2,6 @@
+ 
+ import (
+ 	"context"
+-	"encoding/json"
+-	"fmt"
+ 	"io"
+ 	"net/http"
+ 	"net/http/httptest"
+@@ -12,6 +10,7 @@
+ 	"testing"
+ 	"time"
+ 
++	"github.com/MoeForge/moego/ojson"
+ 	"github.com/gin-gonic/gin"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+@@ -61,10 +60,7 @@
+ 				}
+ 				// Count fully received requests, not executor invocations or TCP dials.
+ 				attempt := submissions.Add(1)
+-				var request struct {
+-					Stream bool `json:"stream"`
+-				}
+-				if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" || json.Unmarshal(body, &request) != nil || !request.Stream {
++				if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" || !ojson.ValidBytes(body) || ojson.GetBytesNoCopy(body, "stream").Type != ojson.True {
+ 					invalidRequests.Add(1)
+ 					t.Errorf("wrong upstream path: method=%s path=%s body=%s", r.Method, r.URL.Path, body)
+ 				}
+@@ -98,8 +94,9 @@
+ 			router.POST("/v1/chat/completions", NewOpenAIAPIHandler(base).ChatCompletions)
+ 			public := httptest.NewServer(router)
+ 			defer public.Close()
+-			requestBody := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":false}`, model)
+-			request, errRequest := http.NewRequest(http.MethodPost, public.URL+"/v1/chat/completions", strings.NewReader(requestBody))
++			requestDoc := ojson.NewDoc([]byte(`{"messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":false}`))
++			_ = requestDoc.Set("model", model)
++			request, errRequest := http.NewRequest(http.MethodPost, public.URL+"/v1/chat/completions", strings.NewReader(requestDoc.String()))
+ 			if errRequest != nil {
+ 				t.Fatal(errRequest)
+ 			}
+@@ -131,16 +128,9 @@
+ 				t.Fatal("probe did not reach the expected Claude upstream stream path")
+ 			}
+ 			if tc.valid {
+-				var completion struct {
+-					Object  string `json:"object"`
+-					Choices []struct {
+-						Message struct {
+-							Content string `json:"content"`
+-						} `json:"message"`
+-						FinishReason string `json:"finish_reason"`
+-					} `json:"choices"`
+-				}
+-				if response.StatusCode != http.StatusOK || json.Unmarshal(body, &completion) != nil || completion.Object != "chat.completion" || len(completion.Choices) != 1 || completion.Choices[0].Message.Content != "done" || completion.Choices[0].FinishReason != "stop" {
++				completion := ojson.ParseBytes(body)
++				choices := completion.Get("choices")
++				if response.StatusCode != http.StatusOK || !ojson.ValidBytes(body) || completion.Get("object").String() != "chat.completion" || !choices.IsArray() || len(choices.Array()) != 1 || choices.Get("0.message.content").String() != "done" || choices.Get("0.finish_reason").String() != "stop" {
+ 					t.Fatalf("valid terminal response changed: status=%d body=%s", response.StatusCode, body)
+ 				}
+ 				return
+@@ -148,13 +138,8 @@
+ 			if response.StatusCode != http.StatusBadGateway {
+ 				t.Errorf("status=%d, want 502", response.StatusCode)
+ 			}
+-			var failure struct {
+-				Error struct {
+-					Code      string `json:"code"`
+-					Retryable *bool  `json:"retryable"`
+-				} `json:"error"`
+-			}
+-			if json.Unmarshal(body, &failure) != nil || failure.Error.Code != "upstream_outcome_unknown" || failure.Error.Retryable == nil || *failure.Error.Retryable {
++			failure := ojson.ParseBytes(body)
++			if !ojson.ValidBytes(body) || failure.Get("error.code").String() != "upstream_outcome_unknown" || failure.Get("error.retryable").Type != ojson.False {
+ 				t.Errorf("missing nonretryable unknown outcome: %s", body)
+ 			}
+ 			if got := response.Header.Get("x-should-retry"); got != "false" {
+diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go b/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go
+--- a/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go
++++ b/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go
+@@ -2,8 +2,6 @@
+ 
+ import (
+ 	"context"
+-	"encoding/json"
+-	"fmt"
+ 	"io"
+ 	"net/http"
+ 	"net/http/httptest"
+@@ -12,6 +10,7 @@
+ 	"testing"
+ 	"time"
+ 
++	"github.com/MoeForge/moego/ojson"
+ 	"github.com/gin-gonic/gin"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+@@ -51,10 +50,7 @@
+ 				}
+ 				// Count fully received requests, not executor invocations or TCP dials.
+ 				submissions.Add(1)
+-				var request struct {
+-					Stream bool `json:"stream"`
+-				}
+-				if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" || json.Unmarshal(body, &request) != nil || !request.Stream {
++				if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" || !ojson.ValidBytes(body) || ojson.GetBytesNoCopy(body, "stream").Type != ojson.True {
+ 					invalidRequests.Add(1)
+ 					t.Errorf("wrong upstream path: method=%s path=%s body=%s", r.Method, r.URL.Path, body)
+ 				}
+@@ -84,8 +80,9 @@
+ 			router.POST("/v1/chat/completions", NewOpenAIAPIHandler(base).ChatCompletions)
+ 			public := httptest.NewServer(router)
+ 			defer public.Close()
+-			requestBody := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":false}`, model)
+-			request, errRequest := http.NewRequest(http.MethodPost, public.URL+"/v1/chat/completions", strings.NewReader(requestBody))
++			requestDoc := ojson.NewDoc([]byte(`{"messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":false}`))
++			_ = requestDoc.Set("model", model)
++			request, errRequest := http.NewRequest(http.MethodPost, public.URL+"/v1/chat/completions", strings.NewReader(requestDoc.String()))
+ 			if errRequest != nil {
+ 				t.Fatal(errRequest)
+ 			}
+@@ -113,16 +110,9 @@
+ 				t.Fatal("probe did not reach the expected Claude upstream stream path")
+ 			}
+ 			if tc.valid {
+-				var completion struct {
+-					Object  string `json:"object"`
+-					Choices []struct {
+-						Message struct {
+-							Content string `json:"content"`
+-						} `json:"message"`
+-						FinishReason string `json:"finish_reason"`
+-					} `json:"choices"`
+-				}
+-				if response.StatusCode != http.StatusOK || json.Unmarshal(body, &completion) != nil || completion.Object != "chat.completion" || len(completion.Choices) != 1 || completion.Choices[0].Message.Content != "done" || completion.Choices[0].FinishReason != "stop" {
++				completion := ojson.ParseBytes(body)
++				choices := completion.Get("choices")
++				if response.StatusCode != http.StatusOK || !ojson.ValidBytes(body) || completion.Get("object").String() != "chat.completion" || !choices.IsArray() || len(choices.Array()) != 1 || choices.Get("0.message.content").String() != "done" || choices.Get("0.finish_reason").String() != "stop" {
+ 					t.Fatalf("valid terminal response changed: status=%d body=%s", response.StatusCode, body)
+ 				}
+ 				return
+@@ -130,13 +120,8 @@
+ 			if response.StatusCode != http.StatusBadGateway {
+ 				t.Errorf("status=%d, want 502", response.StatusCode)
+ 			}
+-			var failure struct {
+-				Error struct {
+-					Code      string `json:"code"`
+-					Retryable *bool  `json:"retryable"`
+-				} `json:"error"`
+-			}
+-			if json.Unmarshal(body, &failure) != nil || failure.Error.Code != "upstream_outcome_unknown" || failure.Error.Retryable == nil || *failure.Error.Retryable {
++			failure := ojson.ParseBytes(body)
++			if !ojson.ValidBytes(body) || failure.Get("error.code").String() != "upstream_outcome_unknown" || failure.Get("error.retryable").Type != ojson.False {
+ 				t.Errorf("missing nonretryable unknown outcome: %s", body)
+ 			}
+ 			if got := response.Header.Get("x-should-retry"); got != "false" {
+diff --git a/sdk/api/handlers/openai/http_submission_codex_bootstrap_provenance_test.go b/sdk/api/handlers/openai/http_submission_codex_bootstrap_provenance_test.go
+new file mode 100644
+index 0000000000..043759e543
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_codex_bootstrap_provenance_test.go
+@@ -0,0 +1,77 @@
++package openai
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++func TestHTTPSubmissionCodexBootstrapPreservesProviderProvenance(t *testing.T) {
++	for _, tc := range []struct {
++		name     string
++		payload  string
++		provider bool
++	}{
++		{"malformed_overload", `{"type":"response.failed","response":{"error":{"code":"server_is_overloaded"}}`, false},
++		{"parsed_overload", `{"type":"response.failed","response":{"error":{"code":"server_is_overloaded"}}}`, true},
++		{"top_level_provider_message", `{"type":"error","message":"provider overloaded"}`, true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			var submissions atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				w.Header().Set("Content-Type", "text/event-stream")
++				if submissions.Add(1) == 1 {
++					_, _ = io.WriteString(w, "data: "+tc.payload+"\n\n")
++					return
++				}
++				_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"synthetic\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_synthetic\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}]}}\n\n")
++			}))
++			defer upstream.Close()
++			cfg := &config.Config{}
++			cfg.Codex.StreamBootstrapBuffering = true
++			manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++			manager.RegisterExecutor(runtimeexecutor.NewCodexExecutor(cfg))
++			const model = "gpt-5.2-codex"
++			for _, suffix := range []string{"a", "b"} {
++				auth := &coreauth.Auth{ID: t.Name() + suffix, Provider: "codex", Status: coreauth.StatusActive,
++					ProxyURL: "direct", Attributes: map[string]string{"base_url": upstream.URL, "api_key": "synthetic"}}
++				if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++					t.Fatal(errRegister)
++				}
++				registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: model}})
++				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++			}
++			base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++			router := gin.New()
++			router.POST("/v1/responses", NewOpenAIResponsesAPIHandler(base).Responses)
++			request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.2-codex","input":"hello","stream":true}`))
++			request.Header.Set("Content-Type", "application/json")
++			response := httptest.NewRecorder()
++			router.ServeHTTP(response, request)
++			t.Logf("accepted=%d status=%d retry=%q body=%s", submissions.Load(), response.Code, response.Header().Get("x-should-retry"), response.Body.String())
++			if tc.provider {
++				if submissions.Load() != 2 || response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "done") {
++					t.Fatal("parsed provider error lost failover")
++				}
++				return
++			}
++			if submissions.Load() != 1 || response.Code != http.StatusBadGateway || ojson.Get(response.Body.String(), "error.code").String() != "upstream_outcome_unknown" || response.Header().Get("x-should-retry") != "false" {
++				t.Fatal("malformed provider bytes regained replay permission")
++			}
++		})
++	}
++}
+diff --git a/sdk/api/handlers/openai/http_submission_credits_translation_test.go b/sdk/api/handlers/openai/http_submission_credits_translation_test.go
+new file mode 100644
+index 0000000000..6d59bb8481
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_credits_translation_test.go
+@@ -0,0 +1,123 @@
++package openai
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++// Model cooldown forces entry through the real credits fallback. Home mode would
++// skip that fallback entirely, so a Home dispatcher cannot exercise this bug.
++func TestHTTPSubmissionAntigravityCreditsTranslationIsTerminal(t *testing.T) {
++	for _, credentials := range []int{1, 2} {
++		t.Run(fmt.Sprintf("credentials=%d", credentials), func(t *testing.T) {
++			var submissions atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				body, errRead := io.ReadAll(r.Body)
++				if errRead != nil {
++					t.Error(errRead)
++					return
++				}
++				if r.Method != http.MethodPost || (r.URL.Path != "/v1internal:generateContent" && r.URL.Path != "/v1internal:streamGenerateContent") {
++					t.Errorf("unexpected upstream request: %s %s", r.Method, r.URL.Path)
++					w.WriteHeader(http.StatusBadRequest)
++					return
++				}
++				submissions.Add(1)
++				if ojson.GetBytes(body, "enabledCreditTypes.0").String() != "GOOGLE_ONE_AI" {
++					t.Errorf("generation did not come through credits fallback: %s", body)
++				}
++				w.Header().Set("Content-Type", "application/json")
++				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"functions__apply_patch","args":{"input":1}}}]},"finishReason":"STOP"}]}}`)
++
++			}))
++			defer upstream.Close()
++
++			cfg := &config.Config{QuotaExceeded: config.QuotaExceeded{AntigravityCredits: true}, OpenAICompatibility: []config.OpenAICompatibility{{Name: "antigravity", Models: []config.OpenAICompatibilityModel{{Name: "gemini-2.5-flash", Alias: "claude-credits-translation"}}}}}
++			manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++			manager.SetConfig(cfg)
++			manager.SetRetryConfig(0, 0, 0)
++			manager.RegisterExecutor(runtimeexecutor.NewAntigravityExecutor(cfg))
++			manager.RegisterExecutor(&creditsPoolRoutedAntigravityExecutor{runtimeexecutor.NewAntigravityExecutor(cfg)})
++			const model = "claude-credits-translation"
++			until := time.Now().Add(30 * time.Minute)
++			for index := 0; index < credentials; index++ {
++				authID := fmt.Sprintf("credits-terminal-%s-%d", t.Name(), index)
++				auth := &coreauth.Auth{
++					ID: authID, Provider: "antigravity", Status: coreauth.StatusActive,
++					ProxyURL:   "direct",
++					Attributes: map[string]string{"base_url": upstream.URL, "source": "config:antigravity", "compat_name": "antigravity", "provider_key": "antigravity"},
++					Metadata: map[string]any{
++						"access_token": "synthetic-credits-token",
++						"project_id":   "synthetic-credits-project",
++						"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
++					},
++					ModelStates: map[string]*coreauth.ModelState{
++						model: {
++							Unavailable: true, NextRetryAfter: until,
++							Quota: coreauth.QuotaState{Exceeded: true, NextRecoverAt: until},
++						},
++					},
++				}
++				if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++					t.Fatal(errRegister)
++				}
++				registry.GetGlobalRegistry().RegisterClient(authID, "antigravity", []*registry.ModelInfo{{ID: model}})
++				// Fresh hints prevent background loadCodeAssist refreshes.
++				coreauth.SetAntigravityCreditsHint(authID, coreauth.AntigravityCreditsHint{Known: true, Available: true, UpdatedAt: time.Now()})
++				t.Cleanup(func() {
++					registry.GetGlobalRegistry().UnregisterClient(authID)
++					coreauth.SetAntigravityCreditsHint(authID, coreauth.AntigravityCreditsHint{})
++				})
++			}
++
++			base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++			router := gin.New()
++			router.POST("/v1/responses", NewOpenAIResponsesAPIHandler(base).Responses)
++			body := ojson.NewDocString(`{"input":"make a patch","stream":false,"tools":[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"apply_patch","format":{"type":"grammar","definition":"start: patch"}}]}]}`)
++			if errSet := body.Set("model", model); errSet != nil {
++				t.Fatal(errSet)
++			}
++
++			request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body.String()))
++			request.Header.Set("Content-Type", "application/json")
++			response := httptest.NewRecorder()
++			router.ServeHTTP(response, request)
++
++			wire := response.Body.String()
++			t.Logf("generation submissions=%d status=%d body=%s", submissions.Load(), response.Code, wire)
++			if got := submissions.Load(); got != 1 {
++				t.Errorf("credits fallback submitted generation %d times after accepted translation failure, want 1", got)
++			}
++			if response.Code != http.StatusBadGateway {
++				t.Errorf("status=%d, want 502 for unknown generation outcome", response.Code)
++			}
++			if !ojson.Valid(wire) || ojson.Get(wire, "error.code").String() != "upstream_outcome_unknown" {
++				t.Errorf("credits fallback discarded unknown outcome: %s", wire)
++			}
++			retryable := ojson.Get(wire, "error.retryable")
++			if !retryable.Exists() || retryable.Bool() {
++				t.Errorf("unknown outcome must advertise retryable=false: %s", wire)
++			}
++			if got := response.Header().Get("x-should-retry"); got != "false" {
++				t.Errorf("x-should-retry=%q, want false", got)
++			}
++		})
++	}
++}
+diff --git a/sdk/api/handlers/openai/http_submission_empty_nonstream_test.go b/sdk/api/handlers/openai/http_submission_empty_nonstream_test.go
+new file mode 100644
+index 0000000000..3fb0733a4c
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_empty_nonstream_test.go
+@@ -0,0 +1,40 @@
++package openai
++
++import (
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++)
++
++func TestHTTPSubmissionEmptyAcceptedNonStreamDoesNotReplay(t *testing.T) {
++	var accepted atomic.Int32
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if _, errRead := io.Copy(io.Discard, r.Body); errRead != nil {
++			t.Error(errRead)
++			return
++		}
++		accepted.Add(1)
++		w.WriteHeader(http.StatusOK)
++	}))
++	defer upstream.Close()
++	response := submissionRequest(t, upstream.URL, false, nil)
++	body := response.Body.String()
++	t.Logf("accepted=%d status=%d retry=%q body=%s", accepted.Load(), response.Code, response.Header().Get("x-should-retry"), body)
++	if accepted.Load() != 1 {
++		t.Errorf("empty accepted response replayed: submissions=%d want1", accepted.Load())
++	}
++	if response.Code != http.StatusBadGateway {
++		t.Errorf("status=%d want502", response.Code)
++	}
++	for _, field := range []string{`"code":"upstream_outcome_unknown"`, `"retryable":false`} {
++		if !strings.Contains(body, field) {
++			t.Errorf("missing %s in %s", field, body)
++		}
++	}
++	if response.Header().Get("x-should-retry") != "false" {
++		t.Error("missing nonretryable header")
++	}
++}
+diff --git a/sdk/api/handlers/openai/http_submission_local_error_matrix_test.go b/sdk/api/handlers/openai/http_submission_local_error_matrix_test.go
+new file mode 100644
+index 0000000000..d0dcea2afa
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_local_error_matrix_test.go
+@@ -0,0 +1,92 @@
++package openai
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++func TestHTTPSubmissionAcceptedLocalFailureMatrix(t *testing.T) {
++	const geminiBadTool = `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"functions__apply_patch","args":{"input":1}}}]},"finishReason":"STOP"}]}`
++	const openaiBadTool = `{"id":"synthetic","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_synthetic","type":"function","function":{"name":"functions__apply_patch","arguments":"{\"input\":1}"}}]},"finish_reason":"tool_calls"}]}`
++	for _, tc := range []struct {
++		name      string
++		model     string
++		executor  coreauth.ProviderExecutor
++		payload   string
++		encoding  string
++		mediaType string
++	}{
++		{"gemini_tool_translation", "gemini-2.5-flash", runtimeexecutor.NewGeminiExecutor(&config.Config{}), geminiBadTool, "", "application/json"},
++		{"vertex_tool_translation", "gemini-2.5-flash", runtimeexecutor.NewGeminiVertexExecutor(&config.Config{}), geminiBadTool, "", "application/json"},
++		{"antigravity_tool_translation", "gemini-2.5-flash", runtimeexecutor.NewAntigravityExecutor(&config.Config{}), `{"response":` + geminiBadTool + `}`, "", "application/json"},
++		{"openai_tool_translation", "local-error-openai", runtimeexecutor.NewOpenAICompatExecutor("local-error-openai", &config.Config{}), openaiBadTool, "", "application/json"},
++		{"claude_buffered_validation", "claude-opus-5", runtimeexecutor.NewClaudeExecutor(&config.Config{}), "data: {\"type\":\"message_start\",\"message\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n", "", "text/event-stream"},
++		{"codex_response_decoder", "gpt-5.2-codex", runtimeexecutor.NewCodexExecutor(&config.Config{}), `{}`, "synthetic-unsupported", "application/json"},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			var submissions atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if _, errRead := io.Copy(io.Discard, r.Body); errRead != nil {
++					t.Error(errRead)
++					return
++				}
++				if r.Method != http.MethodPost {
++					t.Errorf("unexpected upstream method=%s", r.Method)
++				}
++				submissions.Add(1)
++				w.Header().Set("Content-Type", tc.mediaType)
++				if tc.encoding != "" {
++					w.Header().Set("Content-Encoding", tc.encoding)
++				}
++				_, _ = io.WriteString(w, tc.payload)
++			}))
++			defer upstream.Close()
++			manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++			manager.RegisterExecutor(tc.executor)
++			for _, suffix := range []string{"a", "b"} {
++				auth := &coreauth.Auth{ID: t.Name() + suffix, Provider: tc.executor.Identifier(), Status: coreauth.StatusActive,
++					ProxyURL: "direct", Attributes: map[string]string{"base_url": upstream.URL, "api_key": "synthetic"},
++					Metadata: map[string]any{"access_token": "synthetic", "project_id": "synthetic", "expired": time.Now().Add(time.Hour).Format(time.RFC3339)}}
++				if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++					t.Fatal(errRegister)
++				}
++				registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: tc.model}})
++				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++			}
++			base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++			router := gin.New()
++			router.POST("/v1/responses", NewOpenAIResponsesAPIHandler(base).Responses)
++			body := ojson.NewDocString(`{"model":"","input":"make a patch","stream":false,"tools":[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"apply_patch","format":{"type":"grammar","definition":"start: patch"}}]}]}`)
++			if errSet := body.Set("model", tc.model); errSet != nil {
++				t.Fatal(errSet)
++			}
++			request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body.String()))
++			request.Header.Set("Content-Type", "application/json")
++			response := httptest.NewRecorder()
++			router.ServeHTTP(response, request)
++			t.Logf("accepted=%d status=%d retry=%q body=%s", submissions.Load(), response.Code, response.Header().Get("x-should-retry"), response.Body.String())
++			if got := submissions.Load(); got != 1 {
++				t.Errorf("accepted upstream POSTs=%d, want 1", got)
++			}
++			if response.Code != http.StatusBadGateway || ojson.Get(response.Body.String(), "error.code").String() != "upstream_outcome_unknown" || ojson.Get(response.Body.String(), "error.retryable").Raw != "false" || response.Header().Get("x-should-retry") != "false" {
++				t.Fatal("local executor failure lost the nonretryable unknown outcome")
++			}
++		})
++	}
++}
+diff --git a/sdk/api/handlers/openai/http_submission_provider_error_matrix_test.go b/sdk/api/handlers/openai/http_submission_provider_error_matrix_test.go
+new file mode 100644
+index 0000000000..d5cacd4157
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_provider_error_matrix_test.go
+@@ -0,0 +1,71 @@
++package openai
++
++import (
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++)
++
++func TestHTTPSubmissionProviderRefusalBeforeAcceptanceCanFailOver(t *testing.T) {
++	for _, status := range []int{http.StatusForbidden, http.StatusServiceUnavailable} {
++		t.Run(fmt.Sprint(status), func(t *testing.T) {
++			var attempts atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				w.Header().Set("Content-Type", "application/json")
++				if attempts.Add(1) == 1 {
++					w.WriteHeader(status)
++					_, _ = io.WriteString(w, `{"error":{"message":"synthetic refusal"}}`)
++					return
++				}
++				_, _ = io.WriteString(w, `{"id":"ok","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
++			}))
++			defer upstream.Close()
++			response := submissionRequest(t, upstream.URL, false, nil)
++			if response.Code != http.StatusOK || attempts.Load() != 2 {
++				t.Fatalf("status=%d attempts=%d body=%s", response.Code, attempts.Load(), response.Body.String())
++			}
++		})
++	}
++}
++
++func TestHTTPSubmissionAcceptedProviderPayloadMustContainErrorDetails(t *testing.T) {
++	for _, tc := range []struct {
++		name    string
++		payload string
++		refusal bool
++	}{
++		{"explicit_refusal", `{"error":{"status":503,"message":"synthetic refusal"}}`, true},
++		{"empty_error_object", `{"error":{}}`, false},
++		{"error_event_without_error_payload", `{}`, false},
++		{"malformed_error_json", `{"error":{"message":"truncated"}`, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			var attempts atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				w.Header().Set("Content-Type", "text/event-stream")
++				if attempts.Add(1) == 1 {
++					_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", tc.payload)
++					return
++				}
++				_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
++			}))
++			defer upstream.Close()
++			response := submissionRequest(t, upstream.URL, true, nil)
++			if tc.refusal {
++				if response.Code != http.StatusOK || attempts.Load() != 2 || !strings.Contains(response.Body.String(), "done") {
++					t.Fatalf("provider refusal no longer fails over: status=%d attempts=%d body=%s", response.Code, attempts.Load(), response.Body.String())
++				}
++				return
++			}
++			if response.Code != http.StatusBadGateway || attempts.Load() != 1 || !strings.Contains(response.Body.String(), `"code":"upstream_outcome_unknown"`) || response.Header().Get("x-should-retry") != "false" {
++				t.Fatalf("unparsed failure treated as provider refusal: status=%d attempts=%d body=%s", response.Code, attempts.Load(), response.Body.String())
++			}
++		})
++	}
++}
+diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
+index 1d2f83c31d..2dd6c49923 100644
+--- a/sdk/cliproxy/auth/conductor_home.go
++++ b/sdk/cliproxy/auth/conductor_home.go
+@@ -1520,6 +1520,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
+ 			creditsCtx = syncMetadataSessionToContext(creditsCtx, creditsOpts.Metadata)
+ 			executionSeq := m.nextExecutionSeq()
+ 			resp, errExec := c.executor.Execute(creditsCtx, c.auth, execReq, creditsOpts)
++			errExec = httptransport.ClassifySubmissionError(creditsCtx, errExec)
+ 			result := Result{AuthID: c.auth.ID, Provider: c.provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: creditsOpts, CredentialVersion: c.auth.CredentialVersion, RegistrationEpoch: c.auth.RegistrationEpoch, ExecutionSeq: executionSeq}
+ 			if errExec != nil {
+ 				result.Error = resultErrorFromError(errExec)
+diff --git a/sdk/cliproxy/executor/websocket.go b/sdk/cliproxy/executor/websocket.go
+index 4c1f084d15..fdcfacb3bc 100644
+--- a/sdk/cliproxy/executor/websocket.go
++++ b/sdk/cliproxy/executor/websocket.go
+@@ -66,6 +66,12 @@ func (e *UpstreamWebsocketTurnError) StatusCode() int {
+ }
+ func (*UpstreamWebsocketTurnError) IsRequestScoped() bool { return true }
+ 
++// Preserve the native lost-turn error and its correlation through shared submission
++// classification. A rejected or idle operation has no ambiguous generation outcome.
++func (e *UpstreamWebsocketTurnError) IsOutcomeUnknown() bool {
++	return !e.FullContextRequired && !e.NotSent && !e.Idle
++}
++
+ // IsUpstreamWebsocketTurnError reports whether err is a recoverable upstream websocket loss.
+ func IsUpstreamWebsocketTurnError(err error) bool {
+ 	var turnErr *UpstreamWebsocketTurnError
+diff --git a/sdk/httptransport/decorator.go b/sdk/httptransport/decorator.go
+index 987ad67728..30b113dff5 100644
+--- a/sdk/httptransport/decorator.go
++++ b/sdk/httptransport/decorator.go
+@@ -28,10 +28,9 @@ func WithDecorator(ctx context.Context, decorator Decorator) context.Context {
+ 
+ // WithoutDecorator suppresses intermediate helper decoration. A specialized
+ // executor that further configures its helper's transport must apply Decorate
+-// once, after its own protocol/pool policy is complete. Submission tracking is
+-// suppressed here too so it wraps that final transport exactly once.
++// once, after its own protocol/pool policy is complete.
+ func WithoutDecorator(ctx context.Context) context.Context {
+-	return context.WithValue(WithDecorator(ctx, nil), submissionKey{}, (*submissionState)(nil))
++	return WithDecorator(ctx, nil)
+ }
+ 
+ // InheritDecorator copies a decorator from fallback into ctx when ctx does not
+@@ -52,33 +51,25 @@ func InheritDecorator(ctx, fallback context.Context) context.Context {
+ 	return ctx
+ }
+ 
+-// Decorate applies observation and submission tracking after transport selection.
+-// Without either, the exact original client is returned. The selected pool, proxy
+-// and protocol policy survive; only the client value is copied.
++// Decorate observes all HTTP traffic, including credential and auxiliary calls.
++// GenerationTransport guards submission only at the generation send boundary.
+ func Decorate(ctx context.Context, client *http.Client) *http.Client {
+ 	if ctx == nil || client == nil {
+ 		return client
+ 	}
+ 	decorator, _ := ctx.Value(decoratorKey{}).(Decorator)
+-	state, _ := ctx.Value(submissionKey{}).(*submissionState)
+-	if decorator == nil && state == nil {
++	if decorator == nil {
+ 		return client
+ 	}
+ 	next := client.Transport
+ 	if next == nil {
+ 		next = http.DefaultTransport
+ 	}
+-	wrapped := next
+-	if decorator != nil {
+-		if observed := decorator(next); observed != nil {
+-			wrapped = observed
+-		} else if state == nil {
+-			return client
+-		}
+-	}
+-	if state != nil {
+-		wrapped = &submissionTransport{next: wrapped, state: state}
++	wrapped := decorator(next)
++	if wrapped == nil {
++		return client
+ 	}
++
+ 	clone := *client
+ 	clone.Transport = wrapped
+ 	return &clone
+diff --git a/sdk/httptransport/submission.go b/sdk/httptransport/submission.go
+index 724d090718..9838ae24e5 100644
+--- a/sdk/httptransport/submission.go
++++ b/sdk/httptransport/submission.go
+@@ -63,18 +63,17 @@ func (*OutcomeUnknownError) IsRequestScoped() bool { return true }
+ // configured error rule would otherwise select another model or credential.
+ func IsOutcomeUnknown(err error) bool {
+ 	var unknown *OutcomeUnknownError
+-	return errors.As(err, &unknown)
++	if errors.As(err, &unknown) {
++		return true
++	}
++	var native interface{ IsOutcomeUnknown() bool }
++	return errors.As(err, &native) && native.IsOutcomeUnknown()
+ }
+ 
+-// ClassifySubmissionError preserves observed transport failures and classifies
+-// incomplete responses. A definitive provider error can still allow failover.
++// ClassifySubmissionError treats every failure after acceptance as ambiguous
++// unless the executor positively parsed a provider error payload.
+ func ClassifySubmissionError(ctx context.Context, err error) error {
+-	var truncated interface{ IsStreamTruncated() bool }
+-	var malformed interface{ IsResponseIncomplete() bool }
+-	incomplete := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+-		(errors.As(err, &truncated) && truncated.IsStreamTruncated()) ||
+-		(errors.As(err, &malformed) && malformed.IsResponseIncomplete())
+-	return classifySubmissionError(ctx, err, incomplete)
++	return classifySubmissionError(ctx, err, false)
+ }
+ 
+ // ClassifyIncompleteResponse marks a protocol failure that left an accepted
+@@ -94,12 +93,63 @@ func classifySubmissionError(ctx context.Context, err error, incomplete bool) er
+ 	if terminal := state.terminal.Load(); terminal != nil {
+ 		return terminal
+ 	}
+-	if !state.accepted.Load() || (!incomplete && !state.redirected.Load()) {
++	if !state.accepted.Load() {
++		return err
++	}
++	var provider interface{ IsProviderErrorPayload() bool }
++	if !incomplete && !state.redirected.Load() && errors.As(err, &provider) && provider.IsProviderErrorPayload() {
+ 		return err
+ 	}
+ 	return state.fail(err)
+ }
+ 
++// WriteGeneration guards a non-HTTP generation frame. Once the writer runs,
++// an error cannot prove that no bytes left. Check pre-write failures before
++// calling it; handshakes and control frames must not call it.
++func WriteGeneration(ctx context.Context, write func() error) error {
++	var state *submissionState
++	var disabled bool
++	if ctx != nil {
++		var present bool
++		state, present = ctx.Value(submissionKey{}).(*submissionState)
++		disabled = present && state == nil
++	}
++	if state != nil {
++		if terminal := state.terminal.Load(); terminal != nil {
++			return terminal
++		}
++	}
++	if errWrite := write(); errWrite != nil {
++		if disabled {
++			return errWrite
++		}
++		if state != nil {
++			return state.fail(errWrite)
++		}
++		return &OutcomeUnknownError{Cause: errWrite}
++	}
++	if state != nil {
++		state.accepted.Store(true)
++	}
++	return nil
++}
++
++// GenerationTransport guards a model send after credentials and payload preparation.
++// Generic HTTP client construction must not track token or auxiliary requests.
++func GenerationTransport(ctx context.Context, next http.RoundTripper) http.RoundTripper {
++	if next == nil {
++		next = http.DefaultTransport
++	}
++	if ctx == nil {
++		return next
++	}
++	state, _ := ctx.Value(submissionKey{}).(*submissionState)
++	if state == nil {
++		return next
++	}
++	return &submissionTransport{next: next, state: state}
++}
++
+ type submissionTransport struct {
+ 	next  http.RoundTripper
+ 	state *submissionState
+diff --git a/sdk/httptransport/submission_classification_test.go b/sdk/httptransport/submission_classification_test.go
+new file mode 100644
+index 0000000000..1f1c1e0a71
+--- /dev/null
++++ b/sdk/httptransport/submission_classification_test.go
+@@ -0,0 +1,99 @@
++package httptransport
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++)
++
++type parsedProviderFailure struct{ error }
++
++func (parsedProviderFailure) IsProviderErrorPayload() bool { return true }
++
++func TestSubmissionAcceptedErrorsDefaultToUnknown(t *testing.T) {
++	for _, tc := range []struct {
++		name     string
++		err      error
++		provider bool
++	}{
++		{"local validation", errors.New("invalid response"), false},
++		{"local translation", errors.New("invalid tool arguments"), false},
++		{"local error-shaped JSON", errors.New(`{"error":{"message":"local translation failed"}}`), false},
++		{"cancelled after acceptance", context.Canceled, false},
++		{"EOF", io.EOF, false},
++		{"parsed provider refusal", parsedProviderFailure{errors.New("provider refused")}, true},
++		{"wrapped provider refusal", fmt.Errorf("provider response: %w", parsedProviderFailure{errors.New("provider refused")}), true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				w.WriteHeader(http.StatusOK)
++			}))
++			defer server.Close()
++			ctx := WithSubmissionTracking(context.Background())
++			response, errDo := generationClient(ctx, server.Client()).Post(server.URL, "application/json", strings.NewReader(`{}`))
++			if errDo != nil {
++				t.Fatal(errDo)
++			}
++			if errClose := response.Body.Close(); errClose != nil {
++				t.Fatal(errClose)
++			}
++			classified := ClassifySubmissionError(ctx, tc.err)
++			if tc.provider {
++				if classified != tc.err {
++					t.Fatalf("parsed provider refusal changed: %v", classified)
++				}
++				return
++			}
++			if !IsOutcomeUnknown(classified) || !errors.Is(classified, tc.err) {
++				t.Fatalf("local error=%v, want unknown outcome retaining cause", classified)
++			}
++			if ClassifySubmissionError(ctx, parsedProviderFailure{errors.New("later refusal")}) != classified {
++				t.Fatal("provider payload cleared an already terminal attempt")
++			}
++		})
++	}
++}
++
++func generationClient(ctx context.Context, client *http.Client) *http.Client {
++	clone := *Decorate(ctx, client)
++	clone.Transport = GenerationTransport(ctx, clone.Transport)
++	return &clone
++}
++
++func TestSubmissionAuxiliaryHTTPDoesNotChangeGenerationOutcome(t *testing.T) {
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = io.Copy(io.Discard, r.Body)
++		_, _ = io.WriteString(w, `{}`)
++	}))
++	defer server.Close()
++	ctx := WithSubmissionTracking(context.Background())
++	local := errors.New("generation has not been submitted")
++	response, errDo := Decorate(ctx, server.Client()).Post(server.URL, "application/json", strings.NewReader(`{}`))
++	if errDo != nil {
++		t.Fatal(errDo)
++	}
++	_ = response.Body.Close()
++	if ClassifySubmissionError(ctx, local) != local {
++		t.Fatal("auxiliary 200 accepted a generation")
++	}
++	response, errDo = generationClient(WithoutDecorator(ctx), server.Client()).Post(server.URL, "application/json", strings.NewReader(`{}`))
++	if errDo != nil {
++		t.Fatal(errDo)
++	}
++	_ = response.Body.Close()
++	if !IsOutcomeUnknown(ClassifySubmissionError(ctx, local)) {
++		t.Fatal("generation 200 was not tracked")
++	}
++	// Even a terminal generation cannot prevent a credential HTTP exchange.
++	response, errDo = Decorate(ctx, server.Client()).Post(server.URL, "application/json", strings.NewReader(`{}`))
++	if errDo != nil {
++		t.Fatal(errDo)
++	}
++	_ = response.Body.Close()
++}
+diff --git a/sdk/httptransport/submission_test.go b/sdk/httptransport/submission_test.go
+index 1dde55d822..46ade9e603 100644
+--- a/sdk/httptransport/submission_test.go
++++ b/sdk/httptransport/submission_test.go
+@@ -2,6 +2,7 @@ package httptransport
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"io"
+ 	"net/http"
+ 	"net/http/httptest"
+@@ -49,7 +50,7 @@ func TestSubmissionGuardPreventsInternalPOSTReplay(t *testing.T) {
+ 					_ = conn.Close()
+ 				}))
+ 				defer server.Close()
+-				client := Decorate(WithSubmissionTracking(context.Background()), server.Client())
++				client := generationClient(WithSubmissionTracking(context.Background()), server.Client())
+ 				warm, errWarm := client.Get(server.URL)
+ 				if errWarm != nil {
+ 					t.Fatal(errWarm)
+@@ -95,7 +96,7 @@ func TestSubmissionGuardHTTPRefusalIsNotAcceptance(t *testing.T) {
+ 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
+ 	defer server.Close()
+ 	ctx := WithSubmissionTracking(context.Background())
+-	client := Decorate(ctx, server.Client())
++	client := generationClient(ctx, server.Client())
+ 	response, errDo := client.Post(server.URL, "text/plain", strings.NewReader("request"))
+ 	if errDo != nil {
+ 		t.Fatal(errDo)
+@@ -124,7 +125,7 @@ func TestSubmissionGuardPreservesSafeEmptyRequestRetry(t *testing.T) {
+ 		_ = conn.Close()
+ 	}))
+ 	defer server.Close()
+-	client := Decorate(WithSubmissionTracking(context.Background()), server.Client())
++	client := generationClient(WithSubmissionTracking(context.Background()), server.Client())
+ 	for range 2 {
+ 		response, errGet := client.Get(server.URL)
+ 		if errGet != nil {
+@@ -137,3 +138,48 @@ func TestSubmissionGuardPreservesSafeEmptyRequestRetry(t *testing.T) {
+ 		t.Fatalf("safe request not retried: calls=%d", calls.Load())
+ 	}
+ }
++
++func TestWriteGenerationSubmissionBoundary(t *testing.T) {
++	ctx := WithSubmissionTracking(context.Background())
++	if err := WriteGeneration(ctx, func() error { return nil }); err != nil {
++		t.Fatal(err)
++	}
++	terminal := ClassifySubmissionError(ctx, io.EOF)
++	if !IsOutcomeUnknown(terminal) {
++		t.Fatalf("successful write lost submission: %v", terminal)
++	}
++	calls := 0
++	if err := WriteGeneration(ctx, func() error { calls++; return nil }); err != terminal || calls != 0 {
++		t.Fatalf("terminal attempt wrote again: err=%v calls=%d", err, calls)
++	}
++	auxiliary := WithoutSubmissionTracking(ctx)
++	if err := WriteGeneration(auxiliary, func() error { calls++; return nil }); err != nil || calls != 1 {
++		t.Fatalf("auxiliary request blocked: err=%v calls=%d", err, calls)
++	}
++	if err := ClassifySubmissionError(auxiliary, io.EOF); IsOutcomeUnknown(err) {
++		t.Fatal("auxiliary request acquired submission tracking")
++	}
++}
++
++func TestWriteGenerationFailedFrameIsTerminal(t *testing.T) {
++	for _, ctx := range []context.Context{WithSubmissionTracking(context.Background()), context.Background(), nil} {
++		failure := io.ErrClosedPipe
++		errWrite := WriteGeneration(ctx, func() error { return failure })
++		if !IsOutcomeUnknown(errWrite) || !errors.Is(errWrite, failure) {
++			t.Fatalf("write failure lost ambiguity or cause: %v", errWrite)
++		}
++	}
++	ctx := WithSubmissionTracking(context.Background())
++	terminal := WriteGeneration(ctx, func() error { return io.ErrClosedPipe })
++	if errClassify := ClassifySubmissionError(ctx, parsedProviderFailure{errors.New("refusal")}); errClassify != terminal {
++		t.Fatalf("provider marker overrode terminal write error: %v", errClassify)
++	}
++	writes := 0
++	if errWrite := WriteGeneration(ctx, func() error { writes++; return nil }); errWrite != terminal || writes != 0 {
++		t.Fatalf("terminal attempt wrote again: %v writes=%d", errWrite, writes)
++	}
++	auxiliary := WithoutSubmissionTracking(ctx)
++	if errWrite := WriteGeneration(auxiliary, func() error { return io.ErrClosedPipe }); errWrite != io.ErrClosedPipe {
++		t.Fatalf("auxiliary write acquired tracking: %v", errWrite)
++	}
++}
+diff --git a/sdk/pluginapi/types.go b/sdk/pluginapi/types.go
+index 9e84fa29f3..cfdadf143d 100644
+--- a/sdk/pluginapi/types.go
++++ b/sdk/pluginapi/types.go
+@@ -1043,6 +1043,9 @@ type HTTPRequest struct {
+ 	Body []byte
+ 	// WireProfile specifies optional outbound HTTP wire profile settings.
+ 	WireProfile *HTTPWireProfile `json:"wire_profile,omitempty"`
++	// Auxiliary identifies credential, token, or metadata calls within model execution.
++	// Other host operations are untracked; executor calls default to generation.
++	Auxiliary bool `json:"auxiliary,omitempty"`
+ }
+ 
+ // HTTPResponse describes a non-streaming host HTTP response.

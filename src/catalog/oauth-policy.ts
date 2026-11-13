@@ -88,6 +88,7 @@ export interface OAuthEvidence {
   sources: ReadonlyMap<string, string>;
   hostedClients: ReadonlySet<string>;
   metadata: ReadonlyMap<string, { sha256: string; document: unknown }>;
+  metadataFailures?: ReadonlyMap<string, string>;
 }
 
 /** Source content binds manual review to the declaration that a person will actually install. */
@@ -123,18 +124,43 @@ export function oauthFitness(
         );
       else if (decision.kind === "automatic") {
         const proof = evidence.metadata.get(decision.metadata);
-        const document = proof?.document;
-        if (
-          proof?.sha256 !== decision.metadataSha256 ||
-          !record(document) ||
-          !https(document.issuer) ||
-          !https(document.authorization_endpoint) ||
-          !https(document.token_endpoint) ||
-          (decision.protocol === "dcr"
-            ? !https(document.registration_endpoint)
-            : document.client_id_metadata_document_supported !== true)
-        )
-          problems.push(`${entry.id}/${method}: automatic client metadata is missing or changed`);
+        if (proof === undefined) {
+          problems.push(
+            `${entry.id}/${method}: automatic client metadata is unavailable (${decision.metadata}: ${evidence.metadataFailures?.get(decision.metadata) ?? "no document"})`,
+          );
+          continue;
+        }
+        if (proof.sha256 !== decision.metadataSha256) {
+          problems.push(
+            `${entry.id}/${method}: automatic client metadata changed (metadataSha256: ${decision.metadataSha256} -> ${proof.sha256})`,
+          );
+          continue;
+        }
+        const document = proof.document;
+        const rejectProtocolField = (property: string, expected: string, observed: unknown) => {
+          problems.push(
+            `${entry.id}/${method}: automatic client metadata does not support the reviewed protocol (${property}: expected ${expected}, observed ${JSON.stringify(observed) ?? "missing"})`,
+          );
+        };
+        if (!record(document)) {
+          rejectProtocolField("document", "object", document);
+          continue;
+        }
+        for (const property of [
+          "issuer",
+          "authorization_endpoint",
+          "token_endpoint",
+          ...(decision.protocol === "dcr" ? ["registration_endpoint"] : []),
+        ]) {
+          if (!https(document[property]))
+            rejectProtocolField(property, "HTTPS URL", document[property]);
+        }
+        if (decision.protocol === "cimd" && document.client_id_metadata_document_supported !== true)
+          rejectProtocolField(
+            "client_id_metadata_document_supported",
+            "true",
+            document.client_id_metadata_document_supported,
+          );
       }
     }
     for (const method of Object.keys(review.methods))

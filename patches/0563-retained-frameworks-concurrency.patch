@@ -1,0 +1,266 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks.ts b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks.ts
+@@ -3,9 +3,9 @@
+ import { Effect, Schema } from "effect";
+ import { ProductionOperationRefused } from "./contracts.ts";
+ import { sha256 } from "./crypto.ts";
++import { retainedFrameworkRecordReader } from "./retained-frameworks-records.ts";
+ import {
+   retainedFrameworkReadBounds,
+-  retryRetainedFrameworkRead,
+   withRetainedFrameworkReadBudget,
+ } from "./retained-frameworks-read.ts";
+ 
+@@ -184,57 +184,38 @@
+         group.deployments.add(ref.deployment);
+         grouped.set(ref.build, group);
+       }
+-      let bytes = 0;
+-      const read = (key: string) =>
+-        retryRetainedFrameworkRead(
++      const read = yield* retainedFrameworkRecordReader(progress, objects, retainedFrameworkBounds);
++      const builds = yield* Effect.forEach(
++        [...grouped],
++        ([build, group]) =>
+           Effect.gen(function* () {
+-            progress.objectClass = key.endsWith("/worker.json") ? "split_record" : "legacy_record";
+-            progress.readPhase = "read";
+-            const remaining = retainedFrameworkBounds.totalBytes - bytes;
+-            const max = Math.min(retainedFrameworkBounds.objectBytes, remaining);
+-            if (max <= 0) return yield* retainedFrameworkRefused("total byte bound");
+-            // A failed stream may already have delivered bytes. Retain its whole reservation;
+-            // only a successful read or confirmed absence can refund the unused allowance.
+-            bytes += max;
+-            progress.work.recordAttempts++;
+-            const body = yield* objects.read(key, max);
+-            if (body !== null) {
+-              if (body.byteLength > max) return yield* retainedFrameworkRefused("byte bound");
+-              bytes -= max - body.byteLength;
+-            } else {
+-              bytes -= max;
+-            }
+-            return body;
+-          }),
+-        );
+-      const builds = yield* Effect.forEach([...grouped], ([build, group]) =>
+-        Effect.gen(function* () {
+-          const body = yield* read(`${build}/worker.json`);
+-          const legacy = body === null ? yield* read(`${build}.json`) : null;
+-          progress.readPhase = "project";
+-          const result: Projection =
+-            body !== null
+-              ? yield* project(body, true, frameworks)
+-              : legacy !== null
+-                ? yield* project(legacy, false, frameworks)
+-                : { complete: false, reason: "missing_record" };
+-          return result;
+-        }).pipe(
+-          Effect.catch((error) =>
+-            error instanceof ProductionOperationRefused
+-              ? Effect.fail(error)
+-              : Effect.succeed({ complete: false, reason: "unreadable_record" } as const),
++            const body = yield* read(`${build}/worker.json`);
++            const legacy = body === null ? yield* read(`${build}.json`) : null;
++            progress.readPhase = "project";
++            const result: Projection =
++              body !== null
++                ? yield* project(body, true, frameworks)
++                : legacy !== null
++                  ? yield* project(legacy, false, frameworks)
++                  : { complete: false, reason: "missing_record" };
++            return result;
++          }).pipe(
++            Effect.catch((error) =>
++              error instanceof ProductionOperationRefused
++                ? Effect.fail(error)
++                : Effect.succeed({ complete: false, reason: "unreadable_record" } as const),
++            ),
++            Effect.map((result) => {
++              progress.work.completedBuilds++;
++              return {
++                build,
++                apps: [...group.apps].sort(),
++                deployments: [...group.deployments].sort(),
++                ...result,
++              };
++            }),
+           ),
+-          Effect.map((result) => {
+-            progress.work.completedBuilds++;
+-            return {
+-              build,
+-              apps: [...group.apps].sort(),
+-              deployments: [...group.deployments].sort(),
+-              ...result,
+-            };
+-          }),
+-        ),
++        { concurrency: retainedFrameworkReadBounds.recordConcurrency },
+       );
+       const tuples = new Map<string, Identity & { apps: Set<string>; deployments: Set<string> }>();
+       for (const build of builds) {
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-read.ts b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-read.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-read.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-read.ts
+@@ -4,6 +4,8 @@
+ export const productionOperationTimeoutMs = 25_000;
+ 
+ export const retainedFrameworkReadBounds = {
++  // Four reads leave headroom under Workers' six simultaneous outgoing connections.
++  recordConcurrency: 4,
+   attempts: 3,
+   attemptMs: 3000,
+   inventoryMs: 18_000,
+@@ -67,6 +69,7 @@
+   objectClass: RetainedFrameworkReadDiagnostic["objectClass"];
+   readPhase: RetainedFrameworkReadDiagnostic["readPhase"];
+   work: RetainedFrameworkReadWork;
++  refusalPosition?: Pick<RetainedFrameworkReadDiagnostic, "objectClass" | "readPhase">;
+ }
+ export const RetainedFrameworkReadProgress = Context.Service<RetainedFrameworkReadProgress>(
+   "production-ops/RetainedFrameworkReadProgress",
+@@ -103,8 +106,8 @@
+               Effect.flatMap((now) =>
+                 Effect.fail(
+                   new RetainedFrameworkReadRefused(error.message, {
+-                    objectClass: progress.objectClass,
+-                    readPhase: progress.readPhase,
++                    objectClass: (progress.refusalPosition ?? progress).objectClass,
++                    readPhase: (progress.refusalPosition ?? progress).readPhase,
+                     elapsedMs: Math.min(86_400_000, Math.max(0, now - startedAt)),
+                     work: { ...progress.work },
+                   }),
+@@ -144,7 +147,7 @@
+   return false;
+ }
+ 
+-/** The caller keeps one inventory deadline and reserves bytes anew inside each body attempt. */
++/** Callers time provider I/O separately; byte admission only consumes the shared phase budget. */
+ export const retryRetainedFrameworkRead = <A, E, R>(
+   work: Effect.Effect<A, E, R>,
+   onAttempt?: () => void,
+@@ -153,7 +156,6 @@
+     for (let attempt = 1; ; attempt++) {
+       onAttempt?.();
+       const result = yield* work.pipe(
+-        Effect.timeout(retainedFrameworkReadBounds.attemptMs),
+         Effect.match({
+           onSuccess: (value) => ({ ok: true as const, value }),
+           onFailure: (error) => ({ ok: false as const, error }),
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-records.ts b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-records.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-records.ts
+@@ -0,0 +1,81 @@
++import { Deferred, Effect } from "effect";
++import { ProductionOperationRefused } from "./contracts.ts";
++import {
++  retainedFrameworkReadBounds,
++  retryRetainedFrameworkRead,
++  type RetainedFrameworkReadProgress,
++} from "./retained-frameworks-read.ts";
++import type { RetainedFrameworkObjects } from "./retained-frameworks.ts";
++
++/** Reservations bound concurrent buffers; a failed attempt keeps its whole debit. */
++export const retainedFrameworkRecordReader = (
++  progress: RetainedFrameworkReadProgress,
++  objects: RetainedFrameworkObjects,
++  bounds: { readonly objectBytes: number; readonly totalBytes: number },
++) =>
++  Effect.gen(function* () {
++    let bytes = 0;
++    let active = 0;
++    let changed = yield* Deferred.make<void>();
++    const refused = (reason: string) =>
++      Effect.fail(new ProductionOperationRefused({ message: `Retained frameworks: ${reason}` }));
++    const reserve = Effect.gen(function* () {
++      for (;;) {
++        const max = Math.min(bounds.objectBytes, bounds.totalBytes - bytes);
++        if (active > 0 && max < bounds.objectBytes) {
++          // Another successful read can refund its unused allowance. Do not mistake its
++          // in-flight reservation for a permanent byte limit on this record.
++          yield* Deferred.await(changed);
++          continue;
++        }
++        if (max <= 0) return yield* refused("total byte bound");
++        bytes += max;
++        active++;
++        return max;
++      }
++    });
++    const release = Effect.gen(function* () {
++      const next = yield* Deferred.make<void>();
++      active--;
++      const previous = changed;
++      changed = next;
++      yield* Deferred.succeed(previous, undefined);
++    });
++    return (key: string) => {
++      const position = {
++        objectClass: key.endsWith("/worker.json")
++          ? ("split_record" as const)
++          : ("legacy_record" as const),
++        readPhase: "read" as const,
++      };
++      const capture = Effect.sync(() => {
++        // Peer cancellation must not replace the position that produced the refusal.
++        progress.refusalPosition ??= position;
++      });
++      return retryRetainedFrameworkRead(
++        Effect.acquireUseRelease(
++          Effect.interruptible(reserve),
++          (max) =>
++            Effect.gen(function* () {
++              progress.work.recordAttempts++;
++              const body = yield* objects
++                .read(key, max)
++                .pipe(Effect.timeout(retainedFrameworkReadBounds.attemptMs));
++              if (body !== null) {
++                if (body.byteLength > max) return yield* refused("byte bound");
++                bytes -= max - body.byteLength;
++              } else {
++                bytes -= max;
++              }
++              return body;
++            }),
++          () => release,
++        ),
++      ).pipe(
++        Effect.tapError((error) =>
++          error instanceof ProductionOperationRefused ? capture : Effect.void,
++        ),
++        Effect.onInterrupt(() => capture),
++      );
++    };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-r2.ts b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-r2.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-r2.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-r2.ts
+@@ -4,6 +4,7 @@
+ import { Effect, Option } from "effect";
+ import { ProductionOperationRefused } from "./contracts.ts";
+ import {
++  retainedFrameworkReadBounds,
+   retryRetainedFrameworkRead,
+   RetainedFrameworkReadProgress,
+ } from "./retained-frameworks-read.ts";
+@@ -47,11 +48,13 @@
+     let cursor: string | undefined;
+     for (let pageNumber = 0; pageNumber < 3; pageNumber++) {
+       const page = yield* retryRetainedFrameworkRead(
+-        bucket.list({
+-          prefix: "frameworks/",
+-          limit: 1000,
+-          ...(cursor === undefined ? {} : { cursor }),
+-        }),
++        bucket
++          .list({
++            prefix: "frameworks/",
++            limit: 1000,
++            ...(cursor === undefined ? {} : { cursor }),
++          })
++          .pipe(Effect.timeout(retainedFrameworkReadBounds.attemptMs)),
+         () => {
+           if (progress) progress.work.metadataAttempts++;
+         },

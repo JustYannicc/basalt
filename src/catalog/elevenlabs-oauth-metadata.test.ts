@@ -6,16 +6,17 @@ import type { Feed } from "./feed.ts";
 import reviewData from "./oauth-reviews.json" with { type: "json" };
 import elevenlabsMetadata from "./elevenlabs.oauth-metadata.json" with { type: "json" };
 
-test("ElevenLabs's reviewed advertising-write scope still refuses metadata drift", () => {
-  // The provider added only ads_write; endpoint, auth, PKCE and grant settings did not change.
-  assert.ok(elevenlabsMetadata.scopes_supported.includes("ads_write"));
+test("ElevenLabs's reviewed user and pronunciation-dictionary scopes still refuses metadata drift", () => {
+  // Only advertised read scopes changed; this does not request them in connector consent.
+  const added = ["user_read", "pronunciation_dictionaries_read"];
+  for (const scope of added) assert.ok(elevenlabsMetadata.scopes_supported.includes(scope));
   const previous = {
     ...elevenlabsMetadata,
-    scopes_supported: elevenlabsMetadata.scopes_supported.filter((scope) => scope !== "ads_write"),
+    scopes_supported: elevenlabsMetadata.scopes_supported.filter((scope) => !added.includes(scope)),
   };
   assert.equal(
     catalogDocumentSha256(previous),
-    "2a74d8ace0c536cbe0af7f7dd67b7b9e6e529803b57d868c44e3e21c7d8f5f76",
+    "4e5d8c43dca2881e16d2452a6463357c4e478b21b8b7fe6358748a59160c54a1",
   );
   const review = oauthReviews(reviewData).find((item) => item.entry === "elevenlabs")!;
   const method = review.methods.oauth!;
@@ -61,7 +62,7 @@ test("ElevenLabs's reviewed advertising-write scope still refuses metadata drift
     ].map((change) => ({ ...elevenlabsMetadata, ...change })),
   ]) {
     assert.deepEqual(check(document), [
-      "elevenlabs/oauth: automatic client metadata is missing or changed",
+      `elevenlabs/oauth: automatic client metadata changed (metadataSha256: ${method.metadataSha256} -> ${catalogDocumentSha256(document)})`,
     ]);
   }
 });

@@ -160,11 +160,11 @@ test("a stalled metadata read gets at most three bounded attempts", async () => 
   assert.ok(!JSON.stringify(guard).includes(moduleText));
 });
 
-test("healthy cumulative reads complete past eight seconds while pages, records and retries share one phase cap", async () => {
+test("concurrent records, metadata pages and retries still share one phase cap", async () => {
   for (const [pages, count] of [
     [false, 6],
     [true, 10],
-    [false, 10],
+    [false, 40],
   ] as const) {
     const fixture = bucketFixture();
     fixture.objects.push(metadata(identity.version, identity.sha256));
@@ -197,11 +197,11 @@ test("healthy cumulative reads complete past eight seconds while pages, records 
     if (!pages && count === 6) {
       assert.ok(
         Exit.isSuccess(exit),
-        "Six healthy reads must complete after their cumulative twelve seconds",
+        "Six healthy reads must complete before the shared phase deadline",
       );
       assert.equal(exit.value.complete, true);
       assert.equal(calls, 6);
-      assert.equal(elapsedMs, 12_000);
+      assert.equal(elapsedMs, 4_000);
       continue;
     }
     assert.ok(Exit.isFailure(exit));
@@ -210,10 +210,11 @@ test("healthy cumulative reads complete past eight seconds while pages, records 
     assert.equal(diagnostic.elapsedMs, 18_000);
     assert.equal(diagnostic.objectClass, pages ? "framework_metadata" : "split_record");
     assert.equal(diagnostic.readPhase, pages ? "list" : "read");
-    assert.equal(calls, pages ? 2 : 9);
-    assert.equal(diagnostic.work?.builds, 10);
+    if (pages) assert.equal(calls, 2);
+    else assert.ok(calls < count && calls > 9);
+    assert.equal(diagnostic.work?.builds, count);
     assert.equal(diagnostic.work?.metadataPages, pages ? 2 : 1);
-    assert.equal(diagnostic.work?.recordAttempts, pages ? 0 : 9);
+    assert.equal(diagnostic.work?.recordAttempts, pages ? 0 : calls);
   }
 });
 

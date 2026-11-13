@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      migrationActivation "Reader-ready migrations use the production release lock and exact live candidate. A material plan digest binds serving reader versions, signed singleton adoption, installed app versions and exact database preparations. Encrypted pending intent precedes one activation send; an unknown reply blocks ordinary release until inspected. Read-only inspection never creates or resends an activation. Normal preparation never activates, and later releases retain recognized optional cutover markers."
+    }
+  }
+}

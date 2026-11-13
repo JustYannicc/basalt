@@ -90,13 +90,16 @@ test("the fixed SQL scopes all retained deployments and R2 returns metadata with
     },
   ]);
   assert.ok("builds" in result && result.builds.length === 3);
-  assert.deepEqual(fixture.reads, [
-    "bld_explicit/worker.json",
-    "bld_explicit.json",
-    "bld_old/worker.json",
-    "bld_old.json",
-    "bld_one/worker.json",
-  ]);
+  assert.deepEqual(
+    [...fixture.reads].sort(),
+    [
+      "bld_explicit/worker.json",
+      "bld_explicit.json",
+      "bld_old/worker.json",
+      "bld_old.json",
+      "bld_one/worker.json",
+    ].sort(),
+  );
   assert.deepEqual(fixture.lists, [{ prefix: "frameworks/", limit: 1000 }]);
   assert.ok("frameworks" in result);
   assert.deepEqual(result.frameworks, [

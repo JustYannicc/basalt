@@ -53,7 +53,7 @@ for (const state of ["breached", "unavailable"] as const)
         ...(state === "unavailable" ? { reason: "capture_stale" as const } : {}),
       }),
     );
-    assert.equal(envelopes.length, state === "breached" ? 3 : 2);
+    assert.equal(envelopes.length, 3);
     const checks = envelopes
       .filter((entry) => entry.type === "check_in")
       .map((entry) => entry.payload);
@@ -126,8 +126,8 @@ for (const state of ["breached", "unavailable"] as const)
       assert.deepEqual(event!.fingerprint, ["basalt", "pool_request_success_below_target"]);
       assert.deepEqual(diagnostics, []);
     } else {
-      assert.equal(event, undefined);
-      assert.equal(messages.filter((message) => message.fingerprint).length, 1);
+      assert.deepEqual(event!.fingerprint, ["basalt", "pool_request_reliability_unavailable"]);
+      assert.equal(messages.filter((message) => message.fingerprint).length, 2);
       assert.equal(diagnostics.length, 1);
       assert.equal(diagnostics[0]![0], "POOL_REQUEST_RELIABILITY_UNKNOWN");
     }
@@ -141,7 +141,7 @@ for (const state of ["breached", "unavailable"] as const)
     assert.doesNotMatch(JSON.stringify(messages), /private-runtime-error/);
   });
 
-test("a failed collector logs a closed diagnostic without an issue and no-traffic stays unmeasured", async (t) => {
+test("a failed collector reports a separate incident and no-traffic stays unmeasured", async (t) => {
   const messages: Record<string, unknown>[] = [];
   const diagnostics: unknown[][] = [];
   t.mock.method(console, "warn", (...args: unknown[]) => diagnostics.push(args));
@@ -157,8 +157,9 @@ test("a failed collector logs a closed diagnostic without an issue and no-traffi
       throw new Error("private-connection-secret");
     },
   );
-  assert.equal(messages.length, 2);
+  assert.equal(messages.length, 3);
   assert.equal(messages[1]!.status, "ok");
+  assert.deepEqual(messages[2]!.fingerprint, ["basalt", "pool_request_reliability_unavailable"]);
   assert.deepEqual(diagnostics, [
     [
       "POOL_REQUEST_RELIABILITY_UNKNOWN",
@@ -174,7 +175,7 @@ test("a failed collector logs a closed diagnostic without an issue and no-traffi
     async () => ({ ...slo("no_traffic"), hour: window(0, 0), day: window(0, 0) }),
   );
   assert.deepEqual(
-    messages.map((message) => message.status),
+    messages.filter((message) => message.status).map((message) => message.status),
     ["in_progress", "ok"],
   );
   assert.deepEqual(diagnostics, []);
@@ -200,7 +201,7 @@ test("pending classification reports unknown reliability without a monitor error
     }),
   );
   assert.deepEqual(
-    messages.map((message) => message.status),
+    messages.filter((message) => message.status).map((message) => message.status),
     ["in_progress", "ok"],
   );
   assert.deepEqual(diagnostics, [
@@ -271,7 +272,26 @@ for (const proofFailed of [0, 45])
       async () => ({ ...slo("no_traffic"), hour: noTraffic, day: noTraffic }),
     );
     assert.deepEqual(
-      messages.map((message) => message.status),
+      messages.filter((message) => message.status).map((message) => message.status),
       ["in_progress", "ok"],
     );
   });
+
+test("recent real failures alert independently of a met hourly and daily objective", async (t) => {
+  const messages: Record<string, unknown>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit) => {
+    messages.push(JSON.parse(new TextDecoder().decode(init.body as ArrayBuffer).split("\n")[2]!));
+    return new Response(null, { status: 202 });
+  });
+  await runAvailabilityProbe(
+    env,
+    async () => ({ ok: true, failures: [] }),
+    async () => ({ ...slo("ok"), current: window(500, 1) }),
+  );
+  assert.deepEqual(
+    messages.filter((message) => message.status).map((message) => message.status),
+    ["in_progress", "ok"],
+  );
+  const event = messages.find((message) => message.fingerprint)!;
+  assert.deepEqual(event.fingerprint, ["basalt", "pool_request_failing_now"]);
+});

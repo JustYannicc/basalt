@@ -306,3 +306,13 @@ model {
   }
   basalt.modelGateway -[sync]-> publicModelPrices "use public API rates through Home and a dated shipped snapshot"
 }
+
+model {
+  publicPlanAllowances = adapter "Public subscription allowances" {
+    #external
+    technology "PlanYield CC BY 4.0 and dated vendor statements"
+    metadata { hosts "planyield.dev|api.fxtwitter.com|support.claude.com|docs.x.ai|creativecommons.org|x.com" }
+  }
+  basalt.modelGateway -[sync]-> providerSource "verify official vendor plan identities"
+  basalt.modelGateway -[sync]-> publicPlanAllowances "refresh expiring plan facts with provenance"
+}

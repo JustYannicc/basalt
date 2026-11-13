@@ -248,6 +248,7 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --cwd clients --frozen-lockfile
+      - run: bun install --cwd src/tunnel --frozen-lockfile
       - run: bun run --cwd clients typecheck
       - name: Verify headless connection through independent processes
         run: bun run --cwd clients test
@@ -1301,6 +1302,7 @@ jobs:
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/change-journal.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
           if-no-files-found: warn
   production-ops-atlassian-adoption:
@@ -1394,12 +1396,14 @@ jobs:
             .upstream/.local/e2e/**/server.log
             .upstream/.local/e2e/**/cloud*.log
             .upstream/.local/e2e/**/cloud-forwarding-errors.ndjson
+            .upstream/.local/e2e/**/change-journal.ndjson
             .upstream/.local/e2e/**/physical-state-digests.ndjson
             .upstream/.local/e2e/**/physical-provisioning-completed.json
             .upstream/.local/e2e/**/report/**
             ${{ runner.temp }}/basalt-e2e-evidence/**/results.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/server.log
             ${{ runner.temp }}/basalt-e2e-evidence/**/cloud.log
+            ${{ runner.temp }}/basalt-e2e-evidence/**/change-journal.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/physical-state-digests.ndjson
             ${{ runner.temp }}/basalt-e2e-evidence/**/physical-provisioning-completed.json
             ${{ runner.temp }}/basalt-e2e-evidence/**/report/**
@@ -1731,7 +1735,7 @@ jobs:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'pool-inventory')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node
@@ -1759,6 +1763,8 @@ jobs:
         run: node e2e/pool-reset-ui.mjs .generated/pool-reset-ui/ci
       - name: Verify scoped account and pool updates without idle polling
         run: node e2e/scoped-change-consumers.mjs .generated/scoped-change-consumers/ci
+      - name: Verify the pool usage overview in a browser with synthetic usage
+        run: node e2e/pool-overview-ui.mjs .generated/pool-overview-ui/ci
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -1786,6 +1792,9 @@ jobs:
             .generated/scoped-change-consumers/**/report.json
             .generated/scoped-change-consumers/**/failure.json
             .generated/scoped-change-consumers/**/*.png
+            .generated/pool-overview-ui/**/report.json
+            .generated/pool-overview-ui/**/failure.json
+            .generated/pool-overview-ui/**/*.png
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**
@@ -2154,6 +2163,9 @@ jobs:
   fast:
     needs: select
     runs-on: ubuntu-latest
+    env:
+      # Bytecode inside the pool context changes its reviewed publication identity.
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -2331,10 +2343,10 @@ jobs:
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
-      - name: Prove committed change lock ordering on PostgreSQL
+      - name: Prove committed change locks and prepared versus active contention on PostgreSQL
         env:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
-        run: node --experimental-transform-types --test scripts/upstream-tests/account-change-postgres.test.ts
+        run: node --experimental-transform-types --test --test-concurrency=1 scripts/upstream-tests/account-change-postgres.test.ts scripts/upstream-tests/change-serializable-postgres.test.ts
       - name: Stage the pinned app release for provider fixtures
         working-directory: .upstream
         run: bun run e2e:prepare

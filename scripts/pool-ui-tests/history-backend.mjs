@@ -3,9 +3,12 @@ import { createServer } from "node:http";
 import { overviewFixture } from "./overview-fixture.mjs";
 
 /** Loopback history data and revision transport; held replies expose cancellation to the test. */
-export async function historyBackend() {
+export async function historyBackend({ initialRequests = 1, pageSize = Infinity } = {}) {
   const first = "2026-11-04T11:28:37.250Z";
-  const times = [first];
+  const initial = Array.from({ length: initialRequests }, (_, index) =>
+    new Date(Date.parse(first) + index * 1000).toISOString(),
+  );
+  const times = [...initial];
   const requests = [];
   const streams = new Set();
   const waiting = new Set();
@@ -77,40 +80,56 @@ export async function historyBackend() {
               capturedThrough: first,
             };
             response.end(JSON.stringify(value));
-          } else
+          } else {
+            const records = times
+              .map((timestamp, i) => ({
+                id: String(i + 1).padStart(64, "0"),
+                timestamp,
+                person: null,
+                request_id: "synthetic-" + i,
+                provider: "codex",
+                model: "Synthetic model",
+                endpoint: "/v1/responses",
+                api_type: "responses",
+                service_tier: null,
+                input_tokens: "100",
+                output_tokens: "10",
+                cache_read_tokens: "0",
+                cache_write_tokens: "0",
+                reasoning_tokens: "0",
+                total_tokens: "110",
+                token_quality: "complete",
+                latency_ms: "100",
+                failed: false,
+                status_code: 200,
+                cost: null,
+                currency: null,
+                cost_basis: "unpriced",
+                attribution: "unknown",
+              }))
+              .filter(
+                (record) =>
+                  record.timestamp >= input.from &&
+                  record.timestamp < input.to &&
+                  (!input.after ||
+                    record.timestamp > input.after.timestamp ||
+                    (record.timestamp === input.after.timestamp && record.id > input.after.id)),
+              );
+            const page = records.slice(0, pageSize);
+            const last = page.at(-1);
             response.end(
               JSON.stringify({
                 ok: true,
                 value: {
-                  records: times.map((timestamp, i) => ({
-                    id: String(i + 1).padStart(64, "0"),
-                    timestamp,
-                    person: null,
-                    request_id: "synthetic-" + i,
-                    provider: "codex",
-                    model: "Synthetic model",
-                    endpoint: "/v1/responses",
-                    api_type: "responses",
-                    service_tier: null,
-                    input_tokens: "100",
-                    output_tokens: "10",
-                    cache_read_tokens: "0",
-                    cache_write_tokens: "0",
-                    reasoning_tokens: "0",
-                    total_tokens: "110",
-                    token_quality: "complete",
-                    latency_ms: "100",
-                    failed: false,
-                    status_code: 200,
-                    cost: null,
-                    currency: null,
-                    cost_basis: "unpriced",
-                    attribution: "unknown",
-                  })),
-                  next: null,
+                  records: page,
+                  next:
+                    records.length > page.length && last
+                      ? { timestamp: last.timestamp, id: last.id }
+                      : null,
                 },
               }),
             );
+          }
         },
       };
       requests.push(entry);
@@ -142,8 +161,15 @@ export async function historyBackend() {
     add() {
       times.push("2026-11-09T08:01:02.000Z");
     },
+    change(topic = "pool-usage") {
+      const hint = revisions.find((entry) => entry.topic === topic);
+      assert.ok(hint);
+      hint.revision = String(Number(hint.revision) + 1);
+      for (const stream of streams)
+        stream.write(`event: changed\ndata: ${JSON.stringify({ kind: "changed", hint })}\n\n`);
+    },
     reset() {
-      times.splice(1);
+      times.splice(0, times.length, ...initial);
     },
     origin,
     async close() {

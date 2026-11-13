@@ -701,6 +701,10 @@ export const proveContainerStack = (source, recompile, scenario) =>
         if (["native-state-drift", "database-dependency-drift"].includes(scenario)) {
           assert.ok(events.includes("native:drift"));
           assert.equal(receipts.at(-1).failure.reason, "alchemy-state-drift");
+          assert.equal(receipts.at(-1).failure.operation, "verify-native-state");
+          assert.ok(
+            receipts.at(-1).failure.delta.changed.some((change) => change.path === "attr.workerId"),
+          );
         }
         const succeeded = Exit.isSuccess(exit);
         const expectedSuccess = [

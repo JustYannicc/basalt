@@ -2,6 +2,7 @@ import * as Plan from "alchemy/Plan";
 import * as Provider from "alchemy/Provider";
 import type { CompiledStack } from "alchemy/Stack";
 import { Context, Effect, Option } from "effect";
+import { withStateOperations } from "./observed-state.ts";
 import { withOperation } from "./operation-failure.ts";
 
 function observedProvider(provider: Provider.ProviderService): Provider.ProviderService {
@@ -45,5 +46,8 @@ export const planStack = (stack: CompiledStack, options?: Plan.FilteredPlanOptio
           observedProvider(provider.value),
         );
     }
-    return yield* Plan.make(stack, options).pipe(Effect.provideContext(context));
+    return yield* Plan.make(stack, options).pipe(
+      withStateOperations("plan-read-state", "plan-read-state"),
+      Effect.provideContext(context),
+    );
   }).pipe(withOperation("(plan)", "plan-stack"));

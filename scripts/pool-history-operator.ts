@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { historyObject } from "../src/pool/model-history/record.ts";
 import {
+  historyJournalActivationPath,
+  historyJournalActivationManifest,
+  historyJournalReaderVersion,
   historyBackfillPath,
   historyBackfillVersion,
   historySchemaApplyPath,
@@ -13,10 +16,8 @@ import {
 } from "../src/pool/model-history/operator.ts";
 
 import {
+  historyJournalActivationMigration,
   historyBaseSchemaVersion,
-  historyAppSchemaVersion,
-  historyAccountTimeSchemaVersion,
-  historySchemaVersion,
   historySchemaStatements,
   historySchemaMigrations,
 } from "../src/pool/model-history/schema.ts";
@@ -35,6 +36,7 @@ export function historyOperatorOptions(args: string[]) {
       operation: { type: "string" },
       apply: { type: "boolean" },
       go: { type: "boolean" },
+      "readers-ready": { type: "string" },
     },
   });
   const operation = values.operation ?? "schema";
@@ -42,33 +44,38 @@ export function historyOperatorOptions(args: string[]) {
     !values.worker ||
     !/^[a-z0-9][a-z0-9-]{0,62}$/.test(values.worker) ||
     !values.plan ||
-    (operation !== "schema" && operation !== "backfill") ||
+    (operation !== "schema" && operation !== "backfill" && operation !== "journal-activation") ||
+    (values["readers-ready"] !== undefined &&
+      (operation !== "journal-activation" ||
+        values["readers-ready"] !== historyJournalReaderVersion)) ||
+    (operation === "journal-activation" &&
+      values.apply === true &&
+      values["readers-ready"] !== historyJournalReaderVersion) ||
     Boolean(values.apply) !== Boolean(values.go)
   )
     throw new Error(
-      "Use --worker <deployed-script> --plan <private-file> [--operation schema|backfill] [--apply --go]",
+      "Use --worker <deployed-script> --plan <private-file> [--operation schema|backfill|journal-activation] [--apply --go] [--readers-ready checkpoint-count-v1]",
     );
   return {
     worker: values.worker,
     plan: values.plan,
     operation,
     apply: values.apply === true,
+    readersReady: values["readers-ready"],
   } satisfies {
     worker: string;
     plan: string;
-    operation: "schema" | "backfill";
+    operation: "schema" | "backfill" | "journal-activation";
     apply: boolean;
+    readersReady?: string;
   };
 }
 
 function hashes(value: Record<string, unknown>) {
   if (
-    ![
-      historyBaseSchemaVersion,
-      historyAppSchemaVersion,
-      historyAccountTimeSchemaVersion,
-      historySchemaVersion,
-    ].includes(String(value.version)) ||
+    ![...historySchemaMigrations, historyJournalActivationMigration].some(
+      (migration) => migration.name === String(value.version),
+    ) ||
     typeof value.schemaHash !== "string" ||
     !/^[a-f0-9]{64}$/.test(value.schemaHash) ||
     typeof value.catalogHash !== "string" ||
@@ -78,16 +85,34 @@ function hashes(value: Record<string, unknown>) {
   return { schemaHash: value.schemaHash, catalogHash: value.catalogHash };
 }
 
-function schemaPreview(report: Record<string, unknown>) {
+function schemaPrefix(version: string) {
+  if (version === historyJournalActivationMigration.name)
+    return {
+      migrations: [historyJournalActivationMigration],
+      manifest: historyJournalActivationManifest,
+    };
+  const end = historySchemaMigrations.findIndex((migration) => migration.name === version);
+  if (end < 0) throw new Error("Invalid history schema plan");
+  const migrations = historySchemaMigrations.slice(0, end + 1);
+  return {
+    migrations,
+    // v1 plans used the statements array directly; keep that historical hash stable.
+    manifest: version === historyBaseSchemaVersion ? historySchemaStatements : migrations,
+  };
+}
+
+function schemaPreview(
+  report: Record<string, unknown>,
+  operation: "schema" | "journal-activation",
+) {
+  const activation = operation === "journal-activation";
+  if (
+    activation !== (report.version === historyJournalActivationMigration.name) ||
+    (activation && report.readersReadyRequired !== historyJournalReaderVersion)
+  )
+    throw new Error("History schema operation or reader contract changed");
   hashes(report);
-  const manifest =
-    report.version === historyBaseSchemaVersion
-      ? historySchemaStatements
-      : report.version === historyAppSchemaVersion
-        ? historySchemaMigrations.slice(0, 2)
-        : report.version === historyAccountTimeSchemaVersion
-          ? historySchemaMigrations.slice(0, 3)
-          : historySchemaMigrations;
+  const { manifest, migrations } = schemaPrefix(String(report.version));
   if (
     report.schemaHash !== createHash("sha256").update(JSON.stringify(manifest)).digest("hex") ||
     typeof report.applied !== "boolean"
@@ -111,17 +136,16 @@ function schemaPreview(report: Record<string, unknown>) {
         `CREATE TABLE IF NOT EXISTS basalt_model_history_migrations (
       name text PRIMARY KEY, completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
       ];
-  const pending = [historySchemaVersion, historyAccountTimeSchemaVersion].includes(
-    String(report.version),
-  )
-    ? pendingMigrations(report)
-    : report.applied
-      ? []
-      : report.version === historyBaseSchemaVersion
-        ? [historySchemaMigrations[0]!]
-        : diff.createTables.length
-          ? historySchemaMigrations.slice(0, 2)
-          : [historySchemaMigrations[1]!];
+  const pending =
+    activation || migrations.length >= 3
+      ? pendingMigrations(report, migrations)
+      : report.applied
+        ? []
+        : report.version === historyBaseSchemaVersion
+          ? [historySchemaMigrations[0]!]
+          : diff.createTables.length
+            ? historySchemaMigrations.slice(0, 2)
+            : [historySchemaMigrations[1]!];
   return {
     pendingDdl: [...ledgerDdl, ...pending.flatMap((migration) => migration.statements)],
     migrationMarkers: pending.map((migration) => ({
@@ -131,25 +155,30 @@ function schemaPreview(report: Record<string, unknown>) {
   };
 }
 
-function pendingMigrations(report: Record<string, unknown>) {
+function pendingMigrations(
+  report: Record<string, unknown>,
+  migrations: typeof historySchemaMigrations,
+) {
   const names = report.pendingMigrations;
   if (
     !Array.isArray(names) ||
-    names.some((name) => !historySchemaMigrations.some((migration) => migration.name === name)) ||
+    names.some((name) => !migrations.some((migration) => migration.name === name)) ||
     report.applied !== (names.length === 0)
   )
     throw new Error("Invalid pending history migrations");
-  const pending = historySchemaMigrations.filter((migration) => names.includes(migration.name));
-  if (
-    JSON.stringify(names) !== JSON.stringify(pending.map((migration) => migration.name)) ||
-    (names.length && names.at(-1) !== report.version)
-  )
+  const pending = migrations.filter((migration) => names.includes(migration.name));
+  if (JSON.stringify(names) !== JSON.stringify(pending.map((migration) => migration.name)))
     throw new Error("Invalid pending history migrations");
   return pending;
 }
 
-function approvalFor(operation: "schema" | "backfill", report: Record<string, unknown>) {
+function approvalFor(
+  operation: "schema" | "backfill" | "journal-activation",
+  report: Record<string, unknown>,
+) {
   if (operation === "schema") return hashes(report);
+  if (operation === "journal-activation")
+    return { ...hashes(report), readersReady: historyJournalReaderVersion };
   if (
     report.version !== historyBackfillVersion ||
     typeof report.digest !== "string" ||
@@ -165,6 +194,14 @@ export async function runHistoryOperator(
   accountId: string,
   connect?: (path: string) => Promise<Platform>,
 ) {
+  if (
+    options.operation === "journal-activation" &&
+    options.apply &&
+    options.readersReady !== historyJournalReaderVersion
+  )
+    throw new Error(
+      "Verify deployed reader inventory, then acknowledge --readers-ready checkpoint-count-v1",
+    );
   if (!/^[a-f0-9]{32}$/.test(accountId)) throw new Error("CLOUDFLARE_ACCOUNT_ID is required");
   let approval: ReturnType<typeof approvalFor> | undefined;
   let approvedSchemaState: string | undefined;
@@ -178,8 +215,8 @@ export async function runHistoryOperator(
       throw new Error("History schema plan target changed");
     const report = historyObject(saved.report);
     approval = approvalFor(options.operation, report);
-    if (options.operation === "schema") {
-      const preview = schemaPreview(report);
+    if (options.operation !== "backfill") {
+      const preview = schemaPreview(report, options.operation);
       if (
         JSON.stringify(report.pendingDdl) !== JSON.stringify(preview.pendingDdl) ||
         JSON.stringify(report.migrationMarkers) !== JSON.stringify(preview.migrationMarkers)
@@ -221,7 +258,9 @@ export async function runHistoryOperator(
     platform = await open(configPath);
     if (approvedSchemaState) {
       const response = await platform.env.POOL_OPERATIONS.fetch(
-        new Request(`http://pool-operations${historySchemaCatalogPath}`),
+        new Request(
+          `http://pool-operations${options.operation === "journal-activation" ? historyJournalActivationPath : historySchemaCatalogPath}`,
+        ),
       );
       if (!response.ok) throw new Error("History schema catalog refresh failed");
       const current = historyObject(await response.json());
@@ -230,9 +269,12 @@ export async function runHistoryOperator(
         current.writes !== false ||
         current.automaticBackfill !== false ||
         JSON.stringify({
-          ...hashes(current),
+          ...approvalFor(options.operation, current),
           version: current.version,
-          ...schemaPreview(current),
+          ...schemaPreview(
+            current,
+            options.operation === "journal-activation" ? "journal-activation" : "schema",
+          ),
         }) !== approvedSchemaState
       )
         throw new Error("History schema plan changed; prepare and approve a fresh dry run");
@@ -244,11 +286,13 @@ export async function runHistoryOperator(
         { mode: 0o600, flag: "wx" },
       );
     const path =
-      options.operation === "backfill"
-        ? historyBackfillPath
-        : approval
-          ? historySchemaApplyPath
-          : historySchemaCatalogPath;
+      options.operation === "journal-activation"
+        ? historyJournalActivationPath
+        : options.operation === "backfill"
+          ? historyBackfillPath
+          : approval
+            ? historySchemaApplyPath
+            : historySchemaCatalogPath;
     const response = await platform.env.POOL_OPERATIONS.fetch(
       new Request(
         `http://pool-operations${path}`,
@@ -268,7 +312,10 @@ export async function runHistoryOperator(
       if (
         report.status !== "complete" ||
         ("schemaHash" in approval
-          ? report.schemaHash !== approval.schemaHash || typeof report.applied !== "boolean"
+          ? report.schemaHash !== approval.schemaHash ||
+            typeof report.applied !== "boolean" ||
+            (options.operation === "journal-activation" &&
+              report.readersReady !== historyJournalReaderVersion)
           : report.digest !== approval.digest || report.activated !== true)
       )
         throw new Error("Invalid history apply response");
@@ -278,10 +325,11 @@ export async function runHistoryOperator(
       if (
         report.status !== "dry-run" ||
         report.writes !== false ||
-        (options.operation === "schema" && report.automaticBackfill !== false)
+        (options.operation !== "backfill" && report.automaticBackfill !== false)
       )
         throw new Error("Invalid history schema dry run");
-      if (options.operation === "schema") report = { ...report, ...schemaPreview(report) };
+      if (options.operation !== "backfill")
+        report = { ...report, ...schemaPreview(report, options.operation) };
       await writeFile(
         options.plan,
         JSON.stringify({ accountId, worker: options.worker, operation: options.operation, report }),

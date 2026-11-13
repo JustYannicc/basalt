@@ -10,7 +10,7 @@ import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
 import * as Provider from "alchemy/Provider";
 import { Resource } from "alchemy/Resource";
-import { State } from "alchemy/State/State";
+import { State, StateStoreError, isResourceState } from "alchemy/State/State";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { WorkerUploadHook } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
 import { Context, Effect, Exit, Layer, Option } from "effect";
@@ -53,6 +53,19 @@ export const fixture = (
     orphanedDatabaseCommand?: boolean;
     planFailure?: "read" | "diff";
     planError?: unknown;
+    admittedFailure?:
+      | "state-read"
+      | "state-drift"
+      | "plan"
+      | "apply"
+      | "state-write"
+      | "journal-write"
+      | "journal-write-persistent"
+      | "plan-list"
+      | "apply-list";
+    admittedError?: unknown;
+    migrationError?: unknown;
+    admittedStateError?: StateStoreError;
     finalizeDrift?: "binding" | "uncovered-env" | "props";
     cyclicImage?: "changed" | "unchanged";
   } = {},
@@ -66,6 +79,8 @@ export const fixture = (
   let namespaceReads = 0;
   let releasePlanning = false;
   let activated = false;
+  let admittedDatabaseReads = 0;
+  let journalFailures = 0;
   const workers = Provider.succeed(FixtureWorker, {
     precreate: ({ id }) => Effect.succeed(attributes(id)),
     read: (input) =>
@@ -129,14 +144,55 @@ export const fixture = (
       const memory = yield* InMemoryService();
       return Effect.succeed({
         ...memory,
+        list: (input) =>
+          options.admittedFailure === "plan-list" && receipts.at(-1)?.phase === "admitted"
+            ? Effect.fail(options.admittedStateError!)
+            : memory.list(input),
+        getReplacedResources: (input) =>
+          options.admittedFailure === "apply-list" && receipts.at(-1)?.phase === "admitted"
+            ? Effect.fail(options.admittedStateError!)
+            : memory.getReplacedResources(input),
+        get: (input) => {
+          if (receipts.at(-1)?.phase === "admitted" && input.fqn === "PoolDatabase") {
+            admittedDatabaseReads++;
+            if (options.admittedFailure === "plan" && admittedDatabaseReads === 2)
+              return Effect.fail(options.admittedStateError!);
+          }
+          const admitted = receipts.at(-1)?.phase === "admitted" && input.fqn === "Api";
+          if (admitted && options.admittedFailure === "state-read")
+            return Effect.fail(options.admittedStateError!);
+          return memory
+            .get(input)
+            .pipe(
+              Effect.map((row) =>
+                admitted && options.admittedFailure === "state-drift" && isResourceState(row)
+                  ? { ...row, providerVersion: row.providerVersion + 1 }
+                  : row,
+              ),
+            );
+        },
         set: (input) =>
-          Effect.sync(() => {
+          Effect.suspend(() => {
+            if (
+              options.admittedFailure === "state-write" &&
+              receipts.at(-1)?.phase === "admitted" &&
+              input.fqn === "PoolDatabase"
+            )
+              return Effect.fail(options.admittedStateError!);
             writes++;
-          }).pipe(Effect.andThen(memory.set(input))),
+            return memory.set(input);
+          }),
         setOutput: (input) =>
-          Effect.sync(() => {
+          Effect.suspend(() => {
+            if (
+              options.admittedFailure?.startsWith("journal-write") &&
+              input.stack.endsWith("-sql-schema-barrier") &&
+              (journalFailures++ === 0 || options.admittedFailure === "journal-write-persistent")
+            )
+              return Effect.fail(options.admittedStateError!);
             writes++;
-          }).pipe(Effect.andThen(memory.setOutput(input))),
+            return memory.setOutput(input);
+          }),
       });
     }),
   );
@@ -147,6 +203,14 @@ export const fixture = (
         run: (news) =>
           Effect.sync(() => {
             events.push(`command:${news.command}`);
+            if (
+              news.command === "node src/migrate.ts" &&
+              options.migrationError &&
+              receipts.at(-1)?.phase === "admitted"
+            )
+              throw options.migrationError;
+            if (options.admittedFailure === "apply" && receipts.at(-1)?.phase === "admitted")
+              throw options.admittedError;
             return { exitCode: 0, stdout: "", stderr: "" };
           }),
       }),
@@ -172,7 +236,14 @@ export const fixture = (
           command: "node unmodeled.ts",
           memo: false,
         });
-      yield* Command.Exec("PoolDatabase", { command: "node ensure-pool-database.ts", memo: false });
+      const migrations = options.migrationError
+        ? yield* Command.Exec("Migrations", { command: "node src/migrate.ts", memo: false })
+        : undefined;
+      yield* Command.Exec("PoolDatabase", {
+        command: "node ensure-pool-database.ts",
+        memo: false,
+        ...(migrations ? { env: { READY: migrations.hash.pipe(Output.map(() => "ready")) } } : {}),
+      });
       if (options.orphanedDatabaseCommand)
         yield* Command.Exec("Migrations", { command: "node src/migrate.ts", memo: false });
       const api = yield* FixtureWorker("Api", { revision: "candidate" });

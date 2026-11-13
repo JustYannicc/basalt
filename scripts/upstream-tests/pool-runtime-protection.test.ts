@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { build } from "esbuild";
 
-const require = createRequire(new URL("../../.upstream/package.json", import.meta.url));
-const { Miniflare } = require("miniflare") as typeof import("miniflare");
+import { Miniflare } from "../pool-test-runtime/index.ts";
 
 test("a Worker relay refuses unproven readiness, recovers admission and closes on a proven boot change", async () => {
   const bundle = await build({
@@ -14,8 +12,9 @@ test("a Worker relay refuses unproven readiness, recovers admission and closes o
         import { RuntimeProtection } from "./src/pool/runtime-protection.ts";
         import { PoolRuntimeUnhealthy } from "./src/pool/lifecycle.ts";
         import { nativeResponse } from "./src/pool/native-response.worker.ts";
-        let healthy = true, boot = "boot", upstreamClosed = 0, observeClose, notifyDegraded = () => {};
-        const upstreamDone = new Promise((resolve) => { observeClose = resolve; });
+        import { modelLifetimeFetch } from "./src/pool/model-lifetime.worker.ts";
+        export { ModelLifetimeNode } from "./scripts/pool-tests/model-lifetime-node.mjs";
+        let healthy = true, boot = "boot", notifyDegraded = () => {};
         const streams = new NativeStreams();
         async function readiness(lease = "fresh") {
           if (!healthy) throw new PoolRuntimeUnhealthy();
@@ -25,14 +24,15 @@ test("a Worker relay refuses unproven readiness, recovers admission and closes o
         }
         let protection;
         export class Relay {
-          constructor(ctx) { this.ctx = ctx; }
+          constructor(ctx, env) { this.ctx = ctx; this.env = env; }
           async fetch(request) {
           const url = new URL(request.url), path = url.pathname;
+          const node = this.env.NODE.getByName("fixture");
           if (path === "/disable") { healthy = false; return new Response(null, { status: 204 }); }
-          if (path === "/degraded") return Response.json({ upstreamClosed });
+          if (path === "/degraded") return Response.json({ upstreamClosed: (await (await node.fetch("https://node/node-state")).json()).closed });
           if (path === "/recover") { healthy = true; return new Response(null, { status: 204 }); }
           if (path === "/restart") { healthy = true; boot = "new-boot"; return new Response(null, { status: 204 }); }
-          if (path === "/upstream-state") return upstreamDone.then(() => Response.json({ upstreamClosed }));
+          if (path === "/upstream-state") return node.fetch("https://node/node-wait-closed?count=2");
           if (path !== "/socket") return new Response(null, { status: 404 });
           const lease = streams.acquire("fixture", "pool", request.signal);
           protection ??= new RuntimeProtection(streams, {
@@ -45,12 +45,9 @@ test("a Worker relay refuses unproven readiness, recovers admission and closes o
             if (!(error instanceof PoolRuntimeUnhealthy)) throw error;
             return new Response(null, { status: 503 });
           }
-          const pair = new WebSocketPair();
-          pair[1].accept();
-          pair[1].addEventListener("close", () => { if (++upstreamClosed === 2) observeClose(); });
-          pair[1].addEventListener("message", (event) => pair[1].send(event.data));
-          notifyDegraded = () => pair[1].send("runtime-unhealthy");
-          return nativeResponse(new Response(null, { status: 101, webSocket: pair[0] }), lease);
+          notifyDegraded = () => this.ctx.waitUntil(node.fetch("https://node/node-broadcast", { method: "POST", body: "runtime-unhealthy" }));
+          const response = await modelLifetimeFetch(new Request("https://node/socket", { headers: request.headers, signal: lease.signal }), (request) => node.fetch(request));
+          return nativeResponse(response, lease);
         } }
         export default { fetch(request, env) { return env.RELAY.get(env.RELAY.idFromName("fixture")).fetch(request); } };`,
       resolveDir: fileURLToPath(new URL("../../", import.meta.url)),
@@ -62,11 +59,12 @@ test("a Worker relay refuses unproven readiness, recovers admission and closes o
     format: "esm",
     platform: "browser",
     target: "es2023",
+    external: ["cloudflare:workers"],
   });
   const mf = new Miniflare({
     modules: true,
     // A plain Worker cannot close I/O created by another request.
-    durableObjects: { RELAY: "Relay" },
+    durableObjects: { RELAY: "Relay", NODE: { className: "ModelLifetimeNode", useSQLite: true } },
     script: bundle.outputFiles[0]!.text,
     compatibilityDate: "2026-08-06",
     compatibilityFlags: ["nodejs_compat"],

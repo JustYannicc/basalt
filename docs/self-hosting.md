@@ -44,6 +44,16 @@ Required services are Cloudflare Workers, R2, Hyperdrive, native Email Sending, 
 
 Autumn billing, Axiom telemetry and Context.dev company suggestions are optional. When unconfigured, Basalt carries an upstream patch that allows product use without billing, exports no Axiom telemetry and skips company suggestions. It never substitutes hosted emulators. Sentry and PostHog configuration belongs to the analytics integration work.
 
+### Activate committed-change journals
+
+Deploy once with the activation settings absent to prepare the databases. Verify that every serving tools host and pool Worker uses the queue-aware readers before activating either producer. The commands acknowledge that inventory; they do not inspect deployed readers.
+
+For the cloud tools service, run its existing migration entrypoint with `--activate-change-journal --readers-ready=checkpoint-count-v1` and the usual migration database connection. This separate operation requires the earlier preparation and changes no auth or cloud provisioning. For the standalone native host, restart with `EXECUTOR_CHANGE_JOURNAL_READERS_READY=checkpoint-count-v1`; remove the setting after activation. It refuses activation before a previously committed preparation.
+
+For pool history, run `bun scripts/pool-history-operator.ts --worker <deployed-script> --plan <private-file> --operation journal-activation`. Review the saved catalog and SQL, then repeat with `--apply --go --readers-ready checkpoint-count-v1`. Each activation records its exact migration once, including when a later preparation is already installed.
+
+After activation, rollback builds must retain queue-aware readers. Removing an activation setting does not undo committed SQL.
+
 ### Restart one exact pool runtime
 
 Use [Exact pool runtime recovery](../.github/workflows/pool-runtime-recovery.yml) on `main` when a reviewed incident plan calls for one restart. It uses the `production-release` environment and waits behind production releases. Keep `POOL_APP_SIGNING_KEY` in Actions.
@@ -104,6 +114,16 @@ Redeploy cannot recover a lost or rotated state key; after bootstrap, back up `A
 | `ANDROID_RELEASE_KEYSTORE_PASSWORD` | Optional; the password for that key and its `signalbox` alias |
 
 The workflow maps `AUTH_GITHUB_*` to upstream's `GITHUB_*` environment variables because GitHub reserves the latter prefix for Actions secrets. Generated signing and lifecycle secrets are created directly in Actions secrets. Their values never belong in logs, repository files or artifacts.
+
+### Pool machine credential
+
+Before enabling pool fleet observation, provision its account-owned Workers Containers Read token through the existing Cloudflare connector. The connected account needs Account API Tokens Write and Secrets Store Write, and the deployment account must already have `default_secrets_store`. The bootstrap does not use the deployment credential or export the OAuth grant.
+
+`node scripts/pool-credential-bootstrap.ts review <plan.json>` produces the plan and program digests for review. The plan contains only identifiers, a stage, operation and attempt UUIDs, a mode, an optional recovery token ID, and an expiry within ten minutes. The schemas are in `scripts/pool-credential-bootstrap/contract.ts`.
+
+After separate mint and store approvals for those exact digests, `arm <packet.json> <retained-journal>` durably records the submission and emits the `tools.cloudflare.mcp.execute` invocation. Execute it once through the connector. Inside that one server-side call, the token value passes directly to `basalt-<stage>-pool-provider-observation` in the existing store. Only token ID, secret name and outcome return. Use `record <plan.json> <retained-journal> <result.json>` to retain that metadata. Keep the journal private and backed up.
+
+A lost reply never permits another create or another execution of the emitted invocation. Use `inspect <plan.json>` with the original operation to find its exact token and store metadata, then record that result. Inspection establishes ownership only; it cannot prove custody after an uncertain rotation. Only an acknowledged value write returns `stored`. Recovery requires the original submission and inspection, plus separate approvals to rotate the owned token and store its new value, or to revoke only that token. A retained secret entry is not deleted by revocation. `stored` proves custody only; authorize and perform the controller read separately before binding or activation.
 
 ### Account setup
 

@@ -62,6 +62,33 @@ test("migration 20 preserves saved accounts and repeated setup; real account, bi
     }),
   ));
 
+test("provisioning stop and retry status commits publish revisions; bookkeeping does not", () =>
+  fixture(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const journal = makeChangeJournal(sql);
+      const heads = () => journal.current("organization:team-a", [key("apps"), key("accounts")]);
+      yield* sql`insert into hosted_provisioning values ('team-a','queued',0,now())`;
+      let revision = 1n;
+      for (const status of ["running", "failed", "queued", "running", "succeeded"]) {
+        yield* sql`update hosted_provisioning set attempts=attempts+1, updated_at=now()`;
+        assert.ok((yield* heads()).every((hint) => hint.revision === String(revision)));
+        yield* sql`update hosted_provisioning set status=${status}, updated_at=now()`;
+        revision++;
+        assert.ok((yield* heads()).every((hint) => hint.revision === String(revision)));
+        const delivered: string[] = [];
+        yield* journal.deliver((scope, hint) =>
+          Effect.sync(() => {
+            assert.equal(scope, "organization:team-a");
+            assert.equal(hint.revision, String(revision));
+            delivered.push(hint.topic);
+          }),
+        );
+        assert.deepEqual(delivered.sort(), ["accounts", "apps"]);
+      }
+    }),
+  ));
+
 test("roles, groups, sharing, provisioning and session revocation have durable scoped hints", () =>
   fixture(
     Effect.gen(function* () {

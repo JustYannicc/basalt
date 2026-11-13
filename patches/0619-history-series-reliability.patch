@@ -1,0 +1,181 @@
+diff --git a/apps/hosted/server/src/contracts/pool-usage.ts b/apps/hosted/server/src/contracts/pool-usage.ts
+--- a/apps/hosted/server/src/contracts/pool-usage.ts
++++ b/apps/hosted/server/src/contracts/pool-usage.ts
+@@ -108,6 +108,12 @@
+     status: 503,
+     message: "Pool usage could not be reached. Try again.",
+   }))();
++export const PoolUsageTimedOut = /* @__PURE__ */ (() =>
++  ApiError.define({
++    tag: "PoolUsageTimedOut",
++    status: 504,
++    message: "History is taking too long. Try again.",
++  }))();
+ export const PoolCapConflict = /* @__PURE__ */ (() =>
+   ApiError.define({
+     tag: "PoolCapConflict",
+@@ -245,7 +251,7 @@
+           params,
+           payload: PoolUsageSeriesInput,
+           success: Schema.NullOr(PoolUsageSeries),
+-          error: [OrganizationForbidden, StorageError, PoolUsageUnavailable],
++          error: [OrganizationForbidden, StorageError, PoolUsageUnavailable, PoolUsageTimedOut],
+         },
+       ).annotate(RequiredAction, "read"),
+     )
+diff --git a/apps/hosted/server/src/implementation/pool-app-ui.ts b/apps/hosted/server/src/implementation/pool-app-ui.ts
+--- a/apps/hosted/server/src/implementation/pool-app-ui.ts
++++ b/apps/hosted/server/src/implementation/pool-app-ui.ts
+@@ -21,6 +21,7 @@
+   poolUsageSeries,
+   setUsageAccountLabel,
+ } from "./pool-usage.ts";
++import { PoolUsageTimedOut } from "../contracts/pool-usage.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
+ 
+ export const poolAppUsagePath = "/_executor/api/pool-usage/series";
+@@ -70,6 +71,8 @@
+         return Effect.succeed(json({ _tag: "UiUnauthorized" }, 401));
+       if (Schema.is(UiForbidden)(error) || Schema.is(OrganizationForbidden)(error))
+         return Effect.succeed(json({ _tag: "UiForbidden" }, 403));
++      if (Schema.is(PoolUsageTimedOut)(error))
++        return Effect.succeed(json({ _tag: "UiFailed", reason: "timeout" }, 504));
+       return Effect.succeed(json({ _tag: "UiFailed", reason: "unavailable" }, 503));
+     }),
+   );
+diff --git a/apps/hosted/server/src/implementation/pool-history-read-phase.ts b/apps/hosted/server/src/implementation/pool-history-read-phase.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-history-read-phase.ts
+@@ -0,0 +1,19 @@
++import { Effect, Exit } from "effect";
++
++/** Cloud invocation metadata correlates phases; no caller, query or account data enters logs. */
++export const historyReadPhase = <A, E, R>(
++  phase: "host-series" | "host-membership",
++  operation: Effect.Effect<A, E, R>,
++) =>
++  Effect.gen(function* () {
++    const started = performance.now();
++    return yield* operation.pipe(
++      Effect.onExit((exit) =>
++        Effect.logInfo("pool_history_phase", {
++          phase,
++          durationMs: Math.max(0, Math.round(performance.now() - started)),
++          outcome: Exit.isSuccess(exit) ? "ok" : "failed",
++        }).pipe(Effect.catchCause(() => Effect.void)),
++      ),
++    );
++  });
+diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
+--- a/apps/hosted/server/src/implementation/pool-membership.ts
++++ b/apps/hosted/server/src/implementation/pool-membership.ts
+@@ -75,8 +75,9 @@
+       binding.driverRevision === row.driverRevision &&
+       binding.revision === row.bindingRevision &&
+       binding.removal === null;
+-    const current = yield* source.current;
+-    if (!matches(source.binding) || !matches(current)) return null;
++    // The policy transaction already holds both rows FOR SHARE. SDK current upgrades
++    // them with UPDATEs and can block against these locks on another connection.
++    if (!matches(source.binding)) return null;
+     return Redacted.value(source.hostReference);
+   });
+ 
+diff --git a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+--- a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
++++ b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+@@ -7,6 +7,7 @@
+ import { AccountGrants } from "./proofs/account-access.ts";
+ import { nativePoolMembership } from "./pool-membership.ts";
+ import { policyDatabase } from "./resource-policy.ts";
++import { historyReadPhase } from "./pool-history-read-phase.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
+ 
+ const inspect = (account: AccountId) =>
+@@ -58,7 +59,10 @@
+     // This service resolves only AccountAcquisitionHost.source and rechecks its current binding.
+     const membership = yield* appUiPhase(
+       "overview-history-membership",
+-      nativePoolMembership(pool.organization, pool.pool, executor),
++      historyReadPhase(
++        "host-membership",
++        nativePoolMembership(pool.organization, pool.pool, executor),
++      ),
+     ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+     const accounts = [
+       ...new Map(membership.accounts.map((account) => [account.account, account])).values(),
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -1,5 +1,5 @@
+ import { poolUsageOverviewRead } from "./pool-usage-summary.ts";
+-import { readPool, sendPoolCommand, withPool } from "./pool-backend.ts";
++import { readPool, sendPoolCommand, sendPoolCommandResponse, withPool } from "./pool-backend.ts";
+ import {
+   poolAccountRouting,
+   poolRoutingDecisions,
+@@ -18,6 +18,7 @@
+   PoolUsagePage,
+   PoolUsageSummary,
+   PoolUsageUnavailable,
++  PoolUsageTimedOut,
+ } from "../contracts/pool-usage.ts";
+ import { lockCurrentActor, policyDatabase, requireAppAccessAs } from "./resource-policy.ts";
+ import {
+@@ -32,6 +33,7 @@
+ import { poolOverviewSignedInput, poolPersonalOverviewOfferings } from "./pool-usage-overview.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
++import { historyReadPhase } from "./pool-history-read-phase.ts";
+ import { poolMemberDirectory } from "./pool-usage-directory.ts";
+ 
+ const Person = Schema.Struct({
+@@ -133,23 +135,25 @@
+   withPool(app, (pool) =>
+     Effect.gen(function* () {
+       const accounts = yield* usageSeriesAccounts(pool, input.accounts);
+-      const result = yield* sendPoolCommand(
+-        "poolUsageSeries",
+-        {
+-          pool: pool.pool,
+-          organization: pool.organization,
+-          user: pool.user,
+-          input: { ...input, pool: pool.pool },
+-          authority: { canManage: true, accounts },
+-        },
+-        PoolUsageSeriesData,
+-      );
++      const response = yield* sendPoolCommandResponse("poolUsageSeries", {
++        pool: pool.pool,
++        organization: pool.organization,
++        user: pool.user,
++        input: { ...input, pool: pool.pool },
++        authority: { canManage: true, accounts },
++      });
++      if (response.status === 504) return yield* new PoolUsageTimedOut();
++      if (response.status !== 200) return yield* new PoolUsageUnavailable();
++      const result = yield* Schema.decodeUnknownEffect(PoolUsageSeriesData)(response.body);
+       return input.by.includes("person") && input.after === undefined
+         ? { ...result, directory: yield* poolMemberDirectory(pool) }
+         : result;
+     }),
+   ).pipe(
+     trackedUsageRead,
++    Effect.timeout("6 seconds"),
++    Effect.catchTag("TimeoutError", () => new PoolUsageTimedOut()),
++    (read) => historyReadPhase("host-series", read),
+     Effect.catchTags({
+       SqlError: () => new StorageError(),
+       SchemaError: () => new PoolUsageUnavailable(),
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -31,6 +31,7 @@
+     AccountResetRefused: ({ message }) => message,
+     PoolManagerTokenUnavailable: ({ message }) => message,
+     PoolUsageUnavailable: ({ message }) => message,
++    PoolUsageTimedOut: ({ message }) => message,
+     PoolUsageImportRejected: ({ message }) => message,
+     PoolCreditPolicyUnavailable: ({ message }) => message,
+     PoolCapConflict: ({ message }) => message,

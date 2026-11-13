@@ -1,3 +1,4 @@
+import { modelDrainProtocol } from "./model-drain-contract.ts";
 import type { ComputerHome } from "./computer-home.ts";
 import {
   publicView,
@@ -285,6 +286,14 @@ export class NativeComputers {
       ])
         headers.delete(name);
       headers.set("authorization", `Bearer ${key}`);
+      if (
+        value.modelDrain === modelDrainProtocol &&
+        request.method === "GET" &&
+        url.pathname === "/v1/responses"
+      )
+        headers.set("sec-websocket-protocol", modelDrainProtocol);
+      else if (headers.get("sec-websocket-protocol") === modelDrainProtocol)
+        headers.delete("sec-websocket-protocol");
       url.searchParams.delete("key");
       url.searchParams.delete("auth_token");
       return {

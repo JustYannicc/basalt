@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.poolMembership {
+    metadata {
+      constraint "Native membership locks its organization-owned app-link candidates in account order, then their bindings, before evaluating current policy once in the final fingerprint query. Lock candidates never grant membership. Exact metadata and ciphertext digests, fresh revocation checks, reference reuse and the five-second authority interval remain unchanged."
+    }
+  }
+}

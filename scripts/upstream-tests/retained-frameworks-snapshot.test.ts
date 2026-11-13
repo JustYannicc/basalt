@@ -149,7 +149,7 @@ test("SQL failures and scope refusals start no R2 work", async () => {
           yield* sql`insert into hosted_organization_removal values ('org_one')`;
         else
           yield* sql`insert into executor_deployments
-        select 'dpl_extra_' || n, 'code_one', 'organization:org_one', 'bld_extra_' || n from generate_series(1, 1000) as n`;
+        select 'dpl_extra_' || n, 'code_one', 'organization:org_one', 'bld_one' from generate_series(1, 1000) as n`;
         const exit = yield* runner
           .runProductionOperation(
             { ...settings, retainedFrameworkObjects: retainedFrameworkObjects(fixture.bucket) },
@@ -210,7 +210,7 @@ test("R2 timeout and cancellation leave no SQL transaction open", async () => {
         assert.ok(Exit.isFailure(exit));
         assert.equal(yield* readonly(sql), "off");
         assert.equal(cancelled, gets);
-        assert.equal(gets, cancel ? 1 : 3);
+        assert.equal(gets, cancel ? 2 : 4);
       }).pipe(Effect.provide(TestClock.layer())),
     );
 });

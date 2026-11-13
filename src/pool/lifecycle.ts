@@ -1,3 +1,4 @@
+import { isModelLifetimePath } from "./model-lifetime-contract.ts";
 export const poolLifecycle = {
   idleTimeoutMs: 2 * 60 * 60_000,
   refreshMs: 5 * 60_000,
@@ -196,6 +197,7 @@ export class PoolLifecycle {
 }
 
 export function poolPort(pathname: string): 8317 | 8327 | undefined {
+  if (isModelLifetimePath(pathname)) return undefined;
   if (pathname === "/typesafe/v1/models" || pathname === "/typesafe/v1/systemone") return 8317;
   if (pathname === "/v1" || pathname.startsWith("/v1/")) return 8317;
   if (unversionedModelPaths.has(pathname)) return 8317;

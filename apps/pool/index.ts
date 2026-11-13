@@ -1,6 +1,5 @@
 import { defineApp, boolean, number, object, query, type QueryContext, router } from "apps";
 import { type PoolView, type UsageSummary } from "./contract.ts";
-import { providerAccountView } from "./provider-account-view.ts";
 import { requirements } from "./requirements.ts";
 import { control, type Result } from "./control.ts";
 import { importUsage } from "./import-actions.ts";
@@ -28,8 +27,7 @@ export const view = query(
     input: object({ fresh: boolean().optional() }),
   },
   async (ctx: Context, { fresh }): Promise<Result<PoolView>> => {
-    const result = await control<PoolView>(ctx, fresh ? "/pool?fresh=true" : "/pool");
-    return result.ok ? { ok: true, value: await providerAccountView(ctx, result.value) } : result;
+    return control<PoolView>(ctx, fresh ? "/pool?fresh=true" : "/pool");
   },
 );
 
@@ -49,13 +47,13 @@ export const usage = query(
 export const capacity = query(
   {
     description:
-      "Measured capacity and seasonal projections for pool managers (1 to 90 days, default 30). Forecasts need two completed weeks, sizing advice four. Banked resets are never spent by a forecast.",
+      "Measured capacity and seasonal projections for pool managers (1 to 400 days, default 30). Forecasts need two completed weeks, sizing advice four. Banked resets are never spent by a forecast.",
     input: object({ days: number().optional(), to: number().optional() }),
   },
   async (ctx: Context, { days, to }) =>
     control<import("./capacity-contract.ts").PoolCapacityHistory>(
       ctx,
-      `/usage/capacity?days=${Math.min(90, Math.max(1, Math.round(days ?? 30)))}${to === undefined ? "" : `&to=${encodeURIComponent(to)}`}`,
+      `/usage/capacity?days=${Math.min(400, Math.max(1, Math.round(days ?? 30)))}${to === undefined ? "" : `&to=${encodeURIComponent(to)}`}`,
     ),
 );
 

@@ -10,6 +10,10 @@ import { NativeMemberships } from "../../src/pool/membership.ts";
 import { readNativeMembership } from "../../src/pool/membership-read.ts";
 import { HomeMembership } from "../../src/pool/home-membership.ts";
 import { Computers } from "../../src/pool/computers.ts";
+import { openEnvelope } from "../../src/pool/token.ts";
+import { PoolChanges, publishPoolChanges } from "../../src/pool/change-revisions.ts";
+import { poolChangesPath, readCommittedPoolChanges } from "../../src/pool/change-http.ts";
+import { poolFixtureStorage } from "./pool-fixture-storage.mjs";
 
 /** The production control API with only its external Home management service simulated. */
 export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
@@ -17,18 +21,7 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
   const now = () => Date.now() + clockOffset;
   const resets = resetProvider(now);
   const values = new Map();
-  const storage = {
-    async get(key) {
-      return structuredClone(values.get(key));
-    },
-    async put(key, value) {
-      values.set(key, structuredClone(value));
-    },
-    async getAlarm() {
-      return null;
-    },
-    async setAlarm() {},
-  };
+  const storage = poolFixtureStorage(values);
   const files = new Map(),
     readings = new Map(),
     groups = new Map(),
@@ -177,6 +170,14 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     home: new ComputerHome(new HomeClient(home)),
   });
   let productOrigin;
+  const changes = new PoolChanges(storage, (revisions) => {
+    if (!productOrigin) throw new Error("The fixture has no product origin");
+    return publishPoolChanges(
+      { fetch: (input, init) => fetch(new URL(new URL(input).pathname, productOrigin), init) },
+      signingKey,
+      revisions,
+    );
+  });
   const homeMembership = new HomeMembership(new HomeClient(home));
   const memberships = new NativeMemberships({
     storage,
@@ -208,11 +209,81 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     },
   });
   const traces = [];
+  // Signed usage reads the model-history worker would answer. A journey that sets `respond`
+  // supplies their synthetic data; every other journey keeps the production control's answers.
+  const usage = {
+    respond: undefined,
+    capacity: undefined,
+    history: undefined,
+    calls: [],
+    requests: [],
+    log: [],
+  };
+  const usageRoutes = new Set([
+    "/pool/v1/usage/summary",
+    "/pool/v1/usage/series",
+    "/pool/v1/usage/overview",
+    "/pool/v1/usage/personal-overview",
+    "/pool/v1/usage/last-success",
+  ]);
   const server = createServer(async (request, response) => {
     try {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const body = Buffer.concat(chunks);
+      // Method and path only, for the journey's request inventory; never bodies or credentials.
+      const route = `${request.method} ${new URL(request.url ?? "/", "http://127.0.0.1").pathname}`;
+      usage.requests.push(route);
+      usage.log.push({ at: Date.now(), route });
+      const address = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (address.pathname === poolChangesPath) {
+        const result = await readCommittedPoolChanges(
+          new Request(address, {
+            method: request.method,
+            headers: request.headers,
+            ...(["GET", "HEAD"].includes(request.method) ? {} : { body }),
+          }),
+          { signingKey, current: async (pool) => ({ revisions: await changes.current(pool) }) },
+        );
+        response.writeHead(result.status, Object.fromEntries(result.headers));
+        response.end(Buffer.from(await result.arrayBuffer()));
+        return;
+      }
+      if (
+        usage.capacity &&
+        request.method === "GET" &&
+        address.pathname === "/pool/v1/usage/capacity"
+      ) {
+        response
+          .writeHead(200, { "Content-Type": "application/json" })
+          .end(JSON.stringify(await usage.capacity(address)));
+        return;
+      }
+      if (
+        usage.history &&
+        request.method === "GET" &&
+        address.pathname === "/pool/v1/usage/history"
+      ) {
+        response
+          .writeHead(200, { "Content-Type": "application/json" })
+          .end(JSON.stringify(await usage.history(address)));
+        return;
+      }
+      if (usage.respond && request.method === "POST" && usageRoutes.has(request.url)) {
+        let envelope = "";
+        try {
+          envelope = JSON.parse(body.toString("utf8")).envelope ?? "";
+        } catch {}
+        const payload = await openEnvelope(signingKey, "sbs1", envelope);
+        usage.calls.push({ route: request.url, payload: payload ?? null });
+        const reply = payload === undefined ? undefined : await usage.respond(request.url, payload);
+        if (reply === undefined) response.writeHead(payload === undefined ? 401 : 404).end();
+        else
+          response
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(JSON.stringify(reply));
+        return;
+      }
       if (request.url === "/send" && request.method === "POST") {
         sends.push(JSON.parse(body.toString()));
         response
@@ -318,6 +389,8 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
   const origin = new URL("http://127.0.0.1");
   origin.port = String(server.address().port);
   const fixture = {
+    changes,
+    usage,
     prepareAcquisition(pool, id, provider = "codex", resetCount = 2) {
       acquisition = { pool, id, provider, resetCount };
     },

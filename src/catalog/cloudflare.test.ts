@@ -86,6 +86,8 @@ test("Cloudflare OAuth review binds automatic sign-in to the served full-scope s
         [decision.metadata, { sha256: catalogDocumentSha256(changed), document: changed }],
       ]),
     }),
-    ["cloudflare/oauth: automatic client metadata is missing or changed"],
+    [
+      `cloudflare/oauth: automatic client metadata changed (metadataSha256: ${decision.metadataSha256} -> ${catalogDocumentSha256(changed)})`,
+    ],
   );
 });

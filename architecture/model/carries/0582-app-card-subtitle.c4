@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A catalog install records its service's name and the catalog's noun for one copy beside the service identity it already records, and catalog copies from before service records take both from their package's entry in the catalog read the inventory already makes for them; no inventory read is added. An app's card shows that name and noun under the app's own name, such as Obsidian vault under Personal, only when the name is recorded and differs from the name the card shows, compared as the product shows both so the built-in app under the product's brand gets none, and not on phones; the card's accessible name includes it. Copies recorded before names were recorded show no such line; nothing back-fills them, because doing so would read the catalog on every inventory."
+    }
+  }
+}

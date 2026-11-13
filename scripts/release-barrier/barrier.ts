@@ -1,3 +1,4 @@
+import { ReleaseOperationFailure } from "./operation-failure.ts";
 import { assertSqlSchemas, type SqlSchemaReceipt } from "./sql-schema-contract.ts";
 import { uploadFailure } from "./upload-failure.ts";
 import type { ResourceDelta } from "./prop-diff.ts";
@@ -69,7 +70,13 @@ export interface BarrierReceipt {
     version?: number;
     rolloutId?: string;
   };
-  failure?: { reason: string; worker?: string; delta?: ResourceDelta };
+  failure?: {
+    reason: string;
+    worker?: string;
+    delta?: ResourceDelta;
+    operation?: ReleaseOperationFailure["operation"];
+    provider?: ReleaseOperationFailure["provider"];
+  };
 }
 
 export interface BarrierOptions {
@@ -300,6 +307,9 @@ export async function releaseWorkers(
             reason: error.reason,
             ...(error.worker ? { worker: error.worker } : {}),
             ...(error.delta ? { delta: error.delta } : {}),
+            ...(error instanceof ReleaseOperationFailure
+              ? { operation: error.operation, provider: error.provider }
+              : {}),
           }
         : {
             reason:

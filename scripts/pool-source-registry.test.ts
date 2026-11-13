@@ -373,6 +373,142 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         );
         assert.match(patch.retirement.requires, /no empty periodic writes/);
         assert.match(patch.retirement.requires, /without a schema or lease change/);
+      } else if (patch.identity === "cliproxy-node-terminal-request-id") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0592-node-terminal-request-id.patch");
+        assert.match(
+          patch.retirement.requires,
+          /validated per-request terminal correlation identities/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /independent trace and billing execution identities/,
+        );
+        assert.match(patch.retirement.requires, /metadata-only reporting/);
+        assert.match(patch.retirement.requires, /privacy and model-drain regressions/);
+      } else if (patch.identity === "cliproxy-node-model-drain") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0574-node-model-drain.patch");
+        assert.match(patch.retirement.requires, /exact-length read receipts/);
+        assert.match(patch.retirement.requires, /unbuffered private input handoff/);
+        assert.match(
+          patch.retirement.requires,
+          /raw Responses compatibility and no inference replay/,
+        );
+      } else if (patch.identity === "cliproxy-home-quota-deadline") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0572-home-quota-deadline.patch");
+        assert.match(patch.retirement.requires, /forecast-paced quota deadlines/);
+        assert.match(patch.retirement.requires, /retained smooth weighted credits/);
+        assert.match(patch.retirement.requires, /fallback and affinity safety, admission retry/);
+        assert.match(patch.retirement.requires, /bounded private decision evidence/);
+        assert.match(patch.retirement.requires, /current read-only snapshots/);
+        assert.match(patch.retirement.requires, /staggered-reset availability/);
+        assert.match(patch.retirement.requires, /independent capacity-shortfall classification/);
+        assert.match(patch.retirement.requires, /public pool API/);
+        assert.match(patch.retirement.requires, /without exposing uninspectable account facts/);
+      } else if (patch.identity === "home-summary-service-tier") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0594-home-summary-service-tier.patch");
+        assert.match(patch.retirement.requires, /service-tier/);
+        assert.match(patch.retirement.requires, /unknown/);
+        assert.match(patch.retirement.requires, /privacy/);
+      } else if (patch.identity === "cliproxy-node-model-lifetime") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0593-node-model-lifetime.patch");
+        assert.match(patch.retirement.requires, /private single-use connection completion channel/);
+        assert.match(patch.retirement.requires, /binds the actual model socket/);
+        assert.match(
+          patch.retirement.requires,
+          /preserves unmarked raw frames and public subprotocols/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /closes the data socket if completion becomes uncertain/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /normal, client, upstream, revocation, duplicate-claim and draining-retirement regressions/,
+        );
+        assert.match(patch.retirement.requires, /without inference replay or a byte-lifetime cap/);
+      } else if (patch.identity === "cliproxy-node-no-postwrite-replay") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0599-node-no-postwrite-replay.patch");
+        assert.match(patch.retirement.requires, /terminal unknown-outcome classification/);
+        assert.match(patch.retirement.requires, /real post-write EOF/);
+        assert.match(patch.retirement.requires, /empty accepted model-pool stream/);
+        assert.match(patch.retirement.requires, /incomplete SSE frames/);
+        assert.match(patch.retirement.requires, /internal POST replay/);
+        assert.match(
+          patch.retirement.requires,
+          /generation-only submission tracking with replayable token counting/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /exactly one request-scoped failed stream result for local and Home observers/,
+        );
+        assert.match(patch.retirement.requires, /JSON document error envelopes/);
+        assert.match(patch.retirement.requires, /terminal Antigravity credits fallback/);
+        assert.match(
+          patch.retirement.requires,
+          /buffered Claude incomplete-response classification/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /direct Fast credential-rate-limit result recording and cooldown/,
+        );
+        assert.match(patch.retirement.requires, /explicit HTTP and SSE refusal regressions/);
+        assert.match(
+          patch.retirement.requires,
+          /no replay across models, credentials and retry rounds/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /public 502 upstream_outcome_unknown with retryable false/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /existing proxy and protocol selection, and release updates/,
+        );
+      } else if (patch.identity === "cliproxy-home-oauth-dispatch-expiry") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0600-home-oauth-dispatch-expiry.patch");
+        assert.match(patch.retirement.requires, /five-minute dispatch safety window/);
+        assert.match(
+          patch.retirement.requires,
+          /scheduler, full-credential and affinity admission/,
+        );
+        assert.match(patch.retirement.requires, /no stale upstream dispatch/);
+        assert.match(
+          patch.retirement.requires,
+          /next-account fallback, clean temporary unavailability/,
+        );
+        assert.match(patch.retirement.requires, /same-UUID fresh replacement/);
+        assert.match(
+          patch.retirement.requires,
+          /quota-deadline compatibility through native public requests/,
+        );
+      } else if (patch.identity === "cliproxy-node-home-funding-test-fixtures") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0604-node-home-funding-test-fixtures.patch");
+        assert.match(patch.retirement.requires, /approved ValidateUsageCreditTurn methods/);
+        assert.match(patch.retirement.requires, /five retained-account Home dispatcher fixtures/);
+        assert.match(patch.retirement.requires, /no product Go changes/);
+        assert.match(patch.retirement.requires, /without dropping existing selections/);
+        assert.match(patch.retirement.requires, /funding-denial and missing-validator controls/);
+      } else if (patch.identity === "cliproxy-node-generation-submission") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0611-node-generation-submission.patch");
+        assert.match(patch.retirement.requires, /guards only generation sends/);
+        assert.match(
+          patch.retirement.requires,
+          /ambiguous WebSocket frame writes as terminal unknown/,
+        );
+        assert.match(patch.retirement.requires, /positively validates provider refusal payloads/);
+        assert.match(
+          patch.retirement.requires,
+          /Generic credential, refresh and auxiliary HTTP calls remain untracked/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&

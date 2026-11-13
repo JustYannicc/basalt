@@ -58,6 +58,14 @@ export function refusalTable(failure: Failure) {
         .filter((value) => value !== undefined)
         .join("; "),
     ]);
+  if (failure.provider?.migration) {
+    const value = failure.provider.migration;
+    rows.push([
+      failure.worker ?? "Migrations",
+      "$migration",
+      `phase=${value.phase}; ${value.message}; exit=${failure.provider.exitCode ?? "unknown"}${value.version ? `; version=${value.version}` : ""}`,
+    ]);
+  }
   if (failure.stateStore) {
     const value = failure.stateStore;
     rows.push([

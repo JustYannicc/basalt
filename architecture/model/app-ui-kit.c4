@@ -1,0 +1,8 @@
+model {
+  extend basalt.toolsGateway {
+    appUiKit = part "App UI kit" {
+      description "App pages build the dashboard's own controls, tokens, provider marks and selected-account identity and health through the served framework's public `apps/ui` and `apps/ui.css`. The dashboard and app pages render the same implementation; no app keeps a copied kit."
+      metadata { code ".upstream/packages/apps/src/ui.tsx|.upstream/packages/ui/src/implementation/styles/app.css" }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Generation sends own submission tracking. Accepted HTTP responses and attempted WebSocket generation writes make later local failures terminal unknown; only positively validated provider refusals permit failover. Credential, refresh and token-count calls remain auxiliary. Preserve native error envelopes, correlation identity, pre-write recovery and retained Home funding behavior."
+    }
+  }
+}

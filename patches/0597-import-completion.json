@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-import-completion",
+  "file": "0597-import-completion.patch",
+  "content_sha256": "cf2ef5b86103f862201f9df9b3cf004b826bb97efefc067c661f9514fbb959f4",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

@@ -1,3 +1,5 @@
+import { readRoutingDecisions } from "./routing-decisions.ts";
+import { routingDecisionsView } from "./routing-decision-view.ts";
 import type { AccountUsageRouting } from "../../apps/pool/usage-credits-contract.ts";
 import type { HomeClient } from "./control.ts";
 import { poolCreditRouting, setPoolCreditPolicy } from "./credit-policy.ts";
@@ -7,6 +9,7 @@ import { setPoolSelectionPolicy } from "./selection-policy.ts";
 
 export const creditRoutingPaths = new Set([
   "/pool/v1/accountRouting",
+  "/pool/v1/routingDecisions",
   "/pool/v1/setCreditPolicy",
   "/pool/v1/setSelectionPolicy",
 ]);
@@ -55,7 +58,11 @@ export async function handleCreditRouting(
     )
       return fail(401, "unauthorized", "A valid host policy assertion is required.");
     if (action !== "accountRouting" && payload.user !== payload.owner)
-      return fail(403, "not_owner", "Only the pool owner can change routing policy.");
+      return fail(
+        403,
+        "not_owner",
+        "Only the pool owner can inspect decisions or change routing policy.",
+      );
     await access.ensure?.(payload.pool, payload.organization);
     if (action === "setCreditPolicy")
       return json(await setPoolCreditPolicy(access.home, payload.pool, payload.usageCreditPolicy));
@@ -72,6 +79,7 @@ export async function handleCreditRouting(
       return fail(400, "invalid_query", "A bounded inspected account mapping is required.");
     const result = await poolCreditRouting(access.home, payload.pool);
     const accounts: Record<string, AccountUsageRouting> = {};
+    const mappings: { account: string; home: string[] }[] = [];
     for (const entry of payload.accounts) {
       if (
         !object(entry) ||
@@ -83,12 +91,27 @@ export async function handleCreditRouting(
         !entry.home.every((id) => typeof id === "string" && id.length > 0 && id.length <= 256)
       )
         return fail(400, "invalid_query", "A valid inspected account mapping is required.");
+      mappings.push({
+        account: entry.account,
+        home: entry.home.filter((id): id is string => typeof id === "string"),
+      });
       const available = entry.home.flatMap((id) =>
         typeof id === "string" && result.accounts[id] ? [result.accounts[id]!] : [],
       );
       available.sort((a, b) => rank(a) - rank(b));
       const first = available[0];
       if (first !== undefined) accounts[entry.account] = first;
+    }
+    if (action === "routingDecisions") {
+      const history = await readRoutingDecisions(access.home, payload.pool);
+      return json(
+        routingDecisionsView(
+          history.pages,
+          result.accountSelectionPolicy,
+          history.changedAt,
+          mappings,
+        ),
+      );
     }
     return json({
       usageCreditPolicy: result.usageCreditPolicy,

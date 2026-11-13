@@ -1,0 +1,111 @@
+diff --git a/apps/hosted/server/src/contracts/pool-usage-series.ts b/apps/hosted/server/src/contracts/pool-usage-series.ts
+--- a/apps/hosted/server/src/contracts/pool-usage-series.ts
++++ b/apps/hosted/server/src/contracts/pool-usage-series.ts
+@@ -1,5 +1,6 @@
+ import { AccountId } from "@executor-js/sdk/core";
+ import { Schema } from "effect";
++import { PoolUsageForecasts } from "./pool-usage-forecast.ts";
+ 
+ const count = /* @__PURE__ */ (() => Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)))();
+ const decimal = /* @__PURE__ */ (() =>
+@@ -47,6 +48,8 @@
+   Schema.Struct({
+     ...bounds.fields,
+     bucket: Schema.Literals(["hour", "day"]),
++    timezone: Schema.optionalKey(Schema.Literals(["UTC", "Europe/Zurich"])),
++    forecast: Schema.optionalKey(Schema.Boolean),
+     by: Schema.Array(dimensions).check(
+       Schema.isMaxLength(7),
+       Schema.makeFilter((keys) => new Set(keys).size === keys.length),
+@@ -75,9 +78,11 @@
+ const counts = /* @__PURE__ */ (() =>
+   Schema.Struct({
+     at: Schema.NonEmptyString,
++    end: Schema.optionalKey(Schema.NonEmptyString),
+     partial: Schema.Boolean,
+     requests: count,
+     failed: count,
++    limited: Schema.optionalKey(count),
+     unassignedFailures: count,
+     successRate: Schema.NullOr(Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
+   }))();
+@@ -121,6 +126,8 @@
+   }))();
+ export const PoolUsageSeries = /* @__PURE__ */ (() =>
+   Schema.Struct({
++    timezone: Schema.optionalKey(Schema.Literals(["UTC", "Europe/Zurich"])),
++    forecasts: Schema.optionalKey(PoolUsageForecasts),
+     ...bounds.fields,
+     bucket: Schema.Literals(["hour", "day"]),
+     window: Schema.optionalKey(bounds),
+diff --git a/apps/hosted/server/src/contracts/pool-usage-forecast.ts b/apps/hosted/server/src/contracts/pool-usage-forecast.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/pool-usage-forecast.ts
+@@ -0,0 +1,66 @@
++import { Schema } from "effect";
++
++const number = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
++const amount = Schema.NullOr(number);
++const count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
++const projection = Schema.Struct({
++  from: Schema.String,
++  through: Schema.String,
++  actual: amount,
++  median: amount,
++  low: amount,
++  high: amount,
++});
++const forecast = Schema.Union([
++  Schema.Struct({
++    status: Schema.Literal("unavailable"),
++    reason: Schema.Literals(["invalid-input", "insufficient-history", "insufficient-use"]),
++    comparableWeeks: count,
++    calculatedAt: Schema.String,
++  }),
++  Schema.Struct({
++    status: Schema.Literal("available"),
++    calculatedAt: Schema.String,
++    timezone: Schema.Literal("Europe/Zurich"),
++    method: Schema.Literal("Median of the last 4 full weeks, shaped by day of week"),
++    confidence: Schema.Literals(["Low", "Medium", "High"]),
++    coverage: Schema.Struct({
++      basis: Schema.Literals(["recorded-total", "known-subset"]),
++      excludedRequests: count,
++    }),
++    interval: Schema.Literal(0.8),
++    comparableWeeks: count,
++    trainingWeeks: Schema.Array(Schema.String).check(Schema.isMaxLength(4)),
++    misses: Schema.Array(
++      Schema.Struct({
++        week: Schema.String,
++        predicted: number,
++        actual: number,
++        error: Schema.Finite,
++        share: amount,
++      }),
++    ).check(Schema.isMaxLength(8)),
++    thisWeek: projection,
++    nextWeek: projection,
++    month: projection,
++    daily: Schema.Array(
++      Schema.Struct({ day: Schema.String, median: number, low: amount, high: amount }),
++    ).check(Schema.isMaxLength(45)),
++  }),
++]);
++
++export const PoolUsageForecasts = Schema.Struct({
++  calculatedAt: Schema.String,
++  timezone: Schema.Literal("Europe/Zurich"),
++  basis: Schema.Literal("recorded-usage"),
++  warnings: Schema.Array(Schema.String),
++  series: Schema.Array(
++    Schema.Struct({
++      provider: Schema.NullOr(Schema.String),
++      requests: forecast,
++      tokens: forecast,
++      apiEstimate: forecast,
++      excluded: Schema.Struct({ tokens: count, apiEstimate: count }),
++    }),
++  ),
++});

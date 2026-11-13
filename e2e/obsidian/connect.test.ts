@@ -20,6 +20,7 @@ import {
   bratInstallLink,
 } from "../../.upstream/apps/hosted/web/src/contracts/obsidian-plugin.ts";
 import { parseConnectLink, protocolAction } from "../../clients/obsidian/link.ts";
+import { obsidian as obsidianCatalogEntry } from "../../src/catalog/obsidian/index.ts";
 import manifest from "../../clients/obsidian/manifest.json" with { type: "json" };
 import versions from "../../clients/obsidian/versions.json" with { type: "json" };
 
@@ -59,6 +60,29 @@ test("a renamed cloud app produces a plugin-readable link with only its exact to
     false,
   );
   assert.equal(Boolean(supportsObsidian({ requirements: { accounts: {} } }, all)), false);
+});
+
+test("a vault app's link names its vault for the plugin, without Obsidian routing on it", () => {
+  const params = (name: string) =>
+    new URL(
+      obsidianConnectLink(
+        { id: AppId.make("app_fixture_vault"), slug: AppSlug.make("garden"), name },
+        "https://cloud.fixture.invalid/mcp?connection=fixture-device",
+      ),
+    ).searchParams;
+  const vaultName = (name: string) => parseConnectLink(Object.fromEntries(params(name))).vaultName;
+  // The plugin compares this name with the vault it runs in and warns on a mismatch.
+  assert.equal(vaultName("Garden"), "Garden");
+  assert.equal(vaultName("  Work notes · 2026 ✦ "), "Work notes · 2026 ✦");
+  // Obsidian opens the vault named by `vault=`, or refuses the link when there is none, before the
+  // plugin runs; `vaultName` reaches the plugin in whichever vault is open.
+  assert.equal(params("Garden").get("vaultName"), "Garden");
+  assert.equal(params("Garden").has("vault"), false);
+  // An app still named after the catalog entry stands for no vault yet; its first device may
+  // connect from any vault without a warning.
+  assert.equal(vaultName(obsidianCatalogEntry.entry.name), null);
+  // A name the plugin wouldn't accept is left out rather than cut to a different name.
+  assert.equal(vaultName("v".repeat(256)), null);
 });
 
 test("the dashboard installs the plugin release this checkout publishes", () => {

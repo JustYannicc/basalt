@@ -13,6 +13,83 @@ import { fixture } from "./test/deploy-stack-fixture.ts";
 import { releaseEvidence } from "./evidence.ts";
 import { reportRefusal } from "./refusal-report.ts";
 
+test("a rejected startup confirmation retains the first measurement and terminates before writes", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "startup-confirmation-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const evidence = releaseEvidence(root, "a".repeat(40));
+  const requests: string[] = [];
+  const client = HttpClient.make((request, url) => {
+    assert.equal(request.method, "POST");
+    assert.ok(url.pathname.endsWith("/versions"));
+    requests.push(url.pathname.split("/").at(-2)!);
+    const response =
+      requests.length === 1
+        ? Response.json({
+            success: true,
+            result: { id: "slow-api-version", startup_time_ms: 752 },
+          })
+        : Response.json(
+            {
+              success: false,
+              errors: [
+                { code: 100312, message: "synthetic-private-token https://private.invalid" },
+              ],
+            },
+            { status: 400 },
+          );
+    return Effect.succeed(HttpResponse.fromWeb(request, response));
+  });
+  const proof = fixture({
+    evidence,
+    upload: (worker) =>
+      uploadVersion(worker).pipe(
+        Effect.provideService(HttpClient.HttpClient, client),
+        Effect.provideService(
+          Credentials,
+          Effect.succeed({
+            type: "apiToken",
+            apiToken: Redacted.make("synthetic-private-token"),
+            apiBaseUrl: "https://private.invalid",
+          }),
+        ),
+      ),
+  });
+  const exit = await Effect.runPromiseExit(proof.effect);
+  assert.ok(Exit.isFailure(exit));
+  const failure = await evidence.failure(Cause.squash(exit.cause));
+  assert.deepEqual(requests, ["Api", "Api"]);
+  assert.equal(failure.worker, "Api");
+  assert.equal(failure.reason, "upload-rejected-or-unconfirmed");
+  const receipt = proof.receipts.at(-1)!;
+  assert.equal(receipt.ceilingMs, 750);
+  assert.equal(receipt.phase, "upload");
+  assert.deepEqual(receipt.startupMeasurements, [
+    { worker: "Api", versionId: "slow-api-version", startupTimeMs: 752 },
+  ]);
+  assert.deepEqual(receipt.accepted, []);
+  assert.deepEqual(receipt.pendingUpload, { worker: "Api" });
+  assert.equal(proof.writes(), 0);
+  assert.deepEqual(failure.activated, []);
+  assert.equal(
+    proof.events.some((event) => event.startsWith("activate:")),
+    false,
+  );
+  const summary = join(root, "summary.md");
+  const messages: string[] = [];
+  await reportRefusal(failure, summary, (message) => messages.push(message));
+  for (const output of [
+    JSON.stringify(receipt),
+    await readFile(join(root, "failure.json"), "utf8"),
+    await readFile(summary, "utf8"),
+    ...messages,
+  ]) {
+    assert.ok(output.includes("400"), output);
+    assert.ok(output.includes("100312"), output);
+    assert.ok(!output.includes("synthetic-private-token"), output);
+    assert.ok(!output.includes("private.invalid"), output);
+  }
+});
+
 for (const scenario of [
   "validation",
   "startup",

@@ -243,10 +243,11 @@ const program = Effect.gen(function* () {
       }),
     );
     const row = (name) => page.getByRole("button", { name: `Manage ${name}`, exact: true }).first();
-    const updating = page
-      .getByRole("status")
-      .filter({ hasText: /updating/i })
-      .first();
+    const updating = () =>
+      page
+        .getByRole("status")
+        .filter({ hasText: /updating/i })
+        .first();
     const flush = () =>
       Promise.all([
         page.evaluate(
@@ -280,7 +281,7 @@ const program = Effect.gen(function* () {
     );
     yield* browserWork(async () => {
       await resourceIdle();
-      await updating.waitFor({ state: "hidden" });
+      await updating().waitFor({ state: "hidden" });
       await flush();
       await resourceIdle();
       await shot("before");
@@ -314,7 +315,7 @@ const program = Effect.gen(function* () {
     checks.push(`Accounts at ${width}: real host write advanced SQL journal`);
     yield* browserWork(async () => {
       await row(label).waitFor();
-      await updating.waitFor();
+      await updating().waitFor();
       check(
         `Accounts at ${width}: held update retains the original row`,
         await row(label).isVisible(),
@@ -337,7 +338,7 @@ const program = Effect.gen(function* () {
     yield* browserWork(async () => {
       await row(nextLabel).waitFor();
       progress.phase = "await-updating-hidden";
-      await updating.waitFor({ state: "hidden" });
+      await updating().waitFor({ state: "hidden" });
       await resourceIdle();
       await flush();
       await shot("after");
@@ -415,21 +416,22 @@ const program = Effect.gen(function* () {
         (diagnostics.pageErrors ??= []).push(redactLogText(String(error)));
       });
       yield* browserWork(() => page.clock.install());
-      const frame = page.frameLocator(`iframe[title=${JSON.stringify(`${pool.name} app`)}]`);
+      let frame = page.frameLocator('[data-app-frames] iframe:not([src*="/history"])');
       const requestRow = (name) =>
         frame.getByRole("button", { name: new RegExp(`Show metadata for ${name} at`) }).first();
       const historyReads = () =>
         h.fixture.scoped.reads.filter((read) => read.kind === "history").length;
       const overviewReads = () =>
-        h.fixture.scoped.reads.filter((read) => read.kind === "poolOverview").length;
-      const updating = frame
-        .getByRole("status")
-        .filter({ hasText: /updating/i })
-        .first();
+        h.fixture.scoped.reads.filter((read) => read.kind === "poolUsageSummary").length;
+      const updating = () =>
+        frame
+          .getByRole("status")
+          .filter({ hasText: /updating/i })
+          .first();
       const requestTotal = (count) =>
-        frame.locator("#who > p").filter({
-          hasText: new RegExp(`\\b${count} ${count === 1 ? "request" : "requests"} in 7 days`),
-        });
+        frame
+          .getByRole("region", { name: "Requests", exact: true })
+          .getByText(count.toLocaleString(), { exact: true });
       const flush = () =>
         Promise.all([
           page.evaluate(
@@ -440,6 +442,45 @@ const program = Effect.gen(function* () {
         ]);
       const shot = async (phase) => {
         const name = `pool-${width}-${phase}.png`;
+        if (width === 390 && phase === "overview-before") {
+          const body = frame.locator("body");
+          const font = await body.evaluate((element) =>
+            element.style.getPropertyValue("--font-sans"),
+          );
+          try {
+            // System fallback fonts differ by platform; a wider face must keep every range usable.
+            await body.evaluate((element) =>
+              element.style.setProperty("--font-sans", "Verdana, sans-serif"),
+            );
+            await page.screenshot({
+              path: join(directory, "pool-390-fallback-font.png"),
+              fullPage: true,
+            });
+            assert.ok(
+              await body.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+              "Pool app at 390: fallback font has no horizontal overflow",
+            );
+            const ranges = frame.getByRole("tablist", { name: "Range", exact: true });
+            for (const tab of await ranges.getByRole("tab").all()) {
+              await tab.scrollIntoViewIfNeeded();
+              assert.ok(
+                await tab.evaluate((element) => {
+                  const rect = element.getBoundingClientRect();
+                  return rect.left >= -1 && rect.right <= innerWidth + 1;
+                }),
+                "Every range option remains reachable at 390 with the fallback font",
+              );
+            }
+            await ranges.evaluate((element) => {
+              element.scrollLeft = 0;
+            });
+          } finally {
+            await body.evaluate((element, value) => {
+              if (value) element.style.setProperty("--font-sans", value);
+              else element.style.removeProperty("--font-sans");
+            }, font);
+          }
+        }
         assert.ok(
           await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
           `Pool shell at ${width}: no horizontal overflow`,
@@ -461,10 +502,10 @@ const program = Effect.gen(function* () {
         await page.goto(
           `${browserOrigin}/org/${h.actors.organization.slug}/apps/${pool.id}?view=app`,
         );
-        await frame.getByRole("heading", { name: "Overview", exact: true }).waitFor();
-        await frame.locator('a[href="#usage-history"]').first().waitFor();
+        await frame.getByRole("heading", { name: "How much are we using?", exact: true }).waitFor();
+        await page.getByRole("link", { name: "History", exact: true }).waitFor();
         await requestTotal(requestCount).waitFor();
-        await updating.waitFor({ state: "hidden" });
+        await updating().waitFor({ state: "hidden" });
         await flush();
         await shot("overview-before");
       });
@@ -495,7 +536,7 @@ const program = Effect.gen(function* () {
       checks.push(`Pool Overview at ${width}: real SQL commit delivered through hosted native DO`);
       yield* browserWork(() => overviewHold.started);
       yield* browserWork(async () => {
-        await updating.waitFor();
+        await updating().waitFor();
         check(
           `Pool Overview at ${width}: held refresh retains accepted request total`,
           await requestTotal(requestCount).isVisible(),
@@ -509,7 +550,7 @@ const program = Effect.gen(function* () {
         await shot("overview-updating");
         overviewHold.release();
         await requestTotal(overviewCommit.count).waitFor();
-        await updating.waitFor({ state: "hidden" });
+        await updating().waitFor({ state: "hidden" });
         await flush();
         await shot("overview-after");
       });
@@ -536,9 +577,10 @@ const program = Effect.gen(function* () {
         0,
       );
       yield* browserWork(async () => {
-        await frame.locator('a[href="#usage-history"]').first().click();
+        await page.getByRole("link", { name: "History", exact: true }).click();
+        frame = page.frameLocator('[data-app-frames] iframe[src*="/history"]');
         await requestRow(model).waitFor();
-        await updating.waitFor({ state: "hidden" });
+        await updating().waitFor({ state: "hidden" });
         await flush();
         await shot("before");
       });
@@ -567,7 +609,7 @@ const program = Effect.gen(function* () {
       checks.push(`Pool history at ${width}: real SQL commit delivered through hosted native DO`);
       yield* browserWork(() => hold.started);
       yield* browserWork(async () => {
-        await updating.waitFor();
+        await updating().waitFor();
         check(
           `Pool history at ${width}: held refresh retains accepted requests`,
           await requestRow(model).isVisible(),
@@ -581,7 +623,7 @@ const program = Effect.gen(function* () {
         await shot("updating");
         hold.release();
         await requestRow(nextModel).waitFor();
-        await updating.waitFor({ state: "hidden" });
+        await updating().waitFor({ state: "hidden" });
         await flush();
         await shot("after");
       });

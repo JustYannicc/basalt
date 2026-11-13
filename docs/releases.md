@@ -4,6 +4,8 @@ How Executor updates and carried patches land, how database changes ship, and wh
 
 ## Carried patches
 
+- `0613-accepted-read-page-app-assets.patch` supersedes retired `0602-accepted-read-combined-app-assets.patch`. Do not replay 0602. The normal pinned generator produces 0613 from the combined revision client and declared-page navigation after 0612; frozen 0607 stays unchanged.
+
 - `0001-optional-cloud-vendors.patch`: absent optional vendors do not require accounts or make external calls. This manual Basalt overlay stays carried while [executor#2378](https://github.com/UsefulSoftwareCo/executor/issues/2378) asks whether third-party Cloud deployments are in scope. [PR #2348](https://github.com/UsefulSoftwareCo/executor/pull/2348) closed pending an explicit scope decision.
 - `0002-cloud-deployment.patch`: exports the upstream deployment composition, accepts Actions-supplied MCP signing keys, leaves the public domain to the router and configures native mail senders.
 - `0003-eu-durable-objects.patch`: constrains Basalt namespace bindings before native and Effect adapters capture them. Other stacks keep their existing bindings. R2 jurisdiction is set in the deployment patch. This manual Basalt EU-deployment overlay retains [issue #2364](https://github.com/UsefulSoftwareCo/executor/issues/2364) as provenance. That issue closed as not planned, pointing to the existing jurisdiction seam in [PR #2303](https://github.com/UsefulSoftwareCo/executor/pull/2303). The carry remains manual.
@@ -101,6 +103,14 @@ A failed release retains its barrier receipts and stops for recorded recovery or
 
 The simulated release and broken-patch checks verify update mechanics without cloud credentials. Live preview, automatic release merge, database restore and provider teardown acceptance remain pending until the required accounts and dedicated subscription secrets are configured.
 
+### Activate prepared change journals
+
+Release the candidate normally first, with both the reader-ready journal code and activation client included. In **Manual release of main**, select `main`, set `candidate` to that exact successful production SHA and set `migration_activation` to `plan`. This path keeps the deployment lock and checks the release hold, but does not redeploy. Retain `migration-activation.json` and review its digest, routing and reader-adoption evidence, app inventory hash and prepared hosted 21/model-history v9 state.
+
+With approval for that exact plan, dispatch the same workflow and candidate with `migration_activation` set to its 64-character digest. Changed evidence or either target already being active refuses a fresh plan. The existing hosted CLI and pool operator activate hosted 22 and model-history v10 once, with a durable encrypted intent recorded first.
+
+For a lost reply or pending result, dispatch the same candidate with `migration_activation=inspect`. Inspection is read-only and never resends a command or clears the pending journal. A pending journal blocks ordinary releases. If inspection proves both targets active, an explicitly authorized dispatch of the original digest may record completion without sending again. Any other partial or unknown outcome needs a recovery decision; do not retry activation or roll back automatically. Verify the released product separately before calling the cutover accepted.
+
 ### Retire unused pool transport tokens
 
 This private operator command removes exact saved Executor account IDs after proving that they are replaced pool transport tokens with no retained use. It preserves Home credentials, backend keys and channel memberships. It never selects accounts by label or runs on a schedule. Preparing, merging or deploying the tooling gives no permission to run it against production.
@@ -135,6 +145,12 @@ For each account, apply locks its organization, provider, pool app, replacement,
 Deletion and its journal receipt commit together. The command reads the account back after commit. Repeating the same successful apply verifies the checkpoint, journal and absence of the account and reports `alreadyRecorded: true`; it does not repeat deletion. A batch stops on a changed account and retains earlier per-account outcomes. An incomplete result or lost connection requires inspecting the journal and retrying the exact invocation before deciding what happened. An expired report cannot start a pending deletion. Produce a new report for the remaining IDs after renewing inventory and approval. A checkpoint without a committed receipt may be left by a rolled-back transaction; keep it until the retry or recovery is resolved.
 
 With separate production recovery GO, use the original report, inventory and checkpoint directory and replace `--apply` with `--recover`. Its request may list a subset of the original report IDs so a partial batch can be recovered. Recovery authenticates the checkpoint and restores the same ID, original ciphertext, policy and cached rows in one transaction. It refuses to overwrite an existing account. A repeated successful recovery verifies the restored rows without rewriting them. An account restored from a report cannot be deleted again with that report. Recovery does not require the original report to remain fresh, and never restores or revokes a Home credential or backend key.
+
+## Rebuild historical framework hashes
+
+Run the **Historical framework hashes** workflow manually from `main`, once per historical build. Supply its full source commit and logged toolchain. The toolchain selects Ubuntu, Bun and the original candidate or workspace checkout layout; Node stays at 24.18.0. Supply the logged generation UUID and dependency key together. Leave both empty only for sources that installed dependencies directly.
+
+The workflow checks the calculated dependency key before installing, restores its temporary preparation edits, and builds only the framework and its package formats. The artifact contains a hash manifest, including declaration and package-file hashes. It contains no bundle bodies or build logs and needs no credentials, keys or production access. A matching module map establishes byte identity; compatibility and native execution still need their own proofs.
 
 ## Verification and remaining work
 
