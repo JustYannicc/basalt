@@ -105,7 +105,8 @@ export async function modelLifetimeFetch(
     controlHeaders.delete(name);
   const url = new URL(request.url);
   url.pathname = modelLifetimePath;
-  for (const name of [...url.searchParams.keys()])
+  // Deleting while iterating live keys skips entries, so take a snapshot first.
+  for (const name of Array.from(url.searchParams.keys()))
     if (name !== "key" && name !== "auth_token") url.searchParams.delete(name);
   const control = await forward(new Request(url, { headers: controlHeaders, signal }));
   if (
