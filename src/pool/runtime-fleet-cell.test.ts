@@ -67,7 +67,16 @@ async function fixture() {
       runtimeApplicationSettings(decodeProviderApplication(providerFixture.raw)),
     ),
   };
-  const transport = { stubs: 0, calls: 0, fail: false };
+  const modelStubs: number[] = [];
+  const transport = {
+    stubs: 0,
+    calls: 0,
+    fail: false,
+    generation: 0,
+    disconnected: 0,
+    failHealth: false,
+    modelStubs,
+  };
   const cell = boundFleetCell({
     ctx: root,
     env,
@@ -77,11 +86,24 @@ async function fixture() {
     application: { ...application, color: "blue", imageInput: target.imageInput },
     wrap: runtime.wrap,
     remote: () => {
-      transport.stubs++;
+      const stub = ++transport.stubs;
+      const generation = transport.generation;
       return {
         fetch: async (request) => {
           transport.calls++;
           if (transport.fail) throw new Error("native transport failed");
+          if (
+            generation !== transport.generation ||
+            (transport.failHealth && new URL(request.url).pathname === "/health")
+          ) {
+            transport.disconnected++;
+            await request.text();
+            throw Object.assign(new Error("synthetic stale endpoint stub"), {
+              disconnected: true,
+              retryable: true,
+            });
+          }
+          if (request.headers.has("X-Signalbox-Runtime-Identity")) transport.modelStubs.push(stub);
           return runtime.stub.fetch(request);
         },
       };
@@ -227,4 +249,83 @@ test("an absent observation secret holds draining capacity without destruction a
   assert.equal(f.calls.destroy, 1);
   assert.deepEqual(await state.inspect(), []);
   assert.equal(f.calls.start, 1);
+});
+
+test("a disconnected cached stub reconnects health before the first model send", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const selected = await f.cell.start(f.target);
+  assert.equal(f.transport.stubs, 1);
+  f.transport.generation++;
+  const direct = await f.stub.fetch(
+    new Request("http://runtime/observe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ target: f.target }),
+    }),
+  );
+  assert.equal(direct.status, 200);
+  const observed = await direct.json();
+  assert.equal(observed.identity.bootId, selected.bootId);
+  let dispatched = 0;
+  const response = await f.cell.forward(
+    new Request("http://pool/v1/responses"),
+    8317,
+    undefined,
+    () => {
+      dispatched++;
+    },
+  );
+  await response.text();
+  assert.equal(response.status, 200);
+  assert.equal(f.transport.disconnected, 1);
+  assert.equal(f.transport.stubs, 2);
+  assert.deepEqual(f.transport.modelStubs, [2]);
+  assert.deepEqual(await f.cell.drain(selected), { active: 0, known: true });
+  assert.equal(f.transport.stubs, 2);
+  assert.equal(f.calls.start, 1);
+  assert.equal(f.calls.model, 1);
+  assert.equal(dispatched, 1);
+});
+
+test("a disconnected health probe reconnects at most once before refusing dispatch", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  await f.cell.start(f.target);
+  f.transport.generation++;
+  f.transport.failHealth = true;
+  const before = f.transport.calls;
+  let dispatched = 0;
+  await assert.rejects(
+    f.cell.forward(new Request("http://pool/v1/responses"), 8317, undefined, () => {
+      dispatched++;
+    }),
+    /synthetic stale endpoint stub/,
+  );
+  assert.equal(f.transport.calls, before + 2);
+  assert.equal(f.transport.stubs, 2);
+  assert.equal(f.transport.disconnected, 2);
+  assert.equal(f.calls.model, 0);
+  assert.equal(dispatched, 0);
+});
+
+test("a disconnected error after model dispatch never resends the model request", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  await f.cell.start(f.target);
+  f.hooks.model = async () => {
+    throw Object.assign(new Error("synthetic failure after model dispatch"), {
+      disconnected: true,
+      retryable: true,
+    });
+  };
+  let dispatched = 0;
+  await assert.rejects(
+    f.cell.forward(new Request("http://pool/v1/responses"), 8317, undefined, () => {
+      dispatched++;
+    }),
+  );
+  assert.equal(f.transport.stubs, 1);
+  assert.equal(f.calls.model, 1);
+  assert.equal(dispatched, 1);
 });

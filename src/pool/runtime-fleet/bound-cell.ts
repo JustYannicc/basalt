@@ -50,12 +50,40 @@ export function boundFleetCell(input: Input) {
     const runtimeStub = (retained ??= input.remote(value));
     return {
       fetch: async (request) => {
+        const health =
+          request.method === "POST" &&
+          new URL(request.url).pathname === "/health" &&
+          !request.headers.has("X-Signalbox-Runtime-Identity")
+            ? request.clone()
+            : undefined;
+        const send = async (runtimeStub: RuntimeStub, forwarded: Request) => {
+          try {
+            return await runtimeStub.fetch(forwarded);
+          } catch (error) {
+            if (retained === runtimeStub) retained = undefined;
+            throw error;
+          }
+        };
         try {
-          return await runtimeStub.fetch(request);
-        } catch (error) {
-          // Native exceptions poison this stub. Future calls reconnect; this call never retries.
-          if (retained === runtimeStub) retained = undefined;
-          throw error;
+          try {
+            return await send(runtimeStub, request);
+          } catch (error) {
+            if (
+              !health ||
+              !(error instanceof Error) ||
+              ("overloaded" in error && error.overloaded === true) ||
+              !(
+                ("disconnected" in error && error.disconnected === true) ||
+                ("retryable" in error && error.retryable === true)
+              )
+            )
+              throw error;
+            // Only this read precedes model dispatch. Reconnect once within its original signal.
+            health.signal.throwIfAborted();
+            return await send((retained ??= input.remote(value)), health);
+          }
+        } finally {
+          if (health && !health.bodyUsed) void health.body?.cancel().catch(() => {});
         }
       },
     };
