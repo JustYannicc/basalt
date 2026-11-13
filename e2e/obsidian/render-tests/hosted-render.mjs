@@ -78,6 +78,7 @@ export async function loadHostedPages(exports) {
         'export { DashboardProvider } from "@executor-js/ui/dashboard/context";',
         'export { resetFixtureAtoms } from "fixture-atoms";',
         'export { RegistryProvider } from "@effect/atom-react";',
+        'export { productBrandAtom } from "@executor-js/ui/contracts/product-brand";',
         'export { Atom, AsyncResult } from "effect/reactivity";',
         'export { Cause } from "effect";',
         'export { act, createElement } from "react";',
@@ -157,7 +158,7 @@ export async function loadHostedPages(exports) {
    * (keyed like the replaced atoms; any other query stays pending), run `read` on the mounted
    * container, then unmount.
    */
-  const render = async (results, element, read) => {
+  const render = async (results, element, read, { brand } = {}) => {
     ui.resetFixtureAtoms();
     globalThis.hostedFixture = { read: (key) => results[key] ?? ui.AsyncResult.initial() };
     const AppLink = ({ app: id, view, tool: _tool, children, ...props }) =>
@@ -169,7 +170,7 @@ export async function loadHostedPages(exports) {
       root.render(
         ui.createElement(
           ui.RegistryProvider,
-          null,
+          brand === undefined ? null : { initialValues: [[ui.productBrandAtom, brand]] },
           ui.createElement(
             ui.DashboardProvider,
             {

@@ -46,6 +46,13 @@ const cards = (results) =>
         notes: text("Notes"),
         weather: text("Weather"),
         loading: container.querySelectorAll('[aria-label="Loading status"]').length,
+        // The line under each card's name, by name.
+        subtitles: Object.fromEntries(
+          [...container.querySelectorAll(".app-card-heading strong")].map((name) => [
+            name.textContent,
+            name.nextElementSibling?.textContent ?? null,
+          ]),
+        ),
       };
     },
   );
@@ -133,4 +140,56 @@ test("a vault is flagged only when even its newest device has been idle that lon
   });
   assert.match(result.vault ?? "", /^2 devices · active /);
   assert.equal(result.warned, false);
+});
+
+test("a renamed copy says which service it is a copy of, in the catalog's word for one", async () => {
+  const service = (name, noun) => ({
+    id: name.toLowerCase(),
+    newInstance: true,
+    name,
+    ...(noun === undefined ? {} : { noun }),
+  });
+  const result = await cards({
+    ...settled([]),
+    inventory: success({
+      apps: [
+        { ...vault, service: service("Obsidian", "vault") },
+        { ...app("app_fixture_personal", "Personal", true), service: service("Obsidian", "vault") },
+        { ...app("app_fixture_board", "Board", false), service: service("Tracker") },
+        notes,
+      ],
+      links: [],
+      accounts: [],
+    }),
+  });
+  assert.deepEqual(result.subtitles, {
+    // Named after its service, so nothing to add.
+    Obsidian: null,
+    Personal: "Obsidian vault",
+    Board: "Tracker",
+    // No recorded service name: nothing to say.
+    Notes: null,
+  });
+});
+
+test("the built-in app shows the product's name and no subtitle, whatever the brand", async () => {
+  const builtIn = {
+    ...app("app_fixture_builtin", "Executor", false),
+    copiedFrom: { name: "executor" },
+    service: { id: "executor", newInstance: false, name: "Executor" },
+  };
+  const result = await hosted.render(
+    {
+      inventory: success({ apps: [builtIn], links: [], accounts: [] }),
+      groups: success({ groups: [] }),
+    },
+    (ui) => ui.createElement(ui.AppsPage),
+    (container) =>
+      [...container.querySelectorAll(".app-card-heading strong")].map((name) => [
+        name.textContent,
+        name.nextElementSibling?.textContent ?? null,
+      ]),
+    { brand: { name: "Northwind", logo: "/favicon.png" } },
+  );
+  assert.deepEqual(result, [["Northwind", null]]);
 });
