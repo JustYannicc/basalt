@@ -39,7 +39,8 @@ test("only modules the entry reaches are uploaded, through static, dynamic and a
   const sources: Record<string, string> = {
     "main.js": 'import{t as a}from"./shared-Ab12Cd34.js";const l=()=>import("./lazy-Zz99Yy88.js");',
     "shared-Ab12Cd34.js": 'import"./main.js";export const t=1;',
-    "lazy-Zz99Yy88.js": "const w=import(`./assets/tool-Qq11Ww22.wasm`);const x=import(`./${name}.js`);",
+    "lazy-Zz99Yy88.js":
+      "const w=import(`./assets/tool-Qq11Ww22.wasm`);const x=import(`./${name}.js`);",
     "stale-Old00000.js": "export const old=1;",
     "assets/tool-Qq11Ww22.wasm": "",
   };
@@ -75,10 +76,18 @@ const profile = (samples: Array<[string, number]>): CpuProfile => {
 };
 
 const covered = (...work: Array<[string, number]>) =>
-  profile([["(idle)", 40], ["fetch>startupWitnessBefore", 0.1], ...work, ["fetch>startupWitnessAfter>loop", 0.1], ["(idle)", 1]]);
+  profile([
+    ["(idle)", 40],
+    ["fetch>startupWitnessBefore", 0.1],
+    ...work,
+    ["fetch>startupWitnessAfter>loop", 0.1],
+    ["(idle)", 1],
+  ]);
 
 test("startup CPU counts every non-idle sample but the witnesses, garbage collection included", () => {
-  const reading = read(covered(["fetch>evaluate", 1.5], ["(garbage collector)", 1.5], ["(idle)", 1.5]));
+  const reading = read(
+    covered(["fetch>evaluate", 1.5], ["(garbage collector)", 1.5], ["(idle)", 1.5]),
+  );
   assert.deepEqual(reading, { activeMs: 3, conclusive: true });
 });
 
@@ -89,11 +98,32 @@ test("a start too cheap to sample is conclusive once the sampler saw both witnes
 test("a start the sampler didn't cover on both sides is inconclusive, never cheap", () => {
   // One idle sample across the whole start: nothing proves the sampler ran.
   assert.equal(read(profile([["(idle)", 143]])).conclusive, false);
-  assert.equal(read(profile([["fetch>startupWitnessBefore", 0.1], ["fetch>evaluate", 60]])).conclusive, false);
-  assert.equal(read(profile([["fetch>evaluate", 60], ["fetch>startupWitnessAfter", 0.1]])).conclusive, false);
+  assert.equal(
+    read(
+      profile([
+        ["fetch>startupWitnessBefore", 0.1],
+        ["fetch>evaluate", 60],
+      ]),
+    ).conclusive,
+    false,
+  );
+  assert.equal(
+    read(
+      profile([
+        ["fetch>evaluate", 60],
+        ["fetch>startupWitnessAfter", 0.1],
+      ]),
+    ).conclusive,
+    false,
+  );
 });
 
-const fixture: WorkerBundle = { name: "Fixture", directory: "/fixture", entry: "worker.js", modules: [] };
+const fixture: WorkerBundle = {
+  name: "Fixture",
+  directory: "/fixture",
+  entry: "worker.js",
+  modules: [],
+};
 const starts = (...profiles: CpuProfile[]) => {
   let next = 0;
   return { start: async () => profiles[Math.min(next++, profiles.length - 1)]!, count: () => next };
@@ -101,12 +131,23 @@ const starts = (...profiles: CpuProfile[]) => {
 
 test("a sampler gap that ends in a witness still counts the work it covered", () => {
   // The import ran unsampled; the first sample after it landed in the closing witness.
-  const reading = read(profile([["fetch>startupWitnessBefore", 0.1], ["fetch>evaluate", 0.1], ["fetch>startupWitnessAfter", 60], ["fetch>startupWitnessAfter", 0.1]]));
+  const reading = read(
+    profile([
+      ["fetch>startupWitnessBefore", 0.1],
+      ["fetch>evaluate", 0.1],
+      ["fetch>startupWitnessAfter", 60],
+      ["fetch>startupWitnessAfter", 0.1],
+    ]),
+  );
   assert.deepEqual(reading, { activeMs: 60.1, conclusive: true });
 });
 
 test("inconclusive starts are retried and reported, not counted", async () => {
-  const runs = starts(profile([["(idle)", 60]]), covered(["fetch>evaluate", 70]), covered(["fetch>evaluate", 72]));
+  const runs = starts(
+    profile([["(idle)", 60]]),
+    covered(["fetch>evaluate", 70]),
+    covered(["fetch>evaluate", 72]),
+  );
   const measurement = await measure(fixture, 2, { start: runs.start, backoffMs: 1 });
   // The closing witness sample right after the work covers 0.1 ms of it.
   assert.deepEqual(measurement.startupMs, [70.1, 72.1]);
@@ -117,11 +158,20 @@ test("inconclusive starts are retried and reported, not counted", async () => {
 test("a Worker whose every start is inconclusive fails as unknown after retrying with backoff", async () => {
   const runs = starts(profile([["(idle)", 60]]));
   const delays: number[] = [];
-  await assert.rejects(measure(fixture, 2, { start: runs.start, backoffMs: 1, sleep: async (milliseconds) => { delays.push(milliseconds); } }), (error) => {
-    assert.ok(error instanceof InconclusiveStartup);
-    assert.match(error.message, /Fixture: the profiler couldn't confirm 7 of 7 starts/);
-    return true;
-  });
+  await assert.rejects(
+    measure(fixture, 2, {
+      start: runs.start,
+      backoffMs: 1,
+      sleep: async (milliseconds) => {
+        delays.push(milliseconds);
+      },
+    }),
+    (error) => {
+      assert.ok(error instanceof InconclusiveStartup);
+      assert.match(error.message, /Fixture: the profiler couldn't confirm 7 of 7 starts/);
+      return true;
+    },
+  );
   // Two runs need two of the eight attempts, so the seventh miss is final.
   assert.equal(runs.count(), 7);
   // 1, 2, 4 and 8 ms, then capped at 8 ms; no wait after the final miss.
@@ -136,10 +186,19 @@ test("the median ignores a single slow run", () => {
 });
 
 test("a Worker fails when its median startup or its size crosses the budget", () => {
-  const fits = { name: "Api", bytes: 5_322_120, gzipBytes: 1_586_000, startupMs: [69, 70, 400], inconclusive: 0 };
+  const fits = {
+    name: "Api",
+    bytes: 5_322_120,
+    gzipBytes: 1_586_000,
+    startupMs: [69, 70, 400],
+    inconclusive: 0,
+  };
   assert.deepEqual(violations(fits), []);
   const slow = { ...fits, startupMs: [startupBudgetMs + 1, startupBudgetMs + 2, 10] };
-  assert.match(violations(slow).join("\n"), /Api starts in 401\.0 ms of CPU \(median\); the budget is 400 ms/);
+  assert.match(
+    violations(slow).join("\n"),
+    /Api starts in 401\.0 ms of CPU \(median\); the budget is 400 ms/,
+  );
   const large = { ...fits, bytes: sizeBudgetBytes + 1 };
   assert.match(violations(large).join("\n"), /Api uploads 33554433 bytes/);
 });

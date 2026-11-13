@@ -16,7 +16,12 @@ import { join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { setTimeout as sleep } from "node:timers/promises";
-import { loadMiniflare, profileStartup, read, type CpuProfile } from "./startup-profiler/profile.ts";
+import {
+  loadMiniflare,
+  profileStartup,
+  read,
+  type CpuProfile,
+} from "./startup-profiler/profile.ts";
 
 /** Cloudflare's startup limit: the global scope must parse and execute within one second. */
 export const startupLimitMs = 1_000;
@@ -62,7 +67,8 @@ export const findEntry = (modules: ReadonlyArray<string>) => {
   const entries = modules.filter(
     (file) => /^[^/]+\.js$/.test(file) && !/-(?=[\w-]{0,7}[A-Z0-9])[\w-]{8}\.js$/.test(file),
   );
-  if (entries.length !== 1) throw new Error(`Expected one main module, found ${entries.join(", ") || "none"}`);
+  if (entries.length !== 1)
+    throw new Error(`Expected one main module, found ${entries.join(", ") || "none"}`);
   return entries[0]!;
 };
 
@@ -80,7 +86,9 @@ export const reachableModules = (
   const pending = [entry];
   for (let module = pending.pop(); module !== undefined; module = pending.pop()) {
     if (!module.endsWith(".js")) continue;
-    for (const [, specifier] of read(module).matchAll(/\b(?:from|import)\s*\(?\s*["'`](\.\.?\/[^"'`]+)["'`]/g)) {
+    for (const [, specifier] of read(module).matchAll(
+      /\b(?:from|import)\s*\(?\s*["'`](\.\.?\/[^"'`]+)["'`]/g,
+    )) {
       const target = posix.join(posix.dirname(module), specifier!);
       if (present.has(target) && !reached.has(target)) {
         reached.add(target);
@@ -96,7 +104,9 @@ export const readBundle = (name: string, from: string): WorkerBundle => {
   const directory = resolve(from);
   const files = listFiles(directory).filter((file) => !file.endsWith(".map"));
   const entry = findEntry(files);
-  const modules = reachableModules(entry, files, (module) => readFileSync(join(directory, module), "utf8"));
+  const modules = reachableModules(entry, files, (module) =>
+    readFileSync(join(directory, module), "utf8"),
+  );
   return { name, directory, entry, modules };
 };
 
@@ -127,10 +137,14 @@ export const violations = (measurement: Measurement) => {
   const startup = median(measurement.startupMs);
   return [
     ...(startup > startupBudgetMs
-      ? [`${measurement.name} starts in ${startup.toFixed(1)} ms of CPU (median); the budget is ${startupBudgetMs} ms, against Cloudflare's ${startupLimitMs} ms limit`]
+      ? [
+          `${measurement.name} starts in ${startup.toFixed(1)} ms of CPU (median); the budget is ${startupBudgetMs} ms, against Cloudflare's ${startupLimitMs} ms limit`,
+        ]
       : []),
     ...(measurement.bytes > sizeBudgetBytes
-      ? [`${measurement.name} uploads ${measurement.bytes} bytes; the budget is ${sizeBudgetBytes}, against Cloudflare's ${sizeLimitBytes} limit`]
+      ? [
+          `${measurement.name} uploads ${measurement.bytes} bytes; the budget is ${sizeBudgetBytes}, against Cloudflare's ${sizeLimitBytes} limit`,
+        ]
       : []),
   ];
 };
@@ -153,11 +167,22 @@ export interface MeasureOptions {
 const attemptsPerRun = 4;
 
 /** Measure a Worker over several conclusive cold starts, retrying the ones the profiler missed. */
-export const measure = async (bundle: WorkerBundle, runs: number, options: MeasureOptions = {}): Promise<Measurement> => {
+export const measure = async (
+  bundle: WorkerBundle,
+  runs: number,
+  options: MeasureOptions = {},
+): Promise<Measurement> => {
   if (!Number.isInteger(runs) || runs < 1) throw new Error("Measure at least one start");
-  const contents = new Map(bundle.modules.map((module) => [join(bundle.directory, module), readFileSync(join(bundle.directory, module))]));
+  const contents = new Map(
+    bundle.modules.map((module) => [
+      join(bundle.directory, module),
+      readFileSync(join(bundle.directory, module)),
+    ]),
+  );
   const start =
-    options.start ?? (() => profileStartup(bundle.name, join(bundle.directory, bundle.entry), contents, compatibility));
+    options.start ??
+    (() =>
+      profileStartup(bundle.name, join(bundle.directory, bundle.entry), contents, compatibility));
   const startupMs: number[] = [];
   let inconclusive = 0;
   while (startupMs.length < runs) {
@@ -172,7 +197,9 @@ export const measure = async (bundle: WorkerBundle, runs: number, options: Measu
       // Back off so a busy runner can settle before the next start.
       inconclusive++;
       if (runs * attemptsPerRun - inconclusive >= runs)
-        await (options.sleep ?? sleep)((options.backoffMs ?? 250) * 2 ** Math.min(inconclusive - 1, 3));
+        await (options.sleep ?? sleep)(
+          (options.backoffMs ?? 250) * 2 ** Math.min(inconclusive - 1, 3),
+        );
       continue;
     }
     options.onProfile?.(profile, startupMs.length);
@@ -218,16 +245,23 @@ if (import.meta.main) {
     join(root, ".alchemy/bundles"),
   ]);
   const missing = requiredWorkers.filter((name) => !bundles.some((bundle) => bundle.name === name));
-  if (missing.length) throw new Error(`Run npm run build first; missing Worker bundles: ${missing.join(", ")}`);
+  if (missing.length)
+    throw new Error(`Run npm run build first; missing Worker bundles: ${missing.join(", ")}`);
   const measurements: Measurement[] = [];
   const unknown: string[] = [];
   for (const bundle of bundles) {
-    console.log(`Profiling ${bundle.name} (${relative(root, join(bundle.directory, bundle.entry))})`);
+    console.log(
+      `Profiling ${bundle.name} (${relative(root, join(bundle.directory, bundle.entry))})`,
+    );
     try {
       measurements.push(
         await measure(bundle, runs, {
           onProfile: (profile, run) => {
-            if (profiles) writeFileSync(join(profiles, `${bundle.name}-${run + 1}.cpuprofile`), JSON.stringify(profile));
+            if (profiles)
+              writeFileSync(
+                join(profiles, `${bundle.name}-${run + 1}.cpuprofile`),
+                JSON.stringify(profile),
+              );
           },
         }),
       );
@@ -239,10 +273,13 @@ if (import.meta.main) {
   const table = report(measurements);
   console.log(`\n${table}`);
   if (process.env.GITHUB_STEP_SUMMARY)
-    writeFileSync(process.env.GITHUB_STEP_SUMMARY, `### Worker startup and size\n\n${table}\n`, { flag: "a" });
+    writeFileSync(process.env.GITHUB_STEP_SUMMARY, `### Worker startup and size\n\n${table}\n`, {
+      flag: "a",
+    });
   const failures = measurements.flatMap(violations);
   for (const failure of failures) console.error(`::error title=Worker startup budget::${failure}`);
   // Unmeasured is not within budget; it fails too, under its own title, so a rerun can tell them apart.
-  for (const message of unknown) console.error(`::error title=Worker startup inconclusive::${message}`);
+  for (const message of unknown)
+    console.error(`::error title=Worker startup inconclusive::${message}`);
   if (failures.length || unknown.length) process.exitCode = 1;
 }
