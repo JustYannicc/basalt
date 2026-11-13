@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Hosted resource and inventory lists read current owner-scoped app metadata and visibility before loading displayed declarations. Only completed credential-free requirements of an immutable version may be reused, scoped by origin, owner, code and version, within 128 entries and 8 MiB with a 512 KiB entry limit. Policy, grants, active-version pointers and app metadata are never cached. Existing app, account-binding and SDK wire contracts remain complete."
+    }
+  }
+}

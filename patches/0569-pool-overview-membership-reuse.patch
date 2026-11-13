@@ -1,0 +1,215 @@
+diff --git a/apps/hosted/server/src/implementation/pool-usage-overview.ts b/apps/hosted/server/src/implementation/pool-usage-overview.ts
+--- a/apps/hosted/server/src/implementation/pool-usage-overview.ts
++++ b/apps/hosted/server/src/implementation/pool-usage-overview.ts
+@@ -11,7 +11,7 @@
+ } from "../contracts/pool-usage-overview.ts";
+ import { nativePoolMembership } from "./pool-membership.ts";
+ import { policyDatabase } from "./resource-policy.ts";
+-import { usageSeriesAccounts } from "./pool-usage-series-accounts.ts";
++import { usageSeriesAccountReferences } from "./pool-usage-series-accounts.ts";
+ import { providers } from "./pool-provider-definitions.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
+ 
+@@ -79,7 +79,7 @@
+       "overview-membership",
+       nativePoolMembership(pool.organization, pool.pool, executor),
+     ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+-    const history = yield* usageSeriesAccounts(pool, undefined);
++    const history = yield* usageSeriesAccountReferences(membership, undefined);
+     const bindingByAccount = new Map<
+       string,
+       { readonly provider: string; readonly method: string }
+diff --git a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+--- a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
++++ b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+@@ -44,22 +44,12 @@
+   return value;
+ };
+ 
+-/** Only after pool management and requested-account inspection; no raw reference leaves the host. */
+-export const usageSeriesAccounts = (
+-  pool: { readonly pool: AppId; readonly organization: string },
++/** The caller keeps the native membership transaction open while these inspection checks run. */
++export const usageSeriesAccountReferences = (
++  membership: Effect.Success<ReturnType<typeof nativePoolMembership>>,
+   requested: readonly AccountId[] | undefined,
+ ) =>
+   Effect.gen(function* () {
+-    for (const account of requested ?? []) {
+-      if (!(yield* inspect(account))) return yield* new OrganizationForbidden();
+-    }
+-    const executor = yield* Effect.flatten(HostedExecutor);
+-    const sql = yield* policyDatabase;
+-    // This service resolves only AccountAcquisitionHost.source and rechecks its current binding.
+-    const membership = yield* appUiPhase(
+-      "overview-history-membership",
+-      nativePoolMembership(pool.organization, pool.pool, executor),
+-    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+     const accounts = [
+       ...new Map(membership.accounts.map((account) => [account.account, account])).values(),
+     ];
+@@ -90,6 +80,25 @@
+     );
+   });
+ 
++/** Only after pool management and requested-account inspection; no raw reference leaves the host. */
++export const usageSeriesAccounts = (
++  pool: { readonly pool: AppId; readonly organization: string },
++  requested: readonly AccountId[] | undefined,
++) =>
++  Effect.gen(function* () {
++    for (const account of requested ?? []) {
++      if (!(yield* inspect(account))) return yield* new OrganizationForbidden();
++    }
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const sql = yield* policyDatabase;
++    // This service resolves only AccountAcquisitionHost.source and rechecks its current binding.
++    const membership = yield* appUiPhase(
++      "overview-history-membership",
++      nativePoolMembership(pool.organization, pool.pool, executor),
++    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
++    return yield* usageSeriesAccountReferences(membership, requested);
++  });
++
+ export const creditRoutingAccounts = (pool: {
+   readonly pool: AppId;
+   readonly organization: string;
+diff --git a/e2e/support/pool-overview-query-proof.ts b/e2e/support/pool-overview-query-proof.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/pool-overview-query-proof.ts
+@@ -0,0 +1,60 @@
++import { Effect, FileSystem, Path, Schema } from "effect";
++import { Target } from "./platform.ts";
++
++const Statement = Schema.Struct({
++  trace: Schema.String,
++  membership: Schema.Boolean,
++  fingerprint: Schema.Boolean,
++});
++
++/** Count the real server's membership SQL per HTTP trace without retaining SQL or values. */
++export const poolOverviewQueryProof = Effect.gen(function* () {
++  const target = yield* Target,
++    fs = yield* FileSystem.FileSystem,
++    path = yield* Path.Path;
++  const entry = path.join(target.directory, "pool-overview-product.ts");
++  const measurement = path.join(target.directory, "pool-overview-statements.jsonl");
++  yield* fs.writeFileString(
++    entry,
++    `import * as Runtime from "@effect/platform-bun/BunRuntime";
++import { main } from "@executor-js/hosted-self-host/server";
++import { Effect } from "effect";
++import * as Statement from "effect/sql/Statement";
++import { appendFileSync, writeFileSync } from "node:fs";
++const measurement = ${JSON.stringify(measurement)};
++writeFileSync(measurement, "");
++const transformer: Statement.Transformer = (statement, _sql, _fiber, span) => Effect.sync(() => {
++  const [text] = statement.compile();
++  const membership = text.includes("current_database() as database,current_schema() as schema");
++  const fingerprint = text.includes('as "referenceDigest"') && text.includes("a.credential_generation as generation");
++  if (membership || fingerprint)
++    appendFileSync(measurement, JSON.stringify({ trace: span.traceId, membership, fingerprint }) + "\\n");
++  return statement;
++});
++Runtime.runMain(main.pipe(Effect.provideService(Statement.CurrentTransformer, transformer)));
++`,
++  );
++  const links = path.join(target.directory, "node_modules", "@executor-js");
++  yield* fs.makeDirectory(links, { recursive: true });
++  const product = path.join(links, "hosted-self-host");
++  if (!(yield* fs.exists(product)))
++    yield* fs.symlink(path.resolve("apps/hosted/self-host"), product);
++  return {
++    entry,
++    read: (trace: string) =>
++      fs.readFileString(measurement).pipe(
++        Effect.map((text) =>
++          text
++            .trim()
++            .split("\n")
++            .filter(Boolean)
++            .map((line) => Schema.decodeUnknownSync(Schema.fromJsonString(Statement))(line))
++            .filter((record) => record.trace === trace),
++        ),
++        Effect.map((records) => ({
++          membershipReads: records.filter((record) => record.membership).length,
++          fingerprintReads: records.filter((record) => record.fingerprint).length,
++        })),
++      ),
++  };
++});
+diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.spec.ts
+--- a/e2e/tests/pool-usage-series.spec.ts
++++ b/e2e/tests/pool-usage-series.spec.ts
+@@ -1,4 +1,4 @@
+-import { createHash } from "node:crypto";
++import { createHash, randomUUID } from "node:crypto";
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Redacted, Schema } from "effect";
+ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+@@ -16,6 +16,7 @@
+ import { scenarios } from "../test-plan.ts";
+ import { appPhaseTimings } from "../support/app-phase-timings.ts";
+ import { Evidence } from "../support/evidence.ts";
++import { poolOverviewQueryProof } from "../support/pool-overview-query-proof.ts";
+ 
+ const source = `import {defineApp,query,object,router} from "apps";
+ export default defineApp({},{tools:router({identity:query({input:object({})},async()=>"allowed")})});`;
+@@ -145,7 +146,9 @@
+             ],
+           },
+         ]);
++        const queryProof = yield* poolOverviewQueryProof;
+         yield* serverControl("environment", 200, {
++          EXECUTOR_E2E_PRODUCT_ENTRY: queryProof.entry,
+           POOL_APP_SIGNING_KEY: "ab".repeat(32),
+           BASALT_POOL_ORIGIN: backend.origin,
+         });
+@@ -293,9 +296,11 @@
+           session: { readonly origin: string; readonly cookies: Map<string, string> },
+           path: string,
+           payload: unknown,
++          trace?: string,
+         ) =>
+           HttpClientRequest.post(session.origin + path).pipe(
+             HttpClientRequest.setHeaders({
++              ...(trace === undefined ? {} : { traceparent: `00-${trace}-1234567890abcdef-01` }),
+               origin: session.origin,
+               "sec-fetch-site": "same-origin",
+               cookie: [...session.cookies].map(([name, value]) => name + "=" + value).join("; "),
+@@ -374,12 +379,22 @@
+           },
+         });
+ 
+-        const manager = yield* postApp(ownerApp, managerPath, {
+-          version: app.activeVersion,
+-          input: range,
+-        });
++        const managerTrace = randomUUID().replaceAll("-", "");
++        const manager = yield* postApp(
++          ownerApp,
++          managerPath,
++          { version: app.activeVersion, input: range },
++          managerTrace,
++        );
+         expect(manager.status).toBe(200);
+         expect(JSON.parse(manager.text)).toEqual({ result: "Overview is ready" });
++        const membershipReads = yield* queryProof.read(managerTrace);
++        yield* (yield* Evidence).json("pool-overview-membership-reads.json", membershipReads);
++        expect(membershipReads.membershipReads, "An overview reads locked membership once").toBe(1);
++        expect(
++          membershipReads.fingerprintReads,
++          "An overview reads its fresh fingerprint once",
++        ).toBe(1);
+         const managerPhases = appPhaseTimings(manager.timing);
+         expect(Object.keys(managerPhases).sort()).toEqual(
+           [
+@@ -388,7 +403,6 @@
+             "overview-transaction",
+             "overview-directory",
+             "overview-membership",
+-            "overview-history-membership",
+             "overview-history-references",
+             "overview-offerings",
+             "overview-backend",
