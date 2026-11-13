@@ -2,12 +2,37 @@
   "format_version": 1,
   "transitions": [
     {
+      "baselineInputHash": "ef1236d5c3f08c04",
+      "candidateInputHash": "c7646255244ef2e0",
+      "fromVersions": [15, 16],
+      "targetVersion": 16,
+      "requiredIndexes": [
+        "idx_billing_charge_usage_cover_v1",
+        "idx_billing_charge_overview_time_v1",
+        "idx_usage_billing_complete_v2",
+        "idx_usage_summary_cursor_v1",
+        "idx_usage_key_success_time_v1",
+        "idx_billing_charge_key_usage_v1"
+      ]
+    },
+    {
       "baselineInputHash": "0e2ecb6f105a95f3",
-      "candidateInputHash": "ef1236d5c3f08c04",
-      "fromVersions": [
-        15,
-        16
-      ],
+      "candidateInputHash": "c7646255244ef2e0",
+      "fromVersions": [15, 16],
+      "targetVersion": 16,
+      "requiredIndexes": [
+        "idx_billing_charge_usage_cover_v1",
+        "idx_billing_charge_overview_time_v1",
+        "idx_usage_billing_complete_v2",
+        "idx_usage_summary_cursor_v1",
+        "idx_usage_key_success_time_v1",
+        "idx_billing_charge_key_usage_v1"
+      ]
+    },
+    {
+      "baselineInputHash": "c7646255244ef2e0",
+      "candidateInputHash": "5f82807410b4ebd6",
+      "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
         "idx_billing_charge_usage_cover_v1",
