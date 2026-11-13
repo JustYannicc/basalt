@@ -32,7 +32,7 @@ diff --git a/apps/hosted/server/src/contracts/pool-routing.ts b/apps/hosted/serv
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/pool-routing.ts
-@@ -0,0 +1,228 @@
+@@ -0,0 +1,229 @@
 +import { Schema } from "effect";
 +import { AccountId } from "@executor-js/sdk/core";
 +
@@ -157,6 +157,7 @@ new file mode 100644
 +    "pinned-account",
 +    "configured-strategy",
 +    "no-eligible-account",
++    "mixed-provider-cohort",
 +  ]),
 +  forecast: Schema.NullOr(evidence),
 +  targetThrough: maybeAt,
@@ -198,7 +199,7 @@ new file mode 100644
 +});
 +const capacity = Schema.Struct({
 +  provider: text,
-+  modelFamily: text,
++  modelFamily: Schema.NullOr(text),
 +  from: at,
 +  through: at,
 +  status: Schema.Literals(["enough", "routing-waste", "needs-more-accounts", "uncertain"]),

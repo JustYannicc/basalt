@@ -189,6 +189,7 @@ function routingPlan(value: Json, accounts: ReadonlyMap<string, string>) {
       "pinned-account",
       "configured-strategy",
       "no-eligible-account",
+      "mixed-provider-cohort",
     ]),
     forecast: evidence(value.forecast),
     targetThrough: nullableInstant(value.targetThrough),
@@ -254,9 +255,8 @@ export function routingDecisionsView(
   const byId = new Map<string, RoutingDecision>();
   const current = new Map<string, RoutingNow>();
   const capacity = new Map<string, ReturnType<typeof capacityOutlook>>();
-  let from = new Date().toISOString(),
-    through = from,
-    truncated = false;
+  let from: string | undefined, through: string | undefined;
+  let truncated = false;
   for (const page of pages) {
     if (
       !object(page.retention) ||
@@ -266,8 +266,8 @@ export function routingDecisionsView(
       return unavailable();
     const start = instant(page.retention.from),
       end = instant(page.retention.through);
-    if (start < from) from = start;
-    if (end > through) through = end;
+    if (from === undefined || start < from) from = start;
+    if (through === undefined || end > through) through = end;
     if (typeof page.retention.truncated !== "boolean") return unavailable();
     truncated ||= page.retention.truncated || page.next !== null;
     for (const entry of rows(page.capacity)) {
@@ -298,7 +298,12 @@ export function routingDecisionsView(
     decisions,
     current: [...current.values()],
     next: null,
-    retention: { from, through, truncated: truncated || byId.size > 20, persistence: "runtime" },
+    retention: {
+      from: from ?? new Date().toISOString(),
+      through: through ?? new Date().toISOString(),
+      truncated: truncated || byId.size > 20,
+      persistence: "runtime",
+    },
     capacity: [...capacity.values()],
   };
 }

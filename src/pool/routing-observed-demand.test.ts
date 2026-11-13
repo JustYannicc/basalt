@@ -51,7 +51,7 @@ function history(): CapacityDemandData {
 }
 
 test("observed quota burn supplies low-confidence targets before history calibration exists", () => {
-  const inputs = observedRoutingDemand(history(), now);
+  const inputs = observedRoutingDemand(history(), now, new Map([["synthetic-a", "home-a"]]));
   assert.equal(inputs.length, 1);
   const input = inputs[0]!;
   assert.equal(input.source, "observed-quota-burn");
@@ -59,6 +59,7 @@ test("observed quota burn supplies low-confidence targets before history calibra
   assert.equal(input.windows[0]!.intervals[0]!.demand.upper80, null);
   assert.equal(input.windows[0]!.intervals[0]!.demand.median, 0.05 * 168);
   assert.equal(input.windows[0]!.accounts[0]!.full, 1);
+  assert.equal(input.windows[0]!.accounts[0]!.account, "home-a");
   assert.equal(input.validUntil, new Date(now + 15 * 60_000).toISOString());
 });
 
@@ -81,7 +82,8 @@ test("stale, censored, missing, changed and unknown-plan quota history never man
       latestReadings: data.latestReadings.map((reading) => ({ ...reading, staleAt: now })),
     },
   ];
-  for (const variant of variants) assert.deepEqual(observedRoutingDemand(variant, now), []);
+  for (const variant of variants)
+    assert.deepEqual(observedRoutingDemand(variant, now, new Map([["synthetic-a", "home-a"]])), []);
 });
 
 test("a changed recent regime invalidates a long extrapolation", () => {
@@ -92,7 +94,10 @@ test("a changed recent regime invalidates a long extrapolation", () => {
     hour: now - (6 - index) * hour,
     demand: index < 4 ? 1 : 0.01,
   }));
-  assert.deepEqual(observedRoutingDemand({ ...data, points }, now), []);
+  assert.deepEqual(
+    observedRoutingDemand({ ...data, points }, now, new Map([["synthetic-a", "home-a"]])),
+    [],
+  );
 });
 
 test("weekly and short observations publish one coherent provider profile", () => {
@@ -105,7 +110,7 @@ test("weekly and short observations publish one coherent provider profile", () =
       ...data.latestReadings.map((reading) => ({ ...reading, windowSeconds: 18000 })),
     ],
   };
-  const inputs = observedRoutingDemand(both, now);
+  const inputs = observedRoutingDemand(both, now, new Map([["synthetic-a", "home-a"]]));
   assert.equal(inputs.length, 1);
   assert.deepEqual(
     inputs[0]!.windows.map((window) => window.seconds),

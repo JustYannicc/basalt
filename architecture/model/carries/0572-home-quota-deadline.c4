@@ -1,7 +1,7 @@
 model {
   extend basalt.poolRuntime {
     metadata {
-      constraint "Quota-deadline is a selector strategy using only fresh trusted account-wide quota and comparable demand. Normalized smooth weighted round robin retains credit across target changes. Affinity, credits-last, model gates and final admission remain authoritative. Unknown ranks balance and unknown demand uses explicit deadline-rate weights. Private bounded runtime decisions and current snapshots never select on read; forecast publication replaces owned sources atomically and capacity advice requires the forecast owner's matching replay evidence."
+      constraint "Quota-deadline is a selector strategy using only fresh trusted account-wide quota and comparable demand. Normalized smooth weighted round robin retains credit across target changes. Affinity, credits-last, model gates and final admission remain authoritative. Unknown ranks balance and unknown demand uses explicit deadline-rate weights. Exact enabled duplicate-group scopes share one trusted profile and union inventory. Forecast lookup uses the eligible provider cohort, and outlook model scopes match exactly including null. Private bounded runtime decisions and current snapshots never select on read; forecast publication replaces owned sources atomically and capacity advice requires the forecast owner's matching replay evidence."
     }
   }
 }

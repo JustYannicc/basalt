@@ -69,7 +69,7 @@ test("signed owner trace read maps current identities and withholds every privat
       });
     if (path === "/v8/management/channel-groups/1")
       return Response.json({ channel_group: { updated_at: now } });
-    if (path.endsWith("/routing-decisions?limit=20")) return Response.json(page);
+    if (path.includes("/routing-decisions?")) return Response.json(page);
     return Response.json({}, { status: 404 });
   });
   const signingKey = "ab".repeat(32);

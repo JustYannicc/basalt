@@ -51,7 +51,7 @@ export interface ForecastEvidence {
 
 export interface CapacityOutlook {
   readonly provider: string;
-  readonly modelFamily: string;
+  readonly modelFamily: string | null;
   readonly from: string;
   readonly through: string;
   /** True shortage is distinct from quota stranded by the configured strategy. */
@@ -153,7 +153,8 @@ export interface RoutingDecision {
     | "parent-affinity"
     | "pinned-account"
     | "configured-strategy"
-    | "no-eligible-account";
+    | "no-eligible-account"
+    | "mixed-provider-cohort";
   readonly forecast: ForecastEvidence | null;
   readonly targetThrough: string | null;
   readonly candidates: readonly RoutingCandidate[];

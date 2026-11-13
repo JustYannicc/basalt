@@ -10,7 +10,11 @@ const key = (point: {
 }) => JSON.stringify([point.provider, point.windowSeconds, point.mode, point.unit.id]);
 
 /** Recent quota deltas already exclude refills. Request counts cannot supply missing quota units. */
-export function observedRoutingDemand(data: CapacityDemandData, now: number): RoutingDemandInput[] {
+export function observedRoutingDemand(
+  data: CapacityDemandData,
+  now: number,
+  references: ReadonlyMap<string, string>,
+): RoutingDemandInput[] {
   if (data.readAt === null || data.readAt > now || now - data.readAt > 6 * 60_000) return [];
   const through = Math.floor(now / hour) * hour;
   const cohorts = new Map<string, CapacityDemandPoint[]>();
@@ -48,6 +52,7 @@ export function observedRoutingDemand(data: CapacityDemandData, now: number): Ro
       readings.length > 500 ||
       readings.some(
         (reading) =>
+          !references.has(reading.account) ||
           !reading.knownWeight ||
           reading.full <= 0 ||
           reading.observedAt > now ||
@@ -94,7 +99,7 @@ export function observedRoutingDemand(data: CapacityDemandData, now: number): Ro
             },
           ],
           accounts: readings.map((reading) => ({
-            account: reading.account,
+            account: references.get(reading.account)!,
             full: reading.full,
             known: true,
             plan: reading.plan,

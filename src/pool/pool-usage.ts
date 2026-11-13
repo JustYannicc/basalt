@@ -241,6 +241,7 @@ export class PoolUsage {
           pool,
           await this.capacity.demandData(pool, now.getTime() - 6 * 3_600_000),
           now.getTime(),
+          [...accounts],
           await this.deps.routingForecasts?.(pool, now.getTime()),
           this.deps.routingOutlooks
             ? await routingOutlooks(

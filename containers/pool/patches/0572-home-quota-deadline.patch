@@ -1,3 +1,83 @@
+diff --git a/docs/management/api.md b/docs/management/api.md
+index 68cafb6..5b46e6e 100644
+--- a/docs/management/api.md
++++ b/docs/management/api.md
+@@ -189,6 +189,9 @@ The following v8 routes are derived from `internal/managementhttp/routes_v8.go`
+ | `DELETE` | `/channel-groups/:id` |
+ | `GET` | `/channel-groups/:id` |
+ | `GET` | `/channel-groups/:id/usage-credit-routing` |
++| `PUT` | `/channel-groups/:id/routing-demand` |
++| `DELETE` | `/channel-groups/:id/routing-demand` |
++| `GET` | `/channel-groups/:id/routing-decisions` |
+ | `PATCH` | `/channel-groups/:id` |
+ | `PUT` | `/channel-groups/:id` |
+ | `GET` | `/config` |
+@@ -3798,6 +3801,14 @@ v8 channel-group create/update and read responses accept/expose `usage_credit_po
+ 
+ v8 quota detail responses include nullable `usage_credits`: `state`, optional decimal-string `balance`, source `observed_at`/`expires_at`, Codex `allowed`/`limit_reached`/`has_credits`/`unlimited`, and optional Claude `extra_usage` with `enabled`, `monthly_cap` (`limited`, `unlimited`, `unknown`) and `used_ratio`. `credit_blocked` preserves explicit zero, disabled or exhausted evidence. Claude caps are not wallets; currency and scale are unproven, so no money amount is published. `reset_credits` remains separate. Older rows without these facts are unknown until collection.
+ 
++### Routing demand and decision evidence
++
++All routes use the existing Management API authentication. `PUT /channel-groups/:id/routing-demand` accepts `{ groups?, inputs, capacity?, replaceSources }`. `groups` is the complete sorted scheduling scope of at most 32 enabled duplicate groups with the same channel name, including `:id`; omitted means only `:id`. Account references must be current credential IDs in that scope. Each of at most 12 inputs carries a provider, nullable model scope, revision, calculation/expiry timestamps, uncensored history coverage and one or two separately calibrated weekly/five-hour demand windows. Observed-burn inputs have Low confidence and a null upper band. Replacement atomically clears only the named `history-forecast` or `observed-quota-burn` sources, including an empty replacement. Capacity outlooks require the same forecast revision and exact nullable model scope; an uncertain uncalibrated result has no advice or attention. Invalid scope, membership, bounds or evidence returns 400 without replacing accepted state.
++
++`GET /channel-groups/:id/routing-decisions?groups=1,2&limit=20&before=<sequence>` returns `{ current, decisions, capacity, next, retention }`. The optional group scope follows the same rule; `limit` is 1..50 and `before` is the returned opaque pagination cursor. Current targets are recomputed without selecting an account and include calculation/expiry times and explicit account-window scope. Decisions include configured/effective strategy, evidence revision, quota, targets, weights, bypass/fallback reason, admission attempts and the final admitted credential. No request body, session ID, API key or credential secret is retained. The private response uses credential IDs; an authenticated product adapter must apply its own account-inspection authority before returning it publicly. History is a runtime-only ring bounded by 256 decisions, 4 MiB and 24 hours. `retention` reports the retained interval, truncation and restart boundary; it is not durable audit storage. Current snapshots also expire at the relevant quota resets.
++
++`DELETE /channel-groups/:id/routing-demand?groups=1,2&source=history-forecast` clears that source and its outlooks for the exact scope; `observed-quota-burn` is the other accepted source. Demand, outlooks and decision history clear on Home restart. Missing or expired demand never gates dispatch: quota-deadline uses explicit deadline-rate targets, while unknown or expired quota ranks balance. Existing affinity, funding, model gates and final admission remain authoritative.
++
+ ### DELETE `/channel-groups/:id`
+ 
+ Soft-deletes the group and its details, and atomically removes its ID from API key `channels` and model group detail `channels`, including soft-deleted records. Other bindings, key identity, and user ownership are preserved. Removing the last API key channel binding makes credential selection unrestricted by that key; removing the last model-detail channel binding restores inheritance from the key. A config event is published when bindings change, and the local runtime config is refreshed. Disabled groups are not removed.
+diff --git a/docs/management/api_CN.md b/docs/management/api_CN.md
+index 748e77a..7b2edc4 100644
+--- a/docs/management/api_CN.md
++++ b/docs/management/api_CN.md
+@@ -183,6 +183,9 @@ DB-backed handler 通常同时返回机器可读 `error` 和可读 `message`：
+ | `DELETE` | `/channel-groups/:id` |
+ | `GET` | `/channel-groups/:id` |
+ | `GET` | `/channel-groups/:id/usage-credit-routing` |
++| `PUT` | `/channel-groups/:id/routing-demand` |
++| `DELETE` | `/channel-groups/:id/routing-demand` |
++| `GET` | `/channel-groups/:id/routing-decisions` |
+ | `PATCH` | `/channel-groups/:id` |
+ | `PUT` | `/channel-groups/:id` |
+ | `GET` | `/config` |
+@@ -3784,6 +3787,14 @@ v8 channel-group create/update and read responses accept/expose `usage_credit_po
+ 
+ v8 quota detail responses include nullable `usage_credits`: `state`, optional decimal-string `balance`, source `observed_at`/`expires_at`, Codex `allowed`/`limit_reached`/`has_credits`/`unlimited`, and optional Claude `extra_usage` with `enabled`, `monthly_cap` (`limited`, `unlimited`, `unknown`) and `used_ratio`. `credit_blocked` preserves explicit zero, disabled or exhausted evidence. Claude caps are not wallets; currency and scale are unproven, so no money amount is published. `reset_credits` remains separate. Older rows without these facts are unknown until collection.
+ 
++### 路由需求与决策记录
++
++以下路由使用现有管理 API 认证。`PUT /channel-groups/:id/routing-demand` 接受 `{ groups?, inputs, capacity?, replaceSources }`。`groups` 是同一池的完整调度范围，最多包含 32 个已启用、名称相同的重复通道组，且必须包含 `:id`；省略时仅使用 `:id`。账户引用必须是该范围内当前凭据的 ID。最多 12 个需求输入包含提供方、可空的模型范围、版本、计算与过期时间、无截断的历史覆盖信息，以及分别校准的每周与五小时需求窗口。观测消耗仅标为 Low 置信度，上界为 null。替换操作原子更新指定的 `history-forecast` 或 `observed-quota-burn` 来源，空列表用于清除。容量预测必须匹配同次发布的预测版本与精确的可空模型范围；未校准的不确定结果不得包含建议或提醒。范围、成员、边界或证据无效时返回 400，保留已接受的数据。
++
++`GET /channel-groups/:id/routing-decisions?groups=1,2&limit=20&before=<sequence>` 返回 `{ current, decisions, capacity, next, retention }`。组范围遵循相同规则；`limit` 为 1..50，`before` 使用响应中的不透明游标。当前目标在读取时重新计算，不会选择账户或推进轮询状态，并包含计算时间、有效期及账户窗口范围。决策包含配置与实际策略、证据版本、配额、目标、权重、回退或绑定原因、准入尝试及最终凭据。不保存请求正文、会话 ID、API 密钥或凭据机密。此私有接口使用凭据 ID；产品适配器公开数据前必须按当前账户查看权限过滤。历史仅在内存中保留，最多 256 条、4 MiB、24 小时；`retention` 明确给出保留范围、截断与重启边界，不是持久审计日志。当前快照也在相关配额重置时失效。
++
++`DELETE /channel-groups/:id/routing-demand?groups=1,2&source=history-forecast` 清除精确范围内该来源及其容量预测；另一有效来源是 `observed-quota-burn`。需求、容量预测与决策记录在 Home 重启后清空。需求缺失或过期不会阻止调度：quota-deadline 使用明确的重置速率模式，配额状态未知或过期时均衡分配。会话绑定、资金来源、模型限制和最终准入检查保持权威。
++
+ ### DELETE `/channel-groups/:id`
+ 
+ 软删除 group 及其 details，并在同一事务中从 API key 的 `channels` 和 model group detail 的 `channels` 中移除该 ID，包括软删除记录中的引用。保留其他绑定、密钥身份及用户归属。移除 API key 的最后一个凭证范围后，该 key 不再额外限制凭证；移除模型明细的最后一个凭证范围后，恢复继承 key 的凭证范围。绑定发生变化时发布配置事件，并刷新本地运行时配置。禁用但未删除的范围不会被移除。
+diff --git a/internal/cliproxy/auth/manager.go b/internal/cliproxy/auth/manager.go
+index 5d15695..e8b0383 100644
+--- a/internal/cliproxy/auth/manager.go
++++ b/internal/cliproxy/auth/manager.go
+@@ -1428,7 +1428,7 @@ func (m *Manager) Dispatch(ctx context.Context, providers []string, requestedMod
+ 			if candidate == nil || candidate.Disabled {
+ 				continue
+ 			}
+-			if filterWeights && isWeightedSelector(selector) && authWeight(candidate) <= 0 {
++			if filterWeights && isWeightedSelector(selector, opts.AccountSelection) && authWeight(candidate) <= 0 {
+ 				continue
+ 			}
+ 			if !requestRetryRoundAllowed(candidate, retryRound, defaultRequestRetry) {
+@@ -1619,7 +1619,7 @@ func (m *Manager) scanDispatchAvailability(providers []string, routeModel string
+ 		if candidate == nil || candidate.Disabled || candidate.Status == StatusDisabled {
+ 			continue
+ 		}
+-		if filterWeights && isWeightedSelector(m.selector) && authWeight(candidate) <= 0 {
++		if filterWeights && isWeightedSelector(m.selector, opts.AccountSelection) && authWeight(candidate) <= 0 {
+ 			continue
+ 		}
+ 		if !requestRetryRoundAllowed(candidate, retryRound, defaultRequestRetry) {
 diff --git a/internal/cliproxy/auth/quota_deadline_plan.go b/internal/cliproxy/auth/quota_deadline_plan.go
 new file mode 100644
 index 0000000..1c8f2fe
@@ -277,14 +357,15 @@ index 0000000..1c8f2fe
 +}
 diff --git a/internal/cliproxy/auth/quota_deadline_selector.go b/internal/cliproxy/auth/quota_deadline_selector.go
 new file mode 100644
-index 0000000..f96ac85
+index 0000000..83bd081
 --- /dev/null
 +++ b/internal/cliproxy/auth/quota_deadline_selector.go
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,177 @@
 +package auth
 +
 +import (
 +	"context"
++	"strings"
 +	"sync"
 +	"time"
 +)
@@ -317,6 +398,12 @@ index 0000000..f96ac85
 +		return s.Fallback.Pick(ctx, provider, model, opts, auths)
 +	}
 +	reason := ""
++	actualProvider, knownProvider := routingProviderCohort(provider, available)
++	if !knownProvider {
++		reason = "mixed-provider-cohort"
++	} else {
++		provider = actualProvider
++	}
 +	if !selection.PlanFunded {
 +		reason = "credits-only"
 +	}
@@ -435,6 +522,21 @@ index 0000000..f96ac85
 +	selection.Decision.Mode = "configured-strategy"
 +	selection.Decision.Reason = "configured-strategy"
 +	return selector.Pick(ctx, provider, model, opts, auths)
++}
++
++func routingProviderCohort(requested string, accounts []*Auth) (string, bool) {
++	provider := ""
++	for _, account := range accounts {
++		actual := strings.ToLower(strings.TrimSpace(account.Provider))
++		if actual == "" && requested != "mixed" {
++			actual = requested
++		}
++		if actual == "" || actual == "mixed" || provider != "" && provider != actual {
++			return "", false
++		}
++		provider = actual
++	}
++	return provider, provider != ""
 +}
 diff --git a/internal/cliproxy/auth/quota_deadline_simulation_test.go b/internal/cliproxy/auth/quota_deadline_simulation_test.go
 new file mode 100644
@@ -822,10 +924,10 @@ index 4300f20..ada01fa 100644
  	opts := Options{AccountSelection: selection, Headers: http.Header{"X-Session-Id": []string{"synthetic-parent"}}}
 diff --git a/internal/cliproxy/auth/routing_current.go b/internal/cliproxy/auth/routing_current.go
 new file mode 100644
-index 0000000..8b6e69a
+index 0000000..99e03ef
 --- /dev/null
 +++ b/internal/cliproxy/auth/routing_current.go
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,73 @@
 +package auth
 +
 +import "time"
@@ -859,6 +961,12 @@ index 0000000..8b6e69a
 +		rank, exists := selection.Ranks[account.ID]
 +		if invalid := quotaRankReason(rank, exists, now); invalid != "" && reason == "" {
 +			reason = invalid
++		}
++		if exists && rank.ResetAt.Before(result.ValidUntil) {
++			result.ValidUntil = rank.ResetAt
++		}
++		if exists && rank.Short != nil && rank.Short.ResetAt != nil && rank.Short.ResetAt.Before(result.ValidUntil) {
++			result.ValidUntil = *rank.Short.ResetAt
 +		}
 +		if exists && rank.ExpiresAt.Before(result.ValidUntil) {
 +			result.ValidUntil = rank.ExpiresAt
@@ -895,10 +1003,10 @@ index 0000000..8b6e69a
 +}
 diff --git a/internal/cliproxy/auth/routing_current_test.go b/internal/cliproxy/auth/routing_current_test.go
 new file mode 100644
-index 0000000..f360ef5
+index 0000000..5028f0d
 --- /dev/null
 +++ b/internal/cliproxy/auth/routing_current_test.go
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,62 @@
 +package auth
 +
 +import (
@@ -941,6 +1049,24 @@ index 0000000..f360ef5
 +		if got := routingModelFamilyMatches(example.family, example.model); got != example.want {
 +			t.Fatalf("%s %s: %v", example.family, example.model, got)
 +		}
++	}
++}
++
++func TestCurrentSnapshotExpiresAtEveryPacingReset(t *testing.T) {
++	now := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
++	main := now.Add(10 * time.Second)
++	short := now.Add(5 * time.Second)
++	rank := QuotaResetRank{Headroom: .8, ResetAt: main, ExpiresAt: now.Add(time.Hour), ObservedAt: now, WindowSeconds: 604800, Short: &QuotaGateRank{Headroom: .8, ResetAt: &short, Mode: "fixed"}}
++	selection := &AccountSelection{Policy: "reset_aware", PlanFunded: true, Ranks: map[string]QuotaResetRank{"a": rank}}
++	current := ComputeRoutingCurrent(selection, "claude", []*Auth{{ID: "a", Provider: "claude"}}, now)
++	if !current.ValidUntil.Equal(short) {
++		t.Fatalf("valid beyond short refill: %v", current.ValidUntil)
++	}
++	rank.Short = nil
++	selection.Ranks["a"] = rank
++	current = ComputeRoutingCurrent(selection, "claude", []*Auth{{ID: "a", Provider: "claude"}}, now)
++	if !current.ValidUntil.Equal(main) {
++		t.Fatalf("valid beyond main refill: %v", current.ValidUntil)
 +	}
 +}
 diff --git a/internal/cliproxy/auth/routing_trace.go b/internal/cliproxy/auth/routing_trace.go
@@ -1132,10 +1258,22 @@ index 0000000..45e9003
 +	}
 +}
 diff --git a/internal/cliproxy/auth/selector.go b/internal/cliproxy/auth/selector.go
-index 854be9c..f37586e 100644
+index 854be9c..2d38fac 100644
 --- a/internal/cliproxy/auth/selector.go
 +++ b/internal/cliproxy/auth/selector.go
-@@ -301,7 +301,6 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
+@@ -16,10 +16,9 @@ import (
+ 	"time"
+ 	"unicode"
+ 
++	"github.com/router-for-me/CLIProxyAPIHome/internal/logging"
+ 	log "github.com/sirupsen/logrus"
+ 	"github.com/tidwall/gjson"
+-
+-	"github.com/router-for-me/CLIProxyAPIHome/internal/logging"
+ )
+ 
+ // RoundRobinSelector provides a simple provider scoped round-robin selection strategy.
+@@ -301,7 +300,6 @@ func (s *RoundRobinSelector) Pick(ctx context.Context, provider, model string, o
  	if err != nil {
  		return nil, err
  	}
@@ -1143,7 +1281,7 @@ index 854be9c..f37586e 100644
  	key := provider + ":" + canonicalModelKey(model)
  	s.mu.Lock()
  	if s.cursors == nil {
-@@ -337,7 +336,6 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
+@@ -337,7 +335,6 @@ func (s *FillFirstSelector) Pick(ctx context.Context, provider, model string, op
  	if err != nil {
  		return nil, err
  	}
@@ -1151,8 +1289,17 @@ index 854be9c..f37586e 100644
  	return available[0], nil
  }
  
+@@ -458,7 +455,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
+ 
+ 	now := time.Now()
+ 	auths = filterConcurrencyExcludedAuths(auths, model, opts)
+-	if isWeightedSelector(s.fallback) {
++	if isWeightedSelector(s.fallback, opts.AccountSelection) {
+ 		auths = positiveWeightAuths(auths)
+ 	}
+ 	available, err := getAvailableAuths(auths, provider, model, now)
 diff --git a/internal/cliproxy/auth/selector_weighted.go b/internal/cliproxy/auth/selector_weighted.go
-index 61237dd..91d1ef8 100644
+index 61237dd..c53b99a 100644
 --- a/internal/cliproxy/auth/selector_weighted.go
 +++ b/internal/cliproxy/auth/selector_weighted.go
 @@ -59,7 +59,6 @@ func (s *WeightedRoundRobinSelector) Pick(ctx context.Context, provider, model s
@@ -1163,6 +1310,26 @@ index 61237dd..91d1ef8 100644
  	stateModel := model
  	if requested, ok := opts.Metadata[RequestedModelMetadataKey].(string); ok && strings.TrimSpace(requested) != "" {
  		stateModel = requested
+@@ -195,12 +194,17 @@ func saturatingAddInt64(value, delta int64) int64 {
+ }
+ 
+ // isWeightedSelector also covers session affinity wrapping weighted fallback.
+-func isWeightedSelector(selector Selector) bool {
++func isWeightedSelector(selector Selector, selection *AccountSelection) bool {
+ 	switch current := selector.(type) {
+ 	case *WeightedRoundRobinSelector:
+ 		return true
++	case *AccountRoutingSelector:
++		if selection != nil {
++			return selection.Policy == "weighted"
++		}
++		return isWeightedSelector(current.Fallback, nil)
+ 	case *SessionAffinitySelector:
+-		return isWeightedSelector(current.fallback)
++		return isWeightedSelector(current.fallback, selection)
+ 	default:
+ 		return false
+ 	}
 diff --git a/internal/cluster/account_routing.go b/internal/cluster/account_routing.go
 index 2136d74..c4d157e 100644
 --- a/internal/cluster/account_routing.go
@@ -1274,16 +1441,18 @@ index 2136d74..c4d157e 100644
  }
 diff --git a/internal/cluster/management/routing_decisions.go b/internal/cluster/management/routing_decisions.go
 new file mode 100644
-index 0000000..6d39ecb
+index 0000000..69c74d2
 --- /dev/null
 +++ b/internal/cluster/management/routing_decisions.go
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,143 @@
 +package management
 +
 +import (
 +	"encoding/json"
++	"fmt"
 +	"net/http"
 +	"strconv"
++	"strings"
 +	"time"
 +
 +	"github.com/gin-gonic/gin"
@@ -1296,6 +1465,7 @@ index 0000000..6d39ecb
 +		return
 +	}
 +	var body struct {
++		Groups         []uint                        `json:"groups"`
 +		Capacity       []json.RawMessage             `json:"capacity"`
 +		Inputs         []coreauth.RoutingDemandInput `json:"inputs"`
 +		ReplaceSources []string                      `json:"replaceSources"`
@@ -1307,7 +1477,12 @@ index 0000000..6d39ecb
 +	}
 +	ctx, cancel := h.requestContext(c)
 +	defer cancel()
-+	if errStore := h.repo.SetRoutingDemand(ctx, id, body.Inputs, body.ReplaceSources, time.Now().UTC(), body.Capacity...); errStore != nil {
++	groups, errGroups := h.repo.ResolveRoutingGroups(ctx, id, body.Groups)
++	if errGroups != nil {
++		respondError(c, http.StatusBadRequest, "invalid_routing_scope", errGroups)
++		return
++	}
++	if errStore := h.repo.SetRoutingDemandForGroups(ctx, groups, body.Inputs, body.ReplaceSources, time.Now().UTC(), body.Capacity...); errStore != nil {
 +		respondError(c, http.StatusBadRequest, "invalid_routing_demand", errStore)
 +		return
 +	}
@@ -1343,9 +1518,19 @@ index 0000000..6d39ecb
 +		}
 +		limit = parsed
 +	}
++	groups, errGroups := routingQueryGroups(c)
++	if errGroups != nil {
++		respondError(c, http.StatusBadRequest, "invalid_routing_scope", errGroups)
++		return
++	}
++	groups, errGroups = h.repo.ResolveRoutingGroups(ctx, id, groups)
++	if errGroups != nil {
++		respondError(c, http.StatusBadRequest, "invalid_routing_scope", errGroups)
++		return
++	}
 +	now := time.Now().UTC()
-+	page := h.repo.RoutingDecisions(id, before, limit, now)
-+	current, errCurrent := h.repo.CurrentRouting(ctx, id, now)
++	page := h.repo.RoutingDecisionsForGroups(groups, before, limit, now)
++	current, errCurrent := h.repo.CurrentRoutingForGroups(ctx, groups, now)
 +	if errCurrent != nil {
 +		respondError(c, http.StatusServiceUnavailable, "routing_state_unavailable", errCurrent)
 +		return
@@ -1370,8 +1555,122 @@ index 0000000..6d39ecb
 +		respondChannelRecordError(c, "channel_group_load_failed", errGroup)
 +		return
 +	}
-+	h.repo.DeleteRoutingDemand(id, source)
++	groups, errGroups := routingQueryGroups(c)
++	if errGroups != nil {
++		respondError(c, http.StatusBadRequest, "invalid_routing_scope", errGroups)
++		return
++	}
++	groups, errGroups = h.repo.ResolveRoutingGroups(ctx, id, groups)
++	if errGroups != nil {
++		respondError(c, http.StatusBadRequest, "invalid_routing_scope", errGroups)
++		return
++	}
++	h.repo.DeleteRoutingDemandForGroups(groups, source)
 +	c.JSON(http.StatusOK, gin.H{"success": true})
++}
++
++func routingQueryGroups(c *gin.Context) ([]uint, error) {
++	raw := c.Query("groups")
++	if raw == "" {
++		return nil, nil
++	}
++	parts := strings.Split(raw, ",")
++	if len(parts) > 32 {
++		return nil, fmt.Errorf("too many routing groups")
++	}
++	ids := make([]uint, 0, len(parts))
++	for _, part := range parts {
++		id, errParse := strconv.ParseUint(part, 10, 32)
++		if errParse != nil || id == 0 {
++			return nil, fmt.Errorf("invalid routing group")
++		}
++		ids = append(ids, uint(id))
++	}
++	return ids, nil
++}
+diff --git a/internal/cluster/management/routing_decisions_test.go b/internal/cluster/management/routing_decisions_test.go
+new file mode 100644
+index 0000000..b610ea4
+--- /dev/null
++++ b/internal/cluster/management/routing_decisions_test.go
+@@ -0,0 +1,78 @@
++package management
++
++import (
++	"bytes"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++)
++
++func TestRoutingManagementPublishesReadsAndClearsOneDuplicateScope(t *testing.T) {
++	handler, closeRepo := newUsageObservabilityTestHandler(t)
++	defer closeRepo()
++	groups := []uint{}
++	ctx := t.Context()
++	now := time.Now().UTC()
++	for _, id := range []string{"routing-a", "routing-b"} {
++		if _, errUpsert := handler.repo.UpsertAuth(ctx, &coreauth.Auth{ID: id, Index: id, Provider: "claude"}, "test"); errUpsert != nil {
++			t.Fatal(errUpsert)
++		}
++		group, errGroup := handler.repo.CreateChannelGroup(ctx, "routing-same-pool", false)
++		if errGroup != nil {
++			t.Fatal(errGroup)
++		}
++		if _, errDetail := handler.repo.CreateChannelGroupDetail(ctx, group.ID, id); errDetail != nil {
++			t.Fatal(errDetail)
++		}
++		groups = append(groups, group.ID)
++	}
++	gin.SetMode(gin.TestMode)
++	engine := gin.New()
++	engine.PUT("/channel-groups/:id/routing-demand", handler.PutChannelGroupRoutingDemand)
++	engine.GET("/channel-groups/:id/routing-decisions", handler.GetChannelGroupRoutingDecisions)
++	engine.DELETE("/channel-groups/:id/routing-demand", handler.DeleteChannelGroupRoutingDemand)
++	publish := map[string]any{"groups": groups, "inputs": []any{}, "replaceSources": []string{"history-forecast"}, "capacity": []any{map[string]any{
++		"provider": "claude", "modelFamily": nil, "from": now, "through": now.Add(24 * time.Hour), "status": "uncertain", "recommendation": nil,
++		"attention": map[string]any{"notice": "none", "inboxNudge": "none"}, "evidence": map[string]any{"status": "uncalibrated", "source": "none", "calculatedAt": now, "validUntil": nil},
++	}}}
++	body, errEncode := json.Marshal(publish)
++	if errEncode != nil {
++		t.Fatal(errEncode)
++	}
++	query := fmt.Sprintf("groups=%d,%d", groups[0], groups[1])
++	base := fmt.Sprintf("/channel-groups/%d", groups[0])
++	call := func(method, path string, body []byte) *httptest.ResponseRecorder {
++		response := httptest.NewRecorder()
++		request := httptest.NewRequest(method, path, bytes.NewReader(body))
++		request.Header.Set("Content-Type", "application/json")
++		engine.ServeHTTP(response, request)
++		return response
++	}
++	if response := call(http.MethodPut, base+"/routing-demand", body); response.Code != 200 {
++		t.Fatalf("publish: %d %s", response.Code, response.Body.String())
++	}
++	response := call(http.MethodGet, base+"/routing-decisions?"+query, nil)
++	var page struct {
++		Capacity []json.RawMessage         `json:"capacity"`
++		Current  []coreauth.RoutingCurrent `json:"current"`
++	}
++	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &page) != nil || len(page.Capacity) != 1 || len(page.Current) != 1 || len(page.Current[0].Plan.Candidates) != 2 {
++		t.Fatalf("scope read: %d %s", response.Code, response.Body.String())
++	}
++	if response := call(http.MethodDelete, base+"/routing-demand?"+query+"&source=history-forecast", nil); response.Code != 200 {
++		t.Fatalf("clear: %d", response.Code)
++	}
++	response = call(http.MethodGet, base+"/routing-decisions?"+query, nil)
++	if json.Unmarshal(response.Body.Bytes(), &page) != nil || len(page.Capacity) != 0 {
++		t.Fatal("deleted outlook remained visible")
++	}
++	if response := call(http.MethodGet, base+"/routing-decisions?groups=0", nil); response.Code != 400 {
++		t.Fatal("invalid scope accepted")
++	}
 +}
 diff --git a/internal/cluster/quota_selection.go b/internal/cluster/quota_selection.go
 index f2c659e..8790298 100644
@@ -1453,41 +1752,51 @@ index af86412..84ad7e1 100644
  	db                 *gorm.DB
 diff --git a/internal/cluster/routing_current.go b/internal/cluster/routing_current.go
 new file mode 100644
-index 0000000..b38699a
+index 0000000..e7c8472
 --- /dev/null
 +++ b/internal/cluster/routing_current.go
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,83 @@
 +package cluster
 +
 +import (
 +	"context"
 +	"sort"
-+	"strconv"
 +	"time"
 +
 +	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
 +)
 +
 +func (r *Repository) CurrentRouting(ctx context.Context, group uint, now time.Time) ([]coreauth.RoutingCurrent, error) {
-+	saved, errGroup := r.GetChannelGroup(ctx, group)
-+	if errGroup != nil {
-+		return nil, errGroup
++	return r.CurrentRoutingForGroups(ctx, []uint{group}, now)
++}
++func (r *Repository) CurrentRoutingForGroups(ctx context.Context, groups []uint, now time.Time) ([]coreauth.RoutingCurrent, error) {
++	scope, errScope := r.loadRoutingScope(ctx, groups)
++	if errScope != nil {
++		return nil, errScope
 +	}
-+	details, errDetails := r.ListChannelGroupDetails(ctx, ChannelGroupDetailFilter{ChannelGroupID: &group})
-+	if errDetails != nil {
-+		return nil, errDetails
-+	}
-+	ids := make(map[string]struct{}, len(details))
-+	for _, detail := range details {
-+		ids[detail.AuthID] = struct{}{}
++	ids := make(map[string]struct{}, len(scope.members))
++	for id := range scope.members {
++		ids[id] = struct{}{}
 +	}
 +	items, errItems := r.loadFundingCredentials(ctx, now, ids)
 +	if errItems != nil {
 +		return nil, errItems
 +	}
-+	policy, errPolicy := NormalizeAccountSelectionPolicy(saved.AccountSelectionPolicy)
-+	if errPolicy != nil {
-+		return nil, errPolicy
++	policy, credits := "reset_aware", "last_resort"
++	policies := map[string]bool{}
++	for _, saved := range scope.groups {
++		value, errPolicy := NormalizeAccountSelectionPolicy(saved.AccountSelectionPolicy)
++		if errPolicy != nil {
++			return nil, errPolicy
++		}
++		policy = value
++		policies[value] = true
++		if saved.UsageCreditPolicy != "" && saved.UsageCreditPolicy != "last_resort" {
++			credits = "never"
++		}
++	}
++	if len(policies) > 1 {
++		policy = "balanced"
 +	}
 +	byProvider := make(map[string][]QuotaCredentialSnapshot)
 +	for _, item := range items {
@@ -1500,14 +1809,14 @@ index 0000000..b38699a
 +	sort.Strings(providers)
 +	current := make([]coreauth.RoutingCurrent, 0, len(providers))
 +	for _, provider := range providers {
-+		selection := &coreauth.AccountSelection{Policy: policy, Groups: []uint{group}, Scope: strconv.FormatUint(uint64(group), 10), Ranks: make(map[string]coreauth.QuotaResetRank), Funding: make(map[string]int), Demand: r.routingDemandForGroups([]uint{group}, now)}
++		selection := &coreauth.AccountSelection{Policy: policy, Groups: routingScopeIDs(groups), Scope: scope.key, Ranks: make(map[string]coreauth.QuotaResetRank), Funding: make(map[string]int), Demand: r.routingDemandForGroups(groups, now)}
 +		best := 3
 +		for _, item := range byProvider[provider] {
 +			tier := usageCreditFundingTier(item, "", now)
 +			if item.CredentialStatus != "" && item.CredentialStatus != "enabled" && item.CredentialStatus != "active" && item.CredentialStatus != "available" {
 +				tier = 3
 +			}
-+			if saved.UsageCreditPolicy == "never" && tier > 0 {
++			if credits == "never" && tier > 0 {
 +				tier = 3
 +			}
 +			selection.Funding[item.CredentialID] = tier
@@ -1532,16 +1841,17 @@ index 0000000..b38699a
 +}
 diff --git a/internal/cluster/routing_demand_test.go b/internal/cluster/routing_demand_test.go
 new file mode 100644
-index 0000000..84b0e14
+index 0000000..27df7c9
 --- /dev/null
 +++ b/internal/cluster/routing_demand_test.go
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,109 @@
 +package cluster
 +
 +import (
-+	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
 +	"testing"
 +	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
 +)
 +
 +func observedDemandFixture(now time.Time) coreauth.RoutingDemandInput {
@@ -1598,6 +1908,50 @@ index 0000000..84b0e14
 +	input := observedDemandFixture(now)
 +	if err := validateRoutingDemand([]coreauth.RoutingDemandInput{input, input}, map[string]bool{"a": true}, now); err == nil {
 +		t.Fatal("duplicate cohort silently hides a window")
++	}
++}
++
++func TestRoutingDemandPublishesDuplicateGroupsAsTheActualDispatchScope(t *testing.T) {
++	repo, ctx := newTestKVRepository(t)
++	now := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
++	groups := []uint{}
++	for _, id := range []string{"a", "b"} {
++		if _, errUpsert := repo.UpsertAuth(ctx, &coreauth.Auth{ID: id, Index: id, Provider: "claude"}, "test"); errUpsert != nil {
++			t.Fatal(errUpsert)
++		}
++		group, errGroup := repo.CreateChannelGroup(ctx, "same-pool", false)
++		if errGroup != nil {
++			t.Fatal(errGroup)
++		}
++		if _, errDetail := repo.CreateChannelGroupDetail(ctx, group.ID, id); errDetail != nil {
++			t.Fatal(errDetail)
++		}
++		groups = append(groups, group.ID)
++	}
++	input := observedDemandFixture(now)
++	input.Windows[0].Accounts = append(input.Windows[0].Accounts, coreauth.RoutingDemandAccount{Account: "b", Full: 100, Known: true, WeightRevision: "test"})
++	if errStore := repo.SetRoutingDemand(ctx, groups[0], []coreauth.RoutingDemandInput{input}, []string{input.Source}, now); errStore == nil {
++		t.Fatal("whole demand accepted against partial membership")
++	}
++	if errStore := repo.SetRoutingDemandForGroups(ctx, groups, []coreauth.RoutingDemandInput{input}, []string{input.Source}, now); errStore != nil {
++		t.Fatal(errStore)
++	}
++	if got := repo.routingDemandForGroups([]uint{groups[1], groups[0]}, now); len(got) != 1 || len(got[0].Windows[0].Accounts) != 2 {
++		t.Fatal("dispatch scope did not read full profile")
++	}
++	if got := repo.routingDemandForGroups(groups[:1], now); len(got) != 0 {
++		t.Fatal("partial group consumed whole-pool demand")
++	}
++	other, errOther := repo.CreateChannelGroup(ctx, "other-pool", false)
++	if errOther != nil {
++		t.Fatal(errOther)
++	}
++	if _, errScope := repo.ResolveRoutingGroups(ctx, groups[0], []uint{groups[0], other.ID}); errScope == nil {
++		t.Fatal("unrelated pools merged")
++	}
++	repo.DeleteRoutingDemandForGroups(groups, input.Source)
++	if len(repo.routingDemandForGroups(groups, now)) != 0 {
++		t.Fatal("scope deletion failed")
 +	}
 +}
 diff --git a/internal/cluster/routing_demand_validation.go b/internal/cluster/routing_demand_validation.go
@@ -1694,17 +2048,18 @@ index 0000000..31e91ae
 +}
 diff --git a/internal/cluster/routing_outlook.go b/internal/cluster/routing_outlook.go
 new file mode 100644
-index 0000000..5ab6fb0
+index 0000000..4582fdc
 --- /dev/null
 +++ b/internal/cluster/routing_outlook.go
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,72 @@
 +package cluster
 +
 +import (
 +	"encoding/json"
 +	"fmt"
-+	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
 +	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
 +)
 +
 +type routingOutlook struct {
@@ -1723,7 +2078,7 @@ index 0000000..5ab6fb0
 +	for _, payload := range payloads {
 +		var envelope struct {
 +			Provider       string          `json:"provider"`
-+			ModelFamily    string          `json:"modelFamily"`
++			ModelFamily    *string         `json:"modelFamily"`
 +			From           time.Time       `json:"from"`
 +			Through        time.Time       `json:"through"`
 +			Status         string          `json:"status"`
@@ -1743,8 +2098,12 @@ index 0000000..5ab6fb0
 +		if len(payload) > 64*1024 || json.Unmarshal(payload, &envelope) != nil {
 +			return nil, fmt.Errorf("routing outlook representation is invalid")
 +		}
-+		key := envelope.Provider + "\x00" + envelope.ModelFamily
-+		if seen[key] || !routingText(envelope.Provider) || !routingText(envelope.ModelFamily) || !envelope.Through.After(envelope.From) || envelope.Through.Sub(envelope.From) > 7*24*time.Hour {
++		model := ""
++		if envelope.ModelFamily != nil {
++			model = *envelope.ModelFamily
++		}
++		key := envelope.Provider + "\x00" + model
++		if seen[key] || !routingText(envelope.Provider) || envelope.ModelFamily != nil && !routingText(*envelope.ModelFamily) || !envelope.Through.After(envelope.From) || envelope.Through.Sub(envelope.From) > 7*24*time.Hour {
 +			return nil, fmt.Errorf("routing outlook horizon is invalid")
 +		}
 +		seen[key] = true
@@ -1752,7 +2111,7 @@ index 0000000..5ab6fb0
 +		uncertain := envelope.Status == "uncertain" && string(envelope.Recommendation) == "null" && envelope.Attention.Notice == "none" && envelope.Attention.InboxNudge == "none" && envelope.Evidence.Status != "calibrated" && !envelope.Evidence.CalculatedAt.IsZero() && !envelope.Evidence.CalculatedAt.After(now) && now.Sub(envelope.Evidence.CalculatedAt) <= time.Hour
 +		matched := uncertain
 +		for _, input := range inputs {
-+			modelMatches := input.ModelFamily == nil || *input.ModelFamily == envelope.ModelFamily
++			modelMatches := input.ModelFamily == nil && envelope.ModelFamily == nil || input.ModelFamily != nil && envelope.ModelFamily != nil && *input.ModelFamily == *envelope.ModelFamily
 +			if input.Provider == envelope.Provider && modelMatches && input.Source == "history-forecast" && envelope.Evidence.Source == input.Source && envelope.Evidence.Revision == input.Revision && envelope.Evidence.CalculatedAt.Equal(input.CalculatedAt) && envelope.Evidence.ValidUntil != nil && envelope.Evidence.ValidUntil.Equal(input.ValidUntil) && input.ValidUntil.After(now) {
 +				matched = true
 +				expires = input.ValidUntil
@@ -1767,22 +2126,24 @@ index 0000000..5ab6fb0
 +}
 diff --git a/internal/cluster/routing_outlook_test.go b/internal/cluster/routing_outlook_test.go
 new file mode 100644
-index 0000000..00d1135
+index 0000000..9431fe4
 --- /dev/null
 +++ b/internal/cluster/routing_outlook_test.go
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,69 @@
 +package cluster
 +
 +import (
 +	"encoding/json"
-+	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
 +	"testing"
 +	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
 +)
 +
 +func TestRoutingOutlookRequiresMatchingForecastAndOwnsBytes(t *testing.T) {
 +	now := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
-+	input := coreauth.RoutingDemandInput{Provider: "claude", Revision: "test", Source: "history-forecast", CalculatedAt: now, ValidUntil: now.Add(time.Minute)}
++	model := "opus"
++	input := coreauth.RoutingDemandInput{ModelFamily: &model, Provider: "claude", Revision: "test", Source: "history-forecast", CalculatedAt: now, ValidUntil: now.Add(time.Minute)}
 +	payload, _ := json.Marshal(map[string]any{"provider": "claude", "modelFamily": "opus", "from": now, "through": now.Add(24 * time.Hour), "evidence": map[string]any{"source": input.Source, "revision": input.Revision, "calculatedAt": now, "validUntil": input.ValidUntil}})
 +	result, err := validatedRoutingOutlooks([]json.RawMessage{payload}, []coreauth.RoutingDemandInput{input}, now)
 +	if err != nil || len(result) != 1 {
@@ -1812,16 +2173,121 @@ index 0000000..00d1135
 +	if len(repo.RoutingDecisions(8, 0, 20, now).Decisions) != 0 {
 +		t.Fatal("cross-group history")
 +	}
-+	if len(repo.RoutingDecisions(7, 0, 20, now.Add(25*time.Hour)).Decisions) != 0 {
++	expired := repo.RoutingDecisions(7, 0, 20, now.Add(25*time.Hour))
++	if !expired.Retention.Truncated || !expired.Retention.From.Equal(now.Add(time.Hour)) {
++		t.Fatal("idle expiry hid the retention gap", expired.Retention)
++	}
++	if len(expired.Decisions) != 0 {
 +		t.Fatal("expired idle history returned")
 +	}
 +}
++
++func TestRoutingOutlookRequiresExactNullableModelScope(t *testing.T) {
++	now := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
++	providerWide := coreauth.RoutingDemandInput{Provider: "claude", Revision: "test", Source: "history-forecast", CalculatedAt: now, ValidUntil: now.Add(time.Minute)}
++	payload := func(model any) json.RawMessage {
++		bytes, errEncode := json.Marshal(map[string]any{"provider": "claude", "modelFamily": model, "from": now, "through": now.Add(24 * time.Hour), "evidence": map[string]any{"source": providerWide.Source, "revision": providerWide.Revision, "calculatedAt": now, "validUntil": providerWide.ValidUntil}})
++		if errEncode != nil {
++			t.Fatal(errEncode)
++		}
++		return bytes
++	}
++	if _, errScope := validatedRoutingOutlooks([]json.RawMessage{payload("opus")}, []coreauth.RoutingDemandInput{providerWide}, now); errScope == nil {
++		t.Fatal("provider-wide input authorized a model-specific capacity claim")
++	}
++	if _, errScope := validatedRoutingOutlooks([]json.RawMessage{payload(nil)}, []coreauth.RoutingDemandInput{providerWide}, now); errScope != nil {
++		t.Fatal(errScope)
++	}
++}
+diff --git a/internal/cluster/routing_scope.go b/internal/cluster/routing_scope.go
+new file mode 100644
+index 0000000..b730190
+--- /dev/null
++++ b/internal/cluster/routing_scope.go
+@@ -0,0 +1,77 @@
++package cluster
++
++import (
++	"context"
++	"fmt"
++	"sort"
++)
++
++type routingScope struct {
++	key     string
++	groups  []ChannelGroupRecord
++	members map[string]bool
++}
++
++func routingScopeIDs(groups []uint) []uint {
++	unique := make(map[uint]bool, len(groups))
++	ids := make([]uint, 0, len(groups))
++	for _, id := range groups {
++		if !unique[id] {
++			unique[id] = true
++			ids = append(ids, id)
++		}
++	}
++	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
++	return ids
++}
++func routingScopeKey(groups []uint) string { return fmt.Sprint(routingScopeIDs(groups)) }
++
++// Duplicate channel groups for one pool are one scheduling scope. A profile may
++// never combine unrelated pools or validate a full pool against one partial group.
++func (r *Repository) loadRoutingScope(ctx context.Context, groups []uint) (routingScope, error) {
++	ids := routingScopeIDs(groups)
++	result := routingScope{key: routingScopeKey(ids), members: make(map[string]bool)}
++	if len(ids) == 0 || len(ids) > 32 || ids[0] == 0 {
++		return result, fmt.Errorf("routing scope needs one to thirty-two channel groups")
++	}
++	name := ""
++	for _, id := range ids {
++		record, errGroup := r.GetChannelGroup(ctx, id)
++		if errGroup != nil {
++			return result, errGroup
++		}
++		if record.Disabled || name != "" && record.ChannelName != name {
++			return result, fmt.Errorf("routing scope groups must be enabled parts of one pool")
++		}
++		name = record.ChannelName
++		result.groups = append(result.groups, *record)
++		details, errDetails := r.ListChannelGroupDetails(ctx, ChannelGroupDetailFilter{ChannelGroupID: &id})
++		if errDetails != nil {
++			return result, errDetails
++		}
++		for _, detail := range details {
++			result.members[detail.AuthID] = true
++		}
++	}
++	return result, nil
++}
++
++func (r *Repository) ResolveRoutingGroups(ctx context.Context, anchor uint, groups []uint) ([]uint, error) {
++	if len(groups) == 0 {
++		groups = []uint{anchor}
++	}
++	ids := routingScopeIDs(groups)
++	found := false
++	for _, id := range ids {
++		if id == anchor {
++			found = true
++		}
++	}
++	if !found {
++		return nil, fmt.Errorf("routing scope must include the route's channel group")
++	}
++	if _, errScope := r.loadRoutingScope(ctx, ids); errScope != nil {
++		return nil, errScope
++	}
++	return ids, nil
++}
 diff --git a/internal/cluster/routing_state.go b/internal/cluster/routing_state.go
 new file mode 100644
-index 0000000..e889f4d
+index 0000000..128e3aa
 --- /dev/null
 +++ b/internal/cluster/routing_state.go
-@@ -0,0 +1,250 @@
+@@ -0,0 +1,267 @@
 +package cluster
 +
 +import (
@@ -1842,8 +2308,8 @@ index 0000000..e889f4d
 +}
 +
 +type routingState struct {
-+	outlooks  map[uint][]routingOutlook
-+	inputs    map[uint][]coreauth.RoutingDemandInput
++	outlooks  map[string][]routingOutlook
++	inputs    map[string][]coreauth.RoutingDemandInput
 +	decisions []routingStoredDecision
 +	bytes     int
 +	sequence  uint64
@@ -1868,12 +2334,16 @@ index 0000000..e889f4d
 +
 +func (r *Repository) routingStateLocked(now time.Time) *routingState {
 +	if r.routing == nil {
-+		r.routing = &routingState{inputs: make(map[uint][]coreauth.RoutingDemandInput), outlooks: make(map[uint][]routingOutlook), started: now}
++		r.routing = &routingState{inputs: make(map[string][]coreauth.RoutingDemandInput), outlooks: make(map[string][]routingOutlook), started: now}
 +	}
 +	return r.routing
 +}
 +
 +func (r *Repository) SetRoutingDemand(ctx context.Context, group uint, inputs []coreauth.RoutingDemandInput, replaceSources []string, now time.Time, payloads ...json.RawMessage) error {
++	return r.SetRoutingDemandForGroups(ctx, []uint{group}, inputs, replaceSources, now, payloads...)
++}
++
++func (r *Repository) SetRoutingDemandForGroups(ctx context.Context, groups []uint, inputs []coreauth.RoutingDemandInput, replaceSources []string, now time.Time, payloads ...json.RawMessage) error {
 +	if len(inputs) > 12 || len(inputs) == 0 && len(replaceSources) == 0 || len(replaceSources) > 2 {
 +		return fmt.Errorf("one to twelve routing demand inputs required")
 +	}
@@ -1882,17 +2352,11 @@ index 0000000..e889f4d
 +			return fmt.Errorf("unsupported routing demand replacement source")
 +		}
 +	}
-+	if _, errGroup := r.GetChannelGroup(ctx, group); errGroup != nil {
-+		return errGroup
++	scope, errScope := r.loadRoutingScope(ctx, groups)
++	if errScope != nil {
++		return errScope
 +	}
-+	details, errDetails := r.ListChannelGroupDetails(ctx, ChannelGroupDetailFilter{ChannelGroupID: &group})
-+	if errDetails != nil {
-+		return errDetails
-+	}
-+	members := make(map[string]bool, len(details))
-+	for _, detail := range details {
-+		members[detail.AuthID] = true
-+	}
++	group, members := scope.key, scope.members
 +	if errValid := validateRoutingDemand(inputs, members, now); errValid != nil {
 +		return errValid
 +	}
@@ -1965,7 +2429,7 @@ index 0000000..e889f4d
 +}
 +
 +func (r *Repository) routingDemandForGroups(groups []uint, now time.Time) []coreauth.RoutingDemandInput {
-+	if len(groups) != 1 {
++	if len(groups) == 0 || len(groups) > 32 {
 +		return nil
 +	}
 +	r.routingMu.Lock()
@@ -1975,7 +2439,7 @@ index 0000000..e889f4d
 +	}
 +	// Validated inputs are immutable after publication. Selection owns the outer
 +	// slice but only reads the shared profile, avoiding JSON work per request.
-+	return append([]coreauth.RoutingDemandInput{}, r.routing.inputs[groups[0]]...)
++	return append([]coreauth.RoutingDemandInput{}, r.routing.inputs[routingScopeKey(groups)]...)
 +}
 +
 +func (a *RuntimeAdapter) RecordRoutingDecision(_ context.Context, selection *coreauth.AccountSelection) {
@@ -1994,26 +2458,30 @@ index 0000000..e889f4d
 +	}
 +	state.decisions = append(state.decisions, routingStoredDecision{groups: append([]uint{}, selection.Groups...), sequence: state.sequence, at: now, bytes: bytes})
 +	state.bytes += len(bytes)
-+	for len(state.decisions) > 256 || state.bytes > 4*1024*1024 || len(state.decisions) > 0 && now.Sub(state.decisions[0].at) > 24*time.Hour {
-+		state.bytes -= len(state.decisions[0].bytes)
-+		state.decisions[0] = routingStoredDecision{}
-+		state.decisions = state.decisions[1:]
-+		state.truncated = true
-+	}
++	pruneRoutingDecisions(state, now)
 +}
 +
 +func (r *Repository) RoutingDecisions(group uint, before uint64, limit int, now time.Time) RoutingDecisionPage {
++	return r.RoutingDecisionsForGroups([]uint{group}, before, limit, now)
++}
++func (r *Repository) RoutingDecisionsForGroups(groups []uint, before uint64, limit int, now time.Time) RoutingDecisionPage {
++	group := routingScopeKey(groups)
 +	r.routingMu.Lock()
 +	defer r.routingMu.Unlock()
 +	state := r.routingStateLocked(now)
++	pruneRoutingDecisions(state, now)
 +	page := RoutingDecisionPage{Capacity: []json.RawMessage{}, Decisions: []coreauth.RoutingDecision{}, Retention: RoutingRetention{From: state.started, Through: now, Truncated: state.truncated, Persistence: "runtime"}}
 +	for _, outlook := range state.outlooks[group] {
 +		if outlook.expires.After(now) {
 +			page.Capacity = append(page.Capacity, append(json.RawMessage(nil), outlook.payload...))
 +		}
 +	}
-+	if len(state.decisions) > 0 && state.truncated {
-+		page.Retention.From = state.decisions[0].at
++	if state.truncated {
++		if len(state.decisions) > 0 {
++			page.Retention.From = state.decisions[0].at
++		} else if cutoff := now.Add(-24 * time.Hour); cutoff.After(state.started) {
++			page.Retention.From = cutoff
++		}
 +	}
 +	if limit < 1 || limit > 50 {
 +		limit = 20
@@ -2029,9 +2497,11 @@ index 0000000..e889f4d
 +		}
 +		matches := false
 +		for _, id := range stored.groups {
-+			if id == group {
-+				matches = true
-+				break
++			for _, wanted := range groups {
++				if id == wanted {
++					matches = true
++					break
++				}
 +			}
 +		}
 +		if !matches {
@@ -2052,6 +2522,10 @@ index 0000000..e889f4d
 +}
 +
 +func (r *Repository) DeleteRoutingDemand(group uint, source string) {
++	r.DeleteRoutingDemandForGroups([]uint{group}, source)
++}
++func (r *Repository) DeleteRoutingDemandForGroups(groups []uint, source string) {
++	group := routingScopeKey(groups)
 +	r.routingMu.Lock()
 +	defer r.routingMu.Unlock()
 +	if r.routing == nil {
@@ -2070,6 +2544,15 @@ index 0000000..e889f4d
 +		delete(r.routing.inputs, group)
 +	} else {
 +		r.routing.inputs[group] = kept
++	}
++}
++
++func pruneRoutingDecisions(state *routingState, now time.Time) {
++	for len(state.decisions) > 256 || state.bytes > 4*1024*1024 || len(state.decisions) > 0 && now.Sub(state.decisions[0].at) > 24*time.Hour {
++		state.bytes -= len(state.decisions[0].bytes)
++		state.decisions[0] = routingStoredDecision{}
++		state.decisions = state.decisions[1:]
++		state.truncated = true
 +	}
 +}
 diff --git a/internal/home/account_selection.go b/internal/home/account_selection.go
@@ -2092,10 +2575,22 @@ index fe1efd5..e2fc1e2 100644
 +	}
 +}
 diff --git a/internal/home/account_selection_test.go b/internal/home/account_selection_test.go
-index 709f446..351212d 100644
+index 709f446..28834b8 100644
 --- a/internal/home/account_selection_test.go
 +++ b/internal/home/account_selection_test.go
-@@ -50,7 +50,7 @@ func TestAccountSelectionRechecksAdmissionAndKeepsCreditsLast(t *testing.T) {
+@@ -7,10 +7,9 @@ import (
+ 	"testing"
+ 	"time"
+ 
+-	log "github.com/sirupsen/logrus"
+-
+ 	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/registry"
++	log "github.com/sirupsen/logrus"
+ )
+ 
+ type selectionStore struct {
+@@ -50,7 +49,7 @@ func TestAccountSelectionRechecksAdmissionAndKeepsCreditsLast(t *testing.T) {
  		"plan-b":  {ResetAt: now.Add(time.Hour), ExpiresAt: now.Add(time.Minute), Headroom: .6},
  		"credits": {ResetAt: now.Add(time.Second), ExpiresAt: now.Add(time.Minute), Headroom: .6},
  	}}}
@@ -2104,7 +2599,7 @@ index 709f446..351212d 100644
  	for _, id := range []string{"plan-a", "plan-b", "credits"} {
  		auth := &coreauth.Auth{ID: id, Provider: "codex", Status: coreauth.StatusActive, Attributes: map[string]string{"auth_kind": "oauth"}}
  		registry.GetGlobalRegistry().RegisterClient(id, "codex", []*registry.ModelInfo{{ID: "gpt"}})
-@@ -104,7 +104,7 @@ func TestAccountSelectionRechecksAdmissionAndKeepsCreditsLast(t *testing.T) {
+@@ -104,7 +103,7 @@ func TestAccountSelectionRechecksAdmissionAndKeepsCreditsLast(t *testing.T) {
  
  func TestAccountSelectionPublicDispatchPreservesEligibleStickyAndPinned(t *testing.T) {
  	now := time.Now()
@@ -2113,6 +2608,89 @@ index 709f446..351212d 100644
  	t.Cleanup(selector.Stop)
  	manager := coreauth.NewManager(nil, selector, nil)
  	store := &selectionStore{tiers: map[string]int{"sticky-a": 0, "sticky-b": 0}, selection: coreauth.AccountSelection{Policy: "reset_aware", Ranks: map[string]coreauth.QuotaResetRank{
+diff --git a/internal/home/quota_deadline_dispatch_test.go b/internal/home/quota_deadline_dispatch_test.go
+new file mode 100644
+index 0000000..1d89a87
+--- /dev/null
++++ b/internal/home/quota_deadline_dispatch_test.go
+@@ -0,0 +1,77 @@
++package home
++
++import (
++	"context"
++	"net/http"
++	"testing"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/registry"
++)
++
++type routingDispatchStore struct {
++	selectionStore
++	decisions []*coreauth.RoutingDecision
++}
++
++func (s *routingDispatchStore) RecordRoutingDecision(_ context.Context, selection *coreauth.AccountSelection) {
++	s.decisions = append(s.decisions, selection.Decision)
++}
++
++func TestQuotaDeadlinePublicDispatchUsesEligibleProviderWithTwoInstalledProviders(t *testing.T) {
++	now := time.Now().UTC()
++	store := &routingDispatchStore{selectionStore: selectionStore{tiers: map[string]int{"forecast-a": 0, "forecast-b": 0, "other-provider": 0}, selection: coreauth.AccountSelection{Policy: "reset_aware", Ranks: map[string]coreauth.QuotaResetRank{}}}}
++	for index, id := range []string{"forecast-a", "forecast-b"} {
++		store.selection.Ranks[id] = coreauth.QuotaResetRank{ResetAt: now.Add(time.Duration(1+3*index) * 24 * time.Hour), ExpiresAt: now.Add(time.Hour), ObservedAt: now, Headroom: .8, WindowSeconds: 604800}
++	}
++	store.selection.Demand = []coreauth.RoutingDemandInput{{Provider: "claude", Revision: "forecast", Source: "history-forecast", CalculatedAt: now, ValidUntil: now.Add(time.Hour), History: coreauth.RoutingDemandHistory{CoverageRatio: 1}, Windows: []coreauth.RoutingDemandWindow{{Seconds: 604800, Accounts: []coreauth.RoutingDemandAccount{{Account: "forecast-a", Full: 100, Known: true}, {Account: "forecast-b", Full: 100, Known: true}}, Intervals: []coreauth.RoutingDemandInterval{{From: now, To: now.Add(24 * time.Hour), Demand: coreauth.RoutingDemandRange{Median: 40}}}}}}}
++	manager := coreauth.NewManager(nil, selectorFromConfig(&config.Config{}, nil), nil)
++	for _, entry := range []struct{ id, provider, model string }{{"forecast-a", "claude", "opus"}, {"forecast-b", "claude", "opus"}, {"other-provider", "codex", "gpt"}} {
++		auth := &coreauth.Auth{ID: entry.id, Provider: entry.provider, Status: coreauth.StatusActive, Attributes: map[string]string{"auth_kind": "oauth"}}
++		registry.GetGlobalRegistry().RegisterClient(entry.id, entry.provider, []*registry.ModelInfo{{ID: entry.model}})
++		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(entry.id) })
++		if _, errRegister := manager.Register(t.Context(), auth); errRegister != nil {
++			t.Fatal(errRegister)
++		}
++	}
++	runtime := &Runtime{coreManager: manager, clusterAdapter: store}
++	for range 100 {
++		result, errDispatch := runtime.DispatchForAPIKeyWithConcurrency(t.Context(), "opus", nil, "fixture-key", "", nil, "", DispatchConcurrencyContext{})
++		if errDispatch != nil || result.AuthID != "forecast-a" {
++			t.Fatalf("mixed provider label lost forecast: result=%+v err=%v", result, errDispatch)
++		}
++	}
++	if len(store.decisions) != 100 || store.decisions[0].Mode != "forecast-paced" {
++		t.Fatalf("forecast trace disagrees with dispatch: %+v", store.decisions)
++	}
++}
++
++func TestConfigBuiltWeightedAffinityReleasesZeroWeightAccount(t *testing.T) {
++	for _, policy := range []string{"", "weighted"} {
++		t.Run(policy, func(t *testing.T) {
++			cfg := &config.Config{}
++			cfg.Routing.Strategy = "weighted-round-robin"
++			cfg.Routing.SessionAffinity = true
++			selector := selectorFromConfig(cfg, nil)
++			if stoppable, ok := selector.(interface{ Stop() }); ok {
++				t.Cleanup(stoppable.Stop)
++			}
++			accounts := []*coreauth.Auth{{ID: "weighted-a", Provider: "codex", Status: coreauth.StatusActive, Attributes: map[string]string{"weight": "3"}}, {ID: "weighted-b", Provider: "codex", Status: coreauth.StatusActive, Attributes: map[string]string{"weight": "1"}}}
++			opts := coreauth.Options{Headers: http.Header{"X-Session-Id": []string{"fixture-weighted-session"}}}
++			if policy != "" {
++				opts.AccountSelection = &coreauth.AccountSelection{Policy: policy}
++			}
++			first, errFirst := selector.Pick(t.Context(), "codex", "gpt", opts, accounts)
++			if errFirst != nil || first.ID != "weighted-a" {
++				t.Fatalf("initial: %v %v", first, errFirst)
++			}
++			accounts[0].Attributes["weight"] = "0"
++			next, errNext := selector.Pick(t.Context(), "codex", "gpt", opts, accounts)
++			if errNext != nil || next.ID != "weighted-b" {
++				t.Fatalf("zero-weight binding survived wrapper: %v %v", next, errNext)
++			}
++		})
++	}
++}
 diff --git a/internal/home/quota_deadline_test.go b/internal/home/quota_deadline_test.go
 new file mode 100644
 index 0000000..fb70d7b
@@ -2150,19 +2728,22 @@ index 0000000..fb70d7b
 +	}
 +}
 diff --git a/internal/home/runtime.go b/internal/home/runtime.go
-index 3404caf..4faa381 100644
+index 3404caf..6f8cd1c 100644
 --- a/internal/home/runtime.go
 +++ b/internal/home/runtime.go
-@@ -972,6 +972,8 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
+@@ -972,6 +972,11 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
  		decision, errDispatch := r.coreManager.Dispatch(ctx, providers, reqModel, opts)
  		dispatchtiming.Observe(ctx, dispatchtiming.Selection, selectionStarted, errDispatch)
  		if errDispatch != nil {
-+ if opts.AccountSelection!=nil { opts.AccountSelection.Decision=nil;opts.AccountSelection.Reason="no-eligible-account" }
-+ r.recordRoutingDecision(ctx,reqModel,"",opts.AccountSelection,false)
++			if opts.AccountSelection != nil {
++				opts.AccountSelection.Decision = nil
++				opts.AccountSelection.Reason = "no-eligible-account"
++			}
++			r.recordRoutingDecision(ctx, reqModel, "", opts.AccountSelection, false)
  			if lastCandidateError != nil {
  				return nil, lastCandidateError
  			}
-@@ -982,6 +984,7 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
+@@ -982,6 +987,7 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
  		}
  
  		if concurrencyCtx.FundingCheck {
@@ -2170,7 +2751,7 @@ index 3404caf..4faa381 100644
  			return &DispatchResult{Auth: decision.Auth.Clone(), AuthID: decision.Auth.ID}, nil
  		}
  		auth := decision.Auth
-@@ -1048,6 +1051,10 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
+@@ -1048,6 +1054,10 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
  				if !concurrencyCandidateIneligible(admissionType) {
  					return nil, errAdmit
  				}
@@ -2181,7 +2762,7 @@ index 3404caf..4faa381 100644
  				lastCandidateError = errAdmit
  				excluded := coreauth.ExcludedConcurrencyCandidate{CredentialID: auth.ID}
  				if admissionType == "credential_model_concurrency_exceeded" {
-@@ -1078,6 +1085,10 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
+@@ -1078,6 +1088,10 @@ func (r *Runtime) dispatchWithOptions(ctx context.Context, reqModel string, opts
  				continue
  			}
  		}

@@ -32,7 +32,7 @@ export interface RoutingDemandInput {
     }[];
     /** Full allowance, NOT remaining allowance. Selection always rereads fresh remaining quota. */
     readonly accounts: readonly {
-      /** Private service-to-service reference only. 0572 projects public account identity separately. */
+      /** Current Home credential reference from trusted pool inventory. Never a CapacityHistory hash or public account ID. */
       readonly account: string;
       readonly full: number;
       readonly known: boolean;

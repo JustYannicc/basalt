@@ -97,7 +97,7 @@ export function capacityOutlook(value: unknown): CapacityOutlook {
     return unavailable();
   return {
     provider: text(value.provider),
-    modelFamily: text(value.modelFamily),
+    modelFamily: value.modelFamily === null ? null : text(value.modelFamily),
     from: at(value.from),
     through: at(value.through),
     status: choice(value.status, ["enough", "routing-waste", "needs-more-accounts", "uncertain"]),

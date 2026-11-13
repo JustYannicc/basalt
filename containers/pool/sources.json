@@ -234,7 +234,7 @@
         {
           "identity": "cliproxy-home-quota-deadline",
           "file": "0572-home-quota-deadline.patch",
-          "sha256": "dd114b4b0ea360be7f5fe59cc635a44897f3316c468f9bbb8fc61dadba11fcb3",
+          "sha256": "bb2af25c1bb73037314823972d04f5a979d970d2045b7991df00f1eff6ec08c8",
           "retirement": {
             "mode": "manual",
             "requires": "Retire only after the pinned selector preserves forecast-paced quota deadlines, retained smooth weighted credits, fallback and affinity safety, admission retry, bounded private decision evidence and current read-only snapshots. Prove staggered-reset availability and independent capacity-shortfall classification through the public pool API without exposing uninspectable account facts."
