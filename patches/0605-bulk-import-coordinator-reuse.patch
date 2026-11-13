@@ -1,0 +1,147 @@
+diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/src/artifacts-credentials.ts
+--- a/apps/hosted/cloud/src/artifacts-credentials.ts
++++ b/apps/hosted/cloud/src/artifacts-credentials.ts
+@@ -4,6 +4,15 @@
+  * the stage's only Artifacts binding, so it also lists commit history, which Git cannot fetch
+  * without every file those commits hold.
+  */
++import type { DurableObjectNamespace } from "@cloudflare/workers-types";
++import { HttpServerRequest, HttpServerResponse } from "effect/http";
++import {
++  BulkCoordinator,
++  bulkObjectName,
++  bulkObjectJob,
++  type BulkEnvironment,
++} from "../../../../../src/pool/model-history/bulk-coordinator.ts";
++import { bulkImportEnvironment } from "../../../../../src/pool/model-history/bulk-deployment.ts";
+ import { AppCodeId, SourceError, SourceFilePath, aesGcmCredentials } from "@executor-js/sdk/core";
+ import { externalTrace, TraceContext, traceLinks } from "@executor-js/telemetry";
+ import * as Cloudflare from "alchemy/Cloudflare";
+@@ -70,24 +79,51 @@
+   );
+   const attachments = yield* Cloudflare.R2.ReadWriteBucket(VaultAttachments);
+   const encryptionKey = yield* cloudEncryptionKey;
++  const nativeEnvironment = yield* Cloudflare.WorkerEnvironment;
+   return Effect.gen(function* () {
+     const state = yield* Cloudflare.DurableObjectState;
+     let vault: ReturnType<typeof vaultObject> | undefined;
++    let bulk: BulkCoordinator | undefined;
++    // Runtime initialization supplies the self binding; planning never executes handlers.
++    const nativeNamespace = () =>
++      (nativeEnvironment as unknown as { ArtifactsTokenCoordinator: DurableObjectNamespace })
++        .ArtifactsTokenCoordinator;
++    const sourceObject = (repository: string) =>
++      Effect.gen(function* () {
++        const objects = nativeNamespace();
++        if (!state.raw.id.equals(objects.idFromName(repository))) return yield* unavailable();
++      });
++    const imports = Effect.gen(function* () {
++      if (bulk) return bulk;
++      const objects = nativeNamespace().jurisdiction("eu");
++      // bulkImportEnvironment declares these bindings; the R2 handle stays prefix-scoped by the adapter.
++      const access = nativeEnvironment as unknown as Omit<BulkEnvironment, "UsageImportArtifacts">;
++      bulk = new BulkCoordinator(
++        state.raw,
++        { ...access, UsageImportArtifacts: yield* attachments.raw },
++        (job) => state.raw.id.equals(objects.idFromName(bulkObjectName(job))),
++      );
++      return bulk;
++    });
+     const encryption = yield* aesGcmCredentials(yield* encryptionKey, crypto);
+     const lock = yield* Semaphore.make(1);
+     const open = (repository: AppCodeId) =>
+-      Effect.acquireRelease(
+-        binding.get(repository).pipe(
+-          Effect.retry({
+-            while: (error) =>
+-              error.message ===
+-              `Repository "${repository}" is currently being created. The repository is not yet available. Retry after 5 seconds.`,
+-            schedule: Schedule.spaced("5 seconds"),
+-            times: 2,
+-          }),
+-          Effect.withSpan("source.repository.open"),
+-        ),
+-        (repo) => disposeRpc(repo.raw),
++      sourceObject(repository).pipe(
++        Effect.andThen(
++          Effect.acquireRelease(
++            binding.get(repository).pipe(
++              Effect.retry({
++                while: (error) =>
++                  error.message ===
++                  `Repository "${repository}" is currently being created. The repository is not yet available. Retry after 5 seconds.`,
++                schedule: Schedule.spaced("5 seconds"),
++                times: 2,
++              }),
++              Effect.withSpan("source.repository.open"),
++            ),
++            (repo) => disposeRpc(repo.raw),
++          ),
++        ),
+       );
+     const acquire = (repository: AppCodeId, rejectedGeneration: string | null) =>
+       lock
+@@ -99,6 +135,7 @@
+                   "source.token.rejected_generation",
+                   rejectedGeneration,
+                 );
++              yield* sourceObject(repository);
+               const now = yield* Clock.currentTimeMillis;
+               const stored = yield* state.storage.get<unknown>("credential");
+               if (stored !== undefined) {
+@@ -162,6 +199,13 @@
+         )
+         .pipe(Effect.mapError(unavailable), Effect.withSpan("source.repository.token.acquire"));
+     return {
++      fetch: Effect.gen(function* () {
++        const request = yield* HttpServerRequest.toWeb(
++          yield* HttpServerRequest.HttpServerRequest,
++        ).pipe(Effect.orDie);
++        const object = yield* imports;
++        return HttpServerResponse.fromWeb(yield* Effect.promise(() => object.fetch(request)));
++      }),
+       acquire: (id: string, rejectedGeneration: string | null, trace: TraceContext | undefined) =>
+         Schema.decodeUnknownEffect(AppCodeId)(id).pipe(
+           Effect.flatMap((repository) =>
+@@ -333,6 +377,7 @@
+         Effect.scoped(
+           Effect.gen(function* () {
+             const repository = yield* Schema.decodeUnknownEffect(AppCodeId)(id);
++            yield* sourceObject(repository);
+             const created = yield* Effect.acquireRelease(
+               binding.create(repository, { setDefaultBranch: "main" }).pipe(
+                 Effect.tapError((error) =>
+@@ -416,6 +461,11 @@
+         }),
+       alarm: () =>
+         Effect.gen(function* () {
++          if ((yield* Effect.promise(() => bulkObjectJob(state.raw))) !== undefined) {
++            const object = yield* imports;
++            yield* Effect.promise(() => object.alarm());
++            return;
++          }
+           const raw = yield* state.storage.get<unknown>("prepare");
+           if (raw === undefined) return;
+           const pending = yield* Schema.decodeUnknownEffect(pendingPreparation)(raw);
+@@ -466,7 +516,7 @@
+       ...(yield* cloudObservability),
+       workersDev: false,
+       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+-      env: yield* telemetryBindings,
++      env: { ...(yield* telemetryBindings), ...(yield* bulkImportEnvironment) },
+     };
+   }),
+   Effect.succeed({}).pipe(
+diff --git a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
+--- a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
++++ b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
+@@ -41,7 +41,8 @@
+   );
+ });
+ 
+-interface Coordinator {
++interface Coordinator extends Cloudflare.DurableObjectShape {
++  readonly fetch: NonNullable<Cloudflare.DurableObjectShape["fetch"]>;
+   /** Reuse the stored token unless it is near expiry or its generation was rejected. */
+   readonly acquire: (
+     id: string,

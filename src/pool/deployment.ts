@@ -12,6 +12,7 @@ import { telemetryBindings, workerObservability } from "../telemetry/deployment.
 import { validSentryDsn } from "../telemetry/sentry-target.ts";
 import { inventoryCron } from "./inventory.ts";
 import { availabilityCron, validProbeTarget } from "./availability-config.ts";
+import { ArtifactsCredentials } from "../../.upstream/apps/hosted/cloud/src/infrastructure/artifacts-credentials-worker.ts";
 import { Api } from "../../.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
 
 // Alchemy beta.80 forwards these Cloudflare API fields but omits them from its type.
@@ -59,6 +60,10 @@ export const poolWorker = Effect.gen(function* () {
     observability: workerObservability,
     env: {
       PoolContainer: image,
+      BulkUsageImport: Cloudflare.DurableObject("ArtifactsTokenCoordinator", {
+        className: "ArtifactsTokenCoordinator",
+        scriptName: (yield* ArtifactsCredentials).workerName,
+      }),
       POOL_DATABASE_URL: database.runtimeUrl,
       POOL_AUTH_DATABASE: workerDatabase,
       POOL_DEPLOYMENT_KEY: yield* Config.Redacted("POOL_DEPLOYMENT_KEY"),

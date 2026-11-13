@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-bulk-import-coordinator-reuse",
+  "file": "0605-bulk-import-coordinator-reuse.patch",
+  "content_sha256": "9500dfebd8eb780985562de51a6a7bfaff8e7ac80ada4df370624aed8ebc58ac",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
