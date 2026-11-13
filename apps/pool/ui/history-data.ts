@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChangeReadRetry, type ChangeWatch } from "apps/client";
 import type { PoolApi } from "./api.ts";
 import { managersOnly } from "./overview-data.ts";
 import { revokedMessage, unconfirmed } from "./pool-view.ts";
 import { settleRefresh } from "./history-refresh.ts";
+import { syncHistory, type HistorySync } from "./history-sync.ts";
 import type { SeriesFetch } from "./series-model.ts";
 import {
   historyDateBounds,
@@ -39,13 +39,6 @@ export interface HistoryState {
 }
 
 export type Settled = { readonly loaded: LoadedHistory } | { readonly loadError: string };
-/**
- * New usage: history reads again but keeps a person's page. Authority topics are not here; only
- * the authority watch hears them, so a narrower grant always arrives as a reset, never as "newer".
- */
-const topics = ["pool-usage", "pool-samples", "pool-prices"];
-/** Who may see which requests and totals: a change here replaces everything on screen. */
-const authorityTopics = ["apps", "membership", "session"];
 
 const changedRange = () => new DOMException("History range changed.", "AbortError");
 
@@ -140,67 +133,54 @@ export function useHistory(
   const paging = useRef(false);
   /** A change-driven read is in flight over the history on screen. */
   const [refreshing, setRefreshing] = useState<object>();
-  const watching = useRef<ChangeWatch | undefined>(undefined);
-  /** Fences next-page reads on authority without claiming the shown snapshot's usage heads. */
-  const pager = useRef<ChangeWatch | undefined>(undefined);
-  /** Bumped when authority changes; a page requested under an older scope is dropped. */
-  const scope = useRef(0);
+  const syncing = useRef<HistorySync | undefined>(undefined);
 
   useEffect(() => {
     const current = ++revision.current;
     const live = () => current === revision.current;
     paging.current = false;
-    let resetPending = false;
-    let primed = false;
-    const feed = changes();
-    const watch = feed.watch({
-      topics,
-      refresh: async () => {
-        let value: Settled;
-        const marker = {};
-        setRefreshing(marker);
-        const done = () => setRefreshing((current) => (current === marker ? undefined : current));
-        try {
-          value = await watch.read(() => readHistory(series, publicHistory, filter, live));
-          done();
-        } catch (error) {
-          done();
-          // A rejected read keeps the confirmed history and says it may be behind, unless
-          // authority changed: then nothing from the old grant may stay on screen.
-          if (!live() || !(error instanceof ChangeReadRetry) || error.reason === "hidden") return;
-          if (resetPending) {
-            scope.current++;
-            paging.current = false;
-            setResult({
-              request,
-              loadingNext: false,
-              page: 0,
-              loadError: "History could not be read. Try again.",
-            });
-            return;
-          }
-          setResult((previous) =>
-            previous?.request === request && previous.loaded !== undefined
-              ? { ...previous, failed: unconfirmed }
-              : {
-                  request,
-                  loadingNext: false,
-                  page: 0,
-                  loadError: "History could not be read. Try again.",
-                },
-          );
-          return;
+    let marker: object | undefined;
+    const sync = syncHistory(changes(), {
+      read: () => readHistory(series, publicHistory, filter, live),
+      reading: (active) => {
+        if (!live()) return;
+        if (active) {
+          const own = {};
+          marker = own;
+          setRefreshing(own);
+        } else {
+          const own = marker;
+          setRefreshing((value) => (value === own ? undefined : value));
         }
+      },
+      apply: (value, reset) => {
         if (!live()) return;
         const paged = paging.current;
-        const reset = resetPending;
-        resetPending = false;
-        if (reset) {
-          scope.current++;
-          paging.current = false;
-        }
+        if (reset) paging.current = false;
         setResult((previous) =>
           settleRefresh(previous, value, { request, paged, reset, failed: unconfirmed }),
+        );
+      },
+      // Synchronously on an authority hint: nothing from the old grant stays on screen while its
+      // replacement loads, and pages requested under it are dropped by the generation check.
+      clear: () => {
+        if (!live()) return;
+        paging.current = false;
+        setResult(undefined);
+      },
+      // A rejected read keeps the confirmed history and says it may be behind, unless a reset is
+      // owed: then nothing from the old grant may be kept.
+      rejected: (_error, resetOwed) => {
+        if (!live()) return;
+        setResult((previous) =>
+          !resetOwed && previous?.request === request && previous.loaded !== undefined
+            ? { ...previous, failed: unconfirmed }
+            : {
+                request,
+                loadingNext: false,
+                page: 0,
+                loadError: "History could not be read. Try again.",
+              },
         );
       },
       revoked: () => {
@@ -208,39 +188,11 @@ export function useHistory(
         setResult({ request, loadingNext: false, page: 0, loadError: revokedMessage });
       },
     });
-    // Who may see what changed. Before any await, the next history read becomes a reset and every
-    // page requested under the old grant is dropped; that request is this hint's one data read.
-    // Its own read only records authority heads (no data), so a reconnect at the same heads reads
-    // nothing. The first refresh just primes those heads; the main watch's first read loads.
-    const authority = feed.watch({
-      topics: authorityTopics,
-      refresh: async () => {
-        if (primed) {
-          resetPending = true;
-          scope.current++;
-          paging.current = false;
-          watch.request();
-        }
-        primed = true;
-        await authority.read(async () => undefined).catch(() => undefined);
-      },
-      revoked: () => undefined,
-    });
-    // Next-page reads are fenced on authority by their own watch, which never reads on its own.
-    const pageFence = feed.watch({
-      topics: authorityTopics,
-      refresh: () => undefined,
-      revoked: () => undefined,
-    });
-    watching.current = watch;
-    pager.current = pageFence;
+    syncing.current = sync;
     return () => {
       revision.current = current + 1;
-      if (watching.current === watch) watching.current = undefined;
-      if (pager.current === pageFence) pager.current = undefined;
-      watch.stop();
-      authority.stop();
-      pageFence.stop();
+      if (syncing.current === sync) syncing.current = undefined;
+      sync.stop();
     };
   }, [request, filter, publicHistory, series, changes]);
 
@@ -250,23 +202,25 @@ export function useHistory(
       setResult({ ...state, page: page + 1 });
       return;
     }
-    const fence = pager.current;
-    if (!loaded.next || !publicHistory || fence === undefined) return;
+    const sync = syncing.current;
+    if (!loaded.next || !publicHistory || sync === undefined) return;
     const current = revision.current;
-    const scoped = scope.current;
+    const scoped = sync.generation();
     const cursor = loaded.next;
     // A page lands only on the snapshot it continues, under the authority it was read with.
     const onSnapshot = (apply: (previous: HistoryState) => HistoryState) =>
       setResult((previous) =>
-        previous === undefined || previous.loaded !== loaded || scope.current !== scoped
+        previous === undefined || previous.loaded !== loaded || sync.generation() !== scoped
           ? previous
           : apply(previous),
       );
-    const stale = () => revision.current !== current || scope.current !== scoped;
+    const stale = () => revision.current !== current || sync.generation() !== scoped;
     paging.current = true;
     onSnapshot((previous) => ({ ...previous, loadingNext: true, pageError: undefined }));
     try {
-      const result = await fence.read(() => publicHistory({ ...loaded.bounds, after: cursor }));
+      const result = await sync.pages.read(() =>
+        publicHistory({ ...loaded.bounds, after: cursor }),
+      );
       if (stale()) return;
       if (!result.ok)
         onSnapshot((previous) => ({ ...previous, loadingNext: false, pageError: result.message }));
@@ -308,7 +262,7 @@ export function useHistory(
     updating: refreshing !== undefined && loaded !== undefined,
     failed: refreshing === undefined ? state?.failed : undefined,
     /** Read again through the feed, keeping the history on screen. */
-    retry: () => watching.current?.request(),
+    retry: () => syncing.current?.request(),
     pageError: state?.pageError,
     loadingNext: state?.loadingNext ?? false,
     page,

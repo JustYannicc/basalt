@@ -186,11 +186,10 @@ const program = Effect.gen(function* () {
         gate.claimed = true;
         const held = gate;
         const work = (async () => {
-          const response = await route.fetch();
-          assert.equal(response.status(), 200, "held account response comes from the real product");
+          // Hold the original request so authentication stays on the browser's normal path.
           held.enter();
           await held.released;
-          await route.fulfill({ response });
+          await route.fallback();
         })();
         activeHolds.add(work);
         return work.finally(() => activeHolds.delete(work));
@@ -278,7 +277,11 @@ const program = Effect.gen(function* () {
         0,
       );
       await shot("updating");
+      const answered = page.waitForResponse(
+        (response) => response.request().method() === "GET" && resources(new URL(response.url())),
+      );
       gate.release();
+      assert.equal((await answered).status(), 200, "the released browser read is authenticated");
     });
     yield* browserWork(async () => {
       await row(nextLabel).waitFor();
