@@ -431,6 +431,14 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           /normal, client, upstream, revocation, duplicate-claim and draining-retirement regressions/,
         );
         assert.match(patch.retirement.requires, /without inference replay or a byte-lifetime cap/);
+      } else if (patch.identity === "cliproxy-node-home-funding-test-fixtures") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0604-node-home-funding-test-fixtures.patch");
+        assert.match(patch.retirement.requires, /approved ValidateUsageCreditTurn methods/);
+        assert.match(patch.retirement.requires, /five retained-account Home dispatcher fixtures/);
+        assert.match(patch.retirement.requires, /no product Go changes/);
+        assert.match(patch.retirement.requires, /without dropping existing selections/);
+        assert.match(patch.retirement.requires, /funding-denial and missing-validator controls/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
