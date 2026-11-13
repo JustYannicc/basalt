@@ -26,7 +26,7 @@ export interface FleetCell {
   abortPool(pool: string): void;
   drain(identity: SlotIdentity): Promise<{ active: number; known: boolean }>;
   retire(identity: SlotIdentity, begin: () => Promise<void>): Promise<void>;
-  retired(identity: SlotIdentity): Promise<boolean>;
+  retired(identity: SlotIdentity, resumeBeforeDispatch?: boolean): Promise<boolean>;
   failed(identity: SlotIdentity, active: number): Promise<boolean>;
 }
 interface Dependencies {
@@ -115,14 +115,15 @@ export class RuntimeFleet {
     while (true) {
       if (this.deps.enabled?.() === false) return;
       const rows = await this.deps.state.inspect();
+      const physical = await this.deps.state.physicalCount();
       const active = Math.max(
         this.deps.currentRequests(),
         (await this.deps.legacyActive()) + rows.reduce((sum, row) => sum + row.active, 0),
       );
-      if (rows.length >= this.deps.maximum) this.atCapacity = true;
+      if (physical >= this.deps.maximum) this.atCapacity = true;
       const desired = Math.min(this.deps.maximum, Math.floor(active / this.deps.targetActive));
       const replacements = await this.deps.state.replacements();
-      if (rows.length >= this.deps.maximum) return;
+      if (physical >= this.deps.maximum) return;
       if (
         !replacements &&
         (rows.length >= desired ||
@@ -296,7 +297,9 @@ export class RuntimeFleet {
             } else if (
               row.phase === "retiring" &&
               row.identity &&
-              (await cell.retired(row.identity))
+              row.active === 0 &&
+              row.drainAcknowledged === true &&
+              (await cell.retired(row.identity, true))
             ) {
               this.cells.delete(row.target.slotId);
               await this.deps.state.retired(row.identity);

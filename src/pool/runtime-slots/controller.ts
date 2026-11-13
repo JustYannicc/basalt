@@ -15,10 +15,10 @@ import {
   type SlotSelection,
 } from "./contract.ts";
 import { currentPolicies, healthy, proveSlot, slotClock, type SlotClock } from "./proof.ts";
-import { RuntimeSlotStorage, slotSelectionKey } from "./storage.ts";
+import { RuntimeSlotStorage, slotSelectionKey, type SlotStorage } from "./storage.ts";
 import { SlotStreams } from "./streams.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
-import { SlotRetirement } from "./retirement.ts";
+import { SlotRetirement, type RetirementProvider } from "./retirement.ts";
 import { SlotPromotion } from "./promotion.ts";
 import { SlotFirstStart } from "./first-start.ts";
 
@@ -29,6 +29,9 @@ interface Dependencies {
   driver: SlotDriver;
   streams: SlotStreams;
   clock?: SlotClock;
+  beforeStage?(target: SlotTarget, transaction: SlotStorage): Promise<void>;
+  beforePromote?(intent: PromotionIntent, transaction: SlotStorage): Promise<void>;
+  retirementProvider?: RetirementProvider;
 }
 /** Inert until a private integration supplies admitted runtime drivers and existing DO storage. */
 export class RuntimeSlots {
@@ -44,7 +47,13 @@ export class RuntimeSlots {
     };
     this.clock = deps.clock ?? slotClock;
     this.promotion = new SlotPromotion(this.deps, this.clock);
-    this.retirement = new SlotRetirement(deps.storage, deps.driver, deps.streams, this.clock);
+    this.retirement = new SlotRetirement(
+      deps.storage,
+      deps.driver,
+      deps.streams,
+      this.clock,
+      deps.retirementProvider,
+    );
     this.firstStart = new SlotFirstStart(deps, this.clock);
   }
 
@@ -77,6 +86,7 @@ export class RuntimeSlots {
   async stage(
     value: SlotTarget,
     expected?: { epoch: number; active: SlotIdentity; digest: string },
+    admit?: () => Promise<void>,
   ) {
     const target = Schema.decodeUnknownSync(SlotTarget)(value);
     if (target.controllerId !== this.deps.controllerId) throw new SlotRefused("identity");
@@ -99,12 +109,14 @@ export class RuntimeSlots {
       )
         throw new SlotRefused("selection");
       currentPolicies(snapshot, this.clock);
+      await this.deps.beforeStage?.(target, transaction);
       await transaction.put(slotSelectionKey, {
         ...selection,
         candidate: { target, fenced: false },
       });
     });
     // Registration precedes startup. Concurrent revocation sees even an unready candidate.
+    await admit?.();
     const health = await this.deps.driver.start(target, AbortSignal.timeout(180_000));
     const identity = this.identity(health.identity);
     if (!sameTarget(identity, target)) throw new SlotRefused("identity");

@@ -12,6 +12,7 @@ import {
   SlotIdentity,
   SlotTarget,
   SlotRefused,
+  RuntimeRetirementObservation,
   sameTarget,
   sameIdentity,
   type SlotHealth,
@@ -134,9 +135,9 @@ export class BoundSlotDriver implements SlotDriver {
   }
   async retirement(identity: SlotIdentity, signal: AbortSignal) {
     const response = await this.call(identity, "retirement", { identity }, signal);
-    return Schema.decodeUnknownSync(
-      Schema.Struct({ identity: SlotIdentity, retired: Schema.Boolean, running: Schema.Boolean }),
-    )(await retirementBody(response, signal));
+    return Schema.decodeUnknownSync(RuntimeRetirementObservation)(
+      await retirementBody(response, signal),
+    );
   }
   async failed(identity: SlotIdentity, signal: AbortSignal) {
     const response = await this.call(identity, "failed", { identity }, signal);

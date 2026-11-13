@@ -31,6 +31,7 @@ import type { DeclaredChanges } from "./declared-change-schema.ts";
 import type { PreparedD1 } from "./declared-d1-types.ts";
 import type { PreparedBucket } from "./declared-buckets.ts";
 import { workerActivationInputs } from "./activation-inputs.ts";
+import type { FleetImageResource } from "./runtime-image-phase.ts";
 export { assertSupportedPlan } from "./plan-admission.ts";
 
 const workerType = "Cloudflare.Worker";
@@ -50,9 +51,10 @@ export const preparePlan = (
   declarations?: DeclaredChanges,
   declaredBuckets: ReadonlyMap<string, PreparedBucket | PreparedD1> = new Map(),
   recordNamespaceRead?: (read: NamespaceRead) => Promise<void>,
+  runtimeImage?: FleetImageResource,
 ) =>
   Effect.gen(function* () {
-    assertSupportedPlan(plan, yield* imagePlanReasons(plan), declarations);
+    assertSupportedPlan(plan, yield* imagePlanReasons(plan), declarations, runtimeImage);
     const files = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
     const captured = new Map<string, PreparedWorkerUpload>();
     const containers = new Map<string, StagedContainer>();
@@ -114,6 +116,7 @@ export const preparePlan = (
                     input.olds as ContainerApplication["Props"] | undefined,
                     cached as ContainerApplication["Attributes"],
                     inspect,
+                    runtimeImage,
                   );
                   if (recordPublication)
                     yield* Effect.tryPromise({

@@ -12,15 +12,25 @@ const Attributes = Schema.Struct({
 const Stored = Schema.Struct({
   status: Schema.Literals(["created", "updated", "updating"]),
   resourceType: Schema.Literal("Cloudflare.Container"),
-  logicalId: Schema.Literal("PoolContainer"),
+  logicalId: Schema.Literals([
+    "PoolContainer",
+    "PoolRuntime",
+    "PoolRuntimeBlue",
+    "PoolRuntimeGreen",
+  ]),
   attr: Schema.optional(Attributes),
   old: Schema.optional(Schema.Struct({ attr: Attributes })),
 });
 
 export function retainedLegacyImage(value: unknown) {
+  return retainedRuntimeImage(value, "PoolContainer");
+}
+
+export function retainedRuntimeImage(value: unknown, logicalId: (typeof Stored.Type)["logicalId"]) {
   if (value === undefined) return undefined;
   try {
     const record = Schema.decodeUnknownSync(Stored)(value);
+    if (record.logicalId !== logicalId) throw new Error("different runtime application");
     const attr = record.status === "updating" ? record.old?.attr : record.attr;
     if (!attr) throw new Error("missing retained image");
     const image = attr.configuration.image;

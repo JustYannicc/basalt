@@ -1,7 +1,14 @@
-import type { ContainerAttributes } from "./application.ts";
-
 /** Release admission and demand-driven starts compare the same complete application settings. */
-export function runtimeApplicationSettings(application: ContainerAttributes) {
+export function runtimeApplicationSettings(application: {
+  applicationName: string;
+  configuration: unknown;
+  instances?: number;
+  maxInstances: number;
+  schedulingPolicy: string;
+  constraints?: unknown;
+  affinities?: unknown;
+  durableObjects?: unknown;
+}) {
   return {
     applicationName: application.applicationName,
     configuration: application.configuration,

@@ -138,6 +138,7 @@ test("a reconstructed endpoint waits for the actual response body before destroy
     identity,
     retired: true,
     running: false,
+    provider: f.grant.proof.provider,
   });
   await assert.rejects(f.endpoint.retire(f.target, identity, AbortSignal.timeout(2_000)));
   assert.equal(f.calls.destroy, 1);
@@ -166,6 +167,7 @@ test("a lost destroy reply is inspect-only after endpoint reconstruction", async
     identity,
     retired: false,
     running: true,
+    provider: f.grant.proof.provider,
   });
 });
 
@@ -197,6 +199,53 @@ test("actual runtime start retains its measured launch witness and settings thro
   assert.equal(f.calls.start, 1);
   assert.equal(f.calls.destroy, 0);
 });
+
+for (const matchingApplication of [true, false])
+  test(`candidate startup settings bind only to their exact application (matching=${matchingApplication})`, async (context) => {
+    const f = await fixture();
+    context.after(f.cleanup);
+    await f.storage.delete(launchWitnessKey(f.target.slotId));
+    const desired = runtimeConfiguration(f.env);
+    const endpoint = new RuntimeEndpoint(
+      f.ctx,
+      {
+        ...f.env,
+        POOL_MANAGEMENT_KEY: "preserved-legacy-key",
+        POOL_CANDIDATE_APPLICATION_ID: matchingApplication
+          ? f.target.applicationId
+          : "another-application",
+        POOL_CANDIDATE_RUNTIME_CONFIGURATION: JSON.stringify(desired),
+      },
+      "runtime",
+      runtimeFixtureCode,
+      f.wrap,
+    );
+    if (!matchingApplication) {
+      await assert.rejects(endpoint.admit(f.grant.envelope), /identity/);
+      assert.equal(f.calls.start, 0);
+      return;
+    }
+    await endpoint.admit(f.grant.envelope);
+    const started = await endpoint.start(f.target, AbortSignal.timeout(5_000));
+    const witness = await endpoint.witness(f.target);
+    assert.ok(witness.kind === "witness");
+    assert.ok(witness.witness);
+    assert.equal(witness.witness.configurationFingerprint, await configurationDigest(desired));
+    assert.equal(f.calls.start, 1);
+    assert.equal(JSON.stringify(witness).includes(desired.managementKey), false);
+    const restored = new RuntimeEndpoint(
+      f.ctx,
+      { ...f.env, POOL_MANAGEMENT_KEY: "preserved-legacy-key" },
+      "runtime",
+      runtimeFixtureCode,
+      f.wrap,
+    );
+    assert.equal(
+      (await restored.health(started.identity, AbortSignal.timeout(2_000))).identity.bootId,
+      started.identity.bootId,
+    );
+    assert.equal(f.calls.start, 1);
+  });
 
 test("candidate readiness needs a release join matching the actual launch witness", async (context) => {
   const f = await fixture();

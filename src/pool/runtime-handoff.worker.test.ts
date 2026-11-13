@@ -270,9 +270,16 @@ test("a lost SQLite promotion acknowledgement retains its atomic selection and r
   assert.equal(f.old.calls.destroy, 0);
 });
 
-test("an admitted selection with a missing runtime binding refuses requests without warming the legacy container", async (context) => {
+test("an admitted remote selection with a missing runtime binding refuses requests without warming the legacy container", async (context) => {
   const f = await handoffWorker();
   context.after(f.cleanup);
+  const grant = await f.startGrant();
+  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 200);
+  const joined = await f.joined(grant);
+  assert.equal(
+    (await f.command("promote", { intent: await f.intent(), proof: joined.envelope })).status,
+    200,
+  );
   const worker = f.reconstruct(false);
   await assert.rejects(worker.deploymentReady());
   assert.equal((await f.model()).status, 503);
@@ -281,7 +288,7 @@ test("an admitted selection with a missing runtime binding refuses requests with
   assert.equal("error" in view.body && view.body.error, "backend_unavailable");
   assert.equal(f.old.calls.start, 0);
   assert.equal(f.old.calls.destroy, 0);
-  assert.equal(f.candidate.calls.start, 0);
+  assert.equal(f.candidate.calls.start, 1);
 });
 
 test("explicit Worker warming renews the selected boot while read-only availability probes leave its idle timer alone", async (context) => {

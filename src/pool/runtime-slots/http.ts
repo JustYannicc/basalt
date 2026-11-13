@@ -8,16 +8,25 @@ import type {
   RuntimeFleetConfiguration,
   FleetConfiguration,
 } from "../runtime-fleet/configuration.ts";
+import type { ImageUpdateIntent, RuntimeImageUpdate } from "../runtime-fleet/image-update.ts";
+import type { RuntimeCandidateProbe } from "./candidate-probe.ts";
 
 export interface HandoffFleet {
+  primaryTarget?(
+    operationId: string,
+    applicationId: string,
+  ): Promise<import("./contract.ts").SlotTarget>;
   configure(
     operationId: string,
     configuration: FleetConfiguration,
   ): ReturnType<RuntimeFleetConfiguration["configure"]>;
   inspect(operationId?: string): Promise<unknown>;
   disable?(operationId: string, expectedDigest: string): Promise<unknown>;
-  assertPrimaryChange?(): Promise<void>;
+  assertPrimaryChange?(action: string): Promise<void>;
   replace?(operationId: string, identity: SlotIdentity): Promise<unknown>;
+  prepareImage?(intent: ImageUpdateIntent): ReturnType<RuntimeImageUpdate["prepare"]>;
+  inspectImage?(operationId: string): ReturnType<RuntimeImageUpdate["inspect"]>;
+  cancelImage?(operationId: string): ReturnType<RuntimeImageUpdate["cancel"]>;
 }
 
 /** Reuses the private deployment bridge. Commands cannot grant provider-write authority. */
@@ -27,6 +36,7 @@ export async function handleRuntimeHandoff(
   code: ControllerCode,
   secret: string,
   fleet?: HandoffFleet,
+  probe?: RuntimeCandidateProbe,
 ) {
   if (request.method !== "POST") return new Response(null, { status: 405 });
   try {
@@ -42,9 +52,37 @@ export async function handleRuntimeHandoff(
     if (
       ["adopt", "stage", "promote", "drain", "discard", "fence", "unfence"].includes(value.action)
     )
-      await fleet?.assertPrimaryChange?.();
+      await fleet?.assertPrimaryChange?.(value.action);
     let result: unknown;
     switch (value.action) {
+      case "candidate-target":
+        if (!fleet?.primaryTarget) throw new Error("Runtime fleet unavailable");
+        result = await fleet.primaryTarget(value.operationId, value.applicationId);
+        break;
+      case "candidate-probe":
+        if (!probe) throw new Error("Candidate probe unavailable");
+        result = await probe.probe(value.operationId, value.pool);
+        break;
+      case "candidate-probe-inspect":
+        if (!probe) throw new Error("Candidate probe unavailable");
+        result = await probe.inspect(value.operationId);
+        break;
+      case "candidate-probe-cancel":
+        if (!probe) throw new Error("Candidate probe unavailable");
+        result = await probe.cancel(value.operationId);
+        break;
+      case "image-prepare":
+        if (!fleet?.prepareImage) throw new Error("Runtime fleet unavailable");
+        result = await fleet.prepareImage(value.update);
+        break;
+      case "image-inspect":
+        if (!fleet?.inspectImage) throw new Error("Runtime fleet unavailable");
+        result = await fleet.inspectImage(value.operationId);
+        break;
+      case "image-cancel":
+        if (!fleet?.cancelImage) throw new Error("Runtime fleet unavailable");
+        result = await fleet.cancelImage(value.operationId);
+        break;
       case "fleet-configure":
         if (!fleet) throw new Error("Runtime fleet unavailable");
         result = await fleet.configure(value.operationId, value.configuration);
@@ -63,6 +101,9 @@ export async function handleRuntimeHandoff(
         break;
       case "inspect":
         result = await handoff.slots.inspect();
+        break;
+      case "active-health":
+        result = await handoff.activeHealth();
         break;
       case "receipt":
         result = await handoff.slots.receipt(value.operationId);

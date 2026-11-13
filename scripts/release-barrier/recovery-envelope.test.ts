@@ -37,6 +37,17 @@ test("retained recovery ciphertext binds the candidate, complete manifest and de
   );
 });
 
+test("a real-sized Worker recovery capsule uses the bounded module envelope in both directions", () => {
+  const payload = { modules: [{ contentBase64: "x".repeat(2 * 1024 * 1024) }] };
+  const candidate = "a".repeat(40),
+    fingerprint = "b".repeat(64),
+    key = "c".repeat(64);
+  assert.throws(() => sealRecovery(payload, key, candidate, fingerprint), /manifest-too-large/);
+  const sealed = sealRecovery(payload, key, candidate, fingerprint, "worker-modules");
+  assert.deepEqual(openRecovery(sealed, key, candidate, fingerprint, "worker-modules"), payload);
+  assert.throws(() => openRecovery(sealed, key, candidate, fingerprint), /authentication-failed/);
+});
+
 test("existing CI receipt artifacts retain the exact encrypted configuration without raw secrets", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "container-recovery-evidence-"));
   context.after(() => rm(root, { force: true, recursive: true }));

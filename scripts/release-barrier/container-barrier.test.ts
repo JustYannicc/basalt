@@ -30,6 +30,34 @@ test("all image and Worker admissions precede database work and every activation
   assert.equal(result.phase, "complete");
 });
 
+for (const outcome of ["accepted", "refused", "drift"] as const)
+  test(`inactive-image admission ${outcome} is checked before the ordinary provider mutation`, async () => {
+    const proof = containerRelease();
+    const result = releaseWorkers(proof.manifest, {
+      ...proof.options,
+      containers: {
+        ...proof.options.containers,
+        prepare: async () => {
+          proof.events.push("controller:freeze");
+          if (outcome === "refused") throw new Error("synthetic freeze refused");
+          if (outcome === "drift") proof.setCurrent({ ...proof.current(), version: 99 });
+        },
+      },
+    });
+    if (outcome === "accepted") {
+      await result;
+      assert.equal(proof.events.filter((event) => event === "container:rollout").length, 1);
+      assert.ok(
+        proof.events.indexOf("controller:freeze") < proof.events.indexOf("container:rollout"),
+      );
+    } else {
+      await assert.rejects(result);
+      assert.ok(!proof.events.includes("container:rollout"));
+      assert.ok(!proof.receipts.some((receipt) => receipt.pendingContainer?.phase === "rollout"));
+    }
+    assert.equal(proof.events.filter((event) => event === "controller:freeze").length, 1);
+  });
+
 test("new image inputs that publish the existing digest do not PATCH or roll out the same configuration", async () => {
   const proof = containerRelease();
   const container = {

@@ -11,10 +11,15 @@ export async function poolRelease(
   request: Request,
   env: { readonly POOL_APP_SIGNING_KEY: string },
   revision: string = poolWorkerRevision,
+  imageReady: () => Promise<boolean> = async () => false,
 ): Promise<Response> {
   if (request.method !== "GET") return new Response(null, { status: 405 });
   return Response.json(
-    { revision, keyVersion: await tokenKeyVersion(env.POOL_APP_SIGNING_KEY) },
+    {
+      revision,
+      keyVersion: await tokenKeyVersion(env.POOL_APP_SIGNING_KEY),
+      imageReady: await imageReady(),
+    },
     { headers: { "Cache-Control": "no-store" } },
   );
 }

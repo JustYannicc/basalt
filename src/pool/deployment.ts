@@ -9,6 +9,7 @@ import { verifyRuntimeDatabaseBudget } from "./database-budget.ts";
 import { poolDatabaseInfrastructure } from "./database.ts";
 import { euPlacement } from "./placement.ts";
 import { fleetInfrastructure } from "./fleet-deployment.ts";
+import { desiredPoolImageInput, RuntimeImageReleasePlan } from "./image-release-plan.ts";
 import { bindPoolObservationSecret } from "./fleet-observation.ts";
 import { poolWorkerDatabase } from "./worker-database.ts";
 import { telemetryBindings, workerObservability } from "../telemetry/deployment.ts";
@@ -46,6 +47,7 @@ export const poolWorker = Effect.gen(function* () {
   });
   const application = yield* image.Application;
   const fleet = yield* fleetInfrastructure;
+  const imageRelease = yield* RuntimeImageReleasePlan;
   // Set only while rotating: the Worker still accepts pool tokens signed with it.
   const previousSigningKey = yield* Config.option(Config.Redacted("POOL_APP_SIGNING_KEY_PREVIOUS"));
   const worker = yield* Cloudflare.Worker("PoolWorker", {
@@ -59,6 +61,15 @@ export const poolWorker = Effect.gen(function* () {
       ...fleet,
       POOL_CONTAINER_APPLICATION_ID: application.applicationId,
       POOL_PRESERVE_LEGACY_IMAGE: "true",
+      POOL_DESIRED_IMAGE_INPUT: yield* desiredPoolImageInput.pipe(Effect.orDie),
+      ...(imageRelease?.candidateConfiguration
+        ? {
+            POOL_CANDIDATE_APPLICATION_ID: imageRelease.candidateConfiguration.applicationId,
+            POOL_CANDIDATE_RUNTIME_CONFIGURATION: Redacted.make(
+              JSON.stringify(imageRelease.candidateConfiguration.configuration),
+            ),
+          }
+        : {}),
       POOL_DATABASE_URL: database.runtimeUrl,
       POOL_AUTH_DATABASE: workerDatabase,
       POOL_DEPLOYMENT_KEY: yield* Config.Redacted("POOL_DEPLOYMENT_KEY"),

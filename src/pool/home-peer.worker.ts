@@ -78,7 +78,7 @@ export class RuntimeHomePeerTransport {
   async open(source: HomePeerSource) {
     await this.gate.assert(source);
     const socket = this.ctx
-      .container!.getTcpPort(source.kind === "legacy" ? 8327 : 8329)
+      .container!.getTcpPort(peerTarget(source).homePeerOrdinal === undefined ? 8327 : 8329)
       .connect("127.0.0.1:8329", { allowHalfOpen: true });
     await socket.opened;
     try {

@@ -2,6 +2,7 @@ import { Schema, Tuple } from "effect";
 import { ControllerCode, PromotionIntent, SlotIdentity, SlotTarget } from "./contract.ts";
 import { deploymentReadinessPrefix } from "../deployment-readiness.ts";
 import { FleetConfiguration } from "../runtime-fleet/configuration.ts";
+import { ImageUpdateIntent } from "../runtime-fleet/image-update.ts";
 
 export const runtimeHandoffPath = "/runtime-handoff";
 export const runtimeHandoffCommandPrefix = deploymentReadinessPrefix;
@@ -44,7 +45,30 @@ export type RuntimeFleetCommand = typeof RuntimeFleetCommand.Type;
 
 export const RuntimeHandoffCommand = Schema.Union([
   ...RuntimeFleetCommand.members,
-  Schema.Struct({ ...fields, action: Schema.Literals(["inspect", "observe"]) }),
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literal("candidate-target"),
+    operationId: OperationId,
+    applicationId: Schema.NonEmptyString,
+  }),
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literal("candidate-probe"),
+    operationId: OperationId,
+    pool: Schema.NonEmptyString,
+  }),
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literals(["candidate-probe-inspect", "candidate-probe-cancel"]),
+    operationId: OperationId,
+  }),
+  Schema.Struct({ ...fields, action: Schema.Literal("image-prepare"), update: ImageUpdateIntent }),
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literals(["image-inspect", "image-cancel"]),
+    operationId: OperationId,
+  }),
+  Schema.Struct({ ...fields, action: Schema.Literals(["inspect", "observe", "active-health"]) }),
   Schema.Struct({
     ...fields,
     action: Schema.Literals(["receipt", "retirement", "drain", "discard"]),

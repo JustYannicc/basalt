@@ -23,6 +23,8 @@ export interface RuntimeEnvironment {
   POOL_IMAGE_HASH: string;
   POOL_DEPLOYMENT_KEY?: string;
   POOL_HOME_PEER_ORDINAL?: string;
+  POOL_CANDIDATE_APPLICATION_ID?: string;
+  POOL_CANDIDATE_RUNTIME_CONFIGURATION?: string;
 }
 export function runtimeConfiguration(env: RuntimeEnvironment): RuntimeConfiguration {
   return Schema.decodeUnknownSync(RuntimeConfiguration)({

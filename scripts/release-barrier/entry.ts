@@ -2,7 +2,8 @@ import { assertReleaseStateVersion } from "./release-state-version.ts";
 import { homeSchemaRetryAuthorization } from "./home-schema-retry.ts";
 import { loadDeclaredChanges } from "./declared-file.ts";
 import { undoForwardAdoption } from "./forward-undo.ts";
-import { resumeForwardRelease } from "./forward-resume.ts";
+import { releaseRuntimeImage } from "./runtime-image-release.ts";
+import { ordinaryReleaseWriter } from "./runtime-release-writer.ts";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -11,7 +12,6 @@ import { evalStack } from "alchemy/Stack";
 import { Context, Effect } from "effect";
 import { recoverStack } from "./recover-stack.ts";
 import { readRecoveryManifest } from "./recovery.ts";
-import { deployStack } from "./deploy-stack.ts";
 import { withReleaseRuntime } from "./runtime.ts";
 import { releaseEvidence } from "./evidence.ts";
 import { openRecovery } from "./recovery-envelope.ts";
@@ -86,51 +86,52 @@ process.exitCode = await releaseOutcome(evidence, process.env.GITHUB_STEP_SUMMAR
       ),
     ).pipe(
       Effect.flatMap((stack) =>
-        evalStack(
-          stack,
-          (compiled) =>
-            (undoPath
-              ? undoForwardAdoption(compiled, undoPath)
-              : recovery
-                ? recoverStack(
-                    compiled,
-                    recovery.manifest,
-                    recovery.receipt,
-                    (value) => evidence.recovery(value),
-                    containerRecovery,
-                  )
-                : Effect.gen(function* () {
-                    const declarations = yield* Effect.tryPromise({
-                      try: () =>
-                        loadDeclaredChanges(fileURLToPath(new URL("../../", import.meta.url))),
-                      catch: (error) => error,
-                    });
-                    const forward = yield* resumeForwardRelease(compiled, { directory });
-                    return yield* deployStack(compiled, {
-                      candidate: process.env.BASALT_RELEASE_CANDIDATE!,
-                      declarations,
-                      declared: evidence.declared,
-                      declaredReadiness: evidence.declaredReadiness,
-                      expansion: evidence.expansion,
-                      forwardInput: forward?.continuation,
-                      forwardEncryptionKey: process.env.EXECUTOR_ENCRYPTION_KEY,
-                      homeSchemaRetryIntent,
-                      record: evidence.record,
-                      publication: evidence.publication,
-                      admission: evidence.admission,
-                      namespaceRead: evidence.namespaceRead,
-                      bucketRead: evidence.bucketRead,
-                      serving: evidence.serving,
-                      manifest: evidence.manifest,
-                    });
-                  })
-            ).pipe(
-              (effect) => assertReleaseStateVersion(compiled).pipe(Effect.andThen(effect)),
-              Effect.provideContext(compiled.services),
-              Effect.provideService(State, Context.get(compiled.services, State)),
-            ),
-          { stage: "production" },
-        ),
+        undoPath || recovery
+          ? evalStack(
+              stack,
+              (compiled) =>
+                Effect.gen(function* () {
+                  if (undoPath) yield* undoForwardAdoption(compiled, undoPath);
+                  else
+                    yield* recoverStack(
+                      compiled,
+                      recovery!.manifest,
+                      recovery!.receipt,
+                      (value) => evidence.recovery(value),
+                      containerRecovery,
+                    );
+                }).pipe(
+                  (effect) => assertReleaseStateVersion(compiled).pipe(Effect.andThen(effect)),
+                  Effect.provideContext(compiled.services),
+                  Effect.provideService(State, Context.get(compiled.services, State)),
+                ),
+              { stage: "production" },
+            )
+          : Effect.gen(function* () {
+              const declarations = yield* Effect.tryPromise({
+                try: () => loadDeclaredChanges(fileURLToPath(new URL("../../", import.meta.url))),
+                catch: (error) => error,
+              });
+              return yield* releaseRuntimeImage(stack, {
+                candidate: process.env.BASALT_RELEASE_CANDIDATE!,
+                writer: ordinaryReleaseWriter(process.env),
+                directory,
+                encryptionKey: process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
+                declarations,
+                declared: evidence.declared,
+                declaredReadiness: evidence.declaredReadiness,
+                expansion: evidence.expansion,
+                forwardEncryptionKey: process.env.EXECUTOR_ENCRYPTION_KEY,
+                homeSchemaRetryIntent,
+                record: evidence.record,
+                publication: evidence.publication,
+                admission: evidence.admission,
+                namespaceRead: evidence.namespaceRead,
+                bucketRead: evidence.bucketRead,
+                serving: evidence.serving,
+                manifest: evidence.manifest,
+              });
+            }),
       ),
       withReleaseRuntime,
     ),

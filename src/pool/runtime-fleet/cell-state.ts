@@ -5,15 +5,18 @@ import {
   type SlotStorage,
 } from "../runtime-slots/storage.ts";
 
+export function runtimeCellKey(cell: string, value: string) {
+  if (!/^[a-zA-Z0-9-]{1,128}$/u.test(cell)) throw new Error("Invalid runtime cell");
+  return value === nativeMembershipKey ? value : `runtime-fleet-v1:cell:${cell}:${value}`;
+}
+
 /** Cells have independent handoff journals but read the existing canonical membership authority. */
 export function runtimeCellState(
   root: ControllerState,
   cell: string,
   authorizeStart?: (transaction: SlotStorage) => Promise<void>,
 ): ControllerState {
-  if (!/^[a-zA-Z0-9-]{1,128}$/u.test(cell)) throw new Error("Invalid runtime cell");
-  const prefix = `runtime-fleet-v1:cell:${cell}:`;
-  const key = (value: string) => (value === nativeMembershipKey ? value : `${prefix}${value}`);
+  const key = (value: string) => runtimeCellKey(cell, value);
   const scoped = (storage: SlotStorage): SlotStorage => ({
     get: <T>(value: string) => storage.get<T>(key(value)),
     put: async (value, content) => {

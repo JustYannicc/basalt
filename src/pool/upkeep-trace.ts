@@ -10,6 +10,8 @@ type Phase =
   | "rearm"
   | "home"
   | "home_shared"
+  | "candidate_probe"
+  | "primary_retirement"
   | "app_models"
   | "memberships"
   | "computers"

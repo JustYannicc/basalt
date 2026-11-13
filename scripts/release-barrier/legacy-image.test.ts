@@ -82,3 +82,37 @@ test("a legacy pin cannot conceal image, configuration, namespace, placement or 
     assert.equal(inspected, 0);
   }
 });
+
+test("an existing single-runtime application retains its image and native input without gaining image-update authority", async () => {
+  const f = fixture();
+  const olds = { ...containerProps(), className: "PoolRuntime", instances: 0 };
+  const props = { ...f.props, className: "PoolRuntime", instances: 0 };
+  const previous = { ...f.previous, instances: 0 };
+  const publication = {
+    ...f.publication,
+    id: "PoolRuntime",
+    previous,
+    proposed: { ...f.publication.proposed, instances: 0 },
+  };
+  const staged = await Effect.runPromise(
+    stageContainer(publication, props, olds, previous, () => Effect.succeed(f.metadata)),
+  );
+  assert.equal(staged.frozen.inputHash, previous.hash!.image);
+  assert.equal(staged.frozen.configuration.image, previous.configuration.image);
+  for (const changed of [
+    { ...props, image: f.proposed.configuration.image },
+    { ...props, maxInstances: 4 },
+    { ...props, instances: 1 },
+  ]) {
+    let reads = 0;
+    await assert.rejects(
+      Effect.runPromise(
+        stageContainer(publication, changed, olds, previous, () => {
+          reads++;
+          return Effect.succeed(f.metadata);
+        }),
+      ),
+    );
+    assert.equal(reads, 0);
+  }
+});

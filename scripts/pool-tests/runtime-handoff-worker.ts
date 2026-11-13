@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { Schema } from "effect";
 import { handoffRuntime } from "./runtime-handoff-fixture.ts";
+import { runtimeApplicationFixture } from "./runtime-provider-fixture.ts";
 import { runtimeFixtureCode, runtimeGrant, joinedRuntimeProof } from "./runtime-handoff-proofs.ts";
 import { StartAuthorization } from "../../src/pool/runtime-slots/admission-proof.ts";
 import {
@@ -45,7 +46,20 @@ const {
   PoolContainer,
   PoolRuntimeBlue,
   PoolRuntimeGreen,
+  handlePoolWorkerRequest,
 }: {
+  handlePoolWorkerRequest: (
+    request: Request,
+    env: {
+      POOL_AUTH_DATABASE: { connectionString: string };
+      PoolContainer: {
+        jurisdiction(value: string): {
+          getByName(name: string): { fetch(request: Request): Promise<Response> };
+        };
+      };
+    },
+    lookup: (connection: string, candidates: readonly string[]) => Promise<boolean>,
+  ) => Promise<Response>;
   PoolRuntimeBlue: new (ctx: object, env: object) => RuntimeWorker;
   PoolRuntimeGreen: new (ctx: object, env: object) => RuntimeWorker;
   PoolContainer: new (
@@ -67,6 +81,8 @@ export const runtimeWorkerClasses = { blue: PoolRuntimeBlue, green: PoolRuntimeG
 type RuntimeFixture = Awaited<ReturnType<typeof handoffRuntime>>;
 export async function handoffWorker(
   options: {
+    candidateTarget?: Partial<SlotTarget>;
+    candidateProvider?: { accountId: string; namespaceId: string; applicationConfigDigest: string };
     rotateSigningKey?: boolean;
     adopt?: boolean;
     bindings?:
@@ -96,6 +112,7 @@ export async function handoffWorker(
     instanceId: "c".repeat(64),
     imageDigest: `sha256:${"d".repeat(64)}`,
     imageInput: "2".repeat(16),
+    ...options.candidateTarget,
   };
   const env = {
     POOL_DATABASE_URL: "postgresql://fixture@database.invalid/pool",
@@ -171,8 +188,42 @@ export async function handoffWorker(
     typeof options.bindings === "function"
       ? await options.bindings({ old, candidate, env: nextEnv })
       : options.bindings;
+  const previousFetch = globalThis.fetch;
+  const providerRuntimes = options.candidateProvider ? [old] : [old, candidate];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const runtime = providerRuntimes.find(
+      (runtime) =>
+        url.pathname ===
+          `/client/v4/accounts/${"1".repeat(32)}/containers/applications/${runtime.target.applicationId}` ||
+        url.pathname ===
+          `/client/v4/accounts/${"1".repeat(32)}/containers/applications/${runtime.target.applicationId}/instances-v2`,
+    );
+    if (url.origin !== "https://api.cloudflare.com" || !runtime) return previousFetch(input, init);
+    assert.equal(init?.method, "GET");
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer synthetic-provider-read");
+    const application = runtimeApplicationFixture(runtime.target);
+    return Response.json({
+      success: true,
+      errors: [],
+      result: url.pathname.endsWith("instances-v2")
+        ? runtime.ctx.container.running
+          ? [
+              {
+                id: runtime.target.instanceId,
+                application_id: application.id,
+                status: { state: "running" },
+                image: application.configuration.image,
+              },
+            ]
+          : []
+        : application,
+      result_info: { next_page_token: "" },
+    });
+  };
   const workerEnv = {
     ...env,
+    POOL_PROVIDER_OBSERVATION_TOKEN: { get: async () => "synthetic-provider-read" },
     PoolRuntime: {
       jurisdiction: () => ({
         idFromString: (id: string) => id,
@@ -242,6 +293,8 @@ export async function handoffWorker(
       configurationFingerprint?: string;
       configuration?: import("../../src/pool/runtime-fleet/configuration.ts").FleetConfiguration;
       expectedDigest?: string;
+      update?: import("../../src/pool/runtime-fleet/image-update.ts").ImageUpdateIntent;
+      pool?: string;
     } = {},
   ) => {
     const at = Date.now();
@@ -304,7 +357,7 @@ export async function handoffWorker(
     return ((await response.json()) as { result: { selection: SlotSelection; digest: string } })
       .result;
   };
-  const startGrant = () => runtimeGrant(candidate, old.storage, "start");
+  const startGrant = () => runtimeGrant(candidate, old.storage, "start", options.candidateProvider);
   const joined = (grant: Awaited<ReturnType<typeof startGrant>>) =>
     joinedRuntimeProof(
       candidate,
@@ -333,6 +386,31 @@ export async function handoffWorker(
     command,
     view,
     model,
+    publicModel: (
+      request: Request,
+      identity: import("../../src/pool/model-membership.ts").ModelIdentity | undefined,
+    ) =>
+      handlePoolWorkerRequest(
+        request,
+        {
+          POOL_AUTH_DATABASE: { connectionString: "postgresql://fixture@database.invalid/auth" },
+          PoolContainer: {
+            jurisdiction: (value) => {
+              assert.equal(value, "eu");
+              return {
+                getByName: (name) => {
+                  assert.equal(name, "control-plane");
+                  return {
+                    fetch: (forwarded) =>
+                      worker.forward(forwarded, identity ?? { pool: "invalid", person: "invalid" }),
+                  };
+                },
+              };
+            },
+          },
+        },
+        async () => identity !== undefined,
+      ),
     alarm: async () => {
       await old.storage.delete("fixture-alarm");
       return worker.alarm();
@@ -345,7 +423,12 @@ export async function handoffWorker(
     loseStartReply: () => {
       loseStartReply = true;
     },
-    advanceCurrentBindings: (bindings: Partial<EndpointEnvironment>) => {
+    advanceCurrentBindings: (
+      bindings: Partial<EndpointEnvironment> & {
+        POOL_BLUE_IMAGE_HASH?: string;
+        POOL_GREEN_IMAGE_HASH?: string;
+      },
+    ) => {
       currentEnv = { ...currentEnv, ...bindings };
       worker = new PoolContainer(old.ctx, currentEnv);
       return worker;
@@ -358,6 +441,7 @@ export async function handoffWorker(
       return worker;
     },
     cleanup: async () => {
+      globalThis.fetch = previousFetch;
       await old.cleanup();
       await candidate.cleanup();
     },
