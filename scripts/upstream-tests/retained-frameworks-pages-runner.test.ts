@@ -28,7 +28,7 @@ const settings = {
 };
 interface Runner {
   readonly runProductionOperation: (
-    settings: typeof settings & {
+    opsSettings: typeof settings & {
       retainedFrameworkObjects: ReturnType<typeof retainedFrameworkObjects>;
     },
     operation: typeof Operation.Type,
@@ -106,10 +106,8 @@ function transport(
   const fetcher: typeof fetch = async (_url, init) => {
     const index = calls++;
     await change?.(index);
-    const raw = await openEnvelope(
-      input.signingKey,
-      "sbops1",
-      JSON.parse(String(init!.body)).envelope,
+    const raw = Schema.decodeUnknownSync(Schema.Struct({ operation: Operation }))(
+      await openEnvelope(input.signingKey, "sbops1", JSON.parse(String(init!.body)).envelope),
     );
     const operation = Schema.decodeUnknownSync(Operation)(raw.operation);
     const response = await Effect.runPromise(
@@ -202,7 +200,7 @@ test("changed references fail closed at the final page without repeating earlier
 test("continuation tampering, organization and release changes refuse before record reads", async () =>
   run(
     Effect.gen(function* () {
-      const { sql, fixture } = yield* setup;
+      const { fixture } = yield* setup;
       const operation = {
         action: "inventory" as const,
         selection: "retained-frameworks",

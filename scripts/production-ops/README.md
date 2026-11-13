@@ -65,9 +65,16 @@ and missing or ambiguous framework identities appear as fixed per-build incomple
 reasons with `complete: false`. Resolved tuples in such a result are partial;
 check the overall `complete` field before relying on the inventory.
 
-This selection refuses above 2,000 SQL associations or 2,000 framework objects,
+The workflow reads at most 64 distinct builds per request and saves each encrypted
+page before requesting the next. Copied apps and inactive deployments remain in
+the inventory. A sealed continuation binds the organization, release, database and
+page chain. Changed associations or framework metadata refuse the inventory.
+Decryption requires every page in order before producing a complete combined inventory.
+
+Each page refuses above 2,000 SQL associations or 2,000 framework objects,
 three metadata pages, 8,000,000 bytes per record, 32,000,000 total record bytes or
-eight seconds of R2 inventory work. Each attempt reserves its allowed bytes before
+18 seconds of R2 inventory work within the unchanged 25-second request deadline.
+Each attempt reserves its allowed bytes before
 reading. Successful reads refund unused bytes and confirmed absences refund the
 whole allowance; failed reads retain it, so repeated partial failures cannot bypass
 the total bound. Stream bytes are bounded before accumulation, even if the reported
@@ -84,11 +91,16 @@ these accounts. Before a retirement GO, compare every dry-run account ID with
 the corresponding visible Accounts row.
 
 The workflow's artifact `production-ops-<run ID>` contains `operation.json` and a
-safe `summary.json`. Inventories and backups are encrypted before leaving the
+safe `summary.json`. Paged inventories retain encrypted responses under `pages/`,
+including completed pages when a later request fails. A failed page stops the run;
+it does not produce a combined `operation.json` or retry the request.
+Inventories and backups are encrypted before leaving the
 runtime; do not paste their decrypted contents into public logs or issues.
 
 A failed run still uploads `failure.json`. Its fixed category and phase locate
 the failed boundary; a SQL failure can include its two-character SQL state class.
+Retained inventory includes an allowlisted `reasonCode` in that receipt, the workflow
+error and its summary, without object keys or provider messages.
 Known provider-adoption refusals, defects and interruptions have distinct categories.
 The cause kind records whether a failure, defect or composite cause reached the boundary.
 Use this receipt when deciding the next diagnostic step. It contains no raw error

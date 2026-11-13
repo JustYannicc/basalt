@@ -71,7 +71,7 @@ try {
     go: process.env.OPS_GO ?? "",
     ...(previous === undefined ? {} : { previous }),
   };
-  const result =
+  const result: Record<string, unknown> =
     action === "inventory" && input.selection === "retained-frameworks"
       ? await retainedInventory(input, fetch, (page, index) => {
           mkdirSync(join(output, "pages"), { recursive: true, mode: 0o700 });

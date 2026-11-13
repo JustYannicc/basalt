@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Clock, Effect, Exit, Fiber } from "effect";
+import { Clock, Effect, Exit, Fiber, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { retainedFrameworks } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks.ts";
 import { retainedFrameworkObjects } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-r2.ts";
@@ -93,11 +93,14 @@ for (const count of [329, 987])
           }),
       );
     const fetcher: typeof fetch = async (_url, init) => {
-      const signed = await openEnvelope(
-        input.signingKey,
-        "sbops1",
-        JSON.parse(String(init!.body)).envelope,
-      );
+      const signed = Schema.decodeUnknownSync(
+        Schema.Struct({
+          operation: Schema.Struct({
+            action: Schema.String,
+            continuation: Schema.optionalKey(Schema.Unknown),
+          }),
+        }),
+      )(await openEnvelope(input.signingKey, "sbops1", JSON.parse(String(init!.body)).envelope));
       assert.equal(signed.operation.action, "inventory");
       const index = calls++;
       assert.deepEqual(signed.operation.continuation, index ? protection(index) : undefined);

@@ -8,15 +8,15 @@ const integer = (value: unknown, maximum: number): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum;
 const digest = (value: unknown): value is string =>
   typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
-const refuse = (
+function refuse(
   reasonCode:
     | "page_protocol_invalid"
     | "page_sequence_invalid"
     | "page_incomplete"
     | "page_count_bound",
-): never => {
+): never {
   throw new OperationFailure({ ...failure("refused", "receipt"), reasonCode });
-};
+}
 
 /** One refusal stops the chain. Only a validated new page can authorize the next signed read. */
 export async function retainedInventory(

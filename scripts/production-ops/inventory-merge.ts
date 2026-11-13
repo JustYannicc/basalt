@@ -1,8 +1,8 @@
 import { canonical, hash } from "./encoding.ts";
 
-const fail = (): never => {
+function fail(): never {
   throw new Error("Invalid retained inventory page chain");
-};
+}
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const integer = (value: unknown): value is number =>
