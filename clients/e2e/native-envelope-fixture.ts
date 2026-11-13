@@ -195,7 +195,7 @@ export async function envelopeFixture(legacyOnly = false) {
     close: async () => {
       controller.abort();
       for (const peer of sockets.clients) peer.terminate();
-      await Promise.all([...pending]);
+      await Promise.all(pending);
       sockets.close();
       await Promise.all(
         [server, bridge].map((item) => new Promise<void>((resolve) => item.close(() => resolve()))),
