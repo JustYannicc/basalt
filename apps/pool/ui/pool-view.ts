@@ -86,11 +86,13 @@ export function usePool(api: PoolApi) {
   );
   useEffect(() => {
     mounted.current = true;
+    // The same ref object for this effect's lifetime; bumping it drops any read still in flight.
+    const requests = latest;
     const current = api.changes().watch({
       topics,
       refresh: () => load(true),
       revoked: () => {
-        latest.current++;
+        requests.current++;
         setState((previous) => ({
           first: previous.first === "pending" ? "failure" : previous.first,
           error: revokedMessage,
@@ -100,10 +102,11 @@ export function usePool(api: PoolApi) {
       },
     });
     watch.current = current;
+    // oxlint-disable-next-line react/set-state-in-effect -- the retained view is an external HTTP read; state changes only after it answers, never synchronously here
     void load(false);
     return () => {
       mounted.current = false;
-      latest.current++;
+      requests.current++;
       watch.current = undefined;
       current.stop();
     };

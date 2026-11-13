@@ -55,8 +55,10 @@ test("each source defaults to five minutes from its own timestamp, not the newes
     { balances: [balance({ observedAt: at(-120_000) })] },
   ];
   for (const source of sources) {
-    const result = report(source);
-    result.collection = { attemptedAt: at(0), outcome: "success" };
+    const result: AccountObservationResult = {
+      ...report(source),
+      collection: { attemptedAt: at(0), outcome: "success" },
+    };
     assertCutoff(result, now - 120_000 + fiveMinutes);
   }
   assertCutoff(
@@ -155,8 +157,10 @@ test("invalid source and cutoff timestamps remain stale instead of being ignored
     false,
     "report validation remains separate from source freshness",
   );
-  const futureAttempt = report({ plan: plan() });
-  futureAttempt.collection = { attemptedAt: at(60_001), outcome: "success" };
+  const futureAttempt: AccountObservationResult = {
+    ...report({ plan: plan() }),
+    collection: { attemptedAt: at(60_001), outcome: "success" },
+  };
   assert.equal(freshObservation(futureAttempt, now), true);
   assert.equal(validObservationTime(futureAttempt, now), false);
 });

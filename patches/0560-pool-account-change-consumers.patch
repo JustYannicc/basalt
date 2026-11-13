@@ -892,7 +892,7 @@ index 0000000000000000000000000000000000000000..ad72a78b0671f533d4f28558d3d8bba1
 +}).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))));
 diff --git a/apps/hosted/server/src/implementation/scoped-changes.ts b/apps/hosted/server/src/implementation/scoped-changes.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..4fe68d403a6ce7af0cec62d6ecaeda9cf4576fab
+index 0000000000000000000000000000000000000000..45868bb04fd0cda47c1cca77188828c452b641de
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/scoped-changes.ts
 @@ -0,0 +1,143 @@
@@ -1022,7 +1022,7 @@ index 0000000000000000000000000000000000000000..4fe68d403a6ce7af0cec62d6ecaeda9c
 +            ),
 +          ),
 +        ),
-+      ).pipe(Stream.concat(Stream.never));
++      ).pipe(Stream.concat(Stream.never), Stream.provideContext(services));
 +      // Finish after the terminal frame is consumed; ending the expiry branch can cancel its frame.
 +      stream = Stream.merge(stream, expiry, { haltStrategy: "left" }).pipe(
 +        Stream.takeUntil(
@@ -1582,31 +1582,11 @@ index fdc4545ed67f5b43d1799bb5eed612a88cb46e2f..5792903eb6901f3d59fd81eb69587a14
    }),
  ]);
  export type RevisionEvent = typeof RevisionEvent.Type;
-diff --git a/packages/apps/src/client.ts b/packages/apps/src/client.ts
-index 9aedb7ca4445f0bd779a523a030f2a4af171f632..555e7e72573c317280b38fb8666902fd4e4de371 100644
---- a/packages/apps/src/client.ts
-+++ b/packages/apps/src/client.ts
-@@ -8,6 +8,15 @@ export {
- } from "./contracts/live.ts";
- export { createAppClient } from "./implementation/ui-client.ts";
- export { makeRevisionFence } from "./implementation/revision-fence.ts";
-+export {
-+  ChangeReadRetry,
-+  makeChangeFeed,
-+  type ChangeActivity,
-+  type ChangeFeed,
-+  type ChangeStatus,
-+  type ChangeWatch,
-+  type ChangeWatchOptions,
-+} from "./implementation/change-feed.ts";
- 
- export type {
-   AppMutation,
-diff --git a/packages/apps/src/implementation/change-feed.ts b/packages/apps/src/implementation/change-feed.ts
+diff --git a/packages/apps/src/browser/change-feed.ts b/packages/apps/src/browser/change-feed.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..c753e797cac7e634176a9604f1d099813e2044b9
+index 0000000000000000000000000000000000000000..128d3445b6a38f276058a2c87058e1b14b02c077
 --- /dev/null
-+++ b/packages/apps/src/implementation/change-feed.ts
++++ b/packages/apps/src/browser/change-feed.ts
 @@ -0,0 +1,607 @@
 +/**
 + * One committed-revision stream per page. A watch reads again only after a hint, a handshake or a
@@ -1615,7 +1595,7 @@ index 0000000000000000000000000000000000000000..c753e797cac7e634176a9604f1d09981
 + */
 +import { Option, Schema } from "effect";
 +import { newerRevision, revisionKey, RevisionEvent, RevisionHint } from "@executor-js/app-data";
-+import { makeRevisionFence } from "./revision-fence.ts";
++import { makeRevisionFence } from "../implementation/revision-fence.ts";
 +
 +/** Whether the page is following committed changes or needs to reconnect or sign in again. */
 +export type ChangeStatus = "connecting" | "live" | "paused" | "revoked";
@@ -2215,15 +2195,35 @@ index 0000000000000000000000000000000000000000..c753e797cac7e634176a9604f1d09981
 +    },
 +  };
 +}
+diff --git a/packages/apps/src/client.ts b/packages/apps/src/client.ts
+index 9aedb7ca4445f0bd779a523a030f2a4af171f632..0c6db234e6b4b057a51149647c5e93a46e3c6b8f 100644
+--- a/packages/apps/src/client.ts
++++ b/packages/apps/src/client.ts
+@@ -8,6 +8,15 @@ export {
+ } from "./contracts/live.ts";
+ export { createAppClient } from "./implementation/ui-client.ts";
+ export { makeRevisionFence } from "./implementation/revision-fence.ts";
++export {
++  ChangeReadRetry,
++  makeChangeFeed,
++  type ChangeActivity,
++  type ChangeFeed,
++  type ChangeStatus,
++  type ChangeWatch,
++  type ChangeWatchOptions,
++} from "./browser/change-feed.ts";
+ 
+ export type {
+   AppMutation,
 diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/implementation/ui-client.ts
-index ce7bcb2b08ab00032dfd1022ee182af9b73ca18d..03222f6c27d9f495e0f0af35095799b026fcf48b 100644
+index ce7bcb2b08ab00032dfd1022ee182af9b73ca18d..fe8865e0801694bd809bb37edd91d63a50d5a383 100644
 --- a/packages/apps/src/implementation/ui-client.ts
 +++ b/packages/apps/src/implementation/ui-client.ts
 @@ -23,6 +23,7 @@ import { JsonValue } from "../contracts/schema.ts";
  import { decoderOf, type Schema } from "./schema.ts";
  import { makeOptimisticClient } from "./optimistic.ts";
  import { queryResult, type ObservedQueryValue } from "./query-commit.ts";
-+import { makeChangeFeed, type ChangeFeed } from "./change-feed.ts";
++import { makeChangeFeed, type ChangeFeed } from "../browser/change-feed.ts";
  
  /**
   * Consecutive failed subscriptions wait 1, 2, 4… seconds, at most a minute, with jitter so pages

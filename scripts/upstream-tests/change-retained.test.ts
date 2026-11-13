@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { Atom as AtomType, AtomRegistry as RegistryType } from "effect/reactivity";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -166,7 +167,7 @@ function source(retained?: unknown) {
     resolve: (value: unknown) => void;
   }> = [];
   let first = retained;
-  const atom = Atom.readable((get: any) => {
+  const atom = Atom.readable((get: AtomType.AtomContext) => {
     if (first !== undefined) {
       const value = first;
       first = undefined;
@@ -193,7 +194,7 @@ function setup(t: TestContext) {
   const server = backend();
   const originalFetch = globalThis.fetch;
   globalThis.fetch = server.fetch as typeof fetch;
-  const registries = new Set<any>();
+  const registries = new Set<RegistryType.AtomRegistry>();
   // Runs even when an assertion fails: dispose every registry (stopping its watches), end the fake
   // streams so no read stays pending, then restore fetch.
   t.after(() => {
@@ -207,10 +208,10 @@ function setup(t: TestContext) {
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
   };
-  const mount = (registry: any, atom: unknown) => {
+  const mount = <A extends Result>(registry: RegistryType.AtomRegistry, atom: AtomType.Atom<A>) => {
     registries.add(registry);
     const values: Result[] = [];
-    const stop = registry.subscribe(atom, (value: Result) => values.push(value));
+    const stop = registry.subscribe(atom, (value: A) => values.push(value));
     values.push(registry.get(atom));
     return { values, stop, current: () => registry.get(atom) as Result };
   };

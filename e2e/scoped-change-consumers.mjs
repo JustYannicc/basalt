@@ -209,7 +209,7 @@ const program = Effect.gen(function* () {
     yield* Effect.addFinalizer(() =>
       Effect.promise(async () => {
         gate?.release();
-        await Promise.allSettled([...activeHolds]);
+        await Promise.allSettled(activeHolds);
       }),
     );
     yield* browserWork(() =>

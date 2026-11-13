@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { makeChangeFeed } from "../../.upstream/packages/apps/src/implementation/change-feed.ts";
+import { makeChangeFeed } from "../../.upstream/packages/apps/src/browser/change-feed.ts";
 
 // The real feed and fence; only fetch, the stream body, page activity and clocks are stand-ins.
 const STREAM = "/changes";
