@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import pg from "pg";
-import { loadMiniflare } from "../startup-profiler/profile.ts";
+import { Miniflare } from "../pool-test-runtime/index.ts";
 import { seriesFixture, pool } from "./series-fixture.ts";
 import { digest } from "../../src/pool/backend-users.ts";
 import { signEnvelope, openEnvelope } from "../../src/pool/token.ts";
@@ -162,51 +162,48 @@ test("bulk signed HTTP commands run through SQLite DO, R2 and real PostgreSQL re
     url.password = "fixture-only";
     let admitted = true;
     const admissions: { job: string; pool: string; owner: string; organization: string }[] = [];
-    const { Miniflare, convertV4MiniflareOptions } = loadMiniflare();
-    const worker = new Miniflare(
-      convertV4MiniflareOptions({
-        workers: [
-          {
-            name: "bulk",
-            compatibilityDate: "2026-09-08",
-            compatibilityFlags: ["nodejs_compat"],
-            modules: true,
-            script: await nativeWorker(),
-            bindings: { POOL_APP_SIGNING_KEY: signingKey },
-            hyperdrives: { POOL_AUTH_DATABASE: url.toString() },
-            durableObjects: {
-              UsageImports: { className: "FixtureBulkUsageImport", useSQLite: true },
-              NativeUsageImports: { className: "BulkUsageImport", useSQLite: true },
-            },
-            r2Buckets: ["UsageImportArtifacts"],
-            serviceBindings: {
-              TOOLS_SERVICE: async (request: Request) => {
-                assert.equal(
-                  new URL(request.url).pathname,
-                  "/api/internal/pool-usage-import-admission",
-                );
-                const body = (await request.json()) as { envelope: string };
-                const assertion = (await openEnvelope(signingKey, "sbq1", body.envelope)) as {
-                  action: string;
-                  job: string;
-                  pool: string;
-                  owner: string;
-                  organization: string;
-                  expiresAt: number;
-                };
-                assert.equal(assertion.action, "usageImportAdmission");
-                assert.equal(assertion.pool, pool);
-                assert.equal(assertion.organization, identity.organization);
-                assert.equal(assertion.owner, identity.owner);
-                assert.ok(assertion.expiresAt > Date.now());
-                admissions.push(assertion);
-                return new Response(null, { status: admitted ? 204 : 403 });
-              },
+    const worker = new Miniflare({
+      workers: [
+        {
+          name: "bulk",
+          compatibilityDate: "2026-09-08",
+          compatibilityFlags: ["nodejs_compat"],
+          modules: true,
+          script: await nativeWorker(),
+          bindings: { POOL_APP_SIGNING_KEY: signingKey },
+          hyperdrives: { POOL_AUTH_DATABASE: url.toString() },
+          durableObjects: {
+            UsageImports: { className: "FixtureBulkUsageImport", useSQLite: true },
+            NativeUsageImports: { className: "BulkUsageImport", useSQLite: true },
+          },
+          r2Buckets: ["UsageImportArtifacts"],
+          serviceBindings: {
+            TOOLS_SERVICE: async (request: Request) => {
+              assert.equal(
+                new URL(request.url).pathname,
+                "/api/internal/pool-usage-import-admission",
+              );
+              const body = (await request.json()) as { envelope: string };
+              const assertion = (await openEnvelope(signingKey, "sbq1", body.envelope)) as {
+                action: string;
+                job: string;
+                pool: string;
+                owner: string;
+                organization: string;
+                expiresAt: number;
+              };
+              assert.equal(assertion.action, "usageImportAdmission");
+              assert.equal(assertion.pool, pool);
+              assert.equal(assertion.organization, identity.organization);
+              assert.equal(assertion.owner, identity.owner);
+              assert.ok(assertion.expiresAt > Date.now());
+              admissions.push(assertion);
+              return new Response(null, { status: admitted ? 204 : 403 });
             },
           },
-        ],
-      }),
-    );
+        },
+      ],
+    });
     try {
       await worker.ready;
       const runtime = await worker.getWorker("bulk");
