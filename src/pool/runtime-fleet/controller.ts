@@ -203,15 +203,17 @@ export class RuntimeFleet {
       });
     } catch (error) {
       rememberRuntimeFailure(step, error);
-      try {
-        if (reservation.kind === "runtime")
-          await this.failures.failed(reservation.identity, error, request.signal);
-      } finally {
+      if (reservation.kind === "runtime") {
         try {
-          await reservation.release();
-        } catch (releaseError) {
-          refuseRuntime("fleet_release", releaseError);
+          await this.failures.failed(reservation.identity, error, request.signal);
+        } catch {
+          throw error;
         }
+      }
+      try {
+        await reservation.release();
+      } catch (releaseError) {
+        refuseRuntime("fleet_release", releaseError);
       }
       throw error;
     } finally {

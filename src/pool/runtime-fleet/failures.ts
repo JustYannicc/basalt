@@ -28,7 +28,7 @@ export class FleetFailures {
     this.blocked.add(key);
     const retained = this.pending.get(key);
     if (retained) return retained;
-    const work = this.state.quarantine(identity).then(() => this.changed());
+    const work = this.state.quarantine(identity).finally(() => this.changed());
     this.pending.set(key, work);
     try {
       await work;

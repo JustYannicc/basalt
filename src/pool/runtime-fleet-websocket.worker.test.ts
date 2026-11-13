@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Schema } from "effect";
-import { Response as WorkerResponse, ErrorEvent, WebSocket, WebSocketPair } from "miniflare";
+import { ErrorEvent, WebSocket, WebSocketPair } from "miniflare";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
 import { deferred } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
+import { installWorkerSockets, upgraded } from "../../scripts/pool-tests/native-sockets.ts";
 import { RuntimeFleetState } from "./runtime-fleet/state.ts";
 
 async function activeFleet(advance: () => void) {
@@ -74,32 +75,6 @@ async function activeFleet(advance: () => void) {
   }
 }
 
-function installWorkerSockets() {
-  const response = Object.getOwnPropertyDescriptor(globalThis, "Response")!;
-  const pair = Object.getOwnPropertyDescriptor(globalThis, "WebSocketPair");
-  Object.defineProperty(globalThis, "Response", {
-    configurable: true,
-    writable: true,
-    value: WorkerResponse,
-  });
-  Object.defineProperty(globalThis, "WebSocketPair", {
-    configurable: true,
-    writable: true,
-    value: WebSocketPair,
-  });
-  return () => {
-    Object.defineProperty(globalThis, "Response", response);
-    if (pair) Object.defineProperty(globalThis, "WebSocketPair", pair);
-    else Reflect.deleteProperty(globalThis, "WebSocketPair");
-  };
-}
-
-function upgraded(response: Response) {
-  const socket: unknown = Reflect.get(response, "webSocket");
-  assert.ok(socket instanceof WebSocket);
-  socket.accept();
-  return socket;
-}
 function nextMessage(socket: WebSocket) {
   const event = deferred<string>();
   socket.addEventListener("message", (message) => event.resolve(String(message.data)), {
@@ -108,7 +83,7 @@ function nextMessage(socket: WebSocket) {
   return event.promise;
 }
 
-for (const failure of ["upstream", "client"] as const) {
+for (const failure of ["upstream", "client", "send"] as const) {
   test(
     `an upgraded ${failure} failure preserves the runtime fault boundary across every relay`,
     { timeout: 20_000 },
@@ -151,13 +126,19 @@ for (const failure of ["upstream", "client"] as const) {
       const client = upgraded(response);
       sockets.push(client);
       if (failure === "upstream") upstream!.dispatchEvent(new ErrorEvent("error"));
-      else client.close(1011, "Client transport closed");
+      else if (failure === "client") client.close(1011, "Client transport closed");
+      else {
+        context.mock.method(upstream!, "send", () => {
+          throw new Error("Synthetic upstream send failure");
+        });
+        client.send("response request frame");
+      }
       const rows = await f.resourcesWhen(
         (values) => values.find((row) => row.target.instanceId === runtime)?.active === 0,
       );
       assert.equal(
         rows.find((row) => row.target.instanceId === runtime)?.phase,
-        failure === "upstream" ? "quarantined" : "ready",
+        failure === "client" ? "ready" : "quarantined",
       );
       assert.equal(dispatches, 1);
     },

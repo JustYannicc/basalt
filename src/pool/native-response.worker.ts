@@ -26,10 +26,11 @@ export function nativeResponse(response: Response, lease: NativeStreamLease): Re
     const pair = new WebSocketPair();
     const client = pair[0],
       server = pair[1];
-    let ended = false;
+    let ended = false,
+      failing = false;
     upstream.accept();
     server.accept();
-    const close = (failed = false) => {
+    const finish = (failed: boolean, release: boolean) => {
       if (ended) return;
       ended = true;
       try {
@@ -38,10 +39,26 @@ export function nativeResponse(response: Response, lease: NativeStreamLease): Re
       try {
         server.close(failed ? 1011 : 1000, "Connection ended");
       } catch {}
-      lease.release();
+      if (release) lease.release();
     };
-    lease.onClose(() => close());
+    const close = () => {
+      if (!failing) finish(false, true);
+    };
+    const fail = (error: unknown) => {
+      if (ended || failing) return;
+      failing = true;
+      try {
+        void Promise.resolve(lease.failed?.(error)).then(
+          () => finish(true, true),
+          () => finish(true, false),
+        );
+      } catch {
+        finish(true, false);
+      }
+    };
+    lease.onClose(close);
     upstream.addEventListener("message", (event) => {
+      if (ended || failing) return;
       try {
         server.send(event.data);
       } catch {
@@ -49,25 +66,24 @@ export function nativeResponse(response: Response, lease: NativeStreamLease): Re
       }
     });
     server.addEventListener("message", (event) => {
+      if (ended || failing) return;
       try {
         upstream.send(event.data);
-      } catch {
-        close();
+      } catch (error) {
+        fail(error);
       }
     });
     for (const socket of [upstream, server]) {
       socket.addEventListener("close", (event) => {
-        const failed = socket === upstream && (event.code === 1006 || event.code === 1011);
-        if (!ended && failed) void Promise.resolve(lease.failed?.(event)).catch(() => {});
-        close(failed);
+        if (socket === upstream && (event.code === 1006 || event.code === 1011)) fail(event);
+        else close();
       });
       socket.addEventListener("error", (error) => {
-        if (!ended && socket === upstream)
-          void Promise.resolve(lease.failed?.(error)).catch(() => {});
-        close(socket === upstream);
+        if (socket === upstream) fail(error);
+        else close();
       });
     }
-    lease.signal.addEventListener("abort", () => close(), { once: true });
+    lease.signal.addEventListener("abort", close, { once: true });
     if (lease.signal.aborted) close();
     return new Response(null, { status: 101, headers: response.headers, webSocket: client });
   }
@@ -76,7 +92,8 @@ export function nativeResponse(response: Response, lease: NativeStreamLease): Re
     return response;
   }
   const reader = response.body.getReader();
-  let ended = false;
+  let ended = false,
+    failing = false;
   let detach = () => {};
   const finish = () => {
     ended = true;
@@ -87,7 +104,7 @@ export function nativeResponse(response: Response, lease: NativeStreamLease): Re
     new ReadableStream({
       start(controller) {
         const close = () => {
-          if (ended) return;
+          if (ended || failing) return;
           finish();
           void reader.cancel().catch(() => {});
           controller.error(new Error("Connection ended"));
@@ -107,16 +124,21 @@ export function nativeResponse(response: Response, lease: NativeStreamLease): Re
           } else controller.enqueue(value.value);
         } catch (error) {
           if (ended) return;
+          failing = true;
           try {
             await lease.failed?.(error);
-          } finally {
-            finish();
+          } catch {
+            ended = true;
+            detach();
             controller.error(error);
+            return;
           }
+          finish();
+          controller.error(error);
         }
       },
       async cancel(reason) {
-        finish();
+        if (!failing) finish();
         await reader.cancel(reason);
       },
     }),
