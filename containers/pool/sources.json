@@ -346,9 +346,7 @@
       "tag": "v1.0.5",
       "commit": "19d9868ffa24e94a2919ea1d1a761afa634de669",
       "sha256": "79b6ae8702b0ace76c10102d42a1401259e7dc772baacce2d47c90c33c6b25e7",
-      "auth_providers": [
-        "gemini-cli"
-      ]
+      "auth_providers": ["gemini-cli"]
     }
   }
 }

@@ -108,15 +108,16 @@ function schemaPreview(report: Record<string, unknown>) {
         `CREATE TABLE IF NOT EXISTS basalt_model_history_migrations (
       name text PRIMARY KEY, completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
       ];
-  const pending = migrations.length >= 3
-    ? pendingMigrations(report, migrations)
-    : report.applied
-      ? []
-      : report.version === historyBaseSchemaVersion
-        ? [historySchemaMigrations[0]!]
-        : diff.createTables.length
-          ? historySchemaMigrations.slice(0, 2)
-          : [historySchemaMigrations[1]!];
+  const pending =
+    migrations.length >= 3
+      ? pendingMigrations(report, migrations)
+      : report.applied
+        ? []
+        : report.version === historyBaseSchemaVersion
+          ? [historySchemaMigrations[0]!]
+          : diff.createTables.length
+            ? historySchemaMigrations.slice(0, 2)
+            : [historySchemaMigrations[1]!];
   return {
     pendingDdl: [...ledgerDdl, ...pending.flatMap((migration) => migration.statements)],
     migrationMarkers: pending.map((migration) => ({

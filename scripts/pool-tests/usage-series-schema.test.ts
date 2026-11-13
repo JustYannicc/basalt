@@ -358,9 +358,8 @@ test("a retained v4 database applies v6 after v8 and preserves imported rows and
       traffic,
     );
     assert.deepEqual(
-      (
-        await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_import_completion r")
-      ).rows,
+      (await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_import_completion r"))
+        .rows,
       completions,
       "applying v6 must preserve v8 frozen completion fields",
     );
