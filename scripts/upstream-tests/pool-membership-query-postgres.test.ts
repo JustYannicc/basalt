@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { Deferred, Effect, Fiber, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { CurrentTransformer } from "effect/sql/Statement";
+import type { NativePoolAccount } from "../../.upstream/apps/hosted/server/src/implementation/pool-membership.ts";
 import { app, organization, postgresFixture, until } from "./org-lock-postgres-fixture.ts";
 
 const upstream = new URL("../../.upstream/", import.meta.url);
@@ -74,6 +75,13 @@ const runtime = (sql: SqlClient.SqlClient, hold = Effect.void) => {
   return { executor, reads: () => reads };
 };
 
+const nativeRead = (executor: ReturnType<typeof runtime>["executor"]) =>
+  membership.nativePoolMembership(organization, app, executor) as Effect.Effect<
+    { accounts: readonly (typeof NativePoolAccount.Type)[] },
+    unknown,
+    SqlClient.SqlClient
+  >;
+
 test("native membership evaluates policy once on PostgreSQL and refreshes exact references", async () => {
   await postgresFixture(({ sql }) =>
     Effect.gen(function* () {
@@ -82,11 +90,11 @@ test("native membership evaluates policy once on PostgreSQL and refreshes exact 
       yield* Effect.tryPromise(() =>
         membership.bindPoolMembershipReferenceRuntime(executor, {}, Redacted.make("fixture-key")),
       );
-      const first = yield* membership.nativePoolMembership(organization, app, executor);
+      const first = yield* nativeRead(executor);
       assert.equal(first.accounts.length, 32);
       assert.equal(first.accounts[0].homeReference, "fixture-reference-binding-one");
       const statements: string[] = [];
-      const cached = yield* membership.nativePoolMembership(organization, app, executor).pipe(
+      const cached = yield* nativeRead(executor).pipe(
         Effect.provideService(CurrentTransformer, (statement) =>
           Effect.sync(() => {
             statements.push(statement.compile()[0]);
@@ -109,22 +117,19 @@ test("native membership evaluates policy once on PostgreSQL and refreshes exact 
       assert.equal(policyReads.length, 1, "one fresh policy evaluation per native membership read");
 
       yield* sql`update executor_account_acquisitions set revision='binding-two' where account=${home}`;
-      const changed = yield* membership.nativePoolMembership(organization, app, executor);
+      const changed = yield* nativeRead(executor);
       assert.equal(changed.accounts[0].bindingRevision, "binding-two");
       assert.equal(changed.accounts[0].homeReference, "fixture-reference-binding-two");
       assert.equal(reads(), 64);
       yield* sql`delete from hosted_account_access where account_id=${home}`;
-      const revoked = yield* membership.nativePoolMembership(organization, app, executor);
+      const revoked = yield* nativeRead(executor);
       assert.equal(
         revoked.accounts.some((row: { account: string }) => row.account === home),
         false,
       );
       assert.equal(revoked.accounts.length, 31);
       yield* sql`delete from hosted_app_account_links where app=${app}`;
-      assert.deepEqual(
-        (yield* membership.nativePoolMembership(organization, app, executor)).accounts,
-        [],
-      );
+      assert.deepEqual((yield* nativeRead(executor)).accounts, []);
     }),
   );
 });
@@ -139,9 +144,7 @@ test("native membership keeps account and binding locks until reference validati
         Effect.andThen(Deferred.await(release)),
       );
       const { executor } = runtime(sql, held);
-      const read = yield* Effect.forkChild(
-        membership.nativePoolMembership(organization, app, executor),
-      );
+      const read = yield* Effect.forkChild(nativeRead(executor));
       yield* Deferred.await(arrived);
       const accountWrite = yield* Effect.forkChild(
         sql`update executor_accounts set credential_generation=2 where id=${home}`,
