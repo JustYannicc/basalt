@@ -32,12 +32,21 @@ const transient = () => Object.assign(new Error(moduleText), { name: "ServiceUna
 const run = (fixture: ReturnType<typeof bucketFixture>, count = 1) =>
   Effect.gen(function* () {
     const started = yield* Clock.currentTimeMillis;
+    let finished = started;
     const fiber = yield* retainedFrameworks(
       references(count),
       retainedFrameworkObjects(fixture.bucket),
-    ).pipe(Effect.provide(fixture.logger), Effect.forkChild);
+    ).pipe(
+      Effect.provide(fixture.logger),
+      Effect.onExit(() =>
+        Effect.gen(function* () {
+          finished = yield* Clock.currentTimeMillis;
+        }),
+      ),
+      Effect.forkChild,
+    );
     yield* TestClock.adjust("18 seconds");
-    return { exit: yield* Fiber.await(fiber), started };
+    return { exit: yield* Fiber.await(fiber), started, elapsedMs: finished - started };
   }).pipe(Effect.provide(TestClock.layer()), Effect.scoped, Effect.runPromise);
 
 for (const phase of ["metadata", "get", "body"] as const)
@@ -151,8 +160,12 @@ test("a stalled metadata read gets at most three bounded attempts", async () => 
   assert.ok(!JSON.stringify(guard).includes(moduleText));
 });
 
-test("successful metadata pages, records, retries and waits consume one R2 phase budget", async () => {
-  for (const pages of [false, true]) {
+test("healthy cumulative reads complete past eight seconds while pages, records and retries share one phase cap", async () => {
+  for (const [pages, count] of [
+    [false, 6],
+    [true, 10],
+    [false, 10],
+  ] as const) {
     const fixture = bucketFixture();
     fixture.objects.push(metadata(identity.version, identity.sha256));
     let calls = 0;
@@ -180,7 +193,17 @@ test("successful metadata pages, records, retries and waits consume one R2 phase
           );
         });
     }
-    const { exit } = await run(fixture, 10);
+    const { exit, elapsedMs } = await run(fixture, count);
+    if (!pages && count === 6) {
+      assert.ok(
+        Exit.isSuccess(exit),
+        "Six healthy reads must complete after their cumulative twelve seconds",
+      );
+      assert.equal(exit.value.complete, true);
+      assert.equal(calls, 6);
+      assert.equal(elapsedMs, 12_000);
+      continue;
+    }
     assert.ok(Exit.isFailure(exit));
     const diagnostic = refusalDiagnostic(exit.cause, "sql");
     assert.equal(diagnostic.reasonCode, "time_bound");
