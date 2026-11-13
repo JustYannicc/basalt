@@ -1,3 +1,5 @@
+import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
+import { observeRuntimeRetirement } from "./retirement-observation.ts";
 import { RuntimeReadTrace, runtimeReadStep } from "../runtime-read-trace.ts";
 import { refuseRuntime } from "../runtime-route-diagnostic.ts";
 import {
@@ -54,6 +56,7 @@ export class RuntimeEndpoint {
   private activity: RuntimeActivity;
   private wrap: (response: Response, lease: NativeStreamLease) => Response;
   private queue: Promise<unknown> = Promise.resolve();
+  private retirementAttempts = 0;
   private options: EndpointOptions;
   constructor(
     ctx: ControllerState,
@@ -354,21 +357,28 @@ export class RuntimeEndpoint {
     );
   }
   retire(target: SlotTarget, identity: SlotIdentity, signal: AbortSignal) {
+    const trace = new RuntimeRetirementTrace("endpoint", ++this.retirementAttempts);
     return this.serialize(async () => {
-      const { record } = await this.store.read(target);
-      await this.health(identity, signal);
+      const { record } = await trace.run("witness_read", () => this.store.read(target));
+      await trace.run("health", () => this.health(identity, signal), undefined, signal);
       signal.throwIfAborted();
       if (!sameTarget(target, identity)) throw new SlotRefused("identity");
-      await this.activity.retire(identity);
+      await trace.run("activity_retire", () => this.activity.retire(identity));
       signal.throwIfAborted();
-      await this.ctx.container!.destroy();
-      await this.store.put(target, { ...record, retired: true });
+      await trace.run("destroy", () => this.ctx.container!.destroy(), undefined, signal);
+      await trace.run("retired_record", () => this.store.put(target, { ...record, retired: true }));
     });
   }
-  async retirement(identity: SlotIdentity) {
+  async retirement(identity: SlotIdentity, signal?: AbortSignal) {
+    const trace = new RuntimeRetirementTrace("endpoint", ++this.retirementAttempts);
     this.bound(identity);
-    const record = await this.store.retained(identity.slotId);
-    if (!record || !sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
-    return { identity, retired: record.retired === true, running: this.ctx.container!.running };
+    return observeRuntimeRetirement(
+      identity,
+      this.ctx.container!,
+      this.store,
+      this.activity,
+      trace,
+      signal,
+    );
   }
 }

@@ -1,3 +1,5 @@
+import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
+import { awaitProbe } from "../availability.ts";
 import {
   SlotRefused,
   sameIdentity,
@@ -23,6 +25,7 @@ interface Dependencies {
 /** A fleet cell reuses slot startup, policy installation and body lifetime rather than adding a second execution path. */
 export class FleetHandoffCell implements FleetCell {
   private deps: Dependencies;
+  private retirementAttempts = 0;
   constructor(deps: Dependencies) {
     this.deps = deps;
   }
@@ -78,14 +81,44 @@ export class FleetHandoffCell implements FleetCell {
     return this.deps.driver.drain(identity, AbortSignal.timeout(2_000));
   }
   async retire(identity: SlotIdentity, begin: () => Promise<void>) {
-    await this.deps.provider.observe(this.deps.application, identity.instanceId);
+    const trace = new RuntimeRetirementTrace("cell", ++this.retirementAttempts);
+    await trace.run("provider_observe", () =>
+      this.deps.provider.observe(this.deps.application, identity.instanceId),
+    );
     await begin();
-    await this.deps.driver.retire(identity, identity, AbortSignal.timeout(2_000));
+    const signal = AbortSignal.timeout(2_000);
+    await trace.run(
+      "driver_retire",
+      () => this.deps.driver.retire(identity, identity, signal),
+      undefined,
+      signal,
+    );
     if (!(await this.retired(identity))) throw new SlotRefused("uncertain");
   }
   async retired(identity: SlotIdentity) {
-    const actual = await this.deps.driver.retirement(identity, AbortSignal.timeout(2_000));
+    const trace = new RuntimeRetirementTrace("cell", ++this.retirementAttempts);
+    const signal = AbortSignal.timeout(2_000);
+    const actual = await trace.run(
+      "driver_retirement",
+      () => this.deps.driver.retirement(identity, signal),
+      (value) => ({
+        retired: value.retired,
+        running: value.running,
+        identityMatches: sameIdentity(value.identity, identity),
+      }),
+      signal,
+    );
     if (!sameIdentity(actual.identity, identity) || !actual.retired || actual.running) return false;
-    return this.deps.provider.absent(this.deps.application, identity.instanceId);
+    const observation = AbortSignal.timeout(15_000);
+    return trace.run(
+      "provider_absent",
+      () =>
+        awaitProbe(
+          () => this.deps.provider.absent(this.deps.application, identity.instanceId, observation),
+          observation,
+        ),
+      (absent) => ({ absent }),
+      observation,
+    );
   }
 }
