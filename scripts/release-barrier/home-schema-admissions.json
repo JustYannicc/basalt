@@ -3,7 +3,7 @@
   "transitions": [
     {
       "baselineInputHash": "ef1236d5c3f08c04",
-      "candidateInputHash": "0152ede472b6f78e",
+      "candidateInputHash": "c7646255244ef2e0",
       "fromVersions": [
         15,
         16
@@ -20,7 +20,7 @@
     },
     {
       "baselineInputHash": "0e2ecb6f105a95f3",
-      "candidateInputHash": "0152ede472b6f78e",
+      "candidateInputHash": "c7646255244ef2e0",
       "fromVersions": [
         15,
         16

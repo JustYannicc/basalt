@@ -85,7 +85,7 @@ test("no approved pair refuses every migration and malformed admission cannot si
 
 test("two reviewed serving baselines admit one candidate while stale candidates and other baselines refuse", async (context) => {
   const baselines = ["ef1236d5c3f08c04", "0e2ecb6f105a95f3"];
-  const sourceInputHash = "0152ede472b6f78e";
+  const sourceInputHash = "c7646255244ef2e0";
   const admit = await declarations(context, {
     format_version: 1,
     transitions: baselines.map((baselineInputHash) => ({
@@ -99,6 +99,8 @@ test("two reviewed serving baselines admit one candidate while stale candidates 
     for (const applied_version of [15, 16])
       assert.equal(admit(current, info, { ...before, applied_version }), true);
     for (const stale of [
+      "0152ede472b6f78e",
+      "cc52df39f1c5cd82",
       "ef1236d5c3f08c04",
       "2fe25d81b60b7025",
       "6842d68639bcd135",
