@@ -62,6 +62,7 @@ export class BoundSlotDriver implements SlotDriver {
     signal.throwIfAborted();
     // Cold startup is not health transport time. Acquire a fresh lease without repeating start.
     const health = await this.health(started.identity, signal);
+    signal.throwIfAborted();
     if (!sameIdentity(health.identity, started.identity)) throw new SlotRefused("identity");
     return health;
   }

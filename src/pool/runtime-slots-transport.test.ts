@@ -83,3 +83,28 @@ for (const mismatch of ["start-target", "health-boot"])
     await assert.rejects(driver.start(identity, new AbortController().signal), /identity/);
     assert.deepEqual(calls, mismatch === "start-target" ? ["/start"] : ["/start", "/health"]);
   });
+
+test("cancellation after fresh health completes cannot return a usable lease", async (context) => {
+  context.mock.method(performance, "now", () => 0);
+  const cancelled = new AbortController();
+  const identity = slotIdentity("candidate");
+  const calls: string[] = [];
+  const driver = new BoundSlotDriver(() => ({
+    fetch: async (request) => {
+      const action = new URL(request.url).pathname;
+      calls.push(action);
+      const response = Response.json({ identity, leaseMs: 1_500 });
+      if (action === "/health") {
+        const read = response.json.bind(response);
+        context.mock.method(response, "json", async () => {
+          const body: unknown = await read();
+          cancelled.abort(new Error("Synthetic cancellation after health completion"));
+          return body;
+        });
+      }
+      return response;
+    },
+  }));
+  await assert.rejects(driver.start(identity, cancelled.signal), /after health completion/);
+  assert.deepEqual(calls, ["/start", "/health"]);
+});
