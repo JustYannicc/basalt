@@ -1,4 +1,3 @@
-import type { WebSocket as WorkerWebSocket } from "@cloudflare/workers-types";
 import type { NativeStreamLease } from "./native-streams.ts";
 
 import {
@@ -6,6 +5,13 @@ import {
   modelLifetimePath,
   modelLifetimeHeader,
 } from "./model-lifetime-contract.ts";
+
+interface LifetimeSocket extends Pick<
+  WebSocket,
+  "addEventListener" | "removeEventListener" | "close"
+> {
+  accept(): void;
+}
 
 const lifetimes = new WeakMap<Response, ModelLifetime>();
 
@@ -19,10 +25,10 @@ class ModelLifetime {
     this.resolveReady = resolve;
     this.rejectReady = reject;
   });
-  private control: WorkerWebSocket;
+  private control: LifetimeSocket;
   private abortSocket: AbortController;
   private signal: AbortSignal;
-  constructor(control: WorkerWebSocket, abortSocket: AbortController, signal: AbortSignal) {
+  constructor(control: LifetimeSocket, abortSocket: AbortController, signal: AbortSignal) {
     this.control = control;
     this.abortSocket = abortSocket;
     this.signal = signal;
@@ -152,6 +158,6 @@ export function inheritModelLifetime(source: Response, target: Response) {
   return target;
 }
 
-function upgraded(response: Response): response is Response & { webSocket: WorkerWebSocket } {
+function upgraded(response: Response): response is Response & { webSocket: LifetimeSocket } {
   return response.status === 101 && "webSocket" in response && response.webSocket != null;
 }
