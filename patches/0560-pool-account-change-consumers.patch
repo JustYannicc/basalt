@@ -308,6 +308,25 @@ index adb1d5f63f4fd3675239b78543c44d1143932c36..3d55f9758e1a7ae0e1ac63c4317a899f
            recordRequestRejections,
            Effect.provideService(CurrentProductBrand, brand),
            Effect.provideService(McpAppSandbox, sandbox),
+diff --git a/apps/hosted/self-host/src/main.ts b/apps/hosted/self-host/src/main.ts
+index 58aa9e28ecd4f022b0dcc909f7f96d6a643135d8..87bead6b4a1d3c01be7db4f938f729ee52425103 100644
+--- a/apps/hosted/self-host/src/main.ts
++++ b/apps/hosted/self-host/src/main.ts
+@@ -81,7 +81,13 @@ export const main = Effect.scoped(
+     const listener = yield* Layer.build(
+       // Bun closes a request after 10 seconds without a response by default; account checks
+       // and server-rendered documents can wait longer.
+-      BunHttpServer.layer({ hostname: host, port, idleTimeout: 30 }),
++      BunHttpServer.layer({
++        hostname: host,
++        port,
++        idleTimeout: 30,
++        // Revision streams end when their serving scope closes, before the listener drains.
++        disablePreemptiveShutdown: true,
++      }),
+     );
+     const bound = yield* HttpServer.HttpServer.pipe(Effect.provideContext(listener));
+     const address = bound.address;
 diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src/contracts/app-ui.ts
 index 04760454c58f3ac4a2b41788fc63d910e5914fba..cc3ee7175528f786abda0d14be688b3b9b23269e 100644
 --- a/apps/hosted/server/src/contracts/app-ui.ts
@@ -1302,10 +1321,10 @@ index 337f4134f823c8a2d5fd93d5a4a303336ae6f883..e87ad73ac77099eb6f83abde195c61f9
    );
 diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/src/contracts/change-signal.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..08af83dd9d966749d01274ef61988c2bb2b94477
+index 0000000000000000000000000000000000000000..f218841ed1291b59bbd71517f691a90e699508df
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/change-signal.ts
-@@ -0,0 +1,202 @@
+@@ -0,0 +1,206 @@
 +/** Dashboard reads that follow the organization's committed revisions instead of a timer. */
 +import {
 +  ChangeReadRetry,
@@ -1352,12 +1371,13 @@ index 0000000000000000000000000000000000000000..08af83dd9d966749d01274ef61988c2b
 +
 +/**
 + * Retain `self` and publish a new value only from a read the organization's change feed
-+ * accepted. Until the first one, the page shows loading: a retained, hydrated or prefetched value
-+ * may belong to an earlier session in this registry, so it is never shown. After that, a read
-+ * runs after a hint, a missed head on reconnect, a server deadline or a refresh of this atom, and
-+ * its body stays buffered until the fence accepts it. While a read
-+ * runs, the previous value is shown as waiting; a rejected read keeps it. Ended access publishes
-+ * a denial, so protected content is cleared rather than retained. No focus or interval read.
++ * accepted. The server render and browser hydration snapshot both show loading: only the browser
++ * can establish the authenticated feed, and a retained, hydrated or prefetched value may belong to
++ * an earlier session in this registry. After the first accepted read, hints, missed heads on
++ * reconnect, server deadlines and refreshes trigger reads whose bodies stay buffered until the
++ * fence accepts them. While one runs, the previous value is shown as waiting; a rejected read
++ * keeps it. Ended access publishes a denial, so protected content is cleared rather than retained.
++ * No focus or interval read.
 + */
 +const changeRetained =
 +  (organization: OrganizationReference, topics: readonly string[]) =>
@@ -1379,11 +1399,14 @@ index 0000000000000000000000000000000000000000..08af83dd9d966749d01274ef61988c2b
 +    );
 +    const atom = Atom.readable(
 +      (get): Value => {
-+        if (typeof window === "undefined") return get(source);
++        // The server cannot establish the authenticated feed. Match the browser's first snapshot
++        // so no source value is shown before that feed accepts a read.
++        if (typeof window === "undefined")
++          return AsyncResult.initial<A, E | OrganizationForbidden | ChangeRefreshFailed>(false);
 +        /** The last accepted value; nothing is shown before the first one. */
 +        let shown: Value | undefined;
 +        const display = () =>
-+          shown ?? AsyncResult.initial<A, E | OrganizationForbidden | ChangeRefreshFailed>(true);
++          shown ?? AsyncResult.initial<A, E | OrganizationForbidden | ChangeRefreshFailed>(false);
 +        let started = false;
 +        let owning = false;
 +        let ended = false;
@@ -1665,6 +1688,89 @@ index 9235a2c6408f24376457f3e83e5b604b7d4b48d0..ba8537f21131913320fe64d8de3cb14f
              <VerifyIdentities
                query={resourceInventoryAtom(organization)}
                identify={identify}
+diff --git a/e2e/support/app-origin-tls.ts b/e2e/support/app-origin-tls.ts
+index 93fabe9a5ea8b9ff5b34d1717c214d347dce8e3d..5a4869d6bd1304ca080d66b9acffecb999c318b1 100644
+--- a/e2e/support/app-origin-tls.ts
++++ b/e2e/support/app-origin-tls.ts
+@@ -59,7 +59,10 @@ export const appOriginTls = Effect.gen(function* () {
+             response.pipe(outgoing);
+           },
+         );
+-        forwarded.on("error", () => outgoing.writeHead(502).end());
++        forwarded.on("error", (error) => {
++          if (outgoing.headersSent) outgoing.destroy(error);
++          else outgoing.writeHead(502).end();
++        });
+         incoming.pipe(forwarded);
+       });
+       return new Promise<typeof server>((resolve, reject) => {
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index 7db694c0fcbef364a5703598338dedff88df6b0c..0d1e99114b7f01fc72bdae0268c4b62be1203498 100644
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -1,6 +1,54 @@
++/** Undo hosted migration 20 before reconstructing its dependency layout. */
++const beforeHostedAccountChanges = () =>
++  [
++    // A dropped SDK table also drops its migration-20 trigger. Rewind the whole step so startup
++    // reinstalls every trigger after the older SDK layout has been reconstructed.
++    { sql: "DROP FUNCTION IF EXISTS hosted_account_changed() CASCADE" },
++    { sql: "DROP FUNCTION IF EXISTS hosted_flush_changes() CASCADE" },
++    { sql: "DROP FUNCTION IF EXISTS hosted_queue_change(text, text, text, bigint)" },
++    { sql: "DROP TABLE IF EXISTS hosted_change_dirty" },
++    { sql: "DROP TABLE IF EXISTS hosted_change_batches" },
++    {
++      sql: `DO $rollback$
++        BEGIN
++          IF to_regclass('private_hosted_migrations') IS NOT NULL THEN
++            DELETE FROM private_hosted_migrations WHERE migration_id = 20;
++            IF EXISTS (SELECT 1 FROM private_hosted_migrations WHERE migration_id = 19)
++              AND to_regprocedure('hosted_record_change(text,text,text)') IS NOT NULL THEN
++              EXECUTE $migration19$
++                CREATE OR REPLACE FUNCTION hosted_deployment_changed() RETURNS trigger LANGUAGE plpgsql AS $function$
++                BEGIN
++                  IF TG_OP = 'DELETE' THEN
++                    PERFORM hosted_record_change(OLD.owner, 'deployment', OLD.id);
++                    RETURN OLD;
++                  END IF;
++                  IF TG_OP = 'INSERT' THEN
++                    IF NEW.active_deployment IS NOT NULL THEN
++                      PERFORM hosted_record_change(NEW.owner, 'deployment', NEW.id);
++                    END IF;
++                  ELSIF NEW.active_deployment IS DISTINCT FROM OLD.active_deployment OR NEW.owner IS DISTINCT FROM OLD.owner THEN
++                    IF NEW.owner IS DISTINCT FROM OLD.owner THEN
++                      PERFORM hosted_record_change(OLD.owner, 'deployment', OLD.id);
++                    END IF;
++                    PERFORM hosted_record_change(NEW.owner, 'deployment', NEW.id);
++                  END IF;
++                  RETURN NEW;
++                END;
++                $function$
++              $migration19$;
++            ELSIF to_regprocedure('hosted_deployment_changed()') IS NOT NULL THEN
++              DROP FUNCTION hosted_deployment_changed() CASCADE;
++            END IF;
++          END IF;
++        END;
++      $rollback$;`,
++    },
++  ] as const;
++
+ /** Remove account targets and app calls before reconstructing an earlier SDK layout. */
+ export const beforeAppCalls = () =>
+   [
++    ...beforeHostedAccountChanges(),
+     { sql: "DROP TABLE executor_account_targets" },
+     { sql: "DROP TABLE executor_app_call_receipts" },
+     { sql: "DROP TABLE executor_app_connections" },
+@@ -24,6 +72,7 @@ export const beforeAccountIdentities = () =>
+ /** Remove the latest hosted objects and journal together so earlier migrations can replay. */
+ export const beforeHostedAccountRechecks = () =>
+   [
++    ...beforeHostedAccountChanges(),
+     { sql: "DROP TRIGGER hosted_deployment_changed ON executor_apps" },
+     { sql: "DROP FUNCTION hosted_deployment_changed(), hosted_record_change(text, text, text)" },
+     { sql: "DROP TABLE hosted_change_pending, hosted_change_heads" },
 diff --git a/packages/app-data/src/contracts/change-revisions.ts b/packages/app-data/src/contracts/change-revisions.ts
 index fdc4545ed67f5b43d1799bb5eed612a88cb46e2f..5792903eb6901f3d59fd81eb69587a142fb50ffa 100644
 --- a/packages/app-data/src/contracts/change-revisions.ts
