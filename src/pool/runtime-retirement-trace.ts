@@ -18,6 +18,7 @@ type Phase =
   | "destroy"
   | "retired_record";
 interface Fields {
+  exit?: "normal" | "nonzero";
   retired?: boolean;
   running?: boolean;
   identityMatches?: boolean;

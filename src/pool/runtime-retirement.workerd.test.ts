@@ -131,6 +131,42 @@ test(
         );
       });
       await context.test(
+        "a native nonzero exit proves stop without treating it as healthy",
+        async () => {
+          const value = await step("stale-nonzero-monitor");
+          assert.equal(value.phase, "retired");
+          assert.equal(value.endpoint.running, false);
+          assert.equal(value.endpoint.actualRunning, false);
+          assert.equal(value.endpoint.monitorCalls, 1);
+          assert.equal(value.endpoint.destroyed, 1);
+          assert.ok(
+            value.events.some(
+              (event: { phase: string; exit?: string }) =>
+                event.phase === "monitor" && event.exit === "nonzero",
+            ),
+          );
+          assert.ok(
+            value.events.some(
+              (event: { phase: string; absent?: boolean }) =>
+                event.phase === "provider_absent" && event.absent === true,
+            ),
+          );
+        },
+      );
+      await context.test("an invalid exit-code shape remains unknown", async () => {
+        const first = await step("stale-invalid-exit");
+        const second = await step("stale-invalid-exit");
+        assert.equal(first.phase, "retiring");
+        assert.equal(second.phase, "retiring");
+        assert.equal(second.endpoint.running, false);
+        assert.equal(second.endpoint.destroyed, 1);
+        assert.equal(second.endpoint.monitorCalls, 1);
+        assert.equal(
+          second.events.some((event: { phase: string }) => event.phase === "provider_absent"),
+          false,
+        );
+      });
+      await context.test(
         "a held stop monitor stays bounded and never repeats destruction",
         async () => {
           try {

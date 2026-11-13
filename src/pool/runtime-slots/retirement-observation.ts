@@ -1,3 +1,4 @@
+import { Schema } from "effect";
 import { awaitProbe } from "../availability.ts";
 import { RuntimeActivity } from "./activity.ts";
 import { SlotRefused, sameIdentity, type SlotIdentity } from "./contract.ts";
@@ -5,10 +6,20 @@ import { RuntimeWitnessStore } from "./witness-store.ts";
 import type { RuntimeState } from "./runtime-state.ts";
 import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
 
+const isProcessExit = Schema.is(
+  Schema.Struct({
+    exitCode: Schema.Number.check(
+      Schema.isInt(),
+      Schema.isGreaterThanOrEqualTo(-2_147_483_648),
+      Schema.isLessThanOrEqualTo(2_147_483_647),
+    ),
+  }),
+);
+
 /** Older container runtimes update running only when their monitor settles. */
 export class RuntimeRetirementMonitor {
   private container: NonNullable<RuntimeState["container"]>;
-  private observation?: Promise<void>;
+  private observation?: Promise<"normal" | "nonzero">;
   private identity?: SlotIdentity;
   constructor(container: NonNullable<RuntimeState["container"]>) {
     this.container = container;
@@ -17,13 +28,20 @@ export class RuntimeRetirementMonitor {
     if (this.identity && !sameIdentity(this.identity, identity)) this.observation = undefined;
     this.identity = identity;
     if (this.observation || !this.container.running) return;
-    try {
-      this.observation = this.container.monitor();
-    } catch (error) {
-      this.observation = Promise.reject(error);
-    }
+    this.observation = this.observe();
     // Destruction may outlive its caller; retain one handled observation for later reports.
     void this.observation.catch(() => {});
+  }
+  private async observe() {
+    try {
+      await this.container.monitor();
+      return "normal" as const;
+    } catch (error) {
+      // A native exit status proves termination; transport rejection alone does not.
+      if (error instanceof Error && isProcessExit(error) && error.exitCode !== 0)
+        return "nonzero" as const;
+      throw error;
+    }
   }
   async stopped(identity: SlotIdentity, trace: RuntimeRetirementTrace, caller?: AbortSignal) {
     if (this.identity && !sameIdentity(this.identity, identity)) this.observation = undefined;
@@ -36,7 +54,7 @@ export class RuntimeRetirementMonitor {
     await trace.run(
       "monitor",
       () => awaitProbe(() => observation, signal),
-      () => ({ running: this.container.running }),
+      (exit) => ({ running: this.container.running, exit }),
       signal,
     );
     if (this.container.running) throw new SlotRefused("uncertain");
