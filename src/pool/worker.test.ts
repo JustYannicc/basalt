@@ -1111,7 +1111,7 @@ for (const retire of [false, true])
                     "at" in publication &&
                     typeof publication.at === "number",
                 );
-                assert.ok(publication.at <= Date.now() && publication.at + 30_000 > Date.now());
+                assert.ok(publication.at >= start && publication.at <= Date.now());
                 assert.partialDeepStrictEqual(publication, {
                   action: "publish-changes",
                   expiresAt: publication.at + 30_000,
