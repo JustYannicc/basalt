@@ -1798,7 +1798,8 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Check Google BYO OAuth through the real self-host flow
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts dashboard-batch:google-byo-oauth-through-the-real-self-host-flow)"
+        # Each case starts its own compiler, server and browser; keep their startup bursts apart.
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts dashboard-batch:google-byo-oauth-through-the-real-self-host-flow)" --workers 1
       - name: Prove shared Google Admin OAuth selection through the pinned server
         env:
           BASE_SHA: ${{ needs.select.outputs.base_sha }}
