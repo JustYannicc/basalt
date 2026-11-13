@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The packaged MCP renderer is generated from the final combined client tree, after accepted-read fencing and shared plan-name presentation. Its content-hashed public path identifies those exact bytes. Replaying older generated-asset carries must not serve a renderer from a different client contract. The normal pinned generator is authoritative and reproduces the committed assets without changes."
+    }
+  }
+}
