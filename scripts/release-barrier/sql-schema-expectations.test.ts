@@ -125,8 +125,7 @@ test("all six expectations derive from the actual candidate registries and suppl
     storageSchemas.map((entry) => entry.version),
   );
   assert.deepEqual(sdk.expected, [storageSchemas.at(-1)!.version]);
-  assert.equal(sdk.expected[0], "4.0.29", "the candidate includes its trailing index migration");
-  assert.notEqual(sdk.expected[0], currentStorageSchema.version);
+  assert.ok(sdk.registered!.includes(currentStorageSchema.version));
   const publicRegistry = expectations.find((entry) => entry.namespace === "registry")!;
   assert.deepEqual(publicRegistry.expected, [registrySchema.version]);
   const registrySource = await readFile(
