@@ -107,6 +107,7 @@ export const sharedInputs = [
   ".github/workflows/**",
   "scripts/ci/**",
   "scripts/prepare-upstream.ts",
+  "scripts/pool-test-runtime/**",
   "scripts/process.ts",
   "scripts/releases/patches.json",
   ".upstream/package.json",
