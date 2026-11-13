@@ -4,10 +4,7 @@
     {
       "baselineInputHash": "ef1236d5c3f08c04",
       "candidateInputHash": "c7646255244ef2e0",
-      "fromVersions": [
-        15,
-        16
-      ],
+      "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
         "idx_billing_charge_usage_cover_v1",
@@ -21,10 +18,7 @@
     {
       "baselineInputHash": "0e2ecb6f105a95f3",
       "candidateInputHash": "c7646255244ef2e0",
-      "fromVersions": [
-        15,
-        16
-      ],
+      "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
         "idx_billing_charge_usage_cover_v1",
@@ -38,10 +32,7 @@
     {
       "baselineInputHash": "c7646255244ef2e0",
       "candidateInputHash": "5f82807410b4ebd6",
-      "fromVersions": [
-        15,
-        16
-      ],
+      "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
         "idx_billing_charge_usage_cover_v1",
@@ -54,11 +45,8 @@
     },
     {
       "baselineInputHash": "5f82807410b4ebd6",
-      "candidateInputHash": "6435f34f5e3ed462",
-      "fromVersions": [
-        15,
-        16
-      ],
+      "candidateInputHash": "cb7def7a9c6a50ee",
+      "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
         "idx_billing_charge_usage_cover_v1",
