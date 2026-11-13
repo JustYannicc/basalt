@@ -500,3 +500,26 @@ new file mode 100644
 +  "page_incomplete",
 +  "page_count_bound",
 +] as const;
+diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
+--- a/e2e/tests/production-ops-migrations.spec.ts
++++ b/e2e/tests/production-ops-migrations.spec.ts
+@@ -39,7 +39,7 @@
+               category,
+               phase: "sql",
+               causeKind,
+-              ...(sqlStateClass === undefined ? {} : { sqlStateClass }),
++              ...(sqlStateClass === undefined ? {} : { reasonCode: "sql_failure", sqlStateClass }),
+             },
+           });
+           expect(JSON.stringify(response.body)).not.toContain("never-retain-diagnostic-password");
+diff --git a/e2e/support/provider-adoption-locks.ts b/e2e/support/provider-adoption-locks.ts
+--- a/e2e/support/provider-adoption-locks.ts
++++ b/e2e/support/provider-adoption-locks.ts
+@@ -178,6 +178,7 @@
+       category: "sql",
+       phase: "sql",
+       sqlStateClass: "55",
++      reasonCode: "sql_failure",
+       causeKind: "failure",
+     },
+   });
