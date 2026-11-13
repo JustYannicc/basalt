@@ -1,14 +1,15 @@
 diff --git a/sdk/api/handlers/openai/basalt_model_drain.go b/sdk/api/handlers/openai/basalt_model_drain.go
 new file mode 100644
-index 0000000..491501c
+index 0000000..388fdb7
 --- /dev/null
 +++ b/sdk/api/handlers/openai/basalt_model_drain.go
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,60 @@
 +package openai
 +
 +import (
 +	"encoding/binary"
 +	"errors"
++
 +	"github.com/gorilla/websocket"
 +)
 +
@@ -65,23 +66,24 @@ index 0000000..491501c
 +}
 diff --git a/sdk/api/handlers/openai/basalt_model_drain_test.go b/sdk/api/handlers/openai/basalt_model_drain_test.go
 new file mode 100644
-index 0000000..15d7fc1
+index 0000000..71a9eb8
 --- /dev/null
 +++ b/sdk/api/handlers/openai/basalt_model_drain_test.go
-@@ -0,0 +1,129 @@
+@@ -0,0 +1,130 @@
 +package openai
 +
 +import (
 +	"bytes"
 +	"context"
 +	"encoding/binary"
-+	"github.com/gorilla/websocket"
 +	"net/http"
 +	"net/http/httptest"
 +	"strings"
 +	"sync/atomic"
 +	"testing"
 +	"time"
++
++	"github.com/gorilla/websocket"
 +)
 +
 +func basaltModelDrainPair(t *testing.T, protocol string) (*websocket.Conn, *websocket.Conn) {

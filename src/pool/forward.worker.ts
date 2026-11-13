@@ -63,9 +63,15 @@ export async function forwardPoolRequest(
     if (request.headers.has(nativeModelHeader)) {
       native = await deps.computers.nativeModel(request);
       request = native.request;
-    } else if (request.headers.get("sec-websocket-protocol") === modelDrainProtocol) {
+    } else if (request.headers.has("sec-websocket-protocol")) {
       const headers = new Headers(request.headers);
-      headers.delete("sec-websocket-protocol");
+      const protocols = headers
+        .get("sec-websocket-protocol")!
+        .split(",")
+        .map((value) => value.trim())
+        .filter((value) => value !== modelDrainProtocol);
+      if (protocols.length) headers.set("sec-websocket-protocol", protocols.join(", "));
+      else headers.delete("sec-websocket-protocol");
       request = new Request(request, { headers });
     }
     if (isPublicModelPath(pathname)) {
