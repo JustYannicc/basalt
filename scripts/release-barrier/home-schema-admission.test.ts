@@ -172,7 +172,7 @@ test("the combined b76 publication requires its b75 baseline and preserves both 
     );
 });
 
-test("the rebased fleet publication requires the serving b77 image and rejects the frozen image", async () => {
+test("the rebased fleet publication requires the serving b79 image and rejects earlier fleet images", async () => {
   const admit = await homeSchemaAdmission(fileURLToPath(new URL("../../", import.meta.url)));
   const native = {
     ...info,
@@ -187,14 +187,25 @@ test("the rebased fleet publication requires the serving b77 image and rejects t
   };
   const current = {
     ...identity,
-    baselineInputHash: "5f82807410b4ebd6",
-    sourceInputHash: "cb7def7a9c6a50ee",
+    baselineInputHash: "776158b6965a4dc3",
+    sourceInputHash: "25f1b8918cedcf21",
   };
   for (const applied_version of [15, 16])
     assert.equal(admit(current, native, { ...before, applied_version }), true);
-  for (const sourceInputHash of ["6435f34f5e3ed462", "5f82807410b4ebd6", "f".repeat(16)])
+  for (const sourceInputHash of [
+    "6435f34f5e3ed462",
+    "cb7def7a9c6a50ee",
+    "776158b6965a4dc3",
+    "5f82807410b4ebd6",
+    "f".repeat(16),
+  ])
     assert.equal(admit({ ...current, sourceInputHash }, native, before), false);
-  for (const baselineInputHash of ["ef1236d5c3f08c04", "0e2ecb6f105a95f3", "c7646255244ef2e0"])
+  for (const baselineInputHash of [
+    "ef1236d5c3f08c04",
+    "0e2ecb6f105a95f3",
+    "c7646255244ef2e0",
+    "5f82807410b4ebd6",
+  ])
     assert.equal(admit({ ...current, baselineInputHash }, native, before), false);
   for (const applied_version of [null, 14, 17])
     assert.equal(admit(current, native, { ...before, applied_version }), false);
