@@ -245,7 +245,7 @@ new file mode 100644
 +const Reference = Schema.Struct({ app: Id("app"), deployment: Id("dpl"), build: Id("bld") });
 +export const ReferenceSnapshot = Schema.Struct({
 +  references: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 2147483647 })),
-+  fingerprint: Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/)),
++  fingerprint: Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u)),
 +});
 +const scope = `from executor_apps a join executor_deployments d on d.code = a.code and d.owner = a.owner
 +  where a.owner = 'organization:' || $1 and d.owner = 'organization:' || $1`;
@@ -308,7 +308,7 @@ new file mode 100644
 +import { retainedFrameworkReadBudget } from "./retained-frameworks-read.ts";
 +import type { Operation, OpsSettings } from "./runner.ts";
 +
-+const Digest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
++const Digest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
 +const Cursor = Schema.Struct({
 +  format: Schema.Literal("basalt-retained-inventory-cursor-v1"),
 +  target: Schema.String,
@@ -318,7 +318,7 @@ new file mode 100644
 +  database: Schema.Json,
 +  session: Schema.NonEmptyString,
 +  index: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2000 })),
-+  after: Schema.String.check(Schema.isPattern(/^bld_[A-Za-z0-9_-]{1,251}$/)),
++  after: Schema.String.check(Schema.isPattern(/^bld_[A-Za-z0-9_-]{1,251}$/u)),
 +  snapshot: ReferenceSnapshot,
 +  metadataSha256: Digest,
 +  prior: Digest,
