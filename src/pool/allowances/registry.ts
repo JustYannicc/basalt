@@ -180,6 +180,7 @@ export class PlanAllowances {
     const now = this.now();
     const active = entries.filter(
       (entry) =>
+        entry.verification !== "unknown" &&
         entry.checkedAt !== null &&
         entry.checkedAt <= now &&
         entry.expiresAt !== null &&

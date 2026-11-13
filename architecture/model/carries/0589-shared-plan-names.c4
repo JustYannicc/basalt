@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.accountPresentation {
     metadata {
-      constraint "Host plan labels resolve through the same vendor identities as pool capacity and supported windows, preserving existing named tiers without inferring an allowance from a label. Embedded account views ship regenerated MCP assets from the same shared contract."
+      constraint "Host plan labels resolve through the same vendor identities as pool capacity and supported windows, preserving existing named tiers without inferring an allowance from a label. Embedded account views ship regenerated MCP assets and matching content-addressed paths from the same shared contract."
     }
   }
 }

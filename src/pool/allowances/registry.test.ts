@@ -163,3 +163,49 @@ test("an expired vendor statement cannot contradict a freshly checked dataset", 
   assert.equal(value.multiplier, 50);
   assert.equal(value.allowance?.kind, "dataset");
 });
+
+test("rejected source rows do not contradict fresh fallback before their original expiry", async () => {
+  const bodies: Record<string, string> = JSON.parse(
+    readFileSync(new URL("./fixtures/vendor-sources.json", import.meta.url), "utf8"),
+  );
+  for (const change of ["dataset", "vendor", "conflict"]) {
+    let clock = now;
+    let changed = false;
+    const registry = new PlanAllowances(new Memory(), {
+      now: () => clock,
+      seed: { entries: [] },
+      fetch: async (input) => {
+        const url = String(input);
+        if (url.includes("planyield"))
+          return Response.json({
+            as_of: "2026-11-13",
+            license: "CC BY 4.0",
+            options: [
+              {
+                ...row(changed && change === "conflict" ? 43 : 50),
+                ...(changed && change === "dataset" ? { status_class: "stale" } : {}),
+              },
+            ],
+          });
+        if (url.includes("subscription.rs")) return new Response(bodies["openai-client"]);
+        if (url.includes("fxtwitter"))
+          return new Response(changed && change === "vendor" ? "{}" : bodies["openai-statement"]);
+        return new Response(null, { status: 503 });
+      },
+    });
+    await registry.refresh();
+    clock += 86_400_000;
+    changed = true;
+    await registry.refresh();
+    const value = capacityWeight("codex", "promax", 604_800, {
+      catalog: await registry.read(),
+      now: clock,
+    });
+    if (change === "conflict") {
+      assert.equal(value.known, false, "actual current disagreement stays unknown");
+    } else {
+      assert.equal(value.multiplier, 50, change);
+      assert.equal(value.allowance?.kind, change === "dataset" ? "vendor" : "dataset");
+    }
+  }
+});

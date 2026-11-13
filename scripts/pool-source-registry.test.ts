@@ -373,6 +373,12 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         );
         assert.match(patch.retirement.requires, /no empty periodic writes/);
         assert.match(patch.retirement.requires, /without a schema or lease change/);
+      } else if (patch.identity === "home-summary-service-tier") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0594-home-summary-service-tier.patch");
+        assert.match(patch.retirement.requires, /service-tier/);
+        assert.match(patch.retirement.requires, /unknown/);
+        assert.match(patch.retirement.requires, /privacy/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
