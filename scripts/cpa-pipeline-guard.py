@@ -70,13 +70,44 @@ def check_batch(root, base, head):
             raise ValueError(f"CPA member {member_base}..{member}: {error}") from error
 
 
+def check_main_push(root, base, head):
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+    parents = git("rev-list", "--parents", "-n", "1", head).split()[1:]
+    if len(parents) == 2:
+        first, second = parents
+        common = git("merge-base", first, second)
+        merges = git("rev-list", "--first-parent", "--min-parents=2", f"{common}..{second}").splitlines()
+        members = []
+        for merge in merges:
+            member = git("rev-parse", f"{merge}^2")
+            landed = subprocess.run(["git", "merge-base", "--is-ancestor", member, first], cwd=root)
+            if landed.returncode not in (0, 1):
+                landed.check_returncode()
+            # Merging main into an ordinary update does not create a reviewed member.
+            if landed.returncode == 1:
+                members.append(merge)
+        if members:
+            # Main wraps the composed head in one merge; members remain on the second parent.
+            print(f"CPA main merge uses batch attribution; base {first}; batch base {common}")
+            check_batch(root, common, second)
+            check(root, second, head)
+            return
+    check(root, base, head)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True)
     parser.add_argument("--head")
-    parser.add_argument("--batch", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--batch", action="store_true")
+    mode.add_argument("--main-push", action="store_true")
     args = parser.parse_args()
-    if args.batch:
+    if args.main_push:
+        check_main_push(ROOT, args.base, args.head or "HEAD")
+    elif args.batch:
         check_batch(ROOT, args.base, args.head or "HEAD")
     else:
         check(ROOT, args.base, args.head)
