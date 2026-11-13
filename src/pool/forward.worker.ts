@@ -203,11 +203,14 @@ export async function forwardPoolRequest(
       }
       const observed =
         socketCall && observing
-          ? terminalSocket(
+          ? inheritModelLifetime(
               response,
-              requestId,
-              observe,
-              response.headers.get("X-Basalt-Terminal-Protocol") === "1",
+              terminalSocket(
+                response,
+                requestId,
+                observe,
+                response.headers.get("X-Basalt-Terminal-Protocol") === "1",
+              ),
             )
           : response;
       const forwarded = native === undefined ? observed : nativeResponse(observed, native);
