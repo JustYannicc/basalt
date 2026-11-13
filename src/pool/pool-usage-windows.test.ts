@@ -143,6 +143,7 @@ async function sampledCapacity(options: {
   sampleMinutes?: number;
   durationMinutes?: number;
   interrupt?: "membership" | "collection";
+  resumeOutage?: boolean;
 }) {
   const start = Date.parse("2026-11-09T08:00:00Z");
   const f = quotaSamplingFixture(start);
@@ -157,14 +158,15 @@ async function sampledCapacity(options: {
     elapsed <= (options.durationMinutes ?? 210) * 60_000;
     elapsed += (options.sampleMinutes ?? 5) * 60_000
   ) {
+    if (options.resumeOutage && elapsed > 0 && elapsed < 20 * 60_000) continue;
     const sequence = Math.floor(elapsed / interval);
     const sourceAt = start + sequence * interval;
     const observedAt = new Date(sourceAt).toISOString();
     f.detail.collection.observed_at = observedAt;
     f.credential.observed_at = observedAt;
-    if (options.interrupt === "membership") f.select(elapsed !== 30 * 60_000);
+    if (options.interrupt === "membership") f.select(elapsed !== 10 * 60_000);
     f.detail.collection.status =
-      options.interrupt === "collection" && elapsed === 30 * 60_000 ? "failed" : "success";
+      options.interrupt === "collection" && elapsed === 10 * 60_000 ? "failed" : "success";
     for (const window of f.detail.windows) {
       window.observed_at = observedAt;
       window.expires_at = new Date(sourceAt + 30 * 60_000).toISOString();
@@ -219,4 +221,13 @@ test("removing an account or failing collection breaks historical source continu
     });
     assert.equal(forecast.history.observedHours, 0, interrupt);
   }
+});
+
+test("a resumed sampler cannot train across its earlier outage", async () => {
+  const forecast = await sampledCapacity({
+    sourceMinutes: 34.04,
+    durationMinutes: 75,
+    resumeOutage: true,
+  });
+  assert.equal(forecast.history.observedHours, 0);
 });

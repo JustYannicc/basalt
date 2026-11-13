@@ -51,6 +51,9 @@ const readingKey = (reading: CapacityReading) =>
     reading.unit.id,
     reading.account,
   ]);
+const accountWindowKey = (
+  value: Pick<CapacityAccountState, "account" | "provider" | "windowSeconds">,
+) => JSON.stringify([value.account, value.provider, value.windowSeconds]);
 const text = (value: unknown, max: number): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= max;
 
@@ -186,6 +189,9 @@ interface RollingChainEntry {
   revision: string;
   complete: boolean;
 }
+interface StoredAccountState extends CapacityAccountState {
+  sourceSince?: number;
+}
 interface HistoryIndex {
   version: 1;
   days: string[];
@@ -193,10 +199,11 @@ interface HistoryIndex {
   fromHour: number;
   groups: Record<string, GroupCursor>;
   trackingSince?: number;
+  sourceSince?: number;
   previous?: CapacityReading[];
   previousExpected?: CapacityExpectedCohort[];
   latest?: CapacityReading[];
-  accountStates?: CapacityAccountState[];
+  accountStates?: StoredAccountState[];
   unclassifiedAccounts?: { account: string; provider: string }[];
   bankedReceipts?: Record<string, number>;
   demandFrom?: number;
@@ -669,10 +676,10 @@ export class CapacityHistory {
           dayWrites.set(day, history);
         }
       }
-      const previous =
-        index.lastAt !== null && snapshot.at - index.lastAt <= maxDemandSampleGap
-          ? (index.previous ?? [])
-          : [];
+      const samplerInterrupted =
+        index.lastAt !== null && snapshot.at - index.lastAt > maxDemandSampleGap;
+      const sourceSince = samplerInterrupted ? snapshot.at : index.sourceSince;
+      const previous = !samplerInterrupted ? (index.previous ?? []) : [];
       const priorLatestByKey = new Map(
         (index.latest ?? previous).map((reading) => [readingKey(reading), reading]),
       );
@@ -763,18 +770,40 @@ export class CapacityHistory {
           else if (rollingChain[group]?.[account]?.complete) accounts[account] = [];
           else delete accounts[account];
         }
-      const previousByKey = new Map(previous.map((reading) => [readingKey(reading), reading]));
       const hashedCurrentBySource = new Map(
         validCurrent.map((reading, index) => [readingKey(reading), hashedCurrent[index]!]),
       );
+      const priorStates = new Map(
+        (index.accountStates ?? []).map((state) => [accountWindowKey(state), state]),
+      );
       const nextAccountStates = snapshot.accountStates
         ? await Promise.all(
-            snapshot.accountStates.map(async (state) => ({
-              ...state,
-              account: await accountHash(state.account),
-            })),
+            snapshot.accountStates.map(async (state) => {
+              const account = await accountHash(state.account);
+              const old = priorStates.get(accountWindowKey({ ...state, account }));
+              const since =
+                state.sourceContinuous === false ||
+                (state.sourceContinuous === true && old?.sourceContinuous === undefined)
+                  ? snapshot.at
+                  : old?.sourceSince;
+              return { ...state, account, sourceSince: since };
+            }),
           )
         : (index.accountStates ?? []);
+      const currentStates = new Map(
+        nextAccountStates.map((state) => [accountWindowKey(state), state]),
+      );
+      const currentSources = new Set(hashedCurrent.map(accountWindowKey));
+      // A fresh-looking cached source cannot restart training after lost continuity.
+      const sourceEligible = (reading: CapacityReading) => {
+        const state = currentStates.get(accountWindowKey(reading));
+        return (
+          reading.observedAt >= Math.max(sourceSince ?? -Infinity, state?.sourceSince ?? -Infinity)
+        );
+      };
+      const previousByKey = new Map(
+        previous.filter(sourceEligible).map((reading) => [readingKey(reading), reading]),
+      );
       const unclassifiedAccounts = snapshot.unclassifiedAccounts
         ? await Promise.all(
             snapshot.unclassifiedAccounts.map(async (entry) => ({
@@ -884,6 +913,7 @@ export class CapacityHistory {
       const censoredGroups = new Set<string>();
       for (const reading of validCurrent) {
         const hashed = hashedCurrentBySource.get(readingKey(reading))!;
+        if (!sourceEligible(hashed)) continue;
         const old = previousByKey.get(readingKey(hashed));
         const group = cohortGroup(reading);
         if (reading.windowSeconds === 18_000 && reading.mode?.toLowerCase().includes("rolling")) {
@@ -1365,27 +1395,17 @@ export class CapacityHistory {
         trackingSince: index.trackingSince ?? snapshot.at,
         // This cursor only compares historical fixed-window sources. Expired readings
         // never enter current capacity or rolling reconstruction through this path.
+        sourceSince,
         previous: [
           ...previous
-            .filter((reading) => fixedDemandWindow(reading))
+            .filter((reading) => fixedDemandWindow(reading) && sourceEligible(reading))
             .filter(
               (reading) =>
                 snapshot.at - reading.observedAt <= maxFixedSourceGap &&
-                !hashedCurrent.some(
-                  (current) =>
-                    current.account === reading.account &&
-                    current.provider === reading.provider &&
-                    current.windowSeconds === reading.windowSeconds,
-                ) &&
-                nextAccountStates.some(
-                  (state) =>
-                    state.account === reading.account &&
-                    state.provider === reading.provider &&
-                    state.windowSeconds === reading.windowSeconds &&
-                    state.sourceContinuous === true,
-                ),
+                !currentSources.has(accountWindowKey(reading)) &&
+                currentStates.get(accountWindowKey(reading))?.sourceContinuous === true,
             ),
-          ...hashedCurrent,
+          ...hashedCurrent.filter(sourceEligible),
         ],
         previousExpected: [...expected.values()],
         latest: [...latestByKey.values()],
