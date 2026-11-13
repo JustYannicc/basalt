@@ -304,10 +304,10 @@
         {
           "identity": "cliproxy-node-no-postwrite-replay",
           "file": "0599-node-no-postwrite-replay.patch",
-          "sha256": "b4e9203331651d3ec7fcec2ab041af85d6c5a10ba10aa3689aff03f05f481de2",
+          "sha256": "b86b7408dc09adc6b0992689c7003f6952ffadb391582b451d1ef8807a1db2b1",
           "retirement": {
             "mode": "manual",
-            "requires": "Retire when the pinned upstream release includes terminal unknown-outcome classification after HTTP submission and passes the real post-write EOF, empty accepted model-pool stream, late truncation, incomplete SSE frames, internal POST replay, pre-write connect failure and explicit HTTP and SSE refusal regressions. Preserve no replay across models, credentials and retry rounds, public 502 upstream_outcome_unknown with retryable false, existing proxy and protocol selection, and release updates. Re-apply on each source update until the upstream fix is released; remove this carry when that release supplies the same behavior."
+            "requires": "Retire when the pinned upstream release includes terminal unknown-outcome classification after HTTP submission and passes the real post-write EOF, empty accepted model-pool stream, late truncation, incomplete SSE frames, malformed accepted decoding, submitted POST redirects, header-only framing, terminal request-body closure, internal POST replay, pre-write connect failure and explicit HTTP and SSE refusal regressions. Preserve no replay across models, credentials and retry rounds, public 502 upstream_outcome_unknown with retryable false, existing proxy and protocol selection, and release updates. Re-apply on each source update until the upstream fix is released; remove this carry when that release supplies the same behavior."
           }
         }
       ]
