@@ -108,6 +108,17 @@ export class PoolUsage {
       const pool = byGroup.get(member.channel_group_id);
       if (pool !== undefined) pools.set(pool, (pools.get(pool) ?? new Set()).add(member.auth_id));
     }
+    for (const [pool, accounts] of pools) {
+      if (accounts.size) continue;
+      await this.capacity.observe(pool, {
+        at: (this.deps.now?.() ?? new Date()).getTime(),
+        expected: [],
+        readings: [],
+        accountStates: [],
+        unclassifiedAccounts: [],
+      });
+      pools.delete(pool);
+    }
     if (!pools.size) return;
     const ids = new Set([...pools.values()].flatMap((set) => [...set]));
     const [files, quota] = await Promise.all([
