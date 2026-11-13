@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-vault-connect-link",
+  "file": "0579-vault-connect-link.patch",
+  "content_sha256": "638be431660f6b2562a67f36e26089a4b3f79003a5ba3490338789ce8739a7d9",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
