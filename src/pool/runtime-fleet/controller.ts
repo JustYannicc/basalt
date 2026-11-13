@@ -9,6 +9,7 @@ import {
 } from "../runtime-slots/contract.ts";
 import { FleetRefused, RuntimeFleetState } from "./state.ts";
 import { FleetDispatches } from "./dispatches.ts";
+import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 
 export interface FleetCell {
   start(target: SlotTarget): Promise<SlotIdentity>;
@@ -209,47 +210,72 @@ export class RuntimeFleet {
     for (const { cell } of this.cells.values()) cell.abortPool(pool);
   }
   async drain(identity: SlotIdentity) {
-    await this.dispatches.fence(identity, () => this.deps.state.drain(identity));
-    const actual = await this.cell(identity).drain(identity);
+    const trace = new PoolUpkeepTrace("fleet");
+    await trace.run(
+      "drain_fence",
+      () => this.dispatches.fence(identity, () => this.deps.state.drain(identity)),
+      { ordinal: identity.homePeerOrdinal },
+    );
+    const actual = await trace.run("drain_recheck", () => this.cell(identity).drain(identity), {
+      ordinal: identity.homePeerOrdinal,
+    });
+    trace.event("drain_recheck", {
+      ordinal: identity.homePeerOrdinal,
+      active: actual.active,
+      known: actual.known,
+    });
     await this.deps.state.acknowledgeDrain(identity);
     return actual;
   }
   async upkeep() {
-    for (const row of await this.deps.state.inspect()) {
-      const cell = this.cell(row.target);
-      if (row.phase === "reserved") {
-        if (this.deps.enabled?.() === false) {
-          await this.deps.state.cancelReserved(row.target);
-          this.cells.delete(row.target.slotId);
-          continue;
-        }
-        await this.start(row.target);
-      } else if (row.phase === "warming" || row.phase === "uncertain") {
-        const observed = await cell.observe(row.target, this.deps.enabled?.() !== false);
-        if (observed) await this.deps.state.ready(observed);
-      } else if (
-        row.phase === "ready" &&
-        row.identity &&
-        (row.active === 0 || this.deps.enabled?.() === false) &&
-        (this.deps.enabled?.() === false || !(await this.deps.keepReady?.(row.identity))) &&
-        (this.deps.enabled?.() === false ||
-          this.deps.now() - row.lastUsedAt >= this.deps.idleMilliseconds)
-      ) {
-        await this.drain(row.identity);
-      } else if (row.phase === "draining" && row.identity) {
-        const actual = await this.drain(row.identity);
-        if (row.active !== 0 || actual.active !== 0 || !actual.known) continue;
-        const identity = row.identity;
-        await cell.retire(identity, () => this.deps.state.beginRetirement(identity));
-        this.cells.delete(row.target.slotId);
-        await this.deps.state.retired(row.identity);
-        this.atCapacity = false;
-      } else if (row.phase === "retiring" && row.identity && (await cell.retired(row.identity))) {
-        this.cells.delete(row.target.slotId);
-        await this.deps.state.retired(row.identity);
-        this.atCapacity = false;
+    const trace = new PoolUpkeepTrace("fleet");
+    return trace.run("upkeep", async () => {
+      for (const row of await trace.run("snapshot", () => this.deps.state.inspect())) {
+        await trace.run(
+          row.phase,
+          async () => {
+            const cell = this.cell(row.target);
+            if (row.phase === "reserved") {
+              if (this.deps.enabled?.() === false) {
+                await this.deps.state.cancelReserved(row.target);
+                this.cells.delete(row.target.slotId);
+                return;
+              }
+              await this.start(row.target);
+            } else if (row.phase === "warming" || row.phase === "uncertain") {
+              const observed = await cell.observe(row.target, this.deps.enabled?.() !== false);
+              if (observed) await this.deps.state.ready(observed);
+            } else if (
+              row.phase === "ready" &&
+              row.identity &&
+              (row.active === 0 || this.deps.enabled?.() === false) &&
+              (this.deps.enabled?.() === false || !(await this.deps.keepReady?.(row.identity))) &&
+              (this.deps.enabled?.() === false ||
+                this.deps.now() - row.lastUsedAt >= this.deps.idleMilliseconds)
+            ) {
+              await this.drain(row.identity);
+            } else if (row.phase === "draining" && row.identity) {
+              const actual = await this.drain(row.identity);
+              if (row.active !== 0 || actual.active !== 0 || !actual.known) return;
+              const identity = row.identity;
+              await cell.retire(identity, () => this.deps.state.beginRetirement(identity));
+              this.cells.delete(row.target.slotId);
+              await this.deps.state.retired(row.identity);
+              this.atCapacity = false;
+            } else if (
+              row.phase === "retiring" &&
+              row.identity &&
+              (await cell.retired(row.identity))
+            ) {
+              this.cells.delete(row.target.slotId);
+              await this.deps.state.retired(row.identity);
+              this.atCapacity = false;
+            }
+          },
+          { ordinal: row.target.homePeerOrdinal, active: row.active },
+        );
       }
-    }
-    this.grow();
+      this.grow();
+    });
   }
 }

@@ -313,6 +313,7 @@ test("the Durable Object alarm provisions pending pool members", async () => {
     ],
   ]);
   const users: Record<string, unknown>[] = [];
+  const background: Promise<unknown>[] = [];
   let alarm: number | null = null;
   const runtime = {
     running: false,
@@ -341,7 +342,9 @@ test("the Durable Object alarm provisions pending pool members", async () => {
     {
       id: { toString: () => "a".repeat(64) },
       container: runtime,
-      waitUntil: () => {},
+      waitUntil: (work: Promise<unknown>) => {
+        background.push(work);
+      },
       storage: Object.assign(new RuntimeMap(values), {
         getAlarm: async () => alarm,
         setAlarm: async (time: number) => {
@@ -357,6 +360,7 @@ test("the Durable Object alarm provisions pending pool members", async () => {
     },
   );
   await worker.alarm();
+  await Promise.all(background);
   assert.equal(users.length, 1);
   const state = values.get("pool-directory-v1") as {
     pools: Record<string, { pending: string[]; provisioned: string[] }>;
@@ -1137,7 +1141,8 @@ for (const retire of [false, true])
       const firing = worker.alarm();
       t.mock.timers.tick(8_800);
       release.resolve();
-      await Promise.all([firing, ...background]);
+      await firing;
+      await Promise.all(background);
       assert.equal(reads, 1, "the alarm must join the background repair");
       if (retire) {
         assert.equal(installed.at(-1)?.dirty, true);
@@ -1145,6 +1150,7 @@ for (const retire of [false, true])
         t.mock.timers.tick(300_000);
         alarm = null;
         await worker.alarm();
+        await Promise.all(background);
         assert.equal(reads, 1, "retired pools must not be read by later alarms");
         const reserve = async () => {
           const envelope = await signEnvelope(key, membershipPrefix, {
@@ -1186,6 +1192,7 @@ for (const retire of [false, true])
       t.mock.timers.tick(5_000);
       alarm = null;
       await worker.alarm();
+      await Promise.all(background);
       assert.equal(reads, 2, "the restored alarm must perform a fresh repair");
       assert.ok(installed.at(-1)!.expiresAt > firstExpiry, "the next pass renews native authority");
       assert.equal(alarm, Date.now() + 5_000);
@@ -1507,11 +1514,22 @@ test("five-second membership alarms run persisted reporting jobs only every five
       saved.set(key, value);
     },
   };
+  const background: Promise<unknown>[] = [];
   const instance = () =>
     Object.setPrototypeOf(
       {
-        ctx: { storage },
+        ctx: {
+          storage,
+          waitUntil: (work: Promise<unknown>) => {
+            background.push(work);
+          },
+        },
         alarms: {
+          inspect: async () => ({
+            homeDeadline: Date.now(),
+            fleetDeadline: null,
+            nativeDeadline: null,
+          }),
           take: async () => ({ home: true, fleet: false }),
           rearm: async () => {},
         },
@@ -1549,7 +1567,10 @@ test("five-second membership alarms run persisted reporting jobs only every five
       },
       PoolContainer.prototype,
     );
-  const fire = async () => Reflect.apply(PoolContainer.prototype.alarm, instance(), []);
+  const fire = async () => {
+    await Reflect.apply(PoolContainer.prototype.alarm, instance(), []);
+    await Promise.all(background.splice(0));
+  };
   for (let i = 0; i < 60; i++) {
     await fire();
     t.mock.timers.tick(5_000);
@@ -1557,4 +1578,41 @@ test("five-second membership alarms run persisted reporting jobs only every five
   assert.deepEqual(calls, { membership: 60, computers: 1, usage: 1, publish: 1 });
   await fire();
   assert.deepEqual(calls, { membership: 61, computers: 2, usage: 2, publish: 2 });
+});
+
+test("failed background Home maintenance retains a five-second retry and permits a fresh task", async (t) => {
+  const now = Date.parse("2026-11-13T00:00:00Z");
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const background: Promise<unknown>[] = [];
+  const deadlines: number[] = [];
+  let calls = 0;
+  const worker = Object.setPrototypeOf(
+    {
+      ctx: {
+        waitUntil: (work: Promise<unknown>) => {
+          background.push(work);
+        },
+      },
+      alarms: {
+        inspect: async () => ({ homeDeadline: now, fleetDeadline: null, nativeDeadline: null }),
+        take: async () => ({ home: true, fleet: false }),
+        rearm: async () => {},
+        schedule: async (owner: string, at: number) => {
+          assert.equal(owner, "home");
+          deadlines.push(at);
+        },
+      },
+      homeUpkeep: async () => {
+        if (++calls === 1) throw Error("synthetic-private-home-error");
+      },
+    },
+    PoolContainer.prototype,
+  );
+  await Reflect.apply(PoolContainer.prototype.alarm, worker, []);
+  await Promise.all(background.splice(0));
+  assert.deepEqual(deadlines, [now + 5_000]);
+  await Reflect.apply(PoolContainer.prototype.alarm, worker, []);
+  await Promise.all(background.splice(0));
+  assert.equal(calls, 2);
+  assert.equal(deadlines.length, 1, "successful upkeep must retain its ordinary scheduling");
 });

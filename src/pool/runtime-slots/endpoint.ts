@@ -1,3 +1,4 @@
+import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
 import { RuntimeRetirementMonitor, observeRuntimeRetirement } from "./retirement-observation.ts";
 import { RuntimeReadTrace, runtimeReadStep } from "../runtime-read-trace.ts";
@@ -330,17 +331,34 @@ export class RuntimeEndpoint {
     }
   }
   drain(identity: SlotIdentity, signal: AbortSignal) {
-    return this.serialize(async () => {
-      await this.health(identity, signal);
-      signal.throwIfAborted();
-      const state = await this.activity.drain(identity);
-      if (state.known || state.active !== 0 || this.role !== "legacy") return state;
-      if (
-        !(await proveLegacyDrain(this.ctx, identity, signal, () => this.health(identity, signal)))
-      )
-        return state;
-      return this.activity.reconcileDrained(identity);
-    });
+    const trace = new PoolUpkeepTrace("endpoint");
+    const fields = { ordinal: identity.homePeerOrdinal };
+    return trace.run(
+      "drain_queue",
+      () =>
+        this.serialize(async () => {
+          await trace.run("drain_health", () => this.health(identity, signal), fields);
+          signal.throwIfAborted();
+          const state = await trace.run(
+            "drain_activity",
+            () => this.activity.drain(identity),
+            fields,
+          );
+          trace.event("drain_recheck", { ...fields, active: state.active, known: state.known });
+          if (state.known || state.active !== 0 || this.role !== "legacy") return state;
+          if (
+            !(await trace.run(
+              "legacy_drain_proof",
+              () =>
+                proveLegacyDrain(this.ctx, identity, signal, () => this.health(identity, signal)),
+              fields,
+            ))
+          )
+            return state;
+          return this.activity.reconcileDrained(identity);
+        }),
+      fields,
+    );
   }
   async bootstrapPeer(input: PeerBootstrapInput, signal: AbortSignal) {
     if (this.role !== "legacy") throw new SlotRefused("identity");

@@ -24,6 +24,18 @@ test(
       conditions: ["workerd", "module", "import"],
       target: "es2023",
       external: ["node:*", "cloudflare:workers"],
+      plugins: [
+        {
+          name: "unavailable-auth-database",
+          setup(build) {
+            build.onResolve({ filter: /^pg$/ }, () => ({ path: "pg", namespace: "unavailable" }));
+            build.onLoad({ filter: /.*/, namespace: "unavailable" }, () => ({
+              contents:
+                "export default {Pool: class {constructor(){throw Error('Retirement must not query account database');}}};",
+            }));
+          },
+        },
+      ],
     });
     const { Miniflare, convertV4MiniflareOptions } = loadMiniflare();
     const mf = new Miniflare(
@@ -35,6 +47,7 @@ test(
         durableObjects: {
           Root: { className: "Root", useSQLite: true },
           Extra: { className: "Extra", useSQLite: true },
+          AlarmRoot: { className: "AlarmRoot", useSQLite: true },
         },
         bindings: {
           RAW_APPLICATION: provider.raw,
@@ -53,6 +66,106 @@ test(
       return response.status === 204 ? undefined : response.json();
     };
     try {
+      await context.test(
+        "held Home maintenance cannot starve two zero-active draining extras",
+        async () => {
+          try {
+            await step("alarm", "/start");
+            const ready = await step("alarm", "/ready");
+            assert.deepEqual(
+              ready.rows.map((row: { phase: string; active: number }) => [row.phase, row.active]),
+              [
+                ["draining", 1],
+                ["draining", 1],
+              ],
+            );
+            await step("alarm", "/release-streams");
+            const result = await step("alarm", "/result");
+            assert.equal(
+              result.homeResolved,
+              false,
+              "Home must still be held while fleet retirement progresses",
+            );
+            assert.equal(result.homeCalls, 1, "alarm continuation cannot duplicate Home work");
+            assert.equal(
+              result.rows.length,
+              0,
+              "Both extras must retire while Home maintenance remains held",
+            );
+            assert.equal(result.endpoints.length, 2);
+            assert.ok(
+              result.deadlines.homeDeadline > Date.now(),
+              "joining a held Home pass must retain its next wake-up",
+            );
+            const upkeep = result.upkeepEvents as Array<{
+              at: number;
+              side: string;
+              phase: string;
+              outcome: string;
+              ordinal?: number;
+              active?: number;
+              known?: boolean;
+              fleetDeadline?: number | null;
+            }>;
+            assert.ok(upkeep.every((event) => Number.isSafeInteger(event.at) && event.at > 0));
+            assert.ok(
+              upkeep.some(
+                (event) =>
+                  event.side === "alarm" && event.phase === "alarm" && event.outcome === "ended",
+              ),
+            );
+            assert.ok(upkeep.some((event) => event.phase === "home_shared"));
+            assert.ok(
+              upkeep.some(
+                (event) => event.phase === "deadlines" && typeof event.fleetDeadline === "number",
+              ),
+            );
+            for (const ordinal of [1, 2]) {
+              assert.ok(
+                upkeep.some(
+                  (event) =>
+                    event.phase === "draining" &&
+                    event.ordinal === ordinal &&
+                    event.outcome === "ended",
+                ),
+              );
+              assert.ok(
+                upkeep.some(
+                  (event) =>
+                    event.phase === "drain_recheck" &&
+                    event.ordinal === ordinal &&
+                    event.active === 0 &&
+                    event.known === true,
+                ),
+              );
+            }
+            assert.equal(JSON.stringify(upkeep).includes("synthetic"), false);
+            for (const endpoint of result.endpoints) {
+              assert.equal(endpoint.actualRunning, false);
+              assert.equal(endpoint.running, false);
+              assert.equal(endpoint.destroyed, 1);
+              assert.equal(endpoint.monitorCalls, 1);
+            }
+            assert.equal(
+              result.events.filter(
+                (event: { phase: string; absent?: boolean }) =>
+                  event.phase === "provider_absent" && event.absent === true,
+              ).length,
+              2,
+            );
+            await step("alarm", "/release-home");
+            const finished = await step("alarm", "/home-finished");
+            assert.ok(
+              finished.upkeepEvents.some(
+                (event: { side: string; phase: string; outcome: string }) =>
+                  event.side === "home" && event.phase === "home" && event.outcome === "ended",
+              ),
+            );
+          } finally {
+            await step("alarm", "/release-home");
+          }
+        },
+      );
       for (const fault of [
         "lost-destroy",
         "stale-lost-destroy",
