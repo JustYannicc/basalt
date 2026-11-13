@@ -28,19 +28,19 @@ export const officialPriceRows = (prices: readonly OverviewApiPrice[]) =>
     refresh_failed: price.refreshFailed ?? false,
   }));
 
+interface CostScope {
+  pool: string;
+  from: string;
+  to: string;
+  person?: string;
+  includeImports?: boolean;
+}
+
 /** Pool ownership and optional person scope are established by the caller before this read. */
-export async function officialCostTargets(
-  db: HistoryDatabase,
-  input: {
-    pool: string;
-    from: string;
-    to: string;
-    person?: string;
-  },
-) {
+export async function officialCostTargets(db: HistoryDatabase, input: CostScope) {
   const result = await db.query(
     `SELECT DISTINCT provider,model FROM basalt_model_requests
-    WHERE pool=$1 AND source=$2 AND timestamp_exact >= $3 AND timestamp_exact < $4
+    WHERE pool=$1 AND (source=$2 OR $6::boolean AND attribution='import-owner') AND timestamp_exact >= $3 AND timestamp_exact < $4
       AND ($5::text IS NULL OR person=$5 AND attribution IS DISTINCT FROM 'import-owner') AND provider IS NOT NULL AND model IS NOT NULL
     ORDER BY provider,model LIMIT 101`,
     [
@@ -49,6 +49,7 @@ export async function officialCostTargets(
       timestamp(input.from),
       timestamp(input.to),
       input.person ?? null,
+      input.includeImports !== false,
     ],
   );
   return result.rows.length > 100
@@ -84,18 +85,14 @@ export interface OfficialCostRow {
 /** Both USD surfaces use this request-token calculation and the same official price table. Credits are never selected. */
 export async function officialCosts(
   db: HistoryDatabase,
-  input: {
-    pool: string;
-    from: string;
-    to: string;
-    person?: string;
-  },
+  input: CostScope,
   prices: readonly OverviewApiPrice[],
 ): Promise<OfficialCostRow[]> {
   const source = await digest("home-local-v1");
   const result = await db.query(
-    `${priceQuery(false, true)}
-    SELECT person,account,provider,model,app_id,requirement,left(timestamp_exact,10) AS day,
+    `${priceQuery(false, true, input.includeImports !== false)}
+    SELECT CASE WHEN attribution='import-owner' THEN NULL ELSE person END AS person,
+      account,provider,model,app_id,requirement,left(timestamp_exact,10) AS day,
       count(*)::text AS requests,count(api_cost)::text AS priced,
       count(*) FILTER (WHERE api_cost IS NOT NULL AND token_count_estimate)::text AS token_count_estimates,
       count(*) FILTER (WHERE price_version IS NULL)::text AS missing_prices,
@@ -104,7 +101,7 @@ export async function officialCosts(
         OR token_quality NOT IN ('complete','legacy'))::text AS missing_tokens,
       round(sum(api_cost),12)::text AS cost
     FROM priced WHERE $6::text[] IS NOT NULL AND ($9::text IS NULL OR person=$9 AND attribution IS DISTINCT FROM 'import-owner')
-    GROUP BY person,account,provider,model,app_id,requirement,left(timestamp_exact,10)
+    GROUP BY CASE WHEN attribution='import-owner' THEN NULL ELSE person END,account,provider,model,app_id,requirement,left(timestamp_exact,10)
     ORDER BY person,account,provider,model,app_id,requirement,day LIMIT 10001`,
     [
       (await digest(input.pool)).slice(0, 16),
