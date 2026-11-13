@@ -8,6 +8,7 @@ import {
 } from "../../apps/pool/usage-series-contract.ts";
 import { seriesUsageForecasts } from "./model-history/usage-forecasts.ts";
 import { addUsageDays, usageDayStart } from "./usage-calendar.ts";
+import { summaryKnownDays } from "./model-history/summary-known-days.ts";
 
 const now = "2026-11-09T11:00:00Z";
 const capture = (...hours: string[]) => ({ capturedAt: now, incompleteHours: new Set(hours) });
@@ -156,4 +157,72 @@ test("mixed known and missing metrics forecast an explicitly labelled Low-confid
   }
   assert.equal(forecast.requests.status, "available");
   if (forecast.requests.status === "available") assert.equal(forecast.requests.confidence, "High");
+});
+
+const imported = (frozenFrom: string, frozenTo: string) => ({
+  source: "import",
+  kind: "import" as const,
+  firstAt: frozenFrom,
+  lastAt: frozenTo,
+  backfillComplete: true,
+  sweep: null,
+  completion: {
+    frozenFrom,
+    frozenTo,
+    upperSourceId: "8400",
+    manifestDigest: "a".repeat(64),
+    accountMappingDigest: "b".repeat(64),
+    idsDigest: "c".repeat(64),
+    verifiedRows: "8400",
+  },
+});
+
+test("a certified import cannot turn days after its frozen range into complete zero usage", () => {
+  const result = fixture();
+  result.coverage.sources = [imported(result.from, "2026-11-08T23:00:00Z")];
+  const coverage = summaryKnownDays(result.from, result.to, result.coverage, {
+    capturedAt: null,
+    incompleteHours: null,
+  });
+  assert.ok(coverage.known.has("2026-11-08"));
+  assert.ok(!coverage.known.has("2026-11-09"));
+  assert.ok(coverage.gaps.includes("2026-11-09"));
+  const forecast = seriesUsageForecasts(result, undefined, coverage.known).series[0]!.requests;
+  assert.equal(forecast.status, "available");
+  if (forecast.status !== "available") return;
+  assert.equal(forecast.thisWeek.actual, null);
+  assert.equal(forecast.thisWeek.median, null);
+  assert.equal(forecast.confidence, "Low");
+});
+
+test("days before a frozen range remain gaps until native capture supplies proof", () => {
+  const result = fixture();
+  const home = result.coverage.sources[0]!;
+  result.coverage.sources = [imported("2026-09-01T22:00:00Z", result.to)];
+  const missing = summaryKnownDays(result.from, result.to, result.coverage, {
+    capturedAt: null,
+    incompleteHours: null,
+  });
+  assert.ok(missing.gaps.includes("2026-08-17"));
+  result.coverage.sources.push(home);
+  const covered = summaryKnownDays(result.from, result.to, result.coverage, capture());
+  assert.ok(covered.known.has("2026-08-17"));
+  assert.ok(covered.known.has("2026-11-09"));
+  assert.equal(covered.gaps.length, 0);
+});
+
+test("backfillComplete alone and one certified source cannot certify every import", () => {
+  const result = fixture();
+  const proof = imported(result.from, result.to);
+  const { completion, ...uncertified } = proof;
+  result.coverage.sources = [uncertified];
+  const noProof = { capturedAt: null, incompleteHours: null };
+  const missing = summaryKnownDays(result.from, result.to, result.coverage, noProof);
+  assert.equal(missing.known.size, 0);
+  assert.equal(
+    seriesUsageForecasts(result, undefined, missing.known).series[0]!.requests.status,
+    "unavailable",
+  );
+  result.coverage.sources = [proof, { ...uncertified, source: "other-import" }];
+  assert.equal(summaryKnownDays(result.from, result.to, result.coverage, noProof).known.size, 0);
 });

@@ -6,7 +6,12 @@ import { timestamp } from "../../src/pool/model-history/record.ts";
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
-import { summaryCounters, summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
+import {
+  summaryCompletionFixture,
+  summaryCounters,
+  summaryFixture,
+  summaryPrices,
+} from "./usage-summary-fixture.ts";
 
 test("initial, refresh and model summary reads stay within the populated real-Postgres budget", async () => {
   await seriesFixture(async (f) => {
@@ -48,7 +53,17 @@ test("initial, refresh and model summary reads stay within the populated real-Po
     await fixture.analyze();
     const from = "2026-01-01T00:00:00Z",
       to = "2026-03-26T00:00:00Z";
-    for (const action of ["initial", "refresh", "model"] as const) {
+    for (const action of [
+      "initial",
+      "refresh",
+      "model",
+      "certified-initial",
+      "certified-refresh",
+      "certified-model",
+    ] as const) {
+      const certified = action.startsWith("certified-");
+      const models = action.endsWith("model");
+      const proof = action === "certified-initial" ? await summaryCompletionFixture(f) : undefined;
       let priceReads = 0;
       const statements: { text: string; values?: unknown[] }[] = [];
       const counted: HistoryDatabase = {
@@ -63,7 +78,7 @@ test("initial, refresh and model summary reads stay within the populated real-Po
           pool,
           from,
           to,
-          by: action === "model" ? "model" : "provider",
+          by: models ? "model" : "provider",
           authority: fixture.authority,
         },
         async (targets) => {
@@ -95,12 +110,20 @@ test("initial, refresh and model summary reads stay within the populated real-Po
         id + 2,
       );
       assert.equal(result.previousDaily.length, 0);
-      assert.equal(result.models === null, action !== "model");
-      if (action === "model") assert.equal(result.models?.status, "available");
+      assert.equal(result.models === null, !models);
+      if (models) assert.equal(result.models?.status, "available");
+      if (proof) {
+        const source = result.coverage.sources.find((source) => source.source === proof.source);
+        assert.equal(source?.backfillComplete, true);
+        assert.ok(source && "completion" in source);
+        assert.deepEqual(source.completion, proof.completion);
+      }
       const selects = statements.filter(({ text }) => /^\s*(WITH|SELECT)\b/i.test(text)).length;
       const priced = statements.filter(({ text }) => /\bpriced\s+AS\s*\(/i.test(text));
       assert.ok(selects <= 10, `${action} used ${selects} history SELECTs`);
       assert.ok(statements.length <= 15, `${action} used ${statements.length} SQL statements`);
+      assert.equal(selects, certified ? 10 : 9);
+      assert.equal(statements.length, certified ? 15 : 14);
       assert.equal(priced.length, 1);
       assert.equal(priceReads, 1);
       console.log(

@@ -76,6 +76,13 @@ export interface PoolUsageSummaryResult {
   readonly readFrom: string;
   readonly asOf: string | null;
   readonly coverage: SeriesCoverage;
+  /** Each day covers only its intersection with these bounds, including the current partial day. */
+  readonly historyCoverage: {
+    readonly from: string;
+    readonly to: string;
+    readonly knownDays: readonly string[];
+    readonly gapDays: readonly string[];
+  };
   readonly daily: readonly UsageSummaryGroup[];
   readonly previousDaily: readonly UsageSummaryGroup[];
   readonly models: null | {

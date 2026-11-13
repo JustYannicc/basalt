@@ -22,6 +22,7 @@ import { summaryCoverage } from "./summary-coverage.ts";
 import { summaryGroups, summaryCostRows } from "./summary-values.ts";
 import { summaryHourly } from "./summary-hourly.ts";
 import { summaryIncidents } from "./summary-incidents.ts";
+import { summaryKnownDays } from "./summary-known-days.ts";
 
 type Prices = (
   targets: readonly { provider: string; model: string }[],
@@ -106,6 +107,7 @@ export async function poolUsageSummary(
       groups: history.series,
       next: null,
     };
+    const historyCoverage = summaryKnownDays(readFrom, input.to, observed.coverage, capture);
     const hourlySelection = await summarySelection(
       pool,
       [input.from, heatmapFrom].sort()[0]!,
@@ -146,6 +148,12 @@ export async function poolUsageSummary(
       readFrom,
       asOf: observed.asOf,
       coverage: observed.coverage,
+      historyCoverage: {
+        from: readFrom,
+        to: input.to,
+        knownDays: [...historyCoverage.known],
+        gapDays: historyCoverage.gaps,
+      },
       daily: daily.groups,
       previousDaily: previousDaily.groups,
       models:
@@ -165,7 +173,7 @@ export async function poolUsageSummary(
                   prices,
                 ).groups,
               },
-      forecasts: seriesUsageForecasts(series, capture),
+      forecasts: seriesUsageForecasts(series, capture, historyCoverage.known),
       usageSlices:
         costRows.length > maxSummaryCostRows
           ? []

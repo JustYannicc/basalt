@@ -86,3 +86,42 @@ export async function summaryFixture(f: Fixture) {
   };
   return { source, visible, hidden, fingerprint, authority, native, cursor, analyze };
 }
+
+/** The reader's synthetic approved receipt, using the completion owner's seven-field contract. */
+export async function summaryCompletionFixture(f: Fixture) {
+  await f.db.query(`CREATE TABLE basalt_model_import_completion (
+    pool char(16),source char(64),frozen_from varchar(30),frozen_to varchar(30),
+    upper_source_id numeric(20,0),manifest_digest char(64),map_digest char(64),
+    ids_digest char(64),verified_rows bigint,PRIMARY KEY(pool,source))`);
+  const source = await digest("fixture-import");
+  const completion = {
+    frozenFrom: timestamp("2026-01-02T01:45:00Z"),
+    frozenTo: timestamp("2026-01-02T01:45:00Z"),
+    upperSourceId: "1",
+    manifestDigest: "a".repeat(64),
+    accountMappingDigest: "b".repeat(64),
+    idsDigest: "c".repeat(64),
+    verifiedRows: "1",
+  };
+  for (const [poolId, manifest] of [
+    [(await digest(pool)).slice(0, 16), completion.manifestDigest],
+    [(await digest("foreign-pool")).slice(0, 16), "d".repeat(64)],
+  ])
+    await f.db.query(
+      `INSERT INTO basalt_model_import_completion
+      (pool,source,frozen_from,frozen_to,upper_source_id,manifest_digest,map_digest,ids_digest,verified_rows)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [
+        poolId,
+        source,
+        completion.frozenFrom,
+        completion.frozenTo,
+        completion.upperSourceId,
+        manifest,
+        completion.accountMappingDigest,
+        completion.idsDigest,
+        completion.verifiedRows,
+      ],
+    );
+  return { source, completion };
+}
