@@ -44,7 +44,7 @@ test("WorkOS's reviewed issuer-response capability still refuses metadata drift"
     { unreviewed_capability: true },
   ]) {
     assert.deepEqual(check({ ...workosMetadata, ...change }), [
-      "workos/oauth: automatic client metadata is missing or changed",
+      `workos/oauth: automatic client metadata changed (metadataSha256: ${method.metadataSha256} -> ${catalogDocumentSha256({ ...workosMetadata, ...change })})`,
     ]);
   }
 });
