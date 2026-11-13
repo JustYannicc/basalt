@@ -11,6 +11,7 @@ export type {
   CapacityRawHistory,
 } from "../../../apps/pool/capacity-contract.ts";
 import { digest } from "../backend-users.ts";
+import { capacityAccountReference } from "./account-reference.ts";
 import { ChunkStorage, UsageQueue, type UsageStorage } from "../usage-storage.ts";
 import type { CapacityReading } from "./normalize.ts";
 
@@ -668,7 +669,7 @@ export class CapacityHistory {
         (index.latest ?? previous).map((reading) => [readingKey(reading), reading]),
       );
       const latestByKey = new Map(priorLatestByKey);
-      const accountHash = async (account: string) => digest(`${pool}\u0000${account}`);
+      const accountHash = (account: string) => capacityAccountReference(pool, account);
       const hashedCurrent = await Promise.all(
         validCurrent.map(async (reading) => ({
           ...reading,
