@@ -23,7 +23,7 @@ import {
   type LineFacts,
 } from "./capacity-model.ts";
 import { Button, Problem, Segmented, StateIcon } from "./controls.tsx";
-import { LabMark, labColor, labProvider } from "./lab.tsx";
+import { LabMark, labColor } from "./lab.tsx";
 
 export type Tone = "ok" | "warn" | "bad" | "learn" | "info";
 export const toneText: Record<Tone, string> = {
@@ -136,7 +136,6 @@ export function CapacitySection({
               lab={lab}
               history={result.value}
               name={providerName(providers, lab.provider)}
-              provider={labProvider(providers)(lab.provider)}
               days={days}
               coherent={coherent}
               first={index === 0}
@@ -154,7 +153,6 @@ function Panel({
   lab,
   history,
   name,
-  provider,
   days,
   coherent,
   first,
@@ -164,7 +162,6 @@ function Panel({
   lab: CapacityLab;
   history: PoolCapacityHistory;
   name: string;
-  provider: Provider | undefined;
   days: number;
   coherent: boolean;
   first: boolean;
@@ -241,7 +238,7 @@ function Panel({
       className={first ? "pt-1 pb-6" : "border-t border-border pt-5 pb-6"}
     >
       <div className="grid grid-cols-[auto_1fr_auto] items-start gap-x-3 gap-y-1 max-[540px]:grid-cols-[auto_1fr]">
-        <LabMark provider={provider} />
+        <LabMark provider={lab.provider} name={name} />
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <h3 id={`lab-${lab.provider}`} className="text-[15px] font-semibold tracking-[-0.015em]">
             {name}

@@ -3,7 +3,7 @@
     "poolProviderNativePresentation": {
       "fixtures": "actors",
       "legacyStorage": true,
-      "title": "Packaged pool view reuses generated provider reports and icons without a pool edit and withholds denied copied allowance",
+      "title": "Packaged pool keeps Home model windows and banked resets without provider read fanout, while Accounts keeps provider logos",
       "targets": {
         "self-host": {
           "status": "scheduled"
@@ -20,22 +20,28 @@
     }
   },
   "runs": {
-    "poolProviderNativePresentation": [
-      "declared:self-host"
-    ]
+    "poolProviderNativePresentation": ["declared:self-host"]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/implementation/account-source-connections.ts",
     ".upstream/apps/hosted/server/src/implementation/selected-account-read.ts",
+    ".upstream/e2e/support/provider-account-product.ts",
     ".upstream/e2e/support/provider-apps-catalog.ts",
     ".upstream/packages/apps/src/contracts/selected-account-read.ts",
     ".upstream/packages/sdk/src/implementation/selected-account-read.ts",
     "apps/pool/index.ts",
     "apps/pool/provider-account-view.ts",
     "apps/pool/requirements.ts",
+    "apps/pool/ui/account-limits-view.tsx",
+    "apps/pool/ui/capacity-view.tsx",
+    "apps/pool/ui/lab.tsx",
+    "apps/pool/ui/overview.tsx",
+    "apps/pool/ui/usage-groups.tsx",
     "scripts/pool-app-bundle.ts",
     "scripts/provider-app-source.ts",
     "src/catalog/provider-apps/account-view.ts",
-    "src/catalog/provider-apps/presentation.ts"
+    "src/catalog/provider-apps/logos.ts",
+    "src/catalog/provider-apps/presentation.ts",
+    "src/pool/control.ts"
   ]
 }

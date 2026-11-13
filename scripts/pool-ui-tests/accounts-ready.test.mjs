@@ -73,7 +73,7 @@ const resetsRef = process.env.POOL_UI_RESETS_REF;
 const nativeViewRef = process.env.POOL_UI_NATIVE_VIEW_REF;
 const historicalOverview = Boolean(planBaseline || peopleCopyRef || learningRef);
 const requestWindow = historicalOverview ? "in" : "· last";
-const baselineRef = sourceRef ?? peopleCopyRef ?? learningRef ?? resetsRef;
+const baselineRef = sourceRef ?? peopleCopyRef ?? learningRef ?? resetsRef ?? nativeViewRef;
 const artifactLabel =
   process.env.POOL_UI_ARTIFACT_LABEL ??
   (baselineRef ? `before-${baselineRef.slice(0, 8)}` : "after");
@@ -2479,7 +2479,7 @@ test(
         );
       });
 
-    // Provider apps own lab marks and account readings; the pool keeps membership and forecasts.
+    // Overview badges use provider labels; supplied native readings still control inspection.
     const mark = (fill) =>
       `data:image/svg+xml;base64,${Buffer.from(
         `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="${fill}"/></svg>`,
@@ -2488,7 +2488,7 @@ test(
     const darkMark = mark("#9be7c4");
     for (const width of [1280, 390])
       await t.test(
-        `provider apps supply lab marks and account readings at ${width}px`,
+        `overview letter badges are independent of provider icons at ${width}px`,
         async () => {
           const f = quotaSamplingFixture(Date.now() - minute, samplerUsage);
           await f.usage.observe();
@@ -2649,14 +2649,12 @@ test(
                   .waitFor();
                 const glance = frame.getByRole("navigation", { name: "At a glance" });
                 await glance.getByText(/^Codex:/).waitFor();
-                // Labs grouping marks its rows with the same source icon.
+                // All three overview entries use the same provider label.
                 const who = frame.locator("#who");
                 await frame.getByRole("radio", { name: "Labs", exact: true }).click();
                 await who.getByText("Codex", { exact: true }).first().waitFor();
                 await settled();
                 if (nativeViewRef) {
-                  assert.equal(await frame.locator("[data-lab-mark]").count(), 0);
-                  assert.equal(await lab.getByText("C", { exact: true }).count(), 1);
                   assert.ok(
                     await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
                   );
@@ -2673,31 +2671,15 @@ test(
                   );
                   return;
                 }
-                const marks = frame.locator("[data-lab-mark]");
+                assert.equal(await frame.locator("[data-lab-mark]").count(), 0);
                 for (const scope of [lab, glance, who]) {
-                  const own = scope.locator("[data-lab-mark]");
-                  assert.equal(await own.count(), 1, "Each lab entry shows one mark");
-                  assert.equal(await own.innerText(), "", "A lab mark never shows an initial");
-                }
-                if (scenario.src === null) {
-                  assert.equal(await frame.locator('[data-lab-mark="icon"]').count(), 0);
-                  assert.ok((await frame.locator('[data-lab-mark="unavailable"]').count()) >= 2);
-                } else {
-                  assert.equal(await frame.locator('[data-lab-mark="unavailable"]').count(), 0);
-                  await frame.waitForFunction(() =>
-                    [...document.querySelectorAll("[data-lab-mark] img")].every(
-                      (image) => image.complete && image.naturalWidth > 0,
-                    ),
+                  const badge = scope.getByText("C", { exact: true });
+                  assert.equal(
+                    await badge.count(),
+                    1,
+                    "Each lab entry shows the provider label's initial regardless of icons",
                   );
-                  const sources = await marks
-                    .locator("img")
-                    .evaluateAll((images) => images.map((image) => image.currentSrc));
-                  assert.ok(sources.length >= 2);
-                  assert.deepEqual(
-                    [...new Set(sources)],
-                    [scenario.src],
-                    `The ${scenario.scheme} scheme shows the provider app's ${scenario.scheme} icon`,
-                  );
+                  assert.equal(await scope.locator("picture").count(), 0);
                 }
                 const text = await frame.locator("body").innerText();
                 // Membership and routing are the pool's: all four accounts count, whatever inspection.

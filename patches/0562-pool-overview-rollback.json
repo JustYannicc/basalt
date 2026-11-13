@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-overview-rollback",
+  "file": "0562-pool-overview-rollback.patch",
+  "content_sha256": "a8ef6f7edacca2d3cda478ce0cad069572574f030cc4b50392887a2bfc42f013",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
