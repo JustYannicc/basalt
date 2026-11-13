@@ -1,3 +1,4 @@
+import { historyImportCompletionPath } from "./model-history/import-completion-contract.ts";
 import { reportWhenDue } from "./reporting.ts";
 import { creditRoutingPaths, handleCreditRouting } from "./credit-routing-http.ts";
 export { PoolRuntime } from "./runtime-do.worker.ts";
@@ -767,6 +768,7 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
         historySchemaApplyPath,
         historyBackfillPath,
         historyTrafficPath,
+        historyImportCompletionPath,
       ].includes(path)
     )
       return handleModelHistoryOperation(request, this.env.POOL_AUTH_DATABASE?.connectionString);

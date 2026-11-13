@@ -1,3 +1,4 @@
+import { historyImportCompletionPath } from "../../src/pool/model-history/import-completion-contract.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -95,6 +96,7 @@ test("the private schema operator defaults to catalog/count reads and binds writ
         historySchemaApplyPath,
         historyBackfillPath,
         historyTrafficPath,
+        historyImportCompletionPath,
       ]) {
         const response = await publicPool.fetch(`http://pool${path}`, {
           method: "POST",
@@ -115,7 +117,7 @@ test("the private schema operator defaults to catalog/count reads and binds writ
       assert.equal(preview.writes, false);
       assert.equal(preview.history.rows, "2");
       assert.equal(preview.history.privacyReady, true);
-      assert.equal(preview.catalogDiff.createTables.length, 20);
+      assert.equal(preview.catalogDiff.createTables.length, 21);
       const backfill = await operator.fetch(`http://operator${historyBackfillPath}`);
       assert.equal(backfill.status, 200, await backfill.clone().text());
       assert.equal((await backfill.json()).writes, false);
@@ -165,7 +167,7 @@ test("the private schema operator defaults to catalog/count reads and binds writ
     assert.equal(plan.history.rows, "2");
     assert.equal(plan.history.privacyReady, true);
     assert.equal(plan.ledgerRows, "0");
-    assert.equal(plan.catalogDiff.createTables.length, 20);
+    assert.equal(plan.catalogDiff.createTables.length, 21);
     assert.equal(
       (await db.query("SELECT to_regclass('basalt_model_requests') AS name")).rows[0].name,
       null,

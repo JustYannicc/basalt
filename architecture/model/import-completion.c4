@@ -1,0 +1,8 @@
+model {
+  extend basalt.modelGateway {
+    description "The private operations service reconciles imported history against the accepted manifest ID set before retaining a pool-and-source completion checkpoint. Coverage reads only the small checkpoint table and exposes its frozen range and source watermark. Prefix-grouped digests bound reconciliation memory without indexing or rewriting request history."
+  }
+  extend basalt.deployment {
+    description "The completion operator verifies the accepted metadata manifest and account-map digest locally, reviews the database reconciliation plan, and records its dispatch before an explicit finalize. A lost reply requires inspection and cannot replay the same approval."
+  }
+}

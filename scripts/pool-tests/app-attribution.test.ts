@@ -13,6 +13,7 @@ import {
   historyAppSchemaVersion,
   historyAccountTimeSchemaVersion,
   historySchemaVersion,
+  historyTrafficSchemaVersion,
   migrateModelHistory,
   type HistoryDatabase,
 } from "../../src/pool/model-history/schema.ts";
@@ -71,6 +72,7 @@ test("app attribution upgrades additively and new Home attempts retain app perso
         historyBaseSchemaVersion,
         historyAppSchemaVersion,
         historyAccountTimeSchemaVersion,
+        historyTrafficSchemaVersion,
         historySchemaVersion,
       ],
     );
