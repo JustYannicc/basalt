@@ -14,7 +14,6 @@ import {
 
 import {
   historyBaseSchemaVersion,
-  historyAppSchemaVersion,
   historySchemaStatements,
   historySchemaMigrations,
 } from "../src/pool/model-history/schema.ts";
