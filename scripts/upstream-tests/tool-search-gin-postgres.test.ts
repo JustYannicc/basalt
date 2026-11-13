@@ -11,7 +11,7 @@ test("indexed search intersects scopes and keeps every permitted duplicate targe
       const first = target("first");
       const second = target("second");
       yield* listing(first, [
-        tool("same", ["other"], { tool: { ...tool("same", []).tool, router: "" } }),
+        tool("same", ["other"], { tool: { ...tool("same", []).tool, router: "group" } }),
         tool("secret", ["needle", "needle"]),
       ]);
       yield* listing(second, [tool("same", ["needle"], { definitions: [0] })]);
@@ -36,7 +36,7 @@ test("indexed search intersects scopes and keeps every permitted duplicate targe
         [{ target: 0, ordinals: [0, 1], listing: "first", name: "same" }],
       );
       assert.deepEqual(page.definitions, []);
-      assert.deepEqual(page.items[0]?.router, { path: "", title: "Synthetic search" });
+      assert.deepEqual(page.items[0]?.router, { path: "group", title: "Synthetic search" });
       const onlyLater = yield* store.page({
         targets: [second],
         terms: ["needle"],
@@ -58,6 +58,21 @@ test("indexed search intersects scopes and keeps every permitted duplicate targe
         limit: 10,
       });
       assert.deepEqual(wrongApp, { total: 0, missing: [0], items: [], definitions: [] });
+    }),
+  );
+});
+
+test("an evaluated empty listing stays present for lexical and empty searches", async () => {
+  await searchPostgres(({ store, listing }) =>
+    Effect.gen(function* () {
+      const empty = target("empty");
+      yield* listing(empty, []);
+      for (const terms of [["needle"], []]) {
+        assert.deepEqual(
+          yield* store.page({ targets: [empty, target("absent")], terms, offset: 0, limit: 10 }),
+          { total: 0, missing: [1], items: [], definitions: [] },
+        );
+      }
     }),
   );
 });

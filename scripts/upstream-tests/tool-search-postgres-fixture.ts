@@ -81,7 +81,7 @@ export const searchPostgres = <A, E>(
             version: shared.VersionId.make("dpl_search"),
             at: 1,
             digest: selected.listing,
-            routers: [{ path: "", title: "Synthetic search" }],
+            routers: [{ path: "group", title: "Synthetic search" }],
           },
           { tools, definitions: [{ type: "string" }] },
         );
