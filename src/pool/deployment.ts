@@ -13,7 +13,6 @@ import { validSentryDsn } from "../telemetry/sentry-target.ts";
 import { inventoryCron } from "./inventory.ts";
 import { availabilityCron, validProbeTarget } from "./availability-config.ts";
 import { Api } from "../../.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
-import { retain } from "alchemy/RemovalPolicy";
 
 // Alchemy beta.80 forwards these Cloudflare API fields but omits them from its type.
 // https://developers.cloudflare.com/containers/concepts/placement/
@@ -39,11 +38,6 @@ export const poolWorker = Effect.gen(function* () {
     );
   const database = yield* poolDatabaseInfrastructure;
   const workerDatabase = yield* poolWorkerDatabase(database.workerOrigin);
-  const importArtifacts = yield* Cloudflare.R2.Bucket("UsageImportArtifacts", {
-    jurisdiction: "eu",
-    forceDestroy: false,
-  }).pipe(retain());
-  const importJobs = Cloudflare.DurableObject("BulkUsageImport", { className: "BulkUsageImport" });
   const image = Cloudflare.Container("PoolContainer", {
     context: fileURLToPath(new URL("../../containers/pool/", import.meta.url)),
     className: "PoolContainer",
@@ -65,8 +59,6 @@ export const poolWorker = Effect.gen(function* () {
     observability: workerObservability,
     env: {
       PoolContainer: image,
-      BulkUsageImport: importJobs,
-      UsageImportArtifacts: importArtifacts,
       POOL_DATABASE_URL: database.runtimeUrl,
       POOL_AUTH_DATABASE: workerDatabase,
       POOL_DEPLOYMENT_KEY: yield* Config.Redacted("POOL_DEPLOYMENT_KEY"),

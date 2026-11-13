@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The owner-session bulk import endpoint maps only the exact backend bulk_import_not_provisioned code to PoolUsageImportRejected with reason not_provisioned. Other backend failures keep unavailable and existing query, identity and authorization refusals keep their reasons. The unprovisioned deployment binds no new job class or object storage, rejects bulk commands before job work, and retains additive model-history migrations and adaptive pacing for a later provisioned release."
+    }
+  }
+}
