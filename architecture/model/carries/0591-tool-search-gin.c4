@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Searches without matching target labels select own-word candidates through the stored GIN expression before materialization. Label matches retain full-corpus ranking. Every candidate intersects the complete permitted corpus; BM25 statistics and alternative-target merging retain nonmatching permitted rows. Ranking and hydration remain one statement with fresh listing, account-target, scope and tool filters."
+    }
+  }
+}
