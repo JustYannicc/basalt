@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Manager-authorized usage series retain every source and append-only request identity. Optional Zurich daily buckets follow actual local calendar boundaries, including daylight-saving changes, while existing reads stay UTC. Historical usage forecasts use four complete weeks and the same estimator for held-out misses; incomplete, hidden and unpriced values retain their exclusions. Usage history never establishes remaining provider quota or routing capacity."
+    }
+  }
+}

@@ -95,6 +95,7 @@ export async function seriesQuery(
   const aggregates = [
     "count(*)::text AS requests",
     "count(*) FILTER (WHERE failed)::text AS failed",
+    "count(*) FILTER (WHERE status_code = 429)::text AS limited",
     "count(*) FILTER (WHERE failed AND account IS NULL AND source = $6)::text AS unassigned",
     "max(timestamp_exact) FILTER (WHERE NOT failed) AS last_success",
     ...columns,
@@ -146,6 +147,8 @@ export async function seriesQuery(
   if (input.by.includes("person") && !input.by.includes("attribution"))
     redactedKey.push("'attribution'", "NULL");
   const app = (await appAttributionReady(db)) ? "r.app_id" : "NULL::text AS app_id";
+  const timezone = input.timezone ?? "UTC";
+  const localBucket = `date_trunc('${input.bucket}', (left(timestamp_exact,19)::timestamp AT TIME ZONE 'UTC') AT TIME ZONE '${timezone}')`;
   const prefix = `WITH bindings AS (SELECT * FROM jsonb_to_recordset($4::jsonb) AS b(history text,saved text)),
     selected AS (SELECT r.*, $6::text AS gateway_source,
       ${app === "r.app_id" ? "" : `${app},`}
@@ -160,11 +163,12 @@ export async function seriesQuery(
     ${prices ? `${pricedRowsSql("selected", priceParameter!, "s.source=$5 AND NOT s.counts_only", "public_")},` : ""}
     keyed AS (SELECT *, CASE WHEN counts_only THEN jsonb_build_object(${redactedKey.join(", ")})
       ELSE jsonb_build_object(${key.join(", ")}) END::text COLLATE "C" AS group_key,
-      date_trunc('${input.bucket}', left(timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' AS bucket_at
+      ${localBucket} AT TIME ZONE '${timezone}' AS bucket_at,
+      (${localBucket} + interval '1 ${input.bucket}') AT TIME ZONE '${timezone}' AS bucket_end
       FROM ${prices ? "priced" : "selected"})`;
-  const aggregate = `${prefix.replace("ACCOUNT_FILTER", accountWhere)}, aggregated AS (SELECT group_key, bucket_at, ${aggregates.join(",\n      ")}
-      FROM keyed GROUP BY group_key,bucket_at)
-    SELECT *, ${utcSql("bucket_at")} AS at FROM aggregated`;
+  const aggregate = `${prefix.replace("ACCOUNT_FILTER", accountWhere)}, aggregated AS (SELECT group_key, bucket_at, bucket_end, ${aggregates.join(",\n      ")}
+      FROM keyed GROUP BY group_key,bucket_at,bucket_end)
+    SELECT *, ${utcSql("bucket_at")} AS at, ${utcSql("bucket_end")} AS end_at FROM aggregated`;
   let condition = "";
   if (after) {
     values.push(after.key, timestamp(after.at));
