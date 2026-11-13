@@ -183,7 +183,7 @@
 +                Effect.provideService(CurrentOrganization, current.access),
 +                Effect.provideService(CurrentAuthorization, fullAuthority),
 +                Effect.provideService(CurrentUserId, current.access.userId),
-+                Effect.mapError(dataFailure),
++                Effect.catchTag("StorageError", unavailable),
 +              ),
 +            ),
 +          )
@@ -755,3 +755,14 @@
        }),
      ),
    );
+--- a/e2e/tests/app-ui-phase-headers.spec.ts
++++ b/e2e/tests/app-ui-phase-headers.spec.ts
+@@ -121,7 +121,7 @@
+               ? documentPhases
+               : response.kind === "query"
+                 ? queryPhases
+-                : ["query-session-access"];
++                : ["query-dispatch", "query-session-access"];
+           expect(Object.keys(phases).sort()).toEqual(expected);
+           expect(response.status).toBe(response.kind === "stale" ? 409 : 200);
+           expect(response.timing).toContain("executor;dur=");
