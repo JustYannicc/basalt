@@ -101,11 +101,11 @@ index 859cee4..6e27d1d 100644
        apps.map((app) => app.id),
 diff --git a/packages/sdk/src/contracts/app-read.ts b/packages/sdk/src/contracts/app-read.ts
 new file mode 100644
-index 0000000..1107f18
+index 0000000..ad7a37c
 --- /dev/null
 +++ b/packages/sdk/src/contracts/app-read.ts
 @@ -0,0 +1,19 @@
-+import { Schema, Struct, type Effect } from "effect";
++import { Struct, type Effect } from "effect";
 +import { AppFields, type App } from "./apps.ts";
 +import type { AppId, OwnerId, StorageError } from "./shared.ts";
 +
