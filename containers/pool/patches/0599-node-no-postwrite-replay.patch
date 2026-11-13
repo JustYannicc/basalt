@@ -1,0 +1,622 @@
+diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
+--- a/sdk/api/handlers/handlers.go
++++ b/sdk/api/handlers/handlers.go
+@@ -84,6 +84,9 @@
+ 
+ 	trimmed := strings.TrimSpace(errText)
+ 
++	if httptransport.IsOutcomeUnknown(err) {
++		return []byte((&httptransport.OutcomeUnknownError{}).Error())
++	}
+ 	if coreauth.IsTerminalAuthError(err) {
+ 		message := errText
+ 		if trimmed != "" && json.Valid([]byte(trimmed)) {
+diff --git a/sdk/api/handlers/handlers_errors.go b/sdk/api/handlers/handlers_errors.go
+--- a/sdk/api/handlers/handlers_errors.go
++++ b/sdk/api/handlers/handlers_errors.go
+@@ -4,6 +4,7 @@
+ 	"bytes"
+ 	"errors"
+ 	"fmt"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	"net/http"
+ 	"strings"
+ 
+@@ -143,6 +144,10 @@
+ 				c.Writer.Header().Add(key, value)
+ 			}
+ 		}
++	}
++
++	if msg != nil && httptransport.IsOutcomeUnknown(msg.Error) {
++		c.Writer.Header().Set("x-should-retry", "false")
+ 	}
+ 
+ 	errText := http.StatusText(status)
+diff --git a/sdk/api/handlers/handlers_stream.go b/sdk/api/handlers/handlers_stream.go
+--- a/sdk/api/handlers/handlers_stream.go
++++ b/sdk/api/handlers/handlers_stream.go
+@@ -5,6 +5,7 @@
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	"net/http"
+ 
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+@@ -577,6 +578,9 @@
+ 	}
+ 
+ 	bootstrapEligible := func(err error) bool {
++		if httptransport.IsOutcomeUnknown(err) {
++			return false
++		}
+ 		status := statusFromError(err)
+ 		if status == 0 {
+ 			return true
+diff --git a/sdk/api/handlers/openai/http_submission_test.go b/sdk/api/handlers/openai/http_submission_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_test.go
+@@ -0,0 +1,173 @@
++package openai
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++func submissionRequest(t *testing.T, upstream string, stream bool, transport http.RoundTripper) *httptest.ResponseRecorder {
++	t.Helper()
++	const provider = "submission-test"
++	model := "submission-" + strings.ReplaceAll(t.Name(), "/", "-")
++	manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++	manager.RegisterExecutor(runtimeexecutor.NewOpenAICompatExecutor(provider, &config.Config{}))
++	if transport != nil {
++		manager.SetRoundTripperProvider(submissionTransport{transport})
++	}
++	for _, suffix := range []string{"a", "b"} {
++		auth := &coreauth.Auth{ID: model + suffix, Provider: provider, Status: coreauth.StatusActive,
++			ProxyURL: "direct", Attributes: map[string]string{"base_url": upstream, "api_key": "synthetic"}}
++		// The injected transport exercises a real failed TCP connect before its successful attempt.
++		if transport != nil {
++			auth.ProxyURL = ""
++		}
++		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++			t.Fatal(errRegister)
++		}
++		registry.GetGlobalRegistry().RegisterClient(auth.ID, provider, []*registry.ModelInfo{{ID: model}})
++		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++	}
++	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++	router := gin.New()
++	router.POST("/v1/chat/completions", NewOpenAIAPIHandler(base).ChatCompletions)
++	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}],"stream":%t}`, model, stream)
++	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
++	request.Header.Set("Content-Type", "application/json")
++	recorder := httptest.NewRecorder()
++	router.ServeHTTP(recorder, request)
++	return recorder
++}
++
++type submissionTransport struct{ transport http.RoundTripper }
++
++func (s submissionTransport) RoundTripperFor(*coreauth.Auth) http.RoundTripper { return s.transport }
++
++func TestHTTPSubmissionPostWriteDisconnectDoesNotReplay(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		t.Run(fmt.Sprint(stream), func(t *testing.T) {
++			var accepted atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if _, errRead := io.Copy(io.Discard, r.Body); errRead != nil {
++					t.Error(errRead)
++					return
++				}
++				accepted.Add(1)
++				conn, _, errHijack := w.(http.Hijacker).Hijack()
++				if errHijack != nil {
++					t.Error(errHijack)
++					return
++				}
++				_ = conn.Close()
++			}))
++			defer upstream.Close()
++			response := submissionRequest(t, upstream.URL, stream, nil)
++			t.Logf("accepted non-idempotent requests=%d, public status=%d", accepted.Load(), response.Code)
++			if got := accepted.Load(); got != 1 {
++				t.Fatalf("upstream accepted %d requests after post-write EOF, want 1", got)
++			}
++			if response.Code != http.StatusBadGateway {
++				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
++			}
++			for _, value := range []string{`"code":"upstream_outcome_unknown"`, `"retryable":false`} {
++				if !strings.Contains(response.Body.String(), value) {
++					t.Fatalf("body=%s, missing %s", response.Body.String(), value)
++				}
++			}
++			if got := response.Header().Get("x-should-retry"); got != "false" {
++				t.Fatalf("x-should-retry=%q", got)
++			}
++		})
++	}
++}
++
++func TestHTTPSubmissionPreWriteConnectFailureCanRetry(t *testing.T) {
++	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
++	if errListen != nil {
++		t.Fatal(errListen)
++	}
++	refused := listener.Addr().String()
++	_ = listener.Close()
++	var accepted, dials atomic.Int32
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = io.Copy(io.Discard, r.Body)
++		accepted.Add(1)
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"id":"ok","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
++	}))
++	defer upstream.Close()
++	transport := http.DefaultTransport.(*http.Transport).Clone()
++	transport.Proxy = nil
++	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
++		if dials.Add(1) == 1 {
++			address = refused
++		}
++		return (&net.Dialer{}).DialContext(ctx, network, address)
++	}
++	defer transport.CloseIdleConnections()
++	response := submissionRequest(t, upstream.URL, false, transport)
++	if response.Code != http.StatusOK || accepted.Load() != 1 || dials.Load() != 2 {
++		t.Fatalf("status=%d accepted=%d dials=%d body=%s", response.Code, accepted.Load(), dials.Load(), response.Body.String())
++	}
++}
++
++func TestHTTPSubmissionExplicitRefusalCanFailOver(t *testing.T) {
++	var attempts atomic.Int32
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = io.Copy(io.Discard, r.Body)
++		if attempts.Add(1) == 1 {
++			w.WriteHeader(http.StatusServiceUnavailable)
++			_, _ = io.WriteString(w, `{"error":{"message":"not accepted"}}`)
++			return
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"id":"ok","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
++	}))
++	defer upstream.Close()
++	response := submissionRequest(t, upstream.URL, false, nil)
++	if response.Code != http.StatusOK || attempts.Load() != 2 {
++		t.Fatalf("status=%d attempts=%d body=%s", response.Code, attempts.Load(), response.Body.String())
++	}
++}
++
++func TestHTTPSubmissionAcceptedResponseDisconnectDoesNotReplay(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		t.Run(fmt.Sprint(stream), func(t *testing.T) {
++			var accepted atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				accepted.Add(1)
++				w.Header().Set("Content-Length", "1000")
++				w.Header().Set("Content-Type", "text/event-stream")
++				w.WriteHeader(http.StatusOK)
++				w.(http.Flusher).Flush()
++				conn, _, errHijack := w.(http.Hijacker).Hijack()
++				if errHijack != nil {
++					t.Error(errHijack)
++					return
++				}
++				_ = conn.Close()
++			}))
++			defer upstream.Close()
++			response := submissionRequest(t, upstream.URL, stream, nil)
++			if accepted.Load() != 1 || response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"code":"upstream_outcome_unknown"`) {
++				t.Fatalf("accepted=%d status=%d body=%s", accepted.Load(), response.Code, response.Body.String())
++			}
++		})
++	}
++}
+diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
+--- a/sdk/cliproxy/auth/conductor_execution.go
++++ b/sdk/cliproxy/auth/conductor_execution.go
+@@ -21,6 +21,7 @@
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+ 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+ 	log "github.com/sirupsen/logrus"
+ )
+@@ -30,12 +31,12 @@
+ 	if RequestScopedErrorConfigFromContext(ctx) == nil {
+ 		ctx = WithRequestScopedErrorConfig(ctx, m.runtimeConfigSnapshot())
+ 	}
+-	return cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
++	return httptransport.WithSubmissionTracking(cliproxyexecutor.WithUpstreamAttemptTracker(ctx))
+ }
+ 
+ func newUpstreamAttemptContext(ctx context.Context) context.Context {
+ 	ctx = logging.WithFreshResponseHeadersHolder(ctx)
+-	return cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
++	return httptransport.WithSubmissionTracking(cliproxyexecutor.WithUpstreamAttemptTracker(ctx))
+ }
+ 
+ func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) error {
+@@ -80,6 +81,7 @@
+ }
+ 
+ func markUpstreamExecutionAttemptFromContext(ctx context.Context, err error) error {
++	err = httptransport.ClassifySubmissionError(ctx, err)
+ 	if err == nil || !cliproxyexecutor.UpstreamAttempted(ctx) {
+ 		return err
+ 	}
+@@ -447,7 +449,7 @@
+ 
+ func isRequestTerminatedError(err error) bool {
+ 	var terminated *cliproxyexecutor.RequestTerminatedError
+-	return (errors.As(err, &terminated) && terminated != nil) || cliproxyexecutor.IsUpstreamWebsocketTurnError(err)
++	return (errors.As(err, &terminated) && terminated != nil) || cliproxyexecutor.IsUpstreamWebsocketTurnError(err) || httptransport.IsOutcomeUnknown(err)
+ }
+ 
+ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExecutor, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options, error) {
+@@ -1349,6 +1351,13 @@
+ 			if hasUpstreamExecutionAttempt(errStream) {
+ 				upstreamErr = errStream
+ 			}
++			if httptransport.IsOutcomeUnknown(errStream) {
++				if selection != nil {
++					releaseAttempt()
++					selection.End("outcome_unknown")
++				}
++				return nil, errStream
++			}
+ 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.requestScopedErrorConfig(execCtx))
+ 			stoppedByRule := isRequestStopError(errStream) || isRequestScopedStop(action, okAction)
+ 			if stoppedByRule || (!okAction && (isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream))) {
+diff --git a/sdk/cliproxy/auth/conductor_request_scoped_errors.go b/sdk/cliproxy/auth/conductor_request_scoped_errors.go
+--- a/sdk/cliproxy/auth/conductor_request_scoped_errors.go
++++ b/sdk/cliproxy/auth/conductor_request_scoped_errors.go
+@@ -4,6 +4,7 @@
+ 	"context"
+ 	"encoding/json"
+ 	"errors"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	"regexp"
+ 	"strconv"
+ 	"strings"
+@@ -369,6 +370,9 @@
+ }
+ 
+ func matchRequestScopedErrorAction(auth *Auth, err error, cfg *internalconfig.Config) (string, bool) {
++	if httptransport.IsOutcomeUnknown(err) {
++		return "", false
++	}
+ 	if err == nil || cliproxyexecutor.IsUpstreamWebsocketTurnError(err) {
+ 		return "", false
+ 	}
+diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conductor_selection.go
+--- a/sdk/cliproxy/auth/conductor_selection.go
++++ b/sdk/cliproxy/auth/conductor_selection.go
+@@ -1768,7 +1768,7 @@
+ }
+ 
+ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts cliproxyexecutor.Options, err error, attempt int, providers []string, model string, maxWait time.Duration, homeRetryLimit int, defaultRequestRetry int, attempted map[string]struct{}) (time.Duration, bool) {
+-	if err == nil {
++	if err == nil || isRequestTerminatedError(err) {
+ 		return 0, false
+ 	}
+ 	var homeBusy *HomeConcurrencyBusyError
+diff --git a/sdk/cliproxy/auth/conductor_stream.go b/sdk/cliproxy/auth/conductor_stream.go
+--- a/sdk/cliproxy/auth/conductor_stream.go
++++ b/sdk/cliproxy/auth/conductor_stream.go
+@@ -488,6 +488,9 @@
+ 		streamResult, errStream = validateStreamResult(streamResult, errStream)
+ 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
+ 		if errStream != nil {
++			if isRequestTerminatedError(errStream) {
++				return nil, errStream
++			}
+ 			rerr := resultErrorFromError(errStream)
+ 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.requestScopedErrorConfig(ctx))
+ 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
+@@ -578,6 +581,9 @@
+ 			}
+ 		}
+ 		if bootstrapErr != nil {
++			if isRequestTerminatedError(bootstrapErr) {
++				return nil, bootstrapErr
++			}
+ 			action, okAction := matchRequestScopedErrorAction(auth, bootstrapErr, m.requestScopedErrorConfig(ctx))
+ 			if okAction {
+ 				rerr := resultErrorFromError(bootstrapErr)
+diff --git a/sdk/httptransport/decorator.go b/sdk/httptransport/decorator.go
+--- a/sdk/httptransport/decorator.go
++++ b/sdk/httptransport/decorator.go
+@@ -1,4 +1,5 @@
+-// Package httptransport exposes an additive, request-scoped observation seam.
++// Package httptransport preserves selected transports while observing requests
++// and preventing replay after ambiguous provider submission.
+ // A decorator wraps the transport already selected by the executor: it must not
+ // replace provider fingerprints, proxy routing, pools, or HTTP protocol policy.
+ package httptransport
+@@ -27,9 +28,10 @@
+ 
+ // WithoutDecorator suppresses intermediate helper decoration. A specialized
+ // executor that further configures its helper's transport must apply Decorate
+-// once, after its own protocol/pool policy is complete.
++// once, after its own protocol/pool policy is complete. Submission tracking is
++// suppressed here too so it wraps that final transport exactly once.
+ func WithoutDecorator(ctx context.Context) context.Context {
+-	return WithDecorator(ctx, nil)
++	return context.WithValue(WithDecorator(ctx, nil), submissionKey{}, (*submissionState)(nil))
+ }
+ 
+ // InheritDecorator copies a decorator from fallback into ctx when ctx does not
+@@ -50,24 +52,32 @@
+ 	return ctx
+ }
+ 
+-// Decorate applies a context decorator AFTER transport selection. With no
+-// decorator, the exact original client is returned. Only the client value is
+-// copied; the original selected transport/pool and all client policy survive.
++// Decorate applies observation and submission tracking after transport selection.
++// Without either, the exact original client is returned. The selected pool, proxy
++// and protocol policy survive; only the client value is copied.
+ func Decorate(ctx context.Context, client *http.Client) *http.Client {
+ 	if ctx == nil || client == nil {
+ 		return client
+ 	}
+ 	decorator, _ := ctx.Value(decoratorKey{}).(Decorator)
+-	if decorator == nil {
++	state, _ := ctx.Value(submissionKey{}).(*submissionState)
++	if decorator == nil && state == nil {
+ 		return client
+ 	}
+ 	next := client.Transport
+ 	if next == nil {
+ 		next = http.DefaultTransport
+ 	}
+-	wrapped := decorator(next)
+-	if wrapped == nil {
+-		return client
++	wrapped := next
++	if decorator != nil {
++		if observed := decorator(next); observed != nil {
++			wrapped = observed
++		} else if state == nil {
++			return client
++		}
++	}
++	if state != nil {
++		wrapped = &submissionTransport{next: wrapped, state: state}
+ 	}
+ 	clone := *client
+ 	clone.Transport = wrapped
+diff --git a/sdk/httptransport/submission.go b/sdk/httptransport/submission.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/httptransport/submission.go
+@@ -0,0 +1,125 @@
++package httptransport
++
++import (
++	"context"
++	"errors"
++	"io"
++	"net/http"
++	"net/http/httptrace"
++	"sync/atomic"
++)
++
++type submissionKey struct{}
++type submissionState struct {
++	accepted atomic.Bool
++	terminal atomic.Pointer[OutcomeUnknownError]
++}
++
++func (s *submissionState) fail(err error) error {
++	unknown := &OutcomeUnknownError{Cause: err}
++	s.terminal.CompareAndSwap(nil, unknown)
++	return s.terminal.Load()
++}
++
++// WithSubmissionTracking starts one provider attempt. Explicit HTTP refusals do
++// not make later attempts ambiguous; a successful response does.
++func WithSubmissionTracking(ctx context.Context) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, submissionKey{}, &submissionState{})
++}
++
++// OutcomeUnknownError means the provider may have executed the request. Its
++// transport cause is available to operators, never included in the public body.
++type OutcomeUnknownError struct{ Cause error }
++
++func (*OutcomeUnknownError) Error() string {
++	return `{"error":{"message":"Upstream disconnected after submission. The request was not replayed and its outcome is unknown.","type":"server_error","code":"upstream_outcome_unknown","retryable":false}}`
++}
++func (e *OutcomeUnknownError) Unwrap() error       { return e.Cause }
++func (*OutcomeUnknownError) StatusCode() int       { return http.StatusBadGateway }
++func (*OutcomeUnknownError) IsRequestScoped() bool { return true }
++
++// IsOutcomeUnknown reports an attempt that must never be replayed, even when a
++// configured error rule would otherwise select another model or credential.
++func IsOutcomeUnknown(err error) bool {
++	var unknown *OutcomeUnknownError
++	return errors.As(err, &unknown)
++}
++
++// ClassifySubmissionError stops failures detected after an accepted HTTP response.
++// Explicit HTTP refusals never set the accepted flag.
++func ClassifySubmissionError(ctx context.Context, err error) error {
++	if err == nil || IsOutcomeUnknown(err) || ctx == nil {
++		return err
++	}
++	state, _ := ctx.Value(submissionKey{}).(*submissionState)
++	if state == nil {
++		return err
++	}
++	if terminal := state.terminal.Load(); terminal != nil {
++		return terminal
++	}
++	if !state.accepted.Load() {
++		return err
++	}
++	return state.fail(err)
++}
++
++type submissionTransport struct {
++	next  http.RoundTripper
++	state *submissionState
++}
++
++func (s *submissionTransport) RoundTrip(req *http.Request) (*http.Response, error) {
++	if terminal := s.state.terminal.Load(); terminal != nil {
++		return nil, terminal
++	}
++	switch req.Method {
++	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
++		return s.next.RoundTrip(req)
++	}
++	var written, responseStarted atomic.Bool
++	trace := &httptrace.ClientTrace{
++		// Even a partial body can be accepted by an upstream that replies early.
++		WroteHeaders: func() { written.Store(true) },
++		WroteRequest: func(info httptrace.WroteRequestInfo) {
++			if info.Err == nil {
++				written.Store(true)
++			}
++		},
++		GotFirstResponseByte: func() { responseStarted.Store(true) },
++	}
++	cloned := req.Clone(httptrace.WithClientTrace(req.Context(), trace))
++	// A replayable body lets net/http repeat a POST with an Idempotency-Key inside
++	// RoundTrip, before the manager can inspect the failed attempt.
++	cloned.GetBody = nil
++	response, err := s.next.RoundTrip(cloned)
++	if err != nil {
++		if written.Load() || responseStarted.Load() {
++			return nil, s.state.fail(err)
++		}
++		return response, err
++	}
++	if response != nil && response.StatusCode >= 200 && response.StatusCode < 300 {
++		s.state.accepted.Store(true)
++		if response.Body != nil {
++			response.Body = &submissionBody{ReadCloser: response.Body, state: s.state}
++		}
++	}
++	return response, nil
++}
++
++type submissionBody struct {
++	io.ReadCloser
++	state *submissionState
++}
++
++func (b *submissionBody) Read(p []byte) (int, error) {
++	n, err := b.ReadCloser.Read(p)
++	if err != nil && !errors.Is(err, io.EOF) {
++		err = b.state.fail(err)
++	}
++	return n, err
++}
+diff --git a/sdk/httptransport/submission_test.go b/sdk/httptransport/submission_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/httptransport/submission_test.go
+@@ -0,0 +1,77 @@
++package httptransport
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"net/http/httptrace"
++	"strings"
++	"sync/atomic"
++	"testing"
++)
++
++func TestSubmissionGuardPreventsInternalPOSTReplay(t *testing.T) {
++	var calls atomic.Int32
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = io.Copy(io.Discard, r.Body)
++		if calls.Add(1) == 1 {
++			w.WriteHeader(http.StatusNoContent)
++			return
++		}
++		conn, _, errHijack := w.(http.Hijacker).Hijack()
++		if errHijack != nil {
++			t.Error(errHijack)
++			return
++		}
++		_ = conn.Close()
++	}))
++	defer server.Close()
++	client := Decorate(WithSubmissionTracking(context.Background()), server.Client())
++	warm, errWarm := client.Get(server.URL)
++	if errWarm != nil {
++		t.Fatal(errWarm)
++	}
++	_, _ = io.Copy(io.Discard, warm.Body)
++	_ = warm.Body.Close()
++	var reused, wrote atomic.Bool
++	trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { reused.Store(info.Reused) }, WroteRequest: func(info httptrace.WroteRequestInfo) { wrote.Store(info.Err == nil) }}
++	request, errRequest := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), http.MethodPost, server.URL, strings.NewReader("non-idempotent operation"))
++	if errRequest != nil {
++		t.Fatal(errRequest)
++	}
++	request.Header.Set("Idempotency-Key", "synthetic-key")
++	_, errDo := client.Do(request)
++	if !IsOutcomeUnknown(errDo) {
++		t.Fatalf("error=%v, want unknown outcome", errDo)
++	}
++	if !reused.Load() || !wrote.Load() {
++		t.Fatalf("existing trace lost or warm connection not reused: reused=%v wrote=%v", reused.Load(), wrote.Load())
++	}
++	if got := calls.Load(); got != 2 {
++		t.Fatalf("requests=%d, want warm GET plus one POST", got)
++	}
++	// An executor's internal fallback must not bypass the manager's terminal decision.
++	_, errRetry := client.Post(server.URL, "text/plain", strings.NewReader("same operation"))
++	if !IsOutcomeUnknown(errRetry) || calls.Load() != 2 {
++		t.Fatalf("internal retry: error=%v requests=%d", errRetry, calls.Load())
++	}
++}
++
++func TestSubmissionGuardHTTPRefusalIsNotAcceptance(t *testing.T) {
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
++	defer server.Close()
++	ctx := WithSubmissionTracking(context.Background())
++	client := Decorate(ctx, server.Client())
++	response, errDo := client.Post(server.URL, "text/plain", strings.NewReader("request"))
++	if errDo != nil {
++		t.Fatal(errDo)
++	}
++	_ = response.Body.Close()
++	if response.StatusCode != http.StatusServiceUnavailable {
++		t.Fatal(response.StatusCode)
++	}
++	if err := ClassifySubmissionError(ctx, io.EOF); IsOutcomeUnknown(err) {
++		t.Fatal("explicit refusal marked accepted")
++	}
++}

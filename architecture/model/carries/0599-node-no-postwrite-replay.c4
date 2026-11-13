@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "A provider HTTP submission whose write or response was observed cannot be replayed after a transport loss, including internal HTTP, model, credential and retry-round fallbacks. The final selected transport records request-local evidence without replacing proxy, TLS or pool policy. Ambiguous outcomes return 502 upstream_outcome_unknown with retryable false and x-should-retry false; safe pre-write connection failures and explicit HTTP refusals retain retry behavior. Real loopback regressions guard both the public API and transport replay before the native source image is built. Keep the carry until an upstream release passes the same behavior, re-applying it across source updates without rolling back the release pin."
+    }
+  }
+}
