@@ -1,0 +1,663 @@
+diff --git a/internal/cluster/coordinator_idle_snapshot_test.go b/internal/cluster/coordinator_idle_snapshot_test.go
+new file mode 100644
+index 0000000..6316d87
+--- /dev/null
++++ b/internal/cluster/coordinator_idle_snapshot_test.go
+@@ -0,0 +1,76 @@
++package cluster
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/node"
++	"gorm.io/gorm"
++)
++
++func TestCoordinatorUnchangedSnapshotBatchesRetentionRefresh(t *testing.T) {
++	registry := node.GlobalRegistry()
++	const ip, id = "192.0.2.225", "idle-snapshot-node"
++	registry.AddWithNodeID(ip, id, time.Now())
++	t.Cleanup(func() { registry.RemoveWithNodeID(ip, id) })
++	repo := newCredentialFoundationTestRepository(t)
++	coordinator := newSnapshotTestCoordinator(t, repo)
++	startedAt := time.Now()
++	scheduler := cpaNodeSnapshotScheduler{coordinator: coordinator, lastSuccess: startedAt.Add(-time.Minute)}
++	scheduler.refresh(context.Background(), startedAt)
++	deletes := snapshotDeleteCounter(t, repo)
++	for second := 1; second < 60; second++ {
++		scheduler.refresh(context.Background(), startedAt.Add(time.Duration(second)*time.Second))
++	}
++	if got := deletes.Load(); got != 0 {
++		t.Fatalf("unchanged topology replaced %d times before retention refresh, want 0", got)
++	}
++	scheduler.refresh(context.Background(), startedAt.Add(time.Minute))
++	if got := deletes.Load(); got != 1 {
++		t.Fatalf("bounded retention refreshes=%d, want 1", got)
++	}
++}
++
++func TestCoordinatorEmptySnapshotDoesNoPeriodicSQL(t *testing.T) {
++	repo := newCredentialFoundationTestRepository(t)
++	coordinator := newSnapshotTestCoordinator(t, repo)
++	startedAt := time.Now()
++	scheduler := cpaNodeSnapshotScheduler{coordinator: coordinator, lastSuccess: startedAt.Add(-time.Minute)}
++	scheduler.refresh(context.Background(), startedAt)
++	counter := &lifecycleSQLCounter{Interface: repo.db.Logger}
++	repo.db = repo.db.Session(&gorm.Session{Logger: counter})
++	for second := 1; second <= 180; second++ {
++		scheduler.refresh(context.Background(), startedAt.Add(time.Duration(second)*time.Second))
++	}
++	if got := counter.statements.Load(); got != 0 {
++		t.Fatalf("empty unchanged topology used %d periodic SQL statements, want 0", got)
++	}
++}
++
++func TestCoordinatorSnapshotPersistsHandlerAndFenceChangesWithoutNotification(t *testing.T) {
++	registry := node.GlobalRegistry()
++	const fingerprint, id, ip = "idle-snapshot-fingerprint", "idle-draining-node", "192.0.2.227"
++	registry.UpdateFingerprintState(fingerprint, id, ip, 1, 0, 0)
++	t.Cleanup(func() { registry.UpdateFingerprintState(fingerprint, id, ip, -1, -1, 2) })
++	repo := newCredentialFoundationTestRepository(t)
++	coordinator := newSnapshotTestCoordinator(t, repo)
++	startedAt := time.Now()
++	scheduler := cpaNodeSnapshotScheduler{coordinator: coordinator, lastSuccess: startedAt.Add(-time.Minute)}
++	scheduler.refresh(context.Background(), startedAt)
++	registry.UpdateFingerprintState(fingerprint, id, ip, -1, 1, 2)
++	scheduler.refresh(context.Background(), startedAt.Add(time.Second))
++	var record CPANodeRecord
++	if errFind := repo.db.First(&record, "certificate_fingerprint = ?", fingerprint).Error; errFind != nil {
++		t.Fatal(errFind)
++	}
++	if record.OpenConnections != 0 || record.ActiveHandlers != 1 || record.LatestCancelRevision != 2 {
++		t.Fatalf("held-draining state=%#v", record)
++	}
++	registry.UpdateFingerprintState(fingerprint, id, ip, 0, -1, 2)
++	scheduler.refresh(context.Background(), startedAt.Add(2*time.Second))
++	var count int64
++	if errCount := repo.db.Model(&CPANodeRecord{}).Where("certificate_fingerprint = ?", fingerprint).Count(&count).Error; errCount != nil || count != 0 {
++		t.Fatalf("closed snapshot count=%d error=%v", count, errCount)
++	}
++}
+diff --git a/internal/cluster/coordinator_snapshot.go b/internal/cluster/coordinator_snapshot.go
+index 94f4314..5a9df06 100644
+--- a/internal/cluster/coordinator_snapshot.go
++++ b/internal/cluster/coordinator_snapshot.go
+@@ -2,6 +2,8 @@ package cluster
+ 
+ import (
+ 	"context"
++	"slices"
++	"strings"
+ 	"time"
+ 
+ 	"github.com/router-for-me/CLIProxyAPIHome/internal/node"
+@@ -22,6 +24,9 @@ type cpaNodeSnapshotScheduler struct {
+ 	coordinator *Coordinator
+ 	pending     bool
+ 	lastSuccess time.Time
++	lastNodes   []node.Node
++	lastHome    HomeIncarnationID
++	initialized bool
+ }
+ 
+ // runCPANodeSnapshotLoop owns all runtime refreshes. Ticks also bound failure retries.
+@@ -50,15 +55,28 @@ func (s *cpaNodeSnapshotScheduler) refresh(ctx context.Context, scheduledAt time
+ 		s.pending = true
+ 	default:
+ 	}
+-	if !s.pending && scheduledAt.Sub(s.lastSuccess) < c.heartbeatInterval {
++	if !s.initialized && !s.pending && scheduledAt.Sub(s.lastSuccess) < c.heartbeatInterval {
+ 		return
+ 	}
+ 	home, initialized := c.HomeIncarnation()
+ 	if !initialized {
+ 		return
+ 	}
++	nodes := node.GlobalRegistry().List()
++	// Registry order can vary for equal connection times. Compare the fields persisted by the snapshot.
++	slices.SortFunc(nodes, func(a, b node.Node) int { return strings.Compare(cpaNodeKey(a), cpaNodeKey(b)) })
++	for i := range nodes {
++		nodes[i].Connected = nodes[i].Connected.UTC()
++	}
++	same := s.initialized && s.lastHome == home && slices.Equal(nodes, s.lastNodes)
++	// Readers discard snapshots after retention; refresh a stable nonempty view halfway through it.
++	refreshEvery := min(time.Minute, cpaNodeSnapshotRetention(c.heartbeatTimeout)/2)
++	if same && (len(nodes) == 0 || scheduledAt.Sub(s.lastSuccess) < refreshEvery) {
++		s.pending = false
++		return
++	}
+ 	refreshCtx, cancelRefresh := context.WithTimeout(ctx, cpaNodeSnapshotRefreshBudget)
+-	errSnapshot := c.syncCPANodeSnapshot(refreshCtx, home)
++	errSnapshot := c.syncCPANodeSnapshotNodes(refreshCtx, home, nodes)
+ 	cancelRefresh()
+ 	if ctx.Err() != nil {
+ 		return
+@@ -68,14 +86,21 @@ func (s *cpaNodeSnapshotScheduler) refresh(ctx context.Context, scheduledAt time
+ 		log.Warnf("failed to sync CPA node snapshot: %v", errSnapshot)
+ 		return
+ 	}
++	s.lastNodes = nodes
++	s.lastHome = home
++	s.initialized = true
+ 	s.lastSuccess = scheduledAt
+ 	s.pending = false
+ }
+ 
+ func (c *Coordinator) syncCPANodeSnapshot(ctx context.Context, home HomeIncarnationID) error {
++	return c.syncCPANodeSnapshotNodes(ctx, home, node.GlobalRegistry().List())
++}
++
++func (c *Coordinator) syncCPANodeSnapshotNodes(ctx context.Context, home HomeIncarnationID, nodes []node.Node) error {
+ 	seenAt, errNow := c.repo.CurrentDatabaseTime(ctx)
+ 	if errNow != nil {
+ 		return errNow
+ 	}
+-	return c.repo.ReplaceCPANodeSnapshotForIncarnation(ctx, home, node.GlobalRegistry().List(), seenAt)
++	return c.repo.ReplaceCPANodeSnapshotForIncarnation(ctx, home, nodes, seenAt)
+ }
+diff --git a/internal/cluster/coordinator_snapshot_test.go b/internal/cluster/coordinator_snapshot_test.go
+index 0d4c118..264234c 100644
+--- a/internal/cluster/coordinator_snapshot_test.go
++++ b/internal/cluster/coordinator_snapshot_test.go
+@@ -69,15 +69,24 @@ func TestCoordinatorSnapshotCoalescesNotifications(t *testing.T) {
+ func TestCoordinatorSnapshotRefreshesPeriodicallyWithoutNotifications(t *testing.T) {
+ 	repo := newCredentialFoundationTestRepository(t)
+ 	coordinator := newSnapshotTestCoordinator(t, repo)
++	registry := node.GlobalRegistry()
++	const ip, id = "192.0.2.226", "snapshot-retention-node"
++	registry.AddWithNodeID(ip, id, time.Now())
++	t.Cleanup(func() { registry.RemoveWithNodeID(ip, id) })
+ 	deletes := snapshotDeleteCounter(t, repo)
+ 	startedAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+ 	scheduler := cpaNodeSnapshotScheduler{coordinator: coordinator, lastSuccess: startedAt}
+ 	scheduler.refresh(context.Background(), startedAt.Add(time.Second))
+ 	if deletes.Load() != 0 {
+-		t.Fatal("snapshot refreshed before the periodic deadline")
++		t.Fatal("snapshot refreshed before initial deadline")
++	}
++	first := startedAt.Add(coordinator.heartbeatInterval)
++	scheduler.refresh(context.Background(), first)
++	scheduler.refresh(context.Background(), first.Add(time.Minute-time.Second))
++	if got := deletes.Load(); got != 1 {
++		t.Fatalf("unchanged replacements before retention refresh = %d, want 1", got)
+ 	}
+-	scheduler.refresh(context.Background(), startedAt.Add(coordinator.heartbeatInterval))
+-	scheduler.refresh(context.Background(), startedAt.Add(2*coordinator.heartbeatInterval))
++	scheduler.refresh(context.Background(), first.Add(time.Minute))
+ 	if got := deletes.Load(); got != 2 {
+ 		t.Fatalf("periodic replacements = %d, want 2", got)
+ 	}
+diff --git a/internal/cluster/home_incarnation.go b/internal/cluster/home_incarnation.go
+index 69cfb25..5288f48 100644
+--- a/internal/cluster/home_incarnation.go
++++ b/internal/cluster/home_incarnation.go
+@@ -123,6 +123,9 @@ func (r *Repository) HeartbeatHomeIncarnation(ctx context.Context, id HomeIncarn
+ 	if errDB != nil {
+ 		return errDB
+ 	}
++	if db.Dialector.Name() == "postgres" {
++		return refreshPostgresHomeLiveness(contextOrBackground(ctx), db, id)
++	}
+ 	errHeartbeat := db.WithContext(contextOrBackground(ctx)).Transaction(func(tx *gorm.DB) error {
+ 		// Acquire the liveness writer lock before evaluating database time. It remains compatible
+ 		// with lifecycle KEY SHARE readers, but serializes heartbeats and state transitions.
+diff --git a/internal/cluster/idle_sql_postgres_test.go b/internal/cluster/idle_sql_postgres_test.go
+new file mode 100644
+index 0000000..dc6d849
+--- /dev/null
++++ b/internal/cluster/idle_sql_postgres_test.go
+@@ -0,0 +1,45 @@
++package cluster
++
++import (
++	"testing"
++
++	"gorm.io/gorm"
++)
++
++func TestPostgresSinglePartObservationUsesOneStatement(t *testing.T) {
++	repo, ctx, lifetime := newPostgresLifecycleFixture(t)
++	identity := InFlightIngestIdentity{CertificateFingerprint: lifetime.Fingerprint, NodeID: "node-a", MembershipConnectedAt: lifetime.ConnectedAt}
++	publishInFlightSnapshot(t, repo, identity, 1, nil)
++	counter := &lifecycleSQLCounter{Interface: repo.db.Logger}
++	repo.db = repo.db.Session(&gorm.Session{Logger: counter})
++	for revision := int64(2); revision <= 31; revision++ {
++		counter.statements.Store(0)
++		result, errIngest := repo.IngestInFlightFrame(ctx, identity, mustInFlightJSON(t, inFlightPart(revision, 0, 1, nil, nil)), DefaultInFlightLimits())
++		if errIngest != nil || !result.Published || !result.Accepted || result.State != "complete" {
++			t.Fatalf("revision %d: result=%#v error=%v", revision, result, errIngest)
++		}
++		if got := counter.statements.Load(); got != 1 {
++			t.Fatalf("revision %d used %d business SQL statements, want 1", revision, got)
++		}
++	}
++	attempt := loadInFlightAttempt(t, repo)
++	if attempt.HighestSeenRevision != 31 || attempt.ReceivedPartCount != 1 || attempt.State != "complete" {
++		t.Fatalf("attempt=%#v", attempt)
++	}
++	var visible CPAInFlightSnapshotRecord
++	if errFind := repo.db.First(&visible).Error; errFind != nil || visible.Revision != 31 {
++		t.Fatalf("visible=%#v error=%v", visible, errFind)
++	}
++}
++
++func TestPostgresHomeHeartbeatUsesOneStatement(t *testing.T) {
++	repo, ctx, lifetime := newPostgresLifecycleFixture(t)
++	counter := &lifecycleSQLCounter{Interface: repo.db.Logger}
++	repo.db = repo.db.Session(&gorm.Session{Logger: counter})
++	if errHeartbeat := repo.HeartbeatHomeIncarnation(ctx, lifetime.Home); errHeartbeat != nil {
++		t.Fatal(errHeartbeat)
++	}
++	if got := counter.statements.Load(); got != 1 {
++		t.Fatalf("Home heartbeat used %d business SQL statements, want 1", got)
++	}
++}
+diff --git a/internal/cluster/in_flight_ingest.go b/internal/cluster/in_flight_ingest.go
+index 43be838..f0954a4 100644
+--- a/internal/cluster/in_flight_ingest.go
++++ b/internal/cluster/in_flight_ingest.go
+@@ -53,6 +53,15 @@ func (r *Repository) IngestInFlightFrame(ctx context.Context, identity InFlightI
+ 
+ 	// Decode untrusted JSON before acquiring any database locks. Rejections still commit revision state below.
+ 	frame, errFrame := decodeInFlightFrameStrict(raw, limits)
++	if db.Dialector.Name() == "postgres" && r.hasPublishedInFlight(identity) && errEnvelope == nil && errFrame == nil && frame.Kind == InFlightFramePart && *frame.PartCount == 1 {
++		published, errPublish := publishPostgresSingleInFlight(ctx, db, identity, frame, raw, limits)
++		if errPublish != nil {
++			return InFlightIngestResult{}, errPublish
++		}
++		if published {
++			return InFlightIngestResult{Revision: frame.Revision, Accepted: true, Published: true, State: "complete"}, nil
++		}
++	}
+ 	result := InFlightIngestResult{Revision: envelope.Revision}
+ 	var protocolErr error
+ 	errTransaction := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+@@ -96,6 +105,9 @@ func (r *Repository) IngestInFlightFrame(ctx context.Context, identity InFlightI
+ 	if errTransaction != nil {
+ 		return InFlightIngestResult{}, errTransaction
+ 	}
++	if result.Published {
++		r.rememberPublishedInFlight(identity)
++	}
+ 	return result, protocolErr
+ }
+ 
+diff --git a/internal/cluster/in_flight_single_postgres.go b/internal/cluster/in_flight_single_postgres.go
+new file mode 100644
+index 0000000..9ffd44e
+--- /dev/null
++++ b/internal/cluster/in_flight_single_postgres.go
+@@ -0,0 +1,130 @@
++package cluster
++
++import (
++	"context"
++	"encoding/json"
++	"time"
++
++	"gorm.io/gorm"
++)
++
++// The unlocked prior revision detects changes committed while FOR UPDATE waits.
++// PostgreSQL's statement snapshot cannot see their parts, so only an unchanged
++// completed attempt may use this path. All other cases restart in the general
++// transaction with a fresh snapshot and its existing replay/conflict checks.
++const publishPostgresSingleInFlightSQL = `
++WITH input AS MATERIALIZED (
++ SELECT ?::text AS fingerprint, ?::timestamptz AS connected_at, ?::text AS node_id,
++   ?::bigint AS revision, ?::timestamptz AS observed_at, ?::bigint AS barrier_revision,
++   ?::boolean AS details_truncated, ?::bytea AS raw, ?::integer AS encoded_bytes, ?::jsonb AS payload
++), member AS MATERIALIZED (
++ SELECT m.certificate_fingerprint FROM cpa_node_membership m CROSS JOIN input i
++ WHERE m.certificate_fingerprint = i.fingerprint AND m.connected_at = i.connected_at
++   AND m.node_id = i.node_id AND m.state = 'active'
++ FOR KEY SHARE OF m
++), prior AS MATERIALIZED (
++ SELECT a.certificate_fingerprint, a.membership_connected_at, a.highest_seen_revision, a.state
++ FROM cpa_in_flight_snapshot_attempts a JOIN member m USING (certificate_fingerprint) CROSS JOIN input i
++ WHERE a.membership_connected_at = i.connected_at AND a.state = 'complete' AND a.highest_seen_revision < i.revision
++), locked AS MATERIALIZED (
++ SELECT a.certificate_fingerprint, a.membership_connected_at
++ FROM cpa_in_flight_snapshot_attempts a JOIN prior p
++ ON a.certificate_fingerprint = p.certificate_fingerprint AND a.membership_connected_at = p.membership_connected_at
++ WHERE a.highest_seen_revision = p.highest_seen_revision AND a.state = p.state
++ FOR UPDATE OF a
++), ready AS MATERIALIZED (
++ SELECT i.*, clock_timestamp() AS written_at FROM input i CROSS JOIN locked
++), removed AS (
++ DELETE FROM cpa_in_flight_snapshot_parts p USING ready r
++ WHERE p.certificate_fingerprint = r.fingerprint AND p.membership_connected_at = r.connected_at
++ RETURNING p.revision
++), inserted AS (
++ INSERT INTO cpa_in_flight_snapshot_parts
++ (certificate_fingerprint, membership_connected_at, revision, part_index, payload, encoded_bytes, created_at, updated_at)
++ SELECT fingerprint, connected_at, revision, 0, raw, encoded_bytes, written_at, written_at FROM ready
++ WHERE (SELECT count(*) FROM removed) >= 0
++ RETURNING certificate_fingerprint
++), completed AS (
++ UPDATE cpa_in_flight_snapshot_attempts a
++ SET highest_seen_revision = r.revision, state = 'complete', observed_at = r.observed_at,
++   barrier_revision = r.barrier_revision, part_count = 1, received_part_count = 1,
++   encoded_bytes = r.encoded_bytes, aggregate_group_count = 0,
++   details_truncated = r.details_truncated, updated_at = r.written_at
++ FROM ready r JOIN inserted p ON p.certificate_fingerprint = r.fingerprint
++ WHERE a.certificate_fingerprint = r.fingerprint AND a.membership_connected_at = r.connected_at
++ RETURNING a.certificate_fingerprint
++), published AS (
++ INSERT INTO cpa_in_flight_snapshots
++ (certificate_fingerprint, node_id, membership_connected_at, revision, observed_at, barrier_revision, details_truncated, payload, updated_at)
++ SELECT r.fingerprint, r.node_id, r.connected_at, r.revision, r.observed_at,
++   r.barrier_revision, r.details_truncated, r.payload, r.written_at
++ FROM ready r JOIN completed a ON a.certificate_fingerprint = r.fingerprint
++ ON CONFLICT (certificate_fingerprint) DO UPDATE SET
++ node_id = EXCLUDED.node_id, membership_connected_at = EXCLUDED.membership_connected_at,
++ revision = EXCLUDED.revision, observed_at = EXCLUDED.observed_at, barrier_revision = EXCLUDED.barrier_revision,
++ details_truncated = EXCLUDED.details_truncated, payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
++ RETURNING certificate_fingerprint
++)
++SELECT EXISTS(SELECT 1 FROM member) AS membership_active,
++ EXISTS(SELECT 1 FROM published) AS published`
++
++func publishPostgresSingleInFlight(ctx context.Context, db *gorm.DB, identity InFlightIngestIdentity, frame InFlightSnapshotFrame, raw []byte, limits InFlightLimits) (bool, error) {
++	payload := InFlightSnapshotPayload{Aggregates: frame.Aggregates, Details: frame.Details, DetailsTruncated: frame.DetailsTruncated}
++	if payload.Aggregates == nil {
++		payload.Aggregates = []InFlightAggregate{}
++	}
++	if payload.Details == nil {
++		payload.Details = []InFlightRequestDetail{}
++	}
++	if errValidate := validateCompleteInFlightPayload(payload, limits); errValidate != nil {
++		return false, nil
++	}
++	encoded, errEncode := json.Marshal(payload)
++	if errEncode != nil {
++		return false, errEncode
++	}
++	var result struct {
++		MembershipActive bool
++		Published        bool
++	}
++	errPublish := db.WithContext(ctx).Connection(func(conn *gorm.DB) error {
++		return conn.Raw(publishPostgresSingleInFlightSQL,
++			identity.CertificateFingerprint, identity.MembershipConnectedAt, identity.NodeID,
++			frame.Revision, frame.ObservedAt, frame.BarrierRevision, frame.DetailsTruncated,
++			raw, len(raw), string(encoded)).Scan(&result).Error
++	})
++	if errPublish != nil {
++		return false, errPublish
++	}
++	if !result.MembershipActive {
++		return false, ErrInFlightLifetimeMismatch
++	}
++	return result.Published, nil
++}
++
++// This bounded hint only avoids an extra database probe on cold lifetimes.
++// It grants no authority: the fast statement locks and checks the live rows.
++type inFlightLifetime struct {
++	fingerprint string
++	connectedAt time.Time
++}
++
++func (r *Repository) hasPublishedInFlight(identity InFlightIngestIdentity) bool {
++	r.inFlightFastPathMu.Lock()
++	defer r.inFlightFastPathMu.Unlock()
++	_, found := r.inFlightFastPaths[inFlightLifetime{identity.CertificateFingerprint, identity.MembershipConnectedAt.UTC()}]
++	return found
++}
++
++func (r *Repository) rememberPublishedInFlight(identity InFlightIngestIdentity) {
++	r.inFlightFastPathMu.Lock()
++	defer r.inFlightFastPathMu.Unlock()
++	key := inFlightLifetime{identity.CertificateFingerprint, identity.MembershipConnectedAt.UTC()}
++	if _, found := r.inFlightFastPaths[key]; found {
++		return
++	}
++	if r.inFlightFastPaths == nil || len(r.inFlightFastPaths) >= 1024 {
++		r.inFlightFastPaths = make(map[inFlightLifetime]struct{})
++	}
++	r.inFlightFastPaths[key] = struct{}{}
++}
+diff --git a/internal/cluster/in_flight_single_postgres_test.go b/internal/cluster/in_flight_single_postgres_test.go
+new file mode 100644
+index 0000000..d5226e6
+--- /dev/null
++++ b/internal/cluster/in_flight_single_postgres_test.go
+@@ -0,0 +1,151 @@
++package cluster
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"testing"
++
++	"gorm.io/gorm/clause"
++)
++
++func TestPostgresSinglePartRestartsAfterConcurrentAttemptChange(t *testing.T) {
++	for _, scenario := range []string{"complete", "multipart", "rejected", "newer"} {
++		t.Run(scenario, func(t *testing.T) {
++			repo, ctx, lifetime := newPostgresLifecycleFixture(t)
++			identity := InFlightIngestIdentity{CertificateFingerprint: lifetime.Fingerprint, NodeID: "node-a", MembershipConnectedAt: lifetime.ConnectedAt}
++			publishInFlightSnapshot(t, repo, identity, 1, nil)
++			holder := beginTimestampLockHolder(t, ctx, repo)
++			var attempt CPAInFlightSnapshotAttemptRecord
++			if errLock := holder.Clauses(clause.Locking{Strength: "UPDATE"}).First(&attempt).Error; errLock != nil {
++				t.Fatal(errLock)
++			}
++			observeLifecycleTransitionPID(t, repo)
++			observer := &lifecycleTransitionPIDObserver{results: make(chan postgresBackendPIDResult, 1)}
++			contenderCtx := context.WithValue(ctx, lifecycleTransitionPIDContextKey{}, observer)
++			done := make(chan error, 1)
++			go func() {
++				_, errIngest := repo.IngestInFlightFrame(contenderCtx, identity, mustInFlightJSON(t, inFlightPart(3, 0, 1, nil, nil)), DefaultInFlightLimits())
++				done <- errIngest
++			}()
++			holderPID := make(chan postgresBackendPIDResult, 1)
++			if errPID := postgresContenderBackendPIDHook(holderPID)(holder); errPID != nil {
++				t.Fatal(errPID)
++			}
++			waitForPostgresContendersBlockedByHolder(t, ctx, repo, holderPID, observer.results)
++			// The contender already has its statement snapshot. Commit parts it cannot see.
++			frame := inFlightPart(2, 0, 1, nil, nil)
++			if scenario == "multipart" {
++				frame = inFlightPart(2, 0, 2, nil, nil)
++			}
++			if scenario == "newer" {
++				frame = inFlightPart(4, 0, 1, nil, nil)
++			}
++			var result InFlightIngestResult
++			if scenario == "rejected" {
++				if errReject := repo.markInFlightRejected(ctx, holder, identity, 2, &result); errReject != nil {
++					t.Fatal(errReject)
++				}
++			} else if errStage := repo.stageInFlightFrame(ctx, holder, identity, frame, mustInFlightJSON(t, frame), DefaultInFlightLimits(), &result); errStage != nil {
++				t.Fatal(errStage)
++			}
++			if errCommit := holder.Commit().Error; errCommit != nil {
++				t.Fatal(errCommit)
++			}
++			select {
++			case errIngest := <-done:
++				if scenario == "newer" {
++					if !errors.Is(errIngest, ErrInFlightRevisionStale) {
++						t.Fatalf("error=%v, want stale revision", errIngest)
++					}
++				} else if errIngest != nil {
++					t.Fatal(errIngest)
++				}
++			case <-ctx.Done():
++				t.Fatal(ctx.Err())
++			}
++			wantRevision := int64(3)
++			if scenario == "newer" {
++				wantRevision = 4
++			}
++			var parts []CPAInFlightSnapshotPartRecord
++			if errFind := repo.db.Find(&parts).Error; errFind != nil {
++				t.Fatal(errFind)
++			}
++			if len(parts) != 1 || parts[0].Revision != wantRevision {
++				t.Fatalf("stale or missing parts after restart: %#v", parts)
++			}
++			final := loadInFlightAttempt(t, repo)
++			if final.HighestSeenRevision != wantRevision || final.State != "complete" || final.ReceivedPartCount != 1 {
++				t.Fatalf("attempt=%#v", final)
++			}
++			var visible CPAInFlightSnapshotRecord
++			if errFind := repo.db.First(&visible).Error; errFind != nil || visible.Revision != wantRevision {
++				t.Fatalf("snapshot=%#v error=%v", visible, errFind)
++			}
++		})
++	}
++}
++
++func TestPostgresSinglePartPreservesReplayAndPayload(t *testing.T) {
++	repo, ctx, lifetime := newPostgresLifecycleFixture(t)
++	identity := InFlightIngestIdentity{CertificateFingerprint: lifetime.Fingerprint, NodeID: "node-a", MembershipConnectedAt: lifetime.ConnectedAt}
++	publishInFlightSnapshot(t, repo, identity, 1, nil)
++	frame := inFlightPart(2, 0, 1, []InFlightAggregate{{CredentialID: "fixture-credential", Model: "fixture-model", Status: InFlightAccounted, Count: 1}}, []InFlightRequestDetail{{RequestID: "fixture-request", CredentialID: "fixture-credential", Model: "fixture-model", RequestKind: "responses", StartedAt: databaseTestTime}})
++	frame.BarrierRevision = 7
++	frame.DetailsTruncated = true
++	raw := mustInFlightJSON(t, frame)
++	result, errIngest := repo.IngestInFlightFrame(ctx, identity, raw, DefaultInFlightLimits())
++	if errIngest != nil || !result.Published {
++		t.Fatalf("publish=%#v error=%v", result, errIngest)
++	}
++	var visible CPAInFlightSnapshotRecord
++	if errFind := repo.db.First(&visible).Error; errFind != nil {
++		t.Fatal(errFind)
++	}
++	var payload InFlightSnapshotPayload
++	if errDecode := json.Unmarshal(visible.Payload, &payload); errDecode != nil {
++		t.Fatal(errDecode)
++	}
++	if visible.BarrierRevision != 7 || !visible.DetailsTruncated || !visible.ObservedAt.Equal(frame.ObservedAt) || len(payload.Aggregates) != 1 || payload.Aggregates[0] != frame.Aggregates[0] || len(payload.Details) != 1 || payload.Details[0] != frame.Details[0] {
++		t.Fatalf("snapshot=%#v payload=%#v", visible, payload)
++	}
++	replay, errReplay := repo.IngestInFlightFrame(ctx, identity, raw, DefaultInFlightLimits())
++	if errReplay != nil || !replay.Accepted || replay.Published {
++		t.Fatalf("replay=%#v error=%v", replay, errReplay)
++	}
++	frame.BarrierRevision++
++	if _, errConflict := repo.IngestInFlightFrame(ctx, identity, mustInFlightJSON(t, frame), DefaultInFlightLimits()); !errors.Is(errConflict, ErrInFlightRevisionConflict) {
++		t.Fatalf("conflict=%v", errConflict)
++	}
++	var after CPAInFlightSnapshotRecord
++	if errFind := repo.db.First(&after).Error; errFind != nil {
++		t.Fatal(errFind)
++	}
++	if after.Revision != visible.Revision || after.BarrierRevision != visible.BarrierRevision || !after.UpdatedAt.Equal(visible.UpdatedAt) || string(after.Payload) != string(visible.Payload) {
++		t.Fatal("replay changed the published observation or freshness")
++	}
++}
++
++func TestPostgresSinglePartFastPathChecksCurrentMembership(t *testing.T) {
++	for _, scenario := range []string{"canceling", "node-changed"} {
++		t.Run(scenario, func(t *testing.T) {
++			repo, ctx, lifetime := newPostgresLifecycleFixture(t)
++			identity := InFlightIngestIdentity{CertificateFingerprint: lifetime.Fingerprint, NodeID: "node-a", MembershipConnectedAt: lifetime.ConnectedAt}
++			publishInFlightSnapshot(t, repo, identity, 1, nil)
++			column, value := "state", "canceling"
++			if scenario == "node-changed" {
++				column, value = "node_id", "different-node"
++			}
++			if errUpdate := repo.db.Model(&CPANodeMembershipRecord{}).Where("certificate_fingerprint = ?", identity.CertificateFingerprint).Update(column, value).Error; errUpdate != nil {
++				t.Fatal(errUpdate)
++			}
++			if _, errIngest := repo.IngestInFlightFrame(ctx, identity, mustInFlightJSON(t, inFlightPart(2, 0, 1, nil, nil)), DefaultInFlightLimits()); !errors.Is(errIngest, ErrInFlightLifetimeMismatch) {
++				t.Fatalf("closed lifetime error=%v", errIngest)
++			}
++			if attempt := loadInFlightAttempt(t, repo); attempt.HighestSeenRevision != 1 {
++				t.Fatalf("closed lifetime advanced=%#v", attempt)
++			}
++		})
++	}
++}
+diff --git a/internal/cluster/lifecycle_sql_budget_test.go b/internal/cluster/lifecycle_sql_budget_test.go
+index e4583c6..64fc4bf 100644
+--- a/internal/cluster/lifecycle_sql_budget_test.go
++++ b/internal/cluster/lifecycle_sql_budget_test.go
+@@ -50,7 +50,7 @@ func TestLifecycleHotPathSQLBudgets(t *testing.T) {
+ 	if errHeartbeat := repo.HeartbeatHomeIncarnation(ctx, lifetime.Home); errHeartbeat != nil {
+ 		t.Fatal(errHeartbeat)
+ 	}
+-	if count := counter.statements.Load(); count != 2 {
+-		t.Fatalf("Home heartbeat SQL statements = %d, want 2", count)
++	if count := counter.statements.Load(); count != 1 {
++		t.Fatalf("Home heartbeat SQL statements = %d, want 1", count)
+ 	}
+ }
+diff --git a/internal/cluster/liveness_postgres.go b/internal/cluster/liveness_postgres.go
+index 61d07fe..5a189c5 100644
+--- a/internal/cluster/liveness_postgres.go
++++ b/internal/cluster/liveness_postgres.go
+@@ -2,6 +2,7 @@ package cluster
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"strings"
+ 
+ 	"gorm.io/gorm"
+@@ -65,3 +66,44 @@ func refreshPostgresCPALiveness(ctx context.Context, db *gorm.DB, lifetime Conne
+ 	}
+ 	return ErrHomeIncarnationInactive
+ }
++
++// Lock before reading the clock so time spent waiting cannot extend an old heartbeat.
++const refreshPostgresHomeLivenessSQL = `
++WITH home AS MATERIALIZED (
++ SELECT home_ip, home_port, started_at, state FROM home_process_incarnation
++ WHERE home_ip = ? AND home_port = ? AND started_at = ?
++ FOR NO KEY UPDATE
++), beat AS MATERIALIZED (
++ SELECT clock_timestamp() AS observed_at FROM home WHERE state = 'active'
++), renewed AS (
++ UPDATE home_process_incarnation h SET last_seen_at = beat.observed_at
++ FROM home, beat
++ WHERE h.home_ip = home.home_ip AND h.home_port = home.home_port AND h.started_at = home.started_at
++ RETURNING h.home_ip
++)
++SELECT COALESCE((SELECT state FROM home), '') AS state,
++ EXISTS(SELECT 1 FROM renewed) AS renewed`
++
++func refreshPostgresHomeLiveness(ctx context.Context, db *gorm.DB, id HomeIncarnationID) error {
++	var result struct {
++		State   string
++		Renewed bool
++	}
++	errRenew := db.WithContext(ctx).Connection(func(conn *gorm.DB) error {
++		return conn.Raw(refreshPostgresHomeLivenessSQL, strings.TrimSpace(id.IP), id.Port, id.StartedAt).Scan(&result).Error
++	})
++	if errRenew != nil {
++		return errors.Join(errRenew, ctx.Err())
++	}
++	switch result.State {
++	case "":
++		return ErrHomeIncarnationNotFound
++	case HomeIncarnationFenced:
++		return ErrHomeIncarnationFenced
++	case HomeIncarnationActive:
++		if result.Renewed {
++			return nil
++		}
++	}
++	return ErrHomeIncarnationInactive
++}
+diff --git a/internal/cluster/repository.go b/internal/cluster/repository.go
+index 72b76f3..af86412 100644
+--- a/internal/cluster/repository.go
++++ b/internal/cluster/repository.go
+@@ -25,6 +25,8 @@ type Repository struct {
+ 	quotaDiagnostics   map[string]QuotaCollectionDiagnostic
+ 	db                 *gorm.DB
+ 	cpaSnapshotMu      sync.Mutex
++	inFlightFastPathMu sync.Mutex
++	inFlightFastPaths  map[inFlightLifetime]struct{}
+ 	sessionRootCacheMu sync.RWMutex
+ 	sessionRootCache   map[string]string
+ }

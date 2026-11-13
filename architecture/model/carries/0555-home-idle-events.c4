@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Steady single-part PostgreSQL observation publication uses one atomic statement that locks the active exact membership and completed attempt, timestamps after locks and falls back to a fresh transaction when the attempt changed during its statement snapshot. The bounded process-local lifetime hint only avoids cold probes and grants no authority. Cold frames, multipart assembly, invalid frames, replay conflicts, revision fencing, payloads and barriers retain their existing semantics. Exact Home incarnation heartbeats use one locked PostgreSQL statement and post-lock time; SQLite stays transactional. Node snapshots compare semantic registry fields each existing tick, persist connection, held-handler and cancellation changes, and refresh unchanged nonempty snapshots by the lesser of sixty seconds and half the existing retention. Empty unchanged topology performs no periodic SQL. The two-second observation, ten-second stale, three-second node heartbeat, five-second cancellation and Home expiry bounds stay unchanged; election and lifecycle cleanup are not rescheduled. No schema or lease transition is introduced."
+    }
+  }
+}

@@ -356,6 +356,23 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /context, queue publication and fresh Home-capture regressions/,
         );
+      } else if (patch.identity === "cliproxy-home-idle-events") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0555-home-idle-events.patch");
+        assert.match(patch.retirement.requires, /one statement with fresh membership authority/);
+        assert.match(patch.retirement.requires, /post-lock database time/);
+        assert.match(patch.retirement.requires, /concurrent-attempt snapshot guard/);
+        assert.match(
+          patch.retirement.requires,
+          /cold, multipart, invalid, replay and stale-revision behavior/,
+        );
+        assert.match(patch.retirement.requires, /exact Home incarnations in one locked statement/);
+        assert.match(
+          patch.retirement.requires,
+          /semantic node changes with bounded nonempty retention refresh/,
+        );
+        assert.match(patch.retirement.requires, /no empty periodic writes/);
+        assert.match(patch.retirement.requires, /without a schema or lease change/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
