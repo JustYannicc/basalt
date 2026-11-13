@@ -142,7 +142,7 @@ async function sampledCapacity(options: {
   sourceMinutes: number;
   sampleMinutes?: number;
   durationMinutes?: number;
-  interrupt?: "membership" | "collection";
+  interrupt?: "membership" | "collection" | "window";
   resumeOutage?: boolean;
 }) {
   const start = Date.parse("2026-11-09T08:00:00Z");
@@ -166,12 +166,19 @@ async function sampledCapacity(options: {
     f.credential.observed_at = observedAt;
     if (options.interrupt === "membership") f.select(elapsed !== 10 * 60_000);
     f.detail.collection.status =
-      options.interrupt === "collection" && elapsed === 10 * 60_000 ? "failed" : "success";
+      options.interrupt === "collection" && elapsed === 10 * 60_000
+        ? "failed"
+        : options.interrupt === "window" && elapsed === 10 * 60_000
+          ? "partial"
+          : "success";
     for (const window of f.detail.windows) {
       window.observed_at = observedAt;
       window.expires_at = new Date(sourceAt + 30 * 60_000).toISOString();
-      window.remaining = 90 - sequence;
-      window.remaining_ratio = window.remaining / 100;
+      const remaining = 90 - sequence;
+      window.remaining = remaining;
+      window.remaining_ratio = remaining / 100;
+      window.status =
+        options.interrupt === "window" && elapsed === 10 * 60_000 ? "failed" : "healthy";
     }
     await f.sampleAt(start + elapsed);
   }
@@ -213,7 +220,7 @@ test("weekly training rejects long source intervals and sampler outages", async 
 test("removing an account or failing collection breaks historical source continuity", async () => {
   const uninterrupted = await sampledCapacity({ sourceMinutes: 34.04, durationMinutes: 75 });
   assert.equal(uninterrupted.history.observedHours, 1);
-  for (const interrupt of ["membership", "collection"] as const) {
+  for (const interrupt of ["membership", "collection", "window"] as const) {
     const forecast = await sampledCapacity({
       sourceMinutes: 34.04,
       durationMinutes: 75,

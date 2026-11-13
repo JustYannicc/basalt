@@ -225,7 +225,10 @@ export class PoolUsage {
               sourceContinuous:
                 account.credentialFailure === undefined &&
                 !account.readingFailed &&
-                ["success", "partial"].includes(quota.collection.status ?? ""),
+                ["success", "partial"].includes(quota.collection.status ?? "") &&
+                ["healthy", "low", "exhausted"].includes(String(window.raw.status)) &&
+                Number.isFinite(Date.parse(window.observedAt ?? "")) &&
+                Date.parse(window.observedAt ?? "") <= now.getTime(),
               bankedAvailable: account.bankedResets?.available ?? null,
               bankedUsed: resetReceipts.get(account.id) ?? [],
             })),

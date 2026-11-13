@@ -1,7 +1,7 @@
 model {
   extend basalt.pool {
     metadata {
-      constraint "Fixed-window forecast training accepts source intervals up to thirty-five minutes, matching thirty-minute quota collection plus one five-minute sampling tick. Historical cursors survive an expired reading only while successful source inventory, account membership and sampler continuity remain explicit. Empty pools, failed collections and sampler gaps above fifteen minutes break pairing and persist source-time cutoffs so cached pre-interruption readings cannot restart it. Current capacity never uses an expired reading. Rolling reconstruction and live projection freshness retain their fifteen-minute bounds. No extra provider calls or historical backfill are implied."
+      constraint "Fixed-window forecast training accepts source intervals up to thirty-five minutes, matching thirty-minute quota collection plus one five-minute sampling tick. Historical cursors survive an expired reading only while successful account and window source inventory, account membership and sampler continuity remain explicit. Empty pools, failed collections and sampler gaps above fifteen minutes break pairing and persist source-time cutoffs so cached pre-interruption readings cannot restart it. Current capacity never uses an expired reading. Rolling reconstruction and live projection freshness retain their fifteen-minute bounds. No extra provider calls or historical backfill are implied."
     }
   }
 }
