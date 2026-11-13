@@ -1321,7 +1321,7 @@ index 337f4134f823c8a2d5fd93d5a4a303336ae6f883..e87ad73ac77099eb6f83abde195c61f9
    );
 diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/src/contracts/change-signal.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..fc8381b82cb023f5a7f3b3d257b21fb10c042574
+index 0000000000000000000000000000000000000000..f218841ed1291b59bbd71517f691a90e699508df
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/change-signal.ts
 @@ -0,0 +1,206 @@
@@ -1402,11 +1402,11 @@ index 0000000000000000000000000000000000000000..fc8381b82cb023f5a7f3b3d257b21fb1
 +        // The server cannot establish the authenticated feed. Match the browser's first snapshot
 +        // so no source value is shown before that feed accepts a read.
 +        if (typeof window === "undefined")
-+          return AsyncResult.initial<A, E | OrganizationForbidden | ChangeRefreshFailed>(true);
++          return AsyncResult.initial<A, E | OrganizationForbidden | ChangeRefreshFailed>(false);
 +        /** The last accepted value; nothing is shown before the first one. */
 +        let shown: Value | undefined;
 +        const display = () =>
-+          shown ?? AsyncResult.initial<A, E | OrganizationForbidden | ChangeRefreshFailed>(true);
++          shown ?? AsyncResult.initial<A, E | OrganizationForbidden | ChangeRefreshFailed>(false);
 +        let started = false;
 +        let owning = false;
 +        let ended = false;
