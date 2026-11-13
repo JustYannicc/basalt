@@ -39,7 +39,7 @@ export interface Overview {
   readonly coherent?: boolean;
 }
 
-/** What one refresh received. Pieces from different refreshes never share one. */
+/** Parts share one range; accepted head versions decide whether they form one verdict. */
 interface OverviewPieces {
   readonly capacity?: Result<PoolCapacityHistory>;
   readonly usage?: Result<PoolOverviewResult>;
@@ -118,11 +118,7 @@ function overviewFrom(
   };
 }
 
-/**
- * Each refresh reads its parts together and shows them together only once the change feed
- * accepts the read; the previous accepted pair stays on screen until then, and after a rejected
- * read. Reads follow the feed, never a timer.
- */
+/** Each part publishes after its own revision fence; a slow part cannot hold the others. */
 export function useOverview(api: PoolApi, days: RangeDays) {
   const query = useMemo(() => ({ api, days }), [api, days]);
   const [snapshot, setSnapshot] = useState<{
@@ -132,6 +128,17 @@ export function useOverview(api: PoolApi, days: RangeDays) {
   const state = snapshot?.query === query ? snapshot.value : {};
   const latest = useRef({ id: 0 });
   const watch = useRef<ChangeWatch | undefined>(undefined);
+  const capacityRead = useRef<
+    | {
+        query: typeof query;
+        to: number;
+        controller: AbortController;
+        publish: (value: Result<PoolCapacityHistory>, version: string) => void;
+        reject: (error: unknown) => void;
+        finish: () => void;
+      }
+    | undefined
+  >(undefined);
   /** This view's own read is in flight; the pool header says nothing about it. */
   const [reading, setReading] = useState<object>();
   /** The last read was rejected; the figures on screen are the last confirmed ones. */
@@ -144,39 +151,76 @@ export function useOverview(api: PoolApi, days: RangeDays) {
     const marker = {};
     setReading(marker);
     const done = () => setReading((value) => (value === marker ? undefined : value));
-    let read: { readonly pieces: OverviewPieces; readonly range: { from: string; to: string } };
-    try {
-      read = await current.read(async () => {
-        const to = Date.now();
-        const range = seriesRange(days, to);
-        const input = { from: range.from, to: range.to, days };
-        const [capacity, usage] = await Promise.all([
-          api.capacity(days, to),
-          api.overviewUsage(input),
-        ]);
-        const pieces: OverviewPieces = managersOnly(usage)
-          ? { capacity, usage, personal: await api.personalOverview(input) }
-          : { capacity, usage };
-        return { pieces, range };
-      });
-    } catch (error) {
+    const ongoing = capacityRead.current?.query === query ? capacityRead.current : undefined;
+    const to = ongoing?.to ?? Date.now();
+    const range = seriesRange(days, to);
+    const input = { from: range.from, to: range.to, days };
+    let pieces: OverviewPieces = {};
+    const versions = new Map<keyof OverviewPieces, string>();
+    let remaining = 2;
+    const finish = () => {
+      if (--remaining !== 0) return;
       done();
+      // A part may have retried across a revision while another already committed.
+      if (id === pending.id && new Set(versions.values()).size > 1) current.request();
+    };
+    const publish = (part: OverviewPieces, version: string) => {
+      if (id !== pending.id) return;
+      pieces = { ...pieces, ...part };
+      for (const key of Object.keys(part) as (keyof OverviewPieces)[]) versions.set(key, version);
+      if (pieces.usage === undefined) return;
+      const matching = new Set(versions.values()).size === 1;
+      const value = overviewFrom(pieces, range);
+      setFailed(undefined);
+      setSnapshot({ query, value: { ...value, coherent: value.coherent === true && matching } });
+    };
+    const reject = (error: unknown) => {
       if (id !== pending.id || !(error instanceof ChangeReadRetry)) return;
-      // A read parked by hiding resumes after the foreground handshake; nothing failed.
       if (error.reason === "hidden") return;
-      // Keep confirmed figures and say they may be behind; with none, show the failure itself.
       setFailed({ query, message: unconfirmed });
       setSnapshot((previous) =>
         previous?.query === query
           ? previous
-          : { query, value: overviewFrom({ usage: unreachable }, seriesRange(days, Date.now())) },
+          : { query, value: overviewFrom({ usage: unreachable }, range) },
       );
-      return;
+    };
+    const callbacks = {
+      publish: (capacity: Result<PoolCapacityHistory>, version: string) =>
+        publish({ capacity }, version),
+      reject,
+      finish,
+    };
+    if (ongoing !== undefined) Object.assign(ongoing, callbacks);
+    else {
+      // A retry joins pending capacity instead of exhausting the connection slots with duplicates.
+      const entry = { query, to, controller: new AbortController(), ...callbacks };
+      capacityRead.current = entry;
+      void current
+        .read(
+          () => api.capacity(days, to, entry.controller.signal),
+          (value, version) => entry.publish(value, version),
+        )
+        .catch((error: unknown) => entry.reject(error))
+        .finally(() => {
+          if (capacityRead.current === entry) capacityRead.current = undefined;
+          entry.finish();
+        });
     }
-    done();
-    if (id !== pending.id) return;
-    setFailed(undefined);
-    setSnapshot({ query, value: overviewFrom(read.pieces, read.range) });
+    try {
+      const usage = await current.read(
+        () => api.overviewUsage(input),
+        (usage, version) => publish({ usage }, version),
+      );
+      if (managersOnly(usage))
+        await current.read(
+          () => api.personalOverview(input),
+          (personal, version) => publish({ personal }, version),
+        );
+    } catch (error) {
+      reject(error);
+    } finally {
+      finish();
+    }
   }, [api, days, query]);
   useEffect(() => {
     const pending = latest.current;
@@ -185,16 +229,18 @@ export function useOverview(api: PoolApi, days: RangeDays) {
       refresh: load,
       revoked: () => {
         pending.id++;
+        if (capacityRead.current?.query === query) capacityRead.current.controller.abort();
         setSnapshot(undefined);
       },
     });
     watch.current = current;
     return () => {
       pending.id++;
+      if (capacityRead.current?.query === query) capacityRead.current.controller.abort();
       watch.current = undefined;
       current.stop();
     };
-  }, [api, load]);
+  }, [api, load, query]);
   return {
     ...state,
     reload: load,

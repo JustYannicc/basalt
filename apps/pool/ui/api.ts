@@ -43,12 +43,13 @@ export const pool = {
         result<UsageImportResult>(),
       ),
     ),
-  capacity: (days: 7 | 30 | 90, to?: number) =>
+  capacity: (days: 7 | 30 | 90, to?: number, signal?: AbortSignal) =>
     read(
       client.query(
         queryReference<typeof capacity>("capacity"),
         { days, ...(to === undefined ? {} : { to }) },
         result<import("../capacity-contract.ts").PoolCapacityHistory>(),
+        signal === undefined ? undefined : { signal },
       ),
     ),
   overviewUsage: async (

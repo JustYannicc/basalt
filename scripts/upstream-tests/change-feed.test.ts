@@ -420,3 +420,69 @@ test("a read hidden mid-flight does no more data work until the foreground hands
   assert.equal(seen.dataReads, 3, "the parked read runs once after the handshake");
   assert.equal(seen.applied.at(-1)?.accounts, "3");
 });
+
+test("independent parts publish behind their own fences without accepting a superseded body", async (t) => {
+  const { server, watch } = setup(t);
+  await flush();
+  server.handshake();
+  await flush();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const published: Array<{ part: string; revision: string; version: string }> = [];
+  const capacity = watch.read(
+    async () => {
+      const revision = server.heads.get("accounts")!;
+      await held;
+      return revision;
+    },
+    (revision, version) => published.push({ part: "capacity", revision, version }),
+  );
+  await watch.read(
+    async () => "1",
+    (revision, version) => published.push({ part: "usage", revision, version }),
+  );
+  assert.deepEqual(
+    published.map(({ part }) => part),
+    ["usage"],
+  );
+  server.commit("accounts", "2", false);
+  release();
+  await capacity;
+  assert.deepEqual(
+    published.map(({ part, revision }) => ({ part, revision })),
+    [
+      { part: "usage", revision: "1" },
+      { part: "capacity", revision: "2" },
+    ],
+  );
+  assert.notEqual(published[0]!.version, published[1]!.version);
+});
+
+test("a progressive publisher never receives a body after access ends", async (t) => {
+  const { server, watch } = setup(t);
+  await flush();
+  server.handshake();
+  await flush();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const published: string[] = [];
+  const read = watch
+    .read(
+      async () => {
+        await held;
+        return "protected";
+      },
+      (value) => published.push(value),
+    )
+    .catch(() => undefined);
+  await flush();
+  server.send("revoked", {});
+  await flush();
+  release();
+  await read;
+  assert.deepEqual(published, []);
+});

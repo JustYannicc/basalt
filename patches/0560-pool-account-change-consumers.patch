@@ -1608,10 +1608,10 @@ index fdc4545ed67f5b43d1799bb5eed612a88cb46e2f..5792903eb6901f3d59fd81eb69587a14
  export type RevisionEvent = typeof RevisionEvent.Type;
 diff --git a/packages/apps/src/browser/change-feed.ts b/packages/apps/src/browser/change-feed.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..128d3445b6a38f276058a2c87058e1b14b02c077
+index 0000000000000000000000000000000000000000..decf34c7c9ae24e793f061884f3cc12deec64b29
 --- /dev/null
 +++ b/packages/apps/src/browser/change-feed.ts
-@@ -0,0 +1,607 @@
+@@ -0,0 +1,614 @@
 +/**
 + * One committed-revision stream per page. A watch reads again only after a hint, a handshake or a
 + * server deadline shows its data is behind; nothing here reads on a timer. The stream and the
@@ -1647,9 +1647,13 @@ index 0000000000000000000000000000000000000000..128d3445b6a38f276058a2c87058e1b1
 +   * accepted: both reads agree, cover every head this page knows (handshake, hints and
 +   * acknowledged writes) and, with a stream, the fence accepts them. Otherwise `work` runs again,
 +   * a bounded number of times, and then this throws `ChangeReadRetry`. An unaccepted result is
-+   * never returned; callers keep their previous accepted data.
++   * never returned; callers keep their previous accepted data. An optional publisher runs only
++   * after acceptance, with an opaque version for matching independently read parts.
 +   */
-+  readonly read: <T>(work: () => Promise<T>) => Promise<T>;
++  readonly read: <T>(
++    work: () => Promise<T>,
++    publish?: (value: T, version: string) => void,
++  ) => Promise<T>;
 +  /** Ask for a read through `refresh`, coalesced with any hint-driven one. */
 +  readonly request: () => void;
 +  readonly stop: () => void;
@@ -2061,15 +2065,14 @@ index 0000000000000000000000000000000000000000..128d3445b6a38f276058a2c87058e1b1
 +    pending = { id, promise };
 +    return promise;
 +  };
-+  const sameHeads = (watch: WatchState, left: Current, right: Current) => {
-+    const heads = (value: Current) =>
-+      value.revisions
-+        .filter((hint) => watch.topics === undefined || watch.topics.has(hint.topic))
-+        .map((hint) => `${revisionKey(hint)}=${hint.revision}`)
-+        .sort()
-+        .join("\n");
-+    return heads(left) === heads(right);
-+  };
++  const headVersion = (watch: WatchState, value: Current) =>
++    value.revisions
++      .filter((hint) => watch.topics === undefined || watch.topics.has(hint.topic))
++      .map((hint) => `${revisionKey(hint)}=${hint.revision}`)
++      .sort()
++      .join("\n");
++  const sameHeads = (watch: WatchState, left: Current, right: Current) =>
++    headVersion(watch, left) === headVersion(watch, right);
 +  /** Every head this page knows, including acknowledged writes, is at or below `value`'s. */
 +  const coversKnown = (value: Current) => {
 +    const read = new Map(value.revisions.map((hint) => [revisionKey(hint), hint.revision]));
@@ -2132,7 +2135,10 @@ index 0000000000000000000000000000000000000000..128d3445b6a38f276058a2c87058e1b1
 +        if (revoked) throw new AccessEnded();
 +      };
 +      return {
-+        read: async <T>(work: () => Promise<T>): Promise<T> => {
++        read: async <T>(
++          work: () => Promise<T>,
++          publish?: (value: T, version: string) => void,
++        ): Promise<T> => {
 +          let reason: ChangeReadRetry["reason"] = "moving";
 +          try {
 +            for (let attempt = 0; attempt < attempts; attempt++) {
@@ -2160,6 +2166,7 @@ index 0000000000000000000000000000000000000000..128d3445b6a38f276058a2c87058e1b1
 +              watch.failed = false;
 +              // Data accepted with no stream is shown, but never as live.
 +              if (connection === undefined) setStatus("paused");
++              publish?.(value, headVersion(watch, after));
 +              return value;
 +            }
 +          } catch (error) {
@@ -2240,7 +2247,7 @@ index 9aedb7ca4445f0bd779a523a030f2a4af171f632..0c6db234e6b4b057a51149647c5e93a4
  export type {
    AppMutation,
 diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/implementation/ui-client.ts
-index ce7bcb2b08ab00032dfd1022ee182af9b73ca18d..fe8865e0801694bd809bb37edd91d63a50d5a383 100644
+index ce7bcb2b08ab00032dfd1022ee182af9b73ca18d..a1b85a15a07c8d6cf6a479a0dcf38486ef486c5f 100644
 --- a/packages/apps/src/implementation/ui-client.ts
 +++ b/packages/apps/src/implementation/ui-client.ts
 @@ -23,6 +23,7 @@ import { JsonValue } from "../contracts/schema.ts";
@@ -2265,7 +2272,17 @@ index ce7bcb2b08ab00032dfd1022ee182af9b73ca18d..fe8865e0801694bd809bb37edd91d63a
      window.removeEventListener("pagehide", onHide);
      window.removeEventListener("beforeunload", beforeUnload);
      window.removeEventListener("message", onHostMessage);
-@@ -367,10 +374,17 @@ export const createAppClient = () => {
+@@ -353,7 +360,8 @@ export const createAppClient = () => {
+       reference: OperationReference<Input, Output, "query">,
+       input: NoInfer<Input>,
+       output: Schema<NoInfer<Output>, boolean>,
+-    ) => runtime.runPromise(request("query", reference.name, input, output)),
++      options?: { readonly signal?: AbortSignal },
++    ) => runtime.runPromise(request("query", reference.name, input, output), options),
+     /** Execute a write once in this client's queue. Success acknowledges the write; queries reconcile afterward. */
+     mutate: <Input, Output>(
+       reference: OperationReference<Input, Output, "mutation">,
+@@ -367,10 +375,17 @@ export const createAppClient = () => {
      /** Whether someone can see this page: its browser tab is visible and its host shows it. */
      isActive: () => active,
      /** Call `listener` whenever `isActive` changes. Returns a function that stops it. */
