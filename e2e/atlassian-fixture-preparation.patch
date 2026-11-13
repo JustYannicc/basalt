@@ -1,3 +1,316 @@
+diff --git a/e2e/tests/atlassian-family-screens.spec.ts b/e2e/tests/atlassian-family-screens.spec.ts
+--- a/e2e/tests/atlassian-family-screens.spec.ts
++++ b/e2e/tests/atlassian-family-screens.spec.ts
+@@ -3,84 +3,31 @@
+ import { Effect } from "effect";
+ import type { Page } from "playwright";
+ import { Actors } from "../support/actors.ts";
+-import { accountIdentityIssuer } from "../support/account-identity-issuer.ts";
+ import {
+-  atlassianFamilyClients,
+-  atlassianFamilyProduct,
+-} from "../support/atlassian-family-product.ts";
+-import {
+-  deployFamilyApps,
+   familyMarkLoaded,
+   finishInNewTab,
+   familyRows,
+   rowApps,
+   rowMark,
+-  routeFamilyMarks,
+-  routeProviderConsent,
+   signInFromApp,
+-  finishAppSignIn,
+ } from "../support/atlassian-family-fixture.ts";
+ import { linkedAccountIds } from "../support/app-accounts.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { Evidence } from "../support/evidence.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
++import {
++  allFamilyApps,
++  captureFamilyScreen as capture,
++  familyIdentity,
++  familySetup,
++  openBrowser,
++} from "../support/atlassian-family-screens.ts";
++import { connectFamilyApps } from "../support/atlassian-family-connections.ts";
+ import { scenarios } from "../test-plan.ts";
+-
+-const consentApps = (page: Page) => {
+-  const boxes = page
+-    .getByRole("group", { name: "Connect more apps in this sign-in" })
+-    .getByRole("checkbox");
+-  return page
+-    .getByRole("button", { name: /^(Connect (Gmail|Jira)|Continue with (Google|Atlassian))$/ })
+-    .waitFor()
+-    .then(() =>
+-      boxes.evaluateAll((items) =>
+-        items.map((box) => box.closest("label")?.textContent?.trim() ?? "").sort(),
+-      ),
+-    );
+-};
+ 
+ const fits = (page: Page) =>
+   page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+-
+-/** Two synthetic issuers behind the shipped endpoints, the product restarted on that transport. */
+-const familySetup = (names: Parameters<typeof deployFamilyApps>[0]) =>
+-  Effect.gen(function* () {
+-    const atlassian = yield* accountIdentityIssuer,
+-      google = yield* accountIdentityIssuer;
+-    // Compile the transport while the first server deploys the apps; restart after both finish.
+-    const [transport, fixture] = yield* Effect.all(
+-      [
+-        atlassianFamilyProduct({ atlassian: atlassian.origin, google: google.origin }),
+-        deployFamilyApps(names),
+-      ],
+-      { concurrency: 2 },
+-    );
+-    yield* transport.start;
+-    return { atlassian, google, transport, fixture };
+-  });
+-
+-const openBrowser = (issuers: { atlassian: string; google: string }) =>
+-  Effect.gen(function* () {
+-    const browser = yield* Browser,
+-      actors = yield* Actors;
+-    yield* browser.omitNetworkTrace;
+-    yield* browser.login(actors.owner);
+-    yield* browser.use("Answer provider consent and family marks on loopback", (page) =>
+-      Promise.all([
+-        routeProviderConsent(page.context(), issuers),
+-        routeFamilyMarks(page.context()),
+-      ]),
+-    );
+-    return {
+-      accounts: `/org/${actors.organization.slug}/accounts`,
+-      app: (id: string) => ({
+-        id,
+-        url: `/org/${actors.organization.slug}/apps/${id}?view=accounts`,
+-      }),
+-    };
+-  });
+ 
+ layer(HostedLive, { excludeTestServices: true })("Atlassian family screens", (it) => {
+   it.effect(scenarios.atlassianFamilyScreens.title, (context) =>
+@@ -90,74 +37,21 @@
+         const actors = yield* Actors,
+           browser = yield* Browser,
+           evidence = yield* Evidence;
+-        const { atlassian, google, transport, fixture } = yield* familySetup([
+-          "jira",
+-          "confluence",
+-          "serviceManagement",
+-          "trello",
+-          "gmail",
+-          "calendar",
+-        ]);
++        const { atlassian, google, transport, fixture } = yield* evidence.step(
++          "Deploy family apps and restart product",
++          familySetup(allFamilyApps),
++        );
+         const urls = yield* openBrowser({ atlassian: atlassian.origin, google: google.origin });
+-        const capture = (name: string) =>
+-          Effect.flatMap(
+-            browser.use(`Capture ${name}`, (page) => page.screenshot({ fullPage: true })),
+-            (png) => evidence.attach(name, "image/png", png),
+-          );
+         yield* browser.use("Use desktop width", (page) =>
+           page.setViewportSize({ width: 1280, height: 900 }),
+         );
+ 
+-        // Google is the reference: one sign-in offers the other Google app, nothing else.
+-        const gmail = fixture.apps.gmail;
+-        const googleTargets = yield* browser.use("Open a fresh Gmail connection", (page) =>
+-          page
+-            .goto(urls.app(gmail.id).url)
+-            .then(() =>
+-              page.getByRole("button", { name: "Connect new account", exact: true }).click(),
+-            )
+-            .then(() => consentApps(page)),
+-        );
+-        yield* capture("google-consent-1280.png");
+-        expect(googleTargets).toEqual(["Google Calendar"]);
+-        yield* browser.use("Connect Gmail and Google Calendar in one Google sign-in", (page) =>
+-          finishAppSignIn(page, gmail.id, "Gmail", ["Google Calendar"]),
+-        );
+-        expect((yield* google.metrics).authorizations).toBe(1);
+-
+-        // Jira gets the same consent, offering exactly the Atlassian apps.
+-        const jira = fixture.apps.jira;
+-        const atlassianTargets = yield* browser.use("Open a fresh Jira connection", (page) =>
+-          page
+-            .goto(urls.app(jira.id).url)
+-            .then(() =>
+-              page.getByRole("button", { name: "Connect new account", exact: true }).click(),
+-            )
+-            .then(() => consentApps(page)),
+-        );
+-        yield* capture("atlassian-consent-1280.png");
+-        yield* browser.use("Use phone width for the Atlassian form", (page) =>
+-          page.setViewportSize({ width: 390, height: 844 }),
+-        );
+-        yield* capture("atlassian-consent-390.png");
+-        expect(yield* browser.use("Check the phone sign-in form fits", fits)).toBe(true);
+-        yield* browser.use("Restore desktop width", (page) =>
+-          page.setViewportSize({ width: 1280, height: 900 }),
+-        );
+-        expect(
+-          atlassianTargets,
+-          "Trello and Google apps are not Atlassian sign-in consumers",
+-        ).toEqual(["Confluence", "Jira Service Management"]);
+-        yield* browser.use("Connect Jira and Confluence in one Atlassian sign-in", (page) =>
+-          finishAppSignIn(page, jira.id, "Jira", ["Confluence"]),
+-        );
+-        expect((yield* atlassian.metrics).authorizations, "one Atlassian sign-in").toBe(1);
+-        const identityOf = (app: "jira" | "confluence" | "trello" | "gmail" | "calendar") =>
+-          Effect.gen(function* () {
+-            const links = yield* linkedAccountIds(actors.owner, fixture.apps[app].path);
+-            expect(links, `${app} has one saved account`).toHaveLength(1);
+-            return yield* fixture.account(links[0]!);
+-          });
++        // Complete real public OAuth before inspecting the rows; consent UI has its own cases.
++        yield* connectFamilyApps(fixture, "gmail", ["calendar"], google.origin);
++        yield* connectFamilyApps(fixture, "jira", ["confluence"], atlassian.origin);
++        yield* atlassian.configure({ subject: "trello-member" });
++        yield* connectFamilyApps(fixture, "trello", [], atlassian.origin);
++        const identityOf = familyIdentity(fixture);
+         const jiraAccount = yield* identityOf("jira");
+         const confluenceAccount = yield* identityOf("confluence");
+         expect(jiraAccount.identity?.id).toBeDefined();
+@@ -166,52 +60,17 @@
+         expect((yield* identityOf("calendar")).identity?.id).toBe(gmailAccount.identity?.id);
+         expect(gmailAccount.identity?.id).not.toBe(jiraAccount.identity?.id);
+ 
+-        // Trello uses Atlassian's authorization server for another audience: its own sign-in.
+-        yield* atlassian.configure({ subject: "trello-member" });
+-        const trello = fixture.apps.trello;
+-        const trelloTargets = yield* browser.use("Open a fresh Trello connection", (page) =>
+-          page
+-            .goto(urls.app(trello.id).url)
+-            .then(() =>
+-              page.getByRole("button", { name: "Connect new account", exact: true }).click(),
+-            )
+-            .then(() => page.getByRole("button", { name: "Connect Trello", exact: true }).waitFor())
+-            .then(() =>
+-              page.getByRole("group", { name: "Connect more apps in this sign-in" }).count(),
+-            ),
+-        );
+-        expect(trelloTargets, "Trello offers no Atlassian consumers").toBe(0);
+-        yield* browser.use("Connect Trello with its own sign-in", (page) => {
+-          const client = page.getByRole("textbox", { name: "Client ID", exact: true });
+-          return client
+-            .count()
+-            .then((shown) =>
+-              shown === 0
+-                ? undefined
+-                : client
+-                    .fill(atlassianFamilyClients.atlassian.id)
+-                    .then(() =>
+-                      page
+-                        .getByLabel("Client secret", { exact: true })
+-                        .fill(atlassianFamilyClients.atlassian.secret),
+-                    ),
+-            )
+-            .then(() =>
+-              finishInNewTab(page, trello.id, () =>
+-                page.getByRole("button", { name: "Connect Trello", exact: true }).click(),
+-              ),
+-            );
+-        });
+         const trelloAccount = yield* identityOf("trello");
+         expect(trelloAccount.id).not.toBe(jiraAccount.id);
+         expect(trelloAccount.identity?.id).not.toBe(jiraAccount.identity?.id);
+ 
++        // Read the saved accounts once, then resize the same list.
++        yield* browser.use("Read the saved accounts", (page) => page.goto(urls.accounts));
+         const inspectAccounts = (width: 1280 | 390) =>
+           Effect.gen(function* () {
+             yield* browser.use(`Open Accounts at ${width} px`, (page) =>
+               page
+                 .setViewportSize({ width, height: width === 390 ? 844 : 900 })
+-                .then(() => page.goto(urls.accounts))
+                 .then(() => familyRows(page, ["Jira", "Confluence"]).waitFor())
+                 .then(() =>
+                   Promise.all([
+@@ -311,18 +170,12 @@
+       context,
+       Effect.gen(function* () {
+         const actors = yield* Actors,
+-          browser = yield* Browser,
+-          evidence = yield* Evidence;
++          browser = yield* Browser;
+         const { atlassian, google, transport, fixture } = yield* familySetup([
+           "jira",
+           "confluence",
+         ]);
+         const urls = yield* openBrowser({ atlassian: atlassian.origin, google: google.origin });
+-        const capture = (name: string) =>
+-          Effect.flatMap(
+-            browser.use(`Capture ${name}`, (page) => page.screenshot({ fullPage: true })),
+-            (png) => evidence.attach(name, "image/png", png),
+-          );
+         yield* atlassian.configure({ subject: "jira-person" });
+         const jira = fixture.apps.jira;
+         yield* browser.use("Connect Jira on its own", (page) =>
+diff --git a/e2e/support/atlassian-family-fixture.ts b/e2e/support/atlassian-family-fixture.ts
+--- a/e2e/support/atlassian-family-fixture.ts
++++ b/e2e/support/atlassian-family-fixture.ts
+@@ -77,28 +77,33 @@
+       actors = yield* Actors;
+     const prefix = `/api/organizations/${actors.organization.id}`;
+     const deployed = {} as Record<FamilyApp, { id: string; path: string }>;
+-    for (const key of names) {
+-      const app = familyApps[key];
+-      const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+-        name: app.name,
+-        files: [
+-          appsManifest,
+-          {
+-            path: "index.ts",
+-            content: `import { defineApp, defineProvider, oauth2, router } from "apps";
++    yield* Effect.forEach(
++      names,
++      (key) =>
++        Effect.gen(function* () {
++          const app = familyApps[key];
++          const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++            name: app.name,
++            files: [
++              appsManifest,
++              {
++                path: "index.ts",
++                content: `import { defineApp, defineProvider, oauth2, router } from "apps";
+ const service = defineProvider({ name: ${JSON.stringify(app.name)}, hosts: ${JSON.stringify(app.hosts)}, auth: { oauth: oauth2(${app.oauth}) } });
+ export default defineApp({ user: { accounts: { service } } }, { tools: router({}) });`,
+-          },
+-        ],
+-      });
+-      expect(response.status, JSON.stringify(response.body)).toBe(200);
+-      const { id } = yield* body(Resource, response);
+-      const path = `${prefix}/apps/${id}`;
+-      yield* Effect.addFinalizer(() =>
+-        api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
+-      );
+-      deployed[key] = { id, path };
+-    }
++              },
++            ],
++          });
++          expect(response.status, JSON.stringify(response.body)).toBe(200);
++          const { id } = yield* body(Resource, response);
++          const path = `${prefix}/apps/${id}`;
++          yield* Effect.addFinalizer(() =>
++            api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
++          );
++          deployed[key] = { id, path };
++        }),
++      { concurrency: 2, discard: true },
++    );
+     const Account = Schema.Struct({
+       id: Schema.String,
+       identity: Schema.optionalKey(Schema.Struct({ id: Schema.String, label: Schema.String })),
 diff --git a/e2e/support/atlassian-family-product.ts b/e2e/support/atlassian-family-product.ts
 --- a/e2e/support/atlassian-family-product.ts
 +++ b/e2e/support/atlassian-family-product.ts
@@ -121,75 +434,6 @@ diff --git a/e2e/support/atlassian-family-product.ts b/e2e/support/atlassian-fam
      const start = Effect.gen(function* () {
        yield* serverControl("stop");
        yield* serverControl("environment", 200, {
-diff --git a/e2e/support/atlassian-family-fixture.ts b/e2e/support/atlassian-family-fixture.ts
---- a/e2e/support/atlassian-family-fixture.ts
-+++ b/e2e/support/atlassian-family-fixture.ts
-@@ -77,28 +77,33 @@
-       actors = yield* Actors;
-     const prefix = `/api/organizations/${actors.organization.id}`;
-     const deployed = {} as Record<FamilyApp, { id: string; path: string }>;
--    for (const key of names) {
--      const app = familyApps[key];
--      const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
--        name: app.name,
--        files: [
--          appsManifest,
--          {
--            path: "index.ts",
--            content: `import { defineApp, defineProvider, oauth2, router } from "apps";
-+    yield* Effect.forEach(
-+      names,
-+      (key) =>
-+        Effect.gen(function* () {
-+          const app = familyApps[key];
-+          const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-+            name: app.name,
-+            files: [
-+              appsManifest,
-+              {
-+                path: "index.ts",
-+                content: `import { defineApp, defineProvider, oauth2, router } from "apps";
- const service = defineProvider({ name: ${JSON.stringify(app.name)}, hosts: ${JSON.stringify(app.hosts)}, auth: { oauth: oauth2(${app.oauth}) } });
- export default defineApp({ user: { accounts: { service } } }, { tools: router({}) });`,
--          },
--        ],
--      });
--      expect(response.status, JSON.stringify(response.body)).toBe(200);
--      const { id } = yield* body(Resource, response);
--      const path = `${prefix}/apps/${id}`;
--      yield* Effect.addFinalizer(() =>
--        api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
--      );
--      deployed[key] = { id, path };
--    }
-+              },
-+            ],
-+          });
-+          expect(response.status, JSON.stringify(response.body)).toBe(200);
-+          const { id } = yield* body(Resource, response);
-+          const path = `${prefix}/apps/${id}`;
-+          yield* Effect.addFinalizer(() =>
-+            api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
-+          );
-+          deployed[key] = { id, path };
-+        }),
-+      { concurrency: 2, discard: true },
-+    );
-     const Account = Schema.Struct({
-       id: Schema.String,
-       identity: Schema.optionalKey(Schema.Struct({ id: Schema.String, label: Schema.String })),
-diff --git a/e2e/tests/atlassian-family-screens.spec.ts b/e2e/tests/atlassian-family-screens.spec.ts
---- a/e2e/tests/atlassian-family-screens.spec.ts
-+++ b/e2e/tests/atlassian-family-screens.spec.ts
-@@ -49,7 +49,7 @@
-   Effect.gen(function* () {
-     const atlassian = yield* accountIdentityIssuer,
-       google = yield* accountIdentityIssuer;
--    // Compile the transport while the first server deploys the apps; restart after both finish.
-+    // Prepare the transport and independent apps before restarting the product.
-     const [transport, fixture] = yield* Effect.all(
-       [
-         atlassianFamilyProduct({ atlassian: atlassian.origin, google: google.origin }),
 diff --git a/apps/hosted/testing/atlassian-family-transport.ts b/apps/hosted/testing/atlassian-family-transport.ts
 new file mode 100644
 --- /dev/null
@@ -292,3 +536,329 @@ new file mode 100644
 +    throw new Error("Unexpected Atlassian family fixture request: " + host + url.pathname);
 +  };
 +};
+diff --git a/e2e/support/atlassian-family-screens.ts b/e2e/support/atlassian-family-screens.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/atlassian-family-screens.ts
+@@ -0,0 +1,80 @@
++import { expect } from "@effect/vitest";
++import { Effect } from "effect";
++import { Actors } from "./actors.ts";
++import { accountIdentityIssuer } from "./account-identity-issuer.ts";
++import { atlassianFamilyProduct } from "./atlassian-family-product.ts";
++import {
++  deployFamilyApps,
++  routeFamilyMarks,
++  routeProviderConsent,
++} from "./atlassian-family-fixture.ts";
++import { linkedAccountIds } from "./app-accounts.ts";
++import { Browser } from "./browser.ts";
++import { Evidence } from "./evidence.ts";
++
++export const allFamilyApps = [
++  "jira",
++  "confluence",
++  "serviceManagement",
++  "trello",
++  "gmail",
++  "calendar",
++] as const;
++
++/** Two synthetic issuers behind the shipped endpoints, the product restarted on that transport. */
++export const familySetup = (names: Parameters<typeof deployFamilyApps>[0]) =>
++  Effect.gen(function* () {
++    const atlassian = yield* accountIdentityIssuer,
++      google = yield* accountIdentityIssuer;
++    // Prepare the transport and independent apps before restarting the product.
++    const [transport, fixture] = yield* Effect.all(
++      [
++        atlassianFamilyProduct({ atlassian: atlassian.origin, google: google.origin }),
++        deployFamilyApps(names),
++      ],
++      { concurrency: 2 },
++    );
++    yield* transport.start;
++    return { atlassian, google, transport, fixture };
++  });
++
++export const openBrowser = (issuers: { atlassian: string; google: string }) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser,
++      actors = yield* Actors;
++    yield* browser.omitNetworkTrace;
++    yield* browser.login(actors.owner);
++    yield* browser.use("Answer provider consent and family marks on loopback", (page) =>
++      Promise.all([
++        routeProviderConsent(page.context(), issuers),
++        routeFamilyMarks(page.context()),
++      ]),
++    );
++    return {
++      accounts: `/org/${actors.organization.slug}/accounts`,
++      app: (id: string) => ({
++        id,
++        url: `/org/${actors.organization.slug}/apps/${id}?view=accounts`,
++      }),
++    };
++  });
++
++export const captureFamilyScreen = (name: string) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser,
++      evidence = yield* Evidence;
++    const png = yield* browser.use(`Capture ${name}`, (page) =>
++      page.screenshot({ fullPage: true }),
++    );
++    yield* evidence.attach(name, "image/png", png);
++  });
++
++export const familyIdentity =
++  (fixture: Effect.Success<ReturnType<typeof deployFamilyApps>>) =>
++  (app: "jira" | "confluence" | "trello" | "gmail" | "calendar") =>
++    Effect.gen(function* () {
++      const actors = yield* Actors;
++      const links = yield* linkedAccountIds(actors.owner, fixture.apps[app].path);
++      expect(links, `${app} has one saved account`).toHaveLength(1);
++      return yield* fixture.account(links[0]!);
++    });
+diff --git a/e2e/support/atlassian-family-connections.ts b/e2e/support/atlassian-family-connections.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/atlassian-family-connections.ts
+@@ -0,0 +1,69 @@
++import { expect } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { FetchHttpClient, HttpClient } from "effect/http";
++import { Actors } from "./actors.ts";
++import { Api, body } from "./api.ts";
++import { connectionsPath } from "./app-accounts.ts";
++import { deployFamilyApps, type FamilyApp } from "./atlassian-family-fixture.ts";
++import { Resource } from "./contracts.ts";
++
++/** Row tests use real OAuth over HTTP; separate browser cases cover the consent form. */
++export const connectFamilyApps = (
++  fixture: Effect.Success<ReturnType<typeof deployFamilyApps>>,
++  primary: FamilyApp,
++  companions: readonly FamilyApp[],
++  issuer: string,
++) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors,
++      http = yield* HttpClient.HttpClient;
++    const pending = yield* Effect.forEach([primary, ...companions], (key) =>
++      Effect.gen(function* () {
++        const response = yield* api.request(
++          actors.owner,
++          "POST",
++          connectionsPath(fixture.apps[key].path, "user", "service"),
++          {},
++        );
++        expect(response.status, JSON.stringify(response.body)).toBe(200);
++        return yield* body(Resource, response);
++      }),
++    );
++    const connection = pending[0]!;
++    const started = yield* api.request(
++      actors.owner,
++      "POST",
++      `${fixture.prefix}/connections/${connection.id}/oauth/start`,
++      {
++        method: "oauth",
++        additionalConnections: pending
++          .slice(1)
++          .map(({ id }) => ({ connection: id, method: "oauth" })),
++      },
++    );
++    expect(started.status, JSON.stringify(started.body)).toBe(200);
++    const { authorizationUrl } = yield* body(
++      Schema.Struct({ status: Schema.Literal("redirect"), authorizationUrl: Schema.String }),
++      started,
++    );
++    // Substitute only the external consent host, preserving the product's PKCE and callback.
++    const consent = new URL("/authorize", issuer);
++    consent.search = new URL(authorizationUrl).search;
++    const callbackUrl = yield* Effect.scoped(
++      Effect.gen(function* () {
++        const response = yield* HttpClient.withScope(http).get(consent.href);
++        expect(response.status).toBe(302);
++        if (response.headers.location === undefined)
++          return yield* Effect.die("Issuer omitted callback");
++        return response.headers.location;
++      }),
++    ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
++    const completed = yield* api.request(
++      actors.owner,
++      "POST",
++      `${fixture.prefix}/connections/${connection.id}/oauth/complete`,
++      { callbackUrl },
++    );
++    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
++  });
+diff --git a/e2e/tests/atlassian-family-consent.spec.ts b/e2e/tests/atlassian-family-consent.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/atlassian-family-consent.spec.ts
+@@ -0,0 +1,162 @@
++/** Consent UI coverage stays separate from the saved family row and reuse checks. */
++import { expect, layer } from "@effect/vitest";
++import { Effect } from "effect";
++import type { Page } from "playwright";
++import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { atlassianFamilyClients } from "../support/atlassian-family-product.ts";
++import { finishAppSignIn, finishInNewTab } from "../support/atlassian-family-fixture.ts";
++import {
++  allFamilyApps,
++  captureFamilyScreen as capture,
++  familyIdentity,
++  familySetup,
++  openBrowser,
++} from "../support/atlassian-family-screens.ts";
++import { openInApp } from "../support/in-app-navigation.ts";
++import { scenarios } from "../test-plan.ts";
++
++const consentApps = (page: Page) => {
++  const boxes = page
++    .getByRole("group", { name: "Connect more apps in this sign-in" })
++    .getByRole("checkbox");
++  return page
++    .getByRole("button", { name: /^(Connect (Gmail|Jira)|Continue with (Google|Atlassian))$/ })
++    .waitFor()
++    .then(() =>
++      boxes.evaluateAll((items) =>
++        items.map((box) => box.closest("label")?.textContent?.trim() ?? "").sort(),
++      ),
++    );
++};
++
++const fits = (page: Page) =>
++  page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
++
++layer(HostedLive, { excludeTestServices: true })("Family consent screens", (it) => {
++  it.effect(scenarios.googleFamilyConsentScreens.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const browser = yield* Browser,
++          evidence = yield* Evidence;
++        const { atlassian, google, fixture } = yield* evidence.step(
++          "Deploy family apps and restart product",
++          familySetup(allFamilyApps),
++        );
++        const urls = yield* openBrowser({ atlassian: atlassian.origin, google: google.origin });
++        yield* browser.use("Use desktop width", (page) =>
++          page.setViewportSize({ width: 1280, height: 900 }),
++        );
++        const identityOf = familyIdentity(fixture);
++        // Google is the reference: one sign-in offers the other Google app, nothing else.
++        const gmail = fixture.apps.gmail;
++        const googleTargets = yield* browser.use("Open a fresh Gmail connection", (page) =>
++          page
++            .goto(urls.app(gmail.id).url)
++            .then(() =>
++              page.getByRole("button", { name: "Connect new account", exact: true }).click(),
++            )
++            .then(() => consentApps(page)),
++        );
++        yield* capture("google-consent-1280.png");
++        expect(googleTargets).toEqual(["Google Calendar"]);
++        yield* browser.use("Connect Gmail and Google Calendar in one Google sign-in", (page) =>
++          finishAppSignIn(page, gmail.id, "Gmail", ["Google Calendar"]),
++        );
++        expect((yield* google.metrics).authorizations).toBe(1);
++
++        const gmailAccount = yield* identityOf("gmail");
++        expect(gmailAccount.identity?.id).toBeDefined();
++        expect((yield* identityOf("calendar")).identity?.id).toBe(gmailAccount.identity?.id);
++      }),
++    ),
++  );
++  it.effect(scenarios.atlassianFamilyConsentScreens.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const browser = yield* Browser,
++          evidence = yield* Evidence;
++        const { atlassian, google, fixture } = yield* evidence.step(
++          "Deploy family apps and restart product",
++          familySetup(allFamilyApps),
++        );
++        const urls = yield* openBrowser({ atlassian: atlassian.origin, google: google.origin });
++        yield* browser.use("Use desktop width", (page) =>
++          page.setViewportSize({ width: 1280, height: 900 }),
++        );
++        const identityOf = familyIdentity(fixture);
++        // Jira gets the same consent, offering exactly the Atlassian apps.
++        const jira = fixture.apps.jira;
++        yield* browser.use("Open Jira", (page) => page.goto(urls.app(jira.id).url));
++        const atlassianTargets = yield* browser.use("Open a fresh Jira connection", (page) =>
++          page
++            .getByRole("button", { name: "Connect new account", exact: true })
++            .click()
++            .then(() => consentApps(page)),
++        );
++        yield* capture("atlassian-consent-1280.png");
++        yield* browser.use("Use phone width for the Atlassian form", (page) =>
++          page.setViewportSize({ width: 390, height: 844 }),
++        );
++        yield* capture("atlassian-consent-390.png");
++        expect(yield* browser.use("Check the phone sign-in form fits", fits)).toBe(true);
++        yield* browser.use("Restore desktop width", (page) =>
++          page.setViewportSize({ width: 1280, height: 900 }),
++        );
++        expect(
++          atlassianTargets,
++          "Trello and Google apps are not Atlassian sign-in consumers",
++        ).toEqual(["Confluence", "Jira Service Management"]);
++        yield* browser.use("Connect Jira and Confluence in one Atlassian sign-in", (page) =>
++          finishAppSignIn(page, jira.id, "Jira", ["Confluence"]),
++        );
++        expect((yield* atlassian.metrics).authorizations, "one Atlassian sign-in").toBe(1);
++        const jiraAccount = yield* identityOf("jira");
++        const confluenceAccount = yield* identityOf("confluence");
++        expect(jiraAccount.identity?.id).toBeDefined();
++        expect(confluenceAccount.identity?.id).toBe(jiraAccount.identity?.id);
++        // Trello uses Atlassian's authorization server for another audience: its own sign-in.
++        yield* atlassian.configure({ subject: "trello-member" });
++        const trello = fixture.apps.trello;
++        yield* openInApp("Open Trello in the running dashboard", urls.app(trello.id).url);
++        const trelloTargets = yield* browser.use("Open a fresh Trello connection", (page) =>
++          page
++            .getByRole("button", { name: "Connect new account", exact: true })
++            .click()
++            .then(() => page.getByRole("button", { name: "Connect Trello", exact: true }).waitFor())
++            .then(() =>
++              page.getByRole("group", { name: "Connect more apps in this sign-in" }).count(),
++            ),
++        );
++        expect(trelloTargets, "Trello offers no Atlassian consumers").toBe(0);
++        yield* browser.use("Connect Trello with its own sign-in", (page) => {
++          const client = page.getByRole("textbox", { name: "Client ID", exact: true });
++          return client
++            .count()
++            .then((shown) =>
++              shown === 0
++                ? undefined
++                : client
++                    .fill(atlassianFamilyClients.atlassian.id)
++                    .then(() =>
++                      page
++                        .getByLabel("Client secret", { exact: true })
++                        .fill(atlassianFamilyClients.atlassian.secret),
++                    ),
++            )
++            .then(() =>
++              finishInNewTab(page, trello.id, () =>
++                page.getByRole("button", { name: "Connect Trello", exact: true }).click(),
++              ),
++            );
++        });
++        const trelloAccount = yield* identityOf("trello");
++        expect(trelloAccount.id).not.toBe(jiraAccount.id);
++        expect(trelloAccount.identity?.id).not.toBe(jiraAccount.identity?.id);
++      }),
++    ),
++  );
++});

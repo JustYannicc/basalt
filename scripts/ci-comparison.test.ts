@@ -144,6 +144,7 @@ test("the pipeline guard excludes a merged release bump from an older PR's merge
     git("commit", "-qam", "client change");
     const head = git("rev-parse", "HEAD");
     git("merge", "--no-ff", "-m", "PR merge ref", "main");
+    assert.equal(git("merge-base", "HEAD", "main"), current);
     const output = join(root, "comparison");
     writeFileSync(output, "");
     const environment = {
@@ -153,6 +154,7 @@ test("the pipeline guard excludes a merged release bump from an older PR's merge
       BATCH_PUSH: "false",
       BASE_SHA: stale,
       HEAD_SHA: head,
+      BATCH_MODE: "false",
       GITHUB_OUTPUT: output,
     };
     if (comparison)
@@ -162,22 +164,25 @@ test("the pipeline guard excludes a merged release bump from an older PR's merge
       guard.env.BASE_SHA === "${{ steps.comparison.outputs.base_sha }}" ? resolved : stale;
     const command = guard.run
       .split("\n")
-      .find((line: string) => line.includes("cpa-pipeline-guard.py"));
-    const check = () =>
+      .filter((line: string) => !line.trimStart().startsWith("python3 -m unittest "))
+      .join("\n");
+    const check = (candidate = head) =>
       spawnSync("bash", ["-e", "-c", command], {
         cwd: root,
-        env: { ...environment, BASE_SHA: base },
+        env: { ...environment, BASE_SHA: base, HEAD_SHA: candidate },
         encoding: "utf8",
       });
     const result = check();
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(base, current);
+    assert.equal(base, stale);
     assert.equal(result.stdout.trim(), "CPA source pin unchanged");
 
+    git("switch", "-q", "--detach", head);
     pin("new-bump-in-this-PR");
     writeFileSync(join(root, "containers/pool/runtime.py"), "unrelated runtime change");
     git("add", ".");
-    const combined = check();
+    git("commit", "-qm", "negative bump on source head");
+    const combined = check(git("rev-parse", "HEAD"));
     assert.notEqual(combined.status, 0);
     assert.match(combined.stderr, /CPA bump changes runtime code: containers\/pool\/runtime.py/);
   } finally {

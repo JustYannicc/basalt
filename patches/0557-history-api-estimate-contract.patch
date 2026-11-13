@@ -1,0 +1,172 @@
+diff --git a/apps/hosted/server/src/contracts/pool-usage-series.ts b/apps/hosted/server/src/contracts/pool-usage-series.ts
+--- a/apps/hosted/server/src/contracts/pool-usage-series.ts
++++ b/apps/hosted/server/src/contracts/pool-usage-series.ts
+@@ -17,6 +17,29 @@
+     currency: Schema.NullOr(Schema.String),
+     priced: count,
+     unpriced: count,
++  }))();
++const apiEstimate = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    status: Schema.Literals(["available", "unavailable"]),
++    reason: Schema.optionalKey(Schema.String),
++    amount: Schema.NullOr(decimal),
++    currency: Schema.Literal("USD"),
++    pricedRequests: count,
++    excluded: Schema.Struct({
++      unknownKind: count,
++      unknownKindValue: Schema.NullOr(decimal),
++      unpriced: count,
++    }),
++    price: Schema.NullOr(
++      Schema.Struct({
++        asOf: Schema.NonEmptyString,
++        source: Schema.NonEmptyString,
++        version: Schema.NonEmptyString,
++        basis: Schema.optionalKey(Schema.Literals(["live", "baseline"])),
++        refreshFailed: Schema.optionalKey(Schema.Boolean),
++        calculation: Schema.optionalKey(Schema.Literal("token-counts")),
++      }),
++    ),
+   }))();
+ const dimensions = /* @__PURE__ */ (() =>
+   Schema.Literals(["account", "person", "model", "provider", "app", "attribution", "source"]))();
+@@ -80,6 +103,7 @@
+       homeCharge: cost,
+       importedApiPrice: cost,
+       apiEquivalent: unavailable,
++      apiEstimate: Schema.optionalKey(apiEstimate),
+       unpricedRequests: count,
+     }),
+     attribution: Schema.Struct({
+diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
+--- a/e2e/support/pool-usage-series-backend.ts
++++ b/e2e/support/pool-usage-series-backend.ts
+@@ -307,6 +307,23 @@
+                   unpriced: 1,
+                 },
+                 apiEquivalent: unavailable,
++                apiEstimate: {
++                  status: "available",
++                  amount: "0.123456789012",
++                  currency: "USD",
++                  pricedRequests: 1,
++                  excluded: { unknownKind: 0, unknownKindValue: null, unpriced: 1 },
++                  price: {
++                    asOf: "2026-01-01T00:00:00Z",
++                    source: "models.dev",
++                    version: "fixture-price-version",
++                    basis: "baseline",
++                    refreshFailed: true,
++                    calculation: "token-counts",
++                    privateReference: "private-reference-sentinel",
++                  },
++                  privateReference: "private-reference-sentinel",
++                },
+                 unpricedRequests: 1,
+               },
+               attribution: { chargeSnapshot: 0, keyAtCapture: 0, importOwner: 2, unknown: 0 },
+diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.spec.ts
+--- a/e2e/tests/pool-usage-series.spec.ts
++++ b/e2e/tests/pool-usage-series.spec.ts
+@@ -58,7 +58,24 @@
+               missing: Schema.Number,
+             }),
+           }),
+-          cost: Schema.Struct({ apiEquivalent: Schema.Struct({ status: Schema.String }) }),
++          cost: Schema.Struct({
++            apiEquivalent: Schema.Struct({ status: Schema.String }),
++            apiEstimate: Schema.Struct({
++              status: Schema.Literal("available"),
++              amount: Schema.String,
++              currency: Schema.Literal("USD"),
++              pricedRequests: Schema.Number,
++              excluded: Schema.Struct({ unpriced: Schema.Number }),
++              price: Schema.Struct({
++                asOf: Schema.String,
++                source: Schema.String,
++                version: Schema.String,
++                basis: Schema.Literal("baseline"),
++                refreshFailed: Schema.Boolean,
++                calculation: Schema.Literal("token-counts"),
++              }),
++            }),
++          }),
+         }),
+       ),
+     }),
+@@ -158,7 +175,24 @@
+           requests: 2,
+           successRate: 0.5,
+           tokens: { input: { sum: "9007199254740993", known: 1, missing: 1 } },
+-          cost: { apiEquivalent: { status: "unavailable" } },
++          cost: {
++            apiEquivalent: { status: "unavailable" },
++            apiEstimate: {
++              status: "available",
++              amount: "0.123456789012",
++              currency: "USD",
++              pricedRequests: 1,
++              excluded: { unpriced: 1 },
++              price: {
++                asOf: "2026-01-01T00:00:00Z",
++                source: "models.dev",
++                version: "fixture-price-version",
++                basis: "baseline",
++                refreshFailed: true,
++                calculation: "token-counts",
++              },
++            },
++          },
+         });
+         expect(JSON.stringify(response.body)).not.toContain("private-reference-sentinel");
+         const calls = yield* backend.calls;
+@@ -277,6 +311,40 @@
+         const ownerPerson = personHash(ownerIdentity);
+         const memberPerson = personHash(memberIdentity.userId);
+         expect(memberPerson).not.toBe(ownerPerson);
++        const ownerApp = yield* openAppSession(actors.owner);
++        const appSeries = yield* postApp(ownerApp, "/_executor/api/pool-usage/series", {
++          version: app.activeVersion,
++          input: query,
++        });
++        expect(appSeries.status).toBe(200);
++        expect(JSON.parse(appSeries.text)).toMatchObject(result);
++        expect(appSeries.text).not.toContain("private-reference-sentinel");
++        const retainedSeries = JSON.parse(appSeries.text);
++        for (const apiEstimate of [
++          undefined,
++          {
++            status: "unavailable",
++            reason: "Required counters are missing.",
++            amount: null,
++            currency: "USD",
++            pricedRequests: 0,
++            excluded: { unknownKind: 0, unknownKindValue: null, unpriced: 2 },
++            price: null,
++          },
++        ]) {
++          const reply = structuredClone(retainedSeries);
++          if (apiEstimate === undefined) delete reply.groups[0].buckets[0].cost.apiEstimate;
++          else reply.groups[0].buckets[0].cost.apiEstimate = apiEstimate;
++          yield* backend.respond(() => reply);
++          const legacyOrMissing = yield* postApp(ownerApp, "/_executor/api/pool-usage/series", {
++            version: app.activeVersion,
++            input: query,
++          });
++          expect(legacyOrMissing.status).toBe(200);
++          const cost = JSON.parse(legacyOrMissing.text).groups[0].buckets[0].cost;
++          expect(cost.apiEstimate).toEqual(apiEstimate);
++          expect(cost.importedApiPrice.amount).toBe("0.123456789012");
++        }
+         yield* backend.respond((assertion) => {
+           if (assertion.action === "poolOverview") return { result: "Overview is ready" };
+           if (assertion.action !== "poolPersonalOverview") return {};
+@@ -285,7 +353,6 @@
+           };
+         });
+         const memberApp = yield* openAppSession(actors.member);
+-        const ownerApp = yield* openAppSession(actors.owner);
+         const personalPath = "/_executor/api/pool-usage/personal-overview";
+         const managerPath = "/_executor/api/pool-usage/overview";
+         const range = {

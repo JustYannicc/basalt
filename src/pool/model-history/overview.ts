@@ -477,6 +477,7 @@ export async function poolPersonalOverview(
     const cte = priceQuery(true);
     const totalsQuery = await db.query(
       `${cte}SELECT
+        count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL AND token_count_estimate)::text AS token_count_estimates,
         count(*) FILTER (WHERE offering='metered_api')::text AS api_requests,
         count(*) FILTER (WHERE offering='subscription')::text AS subscription_requests,
         count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NOT NULL)::text AS api_priced,
@@ -492,6 +493,7 @@ export async function poolPersonalOverview(
     );
     const costRows = await db.query(
       `${cte}SELECT person,provider,model,count(*)::text AS requests,
+        count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL AND token_count_estimate)::text AS token_count_estimates,
         count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NOT NULL)::text AS api_priced,
         count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NULL)::text AS api_unpriced,
         count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL)::text AS subscription_priced,
@@ -526,7 +528,7 @@ export async function poolPersonalOverview(
       unknownKindValue: totals.unknownValue,
       unpriced,
     });
-    const price = priceProvenance(prices);
+    const price = priceProvenance(prices, asCount(totalsRow.token_count_estimates) > 0);
     const noKindReason =
       "Some of your requests could not be classified from inspectable account history, so separate estimates are incomplete.";
     const official = await officialCosts(db, input, prices);
@@ -557,7 +559,9 @@ export async function poolPersonalOverview(
             unknownKind: asCount(row.unknown_kind),
             unknownKindValue: asText(row.unknown_kind_value),
             price:
-              price && (row.api_cost !== null || row.subscription_value !== null) ? price : null,
+              row.api_cost !== null || row.subscription_value !== null
+                ? priceProvenance(prices, asCount(row.token_count_estimates) > 0)
+                : null,
           }));
     const partial = seriesResult.next !== null || dimensionOverflow || usageOverflow;
     const result: PoolPersonalOverviewResult = {
@@ -584,6 +588,7 @@ export async function poolPersonalOverview(
           return {
             ...slice,
             subscriptionValue: known?.subscriptionValue ?? null,
+            subscriptionPrice: known?.price ?? null,
             subscriptionPricedRequests: known?.subscriptionPricedRequests ?? 0,
             subscriptionUnpriced: known?.subscriptionUnpriced ?? 0,
             ...(known?.subscriptionUnpriced && slice.apiReason
@@ -943,7 +948,8 @@ export async function poolUsageOverview(
         values,
       );
       const totalsQuery = await db.query(
-        `${cte}SELECT count(*) FILTER (WHERE offering='metered_api')::text AS api_requests,
+        `${cte}SELECT count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL AND token_count_estimate)::text AS token_count_estimates,
+        count(*) FILTER (WHERE offering='metered_api')::text AS api_requests,
         count(*) FILTER (WHERE offering='subscription')::text AS subscription_requests,
         count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NOT NULL)::text AS api_priced,
         count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL)::text AS subscription_priced,
@@ -958,6 +964,7 @@ export async function poolUsageOverview(
       );
       const costs = await db.query(
         `${cte}SELECT person,provider,model,count(*)::text AS requests,
+          count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL AND token_count_estimate)::text AS token_count_estimates,
           count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NOT NULL)::text AS api_priced,
           count(*) FILTER (WHERE offering='metered_api' AND api_cost IS NULL)::text AS api_unpriced,
           count(*) FILTER (WHERE offering='subscription' AND api_cost IS NOT NULL)::text AS subscription_priced,
@@ -1063,7 +1070,10 @@ export async function poolUsageOverview(
               ),
         };
       }
-      const price = priceProvenance(prices);
+      const price = priceProvenance(
+        prices,
+        asCount(totalsQuery.rows[0]?.token_count_estimates) > 0,
+      );
       const costRows = costs.rows.slice(0, maxUsageSlices);
       usageSlices = usageOverflow
         ? []
@@ -1081,7 +1091,9 @@ export async function poolUsageOverview(
             unknownKind: asCount(row.unknown_kind),
             unknownKindValue: asText(row.unknown_kind_value),
             price:
-              price && (row.api_cost !== null || row.subscription_value !== null) ? price : null,
+              row.api_cost !== null || row.subscription_value !== null
+                ? priceProvenance(prices, asCount(row.token_count_estimates) > 0)
+                : null,
           }));
       const totalRow = totalsQuery.rows[0] ?? {};
       const totals = {
@@ -1177,6 +1189,7 @@ export async function poolUsageOverview(
             return {
               ...slice,
               subscriptionValue: known?.subscriptionValue ?? null,
+              subscriptionPrice: known?.price ?? null,
               subscriptionPricedRequests: known?.subscriptionPricedRequests ?? 0,
               subscriptionUnpriced: known?.subscriptionUnpriced ?? 0,
               ...(known?.subscriptionUnpriced && slice.apiReason

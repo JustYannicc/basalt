@@ -8,7 +8,7 @@ export async function homeMetadataFixture(db: HistoryDatabase) {
     input_tokens bigint DEFAULT 100,output_tokens bigint DEFAULT 10,reasoning_tokens bigint DEFAULT 3,
     cached_tokens bigint DEFAULT 20,cache_read_tokens bigint DEFAULT 20,cache_read_tokens_present boolean DEFAULT true,
     cache_creation_tokens bigint DEFAULT 0,total_tokens bigint DEFAULT 110,token_accounting_quality text DEFAULT 'complete',
-    token_accounting_version int DEFAULT 2,accounting_input_tokens bigint DEFAULT 100,accounting_output_tokens bigint DEFAULT 10,
+    token_accounting_version bigint DEFAULT 2,accounting_input_tokens bigint DEFAULT 100,accounting_output_tokens bigint DEFAULT 10,
     accounting_cache_read_tokens bigint DEFAULT 20,accounting_cache_write_tokens bigint DEFAULT 0,
     accounting_reasoning_tokens bigint DEFAULT 3,accounting_total_tokens bigint DEFAULT 110,
     latency_ms bigint DEFAULT 100,failed boolean DEFAULT false,fail_status_code int DEFAULT 0,

@@ -41,7 +41,7 @@ globalThis.fetch = () => {
   throw new Error("Real network is forbidden in the admission proof");
 };
 const temporary = mkdtempSync(join(tmpdir(), "provider-admission-"));
-const context = process.argv[3] ?? join(temporary, "context");
+const context = process.argv[3] || join(temporary, "context");
 if (!process.argv[3]) mkdirSync(context);
 if (!process.argv[3])
   writeFileSync(join(context, "Dockerfile"), "FROM scratch\nLABEL revision=admission\n");
@@ -57,7 +57,8 @@ const props = {
   constraints: { jurisdiction: "eu", regions: ["EEUR", "WEUR"] },
 };
 const session = { note: () => Effect.void };
-const baseline = "0e2ecb6f105a95f3";
+const baseline = process.argv[5] || "0e2ecb6f105a95f3";
+assert.match(baseline, /^[a-f0-9]{16}$/u);
 let publication;
 const hook = {
   rolloutKind: "full_manual",
@@ -163,7 +164,20 @@ const program = Effect.gen(function* () {
   const { computeStaticSourceHash } = yield* Effect.promise(() => load("Docker/ImageSource"));
   const staticHash = yield* computeStaticSourceHash({ context }, "linux/amd64");
   assert.notEqual(staticHash, selected.identity.sourceInputHash);
-  assert.equal(admit({ ...selected.identity, sourceInputHash: staticHash }, info, before), false);
+  const rejectedCandidateHashes = [
+    ...new Set([
+      staticHash,
+      "0152ede472b6f78e",
+      "f0306fefc74fbf8d",
+      "cc52df39f1c5cd82",
+      "ef1236d5c3f08c04",
+      "2fe25d81b60b7025",
+      "6842d68639bcd135",
+      "4290c0e3ed44b007",
+    ]),
+  ];
+  for (const sourceInputHash of rejectedCandidateHashes)
+    assert.equal(admit({ ...selected.identity, sourceInputHash }, info, before), false);
   assert.equal(
     admit({ ...selected.identity, baselineInputHash: "f".repeat(16) }, info, before),
     false,
@@ -175,6 +189,7 @@ const program = Effect.gen(function* () {
       tree,
       publicationHash: selected.identity.sourceInputHash,
       rejectedStaticHash: staticHash,
+      rejectedCandidateHashes,
       baseline,
       postStagingWrites: api.writes,
       rollouts: api.rollouts,

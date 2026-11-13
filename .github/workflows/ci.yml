@@ -211,21 +211,26 @@ jobs:
           BASE_REF: ${{ github.base_ref || 'main' }}
           BATCH_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/batch/') }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           base="$BASE_SHA"
           if [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             target="${BASE_REF:-main}"
             git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
-            base="$(git merge-base HEAD "refs/remotes/origin/$target")"
+            base="$(git merge-base "$HEAD_SHA" "refs/remotes/origin/$target")"
           fi
           base="$(git rev-parse --verify "$base^{commit}")"
           echo "base_sha=$base" >> "$GITHUB_OUTPUT"
       - name: Verify CPA updater and pipeline boundary
         env:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BATCH_MODE: ${{ startsWith(github.head_ref, 'batch/') || startsWith(github.ref, 'refs/heads/batch/') }}
         run: |
           python3 -m unittest discover -s scripts/cpa-tests
-          python3 scripts/cpa-pipeline-guard.py --base "$BASE_SHA"
+          args=(--base "$BASE_SHA" --head "$HEAD_SHA")
+          if [ "$BATCH_MODE" = true ]; then args+=(--batch); fi
+          python3 scripts/cpa-pipeline-guard.py "${args[@]}"
   client-connection:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -1798,7 +1803,8 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Check Google BYO OAuth through the real self-host flow
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts dashboard-batch:google-byo-oauth-through-the-real-self-host-flow)"
+        # Each case starts its own compiler, server and browser; keep their startup bursts apart.
+        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts dashboard-batch:google-byo-oauth-through-the-real-self-host-flow)" --workers 1
       - name: Prove shared Google Admin OAuth selection through the pinned server
         env:
           BASE_SHA: ${{ needs.select.outputs.base_sha }}

@@ -1,6 +1,6 @@
 {
   "name": "@signalbox/desktop-client",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Connect your local agents to Signalbox models and tools.",
   "homepage": "https://github.com/JustYannicc/basalt",

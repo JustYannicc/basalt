@@ -1,4 +1,5 @@
 import { Fragment, useState } from "react";
+import { failedRecordWithoutUsage } from "./usage-outcome.ts";
 import { Badge, Button } from "./controls.tsx";
 import type { MemberDirectoryEntry } from "./series-model.ts";
 import type { PublicHistoryRecord } from "./history-model.ts";
@@ -23,6 +24,7 @@ function timestamp(value: string): string {
 }
 
 function cost(record: PublicHistoryRecord): string {
+  if (failedRecordWithoutUsage(record)) return "No usage recorded";
   if (record.cost_basis === "unpriced" || record.cost === null) return "Unpriced";
   const currency = ` ${record.currency ?? "currency not recorded"}`;
   return `${record.cost}${currency} · ${record.cost_basis === "home-charge" ? "Home charge" : "Historical API price"}`;
@@ -111,7 +113,9 @@ export function HistoryRequests({
             <tbody>
               {visible.map((record) => {
                 const expanded = open?.page === page && open.id === record.id;
-                const model = record.model ?? "Model not recorded";
+                const model = failedRecordWithoutUsage(record)
+                  ? "Failed request"
+                  : (record.model ?? "Model not recorded");
                 const provider = record.provider
                   ? providerName(record.provider)
                   : "Provider not recorded";

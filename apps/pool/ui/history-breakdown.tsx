@@ -1,6 +1,7 @@
 import { Fragment, useState } from "react";
 import type { SeriesGroup } from "../usage-series-contract.ts";
 import { Segmented } from "./controls.tsx";
+import { noRecordedUsage } from "./usage-outcome.ts";
 import { PriceNote } from "./price-note.tsx";
 import {
   money,
@@ -35,6 +36,7 @@ function historyDirectory(
 
 function rowCost(row: Row): string {
   if (row.countsOnly) return "Not mapped";
+  if (noRecordedUsage(row.totals)) return "No usage recorded";
   const costs = [
     row.totals.home.length ? `Home ${moneyList(row.totals.home)}` : null,
     row.totals.imported.length ? `Historical API ${moneyList(row.totals.imported)}` : null,
@@ -49,6 +51,8 @@ function estimate(row: Row) {
   const value = row.totals.apiEstimate;
   const excluded = value.unknownKind + value.unpriced + value.notReported;
   if (row.countsOnly) return { text: "Not mapped", excluded: 0, value, reasons: [] };
+  if (noRecordedUsage(row.totals))
+    return { text: "No usage recorded", excluded: 0, value, reasons: [] };
   if (value.invalid) return { text: "Unavailable", excluded: 0, value, reasons: [] };
   if (value.amount !== null)
     return {
@@ -108,6 +112,7 @@ function EstimateCell({ row, start = false }: { row: Row; start?: boolean }) {
 }
 
 function rowTokens(row: Row): string {
+  if (noRecordedUsage(row.totals)) return "No tokens recorded";
   if (row.totals.tokensKnown === 0) return "Tokens unavailable";
   return `${tokensShort(row.totals.tokens)}${row.totals.tokensMissing ? "+" : ""} tokens`;
 }
@@ -203,7 +208,7 @@ export function HistoryBreakdown({
                     {row.totals.requests.toLocaleString()} requests · {rowTokens(row)} ·{" "}
                     {rowCost(row)}
                   </span>
-                  {estimates && (
+                  {estimates && !noRecordedUsage(row.totals) && (
                     <span className="mt-1 flex items-baseline gap-1.5 text-xs text-muted-foreground min-[541px]:hidden">
                       <span className="shrink-0">API est.</span>
                       <span className="tabular-nums text-foreground">

@@ -113,6 +113,7 @@ export async function seriesQuery(
       ? [
           "round(sum(api_cost),12)::text AS api_amount",
           "count(api_cost)::text AS api_priced",
+          "count(*) FILTER (WHERE api_cost IS NOT NULL AND token_count_estimate)::text AS api_token_count_estimates",
           "min(public_price_as_of) FILTER (WHERE api_cost IS NOT NULL) AS api_price_as_of",
           "string_agg(DISTINCT public_price_version, ',' ORDER BY public_price_version) FILTER (WHERE api_cost IS NOT NULL) AS api_price_version",
           "bool_or(public_price_basis='baseline') FILTER (WHERE api_cost IS NOT NULL) AS api_price_baseline",
@@ -147,8 +148,7 @@ export async function seriesQuery(
   const app = (await appAttributionReady(db)) ? "r.app_id" : "NULL::text AS app_id";
   const prefix = `WITH bindings AS (SELECT * FROM jsonb_to_recordset($4::jsonb) AS b(history text,saved text)),
     selected AS (SELECT r.*, $6::text AS gateway_source,
-      CASE WHEN r.token_quality='complete' OR r.token_quality='legacy' AND r.api_type IN ('responses','responses-compact') THEN r.input_tokens::numeric
-        WHEN r.token_quality='legacy' AND r.api_type='messages' THEN r.input_tokens::numeric+coalesce(r.cache_read_tokens,0)::numeric+coalesce(r.cache_write_tokens,0)::numeric ELSE NULL END AS context_input, ${app === "r.app_id" ? "" : `${app},`}
+      ${app === "r.app_id" ? "" : `${app},`}
       CASE WHEN r.account IS NULL THEN NULL WHEN NOT ${nativeAccount} OR NOT $7::boolean OR b.history IS NULL THEN 'unmapped'
         WHEN b.saved IS NULL THEN 'otherAccounts' ELSE b.saved END AS saved_account,
       ${personScope === undefined ? `(${nativeAccount} AND r.account IS NOT NULL AND (NOT $7::boolean OR b.history IS NULL OR b.saved IS NULL))` : "false"} AS counts_only

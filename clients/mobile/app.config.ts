@@ -25,7 +25,7 @@ if (updateManifestUrl !== undefined && new URL(updateManifestUrl).protocol !== "
 const config: ExpoConfig = {
   name: release ? brand.name : `${brand.name} Client Dev`,
   slug: "signalbox-client",
-  version: "0.2.1",
+  version: "0.2.2",
   scheme: release ? "signalbox-client" : "signalbox-client-dev",
   orientation: "default",
   userInterfaceStyle: "automatic",

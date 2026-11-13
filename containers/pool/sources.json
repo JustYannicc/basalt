@@ -226,8 +226,8 @@
     },
     "node": {
       "repository": "router-for-me/CLIProxyAPI",
-      "commit": "8bba7a77c6bcbfd993516d26606bfecaa4ff49d0",
-      "sha256": "813caa36cbd4d0ec30fc9bc08bcf81d3756e86e51b76b252f1241c9a02309fa0",
+      "commit": "f7ae8feeb3710319f524730849fbe32fde1751e4",
+      "sha256": "94f30de04e19df8db4868bfce7abfa0a4c7cac463ba51df405e9a2b9c71b68ed",
       "patches": [
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
@@ -240,8 +240,8 @@
         },
         {
           "identity": "cliproxy-native-typesafe-registration",
-          "file": "0066-typesafe-native-registration.patch",
-          "sha256": "fe7ebe60f5e90303b0b2f88aa16a6a18941c20ebc7810db179048f0ff8dbfc2e",
+          "file": "0559-typesafe-native-registration.patch",
+          "sha256": "d6b8e6058413d5f641f5d07aa95d375efd4504f2f73724bbdf2f860bf5458e7a",
           "retirement": {
             "mode": "manual",
             "requires": "Retire this carry only after the replacement serves native System One through Home authority and execution, preserves native errors and accounting, and passes stock SDK, compression, multipart, current-generation catalog and revocation proofs. A forced failure during mirror creation, reconnect or deletion must leave no usable stale credential and must recover on retry without replacing the saved Executor account. Migrate each current mirror to the replacement binding before removing the old path, then purge the retired mirrored Home credentials while retaining original Executor token fields and unrelated Home accounts. Prove that the purge is scoped, resumable after a forced failure and idempotent across repeated boots, with no retired credential selectable after unlink, deletion or generation replacement."
@@ -272,6 +272,15 @@
           "retirement": {
             "mode": "manual",
             "requires": "Retire only when the pinned sources preserve the opt-in primary dispatch reply, bounded closed timing transport, failure fencing, legacy compatibility and synthetic-provider response proof through Worker logs without exposing diagnostic headers to clients."
+          }
+        },
+        {
+          "identity": "node-usage-api-shape",
+          "file": "0554-node-usage-api-shape.patch",
+          "sha256": "d95b66ad90f6abf87ce43ed39b2f98020a5e0248c61759c6af8c524d8874b3fb",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after metadata-only Node usage publication preserves only allowlisted canonical API paths in its detached context, omits arbitrary paths and all other request metadata, and passes context, queue publication and fresh Home-capture regressions."
           }
         }
       ]

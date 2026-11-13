@@ -1,0 +1,51 @@
+{
+  "scenarios": {
+    "googleFamilyConsentScreens": {
+      "fixtures": "actors",
+      "title": "Gmail offers only Google Calendar and links both apps in one Google sign-in",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The synthetic authorization servers listen on loopback."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises the hosted operator clients and callback."
+        }
+      }
+    },
+    "atlassianFamilyConsentScreens": {
+      "fixtures": "actors",
+      "title": "Jira offers only Atlassian apps, links Confluence in one sign-in, and Trello offers its own sign-in",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The synthetic authorization servers listen on loopback."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises the hosted operator clients and callback."
+        }
+      }
+    }
+  },
+  "runs": {
+    "googleFamilyConsentScreens": [
+      "dashboard-batch:google-byo-oauth-through-the-real-self-host-flow"
+    ],
+    "atlassianFamilyConsentScreens": [
+      "dashboard-batch:google-byo-oauth-through-the-real-self-host-flow"
+    ]
+  },
+  "inputs": [
+    ".upstream/packages/sdk/src/contracts/oauth-families.ts",
+    ".upstream/packages/sdk/src/contracts/account-family-recipes.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/identity-consent-client.tsx"
+  ]
+}
