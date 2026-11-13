@@ -1,0 +1,602 @@
+diff --git a/packages/apps/src/contracts/ui.ts b/packages/apps/src/contracts/ui.ts
+--- a/packages/apps/src/contracts/ui.ts
++++ b/packages/apps/src/contracts/ui.ts
+@@ -9,7 +9,7 @@ export {
+ } from "@executor-js/app-data";
+ import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
+ import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
+-import { JsonValue } from "./schema.ts";
++import { AccountId, JsonValue } from "./schema.ts";
+ 
+ /**
+  * Non-secret page context injected by the serving host. `accounts` names the account IDs the page
+@@ -136,3 +136,45 @@ export const AppUiApi = HttpApi.make("app-ui").add(
+       }),
+     ),
+ );
++
++/** The host tabs an embedded page may open on its own app, by the names its URLs use. */
++export const HostTab = Schema.Literals([
++  "app",
++  "overview",
++  "accounts",
++  "tools",
++  "skills",
++  "workflows",
++  "schedules",
++  "webhooks",
++  "source",
++  "history",
++  "versions",
++  "settings",
++]);
++/**
++ * Where an embedded page asks its host to go, in the same window: a tab of its own app, or the
++ * Accounts page with one account highlighted. Destinations grant nothing; the host's own
++ * permissions decide what the person then sees.
++ */
++export const HostDestination = Schema.Union([
++  Schema.Struct({ tab: HostTab }),
++  Schema.Struct({ account: AccountId }),
++]);
++/**
++ * A page's request to its embedding host. `version` is the page's own, from its context; the host
++ * refuses a request from any frame other than the app's own document, from any other origin, or
++ * from a version that is no longer active.
++ */
++export const HostNavigationRequest = Schema.Struct({
++  type: Schema.Literal("executor:navigate"),
++  id: Schema.NonEmptyString,
++  version: Schema.NonEmptyString,
++  destination: HostDestination,
++});
++/** The host's answer to one request; `accepted` is false when it refused to navigate. */
++export const HostNavigationResult = Schema.Struct({
++  type: Schema.Literal("executor:navigate-result"),
++  id: Schema.NonEmptyString,
++  accepted: Schema.Boolean,
++});
+diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/implementation/ui-client.ts
+--- a/packages/apps/src/implementation/ui-client.ts
++++ b/packages/apps/src/implementation/ui-client.ts
+@@ -17,7 +17,14 @@ import { AsyncResult, Atom } from "effect/reactivity";
+ import { externalTrace, pendingSpan } from "@executor-js/telemetry";
+ import { FetchHttpClient, HttpClientError } from "effect/http";
+ import { HttpApiClient } from "effect/http-api";
+-import { AppUiApi, UiContext, UiVersionChanged, UiFailed } from "../contracts/ui.ts";
++import {
++  AppUiApi,
++  HostNavigationResult,
++  UiContext,
++  UiVersionChanged,
++  UiFailed,
++  type HostDestination,
++} from "../contracts/ui.ts";
+ import { AppQueryFailed, type OperationReference } from "../contracts/live.ts";
+ import { JsonValue } from "../contracts/schema.ts";
+ import { decoderOf, type Schema } from "./schema.ts";
+@@ -70,6 +77,10 @@ const visibleResult = <E>(
+       });
+ };
+ 
++/** A host without host navigation never answers; the request then resolves false. */
++const navigationTimeout = 3000;
++const isNavigationResult = EffectSchema.is(HostNavigationResult);
++
+ /** A scoped page client. Host-injected context carries only the version, never credentials. */
+ export const createAppClient = () => {
+   const { runtime, atoms } = makeBrowserTelemetry(
+@@ -103,16 +114,15 @@ export const createAppClient = () => {
+     active = !active;
+     for (const listener of activeListeners) listener(active);
+   };
++  // Navigation requests waiting for the host's answer, by request ID.
++  const navigations = new Map<string, (accepted: boolean) => void>();
+   const onHostMessage = (event: MessageEvent) => {
+-    if (
+-      window.parent === window ||
+-      event.source !== window.parent ||
+-      event.data?.type !== "executor:app-active" ||
+-      typeof event.data.active !== "boolean"
+-    )
+-      return;
+-    shown = event.data.active;
+-    activeChanged();
++    if (window.parent === window || event.source !== window.parent) return;
++    if (event.data?.type === "executor:app-active" && typeof event.data.active === "boolean") {
++      shown = event.data.active;
++      activeChanged();
++    } else if (isNavigationResult(event.data))
++      navigations.get(event.data.id)?.(event.data.accepted);
+   };
+   window.addEventListener("message", onHostMessage);
+   document.addEventListener("visibilitychange", activeChanged);
+@@ -127,6 +137,7 @@ export const createAppClient = () => {
+     window.removeEventListener("message", onHostMessage);
+     document.removeEventListener("visibilitychange", activeChanged);
+     activeListeners.clear();
++    for (const settle of navigations.values()) settle(false);
+     optimistic.dispose();
+     await runtime.dispose();
+   };
+@@ -345,9 +356,42 @@ export const createAppClient = () => {
+       );
+     },
+   });
++  let navigationRequests = 0;
++  const navigate = (destination: typeof HostDestination.Encoded): Promise<boolean> =>
++    window.parent === window
++      ? Promise.resolve(false)
++      : runtime.runPromise(context).then(
++          ({ version }) =>
++            new Promise<boolean>((resolve) => {
++              const id = `${version}:${++navigationRequests}`;
++              let timer: ReturnType<typeof setTimeout> | undefined;
++              const settle = (accepted: boolean) => {
++                clearTimeout(timer);
++                navigations.delete(id);
++                resolve(accepted);
++              };
++              navigations.set(id, settle);
++              timer = setTimeout(() => settle(false), navigationTimeout);
++              // The request names only this page's version and a destination; nothing in it is
++              // secret, and only the parent's answer is read.
++              window.parent.postMessage(
++                { type: "executor:navigate", id, version, destination },
++                "*",
++              );
++            }),
++          () => false,
++        );
+   return {
+     /** Close this client when its page or embedding owner is removed. */
+     dispose,
++    /**
++     * Ask the host that embeds this page to open, in the same window, one of this app's tabs, such
++     * as `{ tab: "settings" }`, or the Accounts page with one account highlighted, `{ account }`.
++     * The host keeps this page running, so browser Back returns to it as it was. Resolves true once
++     * the host navigates, and false when the page is not embedded, the host refuses (for example
++     * because another version is now active) or the host does not support it.
++     */
++    navigate,
+     /** Query this app once, with a runtime-validated response. Does not populate the mounted query cache. */
+     query: <Input, Output>(
+       reference: OperationReference<Input, Output, "query">,
+diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-screen.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
+@@ -1,6 +1,10 @@
+ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+ import type { App } from "@executor-js/sdk";
+ import { Button } from "@executor-js/ui/components/button";
++import {
++  hostNavigationResult,
++  readHostNavigation,
++} from "@executor-js/ui/contracts/host-navigation";
+ import { AsyncResult } from "effect/reactivity";
+ import { Option } from "effect";
+ import { useEffect, useRef } from "react";
+@@ -12,6 +16,12 @@ import { useOrganizationRoute } from "../components/organization.tsx";
+ 
+ export { AppSkeleton };
+ 
++/** The app's own embedded document: the iframe whose window sent the message, at its origin. */
++const appFrame = (source: MessageEventSource | null, origin: string) =>
++  Array.from(document.querySelectorAll("iframe")).find(
++    (frame) => frame.contentWindow === source && new URL(frame.src).origin === origin,
++  )?.contentWindow ?? undefined;
++
+ /** App metadata keeps the card label in the existing list request. */
+ export function AppScreenBadge({ app }: { readonly app: App }) {
+   const hasUi = "hasUi" in app ? app.hasUi : undefined;
+@@ -85,6 +95,40 @@ export function AppScreen({ app, active }: { readonly app: App; readonly active:
+     window.addEventListener("message", back);
+     return () => window.removeEventListener("message", back);
+   }, [active, historyRoute, frameRoute, navigate, organizationSlug, app.id]);
++  const frameOrigin = frameRoute === undefined ? undefined : new URL(frameRoute).origin;
++  // The shown screen follows its own document's requests to open a tab of this app or an account,
++  // as a new history entry: Back returns here, and the layout keeps the document running.
++  useEffect(() => {
++    if (!active || frameOrigin === undefined) return;
++    const receive = (event: MessageEvent) => {
++      const message = readHostNavigation(event.data);
++      if (message === undefined || event.origin !== frameOrigin) return;
++      // Other windows, including frames the app's page opens itself, get no answer.
++      const sender = appFrame(event.source, frameOrigin);
++      if (sender === undefined) return;
++      // A document still running a version that is no longer active is refused.
++      const request = Option.filter(
++        message.request,
++        (value) => value.version === app.activeVersion,
++      );
++      sender.postMessage(hostNavigationResult(message.id, Option.isSome(request)), frameOrigin);
++      if (Option.isNone(request)) return;
++      const destination = request.value.destination;
++      void ("tab" in destination
++        ? navigate({
++            to: "/org/$organizationSlug/apps/$appId",
++            params: { organizationSlug, appId: app.id },
++            search: destination.tab === "app" ? {} : { view: destination.tab },
++          })
++        : navigate({
++            to: "/org/$organizationSlug/accounts",
++            params: { organizationSlug },
++            search: { account: destination.account },
++          }));
++    };
++    window.addEventListener("message", receive);
++    return () => window.removeEventListener("message", receive);
++  }, [active, frameOrigin, navigate, organizationSlug, app.id, app.activeVersion]);
+   if (frameRoute !== undefined)
+     return (
+       <>
+diff --git a/packages/app-templates/executor/skills/app-authoring/ui.md b/packages/app-templates/executor/skills/app-authoring/ui.md
+--- a/packages/app-templates/executor/skills/app-authoring/ui.md
++++ b/packages/app-templates/executor/skills/app-authoring/ui.md
+@@ -56,6 +56,15 @@ reads once. Both operation types may fetch external APIs. External changes do
+ not invalidate subscriptions, and rolling back a SQL transaction cannot undo
+ external effects. All callbacks use Promises; the framework runs Effect internally.
+ 
++To send a person to the host instead of a link, call
++`client.navigate({ tab: "settings" })` for one of the app's own tabs (`app`,
++`overview`, `accounts`, `tools`, `skills`, `workflows`, `schedules`, `webhooks`,
++`source`, `history`, `versions`, `settings`) or `client.navigate({ account })`
++to open Accounts with that account highlighted. The host opens it in the same
++window and keeps the app page running, so Back returns to it as it was. It
++resolves `false` when the page is not embedded, its version is no longer active,
++or the host refuses; the person's own permissions decide what they then see.
++
+ Do not include an app ID or credentials in browser code. The host binds both
+ identity and authentication. Compiled imports and `ui/public/` files are retained
+ with the version. Import images and fonts from scripts or CSS. In `ui/index.html`,
+diff --git a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
+--- a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
++++ b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
+@@ -10,7 +10,7 @@ export const executorSkillDigests: Readonly<Record<string, string>> = {
+   "app-authoring/starter.md": "382bd769d7b10e9c09eaa2367755f23153a31a484aaca9c449ab4aac7d61e224",
+   "app-authoring/storage.md": "d2c2288c8a6dafa0a88f09e7e91409d9afc08158205ea6d25064d0dee67a33df",
+   "app-authoring/tools.md": "460eed5aaf4f84071945f891b955765a39d5372773cb6fff4f4e5d0d99e68a14",
+-  "app-authoring/ui.md": "2b6e53b38d05f11a8eef9c4f06f96f3a447f92e359d9e31d143670b51ea6a7b1",
++  "app-authoring/ui.md": "5a47fcf8b96bfa4a85df98289d7c7563fbbb559e37c915af5c2e206d9fe9ef26",
+   "app-authoring/upgrades/0.0.1-beta.38.md": "0e0e38e0334fbece5bdb8264a32be4f36cef9c51705e8f6b749dc0d3b86dcdb5",
+   "app-authoring/upgrades/0.0.1-beta.90.md": "38c727888b2773efa1d83795e8704f7c38ad9ec27c62fcdd89b5177ec5e338c3",
+   "app-authoring/webhooks.md": "e4ca224cd413b591c3692b389bd88d644b337b4697a067d83551e6bcab657cf3",
+diff --git a/packages/ui/src/contracts/host-navigation.ts b/packages/ui/src/contracts/host-navigation.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/contracts/host-navigation.ts
+@@ -0,0 +1,33 @@
++/**
++ * Reading an embedded page's navigation request, for hosts that embed app screens. The page sends
++ * `apps/client`'s `navigate`; the host decides whether to follow it and answers either way.
++ */
++import { HostNavigationRequest, HostNavigationResult } from "apps/ui/contracts";
++import { Option, Schema } from "effect";
++
++const decode = Schema.decodeUnknownOption(HostNavigationRequest);
++
++export type HostNavigation = typeof HostNavigationRequest.Type;
++
++/**
++ * A navigation message, by its ID: `request` is none when the message names a destination or
++ * shape this host does not know, which the host refuses. Any other message is undefined.
++ */
++export const readHostNavigation = (
++  data: unknown,
++): { readonly id: string; readonly request: Option.Option<HostNavigation> } | undefined =>
++  typeof data === "object" &&
++  data !== null &&
++  "type" in data &&
++  data.type === "executor:navigate" &&
++  "id" in data &&
++  typeof data.id === "string" &&
++  data.id !== ""
++    ? { id: data.id, request: decode(data) }
++    : undefined;
++
++/** The answer a host posts back to the page that asked. */
++export const hostNavigationResult = (
++  id: string,
++  accepted: boolean,
++): typeof HostNavigationResult.Type => ({ type: "executor:navigate-result", id, accepted });
+diff --git a/e2e/tests/app-host-navigation.spec.ts b/e2e/tests/app-host-navigation.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/app-host-navigation.spec.ts
+@@ -0,0 +1,296 @@
++/** An embedded app page opens its host's tabs and accounts through `apps/client`, in one window. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import type { Frame, Page } from "playwright";
++import { randomUUID } from "node:crypto";
++import { scenarios } from "../test-plan.ts";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App, Resource } from "../support/contracts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { waitForAppUrl } from "../support/app-pages.ts";
++import { connectionsPath } from "../support/app-accounts.ts";
++import { openThroughBrowser } from "../support/in-app-navigation.ts";
++
++const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
++const service = defineProvider({ name: "Navigation fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
++export const ping = query({ input: object({}) }, async () => "pong");
++export default defineApp({ user: { accounts: { service: service.many() } } }, { tools: router({ ping }) });`;
++
++/**
++ * Buttons ask the host through the public client. `sendRaw` posts a hand-written request, as a page
++ * from another version or with an unknown destination would, and reports the host's answer.
++ */
++const files = [
++  { path: "index.ts", content: source },
++  {
++    path: "ui/index.html",
++    content: `<!doctype html><html><head><title>Navigation fixture</title></head><body><main><h1>Navigation fixture</h1><label>Draft <input name="draft"></label><button id="settings">Open settings</button><button id="account">Show account</button><output></output></main><script type="module" src="./main.ts"></script></body></html>`,
++  },
++  {
++    path: "ui/main.ts",
++    content: `import { createAppClient } from "apps/client";
++const client = createAppClient();
++const context = JSON.parse(document.getElementById("executor-context")?.textContent ?? "{}");
++document.body.dataset.load = String(Math.random());
++const output = document.querySelector("output");
++const go = (destination) =>
++  client.navigate(destination).then((accepted) => (output.textContent = accepted ? "accepted" : "refused"));
++document.getElementById("settings").addEventListener("click", () => go({ tab: "settings" }));
++document.getElementById("account").addEventListener("click", () => go({ account: context.accounts?.service?.[0] }));
++window.version = context.version;
++window.sendRaw = (message) =>
++  new Promise((resolve) => {
++    const timer = setTimeout(() => resolve("unanswered"), 2000);
++    const answer = (event) => {
++      if (event.source !== parent || event.data?.type !== "executor:navigate-result" || event.data.id !== message.id) return;
++      clearTimeout(timer);
++      removeEventListener("message", answer);
++      resolve(event.data.accepted ? "accepted" : "refused");
++    };
++    addEventListener("message", answer);
++    parent.postMessage(message, "*");
++  });`,
++  },
++  appsManifest,
++];
++
++const navigation = (page: Page) => page.getByRole("navigation", { name: "App navigation" });
++const selected = (page: Page) =>
++  navigation(page)
++    .locator('[aria-current="page"]')
++    .allTextContents()
++    .then((names) => names.map((name) => name.trim()));
++
++/** The app's document among the page's frames, by its origin. */
++const appFrame = (page: Page, origin: string): Frame => {
++  const frame = page.frames().find((candidate) => candidate.url().startsWith(origin));
++  if (frame === undefined) throw new Error("The app's frame is missing");
++  return frame;
++};
++
++/** What the page keeps while hidden: its load marker, its draft and its last answer. */
++const kept = (frame: Frame) =>
++  frame.evaluate(() => ({
++    load: document.body.dataset.load,
++    draft: document.querySelector("input")?.value,
++    answer: document.querySelector("output")?.textContent,
++  }));
++
++const request = (version: string, destination: unknown) => ({
++  type: "executor:navigate",
++  id: `raw-${Math.random()}`,
++  version,
++  destination,
++});
++
++layer(HostedLive, { excludeTestServices: true })("App host navigation", (it) => {
++  it.effect(scenarios.appHostNavigation.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const name = `Navigation ${randomUUID().slice(0, 8)}`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name,
++          files,
++        });
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++        const app = yield* body(
++          Schema.Struct({ ...App.fields, activeVersion: Schema.String }),
++          deployed,
++        );
++        const accounts: string[] = [];
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            expect(
++              (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`)).status,
++            ).toBe(200);
++            for (const id of accounts)
++              expect(
++                (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`)).status,
++              ).toBe(200);
++          }).pipe(Effect.orDie),
++        );
++        const connection = yield* body(
++          Resource,
++          yield* api.request(
++            actors.owner,
++            "POST",
++            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
++            { destination: { kind: "shared", audience: { kind: "everyone" } } },
++          ),
++        );
++        const account = yield* body(
++          Resource,
++          yield* api.request(
++            actors.owner,
++            "POST",
++            `${prefix}/connections/${connection.id}/submit`,
++            {
++              method: "key",
++              label: "Navigation key",
++              fields: { token: "synthetic" },
++            },
++          ),
++        );
++        accounts.push(account.id);
++        const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
++        const origin = new URL(url).origin;
++        const detail = `/org/${actors.organization.slug}/apps/${app.id}`;
++
++        yield* browser.login(actors.owner);
++        yield* openThroughBrowser("Open the app's screen", detail);
++        yield* browser.use("The app's page runs in its App tab", (page) =>
++          page
++            .frameLocator("iframe")
++            .getByRole("heading", { name: "Navigation fixture" })
++            .waitFor(),
++        );
++        yield* browser.use("Type a draft the page must keep", (page) =>
++          page.frameLocator("iframe").getByLabel("Draft").fill("kept draft"),
++        );
++        const first = yield* browser.use("Read the running page", (page) =>
++          kept(appFrame(page, origin)),
++        );
++        yield* browser.checkpoint("app page before host navigation");
++
++        // A tab of its own app, as a new history entry.
++        yield* browser.use("The page opens its Settings tab", (page) =>
++          page
++            .frameLocator("iframe")
++            .getByRole("button", { name: "Open settings" })
++            .click()
++            .then(() => page.waitForURL((current) => current.search === "?view=settings")),
++        );
++        expect(yield* browser.use("Settings is the selected tab", selected)).toEqual(["Settings"]);
++        expect(
++          new URL(yield* browser.use("Read the URL", (page) => Promise.resolve(page.url())))
++            .pathname,
++        ).toBe(detail);
++        yield* browser.checkpoint("host settings tab opened by the app");
++        yield* browser.use("Back returns to the app", (page) =>
++          page.goBack().then(() => page.waitForURL((current) => current.search === "")),
++        );
++        expect(yield* browser.use("App is the selected tab", selected)).toEqual(["App"]);
++        expect(
++          yield* browser.use("The same document kept its draft", (page) =>
++            kept(appFrame(page, origin)),
++          ),
++        ).toEqual({ ...first, answer: "accepted" });
++
++        // An account, highlighted on the Accounts page.
++        yield* browser.use("The page opens its account in Accounts", (page) =>
++          page
++            .frameLocator("iframe")
++            .getByRole("button", { name: "Show account" })
++            .click()
++            .then(() =>
++              page.waitForURL(
++                (current) =>
++                  current.pathname === `/org/${actors.organization.slug}/accounts` &&
++                  current.searchParams.get("account") === account.id,
++              ),
++            ),
++        );
++        expect(
++          yield* browser.use("Accounts highlights the account", (page) =>
++            page
++              .locator('[data-highlighted][aria-current="true"]')
++              .first()
++              .waitFor()
++              .then(() =>
++                page.locator('[data-highlighted][aria-current="true"]').allTextContents(),
++              ),
++          ),
++        ).toEqual([expect.stringContaining("Navigation key")]);
++        yield* browser.checkpoint("accounts highlight opened by the app");
++        yield* browser.use("Back returns to the app again", (page) =>
++          page.goBack().then(() => page.waitForURL((current) => current.pathname === detail)),
++        );
++        expect(
++          yield* browser.use("The document is still the same one", (page) =>
++            kept(appFrame(page, origin)),
++          ),
++        ).toEqual({ ...first, answer: "accepted" });
++
++        // Requests the host refuses, answered from the app's own document.
++        const version = yield* browser.use("Read the page's version", (page) =>
++          appFrame(page, origin).evaluate(() => (window as unknown as { version: string }).version),
++        );
++        expect(version).toBe(app.activeVersion);
++        const raw = (label: string, message: unknown) =>
++          browser.use(label, (page) =>
++            appFrame(page, origin).evaluate(
++              (value) =>
++                (window as unknown as { sendRaw: (message: unknown) => Promise<string> }).sendRaw(
++                  value,
++                ),
++              message,
++            ),
++          );
++        expect(
++          yield* raw(
++            "A request from another version is refused",
++            request("ver_stale", { tab: "settings" }),
++          ),
++        ).toBe("refused");
++        expect(yield* raw("An unknown tab is refused", request(version, { tab: "billing" }))).toBe(
++          "refused",
++        );
++        expect(
++          yield* raw(
++            "An address is not a destination",
++            request(version, { url: "https://example.com/" }),
++          ),
++        ).toBe("refused");
++        expect(
++          yield* raw("A malformed account is refused", request(version, { account: "someone" })),
++        ).toBe("refused");
++
++        // Windows other than the app's own document get no answer and move nothing.
++        yield* browser.use("The host's own window asks", (page) =>
++          page.evaluate(
++            (message) => window.postMessage(message, "*"),
++            request(version, { tab: "settings" }),
++          ),
++        );
++        yield* browser.use("A frame the app's page opens asks", (page) =>
++          appFrame(page, origin)
++            .evaluate(() => {
++              const child = document.createElement("iframe");
++              child.name = "nested";
++              document.body.append(child);
++            })
++            .then(() => {
++              const nested = page.frames().find((frame) => frame.name() === "nested");
++              if (nested === undefined) throw new Error("The nested frame is missing");
++              return nested.evaluate(
++                (message) => window.parent.parent.postMessage(message, "*"),
++                request(version, { tab: "settings" }),
++              );
++            }),
++        );
++        // The host handles messages in order: once this refusal arrives, both have been read.
++        expect(
++          yield* raw("A later refused request is answered", request("ver_stale", { tab: "tools" })),
++        ).toBe("refused");
++        expect(
++          yield* browser.use("The host stayed on the App tab", (page) =>
++            Promise.all([new URL(page.url()).search, selected(page)]),
++          ),
++        ).toEqual(["", ["App"]]);
++        expect(
++          yield* browser.use("The page kept its draft through refusals", (page) =>
++            kept(appFrame(page, origin)),
++          ),
++        ).toEqual({ ...first, answer: "accepted" });
++      }),
++    ),
++  );
++});

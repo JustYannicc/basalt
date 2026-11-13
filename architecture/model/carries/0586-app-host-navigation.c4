@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.appHostNavigation {
+    metadata {
+      constraint "`apps/client` `navigate` sends a declarative destination, either a tab of the page's own app from a closed list or an account ID, with the page's own version, and resolves with the host's answer or false after a bounded wait; a page that is not embedded resolves false at once. Only the active app screen answers, and only messages whose window is the app's own embedded document at its origin; other windows, including frames the page opens, get no answer. Unknown destinations, malformed account IDs and versions other than the app's active version are refused before any navigation. Accepted requests push a host route, so Back returns to the retained, running document; navigation grants no access beyond the destination's own permissions. The legacy usage-history back message, host protocol 41 and the framework version are unchanged."
+    }
+  }
+}

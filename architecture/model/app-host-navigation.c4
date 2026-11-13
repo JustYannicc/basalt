@@ -1,0 +1,8 @@
+model {
+  extend basalt.toolsGateway {
+    appHostNavigation = part "App host navigation" {
+      description "An embedded app page asks its host, through the public app client, to open one of its own app's tabs or the Accounts page with an account highlighted. The shown app screen follows only its own document's requests, at its origin and for its active version, as a new history entry in the same window; the host's permissions decide what the person then sees."
+      metadata { code ".upstream/packages/ui/src/contracts/host-navigation.ts|.upstream/apps/hosted/web/src/implementation/pages/app-screen.tsx" }
+    }
+  }
+}
