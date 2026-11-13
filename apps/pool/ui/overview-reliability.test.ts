@@ -67,7 +67,7 @@ test("proof checks never count as real failures and are shown apart", () => {
   assert.equal(mixed[0]!.text, "4 of 200 real requests failed in 7 days");
   assert.match(
     mixed[0]!.sub,
-    /1 failed before reaching any account\. Proof checks counted apart: 3 of 40 failed\./,
+    /1 failed without a known account\. Proof checks counted apart: 3 of 40 failed\./,
   );
 });
 
@@ -137,4 +137,34 @@ test("pending classification and old responses never call the total real", () =>
   });
   assert.equal(legacy.answer, "5.0% of requests failed");
   assert.deepEqual(legacy.sub, ["includes proof checks"]);
+});
+
+test("recent real failures remain visible when the longer success objective is met", () => {
+  const data = reliability(window(counts(10000, 1)), { current: window(counts(5, 1)) });
+  assert.equal(
+    brokenAnswer({ needYou: 0, reliability: data, viewRead: true }).answer,
+    "Requests are failing now",
+  );
+  assert.equal(failureItems(data, 7)[0]!.text, "1 real request failed in the last 5 minutes");
+  const proofOnly = reliability(window(counts(100)), {
+    current: window(counts(1), counts(50, 50)),
+  });
+  assert.equal(
+    brokenAnswer({ needYou: 0, reliability: proofOnly, viewRead: true }).answer,
+    "Nothing broken",
+  );
+});
+
+test("pending classification cannot turn a proof failure into an urgent current outage", () => {
+  const pending = window(counts(5, 1), counts(0), "pending");
+  const data = reliability(pending, {
+    current: pending,
+    state: "unavailable",
+    reason: "classification_pending",
+  });
+  assert.notEqual(
+    brokenAnswer({ needYou: 0, reliability: data, viewRead: true }).answer,
+    "Requests are failing now",
+  );
+  assert.ok(failureItems(data, 7).every((item) => item.tone !== "bad"));
 });

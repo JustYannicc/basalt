@@ -6,7 +6,7 @@ import { AccountLimitsDialog, ModelLimits } from "./account-limits-view.tsx";
 import { capacityInputs } from "./account-view.ts";
 import type { Result } from "../index.ts";
 import type { PoolPersonalOverviewResult } from "../overview-contract.ts";
-import { capacityLabs, duration, gaps, hourMs, planChips } from "./capacity-model.ts";
+import { capacityLabs, duration, gaps, hourMs } from "./capacity-model.ts";
 import {
   CapacitySection,
   labSummaries,
@@ -453,19 +453,8 @@ function Attention({
   if (view && data.capacity?.ok) {
     const history = data.capacity.value;
     for (const lab of capacityLabs(history)) {
-      const flagged = new Set(
-        lab.lines.flatMap((line) =>
-          planChips(line.points.at(-1) ?? null)
-            .filter((chip) => chip.flagged)
-            .map((chip) => chip.plan),
-        ),
-      );
-      if (flagged.size)
-        items.push({
-          tone: "warn",
-          text: `${name(lab.provider)}: no verified allowance multiple for ${[...flagged].join(", ")}`,
-          sub: "Remaining percentages are measured. Totals use an unverified 1x allowance; account sizing is unavailable.",
-        });
+      // An unknown allowance is sized as one account and explained in the capacity details. It
+      // is never an attention item: nobody can fix missing vendor documentation.
       const missing = Math.max(
         0,
         ...lab.lines.map((line) =>

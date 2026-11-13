@@ -11,6 +11,7 @@ export type {
   CapacityRawHistory,
 } from "../../../apps/pool/capacity-contract.ts";
 import { digest } from "../backend-users.ts";
+import { capacityAccountReference } from "./account-reference.ts";
 import { ChunkStorage, UsageQueue, type UsageStorage } from "../usage-storage.ts";
 import type { CapacityReading } from "./normalize.ts";
 
@@ -334,7 +335,12 @@ function aggregate(readings: readonly CapacityReading[], at: number): CapacityAg
     knownWeightCount = 0;
   const weights = new Map<
     string,
-    { source: CapacityReading["source"]; revision: string; accountCount: number }
+    {
+      source: CapacityReading["source"];
+      revision: string;
+      accountCount: number;
+      allowance?: CapacityReading["allowance"];
+    }
   >();
   for (const reading of ordered) {
     remaining += reading.remaining;
@@ -342,10 +348,16 @@ function aggregate(readings: readonly CapacityReading[], at: number): CapacityAg
     observedFrom = Math.min(observedFrom, reading.observedAt);
     observedTo = Math.max(observedTo, reading.observedAt);
     if (reading.knownWeight) knownWeightCount++;
-    const key = JSON.stringify([reading.source, reading.revision]),
+    const key = JSON.stringify([reading.source, reading.revision, reading.allowance ?? null]),
       weight = weights.get(key);
     if (weight) weight.accountCount++;
-    else weights.set(key, { source: reading.source, revision: reading.revision, accountCount: 1 });
+    else
+      weights.set(key, {
+        source: reading.source,
+        revision: reading.revision,
+        accountCount: 1,
+        ...(reading.allowance ? { allowance: reading.allowance } : {}),
+      });
   }
   const provenance = [...weights.values()].sort(
     (a, b) => a.source.localeCompare(b.source) || a.revision.localeCompare(b.revision),
@@ -684,7 +696,7 @@ export class CapacityHistory {
         (index.latest ?? previous).map((reading) => [readingKey(reading), reading]),
       );
       const latestByKey = new Map(priorLatestByKey);
-      const accountHash = async (account: string) => digest(`${pool}\u0000${account}`);
+      const accountHash = (account: string) => capacityAccountReference(pool, account);
       const hashedCurrent = await Promise.all(
         validCurrent.map(async (reading) => ({
           ...reading,

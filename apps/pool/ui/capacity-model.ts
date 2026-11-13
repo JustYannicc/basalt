@@ -1,4 +1,4 @@
-import { accountPlanName } from "apps";
+import { accountPlanName, type AllowanceProvenance } from "apps";
 import {
   hasCurrentLimitReading,
   supportedLimitWindows,
@@ -69,7 +69,7 @@ export function capacityLabs(
   }
   const supported = new Map<string, Map<number, number>>();
   for (const account of accounts) {
-    for (const seconds of supportedLimitWindows(account)) {
+    for (const seconds of supportedLimitWindows(account, history.allowanceCatalog, history.to)) {
       const windows = supported.get(account.provider) ?? new Map<number, number>();
       windows.set(seconds, (windows.get(seconds) ?? 0) + 1);
       supported.set(account.provider, windows);
@@ -155,16 +155,21 @@ export function capacityLabs(
     const ordered = named.sort(
       (a, b) => b.windowSeconds - a.windowSeconds || a.label.localeCompare(b.label),
     );
+    const accountCount = (seconds: number) => {
+      const readings = ordered
+        .filter((line) => line.windowSeconds === seconds)
+        .flatMap((line) => line.points.at(-1)?.last ?? []);
+      const at = Math.max(...readings.map((reading) => reading.at));
+      return readings
+        .filter((reading) => reading.at === at)
+        .reduce((sum, reading) => sum + reading.accountCount, 0);
+    };
     return {
       provider,
       readAt: history.readAt,
       lines: ordered,
-      weeklyAccounts:
-        ordered.find((line) => line.windowSeconds === 604_800)?.points.at(-1)?.last.accountCount ??
-        0,
-      fiveHourAccounts:
-        ordered.find((line) => line.windowSeconds === 18_000)?.points.at(-1)?.last.accountCount ??
-        0,
+      weeklyAccounts: accountCount(604_800),
+      fiveHourAccounts: accountCount(18_000),
     };
   });
 }
@@ -482,7 +487,7 @@ export function verdict(
         : busy > 0
           ? "Busy path short"
           : "Enough";
-  const flagged = facts.latest.last.unknownWeightCount;
+  const unknown = facts.latest.last.unknownWeightCount;
   return {
     tone: projectedOut || shortfall > 0 || busy > 0 || sizingNeed ? "warn" : "ok",
     short,
@@ -490,8 +495,8 @@ export function verdict(
     detail:
       [
         sizingDetail,
-        flagged
-          ? `${flagged} of ${facts.latest.last.accountCount} accounts count at an unverified 1x allowance, so the shortfall may be larger or smaller than shown.`
+        unknown
+          ? `${unknown} of ${facts.latest.last.accountCount} ${facts.latest.last.accountCount === 1 ? "account has" : "accounts have"} an unknown allowance; each is sized as one account.`
           : null,
       ]
         .filter(Boolean)
@@ -544,18 +549,21 @@ export interface PlanChip {
   readonly key: string;
   readonly plan: string;
   readonly accounts: number;
-  readonly flagged: boolean;
+  /** Sized as one account because its allowance is unknown. Quiet: never an attention item. */
+  readonly unknown: boolean;
   /** Where the weight came from, when worth saying. */
   readonly note: string | null;
 }
 
 export const weightSourceLabel: Record<CapacityWeightSource, string> = {
+  "account-calibration": "estimated from account use",
+  "reported-plan-multiplier": "plan dataset",
   "reference-plan": "plan table",
   "published-session-multiplier": "published multiplier",
   "published-weekly-multiplier": "published weekly multiplier",
   "plan-multiplier": "plan multiplier",
   "reported-absolute": "limit reported",
-  "unknown-plan": "unverified · 1x",
+  "unknown-plan": "unknown · sized as 1 account",
 };
 
 export const planName = (plan: string | null, provider: string) =>
@@ -580,7 +588,7 @@ const forecastReasonLabels: Record<string, string> = {
   "partial-account-coverage": "some readings do not cover every account",
   "incomplete-current-week": "the current week is incomplete",
   "missing-account-reading": "an account has no current reading",
-  "unknown-account-weight": "an account's allowance multiple is unverified",
+  "unknown-account-weight": "an account's allowance is unknown, so it is sized as one account",
   "missing-reset-time": "an account reset time is unknown",
   "unhealthy-account": "an account is unavailable",
   "backtest-insufficient": "there is not enough held-out history to check the forecast",
@@ -595,12 +603,12 @@ const forecastReasonLabels: Record<string, string> = {
 export const forecastReasons = (reasons: readonly string[]) =>
   reasons.map((reason) => forecastReasonLabels[reason] ?? reason.replaceAll("-", " "));
 
-/** An unverified flag describes the saved weight, including readings from an older policy. */
+/** The unknown mark describes the saved weight, including readings from an older policy. */
 export function planChips(point: CapacityHistoryPoint | null): PlanChip[] {
   if (!point) return [];
   const groups = new Map<
     string,
-    { accounts: number; flagged: boolean; sources: Set<CapacityWeightSource> }
+    { accounts: number; unknown: boolean; sources: Set<CapacityWeightSource> }
   >();
   for (const plan of point.plans) {
     const last = plan.last;
@@ -608,22 +616,22 @@ export function planChips(point: CapacityHistoryPoint | null): PlanChip[] {
     const name = planName(plan.plan, point.provider);
     const group = groups.get(name) ?? {
       accounts: 0,
-      flagged: false,
+      unknown: false,
       sources: new Set<CapacityWeightSource>(),
     };
     group.accounts += last.accountCount;
-    group.flagged ||= last.unknownWeightCount > 0;
+    group.unknown ||= last.unknownWeightCount > 0;
     for (const weight of last.weights) group.sources.add(weight.source);
     groups.set(name, group);
   }
   return [...groups].map(([plan, group]) => {
     const sources = [...group.sources];
-    const note = group.flagged
+    const note = group.unknown
       ? weightSourceLabel["unknown-plan"]
       : sources.length === 1 && sources[0] !== "reference-plan"
         ? weightSourceLabel[sources[0]!]
         : null;
-    return { key: plan, plan, accounts: group.accounts, flagged: group.flagged, note };
+    return { key: plan, plan, accounts: group.accounts, unknown: group.unknown, note };
   });
 }
 
@@ -638,7 +646,7 @@ export function tooltipPlanRows(point: CapacityHistoryPoint) {
       accounts: number;
       remaining: number;
       full: number;
-      flagged: boolean;
+      unknown: boolean;
       sources: Set<CapacityWeightSource>;
       raw: { remaining: number; full: number } | null;
       rawComplete: boolean;
@@ -651,7 +659,7 @@ export function tooltipPlanRows(point: CapacityHistoryPoint) {
       accounts: 0,
       remaining: 0,
       full: 0,
-      flagged: false,
+      unknown: false,
       sources: new Set<CapacityWeightSource>(),
       raw: null,
       rawComplete: true,
@@ -659,7 +667,7 @@ export function tooltipPlanRows(point: CapacityHistoryPoint) {
     group.accounts += plan.minimum.accountCount;
     group.remaining += plan.minimum.remaining;
     group.full += plan.minimum.full;
-    group.flagged ||= plan.minimum.unknownWeightCount > 0;
+    group.unknown ||= plan.minimum.unknownWeightCount > 0;
     for (const weight of plan.minimum.weights) group.sources.add(weight.source);
     const quota = rawByPlan.get(plan.plan);
     if (quota)
@@ -676,6 +684,107 @@ export function tooltipPlanRows(point: CapacityHistoryPoint) {
     sources: [...sources],
     raw: rawComplete ? raw : null,
   }));
+}
+
+export interface AllowanceRow {
+  readonly key: string;
+  readonly plan: string;
+  readonly accounts: number;
+  readonly basis: string;
+  readonly detail: string | null;
+  readonly checked: string | null;
+  readonly expires: string | null;
+  readonly retrieved: string | null;
+  /** Web sources link out; other identifiers (such as a provider usage API) are plain text. */
+  readonly sources: readonly { readonly label: string; readonly href: string | null }[];
+}
+
+const allowanceBasis: Record<AllowanceProvenance["kind"], string> = {
+  "account-absolute": "Limit reported by the provider",
+  "account-calibration": "Estimated from this account's measured use",
+  dataset: "Plan dataset",
+  vendor: "Published by the vendor",
+  policy: "Pool policy",
+  reference: "Reference plan",
+  unknown: "Unknown allowance",
+};
+
+const ageText = (at: number, asOf: number) => {
+  const days = Math.floor((asOf - at) / dayMs);
+  return days <= 0 ? "under a day old" : `${days} ${days === 1 ? "day" : "days"} old`;
+};
+
+const sourceLink = (source: string) => {
+  try {
+    const url = new URL(source);
+    if (url.protocol === "https:" || url.protocol === "http:")
+      return { label: `${url.host}${url.pathname === "/" ? "" : url.pathname}`, href: url.href };
+  } catch {}
+  return { label: source, href: null };
+};
+
+/**
+ * Where each plan's allowance in a reading came from, and how old that source is. The age counts
+ * from the source's own check date, not from when it was last retrieved. Readings saved before
+ * provenance existed keep their original weight source and say no details were saved.
+ */
+export function allowanceRows(point: CapacityHistoryPoint | null, asOf: number): AllowanceRow[] {
+  if (!point) return [];
+  const rows = new Map<string, AllowanceRow>();
+  for (const plan of point.plans) {
+    const reading = plan.last ?? plan.minimum;
+    const name = planName(plan.plan, point.provider);
+    for (const weight of reading.weights) {
+      if (weight.accountCount <= 0) continue;
+      const allowance = weight.allowance;
+      const key = JSON.stringify([
+        name,
+        weight.source,
+        allowance?.kind ?? null,
+        allowance?.checkedAt ?? null,
+        allowance?.expiresAt ?? null,
+        allowance?.sources ?? [],
+      ]);
+      const known = rows.get(key);
+      if (known) {
+        rows.set(key, { ...known, accounts: known.accounts + weight.accountCount });
+        continue;
+      }
+      const unknown = weight.source === "unknown-plan" || allowance?.kind === "unknown";
+      // The server's unknown detail already names the reason (unknown or disagreeing sources).
+      const basis = unknown
+        ? (allowance?.detail ?? `${allowanceBasis.unknown}; sized as one account`)
+        : allowance
+          ? allowanceBasis[allowance.kind]
+          : weightSourceLabel[weight.source].replace(/^./, (first) => first.toUpperCase());
+      const detail = unknown
+        ? null
+        : allowance
+          ? (allowance.detail ?? null)
+          : "No source details were saved with this reading.";
+      rows.set(key, {
+        key,
+        plan: name,
+        accounts: weight.accountCount,
+        basis,
+        detail,
+        checked:
+          allowance?.checkedAt == null
+            ? null
+            : `Checked ${dayLong(allowance.checkedAt)} UTC, ${ageText(allowance.checkedAt, asOf)}`,
+        expires:
+          allowance?.expiresAt == null
+            ? null
+            : `${allowance.expiresAt <= asOf ? "Expired" : "Expires"} ${dayLong(allowance.expiresAt)} UTC`,
+        retrieved:
+          allowance?.fetchedAt == null
+            ? null
+            : `Retrieved ${dayLong(allowance.fetchedAt)} ${pad(new Date(allowance.fetchedAt).getUTCHours())}:${pad(new Date(allowance.fetchedAt).getUTCMinutes())} UTC`,
+        sources: (allowance?.sources ?? []).map(sourceLink),
+      });
+    }
+  }
+  return [...rows.values()];
 }
 
 const units = new Intl.NumberFormat("en", { maximumFractionDigits: 1 });

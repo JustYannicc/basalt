@@ -1,0 +1,35 @@
+{
+  "scenarios": {
+    "poolRoutingTrace": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "a pool owner reads current routing evidence while members and administrators cannot inspect private decisions",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses an isolated signed pool boundary and retained pool registration."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Exercises hosted pool ownership."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolRoutingTrace": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/contracts/pool-routing.ts",
+    ".upstream/apps/hosted/server/src/contracts/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-credit-routing.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-backend.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage.ts",
+    ".upstream/e2e/support/pool-routing-backend.ts"
+  ]
+}

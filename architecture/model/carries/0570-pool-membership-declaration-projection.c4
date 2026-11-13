@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.poolMembership {
+    metadata {
+      constraint "After the existing ordered account and binding locks, native membership reads the selected organization-owned pool's current deployment once in its final statement and projects only linked requirement/method fields. Shared contribution, departure and holder checks remain authoritative in that snapshot. Null and missing declarations, row ordering, exact reference fingerprint inputs and the five-second renewal cadence remain unchanged. This stores no declaration, policy or active-version cache and composes with a separate reduction in overview invocations."
+    }
+  }
+}

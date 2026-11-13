@@ -1,7 +1,7 @@
 import type { PoolReliabilitySlo } from "../../../apps/pool/reliability-contract.ts";
 import { digest } from "../backend-users.ts";
-import type { HistoryDatabase } from "./schema.ts";
-import { readPoolReliability } from "./reliability.ts";
+import { historyTerminalIntegrityVersion, type HistoryDatabase } from "./schema.ts";
+import { readPoolReliability, terminalCollectionReady } from "./reliability.ts";
 
 export function reliabilityState(
   hour: PoolReliabilitySlo["hour"],
@@ -26,8 +26,28 @@ export async function readPoolReliabilitySlo(
     await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
   try {
     await db.query("SET LOCAL statement_timeout = '5s'");
-    const hour = await readPoolReliability(db, pool, new Date(now - 3_600_000).toISOString(), to);
-    const day = await readPoolReliability(db, pool, new Date(now - 86_400_000).toISOString(), to);
+    const terminalReady = await terminalCollectionReady(db);
+    const hour = await readPoolReliability(
+      db,
+      pool,
+      new Date(now - 3_600_000).toISOString(),
+      to,
+      terminalReady,
+    );
+    const day = await readPoolReliability(
+      db,
+      pool,
+      new Date(now - 86_400_000).toISOString(),
+      to,
+      terminalReady,
+    );
+    const current = await readPoolReliability(
+      db,
+      pool,
+      new Date(now - 5 * 60_000).toISOString(),
+      to,
+      terminalReady,
+    );
     const row = (
       await db.query(
         `SELECT backfill_complete,forward_id::text,
@@ -49,22 +69,72 @@ export async function readPoolReliabilitySlo(
           row.forward_id,
         ])
       ).rows[0]?.lagging === true;
-    const reason =
-      !row || !sourceExists || row.backfill_complete !== true
-        ? "history_inactive"
-        : !Number.isFinite(captured) || captured > now + 30_000 || now - captured > 10 * 60_000
-          ? "capture_stale"
-          : lagging
-            ? "capture_lagging"
-            : hour.classification !== "ready" || day.classification !== "ready"
-              ? "classification_pending"
-              : undefined;
+    const terminalPending = terminalReady
+      ? (
+          await db.query(
+            `SELECT EXISTS (
+            SELECT 1 FROM basalt_model_terminal_starts s
+            LEFT JOIN basalt_model_terminal_finishes f USING (request_id)
+            WHERE s.pool=$1 AND f.request_id IS NULL
+              AND s.started_at >= $2::timestamptz - interval '24 hours'
+              AND s.started_at <= $2::timestamptz - interval '10 minutes'
+          ) AS pending`,
+            [(await digest(pool)).slice(0, 16), to],
+          )
+        ).rows[0]?.pending === true
+      : false;
+    const homeSource = await digest("home-local-v1");
+    const terminalUnavailable = terminalReady
+      ? (
+          await db.query(
+            `SELECT
+            EXISTS (
+              SELECT 1 FROM basalt_model_terminal_starts s
+              JOIN basalt_model_terminal_finishes f USING (request_id)
+              WHERE s.pool=$1 AND f.outcome='unavailable'
+                AND f.finished_at >= $2::timestamptz - interval '24 hours'
+                AND f.finished_at < $2::timestamptz
+            ) AS unavailable_finish,
+            -- v7 is the correlation cutover; each newer Home row must have one finished receipt.
+            EXISTS (
+              SELECT 1 FROM basalt_model_requests h
+              WHERE h.pool=$1 AND h.source=$3
+                AND h.timestamp >= GREATEST($2::timestamptz - interval '24 hours', m.completed_at)
+                AND h.timestamp < $2::timestamptz
+                AND NOT EXISTS (
+                  SELECT 1 FROM basalt_model_terminal_starts s
+                  JOIN basalt_model_terminal_finishes f USING (request_id)
+                  WHERE s.pool=h.pool AND s.request_id::text=h.request_id
+                )
+            ) AS unmatched_home
+          FROM basalt_model_history_migrations m WHERE m.name=$4`,
+            [(await digest(pool)).slice(0, 16), to, homeSource, historyTerminalIntegrityVersion],
+          )
+        ).rows[0]
+      : undefined;
+    const terminalHasGap =
+      terminalUnavailable?.unavailable_finish === true ||
+      terminalUnavailable?.unmatched_home === true;
+    const reason = terminalPending
+      ? "terminal_collection_pending"
+      : !terminalReady || terminalHasGap
+        ? "terminal_collection_unavailable"
+        : !row || !sourceExists || row.backfill_complete !== true
+          ? "history_inactive"
+          : !Number.isFinite(captured) || captured > now + 30_000 || now - captured > 10 * 60_000
+            ? "capture_stale"
+            : lagging
+              ? "capture_lagging"
+              : hour.classification !== "ready" || day.classification !== "ready"
+                ? "classification_pending"
+                : undefined;
     if (transaction === "owned") await db.query("COMMIT");
     return {
       target: 99,
       state: reason ? "unavailable" : reliabilityState(hour, day),
       captureAt,
       ...(reason ? { reason } : {}),
+      current,
       hour,
       day,
     };

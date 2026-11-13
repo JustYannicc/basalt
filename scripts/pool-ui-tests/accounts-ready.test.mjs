@@ -1353,7 +1353,8 @@ test(
         assert.deepEqual(writes.slice(startWrites), [], "nothing was spent or changed");
       });
 
-    let policyWeight = capacityWeight;
+    let policyWeight = (provider, plan, seconds) =>
+      capacityWeight(provider, plan, seconds, { now: Date.parse("2026-11-13T12:00:00Z") });
     if (weightPolicyRef) {
       const path = join(directory, "baseline-weights.ts");
       writeFileSync(
@@ -1383,7 +1384,7 @@ test(
           });
           view.value.accounts = view.value.accounts.map((account) => ({
             ...account,
-            plan: account.provider === "claude" ? "Max 20x" : "Pro 20x",
+            plan: account.provider === "claude" ? "Max 20x" : "Plus",
             windows: account.windows.filter((window) => window.windowSeconds === 604_800),
           }));
           viewResult = view;
@@ -1449,6 +1450,26 @@ test(
               capacity: (input) => {
                 const result = capacityFixture(input);
                 result.value.readAt = input.to;
+                // These synthetic support facts isolate missing readings from vendor plan changes.
+                result.value.allowanceCatalog = {
+                  entries: [
+                    ["anthropic", "max_20x"],
+                    ["openai", "plus"],
+                  ].map(([vendor, plan]) => ({
+                    vendor,
+                    plan,
+                    windowSeconds: 18_000,
+                    full: 1,
+                    unit: { id: "fixture-unit", label: "fixture account" },
+                    kind: "dataset",
+                    verification: "reported",
+                    revision: "fixture-support",
+                    sources: ["https://example.test/allowances.json"],
+                    checkedAt: input.to,
+                    fetchedAt: input.to,
+                    expiresAt: input.to + 86_400_000,
+                  })),
+                };
                 result.value.points = ["claude", "codex"].map((provider) => {
                   const count = provider === "claude" ? 1 : 2;
                   const reading = {
@@ -1519,8 +1540,8 @@ test(
               else {
                 assert.doesNotMatch(body, /plan isn't recognised|plan unknown|flagged 1x/);
                 if (retained) {
-                  assert.match(body, /Claude: no verified allowance multiple for Max 20x/);
-                  assert.match(body, /unverified · 1x/);
+                  assert.doesNotMatch(body, /no verified allowance multiple/);
+                  assert.match(body, /unknown · sized as 1 account/);
                   assert.doesNotMatch(body, /conservative/i);
                 } else {
                   assert.match(
@@ -1787,7 +1808,7 @@ test(
 
     for (const width of [1280, 390])
       await t.test(
-        `a plan without a verified allowance multiple says so at ${width}px`,
+        `an unknown plan keeps its sizing details without an attention item at ${width}px`,
         async () => {
           const value = poolView(Date.now(), {
             source: "live",
@@ -1812,8 +1833,8 @@ test(
               release();
               await frame.locator("#capacity article").waitFor();
               const attention = frame.locator("#attention");
-              await attention.getByText(/^Codex: /).waitFor();
-              await attention.scrollIntoViewIfNeeded();
+              await frame.getByRole("list", { name: "Codex plans", exact: true }).waitFor();
+              await frame.locator("#capacity").scrollIntoViewIfNeeded();
               await settled();
               if (artifacts) {
                 mkdirSync(artifacts, { recursive: true });
@@ -1822,23 +1843,20 @@ test(
                 });
               }
               const items = await attention.innerText();
-              assert.match(items, /Codex: no verified allowance multiple for Pro \(Max\)/);
-              assert.ok(
-                items.includes(
-                  "Remaining percentages are measured. Totals use an unverified 1x allowance; account sizing is unavailable.",
-                ),
-                items,
-              );
-              // The chip and the chart's details say the same: the 1x is unverified, not a bound.
+              assert.doesNotMatch(items, /no verified allowance multiple/);
+              // Unknown sizing remains in the capacity detail without asking for attention.
               assert.match(
                 await frame.getByRole("list", { name: "Codex plans", exact: true }).innerText(),
-                /Pro \(Max\)\s+×3\s+· unverified · 1x/,
+                /Pro \(Max\)\s+×3\s+· unknown · sized as 1 account/,
               );
               const chart = frame.getByRole("group", { name: /^Codex weekly capacity\./ });
               await chart.focus();
               const tip = await chart.getByRole("tooltip").innerText();
-              assert.match(tip, /Pro \(Max\) ×3\s+unverified · 1x/);
-              assert.match(tip, /3 accounts · 3 at an unverified 1x/);
+              assert.match(tip, /Pro \(Max\) ×3\s+unknown · sized as 1 account/);
+              assert.match(
+                tip,
+                /3 accounts · 3 with an unknown allowance, sized as 1 account each/,
+              );
               await chart.scrollIntoViewIfNeeded();
               await capture(frame.page(), `unverified-plan-tooltip-${width}`);
               const body = await frame.locator("body").innerText();
@@ -2077,7 +2095,7 @@ test(
               assert.doesNotMatch(await frame.locator("body").innerText(), /no readings yet/);
               // The grokchat product window shares the account's week; it is not a second account.
               const panel = await lab.innerText();
-              assert.match(panel, /1 account · in account-eq/);
+              assert.match(panel, /1 account · in Grok Pro account/);
               assert.match(panel, /Nominal 1\b/);
               assert.doesNotMatch(panel, /2 accounts|Nominal 2/);
               const chart = lab.getByRole("group", { name: /^Grok weekly\b[^.]* capacity\./ });
@@ -2087,7 +2105,7 @@ test(
               const tip = await chart.getByRole("tooltip").innerText();
               assert.match(tip, /Weekly/);
               // Chart amounts keep one decimal, so the measured 0.98 reads as 1 of 1.
-              assert.match(tip, /\b1 of 1 account-eq left/);
+              assert.match(tip, /\b1 of 1 Grok Pro account left/);
               assert.match(tip, /Grok Pro ×1/);
               assert.match(tip, /Total\s+1 \/ 1/);
               assert.match(tip, /^1 account\b/m);

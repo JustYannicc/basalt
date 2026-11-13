@@ -1,0 +1,83 @@
+diff --git a/internal/cluster/usage_summary_records.go b/internal/cluster/usage_summary_records.go
+--- a/internal/cluster/usage_summary_records.go
++++ b/internal/cluster/usage_summary_records.go
+@@ -21,7 +21,7 @@
+ // This stream is for retained counters. Detailed diagnostics stay on the records API.
+ func usageSummaryRecordSelect() string {
+ 	columns := []string{`"usage"."id" AS usage_id`, `"usage"."auth_index" AS usage_auth_index`}
+-	for _, name := range []string{"timestamp", "provider", "model", "executor_type", "input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cache_read_tokens", "cache_read_tokens_present", "cache_creation_tokens", "total_tokens", "token_accounting_version", "token_accounting_quality", "accounting_total_tokens", "accounting_input_tokens", "uncached_input_tokens", "accounting_cache_read_tokens", "accounting_cache_write_tokens", "accounting_output_tokens", "non_reasoning_output_tokens", "accounting_reasoning_tokens", "unclassified_tokens"} {
++	for _, name := range []string{"timestamp", "provider", "model", "service_tier", "executor_type", "input_tokens", "output_tokens", "reasoning_tokens", "cached_tokens", "cache_read_tokens", "cache_read_tokens_present", "cache_creation_tokens", "total_tokens", "token_accounting_version", "token_accounting_quality", "accounting_total_tokens", "accounting_input_tokens", "uncached_input_tokens", "accounting_cache_read_tokens", "accounting_cache_write_tokens", "accounting_output_tokens", "non_reasoning_output_tokens", "accounting_reasoning_tokens", "unclassified_tokens"} {
+ 		columns = append(columns, `"usage"."`+name+`" AS `+name)
+ 	}
+ 	columns = append(columns,
+diff --git a/internal/cluster/management/usage_summary_records.go b/internal/cluster/management/usage_summary_records.go
+--- a/internal/cluster/management/usage_summary_records.go
++++ b/internal/cluster/management/usage_summary_records.go
+@@ -56,7 +56,7 @@
+ 	for _, record := range records {
+ 		item := gin.H{
+ 			"id": record.ID, "timestamp": record.Timestamp.UTC().Format(time.RFC3339Nano),
+-			"provider": record.Provider, "model": record.Model,
++			"provider": record.Provider, "model": record.Model, "service_tier": record.ServiceTier,
+ 			"tokens": gin.H{"input_tokens": record.Tokens.InputTokens, "output_tokens": record.Tokens.OutputTokens,
+ 				"cache_read_tokens": record.Tokens.CacheReadTokens, "cache_creation_tokens": record.Tokens.CacheCreationTokens, "total_tokens": record.Tokens.TotalTokens},
+ 			"token_breakdown": usageTokenBreakdownResponse(record.Tokens.TokenBreakdown),
+diff --git a/internal/cluster/management/basalt_allowance_tier_test.go b/internal/cluster/management/basalt_allowance_tier_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/cluster/management/basalt_allowance_tier_test.go
+@@ -0,0 +1,54 @@
++package management
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++)
++
++func TestUsageCreditSummaryServiceTierPreservesUnknownAndPrivacy(t *testing.T) {
++	handler, closeRepo := newUsageObservabilityTestHandler(t)
++	defer closeRepo()
++	seedUsageObservabilityManagementRecord(t, handler)
++	seedUsageObservabilityFailedManagementRecord(t, handler)
++	gin.SetMode(gin.TestMode)
++	engine := gin.New()
++	engine.GET("/usage/summary-records", handler.ListUsageSummaryRecords)
++	engine.GET("/usage/summary-pending", handler.ListPendingUsageSummaryRecords)
++	for _, path := range []string{
++		"/usage/summary-records?from=2026-06-10T00:00:00Z&to=2026-06-11T00:00:00Z",
++		"/usage/summary-pending?to=2026-06-11T00:00:00Z",
++	} {
++		response := httptest.NewRecorder()
++		engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
++		if response.Code != http.StatusOK {
++			t.Fatalf("summary returned HTTP %d", response.Code)
++		}
++		for _, private := range []string{"client-key-secret", "203.0.113.", "hello", "Primary OAuth", "auth_json", "payload", "request_id", "balance_after", "access_token"} {
++			if strings.Contains(response.Body.String(), private) {
++				t.Fatal("summary exposed private request metadata")
++			}
++		}
++		var result struct {
++			Items []struct {
++				ServiceTier *string `json:"service_tier"`
++			} `json:"items"`
++		}
++		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
++			t.Fatal(err)
++		}
++		if len(result.Items) != 2 {
++			t.Fatalf("summary returned %d rows", len(result.Items))
++		}
++		if result.Items[0].ServiceTier == nil || *result.Items[0].ServiceTier != "auto" {
++			t.Fatal("unknown tier must retain Home's auto marker")
++		}
++		if result.Items[1].ServiceTier == nil || *result.Items[1].ServiceTier != "priority" {
++			t.Fatal("known priority tier must survive the narrow projection")
++		}
++	}
++}

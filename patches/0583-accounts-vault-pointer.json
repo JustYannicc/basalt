@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-accounts-vault-pointer",
+  "file": "0583-accounts-vault-pointer.patch",
+  "content_sha256": "c29156c29bddbe54130c2f25b4f9f03c70e1bab101db1f87d60c63856df132aa",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

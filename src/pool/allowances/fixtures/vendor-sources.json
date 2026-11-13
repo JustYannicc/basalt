@@ -1,0 +1,7 @@
+{
+  "openai-client": "            (PlanType::Pro, _) => \"Pro 200\",\n            (PlanType::ProLite, _) => \"Pro 100\",\n            (PlanType::ProMax, _) => \"Pro 500\",",
+  "openai-statement": "{\"tweet\": {\"text\": \"Saw some confusions, but all Pro plans have no 5-hour limits, and give the following usage compared to Plus.\\n\\n\\u2705 Pro 100 = 10X\\n\\u2705 Pro 200 = 20X\\n\\u2705 Pro 500 = 50X, access to ultrafast\", \"created_at\": \"Sun Nov 08 05:09:39 +0000 2026\", \"author\": {\"screen_name\": \"thsottiaux\"}}}",
+  "claude-max": "<p>Get five times the Pro plan&#x27;s usage every five hours and every week.</p>",
+  "claude-ultra": "<p>Get 10 times the Pro plan&#x27;s usage every week.</p>",
+  "x-subscription": "| Plan | Monthly | Annual | Included usage |\n| --- | --- | --- | --- |\n| Free | $0 | $0 | Limited |\n| Plus | $8/mo | $80/yr ($7/mo) | Base |\n| Premium | $30/mo | $300/yr ($25/mo) | 4x |\n| Super | $100/mo | $1000/yr ($84/mo) | 15x |\n| Ultra | $200/mo | $2000/yr ($167/mo) | 50x |"
+}

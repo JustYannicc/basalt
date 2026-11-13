@@ -1,5 +1,6 @@
 import { tunnelLimits } from "../../clients/contracts/tunnel.ts";
 import type { TunnelSocket } from "./platform.ts";
+import { modelDrainPayload } from "../pool/model-drain-contract.ts";
 
 /** Receipts come from the node's bounded reader, never from arbitrary provider output. */
 export class ModelDrain {
@@ -48,7 +49,7 @@ export class ModelDrain {
     }
     if ((frame[0] !== 0 && frame[0] !== 1) || frame.length - 1 > this.maximum)
       throw new Error("Model consumer output exceeded.");
-    return { bytes: frame.subarray(1), text: frame[0] === 0 };
+    return { bytes: modelDrainPayload(data, "output")!, text: frame[0] === 0 };
   }
   stop() {
     this.pending.clear();

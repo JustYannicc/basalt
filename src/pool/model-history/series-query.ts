@@ -149,10 +149,16 @@ export async function seriesQuery(
   const app = (await appAttributionReady(db)) ? "r.app_id" : "NULL::text AS app_id";
   const timezone = input.timezone ?? "UTC";
   const localBucket = `date_trunc('${input.bucket}', (left(timestamp_exact,19)::timestamp AT TIME ZONE 'UTC') AT TIME ZONE '${timezone}')`;
+  // Totals scan imported history too; hash foreign identities only for account drill-downs.
+  const foreignAccount = input.by.includes("account")
+    ? "'imported:' || encode(sha256(convert_to($1::text || ':' || r.source || ':' || r.account, 'UTF8')), 'hex')"
+    : "'unmapped'";
   const prefix = `WITH bindings AS (SELECT * FROM jsonb_to_recordset($4::jsonb) AS b(history text,saved text)),
     selected AS (SELECT r.*, $6::text AS gateway_source,
       ${app === "r.app_id" ? "" : `${app},`}
-      CASE WHEN r.account IS NULL THEN NULL WHEN NOT ${nativeAccount} OR NOT $7::boolean OR b.history IS NULL THEN 'unmapped'
+      CASE WHEN r.account IS NULL THEN NULL
+        WHEN NOT ${nativeAccount} AND r.source <> $6 THEN ${foreignAccount}
+        WHEN NOT ${nativeAccount} OR NOT $7::boolean OR b.history IS NULL THEN 'unmapped'
         WHEN b.saved IS NULL THEN 'otherAccounts' ELSE b.saved END AS saved_account,
       ${personScope === undefined ? `(${nativeAccount} AND r.account IS NOT NULL AND (NOT $7::boolean OR b.history IS NULL OR b.saved IS NULL))` : "false"} AS counts_only
       FROM basalt_model_requests r LEFT JOIN bindings b ON ${nativeAccount} AND r.account = b.history::character(64)
@@ -179,8 +185,8 @@ export async function seriesQuery(
     values,
     coverageText: `${prefix.replace("ACCOUNT_FILTER", authority.mappingProven ? accountWhere : "")} SELECT source, min(timestamp_exact) AS first_at,max(timestamp_exact) AS last_at,
       ${utcSql("max(ingested_at)")} AS ingested_at, count(*)::text AS requests,
-      count(*) FILTER (WHERE saved_account NOT IN ('unmapped','otherAccounts'))::text AS mapped,
-      count(*) FILTER (WHERE saved_account = 'unmapped')::text AS unmapped,
+      count(*) FILTER (WHERE saved_account NOT IN ('unmapped','otherAccounts') AND saved_account NOT LIKE 'imported:%')::text AS mapped,
+      count(*) FILTER (WHERE saved_account = 'unmapped' OR saved_account LIKE 'imported:%')::text AS unmapped,
       count(*) FILTER (WHERE counts_only AND saved_account = 'otherAccounts')::text AS other,
       count(*) FILTER (WHERE NOT counts_only AND cost_basis = 'home-charge')::text AS home_priced,
       count(*) FILTER (WHERE NOT counts_only AND cost_basis = 'historical-api-price' AND currency = 'USD')::text AS imported_priced,

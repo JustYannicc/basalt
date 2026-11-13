@@ -1,0 +1,433 @@
+diff --git a/internal/api/basalt_model_lifetime.go b/internal/api/basalt_model_lifetime.go
+new file mode 100644
+index 0000000..f3021ed
+--- /dev/null
++++ b/internal/api/basalt_model_lifetime.go
+@@ -0,0 +1,193 @@
++package api
++
++import (
++	"bufio"
++	"context"
++	"errors"
++	"net"
++	"net/http"
++	"sync"
++
++	"github.com/gin-gonic/gin"
++	"github.com/gorilla/websocket"
++)
++
++const basaltModelLifetimeProtocol = "basalt.model-lifetime.v1"
++const basaltModelLifetimePath = "/v1/__basalt/model-lifetime"
++const basaltModelLifetimeHeader = "X-Basalt-Model-Lifetime-Id"
++const basaltModelLifetimeLimit = 16384
++
++type basaltModelLifetime struct {
++	mu      sync.Mutex
++	claimed bool
++	ended   bool
++	conn    net.Conn
++	cancel  context.CancelFunc
++	done    chan struct{}
++}
++
++func (l *basaltModelLifetime) end() {
++	l.mu.Lock()
++	if l.ended {
++		l.mu.Unlock()
++		return
++	}
++	l.ended = true
++	conn, cancel := l.conn, l.cancel
++	l.mu.Unlock()
++	if cancel != nil {
++		cancel()
++	}
++	if conn != nil {
++		_ = conn.Close()
++	}
++	close(l.done)
++}
++
++func (l *basaltModelLifetime) claim(request *http.Request) (*http.Request, bool) {
++	l.mu.Lock()
++	defer l.mu.Unlock()
++	if l.claimed || l.ended {
++		return nil, false
++	}
++	l.claimed = true
++	ctx, cancel := context.WithCancel(request.Context())
++	l.cancel = cancel
++	return request.WithContext(ctx), true
++}
++
++type basaltModelLifetimeConn struct {
++	net.Conn
++	end func()
++}
++
++func (c *basaltModelLifetimeConn) Close() error {
++	err := c.Conn.Close()
++	c.end()
++	return err
++}
++
++type basaltModelLifetimeWriter struct {
++	gin.ResponseWriter
++	lifetime *basaltModelLifetime
++}
++
++func (w *basaltModelLifetimeWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
++	conn, buffer, err := w.ResponseWriter.Hijack()
++	if err != nil {
++		return nil, nil, err
++	}
++	w.lifetime.mu.Lock()
++	if w.lifetime.ended {
++		w.lifetime.mu.Unlock()
++		_ = conn.Close()
++		return nil, nil, errors.New("model lifetime ended before upgrade")
++	}
++	w.lifetime.conn = conn
++	w.lifetime.mu.Unlock()
++	return &basaltModelLifetimeConn{Conn: conn, end: w.lifetime.end}, buffer, nil
++}
++
++type basaltModelLifetimes struct {
++	mu      sync.Mutex
++	entries map[string]*basaltModelLifetime
++}
++
++func validBasaltModelLifetimeID(id string) bool {
++	if len(id) != 32 {
++		return false
++	}
++	for _, c := range id {
++		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
++			return false
++		}
++	}
++	return true
++}
++
++// The control socket carries no model data and owns one real hijacked connection.
++func (m *basaltModelLifetimes) open(c *gin.Context) {
++	id := c.GetHeader(basaltModelLifetimeHeader)
++	if !validBasaltModelLifetimeID(id) || c.GetHeader("Sec-WebSocket-Protocol") != basaltModelLifetimeProtocol {
++		c.AbortWithStatus(http.StatusForbidden)
++		return
++	}
++	entry := &basaltModelLifetime{done: make(chan struct{})}
++	m.mu.Lock()
++	if m.entries == nil {
++		m.entries = make(map[string]*basaltModelLifetime)
++	}
++	if m.entries[id] != nil || len(m.entries) >= basaltModelLifetimeLimit {
++		m.mu.Unlock()
++		c.AbortWithStatus(http.StatusConflict)
++		return
++	}
++	m.entries[id] = entry
++	m.mu.Unlock()
++	defer func() {
++		entry.end()
++		m.mu.Lock()
++		delete(m.entries, id)
++		m.mu.Unlock()
++	}()
++	upgrader := websocket.Upgrader{Subprotocols: []string{basaltModelLifetimeProtocol}, CheckOrigin: func(*http.Request) bool { return true }}
++	control, err := upgrader.Upgrade(c.Writer, c.Request, nil)
++	if err != nil {
++		return
++	}
++	defer func() { _ = control.Close() }()
++	control.SetReadLimit(1)
++	if err := control.WriteMessage(websocket.TextMessage, []byte("ready")); err != nil {
++		return
++	}
++	lost := make(chan struct{})
++	go func() {
++		// Control input is never a model message or an acknowledgement of inference.
++		_, _, _ = control.ReadMessage()
++		close(lost)
++		entry.end()
++	}()
++	select {
++	case <-entry.done:
++		select {
++		case <-lost:
++			return
++		default:
++		}
++		if err := control.WriteMessage(websocket.TextMessage, []byte("complete")); err != nil {
++			return
++		}
++		_ = control.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "complete"))
++	case <-lost:
++	case <-c.Request.Context().Done():
++	}
++}
++
++func (m *basaltModelLifetimes) track(c *gin.Context) {
++	id := c.GetHeader(basaltModelLifetimeHeader)
++	if id == "" || c.Request.URL.Path == basaltModelLifetimePath {
++		c.Next()
++		return
++	}
++	if !validBasaltModelLifetimeID(id) || !websocket.IsWebSocketUpgrade(c.Request) {
++		c.AbortWithStatus(http.StatusForbidden)
++		return
++	}
++	m.mu.Lock()
++	entry := m.entries[id]
++	m.mu.Unlock()
++	if entry == nil {
++		c.AbortWithStatus(http.StatusConflict)
++		return
++	}
++	request, claimed := entry.claim(c.Request)
++	if !claimed {
++		c.AbortWithStatus(http.StatusConflict)
++		return
++	}
++	defer entry.end()
++	request.Header.Del(basaltModelLifetimeHeader)
++	c.Request = request
++	c.Writer = &basaltModelLifetimeWriter{ResponseWriter: c.Writer, lifetime: entry}
++	c.Next()
++}
+diff --git a/internal/api/basalt_model_lifetime_test.go b/internal/api/basalt_model_lifetime_test.go
+new file mode 100644
+index 0000000..e06acf7
+--- /dev/null
++++ b/internal/api/basalt_model_lifetime_test.go
+@@ -0,0 +1,213 @@
++package api
++
++import (
++	"bytes"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/gorilla/websocket"
++)
++
++func TestBasaltModelLifetimeActualRoute(t *testing.T) {
++	server := newTestServer(t)
++	host := httptest.NewServer(server.engine)
++	defer host.Close()
++	headers := http.Header{"Authorization": {"Bearer test-key"}, "X-Basalt-Model-Lifetime-Id": {"0123456789abcdef0123456789abcdef"}}
++	dialer := websocket.Dialer{Subprotocols: []string{"basalt.model-lifetime.v1"}}
++	control, response, err := dialer.Dial("ws"+strings.TrimPrefix(host.URL, "http")+"/v1/__basalt/model-lifetime", headers)
++	if err != nil {
++		if response != nil {
++			t.Fatalf("completion route status = %d: %v", response.StatusCode, err)
++		}
++		t.Fatal(err)
++	}
++	defer control.Close()
++	if control.Subprotocol() != "basalt.model-lifetime.v1" {
++		t.Fatal("missing protocol acknowledgement")
++	}
++	kind, message, err := control.ReadMessage()
++	if err != nil || kind != websocket.TextMessage || string(message) != "ready" {
++		t.Fatalf("ready = %d %q %v", kind, message, err)
++	}
++}
++
++func TestBasaltModelLifetimeCompletesOnlyAfterTheDataSocketEnds(t *testing.T) {
++	host := basaltModelLifetimeEchoServer(t)
++	defer host.Close()
++	headers := http.Header{"Authorization": {"Bearer test-key"}, "X-Basalt-Model-Lifetime-Id": {"1123456789abcdef0123456789abcdef"}}
++	control, _, err := (&websocket.Dialer{Subprotocols: []string{"basalt.model-lifetime.v1"}}).Dial("ws"+strings.TrimPrefix(host.URL, "http")+"/v1/__basalt/model-lifetime", headers)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer control.Close()
++	_, ready, err := control.ReadMessage()
++	if err != nil || string(ready) != "ready" {
++		t.Fatalf("ready %q %v", ready, err)
++	}
++	data, _, err := (&websocket.Dialer{Subprotocols: []string{"raw.fixture"}}).Dial("ws"+strings.TrimPrefix(host.URL, "http")+"/v1/lifetime-fixture", headers)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer data.Close()
++	if data.Subprotocol() != "raw.fixture" {
++		t.Fatal("raw subprotocol changed")
++	}
++	payload := []byte{0, 1, 255, 10}
++	if err := data.WriteMessage(websocket.BinaryMessage, payload); err != nil {
++		t.Fatal(err)
++	}
++	kind, echo, err := data.ReadMessage()
++	if err != nil || kind != websocket.BinaryMessage || !bytes.Equal(echo, payload) {
++		t.Fatalf("raw echo %d %v %v", kind, echo, err)
++	}
++	if err := data.WriteMessage(websocket.TextMessage, []byte("finish")); err != nil {
++		t.Fatal(err)
++	}
++	_, _, err = data.ReadMessage()
++	if !websocket.IsCloseError(err, 1000) {
++		t.Fatalf("data terminal %v", err)
++	}
++	kind, complete, err := control.ReadMessage()
++	if err != nil || kind != websocket.TextMessage || string(complete) != "complete" {
++		t.Fatalf("completion %d %q %v", kind, complete, err)
++	}
++}
++
++func basaltModelLifetimeEchoServer(t *testing.T) *httptest.Server {
++	server := newTestServer(t)
++	server.engine.GET("/v1/lifetime-fixture", func(c *gin.Context) {
++		if c.GetHeader("X-Basalt-Model-Lifetime-Id") != "" {
++			t.Error("private id reached the model handler")
++		}
++		upgrader := websocket.Upgrader{Subprotocols: []string{"raw.fixture"}}
++		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
++		if err != nil {
++			return
++		}
++		defer conn.Close()
++		for {
++			kind, message, err := conn.ReadMessage()
++			if err != nil {
++				return
++			}
++			if string(message) == "finish" {
++				_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(1000, "done"))
++				return
++			}
++			if err := conn.WriteMessage(kind, message); err != nil {
++				return
++			}
++		}
++	})
++	return httptest.NewServer(server.engine)
++}
++
++func TestBasaltModelLifetimeClientAndControlClose(t *testing.T) {
++	for _, terminal := range []string{"client", "control"} {
++		t.Run(terminal, func(t *testing.T) {
++			host := basaltModelLifetimeEchoServer(t)
++			defer host.Close()
++			headers := http.Header{"Authorization": {"Bearer test-key"}, "X-Basalt-Model-Lifetime-Id": {strings.Repeat("a", 32)}}
++			base := "ws" + strings.TrimPrefix(host.URL, "http")
++			control, _, err := (&websocket.Dialer{Subprotocols: []string{"basalt.model-lifetime.v1"}}).Dial(base+"/v1/__basalt/model-lifetime", headers)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer control.Close()
++			if _, message, err := control.ReadMessage(); err != nil || string(message) != "ready" {
++				t.Fatalf("ready %q %v", message, err)
++			}
++			data, _, err := (&websocket.Dialer{Subprotocols: []string{"raw.fixture"}}).Dial(base+"/v1/lifetime-fixture", headers)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer data.Close()
++			if terminal == "client" {
++				if err := data.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(1000, "client")); err != nil {
++					t.Fatal(err)
++				}
++				if _, _, err := data.ReadMessage(); !websocket.IsCloseError(err, 1000) {
++					t.Fatalf("client close %v", err)
++				}
++				if _, message, err := control.ReadMessage(); err != nil || string(message) != "complete" {
++					t.Fatalf("completion %q %v", message, err)
++				}
++			} else {
++				_ = control.Close()
++				if _, _, err := data.ReadMessage(); err == nil {
++					t.Fatal("lost completion channel left data socket alive")
++				}
++			}
++		})
++	}
++}
++
++func TestBasaltModelLifetimeRefusesUnpreparedAndDuplicateConnections(t *testing.T) {
++	host := basaltModelLifetimeEchoServer(t)
++	defer host.Close()
++	base := "ws" + strings.TrimPrefix(host.URL, "http")
++	headers := http.Header{"Authorization": {"Bearer test-key"}, "X-Basalt-Model-Lifetime-Id": {strings.Repeat("b", 32)}}
++	dataDialer := &websocket.Dialer{Subprotocols: []string{"raw.fixture"}}
++	if data, response, err := dataDialer.Dial(base+"/v1/lifetime-fixture", headers); err == nil {
++		data.Close()
++		t.Fatal("unprepared dispatch accepted")
++	} else if response == nil || response.StatusCode != 409 {
++		t.Fatalf("unprepared response %v %v", response, err)
++	} else {
++		response.Body.Close()
++	}
++	controlDialer := &websocket.Dialer{Subprotocols: []string{"basalt.model-lifetime.v1"}}
++	control, _, err := controlDialer.Dial(base+"/v1/__basalt/model-lifetime", headers)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer control.Close()
++	if _, message, err := control.ReadMessage(); err != nil || string(message) != "ready" {
++		t.Fatalf("ready %q %v", message, err)
++	}
++	if duplicate, response, err := controlDialer.Dial(base+"/v1/__basalt/model-lifetime", headers); err == nil {
++		duplicate.Close()
++		t.Fatal("duplicate completion channel accepted")
++	} else if response == nil || response.StatusCode != 409 {
++		t.Fatalf("duplicate response %v %v", response, err)
++	} else {
++		response.Body.Close()
++	}
++	data, _, err := dataDialer.Dial(base+"/v1/lifetime-fixture", headers)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer data.Close()
++	if duplicate, response, err := dataDialer.Dial(base+"/v1/lifetime-fixture", headers); err == nil {
++		duplicate.Close()
++		t.Fatal("replayed data dispatch accepted")
++	} else if response == nil || response.StatusCode != 409 {
++		t.Fatalf("replay response %v %v", response, err)
++	} else {
++		response.Body.Close()
++	}
++}
++
++func TestBasaltModelLifetimeUnmarkedRawSocketIsUnchanged(t *testing.T) {
++	host := basaltModelLifetimeEchoServer(t)
++	defer host.Close()
++	data, _, err := (&websocket.Dialer{Subprotocols: []string{"raw.fixture"}}).Dial("ws"+strings.TrimPrefix(host.URL, "http")+"/v1/lifetime-fixture", http.Header{"Authorization": {"Bearer test-key"}})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer data.Close()
++	if data.Subprotocol() != "raw.fixture" {
++		t.Fatal("raw public protocol changed")
++	}
++	payload := []byte{0, 255, 10, 13}
++	if err := data.WriteMessage(websocket.BinaryMessage, payload); err != nil {
++		t.Fatal(err)
++	}
++	kind, message, err := data.ReadMessage()
++	if err != nil || kind != websocket.BinaryMessage || !bytes.Equal(message, payload) {
++		t.Fatalf("raw message %d %v %v", kind, message, err)
++	}
++}
+diff --git a/internal/api/server.go b/internal/api/server.go
+index 49491ba..bde0643 100644
+--- a/internal/api/server.go
++++ b/internal/api/server.go
+@@ -248,6 +248,10 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
+ 	engine.Use(s.homeHeartbeatMiddleware())
+ 	engine.Use(s.exampleAPIKeySafeModeMiddleware())
+ 
++	modelLifetimes := &basaltModelLifetimes{}
++	engine.Use(modelLifetimes.track)
++	engine.GET(basaltModelLifetimePath, AuthMiddleware(s.accessManager), modelLifetimes.open)
++
+ 	// Setup routes
+ 	s.setupRoutes()
+ 

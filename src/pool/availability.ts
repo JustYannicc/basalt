@@ -23,6 +23,7 @@ export interface ProbeFailure {
     | "dirty"
     | "unacknowledged"
     | "renewal_overdue"
+    | "failing_now"
     | "below_target"
     | "collection_unavailable"
     | PoolFailureDiagnostic["failure"];

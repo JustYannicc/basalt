@@ -29,7 +29,10 @@ test("real DO transactions retain selection and real Worker sockets survive fail
     script,
     compatibilityDate: "2026-08-06",
     compatibilityFlags: ["nodejs_compat"],
-    durableObjects: { Controller: { className: "Controller", useSQLite: true } },
+    durableObjects: {
+      Controller: { className: "Controller", useSQLite: true },
+      NODE: { className: "ModelLifetimeNode", useSQLite: true },
+    },
   });
   const mf = new Miniflare(options(previousScript));
   const request = (path: string, body?: unknown) =>

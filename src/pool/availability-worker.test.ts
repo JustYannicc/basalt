@@ -37,7 +37,7 @@ const {
 } = await import(modulePath);
 hooks.deregister();
 
-test("the scheduled Worker keeps its passive probe and reports unavailable history without warming or repair", async (t) => {
+test("the scheduled Worker keeps its passive probe and reports unavailable history separately without warming or repair", async (t) => {
   const f = await fixture();
   f.home.addFile("auth-a");
   f.home.addGroup("fixture-pool", 1, ["auth-a"]);
@@ -141,8 +141,10 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
     f.home.calls.every((call) => call.method === "GET"),
     true,
   );
-  assert.equal(messages.length, 2);
+  assert.equal(messages.length, 3);
   assert.match(messages[1]!, /"status":"ok"/);
+  assert.match(messages[2]!, /"error_code":"pool_request_reliability_unavailable"/);
+  assert.match(messages[2]!, /"reason":"collection_unavailable"/);
   assert.deepEqual(diagnostics, [
     [
       "POOL_REQUEST_RELIABILITY_UNKNOWN",
@@ -156,7 +158,7 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
   assert.equal(report.status, 200);
   assert.equal(report.headers.get("Cache-Control"), "no-store");
   assert.deepEqual(await report.json(), { ok: true, failures: [] });
-  assert.equal(messages.length, 2, "manual reads never send check-ins or change monitoring");
+  assert.equal(messages.length, 3, "manual reads never send check-ins or change monitoring");
   const automatic = await PoolOperations.prototype.fetch.call(
     { env },
     new Request(`https://operations/automatic-recovery-observation?pool=${state.pool}`),
@@ -168,7 +170,7 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
   assert.equal(observed.condition, "healthy");
   assert.equal(observed.runtime.bootId, "fixture-boot");
   assert.equal(observed.runtime.instanceId, "a".repeat(64));
-  assert.equal(messages.length, 2);
+  assert.equal(messages.length, 3);
   assert.equal(
     (
       await worker.fetch(

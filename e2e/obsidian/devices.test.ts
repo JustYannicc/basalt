@@ -235,3 +235,20 @@ test("a device turns stale once it has been idle more than two days", () => {
   assert.equal(isStale({ kind: "active", at: at(staleAfter + 1) }, now), true);
   assert.equal(isStale({ kind: "synced", at: at(staleAfter + 1), current: true }, now), true);
 });
+
+test("devices that report the same name are numbered, as older unnamed ones always were", () => {
+  const connections = [
+    connection("mac", vault),
+    connection("phone", vault),
+    connection("pad", vault),
+  ];
+  const devices = obsidianDevices(vault, connections, [
+    agent("g-mac", through("mac"), "2026-11-10T09:00:00.000Z", "Alex MacBook Pro"),
+    agent("g-phone", through("phone"), "2026-11-10T10:00:00.000Z", "iPhone"),
+    agent("g-pad", through("pad"), "2026-11-10T11:00:00.000Z", "iPhone"),
+  ]);
+  assert.deepEqual(
+    devices.map((device) => device.label),
+    ["Alex MacBook Pro", "iPhone 1", "iPhone 2"],
+  );
+});

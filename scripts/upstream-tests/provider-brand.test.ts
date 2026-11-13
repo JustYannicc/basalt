@@ -54,14 +54,15 @@ const expand = (hex: string) =>
   hex.length === 4 ? `#${hex.slice(1).replace(/[0-9a-f]/gi, (c) => c + c)}` : hex;
 
 test("every lab shade keeps at least 3:1 against the page on both themes", async () => {
-  const globals = await read("globals.css");
-  const backgrounds = [...globals.matchAll(/--background:\s*(#[0-9a-f]{3,6})\b/gi)].map((m) =>
+  // The page tokens and lab inks live in their own files, shared by dashboards and app pages.
+  const tokens = await read("tokens.css");
+  const backgrounds = [...tokens.matchAll(/--background:\s*(#[0-9a-f]{3,6})\b/gi)].map((m) =>
     expand(m[1]!.toLowerCase()),
   );
   const [light, dark] = backgrounds as [string, string];
   assert.equal(backgrounds.length, 2, "one light and one dark page background");
   const shades = [
-    ...(await read("dashboard.css")).matchAll(
+    ...(await read("brand.css")).matchAll(
       /(--brand-[a-z]+(?:-\d)?):\s*light-dark\((#[0-9a-f]{6}),\s*(#[0-9a-f]{6})\)/gi,
     ),
   ];
@@ -72,7 +73,7 @@ test("every lab shade keeps at least 3:1 against the page on both themes", async
     assert.ok(contrast(onDark!, dark) >= 3, `${name} on the dark page`);
   }
   // A healthy usage bar fills with the lab's own colour over the meter track (`bg-border`).
-  const tracks = [...globals.matchAll(/--border:\s*(#[0-9a-f]{3,6})\b/gi)].map((m) =>
+  const tracks = [...tokens.matchAll(/--border:\s*(#[0-9a-f]{3,6})\b/gi)].map((m) =>
     expand(m[1]!.toLowerCase()),
   );
   const [lightTrack, darkTrack] = tracks as [string, string];
