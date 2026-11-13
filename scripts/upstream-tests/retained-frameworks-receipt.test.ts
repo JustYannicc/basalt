@@ -93,6 +93,7 @@ test("wrapped runtime refusals reach the signed operator, CI error and summary a
       assert.ok(failure.retainedRead.elapsedMs >= 9300 && failure.retainedRead.elapsedMs <= 9360);
     else assert.equal(failure.retainedRead.elapsedMs, 0);
     const guard = refusalDiagnostic(exit.cause, "config");
+    assert.equal(failure.reasonCode, guard.reasonCode);
     assert.deepEqual(guard, {
       guard: "retained_frameworks",
       reasonCode: stalled ? "read_timeout" : "unreadable_metadata",
@@ -127,7 +128,13 @@ test("untrusted receipt fields cannot put object keys or paths in CLI diagnostic
     { ...safe, elapsedMs: 86_400_001 },
     { ...safe, elapsedMs: 1.5 },
   ]) {
-    const result = cli({ ...base, retainedRead, message: poison, path: poison });
+    const result = cli({
+      ...base,
+      retainedRead,
+      reasonCode: poison,
+      message: poison,
+      path: poison,
+    });
     assert.deepEqual(result.receipt, { ...base, httpStatus: 409 });
     assert.equal(result.summary, "");
     assert.ok(!result.stderr.includes("::error::"));
