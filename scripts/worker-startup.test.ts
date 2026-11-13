@@ -116,8 +116,8 @@ test("inconclusive starts are retried and reported, not counted", async () => {
 
 test("a Worker whose every start is inconclusive fails as unknown after retrying with backoff", async () => {
   const runs = starts(profile([["(idle)", 60]]));
-  const began = performance.now();
-  await assert.rejects(measure(fixture, 2, { start: runs.start, backoffMs: 1 }), (error) => {
+  const delays: number[] = [];
+  await assert.rejects(measure(fixture, 2, { start: runs.start, backoffMs: 1, sleep: async (milliseconds) => { delays.push(milliseconds); } }), (error) => {
     assert.ok(error instanceof InconclusiveStartup);
     assert.match(error.message, /Fixture: the profiler couldn't confirm 7 of 7 starts/);
     return true;
@@ -125,7 +125,7 @@ test("a Worker whose every start is inconclusive fails as unknown after retrying
   // Two runs need two of the eight attempts, so the seventh miss is final.
   assert.equal(runs.count(), 7);
   // 1, 2, 4 and 8 ms, then capped at 8 ms; no wait after the final miss.
-  assert.ok(performance.now() - began >= 1 + 2 + 4 + 8 * 3);
+  assert.deepEqual(delays, [1, 2, 4, 8, 8, 8]);
 });
 
 test("the median ignores a single slow run", () => {

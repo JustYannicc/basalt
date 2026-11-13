@@ -145,6 +145,8 @@ export interface MeasureOptions {
   readonly start?: () => Promise<CpuProfile>;
   /** The first wait before retrying an inconclusive start; it doubles, to at most eight times the first. */
   readonly backoffMs?: number;
+  /** Waits between attempts; tests record delays without depending on wall time. */
+  readonly sleep?: (milliseconds: number) => Promise<void>;
 }
 
 /** Attempts per counted start before a Worker's measurement is inconclusive. */
@@ -170,7 +172,7 @@ export const measure = async (bundle: WorkerBundle, runs: number, options: Measu
       // Back off so a busy runner can settle before the next start.
       inconclusive++;
       if (runs * attemptsPerRun - inconclusive >= runs)
-        await sleep((options.backoffMs ?? 250) * 2 ** Math.min(inconclusive - 1, 3));
+        await (options.sleep ?? sleep)((options.backoffMs ?? 250) * 2 ** Math.min(inconclusive - 1, 3));
       continue;
     }
     options.onProfile?.(profile, startupMs.length);
