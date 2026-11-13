@@ -130,7 +130,7 @@ diff --git a/e2e/support/pool-source-query-proof.ts b/e2e/support/pool-source-qu
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/pool-source-query-proof.ts
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,104 @@
 +import { expect } from "@effect/vitest";
 +import { Clock, Effect, FileSystem, Path, Schema } from "effect";
 +import type { Session } from "./api.ts";
@@ -221,7 +221,13 @@ new file mode 100644
 +          statements: records.length,
 +          writeLocks: records.filter((record) => record.writeLock).length,
 +        });
-+        expect(records.length).toBeGreaterThan(0);
++        for (const trace of traces) {
++          expect(trace).toMatch(/^[a-f0-9]{32}$/u);
++          expect(
++            records.filter((record) => record.trace === trace).length,
++            "Every query must contribute its own measured SQL statements",
++          ).toBeGreaterThan(0);
++        }
 +        expect(
 +          records.filter((record) => record.writeLock),
 +          "Existing source selections must not acquire write locks during concurrent queries",
@@ -294,12 +300,20 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
          ];
          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
            name: "Source binding pool",
-@@ -290,10 +297,23 @@
+@@ -270,6 +277,7 @@
+           });
+           expect(refused.status).not.toBe(200);
+         }
++        expect((yield* choose(ambiguous, yield* source(second))).status).toBe(200);
+         const beforeRevocation = (yield* connections()).find(
+           (connection) => connection.target === first,
+         )!;
+@@ -290,10 +298,29 @@
          expect(yield* nativeIds()).toEqual(membership);
          expect(yield* catalog.mirrors).toEqual(mirrors);
  
 +        const querySources = yield* sourceQueryProof(actors.member, `${poolPath}/ui`);
-+        const concurrentViews = (name: string, denied: boolean) =>
++        const concurrentViews = (name: string, denied: boolean, expectedAmbiguous = first) =>
 +          Effect.gen(function* () {
 +            const replies = yield* Schema.decodeUnknownEffect(Schema.Array(View))(
 +              yield* querySources(name, [a, b, ambiguous]),
@@ -307,8 +321,14 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
 +            for (const reply of replies) expect(reply.selected).toEqual(firstView.selected);
 +            expect(replies[0]!.native.state).toBe(denied ? "denied" : "available");
 +            expect(replies[1]!.reused?.sourceApp.id).toBe(second);
-+            expect(replies[2]!.reused?.sourceApp.id).toBe(first);
++            expect(replies[2]!.reused?.sourceApp.id).toBe(expectedAmbiguous);
 +          });
++
++        yield* concurrentViews("disabled", true, second);
++        expect(
++          (yield* connections()).find((connection) => connection.target === first),
++        ).toMatchObject({ id: beforeRevocation.id, enabled: false });
++        expect(yield* nativeIds()).toEqual(membership);
 +
          // Explicitly choosing another account cannot restore authority for the revoked account.
          expect((yield* choose(ambiguous, yield* source(first))).status).toBe(200);
@@ -318,7 +338,7 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
          expect((yield* view(b)).reused?.sourceApp.id).toBe(second);
          expect(
            (yield* api.request(actors.member, "DELETE", `${poolPath}/accounts/app/openai/${a}`))
-@@ -302,6 +322,8 @@
+@@ -302,6 +329,8 @@
          expect((yield* choose(a, yield* source(first))).status).toBe(200);
          expect((yield* view(a)).reused?.sourceApp.id).toBe(first);
          expect(yield* nativeIds()).toEqual(membership);
@@ -327,7 +347,7 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
  
          const oldSource = yield* source(first);
          const providerFiles = catalog.sources.get("openai")!.files;
-@@ -345,6 +367,7 @@
+@@ -345,6 +374,7 @@
            (yield* api.request(actors.member, "DELETE", `${providerPath(first)}/${a}`)).status,
          ).toBe(200);
          expect((yield* view(a)).native).toEqual({ state: "denied", account: { id: a } });
