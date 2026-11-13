@@ -10,7 +10,9 @@ import {
   deviceSync,
   hasSyncTool,
   obsidianDevices,
+  isStale,
   latestActivity,
+  staleAfter,
 } from "../../.upstream/apps/hosted/web/src/contracts/obsidian-devices.ts";
 
 const vault = AppId.make("app_fixture_vault");
@@ -222,4 +224,14 @@ test("a vault's card shows the newest activity any of its devices reports, by ea
     kind: "active",
     at: "2026-11-12T09:00:00.000Z",
   });
+});
+
+test("a device turns stale once it has been idle more than two days", () => {
+  const now = Date.parse("2026-11-13T12:00:00.000Z");
+  const at = (ms: number) => new Date(now - ms).toISOString();
+  assert.equal(staleAfter, 2 * 24 * 60 * 60 * 1000);
+  assert.equal(isStale(null, now), false);
+  assert.equal(isStale({ kind: "active", at: at(staleAfter) }, now), false);
+  assert.equal(isStale({ kind: "active", at: at(staleAfter + 1) }, now), true);
+  assert.equal(isStale({ kind: "synced", at: at(staleAfter + 1), current: true }, now), true);
 });

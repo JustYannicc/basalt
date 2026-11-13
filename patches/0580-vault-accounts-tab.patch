@@ -1,0 +1,268 @@
+diff --git a/apps/hosted/web/src/contracts/obsidian-devices.ts b/apps/hosted/web/src/contracts/obsidian-devices.ts
+--- a/apps/hosted/web/src/contracts/obsidian-devices.ts
++++ b/apps/hosted/web/src/contracts/obsidian-devices.ts
+@@ -137,3 +137,12 @@ export const latestActivity = (
+       ? activity
+       : newest;
+   }, null);
++
++/**
++ * A device idle this long needs a look, even one that last synced the vault's newest change: it
++ * may be switched off, signed out or stuck, and won't see the next change.
++ */
++export const staleAfter = 2 * 24 * 60 * 60 * 1000;
++
++export const isStale = (activity: DeviceActivity | null, now: number) =>
++  activity !== null && now - Date.parse(activity.at) > staleAfter;
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -72,7 +72,12 @@ import {
+ import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
+ import { AppTools } from "./app-tools.tsx";
+ import { ObsidianConnect } from "./obsidian-connect.tsx";
+-import { ObsidianDeviceList, ObsidianVault } from "./obsidian-devices.tsx";
++import {
++  ObsidianDeviceList,
++  ObsidianVault,
++  VaultDeviceCount,
++  VaultDevicesSection,
++} from "./obsidian-devices.tsx";
+ import { AppSource, AppVersions } from "./app-source.tsx";
+ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
+@@ -265,6 +270,7 @@ export function AppDetailPage({
+       canInspectSource={canManage}
+       appScreen={screenTab}
+       sourceDisabledReason={sourceReason}
++      badges={app === undefined ? undefined : { accounts: <VaultDeviceCount app={app} /> }}
+       back={
+         <Link
+           to="/org/$organizationSlug/apps"
+@@ -597,16 +603,7 @@ export function AppDetailPage({
+             return (
+               <div className="max-w-3xl space-y-4 p-5 max-[740px]:p-4">
+                 {/* A vault's devices are its connection, so Accounts lists them with Disconnect. */}
+-                <ObsidianVault app={current} fallback={null}>
+-                  {(vault) => (
+-                    <section aria-label="Obsidian devices">
+-                      <h2 className="mb-2 text-xs font-medium text-muted-foreground">
+-                        Obsidian devices
+-                      </h2>
+-                      <ObsidianDeviceList vault={vault} manage />
+-                    </section>
+-                  )}
+-                </ObsidianVault>
++                <VaultDevicesSection app={current} />
+                 <ObsidianVault app={current} fallback={accountsView}>
+                   {() => (requirements.length === 0 ? null : accountsView)}
+                 </ObsidianVault>
+diff --git a/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx b/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx
+--- a/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx
++++ b/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx
+@@ -17,6 +17,8 @@ import { Skeleton } from "@executor-js/ui/components/skeleton";
+ import { AppCardNote } from "@executor-js/ui/dashboard/apps";
+ import { useQuery } from "@executor-js/ui/dashboard/context";
+ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { AlertCircleIcon } from "@hugeicons/core-free-icons";
+ import { connectionToolListAtom } from "../../contracts/apps.ts";
+ import {
+   mcpAgentsAtom,
+@@ -27,6 +29,7 @@ import { obsidianTools, supportsObsidian } from "../../contracts/obsidian-connec
+ import {
+   deviceActivity,
+   hasSyncTool,
++  isStale,
+   obsidianDevices,
+   type ObsidianDevice,
+   type VaultSync,
+@@ -164,6 +167,8 @@ export function ObsidianDeviceList({
+   const submit = useAtomSet(revoke, { mode: "promiseExit" });
+   const state = useAtomValue(revoke);
+   const [disconnecting, setDisconnecting] = useState<ObsidianDevice>();
++  // Read once per mount, like the relative times beside it.
++  const [now] = useState(() => Date.now());
+   if (vault.kind === "pending")
+     return (
+       <div role="status" aria-label="Loading devices" className="flex items-center gap-4 py-2.5">
+@@ -196,7 +201,7 @@ export function ObsidianDeviceList({
+             <div className="min-w-0 flex-1">
+               <p className="truncate text-[13px] font-medium">{device.label}</p>
+               <p className="mt-0.5 truncate text-xs text-muted-foreground">
+-                <SyncState device={device} sync={vault.sync} />
++                <SyncState device={device} sync={vault.sync} now={now} />
+                 {" · Connected "}
+                 <LocalTime value={device.connectedAt} options={shortMoment} />
+               </p>
+@@ -256,12 +261,28 @@ export function ObsidianDeviceList({
+ function SyncState({
+   device,
+   sync,
++  now,
+ }: {
+   readonly device: ObsidianDevice;
+   readonly sync: VaultSync | undefined;
++  readonly now: number;
+ }) {
+   const activity = deviceActivity(device, sync);
+   if (activity === null) return <>No sync yet</>;
++  if (isStale(activity, now))
++    return (
++      <span className="text-sign-in-warning">
++        <HugeiconsIcon
++          icon={AlertCircleIcon}
++          strokeWidth={2}
++          size={12}
++          aria-hidden
++          className="mr-1 inline align-[-2px]"
++        />
++        {activity.kind === "active" ? "Last active " : "Last synced "}
++        <RelativeTime value={activity.at} />
++      </span>
++    );
+   return (
+     <>
+       {activity.kind === "active"
+@@ -274,6 +295,33 @@ function SyncState({
+   );
+ }
+ 
++/** A vault app's Accounts tab: the devices that sync it, each with Disconnect. */
++export function VaultDevicesSection({ app }: { readonly app: App }) {
++  return (
++    <ObsidianVault app={app} fallback={null}>
++      {(vault) => (
++        <section aria-label={`Devices syncing ${app.name}`}>
++          <h2 className="text-[13px] font-semibold">Devices syncing {app.name}</h2>
++          <p className="mt-1 mb-3 max-w-prose text-[12.5px] text-muted-foreground">
++            Each device has its own access to this vault. Disconnecting one stops its sync. The
++            vault and your other devices aren't affected.
++          </p>
++          <ObsidianDeviceList vault={vault} manage />
++        </section>
++      )}
++    </ObsidianVault>
++  );
++}
++
++/** How many devices sync a vault app, for its Accounts tab; nothing for other apps. */
++export function VaultDeviceCount({ app }: { readonly app: App }) {
++  return (
++    <ObsidianVault app={app} fallback={null}>
++      {(vault) => (vault.kind === "ready" ? vault.devices.length : null)}
++    </ObsidianVault>
++  );
++}
++
+ /**
+  * A vault's line on its Apps card, from the same devices and activity its Accounts tab lists.
+  * Apps that don't speak the Obsidian sync protocol show `fallback`.
+diff --git a/apps/hosted/web/src/implementation/pages/obsidian-vault-card.tsx b/apps/hosted/web/src/implementation/pages/obsidian-vault-card.tsx
+--- a/apps/hosted/web/src/implementation/pages/obsidian-vault-card.tsx
++++ b/apps/hosted/web/src/implementation/pages/obsidian-vault-card.tsx
+@@ -1,6 +1,8 @@
++import { useState } from "react";
+ import { RelativeTime } from "@executor-js/ui/components/local-time";
+ import { AppCardLine, AppCardNote } from "@executor-js/ui/dashboard/apps";
+ import {
++  isStale,
+   latestActivity,
+   type ObsidianDevice,
+   type VaultSync,
+@@ -14,16 +16,20 @@ export function VaultCardLine({
+   readonly devices: readonly ObsidianDevice[];
+   readonly sync: VaultSync | undefined;
+ }) {
++  // Read once per mount, like the relative time beside it.
++  const [now] = useState(() => Date.now());
+   if (devices.length === 0) return <AppCardNote>No devices yet · Connect one</AppCardNote>;
+   const latest = latestActivity(devices, sync);
++  // A vault turns amber when even its most recent device has been idle too long.
++  const stale = isStale(latest, now);
+   return (
+-    <AppCardLine>
++    <AppCardLine attention={stale}>
+       {devices.length === 1 ? "1 device" : `${devices.length} devices`}
+       {latest === null ? (
+         " · no sync yet"
+       ) : (
+         <>
+-          {latest.kind === "synced" ? " · synced " : " · active "}
++          {` · ${stale ? "last " : ""}${latest.kind === "synced" ? "synced" : "active"} `}
+           <RelativeTime value={latest.at} />
+         </>
+       )}
+diff --git a/packages/ui/src/implementation/dashboard/app-detail.tsx b/packages/ui/src/implementation/dashboard/app-detail.tsx
+--- a/packages/ui/src/implementation/dashboard/app-detail.tsx
++++ b/packages/ui/src/implementation/dashboard/app-detail.tsx
+@@ -122,6 +122,7 @@ export function AppDetailLayout({
+   sourceDisabledReason,
+   back,
+   actions,
++  badges,
+   children,
+ }: {
+   readonly app: App | undefined;
+@@ -132,6 +133,11 @@ export function AppDetailLayout({
+   readonly sourceDisabledReason?: string | undefined;
+   readonly back: ReactNode;
+   readonly actions?: ReactNode;
++  /**
++   * A short count beside a tab's label, such as how many devices an app's Accounts tab lists.
++   * Hidden from the tab's accessible name, which stays the section's name.
++   */
++  readonly badges?: Partial<Record<AppView, ReactNode>> | undefined;
+   readonly children: ReactNode;
+ }) {
+   const brand = useProductBrand();
+@@ -207,6 +213,14 @@ export function AppDetailLayout({
+                     className="max-[740px]:hidden"
+                   />
+                   {section.label}
++                  {badges?.[section.view] !== undefined && (
++                    <span
++                      aria-hidden
++                      className="text-[11px] font-normal text-muted-foreground empty:hidden"
++                    >
++                      {badges[section.view]}
++                    </span>
++                  )}
+                 </>
+               );
+               if (section.view === "app" && appScreen === "pending")
+diff --git a/packages/ui/src/implementation/dashboard/apps.tsx b/packages/ui/src/implementation/dashboard/apps.tsx
+--- a/packages/ui/src/implementation/dashboard/apps.tsx
++++ b/packages/ui/src/implementation/dashboard/apps.tsx
+@@ -21,21 +21,28 @@ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { requirementAccountTitle } from "../../contracts/account-identities.ts";
+ 
+-/** One line of a card's account summary, marked with a key or, when it needs attention, a warning. */
++/**
++ * One line of a card's account summary, marked with a key, or with a warning icon when an account
++ * is missing or needs sign-in. `attention` also colors the line, for something that still works
++ * but someone should look at soon.
++ */
+ export function AppCardLine({
+   warning = false,
++  attention = false,
+   children,
+ }: {
+   readonly warning?: boolean;
++  readonly attention?: boolean;
+   readonly children: ReactNode;
+ }) {
+   return (
+-    <span>
++    <span className={attention ? "text-sign-in-warning" : undefined}>
+       <HugeiconsIcon
+-        icon={warning ? AlertCircleIcon : Key01Icon}
++        icon={warning || attention ? AlertCircleIcon : Key01Icon}
+         strokeWidth={2}
+         aria-hidden
+         size={12}
++        className={attention ? "text-sign-in-warning!" : undefined}
+       />
+       <span className="app-card-account-label min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+         {children}
