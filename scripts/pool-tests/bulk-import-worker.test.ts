@@ -422,6 +422,10 @@ test("bulk signed HTTP commands run through SQLite DO, R2 and real PostgreSQL re
         { generate: { prompt: "synthetic rejected text" } },
         { source_id: { prompt: "synthetic rejected text" } },
         { source_id: "synthetic rejected text" },
+        { endpoint: { prompt: "synthetic rejected text" } },
+        { endpoint: ["synthetic rejected text"] },
+        { endpoint: "/v1/responses?prompt=synthetic" },
+        { endpoint: "synthetic rejected text" },
       ]) {
         const rejected = await plan([JSON.stringify({ ...event(7000), ...invalid })]);
         await post(rejected.input);
@@ -433,6 +437,34 @@ test("bulk signed HTTP commands run through SQLite DO, R2 and real PostgreSQL re
         assert.equal(await bucket.get(`usage-import-v1/${rejected.definition.job}/0.ndjson`), null);
         assert.deepEqual(await receipts(rejected.definition), []);
       }
+      assert.equal(await countRows(), 5005);
+
+      const metadata = await plan([
+        [
+          { ...event(7100), source_id: "7100", generate: true, endpoint: null },
+          {
+            ...event(7101),
+            source_id: "7101",
+            generate: null,
+            endpoint: "/v1beta/models/fixture-model:streamGenerateContent",
+          },
+        ]
+          .map((row) => JSON.stringify(row))
+          .join("\n"),
+      ]);
+      await post(metadata.input);
+      await post({
+        operation: "upload",
+        job: metadata.definition.job,
+        chunk: 0,
+        data: metadata.parts[0],
+      });
+      assert.equal((await status(metadata.definition)).uploadedChunks, 1);
+      assert.equal(
+        await (await bucket.get(`usage-import-v1/${metadata.definition.job}/0.ndjson`))!.text(),
+        metadata.parts[0],
+      );
+      assert.deepEqual(await receipts(metadata.definition), []);
       assert.equal(await countRows(), 5005);
 
       const native = await plan([JSON.stringify(event(6000))]);

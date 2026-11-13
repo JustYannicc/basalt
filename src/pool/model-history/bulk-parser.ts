@@ -1,7 +1,7 @@
 import { digest } from "../backend-users.ts";
 import { bulkInteger, maximumBulkChunkBytes, type BulkDefinition } from "./bulk-contract.ts";
 import { parseBulkUsageImport } from "./import.ts";
-import { counter, historyObject, invalidHistory } from "./record.ts";
+import { counter, endpointMetadata, historyObject, invalidHistory } from "./record.ts";
 
 const metadataFields = new Set([
   "source_id",
@@ -38,7 +38,20 @@ export async function parseBulkChunk(definition: BulkDefinition, index: number, 
     return invalidHistory();
   for (const line of data.split(/\r?\n/).filter((line) => line.trim())) {
     const raw = historyObject(JSON.parse(line));
-    if (Object.keys(raw).some((key) => !metadataFields.has(key))) return invalidHistory();
+    if (
+      Object.entries(raw).some(
+        ([key, value]) =>
+          !metadataFields.has(key) ||
+          (value !== null && !["string", "number", "boolean"].includes(typeof value)),
+      )
+    )
+      return invalidHistory();
+    if (
+      raw.endpoint !== undefined &&
+      raw.endpoint !== null &&
+      endpointMetadata(raw.endpoint).endpoint === null
+    )
+      return invalidHistory();
     counter(raw.source_id);
     if (raw.generate !== undefined && raw.generate !== null && typeof raw.generate !== "boolean")
       return invalidHistory();
