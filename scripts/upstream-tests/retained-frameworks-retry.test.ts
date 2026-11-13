@@ -239,7 +239,7 @@ test("a metadata retry keeps its cursor and does not replay completed pages", as
   const fixture = bucketFixture();
   const cursors: (string | undefined)[] = [];
   fixture.bucket.list = (options) =>
-    Effect.suspend(() => {
+    Effect.suspend((): ReturnType<typeof fixture.bucket.list> => {
       cursors.push(options.cursor);
       if (options.cursor === undefined)
         return Effect.succeed({ objects: [], truncated: true, cursor: "next" });

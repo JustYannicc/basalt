@@ -323,7 +323,7 @@ new file mode 100644
 +      Effect.catchTag("TimeoutError", () =>
 +        Effect.fail(new ProductionOperationRefused({ message: "Retained frameworks: time bound" })),
 +      ),
-+      Effect.catch((error) =>
++      Effect.catch((error): Effect.Effect<never, E | ProductionOperationRefused> =>
 +        error instanceof ProductionOperationRefused
 +          ? Clock.currentTimeMillis.pipe(
 +              Effect.flatMap((now) =>
@@ -459,7 +459,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-framew
 +export const retainedFrameworks = (
 +  references: unknown,
 +  objects: RetainedFrameworkObjects,
-+  budgetMs = retainedFrameworkReadBounds.inventoryMs,
++  budgetMs: number = retainedFrameworkReadBounds.inventoryMs,
 +) =>
 +  withRetainedFrameworkReadBudget(budgetMs, (progress) =>
 +    Effect.gen(function* () {

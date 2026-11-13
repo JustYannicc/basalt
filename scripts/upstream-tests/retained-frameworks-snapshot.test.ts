@@ -6,7 +6,10 @@ import { Effect, Exit, Fiber, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { SqlClient } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
-import { openArtifact } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts";
+import {
+  openArtifact,
+  ProtectedArtifact,
+} from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts";
 import { retainedFrameworkObjects } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-r2.ts";
 import {
   bucketFixture,
@@ -16,11 +19,22 @@ import {
   record,
 } from "./retained-frameworks-fixture.ts";
 
-const actual =
-  await import("../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts");
-const runner: typeof actual = process.env.BASALT_RETAINED_FRAMEWORK_RUNNER
-  ? await import(pathToFileURL(process.env.BASALT_RETAINED_FRAMEWORK_RUNNER).href)
-  : actual;
+// The runner uses its upstream typecheck configuration; this fixture decodes its public result.
+interface Runner {
+  readonly runProductionOperation: (
+    input: typeof settings & {
+      readonly retainedFrameworkObjects: ReturnType<typeof retainedFrameworkObjects>;
+    },
+    request: typeof operation,
+  ) => Effect.Effect<unknown, unknown, SqlClient.SqlClient>;
+}
+const runnerModule = process.env.BASALT_RETAINED_FRAMEWORK_RUNNER
+  ? pathToFileURL(process.env.BASALT_RETAINED_FRAMEWORK_RUNNER).href
+  : new URL(
+      "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts",
+      import.meta.url,
+    ).href;
+const runner = (await import(runnerModule)) as Runner;
 const recipient = generateKeyPairSync("rsa", { modulusLength: 3072 })
   .publicKey.export({ type: "spki", format: "der" })
   .toString("base64");
@@ -84,11 +98,16 @@ test("the actual runner closes SQL before R2 and resolves the captured inactive 
         });
       fixture.bodies.set("bld_one/worker.json", encoded(record(identity)));
       fixture.bodies.set("bld_two/worker.json", encoded(record(identity)));
-      const result = yield* runner.runProductionOperation(
-        { ...settings, retainedFrameworkObjects: retainedFrameworkObjects(fixture.bucket) },
-        operation,
-      );
-      assert.ok("artifact" in result);
+      const result = yield* runner
+        .runProductionOperation(
+          { ...settings, retainedFrameworkObjects: retainedFrameworkObjects(fixture.bucket) },
+          operation,
+        )
+        .pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(Schema.Struct({ artifact: ProtectedArtifact })),
+          ),
+        );
       const value = yield* Effect.promise(() =>
         openArtifact(result.artifact, settings.encryptionKey, settings.target),
       ).pipe(

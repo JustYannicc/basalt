@@ -1,7 +1,7 @@
 {
   "identity": "basalt-retained-frameworks-r2-retry",
   "file": "0558-retained-frameworks-r2-retry.patch",
-  "content_sha256": "c3f0f431ce9bb4426a4dc41bbf2696983616aa5af4ee367ab9cc62ac73667163",
+  "content_sha256": "8c1e4fba8fbe388e810c0c2be82b3f48ae415d7f3193fa27533cbd67f3143433",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

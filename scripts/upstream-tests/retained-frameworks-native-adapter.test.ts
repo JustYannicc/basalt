@@ -4,7 +4,6 @@ import { Effect, Exit, Fiber } from "effect";
 import { TestClock } from "effect/testing";
 import { makeHelpers } from "../../node_modules/alchemy/lib/Cloudflare/R2/BucketBinding.js";
 import { makeRead } from "alchemy/Cloudflare/R2";
-import { AppBuilds } from "../../.upstream/apps/hosted/cloud/src/infrastructure/blobs.ts";
 import { retainedFrameworks } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks.ts";
 import { retainedFrameworkObjects } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-r2.ts";
 import {
@@ -33,7 +32,9 @@ for (const transient of [false, true])
         return { size: body.byteLength, body: nativeBody(body) };
       },
     };
-    const bucket = makeRead(makeHelpers({ [AppBuilds.LogicalId]: native }, AppBuilds));
+    // The binding helper reads only LogicalId; the fixture never creates an Alchemy resource.
+    const descriptor = { LogicalId: "FixtureAppBuilds" } as Parameters<typeof makeHelpers>[1];
+    const bucket = makeRead(makeHelpers({ FixtureAppBuilds: native }, descriptor));
     const exit = await Effect.runPromise(
       Effect.gen(function* () {
         const fiber = yield* retainedFrameworks(
