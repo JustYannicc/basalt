@@ -5,12 +5,16 @@ import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/i
 import { digest } from "../../src/pool/backend-users.ts";
 import {
   historySchemaVersion,
+  historyTerminalIntegrityVersion,
   migrateModelHistory,
   type HistoryDatabase,
 } from "../../src/pool/model-history/schema.ts";
 import { recordGatewayRefusal } from "../../src/pool/model-history/gateway.ts";
 import { modelHistorySchemaPlan } from "../../src/pool/model-history/operator.ts";
-import { readPoolReliability } from "../../src/pool/model-history/reliability.ts";
+import {
+  readPoolReliability,
+  terminalCollectionReady,
+} from "../../src/pool/model-history/reliability.ts";
 import { reference, timestamp } from "../../src/pool/model-history/record.ts";
 import { historyMemoryOwnerFixture } from "./history-fixture.ts";
 import { readPoolReliabilitySlo } from "../../src/pool/model-history/reliability-slo.ts";
@@ -366,7 +370,7 @@ test("an existing v4 database keeps history counts but cannot claim terminal rel
     await db.query("DROP TABLE basalt_model_terminal_finishes");
     await db.query("DROP TABLE basalt_model_terminal_starts");
     await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
-      historySchemaVersion,
+      historyTerminalIntegrityVersion,
     ]);
 
     const result = await readPoolReliabilitySlo(db, "fixture", now);
@@ -387,7 +391,7 @@ test("unavailable terminal outcomes do not create fallback traffic and make the 
       [source, new Date(now).toISOString()],
     );
     await db.query("UPDATE basalt_model_history_migrations SET completed_at=$2 WHERE name=$1", [
-      historySchemaVersion,
+      historyTerminalIntegrityVersion,
       new Date(now - 3_600_000).toISOString(),
     ]);
     await insertTerminal(db, randomUUID(), 22, "unavailable", 200, "2026-11-12T02:50:00Z");
@@ -415,7 +419,7 @@ test("future-dated unavailable finishes do not extend the 24-hour SLO gap", asyn
       [source, new Date(now).toISOString()],
     );
     await db.query("UPDATE basalt_model_history_migrations SET completed_at=$2 WHERE name=$1", [
-      historySchemaVersion,
+      historyTerminalIntegrityVersion,
       new Date(now - 3_600_000).toISOString(),
     ]);
     await insertTerminal(
@@ -444,7 +448,7 @@ test("post-v7 Home usage without a matching terminal receipt blocks SLO reliance
       [source, new Date(now).toISOString()],
     );
     await db.query("UPDATE basalt_model_history_migrations SET completed_at=$2 WHERE name=$1", [
-      historySchemaVersion,
+      historyTerminalIntegrityVersion,
       new Date(now - 3_600_000).toISOString(),
     ]);
     await insertHomeAttempt(db, {
@@ -505,14 +509,14 @@ test("the history operator exposes v7 as a self-creating additive step from v4",
     await db.query("DROP TABLE basalt_model_terminal_starts");
     await db.query("DROP INDEX basalt_model_requests_pool_source_request_exact");
     await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
-      historySchemaVersion,
+      historyTerminalIntegrityVersion,
     ]);
     const upgrade = await modelHistorySchemaPlan(db);
     assert.equal(upgrade.applied, false);
-    assert.deepEqual(upgrade.pendingMigrations, [historySchemaVersion]);
+    assert.deepEqual(upgrade.pendingMigrations, [historyTerminalIntegrityVersion]);
     assert.deepEqual(upgrade.catalogDiff.createTables, [
-      "basalt_model_terminal_starts",
       "basalt_model_terminal_finishes",
+      "basalt_model_terminal_starts",
     ]);
     assert.deepEqual(upgrade.catalogDiff.addIndexes, [
       "basalt_model_requests_pool_source_request_exact",
@@ -637,5 +641,21 @@ test("private traffic tagging defaults to a dry run, binds the exact selection a
       (await db.query("SELECT purpose FROM basalt_model_traffic")).rows[0]!.purpose,
       "real",
     );
+  });
+});
+
+test("terminal collection readiness stays bound to v7 while v8 completion is independent", async () => {
+  await fixture(async (db) => {
+    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+      historySchemaVersion,
+    ]);
+    assert.equal(await terminalCollectionReady(db), true);
+    await db.query("INSERT INTO basalt_model_history_migrations (name) VALUES ($1)", [
+      historySchemaVersion,
+    ]);
+    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+      historyTerminalIntegrityVersion,
+    ]);
+    assert.equal(await terminalCollectionReady(db), false);
   });
 });
