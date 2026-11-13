@@ -1,4 +1,6 @@
 import { reportWhenDue } from "./reporting.ts";
+import { UsageAccountLabels } from "./usage-account-labels.ts";
+import { handleUsageAccountLabel, usageAccountLabelPath } from "./usage-account-label-http.ts";
 import { creditRoutingPaths, handleCreditRouting } from "./credit-routing-http.ts";
 export { PoolRuntime } from "./runtime-do.worker.ts";
 import type { PoolRuntime } from "./runtime-do.worker.ts";
@@ -122,6 +124,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private prices: PriceUpkeep;
   private overviewPrices: OverviewPrices;
   private usage: PoolUsage;
+  private usageAccountLabels: UsageAccountLabels;
   private managementReadyUntil = 0;
   private managementWarming?: Promise<void>;
   private memberships: NativeMemberships;
@@ -132,6 +135,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
     super(ctx, env);
+    this.usageAccountLabels = new UsageAccountLabels(ctx.storage);
     this.handoff = new RuntimeHandoff(
       ctx,
       env,
@@ -555,6 +559,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         return failureResponse(error);
       }
     }
+    if (pathname === usageAccountLabelPath)
+      return handleUsageAccountLabel(request, {
+        signingKey: this.env.POOL_APP_SIGNING_KEY,
+        previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+        set: (pool, input) => this.usageAccountLabels.set(pool, input),
+      });
     let poolClaims: Awaited<ReturnType<typeof requirePoolUse>>;
     if (isControlPath(pathname)) {
       try {
@@ -585,6 +595,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         signingKey: this.env.POOL_APP_SIGNING_KEY,
         previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
         connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
+        accountLabels: (pool) => this.usageAccountLabels.read(pool),
         currentPrices: (targets) => this.overviewPrices.readTable(targets),
       });
     if (
