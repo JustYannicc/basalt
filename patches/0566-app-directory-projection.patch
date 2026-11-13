@@ -101,17 +101,16 @@ index 859cee4..6e27d1d 100644
        apps.map((app) => app.id),
 diff --git a/packages/sdk/src/contracts/app-read.ts b/packages/sdk/src/contracts/app-read.ts
 new file mode 100644
-index 0000000..ad7a37c
+index 0000000..1169899
 --- /dev/null
 +++ b/packages/sdk/src/contracts/app-read.ts
-@@ -0,0 +1,19 @@
-+import { Struct, type Effect } from "effect";
-+import { AppFields, type App } from "./apps.ts";
+@@ -0,0 +1,18 @@
++import type { Effect } from "effect";
++import type { App } from "./apps.ts";
 +import type { AppId, OwnerId, StorageError } from "./shared.ts";
 +
 +/** Current configured-app fields, without the active version's immutable declarations. */
-+export const AppMetadata = AppFields.mapFields(Struct.omit(["requirements"]));
-+export type AppMetadata = typeof AppMetadata.Type;
++export type AppMetadata = Omit<App, "requirements">;
 +
 +export const AppReadHost = Symbol("executor.AppReadHost");
 +

@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-directory-projection",
   "file": "0566-app-directory-projection.patch",
-  "content_sha256": "d69f44080935721d85546f9c4243646a8e42ab01473266a6318b37f8d7876c2a",
+  "content_sha256": "6c902ef5fb9a7832e8efe5800710ca2c9b3b3c51390eb6481d1693b59e2bd736",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
