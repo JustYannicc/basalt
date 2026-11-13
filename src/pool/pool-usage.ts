@@ -103,6 +103,7 @@ export class PoolUsage {
         group.channel_name.slice(poolGroupPrefix.length),
       ]),
     );
+    for (const pool of byGroup.values()) pools.set(pool, new Set());
     for (const member of membership.members) {
       const pool = byGroup.get(member.channel_group_id);
       if (pool !== undefined) pools.set(pool, (pools.get(pool) ?? new Set()).add(member.auth_id));
@@ -221,6 +222,10 @@ export class PoolUsage {
                 account.credentialFailure === undefined &&
                 !account.readingFailed &&
                 account.freshness === "fresh",
+              sourceContinuous:
+                account.credentialFailure === undefined &&
+                !account.readingFailed &&
+                ["success", "partial"].includes(quota.collection.status ?? ""),
               bankedAvailable: account.bankedResets?.available ?? null,
               bankedUsed: resetReceipts.get(account.id) ?? [],
             })),

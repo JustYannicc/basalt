@@ -18,6 +18,10 @@ const hourMs = 3_600_000;
 const dayMs = 24 * hourMs;
 const weekHours = 7 * 24;
 const maxDemandSampleGap = 15 * 60_000;
+// Fixed-window deltas span the 30-minute collector cadence plus one sampler tick.
+const maxFixedSourceGap = 35 * 60_000;
+const fixedDemandWindow = (reading: CapacityReading) =>
+  reading.windowSeconds === 604_800 || reading.mode?.toLowerCase() === "fixed";
 const retainedHours = 400 * 24;
 const maxGroups = 64;
 const maxPlansPerGroup = 32;
@@ -76,6 +80,8 @@ export interface CapacityAccountState {
   readonly provider: string;
   readonly windowSeconds: number;
   readonly usable: boolean;
+  /** Successful active source inventory may retain a historical cursor past its reading TTL. */
+  readonly sourceContinuous?: boolean;
   readonly bankedAvailable: number | null;
   /** Redemption receipts only, already confirmed by the reset service. */
   readonly bankedUsed?: readonly { readonly id: string; readonly at: number }[];
@@ -663,7 +669,10 @@ export class CapacityHistory {
           dayWrites.set(day, history);
         }
       }
-      const previous = index.previous ?? [];
+      const previous =
+        index.lastAt !== null && snapshot.at - index.lastAt <= maxDemandSampleGap
+          ? (index.previous ?? [])
+          : [];
       const priorLatestByKey = new Map(
         (index.latest ?? previous).map((reading) => [readingKey(reading), reading]),
       );
@@ -1029,7 +1038,7 @@ export class CapacityHistory {
                 kind: "observed",
               });
             const elapsed = reading.observedAt - old.resetAt;
-            if (elapsed > 0 && reading.observedAt - old.observedAt <= 15 * 60_000) {
+            if (elapsed > 0 && reading.observedAt - old.observedAt <= maxFixedSourceGap) {
               const items = intervals.get(group) ?? [];
               items.push({
                 reading,
@@ -1046,7 +1055,11 @@ export class CapacityHistory {
           continue;
         }
         const elapsed = reading.observedAt - old.observedAt;
-        if (elapsed < 1_000 || elapsed > 15 * 60_000) continue;
+        if (
+          elapsed < 1_000 ||
+          elapsed > (fixedDemandWindow(reading) ? maxFixedSourceGap : maxDemandSampleGap)
+        )
+          continue;
         if (reading.remaining > old.remaining) {
           if (old.remaining <= 1e-9 || reading.remaining <= 1e-9) censoredGroups.add(group);
           continue;
@@ -1350,7 +1363,30 @@ export class CapacityHistory {
         fromHour: firstRetainedHour,
         groups,
         trackingSince: index.trackingSince ?? snapshot.at,
-        previous: hashedCurrent,
+        // This cursor only compares historical fixed-window sources. Expired readings
+        // never enter current capacity or rolling reconstruction through this path.
+        previous: [
+          ...previous
+            .filter((reading) => fixedDemandWindow(reading))
+            .filter(
+              (reading) =>
+                snapshot.at - reading.observedAt <= maxFixedSourceGap &&
+                !hashedCurrent.some(
+                  (current) =>
+                    current.account === reading.account &&
+                    current.provider === reading.provider &&
+                    current.windowSeconds === reading.windowSeconds,
+                ) &&
+                nextAccountStates.some(
+                  (state) =>
+                    state.account === reading.account &&
+                    state.provider === reading.provider &&
+                    state.windowSeconds === reading.windowSeconds &&
+                    state.sourceContinuous === true,
+                ),
+            ),
+          ...hashedCurrent,
+        ],
         previousExpected: [...expected.values()],
         latest: [...latestByKey.values()],
         accountStates: nextAccountStates,

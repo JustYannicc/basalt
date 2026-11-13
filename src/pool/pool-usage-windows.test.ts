@@ -137,3 +137,86 @@ test("the capacity RPC includes a measured Grok week and excludes its product br
     false,
   );
 });
+
+async function sampledCapacity(options: {
+  sourceMinutes: number;
+  sampleMinutes?: number;
+  durationMinutes?: number;
+  interrupt?: "membership" | "collection";
+}) {
+  const start = Date.parse("2026-11-09T08:00:00Z");
+  const f = quotaSamplingFixture(start);
+  const token = await signPoolToken("ab".repeat(32), {
+    pool: "fixture",
+    owner: "owner",
+    organization: "synthetic",
+  });
+  const interval = options.sourceMinutes * 60_000;
+  for (
+    let elapsed = 0;
+    elapsed <= (options.durationMinutes ?? 210) * 60_000;
+    elapsed += (options.sampleMinutes ?? 5) * 60_000
+  ) {
+    const sequence = Math.floor(elapsed / interval);
+    const sourceAt = start + sequence * interval;
+    const observedAt = new Date(sourceAt).toISOString();
+    f.detail.collection.observed_at = observedAt;
+    f.credential.observed_at = observedAt;
+    if (options.interrupt === "membership") f.select(elapsed !== 30 * 60_000);
+    f.detail.collection.status =
+      options.interrupt === "collection" && elapsed === 30 * 60_000 ? "failed" : "success";
+    for (const window of f.detail.windows) {
+      window.observed_at = observedAt;
+      window.expires_at = new Date(sourceAt + 30 * 60_000).toISOString();
+      window.remaining = 90 - sequence;
+      window.remaining_ratio = window.remaining / 100;
+    }
+    await f.sampleAt(start + elapsed);
+  }
+  const response = await f.usage.handle(
+    new Request("https://pool.example.test/pool/v1/usage/capacity?days=7", {
+      headers: { authorization: `Bearer ${token}`, [callerHeader]: "owner" },
+    }),
+  );
+  assert.equal(response.status, 200);
+  const value = await response.json();
+  const forecast = value.forecasts.find(
+    (entry: { windowSeconds: number }) => entry.windowSeconds === 604800,
+  );
+  assert.ok(forecast, "the weekly quota remains visible");
+  assert.equal(
+    f.calls.some((route) => route.endsWith("/collect")),
+    false,
+  );
+  return forecast;
+}
+
+test("automatic half-hour quota observations train capacity despite collection jitter", async () => {
+  for (const sourceMinutes of [30.03, 34.04]) {
+    const forecast = await sampledCapacity({ sourceMinutes });
+    assert.ok(
+      forecast.history.observedHours >= 2,
+      `${sourceMinutes}-minute source cadence must train completed hours`,
+    );
+  }
+});
+
+test("weekly training rejects long source intervals and sampler outages", async () => {
+  for (const options of [{ sourceMinutes: 35.01 }, { sourceMinutes: 34.04, sampleMinutes: 20 }]) {
+    const forecast = await sampledCapacity(options);
+    assert.equal(forecast.history.observedHours, 0);
+  }
+});
+
+test("removing an account or failing collection breaks historical source continuity", async () => {
+  const uninterrupted = await sampledCapacity({ sourceMinutes: 34.04, durationMinutes: 75 });
+  assert.equal(uninterrupted.history.observedHours, 1);
+  for (const interrupt of ["membership", "collection"] as const) {
+    const forecast = await sampledCapacity({
+      sourceMinutes: 34.04,
+      durationMinutes: 75,
+      interrupt,
+    });
+    assert.equal(forecast.history.observedHours, 0, interrupt);
+  }
+});
