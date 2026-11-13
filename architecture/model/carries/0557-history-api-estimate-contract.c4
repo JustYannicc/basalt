@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "The native history API preserves optional typed USD estimates and their public rate and token-count provenance. Retained Home charges and imported API costs remain separate, older responses can omit the estimate, and undeclared native fields stay private. Unassigned failures without any token counter or recorded cost display as failed requests with no usage recorded, never an unpriced model or zero dollars."
+    }
+  }
+}

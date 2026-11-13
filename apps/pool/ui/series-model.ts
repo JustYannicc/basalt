@@ -1,3 +1,4 @@
+import { failedBucketWithoutUsage, noRecordedUsage } from "./usage-outcome.ts";
 import type { Result } from "../control.ts";
 import type { OverviewMoneyMetric, OverviewPriceProvenance } from "../overview-contract.ts";
 import type {
@@ -130,6 +131,7 @@ export interface Totals {
   requests: number;
   failed: number;
   unassignedFailures: number;
+  failedWithoutUsage: number;
   /** Requests from buckets the caller may count but not split (account mapping pending). */
   countsOnly: number;
   tokens: bigint;
@@ -160,7 +162,7 @@ export interface Estimate {
   unpriced: number;
   notReported: number;
   reasons: string[];
-  price: Required<OverviewPriceProvenance> | null;
+  price: Price | null;
 }
 
 export const emptyEstimate = (): Estimate => ({
@@ -174,23 +176,30 @@ export const emptyEstimate = (): Estimate => ({
   price: null,
 });
 
+/**
+ * Rate provenance with older-server defaults filled in. `calculation` stays optional: it is set
+ * only when some records were priced from their token counts, and no default stands in for it.
+ */
+export type Price = Required<Omit<OverviewPriceProvenance, "calculation">> &
+  Pick<OverviewPriceProvenance, "calculation">;
+
 /** Older servers omit `basis`; they only ever returned refreshed live rates. */
-export const provenance = (price: OverviewPriceProvenance): Required<OverviewPriceProvenance> => ({
+export const provenance = (price: OverviewPriceProvenance): Price => ({
   ...price,
   basis: price.basis ?? "live",
   refreshFailed: price.refreshFailed ?? false,
 });
 
-export function combinePrice(
-  a: Required<OverviewPriceProvenance> | null,
-  b: Required<OverviewPriceProvenance> | null,
-): Required<OverviewPriceProvenance> | null {
+export function combinePrice(a: Price | null, b: Price | null): Price | null {
   if (!a || !b) return a ?? b;
   const older = Date.parse(b.asOf) < Date.parse(a.asOf) ? b : a;
+  // A sum is only as exact as its least exact part, so one counted slice marks the whole sum.
+  const calculation = a.calculation ?? b.calculation;
   return {
     ...older,
     basis: a.basis === "baseline" || b.basis === "baseline" ? "baseline" : "live",
     refreshFailed: a.refreshFailed || b.refreshFailed,
+    ...(calculation ? { calculation } : {}),
   };
 }
 
@@ -225,6 +234,7 @@ export const emptyTotals = (): Totals => ({
   requests: 0,
   failed: 0,
   unassignedFailures: 0,
+  failedWithoutUsage: 0,
   countsOnly: 0,
   tokens: 0n,
   tokensKnown: 0,
@@ -257,6 +267,7 @@ export function addBucket(totals: Totals, bucket: SeriesBucket | SeriesCounts) {
     totals.countsOnly += bucket.requests;
     return;
   }
+  if (failedBucketWithoutUsage(bucket)) totals.failedWithoutUsage += bucket.requests;
   const total = bucket.tokens.total;
   if (total.sum !== null && /^\d+$/.test(total.sum)) totals.tokens += BigInt(total.sum);
   totals.tokensKnown += total.known;
@@ -273,6 +284,7 @@ export function addTotals(into: Totals, from: Totals) {
   into.requests += from.requests;
   into.failed += from.failed;
   into.unassignedFailures += from.unassignedFailures;
+  into.failedWithoutUsage += from.failedWithoutUsage;
   into.countsOnly += from.countsOnly;
   into.tokens += from.tokens;
   into.tokensKnown += from.tokensKnown;
@@ -366,6 +378,7 @@ interface Draft {
   id: string;
   label: string;
   countsOnly: boolean;
+  missingModel?: boolean;
   provider: string | null;
   totals: Totals;
   byProvider: Map<string, bigint>;
@@ -397,6 +410,7 @@ function finish(drafts: Iterable<Draft>): Row[] {
   return [...drafts]
     .map((entry) => ({
       ...entry,
+      label: entry.missingModel && noRecordedUsage(entry.totals) ? "Failed requests" : entry.label,
       empty: entry.empty ?? entry.totals.requests === 0,
       requestTokens: entry.requestTokens ?? null,
       usageKey: entry.usageKey ?? {},
@@ -475,6 +489,7 @@ export function rows(
       ];
     const row = top.get(id) ?? draft(id, label, redacted, by === "person" ? null : provider);
     top.set(id, row);
+    row.missingModel = !redacted && by === "model" && group.key.model == null;
     row.usageKey =
       by === "person" && owner.kind === "person"
         ? { person: owner.id }
@@ -505,6 +520,7 @@ export function rows(
       ? (row.children.get(child[0]!) ?? draft(child[0]!, child[1]!, false, child[2] ?? null))
       : null;
     if (sub) {
+      sub.missingModel = by === "person" && group.key.model == null;
       if (by === "person" && owner.kind === "person")
         sub.usageKey = { person: owner.id, provider, model: group.key.model ?? null };
       else if (by === "provider" && owner.kind === "person")

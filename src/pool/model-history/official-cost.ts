@@ -77,6 +77,7 @@ export interface OfficialCostRow {
   priced: number;
   missingTokens: number;
   missingPrices: number;
+  tokenCountEstimates?: number;
   cost: string | null;
 }
 
@@ -96,6 +97,7 @@ export async function officialCosts(
     `${priceQuery(false, true)}
     SELECT person,account,provider,model,app_id,requirement,left(timestamp_exact,10) AS day,
       count(*)::text AS requests,count(api_cost)::text AS priced,
+      count(*) FILTER (WHERE api_cost IS NOT NULL AND token_count_estimate)::text AS token_count_estimates,
       count(*) FILTER (WHERE price_version IS NULL)::text AS missing_prices,
       count(*) FILTER (WHERE input_tokens IS NULL OR output_tokens IS NULL
         OR cache_read_tokens IS NULL OR cache_write_tokens IS NULL
@@ -136,6 +138,7 @@ export async function officialCosts(
     priced: count(row.priced),
     missingTokens: count(row.missing_tokens),
     missingPrices: count(row.missing_prices),
+    tokenCountEstimates: count(row.token_count_estimates),
     cost: text(row.cost),
   }));
 }
@@ -166,12 +169,13 @@ function missingCostReason(
   return [...reasons].join("; ");
 }
 
-export function priceProvenance(prices: readonly OverviewApiPrice[]) {
+export function priceProvenance(prices: readonly OverviewApiPrice[], tokenCounts = false) {
   if (!prices.length) return null;
   return {
     source: "models.dev",
     version: [...new Set(prices.map((price) => price.version))].sort().join(","),
     asOf: prices.map((price) => price.asOf).sort()[0]!,
+    ...(tokenCounts ? { calculation: "token-counts" as const } : {}),
     ...(prices.some((price) => price.basis === "baseline")
       ? { basis: "baseline" as const }
       : { basis: "live" as const }),
@@ -216,7 +220,10 @@ export function officialCostMetric(
     pricedRequests: priced,
     excluded,
     ...(reason ? { reason } : {}),
-    price: priceProvenance(relevant),
+    price: priceProvenance(
+      relevant,
+      rows.some((row) => (row.tokenCountEstimates ?? 0) > 0),
+    ),
   };
 }
 

@@ -1,7 +1,18 @@
 import { appModelLabelSqlPattern } from "../app-model-contract.ts";
 import { digest, parseBackendUserName } from "../backend-users.ts";
-import { amount, counter, endpointMetadata, historyObject, homePrice, identifier, invalidHistory, priceRule, reference,
-  timestamp, type ModelRequest } from "./record.ts";
+import {
+  amount,
+  counter,
+  endpointMetadata,
+  historyObject,
+  homePrice,
+  identifier,
+  invalidHistory,
+  priceRule,
+  reference,
+  timestamp,
+  type ModelRequest,
+} from "./record.ts";
 
 export const homeHistorySource = "home-local-v1";
 
@@ -55,33 +66,73 @@ export async function homeRequest(raw: unknown, source: string): Promise<ModelRe
   const sourceRecord = await digest(JSON.stringify(["usage", sourceId]));
   const user = parseBackendUserName(row.username);
   const chargeOwner = counter(row.charge_user_id);
-  const canonical = row.token_accounting_version === 2 && row.token_accounting_quality === "complete";
-  const quality = canonical ? "complete" : row.token_accounting_quality === "inconsistent" ? "inconsistent"
-    : row.token_accounting_quality === "unclassified" ? "unclassified" : "legacy";
-  const priced = row.charge_id !== null && row.charge_id !== undefined && row.matched_price_rule !== "default:zero";
+  // Home's Go int maps to bigint, which pg returns as text.
+  const canonical =
+    counter(row.token_accounting_version) === "2" && row.token_accounting_quality === "complete";
+  const quality = canonical
+    ? "complete"
+    : row.token_accounting_quality === "inconsistent"
+      ? "inconsistent"
+      : row.token_accounting_quality === "unclassified"
+        ? "unclassified"
+        : "legacy";
+  const priced =
+    row.charge_id !== null &&
+    row.charge_id !== undefined &&
+    row.matched_price_rule !== "default:zero";
   const cost = priced ? amount(row.amount) : null;
   const price = cost === null ? null : homePrice(historyObject(row.price));
   const failureStatus = counter(row.fail_status_code);
-  const status = row.failed && failureStatus !== null && failureStatus !== "0" ? failureStatus : counter(row.upstream_status_code);
+  const status =
+    row.failed && failureStatus !== null && failureStatus !== "0"
+      ? failureStatus
+      : counter(row.upstream_status_code);
   const code = status === null || status === "0" ? null : Number(status);
   if (code !== null && (code < 100 || code > 599)) return invalidHistory();
   return {
-    id: await digest(JSON.stringify([source, sourceRecord])), source, sourceRecord, timestamp: at,
-    pool: user?.pool ?? null, person: user?.person ?? null,
-    account: await reference(source, "account", row.auth_index), clientKey: await reference(source, "key", row.key_id),
-    requestId, appId: identifier(row.app_id), requirement: identifier(row.requirement), provider: identifier(row.provider), model: identifier(row.model),
-    ...endpointMetadata(row.endpoint), serviceTier: identifier(row.service_tier),
+    id: await digest(JSON.stringify([source, sourceRecord])),
+    source,
+    sourceRecord,
+    timestamp: at,
+    pool: user?.pool ?? null,
+    person: user?.person ?? null,
+    account: await reference(source, "account", row.auth_index),
+    clientKey: await reference(source, "key", row.key_id),
+    requestId,
+    appId: identifier(row.app_id),
+    requirement: identifier(row.requirement),
+    provider: identifier(row.provider),
+    model: identifier(row.model),
+    ...endpointMetadata(row.endpoint),
+    serviceTier: identifier(row.service_tier),
     inputTokens: counter(canonical ? row.accounting_input_tokens : row.input_tokens),
     outputTokens: counter(canonical ? row.accounting_output_tokens : row.output_tokens),
-    cacheReadTokens: counter(canonical ? row.accounting_cache_read_tokens
-      : row.cache_read_tokens_present === true ? row.cache_read_tokens : row.cached_tokens),
-    cacheWriteTokens: counter(canonical ? row.accounting_cache_write_tokens : row.cache_creation_tokens),
+    cacheReadTokens: counter(
+      canonical
+        ? row.accounting_cache_read_tokens
+        : row.cache_read_tokens_present === true
+          ? row.cache_read_tokens
+          : row.cached_tokens,
+    ),
+    cacheWriteTokens: counter(
+      canonical ? row.accounting_cache_write_tokens : row.cache_creation_tokens,
+    ),
     reasoningTokens: counter(canonical ? row.accounting_reasoning_tokens : row.reasoning_tokens),
     totalTokens: counter(canonical ? row.accounting_total_tokens : row.total_tokens),
-    tokenQuality: quality, latencyMs: counter(row.latency_ms), failed: row.failed, statusCode: code,
-    cost, currency: cost === null ? null : "credits", costBasis: cost === null ? "unpriced" : "home-charge",
+    tokenQuality: quality,
+    latencyMs: counter(row.latency_ms),
+    failed: row.failed,
+    statusCode: code,
+    cost,
+    currency: cost === null ? null : "credits",
+    costBasis: cost === null ? "unpriced" : "home-charge",
     originalPriceRule: priceRule(row.matched_price_rule),
-    priceVersion: price === null ? null : await digest(JSON.stringify(price)), price,
-    attribution: user ? chargeOwner !== null && chargeOwner !== "0" ? "charge-snapshot" : "key-at-capture" : "unknown",
+    priceVersion: price === null ? null : await digest(JSON.stringify(price)),
+    price,
+    attribution: user
+      ? chargeOwner !== null && chargeOwner !== "0"
+        ? "charge-snapshot"
+        : "key-at-capture"
+      : "unknown",
   };
 }

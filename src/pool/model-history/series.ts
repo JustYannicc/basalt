@@ -97,6 +97,7 @@ function bucket(
                     priced: requestCount(row.api_priced),
                     missingPrices: requestCount(row.api_missing_prices),
                     missingTokens: requestCount(row.api_missing_tokens),
+                    tokenCountEstimates: requestCount(row.api_token_count_estimates),
                     cost: row.api_amount === null ? null : String(row.api_amount),
                   },
                 ],
@@ -112,6 +113,9 @@ function bucket(
                       version: String(row.api_price_version),
                       basis: row.api_price_baseline === true ? "baseline" : "live",
                       ...(row.api_price_refresh_failed === true ? { refreshFailed: true } : {}),
+                      ...(requestCount(row.api_token_count_estimates) > 0
+                        ? { calculation: "token-counts" as const }
+                        : {}),
                     }
                   : null,
             },
