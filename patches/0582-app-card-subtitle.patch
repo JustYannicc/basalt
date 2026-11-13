@@ -134,6 +134,23 @@ diff --git a/apps/hosted/server/src/implementation/service-installs.ts b/apps/ho
        Effect.catch((error) =>
          Effect.gen(function* () {
            const conflicted = yield* Ref.get(conflict);
+diff --git a/e2e/support/service-install-fixture.ts b/e2e/support/service-install-fixture.ts
+--- a/e2e/support/service-install-fixture.ts
++++ b/e2e/support/service-install-fixture.ts
+@@ -10,7 +10,12 @@ export const Installed = Schema.Struct({
+   name: Schema.String,
+   activeVersion: Schema.NullOr(Schema.String),
+   reused: Schema.Boolean,
+-  service: Schema.Struct({ id: Schema.String, newInstance: Schema.Boolean }),
++  // The catalog's name for the service, which installs record so lists can say what a copy is.
++  service: Schema.Struct({
++    id: Schema.String,
++    newInstance: Schema.Boolean,
++    name: Schema.optionalKey(Schema.String),
++  }),
+ });
+ 
+ /** Native MCP runs the actual management app and returns its install result unchanged. */
 diff --git a/e2e/tests/service-install-identity.spec.ts b/e2e/tests/service-install-identity.spec.ts
 --- a/e2e/tests/service-install-identity.spec.ts
 +++ b/e2e/tests/service-install-identity.spec.ts
