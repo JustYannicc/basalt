@@ -27,7 +27,9 @@
     "image_video_generation",
     "voice_generation",
     "ads_read",
-    "ads_write"
+    "ads_write",
+    "user_read",
+    "pronunciation_dictionaries_read"
   ],
   "authorization_response_iss_parameter_supported": true,
   "client_id_metadata_document_supported": true,

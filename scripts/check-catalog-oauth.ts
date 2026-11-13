@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { ConfigProvider, Effect } from "effect";
 import { optionalConnectorClients } from "./environment.ts";
 import { catalogOAuthEvidence } from "./catalog-oauth-evidence.ts";
@@ -41,7 +41,13 @@ const summary = {
     ),
   problems,
 };
+const report = JSON.stringify(summary, null, 2);
 if (process.env.CATALOG_OAUTH_REPORT)
-  writeFileSync(process.env.CATALOG_OAUTH_REPORT, JSON.stringify(summary, null, 2) + "\n");
-console.log(JSON.stringify(summary, null, 2));
+  writeFileSync(process.env.CATALOG_OAUTH_REPORT, report + "\n");
+if (process.env.GITHUB_STEP_SUMMARY)
+  appendFileSync(
+    process.env.GITHUB_STEP_SUMMARY,
+    "## Catalog OAuth connection paths\n\n```json\n" + report + "\n```\n",
+  );
+console.log(report);
 if (problems.length > 0) process.exitCode = 1;
