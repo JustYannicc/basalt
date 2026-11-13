@@ -160,3 +160,23 @@ test(
     assert.equal(rows[0]?.phase, "uncertain");
   },
 );
+
+test("signed fleet refusal retains only a closed provider transport cause", async (context) => {
+  const f = await fleetWorkerFixture();
+  context.after(f.cleanup);
+  await f.bootstrap();
+  f.onProviderRead(async () => {
+    throw new Error("private-provider-or-credential");
+  });
+  const response = await f.command("fleet-configure", {
+    operationId: "closed-provider-cause",
+    configuration: f.configuration,
+  });
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), {
+    error: "runtime-handoff-refused",
+    cause: "provider_fetch_failed",
+  });
+  assert.deepEqual(await new RuntimeFleetState(f.old.storage, 4).inspect(), []);
+  assert.equal(f.instances.size, 0);
+});

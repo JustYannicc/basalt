@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { ProviderObservationRefused } from "../runtime-provider/read.ts";
 import { openEnvelope } from "../token.ts";
 import { sameControllerCode, type ControllerCode, type SlotIdentity } from "./contract.ts";
 import { decodeRuntimeHandoffCommand, runtimeHandoffCommandPrefix } from "./handoff-command.ts";
@@ -101,7 +102,13 @@ export async function handleRuntimeHandoff(
         break;
     }
     return Response.json({ result: result ?? null }, { headers: { "Cache-Control": "no-store" } });
-  } catch {
-    return Response.json({ error: "runtime-handoff-refused" }, { status: 409 });
+  } catch (error) {
+    return Response.json(
+      {
+        error: "runtime-handoff-refused",
+        ...(error instanceof ProviderObservationRefused ? { cause: error.code } : {}),
+      },
+      { status: 409 },
+    );
   }
 }
