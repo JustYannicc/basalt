@@ -1,3 +1,4 @@
+import { EndpointTrace, failEndpointResponse } from "../runtime-fleet/endpoint-trace.ts";
 import { homeResponse } from "../home-response.ts";
 import { awaitProbe } from "../availability.ts";
 import {
@@ -39,22 +40,36 @@ const Health = Schema.Struct({
 /** Convert remote remaining duration at dispatch, never a remote monotonic timestamp. */
 export class BoundSlotDriver implements SlotDriver {
   private endpoint: (target: SlotTarget) => RuntimeStub;
+  private driverId = crypto.randomUUID();
+  private sequence = 0;
+  private stubs = new WeakMap<RuntimeStub, number>();
   constructor(endpoint: (target: SlotTarget) => RuntimeStub) {
     this.endpoint = endpoint;
   }
   private async call(target: SlotTarget, action: string, value: unknown, signal: AbortSignal) {
-    const response = await homeResponse(
-      () =>
-        this.endpoint(target).fetch(
-          new Request(`http://runtime/${action}`, {
-            method: "POST",
-            signal,
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(value),
-          }),
-        ),
+    const request = new Request(`http://runtime/${action}`, {
+      method: "POST",
       signal,
-    );
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(value),
+    });
+    const trace = new EndpointTrace(request, target.slotId, this.driverId);
+    let response: Response;
+    try {
+      response = await homeResponse(async () => {
+        const runtimeStub = this.endpoint(target);
+        let stub = this.stubs.get(runtimeStub);
+        if (stub === undefined) {
+          stub = ++this.sequence;
+          this.stubs.set(runtimeStub, stub);
+        }
+        return trace.send(stub, () => runtimeStub.fetch(request));
+      }, signal);
+      trace.finish(response);
+    } catch (error) {
+      trace.finish(error);
+      throw error;
+    }
     if (!response.ok) {
       void response.body?.cancel().catch(() => {});
       throw retainRuntimeFailure(response, new SlotRefused("uncertain"));
@@ -64,10 +79,15 @@ export class BoundSlotDriver implements SlotDriver {
   private async read(target: SlotTarget, action: string, signal: AbortSignal): Promise<SlotHealth> {
     const requestedAt = performance.now();
     const response = await this.call(target, action, { target }, signal);
-    const health = Schema.decodeUnknownSync(Health)(await response.json());
-    const policyLeaseUntil = requestedAt + health.leaseMs;
-    if (policyLeaseUntil <= performance.now()) throw new SlotRefused("unhealthy");
-    return { identity: health.identity, policyLeaseUntil };
+    try {
+      const health = Schema.decodeUnknownSync(Health)(await response.json());
+      const policyLeaseUntil = requestedAt + health.leaseMs;
+      if (policyLeaseUntil <= performance.now()) throw new SlotRefused("unhealthy");
+      return { identity: health.identity, policyLeaseUntil };
+    } catch (error) {
+      failEndpointResponse(response, error);
+      throw error;
+    }
   }
   async start(target: SlotTarget, signal: AbortSignal) {
     const response = await this.call(target, "start", { target }, signal);

@@ -48,7 +48,7 @@ export function gatewayUnavailable(
   defer: (work: Promise<unknown>) => void,
   diagnostic: GatewayFailureDiagnostic,
 ): Response {
-  const requestId = crypto.randomUUID();
+  const requestId = diagnostic.runtimeEndpointRequestId ?? crypto.randomUUID();
   const pathname = new URL(request.url).pathname;
   console.error("POOL_GATEWAY_FAILURE", {
     code: "pool_protection_unavailable",

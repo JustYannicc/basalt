@@ -178,6 +178,7 @@ test("a lost provider join after startup is recovered through observation withou
 });
 
 test("a native stub failure is never replayed, and the next call reconnects", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
   const f = await fixture();
   context.after(f.cleanup);
   await f.cell.start(f.target);
@@ -190,6 +191,12 @@ test("a native stub failure is never replayed, and the next call reconnects", as
   assert.equal(f.transport.calls, before + 1);
   assert.equal(f.transport.stubs, 1);
   assert.equal(f.calls.model, 0);
+  const fields = JSON.parse(log.mock.calls[0]!.arguments[1]);
+  assert.equal(fields.reconnectEligible, false);
+  assert.equal(fields.reconnectRan, false);
+  assert.equal(fields.attempts.length, 1);
+  assert.equal(fields.attempts[0].error.disconnected, null);
+  assert.equal(fields.identityHeaderPresent, false);
   f.transport.fail = false;
   const response = await f.cell.forward(
     new Request("http://pool/v1/responses"),
@@ -289,6 +296,7 @@ test("a disconnected cached stub reconnects health before the first model send",
 });
 
 test("a disconnected health probe reconnects at most once before refusing dispatch", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
   const f = await fixture();
   context.after(f.cleanup);
   await f.cell.start(f.target);
@@ -305,6 +313,16 @@ test("a disconnected health probe reconnects at most once before refusing dispat
   assert.equal(f.transport.calls, before + 2);
   assert.equal(f.transport.stubs, 2);
   assert.equal(f.transport.disconnected, 2);
+  const fields = JSON.parse(log.mock.calls[0]!.arguments[1]);
+  assert.equal(fields.reconnectEligible, true);
+  assert.equal(fields.reconnectRan, true);
+  assert.equal(fields.reconnectAcquired, true);
+  assert.deepEqual([fields.attempts[0].stub, fields.attempts[1].stub], [1, 2]);
+  assert.deepEqual(
+    [fields.attempts[0].error.disconnected, fields.attempts[1].error.disconnected],
+    [true, true],
+  );
+  assert.equal(log.mock.callCount(), 1);
   assert.equal(f.calls.model, 0);
   assert.equal(dispatched, 0);
 });
