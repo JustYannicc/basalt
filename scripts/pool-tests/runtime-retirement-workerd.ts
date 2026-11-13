@@ -88,6 +88,7 @@ export class Extra extends DurableObject {
     if(self.actualRunning)await new Promise(resolve=>self.stopWaiters.push(resolve));
     if(self.fault==='stale-held-monitor')await self.hold();
     if(self.fault==='stale-failed-monitor'){self.running=false;throw Error(marker);}
+    if(['stale-nonzero-monitor','stale-invalid-exit'].includes(self.fault)){self.running=false;throw Object.assign(Error(marker),{exitCode:self.fault==='stale-nonzero-monitor'?137:'137'});}
     if(self.fault==='stale-inconsistent-monitor')return;
     self.running=false;self.monitorCompleted=true;
    },
