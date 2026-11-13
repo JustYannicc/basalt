@@ -68,6 +68,9 @@ function fixture() {
       destroy: async () => {
         running = false;
       },
+      monitor: async () => {
+        throw new Error("This scenario must not observe retirement");
+      },
       setInactivityTimeout: async () => {},
       getTcpPort: () => ({
         fetch: async () =>

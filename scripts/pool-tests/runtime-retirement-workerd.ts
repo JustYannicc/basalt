@@ -38,11 +38,11 @@ export class Root extends DurableObject {
   const provider=new RuntimeProviderReader('synthetic-token',async(input)=>{
    const endpoint=await (await extra.fetch('http://fixture/state')).json();
    const instances=new URL(input).pathname.endsWith('instances-v2');
-   const unknown=fault==='provider-unknown'&&!endpoint.running;
-   this.inventory.push({kind:instances?'instances':'application',present:instances?(endpoint.running||fault==='provider-present'):undefined,status:unknown?403:200});
+   const unknown=fault.endsWith('provider-unknown')&&!endpoint.actualRunning;
+   this.inventory.push({kind:instances?'instances':'application',present:instances?(endpoint.actualRunning||fault.endsWith('provider-present')):undefined,status:unknown?403:200});
    if(unknown)return new Response(null,{status:403});
    return Response.json({success:true,errors:[],result:instances?
-    ((endpoint.running||fault==='provider-present')?[{id:this.target.instanceId,application_id:raw.id,status:{state:'running'},image:raw.configuration.image}]:[]):raw,
+    ((endpoint.actualRunning||fault.endsWith('provider-present'))?[{id:this.target.instanceId,application_id:raw.id,status:{state:'running'},image:raw.configuration.image}]:[]):raw,
     result_info:{next_page_token:''}});
   });
   const driver=new BoundSlotDriver(()=>({fetch:request=>extra.fetch(
@@ -65,7 +65,8 @@ export class Root extends DurableObject {
 }
 export class Extra extends DurableObject {
  async setup(input){
-  this.target=input.target;this.identity={...input.target,bootId};this.fault=input.fault;this.running=input.fault!=='no-intent';
+  this.target=input.target;this.identity={...input.target,bootId};this.fault=input.fault;this.running=!['no-intent','stale-no-intent'].includes(input.fault);this.actualRunning=this.running;
+  if(input.fault==='stale-no-intent')this.running=true;this.monitorCalls=0;this.monitorCompleted=false;this.stopWaiters=[];
   this.destroyed=0;this.healthCalls=0;
   const configuration=runtimeConfiguration({...this.env,POOL_HOME_PEER_ORDINAL:'1'});
   const fingerprint=await configurationDigest(configuration);
@@ -83,10 +84,19 @@ export class Extra extends DurableObject {
   const self=this;
   Object.defineProperty(this.ctx,'container',{value:{get running(){return self.running;},
    async setInactivityTimeout(){throw Error('Retirement must not warm');},start(){throw Error('No starts');},
-   async destroy(){self.destroyed++;self.running=false;
-    if(self.fault==='lost-destroy')throw Error(marker);
+   monitor:async()=>{self.monitorCalls++;self.monitorBeforeDestroy=self.actualRunning;
+    if(self.actualRunning)await new Promise(resolve=>self.stopWaiters.push(resolve));
+    if(self.fault==='stale-held-monitor')await self.hold();
+    if(self.fault==='stale-failed-monitor'){self.running=false;throw Error(marker);}
+    if(self.fault==='stale-inconsistent-monitor')return;
+    self.running=false;self.monitorCompleted=true;
+   },
+   async destroy(){self.destroyed++;self.actualRunning=false;
+    if(!self.fault.startsWith('stale-'))self.running=false;
+    self.stopWaiters.splice(0).forEach(resolve=>resolve());
+    if(self.fault.endsWith('lost-destroy'))throw Error(marker);
     if(self.fault==='held-destroy')await self.hold();
-   },getTcpPort(number){if(!self.running)throw Error('Must not probe stopped runtime');if(number!==8318)throw Error('Only readiness allowed');
+   },getTcpPort(number){if(!self.actualRunning)throw Error('Must not probe stopped runtime');if(number!==8318)throw Error('Only readiness allowed');
     return {fetch:async()=>{self.healthCalls++;return Response.json({boot_id:bootId,started_at:'2026-01-01T00:00:00Z'},
      {headers:{'X-Signalbox-Policy-Lease-Ms':'1500','X-Signalbox-Launch-Generation':'1','X-Signalbox-Launch-Token-Sha256':'d'.repeat(64)}});}};
    }},configurable:true});
@@ -96,7 +106,7 @@ export class Extra extends DurableObject {
  async fetch(request){
   const path=new URL(request.url).pathname;
   if(path==='/setup'){await this.setup(await request.json());return new Response(null,{status:204});}
-  if(path==='/state')return Response.json({running:this.running,destroyed:this.destroyed,healthCalls:this.healthCalls});
+  if(path==='/state')return Response.json({running:this.running,actualRunning:this.actualRunning,destroyed:this.destroyed,healthCalls:this.healthCalls,monitorCalls:this.monitorCalls,monitorBeforeDestroy:this.monitorBeforeDestroy,monitorCompleted:this.monitorCompleted});
   if(path==='/release'){this.reportReleased=true;this.release?.();return new Response(null,{status:204});}
   if(path==='/retirement'&&this.fault==='held-report'&&!this.reportReleased)await this.hold();
   if(path==='/retirement'&&this.fault==='held-body'&&!this.reportReleased){

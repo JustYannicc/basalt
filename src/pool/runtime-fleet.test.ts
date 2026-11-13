@@ -142,6 +142,9 @@ test("cells isolate handoff selections, share canonical policies and cannot over
         throw new Error("must not start legacy");
       },
       destroy: async () => {},
+      monitor: async () => {
+        throw new Error("This scenario must not observe retirement");
+      },
       setInactivityTimeout: async () => {},
       getTcpPort: () => ({ fetch: async () => new Response() }),
     },
