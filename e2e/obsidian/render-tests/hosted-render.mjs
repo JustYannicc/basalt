@@ -69,7 +69,8 @@ export const useDashboardAtoms = () => ({
  * Bundle `exports` (export statements resolved from the hosted pages directory) with React, the
  * atom registry and the dashboard provider, register a virtual DOM, and load the bundle.
  */
-export async function loadHostedPages(exports) {
+export async function loadHostedPages(exports, extra = {}) {
+  const modules = { ...replaced, ...extra };
   const scratch = mkdtempSync(join(tmpdir(), "hosted-render-"));
   const result = await build({
     stdin: {
@@ -112,11 +113,11 @@ export async function loadHostedPages(exports) {
           builder.onResolve({ filter: /(?:\.tsx?|^@tanstack\/react-router)$/ }, (args) => {
             if (!args.importer.startsWith(pages)) return undefined;
             const target = args.path.startsWith(".") ? join(args.resolveDir, args.path) : args.path;
-            const name = Object.keys(replaced).find((suffix) => target.endsWith(suffix));
+            const name = Object.keys(modules).find((suffix) => target.endsWith(suffix));
             return name ? { path: name, namespace: "fixture" } : undefined;
           });
           builder.onLoad({ filter: /.*/, namespace: "fixture" }, (args) => ({
-            contents: args.path === "fixture-atoms" ? fixtureAtoms : replaced[args.path],
+            contents: args.path === "fixture-atoms" ? fixtureAtoms : modules[args.path],
             resolveDir: pages,
             loader: "tsx",
           }));

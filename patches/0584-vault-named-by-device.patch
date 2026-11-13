@@ -1,0 +1,517 @@
+diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
+--- a/apps/hosted/server/src/contracts/apps.ts
++++ b/apps/hosted/server/src/contracts/apps.ts
+@@ -301,14 +301,18 @@ export const HostedApps = /* @__PURE__ */ (() =>
+     .add(
+       HttpApiEndpoint.patch("rename", `${prefix}/:app/name`, {
+         params: app,
+-        payload: Schema.Struct({ name: AppName }),
++        payload: Schema.Struct({
++          name: AppName,
++          /** Rename only while the app still has this name; otherwise return it unchanged. */
++          expectedName: Schema.optionalKey(AppName),
++        }),
+         success: App,
+         error: [StorageError, AppNotFound, AppNameTaken, AppSlugTaken, OrganizationForbidden],
+       })
+         .annotate(RequiredAction, "manage")
+         .annotate(
+           OpenApi.Description,
+-          "Rename an app and derive its new slug from the name; the app ID, accounts, links and data stay. The new slug changes the app's tool namespace and Git clone URL. Nested app UI addresses follow the new slugs and the old address stops working; opaque app UI addresses retain the app ID. The name and slug must be unique in the organization.",
++          "Rename an app and derive its new slug from the name; the app ID, accounts, links and data stay. The new slug changes the app's tool namespace and Git clone URL. Nested app UI addresses follow the new slugs and the old address stops working; opaque app UI addresses retain the app ID. The name and slug must be unique in the organization. With expectedName, the rename applies only while the app still has that name; otherwise the app is returned unchanged.",
+         ),
+     )
+     .middleware(RequireOrganization))();
+diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/src/implementation/apps.ts
+--- a/apps/hosted/server/src/implementation/apps.ts
++++ b/apps/hosted/server/src/implementation/apps.ts
+@@ -1,7 +1,11 @@
+ import { catalogService, installService, mcpService } from "./service-installs.ts";
+ import { createPool } from "./pools.ts";
+ import { poolCatalogPackage } from "./pool-catalog.ts";
+-import { projectAppServices, serviceLabel } from "./service-install-records.ts";
++import {
++  labelServiceInstall,
++  projectAppServices,
++  serviceLabel,
++} from "./service-install-records.ts";
+ import { unknownEntryRecovery } from "@executor-js/catalog/contracts";
+ import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
+ import { policyDatabase, requireAppAccess } from "./resource-policy.ts";
+@@ -198,14 +202,26 @@ export const activateApp = (
+     return saved;
+   });
+ /** Keep the configured identity and selections while changing its organization-local name. */
+-export const renameApp = (owner: OwnerId, app: AppId, name: string) =>
++export const renameApp = (
++  owner: OwnerId,
++  app: AppId,
++  name: string,
++  options: { readonly expectedName?: string } = {},
++) =>
+   Effect.gen(function* () {
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const saved = yield* executor.apps.rename({
+       owner,
+       app,
+       name,
++      ...(options.expectedName === undefined ? {} : { expectedName: options.expectedName }),
+     });
++    // A renamed copy is told apart by its service's name; record it if its install never did.
++    if (saved.name === name)
++      // The rename has committed; nothing about the label may fail it now.
++      yield* Effect.flatMap(policyDatabase, (sql) => labelServiceInstall(sql, saved)).pipe(
++        Effect.catchCause((cause) => Effect.logWarning("Copy label was not recorded", cause)),
++      );
+     return saved;
+   });
+ /** Delete one configured copy while preserving its reusable accounts. */
+@@ -273,7 +289,7 @@ export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handle
+     )
+     .handle("rename", ({ params, payload }) =>
+       Effect.flatMap(appManagerOwner(params.app), (owner) =>
+-        renameApp(owner, params.app, payload.name),
++        renameApp(owner, params.app, payload.name, payload),
+       ),
+     )
+     .handle("remove", ({ params }) =>
+diff --git a/apps/hosted/server/src/implementation/service-install-records.ts b/apps/hosted/server/src/implementation/service-install-records.ts
+--- a/apps/hosted/server/src/implementation/service-install-records.ts
++++ b/apps/hosted/server/src/implementation/service-install-records.ts
+@@ -93,3 +93,21 @@ export const projectAppServices = (sql: SqlClient.SqlClient, apps: readonly App[
+       return { ...app, ...(service === undefined ? {} : { service }) };
+     });
+   });
++
++/**
++ * Record the service's name and noun on a copy whose install record has neither, from the catalog
++ * entry for its service. Only a rename asks, so the catalog is read only then.
++ */
++export const labelServiceInstall = (sql: SqlClient.SqlClient, app: App) =>
++  Effect.gen(function* () {
++    const recorded = (yield* recordedServiceInstalls(sql, [app])).get(app.id);
++    if (recorded === undefined || recorded.name !== undefined) return;
++    const entries = yield* Effect.flatMap(HostedCatalog, (catalog) => catalog.list);
++    const entry = entries.find((entry) => (entry.service?.id ?? entry.package) === recorded.id);
++    if (entry === undefined) return;
++    yield* sql`update organization o set metadata = jsonb_set(o.metadata::jsonb,
++      array[${serviceInstallsKey}, ${app.id}],
++      (o.metadata::jsonb -> ${serviceInstallsKey} -> ${app.id}) || ${JSON.stringify(serviceLabel(entry))}::jsonb)::text
++      from executor_apps a where a.id = ${app.id} and a.owner = 'organization:' || o.id
++        and (o.metadata::jsonb -> ${serviceInstallsKey}) ? ${app.id}`;
++  }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
+diff --git a/apps/hosted/web/src/contracts/obsidian-devices.ts b/apps/hosted/web/src/contracts/obsidian-devices.ts
+--- a/apps/hosted/web/src/contracts/obsidian-devices.ts
++++ b/apps/hosted/web/src/contracts/obsidian-devices.ts
+@@ -14,7 +14,7 @@ export interface ObsidianDevice {
+   readonly lastActiveAt: string | null;
+ }
+ 
+-/** The plugin's self-declared client name, identical on every device it runs on. */
++/** The client name older plugins declare, identical on every device they run on. */
+ const pluginClientNames = new Set(["Signalbox Obsidian Sync", "Basalt Sync"]);
+ 
+ /** The plugin's sync tools, any version; Connect Obsidian scopes each device to a subset. */
+@@ -24,7 +24,7 @@ const syncTools = new Set<string>(obsidianTools);
+  * A connection Connect Obsidian made for this vault: this one app, run as the app, limited to
+  * sync tools. A broader connection that happens to include the app belongs to an agent.
+  */
+-const isVaultConnection = (app: AppId, connection: Connection) => {
++export const isVaultConnection = (app: AppId, connection: Connection) => {
+   const [only, ...rest] = connection.policy.apps;
+   return (
+     only !== undefined &&
+@@ -61,20 +61,26 @@ export function obsidianDevices(
+     )
+     .sort((a, b) => a.agent.connectedAt.localeCompare(b.agent.connectedAt));
+   const generic = (name: string | null) => name === null || pluginClientNames.has(name.trim());
+-  const shared = devices.filter(({ agent }) => generic(agent.name)).length;
+-  let index = 0;
+-  return devices.map(({ agent, connection }) => ({
+-    agent: agent.id,
+-    connection,
+-    // Until devices report their own names, number them in the order they connected.
+-    label: generic(agent.name)
+-      ? shared > 1
+-        ? `Obsidian device ${++index}`
+-        : "Obsidian device"
+-      : agent.name!.trim(),
+-    connectedAt: agent.connectedAt,
+-    lastActiveAt: agent.lastActiveAt,
+-  }));
++  // Older plugins all share one name, and phones report only their kind; devices that share a
++  // label are numbered in the order they connected.
++  const base = devices.map(({ agent }) =>
++    generic(agent.name) ? "Obsidian device" : agent.name!.trim(),
++  );
++  const count = new Map<string, number>();
++  for (const label of base) count.set(label, (count.get(label) ?? 0) + 1);
++  const seen = new Map<string, number>();
++  return devices.map(({ agent, connection }, position) => {
++    const label = base[position]!;
++    const index = (seen.get(label) ?? 0) + 1;
++    seen.set(label, index);
++    return {
++      agent: agent.id,
++      connection,
++      label: (count.get(label) ?? 0) > 1 ? `${label} ${index}` : label,
++      connectedAt: agent.connectedAt,
++      lastActiveAt: agent.lastActiveAt,
++    };
++  });
+ }
+ 
+ /** The header offers another device once one syncs this vault. */
+diff --git a/apps/hosted/web/src/contracts/obsidian-vault-name.ts b/apps/hosted/web/src/contracts/obsidian-vault-name.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/obsidian-vault-name.ts
+@@ -0,0 +1,42 @@
++import { Effect, Option } from "effect";
++import type { ConnectionId } from "@executor-js/mcp-auth/connections";
++import type { OrganizationId } from "@executor-js/hosted-server/organization";
++import { HostedClient } from "./api.ts";
++import { vaultApp, vaultRename } from "./obsidian-vault-rename.ts";
++
++/**
++ * One Obsidian app is one vault, named after it. When a device connects a vault app that still
++ * has the catalog's name, name the app after the vault the device reports, exactly as the Rename
++ * button would: its slug follows the name. This happens at the vault's first connection, before
++ * much can depend on the catalog's slug. The server renames only while the app still has the
++ * catalog's name, so a name someone chose is never replaced, and it checks the approving person
++ * may manage the app. The vault name is the device's claim and
++ * decides nothing else; any failure leaves the app as it was.
++ */
++export const nameVaultAfterDeviceAtom = HostedClient.runtime.fn(
++  (input: {
++    readonly connection: ConnectionId;
++    readonly vault: string;
++    readonly organizations: readonly OrganizationId[];
++  }) =>
++    Effect.gen(function* () {
++      const client = yield* HostedClient;
++      for (const organization of input.organizations) {
++        // A person may belong to several organizations; one that can't be read is skipped.
++        const listed = yield* Effect.option(
++          client.mcpConnections.list({ params: { organization } }),
++        );
++        if (Option.isNone(listed)) continue;
++        const connections = listed.value;
++        const connection = connections.find((item) => item.id === input.connection);
++        if (connection === undefined) continue;
++        const app = vaultApp(connection);
++        if (app === undefined) return;
++        const current = yield* client.apps.get({ params: { organization, app } });
++        const payload = vaultRename(current, input.vault);
++        if (payload !== undefined)
++          yield* client.apps.rename({ params: { organization, app }, payload });
++        return;
++      }
++    }).pipe(Effect.catchCause(() => Effect.void)),
++);
+diff --git a/apps/hosted/web/src/contracts/obsidian-vault-rename.ts b/apps/hosted/web/src/contracts/obsidian-vault-rename.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/obsidian-vault-rename.ts
+@@ -0,0 +1,20 @@
++import type { Connection } from "@executor-js/mcp-auth/connections";
++import { isVaultConnection } from "./obsidian-devices.ts";
++
++/** The catalog entry's name for a new Obsidian app, before it is named after its vault. */
++export const obsidianDefaultName = "Obsidian";
++
++/** The vault app a device's connection was made for; nothing for any other connection. */
++export const vaultApp = (connection: Connection) => {
++  const app = connection.policy.apps[0]?.app;
++  return app !== undefined && isVaultConnection(app, connection) ? app : undefined;
++};
++
++/**
++ * How to name a vault app after the vault a device reports: only an app still named after the
++ * catalog, renamed as the Rename button does. Nothing to do for any other app.
++ */
++export const vaultRename = (app: { readonly name: string }, vault: string) =>
++  app.name === obsidianDefaultName && vault.trim().length > 0
++    ? { name: vault.trim(), expectedName: obsidianDefaultName }
++    : undefined;
+diff --git a/apps/hosted/web/src/implementation/pages/device.tsx b/apps/hosted/web/src/implementation/pages/device.tsx
+--- a/apps/hosted/web/src/implementation/pages/device.tsx
++++ b/apps/hosted/web/src/implementation/pages/device.tsx
+@@ -33,6 +33,8 @@ import {
+   mcpClientAtom,
+ } from "../../contracts/mcp.ts";
+ import { organizationsAtom } from "../../contracts/organization.ts";
++import { nameVaultAfterDeviceAtom } from "../../contracts/obsidian-vault-name.ts";
++import { ConnectionId } from "@executor-js/mcp-auth/connections";
+ import { useResourceOrigins } from "../resource-origin.ts";
+ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ 
+@@ -139,6 +141,7 @@ function DeviceReview({ code, view }: { readonly code: string; readonly view: De
+   const client = useAtomValue(mcpClientAtom(view.clientId));
+   const organizations = useAtomValue(organizationsAtom);
+   const decide = useAtomSet(deviceDecisionAtom, { mode: "promiseExit" });
++  const nameVault = useAtomSet(nameVaultAfterDeviceAtom, { mode: "promiseExit" });
+   const state = useAtomValue(deviceDecisionAtom);
+   const [selected, setSelected] = useState("");
+   const [error, setError] = useState<string | null>(null);
+@@ -147,6 +150,7 @@ function DeviceReview({ code, view }: { readonly code: string; readonly view: De
+   const organization = selected || available[0]?.id || "";
+   // A scoped connection belongs to one organization; the server binds the grant to it.
+   const scoped = target?.kind === "mcp" && target.connection !== undefined;
++  const reported = view.reported;
+   const submit = async (accept: boolean) => {
+     const action = accept ? "approve_device" : "deny_device";
+     reportBrowserUsage({ area: "mcp", action, outcome: "started" });
+@@ -161,8 +165,23 @@ function DeviceReview({ code, view }: { readonly code: string; readonly view: De
+       action,
+       outcome: Exit.isSuccess(result) ? "success" : "failure",
+     });
+-    if (Exit.isSuccess(result)) setDecided(result.value.status);
+-    else {
++    if (Exit.isSuccess(result)) {
++      setDecided(result.value.status);
++      // A vault app still named after the catalog takes the vault's name; never awaited, so the
++      // approval stands whatever happens to the name.
++      if (
++        result.value.status === "approved" &&
++        scoped &&
++        target?.kind === "mcp" &&
++        target.connection !== undefined &&
++        reported?.context !== undefined
++      )
++        void nameVault({
++          connection: ConnectionId.make(target.connection),
++          vault: reported.context,
++          organizations: available.map((item) => item.id),
++        });
++    } else {
+       const failure = Cause.squash(result.cause);
+       setError(
+         failure instanceof McpConnectionFailed
+@@ -204,6 +223,15 @@ function DeviceReview({ code, view }: { readonly code: string; readonly view: De
+         </p>
+       }
+     >
++      {reported !== undefined && (
++        <div className="grid gap-2 text-[13px]">
++          <span className="[font-weight:550]">Reported by the device</span>
++          <p className="m-0 text-muted-foreground">
++            {[reported.name, reported.context].filter((label) => label !== undefined).join(" · ")}.
++            The device says this about itself; connect only if it matches.
++          </p>
++        </div>
++      )}
+       <div className="grid gap-2 text-[13px]">
+         <span className="[font-weight:550]">Code</span>
+         <p className="m-0 text-muted-foreground">
+diff --git a/e2e/tests/service-install-identity.spec.ts b/e2e/tests/service-install-identity.spec.ts
+--- a/e2e/tests/service-install-identity.spec.ts
++++ b/e2e/tests/service-install-identity.spec.ts
+@@ -51,9 +51,19 @@ layer(HostedLive, { excludeTestServices: true })("Service install identity", (it
+         expect(first.reused).toBe(false);
+         expect(again.reused).toBe(true);
+         expect(again.activeVersion).toBe(first.activeVersion);
+-        yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${first.id}/name`, {
+-          name: "Our tracker",
+-        });
++        const rename = (payload: Record<string, unknown>) =>
++          api
++            .request(actors.owner, "PATCH", `${prefix}/apps/${first.id}/name`, payload)
++            .pipe(
++              Effect.flatMap((response) =>
++                body(Schema.Struct({ name: Schema.String, slug: Schema.String }), response),
++              ),
++            );
++        // A conditional rename applies while the app still has the name it expects.
++        const named = yield* rename({ name: "Our tracker", expectedName: "Tracker" });
++        expect(named.name).toBe("Our tracker");
++        // Once someone has named it, a conditional rename leaves that name alone.
++        expect(yield* rename({ name: "Ignored", expectedName: "Tracker" })).toEqual(named);
+         const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
+           source: { kind: "mcp", name: "Tracker MCP", url: "https://tracker.example.test/mcp" },
+         });
+@@ -66,6 +76,28 @@ layer(HostedLive, { excludeTestServices: true })("Service install identity", (it
+           activeVersion: first.activeVersion,
+         });
+         const another = yield* install("Another tracker", true);
++        // Two copies, the second still carrying the default name: a conditional rename names
++        // only that copy, and its slug follows its new name without touching the first's.
++        const renameCopy = (id: string, payload: Record<string, unknown>) =>
++          api.request(actors.owner, "PATCH", `${prefix}/apps/${id}/name`, payload);
++        const Named = Schema.Struct({ name: Schema.String, slug: Schema.String });
++        const defaultNamed = yield* body(Named, yield* renameCopy(another.id, { name: "Tracker" }));
++        const garden = yield* body(
++          Named,
++          yield* renameCopy(another.id, { name: "Garden tracker", expectedName: "Tracker" }),
++        );
++        expect(garden.name).toBe("Garden tracker");
++        expect(garden.slug).not.toBe(defaultNamed.slug);
++        expect(garden.slug).not.toBe(named.slug);
++        expect(
++          yield* body(Named, yield* api.request(actors.owner, "GET", `${prefix}/apps/${first.id}`)),
++        ).toEqual(named);
++        // A name another copy has is refused, as the Rename button's is.
++        expect(
++          (yield* renameCopy(another.id, { name: "Our tracker", expectedName: "Garden tracker" }))
++            .status,
++        ).not.toBe(200);
++        expect((yield* renameCopy(another.id, { name: another.name })).status).toBe(200);
+         expect(another.id).not.toBe(first.id);
+         expect(another.reused).toBe(false);
+         const final = yield* install("Tracker once more");
+diff --git a/packages/mcp-auth/src/contracts/device.ts b/packages/mcp-auth/src/contracts/device.ts
+--- a/packages/mcp-auth/src/contracts/device.ts
++++ b/packages/mcp-auth/src/contracts/device.ts
+@@ -23,14 +23,60 @@ export const normalizeUserCode = (input: string): string | undefined => {
+ /** `BCDFGHJK` as `BCDF-GHJK`, the form the CLI prints and the page shows. */
+ export const formatUserCode = (code: string) => `${code.slice(0, 4)}-${code.slice(4)}`;
+ 
++/**
++ * Labels a device reported about itself when it asked to connect, such as its name and the
++ * workspace it connects. Untrusted: shown as the device's claim, never used to decide access.
++ */
++export const DeviceReport = Schema.Struct({
++  name: Schema.optionalKey(Schema.NonEmptyString),
++  context: Schema.optionalKey(Schema.NonEmptyString),
++});
++export type DeviceReport = typeof DeviceReport.Type;
++
++/** The longest device-reported label kept, in characters. */
++export const deviceReportLimit = 80;
++
++/**
++ * One device-reported label as it is kept: control and formatting characters removed, spacing
++ * collapsed, at most `deviceReportLimit` characters. Nothing when nothing printable is left.
++ */
++export const deviceReportLabel = (value: string | undefined) => {
++  if (value === undefined) return undefined;
++  const label = Array.from(
++    value
++      .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")
++      .replace(/\s+/gu, " ")
++      .trim(),
++  )
++    .slice(0, deviceReportLimit)
++    .join("")
++    .trim();
++  return label.length === 0 ? undefined : label;
++};
++
++/** What a device request reports, from its optional fields; nothing when it reports nothing. */
++export const deviceReport = (fields: {
++  readonly device_name?: string | undefined;
++  readonly device_context?: string | undefined;
++}): DeviceReport | undefined => {
++  const name = deviceReportLabel(fields.device_name);
++  const context = deviceReportLabel(fields.device_context);
++  if (name === undefined && context === undefined) return undefined;
++  return {
++    ...(name === undefined ? {} : { name }),
++    ...(context === undefined ? {} : { context }),
++  };
++};
++
+ /**
+  * A pending request as its verification page shows it. The client's name comes from its
+- * registration, looked up separately, never from anything the device sent.
++ * registration, looked up separately; `reported` is what the device says about itself.
+  */
+ export const DeviceRequestView = Schema.Struct({
+   clientId: Schema.NonEmptyString,
+   resource: Schema.NonEmptyString,
+   scopes: Schema.Array(Schema.String),
++  reported: Schema.optionalKey(DeviceReport),
+ });
+ export type DeviceRequestView = typeof DeviceRequestView.Type;
+ 
+diff --git a/packages/mcp-auth/src/implementation/device-authorization.ts b/packages/mcp-auth/src/implementation/device-authorization.ts
+--- a/packages/mcp-auth/src/implementation/device-authorization.ts
++++ b/packages/mcp-auth/src/implementation/device-authorization.ts
+@@ -22,6 +22,8 @@ import { Base64Url } from "effect/encoding";
+ import { Clock, Effect, Option, Schema } from "effect";
+ import {
+   DeviceDecision,
++  DeviceReport,
++  deviceReport,
+   DeviceRequestView,
+   deviceVerificationPath,
+   formatUserCode,
+@@ -60,6 +62,7 @@ const DeviceRequest = Schema.Struct({
+   challenge: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{43}$/u))),
+   /** The user code's key, so finishing the request also forgets it. */
+   userCode: Schema.NonEmptyString,
++  reported: Schema.optionalKey(DeviceReport),
+   expiresAt: Schema.Number,
+   decision: Decision,
+ });
+@@ -330,6 +333,9 @@ export const deviceAuthorizationPlugin = (settings: DeviceAuthorizationOptions)
+                   resource: Schema.optionalKey(Schema.String),
+                   code_challenge: Schema.optionalKey(Schema.String),
+                   code_challenge_method: Schema.optionalKey(Schema.String),
++                  // Optional labels the device reports about itself; older devices send none.
++                  device_name: Schema.optionalKey(Schema.String),
++                  device_context: Schema.optionalKey(Schema.String),
+                 }),
+                 ctx.body,
+               ).pipe(
+@@ -375,10 +381,12 @@ export const deviceAuthorizationPlugin = (settings: DeviceAuthorizationOptions)
+               const userKey = yield* codeKey(ctx, "user", userCode);
+               const now = yield* Clock.currentTimeMillis;
+               const expiresAt = now + requestSeconds * 1000;
++              const reported = deviceReport(body);
+               const value = yield* Schema.encodeEffect(StoredRequest)({
+                 clientId,
+                 resource,
+                 scopes,
++                ...(reported === undefined ? {} : { reported }),
+                 ...(challenge === undefined ? {} : { challenge }),
+                 userCode: userKey,
+                 expiresAt,
+@@ -440,6 +448,7 @@ export const deviceAuthorizationPlugin = (settings: DeviceAuthorizationOptions)
+                 clientId: request.clientId,
+                 resource: request.resource,
+                 scopes: request.scopes,
++                ...(request.reported === undefined ? {} : { reported: request.reported }),
+               });
+             }),
+           ),
+diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
+--- a/packages/sdk/src/contracts/apps.ts
++++ b/packages/sdk/src/contracts/apps.ts
+@@ -541,6 +541,8 @@ export const AppInputs = {
+     app: AppId,
+     owner: Schema.optional(OwnerId),
+     name: AppName,
++    /** Rename only while the app still has this name; otherwise leave it as it is. */
++    expectedName: Schema.optional(AppName),
+   }),
+   source: Schema.Struct({
+     app: AppId,
+@@ -742,12 +744,13 @@ export const AppsGroup = /* @__PURE__ */ (() =>
+         query: ownerQuery,
+         payload: Schema.Struct({
+           name: AppInputs.rename.fields.name,
++          expectedName: AppInputs.rename.fields.expectedName,
+         }),
+         success: App,
+         error: [StorageError, AppNotFound, AppNameTaken, AppSlugTaken],
+       }).annotate(
+         OpenApi.Description,
+-        "Rename an app and derive its new slug. The name and normalized slug must be unique within its owner.",
++        "Rename an app and derive its new slug. The name and normalized slug must be unique within its owner. With expectedName, the rename applies only while the app still has that name; otherwise the app is returned unchanged.",
+       ),
+     )
+     .add(
+diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+--- a/packages/sdk/src/implementation/apps.ts
++++ b/packages/sdk/src/implementation/apps.ts
+@@ -843,6 +843,9 @@ export const makeApps = (
+       transaction(db, (tx) =>
+         Effect.gen(function* () {
+           const app = yield* lockApp(tx, input);
++          // Someone already named it; the conditional rename leaves their name alone.
++          if (input.expectedName !== undefined && app.name !== input.expectedName)
++            return yield* project(tx, app);
+           const taken = yield* query(() =>
+             tx.findFirst("apps", {
+               where: (b) => b.and(b("owner", "=", app.owner), b("name", "=", input.name)),
