@@ -101,6 +101,64 @@ const sourceRefusal = (value: unknown): SourceRefusal | undefined => {
   return { code: row.code, version: row.version, expected: row.expected, actual: row.actual };
 };
 
+const retainedObjectClasses = [
+  "references",
+  "framework_metadata",
+  "split_record",
+  "legacy_record",
+] as const;
+const retainedReadPhases = ["validate", "list", "read", "project"] as const;
+const retainedWorkBounds = {
+  references: 2001,
+  builds: 2000,
+  metadataAttempts: 9,
+  metadataPages: 3,
+  metadataObjects: 3000,
+  recordAttempts: 12000,
+  completedBuilds: 2000,
+} as const;
+type RetainedReadWork = Record<keyof typeof retainedWorkBounds, number>;
+const retainedReadWork = (value: unknown): RetainedReadWork | undefined => {
+  if (typeof value !== "object" || value === null) return;
+  const row = value as Record<string, unknown>;
+  const work: Record<string, number> = {};
+  for (const [key, maximum] of Object.entries(retainedWorkBounds)) {
+    const count = row[key];
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0 || count > maximum)
+      return;
+    work[key] = count;
+  }
+  return work as RetainedReadWork;
+};
+interface RetainedReadDiagnostic {
+  readonly objectClass: (typeof retainedObjectClasses)[number];
+  readonly readPhase: (typeof retainedReadPhases)[number];
+  readonly elapsedMs: number;
+  readonly work?: RetainedReadWork;
+}
+const retainedReadDiagnostic = (value: unknown): RetainedReadDiagnostic | undefined => {
+  if (typeof value !== "object" || value === null) return;
+  const row = value as Record<string, unknown>;
+  const objectClass = retainedObjectClasses.find((entry) => entry === row.objectClass);
+  const readPhase = retainedReadPhases.find((entry) => entry === row.readPhase);
+  if (
+    !objectClass ||
+    !readPhase ||
+    typeof row.elapsedMs !== "number" ||
+    !Number.isSafeInteger(row.elapsedMs) ||
+    row.elapsedMs < 0 ||
+    row.elapsedMs > 86_400_000
+  )
+    return;
+  const work = retainedReadWork(row.work);
+  return {
+    objectClass,
+    readPhase,
+    elapsedMs: row.elapsedMs,
+    ...(work === undefined ? {} : { work }),
+  };
+};
+
 export interface FailureReceipt {
   readonly format: "basalt-production-ops-failure-v1";
   readonly category: (typeof categories)[number];
@@ -116,6 +174,7 @@ export interface FailureReceipt {
   readonly homeStatus?: number;
   readonly homeCode?: RemovalDiagnostic["homeCode"];
   readonly source?: SourceRefusal;
+  readonly retainedRead?: RetainedReadDiagnostic;
 }
 
 export class OperationFailure extends Error {
@@ -145,6 +204,8 @@ export function failureReceipt(value: unknown): FailureReceipt | undefined {
   const causeKind = causeKinds.find((entry) => entry === row.causeKind);
   const removal = removalDiagnostic(row);
   const source = category === "refused" ? sourceRefusal(row.source) : undefined;
+  const retainedRead =
+    category === "refused" ? retainedReadDiagnostic(row.retainedRead) : undefined;
   return {
     format: "basalt-production-ops-failure-v1",
     category,
@@ -154,6 +215,7 @@ export function failureReceipt(value: unknown): FailureReceipt | undefined {
     ...reason,
     ...removal,
     ...(source === undefined ? {} : { source }),
+    ...(retainedRead === undefined ? {} : { retainedRead }),
   };
 }
 

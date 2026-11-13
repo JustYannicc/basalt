@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import pg from "pg";
+import { backendCountSql } from "../../database-budget-verification.ts";
 
 export function localDatabaseUrl(value: string | undefined) {
   assert.ok(value, "The isolated database URL is required");
@@ -33,11 +34,12 @@ export async function runtimeBackends(
   databases: string[],
   roles = ["budget_a", "budget_b"],
 ) {
-  const result = await admin.query<{ connections: number }>(
-    "SELECT count(*)::int AS connections FROM pg_stat_activity WHERE datname=ANY($1::text[]) AND usename=ANY($2::text[])",
-    [databases, roles],
-  );
-  return result.rows[0]!.connections;
+  const result = await admin.query<{ database: string; connections: number }>(backendCountSql, [
+    roles,
+  ]);
+  return result.rows
+    .filter((row) => databases.includes(row.database))
+    .reduce((total, row) => total + row.connections, 0);
 }
 
 export async function waitForBackendCount(
@@ -45,12 +47,13 @@ export async function waitForBackendCount(
   databases: string[],
   expected: number,
   roles = ["budget_a", "budget_b"],
+  comparison: "exact" | "at-least" = "exact",
 ) {
   const deadline = performance.now() + 2_000;
   let count = 0;
   while (performance.now() < deadline) {
     count = await runtimeBackends(admin, databases, roles);
-    if (count >= expected) return count;
+    if (comparison === "at-least" ? count >= expected : count === expected) return count;
   }
   throw new Error(`Expected ${expected} admitted PostgreSQL backends, observed ${count}`);
 }

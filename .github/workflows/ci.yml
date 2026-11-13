@@ -226,10 +226,15 @@ jobs:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           BATCH_MODE: ${{ startsWith(github.head_ref, 'batch/') || startsWith(github.ref, 'refs/heads/batch/') }}
+          MAIN_PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: |
           python3 -m unittest discover -s scripts/cpa-tests
           args=(--base "$BASE_SHA" --head "$HEAD_SHA")
-          if [ "$BATCH_MODE" = true ]; then args+=(--batch); fi
+          if [ "$MAIN_PUSH" = true ]; then
+            args+=(--main-push)
+          elif [ "$BATCH_MODE" = true ]; then
+            args+=(--batch)
+          fi
           python3 scripts/cpa-pipeline-guard.py "${args[@]}"
   client-connection:
     runs-on: ubuntu-latest

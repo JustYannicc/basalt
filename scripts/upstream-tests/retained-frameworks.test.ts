@@ -300,35 +300,42 @@ test(
     const started = Promise.withResolvers<void>();
     const neverCancelled = Promise.withResolvers<void>();
     let cancels = 0;
-    const readable = new ReadableStream<Uint8Array>(
-      {
-        pull() {
-          started.resolve();
+    const readables: ReadableStream<Uint8Array>[] = [];
+    const makeReadable = () =>
+      new ReadableStream<Uint8Array>(
+        {
+          pull() {
+            started.resolve();
+          },
+          cancel() {
+            cancels++;
+            return neverCancelled.promise;
+          },
         },
-        cancel() {
-          cancels++;
-          return neverCancelled.promise;
-        },
-      },
-      { highWaterMark: 0 },
-    );
-    fixture.bucket.get = () => Effect.succeed(nativeObject(1, readable));
+        { highWaterMark: 0 },
+      );
+    fixture.bucket.get = () =>
+      Effect.sync(() => {
+        const readable = makeReadable();
+        readables.push(readable);
+        return nativeObject(1, readable);
+      });
     const exit = await Effect.runPromise(
       Effect.gen(function* () {
         const fiber = yield* retained
           .retainedFrameworks(reference(), r2.retainedFrameworkObjects(fixture.bucket))
           .pipe(Effect.forkChild);
         yield* Effect.promise(() => started.promise);
-        yield* TestClock.adjust("8 seconds");
+        yield* TestClock.adjust("18 seconds");
         return yield* Fiber.await(fiber);
       }).pipe(Effect.provide(TestClock.layer()), Effect.provide(fixture.logger), Effect.scoped),
     );
     assert.ok(Exit.isFailure(exit));
     const error = Cause.findErrorOption(exit.cause);
     assert.ok(error._tag === "Some" && error.value instanceof contracts.ProductionOperationRefused);
-    assert.equal(error.value.message, "Retained frameworks: time bound");
-    assert.equal(cancels, 1);
-    assert.equal(readable.locked, false);
+    assert.equal(error.value.message, "Retained frameworks: read timeout");
+    assert.equal(cancels, 3);
+    assert.ok(readables.every((readable) => !readable.locked));
     assert.ok(!JSON.stringify({ exit, logs: fixture.logs }).includes(moduleText));
   },
 );
@@ -355,12 +362,12 @@ test("the fixed time bound covers a stalled get and a stalled record body", asyn
         const fiber = yield* retained
           .retainedFrameworks(reference(), r2.retainedFrameworkObjects(fixture.bucket))
           .pipe(Effect.forkChild);
-        yield* TestClock.adjust("8 seconds");
+        yield* TestClock.adjust("18 seconds");
         return yield* Fiber.await(fiber);
       }).pipe(Effect.provide(TestClock.layer()), Effect.scoped),
     );
     assert.ok(Exit.isFailure(result));
-    assert.match(Cause.pretty(result.cause), /Retained frameworks: time bound/);
+    assert.match(Cause.pretty(result.cause), /Retained frameworks: read timeout/);
     assert.ok(!JSON.stringify({ result, logs: fixture.logs }).includes(moduleText));
     if (stalledBody) assert.ok(finalized, "Timeout finalizes the in-flight body read");
   }
