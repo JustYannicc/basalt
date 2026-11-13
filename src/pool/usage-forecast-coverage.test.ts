@@ -214,7 +214,7 @@ test("days before a frozen range remain gaps until native capture supplies proof
 test("backfillComplete alone and one certified source cannot certify every import", () => {
   const result = fixture();
   const proof = imported(result.from, result.to);
-  const { completion, ...uncertified } = proof;
+  const { completion: _completion, ...uncertified } = proof;
   result.coverage.sources = [uncertified];
   const noProof = { capturedAt: null, incompleteHours: null };
   const missing = summaryKnownDays(result.from, result.to, result.coverage, noProof);

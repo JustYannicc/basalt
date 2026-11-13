@@ -10,6 +10,7 @@ export function summaryGroups(
   rows: readonly Record<string, unknown>[],
   input: PoolUsageSeriesInput,
   prices: OverviewPriceTable,
+  unavailableReason?: string,
 ) {
   const series = new Map<string, SeriesGroup>();
   const compact = new Map<
@@ -47,10 +48,12 @@ export function summaryGroups(
           ? {
               tokens: bucket.tokens,
               apiEstimate:
-                key.model === undefined && estimate.excluded.unpriced > 0
+                estimate.excluded.unpriced > 0 && (unavailableReason || key.model === undefined)
                   ? {
                       ...estimate,
-                      reason: "Some requests lack a usable current price or complete token counts.",
+                      reason:
+                        unavailableReason ??
+                        "Some requests lack a usable current price or complete token counts.",
                     }
                   : estimate,
             }

@@ -52,6 +52,17 @@ test("model and cost-breakdown overflow stays explicit without paging or droppin
         Date.parse(to),
       );
       assert.equal(reads, 0);
+      const overflow =
+        "More than 100 provider/model pairs need prices; money estimates are unavailable.";
+      for (const bucket of [
+        ...result.daily,
+        ...result.previousDaily,
+        ...(result.models?.groups ?? []),
+      ].flatMap((group) => group.buckets))
+        if (bucket.details?.apiEstimate.excluded.unpriced)
+          assert.equal(bucket.details.apiEstimate.reason, overflow);
+      assert.ok(result.forecasts.warnings.includes(overflow));
+      for (const slice of result.usageSlices) assert.equal(slice.apiReason, overflow);
       assert.equal(
         result.daily
           .flatMap((group) => group.buckets)

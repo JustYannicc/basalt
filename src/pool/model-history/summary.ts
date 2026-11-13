@@ -50,6 +50,10 @@ export async function poolUsageSummary(
     let selection = await summarySelection(pool, readFrom, input.to, authority);
     const targetQuery = summaryPriceTargets(selection);
     const targets = (await db.query(targetQuery.text, targetQuery.values)).rows;
+    const priceUnavailableReason =
+      targets.length > 100
+        ? "More than 100 provider/model pairs need prices; money estimates are unavailable."
+        : undefined;
     let prices: OverviewPriceTable = { prices: [], issues: [] };
     if (targets.length <= 100 && currentPrices)
       try {
@@ -85,9 +89,19 @@ export async function poolUsageSummary(
       by: ["provider"],
       timezone: "Europe/Zurich",
     };
-    const history = summaryGroups(historyRows, seriesInput, prices);
-    const daily = summaryGroups(providerRows, { ...seriesInput, from: input.from }, prices);
-    const previousDaily = summaryGroups(previousRows, { ...seriesInput, ...previous }, prices);
+    const history = summaryGroups(historyRows, seriesInput, prices, priceUnavailableReason);
+    const daily = summaryGroups(
+      providerRows,
+      { ...seriesInput, from: input.from },
+      prices,
+      priceUnavailableReason,
+    );
+    const previousDaily = summaryGroups(
+      previousRows,
+      { ...seriesInput, ...previous },
+      prices,
+      priceUnavailableReason,
+    );
     const incidentTo = timestamp(new Date(now).toISOString());
     const captureTo = [input.to, incidentTo].sort().at(-1)!;
     const capture = await homeCaptureCoverage(
@@ -140,6 +154,7 @@ export async function poolUsageSummary(
         missingHours !== null &&
         ![...missingHours].some((at) => Date.parse(at) + 3_600_000 > incidentFrom),
     );
+    const forecasts = seriesUsageForecasts(series, capture, historyCoverage.known);
     let result: PoolUsageSummaryResult = {
       from: input.from,
       to: input.to,
@@ -171,9 +186,12 @@ export async function poolUsageSummary(
                   modelRows,
                   { ...seriesInput, from: input.from, by: ["provider", "model"] },
                   prices,
+                  priceUnavailableReason,
                 ).groups,
               },
-      forecasts: seriesUsageForecasts(series, capture, historyCoverage.known),
+      forecasts: priceUnavailableReason
+        ? { ...forecasts, warnings: [...forecasts.warnings, priceUnavailableReason] }
+        : forecasts,
       usageSlices:
         costRows.length > maxSummaryCostRows
           ? []
@@ -182,6 +200,7 @@ export async function poolUsageSummary(
               prices.prices,
               [],
               prices.issues,
+              priceUnavailableReason,
             ),
       ...(costRows.length > maxSummaryCostRows
         ? {
@@ -212,6 +231,7 @@ export async function poolUsageSummary(
         coverage: complete.has(Date.parse(point.at)) ? 1 : null,
       })),
       partial:
+        priceUnavailableReason !== undefined ||
         hourly.partial ||
         costRows.length > maxSummaryCostRows ||
         modelRows.length > maxSummaryModelRows ||
