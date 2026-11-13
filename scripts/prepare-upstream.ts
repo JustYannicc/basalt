@@ -78,6 +78,7 @@ run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/tunnel")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/architecture")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/app-lint")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/startup-profiler")]);
+run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/pool-test-runtime")]);
 const modules = join(root, "node_modules");
 if (!existsSync(modules)) symlinkSync(".upstream/apps/hosted/cloud/node_modules", modules, "dir");
 else if (!lstatSync(modules).isSymbolicLink())
