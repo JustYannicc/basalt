@@ -4014,7 +4014,7 @@ index 1cf8952..b4a8082 100644
                  ...(hostAcquisition === undefined ? {} : { hostAcquisition }),
                },
 diff --git a/e2e/tests/hitl-intent-scope.spec.ts b/e2e/tests/hitl-intent-scope.spec.ts
-index e599ad1..cb523e6 100644
+index e599ad1..f792d7a 100644
 --- a/e2e/tests/hitl-intent-scope.spec.ts
 +++ b/e2e/tests/hitl-intent-scope.spec.ts
 @@ -7,7 +7,7 @@ import { Target } from "../support/platform.ts";
@@ -4026,7 +4026,7 @@ index e599ad1..cb523e6 100644
  import { observeNavigation } from "../support/instant-navigation.ts";
  import { checkTouchIntent } from "../support/hitl-touch-intent.ts";
  import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
-@@ -503,6 +503,67 @@ layer(HostedLive, { excludeTestServices: true })("Human in the loop intent scope
+@@ -503,6 +503,62 @@ layer(HostedLive, { excludeTestServices: true })("Human in the loop intent scope
            ).toBe(false);
            yield* browser.checkpoint(`The member's queue without the owner's question at ${width}`);
            if (phone) yield* checkTouchIntent(a.slug);
@@ -4073,14 +4073,9 @@ index e599ad1..cb523e6 100644
 +          yield* browser.use("The denied queue unmounts", (page) =>
 +            page.getByRole("heading", { name: "Connect your agent", exact: true }).waitFor(),
 +          );
-+          yield* browser.use("Let the unused change stream close", (page) =>
-+            page.clock.runFor(1_100),
-+          );
-+          const authority = yield* holdQuery(
-+            /^\/api\/organizations\/[^/]+\/changes(?:\/current)?$/,
-+            "continue",
-+            { allRequests: true },
-+          );
++          const authority = yield* holdQuery(directoryPath, "continue", { allRequests: true });
++          // A shared stream may remain active; a real access change makes a new read owed.
++          yield* f.share("private");
 +          yield* watchFor("Watch the remount for the denied question", question);
 +          yield* openInApp("Remount while authority is pending", `/org/${a.slug}/approvals`);
 +          yield* authority.requested;
