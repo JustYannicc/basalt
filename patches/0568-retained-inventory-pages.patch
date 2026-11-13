@@ -1,0 +1,478 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+@@ -8,8 +8,8 @@
+ } from "./contracts.ts";
+ import { canonical, openArtifact, protectArtifact, ProtectedArtifact, sha256 } from "./crypto.ts";
+ import { backupSelections, backupTables, snapshotTables } from "./backup.ts";
+-import { inventorySnapshot, resolveInventory } from "./inventory.ts";
+-import { retainedFrameworkReadBudget } from "./retained-frameworks-read.ts";
++import { inventoryOperation } from "./inventory-operation.ts";
++import { readOnly } from "./read-only.ts";
+ import { productionMigrations } from "./migrations.ts";
+ import { checkPlanScope, OrganizationRequest, requireOrganization } from "./scope.ts";
+ import { atPhase } from "./diagnostics.ts";
+@@ -23,6 +23,7 @@
+   request: OrganizationRequest,
+   recipient: Schema.NonEmptyString,
+   artifact: Schema.optionalKey(ProtectedArtifact),
++  continuation: Schema.optionalKey(ProtectedArtifact),
+   planSha256: Schema.optionalKey(Schema.String),
+   backupSha256: Schema.optionalKey(Schema.String),
+   go: Schema.optionalKey(Schema.String),
+@@ -99,20 +100,6 @@
+   );
+ }
+ 
+-const readOnly = <A, E>(work: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+-  Effect.gen(function* () {
+-    const sql = yield* SqlClient.SqlClient;
+-    return yield* sql.withTransaction(
+-      Effect.gen(function* () {
+-        yield* sql`set transaction isolation level repeatable read read only`;
+-        yield* sql`set local statement_timeout = '5s'`;
+-        yield* sql`set local lock_timeout = '500ms'`;
+-        yield* sql`set local idle_in_transaction_session_timeout = '10s'`;
+-        return yield* work;
+-      }),
+-    );
+-  });
+-
+ const inspect = (module: ProductionMigration, request: Json) =>
+   module
+     .inspect(request)
+@@ -132,36 +119,9 @@
+       Effect.tryPromise(() =>
+         protectArtifact(value, settings.encryptionKey, operation.recipient, settings.target),
+       ).pipe(atPhase("encryption"));
+-    if (operation.action === "inventory") {
+-      const captured = yield* readOnly(
+-        Effect.gen(function* () {
+-          const database = yield* databaseIdentity(settings.databaseOrigin);
+-          return {
+-            snapshot: yield* inventorySnapshot(operation.selection, organization),
+-            database,
+-          };
+-        }),
+-      );
+-      const result = {
+-        ...(yield* resolveInventory(
+-          captured.snapshot,
+-          settings.retainedFrameworkObjects,
+-          yield* retainedFrameworkReadBudget(now),
+-        )),
+-        database: captured.database,
+-      };
+-      return {
+-        action: "inventory",
+-        rows: result.rows.length,
+-        artifact: yield* protect({
+-          format: "basalt-production-inventory-v1",
+-          target: settings.target,
+-          release: settings.release,
+-          observedAt: now,
+-          ...result,
+-        }),
+-      };
+-    }
++    if (operation.action === "inventory")
++      return yield* inventoryOperation(settings, operation, now);
++
+     const module = Object.hasOwn(productionMigrations, operation.selection)
+       ? productionMigrations[operation.selection]
+       : undefined;
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
+@@ -1,5 +1,6 @@
+ import { AppCodeId, VersionId } from "@executor-js/sdk/core";
+ import { DeploymentSourceRefused } from "../../implementation/source-preservation.ts";
++import { retainedReasonCodes } from "./retained-frameworks-reasons.ts";
+ import { knownRefusalGuard } from "./refusal-guards.ts";
+ import { Cause, Effect, Option, Schema } from "effect";
+ import { SqlError } from "effect/sql";
+@@ -79,6 +80,7 @@
+   causeKind: Schema.optionalKey(Schema.Literals(["failure", "defect", "interrupted", "composite"])),
+   reason: Schema.optionalKey(Schema.Literal("stale_plan")),
+   source: Schema.optionalKey(SourceRefusal),
++  reasonCode: Schema.optionalKey(Schema.Literals(retainedReasonCodes)),
+   retainedRead: Schema.optionalKey(RetainedFrameworkReadDiagnostic),
+ });
+ type FailureReceipt = typeof FailureReceipt.Type;
+@@ -114,11 +116,17 @@
+       ...(Option.isSome(source) ? { source: source.value } : {}),
+     };
+   }
+-  if (error instanceof ProviderAppsRefused || error instanceof ProductionOperationRefused)
++  if (error instanceof ProviderAppsRefused || error instanceof ProductionOperationRefused) {
++    const guard = knownRefusalGuard(error.message);
++    const reasonCode =
++      guard?.guard === "retained_frameworks"
++        ? retainedReasonCodes.find((code) => code === guard.reasonCode)
++        : undefined;
+     return {
+       format: "basalt-production-ops-failure-v1",
+       category: "refused",
+       phase,
++      ...(reasonCode === undefined ? {} : { reasonCode }),
+       ...(error instanceof RetainedFrameworkReadRefused
+         ? Option.match(
+             Schema.decodeUnknownOption(RetainedFrameworkReadDiagnostic)(error.diagnostic),
+@@ -132,6 +140,19 @@
+         ? { reason: "stale_plan" as const }
+         : {}),
+     };
++  }
++  if (
++    typeof error === "object" &&
++    error !== null &&
++    "_tag" in error &&
++    error._tag === "TimeoutError"
++  )
++    return {
++      format: "basalt-production-ops-failure-v1",
++      category: "refused",
++      phase,
++      reasonCode: "operation_timeout",
++    };
+   if (SqlError.isSqlError(error)) {
+     const driver = error.reason.cause;
+     const code =
+@@ -143,6 +164,7 @@
+       format: "basalt-production-ops-failure-v1",
+       category: "sql",
+       phase,
++      reasonCode: code === "57014" ? "sql_query_timeout" : "sql_failure",
+       ...(Option.isSome(state) ? { sqlStateClass: state.value } : {}),
+     };
+   }
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts b/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts
+@@ -31,6 +31,11 @@
+     inventory_exceeds_its_bound: "Inventory exceeds its bound",
+   },
+   retained_frameworks: {
++    invalid_continuation: "Retained frameworks: invalid continuation",
++    continuation_scope_changed: "Retained frameworks: continuation scope changed",
++    snapshot_changed: "Retained frameworks: snapshot changed",
++    metadata_changed: "Retained frameworks: metadata changed",
++    cursor_not_progressing: "Retained frameworks: cursor not progressing",
+     binding_unavailable: "Retained frameworks: binding unavailable",
+     malformed_references: "Retained frameworks: malformed references",
+     inconsistent_references: "Retained frameworks: inconsistent references",
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/read-only.ts b/apps/hosted/cloud/src/infrastructure/production-ops/read-only.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/read-only.ts
+@@ -0,0 +1,16 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++export const readOnly = <A, E>(work: Effect.Effect<A, E, SqlClient.SqlClient>) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        yield* sql`set transaction isolation level repeatable read read only`;
++        yield* sql`set local statement_timeout = '5s'`;
++        yield* sql`set local lock_timeout = '500ms'`;
++        yield* sql`set local idle_in_transaction_session_timeout = '10s'`;
++        return yield* work;
++      }),
++    );
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory-operation.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory-operation.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory-operation.ts
+@@ -0,0 +1,43 @@
++import { Effect } from "effect";
++import { protectArtifact } from "./crypto.ts";
++import { databaseIdentity } from "./database-identity.ts";
++import { atPhase } from "./diagnostics.ts";
++import { inventorySnapshot, resolveInventory } from "./inventory.ts";
++import { readOnly } from "./read-only.ts";
++import { retainedFrameworkPage } from "./retained-frameworks-page.ts";
++import type { Operation, OpsSettings } from "./runner.ts";
++
++/** Every inventory releases its SQL snapshot before external record reads or encryption. */
++export const inventoryOperation = (settings: OpsSettings, operation: Operation, now: number) =>
++  Effect.gen(function* () {
++    if (operation.selection === "retained-frameworks")
++      return yield* retainedFrameworkPage(settings, operation, now);
++    const captured = yield* readOnly(
++      Effect.gen(function* () {
++        const database = yield* databaseIdentity(settings.databaseOrigin);
++        return {
++          snapshot: yield* inventorySnapshot(operation.selection, operation.request.organization),
++          database,
++        };
++      }),
++    );
++    const result = { ...(yield* resolveInventory(captured.snapshot)), database: captured.database };
++    return {
++      action: "inventory",
++      rows: result.rows.length,
++      artifact: yield* Effect.tryPromise(() =>
++        protectArtifact(
++          {
++            format: "basalt-production-inventory-v1",
++            target: settings.target,
++            release: settings.release,
++            observedAt: now,
++            ...result,
++          },
++          settings.encryptionKey,
++          operation.recipient,
++          settings.target,
++        ),
++      ).pipe(atPhase("encryption")),
++    };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-page-query.ts b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-page-query.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-page-query.ts
+@@ -0,0 +1,53 @@
++import { Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import { retainedFrameworkRefused } from "./retained-frameworks.ts";
++
++export const retainedFrameworkPageSize = 64;
++const Id = (prefix: string) =>
++  Schema.String.check(Schema.isPattern(new RegExp(`^${prefix}_[A-Za-z0-9_-]{1,251}$`, "u")));
++const Reference = Schema.Struct({ app: Id("app"), deployment: Id("dpl"), build: Id("bld") });
++export const ReferenceSnapshot = Schema.Struct({
++  references: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 2147483647 })),
++  fingerprint: Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/)),
++});
++const scope = `from executor_apps a join executor_deployments d on d.code = a.code and d.owner = a.owner
++  where a.owner = 'organization:' || $1 and d.owner = 'organization:' || $1`;
++
++/** Only the first and final pages fingerprint the scoped associations; no record bodies enter SQL. */
++export const referenceSnapshot = (organization: string) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql.unsafe(
++      `select count(*)::int as "references",
++    md5(coalesce(string_agg(a.id || chr(31) || d.id || chr(31) || d.build, chr(30)
++      order by a.id collate "C", d.id collate "C"), '')) as fingerprint ${scope}`,
++      [organization],
++    );
++    return yield* Schema.decodeUnknownEffect(ReferenceSnapshot)(rows[0]).pipe(
++      Effect.mapError(() => new Error("Invalid retained reference snapshot")),
++    );
++  });
++
++/** Keyset by distinct build prevents copied or inactive associations from rereading a build. */
++export const referencePage = (organization: string, after: string) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const result = yield* sql.unsafe(
++      `with selected as (
++    select distinct d.build collate "C" as build ${scope} and d.build collate "C" > $2 collate "C"
++    order by build limit ${retainedFrameworkPageSize + 1}
++  ), page as (select build from selected order by build limit ${retainedFrameworkPageSize}), refs as (
++    select a.id as app, d.id as deployment, d.build ${scope}
++    and d.build in (select build from page) order by d.build collate "C", a.id collate "C", d.id collate "C" limit 2001
++  ) select coalesce((select jsonb_agg(refs order by build collate "C", app collate "C", deployment collate "C") from refs), '[]'::jsonb) as rows,
++    (select count(*) > ${retainedFrameworkPageSize} from selected) as more`,
++      [organization, after],
++    );
++    const decoded = yield* Schema.decodeUnknownEffect(
++      Schema.Struct({ rows: Schema.Array(Reference), more: Schema.Boolean }),
++    )(result[0]).pipe(Effect.catch(() => retainedFrameworkRefused("malformed references")));
++    if (decoded.rows.length > 2000) return yield* retainedFrameworkRefused("reference count bound");
++    if (decoded.more && decoded.rows.length === 0)
++      return yield* retainedFrameworkRefused("cursor not progressing");
++    return { ...decoded, last: decoded.rows.at(-1)?.build ?? after };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-page.ts b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-page.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-page.ts
+@@ -0,0 +1,144 @@
++import { randomUUID } from "node:crypto";
++import { Effect, Schema } from "effect";
++import { canonical, openArtifact, protectArtifact, sha256 } from "./crypto.ts";
++import { databaseIdentity } from "./database-identity.ts";
++import { atPhase } from "./diagnostics.ts";
++import { readOnly } from "./read-only.ts";
++import {
++  referencePage,
++  referenceSnapshot,
++  ReferenceSnapshot,
++} from "./retained-frameworks-page-query.ts";
++import { retainedFrameworks, retainedFrameworkRefused } from "./retained-frameworks.ts";
++import { retainedFrameworkReadBudget } from "./retained-frameworks-read.ts";
++import type { Operation, OpsSettings } from "./runner.ts";
++
++const Digest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
++const Cursor = Schema.Struct({
++  format: Schema.Literal("basalt-retained-inventory-cursor-v1"),
++  target: Schema.String,
++  organization: Schema.String,
++  release: Schema.String,
++  recipient: Digest,
++  database: Schema.Json,
++  session: Schema.NonEmptyString,
++  index: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2000 })),
++  after: Schema.String.check(Schema.isPattern(/^bld_[A-Za-z0-9_-]{1,251}$/)),
++  snapshot: ReferenceSnapshot,
++  metadataSha256: Digest,
++  prior: Digest,
++  startedAt: Schema.Number,
++  expiresAt: Schema.Number,
++});
++
++/** A sealed constant-size cursor carries authority and progress, never the completed build set. */
++export const retainedFrameworkPage = (settings: OpsSettings, operation: Operation, now: number) =>
++  Effect.gen(function* () {
++    const organization = operation.request.organization;
++    const prior =
++      operation.continuation === undefined
++        ? undefined
++        : yield* Effect.tryPromise(() =>
++            openArtifact(operation.continuation!, settings.encryptionKey, settings.target),
++          ).pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Cursor)),
++            Effect.catch(() => retainedFrameworkRefused("invalid continuation")),
++          );
++    if (
++      prior &&
++      (prior.target !== settings.target ||
++        prior.organization !== organization ||
++        prior.release !== settings.release ||
++        prior.recipient !== sha256(operation.recipient) ||
++        prior.startedAt > now ||
++        prior.expiresAt <= now ||
++        prior.expiresAt !== prior.startedAt + 3600000)
++    )
++      return yield* retainedFrameworkRefused("continuation scope changed");
++    const captured = yield* readOnly(
++      Effect.gen(function* () {
++        const database = yield* databaseIdentity(settings.databaseOrigin);
++        if (prior && canonical(prior.database) !== canonical(database))
++          return yield* retainedFrameworkRefused("continuation scope changed");
++        const page = yield* referencePage(organization, prior?.after ?? "");
++        const snapshot = prior?.snapshot ?? (yield* referenceSnapshot(organization));
++        if (
++          prior &&
++          !page.more &&
++          canonical(snapshot) !== canonical(yield* referenceSnapshot(organization))
++        )
++          return yield* retainedFrameworkRefused("snapshot changed");
++        return { database, page, snapshot };
++      }),
++    );
++    if (!settings.retainedFrameworkObjects)
++      return yield* retainedFrameworkRefused("binding unavailable");
++    const result = yield* retainedFrameworks(
++      captured.page.rows,
++      settings.retainedFrameworkObjects,
++      yield* retainedFrameworkReadBudget(now),
++    );
++    const metadataSha256 = sha256(canonical(result.frameworks));
++    if (prior && prior.metadataSha256 !== metadataSha256)
++      return yield* retainedFrameworkRefused("metadata changed");
++    const index = prior?.index ?? 0;
++    const session = prior?.session ?? randomUUID();
++    const protect = (value: unknown) =>
++      Effect.tryPromise(() =>
++        protectArtifact(value, settings.encryptionKey, operation.recipient, settings.target),
++      ).pipe(atPhase("encryption"));
++    const page = {
++      index,
++      session,
++      prior: prior?.prior ?? null,
++      more: captured.page.more,
++      after: prior?.after ?? "",
++      last: captured.page.last,
++      references: captured.page.rows.length,
++      snapshot: captured.snapshot,
++      metadataSha256,
++    };
++    const artifact = yield* protect({
++      format: "basalt-production-inventory-v1",
++      target: settings.target,
++      release: settings.release,
++      observedAt: now,
++      selection: "retained-frameworks",
++      organization,
++      database: captured.database,
++      page,
++      ...result,
++    });
++    const continuation = captured.page.more
++      ? yield* protect({
++          format: "basalt-retained-inventory-cursor-v1",
++          target: settings.target,
++          organization,
++          release: settings.release,
++          recipient: sha256(operation.recipient),
++          database: captured.database,
++          session,
++          index: index + 1,
++          after: captured.page.last,
++          snapshot: captured.snapshot,
++          metadataSha256,
++          prior: artifact.sha256,
++          startedAt: prior?.startedAt ?? now,
++          expiresAt: (prior?.startedAt ?? now) + 3600000,
++        })
++      : undefined;
++    return {
++      action: "inventory",
++      rows: result.rows.length,
++      artifact,
++      pagination: {
++        index,
++        session,
++        more: captured.page.more,
++        complete: result.complete,
++        builds: result.builds.length,
++        references: captured.page.rows.length,
++      },
++      ...(continuation === undefined ? {} : { continuation }),
++    };
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-reasons.ts b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-reasons.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-reasons.ts
+@@ -0,0 +1,34 @@
++export const retainedReasonCodes = [
++  "binding_unavailable",
++  "malformed_references",
++  "inconsistent_references",
++  "reference_count_bound",
++  "record_count_bound",
++  "object_count_bound",
++  "metadata_page_bound",
++  "invalid_metadata_cursor",
++  "malformed_metadata",
++  "unreadable_metadata",
++  "invalid_build_key",
++  "malformed_record_size",
++  "native_body_unavailable",
++  "record_size_changed",
++  "object_byte_bound",
++  "stream_byte_bound",
++  "total_byte_bound",
++  "byte_bound",
++  "time_bound",
++  "read_timeout",
++  "invalid_continuation",
++  "continuation_scope_changed",
++  "snapshot_changed",
++  "metadata_changed",
++  "cursor_not_progressing",
++  "operation_timeout",
++  "sql_query_timeout",
++  "sql_failure",
++  "page_protocol_invalid",
++  "page_sequence_invalid",
++  "page_incomplete",
++  "page_count_bound",
++] as const;

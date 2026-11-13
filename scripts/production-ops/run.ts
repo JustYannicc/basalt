@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { brand } from "../../brand.ts";
+import { retainedInventory } from "./inventory-pagination.ts";
 import { productionOperation } from "./client.ts";
 import { failure, failureReceipt, OperationFailure, type FailureReceipt } from "./failure.ts";
 
@@ -58,7 +59,7 @@ try {
     );
   }
   phase = "request";
-  const result = await productionOperation({
+  const input = {
     target: `https://${brand.host}`,
     signingKey: process.env.POOL_APP_SIGNING_KEY ?? "",
     action,
@@ -69,7 +70,18 @@ try {
     planSha256: process.env.OPS_PLAN_SHA256 ?? "",
     go: process.env.OPS_GO ?? "",
     ...(previous === undefined ? {} : { previous }),
-  });
+  };
+  const result =
+    action === "inventory" && input.selection === "retained-frameworks"
+      ? await retainedInventory(input, fetch, (page, index) => {
+          mkdirSync(join(output, "pages"), { recursive: true, mode: 0o700 });
+          writeFileSync(
+            join(output, "pages", `${String(index).padStart(5, "0")}.json`),
+            `${JSON.stringify(page)}\n`,
+            { mode: 0o600, flag: "wx" },
+          );
+        })
+      : await productionOperation(input);
   phase = "receipt";
   mkdirSync(output, { recursive: true, mode: 0o700 });
   writeFileSync(join(output, "operation.json"), `${JSON.stringify(result)}\n`, {
@@ -83,6 +95,9 @@ try {
       : result.planSha256;
   const summary = {
     action: result.action,
+    pages: result.pages,
+    builds: result.builds,
+    complete: result.complete,
     rows: result.rows,
     changes: result.changes,
     planSha256,
@@ -124,13 +139,19 @@ try {
         work === undefined
           ? ""
           : ` Work: ${work.references} references, ${work.builds} builds, ${work.metadataAttempts} metadata attempts, ${work.metadataPages} pages, ${work.metadataObjects} metadata objects, ${work.recordAttempts} record attempts, ${work.completedBuilds} completed builds.`;
-      const detail = `Retained frameworks refused at ${safe.retainedRead.objectClass}/${safe.retainedRead.readPhase} after ${safe.retainedRead.elapsedMs} ms.${counts}`;
+      const detail = `Retained frameworks refused at ${safe.retainedRead.objectClass}/${safe.retainedRead.readPhase} after ${safe.retainedRead.elapsedMs} ms.${safe.reasonCode ? ` Reason: ${safe.reasonCode}.` : ""}${counts}`;
       process.stderr.write(`::error::${detail}\n`);
       if (process.env.GITHUB_STEP_SUMMARY)
         appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n${detail}\n`);
     }
   } catch {
     process.stderr.write("Safe failure receipt could not be saved.\n");
+  }
+  if (safe.reasonCode && !safe.retainedRead) {
+    const detail = `Production operation refused: ${safe.reasonCode}.`;
+    process.stderr.write(`::error::${detail}\n`);
+    if (process.env.GITHUB_STEP_SUMMARY)
+      appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\n${detail}\n`);
   }
   process.stderr.write(
     safe.reason === "stale_plan"
