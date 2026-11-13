@@ -92,6 +92,50 @@ Reconcile the IDs, then restart with the same approved source and a new receipts
 path: retained identical rows insert zero, and changed content fails. Replaying
 pages does not change previous attribution or spend caps.
 
+## Bulk import from an accepted manifest
+
+For a large verified export, `scripts/import-cpamp-bulk.ts` reuses the original
+metadata, exact-ID manifest, source UUID and account map. Run its `prepare`
+command with those files, the accepted manifest's SHA-256, the same destination
+and owner, and a new private `--descriptor` path. `--help` lists the exact
+arguments. Preparation checks every original 200-row page hash and ID before
+writing a small descriptor. It neither contacts the source nor copies the export.
+Keep the accepted files unchanged for upload, apply and recovery.
+
+Run `upload` with the descriptor, private owner session and a new `--receipts`
+path. It rechecks the inputs and stages immutable chunks in EU object storage,
+with at most 5,000 rows and 8 MiB per chunk. Upload does not approve or insert
+history. Review the descriptor's `manifestDigest` and canonical
+`accountMappingDigest` acknowledgement. Production apply still needs the
+coordinator's GO for that exact descriptor digest; approval of the original
+manifest alone does not start the bulk job.
+
+Run `apply` with the same descriptor and owner session, a new receipts path,
+`--approve` set to the exact `manifestDigest`, and `--guard-file` pointing to
+fresh observations from the external guardian. The guard JSON requires
+`observedAt` and `expiresAt` in Unix milliseconds, `ready`, `cpu`, `poolErrors`
+and `queryErrors`. Observations expire within ninety seconds. Never refresh
+the timestamps yourself or replace missing error counts with zero. The guardian
+continues to enforce its CPU/error pause and recovery policy. Missing, stale or
+unsafe observations pause the job, including when the operator client stops.
+
+The EU job processes one bounded chunk per alarm. Every new chunk rechecks the
+current owner's authority and the mapped targets' enabled, selected,
+same-provider state. Its transaction saves the chunk receipt with the request
+rows. Replaying an identical chunk returns that receipt's original counts;
+changed input or retained contents refuses. Existing imported rows and live
+capture keep the same event identities, so overlap does not add duplicate usage.
+
+Use `status` or `watch` to inspect progress, `pause` to stop new chunks, and
+`resume` with the same descriptor, approval digest and a fresh guard after
+recovery. A chunk already admitted may finish. A lost HTTP response stops the
+client without automatic mutation retry. Inspect the private receipts, request
+`status` with a new receipts path, and reconcile before explicitly resuming.
+An interrupted upload can be rerun explicitly with the same immutable descriptor.
+After completion, reconcile retained counts and token sums against the accepted
+source ranges and verify the selected team's history. Local timing does not
+establish production throughput.
+
 Imported history is attributed to the import operation, not to an original person
 or app. Foreign account hashes identify current native accounts only through the
 explicit operator map. Mapped history contributes to the current account's

@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "e716670ce7c0cf30c7dc60f84a4686c7df7340776d7c4fe2c35bf4f5729f68f7" }
+    metadata { bindings "164b5e3e435d9fad8d144770e6166ffdc738d641be3353e68b32074c62c36ee2" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -61,6 +61,11 @@ deployment {
       worker resource-247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b "Pool Worker" {
         app = instanceOf basalt.modelGateway {
           metadata { resource "resource-247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b" }
+        }
+        durableObject resource-39aaf5da0aa90abe20204d4834f474ea6149d8da965638f3e4af78e068b32120 "Bulk Usage Import" {
+          app = instanceOf basalt.bulkUsageImport {
+            metadata { resource "resource-39aaf5da0aa90abe20204d4834f474ea6149d8da965638f3e4af78e068b32120" }
+          }
         }
         durableObject resource-793ef6d5de6e438736b14d305274413357e94e70d2b2864ff687c2eb72f1d4e2 "Pool Container" {
           app = instanceOf basalt.poolController {
@@ -279,6 +284,13 @@ deployment {
       workflow resource-ba613b66a7b4f37d0133ed05f49fd8750a5f2cadd1ed322f8eeb3167167b495a "Provisioning" {
         app = instanceOf basalt.toolsState {
           metadata { resource "resource-ba613b66a7b4f37d0133ed05f49fd8750a5f2cadd1ed322f8eeb3167167b495a" }
+        }
+      }
+    }
+    zone group-4131e346032c074f "Usage import artifacts" {
+      storage resource-8b145eda56e5de69b2bb9265850f96752fc533d6a24710194156854acecfc701 "Usage import artifacts" {
+        app = instanceOf basalt.usageImportArtifacts {
+          metadata { resource "resource-8b145eda56e5de69b2bb9265850f96752fc533d6a24710194156854acecfc701" }
         }
       }
     }
@@ -521,6 +533,11 @@ views {
   deployment view deployment_group_0492fe9825ed3b1f {
     title "Basalt/Deployment/Tools state"
     include deployed.group-0492fe9825ed3b1f.*
+    autoLayout TopBottom
+  }
+  deployment view deployment_group_4131e346032c074f {
+    title "Basalt/Deployment/Usage import artifacts"
+    include deployed.group-4131e346032c074f.*
     autoLayout TopBottom
   }
   deployment view deployment_group_1ed143201a5e9cf6 {

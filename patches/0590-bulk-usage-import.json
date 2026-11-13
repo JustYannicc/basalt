@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-bulk-usage-import",
+  "file": "0590-bulk-usage-import.patch",
+  "content_sha256": "0e533e28582f7688c1a024ab7b5c42b6fec013e548fe12a6cd78c595345c4155",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

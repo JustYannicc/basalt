@@ -155,8 +155,8 @@ model {
       metadata {
         code "src/pool|scripts/public-price-baseline.ts"
         endpointHosts "pool-operations|pool"
-        libraries "apps"
-        bindings "TOOLS_SERVICE=basalt.toolsGateway|service=basalt.toolsGateway|input.tools=basalt.toolsGateway|readiness=basalt.poolRuntime|POOL_AUTH_DATABASE=databaseService|POOL_DATABASE_URL=basalt.poolDatabase|singleton(env)=basalt.poolController|singleton(this.env)=basalt.poolController|container.getTcpPort(port)=basalt.poolRuntime|deps=basalt.poolRuntime|this.ctx.container.getTcpPort(target)=basalt.poolRuntime|container.getTcpPort(8318)=basalt.poolRuntime|container.getTcpPort(8327)=basalt.poolRuntime|port(8318)=basalt.poolRuntime|port(8327)=basalt.poolRuntime|this.deps.driver=basalt.poolRuntime|this.endpoint(target)=basalt.poolRuntime|this.endpoint(identity)=basalt.poolRuntime|endpoint=basalt.poolRuntime|this.channel=basalt.poolRuntime|this.ctx.container!.getTcpPort(8318)=basalt.poolRuntime|this.ctx.container!.getTcpPort(port)=basalt.poolRuntime|ctx.container.getTcpPort(8327)=basalt.poolRuntime"
+        libraries "apps|@cloudflare/workers-types"
+        bindings "stub=basalt.bulkUsageImport|access.jobs=basalt.bulkUsageImport|BulkUsageImport=basalt.bulkUsageImport|TOOLS_SERVICE=basalt.toolsGateway|service=basalt.toolsGateway|input.tools=basalt.toolsGateway|readiness=basalt.poolRuntime|POOL_AUTH_DATABASE=databaseService|POOL_DATABASE_URL=basalt.poolDatabase|singleton(env)=basalt.poolController|singleton(this.env)=basalt.poolController|container.getTcpPort(port)=basalt.poolRuntime|deps=basalt.poolRuntime|this.ctx.container.getTcpPort(target)=basalt.poolRuntime|container.getTcpPort(8318)=basalt.poolRuntime|container.getTcpPort(8327)=basalt.poolRuntime|port(8318)=basalt.poolRuntime|port(8327)=basalt.poolRuntime|this.deps.driver=basalt.poolRuntime|this.endpoint(target)=basalt.poolRuntime|this.endpoint(identity)=basalt.poolRuntime|endpoint=basalt.poolRuntime|this.channel=basalt.poolRuntime|this.ctx.container!.getTcpPort(8318)=basalt.poolRuntime|this.ctx.container!.getTcpPort(port)=basalt.poolRuntime|ctx.container.getTcpPort(8327)=basalt.poolRuntime"
       }
     }
 
