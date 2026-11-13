@@ -123,43 +123,40 @@ index ec2dd213c1eb10b7c4551702751c6c6643a0b792..47a9f2e1108d2bfd5ac42aa577b59b55
          HttpRouter.provideRequest(executor),
          HttpRouter.provideRequest(auth.identity),
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
-index d2c77a22fea84c22f75f58654e9fce219a618d3d..af306909ab3d6527f4b4dde4879808d88cc5030a 100644
+index d2c77a2..fe826f1 100644
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
-@@ -22,6 +22,7 @@ import {
-   type DurableDeclarations,
-   type Executor,
-   type RepositoryBackend,
-+  type BackgroundWork,
- } from "@executor-js/sdk/core";
- import {
-   HostedExecutor,
-@@ -40,6 +41,8 @@ import {
+@@ -1,3 +1,5 @@
++import { SqlClient } from "effect/sql";
++import { committedChangeDelivery } from "./committed-change-delivery.ts";
+ import { AccountResetBackend } from "@executor-js/hosted-server/account-resets";
+ import { poolModels } from "@executor-js/hosted-server/pool-models";
+ import { hostedAppCapabilities } from "@executor-js/hosted-server/app-management";
+@@ -40,6 +42,7 @@ import {
    withExecutorAnalytics,
    executorDefaultRedeployed,
    hostedAppCopies,
 +  ScopedChanges,
-+  makeChangeJournal,
  } from "@executor-js/hosted-server";
  import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
  import { hostedEventAuthority } from "@executor-js/hosted-server/events";
-@@ -73,8 +76,15 @@ export interface SelfHostPlatform {
+@@ -62,7 +65,6 @@ import {
+ } from "@executor-js/hosted-server/connection-retention";
+ import { HostManagedAccountRecords } from "@executor-js/hosted-server/host-managed-accounts";
+ import { poolAccessRecords } from "@executor-js/hosted-server/pool-access-provenance";
+-import { SqlClient } from "effect/sql";
+ import { productBrandConfig } from "@executor-js/utils/product-brand";
+ 
+ /** Native resources supplied at the self-host composition boundary. */
+@@ -73,6 +75,7 @@ export interface SelfHostPlatform {
    readonly workflows: WorkflowRuntime;
    /** Evaluated results kept in each app's data supervisor. */
    readonly declarations: DurableDeclarations;
 +  readonly committedChanges: typeof ScopedChanges.Service;
  }
  
-+/** Routes submit work to the same draining owner as SDK background jobs. */
-+export class SelfHostBackgroundWork extends Context.Service<
-+  SelfHostBackgroundWork,
-+  BackgroundWork
-+>()("self-host/BackgroundWork") {}
-+
  /** Private callback surface for app workflows, exposed only through a service binding. */
- export class SelfHostWorkflowRequests extends Context.Service<
-   SelfHostWorkflowRequests,
-@@ -105,10 +115,13 @@ export const selfHostExecutorServices = <E, R>(
+@@ -105,10 +108,10 @@ export const selfHostExecutorServices = <E, R>(
        const storage = yield* makeExecutorStorage({ provider: "postgresql" });
        const evaluation = yield* declarationConfig;
        const ready = yield* Deferred.make<Executor>();
@@ -169,94 +166,35 @@ index d2c77a22fea84c22f75f58654e9fce219a618d3d..af306909ab3d6527f4b4dde4879808d8
 +      const { runtime, workflows, declarations, blobs, repositories, committedChanges } =
 +        yield* acquire(Deferred.await(ready));
        const background = yield* makeHostedBackgroundWork;
-+      const sql = yield* SqlClient.SqlClient;
-+      const deliverChanges = makeChangeJournal(sql)
-+        .deliver(committedChanges.publish)
-+        .pipe(Effect.catch(() => Effect.logWarning("Committed change delivery failed")));
++      yield* committedChangeDelivery(committedChanges.publish);
        const registry = remoteRegistry(
          yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
            Config.withDefault(hostedExecutorOrigin),
-@@ -161,7 +174,7 @@ export const selfHostExecutorServices = <E, R>(
-           durable: declarations,
-           toolListings: evaluation.toolListings,
-         },
--        background,
-+        background: (work) => background(work.pipe(Effect.andThen(deliverChanges))),
-         events: {
-           sender: httpEventSender(egress),
-           authorize: hostedEventAuthority(Effect.succeed(yield* SqlClient.SqlClient)),
-@@ -185,6 +198,7 @@ export const selfHostExecutorServices = <E, R>(
-         },
-         "private_hosted",
-       );
-+      yield* deliverChanges;
-       // Once the idle grant step has applied, revoke grants that became idle since, daily.
-       yield* Effect.forkScoped(
-         expireIdleAgentGrants(auth.agentGrants, "private_hosted").pipe(
-@@ -243,6 +257,8 @@ export const selfHostExecutorServices = <E, R>(
+@@ -243,6 +246,7 @@ export const selfHostExecutorServices = <E, R>(
              : undefined,
          ),
          Layer.succeed(SelfHostWorkflowRequests, workflowRequests),
-+        Layer.succeed(SelfHostBackgroundWork, background),
 +        Layer.succeed(ScopedChanges, committedChanges),
          Layer.succeed(SelfHostAuth, auth),
          Layer.succeed(ScheduledAuthority, scheduleAuthority),
          Layer.succeed(GroupDatabase, Effect.succeed(groupDatabase)),
 diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
-index adb1d5f63f4fd3675239b78543c44d1143932c36..3d55f9758e1a7ae0e1ac63c4317a899f25c2ae59 100644
+index adb1d5f..3d1c7b6 100644
 --- a/apps/hosted/self-host/src/implementation/routes.ts
 +++ b/apps/hosted/self-host/src/implementation/routes.ts
-@@ -50,7 +50,15 @@ import {
+@@ -50,6 +50,11 @@ import {
    apiProtectedResource,
    lazyHostedApiDocument,
    ProductAnalytics,
-+  ScopedChanges,
-+  makeChangeJournal,
 +  makeOrganizationChanges,
 +  organizationChangesPath,
 +  organizationChangesCurrentPath,
 +  poolChangePath,
 +  publishCommittedChanges,
  } from "@executor-js/hosted-server";
-+import { GroupDatabase } from "@executor-js/hosted-server/groups";
  import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
  import {
-   appUiAddressScheme,
-@@ -73,6 +81,7 @@ import { selfHostAnalytics } from "./product-analytics.ts";
- 
- import type { SourceTextFile as SourceFile } from "@executor-js/sdk/core";
- import type { selfHostExecutorServices } from "./executor-services.ts";
-+import { SelfHostBackgroundWork } from "./executor-services.ts";
- import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
- /** Compose the self-host route map without opening a listener; shared by the process entry and HTTP tests. */
- export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
-@@ -87,6 +96,17 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
-     const { skills, egress, executorServices, dashboard } = options;
-     const brand = yield* productBrandConfig;
-     const auth = yield* SelfHostAuth.pipe(Effect.provide(executorServices));
-+    const { background, deliverChanges } = yield* Effect.gen(function* () {
-+      const background = yield* SelfHostBackgroundWork;
-+      const transport = yield* ScopedChanges;
-+      const sql = yield* Effect.flatten(GroupDatabase);
-+      return {
-+        background,
-+        deliverChanges: makeChangeJournal(sql)
-+          .deliver(transport.publish)
-+          .pipe(Effect.catch(() => Effect.logWarning("Committed change delivery failed"))),
-+      };
-+    }).pipe(Effect.provide(executorServices));
-     const analytics = yield* selfHostAnalytics;
-     /** Requests and background schedules record through this instance's sink unless it opted out. */
-     const observed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-@@ -128,6 +148,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
-     );
-     yield* drainContributedDepartures.pipe(
-       Effect.catch(() => Effect.logWarning("Contributed departure queue processing failed")),
-+      Effect.andThen(deliverChanges),
-       Effect.repeat(Schedule.spaced("1 second")),
-       Effect.provideService(ScheduleWakeup, wake),
-       Effect.provide(executorServices),
-@@ -147,6 +168,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+@@ -147,6 +152,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
        yield* appUiEmbedded,
      );
      const appUi = hostedAppUi(addresses);
@@ -264,7 +202,7 @@ index adb1d5f63f4fd3675239b78543c44d1143932c36..3d55f9758e1a7ae0e1ac63c4317a899f
      const mcp = yield* selfHostMcp.pipe(Effect.provide(HttpServer.layerServices));
      const document = lazyHostedApiDocument(() => executorSelfHostApiDocument(auth.origin));
      const api = selfHostApi(document).pipe(
-@@ -193,6 +215,13 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+@@ -193,6 +199,13 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
        Layer.provide(auth.apiIdentity),
      );
      const productRoutes = Layer.mergeAll(
@@ -278,7 +216,7 @@ index adb1d5f63f4fd3675239b78543c44d1143932c36..3d55f9758e1a7ae0e1ac63c4317a899f
        HttpRouter.add("POST", observationPublishPath, publishAccountObservations).pipe(
          HttpRouter.provideRequest(executorServices),
        ),
-@@ -243,6 +272,8 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+@@ -243,6 +256,8 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
        HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
        HttpRouter.add("GET", "/_executor/version", appUi.versions),
        HttpRouter.add("POST", appUi.poolUsage.path, appUi.poolUsage.read),
@@ -287,27 +225,6 @@ index adb1d5f63f4fd3675239b78543c44d1143932c36..3d55f9758e1a7ae0e1ac63c4317a899f
        HttpRouter.add("POST", appUi.poolUsageOverview.path, appUi.poolUsageOverview.read),
        HttpRouter.add(
          "POST",
-@@ -285,6 +316,20 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
-           if (addresses.ownsHost(request.headers.host)) return notFound;
-           return yield* observed(product);
-         }).pipe(
-+          Effect.onExit(() =>
-+            Effect.gen(function* () {
-+              const request = yield* HttpServerRequest.HttpServerRequest;
-+              const path = new URL(request.url, "http://self-host.internal").pathname;
-+              // OAuth callbacks can commit accounts and sessions through GET requests.
-+              if (
-+                !["GET", "HEAD", "OPTIONS"].includes(request.method) ||
-+                path.startsWith("/api/auth/") ||
-+                path === "/api/oauth/callback" ||
-+                path === appSignInCallbackPath
-+              )
-+                yield* background(deliverChanges);
-+            }),
-+          ),
-           recordRequestRejections,
-           Effect.provideService(CurrentProductBrand, brand),
-           Effect.provideService(McpAppSandbox, sandbox),
 diff --git a/apps/hosted/self-host/src/main.ts b/apps/hosted/self-host/src/main.ts
 index 58aa9e28ecd4f022b0dcc909f7f96d6a643135d8..87bead6b4a1d3c01be7db4f938f729ee52425103 100644
 --- a/apps/hosted/self-host/src/main.ts
@@ -349,10 +266,10 @@ index 04760454c58f3ac4a2b41788fc63d910e5914fba..cc3ee7175528f786abda0d14be688b3b
  
 diff --git a/apps/hosted/server/src/implementation/account-change-schema.ts b/apps/hosted/server/src/implementation/account-change-schema.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..f5d6b6399e336b37e2f8ef147a22126b48f8d4cf
+index 0000000..f81e8cf
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-change-schema.ts
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,149 @@
 +import { Effect } from "effect";
 +import { SqlClient } from "effect/sql";
 +import { migrateDeferredChanges } from "./deferred-change-schema.ts";
@@ -368,6 +285,17 @@ index 0000000000000000000000000000000000000000..f5d6b6399e336b37e2f8ef147a22126b
 +      if TG_OP <> 'INSERT' then previous := to_jsonb(OLD); end if;
 +      if TG_OP <> 'DELETE' then following := to_jsonb(NEW); end if;
 +      ignored := string_to_array(TG_ARGV[3], ',');
++      if TG_TABLE_NAME = 'executor_account_observations' then
++        -- A claim can span transactions while support is discovered. Only settled reports publish.
++        if previous -> 'data' -> 'result' is not distinct from 'null'::jsonb
++          and previous -> 'data' -> 'lastAttempt' is not distinct from 'null'::jsonb then previous := null; end if;
++        if following -> 'data' -> 'result' is not distinct from 'null'::jsonb
++          and following -> 'data' -> 'lastAttempt' is not distinct from 'null'::jsonb then following := null; end if;
++        if previous is null and following is null then
++          if TG_OP = 'DELETE' then return OLD; end if;
++          return NEW;
++        end if;
++      end if;
 +      if TG_OP = 'UPDATE' and previous - ignored = following - ignored then return NEW; end if;
 +      for item in select distinct value from jsonb_array_elements(jsonb_build_array(previous, following))
 +        where value <> 'null'::jsonb loop
@@ -389,10 +317,12 @@ index 0000000000000000000000000000000000000000..f5d6b6399e336b37e2f8ef147a22126b
 +          when 'grant' then
 +            for candidate in select distinct owner from executor_accounts where oauth_grant_id = reference loop
 +              perform hosted_queue_change(candidate, 'accounts', '*');
++              perform hosted_queue_change(candidate, 'observations', '*');
 +            end loop;
 +          when 'provider' then
 +            for candidate in select distinct owner from executor_accounts where provider = reference loop
 +              perform hosted_queue_change(candidate, 'accounts', '*');
++              perform hosted_queue_change(candidate, 'observations', '*');
 +            end loop;
 +          when 'verification' then
 +            if item ->> 'identifier' like 'executor-app-ui:v1:session:%' then
@@ -403,6 +333,23 @@ index 0000000000000000000000000000000000000000..f5d6b6399e336b37e2f8ef147a22126b
 +        if target_scope is not null and not target_scope = any(notified) then
 +          notified := array_append(notified, target_scope);
 +          foreach topic in array string_to_array(TG_ARGV[1], ',') loop
++            if topic = 'observations' and TG_TABLE_NAME = 'executor_accounts' and TG_OP = 'INSERT' then continue; end if;
++            if topic = 'observations' and TG_TABLE_NAME = 'hosted_app_account_links'
++              and not exists (select 1 from executor_account_observations where account = item ->> 'account' and source = item ->> 'app') then continue; end if;
++            if topic = 'membership' and TG_TABLE_NAME = 'hosted_account_access' and TG_OP = 'INSERT'
++              and not exists (select 1 from executor_account_observations where account = item ->> 'account_id') then continue; end if;
++            -- Provisioning metadata does not change the organization's identity or anyone's access.
++            if topic = 'membership' and TG_TABLE_NAME = 'organization' and TG_OP = 'UPDATE'
++              and jsonb_build_array(previous -> 'id', previous -> 'slug') = jsonb_build_array(following -> 'id', following -> 'slug') then continue; end if;
++            if topic = 'observations' and TG_TABLE_NAME in ('executor_apps', 'hosted_app_access', 'hosted_app_groups') then
++              reference := case when TG_TABLE_NAME = 'hosted_app_groups' then item ->> 'app_id' else item ->> 'id' end;
++              -- Source edits and deployment bookkeeping do not change a retained reading.
++              if TG_TABLE_NAME = 'executor_apps' and TG_OP = 'UPDATE' and
++                jsonb_build_array(previous -> 'owner', previous -> 'name', previous -> 'active_deployment') =
++                jsonb_build_array(following -> 'owner', following -> 'name', following -> 'active_deployment') then continue; end if;
++              if not exists (select 1 from executor_account_observations where source = reference)
++                and not exists (select 1 from hosted_app_account_links where app = reference) then continue; end if;
++            end if;
 +            perform hosted_queue_change(target_scope, topic, '*');
 +          end loop;
 +        end if;
@@ -411,26 +358,32 @@ index 0000000000000000000000000000000000000000..f5d6b6399e336b37e2f8ef147a22126b
 +      return NEW;
 +    end $$`;
 +  const triggers = [
-+    ["executor_accounts", "owner", "accounts", "owner", "encrypted_credentials"],
++    ["executor_accounts", "owner", "accounts,observations", "owner", "encrypted_credentials"],
 +    ["executor_account_checks", "account", "accounts", "account", ""],
 +    ["executor_account_reports", "owner", "accounts", "owner", "lease,lease_until"],
 +    ["executor_account_driver_checks", "owner", "accounts", "owner", ""],
 +    ["executor_account_targets", "owner", "accounts", "owner", ""],
-+    ["executor_account_observations", "owner", "accounts", "owner", "lease,lease_until"],
-+    ["executor_account_acquisitions", "owner", "accounts", "owner", ""],
++    [
++      "executor_account_observations",
++      "owner",
++      "observations",
++      "owner",
++      "lease,lease_until,next_allowed_at",
++    ],
++    ["executor_account_acquisitions", "owner", "accounts,observations", "owner", ""],
 +    ["executor_account_connections", "owner", "accounts", "owner", ""],
 +    ["executor_app_connections", "owner", "accounts,apps", "owner", "updated_at"],
 +    ["executor_account_identities", "owner", "accounts", "owner", ""],
 +    ["executor_oauth_grants", "grant", "accounts", "id", "encrypted,updated_at"],
-+    ["executor_apps", "owner", "apps,accounts", "owner", ""],
++    ["executor_apps", "owner", "apps,accounts,observations", "owner", ""],
 +    ["executor_providers", "provider", "accounts", "id", ""],
-+    ["hosted_app_account_links", "app", "accounts", "app", ""],
-+    ["hosted_app_access", "organization", "accounts,apps,membership", "organization_id", ""],
++    ["hosted_app_account_links", "app", "accounts,observations", "app", ""],
++    ["hosted_app_access", "organization", "accounts,apps,observations", "organization_id", ""],
 +    ["hosted_account_access", "organization", "accounts,membership", "organization_id", ""],
 +    [
 +      "hosted_account_observation_access",
 +      "organization",
-+      "accounts,membership",
++      "observations,membership",
 +      "organization_id",
 +      "",
 +    ],
@@ -441,7 +394,7 @@ index 0000000000000000000000000000000000000000..f5d6b6399e336b37e2f8ef147a22126b
 +      "organization_id",
 +      "lease,lease_until,provider_next_at,next_at",
 +    ],
-+    ["hosted_app_groups", "organization", "accounts,apps,membership", "organization_id", ""],
++    ["hosted_app_groups", "organization", "accounts,apps,observations", "organization_id", ""],
 +    ["hosted_account_groups", "organization", "accounts,membership", "organization_id", ""],
 +    ["hosted_model_bindings", "app", "accounts,apps,membership", "app_id", ""],
 +    ["hosted_groups", "organization", "accounts,apps,membership", "organization_id", ""],
@@ -546,10 +499,10 @@ index c3294be075f59bd9b3a30b351e7df5a46306dd91..6f8be5e899a1314a1209bd35c14329b1
      poolPersonalUsageOverview: {
        path: poolAppPersonalUsageOverviewPath,
 diff --git a/apps/hosted/server/src/implementation/change-revisions.ts b/apps/hosted/server/src/implementation/change-revisions.ts
-index ea55c1c07b03f4f7efa203638eac10d8c17b4d5a..472a702550e59847b04ec1d08d6ba599f0c3010c 100644
+index ea55c1c..338cb94 100644
 --- a/apps/hosted/server/src/implementation/change-revisions.ts
 +++ b/apps/hosted/server/src/implementation/change-revisions.ts
-@@ -24,7 +24,7 @@ export const makeChangeJournal = (sql: SqlClient.SqlClient) => ({
+@@ -24,26 +24,29 @@ export const makeChangeJournal = (sql: SqlClient.SqlClient) => ({
          Effect.map((rows) => ({ ...key, revision: rows[0]?.revision ?? "0" })),
        ),
      ),
@@ -557,20 +510,49 @@ index ea55c1c07b03f4f7efa203638eac10d8c17b4d5a..472a702550e59847b04ec1d08d6ba599
 +  /** Network I/O holds no transaction. The pass leaves five seconds for host cleanup before a forced stop. */
    deliver: <E, R>(send: (scope: string, hint: RevisionHint) => Effect.Effect<void, E, R>) =>
      Effect.gen(function* () {
-       const rows = yield* sql`select scope, topic, resource, revision::text as revision
-@@ -45,5 +45,5 @@ export const makeChangeJournal = (sql: SqlClient.SqlClient) => ({
-       );
-       const failed = results.filter(Result.isFailure).length;
-       if (failed > 0) return yield* new ChangeDispatchFailed({ pending: failed });
+-      const rows = yield* sql`select scope, topic, resource, revision::text as revision
++      while (true) {
++        const rows = yield* sql`select scope, topic, resource, revision::text as revision
+         from hosted_change_pending order by updated_at, scope, topic, resource limit 100`;
+-      const pending = yield* Schema.decodeUnknownEffect(Schema.Array(Pending))(rows);
+-      const results = yield* Effect.forEach(pending, ({ scope, ...hint }) =>
+-        send(scope, hint).pipe(
+-          Effect.timeout("5 seconds"),
+-          Effect.andThen(sql`delete from hosted_change_pending where scope = ${scope}
++        const pending = yield* Schema.decodeUnknownEffect(Schema.Array(Pending))(rows);
++        const results = yield* Effect.forEach(pending, ({ scope, ...hint }) =>
++          send(scope, hint).pipe(
++            Effect.timeout("5 seconds"),
++            Effect.andThen(sql`delete from hosted_change_pending where scope = ${scope}
+             and topic = ${hint.topic} and resource = ${hint.resource} and revision = ${hint.revision}::bigint`),
+-          Effect.tapError(
+-            () => sql`update hosted_change_pending set updated_at = clock_timestamp()
++            Effect.tapError(
++              () => sql`update hosted_change_pending set updated_at = clock_timestamp()
+             where scope = ${scope} and topic = ${hint.topic} and resource = ${hint.resource}
+               and revision = ${hint.revision}::bigint`,
++            ),
++            Effect.result,
+           ),
+-          Effect.result,
+-        ),
+-      );
+-      const failed = results.filter(Result.isFailure).length;
+-      if (failed > 0) return yield* new ChangeDispatchFailed({ pending: failed });
 -    }),
++        );
++        const failed = results.filter(Result.isFailure).length;
++        if (failed > 0) return yield* new ChangeDispatchFailed({ pending: failed });
++        if (pending.length < 100) return;
++      }
 +    }).pipe(Effect.interruptible, Effect.timeout("10 seconds")),
  });
 diff --git a/apps/hosted/server/src/implementation/deferred-change-schema.ts b/apps/hosted/server/src/implementation/deferred-change-schema.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..b39c62b350339b0e72401407bc54b51dd0b93d88
+index 0000000..2dd7454
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/deferred-change-schema.ts
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,74 @@
 +import { Effect } from "effect";
 +import { SqlClient } from "effect/sql";
 +
@@ -594,13 +576,14 @@ index 0000000000000000000000000000000000000000..b39c62b350339b0e72401407bc54b51d
 +      insert into hosted_change_batches values (own_transaction) on conflict do nothing;
 +    end $$`;
 +  yield* sql`create or replace function hosted_flush_changes() returns trigger language plpgsql as $$
-+    declare item record; accepted bigint;
++    declare item record; accepted bigint; changed boolean := false;
 +    begin
 +      for item in select scope,topic,resource,revision from hosted_change_dirty
 +        where transaction_id=NEW.transaction_id
 +        order by scope collate "C",topic collate "C",resource collate "C" loop
 +        if item.revision is null then
 +          perform hosted_record_change(item.scope,item.topic,item.resource);
++          changed := true;
 +        else
 +          accepted := null;
 +          insert into hosted_change_heads (scope,topic,resource,revision)
@@ -608,6 +591,7 @@ index 0000000000000000000000000000000000000000..b39c62b350339b0e72401407bc54b51d
 +            on conflict (scope,topic,resource) do update set revision=excluded.revision
 +            where hosted_change_heads.revision < excluded.revision returning revision into accepted;
 +          if accepted is not null then
++            changed := true;
 +            insert into hosted_change_pending (scope,topic,resource,revision)
 +              values (item.scope,item.topic,item.resource,accepted)
 +              on conflict (scope,topic,resource) do update
@@ -615,6 +599,7 @@ index 0000000000000000000000000000000000000000..b39c62b350339b0e72401407bc54b51d
 +          end if;
 +        end if;
 +      end loop;
++      if changed then perform pg_notify('hosted_committed_changes', ''); end if;
 +      delete from hosted_change_dirty where transaction_id=NEW.transaction_id;
 +      delete from hosted_change_batches where transaction_id=NEW.transaction_id;
 +      return null;
@@ -664,10 +649,10 @@ index a72c616d343e8d8d402bf3ede0d92d3c341544d3..285b9979c88a7eefb0146d3b233c0ade
  /**
 diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/apps/hosted/server/src/implementation/organization-changes.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..ccd36481cd67ca6a499c385ac3a509606dd9411d
+index 0000000..07218aa
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/organization-changes.ts
-@@ -0,0 +1,128 @@
+@@ -0,0 +1,130 @@
 +import { Effect, Schema } from "effect";
 +import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 +import { Authentication, Unauthorized } from "../contracts/auth.ts";
@@ -689,10 +674,12 @@ index 0000000000000000000000000000000000000000..ccd36481cd67ca6a499c385ac3a50960
 +
 +export const organizationChangesPath = "/api/organizations/:organization/changes";
 +export const organizationChangesCurrentPath = `${organizationChangesPath}/current`;
-+export const organizationChangeKeys = ["accounts", "apps", "membership"].map((topic) => ({
-+  topic,
-+  resource: "*",
-+}));
++export const organizationChangeKeys = ["accounts", "observations", "apps", "membership"].map(
++  (topic) => ({
++    topic,
++    resource: "*",
++  }),
++);
 +export const sessionChangeKeys = [{ topic: "session", resource: "*" }];
 +const Params = Schema.Struct({ organization: OrganizationReference });
 +const Expires = Schema.Array(Schema.Struct({ expiresAt: Schema.Date }));
@@ -1173,17 +1160,17 @@ index 2aec4993ba4b68825307bd4637593b76c7a2cc56..74e7324b62b0d9762d77c4b58eb96e58
    makeChangeRevisionHandler,
    changeRevisionsPath,
 diff --git a/apps/hosted/web/src/contracts/account-observations.ts b/apps/hosted/web/src/contracts/account-observations.ts
-index 2c64551860682681bf0928283026f7dd2b092c6e..fc6eabc052bf6ab7e728f915fb84842d80df3640 100644
+index 2c64551..6ad1100 100644
 --- a/apps/hosted/web/src/contracts/account-observations.ts
 +++ b/apps/hosted/web/src/contracts/account-observations.ts
-@@ -6,9 +6,11 @@ export type { ObservationPolicy } from "@executor-js/hosted-server/account-obser
+@@ -6,9 +6,12 @@ export type { ObservationPolicy } from "@executor-js/hosted-server/account-obser
  export type ObservationAudience = ObservationPolicy["read"];
  import { browserOnly } from "@executor-js/ui/contracts/http";
  import { acknowledge, invalidate } from "@executor-js/ui/contracts/mutations";
--import { accountPolling } from "./account-polling.ts";
++import { changeProtected } from "./change-signal.ts";
+ import { accountPolling } from "./account-polling.ts";
 -import { Data, Effect } from "effect";
 -import { Atom } from "effect/reactivity";
-+import { changeProtected } from "./change-signal.ts";
 +import { Data, Effect, Option } from "effect";
 +import { AsyncResult, Atom } from "effect/reactivity";
 +import { observationDeadline } from "@executor-js/sdk/core";
@@ -1191,7 +1178,7 @@ index 2c64551860682681bf0928283026f7dd2b092c6e..fc6eabc052bf6ab7e728f915fb84842d
  import { HostedClient } from "./api.ts";
  import { protectedQuery } from "./protected-query.ts";
  
-@@ -17,25 +19,64 @@ class AccountKey extends Data.Class<{
+@@ -17,25 +20,72 @@ class AccountKey extends Data.Class<{
    readonly account: AccountId;
  }> {}
  
@@ -1204,16 +1191,20 @@ index 2c64551860682681bf0928283026f7dd2b092c6e..fc6eabc052bf6ab7e728f915fb84842d
  const observations = Atom.family((key: AccountKey) =>
 -  protectedQuery(browserOnly(HostedClient.query("accounts", "observations", { params: key }))),
 +  browserOnly(HostedClient.query("accounts", "observations", { params: key })).pipe(
-+    changeProtected(key.organization, ["accounts", "membership"]),
++    changeProtected(key.organization, ["observations", "membership"]),
 +  ),
  );
 -// The server collects on its own interval; a visible row reads the retained report again so new
 -// readings appear without a manual refresh. Unavailable or prolonged collections back off.
 -const polledObservations = Atom.family((key: AccountKey) =>
--  accountPolling(
--    observations(key),
--    (view) => view.reports.some((report) => report.collecting),
--    (view) => view.reports.some((report) => report.freshness === "unavailable"),
++const recoveringObservations = Atom.family((key: AccountKey) =>
+   accountPolling(
+     observations(key),
+     (view) => view.reports.some((report) => report.collecting),
+     (view) => view.reports.some((report) => report.freshness === "unavailable"),
++    { idle: false },
++  ).pipe(Atom.setIdleTTL(0)),
++);
 +type ObservationView = Atom.Success<ReturnType<typeof observations>>;
 +
 +// What a row shows: the fenced, protected observations with fresh reports expired at their
@@ -1222,7 +1213,7 @@ index 2c64551860682681bf0928283026f7dd2b092c6e..fc6eabc052bf6ab7e728f915fb84842d
 +const expiringObservations = Atom.family((key: AccountKey) =>
 +  Atom.readable(
 +    (get) => {
-+      const result = get(observations(key));
++      const result = get(recoveringObservations(key));
 +      if (typeof window === "undefined") return result;
 +      const now = Date.now();
 +      let next: number | undefined;
@@ -1321,17 +1312,20 @@ index 337f4134f823c8a2d5fd93d5a4a303336ae6f883..e87ad73ac77099eb6f83abde195c61f9
    );
 diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/src/contracts/change-signal.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..f218841ed1291b59bbd71517f691a90e699508df
+index 0000000..ffd0a97
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/change-signal.ts
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,280 @@
 +/** Dashboard reads that follow the organization's committed revisions instead of a timer. */
 +import {
 +  ChangeReadRetry,
++  ChangeReceipt,
 +  makeChangeFeed,
 +  type ChangeFeed,
 +} from "@executor-js/ui/contracts/refresh";
-+import { Option } from "effect";
++import { Option, Schema } from "effect";
++import { apiFetchAtom } from "@executor-js/dashboard-start/api";
++import { acceptedRead } from "./accepted-read.ts";
 +import { AsyncResult, Atom } from "effect/reactivity";
 +import {
 +  OrganizationForbidden,
@@ -1341,11 +1335,14 @@ index 0000000000000000000000000000000000000000..f218841ed1291b59bbd71517f691a90e
 +import { ChangeRefreshFailed, type HostedError } from "./errors.ts";
 +import { retainProtectedFailure } from "./protected-query.ts";
 +
-+/** A page opened again within this time shows its retained value while the feed decides. */
-+const retention = "30 minutes";
 +type Registry = Atom.AtomContext["registry"];
 +/** Feeds are shared only within one registry, so another registry never sees its heads. */
 +const feeds = new WeakMap<Registry, Map<string, ChangeFeed>>();
++const retainedReads = new WeakMap<Registry, Map<string, Map<object, () => void>>>();
++const changeBase = (registry: Registry, organization: OrganizationReference) => {
++  const target = registry.get(organizationTargetAtom(organization)) ?? organization;
++  return `/api/organizations/${encodeURIComponent(target)}/changes`;
++};
 +
 +/**
 + * One stream per organization URL in this registry, never on the server. A revoked feed,
@@ -1354,8 +1351,7 @@ index 0000000000000000000000000000000000000000..f218841ed1291b59bbd71517f691a90e
 + * no accepted heads.
 + */
 +const organizationFeed = (registry: Registry, organization: OrganizationReference) => {
-+  const target = registry.get(organizationTargetAtom(organization)) ?? organization;
-+  const base = `/api/organizations/${encodeURIComponent(target)}/changes`;
++  const base = changeBase(registry, organization);
 +  let scoped = feeds.get(registry);
 +  if (scoped === undefined) {
 +    scoped = new Map();
@@ -1366,138 +1362,207 @@ index 0000000000000000000000000000000000000000..f218841ed1291b59bbd71517f691a90e
 +  existing?.close();
 +  const feed = makeChangeFeed({ stream: base, current: `${base}/current` });
 +  scoped.set(base, feed);
++  feed.onStatus(() => {
++    if (feed.status() !== "revoked") return;
++    for (const clear of retainedReads.get(registry)?.get(base)?.values() ?? []) clear();
++  });
 +  return feed;
 +};
 +
-+/**
-+ * Retain `self` and publish a new value only from a read the organization's change feed
-+ * accepted. The server render and browser hydration snapshot both show loading: only the browser
-+ * can establish the authenticated feed, and a retained, hydrated or prefetched value may belong to
-+ * an earlier session in this registry. After the first accepted read, hints, missed heads on
-+ * reconnect, server deadlines and refreshes trigger reads whose bodies stay buffered until the
-+ * fence accepts them. While one runs, the previous value is shown as waiting; a rejected read
-+ * keeps it. Ended access publishes a denial, so protected content is cleared rather than retained.
-+ * No focus or interval read.
-+ */
++const decodeHeads = Schema.decodeUnknownSync(ChangeReceipt);
++const headVersion = (receipt: ChangeReceipt, topics: readonly string[]) =>
++  JSON.stringify(
++    receipt.revisions
++      .filter((hint) => topics.includes(hint.topic))
++      .map((hint) => [hint.topic, hint.resource, hint.revision])
++      .sort(),
++  );
++type Heads = { readonly sequence: number; readonly receipt: ChangeReceipt };
++const reads = new WeakMap<
++  Registry,
++  Map<string, { sequence: number; pending?: Promise<Heads> | undefined }>
++>();
++/** Readers join an in-flight head read only when it started after their body finished. */
++const currentHeads = (registry: Registry, organization: OrganizationReference, after: number) => {
++  const target = registry.get(organizationTargetAtom(organization)) ?? organization;
++  const url = `/api/organizations/${encodeURIComponent(target)}/changes/current`;
++  let scoped = reads.get(registry);
++  if (scoped === undefined) {
++    scoped = new Map();
++    reads.set(registry, scoped);
++  }
++  let state = scoped.get(url);
++  if (state === undefined) {
++    state = { sequence: 0 };
++    scoped.set(url, state);
++  }
++  if (state.pending !== undefined && state.sequence > after) return state.pending;
++  const sequence = ++state.sequence;
++  const pending = registry
++    .get(apiFetchAtom)(url, { credentials: "same-origin", cache: "no-store" })
++    .then(async (response): Promise<Heads> => {
++      if (response.status === 401 || response.status === 403) throw new OrganizationForbidden();
++      if (!response.ok) throw new ChangeReadRetry("unavailable");
++      const receipt = decodeHeads(await response.json());
++      if (
++        receipt.identity === undefined ||
++        (receipt.validUntil !== undefined && receipt.validUntil <= Date.now())
++      )
++        throw new ChangeReadRetry("unavailable");
++      return { sequence, receipt };
++    })
++    .finally(() => {
++      if (state.pending === pending) state.pending = undefined;
++    });
++  state.pending = pending;
++  return pending;
++};
++
++/** One accepted body owns its fence through server rendering, hydration and warm navigation. */
 +const changeRetained =
 +  (organization: OrganizationReference, topics: readonly string[]) =>
-+  <A, E>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
++  <A, E extends HostedError>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
 +    type Value = AsyncResult.AsyncResult<A, E | OrganizationForbidden | ChangeRefreshFailed>;
-+    const source = Atom.setIdleTTL(self, retention);
-+    // Every read watches the session too, so a revocation reaches the uncached head read at once.
++    const { source, cache, document: carriesDocument } = acceptedRead(self);
 +    const watched = [...new Set([...topics, "session"])];
-+    /**
-+     * This atom is shared by every registry. A refresh of it, or a write through
-+     * `changeProtected`, changes this signal in the calling registry only, and that registry's
-+     * own watch turns it into one fenced read. Every build and write yields a new value, so
-+     * each one notifies. (A write context can only `set` writables; `refreshSelf` merely
-+     * re-runs the writer's own read, so it cannot reach the watch.)
-+     */
 +    const requests: Atom.Writable<object, void> = Atom.writable(
 +      () => ({}),
 +      (get) => get.setSelf({}),
 +    );
 +    const atom = Atom.readable(
 +      (get): Value => {
-+        // The server cannot establish the authenticated feed. Match the browser's first snapshot
-+        // so no source value is shown before that feed accepts a read.
-+        if (typeof window === "undefined")
-+          return AsyncResult.initial<A, E | OrganizationForbidden | ChangeRefreshFailed>(false);
-+        /** The last accepted value; nothing is shown before the first one. */
-+        let shown: Value | undefined;
-+        const display = () =>
-+          shown ?? AsyncResult.initial<A, E | OrganizationForbidden | ChangeRefreshFailed>(false);
-+        let started = false;
-+        let owning = false;
++        if (typeof window === "undefined" && !carriesDocument) return AsyncResult.initial(false);
++        const registry = get.registry;
++        let retained = retainedReads.get(registry);
++        if (retained === undefined) {
++          retained = new Map();
++          retainedReads.set(registry, retained);
++        }
++        const base = changeBase(registry, organization);
++        let entries = retained.get(base);
++        if (entries === undefined) {
++          entries = new Map();
++          retained.set(base, entries);
++        }
++        entries.set(cache, () => registry.set(cache, undefined));
++        let held = get.once(cache);
++        if (held?.receipt.validUntil !== undefined && held.receipt.validUntil <= Date.now()) {
++          held = undefined;
++          get.set(cache, undefined);
++        }
++        const document = held?.hydrated === true;
++        if (document && held !== undefined) {
++          held = { result: held.result, receipt: held.receipt };
++          get.set(cache, held);
++        }
++        let shown: Value =
++          typeof window === "undefined" || document
++            ? (held?.result ?? AsyncResult.initial(true))
++            : AsyncResult.initial(true);
 +        let ended = false;
-+        let buffered: Value | undefined;
-+        let settled: (() => void) | undefined;
-+        const publish = (value: Value) => get.setSelf(value);
-+        get.subscribe(source, (next) => {
-+          if (ended) return;
-+          if (owning) {
-+            buffered = next;
-+            if (!next.waiting) {
-+              const resolve = settled;
-+              settled = undefined;
-+              resolve?.();
-+            }
-+            return;
-+          }
-+          // The source's own first load is unfenced and never shown. Anything that moves the
-+          // source after a fenced read started is read again through the fence instead.
-+          if (started && !next.waiting) watch.request();
-+        });
-+        // Set before refreshing: a source that settles synchronously reports during `refresh`.
-+        const reread = () =>
-+          new Promise<void>((resolve) => {
-+            buffered = undefined;
-+            settled = resolve;
-+            get.refresh(source);
++        let subscribed = false;
++        let resolveBody: ((value: AsyncResult.AsyncResult<A, E>) => void) | undefined;
++        const publish = (value: Value) => {
++          shown = value;
++          get.setSelf(value);
++        };
++        const body = () =>
++          new Promise<AsyncResult.AsyncResult<A, E>>((resolve) => {
++            resolveBody = resolve;
++            if (!subscribed) {
++              subscribed = true;
++              get.subscribe(
++                source,
++                (value) => {
++                  if (value.waiting || AsyncResult.isInitial(value)) return;
++                  const complete = resolveBody;
++                  resolveBody = undefined;
++                  complete?.(value);
++                },
++                { immediate: true },
++              );
++            } else get.refresh(source);
 +          });
++        const revoked = () => {
++          ended = true;
++          held = undefined;
++          get.set(cache, undefined);
++          resolveBody?.(AsyncResult.initial());
++          resolveBody = undefined;
++          publish(AsyncResult.fail(new OrganizationForbidden()));
++        };
++        const accept = (result: AsyncResult.AsyncResult<A, E>, receipt: ChangeReceipt) => {
++          if (ended) return;
++          const previous = held?.result;
++          const retained =
++            AsyncResult.isFailure(result) && retainProtectedFailure(result.cause)
++              ? AsyncResult.failureWithPrevious(result.cause, {
++                  previous: Option.fromNullishOr(previous),
++                  waiting: result.waiting,
++                })
++              : result;
++          held = { result: retained, receipt };
++          get.set(cache, held);
++          publish(retained);
++        };
 +        const fenced = async () => {
-+          started = true;
-+          owning = true;
-+          // Accepted data stays on screen while it is read again.
-+          publish(AsyncResult.waiting(display()));
++          if (ended) return;
++          publish(AsyncResult.waiting(shown));
 +          try {
-+            await watch.read(reread);
-+            if (ended) return;
-+            if (buffered !== undefined && !buffered.waiting) shown = buffered;
-+            publish(display());
++            if (watch !== undefined) {
++              await watch.read(body, (result, _version, receipt) => accept(result, receipt));
++            } else {
++              // The document uses its request-bound fetch; no browser stream or prior identity.
++              for (let attempt = 0; attempt < 3; attempt++) {
++                const before = await currentHeads(get.registry, organization, 0);
++                if (ended) return;
++                const result = await body();
++                if (ended) return;
++                const after = await currentHeads(get.registry, organization, before.sequence);
++                if (ended) return;
++                if (before.receipt.identity !== after.receipt.identity) return revoked();
++                if (headVersion(before.receipt, watched) !== headVersion(after.receipt, watched))
++                  continue;
++                accept(result, after.receipt);
++                return;
++              }
++              throw new ChangeReadRetry("moving");
++            }
 +          } catch (error) {
 +            if (ended) return;
-+            // Parked by hiding: the read is still owed and resumes after the foreground
-+            // handshake, so the last accepted value stays waiting, not current and not failed.
-+            if (error instanceof ChangeReadRetry && error.reason === "hidden") {
-+              publish(AsyncResult.waiting(display()));
-+              return;
-+            }
-+            // Newer data exists or could not be checked: keep the last accepted value, but as a
-+            // failure, never as current. Its next hint, request or handshake reads again.
-+            if (!ended)
-+              publish(
-+                AsyncResult.fail(new ChangeRefreshFailed(), {
-+                  previousSuccess:
-+                    shown !== undefined && AsyncResult.isSuccess(shown)
-+                      ? Option.some(shown)
-+                      : Option.none(),
-+                }),
-+              );
-+          } finally {
-+            owning = false;
-+            settled = undefined;
++            if (error instanceof OrganizationForbidden) return revoked();
++            if (error instanceof ChangeReadRetry && error.reason === "hidden") return;
++            publish(
++              AsyncResult.fail(new ChangeRefreshFailed(), {
++                previousSuccess: AsyncResult.isSuccess(shown) ? Option.some(shown) : Option.none(),
++              }),
++            );
 +          }
 +        };
-+        const watch = organizationFeed(get.registry, organization).watch({
-+          topics: watched,
-+          refresh: fenced,
-+          // Dangerous path: a stream revocation, a 401/403 head read (session, membership or
-+          // role re-checked on every read) or a changed principal clears protected content
-+          // here; the buffered body of any in-flight read is dropped, never published.
-+          revoked: () => {
-+            ended = true;
-+            buffered = undefined;
-+            shown = undefined;
-+            settled?.();
-+            publish(AsyncResult.fail(new OrganizationForbidden()));
-+          },
-+        });
-+        get.subscribe(requests, () => watch.request());
++        const watch =
++          typeof window === "undefined"
++            ? undefined
++            : organizationFeed(get.registry, organization).watch({
++                topics: watched,
++                ...(held === undefined ? {} : { accepted: held.receipt }),
++                confirmed: () => {
++                  if (!ended && held !== undefined) publish(held.result);
++                },
++                refresh: fenced,
++                revoked,
++              });
++        get.subscribe(requests, () => (watch === undefined ? void fenced() : watch.request()));
 +        get.addFinalizer(() => {
-+          watch.stop();
-+          const resolve = settled;
-+          settled = undefined;
-+          resolve?.();
++          ended = true;
++          watch?.stop();
++          resolveBody?.(AsyncResult.initial());
++          resolveBody = undefined;
 +        });
-+        // Subscribing starts the source's own load; only a fenced read's body is ever shown.
-+        get.once(source);
-+        return display();
++        if (watch === undefined) void fenced();
++        return shown;
 +      },
-+      // A refresh of this atom (a write's acknowledgement, a person's retry) is one fenced read,
-+      // coalesced with any hint-driven one; it never refreshes the source directly.
-+      (refresh) => (typeof window === "undefined" ? refresh(source) : refresh(requests)),
-+    );
++      (refresh) => refresh(requests),
++    ).pipe(Atom.setIdleTTL(0));
 +    return { atom, requests };
 +  };
 +
@@ -1529,7 +1594,7 @@ index 0000000000000000000000000000000000000000..f218841ed1291b59bbd71517f691a90e
 +      },
 +      (refresh) => refresh(fenced),
 +    );
-+    return query;
++    return query.pipe(Atom.setIdleTTL(0));
 +  };
 diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
 index 862f12cb6d19d426d81bed40a06170a4af2b6f3e..8b9325735992b2345426004f5ec5679993acb7fa 100644
@@ -1786,10 +1851,10 @@ index fdc4545ed67f5b43d1799bb5eed612a88cb46e2f..5792903eb6901f3d59fd81eb69587a14
  export type RevisionEvent = typeof RevisionEvent.Type;
 diff --git a/packages/apps/src/browser/change-feed.ts b/packages/apps/src/browser/change-feed.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..decf34c7c9ae24e793f061884f3cc12deec64b29
+index 0000000..6c69a77
 --- /dev/null
 +++ b/packages/apps/src/browser/change-feed.ts
-@@ -0,0 +1,614 @@
+@@ -0,0 +1,632 @@
 +/**
 + * One committed-revision stream per page. A watch reads again only after a hint, a handshake or a
 + * server deadline shows its data is behind; nothing here reads on a timer. The stream and the
@@ -1812,6 +1877,10 @@ index 0000000000000000000000000000000000000000..decf34c7c9ae24e793f061884f3cc12d
 +export interface ChangeWatchOptions {
 +  /** Topics this watch's data depends on; omitted means every topic the server sends. */
 +  readonly topics?: readonly string[];
++  /** A server-fenced or previously accepted result, bound to this feed's authority. */
++  readonly accepted?: ChangeReceipt;
++  /** The retained receipt still covers this connection's authorized heads; no body read is owed. */
++  readonly confirmed?: () => void;
 +  /** Read again through `read`. Called only while active, and never while this watch reads. */
 +  readonly refresh: () => unknown;
 +  /** Access ended. Drop protected data now; defaults to `refresh`, whose refusal clears it. */
@@ -1830,7 +1899,7 @@ index 0000000000000000000000000000000000000000..decf34c7c9ae24e793f061884f3cc12d
 +   */
 +  readonly read: <T>(
 +    work: () => Promise<T>,
-+    publish?: (value: T, version: string) => void,
++    publish?: (value: T, version: string, receipt: ChangeReceipt) => void,
 +  ) => Promise<T>;
 +  /** Ask for a read through `refresh`, coalesced with any hint-driven one. */
 +  readonly request: () => void;
@@ -1868,13 +1937,14 @@ index 0000000000000000000000000000000000000000..decf34c7c9ae24e793f061884f3cc12d
 + * `identity` is the server's opaque hash of organization, viewer and session (and app, for an
 + * app page). It is optional only so older fixtures decode; every current route sends it.
 + */
-+const Current = Schema.Struct({
++export const ChangeReceipt = Schema.Struct({
 +  revisions: Schema.Array(RevisionHint),
 +  validUntil: Schema.optional(Schema.Number),
 +  identity: Schema.optional(Schema.String),
 +});
-+type Current = typeof Current.Type;
-+const decodeCurrent = Schema.decodeUnknownOption(Current);
++export type ChangeReceipt = typeof ChangeReceipt.Type;
++type Current = ChangeReceipt;
++const decodeCurrent = Schema.decodeUnknownOption(ChangeReceipt);
 +const decodeEvent = Schema.decodeUnknownOption(RevisionEvent);
 +/** Handshake fields beyond `RevisionEvent`, decoded on their own so either contract version reads. */
 +const Handshake = Schema.Struct({
@@ -2110,7 +2180,10 @@ index 0000000000000000000000000000000000000000..decf34c7c9ae24e793f061884f3cc12d
 +    streamUntil = extras.validUntil;
 +    if (streamUntil !== undefined) for (const watch of watches) expireBy(watch, streamUntil);
 +    setStatus("live");
-+    for (const watch of watches) if (behind(watch)) mark(watch);
++    for (const watch of watches) {
++      if (behind(watch)) mark(watch);
++      else watch.options.confirmed?.();
++    }
 +  };
 +  /** Stream hints and acknowledged writes both raise what an accepted read must cover. */
 +  const changed = (hint: RevisionHint) => {
@@ -2302,10 +2375,19 @@ index 0000000000000000000000000000000000000000..decf34c7c9ae24e793f061884f3cc12d
 +        failed: false,
 +        requested: false,
 +      };
++      if (
++        options.accepted !== undefined &&
++        (options.accepted.validUntil === undefined || options.accepted.validUntil > Date.now()) &&
++        bind(options.accepted.identity)
++      ) {
++        record(watch, options.accepted);
++        watch.dirty = behind(watch);
++      }
 +      watches.add(watch);
 +      clearTimeout(idle);
 +      idle = undefined;
 +      void connect();
++      if (connection !== undefined && !behind(watch)) options.confirmed?.();
 +      kick(watch);
 +      // Ended access, including a changed principal, rejects any body still in flight.
 +      const live = () => {
@@ -2315,36 +2397,37 @@ index 0000000000000000000000000000000000000000..decf34c7c9ae24e793f061884f3cc12d
 +      return {
 +        read: async <T>(
 +          work: () => Promise<T>,
-+          publish?: (value: T, version: string) => void,
++          publish?: (value: T, version: string, receipt: ChangeReceipt) => void,
 +        ): Promise<T> => {
 +          let reason: ChangeReadRetry["reason"] = "moving";
++          let body: { readonly version: string; readonly value: T } | undefined;
 +          try {
 +            for (let attempt = 0; attempt < attempts; attempt++) {
 +              // A hidden page does no more data work; the foreground handshake reads again.
 +              if (!activity.isActive()) throw new ChangeReadRetry("hidden");
-+              const ticket = { fence, connection };
 +              const before = await current(0);
 +              live();
 +              if (!activity.isActive()) throw new ChangeReadRetry("hidden");
-+              const value = await work();
++              const version = headVersion(watch, before);
++              if (body === undefined || body.version !== version)
++                body = { version, value: await work() };
++              const value = body.value;
 +              live();
 +              const after = await current(started);
 +              live();
 +              if (!sameHeads(watch, before, after) || !coversKnown(after)) continue;
-+              // A read that began on this connection also passes its fence. One that began
-+              // without a stream relies on stable, covering heads and is not live.
-+              const fenced =
-+                ticket.connection === undefined ||
-+                (ticket.fence === fence &&
-+                  fence !== undefined &&
-+                  ticket.connection === connection &&
-+                  fence.accept(ticket.connection, after.revisions));
-+              if (!fenced) continue;
++              // Stable authorized heads survive transport replacement; the current handshake
++              // must cover them before this result can be called live.
++              if (
++                connection !== undefined &&
++                (fence === undefined || !fence.accept(connection, after.revisions))
++              )
++                continue;
 +              record(watch, after);
 +              watch.failed = false;
 +              // Data accepted with no stream is shown, but never as live.
 +              if (connection === undefined) setStatus("paused");
-+              publish?.(value, headVersion(watch, after));
++              publish?.(value, headVersion(watch, after), after);
 +              return value;
 +            }
 +          } catch (error) {
@@ -2405,15 +2488,16 @@ index 0000000000000000000000000000000000000000..decf34c7c9ae24e793f061884f3cc12d
 +  };
 +}
 diff --git a/packages/apps/src/client.ts b/packages/apps/src/client.ts
-index 9aedb7ca4445f0bd779a523a030f2a4af171f632..0c6db234e6b4b057a51149647c5e93a46e3c6b8f 100644
+index 9aedb7c..f06c96f 100644
 --- a/packages/apps/src/client.ts
 +++ b/packages/apps/src/client.ts
-@@ -8,6 +8,15 @@ export {
+@@ -8,6 +8,16 @@ export {
  } from "./contracts/live.ts";
  export { createAppClient } from "./implementation/ui-client.ts";
  export { makeRevisionFence } from "./implementation/revision-fence.ts";
 +export {
 +  ChangeReadRetry,
++  ChangeReceipt,
 +  makeChangeFeed,
 +  type ChangeActivity,
 +  type ChangeFeed,
@@ -2884,16 +2968,17 @@ index 292785bf48e8f4c76cdb55793c4ff3386c2564f1..93c10b315eedb8fa76b444536590ac62
      if (url.pathname === "/evaluated") {
        const command = Schema.decodeUnknownOption(EvaluatedCommandJson)(await request.text());
 diff --git a/packages/ui/src/contracts/refresh.ts b/packages/ui/src/contracts/refresh.ts
-index b4c35cff4ee9402ba487a2bf7cb7f33c20a0b8a4..dc5a2ea379883368f6bfdcdc3209bc8dbfe188bd 100644
+index b4c35cf..ca1a7a1 100644
 --- a/packages/ui/src/contracts/refresh.ts
 +++ b/packages/ui/src/contracts/refresh.ts
-@@ -2,6 +2,16 @@
+@@ -2,6 +2,17 @@
  import { Duration, Option } from "effect";
  import { AsyncResult, Atom } from "effect/reactivity";
  
 +/** Revision-driven reads for dashboard atoms; the feed itself lives with the app client. */
 +export {
 +  ChangeReadRetry,
++  ChangeReceipt,
 +  makeChangeFeed,
 +  type ChangeFeed,
 +  type ChangeStatus,
@@ -2904,3 +2989,959 @@ index b4c35cff4ee9402ba487a2bf7cb7f33c20a0b8a4..dc5a2ea379883368f6bfdcdc3209bc8d
  /**
   * Counts returns to a visible page. A server render has no window, so its value never changes
   * there and each read starts once for that request.
+diff --git a/apps/hosted/self-host/src/implementation/committed-change-delivery.ts b/apps/hosted/self-host/src/implementation/committed-change-delivery.ts
+new file mode 100644
+index 0000000..5645264
+--- /dev/null
++++ b/apps/hosted/self-host/src/implementation/committed-change-delivery.ts
+@@ -0,0 +1,32 @@
++/** Wake on committed journal changes; ordinary reads never probe an empty outbox. */
++import { PgliteClient } from "@effect/sql-pglite";
++import { Effect, Queue, Result } from "effect";
++import { makeChangeJournal } from "@executor-js/hosted-server";
++import type { RevisionHint } from "apps/ui/contracts";
++
++export const committedChangeDelivery = <E, R>(
++  send: (scope: string, hint: RevisionHint) => Effect.Effect<void, E, R>,
++) =>
++  Effect.gen(function* () {
++    const sql = yield* PgliteClient.PgliteClient;
++    // LISTEN precedes recovery so a commit during the first delivery cannot be missed.
++    const changes = yield* sql.listen("hosted_committed_changes");
++    const deliver = Effect.gen(function* () {
++      let failures = 0;
++      while (true) {
++        const result = yield* makeChangeJournal(sql).deliver(send).pipe(Effect.result);
++        if (Result.isSuccess(result)) return;
++        yield* Effect.logWarning("Committed change delivery failed; retrying retained changes");
++        yield* Effect.sleep(Math.min(30_000, 1_000 * 2 ** Math.min(failures++, 5)));
++      }
++    });
++    yield* Effect.gen(function* () {
++      // Recover retained rows once, then retry only a failed delivery or an actual commit.
++      yield* deliver;
++      while (true) {
++        yield* Queue.take(changes);
++        yield* Queue.takeAll(changes);
++        yield* deliver;
++      }
++    }).pipe(Effect.forkScoped);
++  });
+diff --git a/apps/hosted/web/src/contracts/accepted-read.ts b/apps/hosted/web/src/contracts/accepted-read.ts
+new file mode 100644
+index 0000000..6755620
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/accepted-read.ts
+@@ -0,0 +1,38 @@
++/** The body and its authority travel together; an unfenced source is never dehydrated. */
++import { ChangeReceipt } from "@executor-js/ui/contracts/refresh";
++import { AsyncResult, Atom } from "effect/reactivity";
++import { Schema } from "effect";
++
++export interface AcceptedRead<A, E> {
++  readonly result: AsyncResult.AsyncResult<A, E>;
++  readonly receipt: ChangeReceipt;
++  readonly hydrated?: true;
++}
++
++const Snapshot = Schema.Struct({ body: Schema.Unknown, receipt: ChangeReceipt });
++const decodeSnapshot = Schema.decodeUnknownSync(Snapshot);
++
++export const acceptedRead = <A, E>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
++  const cache = Atom.make<AcceptedRead<A, E> | undefined>(undefined).pipe(
++    Atom.setIdleTTL("30 minutes"),
++  );
++  // Reuse the endpoint's codec, but give the body no independently hydratable atom.
++  const source = Atom.readable(self.read, self.refresh).pipe(Atom.setIdleTTL(0));
++  if (!Atom.isSerializable(self)) return { cache, source, document: false };
++  const codec = self[Atom.SerializableTypeId];
++  const retained = Object.assign(cache, {
++    [Atom.SerializableTypeId]: {
++      key: `hosted:accepted:${codec.key}`,
++      encode: (value: AcceptedRead<A, E> | undefined): unknown => {
++        if (value === undefined || value.receipt.identity === undefined)
++          throw new Error("No accepted document read");
++        return { body: codec.encode(value.result), receipt: value.receipt };
++      },
++      decode: (value: unknown): AcceptedRead<A, E> => {
++        const snapshot = decodeSnapshot(value);
++        return { result: codec.decode(snapshot.body), receipt: snapshot.receipt, hydrated: true };
++      },
++    },
++  });
++  return { cache: retained, source, document: true };
++};
+diff --git a/apps/hosted/web/src/contracts/account-polling.ts b/apps/hosted/web/src/contracts/account-polling.ts
+index 3d132e0..01b7016 100644
+--- a/apps/hosted/web/src/contracts/account-polling.ts
++++ b/apps/hosted/web/src/contracts/account-polling.ts
+@@ -24,7 +24,7 @@ export const accountPolling = <A, E>(
+   source: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+   pending?: (value: A) => boolean,
+   unavailableHealth?: (value: A) => boolean,
+-  options: { readonly active?: boolean } = {},
++  options: { readonly active?: boolean; readonly idle?: boolean } = {},
+ ): Atom.Atom<AsyncResult.AsyncResult<A, E>> =>
+   Atom.readable(
+     (get) => {
+@@ -49,8 +49,9 @@ export const accountPolling = <A, E>(
+       };
+       observe();
+       get.subscribe(source, (next) => {
++        // The retry deadline starts with the request, not with a later fence's acceptance.
++        if (!value.waiting || next.waiting) readAt = tick;
+         value = next;
+-        readAt = tick;
+         observe();
+         get.setSelf(next);
+       });
+@@ -78,6 +79,7 @@ export const accountPolling = <A, E>(
+         const delay = unsettled() && (unavailable() || age >= 1) ? backoff : 1;
+         if (
+           !active() &&
++          (options.idle !== false || unsettled()) &&
+           !value.waiting &&
+           document.visibilityState === "visible" &&
+           tick - readAt >= delay
+diff --git a/apps/hosted/web/src/contracts/schedules.ts b/apps/hosted/web/src/contracts/schedules.ts
+index 49a0d61..8abf02b 100644
+--- a/apps/hosted/web/src/contracts/schedules.ts
++++ b/apps/hosted/web/src/contracts/schedules.ts
+@@ -8,11 +8,11 @@ import type { AccountScope, AppId, ScheduleId, ScheduleSettings } from "@executo
+ import { Data, Effect } from "effect";
+ import { Atom } from "effect/reactivity";
+ import { acknowledge, upsert } from "@executor-js/ui/contracts/mutations";
+-import { pollingQuery, runningSchedules, steadyPolling } from "@executor-js/ui/contracts/polling";
++import { pollingQuery, runningSchedules } from "@executor-js/ui/contracts/polling";
+ import type { ApprovalListItem } from "@executor-js/ui/contracts/schedules";
+ import { HostedClient } from "./api.ts";
+ import { OrganizationReference } from "@executor-js/hosted-server/organization";
+-import { inventoryAtom } from "./organization.ts";
++import { resourceInventoryAtom } from "./resource-access.ts";
+ 
+ class AppKey extends Data.Class<{
+   readonly organization: OrganizationReference;
+@@ -144,19 +144,17 @@ const runsSource = Atom.family((organization: OrganizationReference) =>
+       params: { organization },
+       query: { pending: true },
+     }),
+-  ).pipe(revalidated, protectedQuery),
+-);
+-const runsQuery = Atom.family((organization: OrganizationReference) =>
+-  // Approval requests expire, and this queue exists to receive them.
+-  pollingQuery(runsSource(organization), steadyPolling),
++  ).pipe(protectedQuery, Atom.setIdleTTL("30 minutes")),
+ );
+ /** Join safe run metadata with app names; keep either read failure visible. */
+-export const pendingApprovalsAtom = Atom.family((organization: OrganizationReference) =>
+-  HostedClient.runtime.atom((get) =>
++export const pendingApprovalsAtom = Atom.family((organization: OrganizationReference) => {
++  const rows = HostedClient.runtime.atom((get) =>
+     Effect.gen(function* () {
+-      // App names come from the inventory; read it alongside the runs rather than after them.
+       const [runs, inventory] = yield* Effect.all(
+-        [get.result(runsQuery(organization)), get.result(inventoryAtom(organization))],
++        [
++          get.result(runsSource(organization)),
++          get.resultOnce(resourceInventoryAtom(organization), { suspendOnWaiting: true }),
++        ],
+         { concurrency: "unbounded" },
+       );
+       return runs.map((run): ApprovalListItem => ({
+@@ -168,8 +166,12 @@ export const pendingApprovalsAtom = Atom.family((organization: OrganizationRefer
+         },
+       }));
+     }),
+-  ),
+-);
++  );
++  return Atom.readable(
++    (get) => get(rows),
++    (refresh) => refresh(runsSource(organization)),
++  ).pipe(protectedQuery, Atom.setIdleTTL("30 minutes"));
++});
+ 
+ class ReviewKey extends Data.Class<{
+   readonly organization: OrganizationReference;
+diff --git a/apps/hosted/web/src/contracts/workflow-inputs.ts b/apps/hosted/web/src/contracts/workflow-inputs.ts
+index b3f62a0..07f8f4f 100644
+--- a/apps/hosted/web/src/contracts/workflow-inputs.ts
++++ b/apps/hosted/web/src/contracts/workflow-inputs.ts
+@@ -6,7 +6,7 @@ import { Effect } from "effect";
+ import { Atom } from "effect/reactivity";
+ import { HostedClient } from "./api.ts";
+ import { protectedQuery } from "./protected-query.ts";
+-import { inventoryAtom } from "./organization.ts";
++import { resourceInventoryAtom } from "./resource-access.ts";
+ import { pendingApprovalsAtom } from "./schedules.ts";
+ 
+ // The family is weak: retain its outer result too, or GC can recreate the raw read on revisit.
+@@ -22,23 +22,38 @@ export const questions = Atom.family((organization: OrganizationReference) =>
+         ),
+       ),
+     )
+-    .pipe(revalidated, protectedQuery, Atom.setIdleTTL("30 minutes")),
++    .pipe(protectedQuery, Atom.setIdleTTL("30 minutes")),
+ );
+-const pending = Atom.family((organization: OrganizationReference) =>
+-  pollingQuery(questions(organization), steadyPolling),
++const queue = Atom.family((organization: OrganizationReference) =>
++  HostedClient.runtime
++    .atom((get) =>
++      Effect.gen(function* () {
++        const [scheduled, inputs, inventory] = yield* Effect.all(
++          [
++            get.result(pendingApprovalsAtom(organization)),
++            get.result(questions(organization)),
++            // Labels are a snapshot; retaining a queue must not hold the directory's live watch.
++            get.resultOnce(resourceInventoryAtom(organization), { suspendOnWaiting: true }),
++          ],
++          { concurrency: "unbounded" },
++        );
++        return approvalQueue(scheduled, inputs, inventory.apps);
++      }),
++    )
++    .pipe(protectedQuery, Atom.setIdleTTL("30 minutes")),
+ );
++
++/** Intent warms data without owning the queue's clocks. */
+ export const approvalsAtom = Atom.family((organization: OrganizationReference) =>
+-  HostedClient.runtime.atom((get) =>
+-    Effect.gen(function* () {
+-      const [scheduled, inputs, inventory] = yield* Effect.all(
+-        [
+-          get.result(pendingApprovalsAtom(organization)),
+-          get.result(pending(organization)),
+-          get.result(inventoryAtom(organization)),
+-        ],
+-        { concurrency: "unbounded" },
+-      );
+-      return approvalQueue(scheduled, inputs, inventory.apps);
+-    }),
+-  ),
++  Atom.readable(
++    (get) => get(queue(organization)),
++    (refresh) => {
++      refresh(questions(organization));
++      refresh(pendingApprovalsAtom(organization));
++    },
++  ).pipe(revalidated, Atom.setIdleTTL(0), protectedQuery, Atom.setIdleTTL(0)),
++);
++/** Only the actual queue view reconciles on its ordinary live cadence. */
++export const liveApprovalsAtom = Atom.family((organization: OrganizationReference) =>
++  pollingQuery(approvalsAtom(organization), steadyPolling).pipe(Atom.setIdleTTL(0)),
+ );
+diff --git a/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx b/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx
+index a48cea8..654aa8d 100644
+--- a/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx
+@@ -1,13 +1,13 @@
+ import { Link } from "@tanstack/react-router";
+ import { ApprovalsPage as SharedApprovalsPage } from "@executor-js/ui/dashboard/approvals";
+-import { approvalsAtom } from "../../contracts/workflow-inputs.ts";
++import { liveApprovalsAtom } from "../../contracts/workflow-inputs.ts";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ export function ApprovalsPage() {
+   const { organization, slug: organizationSlug } = useOrganizationRoute();
+   return (
+     <SharedApprovalsPage
+-      query={approvalsAtom(organization)}
++      query={liveApprovalsAtom(organization)}
+       Failure={HostedFailure}
+       review={(item) =>
+         item.kind === "workflow" ? (
+diff --git a/e2e/support/account-definition-host.ts b/e2e/support/account-definition-host.ts
+index 09d7baf..8e63375 100644
+--- a/e2e/support/account-definition-host.ts
++++ b/e2e/support/account-definition-host.ts
+@@ -5,7 +5,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+ import * as Runtime from "@effect/platform-node/NodeRuntime";
+ import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
+ import { ProviderDefinition, toEffectRuntime, type BuiltApp } from "@executor-js/sdk/core";
+-import { HostAccounts } from "apps/contracts";
++import { HostAccounts, protocol39 } from "apps/contracts";
+ import { Console, Effect, Layer, Path, Redacted, Result, Schema } from "effect";
+ import { FetchHttpClient, HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { createServer } from "node:http";
+@@ -25,14 +25,18 @@ Runtime.runMain(Effect.scoped(Effect.gen(function* () {
+   let reads = 0;
+   const Input = Schema.Struct({ build: Schema.String, slot: Schema.String,
+     mutation: Schema.optionalKey(Schema.Literals(["scope", "client", "identity", "family"])),
+-    call: Schema.optionalKey(Schema.Boolean) });
++    call: Schema.optionalKey(Schema.Boolean), observe: Schema.optionalKey(Schema.Boolean) });
+   const body = <A, I>(schema: Schema.Codec<A, I>) => HttpServerRequest.schemaBodyJson(schema);
+   const routes = Layer.mergeAll(
+     HttpRouter.add("POST", "/build", Effect.gen(function* () {
+-      const input = yield* body(Schema.Struct({ files: Schema.NonEmptyArray(Schema.Struct({ path: Schema.String, content: Schema.String })) }));
++      const input = yield* body(Schema.Struct({ files: Schema.NonEmptyArray(Schema.Struct({ path: Schema.String, content: Schema.String })), legacyRequirements: Schema.optionalKey(Schema.Boolean) }));
+       const built = yield* runtime.build(input);
+-      builds.set(built.build, built);
+-      return yield* HttpServerResponse.json({ build: built.build, blobReads });
++      const retained = input.legacyRequirements
++        ? { ...built, requirements: Schema.decodeUnknownSync(protocol39.schemas.requirements)(built.requirements) }
++        : built;
++      builds.set(built.build, retained);
++      return yield* HttpServerResponse.json({ build: built.build, blobReads,
++        requirements: built.requirements, retainedRequirements: retained.requirements });
+     })),
+     HttpRouter.add("POST", "/invoke", Effect.gen(function* () {
+       const input = yield* body(Input);
+@@ -47,15 +51,21 @@ Runtime.runMain(Effect.scoped(Effect.gen(function* () {
+           if (input.mutation === "identity") provider = { ...provider, auth: { ...provider.auth, oauth: { ...method, identity: { issuer: "https://foreign.example.test", name: "Foreign identity" } } } };
+           if (input.mutation === "family") provider = { ...provider, family: { id: "foreign", name: "Foreign family" } };
+         }
+-        return [slot, { id: "acc_synthetic_" + slot, method: "oauth", generation: 7,
+-          provider, fields: { access_token: "synthetic-client-a-" + slot, token_type: "Bearer" } }];
++        const methodKey = provider.auth.oauth === undefined ? Object.keys(provider.auth)[0]! : "oauth";
++        return [slot, { id: "acc_synthetic_" + slot, method: methodKey, generation: 7,
++          provider, fields: methodKey === "oauth"
++            ? { access_token: "synthetic-client-a-" + slot, token_type: "Bearer" }
++            : { token: "synthetic-client-a-" + slot } }];
+       }));
+       const accounts = Schema.decodeUnknownSync(HostAccounts)({ app: {}, user: input.call ? selected : { [input.slot]: selected[input.slot] } });
+       const before = JSON.stringify(accounts);
+       const context = { app: "definition-fixture", build: built.build, caller: "synthetic-caller", accounts: Redacted.make(accounts) };
+       const result = yield* Effect.result(input.call
+         ? runtime.call({ ...context, database: false, tool: "read", kind: "query", input: {} })
+-        : runtime.checkAccount({ ...context, requirement: input.slot }));
++        : input.observe ? runtime.observeAccount === undefined
++          ? Effect.die("Expected the host observation operation")
++          : runtime.observeAccount({ ...context, requirement: input.slot })
++          : runtime.checkAccount({ ...context, requirement: input.slot }));
+       return yield* HttpServerResponse.json({
+         ok: Result.isSuccess(result),
+         ...(Result.isSuccess(result) ? { value: result.success } : { tag: result.failure._tag }),
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index dddc3d1..fb2af4d 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9528,6 +9528,18 @@ export const scenarios = plan({
+       local: na("Exercises the hosted product migration journal."),
+     },
+   },
++  accountObservationLegacyDeclaration: {
++    fixtures: "actors",
++    legacyStorage: true,
++    file: "account-observation-protocol.spec.ts",
++    title:
++      "legacy observation declarations publish supported results and keep unsupported probes private",
++    targets: {
++      "self-host": scheduled,
++      cloud: na("Reconstructs legacy deployment declarations in a stopped synthetic database."),
++      local: na("Uses hosted account HTTP endpoints."),
++    },
++  },
+   accountObservationProtocol: {
+     fixtures: "actors",
+     file: "account-observation-protocol.spec.ts",
+diff --git a/e2e/tests/account-definition-projection.spec.ts b/e2e/tests/account-definition-projection.spec.ts
+index a152347..f86e1bf 100644
+--- a/e2e/tests/account-definition-projection.spec.ts
++++ b/e2e/tests/account-definition-projection.spec.ts
+@@ -129,3 +129,74 @@ it.live("host-added Google metadata preserves retained and current account-check
+     }
+   }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+ );
++
++it.live("a current app runs when a retained host declaration ignores observation metadata", () =>
++  Effect.gen(function* () {
++    const fixture = yield* accountDefinitionFixture;
++    const Declaration = Schema.Struct({
++      accounts: Schema.Struct({
++        user: Schema.Record(
++          Schema.String,
++          Schema.Struct({ observation: Schema.optionalKey(Schema.Boolean) }),
++        ),
++      }),
++    });
++    const Build = Schema.Struct({
++      build: Schema.String,
++      requirements: Declaration,
++      retainedRequirements: Declaration,
++    });
++    for (const observe of [false, true]) {
++      const deployed = yield* fixture.post("/build", {
++        legacyRequirements: true,
++        files: [
++          appsManifest,
++          {
++            path: "index.ts",
++            content: `
++          import { defineApp, defineProvider, secrets, object, string, query, router } from "apps";
++          const service = defineProvider({ name: "Observation compatibility",
++            auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) },
++            ${
++              observe
++                ? `observeAccount: async ({ account, fetch }) => {
++              const response = await fetch(${JSON.stringify(fixture.origin + "/provider/service")},
++                { headers: { authorization: "Bearer " + account.fields.token } });
++              if (!response.ok) throw new Error("Synthetic provider refused the fixture account");
++              return { observedAt: new Date().toISOString(), observation: { offering: "metered_api", windows: [], balances: [] } };
++            },`
++                : ""
++            }
++          });
++          export default defineApp({ user: { accounts: { service } } }, {
++            tools: router({ read: query({ input: object({}) }, async () => true) }),
++          });
++        `,
++          },
++        ],
++      });
++      expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
++      const build = yield* Schema.decodeUnknownEffect(Build)(deployed.body);
++      expect(build.requirements.accounts.user.service?.observation).toBe(observe);
++      expect(build.retainedRequirements.accounts.user.service?.observation).toBeUndefined();
++      const called = yield* fixture.post("/invoke", {
++        build: build.build,
++        slot: "service",
++        call: true,
++      });
++      expect(called.status).toBe(200);
++      expect(called.body).toMatchObject({ ok: true, value: true });
++      const observed = yield* fixture.post("/invoke", {
++        build: build.build,
++        slot: "service",
++        observe: true,
++      });
++      expect(observed.status).toBe(200);
++      expect(observed.body, JSON.stringify(observed.body)).toMatchObject(
++        observe
++          ? { ok: true, value: { observation: { offering: "metered_api" } }, reads: 1 }
++          : { ok: false, tag: "HostOperationNotFound", reads: 0 },
++      );
++    }
++  }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
++);
+diff --git a/e2e/tests/account-observation-protocol.spec.ts b/e2e/tests/account-observation-protocol.spec.ts
+index 08204f8..2b37043 100644
+--- a/e2e/tests/account-observation-protocol.spec.ts
++++ b/e2e/tests/account-observation-protocol.spec.ts
+@@ -1,7 +1,10 @@
++import { body } from "../support/api.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { serverControl } from "../support/server-control.ts";
+ import { expect, layer } from "@effect/vitest";
+-import { Effect } from "effect";
++import { Effect, Fiber, Schema } from "effect";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+-import { observationFixture } from "../support/account-observation-fixture.ts";
++import { observationFixture, ObservationView } from "../support/account-observation-fixture.ts";
+ import { protocol17Framework, protocol18Framework } from "../support/app-package.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -37,4 +40,89 @@ layer(HostedLive, { excludeTestServices: true })("Optional observation protocol"
+       ),
+     );
+   }
++
++  it.effect(scenarios.accountObservationLegacyDeclaration.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        for (const observe of [false, true]) {
++          const f = yield* observationFixture({
++            observe,
++            health: true,
++            name: `Legacy observation ${observe}`,
++            providerName: `Legacy observation provider ${observe}`,
++          });
++          yield* serverControl("stop");
++          const [changed] = yield* legacyStorage([
++            {
++              sql: `update executor_deployments d set requirements = jsonb_set(d.requirements::jsonb, '{accounts}',
++            (select jsonb_object_agg(key, value - 'observation') from jsonb_each(d.requirements::jsonb -> 'accounts')))
++            where d.id = (select active_deployment from executor_apps where id = $1) returning requirements`,
++              params: [f.app.id],
++            },
++          ]);
++          expect(changed).toHaveLength(1);
++          const encoded = yield* Schema.decodeUnknownEffect(
++            Schema.Struct({
++              requirements: Schema.Struct({
++                accounts: Schema.Record(
++                  Schema.String,
++                  Schema.Struct({ observation: Schema.optionalKey(Schema.Boolean) }),
++                ),
++              }),
++            }),
++          )(changed![0]);
++          expect(
++            Object.values(encoded.requirements.accounts).every(
++              (slot) => slot.observation === undefined,
++            ),
++          ).toBe(true);
++          yield* serverControl("start");
++          if (observe) {
++            const hold = yield* f.backend.hold;
++            const refreshing = yield* f.refresh().pipe(Effect.forkChild);
++            yield* hold.entered;
++            expect(
++              (yield* body(ObservationView, yield* f.read())).reports,
++              "An unknown legacy callback is not an accepted first report",
++            ).toEqual([]);
++            yield* hold.release;
++            expect((yield* Fiber.join(refreshing)).status).toBe(200);
++            expect((yield* body(ObservationView, yield* f.read())).reports).toMatchObject([
++              { collecting: false, freshness: "fresh", lastAttempt: { outcome: "success" } },
++            ]);
++            expect(yield* f.backend.calls).toBe(1);
++          } else {
++            const heads = () =>
++              f.api.request(f.actors.owner, "GET", `${f.prefix}/changes/current`).pipe(
++                Effect.flatMap((response) =>
++                  body(
++                    Schema.Struct({
++                      revisions: Schema.Array(
++                        Schema.Struct({
++                          topic: Schema.String,
++                          revision: Schema.String,
++                        }),
++                      ),
++                    }),
++                    response,
++                  ),
++                ),
++                Effect.map(
++                  (current) =>
++                    current.revisions.find((hint) => hint.topic === "observations")?.revision,
++                ),
++              );
++            const before = yield* heads();
++            expect((yield* f.refresh()).status).toBe(200);
++            expect((yield* body(ObservationView, yield* f.read())).reports).toEqual([]);
++            expect(yield* f.backend.calls).toBe(0);
++            expect(yield* heads(), "An unsupported first probe publishes no usage change").toBe(
++              before,
++            );
++          }
++        }
++      }),
++    ),
++  );
+ });
+diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
+index e7a405d..d8f1246 100644
+--- a/e2e/tests/account-observation-row-polling.spec.ts
++++ b/e2e/tests/account-observation-row-polling.spec.ts
+@@ -177,6 +177,13 @@ layer(HostedLive, { excludeTestServices: true })("Account observation row pollin
+                       .then(() => undefined);
+               return page.goto(`/org/${f.actors.organization.slug}/accounts`).then(() => loaded);
+             });
++            yield* Effect.addFinalizer(() =>
++              browser
++                .use("Stop simulating the outage before deleting the account", (page) =>
++                  page.unroute(new RegExp(`/accounts/${f.account}/observations$`)),
++                )
++                .pipe(Effect.orDie),
++            );
+             const initial = requests;
+             expect(initial).toBeGreaterThan(0);
+             yield* browser.use(
+diff --git a/packages/apps/protocols/41.json b/packages/apps/protocols/41.json
+index 6918b28..2482569 100644
+--- a/packages/apps/protocols/41.json
++++ b/packages/apps/protocols/41.json
+@@ -657,14 +657,14 @@
+               {
+                 "name": "app",
+                 "type": {
+-                  "$shared": "1df9dc2528b304d5"
++                  "$shared": "bca06c5851d434f2"
+                 },
+                 "isOptional": false
+               },
+               {
+                 "name": "user",
+                 "type": {
+-                  "$shared": "1df9dc2528b304d5"
++                  "$shared": "bca06c5851d434f2"
+                 },
+                 "isOptional": false
+               }
+@@ -6856,15 +6856,6 @@
+         }
+       ]
+     },
+-    "1df9dc2528b304d5": {
+-      "_tag": "Objects",
+-      "propertySignatures": [],
+-      "indexSignatures": [
+-        {
+-          "$shared": "bbe595b729cc6077"
+-        }
+-      ]
+-    },
+     "2182834c74fd835b": {
+       "_tag": "Objects",
+       "propertySignatures": [
+@@ -8108,6 +8099,25 @@
+       },
+       "isOptional": true
+     },
++    "48ac1ab0c4164c61": {
++      "parameter": {
++        "_tag": "String",
++        "checks": [
++          {
++            "_tag": "Filter",
++            "representation": {
++              "id": "effect/schema/isMinLength",
++              "payload": {
++                "minLength": 1
++              }
++            }
++          }
++        ]
++      },
++      "type": {
++        "$shared": "d0458452986e2dec"
++      }
++    },
+     "4c36e63564d77154": {
+       "_tag": "Objects",
+       "propertySignatures": [
+@@ -9564,100 +9574,6 @@
+         "$shared": "95083e2f4ed933f3"
+       }
+     },
+-    "8499884e6b13a36a": {
+-      "_tag": "Objects",
+-      "propertySignatures": [
+-        {
+-          "$shared": "df36a283c958f05e"
+-        },
+-        {
+-          "name": "capabilities",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter",
+-                    "representation": {
+-                      "id": "effect/schema/isMinLength",
+-                      "payload": {
+-                        "minLength": 1
+-                      }
+-                    }
+-                  }
+-                ]
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "cardinality",
+-          "type": {
+-            "_tag": "Union",
+-            "types": [
+-              {
+-                "_tag": "Literal",
+-                "literal": "one"
+-              },
+-              {
+-                "_tag": "Literal",
+-                "literal": "many"
+-              }
+-            ]
+-          },
+-          "isOptional": false
+-        },
+-        {
+-          "name": "contributed",
+-          "type": {
+-            "_tag": "Boolean"
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "health",
+-          "type": {
+-            "_tag": "Literal",
+-            "literal": true
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "interactiveHealth",
+-          "type": {
+-            "_tag": "Literal",
+-            "literal": true
+-          },
+-          "isOptional": true
+-        },
+-        {
+-          "name": "hostAcquisition",
+-          "type": {
+-            "_tag": "Arrays",
+-            "rest": [
+-              {
+-                "_tag": "String",
+-                "checks": [
+-                  {
+-                    "_tag": "Filter",
+-                    "representation": {
+-                      "id": "effect/schema/isMinLength",
+-                      "payload": {
+-                        "minLength": 1
+-                      }
+-                    }
+-                  }
+-                ]
+-              }
+-            ]
+-          },
+-          "isOptional": true
+-        }
+-      ]
+-    },
+     "8b2e6a00a29a7282": {
+       "_tag": "Objects",
+       "propertySignatures": [
+@@ -10006,24 +9922,14 @@
+       },
+       "isOptional": true
+     },
+-    "bbe595b729cc6077": {
+-      "parameter": {
+-        "_tag": "String",
+-        "checks": [
+-          {
+-            "_tag": "Filter",
+-            "representation": {
+-              "id": "effect/schema/isMinLength",
+-              "payload": {
+-                "minLength": 1
+-              }
+-            }
+-          }
+-        ]
+-      },
+-      "type": {
+-        "$shared": "8499884e6b13a36a"
+-      }
++    "bca06c5851d434f2": {
++      "_tag": "Objects",
++      "propertySignatures": [],
++      "indexSignatures": [
++        {
++          "$shared": "48ac1ab0c4164c61"
++        }
++      ]
+     },
+     "cead5e74ec394c0d": {
+       "_tag": "Objects",
+@@ -10183,6 +10089,107 @@
+         }
+       ]
+     },
++    "d0458452986e2dec": {
++      "_tag": "Objects",
++      "propertySignatures": [
++        {
++          "$shared": "df36a283c958f05e"
++        },
++        {
++          "name": "capabilities",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        },
++        {
++          "name": "cardinality",
++          "type": {
++            "_tag": "Union",
++            "types": [
++              {
++                "_tag": "Literal",
++                "literal": "one"
++              },
++              {
++                "_tag": "Literal",
++                "literal": "many"
++              }
++            ]
++          },
++          "isOptional": false
++        },
++        {
++          "name": "contributed",
++          "type": {
++            "_tag": "Boolean"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "health",
++          "type": {
++            "_tag": "Literal",
++            "literal": true
++          },
++          "isOptional": true
++        },
++        {
++          "name": "interactiveHealth",
++          "type": {
++            "_tag": "Literal",
++            "literal": true
++          },
++          "isOptional": true
++        },
++        {
++          "name": "observation",
++          "type": {
++            "_tag": "Boolean"
++          },
++          "isOptional": true
++        },
++        {
++          "name": "hostAcquisition",
++          "type": {
++            "_tag": "Arrays",
++            "rest": [
++              {
++                "_tag": "String",
++                "checks": [
++                  {
++                    "_tag": "Filter",
++                    "representation": {
++                      "id": "effect/schema/isMinLength",
++                      "payload": {
++                        "minLength": 1
++                      }
++                    }
++                  }
++                ]
++              }
++            ]
++          },
++          "isOptional": true
++        }
++      ]
++    },
+     "d63f83fdcc7b22eb": {
+       "name": "balances",
+       "type": {
+diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
+index ac0ccfd..ae70aac 100644
+--- a/packages/apps/src/contracts/protocols/current.ts
++++ b/packages/apps/src/contracts/protocols/current.ts
+@@ -203,6 +203,8 @@ export const DeclaredAccountSlot = Schema.Struct({
+   health: Schema.optionalKey(Schema.Literal(true)),
+   /** This slot can check app-acquired references through connect.check. */
+   interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
++  /** False rules out a callback; missing metadata belongs to a retained older app. */
++  observation: Schema.optionalKey(Schema.Boolean),
+   hostAcquisition: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+ });
+ export type DeclaredAccountSlot = typeof DeclaredAccountSlot.Type;
+diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
+index cafc784..60ce74f 100644
+--- a/packages/apps/src/implementation/host.ts
++++ b/packages/apps/src/implementation/host.ts
+@@ -250,6 +250,7 @@ function declaredSlots(slots: AccountSlots, checks: readonly string[] | undefine
+           : {}),
+         definition: yield* providerDeclaration(provider),
+         ...(provider.health === undefined ? {} : { health: true }),
++        observation: provider.observeAccount !== undefined,
+         ...(hostAcquisition.length === 0 ? {} : { hostAcquisition }),
+         ...((checks?.includes(slot) ??
+         Object.values(provider.auth).some(
+diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
+index a6a1489..259db9f 100644
+--- a/packages/sdk/src/contracts/apps.ts
++++ b/packages/sdk/src/contracts/apps.ts
+@@ -64,6 +64,8 @@ export const AccountRequirement = /* @__PURE__ */ (() =>
+     health: Schema.optionalKey(Schema.Literal(true)),
+     /** This slot can check app-acquired references through connect.check. */
+     interactiveHealth: Schema.optionalKey(Schema.Literal(true)),
++    /** False rules out a callback; missing metadata belongs to a retained older app. */
++    observation: Schema.optionalKey(Schema.Boolean),
+     hostAcquisition: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+   }))();
+ 
+diff --git a/packages/sdk/src/implementation/account-observation-store.ts b/packages/sdk/src/implementation/account-observation-store.ts
+index fdde0d7..fcbab09 100644
+--- a/packages/sdk/src/implementation/account-observation-store.ts
++++ b/packages/sdk/src/implementation/account-observation-store.ts
+@@ -48,6 +48,15 @@ export const makeObservationStore = (db: Query, crypto: Crypto.Crypto) => {
+           if (Option.isNone(data)) return [];
+           const value = data.value;
+           const app = apps.find((app) => app.id === row.source);
++          // A legacy app's first claim discovers support; it is not an accepted reading.
++          if (
++            value.result === null &&
++            value.lastAttempt === null &&
++            !Object.values(app?.requirements.accounts ?? {}).some(
++              (required) => required.provider === account.provider && required.observation === true,
++            )
++          )
++            return [];
+           const outdated = app === undefined || app.activeVersion !== value.version;
+           const failed = value.lastAttempt !== null && value.lastAttempt.outcome !== "success";
+           return [
+diff --git a/packages/sdk/src/implementation/account-observations.ts b/packages/sdk/src/implementation/account-observations.ts
+index a9d3f17..534fb48 100644
+--- a/packages/sdk/src/implementation/account-observations.ts
++++ b/packages/sdk/src/implementation/account-observations.ts
+@@ -43,7 +43,9 @@ export const makeAccountObservations = (
+       if (
+         app.activeVersion === null ||
+         !Object.values(app.requirements.accounts).some(
+-          (required) => required.provider === account.provider,
++          (required) =>
++            required.provider === account.provider &&
++            (required.observation !== false || required.interactiveHealth === true),
+         )
+       )
+         return;
+diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+index 1cf8952..b4a8082 100644
+--- a/packages/sdk/src/implementation/apps.ts
++++ b/packages/sdk/src/implementation/apps.ts
+@@ -402,6 +402,7 @@ export const makeApps = (
+             capabilities: value.capabilities,
+             contributed: scope === "app" && value.contributed === true,
+             health: value.health,
++            observation: value.observation,
+             interactiveHealth: value.interactiveHealth,
+             hostAcquisition: value.hostAcquisition,
+           })),
+@@ -433,6 +434,7 @@ export const makeApps = (
+               capabilities,
+               contributed,
+               health,
++              observation,
+               interactiveHealth,
+               hostAcquisition,
+             }) => [
+@@ -445,6 +447,7 @@ export const makeApps = (
+                 ...(capabilities === undefined ? {} : { capabilities }),
+                 contributed,
+                 ...(health === undefined ? {} : { health }),
++                ...(observation === undefined ? {} : { observation }),
+                 ...(interactiveHealth === undefined ? {} : { interactiveHealth }),
+                 ...(hostAcquisition === undefined ? {} : { hostAcquisition }),
+               },

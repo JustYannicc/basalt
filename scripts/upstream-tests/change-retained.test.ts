@@ -221,8 +221,9 @@ function setup(t: TestContext) {
 test("an unconfirmed retained value is never shown, and a body waits for its after-read", async (t) => {
   const { server, flush, mount } = setup(t);
   const src = source("retained-old");
-  const atom = changeProtected(ORGANIZATION, ["accounts"])(src.atom);
   const registry = AtomRegistry.make();
+  registry.get(src.atom);
+  const atom = changeProtected(ORGANIZATION, ["accounts"])(src.atom);
   const view = mount(registry, atom);
   await flush();
   assert.equal(server.state.streamOpens, 1);
@@ -371,9 +372,11 @@ test("the source's own first load can never replace an accepted result", async (
   const { server, flush, mount } = setup(t);
   const src = source();
   const atom = changeProtected(ORGANIZATION, ["accounts"])(src.atom);
-  const view = mount(AtomRegistry.make(), atom);
-  await flush();
+  const registry = AtomRegistry.make();
+  registry.get(src.atom);
   const own = src.loads[0]!;
+  const view = mount(registry, atom);
+  await flush();
   server.handshake();
   await flush();
   const fenced = src.loads.at(-1)!;
@@ -432,4 +435,63 @@ test("remounting in the same registry after an identity swap never shows the old
   assert.equal(third.current().value, "fresh-b", "a new feed serves the new principal");
   assert.ok(!bodies(third.values).includes("fresh-a"));
   third.stop();
+});
+
+test("remounting confirms retained heads without fetching the body again", async (t) => {
+  const { server, flush, mount } = setup(t);
+  const src = source();
+  const atom = changeProtected(ORGANIZATION, ["accounts"])(src.atom);
+  const registry = AtomRegistry.make();
+  const first = mount(registry, atom);
+  await flush();
+  server.handshake();
+  await flush();
+  src.loads.at(-1)!.resolve("accepted");
+  await flush();
+  first.stop();
+  await flush();
+  t.mock.timers.tick(1_000);
+  await flush();
+  const count = src.loads.length;
+  const second = mount(registry, atom);
+  await flush();
+  assert.deepEqual(bodies(second.values), [], "a new connection must confirm authority first");
+  server.handshake();
+  await flush();
+  assert.equal(second.current().value, "accepted");
+  assert.equal(src.loads.length, count, "unchanged authorized heads reuse the accepted body");
+  second.stop();
+});
+
+test("a changed head during a short unmount cannot reaccept the old raw body", async (t) => {
+  const { server, flush, mount } = setup(t);
+  const src = source();
+  const atom = changeProtected(ORGANIZATION, ["accounts"])(src.atom);
+  const registry = AtomRegistry.make({ defaultIdleTTL: 400 });
+  const first = mount(registry, atom);
+  await flush();
+  server.handshake();
+  await flush();
+  src.loads.at(-1)!.resolve("revision-1");
+  await flush();
+  first.stop();
+  await flush();
+  server.commit("accounts", "2");
+  await flush();
+  const second = mount(registry, atom);
+  await flush();
+  assert.equal(
+    src.loads.length,
+    2,
+    "the changed revision owes a new body despite the registry TTL",
+  );
+  assert.equal(second.current().waiting, true);
+  src.loads.at(-1)!.resolve("revision-2");
+  await flush();
+  assert.equal(second.current().value, "revision-2");
+  assert.ok(
+    !second.values.some((value) => !value.waiting && bodies([value]).includes("revision-1")),
+    JSON.stringify(second.values),
+  );
+  second.stop();
 });
