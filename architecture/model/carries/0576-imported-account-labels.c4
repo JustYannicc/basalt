@@ -1,7 +1,7 @@
 model {
   extend basalt.modelGateway {
     metadata {
-      constraint "Imported account display identities hash the pool, source and foreign account, remain separate from native saved accounts, and never expose ledger references. Labels live in bounded durable controller metadata, joined only into manager-authorized account groups, with create, rename and remove behind the native manager lock and an action-bound host assertion. Neither labels nor imported-only accounts alter append-only usage, account access, provider credentials, routing membership or capacity. Native private accounts retain counts-only redaction; absent account identities remain explicit."
+      constraint "Imported account display identities hash the pool, source and foreign account only for account groups, remain separate from native saved accounts, and never expose ledger references. Totals retain unmapped coverage without hashing every imported request. Labels live in bounded durable controller metadata, joined only into manager-authorized account groups, with create, rename and remove behind the native manager lock and an action-bound host assertion. Neither labels nor imported-only accounts alter append-only usage, account access, provider credentials, routing membership or capacity. Native private accounts retain counts-only redaction; absent account identities remain explicit."
     }
   }
 }

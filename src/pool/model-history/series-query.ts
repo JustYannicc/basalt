@@ -146,11 +146,15 @@ export async function seriesQuery(
   if (input.by.includes("person") && !input.by.includes("attribution"))
     redactedKey.push("'attribution'", "NULL");
   const app = (await appAttributionReady(db)) ? "r.app_id" : "NULL::text AS app_id";
+  // Totals scan imported history too; hash foreign identities only for account drill-downs.
+  const foreignAccount = input.by.includes("account")
+    ? "'imported:' || encode(sha256(convert_to($1::text || ':' || r.source || ':' || r.account, 'UTF8')), 'hex')"
+    : "'unmapped'";
   const prefix = `WITH bindings AS (SELECT * FROM jsonb_to_recordset($4::jsonb) AS b(history text,saved text)),
     selected AS (SELECT r.*, $6::text AS gateway_source,
       ${app === "r.app_id" ? "" : `${app},`}
       CASE WHEN r.account IS NULL THEN NULL
-        WHEN NOT ${nativeAccount} AND r.source <> $6 THEN 'imported:' || encode(sha256(convert_to($1::text || ':' || r.source || ':' || r.account, 'UTF8')), 'hex')
+        WHEN NOT ${nativeAccount} AND r.source <> $6 THEN ${foreignAccount}
         WHEN NOT ${nativeAccount} OR NOT $7::boolean OR b.history IS NULL THEN 'unmapped'
         WHEN b.saved IS NULL THEN 'otherAccounts' ELSE b.saved END AS saved_account,
       ${personScope === undefined ? `(${nativeAccount} AND r.account IS NOT NULL AND (NOT $7::boolean OR b.history IS NULL OR b.saved IS NULL))` : "false"} AS counts_only
