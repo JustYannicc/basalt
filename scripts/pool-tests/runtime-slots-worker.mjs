@@ -1,3 +1,4 @@
+export { ModelLifetimeNode } from "./model-lifetime-node.mjs";
 import { DurableObject } from "cloudflare:workers";
 import { RuntimeSlots } from "../../src/pool/runtime-slots/controller.ts";
 import { RuntimeSlotRouter } from "../../src/pool/runtime-slots/router.ts";
@@ -37,7 +38,6 @@ export class Controller extends DurableObject {
     super(ctx, env);
     this.streams = new SlotStreams();
     this.calls = { start: 0, install: 0, retire: 0 };
-    this.closed = new Set();
     this.inTransaction = false;
     this.store = new RuntimeSlotStorage({
       get: (key) => ctx.storage.get(key),
@@ -92,12 +92,9 @@ export class Controller extends DurableObject {
         const policy = await ctx.storage.get(`fixture-native-policy:${identity.slotId}`);
         if (!policy || policy.dirty || use?.revision !== policy.revision)
           return new Response(null, { status: 503 });
-        const pair = new WebSocketPair();
-        pair[1].accept();
-        pair[1].send(identity.bootId);
-        pair[1].addEventListener("message", (event) => pair[1].send(event.data));
-        pair[1].addEventListener("close", () => this.closed.add(identity.bootId));
-        return new Response(null, { status: 101, webSocket: pair[0] });
+        const headers = new Headers(request.headers);
+        headers.set("X-Fixture-Boot", identity.bootId);
+        return env.NODE.getByName("fixture").fetch(new Request(request, { headers }));
       },
     };
     this.reconstruct();
@@ -212,7 +209,9 @@ export class Controller extends DurableObject {
       return Response.json({
         snapshot: await this.slots.inspect(),
         calls: this.calls,
-        closed: [...this.closed],
+        closed: (
+          await (await this.env.NODE.getByName("fixture").fetch("https://node/node-state")).json()
+        ).closedBoots,
         rollbackSentinel:
           (await this.ctx.storage.get("runtime-slots-v1:rollback-sentinel")) ?? null,
       });

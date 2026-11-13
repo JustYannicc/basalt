@@ -1,3 +1,5 @@
+import { isModelLifetimePath, stripModelLifetimeRequest } from "./model-lifetime-contract.ts";
+import { inheritModelLifetime, modelLifetimeFetch } from "./model-lifetime.worker.ts";
 import { modelKeyScope } from "./key-scope.ts";
 import type { Computers } from "./computers.ts";
 import { ControlFailure, failureResponse } from "./json.ts";
@@ -52,6 +54,8 @@ export async function forwardPoolRequest(
   deps: Dependencies,
 ): Promise<Response> {
   const pathname = new URL(request.url).pathname;
+  if (isModelLifetimePath(pathname)) return new Response(null, { status: 404 });
+  request = stripModelLifetimeRequest(request);
   let native: Awaited<ReturnType<Computers["nativeModel"]>> | undefined;
   let identity: RefusalIdentity | undefined;
   let modelLease: ReturnType<NativeStreams["acquire"]> | undefined;
@@ -100,8 +104,13 @@ export async function forwardPoolRequest(
       }
       guard = "request_active";
       forwarded.signal.throwIfAborted();
-      prepared();
-      beforeDispatch();
+      const dispatch = () => {
+        prepared();
+        beforeDispatch();
+      };
+      if (port === 8317 && (native !== undefined || modelLease !== undefined))
+        return modelLifetimeFetch(forwarded, (request) => deps.fetch(request, port), dispatch);
+      dispatch();
       return deps.fetch(forwarded, port);
     };
     const outbound = containerRequest(request, "http://pool");
@@ -133,7 +142,10 @@ export async function forwardPoolRequest(
       if (response.headers.has(dispatchTimingHeader)) {
         const headers = new Headers(response.headers);
         headers.delete(dispatchTimingHeader);
-        response = new Response(null, { status: 101, headers, webSocket: response.webSocket });
+        response = inheritModelLifetime(
+          response,
+          new Response(null, { status: 101, headers, webSocket: response.webSocket }),
+        );
       }
       const forwarded = native === undefined ? response : nativeResponse(response, native);
       return modelLease === undefined ? forwarded : nativeResponse(forwarded, modelLease);

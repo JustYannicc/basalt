@@ -291,6 +291,15 @@
             "mode": "manual",
             "requires": "Retire after metadata-only Node usage publication preserves only allowlisted canonical API paths in its detached context, omits arbitrary paths and all other request metadata, and passes context, queue publication and fresh Home-capture regressions."
           }
+        },
+        {
+          "identity": "cliproxy-node-model-lifetime",
+          "file": "0593-node-model-lifetime.patch",
+          "sha256": "a6ec0a5c13987b2c1ce65a62e39cf76986962f798b8924fc5d0fe77fd3129ef4",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only when the pinned Node exposes a private single-use connection completion channel that binds the actual model socket, preserves unmarked raw frames and public subprotocols, closes the data socket if completion becomes uncertain, and passes normal, client, upstream, revocation, duplicate-claim and draining-retirement regressions without inference replay or a byte-lifetime cap."
+          }
         }
       ]
     }
