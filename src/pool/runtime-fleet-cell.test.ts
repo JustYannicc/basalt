@@ -1,135 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { handoffRuntime } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
-import { RuntimeSqlite } from "../../scripts/pool-tests/runtime-handoff-storage.ts";
-import { runtimeFixtureCode } from "../../scripts/pool-tests/runtime-handoff-proofs.ts";
-import { runtimeProofFixture } from "../../scripts/release-barrier/test/runtime-proof-fixture.ts";
+import { fleetCellFixture as fixture } from "../../scripts/pool-tests/runtime-fleet-cell-fixture.ts";
 import { RuntimeFleet } from "./runtime-fleet/controller.ts";
 import { RuntimeFleetState } from "./runtime-fleet/state.ts";
-import { boundFleetCell } from "./runtime-fleet/bound-cell.ts";
-import { RuntimeProviderReader } from "./runtime-provider/read.ts";
-import { decodeProviderApplication } from "./runtime-provider/application.ts";
-import { providerDigest } from "./runtime-provider/canonical.ts";
-import { runtimeApplicationSettings } from "./runtime-provider/settings.ts";
-
-async function fixture() {
-  const providerFixture = await runtimeProofFixture();
-  const target = { ...providerFixture.manifest.target, homePeerOrdinal: 1 };
-  const env = {
-    POOL_RUNTIME_APPLICATION_ID: target.applicationId,
-    POOL_CONTAINER_APPLICATION_ID: "legacy",
-    POOL_DATABASE_URL: "postgresql://synthetic@database.invalid/pool",
-    POOL_MANAGEMENT_KEY: "synthetic-management",
-    POOL_APP_SIGNING_KEY: "a".repeat(64),
-    POOL_DEPLOYMENT_KEY: "b".repeat(64),
-    POOL_IMAGE_HASH: target.imageInput,
-  };
-  const runtime = await handoffRuntime(target, env);
-  const storage = new RuntimeSqlite(),
-    background: Promise<unknown>[] = [];
-  const root = {
-    id: { toString: () => target.controllerId },
-    storage,
-    waitUntil: (work: Promise<unknown>) => {
-      background.push(work);
-    },
-  };
-  let failApplication = false,
-    failRuntime = false;
-  let credential: string | null = "synthetic-provider-token";
-  const provider = new RuntimeProviderReader({ get: async () => credential }, async (input) => {
-    const instances = new URL(input).pathname.endsWith("instances-v2");
-    if (instances ? failRuntime : failApplication) return new Response(null, { status: 403 });
-    return Response.json({
-      success: true,
-      errors: [],
-      result: instances
-        ? runtime.ctx.container.running
-          ? [
-              {
-                id: target.instanceId,
-                application_id: target.applicationId,
-                image: providerFixture.raw.configuration.image,
-                status: { state: "running" },
-              },
-            ]
-          : []
-        : providerFixture.raw,
-      result_info: { next_page_token: "" },
-    });
-  });
-  const application = {
-    ...providerFixture.manifest.provider,
-    applicationId: target.applicationId,
-    applicationVersion: target.applicationVersion,
-    imageDigest: target.imageDigest,
-    applicationConfigDigest: await providerDigest(
-      runtimeApplicationSettings(decodeProviderApplication(providerFixture.raw)),
-    ),
-  };
-  const modelStubs: number[] = [];
-  const transport = {
-    stubs: 0,
-    calls: 0,
-    fail: false,
-    generation: 0,
-    disconnected: 0,
-    failHealth: false,
-    modelStubs,
-  };
-  const cell = boundFleetCell({
-    ctx: root,
-    env,
-    target,
-    code: runtimeFixtureCode,
-    provider,
-    application: { ...application, color: "blue", imageInput: target.imageInput },
-    wrap: runtime.wrap,
-    remote: () => {
-      const stub = ++transport.stubs;
-      const generation = transport.generation;
-      return {
-        fetch: async (request) => {
-          transport.calls++;
-          if (transport.fail) throw new Error("native transport failed");
-          if (
-            generation !== transport.generation ||
-            (transport.failHealth && new URL(request.url).pathname === "/health")
-          ) {
-            transport.disconnected++;
-            await request.text();
-            throw Object.assign(new Error("synthetic stale endpoint stub"), {
-              disconnected: true,
-              retryable: true,
-            });
-          }
-          if (request.headers.has("X-Signalbox-Runtime-Identity")) transport.modelStubs.push(stub);
-          return runtime.stub.fetch(request);
-        },
-      };
-    },
-  });
-  return {
-    ...runtime,
-    cell,
-    storage,
-    transport,
-    secret: (value: string | null) => {
-      credential = value;
-    },
-    failApplication: (value: boolean) => {
-      failApplication = value;
-    },
-    failRuntime: (value: boolean) => {
-      failRuntime = value;
-    },
-    cleanup: async () => {
-      await Promise.all(background);
-      await storage.close();
-      await runtime.cleanup();
-    },
-  };
-}
 
 test("a fleet cell joins provider reads to the retained actual start witness before it can forward", async (context) => {
   const f = await fixture();
@@ -177,7 +50,7 @@ test("a lost provider join after startup is recovered through observation withou
   assert.equal(f.calls.start, 1);
 });
 
-test("a native stub failure is never replayed, and the next call reconnects", async (context) => {
+test("two plain health failures refuse model dispatch, and the next call reconnects", async (context) => {
   const log = context.mock.method(console, "error", () => {});
   const f = await fixture();
   context.after(f.cleanup);
@@ -188,13 +61,14 @@ test("a native stub failure is never replayed, and the next call reconnects", as
     f.cell.forward(new Request("http://pool/v1/responses"), 8317, undefined, () => {}),
     /native transport failed/,
   );
-  assert.equal(f.transport.calls, before + 1);
-  assert.equal(f.transport.stubs, 1);
+  assert.equal(f.transport.calls, before + 2);
+  assert.equal(f.transport.stubs, 2);
   assert.equal(f.calls.model, 0);
   const fields = JSON.parse(log.mock.calls[0]!.arguments[1]);
-  assert.equal(fields.reconnectEligible, false);
-  assert.equal(fields.reconnectRan, false);
-  assert.equal(fields.attempts.length, 1);
+  assert.equal(fields.reconnectEligible, true);
+  assert.equal(fields.reconnectRan, true);
+  assert.equal(fields.reconnectOutcome, "error");
+  assert.equal(fields.attempts.length, 2);
   assert.equal(fields.attempts[0].error.disconnected, null);
   assert.equal(fields.identityHeaderPresent, false);
   f.transport.fail = false;
@@ -206,7 +80,8 @@ test("a native stub failure is never replayed, and the next call reconnects", as
   );
   assert.equal(response.status, 200);
   await response.text();
-  assert.equal(f.transport.stubs, 2);
+  assert.equal(f.transport.stubs, 3);
+  assert.deepEqual(f.transport.modelStubs, [3]);
   assert.equal(f.calls.model, 1);
 });
 
@@ -258,42 +133,50 @@ test("an absent observation secret holds draining capacity without destruction a
   assert.equal(f.calls.start, 1);
 });
 
-test("a disconnected cached stub reconnects health before the first model send", async (context) => {
-  const f = await fixture();
-  context.after(f.cleanup);
-  const selected = await f.cell.start(f.target);
-  assert.equal(f.transport.stubs, 1);
-  f.transport.generation++;
-  const direct = await f.stub.fetch(
-    new Request("http://runtime/observe", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ target: f.target }),
-    }),
-  );
-  assert.equal(direct.status, 200);
-  const observed = await direct.json();
-  assert.equal(observed.identity.bootId, selected.bootId);
-  let dispatched = 0;
-  const response = await f.cell.forward(
-    new Request("http://pool/v1/responses"),
-    8317,
-    undefined,
-    () => {
-      dispatched++;
-    },
-  );
-  await response.text();
-  assert.equal(response.status, 200);
-  assert.equal(f.transport.disconnected, 1);
-  assert.equal(f.transport.stubs, 2);
-  assert.deepEqual(f.transport.modelStubs, [2]);
-  assert.deepEqual(await f.cell.drain(selected), { active: 0, known: true });
-  assert.equal(f.transport.stubs, 2);
-  assert.equal(f.calls.start, 1);
-  assert.equal(f.calls.model, 1);
-  assert.equal(dispatched, 1);
-});
+for (const staleFailure of ["flagged", "plain"] as const)
+  test(`a ${staleFailure} cached stub reconnects health before the first model send`, async (context) => {
+    const log = context.mock.method(console, "error", () => {});
+    const f = await fixture(staleFailure);
+    context.after(f.cleanup);
+    const selected = await f.cell.start(f.target);
+    assert.equal(f.transport.stubs, 1);
+    f.transport.generation++;
+    const direct = await f.stub.fetch(
+      new Request("http://runtime/observe", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ target: f.target }),
+      }),
+    );
+    assert.equal(direct.status, 200);
+    const observed = await direct.json();
+    assert.equal(observed.identity.bootId, selected.bootId);
+    let dispatched = 0;
+    const response = await f.cell.forward(
+      new Request("http://pool/v1/responses"),
+      8317,
+      undefined,
+      () => {
+        dispatched++;
+      },
+    );
+    await response.text();
+    assert.equal(response.status, 200);
+    assert.equal(f.transport.disconnected, 1);
+    const fields = JSON.parse(log.mock.calls[0]!.arguments[1]);
+    assert.equal(fields.reconnectEligible, true);
+    assert.equal(fields.reconnectOutcome, "response");
+    assert.equal(fields.attempts[0].error.disconnected, staleFailure === "plain" ? null : true);
+    assert.equal(fields.attempts[0].error.retryable, staleFailure === "plain" ? null : true);
+    assert.equal(fields.attempts[1].status, 200);
+    assert.equal(f.transport.stubs, 2);
+    assert.deepEqual(f.transport.modelStubs, [2]);
+    assert.deepEqual(await f.cell.drain(selected), { active: 0, known: true });
+    assert.equal(f.transport.stubs, 2);
+    assert.equal(f.calls.start, 1);
+    assert.equal(f.calls.model, 1);
+    assert.equal(dispatched, 1);
+  });
 
 test("a disconnected health probe reconnects at most once before refusing dispatch", async (context) => {
   const log = context.mock.method(console, "error", () => {});
@@ -317,6 +200,7 @@ test("a disconnected health probe reconnects at most once before refusing dispat
   assert.equal(fields.reconnectEligible, true);
   assert.equal(fields.reconnectRan, true);
   assert.equal(fields.reconnectAcquired, true);
+  assert.equal(fields.reconnectOutcome, "error");
   assert.deepEqual([fields.attempts[0].stub, fields.attempts[1].stub], [1, 2]);
   assert.deepEqual(
     [fields.attempts[0].error.disconnected, fields.attempts[1].error.disconnected],
@@ -327,23 +211,65 @@ test("a disconnected health probe reconnects at most once before refusing dispat
   assert.equal(dispatched, 0);
 });
 
-test("a disconnected error after model dispatch never resends the model request", async (context) => {
-  const f = await fixture();
+for (const failure of ["flagged", "plain"] as const)
+  test(`a ${failure} error after model dispatch never resends the model request`, async (context) => {
+    const f = await fixture();
+    context.after(f.cleanup);
+    await f.cell.start(f.target);
+    f.hooks.model = async () => {
+      const error = new Error("synthetic failure after model dispatch");
+      if (failure === "flagged") Object.assign(error, { disconnected: true, retryable: true });
+      throw error;
+    };
+    let dispatched = 0;
+    await assert.rejects(
+      f.cell.forward(new Request("http://pool/v1/responses"), 8317, undefined, () => {
+        dispatched++;
+      }),
+    );
+    assert.equal(f.transport.stubs, 1);
+    assert.equal(f.calls.model, 1);
+    assert.equal(dispatched, 1);
+  });
+
+for (const failure of ["overloaded", "non-error", "http"] as const)
+  test(`a ${failure} health failure never reconnects`, async (context) => {
+    const log = context.mock.method(console, "error", () => {});
+    const f = await fixture(failure);
+    context.after(f.cleanup);
+    await f.cell.start(f.target);
+    f.transport.generation++;
+    const before = f.transport.calls;
+    let dispatched = 0;
+    await assert.rejects(
+      f.cell.forward(new Request("http://pool/v1/responses"), 8317, undefined, () => {
+        dispatched++;
+      }),
+    );
+    assert.equal(f.transport.calls, before + 1);
+    assert.equal(f.transport.stubs, 1);
+    assert.equal(f.calls.model, 0);
+    assert.equal(dispatched, 0);
+    const fields = JSON.parse(log.mock.calls[0]!.arguments[1]);
+    assert.equal(fields.reconnectEligible, false);
+    assert.equal(fields.reconnectRan, false);
+    assert.equal(fields.reconnectOutcome, "not_run");
+    assert.equal(fields.attempts.length, 1);
+    if (failure === "http") assert.equal(fields.attempts[0].status, 409);
+  });
+
+test("a plain control mutation error is never resent", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const f = await fixture("plain");
   context.after(f.cleanup);
-  await f.cell.start(f.target);
-  f.hooks.model = async () => {
-    throw Object.assign(new Error("synthetic failure after model dispatch"), {
-      disconnected: true,
-      retryable: true,
-    });
-  };
-  let dispatched = 0;
-  await assert.rejects(
-    f.cell.forward(new Request("http://pool/v1/responses"), 8317, undefined, () => {
-      dispatched++;
-    }),
-  );
+  const selected = await f.cell.start(f.target);
+  f.transport.generation++;
+  const before = f.transport.calls;
+  await assert.rejects(f.cell.drain(selected), /synthetic stale endpoint stub/);
+  assert.equal(f.transport.calls, before + 1);
   assert.equal(f.transport.stubs, 1);
-  assert.equal(f.calls.model, 1);
-  assert.equal(dispatched, 1);
+  const fields = JSON.parse(log.mock.calls[0]!.arguments[1]);
+  assert.equal(fields.path, "/drain");
+  assert.equal(fields.reconnectEligible, false);
+  assert.equal(fields.reconnectOutcome, "not_run");
 });

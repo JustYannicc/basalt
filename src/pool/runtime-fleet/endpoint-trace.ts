@@ -155,6 +155,16 @@ export class EndpointTrace {
       throw error;
     }
   }
+  private reconnectOutcome() {
+    if (!this.reconnected)
+      return this.eligible && this.request.signal.aborted ? "aborted" : "not_run";
+    if (!this.reconnectAcquired) return "acquisition_error";
+    const repeated = this.attempts[1];
+    if (!repeated) return "pending";
+    if (repeated.outcome === "response")
+      return (repeated.status ?? 0) >= 400 ? "refusal" : "response";
+    return repeated.outcome;
+  }
   finish(result: unknown) {
     if (object(result) && correlations.has(result) && correlations.get(result) !== this.requestId)
       return;
@@ -195,6 +205,7 @@ export class EndpointTrace {
         reconnectEligible: this.eligible,
         reconnectRan: this.reconnected,
         reconnectAcquired: this.reconnectAcquired,
+        reconnectOutcome: this.reconnectOutcome(),
         terminalError: result instanceof Response ? null : shape(result),
         signalAborted: this.request.signal.aborted,
         attempts: this.attempts,

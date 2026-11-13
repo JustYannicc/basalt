@@ -84,9 +84,7 @@ export function boundFleetCell(input: Input) {
             trace.eligible =
               !!health &&
               error instanceof Error &&
-              !("overloaded" in error && error.overloaded === true) &&
-              (("disconnected" in error && error.disconnected === true) ||
-                ("retryable" in error && error.retryable === true));
+              !("overloaded" in error && error.overloaded === true);
             if (!trace.eligible || !health) throw error;
             // Only this read precedes model dispatch. Reconnect once within its original signal.
             health.signal.throwIfAborted();

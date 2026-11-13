@@ -45,6 +45,7 @@ test("endpoint failures retain both attempts and join the gateway without raw er
   assert.equal(fields.identityHeaderPresent, false);
   assert.equal(fields.reconnectEligible, true);
   assert.equal(fields.reconnectRan, true);
+  assert.equal(fields.reconnectOutcome, "error");
   assert.deepEqual(fields.attempts, [
     {
       attempt: 1,
@@ -99,8 +100,12 @@ test("an HTTP refusal after reconnect retains its join when decoded into a new e
       throw new Error("network");
     }),
   );
+  trace.eligible = true;
+  trace.reconnected = true;
+  trace.reconnectAcquired = true;
   const response = await trace.send(2, async () => new Response(null, { status: 409 }));
   trace.finish(response);
+  assert.equal(JSON.parse(log.mock.calls[0]!.arguments[1]).reconnectOutcome, "refusal");
   const error = retainRuntimeFailure(response, new Error("refused"));
   assert.equal(
     runtimeFailureDiagnostic(error, "slot_health").runtimeEndpointRequestId,
@@ -243,6 +248,7 @@ test("cancellation retains a disconnected first send and pending reconnect in on
   assert.equal(fields.cellId, "actual-cell");
   assert.equal(fields.reconnectEligible, true);
   assert.equal(fields.reconnectRan, true);
+  assert.equal(fields.reconnectOutcome, "pending");
   assert.equal(fields.attempts.length, 2);
   assert.equal(fields.attempts[0].error.disconnected, true);
   assert.equal(fields.attempts[1].outcome, "pending");
