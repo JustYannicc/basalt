@@ -14,6 +14,7 @@ import { handleHomePeerUpgrade, homePeerPath } from "./home-peer-transport.ts";
 import { PoolRuntimeFleet, type FleetNamespace } from "./runtime-fleet/production.ts";
 import { RuntimeProviderReader } from "./runtime-provider/read.ts";
 import { PoolAlarms } from "./alarms.ts";
+import { PoolUpkeepTrace } from "./upkeep-trace.ts";
 import { RuntimeHandoff, type HandoffEnvironment } from "./runtime-slots/integration.ts";
 import { handleRuntimeHandoff } from "./runtime-slots/http.ts";
 import { runtimeHandoffPath } from "./runtime-slots/handoff-command.ts";
@@ -81,7 +82,11 @@ import { importAccountTargets } from "./model-history/import-account-targets.ts"
 import { handleSelfUsageImport, selfModelImportPath } from "./model-history/self-import-http.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
 import { NativeMemberships } from "./membership.ts";
-import { membershipPath, type NativeMembershipPolicy } from "./membership-contract.ts";
+import {
+  membershipPath,
+  membershipRefreshMs,
+  type NativeMembershipPolicy,
+} from "./membership-contract.ts";
 import { readNativeMembership } from "./membership-read.ts";
 import { HomeMembership } from "./home-membership.ts";
 import { accountAcquisitionPath } from "./account-acquisition-contract.ts";
@@ -137,6 +142,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private fleet: PoolRuntimeFleet;
   private peers: RuntimeHomePeerTransport;
   private alarms: PoolAlarms;
+  private homeUpkeepTask?: Promise<void>;
   private control: PoolControl;
   private mirrorHome: HomeClient;
   private computers: Computers;
@@ -497,44 +503,91 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async alarm() {
-    const due = await this.alarms.take();
-    try {
-      if (due.fleet)
-        await this.fleet.upkeep().catch(() => console.error("POOL_RUNTIME_FLEET_UPKEEP_PENDING"));
-      if (due.home) await this.homeUpkeep();
-    } finally {
-      await this.alarms.rearm();
-    }
+    const trace = new PoolUpkeepTrace("alarm");
+    await trace.run("alarm", async () => {
+      trace.event("deadlines", await this.alarms.inspect());
+      const due = await this.alarms.take();
+      trace.event("deadlines", { homeDue: due.home, fleetDue: due.fleet });
+      try {
+        if (due.fleet)
+          await trace
+            .run("fleet", () => this.fleet.upkeep())
+            .catch(() => console.error("POOL_RUNTIME_FLEET_UPKEEP_PENDING"));
+        if (due.home) this.deferHomeUpkeep();
+      } finally {
+        await trace.run("rearm", () => this.alarms.rearm());
+        trace.event("deadlines", await this.alarms.inspect());
+      }
+    });
   }
-  private async homeUpkeep() {
+  private deferHomeUpkeep() {
+    const trace = new PoolUpkeepTrace("home");
+    if (this.homeUpkeepTask) {
+      trace.event("home_shared");
+      // The alarm consumed this deadline; retain a wake-up even if the shared task has already scheduled its next pass.
+      this.ctx.waitUntil(
+        this.alarms
+          .schedule("home", Date.now() + membershipRefreshMs)
+          .catch(() => console.error("POOL_HOME_UPKEEP_REARM_PENDING")),
+      );
+      return;
+    }
+    // A native alarm waits for its handler, while waitUntil keeps Home work alive without blocking the next fleet alarm.
+    const work = trace
+      .run("home", () => this.homeUpkeep(trace))
+      .catch(async () => {
+        console.error("POOL_HOME_UPKEEP_PENDING");
+        await this.alarms.schedule("home", Date.now() + membershipRefreshMs);
+      })
+      .finally(() => {
+        if (this.homeUpkeepTask === work) this.homeUpkeepTask = undefined;
+      });
+    this.homeUpkeepTask = work;
+    this.ctx.waitUntil(work.catch(() => console.error("POOL_HOME_UPKEEP_REARM_PENDING")));
+  }
+  private async homeUpkeep(trace = new PoolUpkeepTrace("home")) {
     await this.changes.deliver().catch(() => console.error("POOL_CHANGES_PENDING"));
-    await this.appModels.tick().catch(() => console.error("POOL_APP_MODEL_KEY_CLEANUP_PENDING"));
-    await this.memberships.tick();
-    await this.computers.expire();
-    await this.handoff.warm(() => this.lifecycle.then((lifecycle) => lifecycle.warm()));
-    await reportWhenDue(this.ctx.storage, "first-request", (progress) =>
-      this.computers.observeUsage(undefined, true, progress),
+    await trace
+      .run("app_models", () => this.appModels.tick())
+      .catch(() => console.error("POOL_APP_MODEL_KEY_CLEANUP_PENDING"));
+    await trace.run("memberships", () => this.memberships.tick());
+    await trace.run("computers", () => this.computers.expire());
+    await trace.run("warm", () =>
+      this.handoff.warm(() => this.lifecycle.then((lifecycle) => lifecycle.warm())),
     );
-    await this.control.expire();
-    await this.prices.run();
-    await this.overviewPrices.refresh();
+    await trace.run("first_request", () =>
+      reportWhenDue(this.ctx.storage, "first-request", (progress) =>
+        this.computers.observeUsage(undefined, true, progress),
+      ),
+    );
+    await trace.run("control", () => this.control.expire());
+    await trace.run("prices", () => this.prices.run());
+    await trace.run("overview_prices", () => this.overviewPrices.refresh());
     // Usage is a report: a slow or failing read must not hold the pool's own upkeep.
-    await reportWhenDue(this.ctx.storage, "usage", (progress) =>
-      this.usage.observe(progress),
-    ).catch((error: unknown) => console.error("Pool usage observation failed", error));
-    await reportWhenDue(this.ctx.storage, "account-observations", () =>
-      publishAccountObservations(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY),
-    ).catch(() => console.error("POOL_ACCOUNT_OBSERVATIONS_PENDING"));
+    await trace
+      .run("usage", () =>
+        reportWhenDue(this.ctx.storage, "usage", (progress) => this.usage.observe(progress)),
+      )
+      .catch((error: unknown) => console.error("Pool usage observation failed", error));
+    await trace
+      .run("accounts", () =>
+        reportWhenDue(this.ctx.storage, "account-observations", () =>
+          publishAccountObservations(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY),
+        ),
+      )
+      .catch(() => console.error("POOL_ACCOUNT_OBSERVATIONS_PENDING"));
     if (this.env.POOL_MODEL_HISTORY_ENABLED === "true") {
       try {
-        await reportWhenDue(this.ctx.storage, "model-history", (progress) =>
-          withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, async (db) => {
-            const result = await captureHomeRequests(db);
-            progress.rows = result.state === "active" ? result.scanned : 0;
-            await deliverPoolHistoryChanges(db, result.pending, (changes) =>
-              publishPoolChanges(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY, changes),
-            );
-          }),
+        await trace.run("model_history", () =>
+          reportWhenDue(this.ctx.storage, "model-history", (progress) =>
+            withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, async (db) => {
+              const result = await captureHomeRequests(db);
+              progress.rows = result.state === "active" ? result.scanned : 0;
+              await deliverPoolHistoryChanges(db, result.pending, (changes) =>
+                publishPoolChanges(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY, changes),
+              );
+            }),
+          ),
         );
       } catch {
         console.error("POOL_MODEL_HISTORY_FAILURE count=1");

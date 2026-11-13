@@ -52,6 +52,16 @@ export class PoolAlarms {
       return due;
     });
   }
+  async inspect() {
+    const raw = await this.storage.get(key);
+    const value =
+      raw === undefined ? { home: null, fleet: null } : Schema.decodeUnknownSync(Deadlines)(raw);
+    return {
+      homeDeadline: value.home,
+      fleetDeadline: value.fleet,
+      nativeDeadline: await this.storage.getAlarm(),
+    };
+  }
   async rearm() {
     const raw = await this.storage.get(key);
     if (raw === undefined) return;
