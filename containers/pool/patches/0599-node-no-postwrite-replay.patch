@@ -339,6 +339,267 @@ new file mode 100644
 +		})
 +	}
 +}
+diff --git a/sdk/api/handlers/openai/http_submission_reporting_test.go b/sdk/api/handlers/openai/http_submission_reporting_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_reporting_test.go
+@@ -0,0 +1,256 @@
++package openai
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/claude"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++func TestHTTPSubmissionClaudeCountTokensDisconnectCanFailOver(t *testing.T) {
++	for _, homeMode := range []bool{false, true} {
++		t.Run(fmt.Sprintf("home=%t", homeMode), func(t *testing.T) {
++			runSubmissionClaudeCountTokensDisconnect(t, homeMode)
++		})
++	}
++}
++
++func runSubmissionClaudeCountTokensDisconnect(t *testing.T, homeMode bool) {
++	var accepted atomic.Int32
++	var keys []string
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = io.Copy(io.Discard, r.Body)
++		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/count_tokens" {
++			t.Errorf("unexpected count request: %s %s", r.Method, r.URL.Path)
++		}
++		keys = append(keys, r.Header.Get("X-Api-Key"))
++		if accepted.Add(1) == 1 {
++			conn, _, errHijack := w.(http.Hijacker).Hijack()
++			if errHijack != nil {
++				t.Error(errHijack)
++				return
++			}
++			_ = conn.Close()
++			return
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"input_tokens":42}`)
++	}))
++	defer upstream.Close()
++	target, errURL := url.Parse(upstream.URL)
++	if errURL != nil {
++		t.Fatal(errURL)
++	}
++	transport := http.DefaultTransport.(*http.Transport).Clone()
++	transport.Proxy = nil
++	defer transport.CloseIdleConnections()
++	manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++	manager.RegisterExecutor(runtimeexecutor.NewClaudeExecutor(&config.Config{}))
++	manager.SetRoundTripperProvider(submissionTransport{countLoopbackTransport{t: t, target: target, next: transport}})
++	model := "claude-sonnet-5-5"
++	var auths []*coreauth.Auth
++	for _, suffix := range []string{"a", "b"} {
++		auth := &coreauth.Auth{ID: "count-disconnect-" + suffix, Provider: "claude", Status: coreauth.StatusActive, Attributes: map[string]string{"api_key": "synthetic-" + suffix}}
++		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++			t.Fatal(errRegister)
++		}
++		auths = append(auths, auth)
++		registry.GetGlobalRegistry().RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: model}})
++		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++	}
++	if homeMode {
++		manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
++		manager.PublishHomeDispatch(&submissionHomeDispatcher{auths: auths}, executionregistry.New(), 1)
++	}
++	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++	router := gin.New()
++	router.POST("/v1/messages/count_tokens", claude.NewClaudeCodeAPIHandler(base).ClaudeCountTokens)
++	request := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(`{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hello"}]}`))
++	request.Header.Set("Content-Type", "application/json")
++	response := httptest.NewRecorder()
++	router.ServeHTTP(response, request)
++	t.Logf("count POSTs=%d status=%d body=%s", accepted.Load(), response.Code, response.Body.String())
++	if response.Code != http.StatusOK || accepted.Load() != 2 || ojson.GetBytes(response.Body.Bytes(), "input_tokens").Int() != 42 {
++		t.Fatalf("side-effect-free count did not recover: count POSTs=%d status=%d body=%s", accepted.Load(), response.Code, response.Body.String())
++	}
++	if len(keys) != 2 || keys[0] == keys[1] {
++		t.Fatalf("count did not fail over to another credential: %v", keys)
++	}
++}
++
++// Keep the first-party count decision while directing every byte to the fixture.
++type countLoopbackTransport struct {
++	t      *testing.T
++	target *url.URL
++	next   http.RoundTripper
++}
++
++func (c countLoopbackTransport) RoundTrip(request *http.Request) (*http.Response, error) {
++	if request.URL.Host != "api.anthropic.com" {
++		c.t.Errorf("count did not use the native upstream path: %s", request.URL.Host)
++	}
++	cloned := request.Clone(request.Context())
++	cloned.URL.Scheme = c.target.Scheme
++	cloned.URL.Host = c.target.Host
++	cloned.Host = c.target.Host
++	return c.next.RoundTrip(cloned)
++}
++
++func TestHTTPSubmissionOutcomeUnknownWireJSON(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		t.Run(fmt.Sprint(stream), func(t *testing.T) {
++			var accepted atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				accepted.Add(1)
++				if stream {
++					w.Header().Set("Content-Type", "text/event-stream")
++					_, _ = io.WriteString(w, `data: {"id":"cut","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`+"\n\n")
++					w.(http.Flusher).Flush()
++					_, _ = io.WriteString(w, `data: {"id":"cut"`)
++					return
++				}
++				conn, _, errHijack := w.(http.Hijacker).Hijack()
++				if errHijack != nil {
++					t.Error(errHijack)
++					return
++				}
++				_ = conn.Close()
++			}))
++			defer upstream.Close()
++			response := submissionRequest(t, upstream.URL, stream, nil)
++			body := response.Body.String()
++			t.Logf("accepted=%d status=%d wire=%s", accepted.Load(), response.Code, body)
++			if accepted.Load() != 1 {
++				t.Fatal("generation was replayed")
++			}
++			if !stream {
++				if response.Code != http.StatusBadGateway {
++					t.Fatalf("non-stream status=%d", response.Code)
++				}
++				assertSubmissionUnknownJSON(t, body)
++				return
++			}
++			if response.Code != http.StatusOK || !strings.Contains(body, "partial") {
++				t.Fatalf("late SSE lost partial output: %s", body)
++			}
++			found := false
++			for _, line := range strings.Split(body, "\n") {
++				data, ok := strings.CutPrefix(line, "data: ")
++				if !ok {
++					continue
++				}
++				if !ojson.Valid(data) {
++					t.Fatalf("SSE data is not JSON: %q", data)
++				}
++				if ojson.Get(data, "error").Exists() {
++					assertSubmissionUnknownJSON(t, data)
++					found = true
++				}
++			}
++			if !found {
++				t.Fatal("SSE did not contain a decodable unknown-outcome error")
++			}
++		})
++	}
++}
++
++func assertSubmissionUnknownJSON(t *testing.T, body string) {
++	t.Helper()
++	if !ojson.Valid(body) || ojson.Get(body, "error.code").String() != "upstream_outcome_unknown" {
++		t.Fatalf("unknown-outcome envelope is not decodable: %q", body)
++	}
++	retryable := ojson.Get(body, "error.retryable")
++	if !retryable.Exists() || retryable.Bool() {
++		t.Fatalf("unknown-outcome retryable is not false: %q", body)
++	}
++}
++
++type submissionResultHook struct {
++	coreauth.NoopHook
++	mu      sync.Mutex
++	results []coreauth.Result
++}
++
++func (h *submissionResultHook) OnResult(_ context.Context, result coreauth.Result) {
++	h.mu.Lock()
++	defer h.mu.Unlock()
++	h.results = append(h.results, result)
++}
++
++func TestHTTPSubmissionUnknownStreamRecordsResult(t *testing.T) {
++	for _, homeMode := range []bool{false, true} {
++		for _, mode := range []string{"disconnect", "bootstrap", "empty"} {
++			t.Run(fmt.Sprintf("home=%t/%s", homeMode, mode), func(t *testing.T) {
++				var accepted atomic.Int32
++				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					_, _ = io.Copy(io.Discard, r.Body)
++					accepted.Add(1)
++					if mode != "disconnect" {
++						w.Header().Set("Content-Type", "text/event-stream")
++						w.WriteHeader(http.StatusOK)
++						if mode == "bootstrap" {
++							_, _ = io.WriteString(w, `data: {"id":"cut"`)
++						}
++						return
++					}
++					conn, _, errHijack := w.(http.Hijacker).Hijack()
++					if errHijack != nil {
++						t.Error(errHijack)
++						return
++					}
++					_ = conn.Close()
++				}))
++				defer upstream.Close()
++				hook := &submissionResultHook{}
++				response := submissionRequestWithHook(t, upstream.URL, true, nil, "/v1/chat/completions", hook, homeMode)
++				hook.mu.Lock()
++				defer hook.mu.Unlock()
++				t.Logf("accepted=%d status=%d results=%d", accepted.Load(), response.Code, len(hook.results))
++				if accepted.Load() != 1 || response.Code != http.StatusBadGateway || len(hook.results) != 1 {
++					t.Fatalf("terminal attempt missing or duplicated: status=%d accepted=%d results=%d", response.Code, accepted.Load(), len(hook.results))
++				}
++				result := hook.results[0]
++				if result.Success || result.CompletedResponse || result.CredentialScope || result.ExecutionSeq == 0 || result.Error == nil || !result.Error.IsRequestScoped() || result.Error.HTTPStatus != http.StatusBadGateway {
++					t.Fatalf("terminal result is not a request-scoped failed attempt: %+v", result)
++				}
++			})
++		}
++	}
++}
++
++type submissionHomeDispatcher struct {
++	auths []*coreauth.Auth
++	next  atomic.Int32
++}
++
++func (*submissionHomeDispatcher) HeartbeatOK() bool       { return true }
++func (*submissionHomeDispatcher) AbortAmbiguousDispatch() {}
++func (d *submissionHomeDispatcher) RPopAuth(context.Context, string, string, http.Header, int) ([]byte, error) {
++	index := int(d.next.Add(1)) - 1
++	if index >= len(d.auths) {
++		return nil, fmt.Errorf("fixture credentials exhausted")
++	}
++	doc := ojson.NewDoc([]byte(`{}`))
++	if errSet := doc.Set("auth", d.auths[index]); errSet != nil {
++		return nil, errSet
++	}
++	return doc.Bytes(), nil
++}
 diff --git a/sdk/api/handlers/openai/http_submission_stream_test.go b/sdk/api/handlers/openai/http_submission_stream_test.go
 new file mode 100644
 --- /dev/null
@@ -532,7 +793,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_test.go b/sdk/api/handlers/
 new file mode 100644
 --- /dev/null
 +++ b/sdk/api/handlers/openai/http_submission_test.go
-@@ -0,0 +1,214 @@
+@@ -0,0 +1,225 @@
 +package openai
 +
 +import (
@@ -554,6 +815,7 @@ new file mode 100644
 +	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 +	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/claude"
 +	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
 +	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 +)
 +
@@ -562,14 +824,19 @@ new file mode 100644
 +}
 +
 +func submissionRequestPath(t *testing.T, upstream string, stream bool, transport http.RoundTripper, path string) *httptest.ResponseRecorder {
++	return submissionRequestWithHook(t, upstream, stream, transport, path, nil, false)
++}
++
++func submissionRequestWithHook(t *testing.T, upstream string, stream bool, transport http.RoundTripper, path string, hook coreauth.Hook, homeMode bool) *httptest.ResponseRecorder {
 +	t.Helper()
 +	const provider = "submission-test"
 +	model := "submission-" + strings.ReplaceAll(t.Name(), "/", "-")
-+	manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++	manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, hook)
 +	manager.RegisterExecutor(runtimeexecutor.NewOpenAICompatExecutor(provider, &config.Config{}))
 +	if transport != nil {
 +		manager.SetRoundTripperProvider(submissionTransport{transport})
 +	}
++	var auths []*coreauth.Auth
 +	for _, suffix := range []string{"a", "b"} {
 +		auth := &coreauth.Auth{ID: model + suffix, Provider: provider, Status: coreauth.StatusActive,
 +			ProxyURL: "direct", Attributes: map[string]string{"base_url": upstream, "api_key": "synthetic"}}
@@ -580,8 +847,13 @@ new file mode 100644
 +		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
 +			t.Fatal(errRegister)
 +		}
++		auths = append(auths, auth)
 +		registry.GetGlobalRegistry().RegisterClient(auth.ID, provider, []*registry.ModelInfo{{ID: model}})
 +		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++	}
++	if homeMode {
++		manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
++		manager.PublishHomeDispatch(&submissionHomeDispatcher{auths: auths}, executionregistry.New(), 1)
 +	}
 +	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
 +	router := gin.New()
@@ -747,6 +1019,26 @@ new file mode 100644
 +		})
 +	}
 +}
+diff --git a/sdk/cliproxy/auth/conductor_cooldown.go b/sdk/cliproxy/auth/conductor_cooldown.go
+--- a/sdk/cliproxy/auth/conductor_cooldown.go
++++ b/sdk/cliproxy/auth/conductor_cooldown.go
+@@ -24,6 +24,7 @@
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ )
+ 
+ var quotaCooldownDisabled atomic.Bool
+@@ -2807,6 +2808,8 @@
+ 		resultErr.HTTPStatus = statusCodeFromError(err)
+ 	}
+ 	switch {
++	case httptransport.IsOutcomeUnknown(err):
++		resultErr.Code = requestScopedErrorCode
+ 	case isCredentialScopedError(err):
+ 		// A credential-scoped failure always stays on the credential quota path;
+ 		// normalize conflicting model-only or cooldown-skipping codes so MarkResult
 diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
 --- a/sdk/cliproxy/auth/conductor_execution.go
 +++ b/sdk/cliproxy/auth/conductor_execution.go
@@ -758,22 +1050,26 @@ diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conduc
  	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
  	log "github.com/sirupsen/logrus"
  )
-@@ -30,12 +31,12 @@
+@@ -30,12 +31,16 @@
  	if RequestScopedErrorConfigFromContext(ctx) == nil {
  		ctx = WithRequestScopedErrorConfig(ctx, m.runtimeConfigSnapshot())
  	}
 -	return cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
-+	return httptransport.WithSubmissionTracking(cliproxyexecutor.WithUpstreamAttemptTracker(ctx))
++	return cliproxyexecutor.WithUpstreamAttemptTracker(httptransport.WithoutSubmissionTracking(ctx))
  }
  
  func newUpstreamAttemptContext(ctx context.Context) context.Context {
  	ctx = logging.WithFreshResponseHeadersHolder(ctx)
 -	return cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
-+	return httptransport.WithSubmissionTracking(cliproxyexecutor.WithUpstreamAttemptTracker(ctx))
++	return cliproxyexecutor.WithUpstreamAttemptTracker(httptransport.WithoutSubmissionTracking(ctx))
++}
++
++func (m *Manager) newGenerationAttemptContext(ctx context.Context) context.Context {
++	return httptransport.WithSubmissionTracking(m.newUpstreamAttemptContext(ctx))
  }
  
  func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) error {
-@@ -80,6 +81,7 @@
+@@ -80,6 +85,7 @@
  }
  
  func markUpstreamExecutionAttemptFromContext(ctx context.Context, err error) error {
@@ -781,7 +1077,7 @@ diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conduc
  	if err == nil || !cliproxyexecutor.UpstreamAttempted(ctx) {
  		return err
  	}
-@@ -447,7 +449,7 @@
+@@ -447,7 +453,7 @@
  
  func isRequestTerminatedError(err error) bool {
  	var terminated *cliproxyexecutor.RequestTerminatedError
@@ -790,7 +1086,34 @@ diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conduc
  }
  
  func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExecutor, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options, error) {
-@@ -1349,6 +1351,13 @@
+@@ -677,7 +683,7 @@
+ 		}
+ 		execCtx = contextWithRequestedModelAlias(execCtx, pickOpts, routeModel)
+ 		execCtx = coreusage.WithSelectionID(execCtx, selectionIDFromOptions(pickOpts))
+-		execCtx = m.newUpstreamAttemptContext(execCtx)
++		execCtx = m.newGenerationAttemptContext(execCtx)
+ 
+ 		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAliasForRequest(execCtx, auth, routeModel, pickOpts.Headers)
+ 		if len(models) == 0 {
+@@ -703,7 +709,7 @@
+ 		var authErr error
+ 		didRefreshOnUnauthorized := false
+ 		for _, upstreamModel := range models {
+-			execCtx = m.newUpstreamAttemptContext(execCtx)
++			execCtx = m.newGenerationAttemptContext(execCtx)
+ 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
+ 			execReq := req
+ 			execReq.Model = upstreamModel
+@@ -754,7 +760,7 @@
+ 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized, execOpts.Headers); okRefresh {
+ 					auth = refreshed
+ 					didRefreshOnUnauthorized = true
+-					execCtx = m.newUpstreamAttemptContext(execCtx)
++					execCtx = m.newGenerationAttemptContext(execCtx)
+ 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
+ 					executionSeq = m.nextExecutionSeq()
+ 					startRetry := time.Now()
+@@ -1349,6 +1355,13 @@
  			if hasUpstreamExecutionAttempt(errStream) {
  				upstreamErr = errStream
  			}
@@ -804,6 +1127,66 @@ diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conduc
  			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.requestScopedErrorConfig(execCtx))
  			stoppedByRule := isRequestStopError(errStream) || isRequestScopedStop(action, okAction)
  			if stoppedByRule || (!okAction && (isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream))) {
+@@ -2421,7 +2434,7 @@
+ 		Metadata:        map[string]any{cliproxyexecutor.CanonicalSessionIDMetadataKey: sessionID},
+ 	}
+ 
+-	execCtx := m.newUpstreamAttemptContext(ctx)
++	execCtx := m.newGenerationAttemptContext(ctx)
+ 	execCtx = syncMetadataSessionToContext(execCtx, opts.Metadata)
+ 	executionSeq := m.nextExecutionSeq()
+ 	accessToken := authAccessTokenForRequest(execCtx, auth, opts.Headers)
+diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
+--- a/sdk/cliproxy/auth/conductor_home.go
++++ b/sdk/cliproxy/auth/conductor_home.go
+@@ -1500,7 +1500,7 @@
+ 		clearSchedulerSelectionID(creditsOpts.Metadata)
+ 		creditsCtx = contextWithRequestedModelAlias(creditsCtx, creditsOpts, routeModel)
+ 		creditsCtx = coreusage.WithSelectionID(creditsCtx, "")
+-		creditsCtx = m.newUpstreamAttemptContext(creditsCtx)
++		creditsCtx = m.newGenerationAttemptContext(creditsCtx)
+ 		preparedAuth, errPrepare := m.prepareRequestAuth(creditsCtx, c.executor, c.auth)
+ 		if errPrepare != nil {
+ 			continue
+@@ -1512,7 +1512,7 @@
+ 			continue
+ 		}
+ 		for _, upstreamModel := range models {
+-			creditsCtx = m.newUpstreamAttemptContext(creditsCtx)
++			creditsCtx = m.newGenerationAttemptContext(creditsCtx)
+ 			resultModel := m.stateModelForExecution(c.auth, routeModel, upstreamModel, pooled)
+ 			execReq := req
+ 			execReq.Model = upstreamModel
+@@ -1568,7 +1568,7 @@
+ 		clearSchedulerSelectionID(creditsOpts.Metadata)
+ 		creditsCtx = contextWithRequestedModelAlias(creditsCtx, creditsOpts, routeModel)
+ 		creditsCtx = coreusage.WithSelectionID(creditsCtx, "")
+-		creditsCtx = m.newUpstreamAttemptContext(creditsCtx)
++		creditsCtx = m.newGenerationAttemptContext(creditsCtx)
+ 		preparedAuth, errPrepare := m.prepareRequestAuth(creditsCtx, c.executor, c.auth)
+ 		if errPrepare != nil {
+ 			continue
+diff --git a/sdk/cliproxy/auth/conductor_home_execution.go b/sdk/cliproxy/auth/conductor_home_execution.go
+--- a/sdk/cliproxy/auth/conductor_home_execution.go
++++ b/sdk/cliproxy/auth/conductor_home_execution.go
+@@ -10,6 +10,7 @@
+ 	"github.com/MoeForge/moego/ojson"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ )
+ 
+ func (m *Manager) executeHome(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, countTokens bool) (cliproxyexecutor.Response, error) {
+@@ -178,6 +179,9 @@
+ 		}
+ 		for _, upstreamModel := range models {
+ 			execCtx = m.newUpstreamAttemptContext(execCtx)
++			if !countTokens {
++				execCtx = httptransport.WithSubmissionTracking(execCtx)
++			}
+ 			resultModel := m.stateModelForExecution(preparedAuth, routeModel, upstreamModel, pooled)
+ 			execReq := req
+ 			execReq.Model = upstreamModel
 diff --git a/sdk/cliproxy/auth/conductor_request_scoped_errors.go b/sdk/cliproxy/auth/conductor_request_scoped_errors.go
 --- a/sdk/cliproxy/auth/conductor_request_scoped_errors.go
 +++ b/sdk/cliproxy/auth/conductor_request_scoped_errors.go
@@ -856,27 +1239,54 @@ diff --git a/sdk/cliproxy/auth/conductor_stream.go b/sdk/cliproxy/auth/conductor
  			if chunk.Err != nil && !failed {
  				failed = true
  				entry := logEntryWithRequestID(ctx)
+@@ -412,7 +414,7 @@
+ 	var upstreamErr error
+ 	didRefreshOnUnauthorized := false
+ 	for idx, execModel := range execModels {
+-		ctx = m.newUpstreamAttemptContext(ctx)
++		ctx = m.newGenerationAttemptContext(ctx)
+ 		resultModel := m.stateModelForExecution(auth, routeModel, execModel, pooled)
+ 		execReq := req
+ 		execReq.Model = execModel
+@@ -456,7 +458,7 @@
+ 					auth = refreshed
+ 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
+ 					didRefreshOnUnauthorized = true
+-					ctx = m.newUpstreamAttemptContext(ctx)
++					ctx = m.newGenerationAttemptContext(ctx)
+ 					ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
+ 					executionSeq = m.nextExecutionSeq()
+ 					startRetry := time.Now()
 @@ -488,6 +490,9 @@
  		streamResult, errStream = validateStreamResult(streamResult, errStream)
  		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
  		if errStream != nil {
-+			if isRequestTerminatedError(errStream) {
++			if isRequestTerminatedError(errStream) && !httptransport.IsOutcomeUnknown(errStream) {
 +				return nil, errStream
 +			}
  			rerr := resultErrorFromError(errStream)
  			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.requestScopedErrorConfig(ctx))
  			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
+@@ -538,7 +543,7 @@
+ 					auth = refreshed
+ 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
+ 					didRefreshOnUnauthorized = true
+-					ctx = m.newUpstreamAttemptContext(ctx)
++					ctx = m.newGenerationAttemptContext(ctx)
+ 					executionSeq = m.nextExecutionSeq()
+ 					startRetry := time.Now()
+ 					retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
 @@ -578,6 +583,9 @@
  			}
  		}
  		if bootstrapErr != nil {
-+			if isRequestTerminatedError(bootstrapErr) {
++			if isRequestTerminatedError(bootstrapErr) && !httptransport.IsOutcomeUnknown(bootstrapErr) {
 +				return nil, bootstrapErr
 +			}
  			action, okAction := matchRequestScopedErrorAction(auth, bootstrapErr, m.requestScopedErrorConfig(ctx))
  			if okAction {
  				rerr := resultErrorFromError(bootstrapErr)
-@@ -650,8 +658,12 @@
+@@ -650,14 +658,21 @@
  		}
  
  		if closed && len(buffered) == 0 {
@@ -884,12 +1294,21 @@ diff --git a/sdk/cliproxy/auth/conductor_stream.go b/sdk/cliproxy/auth/conductor
 +			emptyErr := httptransport.ClassifyIncompleteResponse(ctx, &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true})
 +			emptyErr = markUpstreamExecutionAttemptFromContext(ctx, emptyErr)
  			currentErr := newStreamBootstrapError(emptyErr, streamResult.Headers)
-+			if isRequestTerminatedError(emptyErr) {
++			if isRequestTerminatedError(emptyErr) && !httptransport.IsOutcomeUnknown(emptyErr) {
 +				return nil, currentErr
 +			}
  			if hasUpstreamExecutionAttempt(emptyErr) {
  				upstreamErr = currentErr
  			}
+ 			warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), emptyErr)
+ 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(emptyErr), Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
+ 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
++			if httptransport.IsOutcomeUnknown(emptyErr) {
++				return nil, currentErr
++			}
+ 			if idx < len(execModels)-1 {
+ 				lastErr = emptyErr
+ 				continue
 diff --git a/sdk/httptransport/decorator.go b/sdk/httptransport/decorator.go
 --- a/sdk/httptransport/decorator.go
 +++ b/sdk/httptransport/decorator.go
@@ -957,7 +1376,7 @@ diff --git a/sdk/httptransport/submission.go b/sdk/httptransport/submission.go
 new file mode 100644
 --- /dev/null
 +++ b/sdk/httptransport/submission.go
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,184 @@
 +package httptransport
 +
 +import (
@@ -968,6 +1387,8 @@ new file mode 100644
 +	"net/http/httptrace"
 +	"strings"
 +	"sync/atomic"
++
++	"github.com/MoeForge/moego/ojson"
 +)
 +
 +type submissionKey struct{}
@@ -992,12 +1413,26 @@ new file mode 100644
 +	return context.WithValue(ctx, submissionKey{}, &submissionState{})
 +}
 +
++// WithoutSubmissionTracking keeps side-effect-free operations replayable even
++// when their context came from a generation attempt.
++func WithoutSubmissionTracking(ctx context.Context) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, submissionKey{}, (*submissionState)(nil))
++}
++
 +// OutcomeUnknownError means the provider may have executed the request. Its
 +// transport cause is available to operators, never included in the public body.
 +type OutcomeUnknownError struct{ Cause error }
 +
 +func (*OutcomeUnknownError) Error() string {
-+	return `{"error":{"message":"Upstream disconnected after submission. The request was not replayed and its outcome is unknown.","type":"server_error","code":"upstream_outcome_unknown","retryable":false}}`
++	doc := ojson.NewDoc([]byte(`{}`))
++	_ = doc.Set("error.message", "Upstream disconnected after submission. The request was not replayed and its outcome is unknown.")
++	_ = doc.Set("error.type", "server_error")
++	_ = doc.Set("error.code", "upstream_outcome_unknown")
++	_ = doc.Set("error.retryable", false)
++	return doc.String()
 +}
 +func (e *OutcomeUnknownError) Unwrap() error       { return e.Cause }
 +func (*OutcomeUnknownError) StatusCode() int       { return http.StatusBadGateway }
