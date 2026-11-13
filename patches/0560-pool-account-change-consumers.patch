@@ -123,7 +123,7 @@ index ec2dd213c1eb10b7c4551702751c6c6643a0b792..47a9f2e1108d2bfd5ac42aa577b59b55
          HttpRouter.provideRequest(executor),
          HttpRouter.provideRequest(auth.identity),
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
-index d2c77a22fea84c22f75f58654e9fce219a618d3d..938773bc3a0bd38edce9459922c49ec08f489115 100644
+index d2c77a22fea84c22f75f58654e9fce219a618d3d..af306909ab3d6527f4b4dde4879808d88cc5030a 100644
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
 @@ -22,6 +22,7 @@ import {
@@ -181,7 +181,7 @@ index d2c77a22fea84c22f75f58654e9fce219a618d3d..938773bc3a0bd38edce9459922c49ec0
            toolListings: evaluation.toolListings,
          },
 -        background,
-+        background: (work) => background(work.pipe(Effect.ensuring(deliverChanges))),
++        background: (work) => background(work.pipe(Effect.andThen(deliverChanges))),
          events: {
            sender: httpEventSender(egress),
            authorize: hostedEventAuthority(Effect.succeed(yield* SqlClient.SqlClient)),
@@ -203,7 +203,7 @@ index d2c77a22fea84c22f75f58654e9fce219a618d3d..938773bc3a0bd38edce9459922c49ec0
          Layer.succeed(ScheduledAuthority, scheduleAuthority),
          Layer.succeed(GroupDatabase, Effect.succeed(groupDatabase)),
 diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
-index adb1d5f63f4fd3675239b78543c44d1143932c36..25d5484da6491689519c4b1ab446392f5b2f71fd 100644
+index adb1d5f63f4fd3675239b78543c44d1143932c36..3d55f9758e1a7ae0e1ac63c4317a899f25c2ae59 100644
 --- a/apps/hosted/self-host/src/implementation/routes.ts
 +++ b/apps/hosted/self-host/src/implementation/routes.ts
 @@ -50,7 +50,15 @@ import {
@@ -252,7 +252,7 @@ index adb1d5f63f4fd3675239b78543c44d1143932c36..25d5484da6491689519c4b1ab446392f
      );
      yield* drainContributedDepartures.pipe(
        Effect.catch(() => Effect.logWarning("Contributed departure queue processing failed")),
-+      Effect.ensuring(deliverChanges),
++      Effect.andThen(deliverChanges),
        Effect.repeat(Schedule.spaced("1 second")),
        Effect.provideService(ScheduleWakeup, wake),
        Effect.provide(executorServices),
@@ -524,6 +524,26 @@ index c3294be075f59bd9b3a30b351e7df5a46306dd91..6f8be5e899a1314a1209bd35c14329b1
      poolUsage: { path: poolAppUsagePath, read: poolAppUsage(authorize) } as const,
      poolPersonalUsageOverview: {
        path: poolAppPersonalUsageOverviewPath,
+diff --git a/apps/hosted/server/src/implementation/change-revisions.ts b/apps/hosted/server/src/implementation/change-revisions.ts
+index ea55c1c07b03f4f7efa203638eac10d8c17b4d5a..472a702550e59847b04ec1d08d6ba599f0c3010c 100644
+--- a/apps/hosted/server/src/implementation/change-revisions.ts
++++ b/apps/hosted/server/src/implementation/change-revisions.ts
+@@ -24,7 +24,7 @@ export const makeChangeJournal = (sql: SqlClient.SqlClient) => ({
+         Effect.map((rows) => ({ ...key, revision: rows[0]?.revision ?? "0" })),
+       ),
+     ),
+-  /** Network I/O holds no SQL transaction or row lock. A newer pending revision survives its predecessor's ack. */
++  /** Network I/O holds no transaction. The pass leaves five seconds for host cleanup before a forced stop. */
+   deliver: <E, R>(send: (scope: string, hint: RevisionHint) => Effect.Effect<void, E, R>) =>
+     Effect.gen(function* () {
+       const rows = yield* sql`select scope, topic, resource, revision::text as revision
+@@ -45,5 +45,5 @@ export const makeChangeJournal = (sql: SqlClient.SqlClient) => ({
+       );
+       const failed = results.filter(Result.isFailure).length;
+       if (failed > 0) return yield* new ChangeDispatchFailed({ pending: failed });
+-    }),
++    }).pipe(Effect.interruptible, Effect.timeout("10 seconds")),
+ });
 diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
 index a72c616d343e8d8d402bf3ede0d92d3c341544d3..285b9979c88a7eefb0146d3b233c0adefa41bd5c 100644
 --- a/apps/hosted/server/src/implementation/migrations.ts
