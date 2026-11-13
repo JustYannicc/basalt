@@ -98,7 +98,6 @@ import {
 } from "./runtime-recovery.ts";
 import { poolRelease, poolReleasePath } from "./release.ts";
 import { historyTrafficPath } from "./model-history/traffic.ts";
-export { BulkUsageImport } from "./model-history/bulk-do.worker.ts";
 import type { BulkUsageImport } from "./model-history/bulk-do.worker.ts";
 import { routeBulkImport } from "./model-history/bulk-http.ts";
 import { bulkImportPath } from "./model-history/bulk-contract.ts";

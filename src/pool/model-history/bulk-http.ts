@@ -62,7 +62,8 @@ export async function routeBulkImport(
     const command = await bulkCommand(request, access);
     if (!command)
       return fail(401, "unauthorized", "A current pool owner import assertion is required.");
-    if (!access.jobs) return fail(503, "backend_unavailable", "Bulk usage import is unavailable.");
+    if (!access.jobs)
+      return fail(503, "bulk_import_not_provisioned", "Bulk import is not provisioned yet.");
     const stub = access.jobs.jurisdiction("eu").getByName(command.job);
     return await stub.fetch(request.url, {
       method: "POST",
