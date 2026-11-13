@@ -477,7 +477,7 @@ test("serving gaps break consecutive regressions and reused computations cannot 
   assert.equal((await f.job.status(identity)).serving.consecutiveRegressions, 0);
   f.advance(60_000);
   await observe(serving(f.guard().observedAt, baselineTo, 250));
-  assert.equal((await f.job.status(identity)).state, "running");
+  assert.equal((await f.job.status(identity)).reason, "serving_regressed");
   f.advance(60_000);
   await observe(serving(f.guard().observedAt, baselineTo, 250));
   assert.equal((await f.job.status(identity)).reason, "serving_regressed");
@@ -516,4 +516,66 @@ test("sparse dependency telemetry stays labeled and a zero-baseline server error
   f.advance(60_000);
   await f.job.observe(identity, f.guard());
   assert.equal((await f.job.status(identity)).reason, "serving_stale");
+});
+
+test("a SQL error after an in-flight load pause stops until explicit owner resume", async () => {
+  const f = fixture();
+  await f.stage();
+  const entered = deferred(),
+    finish = deferred();
+  f.beforeCommit(async () => {
+    entered.resolve();
+    await finish.promise;
+    throw new Error("private SQL error");
+  });
+  const tick = f.job.tick();
+  await entered.promise;
+  await f.job.observe(identity, { ...f.guard(), cpu: 75 });
+  assert.equal((await f.job.status(identity)).reason, "cpu_high");
+  finish.resolve();
+  await tick;
+  assert.equal((await f.job.status(identity)).reason, "database_error");
+  assert.equal((await f.job.status(identity)).requiresAttention, true);
+  await f.restart().observe(identity, f.guard());
+  assert.equal((await f.job.status(identity)).state, "stopped");
+  f.beforeCommit(async () => {});
+  await f.job.resume(identity);
+  await f.job.tick();
+  assert.equal((await f.job.status(identity)).committedChunks, 1);
+});
+
+test("resizing includes receipt persistence and commit wait beyond the recorded SQL body", async () => {
+  const f = fixture(1, 5000);
+  await f.stage();
+  f.dependencies.commitChunk = async (_definition, _index, _data, _start, rows) => {
+    f.advance(2250);
+    return { inserted: rows, existing: 0, count: rows, elapsedMs: 250 };
+  };
+  await f.job.tick();
+  assert.equal((await f.job.status(identity)).inserted, 500);
+  assert.equal((await f.job.status(identity)).chunkSize, 111);
+});
+
+test("a configured serving pause requires a fresh healthy window before recovery", async () => {
+  const f = fixture();
+  await f.stage();
+  const baselineTo = f.guard().observedAt - 1;
+  await f.job.observe(identity, {
+    ...f.guard(),
+    serving: serving(f.guard().observedAt, baselineTo),
+  });
+  f.advance(121_000);
+  await f.job.observe(identity, f.guard());
+  assert.equal((await f.job.status(identity)).reason, "serving_stale");
+  await f.job.observe(identity, {
+    ...f.guard(),
+    serving: serving(f.guard().observedAt, baselineTo, 250),
+  });
+  assert.equal((await f.job.status(identity)).reason, "serving_regressed");
+  f.advance(60_000);
+  await f.job.observe(identity, {
+    ...f.guard(),
+    serving: serving(f.guard().observedAt, baselineTo),
+  });
+  assert.equal((await f.job.status(identity)).state, "running");
 });

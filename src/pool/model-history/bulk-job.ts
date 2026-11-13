@@ -312,7 +312,8 @@ export class BulkJob {
         start,
         rows,
       );
-      const elapsedMs = Math.max(1, receipt.elapsedMs ?? this.dependencies.now() - startedAt);
+      // Receipt timing preserves SQL cost on replay; wall time also includes receipt persistence and commit.
+      const elapsedMs = Math.max(1, receipt.elapsedMs ?? 0, this.dependencies.now() - startedAt);
       if (
         ![receipt.inserted, receipt.existing, receipt.count].every(
           (value) => Number.isSafeInteger(value) && value >= 0,
@@ -343,7 +344,15 @@ export class BulkJob {
     } catch {
       await this.serialized(async () => {
         const state = await this.load();
-        if (state.state === "running") {
+        if (
+          reason === "commit_failed" &&
+          state.state !== "completed" &&
+          state.state !== "stopped"
+        ) {
+          state.state = "stopped";
+          state.reason = "database_error";
+          await this.save(state);
+        } else if (state.state === "running") {
           state.state = reason === "commit_failed" ? "stopped" : "paused";
           state.reason = reason === "commit_failed" ? "database_error" : reason;
           await this.save(state);

@@ -203,7 +203,8 @@ export function observeServing(
     }
     state.computedAt = observation.computedAt;
   }
-  const pause = immediate || (regressed && state.consecutiveRegressions >= 2);
+  const needsHealthy = ["unavailable", "stale", "regressed"].includes(state.status);
+  const pause = immediate || (regressed && (needsHealthy || state.consecutiveRegressions >= 2));
   state.status = pause ? "regressed" : "available";
   return pause ? "serving_regressed" : null;
 }
