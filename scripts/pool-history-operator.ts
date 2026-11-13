@@ -140,10 +140,8 @@ function pendingMigrations(report: Record<string, unknown>) {
   )
     throw new Error("Invalid pending history migrations");
   const pending = historySchemaMigrations.filter((migration) => names.includes(migration.name));
-  if (
-    JSON.stringify(names) !== JSON.stringify(pending.map((migration) => migration.name)) ||
-    (names.length && names.at(-1) !== report.version)
-  )
+  // A newer marker may exist while an older named migration is still pending.
+  if (JSON.stringify(names) !== JSON.stringify(pending.map((migration) => migration.name)))
     throw new Error("Invalid pending history migrations");
   return pending;
 }

@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runHistoryOperator, historyOperatorOptions } from "../pool-history-operator.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -184,11 +188,22 @@ test("equal counts cannot finalize changed IDs, ranges, pools or a source altere
 });
 
 test("v8 creates only its checkpoint and never skips a later registered v7 migration", async () => {
-  await seriesFixture(async ({ db, insert }) => {
+  await seriesFixture(async ({ db, schema, insert }) => {
     await insert();
     const before = (
       await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_requests r ORDER BY id")
     ).rows;
+    await homeMetadataFixture(db);
+    await db.query("DROP TABLE basalt_model_import_completion");
+    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+      historyImportCompletionVersion,
+    ]);
+    const v8Plan = await modelHistorySchemaPlan(db);
+    assert.deepEqual(v8Plan.pendingMigrations, [historyImportCompletionVersion]);
+    assert.deepEqual(v8Plan.catalogDiff.createTables, ["basalt_model_import_completion"]);
+    assert.deepEqual(v8Plan.catalogDiff.addIndexes, []);
+    assert.deepEqual(v8Plan.catalogDiff.addColumns, []);
+    await migrateModelHistory(db);
     const marker = (
       await db.query(
         "SELECT completed_at::text AS at FROM basalt_model_history_migrations WHERE name=$1",
@@ -203,8 +218,31 @@ test("v8 creates only its checkpoint and never skips a later registered v7 migra
       (m) => m.name === historyImportCompletionVersion,
     );
     historySchemaMigrations.splice(index, 0, v7);
+    const directory = await mkdtemp(join(tmpdir(), "history-v7-after-v8-"));
     try {
-      await migrateModelHistory(db);
+      const options = historyOperatorOptions([
+        "--worker",
+        "fixture-pool",
+        "--plan",
+        join(directory, "plan.json"),
+      ]);
+      const connect = async () => ({
+        env: {
+          POOL_OPERATIONS: {
+            fetch: (request: Request) => handleModelHistoryOperation(request, connection(schema)),
+          },
+        },
+        dispose: async () => {},
+      });
+      const preview = await runHistoryOperator(options, "f".repeat(32), connect);
+      assert.deepEqual(preview.pendingDdl, v7.statements);
+      assert.deepEqual(preview.migrationMarkers, [
+        {
+          text: "INSERT INTO basalt_model_history_migrations (name) VALUES ($1)",
+          values: [v7.name],
+        },
+      ]);
+      await runHistoryOperator({ ...options, apply: true }, "f".repeat(32), connect);
       await migrateModelHistory(db);
       assert.equal(
         (await db.query("SELECT to_regclass('fixture_v7_marker') AS name")).rows[0]!.name,
@@ -229,6 +267,7 @@ test("v8 creates only its checkpoint and never skips a later registered v7 migra
       );
     } finally {
       historySchemaMigrations.splice(index, 1);
+      await rm(directory, { recursive: true, force: true });
     }
   });
 });
