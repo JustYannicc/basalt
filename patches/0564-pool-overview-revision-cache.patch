@@ -209,11 +209,11 @@
 +import { AccountObservationResult } from "apps/contracts";
 +import { HttpServerRequest } from "effect/http";
 +import { CurrentAuthorization } from "../contracts/authorization.ts";
-+import { CurrentOrganization } from "../contracts/organization.ts";
++import { CurrentOrganization, organizationOwner } from "../contracts/organization.ts";
 +import { CurrentUserId } from "../contracts/auth.ts";
 +import { GroupDatabase } from "../contracts/groups.ts";
 +import { makeChangeJournal } from "./change-revisions.ts";
-+import { organizationChangeSources } from "./organization-changes.ts";
++import { organizationChangeKeys } from "./organization-changes.ts";
 +import { ChangeSnapshot, changeIdentity } from "./scoped-changes.ts";
 +import { registeredPool } from "./provider-account-policy.ts";
 +import { sendPoolCommand } from "./pool-backend.ts";
@@ -335,22 +335,22 @@
 +};
 +const cached = makePoolViewCache();
 +
-+/** Four hosted heads plus Home's history head; no selected-account or provider reads. */
++/** Request ingress rechecks sessions; this guard follows organization data and sharing. */
 +const current = (app: App) =>
 +  Effect.gen(function* () {
 +    const access = yield* CurrentOrganization;
 +    const user = yield* CurrentUserId;
 +    if (user === undefined) return yield* new StorageError();
 +    const sql = yield* Effect.flatten(GroupDatabase);
-+    const hosted = organizationChangeSources(access.organization, user);
 +    const native = yield* sendPoolCommand("changeRevisions", { pool: app.id }, ChangeSnapshot);
 +    return {
 +      ...native,
 +      revisions: [
 +        ...native.revisions,
-+        ...(yield* Effect.forEach(hosted, (source) =>
-+          makeChangeJournal(sql).current(source.scope, source.keys),
-+        )).flat(),
++        ...(yield* makeChangeJournal(sql).current(
++          organizationOwner(access.organization),
++          organizationChangeKeys,
++        )),
 +      ],
 +    };
 +  }).pipe(Effect.catch(() => new StorageError()));
@@ -499,8 +499,8 @@
        cloud: na(
 --- a/e2e/tests/pool-provider-native-presentation.spec.ts
 +++ b/e2e/tests/pool-provider-native-presentation.spec.ts
-@@ -19,7 +19,7 @@
-
+@@ -19,7 +19,7 @@ import { scenarios } from "../test-plan.ts";
+ 
  const Native = Schema.Struct({
    state: Schema.String,
 -  account: Resource,
@@ -508,7 +508,7 @@
    sourceApp: Schema.optionalKey(
      Schema.Struct({
        id: Schema.String,
-@@ -198,6 +198,10 @@
+@@ -198,6 +198,10 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
              yield* browser.use("Capture Accounts provider logo", (page) => page.screenshot()),
            );
          }
@@ -519,7 +519,7 @@
          const owner = (yield* body(
            Schema.Struct({ userId: Schema.String }),
            yield* api.request(actors.owner, "GET", "/api/viewer"),
-@@ -322,8 +326,29 @@
+@@ -322,8 +326,29 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
            observation: {
              offering: "subscription",
              plan: { label: "Provider plan", observedAt: at },
@@ -551,9 +551,9 @@
            },
          });
          expect(
-@@ -356,6 +381,12 @@
+@@ -356,6 +381,12 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
          });
-
+ 
          const readsBefore = (yield* home.calls).filter((call) => call.action === "observe").length;
 +        const query = () =>
 +          api.request(actors.owner, "POST", `${poolPath}/data/query`, { name: "view", input: {} });
@@ -564,7 +564,7 @@
          const started = yield* Clock.currentTimeMillis;
          const response = yield* api.request(actors.owner, "POST", `${poolPath}/data/query`, {
            name: "view",
-@@ -367,24 +398,29 @@
+@@ -367,24 +398,29 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
          const trace = (yield* evidence.requests)
            .filter((request) => request.path.endsWith("/data/query"))
            .at(-1)!.traceId;
@@ -612,7 +612,7 @@
          const selects = records.filter((record) => record.select).length;
          yield* evidence.json("overview-statements.json", {
            accounts: 1,
-@@ -399,7 +435,7 @@
+@@ -399,7 +435,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
          expect(selects).toBeGreaterThan(0);
          expect(
            selects,
@@ -621,7 +621,7 @@
          ).toBeLessThanOrEqual(24);
          expect(reply.value.accounts).toHaveLength(1);
          expect(reply.value.accounts[0]).toMatchObject({
-@@ -409,9 +445,14 @@
+@@ -409,9 +445,14 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
            windows,
            bankedResets,
          });
@@ -639,10 +639,10 @@
          expect((yield* home.calls).filter((call) => call.action === "observe")).toHaveLength(
            readsBefore,
          );
-@@ -420,8 +461,46 @@
+@@ -420,8 +461,46 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
            poolBefore,
          );
-
+ 
 +        const renamed = yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${account}`, {
 +          label: "Renamed source",
 +        });
@@ -686,7 +686,7 @@
          for (const width of [1280, 390]) {
            const overviewFits = yield* browser.use(
              `Read Home model limits and resets at ${width}px`,
-@@ -446,7 +525,9 @@
+@@ -446,7 +525,9 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
            yield* evidence.attach(
              `pool-model-limits-${width}.png`,
              "image/png",
@@ -697,7 +697,7 @@
            );
            const details = yield* browser.use(`Open model-limit Details at ${width}px`, (page) => {
              const dialog = page.getByRole("dialog", { name: "Account limits", exact: true });
-@@ -470,12 +551,56 @@
+@@ -470,12 +551,65 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
            yield* evidence.attach(
              `pool-account-limits-details-${width}.png`,
              "image/png",
@@ -752,6 +752,15 @@
 +        expect(privateStatements.filter((entry) => entry.head)).toHaveLength(4);
 +        expect(privateStatements.filter((entry) => entry.sdk && entry.select)).toHaveLength(0);
 +        expect(privateStatements.filter((entry) => entry.select).length).toBeLessThanOrEqual(24);
++
++        expect((yield* memberQuery()).status).toBe(200);
++        // Revoke through a separate cookie jar so the caller still sends its original cookie.
++        const revoker = yield* api.session(yield* actors.member.cookies);
++        expect((yield* api.request(revoker, "POST", "/api/auth/sign-out", {})).status).toBe(200);
++        expect(
++          (yield* memberQuery()).status,
++          "A warm cached view never bypasses fresh session authorization",
++        ).toBe(401);
        }),
      ),
    );
