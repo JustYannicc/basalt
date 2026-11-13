@@ -108,7 +108,7 @@ diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/
 +          yield* HttpServerRequest.HttpServerRequest,
 +        ).pipe(Effect.orDie);
 +        const object = yield* imports;
-+        return HttpServerResponse.fromWeb(yield* Effect.promise(() => object.fetch(request)));
++        return HttpServerResponse.fromWeb(yield* Effect.promise(() => object.handle(request)));
 +      }),
        acquire: (id: string, rejectedGeneration: string | null, trace: TraceContext | undefined) =>
          Schema.decodeUnknownEffect(AppCodeId)(id).pipe(

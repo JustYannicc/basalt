@@ -17,7 +17,7 @@ export class BulkUsageImport extends DurableObject<BulkEnvironment> {
     return Date.now();
   }
   fetch(request: Request) {
-    return this.coordinator.fetch(request);
+    return this.coordinator.handle(request);
   }
   alarm() {
     return this.coordinator.alarm();

@@ -191,7 +191,7 @@ export class BulkCoordinator {
     };
     return this.opened.object;
   }
-  async fetch(request: Request) {
+  async handle(request: Request) {
     try {
       const command = await bulkCommand(request, {
         signingKey: this.env.POOL_APP_SIGNING_KEY,
