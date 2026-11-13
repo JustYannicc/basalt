@@ -234,7 +234,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-framew
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-page-query.ts
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,64 @@
 +import { Effect, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
 +import { retainedFrameworkRefused } from "./retained-frameworks.ts";
@@ -243,21 +243,27 @@ new file mode 100644
 +const Id = (prefix: string) =>
 +  Schema.String.check(Schema.isPattern(new RegExp(`^${prefix}_[A-Za-z0-9_-]{1,251}$`, "u")));
 +const Reference = Schema.Struct({ app: Id("app"), deployment: Id("dpl"), build: Id("bld") });
-+export const ReferenceSnapshot = Schema.Struct({
++export const ReferenceCoverage = Schema.Struct({
 +  references: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 2147483647 })),
++  checksum: Schema.String.check(Schema.isPattern(/^[01]{128}$/u)),
++});
++export const ReferenceSnapshot = Schema.Struct({
++  ...ReferenceCoverage.fields,
 +  fingerprint: Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u)),
 +});
 +const scope = `from executor_apps a join executor_deployments d on d.code = a.code and d.owner = a.owner
 +  where a.owner = 'organization:' || $1 and d.owner = 'organization:' || $1`;
++const checksum = `coalesce(bit_xor(('x' || md5(app || chr(31) || deployment || chr(31) || build))::bit(128))::text, repeat('0', 128))`;
 +
 +/** Only the first and final pages fingerprint the scoped associations; no record bodies enter SQL. */
 +export const referenceSnapshot = (organization: string) =>
 +  Effect.gen(function* () {
 +    const sql = yield* SqlClient.SqlClient;
 +    const rows = yield* sql.unsafe(
-+      `select count(*)::int as "references",
-+    md5(coalesce(string_agg(a.id || chr(31) || d.id || chr(31) || d.build, chr(30)
-+      order by a.id collate "C", d.id collate "C"), '')) as fingerprint ${scope}`,
++      `select count(*)::int as "references", ${checksum} as checksum,
++    md5(coalesce(string_agg(app || chr(31) || deployment || chr(31) || build, chr(30)
++      order by app collate "C", deployment collate "C"), '')) as fingerprint
++    from (select a.id as app, d.id as deployment, d.build ${scope}) refs`,
 +      [organization],
 +    );
 +    return yield* Schema.decodeUnknownEffect(ReferenceSnapshot)(rows[0]).pipe(
@@ -277,11 +283,16 @@ new file mode 100644
 +    select a.id as app, d.id as deployment, d.build ${scope}
 +    and d.build in (select build from page) order by d.build collate "C", a.id collate "C", d.id collate "C" limit 2001
 +  ) select coalesce((select jsonb_agg(refs order by build collate "C", app collate "C", deployment collate "C") from refs), '[]'::jsonb) as rows,
++    (select ${checksum} from refs) as checksum,
 +    (select count(*) > ${retainedFrameworkPageSize} from selected) as more`,
 +      [organization, after],
 +    );
 +    const decoded = yield* Schema.decodeUnknownEffect(
-+      Schema.Struct({ rows: Schema.Array(Reference), more: Schema.Boolean }),
++      Schema.Struct({
++        rows: Schema.Array(Reference),
++        more: Schema.Boolean,
++        checksum: ReferenceCoverage.fields.checksum,
++      }),
 +    )(result[0]).pipe(Effect.catch(() => retainedFrameworkRefused("malformed references")));
 +    if (decoded.rows.length > 2000) return yield* retainedFrameworkRefused("reference count bound");
 +    if (decoded.more && decoded.rows.length === 0)
@@ -292,7 +303,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-framew
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-page.ts
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,157 @@
 +import { randomUUID } from "node:crypto";
 +import { Effect, Schema } from "effect";
 +import { canonical, openArtifact, protectArtifact, sha256 } from "./crypto.ts";
@@ -302,6 +313,7 @@ new file mode 100644
 +import {
 +  referencePage,
 +  referenceSnapshot,
++  ReferenceCoverage,
 +  ReferenceSnapshot,
 +} from "./retained-frameworks-page-query.ts";
 +import { retainedFrameworks, retainedFrameworkRefused } from "./retained-frameworks.ts";
@@ -320,6 +332,7 @@ new file mode 100644
 +  index: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 2000 })),
 +  after: Schema.String.check(Schema.isPattern(/^bld_[A-Za-z0-9_-]{1,251}$/u)),
 +  snapshot: ReferenceSnapshot,
++  covered: ReferenceCoverage,
 +  metadataSha256: Digest,
 +  prior: Digest,
 +  startedAt: Schema.Number,
@@ -357,13 +370,22 @@ new file mode 100644
 +          return yield* retainedFrameworkRefused("continuation scope changed");
 +        const page = yield* referencePage(organization, prior?.after ?? "");
 +        const snapshot = prior?.snapshot ?? (yield* referenceSnapshot(organization));
++        const covered = {
++          references: (prior?.covered.references ?? 0) + page.rows.length,
++          checksum: (BigInt(`0b${prior?.covered.checksum ?? "0"}`) ^ BigInt(`0b${page.checksum}`))
++            .toString(2)
++            .padStart(128, "0"),
++        };
++        // Endpoint snapshots can match after a temporary edit; also bind the rows read by every page.
 +        if (
-+          prior &&
-+          !page.more &&
-+          canonical(snapshot) !== canonical(yield* referenceSnapshot(organization))
++          covered.references > snapshot.references ||
++          (!page.more &&
++            (covered.references !== snapshot.references ||
++              covered.checksum !== snapshot.checksum ||
++              (prior && canonical(snapshot) !== canonical(yield* referenceSnapshot(organization)))))
 +        )
 +          return yield* retainedFrameworkRefused("snapshot changed");
-+        return { database, page, snapshot };
++        return { database, page, snapshot, covered };
 +      }),
 +    );
 +    if (!settings.retainedFrameworkObjects)
@@ -391,6 +413,7 @@ new file mode 100644
 +      last: captured.page.last,
 +      references: captured.page.rows.length,
 +      snapshot: captured.snapshot,
++      checksum: captured.page.checksum,
 +      metadataSha256,
 +    };
 +    const artifact = yield* protect({
@@ -416,6 +439,7 @@ new file mode 100644
 +          index: index + 1,
 +          after: captured.page.last,
 +          snapshot: captured.snapshot,
++          covered: captured.covered,
 +          metadataSha256,
 +          prior: artifact.sha256,
 +          startedAt: prior?.startedAt ?? now,

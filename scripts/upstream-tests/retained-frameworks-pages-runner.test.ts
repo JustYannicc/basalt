@@ -8,6 +8,7 @@ import { retainedFrameworkObjects } from "../../.upstream/apps/hosted/cloud/src/
 import { ProtectedArtifact } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/crypto.ts";
 import { diagnostic } from "../../.upstream/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts";
 import { retainedInventory } from "../production-ops/inventory-pagination.ts";
+import { OperationFailure } from "../production-ops/failure.ts";
 import { canonical, decryptArtifact, hash } from "../production-ops/artifact.ts";
 import { openEnvelope } from "../../src/pool/token.ts";
 import { bucketFixture, encoded, metadata, record } from "./retained-frameworks-fixture.ts";
@@ -254,5 +255,32 @@ test("continuation tampering, organization and release changes refuse before rec
         assert.equal(exit._tag, "Failure");
         assert.equal(fixture.reads.length, before);
       }
+    }),
+  ));
+
+test("references that change between pages and revert before the final snapshot cannot silently omit a captured build", async () =>
+  run(
+    Effect.gen(function* () {
+      const { sql, fixture } = yield* setup;
+      const t = transport(sql, fixture, async (index) => {
+        if (index === 2)
+          await Effect.runPromise(
+            sql`update executor_deployments set build='bld_0130' where id='dpl_129'`,
+          );
+        if (index === 3)
+          await Effect.runPromise(
+            sql`update executor_deployments set build='bld_0129' where id='dpl_129'`,
+          );
+      });
+      yield* Effect.promise(() =>
+        assert.rejects(
+          retainedInventory(input, t.fetcher),
+          (error: unknown) =>
+            error instanceof OperationFailure && error.receipt.reasonCode === "snapshot_changed",
+        ),
+      );
+      assert.equal(t.calls(), 6);
+      assert.equal(new Set(fixture.reads).size, fixture.reads.length);
+      assert.equal(fixture.writes(), 0);
     }),
   ));

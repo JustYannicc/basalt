@@ -68,7 +68,7 @@ check the overall `complete` field before relying on the inventory.
 The workflow reads at most 64 distinct builds per request and saves each encrypted
 page before requesting the next. Copied apps and inactive deployments remain in
 the inventory. A sealed continuation binds the organization, release, database and
-page chain. Changed associations or framework metadata refuse the inventory.
+page chain. Changed associations or framework metadata refuse the inventory. Cumulative page checksums must match the original reference snapshot, even if a temporary edit is later reversed.
 Decryption requires every page in order before producing a complete combined inventory.
 
 Each page refuses above 2,000 SQL associations or 2,000 framework objects,

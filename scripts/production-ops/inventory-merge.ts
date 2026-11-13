@@ -49,6 +49,7 @@ export function mergeInventoryPages(values: readonly unknown[], digests: readonl
   let session: unknown;
   let last = "";
   let references = 0;
+  let checksum = 0n;
   const builds: ReturnType<typeof build>[] = [];
   const seen = new Set<string>();
   for (const [index, value] of values.entries()) {
@@ -69,6 +70,10 @@ export function mergeInventoryPages(values: readonly unknown[], digests: readonl
       !integer(page.snapshot.references) ||
       typeof page.snapshot.fingerprint !== "string" ||
       !/^[a-f0-9]{32}$/.test(page.snapshot.fingerprint) ||
+      typeof page.snapshot.checksum !== "string" ||
+      !/^[01]{128}$/.test(page.snapshot.checksum) ||
+      typeof page.checksum !== "string" ||
+      !/^[01]{128}$/.test(page.checksum) ||
       !integer(page.references) ||
       page.references > 2000 ||
       !digest(page.metadataSha256) ||
@@ -105,8 +110,15 @@ export function mergeInventoryPages(values: readonly unknown[], digests: readonl
     }
     if (page.last !== last || (page.more && value.builds.length === 0)) fail();
     references += page.references;
+    checksum ^= BigInt(`0b${page.checksum}`);
   }
-  if (!first || !snapshot || references !== snapshot.references || values.length !== digests.length)
+  if (
+    !first ||
+    !snapshot ||
+    references !== snapshot.references ||
+    checksum.toString(2).padStart(128, "0") !== snapshot.checksum ||
+    values.length !== digests.length
+  )
     fail();
   const tuples = new Map<
     string,
