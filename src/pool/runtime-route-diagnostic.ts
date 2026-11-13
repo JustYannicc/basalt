@@ -66,7 +66,11 @@ function reason(error: unknown): RuntimeRouteDiagnostic["runtimeReason"] {
   return error instanceof Error ? "transport" : "unknown";
 }
 export function runtimeRouteDiagnostic(error: unknown) {
-  return object(error) ? observed.get(error) : undefined;
+  const diagnostic = object(error) ? observed.get(error) : undefined;
+  const requestId = endpointRequestId(error);
+  return diagnostic && requestId
+    ? { ...diagnostic, runtimeEndpointRequestId: requestId }
+    : diagnostic;
 }
 export function rememberRuntimeFailure(
   step: RuntimeRouteDiagnostic["runtimeStep"],

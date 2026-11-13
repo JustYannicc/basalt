@@ -199,3 +199,55 @@ test("the shared health driver records primary endpoint failures without a fleet
   );
   assert.doesNotMatch(JSON.stringify(fields), /private-/);
 });
+
+test("cancellation retains a disconnected first send and pending reconnect in one boundary record", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const { BoundSlotDriver } = await import("./runtime-slots/transport.ts");
+  const { slotIdentity } = await import("../../scripts/pool-tests/runtime-slots-fixture.ts");
+  const entered = Promise.withResolvers<void>(),
+    late = Promise.withResolvers<Response>(),
+    finished = Promise.withResolvers<void>();
+  const control = new AbortController();
+  const driver = new BoundSlotDriver(() => ({
+    fetch: async (request) => {
+      const trace = EndpointTrace.forRequest(request, "primary", "actual-cell");
+      let result: unknown;
+      try {
+        await assert.rejects(
+          trace.send(1, async () => {
+            throw Object.assign(new Error("disconnected"), { disconnected: true });
+          }),
+        );
+        trace.eligible = true;
+        trace.reconnected = true;
+        trace.reconnectAcquired = true;
+        result = await trace.send(2, () => {
+          entered.resolve();
+          return late.promise;
+        });
+        throw new Error("expected pending reconnect failure");
+      } catch (error) {
+        result = error;
+        throw error;
+      } finally {
+        trace.finish(result);
+        finished.resolve();
+      }
+    },
+  }));
+  const work = driver.health(slotIdentity("primary"), control.signal);
+  await entered.promise;
+  control.abort(new DOMException("cancelled", "AbortError"));
+  await assert.rejects(work, { name: "AbortError" });
+  const fields = JSON.parse(log.mock.calls[0]!.arguments[1]);
+  assert.equal(fields.cellId, "actual-cell");
+  assert.equal(fields.reconnectEligible, true);
+  assert.equal(fields.reconnectRan, true);
+  assert.equal(fields.attempts.length, 2);
+  assert.equal(fields.attempts[0].error.disconnected, true);
+  assert.equal(fields.attempts[1].outcome, "pending");
+  late.reject(new Error("private-distinct-late-error"));
+  await finished.promise;
+  assert.equal(log.mock.callCount(), 1);
+  assert.doesNotMatch(JSON.stringify(fields), /private-/);
+});

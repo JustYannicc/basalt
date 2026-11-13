@@ -38,6 +38,7 @@ const actions = [
 ] as const;
 const correlations = new WeakMap<object, string>();
 const responses = new WeakMap<Response, EndpointTrace>();
+const requests = new WeakMap<Request, EndpointTrace>();
 const object = (value: unknown): value is object =>
   value !== null && (typeof value === "object" || typeof value === "function");
 function field(error: unknown, key: string): unknown {
@@ -118,6 +119,29 @@ export class EndpointTrace {
     this.request = request;
     this.slotId = slotId;
     this.cellId = cellId;
+  }
+  static forRequest(request: Request, slotId: string, cellId: string) {
+    const retained = requests.get(request);
+    if (retained) {
+      retained.cellId = cellId;
+      return retained;
+    }
+    const trace = new EndpointTrace(request, slotId, cellId);
+    requests.set(request, trace);
+    return trace;
+  }
+  driverSend(stub: number, work: () => Promise<Response>) {
+    const before = this.attempts.length;
+    let pending: Promise<Response>;
+    try {
+      pending = work();
+    } catch (error) {
+      return this.send(stub, async () => {
+        throw error;
+      });
+    }
+    // A fleet wrapper records its actual endpoint sends synchronously before yielding.
+    return this.attempts.length === before ? this.send(stub, () => pending) : pending;
   }
   async send(stub: number, work: () => Promise<Response>) {
     const attempt = this.attempts.length + 1;

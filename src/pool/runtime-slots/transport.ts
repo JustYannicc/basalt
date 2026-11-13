@@ -53,7 +53,7 @@ export class BoundSlotDriver implements SlotDriver {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(value),
     });
-    const trace = new EndpointTrace(request, target.slotId, this.driverId);
+    const trace = EndpointTrace.forRequest(request, target.slotId, this.driverId);
     let response: Response;
     try {
       response = await homeResponse(async () => {
@@ -63,7 +63,7 @@ export class BoundSlotDriver implements SlotDriver {
           stub = ++this.sequence;
           this.stubs.set(runtimeStub, stub);
         }
-        return trace.send(stub, () => runtimeStub.fetch(request));
+        return trace.driverSend(stub, () => runtimeStub.fetch(request));
       }, signal);
       trace.finish(response);
     } catch (error) {

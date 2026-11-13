@@ -59,7 +59,7 @@ export function boundFleetCell(input: Input) {
     const runtimeStub = (retained ??= acquire(value));
     return {
       fetch: async (request) => {
-        const trace = new EndpointTrace(request, target.slotId, cellId);
+        const trace = EndpointTrace.forRequest(request, target.slotId, cellId);
         let result: unknown;
         const health =
           request.method === "POST" &&
