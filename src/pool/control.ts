@@ -542,7 +542,9 @@ export class PoolHome {
         emitProductEvent(this.onProductEvent, "account_connected", this.accountId);
     }
   }
-  async readView(now: () => Date): Promise<HomeViewData> {
+  async readView(now: () => Date, fresh = false): Promise<HomeViewData> {
+    // Another Home writer can change a group's policy without touching this process cache.
+    if (fresh) this.client.invalidateGroups();
     const readAt: HomeViewData["readAt"] = { membership: "" };
     const controller = new AbortController();
     const membership = timePoolRead(
@@ -606,8 +608,12 @@ export class PoolHome {
     now = () => new Date(),
   ): Promise<PoolView> {
     const result = views
-      ? await views.view(this.pool, fresh, () => this.readView(now))
-      : { data: await this.readView(now), source: "live" as const, revalidationFailed: false };
+      ? await views.view(this.pool, fresh, () => this.readView(now, fresh))
+      : {
+          data: await this.readView(now, fresh),
+          source: "live" as const,
+          revalidationFailed: false,
+        };
     const accounts = result.data.accounts.map((account) =>
       result.source === "snapshot" ? retainedAccount(account, now().getTime()) : account,
     );
