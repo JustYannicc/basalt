@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
-index 8b5d9aa9f4e9a2adc46992ddbf9f20ba509ce6cf..5c447733ca152f09cfe20dd0122ca2c0aaeb989f 100644
+index 8b5d9aa9f4e9a2adc46992ddbf9f20ba509ce6cf..710f72e68de079cf47a2b6dd103df4178544733f 100644
 --- a/apps/hosted/cloud/src/app-ui.ts
 +++ b/apps/hosted/cloud/src/app-ui.ts
 @@ -40,6 +40,8 @@ import { cloudServingProduct } from "./infrastructure/serving-product.ts";
@@ -19,7 +19,7 @@ index 8b5d9aa9f4e9a2adc46992ddbf9f20ba509ce6cf..5c447733ca152f09cfe20dd0122ca2c0
      const executor = yield* cloudServingProduct(yield* appDataSupervisors);
      const base = yield* cloudAppUiBase.pipe(Effect.orDie);
      // App pages send sign-in to the dashboard, on the browser origin.
-@@ -168,9 +171,19 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -168,9 +171,17 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
          yield* appUiEmbedded.pipe(Effect.orDie),
        ),
      );
@@ -33,9 +33,7 @@ index 8b5d9aa9f4e9a2adc46992ddbf9f20ba509ce6cf..5c447733ca152f09cfe20dd0122ca2c0
 +    );
      const notFound = HttpServerResponse.empty({ status: 404 });
      const protectedRoutes = Layer.mergeAll(
-+      HttpRouter.add("GET", appUi.changes.path, appUi.changes.events).pipe(
-+        Layer.provide(Layer.succeed(ScopedChanges, changeRevisions.transport)),
-+      ),
++      HttpRouter.add("GET", appUi.changes.path, appUi.changes.events),
 +      HttpRouter.add("GET", `${appUi.changes.path}/current`, appUi.changes.current),
        HttpRouter.add("GET", appSignInCallbackPath, appUi.callback),
        HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
@@ -79,7 +77,7 @@ index dd421e73a70a1185cef38a37e2429ed377a2f045..261ebcc96cf3425c68c78250911db9d0
        scopedDataChanges(
          Schema.decodeUnknownSync(NativeNamespace)(environment.AppDataSupervisor),
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index ec2dd213c1eb10b7c4551702751c6c6643a0b792..8f7fc3531a56a28dabf31178e97bf10f46d1598c 100644
+index ec2dd213c1eb10b7c4551702751c6c6643a0b792..47a9f2e1108d2bfd5ac42aa577b59b55e530d478 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -1,5 +1,13 @@
@@ -111,7 +109,7 @@ index ec2dd213c1eb10b7c4551702751c6c6643a0b792..8f7fc3531a56a28dabf31178e97bf10f
 +      HttpRouter.add("GET", organizationChangesPath, organizationChanges.events).pipe(
 +        HttpRouter.provideRequest(executor),
 +        HttpRouter.provideRequest(auth.identity),
-+        Layer.provide(Layer.succeed(ScopedChanges, changeRevisions.transport)),
++        HttpRouter.provideRequest(Layer.succeed(ScopedChanges, changeRevisions.transport)),
 +      ),
 +      HttpRouter.add("GET", organizationChangesCurrentPath, organizationChanges.current).pipe(
 +        HttpRouter.provideRequest(executor),
@@ -119,7 +117,7 @@ index ec2dd213c1eb10b7c4551702751c6c6643a0b792..8f7fc3531a56a28dabf31178e97bf10f
 +      ),
 +      HttpRouter.add("POST", poolChangePath, publishCommittedChanges).pipe(
 +        HttpRouter.provideRequest(executor),
-+        Layer.provide(Layer.succeed(ScopedChanges, changeRevisions.transport)),
++        HttpRouter.provideRequest(Layer.succeed(ScopedChanges, changeRevisions.transport)),
 +      ),
        HttpRouter.add("GET", changeRevisionsPath, changeRevisions.handler).pipe(
          HttpRouter.provideRequest(executor),
@@ -544,10 +542,10 @@ index a72c616d343e8d8d402bf3ede0d92d3c341544d3..285b9979c88a7eefb0146d3b233c0ade
  /**
 diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/apps/hosted/server/src/implementation/organization-changes.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..c6ad46618c38d01c7bfe20b3e5a7625ab8637f93
+index 0000000000000000000000000000000000000000..ccd36481cd67ca6a499c385ac3a509606dd9411d
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/organization-changes.ts
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,128 @@
 +import { Effect, Schema } from "effect";
 +import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 +import { Authentication, Unauthorized } from "../contracts/auth.ts";
@@ -626,8 +624,17 @@ index 0000000000000000000000000000000000000000..c6ad46618c38d01c7bfe20b3e5a7625a
 +    const { organization } = yield* HttpRouter.schemaPathParams(Params);
 +    const request = yield* HttpServerRequest.HttpServerRequest;
 +    const headers = new Headers(request.headers);
-+    const authorize = organizationChangeAuthority(headers, organization);
-+    const identity = yield* authorize;
++    const identity = yield* organizationChangeAuthority(headers, organization);
++    // Slugs can move; this stream keeps checking the canonical scope it subscribed to.
++    const authorize = organizationChangeAuthority(headers, identity.organization).pipe(
++      Effect.flatMap((latest) =>
++        latest.organization !== identity.organization ||
++        latest.user !== identity.user ||
++        latest.session !== identity.session
++          ? Effect.fail(new Unauthorized())
++          : Effect.succeed(latest),
++      ),
++    );
 +    const fingerprint = yield* changeIdentity([
 +      identity.organization,
 +      identity.user,
@@ -885,10 +892,10 @@ index 0000000000000000000000000000000000000000..ad72a78b0671f533d4f28558d3d8bba1
 +}).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))));
 diff --git a/apps/hosted/server/src/implementation/scoped-changes.ts b/apps/hosted/server/src/implementation/scoped-changes.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..5b70b95bdc27160ab6889e7e72bd4a975fce37e8
+index 0000000000000000000000000000000000000000..4fe68d403a6ce7af0cec62d6ecaeda9cf4576fab
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/scoped-changes.ts
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,143 @@
 +import { Context, Effect, Schema, Stream } from "effect";
 +import { HttpServerResponse } from "effect/http";
 +import { RuntimeProtocolFailed } from "@executor-js/sdk/core";
@@ -1005,14 +1012,23 @@ index 0000000000000000000000000000000000000000..5b70b95bdc27160ab6889e7e72bd4a97
 +    let stream = Stream.merge(changes, heartbeat, { haltStrategy: "left" });
 +    if (input.validUntil !== undefined) {
 +      const expiry = Stream.fromEffect(
-+        Effect.sleep(Math.max(0, input.validUntil - Date.now())),
-+      ).pipe(
-+        Stream.map(() => "event: revoked\ndata: {}\n\n"),
-+        Stream.concat(Stream.never),
-+      );
++        Effect.sleep(Math.max(0, input.validUntil - Date.now())).pipe(
++          // Renewal can extend a session while this stream still holds its original deadline.
++          Effect.andThen(input.authorize),
++          Effect.as("event: resync\ndata: {}\n\n"),
++          Effect.catch((error) =>
++            Effect.succeed(
++              input.denied(error) ? "event: revoked\ndata: {}\n\n" : "event: resync\ndata: {}\n\n",
++            ),
++          ),
++        ),
++      ).pipe(Stream.concat(Stream.never));
 +      // Finish after the terminal frame is consumed; ending the expiry branch can cancel its frame.
 +      stream = Stream.merge(stream, expiry, { haltStrategy: "left" }).pipe(
-+        Stream.takeUntil((frame) => frame === "event: revoked\ndata: {}\n\n"),
++        Stream.takeUntil(
++          (frame) =>
++            frame === "event: revoked\ndata: {}\n\n" || frame === "event: resync\ndata: {}\n\n",
++        ),
 +      );
 +    }
 +    return HttpServerResponse.stream(
@@ -1042,19 +1058,25 @@ index 2aec4993ba4b68825307bd4637593b76c7a2cc56..74e7324b62b0d9762d77c4b58eb96e58
    makeChangeRevisionHandler,
    changeRevisionsPath,
 diff --git a/apps/hosted/web/src/contracts/account-observations.ts b/apps/hosted/web/src/contracts/account-observations.ts
-index 2c64551860682681bf0928283026f7dd2b092c6e..51a04ecb1a02b3e7857f33e363fef2e9ff67f63e 100644
+index 2c64551860682681bf0928283026f7dd2b092c6e..fc6eabc052bf6ab7e728f915fb84842d80df3640 100644
 --- a/apps/hosted/web/src/contracts/account-observations.ts
 +++ b/apps/hosted/web/src/contracts/account-observations.ts
-@@ -6,7 +6,7 @@ export type { ObservationPolicy } from "@executor-js/hosted-server/account-obser
+@@ -6,9 +6,11 @@ export type { ObservationPolicy } from "@executor-js/hosted-server/account-obser
  export type ObservationAudience = ObservationPolicy["read"];
  import { browserOnly } from "@executor-js/ui/contracts/http";
  import { acknowledge, invalidate } from "@executor-js/ui/contracts/mutations";
 -import { accountPolling } from "./account-polling.ts";
+-import { Data, Effect } from "effect";
+-import { Atom } from "effect/reactivity";
 +import { changeProtected } from "./change-signal.ts";
- import { Data, Effect } from "effect";
- import { Atom } from "effect/reactivity";
++import { Data, Effect, Option } from "effect";
++import { AsyncResult, Atom } from "effect/reactivity";
++import { observationDeadline } from "@executor-js/sdk/core";
++import { expireReports } from "./observation-expiry.ts";
  import { HostedClient } from "./api.ts";
-@@ -17,25 +17,20 @@ class AccountKey extends Data.Class<{
+ import { protectedQuery } from "./protected-query.ts";
+ 
+@@ -17,25 +19,64 @@ class AccountKey extends Data.Class<{
    readonly account: AccountId;
  }> {}
  
@@ -1066,7 +1088,10 @@ index 2c64551860682681bf0928283026f7dd2b092c6e..51a04ecb1a02b3e7857f33e363fef2e9
 +// revisions, so a visible row reads again when they land, never on a timer.
  const observations = Atom.family((key: AccountKey) =>
 -  protectedQuery(browserOnly(HostedClient.query("accounts", "observations", { params: key }))),
--);
++  browserOnly(HostedClient.query("accounts", "observations", { params: key })).pipe(
++    changeProtected(key.organization, ["accounts", "membership"]),
++  ),
+ );
 -// The server collects on its own interval; a visible row reads the retained report again so new
 -// readings appear without a manual refresh. Unavailable or prolonged collections back off.
 -const polledObservations = Atom.family((key: AccountKey) =>
@@ -1074,8 +1099,48 @@ index 2c64551860682681bf0928283026f7dd2b092c6e..51a04ecb1a02b3e7857f33e363fef2e9
 -    observations(key),
 -    (view) => view.reports.some((report) => report.collecting),
 -    (view) => view.reports.some((report) => report.freshness === "unavailable"),
-+  browserOnly(HostedClient.query("accounts", "observations", { params: key })).pipe(
-+    changeProtected(key.organization, ["accounts", "membership"]),
++type ObservationView = Atom.Success<ReturnType<typeof observations>>;
++
++// What a row shows: the fenced, protected observations with fresh reports expired at their
++// deadline. Each change to the source, or a passed deadline, rebuilds this once; a passed deadline
++// is never scheduled again. Writes, acknowledgements and retries keep targeting `observations`.
++const expiringObservations = Atom.family((key: AccountKey) =>
++  Atom.readable(
++    (get) => {
++      const result = get(observations(key));
++      if (typeof window === "undefined") return result;
++      const now = Date.now();
++      let next: number | undefined;
++      const expire = (view: ObservationView) => {
++        const expired = expireReports(view, now, observationDeadline);
++        if (expired.next !== undefined) next = Math.min(next ?? Infinity, expired.next);
++        return expired.view;
++      };
++      const shown = AsyncResult.isSuccess(result)
++        ? AsyncResult.success(expire(result.value), {
++            waiting: result.waiting,
++            timestamp: result.timestamp,
++          })
++        : AsyncResult.isFailure(result) && Option.isSome(result.previousSuccess)
++          ? AsyncResult.failure(result.cause, {
++              waiting: result.waiting,
++              previousSuccess: Option.some(
++                AsyncResult.success(expire(result.previousSuccess.value.value), {
++                  timestamp: result.previousSuccess.value.timestamp,
++                }),
++              ),
++            })
++          : result;
++      if (next !== undefined) {
++        const timer = setTimeout(
++          () => get.refreshSelf(),
++          Math.min(2_147_483_647, Math.max(0, next - now)),
++        );
++        get.addFinalizer(() => clearTimeout(timer));
++      }
++      return shown;
++    },
++    (refresh) => refresh(observations(key)),
    ),
  );
  /** The caller's view of an account's retained usage, with what the policy lets them do. */
@@ -1083,7 +1148,7 @@ index 2c64551860682681bf0928283026f7dd2b092c6e..51a04ecb1a02b3e7857f33e363fef2e9
    readonly organization: OrganizationReference;
    readonly account: AccountId;
 -}) => polledObservations(new AccountKey(key));
-+}) => observations(new AccountKey(key));
++}) => expiringObservations(new AccountKey(key));
  
  const refreshObservations = Atom.family((key: AccountKey) =>
    HostedClient.runtime.fn((_: void, get) =>
@@ -1141,12 +1206,16 @@ index 337f4134f823c8a2d5fd93d5a4a303336ae6f883..e87ad73ac77099eb6f83abde195c61f9
    );
 diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/src/contracts/change-signal.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..193e908c39f85348b8399691275a0a4cb531fd2c
+index 0000000000000000000000000000000000000000..08af83dd9d966749d01274ef61988c2bb2b94477
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/change-signal.ts
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,202 @@
 +/** Dashboard reads that follow the organization's committed revisions instead of a timer. */
-+import { makeChangeFeed, type ChangeFeed } from "@executor-js/ui/contracts/refresh";
++import {
++  ChangeReadRetry,
++  makeChangeFeed,
++  type ChangeFeed,
++} from "@executor-js/ui/contracts/refresh";
 +import { Option } from "effect";
 +import { AsyncResult, Atom } from "effect/reactivity";
 +import {
@@ -1257,7 +1326,14 @@ index 0000000000000000000000000000000000000000..193e908c39f85348b8399691275a0a4c
 +            if (ended) return;
 +            if (buffered !== undefined && !buffered.waiting) shown = buffered;
 +            publish(display());
-+          } catch {
++          } catch (error) {
++            if (ended) return;
++            // Parked by hiding: the read is still owed and resumes after the foreground
++            // handshake, so the last accepted value stays waiting, not current and not failed.
++            if (error instanceof ChangeReadRetry && error.reason === "hidden") {
++              publish(AsyncResult.waiting(display()));
++              return;
++            }
 +            // Newer data exists or could not be checked: keep the last accepted value, but as a
 +            // failure, never as current. Its next hint, request or handshake reads again.
 +            if (!ended)
@@ -1375,6 +1451,38 @@ index 862f12cb6d19d426d81bed40a06170a4af2b6f3e..8b9325735992b2345426004f5ec56799
    }),
  );
  /**
+diff --git a/apps/hosted/web/src/contracts/observation-expiry.ts b/apps/hosted/web/src/contracts/observation-expiry.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..470798177dd07c6e628742a58ff1aa9fbc0ddf2f
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/observation-expiry.ts
+@@ -0,0 +1,26 @@
++/**
++ * A fresh report stops being fresh at its own deadline even when nothing is written, so it turns
++ * stale then, locally and without a read. Only currently fresh reports are considered; stale,
++ * outdated and unavailable ones are never promoted, and timestamps are left as they were. A
++ * deadline that is not a finite instant (an unreadable source timestamp) cannot vouch for
++ * freshness, so that report turns stale now and is never scheduled.
++ */
++export const expireReports = <
++  Result,
++  Report extends { readonly freshness: string; readonly result: Result | null },
++  View extends { readonly reports: readonly Report[] },
++>(
++  view: View,
++  now: number,
++  deadlineOf: (result: Result) => number,
++): { readonly view: View; readonly next: number | undefined } => {
++  let next: number | undefined;
++  const reports = view.reports.map((report) => {
++    if (report.freshness !== "fresh" || report.result === null) return report;
++    const deadline = deadlineOf(report.result);
++    if (!Number.isFinite(deadline) || now >= deadline) return { ...report, freshness: "stale" };
++    next = next === undefined ? deadline : Math.min(next, deadline);
++    return report;
++  });
++  return { view: { ...view, reports }, next };
++};
 diff --git a/apps/hosted/web/src/contracts/organization.ts b/apps/hosted/web/src/contracts/organization.ts
 index f8a9cf4e0e619d9036100761aace2034c8896117..a37d52d86a5e59c08e194d72eca640f7d0692d89 100644
 --- a/apps/hosted/web/src/contracts/organization.ts
@@ -1496,10 +1604,10 @@ index 9aedb7ca4445f0bd779a523a030f2a4af171f632..555e7e72573c317280b38fb8666902fd
    AppMutation,
 diff --git a/packages/apps/src/implementation/change-feed.ts b/packages/apps/src/implementation/change-feed.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..e33b204c2062734063e021710d340e23f9c65f7e
+index 0000000000000000000000000000000000000000..c753e797cac7e634176a9604f1d099813e2044b9
 --- /dev/null
 +++ b/packages/apps/src/implementation/change-feed.ts
-@@ -0,0 +1,603 @@
+@@ -0,0 +1,607 @@
 +/**
 + * One committed-revision stream per page. A watch reads again only after a hint, a handshake or a
 + * server deadline shows its data is behind; nothing here reads on a timer. The stream and the
@@ -1546,12 +1654,13 @@ index 0000000000000000000000000000000000000000..e33b204c2062734063e021710d340e23
 +/**
 + * A read that could not be accepted. `moving`: heads kept changing, and their hints will read
 + * again. `unavailable`: the head route could not be read; the next hint, handshake or return
-+ * to the page reads again. Nothing retries on a timer.
++ * to the page reads again. `hidden`: the page was hidden mid-read, so the read parked before
++ * any further data work; the foreground handshake reads again. Nothing retries on a timer.
 + */
 +export class ChangeReadRetry extends Error {
 +  readonly retryable = true;
-+  readonly reason: "moving" | "unavailable";
-+  constructor(reason: "moving" | "unavailable") {
++  readonly reason: "moving" | "unavailable" | "hidden";
++  constructor(reason: "moving" | "unavailable" | "hidden") {
 +    super(`Change read not accepted: ${reason}`);
 +    this.reason = reason;
 +  }
@@ -2023,9 +2132,12 @@ index 0000000000000000000000000000000000000000..e33b204c2062734063e021710d340e23
 +          let reason: ChangeReadRetry["reason"] = "moving";
 +          try {
 +            for (let attempt = 0; attempt < attempts; attempt++) {
++              // A hidden page does no more data work; the foreground handshake reads again.
++              if (!activity.isActive()) throw new ChangeReadRetry("hidden");
 +              const ticket = { fence, connection };
 +              const before = await current(0);
 +              live();
++              if (!activity.isActive()) throw new ChangeReadRetry("hidden");
 +              const value = await work();
 +              live();
 +              const after = await current(started);
@@ -2151,6 +2263,64 @@ index ce7bcb2b08ab00032dfd1022ee182af9b73ca18d..03222f6c27d9f495e0f0af35095799b0
      /**
       * Call `refresh` every `interval` milliseconds while this page is active, starting one interval
       * from now. A page that becomes active after a refresh came due refreshes once, at once; a page
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index 47c9bd90898e2eecf8cab30bb4430fef0e7debda..92be0049a4bd13dd695f6da2210613813e535293 100644
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -79,3 +79,4 @@ export {
+ export * from "./contracts/account-read.ts";
+ 
+ export * from "./contracts/selected-account-read.ts";
++export { observationDeadline } from "./implementation/account-observation-state.ts";
+diff --git a/packages/sdk/src/implementation/account-observation-state.ts b/packages/sdk/src/implementation/account-observation-state.ts
+index ab0fe57e161fd48896bf24862de0b62dee7c9230..d35d97d86a57bb824766bab44f7a6c094d3e738b 100644
+--- a/packages/sdk/src/implementation/account-observation-state.ts
++++ b/packages/sdk/src/implementation/account-observation-state.ts
+@@ -3,17 +3,18 @@ import type { AccountObservationResult, AccountObservationAttempt } from "apps/c
+ 
+ export const freshnessMillis = 5 * 60_000;
+ export const observationLeaseMillis = 20_000;
+-/** Freshness belongs to each source instant, including when a cached request succeeded just now. */
+-export const freshObservation = (result: AccountObservationResult, now: number) => {
++const observationSources = (result: AccountObservationResult) => {
+   const readings = [
+     ...(result.observation.plan === undefined ? [] : [result.observation.plan]),
+     ...result.observation.windows,
+     ...result.observation.balances,
+   ];
+-  // The result timestamp orders reports; individual readings own their freshness horizons.
+-  if (Date.parse(result.observedAt) > now + 60_000) return false;
+-  const sources = readings.length === 0 ? [{ observedAt: result.observedAt }] : readings;
+-  return sources.every((reading) => {
++  return readings.length === 0 ? [{ observedAt: result.observedAt }] : readings;
++};
++
++/** The earliest source cutoff lets clients expire freshness without collecting another reading. */
++export const observationDeadline = (result: AccountObservationResult): number =>
++  observationSources(result).reduce((deadline, reading) => {
+     const observed = Date.parse(reading.observedAt);
+     const stale =
+       "staleAt" in reading && typeof reading.staleAt === "string"
+@@ -27,8 +28,17 @@ export const freshObservation = (result: AccountObservationResult, now: number)
+       "expiresAt" in reading && typeof reading.expiresAt === "string"
+         ? Date.parse(reading.expiresAt)
+         : Infinity;
+-    return observed <= now + 60_000 && now < Math.min(stale, reset, expiry);
+-  });
++    return Math.min(deadline, stale, reset, expiry);
++  }, Infinity);
++
++/** Freshness belongs to each source instant, including when a cached request succeeded just now. */
++export const freshObservation = (result: AccountObservationResult, now: number) => {
++  // The result timestamp orders reports; individual readings own their freshness horizons.
++  if (Date.parse(result.observedAt) > now + 60_000) return false;
++  return (
++    observationSources(result).every((reading) => Date.parse(reading.observedAt) <= now + 60_000) &&
++    now < observationDeadline(result)
++  );
+ };
+ 
+ export const validObservationTime = (result: AccountObservationResult, now: number) =>
 diff --git a/packages/sdk/src/implementation/binding-workerd-apps.ts b/packages/sdk/src/implementation/binding-workerd-apps.ts
 index 03c3f7e409e2258cd4dfb9209734415f2c8bbe73..58d4e97aeb7fdcdb05e1436d500c7c953cb3fcfb 100644
 --- a/packages/sdk/src/implementation/binding-workerd-apps.ts

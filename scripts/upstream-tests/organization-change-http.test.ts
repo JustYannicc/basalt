@@ -107,6 +107,7 @@ const fixture = <A>(context: TestContext, work: (f: Fixture) => Promise<A>) =>
         queries: [] as string[],
         subscriptions: [] as { scope: string; keys: readonly ChangeKey[] }[],
         authority: { session: 0, membership: 0 },
+        alias: organization,
         beforeHead: undefined as Effect.Effect<void, unknown> | undefined,
         register: (_scope: string): Effect.Effect<void, unknown> => Effect.void,
       };
@@ -158,14 +159,16 @@ const fixture = <A>(context: TestContext, work: (f: Fixture) => Promise<A>) =>
             return { role: "member" as const };
           }),
         organization: (reference) =>
-          reference === "team-a" || reference === "team-a-slug"
+          reference === "team-a"
             ? Effect.succeed(organization)
-            : Effect.fail(new OrganizationForbidden()),
+            : reference === "team-a-slug"
+              ? Effect.succeed(state.alias)
+              : Effect.fail(new OrganizationForbidden()),
         organizationSlug: () => Effect.succeed("team-a-slug"),
         removeOrganization: () => Effect.die("unused fixture operation"),
       });
       const queues = new Map<string, Queue.Queue<RevisionEvent>>();
-      for (const scope of ["organization:team-a", "user:viewer-a"])
+      for (const scope of ["organization:team-a", "organization:team-b", "user:viewer-a"])
         queues.set(scope, yield* Queue.make<RevisionEvent>());
       const transport = ScopedChanges.of({
         subscribe: (scope, keys) =>
@@ -234,6 +237,7 @@ interface Fixture {
     queries: string[];
     subscriptions: { scope: string; keys: readonly ChangeKey[] }[];
     authority: { session: number; membership: number };
+    alias: OrganizationId;
     beforeHead: Effect.Effect<void, unknown> | undefined;
     register: (scope: string) => Effect.Effect<void, unknown>;
   };
@@ -382,7 +386,50 @@ test("idle organization heartbeats perform zero SQL and absolute session expiry 
         remaining.push(frame);
       assert.equal(remaining.at(-1), "event: revoked\ndata: {}\n\n");
       assert.ok(remaining.slice(0, -1).every((frame) => frame === ": heartbeat\n\n"));
-      assert.equal(f.state.queries.length, before.queries, "expiry must not poll SQL either");
+      assert.ok(
+        f.state.queries.length > before.queries,
+        "the absolute deadline rechecks authority once",
+      );
+    } finally {
+      await stream.cancel();
+    }
+  }));
+
+test("a renewed session resyncs at its old deadline instead of falsely revoking access", (context) =>
+  fixture(context, async (f) => {
+    const stream = frames(await f.request());
+    try {
+      assert.ok((await stream.next())?.startsWith("event: current\n"));
+      await Effect.runPromise(
+        f.sql`update session set "expiresAt"=${new Date(f.expiresAt.getTime() + 60_000)} where id='session-a'`,
+      );
+      await f.advance(60_000);
+      const remaining: string[] = [];
+      for (let frame = await stream.next(); frame !== undefined; frame = await stream.next())
+        remaining.push(frame);
+      assert.equal(remaining.at(-1), "event: resync\ndata: {}\n\n");
+      assert.ok(!remaining.some((frame) => frame.startsWith("event: revoked")));
+    } finally {
+      await stream.cancel();
+    }
+  }));
+
+test("a moved organization slug cannot authorize hints from the former scope", (context) =>
+  fixture(context, async (f) => {
+    const stream = frames(await f.request("/api/organizations/team-a-slug/changes"));
+    try {
+      assert.ok((await stream.next())?.startsWith("event: current\n"));
+      await Effect.runPromise(
+        f.sql`insert into member values ('member-b','team-b','viewer-a','member')`,
+      );
+      f.state.alias = OrganizationId.make("team-b");
+      await Effect.runPromise(f.sql`delete from member where id='member-a'`);
+      await Effect.runPromise(
+        f.sql`update executor_accounts set label='Former private scope' where id='acc_a'`,
+      );
+      await f.deliver();
+      assert.equal(await stream.next(), "event: revoked\ndata: {}\n\n");
+      assert.equal(await stream.next(), undefined);
     } finally {
       await stream.cancel();
     }

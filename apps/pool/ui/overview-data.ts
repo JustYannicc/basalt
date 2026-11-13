@@ -162,6 +162,8 @@ export function useOverview(api: PoolApi, days: RangeDays) {
     } catch (error) {
       done();
       if (id !== pending.id || !(error instanceof ChangeReadRetry)) return;
+      // A read parked by hiding resumes after the foreground handshake; nothing failed.
+      if (error.reason === "hidden") return;
       // Keep confirmed figures and say they may be behind; with none, show the failure itself.
       setFailed({ query, message: unconfirmed });
       setSnapshot((previous) =>

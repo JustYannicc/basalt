@@ -60,6 +60,11 @@ export function usePool(api: PoolApi) {
         if (!mounted.current || id !== latest.current) return;
         // Keep the last accepted view, and say it may be behind.
         if (!(error instanceof ChangeReadRetry)) return;
+        // A read parked by hiding resumes after the foreground handshake; nothing failed.
+        if (error.reason === "hidden") {
+          setState((previous) => ({ ...previous, updating: false }));
+          return;
+        }
         setState((previous) => ({
           ...previous,
           updating: false,

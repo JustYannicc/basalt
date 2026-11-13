@@ -390,3 +390,33 @@ test("a stream that never handshakes reads once and says live updates are paused
   assert.equal(feed.status(), "paused");
   assert.ok(server.state.currentReads >= 2);
 });
+
+test("a read hidden mid-flight does no more data work until the foreground handshake", async (t) => {
+  const { server, page, seen, hold } = setup(t);
+  await flush();
+  server.handshake();
+  await flush();
+  const release = hold();
+  server.commit("accounts", "2");
+  await flush();
+  assert.equal(seen.dataReads, 2);
+  // Heads move under the held read, so it would otherwise retry with more data work.
+  server.commit("accounts", "3");
+  await flush();
+  page.show(false);
+  await flush();
+  release();
+  await flush();
+  assert.equal(seen.dataReads, 2, "no retry ran while hidden");
+  assert.equal(seen.applied.length, 1, "the outpaced body was not applied");
+  t.mock.timers.tick(10 * 60_000);
+  await flush();
+  assert.equal(seen.dataReads, 2, "a hidden page makes no reads at all");
+  page.show(true);
+  await flush();
+  assert.equal(seen.dataReads, 2, "nothing reads before the foreground handshake");
+  server.handshake();
+  await flush();
+  assert.equal(seen.dataReads, 3, "the parked read runs once after the handshake");
+  assert.equal(seen.applied.at(-1)?.accounts, "3");
+});
