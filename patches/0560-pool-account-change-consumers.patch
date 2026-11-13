@@ -1688,6 +1688,22 @@ index 9235a2c6408f24376457f3e83e5b604b7d4b48d0..ba8537f21131913320fe64d8de3cb14f
              <VerifyIdentities
                query={resourceInventoryAtom(organization)}
                identify={identify}
+diff --git a/e2e/support/app-origin-tls.ts b/e2e/support/app-origin-tls.ts
+index 93fabe9a5ea8b9ff5b34d1717c214d347dce8e3d..5a4869d6bd1304ca080d66b9acffecb999c318b1 100644
+--- a/e2e/support/app-origin-tls.ts
++++ b/e2e/support/app-origin-tls.ts
+@@ -59,7 +59,10 @@ export const appOriginTls = Effect.gen(function* () {
+             response.pipe(outgoing);
+           },
+         );
+-        forwarded.on("error", () => outgoing.writeHead(502).end());
++        forwarded.on("error", (error) => {
++          if (outgoing.headersSent) outgoing.destroy(error);
++          else outgoing.writeHead(502).end();
++        });
+         incoming.pipe(forwarded);
+       });
+       return new Promise<typeof server>((resolve, reject) => {
 diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
 index 7db694c0fcbef364a5703598338dedff88df6b0c..0d1e99114b7f01fc72bdae0268c4b62be1203498 100644
 --- a/e2e/support/profile-removal-rollback.ts
