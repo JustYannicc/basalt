@@ -47,7 +47,7 @@ for (const tree of ["src", "lib"])
   });
 
 for (const tree of ["src", "lib"])
-  test(`the real ${tree} model lifetime image is admitted only from the serving baseline`, () => {
+  test(`the real ${tree} composed model image is admitted only from the serving baseline`, () => {
     const output = execFileSync(
       "bun",
       [
