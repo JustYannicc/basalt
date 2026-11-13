@@ -1,3 +1,5 @@
+import { homeResponse } from "../home-response.ts";
+import { awaitProbe } from "../availability.ts";
 import {
   retainRuntimeFailure,
   runtimeFailureHeaders,
@@ -37,16 +39,20 @@ export class BoundSlotDriver implements SlotDriver {
     this.endpoint = endpoint;
   }
   private async call(target: SlotTarget, action: string, value: unknown, signal: AbortSignal) {
-    const response = await this.endpoint(target).fetch(
-      new Request(`http://runtime/${action}`, {
-        method: "POST",
-        signal,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(value),
-      }),
+    const response = await homeResponse(
+      () =>
+        this.endpoint(target).fetch(
+          new Request(`http://runtime/${action}`, {
+            method: "POST",
+            signal,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(value),
+          }),
+        ),
+      signal,
     );
     if (!response.ok) {
-      await response.body?.cancel();
+      void response.body?.cancel().catch(() => {});
       throw retainRuntimeFailure(response, new SlotRefused("uncertain"));
     }
     return response;
@@ -103,7 +109,8 @@ export class BoundSlotDriver implements SlotDriver {
     await (await this.call(identity, "native", { identity, policy }, signal)).body?.cancel();
   }
   async retire(target: SlotTarget, identity: SlotIdentity, signal: AbortSignal) {
-    await (await this.call(target, "retire", { target, identity }, signal)).body?.cancel();
+    const response = await this.call(target, "retire", { target, identity }, signal);
+    await awaitProbe(() => response.body?.cancel() ?? Promise.resolve(), signal);
   }
   async drain(identity: SlotIdentity, signal: AbortSignal) {
     const response = await this.call(identity, "drain", { identity }, signal);
@@ -118,7 +125,7 @@ export class BoundSlotDriver implements SlotDriver {
     const response = await this.call(identity, "retirement", { identity }, signal);
     return Schema.decodeUnknownSync(
       Schema.Struct({ identity: SlotIdentity, retired: Schema.Boolean, running: Schema.Boolean }),
-    )(await response.json());
+    )(await retirementBody(response, signal));
   }
   fetch(identity: SlotIdentity, request: Request, port: 8317 | 8327 | 8318) {
     return this.forward(identity, request, port, false);
@@ -214,7 +221,7 @@ export async function runtimeRequest(
       const { identity } = Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(
         value,
       );
-      return Response.json(await endpoint.retirement(identity));
+      return Response.json(await endpoint.retirement(identity, request.signal));
     } else if (action === "/retire") {
       const { target, identity } = Schema.decodeUnknownSync(
         Schema.Struct({ target: SlotTarget, identity: SlotIdentity }),
@@ -230,5 +237,33 @@ export async function runtimeRequest(
       },
       { status: 409, headers: runtimeFailureHeaders(error, "endpoint_route") },
     );
+  }
+}
+
+async function retirementBody(response: Response, signal: AbortSignal): Promise<unknown> {
+  const reader = response.body?.getReader();
+  const cancel = () => {
+    void reader?.cancel().catch(() => {});
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    return await awaitProbe(async () => {
+      const decoder = new TextDecoder();
+      let text = "";
+      while (reader) {
+        const next = await reader.read();
+        signal.throwIfAborted();
+        if (next.done) break;
+        text += decoder.decode(next.value, { stream: true });
+      }
+      signal.throwIfAborted();
+      return JSON.parse(text + decoder.decode());
+    }, signal);
+  } catch (error) {
+    cancel();
+    throw error;
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    reader?.releaseLock();
   }
 }
