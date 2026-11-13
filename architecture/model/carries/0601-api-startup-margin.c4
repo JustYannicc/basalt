@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The Api Worker defers retained-framework page loading until that inventory selection executes, before opening its SQL snapshot. Forecast schemas construct on first schema use through the native lazy codec. Wire validation, permissions, inventory snapshots, continuations, deadlines and encryption stay unchanged. The release barrier remains 750 ms and a rejected second upload ends without schema writes or activation while retaining the first provider startup measurement."
+    }
+  }
+}
