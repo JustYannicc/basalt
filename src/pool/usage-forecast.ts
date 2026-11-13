@@ -155,6 +155,7 @@ export function usageForecast(input: {
     timezone: "Europe/Zurich",
     method: "Median of the last 4 full weeks, shaped by day of week",
     confidence,
+    coverage: { basis: "recorded-total", excludedRequests: 0 },
     interval: 0.8,
     comparableWeeks,
     trainingWeeks,

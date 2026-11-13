@@ -125,5 +125,15 @@ export async function seriesCoverage(
     percentiles: outsideSeries,
     seasonalTrainingRange: outsideSeries,
   };
-  return { coverage, asOf: watermarks.at(-1) ?? null };
+  let homeThrough = capturedThrough;
+  if (input.forecast && cursor?.backfill_complete === true) {
+    const native = (await db.query("SELECT to_regclass('usage') AS relation")).rows[0];
+    if (native?.relation) {
+      const head = (await db.query("SELECT id::text FROM usage ORDER BY id DESC LIMIT 1")).rows[0];
+      // A fresh empty read proves idle days too. The last request time alone cannot do that.
+      if (!head || BigInt(String(head.id)) <= BigInt(String(cursor.forward_id)))
+        homeThrough = nullableAt(cursor.updated_at);
+    }
+  }
+  return { coverage, asOf: watermarks.at(-1) ?? null, homeThrough };
 }

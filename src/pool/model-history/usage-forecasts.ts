@@ -53,7 +53,10 @@ function add(into: Day, bucket: SeriesBucket | SeriesCounts) {
 }
 
 /** Recorded daily history only. Counts-only data never acquires invented token or price values. */
-export function seriesUsageForecasts(result: PoolUsageSeriesResult): UsageForecasts {
+export function seriesUsageForecasts(
+  result: PoolUsageSeriesResult,
+  homeThrough?: string | null,
+): UsageForecasts {
   const byProvider = new Map<string | null, Map<string, Day>>([[null, new Map()]]);
   const warnings: string[] = [];
   if (result.next !== null)
@@ -73,6 +76,26 @@ export function seriesUsageForecasts(result: PoolUsageSeriesResult): UsageForeca
   )
     warnings.push(
       "Imported history may still be arriving. Forecasts describe recorded usage and can change after import.",
+    );
+  const home = result.coverage.sources.find((source) => source.kind === "home");
+  const incompleteHome =
+    home !== undefined &&
+    (home.backfillComplete !== true ||
+      home.sweep === null ||
+      home.sweep.id !== "0" ||
+      home.sweep.upper !== "0");
+  const capturedThrough = home
+    ? Date.parse(homeThrough ?? result.coverage.capturedThrough ?? "")
+    : Date.parse(result.to);
+  if (incompleteHome)
+    warnings.push("Home capture is incomplete. Uncaptured days cannot train a usage forecast.");
+  else if (
+    home &&
+    (!Number.isFinite(capturedThrough) ||
+      capturedThrough < usageDayStart(usageDay(Date.parse(result.to))))
+  )
+    warnings.push(
+      "Home capture has not reached today. Later days and current-period projections remain unknown.",
     );
   const today = usageDay(Date.parse(result.to));
   for (const group of result.groups) {
@@ -102,15 +125,21 @@ export function seriesUsageForecasts(result: PoolUsageSeriesResult): UsageForeca
     if (first && result.next === null)
       for (let day = first; day <= today; day = addUsageDays(day, 1)) {
         const value = measured.get(day) ?? empty();
+        const captured =
+          !incompleteHome &&
+          (day === today
+            ? usageDayStart(day) <= capturedThrough
+            : usageDayStart(addUsageDays(day, 1)) <= capturedThrough);
         tokenMissing += value.tokenMissing;
         unpriced += value.unpriced;
         const cost = Number(value.price) / Number(scale);
         const tokens = Number(value.tokens);
         const row = { day, requests: value.requests };
-        metrics.requests.push({ ...row, value: value.requests });
+        metrics.requests.push({ ...row, value: captured ? value.requests : null });
         metrics.tokens.push({
           ...row,
           value:
+            !captured ||
             value.hidden ||
             !Number.isSafeInteger(tokens) ||
             (value.requests > 0 && value.tokenKnown === 0)
@@ -120,6 +149,7 @@ export function seriesUsageForecasts(result: PoolUsageSeriesResult): UsageForeca
         metrics.apiEstimate.push({
           ...row,
           value:
+            !captured ||
             value.hidden ||
             !Number.isFinite(cost) ||
             cost > Number.MAX_SAFE_INTEGER ||
@@ -128,18 +158,24 @@ export function seriesUsageForecasts(result: PoolUsageSeriesResult): UsageForeca
               : cost,
         });
       }
-    const calculate = (days: readonly UsageDay[]) => {
+    const calculate = (days: readonly UsageDay[], excludedRequests = 0) => {
       const forecast = usageForecast({ days, calculatedAt: result.to });
       // Back-tests cannot establish capture completeness while imports remain unconfirmed.
-      return warnings.length && forecast.status === "available"
-        ? { ...forecast, confidence: "Low" as const }
+      return forecast.status === "available"
+        ? {
+            ...forecast,
+            ...(excludedRequests > 0
+              ? { coverage: { basis: "known-subset" as const, excludedRequests } }
+              : {}),
+            ...(warnings.length || excludedRequests > 0 ? { confidence: "Low" as const } : {}),
+          }
         : forecast;
     };
     return {
       provider,
       requests: calculate(metrics.requests),
-      tokens: calculate(metrics.tokens),
-      apiEstimate: calculate(metrics.apiEstimate),
+      tokens: calculate(metrics.tokens, tokenMissing),
+      apiEstimate: calculate(metrics.apiEstimate, unpriced),
       excluded: { tokens: tokenMissing, apiEstimate: unpriced },
     };
   });

@@ -4,6 +4,9 @@ import { addUsageDays, usageDayStart } from "../../src/pool/usage-calendar.ts";
 import { poolUsageSeries } from "../../src/pool/model-history/series.ts";
 import { seriesInput } from "../../src/pool/model-history/series-input.ts";
 import { authority, full, input, seriesFixture } from "./series-fixture.ts";
+import { digest } from "../../src/pool/backend-users.ts";
+import { homeMetadataFixture } from "./history-fixture.ts";
+import { historyBatchSize } from "../../src/pool/model-history/store.ts";
 import { Schema } from "effect";
 import {
   PoolUsageSeries,
@@ -147,4 +150,85 @@ test("forecast requests reject filtered, hourly, unzoned or paged training befor
     { timezone: "Europe/Paris" },
   ])
     assert.throws(() => seriesInput({ ...query, ...change }));
+});
+
+test("native forecast coverage distinguishes incomplete backfill, verified idle capture and a stalled forward scan", async () => {
+  await seriesFixture(async ({ db, insert }) => {
+    await homeMetadataFixture(db);
+    const source = await digest("home-local-v1");
+    await insert({
+      source,
+      sourceRecord: await digest(JSON.stringify(["usage", "1"])),
+      timestamp: "2026-08-17T10:00:00Z",
+      provider: "codex",
+    });
+    for (let offset = 0; offset < 1000; offset += historyBatchSize)
+      await insert(
+        ...Array.from({ length: Math.min(historyBatchSize, 1000 - offset) }, () => ({
+          source,
+          timestamp: "2026-11-09T10:00:00Z",
+          provider: "codex",
+        })),
+      );
+    await db.query(
+      `INSERT INTO basalt_model_history_cursor
+      (source,forward_id,backfill_upper,backfill_id,backfill_complete,sweep_id,sweep_upper,updated_at)
+      VALUES ($1,1,1,0,false,0,0,'2026-11-09T11:00:00Z')`,
+      [source],
+    );
+    const query = {
+      ...input,
+      from: "2026-08-16T22:00:00Z",
+      to: "2026-11-09T11:00:00Z",
+      bucket: "day",
+      by: ["provider"],
+      timezone: "Europe/Zurich",
+      forecast: true,
+    };
+    const pending = await poolUsageSeries(db, query, authority);
+    assert.equal(pending.forecasts!.series[0]!.requests.status, "unavailable");
+    assert.match(pending.forecasts!.warnings.join(" "), /capture is incomplete/);
+    await db.query(
+      "UPDATE basalt_model_history_cursor SET backfill_complete=true,backfill_id=1 WHERE source=$1",
+      [source],
+    );
+    const idle = await poolUsageSeries(db, query, authority);
+    assert.equal(idle.forecasts!.series[0]!.requests.status, "available");
+    await db.query("INSERT INTO usage (id,timestamp) VALUES (2,'2026-11-09T10:59:00Z')");
+    const stalled = await poolUsageSeries(db, query, authority);
+    assert.equal(stalled.forecasts!.series[0]!.requests.status, "unavailable");
+    assert.match(stalled.forecasts!.warnings.join(" "), /not reached today/);
+  });
+});
+
+test("counts-only native rows retain opted-in refusal counts without exposing account details", async () => {
+  await seriesFixture(async ({ db, insert }) => {
+    await insert({
+      source: await digest("home-local-v1"),
+      account: "a".repeat(64),
+      provider: "private-provider-sentinel",
+      model: "private-model-sentinel",
+      statusCode: 429,
+      failed: true,
+      totalTokens: "87654321",
+    });
+    const result = await poolUsageSeries(
+      db,
+      { ...input, bucket: "day", timezone: "Europe/Zurich", by: ["provider"] },
+      authority,
+    );
+    const bucket = result.groups[0]!.buckets[0]!;
+    assert.equal(bucket.requests, 1);
+    assert.equal(bucket.limited, 1);
+    assert.equal("tokens" in bucket, false);
+    const decoded = Schema.decodeUnknownSync(PoolUsageSeries)(result);
+    assert.equal(decoded.groups[0]!.buckets[0]!.limited, 1);
+    for (const text of [
+      "private-provider-sentinel",
+      "private-model-sentinel",
+      "87654321",
+      "a".repeat(64),
+    ])
+      assert.equal(JSON.stringify(result).includes(text), false);
+  });
 });

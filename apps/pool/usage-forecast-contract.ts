@@ -34,6 +34,11 @@ export type UsageForecast =
       readonly timezone: "Europe/Zurich";
       readonly method: "Median of the last 4 full weeks, shaped by day of week";
       readonly confidence: "Low" | "Medium" | "High";
+      readonly coverage: {
+        readonly basis: "recorded-total" | "known-subset";
+        /** Missing values across the supplied history, including held-out weeks. */
+        readonly excludedRequests: number;
+      };
       readonly interval: 0.8;
       readonly comparableWeeks: number;
       readonly trainingWeeks: readonly string[];
@@ -41,6 +46,7 @@ export type UsageForecast =
       readonly thisWeek: UsageProjection;
       readonly nextWeek: UsageProjection;
       readonly month: UsageProjection;
+      /** Remaining use today; full forecast days thereafter. */
       readonly daily: readonly {
         readonly day: string;
         readonly median: number;

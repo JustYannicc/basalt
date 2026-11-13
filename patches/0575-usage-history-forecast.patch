@@ -42,7 +42,7 @@ diff --git a/apps/hosted/server/src/contracts/pool-usage-forecast.ts b/apps/host
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/contracts/pool-usage-forecast.ts
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,66 @@
 +import { Schema } from "effect";
 +
 +const number = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
@@ -69,6 +69,10 @@ new file mode 100644
 +    timezone: Schema.Literal("Europe/Zurich"),
 +    method: Schema.Literal("Median of the last 4 full weeks, shaped by day of week"),
 +    confidence: Schema.Literals(["Low", "Medium", "High"]),
++    coverage: Schema.Struct({
++      basis: Schema.Literals(["recorded-total", "known-subset"]),
++      excludedRequests: count,
++    }),
 +    interval: Schema.Literal(0.8),
 +    comparableWeeks: count,
 +    trainingWeeks: Schema.Array(Schema.String).check(Schema.isMaxLength(4)),

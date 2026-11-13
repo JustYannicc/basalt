@@ -1,7 +1,7 @@
 {
   "identity": "executor-usage-history-forecast",
   "file": "0575-usage-history-forecast.patch",
-  "content_sha256": "be5e8d727a675fab623ec21ed0c9e06d46e699df319e474633ee3cb75bd28568",
+  "content_sha256": "10c50c90fac43fb466758aed4d85ca21624511466cead2cacf1a6236a3b0ee0d",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

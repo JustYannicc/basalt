@@ -47,6 +47,7 @@ function bucket(
       (typeof row.end_at === "string" ? nanos(row.end_at) : nanos(at) + span) > nanos(bounds.to),
     requests,
     failed,
+    ...(input.timezone ? { limited: requestCount(row.limited ?? "0") } : {}),
     unassignedFailures: requestCount(row.unassigned),
     successRate: successRate(requests, failed),
   };
@@ -72,7 +73,6 @@ function bucket(
   });
   return {
     ...counts,
-    ...(input.timezone ? { limited: requestCount(row.limited ?? "0") } : {}),
     lastSuccessAtInRange: row.last_success === null ? null : timestamp(String(row.last_success)),
     tokens,
     tokenQuality: {
@@ -176,7 +176,7 @@ async function readUsageSeries(
             );
       query = await seriesQuery(db, input, authority, after, personScope, prices);
     }
-    const { coverage, asOf } = await seriesCoverage(
+    const { coverage, asOf, homeThrough } = await seriesCoverage(
       db,
       query,
       input,
@@ -231,7 +231,7 @@ async function readUsageSeries(
       result.next = writeSeriesCursor(scope, String(last.group_key), String(last.at));
     }
     if (input.forecast) {
-      result.forecasts = seriesUsageForecasts(result);
+      result.forecasts = seriesUsageForecasts(result, homeThrough);
       if (new TextEncoder().encode(JSON.stringify(result)).byteLength > maxSeriesBytes)
         result.forecasts = {
           ...result.forecasts,
