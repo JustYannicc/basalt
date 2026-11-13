@@ -1,5 +1,10 @@
-// A lab's identity colour. State (out, flagged, failing) always uses the destructive and warning
-// tokens with an icon and words, so a lab hue never has to say anything on its own.
+import { useState } from "react";
+import type { Provider } from "../contract.ts";
+import { iconSources, type Icons } from "./lab-icon.ts";
+
+// A lab's series colour in charts and bars. State (out, flagged, failing) always uses the
+// destructive and warning tokens with an icon and words, so a lab hue never has to say anything on
+// its own. Provider icons keep their own colours; a missing icon uses the label badge.
 const colors: Record<string, string> = {
   codex: "var(--lab-codex)",
   claude: "var(--lab-claude)",
@@ -10,23 +15,54 @@ const colors: Record<string, string> = {
 export const labColor = (provider: string | null) =>
   (provider && colors[provider]) || "color-mix(in srgb, var(--foreground) 55%, transparent)";
 
-/** A lab's colour and initial, using its provider label. */
+/** The pool's provider entry for a lab id, carrying the icons its provider app declares. */
+export const labProvider =
+  (providers: readonly Provider[] | undefined) =>
+  (id: string): Provider | undefined =>
+    providers?.find((provider) => provider.id === id);
+
+/**
+ * The provider app's own icon. Until the pool view names the provider, or when its app declares no
+ * loadable icon, its label supplies the same letter badge as the direct Home view.
+ */
 export function LabMark({
   provider,
-  name,
   small = false,
 }: {
-  provider: string;
-  name: string;
+  provider: { readonly id?: string; readonly name?: string; readonly icons?: Icons } | undefined;
   small?: boolean;
 }) {
+  const sources = iconSources(provider?.icons);
+  const [broken, setBroken] = useState<string>();
+  const size = small ? "size-[18px] rounded-[5px]" : "size-6 rounded-md";
+  if (sources === null || broken === `${sources.light} ${sources.dark}`)
+    return (
+      <span
+        aria-hidden="true"
+        data-lab-mark="unavailable"
+        // A borderless fill: an outlined square beside a label reads as a checkbox.
+        className={`grid shrink-0 place-items-center font-semibold text-white ${size}`}
+        style={{ background: labColor(provider?.id ?? null) }}
+      >
+        {provider?.name?.slice(0, 1).toUpperCase()}
+      </span>
+    );
   return (
-    <span
+    <picture
       aria-hidden="true"
-      className={`grid shrink-0 place-items-center font-semibold text-white ${small ? "size-[18px] rounded-[5px] text-[10px]" : "size-6 rounded-md text-xs"}`}
-      style={{ background: labColor(provider) }}
+      data-lab-mark="icon"
+      className={`block shrink-0 overflow-hidden ${size}`}
     >
-      {name.slice(0, 1).toUpperCase()}
-    </span>
+      {sources.dark !== sources.light && (
+        <source media="(prefers-color-scheme: dark)" srcSet={sources.dark} />
+      )}
+      <img
+        src={sources.light}
+        alt=""
+        draggable={false}
+        className="block size-full object-contain"
+        onError={() => setBroken(`${sources.light} ${sources.dark}`)}
+      />
+    </picture>
   );
 }
