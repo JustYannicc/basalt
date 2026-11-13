@@ -1,4 +1,7 @@
-import { historyImportCompletionStatements } from "../../src/pool/model-history/import-completion-schema.ts";
+import {
+  historyImportCompletionVersion,
+  historyImportCompletionStatements,
+} from "../../src/pool/model-history/import-completion-schema.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -12,7 +15,6 @@ import {
   historyAccountTimeSchemaVersion,
   historyTrafficStatements,
   historyTrafficSchemaVersion,
-  historyImportCompletionVersion,
   historyTerminalIntegrityStatements,
   historyTerminalIntegrityVersion,
   historyAppSchemaVersion,
