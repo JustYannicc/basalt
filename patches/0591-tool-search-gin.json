@@ -2,7 +2,7 @@
   "identity": "executor-tool-search-gin",
   "file": "0591-tool-search-gin.patch",
   "content_sha256": "b38cf94efebccbeaa2714c70c581ac3245ea0c5ec401bcf9a634aab4749cb2d4",
-  "kind": "upstream",
+  "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
   "workflow_sensitive": false
