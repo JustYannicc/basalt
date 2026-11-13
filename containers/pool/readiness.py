@@ -332,6 +332,8 @@ class ReadyHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        # Pooled container clients must not reuse this HTTP/1.0 connection after its FIN.
+        self.send_header("Connection", "close")
         self.send_header("Cache-Control", "no-store")
         for name, value in (extra_headers or {}).items():
             self.send_header(name, value)

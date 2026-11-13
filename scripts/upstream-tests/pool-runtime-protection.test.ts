@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { build } from "esbuild";
 
-const require = createRequire(new URL("../../.upstream/package.json", import.meta.url));
-const { Miniflare } = require("miniflare") as typeof import("miniflare");
+import { Miniflare } from "../pool-test-runtime/index.ts";
 
 test("a Worker relay refuses unproven readiness, recovers admission and closes on a proven boot change", async () => {
   const bundle = await build({
