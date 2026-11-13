@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-read-source-reconciliation",
+  "file": "0567-pool-read-source-reconciliation.patch",
+  "content_sha256": "ded6d6c8e8ab26b5abd7d88c5150bf69f6baa7cb3b31d07cfe8e0ca14d270516",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
