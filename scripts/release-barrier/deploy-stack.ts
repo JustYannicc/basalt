@@ -15,7 +15,9 @@ import { assertJournaledBaselineInput, type ForwardInputProof } from "./forward-
 import { State } from "alchemy/State/State";
 import { beginForwardJournal } from "./forward-journal.ts";
 import { verifyRepairBaseline } from "./repair-baseline.ts";
-import { operationFailure } from "./operation-failure.ts";
+import { observedState } from "./observed-state.ts";
+import { operationFailure, withOperation } from "./operation-failure.ts";
+import { applyDatabasePlan } from "./apply-database-plan.ts";
 import * as Apply from "alchemy/Apply";
 import type { CompiledStack } from "alchemy/Stack";
 import type { Worker } from "alchemy/Cloudflare";
@@ -247,8 +249,11 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     yield* prerequisites("before-upload");
     if (!options.forwardEncryptionKey) throw new BarrierRefusal("sql-schema-journal-key-required");
     const schemaEncryptionKey = options.forwardEncryptionKey;
+    const journalState = observedState(state, "read-release-journal", "write-release-journal");
     const journal = options.forwardEncryptionKey
-      ? yield* beginForwardJournal(stack, manifest, options.forwardEncryptionKey)
+      ? yield* beginForwardJournal(stack, manifest, options.forwardEncryptionKey).pipe(
+          Effect.provideService(State, Effect.succeed(journalState)),
+        )
       : undefined;
     const activated = new Map<string, Worker["Attributes"]>();
     const activatedContainers = new Map<string, ContainerAttributes>(
@@ -258,7 +263,9 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     const databaseChanges = new Set<string>();
     const database = Effect.gen(function* () {
       for (const admit of prepared.admissions)
-        yield* Effect.tryPromise({ try: admit, catch: (error) => error });
+        yield* Effect.tryPromise({ try: admit, catch: (error) => error }).pipe(
+          withOperation("AppSourceNamespace", "check-source-namespace"),
+        );
       yield* verifyNativeState(plan, stack.name, stack.stage);
       yield* createDeclaredBuckets(
         plan,
@@ -267,7 +274,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         buckets,
         options.candidate,
         options.declared!,
-      );
+      ).pipe(withOperation("(declared buckets)", "check-declared-buckets"));
       yield* createDeclaredDatabases(
         plan,
         declaredDatabases,
@@ -275,7 +282,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         d1,
         options.candidate,
         options.declared!,
-      );
+      ).pipe(withOperation("(declared databases)", "check-declared-databases"));
       for (const fqn of declaredStorage.keys()) {
         databaseFqns.add(fqn);
         databaseChanges.add(fqn);
@@ -299,21 +306,30 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         databaseFqns.add(fqn);
         if (node.action !== "noop") databaseChanges.add(fqn);
       }
-      yield* Apply.apply(databasePlan);
+      yield* applyDatabasePlan(databasePlan);
       yield* verifyNativeState(plan, stack.name, stack.stage, databaseChanges);
       yield* prerequisites("before-activation");
-    });
+    }).pipe(withOperation("(database)", "before-activation"));
     yield* Effect.tryPromise({
       try: () =>
         releaseWorkers(manifest, {
-          record: async (receipt) => {
-            if (receipt.sqlSchemas)
-              await run(
-                writeSqlSchemaJournal(state, stack, schemaEncryptionKey, receipt.sqlSchemas),
-              );
-            if (journal) await run(journal.record(receipt));
-            await options.record(receipt);
-          },
+          record: (receipt) =>
+            run(
+              Effect.gen(function* () {
+                if (receipt.sqlSchemas)
+                  yield* writeSqlSchemaJournal(
+                    journalState,
+                    stack,
+                    schemaEncryptionKey,
+                    receipt.sqlSchemas,
+                  );
+                if (journal) yield* journal.record(receipt);
+                yield* Effect.tryPromise({
+                  try: () => options.record(receipt),
+                  catch: (error) => error,
+                });
+              }).pipe(withOperation("(release receipt)", "record-release-journal")),
+            ),
           beforeActivate: () => run(database),
           sqlSchemas: (record) =>
             options.io?.sqlSchemas
@@ -432,8 +448,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
             },
           },
         }),
-      catch: (error) =>
-        error instanceof BarrierRefusal ? error : new BarrierRefusal("release-operation-failed"),
+      catch: (error) => operationFailure(error, "(release)", "release-stack"),
     });
     const finalizing = preserveClassHistory(
       preserveDeclarationHistory(

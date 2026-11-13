@@ -210,7 +210,7 @@ test("R2 timeout and cancellation leave no SQL transaction open", async () => {
         assert.ok(Exit.isFailure(exit));
         assert.equal(yield* readonly(sql), "off");
         assert.equal(cancelled, gets);
-        assert.equal(gets, cancel ? 1 : 3);
+        assert.equal(gets, cancel ? 2 : 4);
       }).pipe(Effect.provide(TestClock.layer())),
     );
 });

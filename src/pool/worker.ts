@@ -648,6 +648,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
         connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
         permissions: (pool, caller) => this.computers.permissions(pool, caller),
+        currentPrices: (targets) => this.overviewPrices.readTable(targets),
         importAccounts: (pool) => importAccountTargets(this.mirrorHome, pool),
       });
     if (pathname === selfModelImportPath)
