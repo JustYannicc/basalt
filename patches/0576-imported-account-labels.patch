@@ -360,3 +360,11 @@ diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-s
      if (personal !== undefined)
        return HttpServerResponse.jsonUnsafe({
          from: personal.from,
+@@ -345,6 +356,7 @@
+       Layer.mergeAll(
+         // Match the public pool usage paths in Basalt's src/pool/model-history/series-http.ts.
+         HttpRouter.add("POST", "/pool/v1/usage/series", handler),
++        HttpRouter.add("POST", "/pool/v1/setUsageAccountLabel", handler),
+         HttpRouter.add("POST", "/pool/v1/usage/last-success", handler),
+         HttpRouter.add("POST", "/pool/v1/usage/overview", handler),
+         HttpRouter.add("POST", "/pool/v1/usage/personal-overview", handler),

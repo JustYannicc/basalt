@@ -1,7 +1,7 @@
 {
   "identity": "executor-imported-account-labels",
   "file": "0576-imported-account-labels.patch",
-  "content_sha256": "ad295c3be22bb2261bdfadef81da8fed4ed1e6e57b9d5549ff0638781d4ae82c",
+  "content_sha256": "2b9b5ccaf1e92f0a7e5d0b33f50f7ab44a99edaa795575cc22aeecd4bfdcb49b",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
