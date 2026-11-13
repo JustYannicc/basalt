@@ -330,16 +330,18 @@ index 04760454c58f3ac4a2b41788fc63d910e5914fba..cc3ee7175528f786abda0d14be688b3b
  
 diff --git a/apps/hosted/server/src/implementation/account-change-schema.ts b/apps/hosted/server/src/implementation/account-change-schema.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..42f2e7d65379f101629e97e12e045fb64e6dd72c
+index 0000000000000000000000000000000000000000..f5d6b6399e336b37e2f8ef147a22126b48f8d4cf
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-change-schema.ts
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,113 @@
 +import { Effect } from "effect";
 +import { SqlClient } from "effect/sql";
++import { migrateDeferredChanges } from "./deferred-change-schema.ts";
 +
 +/** Triggers cover SQL writers, including background work and writes from another isolate. */
 +export const migrateAccountChanges = Effect.gen(function* () {
 +  const sql = yield* SqlClient.SqlClient;
++  yield* migrateDeferredChanges;
 +  yield* sql`create or replace function hosted_account_changed() returns trigger language plpgsql as $$
 +    declare previous jsonb; following jsonb; item jsonb; target_scope text; topic text;
 +      reference text; ignored text[]; identity jsonb; notified text[] := '{}'; candidate text;
@@ -362,16 +364,16 @@ index 0000000000000000000000000000000000000000..42f2e7d65379f101629e97e12e045fb6
 +            target_scope := 'user:' || reference;
 +            if TG_TABLE_NAME = 'user' then
 +              for candidate in select distinct 'organization:' || "organizationId" from member where "userId" = reference loop
-+                perform hosted_record_change(candidate, 'membership', '*');
++                perform hosted_queue_change(candidate, 'membership', '*');
 +              end loop;
 +            end if;
 +          when 'grant' then
 +            for candidate in select distinct owner from executor_accounts where oauth_grant_id = reference loop
-+              perform hosted_record_change(candidate, 'accounts', '*');
++              perform hosted_queue_change(candidate, 'accounts', '*');
 +            end loop;
 +          when 'provider' then
 +            for candidate in select distinct owner from executor_accounts where provider = reference loop
-+              perform hosted_record_change(candidate, 'accounts', '*');
++              perform hosted_queue_change(candidate, 'accounts', '*');
 +            end loop;
 +          when 'verification' then
 +            if item ->> 'identifier' like 'executor-app-ui:v1:session:%' then
@@ -382,7 +384,7 @@ index 0000000000000000000000000000000000000000..42f2e7d65379f101629e97e12e045fb6
 +        if target_scope is not null and not target_scope = any(notified) then
 +          notified := array_append(notified, target_scope);
 +          foreach topic in array string_to_array(TG_ARGV[1], ',') loop
-+            perform hosted_record_change(target_scope, topic, '*');
++            perform hosted_queue_change(target_scope, topic, '*');
 +          end loop;
 +        end if;
 +      end loop;
@@ -441,7 +443,7 @@ index 0000000000000000000000000000000000000000..42f2e7d65379f101629e97e12e045fb6
 +  ] as const;
 +  for (const [table, mode, topics, field, ignored] of triggers)
 +    yield* sql.unsafe(
-+      `create or replace trigger hosted_committed_change before insert or update or delete on "${table}"
++      `create or replace trigger hosted_committed_change after insert or update or delete on "${table}"
 +        for each row execute function hosted_account_changed('${mode}', '${topics}', '${field}', '${ignored}')`,
 +    );
 +});
@@ -544,6 +546,83 @@ index ea55c1c07b03f4f7efa203638eac10d8c17b4d5a..472a702550e59847b04ec1d08d6ba599
 -    }),
 +    }).pipe(Effect.interruptible, Effect.timeout("10 seconds")),
  });
+diff --git a/apps/hosted/server/src/implementation/deferred-change-schema.ts b/apps/hosted/server/src/implementation/deferred-change-schema.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..b39c62b350339b0e72401407bc54b51dd0b93d88
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/deferred-change-schema.ts
+@@ -0,0 +1,71 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** Domain writes take their locks first; one commit-time batch takes journal locks in key order. */
++export const migrateDeferredChanges = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create table if not exists hosted_change_batches (transaction_id bigint primary key)`;
++  yield* sql`create table if not exists hosted_change_dirty (
++    transaction_id bigint not null, scope text not null, topic text not null, resource text not null,
++    revision bigint check (revision > 0), primary key (transaction_id, scope, topic, resource))`;
++  yield* sql`create or replace function hosted_queue_change(
++    target_scope text, target_topic text, target_resource text, target_revision bigint default null)
++    returns void language plpgsql as $$
++    declare own_transaction bigint := txid_current();
++    begin
++      insert into hosted_change_dirty (transaction_id,scope,topic,resource,revision)
++        values (own_transaction,target_scope,target_topic,target_resource,target_revision)
++        on conflict (transaction_id,scope,topic,resource) do update
++        set revision = case when hosted_change_dirty.revision is null or excluded.revision is null
++          then null else greatest(hosted_change_dirty.revision,excluded.revision) end;
++      insert into hosted_change_batches values (own_transaction) on conflict do nothing;
++    end $$`;
++  yield* sql`create or replace function hosted_flush_changes() returns trigger language plpgsql as $$
++    declare item record; accepted bigint;
++    begin
++      for item in select scope,topic,resource,revision from hosted_change_dirty
++        where transaction_id=NEW.transaction_id
++        order by scope collate "C",topic collate "C",resource collate "C" loop
++        if item.revision is null then
++          perform hosted_record_change(item.scope,item.topic,item.resource);
++        else
++          accepted := null;
++          insert into hosted_change_heads (scope,topic,resource,revision)
++            values (item.scope,item.topic,item.resource,item.revision)
++            on conflict (scope,topic,resource) do update set revision=excluded.revision
++            where hosted_change_heads.revision < excluded.revision returning revision into accepted;
++          if accepted is not null then
++            insert into hosted_change_pending (scope,topic,resource,revision)
++              values (item.scope,item.topic,item.resource,accepted)
++              on conflict (scope,topic,resource) do update
++              set revision=greatest(hosted_change_pending.revision,excluded.revision),updated_at=now();
++          end if;
++        end if;
++      end loop;
++      delete from hosted_change_dirty where transaction_id=NEW.transaction_id;
++      delete from hosted_change_batches where transaction_id=NEW.transaction_id;
++      return null;
++    end $$`;
++  // One marker per transaction schedules one deferred event, regardless of dirty-key count.
++  yield* sql`drop trigger if exists hosted_flush_changes on hosted_change_batches`;
++  yield* sql`create constraint trigger hosted_flush_changes after insert on hosted_change_batches
++    deferrable initially deferred for each row execute function hosted_flush_changes()`;
++  yield* sql`create or replace function hosted_deployment_changed() returns trigger language plpgsql as $$
++    begin
++      if TG_OP = 'DELETE' then
++        perform hosted_queue_change(OLD.owner, 'deployment', OLD.id);
++        return OLD;
++      end if;
++      if TG_OP = 'INSERT' then
++        if NEW.active_deployment is not null then
++          perform hosted_queue_change(NEW.owner, 'deployment', NEW.id);
++        end if;
++      elsif NEW.active_deployment is distinct from OLD.active_deployment or NEW.owner is distinct from OLD.owner then
++        if NEW.owner is distinct from OLD.owner then
++          perform hosted_queue_change(OLD.owner, 'deployment', OLD.id);
++        end if;
++        perform hosted_queue_change(NEW.owner, 'deployment', NEW.id);
++      end if;
++      return NEW;
++    end $$`;
++});
 diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
 index a72c616d343e8d8d402bf3ede0d92d3c341544d3..285b9979c88a7eefb0146d3b233c0adefa41bd5c 100644
 --- a/apps/hosted/server/src/implementation/migrations.ts
@@ -847,10 +926,10 @@ index 483b256e45735bb694eabfc4d9036fd3449067a4..9c03145a933fd59894f9413171ec16b9
    Effect.gen(function* () {
 diff --git a/apps/hosted/server/src/implementation/pool-change-publish.ts b/apps/hosted/server/src/implementation/pool-change-publish.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..ad72a78b0671f533d4f28558d3d8bba13cf8c8ed
+index 0000000000000000000000000000000000000000..c10e647ce4ee406c474595e70977fcf80697d8bb
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-change-publish.ts
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,56 @@
 +import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
 +import { HttpServerRequest, HttpServerResponse } from "effect/http";
 +import { RevisionHint } from "apps/ui/contracts";
@@ -898,14 +977,7 @@ index 0000000000000000000000000000000000000000..ad72a78b0671f533d4f28558d3d8bba1
 +      value.changes,
 +      ({ scope, hint }) =>
 +        Effect.gen(function* () {
-+          const changed = yield* sql`insert into hosted_change_heads (scope,topic,resource,revision)
-+      values (${scope},${hint.topic},${hint.resource},${hint.revision}::bigint)
-+      on conflict (scope,topic,resource) do update set revision = excluded.revision
-+      where hosted_change_heads.revision < excluded.revision returning revision`;
-+          if (changed.length)
-+            yield* sql`insert into hosted_change_pending (scope,topic,resource,revision)
-+        values (${scope},${hint.topic},${hint.resource},${hint.revision}::bigint)
-+        on conflict (scope,topic,resource) do update set revision = greatest(hosted_change_pending.revision, excluded.revision), updated_at = now()`;
++          yield* sql`select hosted_queue_change(${scope},${hint.topic},${hint.resource},${hint.revision}::bigint)`;
 +        }),
 +      { discard: true },
 +    ),

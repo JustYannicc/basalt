@@ -107,18 +107,33 @@ const program = Effect.gen(function* () {
       .pipe(Effect.map((rows) => rows[0]?.revision ?? "0"));
   const outboxEmpty = () =>
     database.run({
-      sql: "select count(*)::text as count from hosted_change_pending where scope=$1 and topic='accounts' and resource='*'",
+      sql: `select count(p.*)::text as count, max(p.revision)::text as revision,
+        max(p.updated_at)::text as updated_at,
+        (select revision::text from hosted_change_heads where scope=$1 and topic='accounts' and resource='*') as head
+        from hosted_change_pending p where scope=$1 and topic='accounts' and resource='*'`,
       params: [scope],
     });
-  // Cloud dispatches the committed journal after writes, including this actual no-op PATCH.
-  const barrier = () =>
-    h
-      .request("PATCH", account, { label })
-      .pipe(
-        Effect.andThen(
-          until(outboxEmpty(), (rows) => rows[0]?.count === "0", "change outbox did not drain"),
-        ),
-      );
+  // A pass can precede a provisioning tail. Each bounded retry drives the public delivery path.
+  const barrier = () => {
+    const progress = { attempts: 0, last: undefined };
+    diagnostics.changeBarrier = progress;
+    return until(
+      Effect.gen(function* () {
+        progress.attempts++;
+        yield* h.request("PATCH", account, { label });
+        const rows = yield* outboxEmpty();
+        progress.last = rows[0];
+        return rows;
+      }),
+      (rows) => rows[0]?.count === "0",
+      "change outbox did not drain",
+    ).pipe(
+      Effect.timeoutOrElse({
+        duration: "15 seconds",
+        orElse: () => Effect.fail("change outbox did not drain"),
+      }),
+    );
+  };
   yield* barrier();
   const browser = yield* Effect.acquireRelease(
     Effect.promise(() => chromium.launch({ headless: true })),
