@@ -65,6 +65,8 @@ export class Extra extends DurableObject {
   const fault=request.headers.get('X-Fixture-Fault');
   if(fault==='invalid-metadata')return Response.json({error:'runtime-refused'},{status:409,headers:{'X-Signalbox-Runtime-Failure-Step':marker,'X-Signalbox-Runtime-Failure-Reason':marker}});
   if(new URL(request.url).pathname==='/calls')return Response.json({calls:this.calls??0});
+  if(new URL(request.url).pathname==='/release-health'){this.releaseHealth?.();return new Response(null,{status:204});}
+  if(new URL(request.url).pathname==='/health-cleaned'){await this.healthCleaned;return Response.json({cancelled:this.healthCancelled??0,aborted:this.healthSignal?.aborted??false});}
   if(new URL(request.url).pathname==='/read-state')return Response.json(await new RuntimeActivity(this.ctx.storage).inspect(this.readIdentity));
   if(new URL(request.url).pathname==='/clear-read-events'){readEvents.length=0;return new Response(null,{status:204});}
   if(new URL(request.url).pathname==='/read-events')return Response.json(readEvents);
@@ -89,9 +91,21 @@ export class Extra extends DurableObject {
     start(){throw Error('No starts')},async destroy(){throw Error('No destroys')},getTcpPort:port=>{
      if(port===8318){
       if(fault==='port-lookup')throw Error(marker);
-      return {fetch:async()=>{
+      return {fetch:async(_input,init)=>{
+       if(fault==='read-timeout-headers'||fault==='read-timeout-body'){
+        this.healthSignal=init.signal;
+        let cleaned;this.healthCleaned=new Promise(resolve=>{cleaned=resolve});
+        const headers={'X-Signalbox-Policy-Lease-Ms':'1500','X-Signalbox-Launch-Generation':'1','X-Signalbox-Launch-Token-Sha256':'d'.repeat(64)};
+        const bytes=new TextEncoder().encode(JSON.stringify({boot_id:bootId,started_at:'2026-01-01T00:00:00Z'}));
+        if(fault==='read-timeout-headers')await new Promise(resolve=>{const timer=setTimeout(resolve,2500);this.releaseHealth=()=>{clearTimeout(timer);resolve();}});
+        let timer;
+        return new Response(new ReadableStream({
+         start:c=>{timer=setTimeout(()=>{c.enqueue(bytes);c.close();},2500);this.releaseHealth=()=>{clearTimeout(timer);c.enqueue(bytes);c.close();};},
+         cancel:()=>{clearTimeout(timer);this.releaseHealth=undefined;this.healthCancelled=(this.healthCancelled??0)+1;cleaned();},
+        }),{headers});
+       }
        if(fault==='read-health-headers')await stall();
-       if(fault==='read-health-body')return new Response(new ReadableStream({async start(c){await stall();c.enqueue(new TextEncoder().encode(JSON.stringify({boot_id:bootId,started_at:'2026-01-01T00:00:00Z'})));c.close();}}),{headers:{'X-Signalbox-Policy-Lease-Ms':'1500','X-Signalbox-Launch-Generation':'1','X-Signalbox-Launch-Token-Sha256':'d'.repeat(64)}});
+       if(fault==='read-health-body'){let timer;return new Response(new ReadableStream({start(c){timer=setTimeout(()=>{c.enqueue(new TextEncoder().encode(JSON.stringify({boot_id:bootId,started_at:'2026-01-01T00:00:00Z'})));c.close();},120);},cancel(){clearTimeout(timer);}}),{headers:{'X-Signalbox-Policy-Lease-Ms':'1500','X-Signalbox-Launch-Generation':'1','X-Signalbox-Launch-Token-Sha256':'d'.repeat(64)}});}
        return fault==='health'?new Response(marker,{status:503}):Response.json(
        {boot_id:fault==='boot'?'different-boot':bootId,started_at:'2026-01-01T00:00:00Z'},
        {headers:{'X-Signalbox-Policy-Lease-Ms':fault==='short-lease'?'100':'1500',
@@ -104,10 +118,12 @@ export class Extra extends DurableObject {
     }},configurable:true});
    this.inner=new RuntimeEndpoint(this.ctx,this.env,'runtime',code,nativeResponse);
   }
-  return runtimeRequest(fault?.startsWith('read-')?new Request(request,{signal:AbortSignal.timeout(50)}):request,this.inner);
+  if(!fault?.startsWith('read-'))return runtimeRequest(request,this.inner);
+  const abort=new AbortController();const timer=setTimeout(()=>abort.abort(),fault.startsWith('read-timeout-')?12000:50);
+  try{return await runtimeRequest(new Request(request,{signal:abort.signal}),this.inner);}finally{clearTimeout(timer);}
  }
 }
 export default {fetch(request,env){const fault=new URL(request.url).searchParams.get('fault')??'healthy';
- if(['/calls','/read-events','/clear-read-events','/read-state'].includes(new URL(request.url).pathname))return env.Extra.get(env.Extra.idFromName(fault)).fetch(request);
+ if(['/calls','/read-events','/clear-read-events','/read-state','/release-health','/health-cleaned'].includes(new URL(request.url).pathname))return env.Extra.get(env.Extra.idFromName(fault)).fetch(request);
  return env.Root.get(env.Root.idFromName(fault)).fetch(request);}};
 `;
