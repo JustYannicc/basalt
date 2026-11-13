@@ -2095,7 +2095,7 @@ test(
               assert.doesNotMatch(await frame.locator("body").innerText(), /no readings yet/);
               // The grokchat product window shares the account's week; it is not a second account.
               const panel = await lab.innerText();
-              assert.match(panel, /1 account · in account-eq/);
+              assert.match(panel, /1 account · in Grok Pro account/);
               assert.match(panel, /Nominal 1\b/);
               assert.doesNotMatch(panel, /2 accounts|Nominal 2/);
               const chart = lab.getByRole("group", { name: /^Grok weekly\b[^.]* capacity\./ });
@@ -2105,7 +2105,7 @@ test(
               const tip = await chart.getByRole("tooltip").innerText();
               assert.match(tip, /Weekly/);
               // Chart amounts keep one decimal, so the measured 0.98 reads as 1 of 1.
-              assert.match(tip, /\b1 of 1 account-eq left/);
+              assert.match(tip, /\b1 of 1 Grok Pro account left/);
               assert.match(tip, /Grok Pro ×1/);
               assert.match(tip, /Total\s+1 \/ 1/);
               assert.match(tip, /^1 account\b/m);
