@@ -9,6 +9,25 @@ import { readServingObservation } from "./serving-observation.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { sameProvisioningValue } from "./provisioning-refusal.ts";
 
+/** A selected fleet primary already consumes the only slot; no drain can create overlap capacity. */
+export async function assertReleaseImageCapacity(client: RuntimeReleaseClient) {
+  const [selected, fleet] = await Promise.all([client.inspect(), client.fleet()]);
+  const active = selected.selection?.active.target;
+  if (
+    fleet.permission?.configuration.maximum === 1 &&
+    active &&
+    active.instanceId !== active.controllerId
+  )
+    throw new BarrierRefusal("runtime-release-capacity-raise-cap-required", "PoolWorker", {
+      fqn: "PoolWorker",
+      type: "Cloudflare.Worker",
+      changed: [{ path: "fleet.maximum", old: 1, new: 2 }],
+      why: [
+        "Raise the fleet cap explicitly to at least 2 before upgrading a selected non-legacy primary.",
+      ],
+    });
+}
+
 /** Provider mutation remains in the ordinary barrier; this owns only its inactive-application admission. */
 export const runtimeReleaseImage = (input: {
   resource: FleetImageResource;
@@ -19,6 +38,7 @@ export const runtimeReleaseImage = (input: {
   Effect.gen(function* () {
     const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
     const prepare = async (container: FrozenContainer) => {
+      await assertReleaseImageCapacity(input.client);
       const record = input.read();
       if (container.id !== input.resource)
         throw new BarrierRefusal("runtime-release-image-target", container.id);

@@ -21,7 +21,7 @@ import { runtimeReleaseClient } from "./runtime-release-client.ts";
 import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
 import { bootstrapReleaseApplication } from "./runtime-release-bootstrap.ts";
 import { configureReleaseFleet } from "./runtime-release-fleet.ts";
-import { runtimeReleaseImage } from "./runtime-release-image.ts";
+import { assertReleaseImageCapacity, runtimeReleaseImage } from "./runtime-release-image.ts";
 import {
   releaseCodeReady,
   releaseSelectedReady,
@@ -250,6 +250,7 @@ export const releaseRuntimeImage = <A, StackError>(
         )
           throw new BarrierRefusal("runtime-release-other-candidate-pending", resource);
       } else {
+        yield* Effect.promise(() => assertReleaseImageCapacity(client));
         const phase = yield* runtimeReleaseImage({ resource, client, read: () => record, save });
         yield* evaluate(
           {
