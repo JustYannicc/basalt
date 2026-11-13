@@ -190,6 +190,7 @@ test("model responses reconcile successful Home usage without listing; alarm ret
       }),
     );
   await worker.alarm();
+  await drain();
   assert.deepEqual(homeReads, [73, 74, 75]);
   assert.equal((await modelRequest("/v1/responses")).status, 200);
   await drain();
@@ -212,6 +213,7 @@ test("model responses reconcile successful Home usage without listing; alarm ret
   assert.deepEqual(homeReads, [73, 74, 75, 73, 74]);
   homeUsage.add(74); // Home persists the streamed success after the response headers.
   await worker.alarm();
+  await drain();
   assert.equal(trackedEvents().length, 1, "negative observations wait for their own deadline");
   t.mock.timers.tick(5 * 60_000);
   assert.equal(alarm, Date.now());
