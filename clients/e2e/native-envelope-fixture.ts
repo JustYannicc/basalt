@@ -1,13 +1,32 @@
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { WebSocketServer, type RawData } from "ws";
-import { serveTunnel } from "../../src/tunnel/session.ts";
+import type { TunnelAccess, TunnelEnvironment } from "../../src/tunnel/access.ts";
+import type { TunnelLimits } from "../contracts/tunnel.ts";
+import type { TunnelTiming } from "../../src/tunnel/timing.ts";
 import type { TunnelSocket } from "../../src/tunnel/platform.ts";
 import { openTunnel } from "../connection/tunnel.ts";
 import { deviceSocket } from "../cli/device-socket.ts";
 import { forwardTunnelWebsocket } from "../cli/tunnel-forward.ts";
 import type { ConnectionTransport } from "../contracts/connection.ts";
 import { deferred } from "./remote-fixture.ts";
+
+// Keep server app types out of the independently installed client test project.
+const sessionModule = "../../src/tunnel/session.ts";
+const {
+  serveTunnel,
+}: {
+  serveTunnel(
+    socket: TunnelSocket,
+    lease: TunnelSocket,
+    request: Request,
+    env: TunnelEnvironment,
+    access: TunnelAccess,
+    keepAlive: (work: Promise<unknown>) => void,
+    timing?: TunnelTiming,
+    limits?: TunnelLimits,
+  ): void;
+} = await import(sessionModule);
 
 const legacyLimits = {
   frameBytes: 32768,
