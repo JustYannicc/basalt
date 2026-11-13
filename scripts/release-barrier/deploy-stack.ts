@@ -15,7 +15,8 @@ import { assertJournaledBaselineInput, type ForwardInputProof } from "./forward-
 import { State } from "alchemy/State/State";
 import { beginForwardJournal } from "./forward-journal.ts";
 import { verifyRepairBaseline } from "./repair-baseline.ts";
-import { operationFailure } from "./operation-failure.ts";
+import { operationFailure, withOperation } from "./operation-failure.ts";
+import { applyDatabasePlan } from "./apply-database-plan.ts";
 import * as Apply from "alchemy/Apply";
 import type { CompiledStack } from "alchemy/Stack";
 import type { Worker } from "alchemy/Cloudflare";
@@ -258,7 +259,9 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     const databaseChanges = new Set<string>();
     const database = Effect.gen(function* () {
       for (const admit of prepared.admissions)
-        yield* Effect.tryPromise({ try: admit, catch: (error) => error });
+        yield* Effect.tryPromise({ try: admit, catch: (error) => error }).pipe(
+          withOperation("AppSourceNamespace", "check-source-namespace"),
+        );
       yield* verifyNativeState(plan, stack.name, stack.stage);
       yield* createDeclaredBuckets(
         plan,
@@ -267,7 +270,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         buckets,
         options.candidate,
         options.declared!,
-      );
+      ).pipe(withOperation("(declared buckets)", "check-declared-buckets"));
       yield* createDeclaredDatabases(
         plan,
         declaredDatabases,
@@ -275,7 +278,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         d1,
         options.candidate,
         options.declared!,
-      );
+      ).pipe(withOperation("(declared databases)", "check-declared-databases"));
       for (const fqn of declaredStorage.keys()) {
         databaseFqns.add(fqn);
         databaseChanges.add(fqn);
@@ -299,10 +302,10 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
         databaseFqns.add(fqn);
         if (node.action !== "noop") databaseChanges.add(fqn);
       }
-      yield* Apply.apply(databasePlan);
+      yield* applyDatabasePlan(databasePlan);
       yield* verifyNativeState(plan, stack.name, stack.stage, databaseChanges);
       yield* prerequisites("before-activation");
-    });
+    }).pipe(withOperation("(database)", "before-activation"));
     yield* Effect.tryPromise({
       try: () =>
         releaseWorkers(manifest, {

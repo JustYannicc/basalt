@@ -3,6 +3,7 @@ import { configurationCodec, attachmentCodec } from "./container-schema.ts";
 import type { PersistedState } from "alchemy/State/State";
 import { encodeState } from "alchemy/State/StateEncoding";
 import { Schema } from "effect";
+import { failureCodec } from "./failure-codec.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import {
   containerSnapshot,
@@ -39,9 +40,7 @@ const forwardReceipt = Schema.Struct({
       startupTimeMs: Schema.optional(Schema.Number),
     }),
   ),
-  failure: Schema.optional(
-    Schema.Struct({ reason: Schema.String, worker: Schema.optional(Schema.String) }),
-  ),
+  failure: Schema.optional(failureCodec),
 });
 const packet = Schema.Struct({
   schemaVersion: Schema.Literal(1),

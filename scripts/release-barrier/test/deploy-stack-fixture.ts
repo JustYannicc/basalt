@@ -10,7 +10,7 @@ import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
 import * as Provider from "alchemy/Provider";
 import { Resource } from "alchemy/Resource";
-import { State } from "alchemy/State/State";
+import { State, StateStoreError, isResourceState } from "alchemy/State/State";
 import { InMemoryService } from "alchemy/State/InMemoryState";
 import { WorkerUploadHook } from "alchemy/Cloudflare/Workers/WorkerUploadHook";
 import { Context, Effect, Exit, Layer, Option } from "effect";
@@ -53,6 +53,9 @@ export const fixture = (
     orphanedDatabaseCommand?: boolean;
     planFailure?: "read" | "diff";
     planError?: unknown;
+    admittedFailure?: "state-read" | "state-drift" | "plan" | "apply";
+    admittedError?: unknown;
+    admittedStateError?: StateStoreError;
     finalizeDrift?: "binding" | "uncovered-env" | "props";
     cyclicImage?: "changed" | "unchanged";
   } = {},
@@ -66,6 +69,7 @@ export const fixture = (
   let namespaceReads = 0;
   let releasePlanning = false;
   let activated = false;
+  let admittedDatabaseReads = 0;
   const workers = Provider.succeed(FixtureWorker, {
     precreate: ({ id }) => Effect.succeed(attributes(id)),
     read: (input) =>
@@ -129,6 +133,25 @@ export const fixture = (
       const memory = yield* InMemoryService();
       return Effect.succeed({
         ...memory,
+        get: (input) => {
+          if (receipts.at(-1)?.phase === "admitted" && input.fqn === "PoolDatabase") {
+            admittedDatabaseReads++;
+            if (options.admittedFailure === "plan" && admittedDatabaseReads === 2)
+              return Effect.fail(options.admittedStateError!);
+          }
+          const admitted = receipts.at(-1)?.phase === "admitted" && input.fqn === "Api";
+          if (admitted && options.admittedFailure === "state-read")
+            return Effect.fail(options.admittedStateError!);
+          return memory
+            .get(input)
+            .pipe(
+              Effect.map((row) =>
+                admitted && options.admittedFailure === "state-drift" && isResourceState(row)
+                  ? { ...row, providerVersion: row.providerVersion + 1 }
+                  : row,
+              ),
+            );
+        },
         set: (input) =>
           Effect.sync(() => {
             writes++;
@@ -147,6 +170,8 @@ export const fixture = (
         run: (news) =>
           Effect.sync(() => {
             events.push(`command:${news.command}`);
+            if (options.admittedFailure === "apply" && receipts.at(-1)?.phase === "admitted")
+              throw options.admittedError;
             return { exitCode: 0, stdout: "", stderr: "" };
           }),
       }),
