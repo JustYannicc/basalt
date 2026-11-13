@@ -1,4 +1,4 @@
-import type { RuntimeRouteDiagnostic } from "./runtime-route-diagnostic.ts";
+import { runtimeFailureCode, type RuntimeRouteDiagnostic } from "./runtime-route-diagnostic.ts";
 import { upstreamOutcomeUnknown } from "../../clients/contracts/model-error.ts";
 import { captureError } from "../telemetry/sentry.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
@@ -85,7 +85,12 @@ export function gatewayUnavailable(
         type: "server_error",
         retryable: true,
         ...(diagnostic.runtimeStep && diagnostic.runtimeReason
-          ? { reason: `runtime_${diagnostic.runtimeStep}_${diagnostic.runtimeReason}` }
+          ? {
+              reason: runtimeFailureCode({
+                runtimeStep: diagnostic.runtimeStep,
+                runtimeReason: diagnostic.runtimeReason,
+              }),
+            }
           : {}),
         message: "The pool's account protection is temporarily unavailable. Retry shortly.",
       },

@@ -4,6 +4,7 @@ import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
 import { ProtectionRefusal } from "./runtime-protection.ts";
 
 const steps = [
+  "primary_forward",
   "fleet_acquire",
   "fleet_identity",
   "fleet_forward",
@@ -76,16 +77,30 @@ export function refuseRuntime(step: RuntimeRouteDiagnostic["runtimeStep"], error
   rememberRuntimeFailure(step, error);
   throw error;
 }
+export function runtimeFailureDiagnostic(
+  error: unknown,
+  step: RuntimeRouteDiagnostic["runtimeStep"],
+) {
+  return runtimeRouteDiagnostic(error) ?? { runtimeStep: step, runtimeReason: reason(error) };
+}
+export function runtimeFailureCode(diagnostic: RuntimeRouteDiagnostic) {
+  return `runtime_${diagnostic.runtimeStep}_${diagnostic.runtimeReason}`;
+}
 export function runtimeFailureHeaders(error: unknown, step: RuntimeRouteDiagnostic["runtimeStep"]) {
-  const diagnostic = runtimeRouteDiagnostic(error) ?? {
-    runtimeStep: step,
-    runtimeReason: reason(error),
-  };
+  const diagnostic = runtimeFailureDiagnostic(error, step);
   return { [stepHeader]: diagnostic.runtimeStep, [reasonHeader]: diagnostic.runtimeReason };
 }
-export function retainRuntimeFailure(response: Response, error: object) {
+export function runtimeResponseDiagnostic(response: Response) {
   const runtimeStep = steps.find((value) => value === response.headers.get(stepHeader));
   const runtimeReason = reasons.find((value) => value === response.headers.get(reasonHeader));
-  if (runtimeStep && runtimeReason) observed.set(error, { runtimeStep, runtimeReason });
+  return runtimeStep && runtimeReason ? { runtimeStep, runtimeReason } : undefined;
+}
+export function stripRuntimeFailureHeaders(headers: Headers) {
+  headers.delete(stepHeader);
+  headers.delete(reasonHeader);
+}
+export function retainRuntimeFailure(response: Response, error: object) {
+  const diagnostic = runtimeResponseDiagnostic(response);
+  if (diagnostic) observed.set(error, diagnostic);
   return error;
 }

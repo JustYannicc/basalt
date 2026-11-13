@@ -27,7 +27,7 @@ export class Root extends DurableObject {
   const fault=new URL(request.url).searchParams.get('fault')??'healthy';
   const value=target(this.ctx.id.toString(),this.env,fault),identity={...value,bootId};
   await this.ctx.storage.put('runtime-fleet-v1:resources',[{target:value,identity,phase:'ready',active:0,lastUsedAt:1}]);
-  await this.ctx.storage.put('runtime-fleet-v1:primary-active',1);
+  await this.ctx.storage.put('runtime-fleet-v1:primary-active',fault==='primary'?0:1);
   await this.ctx.storage.put('runtime-slots-v1:selection',{epoch:1,active:{target:value,identity,fenced:fault==='selection'}});
   const slotStreams=new SlotStreams();
   const driver=new BoundSlotDriver(()=>({fetch:request=>{
@@ -84,7 +84,8 @@ export class Extra extends DurableObject {
         'X-Signalbox-Launch-Generation':'1','X-Signalbox-Launch-Token-Sha256':'d'.repeat(64)}})};
      }
      if(port!==8317)throw Error('Wrong model port');
-     return {fetch:async()=>{this.calls=(this.calls??0)+1;return Response.json({ok:true});}};
+     if(fault==='model-port-lookup')throw Error(marker);
+     return {fetch:async()=>{this.calls=(this.calls??0)+1;if(fault==='model-port-dispatch')throw Error(marker);return Response.json({ok:true});}};
     }},configurable:true});
    this.inner=new RuntimeEndpoint(this.ctx,this.env,'runtime',code,nativeResponse);
   }
