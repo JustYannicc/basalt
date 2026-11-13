@@ -1,4 +1,9 @@
-import { refuseRuntime, runtimeRouteDiagnostic } from "./runtime-route-diagnostic.ts";
+import {
+  refuseRuntime,
+  runtimeRouteDiagnostic,
+  runtimeResponseDiagnostic,
+  stripRuntimeFailureHeaders,
+} from "./runtime-route-diagnostic.ts";
 import { modelKeyScope } from "./key-scope.ts";
 import type { Computers } from "./computers.ts";
 import { ControlFailure, failureResponse } from "./json.ts";
@@ -110,6 +115,13 @@ export async function forwardPoolRequest(
       ? await deps.route(outbound, port, identity?.pool, legacy, beforeDispatch)
       : await legacy(outbound);
     guard = "upstream_response";
+    const runtimeRefusal = runtimeResponseDiagnostic(upstream);
+    if (runtimeRefusal)
+      console.error("POOL_RUNTIME_ROUTE_FAILURE", {
+        code: "runtime-refused",
+        status: upstream.status,
+        ...runtimeRefusal,
+      });
     logDispatchTiming(upstream.headers.get(dispatchTimingHeader));
     let response = await rewriteCapResponse(upstream, pathname);
     if (
@@ -141,6 +153,7 @@ export async function forwardPoolRequest(
     }
     const headers = new Headers(response.headers);
     headers.delete(dispatchTimingHeader);
+    stripRuntimeFailureHeaders(headers);
     const observedBoot = upstream.headers.get("X-Signalbox-Pool-Boot") ?? boot;
     if (observedBoot) headers.set("X-Signalbox-Pool-Boot", observedBoot);
     const forwarded = new Response(response.body, {

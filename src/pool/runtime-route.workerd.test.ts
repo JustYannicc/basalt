@@ -61,6 +61,7 @@ test(
     try {
       for (const [fault, reason] of [
         ["acquire", "runtime_fleet_acquire_transport"],
+        ["primary", "runtime_primary_forward_transport"],
         ["identity", "runtime_fleet_identity_fleet_uncertain"],
         ["health", "runtime_endpoint_health_unhealthy"],
         ["selection", "runtime_slot_selection_slot_selection"],
@@ -83,6 +84,24 @@ test(
           assert.equal(value.error.reason, reason);
           const calls = await mf.dispatchFetch(`http://fixture/calls?fault=${fault}`);
           assert.equal((await calls.json()).calls, 0);
+        });
+      for (const [fault, reason, count] of [
+        ["model-port-lookup", "runtime_port_lookup_transport", 0],
+        ["model-port-dispatch", "runtime_port_dispatch_transport", 1],
+      ] as const)
+        await context.test(fault, async () => {
+          const response = await mf.dispatchFetch(`http://fixture/v1/messages?fault=${fault}`, {
+            method: "POST",
+            body: "{}",
+          });
+          assert.equal(response.status, 409);
+          assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Step"), null);
+          assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Reason"), null);
+          const text = await response.text();
+          assert.equal(text.includes("synthetic-private-exception-body"), false);
+          assert.deepEqual(JSON.parse(text), { error: "runtime-refused", reason });
+          const calls = await mf.dispatchFetch(`http://fixture/calls?fault=${fault}`);
+          assert.equal((await calls.json()).calls, count);
         });
       await context.test("healthy ready extra remains routable", async () => {
         const response = await mf.dispatchFetch("http://fixture/v1/messages?fault=healthy", {

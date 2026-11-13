@@ -1,4 +1,9 @@
-import { retainRuntimeFailure, runtimeFailureHeaders } from "../runtime-route-diagnostic.ts";
+import {
+  retainRuntimeFailure,
+  runtimeFailureHeaders,
+  runtimeFailureDiagnostic,
+  runtimeFailureCode,
+} from "../runtime-route-diagnostic.ts";
 import { Schema } from "effect";
 import {
   SlotIdentity,
@@ -229,7 +234,10 @@ export async function runtimeRequest(
     return new Response(null, { status: 204 });
   } catch (error) {
     return Response.json(
-      { error: "runtime-refused" },
+      {
+        error: "runtime-refused",
+        reason: runtimeFailureCode(runtimeFailureDiagnostic(error, "endpoint_route")),
+      },
       { status: 409, headers: runtimeFailureHeaders(error, "endpoint_route") },
     );
   }

@@ -153,7 +153,8 @@ export class RuntimeFleet {
       return response;
     }
     const { reservation, dispatched } = acquired;
-    let step: "fleet_identity" | "fleet_forward" = "fleet_identity";
+    let step: "primary_forward" | "fleet_identity" | "fleet_forward" =
+      reservation.kind === "primary" ? "primary_forward" : "fleet_identity";
     this.grow();
     try {
       if (reservation.kind === "primary") {
