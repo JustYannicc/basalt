@@ -6,6 +6,7 @@ import { SqlClient } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
 import { GroupDatabase } from "../../.upstream/apps/hosted/server/src/contracts/groups.ts";
 import { migrateChangeRevisions } from "../../.upstream/apps/hosted/server/src/implementation/change-revision-schema.ts";
+import { migrateDeferredChanges } from "../../.upstream/apps/hosted/server/src/implementation/deferred-change-schema.ts";
 import { makeChangeJournal } from "../../.upstream/apps/hosted/server/src/implementation/change-revisions.ts";
 import { ScopedChanges } from "../../.upstream/apps/hosted/server/src/implementation/scoped-changes.ts";
 import {
@@ -21,6 +22,7 @@ test("signed producer revisions commit once, survive delivery failure and never 
       const sql = yield* SqlClient.SqlClient;
       yield* sql`create table executor_apps (id text primary key,owner text,active_deployment text)`;
       yield* migrateChangeRevisions;
+      yield* migrateDeferredChanges;
       const delivered: string[] = [];
       let unavailable = true;
       const transport = ScopedChanges.of({

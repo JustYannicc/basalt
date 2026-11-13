@@ -1,3 +1,4 @@
+import { ChangeReadRetry } from "apps/client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PoolApi } from "./api.ts";
 import { managersOnly } from "./overview-data.ts";
@@ -108,7 +109,8 @@ async function readHistory(
         next: requestPage.value.next,
       },
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof ChangeReadRetry) throw error;
     return { loadError: "History could not be read. Try again." };
   }
 }
