@@ -3458,7 +3458,7 @@ test(
           },
         };
         await session(
-          async ({ frame, settled, clock }) => {
+          async ({ frame, settled }) => {
             const who = frame.locator("#who");
             await who
               .getByText(/128 tokens/)
