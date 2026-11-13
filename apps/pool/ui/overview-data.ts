@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeReadRetry, type ChangeWatch } from "apps/client";
 import type { PoolCapacityHistory } from "../capacity-contract.ts";
 import type { PoolOverviewResult, PoolPersonalOverviewResult } from "../overview-contract.ts";
 import type { PoolUsageSeriesResult } from "../usage-series-contract.ts";
@@ -6,6 +7,7 @@ import type { Result } from "../index.ts";
 import type { PoolApi } from "./api.ts";
 import type { SeriesQuery, SeriesRead } from "./series-model.ts";
 import { coherentOverview } from "./overview-snapshot.ts";
+import { unconfirmed } from "./pool-view.ts";
 
 export type RangeDays = 7 | 30 | 90;
 
@@ -37,14 +39,29 @@ export interface Overview {
   readonly coherent?: boolean;
 }
 
-/** What one refresh has received so far. Pieces from different refreshes never share one. */
+/** What one refresh received. Pieces from different refreshes never share one. */
 interface OverviewPieces {
   readonly capacity?: Result<PoolCapacityHistory>;
   readonly usage?: Result<PoolOverviewResult>;
   readonly personal?: Result<PoolPersonalOverviewResult>;
 }
 
-const refresh = 5 * 60_000;
+/** Capacity, usage, people, models and their prices; the directory comes with membership. */
+const topics = [
+  "accounts",
+  "apps",
+  "membership",
+  "session",
+  "pool-readings",
+  "pool-usage",
+  "pool-samples",
+  "pool-prices",
+];
+const unreachable = {
+  ok: false,
+  error: "backend_unavailable",
+  message: "Overview could not be read. Try again.",
+} as const;
 
 export function seriesRead(result: PoolUsageSeriesResult): SeriesRead {
   return {
@@ -101,7 +118,11 @@ function overviewFrom(
   };
 }
 
-/** Each refresh keeps its own parts; a completed usage read never waits on capacity. */
+/**
+ * Each refresh reads its parts together and shows them together only once the change feed
+ * accepts the read; the previous accepted pair stays on screen until then, and after a rejected
+ * read. Reads follow the feed, never a timer.
+ */
 export function useOverview(api: PoolApi, days: RangeDays) {
   const query = useMemo(() => ({ api, days }), [api, days]);
   const [snapshot, setSnapshot] = useState<{
@@ -110,40 +131,80 @@ export function useOverview(api: PoolApi, days: RangeDays) {
   }>();
   const state = snapshot?.query === query ? snapshot.value : {};
   const latest = useRef({ id: 0 });
+  const watch = useRef<ChangeWatch | undefined>(undefined);
+  /** This view's own read is in flight; the pool header says nothing about it. */
+  const [reading, setReading] = useState<object>();
+  /** The last read was rejected; the figures on screen are the last confirmed ones. */
+  const [failed, setFailed] = useState<{ query: typeof query; message: string }>();
   const load = useCallback(async () => {
+    const current = watch.current;
+    if (current === undefined) return;
     const pending = latest.current;
     const id = ++pending.id;
-    const to = Date.now();
-    const range = seriesRange(days, to);
-    const input = { from: range.from, to: range.to, days };
-    let pieces: OverviewPieces = {};
-    const take = (next: OverviewPieces) => {
-      if (id !== pending.id) return false;
-      pieces = { ...pieces, ...next };
-      const value = overviewFrom(pieces, range);
-      const usageArrived = pieces.usage !== undefined;
-      // Retain the old pair until usage answers, then show only this refresh's parts.
+    const marker = {};
+    setReading(marker);
+    const done = () => setReading((value) => (value === marker ? undefined : value));
+    let read: { readonly pieces: OverviewPieces; readonly range: { from: string; to: string } };
+    try {
+      read = await current.read(async () => {
+        const to = Date.now();
+        const range = seriesRange(days, to);
+        const input = { from: range.from, to: range.to, days };
+        const [capacity, usage] = await Promise.all([
+          api.capacity(days, to),
+          api.overviewUsage(input),
+        ]);
+        const pieces: OverviewPieces = managersOnly(usage)
+          ? { capacity, usage, personal: await api.personalOverview(input) }
+          : { capacity, usage };
+        return { pieces, range };
+      });
+    } catch (error) {
+      done();
+      if (id !== pending.id || !(error instanceof ChangeReadRetry)) return;
+      // Keep confirmed figures and say they may be behind; with none, show the failure itself.
+      setFailed({ query, message: unconfirmed });
       setSnapshot((previous) =>
-        !usageArrived && previous?.query === query ? previous : { query, value },
+        previous?.query === query
+          ? previous
+          : { query, value: overviewFrom({ usage: unreachable }, seriesRange(days, Date.now())) },
       );
-      return true;
-    };
-    await Promise.all([
-      api.capacity(days, to).then((capacity) => void take({ capacity })),
-      api.overviewUsage(input).then(async (usage) => {
-        if (!take({ usage }) || !managersOnly(usage)) return;
-        take({ personal: await api.personalOverview(input) });
-      }),
-    ]);
+      return;
+    }
+    done();
+    if (id !== pending.id) return;
+    setFailed(undefined);
+    setSnapshot({ query, value: overviewFrom(read.pieces, read.range) });
   }, [api, days, query]);
   useEffect(() => {
     const pending = latest.current;
-    void load();
-    const stop = api.poll(() => void load(), refresh);
+    const current = api.changes().watch({
+      topics,
+      refresh: load,
+      revoked: () => {
+        pending.id++;
+        setSnapshot(undefined);
+      },
+    });
+    watch.current = current;
     return () => {
       pending.id++;
-      stop();
+      watch.current = undefined;
+      current.stop();
     };
   }, [api, load]);
-  return { ...state, reload: load, member: managersOnly(state.usage) };
+  return {
+    ...state,
+    reload: load,
+    member: managersOnly(state.usage),
+    // Only a read over data already on screen is an update.
+    updating: reading !== undefined && snapshot?.query === query,
+    // Only claim retained figures when confirmed ones are on screen.
+    failed:
+      failed?.query === query &&
+      reading === undefined &&
+      (state.usage?.ok === true || state.personal?.ok === true)
+        ? failed.message
+        : undefined,
+  };
 }

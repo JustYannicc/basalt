@@ -159,6 +159,8 @@ export const pool = {
     read(client.query(queryReference<typeof usage>("usage"), { days: 30 }, result<UsageSummary>())),
   /** Refreshes on an interval only while someone sees the page, including behind the host's other tabs. */
   poll: client.poll,
+  /** Committed-revision feed; pool data reads again only when it reports a change. */
+  changes: client.changes,
 };
 
 export type PoolApi = typeof pool;

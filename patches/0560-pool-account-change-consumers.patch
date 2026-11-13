@@ -1,0 +1,2517 @@
+diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
+index 8b5d9aa9f4e9a2adc46992ddbf9f20ba509ce6cf..5c447733ca152f09cfe20dd0122ca2c0aaeb989f 100644
+--- a/apps/hosted/cloud/src/app-ui.ts
++++ b/apps/hosted/cloud/src/app-ui.ts
+@@ -40,6 +40,8 @@ import { cloudServingProduct } from "./infrastructure/serving-product.ts";
+ import { sentryBindings } from "./infrastructure/sentry.ts";
+ import { cloudHosts } from "./infrastructure/stage.ts";
+ import { appDataSupervisors } from "./infrastructure/app-data.ts";
++import { cloudChangeRevisions } from "./infrastructure/change-revisions.ts";
++import { ScopedChanges } from "@executor-js/hosted-server";
+ import { Api } from "./infrastructure/api-worker.ts";
+ import {
+   cloudObservability,
+@@ -157,6 +159,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+     const reportErrors = yield* cloudSentry;
+     const analytics = yield* cloudAnalytics;
+     const appSessions = yield* cloudAppSessions;
++    const changeRevisions = yield* cloudChangeRevisions;
+     const executor = yield* cloudServingProduct(yield* appDataSupervisors);
+     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
+     // App pages send sign-in to the dashboard, on the browser origin.
+@@ -168,9 +171,19 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+         yield* appUiEmbedded.pipe(Effect.orDie),
+       ),
+     );
+-    const services = requestServices(Layer.mergeAll(appSessions, executor));
++    const services = requestServices(
++      Layer.mergeAll(
++        appSessions,
++        executor,
++        Layer.succeed(ScopedChanges, changeRevisions.transport),
++      ),
++    );
+     const notFound = HttpServerResponse.empty({ status: 404 });
+     const protectedRoutes = Layer.mergeAll(
++      HttpRouter.add("GET", appUi.changes.path, appUi.changes.events).pipe(
++        Layer.provide(Layer.succeed(ScopedChanges, changeRevisions.transport)),
++      ),
++      HttpRouter.add("GET", `${appUi.changes.path}/current`, appUi.changes.current),
+       HttpRouter.add("GET", appSignInCallbackPath, appUi.callback),
+       HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
+       HttpRouter.add("GET", "/_executor/version", appUi.versions),
+diff --git a/apps/hosted/cloud/src/infrastructure/change-revisions.ts b/apps/hosted/cloud/src/infrastructure/change-revisions.ts
+index dd421e73a70a1185cef38a37e2429ed377a2f045..261ebcc96cf3425c68c78250911db9d055dbfef8 100644
+--- a/apps/hosted/cloud/src/infrastructure/change-revisions.ts
++++ b/apps/hosted/cloud/src/infrastructure/change-revisions.ts
+@@ -6,6 +6,8 @@ import { makeChangeJournal, makeChangeRevisionHandler } from "@executor-js/hoste
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+ import { appDataSupervisors } from "./app-data.ts";
+ import { scopedDataChanges } from "../implementation/data-changes.ts";
++import { RuntimeProtocolFailed } from "@executor-js/sdk/core";
++import { ScopedChanges } from "@executor-js/hosted-server";
+ 
+ const NativeNamespace = Schema.declare(
+   (value): value is Pick<DurableObjectNamespace, "getByName"> =>
+@@ -19,7 +21,24 @@ const NativeNamespace = Schema.declare(
+ export const cloudChangeRevisions = Effect.gen(function* () {
+   const supervisors = yield* appDataSupervisors;
+   const environment = yield* Cloudflare.WorkerEnvironment;
++  const transport = ScopedChanges.of({
++    subscribe: (scope, keys) =>
++      scopedDataChanges(
++        Schema.decodeUnknownSync(NativeNamespace)(environment.AppDataSupervisor),
++        scope,
++        keys,
++      ),
++    publish: (scope, hint) =>
++      supervisors
++        .getByName(`hosted-changes:${scope}`)
++        .publishChange(hint)
++        .pipe(
++          Effect.provide(RuntimeContext.phantom),
++          Effect.mapError(() => new RuntimeProtocolFailed()),
++        ),
++  });
+   return {
++    transport,
+     handler: makeChangeRevisionHandler((scope, keys) =>
+       scopedDataChanges(
+         Schema.decodeUnknownSync(NativeNamespace)(environment.AppDataSupervisor),
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index ec2dd213c1eb10b7c4551702751c6c6643a0b792..8f7fc3531a56a28dabf31178e97bf10f46d1598c 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -1,5 +1,13 @@
+ import { makeMcpGrantRpc } from "./infrastructure/mcp-grant-server.ts";
+ import { cloudChangeRevisions } from "./infrastructure/change-revisions.ts";
++import {
++  makeOrganizationChanges,
++  organizationChangesPath,
++  organizationChangesCurrentPath,
++  ScopedChanges,
++  poolChangePath,
++  publishCommittedChanges,
++} from "@executor-js/hosted-server";
+ import {
+   workflowStatusFaultBindings,
+   localWorkflowStatusFaults,
+@@ -353,6 +361,7 @@ export default Api.make(
+       Effect.catch(() => Effect.logWarning("Contributed departure outbox unavailable")),
+     );
+     const changeRevisions = yield* cloudChangeRevisions;
++    const organizationChanges = makeOrganizationChanges();
+     const deliverChanges = changeRevisions.deliver.pipe(
+       Effect.provide(executor),
+       Effect.scoped,
+@@ -686,6 +695,19 @@ export default Api.make(
+     );
+     const productionOps = yield* cloudProductionOps;
+     const routes = Layer.mergeAll(
++      HttpRouter.add("GET", organizationChangesPath, organizationChanges.events).pipe(
++        HttpRouter.provideRequest(executor),
++        HttpRouter.provideRequest(auth.identity),
++        Layer.provide(Layer.succeed(ScopedChanges, changeRevisions.transport)),
++      ),
++      HttpRouter.add("GET", organizationChangesCurrentPath, organizationChanges.current).pipe(
++        HttpRouter.provideRequest(executor),
++        HttpRouter.provideRequest(auth.identity),
++      ),
++      HttpRouter.add("POST", poolChangePath, publishCommittedChanges).pipe(
++        HttpRouter.provideRequest(executor),
++        Layer.provide(Layer.succeed(ScopedChanges, changeRevisions.transport)),
++      ),
+       HttpRouter.add("GET", changeRevisionsPath, changeRevisions.handler).pipe(
+         HttpRouter.provideRequest(executor),
+         HttpRouter.provideRequest(auth.identity),
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+index d2c77a22fea84c22f75f58654e9fce219a618d3d..938773bc3a0bd38edce9459922c49ec08f489115 100644
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -22,6 +22,7 @@ import {
+   type DurableDeclarations,
+   type Executor,
+   type RepositoryBackend,
++  type BackgroundWork,
+ } from "@executor-js/sdk/core";
+ import {
+   HostedExecutor,
+@@ -40,6 +41,8 @@ import {
+   withExecutorAnalytics,
+   executorDefaultRedeployed,
+   hostedAppCopies,
++  ScopedChanges,
++  makeChangeJournal,
+ } from "@executor-js/hosted-server";
+ import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
+ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
+@@ -73,8 +76,15 @@ export interface SelfHostPlatform {
+   readonly workflows: WorkflowRuntime;
+   /** Evaluated results kept in each app's data supervisor. */
+   readonly declarations: DurableDeclarations;
++  readonly committedChanges: typeof ScopedChanges.Service;
+ }
+ 
++/** Routes submit work to the same draining owner as SDK background jobs. */
++export class SelfHostBackgroundWork extends Context.Service<
++  SelfHostBackgroundWork,
++  BackgroundWork
++>()("self-host/BackgroundWork") {}
++
+ /** Private callback surface for app workflows, exposed only through a service binding. */
+ export class SelfHostWorkflowRequests extends Context.Service<
+   SelfHostWorkflowRequests,
+@@ -105,10 +115,13 @@ export const selfHostExecutorServices = <E, R>(
+       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
+       const evaluation = yield* declarationConfig;
+       const ready = yield* Deferred.make<Executor>();
+-      const { runtime, workflows, declarations, blobs, repositories } = yield* acquire(
+-        Deferred.await(ready),
+-      );
++      const { runtime, workflows, declarations, blobs, repositories, committedChanges } =
++        yield* acquire(Deferred.await(ready));
+       const background = yield* makeHostedBackgroundWork;
++      const sql = yield* SqlClient.SqlClient;
++      const deliverChanges = makeChangeJournal(sql)
++        .deliver(committedChanges.publish)
++        .pipe(Effect.catch(() => Effect.logWarning("Committed change delivery failed")));
+       const registry = remoteRegistry(
+         yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
+           Config.withDefault(hostedExecutorOrigin),
+@@ -161,7 +174,7 @@ export const selfHostExecutorServices = <E, R>(
+           durable: declarations,
+           toolListings: evaluation.toolListings,
+         },
+-        background,
++        background: (work) => background(work.pipe(Effect.ensuring(deliverChanges))),
+         events: {
+           sender: httpEventSender(egress),
+           authorize: hostedEventAuthority(Effect.succeed(yield* SqlClient.SqlClient)),
+@@ -185,6 +198,7 @@ export const selfHostExecutorServices = <E, R>(
+         },
+         "private_hosted",
+       );
++      yield* deliverChanges;
+       // Once the idle grant step has applied, revoke grants that became idle since, daily.
+       yield* Effect.forkScoped(
+         expireIdleAgentGrants(auth.agentGrants, "private_hosted").pipe(
+@@ -243,6 +257,8 @@ export const selfHostExecutorServices = <E, R>(
+             : undefined,
+         ),
+         Layer.succeed(SelfHostWorkflowRequests, workflowRequests),
++        Layer.succeed(SelfHostBackgroundWork, background),
++        Layer.succeed(ScopedChanges, committedChanges),
+         Layer.succeed(SelfHostAuth, auth),
+         Layer.succeed(ScheduledAuthority, scheduleAuthority),
+         Layer.succeed(GroupDatabase, Effect.succeed(groupDatabase)),
+diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
+index adb1d5f63f4fd3675239b78543c44d1143932c36..25d5484da6491689519c4b1ab446392f5b2f71fd 100644
+--- a/apps/hosted/self-host/src/implementation/routes.ts
++++ b/apps/hosted/self-host/src/implementation/routes.ts
+@@ -50,7 +50,15 @@ import {
+   apiProtectedResource,
+   lazyHostedApiDocument,
+   ProductAnalytics,
++  ScopedChanges,
++  makeChangeJournal,
++  makeOrganizationChanges,
++  organizationChangesPath,
++  organizationChangesCurrentPath,
++  poolChangePath,
++  publishCommittedChanges,
+ } from "@executor-js/hosted-server";
++import { GroupDatabase } from "@executor-js/hosted-server/groups";
+ import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
+ import {
+   appUiAddressScheme,
+@@ -73,6 +81,7 @@ import { selfHostAnalytics } from "./product-analytics.ts";
+ 
+ import type { SourceTextFile as SourceFile } from "@executor-js/sdk/core";
+ import type { selfHostExecutorServices } from "./executor-services.ts";
++import { SelfHostBackgroundWork } from "./executor-services.ts";
+ import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
+ /** Compose the self-host route map without opening a listener; shared by the process entry and HTTP tests. */
+ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+@@ -87,6 +96,17 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+     const { skills, egress, executorServices, dashboard } = options;
+     const brand = yield* productBrandConfig;
+     const auth = yield* SelfHostAuth.pipe(Effect.provide(executorServices));
++    const { background, deliverChanges } = yield* Effect.gen(function* () {
++      const background = yield* SelfHostBackgroundWork;
++      const transport = yield* ScopedChanges;
++      const sql = yield* Effect.flatten(GroupDatabase);
++      return {
++        background,
++        deliverChanges: makeChangeJournal(sql)
++          .deliver(transport.publish)
++          .pipe(Effect.catch(() => Effect.logWarning("Committed change delivery failed"))),
++      };
++    }).pipe(Effect.provide(executorServices));
+     const analytics = yield* selfHostAnalytics;
+     /** Requests and background schedules record through this instance's sink unless it opted out. */
+     const observed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+@@ -128,6 +148,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+     );
+     yield* drainContributedDepartures.pipe(
+       Effect.catch(() => Effect.logWarning("Contributed departure queue processing failed")),
++      Effect.ensuring(deliverChanges),
+       Effect.repeat(Schedule.spaced("1 second")),
+       Effect.provideService(ScheduleWakeup, wake),
+       Effect.provide(executorServices),
+@@ -147,6 +168,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+       yield* appUiEmbedded,
+     );
+     const appUi = hostedAppUi(addresses);
++    const organizationChanges = makeOrganizationChanges();
+     const mcp = yield* selfHostMcp.pipe(Effect.provide(HttpServer.layerServices));
+     const document = lazyHostedApiDocument(() => executorSelfHostApiDocument(auth.origin));
+     const api = selfHostApi(document).pipe(
+@@ -193,6 +215,13 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+       Layer.provide(auth.apiIdentity),
+     );
+     const productRoutes = Layer.mergeAll(
++      Layer.mergeAll(
++        HttpRouter.add("GET", organizationChangesPath, organizationChanges.events),
++        HttpRouter.add("GET", organizationChangesCurrentPath, organizationChanges.current),
++      ).pipe(HttpRouter.provideRequest(executorServices), HttpRouter.provideRequest(auth.identity)),
++      HttpRouter.add("POST", poolChangePath, publishCommittedChanges).pipe(
++        HttpRouter.provideRequest(executorServices),
++      ),
+       HttpRouter.add("POST", observationPublishPath, publishAccountObservations).pipe(
+         HttpRouter.provideRequest(executorServices),
+       ),
+@@ -243,6 +272,8 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+       HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
+       HttpRouter.add("GET", "/_executor/version", appUi.versions),
+       HttpRouter.add("POST", appUi.poolUsage.path, appUi.poolUsage.read),
++      HttpRouter.add("GET", appUi.changes.path, appUi.changes.events),
++      HttpRouter.add("GET", `${appUi.changes.path}/current`, appUi.changes.current),
+       HttpRouter.add("POST", appUi.poolUsageOverview.path, appUi.poolUsageOverview.read),
+       HttpRouter.add(
+         "POST",
+@@ -285,6 +316,20 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+           if (addresses.ownsHost(request.headers.host)) return notFound;
+           return yield* observed(product);
+         }).pipe(
++          Effect.onExit(() =>
++            Effect.gen(function* () {
++              const request = yield* HttpServerRequest.HttpServerRequest;
++              const path = new URL(request.url, "http://self-host.internal").pathname;
++              // OAuth callbacks can commit accounts and sessions through GET requests.
++              if (
++                !["GET", "HEAD", "OPTIONS"].includes(request.method) ||
++                path.startsWith("/api/auth/") ||
++                path === "/api/oauth/callback" ||
++                path === appSignInCallbackPath
++              )
++                yield* background(deliverChanges);
++            }),
++          ),
+           recordRequestRejections,
+           Effect.provideService(CurrentProductBrand, brand),
+           Effect.provideService(McpAppSandbox, sandbox),
+diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src/contracts/app-ui.ts
+index 04760454c58f3ac4a2b41788fc63d910e5914fba..cc3ee7175528f786abda0d14be688b3b9b23269e 100644
+--- a/apps/hosted/server/src/contracts/app-ui.ts
++++ b/apps/hosted/server/src/contracts/app-ui.ts
+@@ -196,7 +196,14 @@ export class HostedAppSessions extends Context.Service<
+     readonly current: (
+       target: AppUiTarget,
+       token: typeof AppSignInCode.Type,
+-    ) => Effect.Effect<{ readonly userId: string }, UiUnauthorized | UiForbidden | UiFailed>;
++    ) => Effect.Effect<
++      {
++        readonly userId: string;
++        readonly sessionId?: typeof Principal.Type.sessionId;
++        readonly expiresAt?: Date;
++      },
++      UiUnauthorized | UiForbidden | UiFailed
++    >;
+   }
+ >()("hosted/AppSessions") {}
+ 
+diff --git a/apps/hosted/server/src/implementation/account-change-schema.ts b/apps/hosted/server/src/implementation/account-change-schema.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..871569f4f9cadee330bbf45b53706a663549f39d
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-change-schema.ts
+@@ -0,0 +1,107 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** Triggers cover SQL writers, including background work and writes from another isolate. */
++export const migrateAccountChanges = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create or replace function hosted_account_changed() returns trigger language plpgsql as $$
++    declare previous jsonb; following jsonb; item jsonb; target_scope text; topic text;
++      reference text; ignored text[]; identity jsonb; notified text[] := '{}'; candidate text;
++    begin
++      if TG_OP <> 'INSERT' then previous := to_jsonb(OLD); end if;
++      if TG_OP <> 'DELETE' then following := to_jsonb(NEW); end if;
++      ignored := string_to_array(TG_ARGV[3], ',');
++      if TG_OP = 'UPDATE' and previous - ignored = following - ignored then return NEW; end if;
++      for item in select distinct value from jsonb_array_elements(jsonb_build_array(previous, following))
++        where value <> 'null'::jsonb loop
++        target_scope := null;
++        reference := item ->> TG_ARGV[2];
++        case TG_ARGV[0]
++          when 'owner' then target_scope := reference;
++          when 'organization' then target_scope := 'organization:' || reference;
++          when 'app' then select owner into target_scope from executor_apps where id = reference;
++          when 'account' then select owner into target_scope from executor_accounts where id = reference;
++          when 'group' then select 'organization:' || organization_id into target_scope from hosted_groups where id = reference;
++          when 'user' then
++            target_scope := 'user:' || reference;
++            if TG_TABLE_NAME = 'user' then
++              for candidate in select distinct 'organization:' || "organizationId" from member where "userId" = reference loop
++                perform hosted_record_change(candidate, 'membership', '*');
++              end loop;
++            end if;
++          when 'grant' then
++            for candidate in select distinct owner from executor_accounts where oauth_grant_id = reference loop
++              perform hosted_record_change(candidate, 'accounts', '*');
++            end loop;
++          when 'provider' then
++            for candidate in select distinct owner from executor_accounts where provider = reference loop
++              perform hosted_record_change(candidate, 'accounts', '*');
++            end loop;
++          when 'verification' then
++            if item ->> 'identifier' like 'executor-app-ui:v1:session:%' then
++              begin identity := (item ->> 'value')::jsonb; exception when others then identity := null; end;
++              if identity ->> 'kind' = 'session' then target_scope := 'user:' || (identity ->> 'user'); end if;
++            end if;
++        end case;
++        if target_scope is not null and not target_scope = any(notified) then
++          notified := array_append(notified, target_scope);
++          foreach topic in array string_to_array(TG_ARGV[1], ',') loop
++            perform hosted_record_change(target_scope, topic, '*');
++          end loop;
++        end if;
++      end loop;
++      if TG_OP = 'DELETE' then return OLD; end if;
++      return NEW;
++    end $$`;
++  const triggers = [
++    ["executor_accounts", "owner", "accounts", "owner", "encrypted_credentials"],
++    ["executor_account_checks", "account", "accounts", "account", ""],
++    ["executor_account_observations", "owner", "accounts", "owner", "lease,lease_until"],
++    ["executor_account_acquisitions", "owner", "accounts", "owner", ""],
++    ["executor_account_connections", "owner", "accounts", "owner", ""],
++    ["executor_account_identities", "owner", "accounts", "owner", ""],
++    ["executor_oauth_grants", "grant", "accounts", "id", "encrypted,updated_at"],
++    ["executor_apps", "owner", "apps,accounts", "owner", ""],
++    ["executor_providers", "provider", "accounts", "id", ""],
++    ["hosted_app_account_links", "app", "accounts", "app", ""],
++    ["hosted_app_access", "organization", "accounts,apps,membership", "organization_id", ""],
++    ["hosted_account_access", "organization", "accounts,membership", "organization_id", ""],
++    [
++      "hosted_account_observation_access",
++      "organization",
++      "accounts,membership",
++      "organization_id",
++      "",
++    ],
++    [
++      "hosted_account_rechecks",
++      "organization",
++      "accounts",
++      "organization_id",
++      "lease,lease_until,provider_next_at,next_at",
++    ],
++    ["hosted_app_groups", "organization", "accounts,apps,membership", "organization_id", ""],
++    ["hosted_account_groups", "organization", "accounts,membership", "organization_id", ""],
++    ["hosted_model_bindings", "app", "accounts,apps,membership", "app_id", ""],
++    ["hosted_groups", "organization", "accounts,apps,membership", "organization_id", ""],
++    ["hosted_group_members", "group", "accounts,apps,membership", "group_id", ""],
++    ["member", "organization", "accounts,apps,membership", "organizationId", "createdAt"],
++    ["organization", "organization", "accounts,apps,membership", "id", "logo"],
++    [
++      "hosted_provisioning",
++      "organization",
++      "apps,accounts",
++      "organization_id",
++      "updated_at,attempts,available_at",
++    ],
++    ["hosted_organization_removal", "organization", "membership", "organization_id", ""],
++    ["session", "user", "session", "userId", "updatedAt,ipAddress,userAgent"],
++    ["user", "user", "session", "id", "updatedAt"],
++    ["verification", "verification", "session", "identifier", "updatedAt"],
++  ] as const;
++  for (const [table, mode, topics, field, ignored] of triggers)
++    yield* sql.unsafe(
++      `create or replace trigger hosted_committed_change before insert or update or delete on "${table}"
++        for each row execute function hosted_account_changed('${mode}', '${topics}', '${field}', '${ignored}')`,
++    );
++});
+diff --git a/apps/hosted/server/src/implementation/app-sessions.ts b/apps/hosted/server/src/implementation/app-sessions.ts
+index db417e27dc253b61e988dbd07548c77fd178544d..bc9c021caf0bf6d98542e8bb1de9125608e06dd0 100644
+--- a/apps/hosted/server/src/implementation/app-sessions.ts
++++ b/apps/hosted/server/src/implementation/app-sessions.ts
+@@ -83,7 +83,7 @@ export const hostedAppSessions = (
+       ),
+       Effect.asVoid,
+     );
+-  const read = (identifier: string, consume = false) =>
++  const readStored = (identifier: string, consume = false) =>
+     Effect.gen(function* () {
+       const row = yield* query(() =>
+         consume
+@@ -96,10 +96,13 @@ export const hostedAppSessions = (
+       );
+       if (stored.expiresAt.getTime() <= (yield* Clock.currentTimeMillis))
+         return yield* new UiUnauthorized();
+-      return yield* Schema.decodeUnknownEffect(recordJson)(stored.value).pipe(
++      const record = yield* Schema.decodeUnknownEffect(recordJson)(stored.value).pipe(
+         Effect.mapError(unavailable),
+       );
++      return { record, expiresAt: stored.expiresAt };
+     });
++  const read = (identifier: string, consume = false) =>
++    readStored(identifier, consume).pipe(Effect.map(({ record }) => record));
+   const parent = (id: typeof Principal.Type.sessionId, user: typeof Principal.Type.userId) =>
+     Effect.gen(function* () {
+       const row = yield* query(() =>
+@@ -251,13 +254,18 @@ export const hostedAppSessions = (
+       }),
+     current: (target, token) =>
+       Effect.gen(function* () {
+-        const session = yield* read(key("session", yield* digest(token)));
++        const stored = yield* readStored(key("session", yield* digest(token)));
++        const session = stored.record;
+         if (!Schema.is(AppUiSession)(session) || !sameTarget(session.target, target))
+           return yield* new UiUnauthorized();
+-        yield* parent(session.parent, session.user);
++        const login = yield* parent(session.parent, session.user);
+         // The serving host checks current membership together with app/account
+         // permissions. A second lookup here adds no authority to that decision.
+-        return { userId: session.user };
++        return {
++          userId: session.user,
++          sessionId: session.parent,
++          expiresAt: new Date(Math.min(stored.expiresAt.getTime(), login.expiresAt.getTime())),
++        };
+       }),
+   });
+ };
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+index c3294be075f59bd9b3a30b351e7df5a46306dd91..6f8be5e899a1314a1209bd35c14329b1fe6d5d9c 100644
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -10,6 +10,7 @@ import {
+ } from "./pool-app-ui.ts";
+ import { queryDispatch, queryPhase } from "./app-ui-query-timing.ts";
+ import { appUiPhase, appUiPhaseHeaders } from "./app-ui-phase-timing.ts";
++import { makeAppChanges } from "./pool-app-changes.ts";
+ import { visibleObservationHealth } from "./account-observation-policy.ts";
+ import { visibleAccountStatuses } from "./account-identity.ts";
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+@@ -268,7 +269,7 @@ export const hostedAppUi = <R = never>(
+           Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
+         ),
+       );
+-      return { ...resolved, access, app };
++      return { ...resolved, access, app, changeSession: identity };
+     });
+   const authorize = Effect.flatMap(target, authorizeTarget);
+   const assets = (version: VersionMetadata, path: string) =>
+@@ -859,6 +860,7 @@ export const hostedAppUi = <R = never>(
+     originAccess,
+     sessionAccess,
+     telemetry,
++    changes: makeAppChanges(authorize),
+     poolUsage: { path: poolAppUsagePath, read: poolAppUsage(authorize) } as const,
+     poolPersonalUsageOverview: {
+       path: poolAppPersonalUsageOverviewPath,
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+index a72c616d343e8d8d402bf3ede0d92d3c341544d3..285b9979c88a7eefb0146d3b233c0adefa41bd5c 100644
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -24,6 +24,7 @@ import { migrateContributedDepartures } from "./contributed-departure-schema.ts"
+ import { migrateAccountRechecks } from "./account-recheck-schema.ts";
+ import { migrateAccountObservations } from "./account-observation-schema.ts";
+ import { migrateChangeRevisions } from "./change-revision-schema.ts";
++import { migrateAccountChanges } from "./account-change-schema.ts";
+ 
+ /**
+  * Migration failures stop startup; callers must not log the driver's secret-bearing cause. The
+@@ -155,6 +156,7 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
+     yield* queueExecutorAppUpgrades;
+   }),
+   "19_change_revisions": migrateChangeRevisions,
++  "20_account_changes": migrateAccountChanges,
+ });
+ 
+ /**
+diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/apps/hosted/server/src/implementation/organization-changes.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..c6ad46618c38d01c7bfe20b3e5a7625ab8637f93
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/organization-changes.ts
+@@ -0,0 +1,119 @@
++import { Effect, Schema } from "effect";
++import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { Authentication, Unauthorized } from "../contracts/auth.ts";
++import { GroupDatabase } from "../contracts/groups.ts";
++import {
++  OrganizationForbidden,
++  OrganizationId,
++  OrganizationReference,
++  organizationOwner,
++} from "../contracts/organization.ts";
++import { OrganizationTombstones } from "../contracts/organization-removal.ts";
++import { makeChangeJournal } from "./change-revisions.ts";
++import {
++  changeHeaders,
++  changeIdentity,
++  scopedChangeResponse,
++  type ChangeSource,
++} from "./scoped-changes.ts";
++
++export const organizationChangesPath = "/api/organizations/:organization/changes";
++export const organizationChangesCurrentPath = `${organizationChangesPath}/current`;
++export const organizationChangeKeys = ["accounts", "apps", "membership"].map((topic) => ({
++  topic,
++  resource: "*",
++}));
++export const sessionChangeKeys = [{ topic: "session", resource: "*" }];
++const Params = Schema.Struct({ organization: OrganizationReference });
++const Expires = Schema.Array(Schema.Struct({ expiresAt: Schema.Date }));
++export const deniedChange = (error: unknown) =>
++  Schema.is(Unauthorized)(error) || Schema.is(OrganizationForbidden)(error);
++
++/** A browser feed uses the same live identity and membership as a fresh dashboard request. */
++export const organizationChangeAuthority = (headers: Headers, reference: OrganizationReference) =>
++  Effect.gen(function* () {
++    if (headers.has("authorization")) return yield* new Unauthorized();
++    const authentication = yield* Authentication;
++    const principal = yield* authentication.current(headers);
++    if (principal === null) return yield* new Unauthorized();
++    const organization = yield* authentication.organization(reference);
++    yield* authentication.membership(principal, organization);
++    if (yield* (yield* OrganizationTombstones)(organization))
++      return yield* new OrganizationForbidden();
++    const sql = yield* Effect.flatten(GroupDatabase);
++    const expires = yield* Schema.decodeUnknownEffect(Expires)(
++      yield* sql`select "expiresAt" from session where id = ${principal.sessionId}`,
++    );
++    if (!expires[0]) return yield* new Unauthorized();
++    return {
++      organization,
++      user: principal.userId,
++      session: principal.sessionId,
++      validUntil: expires[0].expiresAt.getTime(),
++    };
++  });
++
++export const organizationChangeSources = (
++  organization: OrganizationId,
++  user: string,
++): ChangeSource[] => [
++  { scope: organizationOwner(organization), keys: organizationChangeKeys },
++  { scope: `user:${user}`, keys: sessionChangeKeys },
++];
++
++const failed = (error: unknown) =>
++  HttpServerResponse.empty({
++    status: Schema.is(Unauthorized)(error)
++      ? 401
++      : Schema.is(OrganizationForbidden)(error)
++        ? 403
++        : 503,
++    headers: changeHeaders,
++  });
++
++export const makeOrganizationChanges = () => {
++  const context = Effect.gen(function* () {
++    const { organization } = yield* HttpRouter.schemaPathParams(Params);
++    const request = yield* HttpServerRequest.HttpServerRequest;
++    const headers = new Headers(request.headers);
++    const authorize = organizationChangeAuthority(headers, organization);
++    const identity = yield* authorize;
++    const fingerprint = yield* changeIdentity([
++      identity.organization,
++      identity.user,
++      identity.session,
++    ]);
++    const sql = yield* Effect.flatten(GroupDatabase);
++    const sources = organizationChangeSources(identity.organization, identity.user);
++    const current = Effect.gen(function* () {
++      const revisions = (yield* Effect.forEach(sources, (source) =>
++        makeChangeJournal(sql).current(source.scope, source.keys),
++      )).flat();
++      const latest = yield* authorize;
++      if (latest.user !== identity.user || latest.session !== identity.session)
++        return yield* new Unauthorized();
++      return { revisions, validUntil: latest.validUntil, identity: fingerprint };
++    });
++    return { identity, sources, current, authorize, fingerprint };
++  });
++  return {
++    current: context.pipe(
++      Effect.flatMap(({ current }) => current),
++      Effect.map((body) => HttpServerResponse.jsonUnsafe(body, { headers: changeHeaders })),
++      Effect.catch((error) => Effect.succeed(failed(error))),
++    ),
++    events: context.pipe(
++      Effect.flatMap(({ identity, sources, current, authorize, fingerprint }) =>
++        scopedChangeResponse({
++          sources,
++          current,
++          authorize,
++          validUntil: identity.validUntil,
++          identity: fingerprint,
++          denied: deniedChange,
++        }),
++      ),
++      Effect.catch((error) => Effect.succeed(failed(error))),
++    ),
++  };
++};
+diff --git a/apps/hosted/server/src/implementation/pool-app-changes.ts b/apps/hosted/server/src/implementation/pool-app-changes.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..241fe6f7458051b422be0b7b0b2de36637da0340
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-app-changes.ts
+@@ -0,0 +1,127 @@
++import { type App } from "@executor-js/sdk/core";
++import { UiForbidden, UiUnauthorized } from "apps/ui/contracts";
++import { Effect, Schema } from "effect";
++import { HttpServerResponse } from "effect/http";
++import { CurrentAuthorization } from "../contracts/authorization.ts";
++import { CurrentUserId } from "../contracts/auth.ts";
++import { GroupDatabase } from "../contracts/groups.ts";
++import {
++  CurrentOrganization,
++  OrganizationForbidden,
++  type OrganizationAccess,
++} from "../contracts/organization.ts";
++import { fullAuthority } from "@executor-js/authorization";
++import { makeChangeJournal } from "./change-revisions.ts";
++import { organizationChangeSources } from "./organization-changes.ts";
++import { sendPoolCommand } from "./pool-backend.ts";
++import {
++  ChangeSnapshot,
++  changeHeaders,
++  changeIdentity,
++  scopedChangeResponse,
++} from "./scoped-changes.ts";
++
++const path = "/_executor/api/changes";
++const denied = (error: unknown) =>
++  Schema.is(UiUnauthorized)(error) ||
++  Schema.is(UiForbidden)(error) ||
++  Schema.is(OrganizationForbidden)(error);
++const failed = (error: unknown) =>
++  HttpServerResponse.empty({
++    status: Schema.is(UiUnauthorized)(error) ? 401 : denied(error) ? 403 : 503,
++    headers: changeHeaders,
++  });
++
++/** The app origin, session and current native policy select every scope; query strings cannot. */
++export const makeAppChanges = <E, R>(
++  authorize: Effect.Effect<
++    {
++      readonly app: Pick<App, "id">;
++      readonly access: OrganizationAccess & { readonly userId: string };
++      readonly changeSession?: { readonly expiresAt?: Date; readonly sessionId?: string };
++    },
++    E,
++    R
++  >,
++) => {
++  const context = Effect.gen(function* () {
++    const identity = yield* authorize;
++    const { app, access } = identity;
++    const fingerprint = yield* changeIdentity([
++      access.organization,
++      access.userId,
++      identity.changeSession?.sessionId ?? "",
++      app.id,
++    ]);
++    const sql = yield* Effect.flatten(GroupDatabase);
++    const hosted = organizationChangeSources(access.organization, access.userId);
++    const sources = [
++      ...hosted,
++      {
++        scope: `pool:${app.id}`,
++        keys: ["pool-readings", "pool-usage", "pool-samples", "pool-prices"].map((topic) => ({
++          topic,
++          resource: app.id,
++        })),
++      },
++    ];
++    const current = Effect.gen(function* () {
++      const native = yield* sendPoolCommand(
++        "changeRevisions",
++        { pool: app.id },
++        ChangeSnapshot,
++      ).pipe(
++        Effect.provideService(CurrentOrganization, access),
++        Effect.provideService(CurrentUserId, access.userId),
++        Effect.provideService(CurrentAuthorization, fullAuthority),
++      );
++      const revisions = [
++        ...native.revisions,
++        ...(yield* Effect.forEach(hosted, (source) =>
++          makeChangeJournal(sql).current(source.scope, source.keys),
++        )).flat(),
++      ];
++      const latest = yield* authorize;
++      if (
++        latest.access.userId !== access.userId ||
++        latest.changeSession?.sessionId !== identity.changeSession?.sessionId
++      )
++        return yield* new UiUnauthorized();
++      const deadlines = [native.validUntil, latest.changeSession?.expiresAt?.getTime()].filter(
++        (at) => at !== undefined,
++      );
++      return {
++        revisions,
++        identity: fingerprint,
++        ...(deadlines.length ? { validUntil: Math.min(...deadlines) } : {}),
++      };
++    });
++    return {
++      sources,
++      current,
++      fingerprint,
++      validUntil: identity.changeSession?.expiresAt?.getTime(),
++    };
++  });
++  return {
++    path: path as typeof path,
++    current: context.pipe(
++      Effect.flatMap(({ current }) => current),
++      Effect.map((body) => HttpServerResponse.jsonUnsafe(body, { headers: changeHeaders })),
++      Effect.catch((error) => Effect.succeed(failed(error))),
++    ),
++    events: context.pipe(
++      Effect.flatMap(({ sources, current, validUntil, fingerprint }) =>
++        scopedChangeResponse({
++          sources,
++          current,
++          authorize,
++          validUntil,
++          identity: fingerprint,
++          denied,
++        }),
++      ),
++      Effect.catch((error) => Effect.succeed(failed(error))),
++    ),
++  };
++};
+diff --git a/apps/hosted/server/src/implementation/pool-backend.ts b/apps/hosted/server/src/implementation/pool-backend.ts
+index 483b256e45735bb694eabfc4d9036fd3449067a4..9c03145a933fd59894f9413171ec16b925454115 100644
+--- a/apps/hosted/server/src/implementation/pool-backend.ts
++++ b/apps/hosted/server/src/implementation/pool-backend.ts
+@@ -37,7 +37,8 @@ type PoolCommand =
+   | "poolUsageSeries"
+   | "lastSuccessAt"
+   | "poolOverview"
+-  | "poolPersonalOverview";
++  | "poolPersonalOverview"
++  | "changeRevisions";
+ 
+ export const sendPoolCommandResponse = (action: PoolCommand, payload: Record<string, unknown>) =>
+   Effect.gen(function* () {
+diff --git a/apps/hosted/server/src/implementation/pool-change-publish.ts b/apps/hosted/server/src/implementation/pool-change-publish.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ad72a78b0671f533d4f28558d3d8bba13cf8c8ed
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-change-publish.ts
+@@ -0,0 +1,63 @@
++import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { HttpServerRequest, HttpServerResponse } from "effect/http";
++import { RevisionHint } from "apps/ui/contracts";
++import { GroupDatabase } from "../contracts/groups.ts";
++import { openEnvelope } from "./pool-token.ts";
++import { makeChangeJournal } from "./change-revisions.ts";
++import { ScopedChanges } from "./scoped-changes.ts";
++
++export const poolChangePath = "/api/internal/change-revisions";
++const Request = Schema.Struct({
++  action: Schema.Literal("publish-changes"),
++  at: Schema.Finite,
++  expiresAt: Schema.Finite,
++  changes: Schema.Array(Schema.Struct({ scope: Schema.NonEmptyString, hint: RevisionHint })).check(
++    Schema.isMaxLength(100),
++  ),
++});
++/** Receiving the producer's committed counter is idempotent; delivery still uses the SQL outbox. */
++export const publishCommittedChanges = Effect.gen(function* () {
++  const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
++  if (Option.isNone(key)) return HttpServerResponse.empty({ status: 503 });
++  const body = yield* HttpServerRequest.schemaBodyJson(
++    Schema.Struct({ envelope: Schema.NonEmptyString }),
++  );
++  const raw = yield* Effect.tryPromise(() =>
++    openEnvelope(Redacted.value(key.value), "sbcr1", body.envelope),
++  );
++  const value = yield* Schema.decodeUnknownEffect(Request)(raw);
++  const now = yield* Clock.currentTimeMillis;
++  if (value.at > now || value.expiresAt <= now || value.expiresAt > value.at + 30_000)
++    return HttpServerResponse.empty({ status: 401 });
++  if (
++    value.changes.some(
++      ({ scope, hint }) =>
++        !["pool-readings", "pool-usage", "pool-samples", "pool-prices"].includes(hint.topic) ||
++        scope !== `pool:${hint.resource}` ||
++        !hint.resource.startsWith("app_") ||
++        hint.revision === "0",
++    )
++  )
++    return HttpServerResponse.empty({ status: 400 });
++  const sql = yield* Effect.flatten(GroupDatabase);
++  yield* sql.withTransaction(
++    Effect.forEach(
++      value.changes,
++      ({ scope, hint }) =>
++        Effect.gen(function* () {
++          const changed = yield* sql`insert into hosted_change_heads (scope,topic,resource,revision)
++      values (${scope},${hint.topic},${hint.resource},${hint.revision}::bigint)
++      on conflict (scope,topic,resource) do update set revision = excluded.revision
++      where hosted_change_heads.revision < excluded.revision returning revision`;
++          if (changed.length)
++            yield* sql`insert into hosted_change_pending (scope,topic,resource,revision)
++        values (${scope},${hint.topic},${hint.resource},${hint.revision}::bigint)
++        on conflict (scope,topic,resource) do update set revision = greatest(hosted_change_pending.revision, excluded.revision), updated_at = now()`;
++        }),
++      { discard: true },
++    ),
++  );
++  const transport = yield* ScopedChanges;
++  yield* makeChangeJournal(sql).deliver(transport.publish);
++  return HttpServerResponse.empty({ status: 204 });
++}).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))));
+diff --git a/apps/hosted/server/src/implementation/scoped-changes.ts b/apps/hosted/server/src/implementation/scoped-changes.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5b70b95bdc27160ab6889e7e72bd4a975fce37e8
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/scoped-changes.ts
+@@ -0,0 +1,134 @@
++import { Context, Effect, Schema, Stream } from "effect";
++import { HttpServerResponse } from "effect/http";
++import { RuntimeProtocolFailed } from "@executor-js/sdk/core";
++import { type ChangeKey, type RevisionEvent, RevisionHint } from "apps/ui/contracts";
++import { authorizedChangeEvents } from "./authorized-change-stream.ts";
++
++export class ScopedChanges extends Context.Service<
++  ScopedChanges,
++  {
++    readonly subscribe: (
++      scope: string,
++      keys: readonly ChangeKey[],
++    ) => Stream.Stream<RevisionEvent, RuntimeProtocolFailed>;
++    readonly publish: (
++      scope: string,
++      hint: RevisionHint,
++    ) => Effect.Effect<void, RuntimeProtocolFailed>;
++  }
++>()("hosted/ScopedChanges") {}
++
++export const ChangeSnapshot = Schema.Struct({
++  revisions: Schema.Array(RevisionHint),
++  validUntil: Schema.optionalKey(Schema.Finite),
++  identity: Schema.optionalKey(Schema.String),
++});
++export const changeHeaders = { "cache-control": "private, no-store", "x-accel-buffering": "no" };
++export interface ChangeSource {
++  scope: string;
++  keys: readonly ChangeKey[];
++}
++export const changeIdentity = (parts: readonly string[]) =>
++  Effect.promise(async () =>
++    Array.from(
++      new Uint8Array(
++        await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(parts))),
++      ),
++      (byte) => byte.toString(16).padStart(2, "0"),
++    ).join(""),
++  );
++
++/** Each owner acknowledges registration before any authoritative head is read. */
++const registeredEvents = (
++  transport: typeof ScopedChanges.Service,
++  sources: readonly ChangeSource[],
++) =>
++  Stream.unwrap(
++    Effect.sync(() => {
++      const registered = new Set<number>();
++      let ready = false;
++      return Stream.mergeAll(
++        sources.map((source, index) =>
++          transport
++            .subscribe(source.scope, source.keys)
++            .pipe(Stream.map((event) => ({ index, event }))),
++        ),
++        { concurrency: "unbounded" },
++      ).pipe(
++        Stream.map(({ index, event }): RevisionEvent | undefined => {
++          if (!ready) {
++            if (event.kind === "current") registered.add(index);
++            if (registered.size !== sources.length) return undefined;
++            ready = true;
++            return { kind: "current", revisions: [], snapshotRequired: true };
++          }
++          return event.kind === "changed" ? event : undefined;
++        }),
++        Stream.filter((event) => event !== undefined),
++      );
++    }),
++  );
++
++/** Heartbeats do no application reads. An absolute expiry closes even a completely idle stream. */
++export const scopedChangeResponse = <E, R, E2, R2>(input: {
++  readonly sources: readonly ChangeSource[];
++  readonly current: Effect.Effect<typeof ChangeSnapshot.Type, E, R>;
++  readonly authorize: Effect.Effect<unknown, E2, R2>;
++  readonly validUntil?: number | undefined;
++  readonly identity?: string | undefined;
++  readonly denied: (error: unknown) => boolean;
++}) =>
++  Effect.gen(function* () {
++    const transport = yield* ScopedChanges;
++    const events = authorizedChangeEvents({
++      keys: input.sources.flatMap((source) => source.keys),
++      events: registeredEvents(transport, input.sources),
++      current: input.current.pipe(Effect.map((snapshot) => snapshot.revisions)),
++      authorize: input.authorize.pipe(Effect.asVoid),
++    });
++    const services = yield* Effect.context<Stream.Services<typeof events>>();
++    const changes = events.pipe(
++      Stream.map(
++        (event) =>
++          `event: ${event.kind}\ndata: ${JSON.stringify(
++            event.kind === "current"
++              ? {
++                  ...event,
++                  ...(input.validUntil === undefined ? {} : { validUntil: input.validUntil }),
++                  ...(input.identity === undefined ? {} : { identity: input.identity }),
++                }
++              : event,
++          )}\n\n`,
++      ),
++      Stream.catch((error) =>
++        Stream.make(
++          input.denied(error) ? "event: revoked\ndata: {}\n\n" : "event: resync\ndata: {}\n\n",
++        ),
++      ),
++      Stream.provideContext(services),
++    );
++    const heartbeat = Stream.tick("15 seconds").pipe(
++      Stream.drop(1),
++      Stream.map(() => ": heartbeat\n\n"),
++    );
++    let stream = Stream.merge(changes, heartbeat, { haltStrategy: "left" });
++    if (input.validUntil !== undefined) {
++      const expiry = Stream.fromEffect(
++        Effect.sleep(Math.max(0, input.validUntil - Date.now())),
++      ).pipe(
++        Stream.map(() => "event: revoked\ndata: {}\n\n"),
++        Stream.concat(Stream.never),
++      );
++      // Finish after the terminal frame is consumed; ending the expiry branch can cancel its frame.
++      stream = Stream.merge(stream, expiry, { haltStrategy: "left" }).pipe(
++        Stream.takeUntil((frame) => frame === "event: revoked\ndata: {}\n\n"),
++      );
++    }
++    return HttpServerResponse.stream(
++      stream.pipe(Stream.provideContext(services), Stream.encodeText),
++      {
++        contentType: "text/event-stream",
++        headers: changeHeaders,
++      },
++    );
++  });
+diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
+index 2aec4993ba4b68825307bd4637593b76c7a2cc56..74e7324b62b0d9762d77c4b58eb96e5813067dd1 100644
+--- a/apps/hosted/server/src/index.ts
++++ b/apps/hosted/server/src/index.ts
+@@ -119,6 +119,13 @@ export { makeScheduledAuthority } from "./implementation/schedules.ts";
+ 
+ export { runAccountRechecks } from "./implementation/account-rechecks.ts";
+ export { makeChangeJournal } from "./implementation/change-revisions.ts";
++export { ScopedChanges } from "./implementation/scoped-changes.ts";
++export {
++  makeOrganizationChanges,
++  organizationChangesPath,
++  organizationChangesCurrentPath,
++} from "./implementation/organization-changes.ts";
++export { poolChangePath, publishCommittedChanges } from "./implementation/pool-change-publish.ts";
+ export {
+   makeChangeRevisionHandler,
+   changeRevisionsPath,
+diff --git a/apps/hosted/web/src/contracts/account-observations.ts b/apps/hosted/web/src/contracts/account-observations.ts
+index 2c64551860682681bf0928283026f7dd2b092c6e..51a04ecb1a02b3e7857f33e363fef2e9ff67f63e 100644
+--- a/apps/hosted/web/src/contracts/account-observations.ts
++++ b/apps/hosted/web/src/contracts/account-observations.ts
+@@ -6,7 +6,7 @@ export type { ObservationPolicy } from "@executor-js/hosted-server/account-obser
+ export type ObservationAudience = ObservationPolicy["read"];
+ import { browserOnly } from "@executor-js/ui/contracts/http";
+ import { acknowledge, invalidate } from "@executor-js/ui/contracts/mutations";
+-import { accountPolling } from "./account-polling.ts";
++import { changeProtected } from "./change-signal.ts";
+ import { Data, Effect } from "effect";
+ import { Atom } from "effect/reactivity";
+ import { HostedClient } from "./api.ts";
+@@ -17,25 +17,20 @@ class AccountKey extends Data.Class<{
+   readonly account: AccountId;
+ }> {}
+ 
+-// Neither sent with the page nor kept after the row closes: every view reads the current policy
+-// verdict, so a revoked grant never shows readings fetched under the old one. Reads never collect.
++// Not sent with the page, and nothing retained is shown: every view reads the current policy
++// verdict through the change fence, so a revoked grant never shows readings fetched under the old
++// one. Reads never collect. The server's collections and policy changes commit `accounts`
++// revisions, so a visible row reads again when they land, never on a timer.
+ const observations = Atom.family((key: AccountKey) =>
+-  protectedQuery(browserOnly(HostedClient.query("accounts", "observations", { params: key }))),
+-);
+-// The server collects on its own interval; a visible row reads the retained report again so new
+-// readings appear without a manual refresh. Unavailable or prolonged collections back off.
+-const polledObservations = Atom.family((key: AccountKey) =>
+-  accountPolling(
+-    observations(key),
+-    (view) => view.reports.some((report) => report.collecting),
+-    (view) => view.reports.some((report) => report.freshness === "unavailable"),
++  browserOnly(HostedClient.query("accounts", "observations", { params: key })).pipe(
++    changeProtected(key.organization, ["accounts", "membership"]),
+   ),
+ );
+ /** The caller's view of an account's retained usage, with what the policy lets them do. */
+ export const accountObservationsAtom = (key: {
+   readonly organization: OrganizationReference;
+   readonly account: AccountId;
+-}) => polledObservations(new AccountKey(key));
++}) => observations(new AccountKey(key));
+ 
+ const refreshObservations = Atom.family((key: AccountKey) =>
+   HostedClient.runtime.fn((_: void, get) =>
+diff --git a/apps/hosted/web/src/contracts/account-projection.ts b/apps/hosted/web/src/contracts/account-projection.ts
+index 337f4134f823c8a2d5fd93d5a4a303336ae6f883..e87ad73ac77099eb6f83abde195c61f9a003991b 100644
+--- a/apps/hosted/web/src/contracts/account-projection.ts
++++ b/apps/hosted/web/src/contracts/account-projection.ts
+@@ -1,12 +1,10 @@
+ import { hydrated } from "@executor-js/ui/contracts/http";
+-import { readInto } from "@executor-js/ui/contracts/mutations";
+-import { revalidated } from "@executor-js/ui/contracts/refresh";
++import { changeProtected } from "./change-signal.ts";
+ import { Data, Effect } from "effect";
+ import { Atom, AsyncResult } from "effect/reactivity";
+ import type { AppId } from "@executor-js/sdk";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+ import { HostedClient } from "./api.ts";
+-import { protectedQuery } from "./protected-query.ts";
+ 
+ class OrganizationKey extends Data.Class<{ readonly organization: OrganizationReference }> {}
+ class ListKey extends Data.Class<{
+@@ -16,8 +14,7 @@ class ListKey extends Data.Class<{
+ 
+ const accounts = Atom.family((key: OrganizationKey) =>
+   HostedClient.query("resourceAccess", "accounts", hydrated({ params: key, query: {} })).pipe(
+-    revalidated,
+-    protectedQuery,
++    changeProtected(key.organization, ["accounts", "membership"]),
+   ),
+ );
+ const lists = Atom.family((key: ListKey) =>
+@@ -41,15 +38,17 @@ export const savedAccountRowsAtom = (key: {
+ export const refreshSavedAccountRows = (get: Atom.FnContext, organization: OrganizationReference) =>
+   get.refresh(accounts(new OrganizationKey({ organization })));
+ 
+-/** Completion owns a fresh read; a retained list value is not proof that refresh succeeded. */
++/**
++ * Completion owns a fresh read; a retained list value is not proof that refresh succeeded. That
++ * read answers the mutation only. The list itself shows only what the change fence accepts, so it
++ * is refreshed through the fence instead of being written with this unfenced body.
++ */
+ export const reconcileSavedAccountRows = (
+   get: Atom.FnContext,
+   organization: OrganizationReference,
+ ) =>
+   Effect.flatMap(HostedClient, (client) =>
+-    readInto(
+-      get,
+-      accounts(new OrganizationKey({ organization })),
+-      client.resourceAccess.accounts({ params: { organization }, query: {} }),
+-    ),
++    client.resourceAccess
++      .accounts({ params: { organization }, query: {} })
++      .pipe(Effect.tap(() => Effect.sync(() => refreshSavedAccountRows(get, organization)))),
+   );
+diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/src/contracts/change-signal.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..193e908c39f85348b8399691275a0a4cb531fd2c
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/change-signal.ts
+@@ -0,0 +1,191 @@
++/** Dashboard reads that follow the organization's committed revisions instead of a timer. */
++import { makeChangeFeed, type ChangeFeed } from "@executor-js/ui/contracts/refresh";
++import { Option } from "effect";
++import { AsyncResult, Atom } from "effect/reactivity";
++import {
++  OrganizationForbidden,
++  type OrganizationReference,
++} from "@executor-js/hosted-server/organization";
++import { organizationTargetAtom } from "./organization-reference.ts";
++import { ChangeRefreshFailed, type HostedError } from "./errors.ts";
++import { retainProtectedFailure } from "./protected-query.ts";
++
++/** A page opened again within this time shows its retained value while the feed decides. */
++const retention = "30 minutes";
++type Registry = Atom.AtomContext["registry"];
++/** Feeds are shared only within one registry, so another registry never sees its heads. */
++const feeds = new WeakMap<Registry, Map<string, ChangeFeed>>();
++
++/**
++ * One stream per organization URL in this registry, never on the server. A revoked feed,
++ * including one whose principal changed through a sign-out and sign-in at the same URL, is
++ * replaced the next time a read opens one; the new feed binds the new identity and starts with
++ * no accepted heads.
++ */
++const organizationFeed = (registry: Registry, organization: OrganizationReference) => {
++  const target = registry.get(organizationTargetAtom(organization)) ?? organization;
++  const base = `/api/organizations/${encodeURIComponent(target)}/changes`;
++  let scoped = feeds.get(registry);
++  if (scoped === undefined) {
++    scoped = new Map();
++    feeds.set(registry, scoped);
++  }
++  const existing = scoped.get(base);
++  if (existing !== undefined && existing.status() !== "revoked") return existing;
++  existing?.close();
++  const feed = makeChangeFeed({ stream: base, current: `${base}/current` });
++  scoped.set(base, feed);
++  return feed;
++};
++
++/**
++ * Retain `self` and publish a new value only from a read the organization's change feed
++ * accepted. Until the first one, the page shows loading: a retained, hydrated or prefetched value
++ * may belong to an earlier session in this registry, so it is never shown. After that, a read
++ * runs after a hint, a missed head on reconnect, a server deadline or a refresh of this atom, and
++ * its body stays buffered until the fence accepts it. While a read
++ * runs, the previous value is shown as waiting; a rejected read keeps it. Ended access publishes
++ * a denial, so protected content is cleared rather than retained. No focus or interval read.
++ */
++const changeRetained =
++  (organization: OrganizationReference, topics: readonly string[]) =>
++  <A, E>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
++    type Value = AsyncResult.AsyncResult<A, E | OrganizationForbidden | ChangeRefreshFailed>;
++    const source = Atom.setIdleTTL(self, retention);
++    // Every read watches the session too, so a revocation reaches the uncached head read at once.
++    const watched = [...new Set([...topics, "session"])];
++    /**
++     * This atom is shared by every registry. A refresh of it, or a write through
++     * `changeProtected`, changes this signal in the calling registry only, and that registry's
++     * own watch turns it into one fenced read. Every build and write yields a new value, so
++     * each one notifies. (A write context can only `set` writables; `refreshSelf` merely
++     * re-runs the writer's own read, so it cannot reach the watch.)
++     */
++    const requests: Atom.Writable<object, void> = Atom.writable(
++      () => ({}),
++      (get) => get.setSelf({}),
++    );
++    const atom = Atom.readable(
++      (get): Value => {
++        if (typeof window === "undefined") return get(source);
++        /** The last accepted value; nothing is shown before the first one. */
++        let shown: Value | undefined;
++        const display = () =>
++          shown ?? AsyncResult.initial<A, E | OrganizationForbidden | ChangeRefreshFailed>(true);
++        let started = false;
++        let owning = false;
++        let ended = false;
++        let buffered: Value | undefined;
++        let settled: (() => void) | undefined;
++        const publish = (value: Value) => get.setSelf(value);
++        get.subscribe(source, (next) => {
++          if (ended) return;
++          if (owning) {
++            buffered = next;
++            if (!next.waiting) {
++              const resolve = settled;
++              settled = undefined;
++              resolve?.();
++            }
++            return;
++          }
++          // The source's own first load is unfenced and never shown. Anything that moves the
++          // source after a fenced read started is read again through the fence instead.
++          if (started && !next.waiting) watch.request();
++        });
++        // Set before refreshing: a source that settles synchronously reports during `refresh`.
++        const reread = () =>
++          new Promise<void>((resolve) => {
++            buffered = undefined;
++            settled = resolve;
++            get.refresh(source);
++          });
++        const fenced = async () => {
++          started = true;
++          owning = true;
++          // Accepted data stays on screen while it is read again.
++          publish(AsyncResult.waiting(display()));
++          try {
++            await watch.read(reread);
++            if (ended) return;
++            if (buffered !== undefined && !buffered.waiting) shown = buffered;
++            publish(display());
++          } catch {
++            // Newer data exists or could not be checked: keep the last accepted value, but as a
++            // failure, never as current. Its next hint, request or handshake reads again.
++            if (!ended)
++              publish(
++                AsyncResult.fail(new ChangeRefreshFailed(), {
++                  previousSuccess:
++                    shown !== undefined && AsyncResult.isSuccess(shown)
++                      ? Option.some(shown)
++                      : Option.none(),
++                }),
++              );
++          } finally {
++            owning = false;
++            settled = undefined;
++          }
++        };
++        const watch = organizationFeed(get.registry, organization).watch({
++          topics: watched,
++          refresh: fenced,
++          // Dangerous path: a stream revocation, a 401/403 head read (session, membership or
++          // role re-checked on every read) or a changed principal clears protected content
++          // here; the buffered body of any in-flight read is dropped, never published.
++          revoked: () => {
++            ended = true;
++            buffered = undefined;
++            shown = undefined;
++            settled?.();
++            publish(AsyncResult.fail(new OrganizationForbidden()));
++          },
++        });
++        get.subscribe(requests, () => watch.request());
++        get.addFinalizer(() => {
++          watch.stop();
++          const resolve = settled;
++          settled = undefined;
++          resolve?.();
++        });
++        // Subscribing starts the source's own load; only a fenced read's body is ever shown.
++        get.once(source);
++        return display();
++      },
++      // A refresh of this atom (a write's acknowledgement, a person's retry) is one fenced read,
++      // coalesced with any hint-driven one; it never refreshes the source directly.
++      (refresh) => (typeof window === "undefined" ? refresh(source) : refresh(requests)),
++    );
++    return { atom, requests };
++  };
++
++/**
++ * The dashboard's protected, change-following read. Reading keeps `protectedQuery`'s rules: an
++ * authoritative denial clears the value, any other failure keeps the last accepted one. Writing
++ * never publishes a body: an acknowledgement, a mutation's own read (`readInto`) or a person's
++ * retry becomes one fenced read, and an invalidation only clears what is shown.
++ */
++export const changeProtected =
++  (organization: OrganizationReference, topics: readonly string[]) =>
++  <A, E extends HostedError>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
++    type Value = AsyncResult.AsyncResult<A, E | OrganizationForbidden | ChangeRefreshFailed>;
++    const { atom: fenced, requests } = changeRetained(organization, topics)(self);
++    const query: Atom.Writable<Value, ((current: A) => A) | undefined> = Atom.writable(
++      (get): Value => {
++        const result = get(fenced);
++        const previous = get.self<Value>();
++        if (AsyncResult.isFailure(result))
++          return retainProtectedFailure(result.cause) === false
++            ? AsyncResult.failure(result.cause, { waiting: result.waiting })
++            : AsyncResult.failureWithPrevious(result.cause, { previous, waiting: result.waiting });
++        if (result.waiting && Option.isSome(previous)) return AsyncResult.waiting(previous.value);
++        return result;
++      },
++      (get, update) => {
++        if (update === undefined) get.setSelf(AsyncResult.initial(true));
++        get.set(requests, undefined);
++      },
++      (refresh) => refresh(fenced),
++    );
++    return query;
++  };
+diff --git a/apps/hosted/web/src/contracts/errors.ts b/apps/hosted/web/src/contracts/errors.ts
+index 862f12cb6d19d426d81bed40a06170a4af2b6f3e..8b9325735992b2345426004f5ec5679993acb7fa 100644
+--- a/apps/hosted/web/src/contracts/errors.ts
++++ b/apps/hosted/web/src/contracts/errors.ts
+@@ -1,17 +1,23 @@
+ import { registryErrorMessage } from "@executor-js/ui/contracts/registry-error";
+ import { mayHaveWrittenFailure } from "@executor-js/sdk";
+ import type { HostedApi } from "@executor-js/hosted-server/contracts";
+-import { Cause, Match, Option, type Schema } from "effect";
++import { Cause, Data, Match, Option, type Schema } from "effect";
+ import type { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+ import type { HttpClientError } from "effect/http";
+ import { outdatedPageMessage, pageOutdated } from "@executor-js/dashboard-start/build-change";
+ 
+ type Groups = (typeof HostedApi.groups)[keyof typeof HostedApi.groups];
++/**
++ * A change-following read whose newer data could not be confirmed current. The page keeps its last
++ * confirmed data and says so; nothing failed on the server, and it is never an access denial.
++ */
++export class ChangeRefreshFailed extends Data.TaggedError("ChangeRefreshFailed")<{}> {}
+ /** The hosted API owns its error algebra, including membership and authentication failures. */
+ export type HostedError =
+   | HttpApiEndpoint.Errors<HttpApiGroup.Endpoints<Groups>>
+   | HttpClientError.HttpClientError
+-  | Schema.SchemaError;
++  | Schema.SchemaError
++  | ChangeRefreshFailed;
+ const errorMessage = Match.type<HostedError>().pipe(
+   Match.tagsExhaustive({
+     AccessDependencyUnavailable: ({ message, recovery }) => `${message} ${recovery.action}`,
+@@ -246,6 +252,8 @@ const errorMessage = Match.type<HostedError>().pipe(
+       pageOutdated()
+         ? outdatedPageMessage
+         : "The server returned an unexpected response. Reload and try again.",
++    ChangeRefreshFailed: () =>
++      "Couldn't confirm the latest changes. Showing the last confirmed version. Try again.",
+   }),
+ );
+ /**
+diff --git a/apps/hosted/web/src/contracts/organization.ts b/apps/hosted/web/src/contracts/organization.ts
+index f8a9cf4e0e619d9036100761aace2034c8896117..a37d52d86a5e59c08e194d72eca640f7d0692d89 100644
+--- a/apps/hosted/web/src/contracts/organization.ts
++++ b/apps/hosted/web/src/contracts/organization.ts
+@@ -1,8 +1,7 @@
+ import { hydrated } from "@executor-js/ui/contracts/http";
+ import { revalidated } from "@executor-js/ui/contracts/refresh";
+-import { accountPolling, unavailableAccountHealth } from "./account-polling.ts";
++import { changeProtected } from "./change-signal.ts";
+ import { observeBrowserUsage } from "./product-analytics.ts";
+-import { protectedQuery } from "./protected-query.ts";
+ import { hydratedResult } from "@executor-js/ui/contracts/http";
+ import {
+   organizationTargetAtom,
+@@ -198,12 +197,7 @@ export const organizationPresentation = Atom.family((reference: OrganizationRefe
+ /** Persisted app/account inventory for the current organization. */
+ export const inventoryAtom = Atom.family((organization: OrganizationReference) =>
+   HostedClient.query("organization", "inventory", hydrated({ params: { organization } })).pipe(
+-    revalidated,
+-    (source) =>
+-      accountPolling(source, undefined, ({ accounts }) =>
+-        accounts.some(({ health }) => unavailableAccountHealth(health)),
+-      ),
+-    protectedQuery,
++    changeProtected(organization, ["accounts", "apps", "membership"]),
+   ),
+ );
+ /** The member and invitation fields the settings page shows; Better Auth's responses decode to them. */
+diff --git a/apps/hosted/web/src/contracts/resource-access.ts b/apps/hosted/web/src/contracts/resource-access.ts
+index 4bbe77a29602548eb09566dfd6b61f246c999682..f12856d8227d0995018d2368091fe58bac51d0f9 100644
+--- a/apps/hosted/web/src/contracts/resource-access.ts
++++ b/apps/hosted/web/src/contracts/resource-access.ts
+@@ -2,7 +2,7 @@
+ import { hydrated } from "@executor-js/ui/contracts/http";
+ import { loadedValue } from "@executor-js/dashboard-start/loaded-value";
+ import { revalidated } from "@executor-js/ui/contracts/refresh";
+-import { accountPolling, unavailableAccountHealth } from "./account-polling.ts";
++import { changeProtected } from "./change-signal.ts";
+ import { Data, Effect } from "effect";
+ import { Atom, AsyncResult } from "effect/reactivity";
+ import type { Account, AccountId, AppId } from "@executor-js/sdk";
+@@ -41,15 +41,8 @@ const directory = Atom.family((key: DirectoryKey) =>
+       query: { view: key.view },
+     }),
+   ).pipe(
+-    revalidated,
+-    (source) =>
+-      accountPolling(
+-        source,
+-        ({ pendingApp }) => pendingApp,
+-        ({ accounts }) => accounts.some(({ health }) => unavailableAccountHealth(health)),
+-        { active: true },
+-      ),
+-    protectedQuery,
++    // Pending apps, health checks, sharing and membership all commit a revision; none polls.
++    changeProtected(key.organization, ["accounts", "apps", "membership"]),
+   ),
+ );
+ const appAccess = Atom.family((key: AppKey) =>
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+index 9235a2c6408f24376457f3e83e5b604b7d4b48d0..ba8537f21131913320fe64d8de3cb14f49c8f2ae 100644
+--- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+@@ -141,6 +141,10 @@ export function AccountsPage({
+     setReconnecting(undefined);
+     setReconnectBusy(false);
+   };
++  // Accepted rows stay on screen while a change-driven read runs; say so only then.
++  const updating =
++    (savedRows.result.waiting && Option.isSome(savedRows.data)) ||
++    (directory.result.waiting && Option.isSome(directory.data));
+   const role = useOrganizationDetails()?.role;
+   const admin = role !== undefined && role !== "member";
+   const manageClients = admin && (
+@@ -155,6 +159,11 @@ export function AccountsPage({
+         Failure={HostedFailure}
+         action={
+           <>
++            {updating && (
++              <span role="status" className="self-center text-xs text-muted-foreground">
++                Updating…
++              </span>
++            )}
+             <VerifyIdentities
+               query={resourceInventoryAtom(organization)}
+               identify={identify}
+diff --git a/packages/app-data/src/contracts/change-revisions.ts b/packages/app-data/src/contracts/change-revisions.ts
+index fdc4545ed67f5b43d1799bb5eed612a88cb46e2f..5792903eb6901f3d59fd81eb69587a142fb50ffa 100644
+--- a/packages/app-data/src/contracts/change-revisions.ts
++++ b/packages/app-data/src/contracts/change-revisions.ts
+@@ -29,6 +29,8 @@ export const RevisionEvent = Schema.Union([
+     kind: Schema.Literal("current"),
+     revisions: Schema.Array(RevisionHint).check(Schema.isMaxLength(32)),
+     snapshotRequired: Schema.Literal(true),
++    identity: Schema.optionalKey(Schema.String),
++    validUntil: Schema.optionalKey(Schema.Finite),
+   }),
+ ]);
+ export type RevisionEvent = typeof RevisionEvent.Type;
+diff --git a/packages/apps/src/client.ts b/packages/apps/src/client.ts
+index 9aedb7ca4445f0bd779a523a030f2a4af171f632..555e7e72573c317280b38fb8666902fd4e4de371 100644
+--- a/packages/apps/src/client.ts
++++ b/packages/apps/src/client.ts
+@@ -8,6 +8,15 @@ export {
+ } from "./contracts/live.ts";
+ export { createAppClient } from "./implementation/ui-client.ts";
+ export { makeRevisionFence } from "./implementation/revision-fence.ts";
++export {
++  ChangeReadRetry,
++  makeChangeFeed,
++  type ChangeActivity,
++  type ChangeFeed,
++  type ChangeStatus,
++  type ChangeWatch,
++  type ChangeWatchOptions,
++} from "./implementation/change-feed.ts";
+ 
+ export type {
+   AppMutation,
+diff --git a/packages/apps/src/implementation/change-feed.ts b/packages/apps/src/implementation/change-feed.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..e33b204c2062734063e021710d340e23f9c65f7e
+--- /dev/null
++++ b/packages/apps/src/implementation/change-feed.ts
+@@ -0,0 +1,603 @@
++/**
++ * One committed-revision stream per page. A watch reads again only after a hint, a handshake or a
++ * server deadline shows its data is behind; nothing here reads on a timer. The stream and the
++ * current-heads route both derive scope and resources on the server.
++ */
++import { Option, Schema } from "effect";
++import { newerRevision, revisionKey, RevisionEvent, RevisionHint } from "@executor-js/app-data";
++import { makeRevisionFence } from "./revision-fence.ts";
++
++/** Whether the page is following committed changes or needs to reconnect or sign in again. */
++export type ChangeStatus = "connecting" | "live" | "paused" | "revoked";
++
++/** Whether someone can see the page. Hidden pages hold no stream and make no reads. */
++export interface ChangeActivity {
++  readonly isActive: () => boolean;
++  readonly onActiveChange: (listener: (active: boolean) => void) => () => void;
++}
++
++/** Select a view's topics and its refresh and access-ended callbacks. */
++export interface ChangeWatchOptions {
++  /** Topics this watch's data depends on; omitted means every topic the server sends. */
++  readonly topics?: readonly string[];
++  /** Read again through `read`. Called only while active, and never while this watch reads. */
++  readonly refresh: () => unknown;
++  /** Access ended. Drop protected data now; defaults to `refresh`, whose refusal clears it. */
++  readonly revoked?: () => void;
++}
++
++/** Fence reads for one mounted view and stop them when that view leaves. */
++export interface ChangeWatch {
++  /**
++   * Run `work` between two authoritative head reads and return its result only once it is
++   * accepted: both reads agree, cover every head this page knows (handshake, hints and
++   * acknowledged writes) and, with a stream, the fence accepts them. Otherwise `work` runs again,
++   * a bounded number of times, and then this throws `ChangeReadRetry`. An unaccepted result is
++   * never returned; callers keep their previous accepted data.
++   */
++  readonly read: <T>(work: () => Promise<T>) => Promise<T>;
++  /** Ask for a read through `refresh`, coalesced with any hint-driven one. */
++  readonly request: () => void;
++  readonly stop: () => void;
++}
++
++/**
++ * A read that could not be accepted. `moving`: heads kept changing, and their hints will read
++ * again. `unavailable`: the head route could not be read; the next hint, handshake or return
++ * to the page reads again. Nothing retries on a timer.
++ */
++export class ChangeReadRetry extends Error {
++  readonly retryable = true;
++  readonly reason: "moving" | "unavailable";
++  constructor(reason: "moving" | "unavailable") {
++    super(`Change read not accepted: ${reason}`);
++    this.reason = reason;
++  }
++}
++
++/** Share one authorized revision stream among the page's mounted views. */
++export interface ChangeFeed {
++  readonly watch: (options: ChangeWatchOptions) => ChangeWatch;
++  readonly status: () => ChangeStatus;
++  readonly onStatus: (listener: () => void) => () => void;
++  /** Raise minimums with revisions a write actually returned. */
++  readonly acknowledge: (revisions: readonly RevisionHint[]) => void;
++  /** Reconnect now instead of waiting for the next retry. */
++  readonly reconnect: () => void;
++  readonly close: () => void;
++}
++
++/**
++ * `identity` is the server's opaque hash of organization, viewer and session (and app, for an
++ * app page). It is optional only so older fixtures decode; every current route sends it.
++ */
++const Current = Schema.Struct({
++  revisions: Schema.Array(RevisionHint),
++  validUntil: Schema.optional(Schema.Number),
++  identity: Schema.optional(Schema.String),
++});
++type Current = typeof Current.Type;
++const decodeCurrent = Schema.decodeUnknownOption(Current);
++const decodeEvent = Schema.decodeUnknownOption(RevisionEvent);
++/** Handshake fields beyond `RevisionEvent`, decoded on their own so either contract version reads. */
++const Handshake = Schema.Struct({
++  identity: Schema.optional(Schema.String),
++  validUntil: Schema.optional(Schema.Number),
++});
++const decodeHandshake = Schema.decodeUnknownOption(Handshake);
++
++/** Reads whose heads keep moving stop here; the hints for those moves read again. */
++const attempts = 3;
++/** Only a disconnect lasting this long is shown; a quick reconnect stays silent. */
++const pausedAfter = 30_000;
++/** The server sends a heartbeat every 15 seconds; three missed ones mean the socket is gone. */
++const silentAfter = 45_000;
++/** The handshake is the server's first message; a stream that hasn't sent it is treated as lost. */
++const handshakeAfter = 10_000;
++/** Watches re-created by a render reuse the open stream. */
++const closeAfter = 1_000;
++const maximumDelay = 60_000;
++const maximumTimer = 2_147_483_647;
++
++class AccessEnded extends Error {}
++class Stopped extends Error {}
++
++const documentActivity: ChangeActivity = {
++  isActive: () => document.visibilityState === "visible",
++  onActiveChange: (listener) => {
++    const changed = () => listener(document.visibilityState === "visible");
++    document.addEventListener("visibilitychange", changed);
++    return () => document.removeEventListener("visibilitychange", changed);
++  },
++};
++
++/** Server-sent events over fetch, so access refusals are visible as status codes. */
++async function readEvents(
++  body: ReadableStream<Uint8Array>,
++  onBytes: () => void,
++  onEvent: (name: string, data: string) => void,
++) {
++  const reader = body.getReader();
++  const decoder = new TextDecoder();
++  let buffer = "";
++  for (;;) {
++    const { value, done } = await reader.read();
++    if (done) return;
++    onBytes();
++    buffer = (buffer + decoder.decode(value, { stream: true })).replaceAll("\r\n", "\n");
++    let end = buffer.indexOf("\n\n");
++    while (end >= 0) {
++      let name = "message";
++      const data: string[] = [];
++      for (const line of buffer.slice(0, end).split("\n")) {
++        if (line.startsWith("event:")) name = line.slice(6).trim();
++        else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
++      }
++      buffer = buffer.slice(end + 2);
++      if (data.length > 0) onEvent(name, data.join("\n"));
++      end = buffer.indexOf("\n\n");
++    }
++  }
++}
++
++interface WatchState {
++  readonly topics: ReadonlySet<string> | undefined;
++  readonly options: ChangeWatchOptions;
++  readonly abort: AbortController;
++  /** Heads of this watch's last accepted read. Empty until one is accepted. */
++  heads: Map<string, string>;
++  validUntil: number | undefined;
++  deadline: ReturnType<typeof setTimeout> | undefined;
++  dirty: boolean;
++  reading: boolean;
++  /** The last read through this watch was not accepted. */
++  failed: boolean;
++  /** `request()` asked for a read; consumed when one starts, so one asked mid-read survives. */
++  requested: boolean;
++}
++
++/** Follow committed revisions, reconcile reconnects and accept reads under one server identity. */
++export function makeChangeFeed(input: {
++  readonly stream: string;
++  readonly current: string;
++  readonly activity?: ChangeActivity;
++}): ChangeFeed {
++  const activity = input.activity ?? documentActivity;
++  const watches = new Set<WatchState>();
++  const statusListeners = new Set<() => void>();
++  let status: ChangeStatus = "connecting";
++  let fence: ReturnType<typeof makeRevisionFence> | undefined;
++  let fenceKeys = "";
++  /**
++   * The principal this feed serves: the first identity a handshake or head read reported. A
++   * different one ends access at once; a missing one after that is rejected. A feed never moves
++   * to another principal, so nothing it accepted can reach one.
++   */
++  let identity: string | undefined;
++  /** The current handshake's deadline; it bounds every read accepted on that connection too. */
++  let streamUntil: number | undefined;
++  let connection: ReturnType<ReturnType<typeof makeRevisionFence>["begin"]> | undefined;
++  /** Heads the stream has told this page, from the handshake and every later hint. */
++  const known = new Map<string, string>();
++  const topicOf = new Map<string, string>();
++  let stream: AbortController | undefined;
++  let failures = 0;
++  /** A stream that never handshook lets watches read once so the page is not left empty. */
++  let fallback = false;
++  let revoked = false;
++  let closed = false;
++  let retry: ReturnType<typeof setTimeout> | undefined;
++  let paused: ReturnType<typeof setTimeout> | undefined;
++  let silent: ReturnType<typeof setTimeout> | undefined;
++  let idle: ReturnType<typeof setTimeout> | undefined;
++
++  const setStatus = (next: ChangeStatus) => {
++    if (status === next) return;
++    status = next;
++    for (const listener of statusListeners) listener();
++  };
++  const interested = (watch: WatchState, key: string) => {
++    const topic = topicOf.get(key);
++    return watch.topics === undefined || (topic !== undefined && watch.topics.has(topic));
++  };
++  const behind = (watch: WatchState) => {
++    if (watch.heads.size === 0) return true;
++    if (watch.validUntil !== undefined && Date.now() >= watch.validUntil) return true;
++    for (const [key, revision] of known) {
++      if (!interested(watch, key)) continue;
++      const held = watch.heads.get(key);
++      if (held === undefined || newerRevision(revision, held)) return true;
++    }
++    return false;
++  };
++  const kick = (watch: WatchState) => {
++    if (closed || revoked || watch.abort.signal.aborted) return;
++    if (!watch.dirty || watch.reading || !activity.isActive()) return;
++    // The first read waits for the handshake unless the stream could not provide one.
++    if (connection === undefined && !fallback) return;
++    watch.dirty = false;
++    watch.requested = false;
++    watch.reading = true;
++    void Promise.resolve()
++      .then(() => watch.options.refresh())
++      .catch(() => undefined)
++      .finally(() => {
++        watch.reading = false;
++        // `dirty` here means a hint, request or deadline arrived during the read.
++        const arrived = watch.dirty;
++        if (watch.failed) {
++          // Stay behind until something new arrives; a failure alone never reads again.
++          watch.dirty = arrived || behind(watch);
++          if (arrived) kick(watch);
++          return;
++        }
++        // A hint the finished read already covered needs no second read; an explicit request does.
++        watch.dirty = watch.requested || (arrived && behind(watch));
++        kick(watch);
++      });
++  };
++  const mark = (watch: WatchState) => {
++    watch.dirty = true;
++    kick(watch);
++  };
++
++  const clearTimers = () => {
++    clearTimeout(retry);
++    clearTimeout(paused);
++    clearTimeout(silent);
++    retry = paused = silent = undefined;
++  };
++  const disconnect = () => {
++    stream?.abort();
++    stream = undefined;
++    clearTimeout(silent);
++    silent = undefined;
++    if (connection !== undefined) fence?.disconnect();
++    connection = undefined;
++  };
++  const endAccess = () => {
++    if (revoked) return;
++    revoked = true;
++    disconnect();
++    clearTimers();
++    setStatus("revoked");
++    for (const watch of watches) (watch.options.revoked ?? watch.options.refresh)();
++  };
++
++  /** False when `reported` cannot be this feed's principal; a different one also ends access. */
++  const bind = (reported: string | undefined) => {
++    if (identity === undefined) {
++      identity = reported;
++      return true;
++    }
++    if (reported === identity) return true;
++    if (reported !== undefined) endAccess();
++    return false;
++  };
++  /** Accepted data may not outlive the earliest deadline the server gave for it. */
++  const expireBy = (watch: WatchState, at: number) => {
++    if (watch.validUntil !== undefined && watch.validUntil <= at) return;
++    watch.validUntil = at;
++    clearTimeout(watch.deadline);
++    watch.deadline = setTimeout(
++      () => mark(watch),
++      Math.min(maximumTimer, Math.max(0, at - Date.now())),
++    );
++  };
++
++  const handshake = (revisions: readonly RevisionHint[], extras: typeof Handshake.Type) => {
++    if (!bind(extras.identity)) {
++      if (!revoked) resync();
++      return;
++    }
++    const keys = `${identity ?? ""}\n${revisions.map(revisionKey).sort().join("\n")}`;
++    if (fence === undefined || keys !== fenceKeys) {
++      // The fence scope binds the URL and the principal it serves.
++      fence = makeRevisionFence(`${input.stream}\n${identity ?? ""}`, revisions);
++      fenceKeys = keys;
++    }
++    const next = fence.begin();
++    if (!fence.handshake(next, revisions)) return resync();
++    connection = next;
++    if (stream !== undefined) watchdog(stream);
++    known.clear();
++    for (const hint of revisions) {
++      const key = revisionKey(hint);
++      known.set(key, hint.revision);
++      topicOf.set(key, hint.topic);
++    }
++    failures = 0;
++    fallback = false;
++    clearTimeout(paused);
++    paused = undefined;
++    streamUntil = extras.validUntil;
++    if (streamUntil !== undefined) for (const watch of watches) expireBy(watch, streamUntil);
++    setStatus("live");
++    for (const watch of watches) if (behind(watch)) mark(watch);
++  };
++  /** Stream hints and acknowledged writes both raise what an accepted read must cover. */
++  const changed = (hint: RevisionHint) => {
++    const key = revisionKey(hint);
++    fence?.observe(hint);
++    topicOf.set(key, hint.topic);
++    const held = known.get(key);
++    if (held === undefined || newerRevision(hint.revision, held)) known.set(key, hint.revision);
++    for (const watch of watches) {
++      if (!interested(watch, key)) continue;
++      const seen = watch.heads.get(key);
++      if (seen === undefined || newerRevision(hint.revision, seen)) mark(watch);
++    }
++  };
++
++  const wanted = () => !closed && !revoked && watches.size > 0 && activity.isActive();
++  const schedule = (delay: number) => {
++    clearTimeout(retry);
++    retry = wanted() ? setTimeout(connect, delay) : undefined;
++  };
++  const lost = () => {
++    disconnect();
++    if (!wanted()) return;
++    fallback = true;
++    for (const watch of watches) kick(watch);
++    paused ??= setTimeout(() => {
++      paused = undefined;
++      if (wanted() && connection === undefined) setStatus("paused");
++    }, pausedAfter);
++    const base = Math.min(maximumDelay, 1_000 * 2 ** failures++);
++    schedule(base / 2 + Math.random() * (base / 2));
++  };
++  function resync() {
++    // One immediate reconnect after a server-side resync; repeats back off.
++    const immediate = failures === 0;
++    lost();
++    if (immediate && wanted()) schedule(0);
++  }
++  const watchdog = (owner: AbortController) => {
++    clearTimeout(silent);
++    silent = setTimeout(
++      () => {
++        if (stream === owner) lost();
++      },
++      connection === undefined ? handshakeAfter : silentAfter,
++    );
++  };
++  async function connect() {
++    clearTimeout(retry);
++    retry = undefined;
++    if (stream !== undefined || !wanted()) return;
++    const owner = new AbortController();
++    stream = owner;
++    if (status !== "paused") setStatus("connecting");
++    watchdog(owner);
++    try {
++      const response = await fetch(input.stream, {
++        credentials: "same-origin",
++        cache: "no-store",
++        headers: { accept: "text/event-stream" },
++        signal: owner.signal,
++      });
++      if (stream !== owner) return;
++      if (response.status === 401 || response.status === 403) return endAccess();
++      if (!response.ok || response.body === null) return lost();
++      await readEvents(
++        response.body,
++        () => watchdog(owner),
++        (name, data) => {
++          if (stream !== owner) return;
++          if (name === "revoked") return endAccess();
++          if (name === "resync") return resync();
++          const json = Option.liftThrowable(JSON.parse)(data);
++          const event = Option.flatMap(json, decodeEvent);
++          if (Option.isNone(event)) return resync();
++          if (event.value.kind === "changed") return changed(event.value.hint);
++          const extras = Option.flatMap(json, decodeHandshake);
++          if (Option.isNone(extras)) return resync();
++          handshake(event.value.revisions, extras.value);
++        },
++      );
++      if (stream === owner) lost();
++    } catch {
++      if (stream === owner) lost();
++    }
++  }
++
++  /**
++   * Every head read is also the server's access check: it re-checks session, membership and
++   * role. A membership or access change that removes access answers 401/403 here and ends
++   * access, which clears protected data. That clearing path is the dangerous one; keep head
++   * reads uncached and never share them across feeds.
++   */
++  const fetchCurrent = async (): Promise<Current> => {
++    const response = await fetch(input.current, {
++      credentials: "same-origin",
++      cache: "no-store",
++      headers: { accept: "application/json" },
++    });
++    if (response.status === 401 || response.status === 403) {
++      endAccess();
++      throw new AccessEnded();
++    }
++    if (!response.ok) throw new ChangeReadRetry("unavailable");
++    const decoded = decodeCurrent(await response.json().catch(() => undefined));
++    if (Option.isNone(decoded)) throw new ChangeReadRetry("unavailable");
++    // Another principal ends access; heads missing their identity are never accepted.
++    if (!bind(decoded.value.identity)) {
++      if (revoked) throw new AccessEnded();
++      throw new ChangeReadRetry("unavailable");
++    }
++    return decoded.value;
++  };
++  /**
++   * Watches share head reads. A read that must follow some work only joins one started after that
++   * work finished, so a shared answer is never older than the caller needs.
++   */
++  let started = 0;
++  let pending: { readonly id: number; readonly promise: Promise<Current> } | undefined;
++  const current = (after: number) => {
++    if (pending !== undefined && pending.id > after) return pending.promise;
++    const id = ++started;
++    const promise = fetchCurrent()
++      .catch((error: unknown) => {
++        throw error instanceof AccessEnded ? error : new ChangeReadRetry("unavailable");
++      })
++      .finally(() => {
++        if (pending?.id === id) pending = undefined;
++      });
++    pending = { id, promise };
++    return promise;
++  };
++  const sameHeads = (watch: WatchState, left: Current, right: Current) => {
++    const heads = (value: Current) =>
++      value.revisions
++        .filter((hint) => watch.topics === undefined || watch.topics.has(hint.topic))
++        .map((hint) => `${revisionKey(hint)}=${hint.revision}`)
++        .sort()
++        .join("\n");
++    return heads(left) === heads(right);
++  };
++  /** Every head this page knows, including acknowledged writes, is at or below `value`'s. */
++  const coversKnown = (value: Current) => {
++    const read = new Map(value.revisions.map((hint) => [revisionKey(hint), hint.revision]));
++    for (const [key, revision] of known) {
++      const seen = read.get(key);
++      if (seen === undefined || newerRevision(revision, seen)) return false;
++    }
++    return true;
++  };
++  const record = (watch: WatchState, value: Current) => {
++    watch.heads = new Map(value.revisions.map((hint) => [revisionKey(hint), hint.revision]));
++    for (const hint of value.revisions) topicOf.set(revisionKey(hint), hint.topic);
++    watch.validUntil = undefined;
++    clearTimeout(watch.deadline);
++    watch.deadline = undefined;
++    if (value.validUntil !== undefined) expireBy(watch, value.validUntil);
++    // A handshake deadline still ahead also bounds this read; a passed one was already read for.
++    if (streamUntil !== undefined && streamUntil > Date.now()) expireBy(watch, streamUntil);
++  };
++
++  const onActive = (active: boolean) => {
++    if (!active) {
++      // Hidden pages hold nothing open; showing it again handshakes and compares heads.
++      disconnect();
++      clearTimers();
++      if (status !== "revoked") setStatus("connecting");
++      return;
++    }
++    void connect();
++    for (const watch of watches) kick(watch);
++  };
++  const stopActivity = activity.onActiveChange(onActive);
++  const online = () => {
++    if (stream === undefined) void connect();
++  };
++  window.addEventListener("online", online);
++
++  return {
++    watch: (options) => {
++      const watch: WatchState = {
++        topics: options.topics === undefined ? undefined : new Set(options.topics),
++        options,
++        abort: new AbortController(),
++        heads: new Map(),
++        validUntil: undefined,
++        deadline: undefined,
++        dirty: true,
++        reading: false,
++        failed: false,
++        requested: false,
++      };
++      watches.add(watch);
++      clearTimeout(idle);
++      idle = undefined;
++      void connect();
++      kick(watch);
++      // Ended access, including a changed principal, rejects any body still in flight.
++      const live = () => {
++        if (watch.abort.signal.aborted) throw new Stopped();
++        if (revoked) throw new AccessEnded();
++      };
++      return {
++        read: async <T>(work: () => Promise<T>): Promise<T> => {
++          let reason: ChangeReadRetry["reason"] = "moving";
++          try {
++            for (let attempt = 0; attempt < attempts; attempt++) {
++              const ticket = { fence, connection };
++              const before = await current(0);
++              live();
++              const value = await work();
++              live();
++              const after = await current(started);
++              live();
++              if (!sameHeads(watch, before, after) || !coversKnown(after)) continue;
++              // A read that began on this connection also passes its fence. One that began
++              // without a stream relies on stable, covering heads and is not live.
++              const fenced =
++                ticket.connection === undefined ||
++                (ticket.fence === fence &&
++                  fence !== undefined &&
++                  ticket.connection === connection &&
++                  fence.accept(ticket.connection, after.revisions));
++              if (!fenced) continue;
++              record(watch, after);
++              watch.failed = false;
++              // Data accepted with no stream is shown, but never as live.
++              if (connection === undefined) setStatus("paused");
++              return value;
++            }
++          } catch (error) {
++            if (!(error instanceof ChangeReadRetry)) {
++              watch.failed = true;
++              throw error;
++            }
++            reason = error.reason;
++          }
++          watch.failed = true;
++          throw new ChangeReadRetry(reason);
++        },
++        request: () => {
++          watch.requested = true;
++          mark(watch);
++        },
++        stop: () => {
++          if (watch.abort.signal.aborted) return;
++          watch.abort.abort();
++          clearTimeout(watch.deadline);
++          watches.delete(watch);
++          if (watches.size > 0) return;
++          clearTimeout(idle);
++          idle = setTimeout(() => {
++            if (watches.size > 0) return;
++            disconnect();
++            clearTimers();
++          }, closeAfter);
++        },
++      };
++    },
++    status: () => status,
++    onStatus: (listener) => {
++      statusListeners.add(listener);
++      return () => void statusListeners.delete(listener);
++    },
++    acknowledge: (revisions) => {
++      for (const hint of revisions) changed(hint);
++    },
++    reconnect: () => {
++      if (stream !== undefined || revoked) return;
++      failures = 0;
++      void connect();
++    },
++    close: () => {
++      closed = true;
++      disconnect();
++      clearTimers();
++      clearTimeout(idle);
++      stopActivity();
++      window.removeEventListener("online", online);
++      for (const watch of watches) {
++        watch.abort.abort();
++        clearTimeout(watch.deadline);
++      }
++      watches.clear();
++    },
++  };
++}
+diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/implementation/ui-client.ts
+index ce7bcb2b08ab00032dfd1022ee182af9b73ca18d..03222f6c27d9f495e0f0af35095799b026fcf48b 100644
+--- a/packages/apps/src/implementation/ui-client.ts
++++ b/packages/apps/src/implementation/ui-client.ts
+@@ -23,6 +23,7 @@ import { JsonValue } from "../contracts/schema.ts";
+ import { decoderOf, type Schema } from "./schema.ts";
+ import { makeOptimisticClient } from "./optimistic.ts";
+ import { queryResult, type ObservedQueryValue } from "./query-commit.ts";
++import { makeChangeFeed, type ChangeFeed } from "./change-feed.ts";
+ 
+ /**
+  * Consecutive failed subscriptions wait 1, 2, 4… seconds, at most a minute, with jitter so pages
+@@ -121,7 +122,13 @@ export const createAppClient = () => {
+   const onHide = (event: PageTransitionEvent) => {
+     if (!event.persisted) void dispose().catch((error) => console.error(error));
+   };
++  const onActiveChange = (listener: (active: boolean) => void) => {
++    activeListeners.add(listener);
++    return () => void activeListeners.delete(listener);
++  };
++  let changes: ChangeFeed | undefined;
+   const dispose = async () => {
++    changes?.close();
+     window.removeEventListener("pagehide", onHide);
+     window.removeEventListener("beforeunload", beforeUnload);
+     window.removeEventListener("message", onHostMessage);
+@@ -367,10 +374,17 @@ export const createAppClient = () => {
+     /** Whether someone can see this page: its browser tab is visible and its host shows it. */
+     isActive: () => active,
+     /** Call `listener` whenever `isActive` changes. Returns a function that stops it. */
+-    onActiveChange: (listener: (active: boolean) => void) => {
+-      activeListeners.add(listener);
+-      return () => void activeListeners.delete(listener);
+-    },
++    onActiveChange,
++    /**
++     * This app's committed-revision feed. One stream per page, opened while a watch exists and
++     * someone sees the page; the server picks the organization, app and topics.
++     */
++    changes: () =>
++      (changes ??= makeChangeFeed({
++        stream: "/_executor/api/changes",
++        current: "/_executor/api/changes/current",
++        activity: { isActive: () => active, onActiveChange },
++      })),
+     /**
+      * Call `refresh` every `interval` milliseconds while this page is active, starting one interval
+      * from now. A page that becomes active after a refresh came due refreshes once, at once; a page
+diff --git a/packages/sdk/src/implementation/binding-workerd-apps.ts b/packages/sdk/src/implementation/binding-workerd-apps.ts
+index 03c3f7e409e2258cd4dfb9209734415f2c8bbe73..58d4e97aeb7fdcdb05e1436d500c7c953cb3fcfb 100644
+--- a/packages/sdk/src/implementation/binding-workerd-apps.ts
++++ b/packages/sdk/src/implementation/binding-workerd-apps.ts
+@@ -13,6 +13,7 @@ import {
+   type EvaluatedCommand,
+ } from "@executor-js/app-data/evaluated";
+ import { connectedWorkerdApps } from "./workerd-client.ts";
++import { RevisionEvent, RevisionHint, type ChangeKey } from "@executor-js/app-data";
+ 
+ const failed = () => new RuntimeProtocolFailed();
+ 
+@@ -23,7 +24,7 @@ export const bindingWorkerdApps = (options: {
+   readonly blobs: BlobStorage;
+ }) => {
+   const headers = { authorization: `Bearer ${options.authorization}` };
+-  const connect = (path: string) =>
++  const connect = (path: string, accept = true) =>
+     Effect.acquireRelease(
+       Effect.tryPromise({
+         try: async () => {
+@@ -32,7 +33,7 @@ export const bindingWorkerdApps = (options: {
+           });
+           const socket = response.webSocket;
+           if (response.status !== 101 || socket === null) throw new Error("App connection failed");
+-          socket.accept();
++          if (accept) socket.accept();
+           return socket;
+         },
+         catch: failed,
+@@ -74,17 +75,19 @@ export const bindingWorkerdApps = (options: {
+         return yield* work(peer, lifetime.signal);
+       }),
+     );
+-  const changes = (app: string) =>
+-    Stream.callback<number, RuntimeProtocolFailed>(
++  const notifications = <A>(
++    path: string,
++    decode: (data: string | ArrayBuffer) => A,
++    scoped: boolean,
++  ) =>
++    Stream.callback<A, RuntimeProtocolFailed>(
+       (queue) =>
+         Effect.gen(function* () {
+-          const socket = yield* connect(`/changes?app=${encodeURIComponent(app)}`);
++          const socket = yield* connect(path, false);
+           const changed = (event: { readonly data: string | ArrayBuffer }) => {
+             try {
+-              const { revision } = Schema.decodeUnknownSync(
+-                Schema.fromJsonString(Schema.Struct({ revision: Schema.Int })),
+-              )(event.data);
+-              Queue.offerUnsafe(queue, revision);
++              if (!Queue.offerUnsafe(queue, decode(event.data)))
++                Queue.failCauseUnsafe(queue, Cause.fail(failed()));
+             } catch {
+               Queue.failCauseUnsafe(queue, Cause.fail(failed()));
+             }
+@@ -102,8 +105,37 @@ export const bindingWorkerdApps = (options: {
+               socket.removeEventListener("error", closed);
+             }),
+           );
++          socket.accept();
+         }),
+-      { bufferSize: 1, strategy: "sliding" },
++      scoped ? { bufferSize: 64, strategy: "dropping" } : { bufferSize: 1, strategy: "sliding" },
++    );
++  const changes = (app: string) =>
++    notifications(
++      `/changes?app=${encodeURIComponent(app)}`,
++      (data) =>
++        Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ revision: Schema.Int })))(
++          data,
++        ).revision,
++      false,
++    );
++  const subscribe = (scope: string, keys: readonly ChangeKey[]) =>
++    notifications(
++      `/hosted-changes?scope=${encodeURIComponent(scope)}&keys=${encodeURIComponent(JSON.stringify(keys))}`,
++      Schema.decodeUnknownSync(Schema.fromJsonString(RevisionEvent)),
++      true,
++    );
++  const publish = (scope: string, hint: RevisionHint) =>
++    Schema.encodeEffect(Schema.fromJsonString(RevisionHint))(hint).pipe(
++      Effect.flatMap((body) =>
++        Effect.tryPromise(async () => {
++          const response = await options.binding.fetch(
++            `http://apps.internal/hosted-changes/publish?scope=${encodeURIComponent(scope)}`,
++            { method: "POST", headers: { ...headers, "content-type": "application/json" }, body },
++          );
++          if (response.status !== 204) throw new Error("Change publication failed");
++        }),
++      ),
++      Effect.mapError(failed),
+     );
+   const backend = (
+     operation: "start" | "status" | "terminate" | "input",
+@@ -140,5 +172,11 @@ export const bindingWorkerdApps = (options: {
+       Effect.flatMap(Schema.decodeUnknownEffect(EvaluatedReplyJson)),
+       Effect.mapError(failed),
+     );
+-  return connectedWorkerdApps(options.blobs, { rpc, changes, evaluated, backend });
++  return connectedWorkerdApps(options.blobs, {
++    rpc,
++    changes,
++    evaluated,
++    backend,
++    committedChanges: { subscribe, publish },
++  });
+ };
+diff --git a/packages/sdk/src/implementation/workerd-apps.ts b/packages/sdk/src/implementation/workerd-apps.ts
+index 77d9a31c2dd6c0e680a6a23b011e07ffe8f0b3d8..7c8be4df191f45a28980630a9a3e548a7f488df4 100644
+--- a/packages/sdk/src/implementation/workerd-apps.ts
++++ b/packages/sdk/src/implementation/workerd-apps.ts
+@@ -44,11 +44,16 @@ import {
+ } from "@executor-js/app-data/evaluated";
+ 
+ import { RuntimeBuildFailed, RuntimeProtocolFailed } from "../contracts/runtime.ts";
++import { RevisionEvent, RevisionHint, type ChangeKey } from "@executor-js/app-data";
+ import type { Executor } from "../contracts/executor.ts";
+ import type { DurableDeclarations } from "../contracts/declarations.ts";
+ import { runtimeAdapter } from "./runtime.ts";
+ 
+-import { connectedWorkerdApps, workerdHostHandler } from "./workerd-client.ts";
++import {
++  connectedWorkerdApps,
++  workerdHostHandler,
++  type WorkerdTransport,
++} from "./workerd-client.ts";
+ import { workerdHostModules } from "./workerd-bundle.ts";
+ import { appWorkerIdleSeconds, appWorkerLimit } from "./app-worker-residency.ts";
+ 
+@@ -171,6 +176,7 @@ export const workerdApps = (options: {
+     readonly runtime: ReturnType<typeof runtimeAdapter>;
+     readonly workflows: WorkflowRuntime;
+     readonly declarations: DurableDeclarations;
++    readonly committedChanges: WorkerdTransport["committedChanges"];
+   },
+   RuntimeBuildFailed | WorkerdMigrationRequired | WorkflowFailure,
+   Scope.Scope
+@@ -300,20 +306,18 @@ export const workerdApps = (options: {
+           return yield* work(peer, lifetime.signal);
+         }),
+       );
+-    const changes = (app: string) =>
+-      Stream.callback<number, RuntimeProtocolFailed>(
++    const notifications = <A>(path: string, decode: (data: string) => A, scoped: boolean) =>
++      Stream.callback<A, RuntimeProtocolFailed>(
+         (queue) =>
+           Effect.gen(function* () {
+             const socket = yield* Effect.acquireRelease(
+-              Effect.sync(() => connect(`/changes?app=${encodeURIComponent(app)}`)),
++              Effect.sync(() => connect(path)),
+               (socket) => Effect.sync(() => socket.close()),
+             );
+             const changed = (data: import("ws").RawData) => {
+               try {
+-                const { revision } = Schema.decodeUnknownSync(
+-                  Schema.fromJsonString(Schema.Struct({ revision: Schema.Int })),
+-                )(data.toString());
+-                Queue.offerUnsafe(queue, revision);
++                if (!Queue.offerUnsafe(queue, decode(data.toString())))
++                  Queue.failCauseUnsafe(queue, Cause.fail(protocolFailure()));
+               } catch {
+                 Queue.failCauseUnsafe(queue, Cause.fail(protocolFailure()));
+               }
+@@ -334,8 +338,40 @@ export const workerdApps = (options: {
+               }),
+             );
+           }),
+-        { bufferSize: 1, strategy: "sliding" },
++        scoped ? { bufferSize: 64, strategy: "dropping" } : { bufferSize: 1, strategy: "sliding" },
++      );
++    const changes = (app: string) =>
++      notifications(
++        `/changes?app=${encodeURIComponent(app)}`,
++        (data) =>
++          Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Struct({ revision: Schema.Int })))(
++            data,
++          ).revision,
++        false,
++      );
++    const subscribe = (scope: string, keys: readonly ChangeKey[]) =>
++      notifications(
++        `/hosted-changes?scope=${encodeURIComponent(scope)}&keys=${encodeURIComponent(JSON.stringify(keys))}`,
++        Schema.decodeUnknownSync(Schema.fromJsonString(RevisionEvent)),
++        true,
+       );
++    const publish = (scope: string, hint: RevisionHint) =>
++      Effect.scoped(
++        Effect.gen(function* () {
++          const url = new URL("/hosted-changes/publish", origin);
++          url.searchParams.set("scope", scope);
++          const request = HttpClientRequest.post(url, {
++            headers: { ...headers, connection: "close" },
++          }).pipe(
++            HttpClientRequest.bodyText(
++              yield* Schema.encodeEffect(Schema.fromJsonString(RevisionHint))(hint),
++              "application/json",
++            ),
++          );
++          const response = yield* http.execute(request);
++          if (response.status !== 204) return yield* protocolFailure();
++        }),
++      ).pipe(Effect.mapError(protocolFailure));
+     // workerd closes an idle keep-alive connection after 5 seconds, and reconciliation polls
+     // every 5 seconds. A pooled socket can then close while a request is written to it, and
+     // the fetch fails with a transport error. Each workflow request uses its own connection.
+@@ -379,7 +415,13 @@ export const workerdApps = (options: {
+           );
+         }),
+       ).pipe(Effect.mapError(protocolFailure));
+-    return yield* connectedWorkerdApps(options.blobs, { rpc, changes, evaluated, backend });
++    return yield* connectedWorkerdApps(options.blobs, {
++      rpc,
++      changes,
++      evaluated,
++      backend,
++      committedChanges: { subscribe, publish },
++    });
+   }).pipe(
+     Effect.provide(NodeServices.layer),
+     Effect.provide(FetchHttpClient.layer),
+diff --git a/packages/sdk/src/implementation/workerd-client.ts b/packages/sdk/src/implementation/workerd-client.ts
+index 57f522cd808ac7a7a90cddc23d991d527b70c622..18e4fcc63c557572eb0aa14b72eaefbddeeae3b5 100644
+--- a/packages/sdk/src/implementation/workerd-client.ts
++++ b/packages/sdk/src/implementation/workerd-client.ts
+@@ -45,6 +45,7 @@ import { loadWorkerBuild, retainWorkerBuild, workerBuildAsset } from "./worker-b
+ import { ownsDatabase } from "../contracts/apps.ts";
+ import type { EvaluatedCommand } from "@executor-js/app-data/evaluated";
+ import { evaluatedDeclarations } from "./evaluated-declarations.ts";
++import type { ChangeKey, RevisionEvent, RevisionHint } from "@executor-js/app-data";
+ 
+ const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: true });
+ const protocolFailure = () => new RuntimeProtocolFailed();
+@@ -268,6 +269,16 @@ export interface WorkerdTransport {
+     work: (api: RpcStub<WorkerdAppApi>, signal: AbortSignal) => Effect.Effect<A, E>,
+   ) => Effect.Effect<A, E | RuntimeProtocolFailed>;
+   readonly changes: (app: string) => Stream.Stream<number, RuntimeProtocolFailed>;
++  readonly committedChanges: {
++    readonly subscribe: (
++      scope: string,
++      keys: readonly ChangeKey[],
++    ) => Stream.Stream<RevisionEvent, RuntimeProtocolFailed>;
++    readonly publish: (
++      scope: string,
++      hint: RevisionHint,
++    ) => Effect.Effect<void, RuntimeProtocolFailed>;
++  };
+   /** One command to the app's store of evaluated results, answered with its reply. */
+   readonly evaluated: (
+     app: string,
+@@ -376,6 +387,7 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
+       changes: transport.changes,
+     });
+     return {
++      committedChanges: transport.committedChanges,
+       runtime: runtimeAdapter(runtime),
+       workflows: {
+         start: (run: WorkflowRunId) => transport.backend("start", run).pipe(Effect.asVoid),
+diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src/implementation/workerd-entry.ts
+index 292785bf48e8f4c76cdb55793c4ff3386c2564f1..93c10b315eedb8fa76b444536590ac62df6091f7 100644
+--- a/packages/sdk/src/implementation/workerd-entry.ts
++++ b/packages/sdk/src/implementation/workerd-entry.ts
+@@ -34,9 +34,11 @@ import {
+ } from "apps/contracts";
+ import {
+   makeFacetSupervisor,
++  makeChangeNotifications,
+   FacetInvocation,
+   type FacetBundle,
+ } from "@executor-js/app-data/cloudflare";
++import { RevisionHint, RevisionKeys } from "@executor-js/app-data";
+ import { EvaluatedCommandJson, EvaluatedReplyJson } from "@executor-js/app-data/evaluated";
+ import { makeAppRunner } from "./app-runner.ts";
+ import { credentialFetch, credentialKey } from "./credential-handles.ts";
+@@ -74,6 +76,7 @@ declare const WebSocketPair: { new (): { 0: NativeWebSocket; 1: NativeWebSocket
+ 
+ type Callback = (input: unknown) => Promise<unknown>;
+ interface DataEntrypoint {
++  publishChange(hint: typeof RevisionHint.Type): Promise<void>;
+   cache(namespace: string, command: unknown): Promise<unknown>;
+   evaluated(command: unknown): Promise<unknown>;
+   invoke(
+@@ -379,8 +382,10 @@ class AppApi extends RpcTarget {
+ /** Native app data stays in isolated facets and retains its database across code updates. */
+ export class AppDataSupervisor extends DurableObject<Environment> {
+   readonly #supervisor: Promise<Effect.Success<ReturnType<typeof makeFacetSupervisor>>>;
++  readonly #notifications: ReturnType<typeof makeChangeNotifications>;
+   constructor(ctx: DurableObjectState, env: Environment) {
+     super(ctx, env);
++    this.#notifications = makeChangeNotifications(ctx);
+     this.#supervisor = Effect.runPromise(
+       makeFacetSupervisor(
+         ctx,
+@@ -425,10 +430,23 @@ export class AppDataSupervisor extends DurableObject<Environment> {
+   async alarm() {
+     return Effect.runPromise((await this.#supervisor).recover);
+   }
+-  async fetch(): Promise<Response> {
++  async publishChange(hint: typeof RevisionHint.Type) {
++    return Effect.runPromise(this.#notifications.publish(hint));
++  }
++  async fetch(request: Request): Promise<Response> {
++    const url = new URL(request.url);
++    const keys =
++      url.pathname === "/hosted-changes"
++        ? Schema.decodeUnknownOption(Schema.fromJsonString(RevisionKeys))(
++            url.searchParams.get("keys"),
++          )
++        : undefined;
++    if (keys?._tag === "None") return new Response(null, { status: 400 });
+     const pair = new WebSocketPair();
+     this.ctx.acceptWebSocket(pair[1]);
+-    await Effect.runPromise((await this.#supervisor).initial(pair[1]));
++    if (keys?._tag === "Some")
++      await Effect.runPromise(this.#notifications.initial(pair[1], keys.value));
++    else await Effect.runPromise((await this.#supervisor).initial(pair[1]));
+     const responseOptions: ResponseInit & { readonly webSocket: NativeWebSocket } = {
+       status: 101,
+       webSocket: pair[0],
+@@ -640,6 +658,22 @@ export default {
+       return newWorkersRpcResponse(request, new AppApi(env, context), rpcOptions);
+     if (url.pathname === "/changes")
+       return env.DATA.getByName(url.searchParams.get("app") ?? "").fetch(request);
++    if (url.pathname === "/hosted-changes" || url.pathname === "/hosted-changes/publish") {
++      const scope = url.searchParams.get("scope");
++      if (!scope) return new Response(null, { status: 400 });
++      const supervisor = env.DATA.getByName(`hosted-changes:${scope}`);
++      if (url.pathname === "/hosted-changes") {
++        if (request.method !== "GET") return new Response(null, { status: 405 });
++        return supervisor.fetch(request);
++      }
++      if (request.method !== "POST") return new Response(null, { status: 405 });
++      const hint = Schema.decodeUnknownOption(Schema.fromJsonString(RevisionHint))(
++        await request.text(),
++      );
++      if (hint._tag === "None") return new Response(null, { status: 400 });
++      await supervisor.publishChange(hint.value);
++      return new Response(null, { status: 204 });
++    }
+     // Evaluated results the host keeps in the app's supervisor, beside its app cache.
+     if (url.pathname === "/evaluated") {
+       const command = Schema.decodeUnknownOption(EvaluatedCommandJson)(await request.text());
+diff --git a/packages/ui/src/contracts/refresh.ts b/packages/ui/src/contracts/refresh.ts
+index b4c35cff4ee9402ba487a2bf7cb7f33c20a0b8a4..dc5a2ea379883368f6bfdcdc3209bc8dbfe188bd 100644
+--- a/packages/ui/src/contracts/refresh.ts
++++ b/packages/ui/src/contracts/refresh.ts
+@@ -2,6 +2,16 @@
+ import { Duration, Option } from "effect";
+ import { AsyncResult, Atom } from "effect/reactivity";
+ 
++/** Revision-driven reads for dashboard atoms; the feed itself lives with the app client. */
++export {
++  ChangeReadRetry,
++  makeChangeFeed,
++  type ChangeFeed,
++  type ChangeStatus,
++  type ChangeWatch,
++  type ChangeWatchOptions,
++} from "apps/client";
++
+ /**
+  * Counts returns to a visible page. A server render has no window, so its value never changes
+  * there and each read starts once for that request.
