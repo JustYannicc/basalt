@@ -28,7 +28,13 @@ test(
       await control.query("LOCK TABLE lifecycle_config IN ACCESS EXCLUSIVE MODE");
       const requests = children.map((child) => child.request("update"));
       try {
-        const count = await waitForBackendCount(fixture.admin, [fixture.database], 8);
+        const count = await waitForBackendCount(
+          fixture.admin,
+          [fixture.database],
+          8,
+          undefined,
+          "at-least",
+        );
         assert.ok(count > 5, "The unchanged direct transport must expose the missing global cap");
         await control.query("COMMIT");
         assert.ok((await Promise.all(requests)).every((result) => result.ok));
