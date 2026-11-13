@@ -1,6 +1,7 @@
 import * as Apply from "alchemy/Apply";
 import type * as Plan from "alchemy/Plan";
 import { Effect } from "effect";
+import { withStateOperations } from "./observed-state.ts";
 import { withOperation } from "./operation-failure.ts";
 
 /** Observe the already-admitted plan without changing providers, actions or retry policy. */
@@ -34,4 +35,7 @@ export const applyDatabasePlan = (plan: Plan.Plan) =>
         ];
       }),
     ),
-  }).pipe(withOperation("(database)", "apply-database-plan"));
+  }).pipe(
+    withStateOperations("apply-read-state", "apply-write-state"),
+    withOperation("(database)", "apply-database-plan"),
+  );

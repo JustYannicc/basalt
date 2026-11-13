@@ -53,7 +53,14 @@ export const fixture = (
     orphanedDatabaseCommand?: boolean;
     planFailure?: "read" | "diff";
     planError?: unknown;
-    admittedFailure?: "state-read" | "state-drift" | "plan" | "apply";
+    admittedFailure?:
+      | "state-read"
+      | "state-drift"
+      | "plan"
+      | "apply"
+      | "state-write"
+      | "journal-write"
+      | "journal-write-persistent";
     admittedError?: unknown;
     admittedStateError?: StateStoreError;
     finalizeDrift?: "binding" | "uncovered-env" | "props";
@@ -70,6 +77,7 @@ export const fixture = (
   let releasePlanning = false;
   let activated = false;
   let admittedDatabaseReads = 0;
+  let journalFailures = 0;
   const workers = Provider.succeed(FixtureWorker, {
     precreate: ({ id }) => Effect.succeed(attributes(id)),
     read: (input) =>
@@ -153,13 +161,27 @@ export const fixture = (
             );
         },
         set: (input) =>
-          Effect.sync(() => {
+          Effect.suspend(() => {
+            if (
+              options.admittedFailure === "state-write" &&
+              receipts.at(-1)?.phase === "admitted" &&
+              input.fqn === "PoolDatabase"
+            )
+              return Effect.fail(options.admittedStateError!);
             writes++;
-          }).pipe(Effect.andThen(memory.set(input))),
+            return memory.set(input);
+          }),
         setOutput: (input) =>
-          Effect.sync(() => {
+          Effect.suspend(() => {
+            if (
+              options.admittedFailure?.startsWith("journal-write") &&
+              input.stack.endsWith("-sql-schema-barrier") &&
+              (journalFailures++ === 0 || options.admittedFailure === "journal-write-persistent")
+            )
+              return Effect.fail(options.admittedStateError!);
             writes++;
-          }).pipe(Effect.andThen(memory.setOutput(input))),
+            return memory.setOutput(input);
+          }),
       });
     }),
   );

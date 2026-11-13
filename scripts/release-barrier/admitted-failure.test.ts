@@ -12,8 +12,11 @@ import { reportRefusal } from "./refusal-report.ts";
 for (const [scenario, resource, operation] of [
   ["state-read", "Api", "read-native-state"],
   ["state-drift", "Api", "verify-native-state"],
-  ["plan", "(plan)", "plan-stack"],
+  ["plan", "PoolDatabase", "plan-read-state"],
   ["apply", "PoolDatabase", "apply-database-resource"],
+  ["state-write", "PoolDatabase", "apply-write-state"],
+  ["journal-write", "fixture-sql-schema-barrier/output", "write-release-journal"],
+  ["journal-write-persistent", "fixture-sql-schema-barrier/output", "write-release-journal"],
 ] as const)
   test(`public stack preserves admitted ${scenario} failure and refuses activation`, async (context) => {
     const root = await mkdtemp(join(tmpdir(), "admitted-failure-"));
@@ -38,14 +41,19 @@ for (const [scenario, resource, operation] of [
     const exit = await Effect.runPromiseExit(proof.effect);
     assert.ok(Exit.isFailure(exit));
     const failure = await evidence.failure(Cause.squash(exit.cause));
-    assert.equal(failure.phase, "admitted");
+    assert.equal(failure.phase, scenario.startsWith("journal-write") ? "schema" : "admitted");
     assert.equal(failure.worker, resource);
     assert.equal(failure.operation, operation);
     assert.equal(
       failure.reason,
       scenario === "state-drift" ? "alchemy-state-drift" : "release-operation-failed",
     );
-    if (scenario === "state-read" || scenario === "plan")
+    if (
+      scenario === "state-read" ||
+      scenario === "plan" ||
+      scenario === "state-write" ||
+      scenario.startsWith("journal-write")
+    )
       assert.deepEqual(failure.provider, { type: "StateStoreError", status: 503 });
     else if (scenario === "apply")
       assert.deepEqual(failure.provider, {
@@ -57,13 +65,14 @@ for (const [scenario, resource, operation] of [
     const receipt = proof.receipts.at(-1)!;
     assert.equal(receipt.accepted.length, 2);
     assert.deepEqual(receipt.activated, []);
-    assert.equal(Reflect.get(receipt.failure!, "operation"), operation);
+    if (scenario !== "journal-write-persistent")
+      assert.equal(Reflect.get(receipt.failure!, "operation"), operation);
     assert.ok(!proof.events.some((event) => event.startsWith("activate:")));
     const summary = join(root, "summary.md");
     const lines: string[] = [];
     await reportRefusal(failure, summary, (line) => lines.push(line));
     for (const output of [
-      JSON.stringify(receipt),
+      ...(scenario === "journal-write-persistent" ? [] : [JSON.stringify(receipt)]),
       await readFile(join(root, "failure.json"), "utf8"),
       await readFile(summary, "utf8"),
       ...lines,

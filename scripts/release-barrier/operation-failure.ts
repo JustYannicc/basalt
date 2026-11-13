@@ -1,7 +1,14 @@
+import { StateStoreError } from "alchemy/State/State";
 import { Cause, Effect } from "effect";
 import { BarrierRefusal } from "./refusal.ts";
 
 export type ReleaseOperation =
+  | "plan-read-state"
+  | "apply-read-state"
+  | "apply-write-state"
+  | "read-release-journal"
+  | "write-release-journal"
+  | "record-release-journal"
   | "plan-stack"
   | "plan-read-resource"
   | "plan-diff-resource"
@@ -118,10 +125,27 @@ export class ReleaseOperationFailure extends BarrierRefusal {
   }
 }
 
+/** Preserve State's declared error channel while carrying the sanitized release diagnostic. */
+export class ReleaseStateStoreFailure extends StateStoreError {
+  readonly failure: ReleaseOperationFailure;
+  constructor(error: StateStoreError, resource: string, operation: ReleaseOperation) {
+    super({
+      message: "Release State operation failed",
+      ...(error.http ? { http: error.http } : {}),
+    });
+    this.failure =
+      error instanceof ReleaseStateStoreFailure
+        ? error.failure
+        : new ReleaseOperationFailure(error, resource, operation);
+  }
+}
+
 export const operationFailure = (error: unknown, resource: string, operation: ReleaseOperation) =>
-  error instanceof ReleaseOperationFailure
-    ? error
-    : new ReleaseOperationFailure(error, resource, operation);
+  error instanceof ReleaseStateStoreFailure
+    ? error.failure
+    : error instanceof ReleaseOperationFailure
+      ? error
+      : new ReleaseOperationFailure(error, resource, operation);
 
 export const withOperation =
   (resource: string, operation: ReleaseOperation) =>
