@@ -61,6 +61,7 @@ async function fixture() {
         retires++;
       },
       retired: async () => true,
+      failed: async () => false,
     };
     cells.set(value.slotId, next);
     return next;
@@ -194,4 +195,20 @@ test("disabling drains an occupied endpoint immediately but cannot retire it unt
   await held.release();
   await fleet.upkeep();
   assert.equal(f.retires(), 1);
+});
+
+test("a reserved planned replacement covers a later runtime failure without allocating a second replacement", async () => {
+  const f = await fixture();
+  const planned = await f.replacement.plan("planned-before-failure", f.old);
+  await f.state.quarantine(f.old);
+  assert.equal(await f.state.replacements(), 0);
+  await f.state.reclaimQuarantined(f.old);
+  await f.controller().upkeep();
+  await f.replacement.upkeep();
+  const rows = await f.state.inspect();
+  assert.equal(f.starts(), 1);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.target.slotId, planned.replacement.slotId);
+  assert.equal(rows[0]?.phase, "ready");
+  assert.equal((await f.replacement.inspect("planned-before-failure"))?.status, "retired");
 });

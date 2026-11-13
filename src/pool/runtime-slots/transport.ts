@@ -5,6 +5,7 @@ import {
   runtimeFailureHeaders,
   runtimeFailureDiagnostic,
   runtimeFailureCode,
+  runtimeResponseDiagnostic,
 } from "../runtime-route-diagnostic.ts";
 import { Schema } from "effect";
 import {
@@ -137,13 +138,19 @@ export class BoundSlotDriver implements SlotDriver {
       Schema.Struct({ identity: SlotIdentity, retired: Schema.Boolean, running: Schema.Boolean }),
     )(await retirementBody(response, signal));
   }
+  async failed(identity: SlotIdentity, signal: AbortSignal) {
+    const response = await this.call(identity, "failed", { identity }, signal);
+    return Schema.decodeUnknownSync(
+      Schema.Struct({ identity: SlotIdentity, stopped: Schema.Boolean }),
+    )(await retirementBody(response, signal));
+  }
   fetch(identity: SlotIdentity, request: Request, port: 8317 | 8327 | 8318) {
     return this.forward(identity, request, port, false);
   }
   probeFetch(identity: SlotIdentity, request: Request, port: 8318 | 8327) {
     return this.forward(identity, request, port, true);
   }
-  private forward(
+  private async forward(
     identity: SlotIdentity,
     request: Request,
     port: 8317 | 8327 | 8318,
@@ -154,7 +161,12 @@ export class BoundSlotDriver implements SlotDriver {
     headers.set("X-Signalbox-Runtime-Port", String(port));
     if (readOnly) headers.set("X-Signalbox-Runtime-Read-Only", "1");
     else headers.delete("X-Signalbox-Runtime-Read-Only");
-    return this.endpoint(identity).fetch(new Request(request, { headers }));
+    const response = await this.endpoint(identity).fetch(new Request(request, { headers }));
+    if (response.status === 409 && runtimeResponseDiagnostic(response)) {
+      void response.body?.cancel().catch(() => {});
+      throw retainRuntimeFailure(response, new SlotRefused("uncertain"));
+    }
+    return response;
   }
 }
 
@@ -227,11 +239,13 @@ export async function runtimeRequest(
         value,
       );
       return Response.json(await endpoint.drain(identity, request.signal));
-    } else if (action === "/retirement") {
+    } else if (action === "/retirement" || action === "/failed") {
       const { identity } = Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(
         value,
       );
-      return Response.json(await endpoint.retirement(identity, request.signal));
+      return Response.json(
+        await endpoint[action === "/failed" ? "failed" : "retirement"](identity, request.signal),
+      );
     } else if (action === "/retire") {
       const { target, identity } = Schema.decodeUnknownSync(
         Schema.Struct({ target: SlotTarget, identity: SlotIdentity }),

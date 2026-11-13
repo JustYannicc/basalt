@@ -23,6 +23,7 @@ const WitnessRecord = Schema.Struct({
   witness: Schema.optional(StartupWitness),
   attestation: Schema.optional(VerifiedRuntimeAttestation),
   retired: Schema.optional(Schema.Boolean),
+  failed: Schema.optional(Schema.Boolean),
 });
 export type WitnessRecord = typeof WitnessRecord.Type;
 
@@ -33,6 +34,13 @@ export class RuntimeWitnessStore {
   constructor(storage: RuntimeState["storage"], secret: string) {
     this.storage = storage;
     this.secret = secret;
+  }
+  retainAlarmTarget(target: SlotTarget) {
+    return this.storage.put("runtime-alarm-v1:target", target);
+  }
+  async alarmTarget() {
+    const value = await this.storage.get("runtime-alarm-v1:target");
+    return value === undefined ? undefined : Schema.decodeUnknownSync(SlotTarget)(value);
   }
   async retained(slot: string) {
     const value = await this.storage.get(launchWitnessKey(slot));

@@ -26,6 +26,7 @@ type Phase =
   | "reserved"
   | "warming"
   | "uncertain"
+  | "quarantined"
   | "ready"
   | "draining"
   | "retiring"

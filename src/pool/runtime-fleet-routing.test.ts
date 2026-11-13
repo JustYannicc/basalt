@@ -71,6 +71,7 @@ function fixture(maximum = 4, targetActive = 1) {
         if (retirementLost) throw new Error("lost retirement acknowledgement");
       },
       retired: async () => retired,
+      failed: async () => false,
     };
     cells.set(value.slotId, next);
     return next;

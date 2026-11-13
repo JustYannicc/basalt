@@ -36,6 +36,7 @@ import { RuntimeActivity } from "./activity.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import { proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
+import { RuntimeMaintenance } from "./maintenance.ts";
 
 export interface EndpointEnvironment extends RuntimeEnvironment {
   POOL_RUNTIME_APPLICATION_ID?: string;
@@ -60,6 +61,7 @@ export class RuntimeEndpoint {
   private retirementAttempts = 0;
   private retirementMonitor: RuntimeRetirementMonitor;
   private options: EndpointOptions;
+  private maintenance: RuntimeMaintenance;
   constructor(
     ctx: ControllerState,
     env: EndpointEnvironment,
@@ -76,6 +78,14 @@ export class RuntimeEndpoint {
     this.store = new RuntimeWitnessStore(ctx.storage, env.POOL_DEPLOYMENT_KEY ?? "");
     this.channel = new RuntimeChannel(ctx, env);
     this.activity = new RuntimeActivity(ctx.storage);
+    this.maintenance = new RuntimeMaintenance({
+      ctx,
+      store: this.store,
+      channel: this.channel,
+      monitor: this.retirementMonitor,
+      bound: (target) => this.bound(target),
+      checked: (record, status) => this.checked(record, status),
+    });
     this.wrap = wrap;
     this.options = options;
   }
@@ -83,6 +93,12 @@ export class RuntimeEndpoint {
     const pending = this.queue.then(work);
     this.queue = pending.catch(() => {});
     return pending;
+  }
+  alarm() {
+    return this.serialize(() => this.maintenance.alarm());
+  }
+  failed(identity: SlotIdentity, signal: AbortSignal) {
+    return this.serialize(() => this.maintenance.failed(identity, signal));
   }
   private bound(target: SlotTarget) {
     const applicationId =

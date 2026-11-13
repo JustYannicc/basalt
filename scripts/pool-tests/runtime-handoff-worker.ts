@@ -22,7 +22,7 @@ import type {
 import type { PoolView } from "../../apps/pool/contract.ts";
 import type { RuntimeStub } from "../../src/pool/runtime-slots/transport.ts";
 import type { HomePeerEndpoint } from "../../src/pool/runtime-fleet/peers.ts";
-type RuntimeWorker = RuntimeStub & HomePeerEndpoint;
+type RuntimeWorker = RuntimeStub & HomePeerEndpoint & { alarm(): Promise<void> };
 import type { ProbeResult } from "../../src/pool/availability.ts";
 
 const hooks = registerHooks({

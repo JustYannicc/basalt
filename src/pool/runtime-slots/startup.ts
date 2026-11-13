@@ -37,6 +37,7 @@ export async function startRuntime(
 ) {
   const target = record.authorization.target;
   const { ledger, binding } = runtimeLaunch(ctx, record);
+  await store.retainAlarmTarget(target);
   const lifecycle = await createPoolLifecycle(
     ctx,
     {

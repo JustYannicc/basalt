@@ -108,3 +108,12 @@ test("a stale source or foreign controller is refused before any destination soc
   );
   assert.ok(f.calls.every((call) => !call.startsWith("open:")));
 });
+
+test("quarantine refuses a new peer destination while an already-dispatched source retains live authority", async () => {
+  const f = fixture();
+  f.phase("quarantined");
+  await assert.rejects(f.router.open(f.legacySource, 1), /identity/);
+  assert.equal(await (await f.router.open(f.runtimeSource, 0)).text(), "opaque");
+  f.invalid();
+  await assert.rejects(f.router.open(f.runtimeSource, 0), /actual launch changed/);
+});

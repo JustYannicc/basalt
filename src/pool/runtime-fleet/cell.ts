@@ -121,4 +121,27 @@ export class FleetHandoffCell implements FleetCell {
       observation,
     );
   }
+  async failed(identity: SlotIdentity, active: number) {
+    const signal = AbortSignal.timeout(2_000);
+    let actual;
+    try {
+      actual = await this.deps.driver.failed(identity, signal);
+    } catch {
+      /* An unreachable or live process still owns its physical capacity. */
+    }
+    if (actual?.stopped) {
+      if (!sameIdentity(actual.identity, identity)) return false;
+      return this.deps.provider.absent(this.deps.application, identity.instanceId);
+    }
+    if (active !== 0) return false;
+    try {
+      const drain = await this.drain(identity);
+      if (!drain.known || drain.active !== 0) return false;
+      // A healthy transport casualty follows the ordinary zero-activity retirement path.
+      await this.retire(identity, async () => {});
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }

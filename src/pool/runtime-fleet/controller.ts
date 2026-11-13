@@ -10,6 +10,7 @@ import {
 import { FleetRefused, RuntimeFleetState } from "./state.ts";
 import { FleetDispatches } from "./dispatches.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
+import { FleetFailures } from "./failures.ts";
 
 export interface FleetCell {
   start(target: SlotTarget): Promise<SlotIdentity>;
@@ -26,6 +27,7 @@ export interface FleetCell {
   drain(identity: SlotIdentity): Promise<{ active: number; known: boolean }>;
   retire(identity: SlotIdentity, begin: () => Promise<void>): Promise<void>;
   retired(identity: SlotIdentity): Promise<boolean>;
+  failed(identity: SlotIdentity, active: number): Promise<boolean>;
 }
 interface Dependencies {
   state: RuntimeFleetState;
@@ -55,6 +57,7 @@ export class RuntimeFleet {
   private growthAlarm?: number;
   private cells = new Map<string, { target: SlotTarget; cell: FleetCell }>();
   private dispatches = new FleetDispatches();
+  private failures: FleetFailures;
   constructor(deps: Dependencies) {
     if (
       !Number.isSafeInteger(deps.targetActive) ||
@@ -67,6 +70,12 @@ export class RuntimeFleet {
     )
       throw new Error("Invalid runtime fleet policy");
     this.deps = deps;
+    this.failures = new FleetFailures(deps.state, () => {
+      this.atCapacity = false;
+      this.nextGrowthCheck = 0;
+      this.deps.changed?.();
+      this.grow();
+    });
   }
   refreshPolicy() {
     this.atCapacity = false;
@@ -112,13 +121,17 @@ export class RuntimeFleet {
       );
       if (rows.length >= this.deps.maximum) this.atCapacity = true;
       const desired = Math.min(this.deps.maximum, Math.floor(active / this.deps.targetActive));
+      const replacements = await this.deps.state.replacements();
+      if (rows.length >= this.deps.maximum) return;
       if (
-        rows.length >= desired ||
-        rows.some((row) => row.phase === "reserved" || row.phase === "warming")
+        !replacements &&
+        (rows.length >= desired ||
+          rows.some((row) => row.phase === "reserved" || row.phase === "warming"))
       )
         return;
       const target = await this.deps.target(rows.map((row) => row.target));
-      await this.deps.state.reserve(target);
+      if (replacements) await this.deps.state.reserveReplacement(target);
+      else await this.deps.state.reserve(target);
       await this.start(target);
     }
   }
@@ -170,16 +183,19 @@ export class RuntimeFleet {
         });
       }
       const cell = this.cell(reservation.identity);
+      this.failures.assertAvailable(reservation.identity);
       if (!sameIdentity(await cell.selected(), reservation.identity))
         throw new FleetRefused("uncertain");
       step = "fleet_forward";
       const response = await cell.forward(request, 8317, pool, () => {
+        this.failures.assertAvailable(reservation.identity);
         beforeDispatch();
         dispatched();
       });
       return this.deps.wrap(response, {
         signal: request.signal,
         onClose: () => {},
+        failed: (error) => this.failures.failed(reservation.identity, error, request.signal),
         release: () => {
           this.deps.defer(reservation.release().then(() => this.deps.changed?.()));
           return true;
@@ -188,9 +204,14 @@ export class RuntimeFleet {
     } catch (error) {
       rememberRuntimeFailure(step, error);
       try {
-        await reservation.release();
-      } catch (releaseError) {
-        refuseRuntime("fleet_release", releaseError);
+        if (reservation.kind === "runtime")
+          await this.failures.failed(reservation.identity, error, request.signal);
+      } finally {
+        try {
+          await reservation.release();
+        } catch (releaseError) {
+          refuseRuntime("fleet_release", releaseError);
+        }
       }
       throw error;
     } finally {
@@ -201,6 +222,7 @@ export class RuntimeFleet {
     const rows = await this.deps.state.inspect();
     await Promise.all(
       rows.map(async (row) => {
+        if (row.phase === "quarantined") return;
         const cell = this.cell(row.target);
         if (await cell.selected()) await cell.install(policy);
       }),
@@ -235,7 +257,14 @@ export class RuntimeFleet {
           row.phase,
           async () => {
             const cell = this.cell(row.target);
-            if (row.phase === "reserved") {
+            if (row.phase === "quarantined" && row.identity) {
+              if (await cell.failed(row.identity, row.active)) {
+                await this.deps.state.reclaimQuarantined(row.identity);
+                this.cells.delete(row.target.slotId);
+                this.atCapacity = false;
+                this.nextGrowthCheck = 0;
+              }
+            } else if (row.phase === "reserved") {
               if (this.deps.enabled?.() === false) {
                 await this.deps.state.cancelReserved(row.target);
                 this.cells.delete(row.target.slotId);

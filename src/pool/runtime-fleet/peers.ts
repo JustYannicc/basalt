@@ -35,7 +35,7 @@ export class RuntimeFleetPeers {
     if (sourceTarget.controllerId !== this.deps.controllerId) throw new SlotRefused("identity");
     const legacy = await this.deps.legacy();
     const rows = (await this.deps.rows()).filter((row) =>
-      ["warming", "uncertain", "ready", "draining"].includes(row.phase),
+      ["warming", "uncertain", "ready", "draining", "quarantined"].includes(row.phase),
     );
     if (source.kind === "legacy") {
       if (!legacy || !sameIdentity(legacy, source.identity)) throw new SlotRefused("identity");
@@ -43,7 +43,10 @@ export class RuntimeFleetPeers {
       throw new SlotRefused("identity");
     await this.deps.endpoint(sourceTarget).assertHomePeer(source);
     const target =
-      ordinal === 0 ? legacy : rows.find((row) => row.target.homePeerOrdinal === ordinal)?.target;
+      ordinal === 0
+        ? legacy
+        : rows.find((row) => row.phase !== "quarantined" && row.target.homePeerOrdinal === ordinal)
+            ?.target;
     if (!target || target.controllerId !== this.deps.controllerId)
       throw new SlotRefused("identity");
     const endpoint = this.deps.endpoint(target);

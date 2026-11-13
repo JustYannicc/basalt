@@ -41,6 +41,9 @@ export class PoolRuntime extends DurableObject<EndpointEnvironment> {
       });
     return runtimeRequest(request, this.endpoint);
   }
+  alarm() {
+    return this.endpoint.alarm();
+  }
   homePeerSource(target: SlotTarget) {
     return this.peers.source(target);
   }

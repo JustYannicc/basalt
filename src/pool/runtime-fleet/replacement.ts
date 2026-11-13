@@ -54,20 +54,24 @@ export class RuntimeFleetReplacement {
     if (!row || row.phase !== "ready") throw new SlotRefused("selection");
     const replacement = await this.deps.target(rows.map((value) => value.target));
     const record = { operationId, previous: identity, replacement, status: "reserved" as const };
-    await this.deps.state.reserve(replacement, async (transaction) => {
-      if (await this.inspect(operationId, transaction)) throw new SlotRefused("uncertain");
-      const current = (await this.deps.state.inspect(transaction)).find((value) =>
-        sameIdentity(value.identity, identity),
-      );
-      if (!current || current.phase !== "ready") throw new SlotRefused("selection");
-      const pending = await this.pending(transaction);
-      for (const id of pending) {
-        if (sameIdentity((await this.inspect(id, transaction))?.previous, identity))
-          throw new SlotRefused("selection");
-      }
-      await transaction.put(key(operationId), record);
-      await transaction.put(pendingKey, [...pending, operationId]);
-    });
+    await this.deps.state.reserve(
+      replacement,
+      async (transaction) => {
+        if (await this.inspect(operationId, transaction)) throw new SlotRefused("uncertain");
+        const current = (await this.deps.state.inspect(transaction)).find((value) =>
+          sameIdentity(value.identity, identity),
+        );
+        if (!current || current.phase !== "ready") throw new SlotRefused("selection");
+        const pending = await this.pending(transaction);
+        for (const id of pending) {
+          if (sameIdentity((await this.inspect(id, transaction))?.previous, identity))
+            throw new SlotRefused("selection");
+        }
+        await transaction.put(key(operationId), record);
+        await transaction.put(pendingKey, [...pending, operationId]);
+      },
+      { previous: identity },
+    );
     return record;
   }
   async keepReady(identity: SlotIdentity) {
@@ -83,14 +87,7 @@ export class RuntimeFleetReplacement {
       if (!record) throw new SlotRefused("uncertain");
       const rows = await this.deps.state.inspect();
       const next = rows.find((value) => sameTarget(value.target, record.replacement));
-      if (record.status === "reserved" && next?.phase === "ready" && next.identity) {
-        if (this.deps.drain) await this.deps.drain(record.previous);
-        else await this.deps.state.drain(record.previous);
-        await this.deps.storage.put(key(id), { ...record, status: "draining" });
-      } else if (
-        record.status === "draining" &&
-        !rows.some((value) => sameIdentity(value.identity, record.previous))
-      ) {
+      if (await this.deps.state.released(record.previous)) {
         await this.deps.storage.transaction(async (transaction) => {
           await transaction.put(key(id), { ...record, status: "retired" });
           await transaction.put(
@@ -98,6 +95,10 @@ export class RuntimeFleetReplacement {
             (await this.pending(transaction)).filter((value) => value !== id),
           );
         });
+      } else if (record.status === "reserved" && next?.phase === "ready" && next.identity) {
+        if (this.deps.drain) await this.deps.drain(record.previous);
+        else await this.deps.state.drain(record.previous);
+        await this.deps.storage.put(key(id), { ...record, status: "draining" });
       }
     }
   }

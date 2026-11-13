@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Schema } from "effect";
-import { Response as WorkerResponse, WebSocket, WebSocketPair } from "miniflare";
+import { Response as WorkerResponse, ErrorEvent, WebSocket, WebSocketPair } from "miniflare";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
 import { deferred } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
 import { RuntimeFleetState } from "./runtime-fleet/state.ts";
@@ -106,6 +106,62 @@ function nextMessage(socket: WebSocket) {
     once: true,
   });
   return event.promise;
+}
+
+for (const failure of ["upstream", "client"] as const) {
+  test(
+    `an upgraded ${failure} failure preserves the runtime fault boundary across every relay`,
+    { timeout: 20_000 },
+    async (context) => {
+      let now = Date.now();
+      context.mock.method(Date, "now", () => now);
+      const restore = installWorkerSockets();
+      const f = await activeFleet(() => {
+        now += 101;
+      }).catch((error: unknown) => {
+        restore();
+        throw error;
+      });
+      const sockets: WebSocket[] = [];
+      context.after(async () => {
+        for (const socket of sockets)
+          try {
+            socket.close();
+          } catch {}
+        await f.cleanup();
+        restore();
+      });
+      let upstream: WebSocket | undefined,
+        runtime: string | undefined,
+        dispatches = 0;
+      f.onModel(async (instance) => {
+        runtime = instance.target.instanceId;
+        dispatches++;
+        const pair = new WebSocketPair();
+        pair[1].accept();
+        upstream = pair[0];
+        sockets.push(...Object.values(pair));
+        const init = { status: 101, webSocket: pair[0] };
+        return new Response(null, init);
+      });
+      const response = await f.model(
+        new Request("https://pool.invalid/v1/responses", { headers: { Upgrade: "websocket" } }),
+      );
+      assert.equal(response.status, 101);
+      const client = upgraded(response);
+      sockets.push(client);
+      if (failure === "upstream") upstream!.dispatchEvent(new ErrorEvent("error"));
+      else client.close(1011, "Client transport closed");
+      const rows = await f.resourcesWhen(
+        (values) => values.find((row) => row.target.instanceId === runtime)?.active === 0,
+      );
+      assert.equal(
+        rows.find((row) => row.target.instanceId === runtime)?.phase,
+        failure === "upstream" ? "quarantined" : "ready",
+      );
+      assert.equal(dispatches, 1);
+    },
+  );
 }
 
 test(

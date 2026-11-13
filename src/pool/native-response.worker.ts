@@ -26,18 +26,21 @@ export function nativeResponse(response: Response, lease: NativeStreamLease): Re
     const pair = new WebSocketPair();
     const client = pair[0],
       server = pair[1];
+    let ended = false;
     upstream.accept();
     server.accept();
-    const close = () => {
+    const close = (failed = false) => {
+      if (ended) return;
+      ended = true;
       try {
-        upstream.close(1000, "Connection ended");
+        upstream.close(failed ? 1011 : 1000, "Connection ended");
       } catch {}
       try {
-        server.close(1000, "Connection ended");
+        server.close(failed ? 1011 : 1000, "Connection ended");
       } catch {}
       lease.release();
     };
-    lease.onClose(close);
+    lease.onClose(() => close());
     upstream.addEventListener("message", (event) => {
       try {
         server.send(event.data);
@@ -53,10 +56,18 @@ export function nativeResponse(response: Response, lease: NativeStreamLease): Re
       }
     });
     for (const socket of [upstream, server]) {
-      socket.addEventListener("close", close);
-      socket.addEventListener("error", close);
+      socket.addEventListener("close", (event) => {
+        const failed = socket === upstream && (event.code === 1006 || event.code === 1011);
+        if (!ended && failed) void Promise.resolve(lease.failed?.(event)).catch(() => {});
+        close(failed);
+      });
+      socket.addEventListener("error", (error) => {
+        if (!ended && socket === upstream)
+          void Promise.resolve(lease.failed?.(error)).catch(() => {});
+        close(socket === upstream);
+      });
     }
-    lease.signal.addEventListener("abort", close, { once: true });
+    lease.signal.addEventListener("abort", () => close(), { once: true });
     if (lease.signal.aborted) close();
     return new Response(null, { status: 101, headers: response.headers, webSocket: client });
   }
@@ -67,7 +78,11 @@ export function nativeResponse(response: Response, lease: NativeStreamLease): Re
   const reader = response.body.getReader();
   let ended = false;
   let detach = () => {};
-  const finish = () => { ended = true; detach(); lease.release(); };
+  const finish = () => {
+    ended = true;
+    detach();
+    lease.release();
+  };
   return new Response(
     new ReadableStream({
       start(controller) {
@@ -92,8 +107,12 @@ export function nativeResponse(response: Response, lease: NativeStreamLease): Re
           } else controller.enqueue(value.value);
         } catch (error) {
           if (ended) return;
-          finish();
-          controller.error(error);
+          try {
+            await lease.failed?.(error);
+          } finally {
+            finish();
+            controller.error(error);
+          }
         }
       },
       async cancel(reason) {

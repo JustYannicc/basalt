@@ -9,6 +9,7 @@ const Count = Schema.Number.check(
 const Row = Schema.Struct({
   target: SlotTarget,
   identity: Schema.optional(SlotIdentity),
+  replaces: Schema.optional(SlotIdentity),
   phase: Schema.Literals([
     "reserved",
     "warming",
@@ -16,6 +17,7 @@ const Row = Schema.Struct({
     "draining",
     "retiring",
     "uncertain",
+    "quarantined",
     "retired",
   ]),
   active: Count,
@@ -26,6 +28,7 @@ type Row = typeof Row.Type;
 const Ledger = Schema.Array(Row);
 const key = "runtime-fleet-v1:resources";
 const primaryKey = "runtime-fleet-v1:primary-active";
+const replacementKey = "runtime-fleet-v1:replacement-demand";
 const retiredKey = (slot: string) => `runtime-fleet-v1:retired:${slot}`;
 interface RuntimeReservation {
   kind: "runtime";
@@ -89,7 +92,19 @@ export class RuntimeFleetState {
   async inspect(storage: SlotStorage = this.storage) {
     return this.rows(await storage.get(key));
   }
-  reserve(value: SlotTarget, retained?: (transaction: SlotStorage) => Promise<void>) {
+  async replacements(storage: SlotStorage = this.storage) {
+    const count = Schema.decodeUnknownSync(Count)((await storage.get(replacementKey)) ?? 0);
+    if (count > this.maximum) throw new FleetRefused("uncertain");
+    return count;
+  }
+  reserveReplacement(value: SlotTarget) {
+    return this.reserve(value, undefined, { replacement: true });
+  }
+  reserve(
+    value: SlotTarget,
+    retained?: (transaction: SlotStorage) => Promise<void>,
+    options: { replacement?: boolean; previous?: SlotIdentity } = {},
+  ) {
     const target = Schema.decodeUnknownSync(SlotTarget)(value);
     return this.change(async (rows, transaction) => {
       await this.permission?.(target, transaction);
@@ -108,7 +123,18 @@ export class RuntimeFleetState {
       )
         throw new FleetRefused("identity");
       await retained?.(transaction);
-      rows.push({ target, phase: "reserved", active: 0, lastUsedAt: this.now() });
+      if (options.replacement) {
+        const remaining = await this.replacements(transaction);
+        if (remaining < 1) throw new FleetRefused("uncertain");
+        await transaction.put(replacementKey, remaining - 1);
+      }
+      rows.push({
+        target,
+        phase: "reserved",
+        active: 0,
+        lastUsedAt: this.now(),
+        ...(options.previous ? { replaces: options.previous } : {}),
+      });
     });
   }
   private row(rows: Row[], target: SlotTarget) {
@@ -197,18 +223,69 @@ export class RuntimeFleetState {
           return;
         }
         const identity = selected.identity;
-        const row = this.row(rows, identity);
+        const live = rows.find((row) => sameTarget(row.target, identity));
+        const row =
+          live ?? Schema.decodeUnknownSync(Row)(await transaction.get(retiredKey(identity.slotId)));
         if (!sameIdentity(row.identity, identity) || row.active === 0)
           throw new FleetRefused("uncertain");
-        rows[rows.indexOf(row)] = { ...row, active: row.active - 1, lastUsedAt: this.now() };
+        const next = { ...row, active: row.active - 1, lastUsedAt: this.now() };
+        if (live) rows[rows.indexOf(live)] = next;
+        else await transaction.put(retiredKey(identity.slotId), next);
       }));
     return selected.kind === "primary"
       ? { kind: "primary", release }
       : { kind: "runtime", identity: selected.identity, release };
   }
+  quarantine(identity: SlotIdentity) {
+    return this.change(async (rows, transaction) => {
+      if (!rows.some((row) => sameTarget(row.target, identity))) {
+        const retired = Schema.decodeUnknownSync(Row)(
+          await transaction.get(retiredKey(identity.slotId)),
+        );
+        if (sameIdentity(retired.identity, identity) && retired.phase === "quarantined") return;
+        throw new FleetRefused("identity");
+      }
+      const row = this.row(rows, identity);
+      if (
+        !sameIdentity(row.identity, identity) ||
+        !["ready", "draining", "retiring", "quarantined"].includes(row.phase)
+      )
+        throw new FleetRefused("identity");
+      if (row.phase === "quarantined") return;
+      if (
+        !rows.some(
+          (replacement) =>
+            sameIdentity(replacement.replaces, identity) &&
+            ["reserved", "warming", "uncertain", "ready"].includes(replacement.phase),
+        )
+      ) {
+        const demand = await this.replacements(transaction);
+        if (demand >= this.maximum) throw new FleetRefused("uncertain");
+        await transaction.put(replacementKey, demand + 1);
+      }
+      rows[rows.indexOf(row)] = { ...row, phase: "quarantined" };
+    });
+  }
+  reclaimQuarantined(identity: SlotIdentity) {
+    return this.change(async (rows, transaction) => {
+      const row = this.row(rows, identity);
+      if (!sameIdentity(row.identity, identity) || row.phase !== "quarantined")
+        throw new FleetRefused("identity");
+      // Process absence releases compute capacity, not the retained request outcome or count.
+      await transaction.put(retiredKey(identity.slotId), row);
+      rows.splice(rows.indexOf(row), 1);
+    });
+  }
+  async released(identity: SlotIdentity) {
+    const value = await this.storage.get(retiredKey(identity.slotId));
+    if (value === undefined) return false;
+    const row = Schema.decodeUnknownSync(Row)(value);
+    return sameIdentity(row.identity, identity) && ["retired", "quarantined"].includes(row.phase);
+  }
   drain(identity: SlotIdentity) {
     return this.change((rows) => {
       const row = this.row(rows, identity);
+      if (sameIdentity(row.identity, identity) && row.phase === "quarantined") return row.active;
       if (!sameIdentity(row.identity, identity) || !["ready", "draining"].includes(row.phase))
         throw new FleetRefused("uncertain");
       rows[rows.indexOf(row)] = { ...row, phase: "draining" };
@@ -218,6 +295,7 @@ export class RuntimeFleetState {
   acknowledgeDrain(identity: SlotIdentity) {
     return this.change((rows) => {
       const row = this.row(rows, identity);
+      if (sameIdentity(row.identity, identity) && row.phase === "quarantined") return;
       if (!sameIdentity(row.identity, identity) || row.phase !== "draining")
         throw new FleetRefused("uncertain");
       rows[rows.indexOf(row)] = { ...row, drainAcknowledged: true };
