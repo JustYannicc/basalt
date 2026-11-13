@@ -1,3 +1,24 @@
+diff --git a/internal/runtime/executor/claude_executor_stream.go b/internal/runtime/executor/claude_executor_stream.go
+--- a/internal/runtime/executor/claude_executor_stream.go
++++ b/internal/runtime/executor/claude_executor_stream.go
+@@ -459,7 +459,7 @@
+ 					errScan = upstreamStreamErr
+ 				}
+ 				if errScan == nil && ctx.Err() == nil {
+-					errScan = statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before message_stop"}
++					errScan = statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before message_stop", streamTruncated: true}
+ 				}
+ 				if errScan != nil {
+ 					errScan = wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errScan)
+@@ -562,7 +562,7 @@
+ 				errScan = upstreamStreamErr
+ 			}
+ 			if errScan == nil && ctx.Err() == nil {
+-				errScan = statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before message_stop"}
++				errScan = statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before message_stop", streamTruncated: true}
+ 			}
+ 			if errScan != nil {
+ 				errScan = wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errScan)
 diff --git a/sdk/api/handlers/claude/code_handlers.go b/sdk/api/handlers/claude/code_handlers.go
 --- a/sdk/api/handlers/claude/code_handlers.go
 +++ b/sdk/api/handlers/claude/code_handlers.go
@@ -109,7 +130,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_stream_test.go b/sdk/api/ha
 new file mode 100644
 --- /dev/null
 +++ b/sdk/api/handlers/openai/http_submission_stream_test.go
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,142 @@
 +package openai
 +
 +import (
@@ -232,6 +253,24 @@ new file mode 100644
 +				t.Fatalf("truncated stream invented completion: %s", body)
 +			}
 +		})
++	}
++}
++
++func TestHTTPSubmissionExplicitStreamErrorCanFailOver(t *testing.T) {
++	var attempts atomic.Int32
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = io.Copy(io.Discard, r.Body)
++		w.Header().Set("Content-Type", "text/event-stream")
++		if attempts.Add(1) == 1 {
++			_, _ = io.WriteString(w, "event: error\ndata: {\"error\":{\"message\":\"not accepted\",\"code\":503}}\n\n")
++			return
++		}
++		_, _ = io.WriteString(w, "data: {\"id\":\"synthetic\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"recovered\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
++	}))
++	defer upstream.Close()
++	response := submissionRequest(t, upstream.URL, true, nil)
++	if attempts.Load() != 2 || response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "recovered") {
++		t.Fatalf("attempts=%d status=%d body=%s", attempts.Load(), response.Code, response.Body.String())
 +	}
 +}
 diff --git a/sdk/api/handlers/openai/http_submission_test.go b/sdk/api/handlers/openai/http_submission_test.go
@@ -582,9 +621,13 @@ diff --git a/sdk/cliproxy/auth/conductor_stream.go b/sdk/cliproxy/auth/conductor
  			action, okAction := matchRequestScopedErrorAction(auth, bootstrapErr, m.requestScopedErrorConfig(ctx))
  			if okAction {
  				rerr := resultErrorFromError(bootstrapErr)
-@@ -652,6 +660,9 @@
+@@ -650,8 +658,12 @@
+ 		}
+ 
  		if closed && len(buffered) == 0 {
- 			emptyErr := markUpstreamExecutionAttemptFromContext(ctx, &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true})
+-			emptyErr := markUpstreamExecutionAttemptFromContext(ctx, &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true})
++			emptyErr := httptransport.ClassifyIncompleteResponse(ctx, &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true})
++			emptyErr = markUpstreamExecutionAttemptFromContext(ctx, emptyErr)
  			currentErr := newStreamBootstrapError(emptyErr, streamResult.Headers)
 +			if isRequestTerminatedError(emptyErr) {
 +				return nil, currentErr
@@ -659,7 +702,7 @@ diff --git a/sdk/httptransport/submission.go b/sdk/httptransport/submission.go
 new file mode 100644
 --- /dev/null
 +++ b/sdk/httptransport/submission.go
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,138 @@
 +package httptransport
 +
 +import (
@@ -710,9 +753,22 @@ new file mode 100644
 +	return errors.As(err, &unknown)
 +}
 +
-+// ClassifySubmissionError stops failures detected after an accepted HTTP response.
-+// Explicit HTTP refusals never set the accepted flag.
++// ClassifySubmissionError preserves observed transport failures and classifies
++// incomplete responses. A definitive provider error can still allow failover.
 +func ClassifySubmissionError(ctx context.Context, err error) error {
++	var truncated interface{ IsStreamTruncated() bool }
++	incomplete := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
++		(errors.As(err, &truncated) && truncated.IsStreamTruncated())
++	return classifySubmissionError(ctx, err, incomplete)
++}
++
++// ClassifyIncompleteResponse marks a protocol failure that left an accepted
++// request without a known outcome, such as a stream with no payload or terminal.
++func ClassifyIncompleteResponse(ctx context.Context, err error) error {
++	return classifySubmissionError(ctx, err, true)
++}
++
++func classifySubmissionError(ctx context.Context, err error, incomplete bool) error {
 +	if err == nil || IsOutcomeUnknown(err) || ctx == nil {
 +		return err
 +	}
@@ -723,7 +779,7 @@ new file mode 100644
 +	if terminal := state.terminal.Load(); terminal != nil {
 +		return terminal
 +	}
-+	if !state.accepted.Load() {
++	if !incomplete || !state.accepted.Load() {
 +		return err
 +	}
 +	return state.fail(err)
