@@ -1,3 +1,4 @@
+import { runtimeReadStep, type RuntimeReadTrace } from "./runtime-read-trace.ts";
 import { PoolRuntimeUnhealthy, type PoolStatus } from "./lifecycle.ts";
 
 export const policyHealthLeaseMs = 1_500;
@@ -13,17 +14,24 @@ export async function readRuntimeHealth(
   managementKey: string,
   signal: AbortSignal,
   now = () => performance.now(),
+  trace?: RuntimeReadTrace,
 ): Promise<PoolStatus> {
   const requestedAt = now();
-  const response = await readiness.fetch("http://pool/ready", {
-    signal,
-    headers: { Authorization: `Bearer ${managementKey}` },
-  });
+  const response = await runtimeReadStep(
+    trace,
+    "health_headers",
+    () =>
+      readiness.fetch("http://pool/ready", {
+        signal,
+        headers: { Authorization: `Bearer ${managementKey}` },
+      }),
+    8318,
+  );
   if (!response.ok) {
     await response.body?.cancel();
     throw new PoolRuntimeUnhealthy();
   }
-  const status: unknown = await response.json();
+  const status: unknown = await runtimeReadStep(trace, "health_body", () => response.json(), 8318);
   if (
     typeof status !== "object" ||
     status === null ||

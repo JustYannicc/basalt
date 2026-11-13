@@ -1,3 +1,4 @@
+import { RuntimeReadTrace, runtimeReadStep } from "../runtime-read-trace.ts";
 import { refuseRuntime } from "../runtime-route-diagnostic.ts";
 import {
   SlotIdentity,
@@ -200,12 +201,17 @@ export class RuntimeEndpoint {
     this.bound(target);
     return this.serialize(() => this.complete(target, signal));
   }
-  async health(identity: SlotIdentity, signal: AbortSignal) {
+  async health(identity: SlotIdentity, signal: AbortSignal, trace?: RuntimeReadTrace) {
     try {
       this.bound(identity);
-      const { record, configuration } = await this.store.read(identity);
+      const { record, configuration } = await runtimeReadStep(trace, "identity", () =>
+        this.store.read(identity),
+      );
       if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
-      return this.checked(record, await this.channel.health(configuration, signal));
+      const status = await this.channel.health(configuration, signal, trace);
+      return trace
+        ? await trace.run("health_identity", async () => this.checked(record, status))
+        : this.checked(record, status);
     } catch (error) {
       refuseRuntime("endpoint_identity", error);
     }
@@ -285,10 +291,13 @@ export class RuntimeEndpoint {
   ) {
     if (readOnly && port === 8317) throw new SlotRefused("identity");
     if (readOnly || port !== 8317) {
-      const { configuration } = await this.store.read(identity);
-      await this.health(identity, request.signal);
+      const trace = readOnly ? new RuntimeReadTrace(request.signal) : undefined;
+      const { configuration } = await runtimeReadStep(trace, "configuration", () =>
+        this.store.read(identity),
+      );
+      await this.health(identity, request.signal, trace);
       if (!readOnly && port !== 8318) await this.channel.keepAlive();
-      return this.channel.fetch(configuration, request, port);
+      return this.channel.fetch(configuration, request, port, trace);
     }
     const { configuration, done } = await this.serialize(async () => {
       this.bound(identity);

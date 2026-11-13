@@ -59,6 +59,52 @@ test(
       }),
     );
     try {
+      for (const [fault, phase] of [
+        ["read-health-headers", "health_headers"],
+        ["read-health-body", "health_body"],
+        ["read-port-headers", "port_headers"],
+      ])
+        await context.test(fault!, async () => {
+          await mf.dispatchFetch(`http://fixture/clear-read-events?fault=${fault}`);
+          const response = await mf.dispatchFetch(`http://fixture/probe?fault=${fault}`);
+          assert.equal(response.status, 200);
+          assert.deepEqual(await response.json(), { caps: true });
+          const eventsResponse = await mf.dispatchFetch(
+            `http://fixture/read-events?fault=${fault}`,
+          );
+          const events = await eventsResponse.json();
+          const aborted = events.filter(
+            (event: { outcome: string }) => event.outcome === "aborted",
+          );
+          assert.equal(aborted.length, 1, JSON.stringify(events));
+          assert.equal(aborted[0].phase, phase);
+          assert.ok(aborted[0].elapsedMs >= 30);
+          assert.ok(aborted[0].readElapsedMs >= aborted[0].elapsedMs);
+          assert.equal(JSON.stringify(events).includes("synthetic-private"), false);
+          assert.equal(JSON.stringify(events).includes("synthetic-management"), false);
+          assert.ok(
+            events.some(
+              (event: { phase: string; outcome: string; port: number }) =>
+                event.phase === "port_headers" && event.outcome === "ok" && event.port === 8329,
+            ),
+          );
+          if (fault === "read-port-headers")
+            assert.ok(
+              events.some(
+                (event: { phase: string; outcome: string; elapsedMs: number }) =>
+                  event.phase === phase && event.outcome === "pending" && event.elapsedMs >= 900,
+              ),
+            );
+          const state = await mf.dispatchFetch(`http://fixture/read-state?fault=${fault}`);
+          assert.partialDeepStrictEqual(await state.json(), {
+            phase: "draining",
+            active: 1,
+            known: true,
+          });
+          const calls = await mf.dispatchFetch(`http://fixture/calls?fault=${fault}`);
+          assert.equal((await calls.json()).calls, 0);
+        });
+      await mf.dispatchFetch("http://fixture/clear-read-events?fault=read-port-headers");
       for (const [fault, reason] of [
         ["acquire", "runtime_fleet_acquire_transport"],
         ["primary", "runtime_primary_forward_transport"],
@@ -116,6 +162,8 @@ test(
         assert.deepEqual(await response.json(), { ok: true });
         const calls = await mf.dispatchFetch("http://fixture/calls?fault=healthy");
         assert.equal((await calls.json()).calls, 1);
+        const events = await mf.dispatchFetch("http://fixture/read-events?fault=healthy");
+        assert.deepEqual(await events.json(), []);
       });
     } finally {
       await mf.dispose();

@@ -9,12 +9,17 @@ import { RuntimeSlotStorage } from './src/pool/runtime-slots/storage.ts';
 import { SlotStreams } from './src/pool/runtime-slots/streams.ts';
 import { BoundSlotDriver, runtimeRequest } from './src/pool/runtime-slots/transport.ts';
 import { RuntimeEndpoint } from './src/pool/runtime-slots/endpoint.ts';
+import { RuntimeActivity } from './src/pool/runtime-slots/activity.ts';
 import { RuntimeWitnessStore } from './src/pool/runtime-slots/witness-store.ts';
 import { runtimeConfiguration, configurationDigest } from './src/pool/runtime-slots/configuration.ts';
 import { NativeStreams } from './src/pool/native-streams.ts';
 import { RuntimeProtection } from './src/pool/runtime-protection.ts';
 import { nativeResponse } from './src/pool/native-response.worker.ts';
 const marker='synthetic-private-exception-body';
+const readEvents=[];
+const info=console.info;
+console.info=(name,value)=>{if(name==='POOL_RUNTIME_READ')readEvents.push(value);else info(name,value);};
+const stall=(milliseconds=120)=>new Promise(resolve=>setTimeout(resolve,milliseconds));
 const bootId='11111111-1111-1111-8111-111111111111';
 const code={candidate:'a'.repeat(40),workerInput:'b'.repeat(64)};
 function target(root,env,fault){return {format:'pool-runtime-slot-v1',controllerId:root,slotId:fault,
@@ -34,6 +39,7 @@ export class Root extends DurableObject {
    const headers=new Headers(request.headers);headers.set('X-Fixture-Fault',fault);
    return this.env.Extra.get(this.env.Extra.idFromString(value.instanceId)).fetch(new Request(request,{headers}));
   }}));
+  if(new URL(request.url).pathname==='/probe')return driver.probeFetch(identity,new Request('http://private.invalid/capabilities?private='+marker),8327);
   const router=new RuntimeSlotRouter({controllerId:this.ctx.id.toString(),driver,
    storage:new RuntimeSlotStorage(storage(this.ctx,'')),streams:slotStreams,
    clock:{now:Date.now,monotonic:()=>performance.now()},defer:work=>this.ctx.waitUntil(work),wrap:nativeResponse});
@@ -59,6 +65,9 @@ export class Extra extends DurableObject {
   const fault=request.headers.get('X-Fixture-Fault');
   if(fault==='invalid-metadata')return Response.json({error:'runtime-refused'},{status:409,headers:{'X-Signalbox-Runtime-Failure-Step':marker,'X-Signalbox-Runtime-Failure-Reason':marker}});
   if(new URL(request.url).pathname==='/calls')return Response.json({calls:this.calls??0});
+  if(new URL(request.url).pathname==='/read-state')return Response.json(await new RuntimeActivity(this.ctx.storage).inspect(this.readIdentity));
+  if(new URL(request.url).pathname==='/clear-read-events'){readEvents.length=0;return new Response(null,{status:204});}
+  if(new URL(request.url).pathname==='/read-events')return Response.json(readEvents);
   if(!this.inner){
    const input=request.headers.get('X-Signalbox-Runtime-Identity')?JSON.parse(request.headers.get('X-Signalbox-Runtime-Identity')):(await request.clone().json()).target;
    const identity={...input,bootId};
@@ -74,25 +83,31 @@ export class Extra extends DurableObject {
    const store=new RuntimeWitnessStore(this.ctx.storage,this.env.POOL_DEPLOYMENT_KEY);
    await store.create(proof,configuration,identity);
    const {record}=await store.read(input);await store.put(input,{...record,witness});
-   Object.defineProperty(this.ctx,'container',{value:{running:true,async setInactivityTimeout(){},
+   this.readIdentity=identity;
+   if(fault?.startsWith('read-')){const activity=new RuntimeActivity(this.ctx.storage);await activity.initialize(identity,true);await activity.acquire(identity);await activity.drain(identity);}
+   Object.defineProperty(this.ctx,'container',{value:{running:true,async setInactivityTimeout(){if(fault?.startsWith('read-'))throw Error('Read must not warm compute');},
     start(){throw Error('No starts')},async destroy(){throw Error('No destroys')},getTcpPort:port=>{
      if(port===8318){
       if(fault==='port-lookup')throw Error(marker);
-      return {fetch:async()=>fault==='health'?new Response(marker,{status:503}):Response.json(
+      return {fetch:async()=>{
+       if(fault==='read-health-headers')await stall();
+       if(fault==='read-health-body')return new Response(new ReadableStream({async start(c){await stall();c.enqueue(new TextEncoder().encode(JSON.stringify({boot_id:bootId,started_at:'2026-01-01T00:00:00Z'})));c.close();}}),{headers:{'X-Signalbox-Policy-Lease-Ms':'1500','X-Signalbox-Launch-Generation':'1','X-Signalbox-Launch-Token-Sha256':'d'.repeat(64)}});
+       return fault==='health'?new Response(marker,{status:503}):Response.json(
        {boot_id:fault==='boot'?'different-boot':bootId,started_at:'2026-01-01T00:00:00Z'},
        {headers:{'X-Signalbox-Policy-Lease-Ms':fault==='short-lease'?'100':'1500',
-        'X-Signalbox-Launch-Generation':'1','X-Signalbox-Launch-Token-Sha256':'d'.repeat(64)}})};
+        'X-Signalbox-Launch-Generation':'1','X-Signalbox-Launch-Token-Sha256':'d'.repeat(64)}});}};
      }
+     if(port===8329)return {fetch:async()=>{if(fault==='read-port-headers')await stall(1_200);return Response.json({caps:true});}};
      if(port!==8317)throw Error('Wrong model port');
      if(fault==='model-port-lookup')throw Error(marker);
      return {fetch:async()=>{this.calls=(this.calls??0)+1;if(fault==='model-port-dispatch')throw Error(marker);return Response.json({ok:true});}};
     }},configurable:true});
    this.inner=new RuntimeEndpoint(this.ctx,this.env,'runtime',code,nativeResponse);
   }
-  return runtimeRequest(request,this.inner);
+  return runtimeRequest(fault?.startsWith('read-')?new Request(request,{signal:AbortSignal.timeout(50)}):request,this.inner);
  }
 }
 export default {fetch(request,env){const fault=new URL(request.url).searchParams.get('fault')??'healthy';
- if(new URL(request.url).pathname==='/calls')return env.Extra.get(env.Extra.idFromName(fault)).fetch(request);
+ if(['/calls','/read-events','/clear-read-events','/read-state'].includes(new URL(request.url).pathname))return env.Extra.get(env.Extra.idFromName(fault)).fetch(request);
  return env.Root.get(env.Root.idFromName(fault)).fetch(request);}};
 `;
