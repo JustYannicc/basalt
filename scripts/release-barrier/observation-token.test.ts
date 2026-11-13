@@ -14,7 +14,7 @@ for (const tree of ["src", "lib"])
   });
 
 for (const tree of ["src", "lib"])
-  test(`the source declaration and production operator provision through the actual ${tree} SDK with encrypted one-shot state`, () => {
+  test(`the production operator refuses token creation absent a source declaration through the actual ${tree} SDK`, () => {
     const output = execFileSync(
       tree === "src" ? "bun" : process.execPath,
       [
@@ -24,5 +24,5 @@ for (const tree of ["src", "lib"])
       ],
       { encoding: "utf8", timeout: 30_000 },
     );
-    assert.match(output, /__OBSERVATION_TOKEN_SOURCE_OPERATION_PASS__/);
+    assert.match(output, /__OBSERVATION_TOKEN_SOURCE_REFUSAL_PASS__/);
   });
