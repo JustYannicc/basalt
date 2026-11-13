@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Model WebSocket data stays on native platform passthrough. Before leased model dispatch, the selected Node opens one private basalt.model-lifetime.v1 completion socket and reserves a single-use random connection identity. The exact hijacked model connection owns completion. Normal end, peer close and revocation release every device, membership and selected-runtime lease; uncertain completion aborts the originating data fetch and never authorizes inference replay. Draining retirement waits for those leases. The private channel carries only ready and complete, not model data or inference completion. Public ingress refuses its route and strips its identity and protocol offer; existing raw frames, public subprotocols and unleased legacy passthrough remain unchanged. There is no cumulative byte limit or established-connection deadline. The bounded Node registry keeps a reservation only while its control connection exists, and rejects a missing or repeated data claim before a model handler runs."
+    }
+  }
+}

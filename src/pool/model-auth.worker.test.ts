@@ -333,3 +333,43 @@ test("computer setup credentials remain outside the Home model-key gate", async 
   assert.equal(calls.lookups, 1);
   assert.equal(calls.forwarded.length, 1);
 });
+
+test("private model lifetime routes never read production auth or wake a controller", async () => {
+  const { env, calls } = poolStub();
+  const response = await handlePoolWorkerRequest(
+    new Request("https://pool.example/v1/__basalt/model-lifetime", {
+      headers: {
+        Upgrade: "websocket",
+        Authorization: "Bearer valid-home-key",
+        "Sec-WebSocket-Protocol": "basalt.model-lifetime.v1",
+        "x-basalt-model-lifetime-id": "f".repeat(32),
+      },
+    }),
+    env,
+    async () => {
+      throw new Error("Private route reached auth lookup");
+    },
+  );
+  assert.equal(response.status, 404);
+  assert.equal(calls.lookups, 0);
+});
+
+test("raw ingress strips private lifetime headers and offer while preserving public subprotocol bytes", async () => {
+  const { env, calls } = poolStub();
+  const response = await handlePoolWorkerRequest(
+    new Request("https://pool.example/v1/responses", {
+      headers: {
+        Upgrade: "websocket",
+        Authorization: "Bearer valid-home-key",
+        "Sec-WebSocket-Protocol": "raw.one, raw.two, basalt.model-lifetime.v1",
+        "x-basalt-model-lifetime-id": "f".repeat(32),
+      },
+    }),
+    env,
+    async () => true,
+  );
+  assert.equal(response.status, 202);
+  assert.equal(calls.forwarded.length, 1);
+  assert.equal(calls.forwarded[0]!.headers.get("x-basalt-model-lifetime-id"), null);
+  assert.equal(calls.forwarded[0]!.headers.get("Sec-WebSocket-Protocol"), "raw.one, raw.two");
+});

@@ -382,6 +382,24 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /raw Responses compatibility and no inference replay/,
         );
+      } else if (patch.identity === "cliproxy-node-model-lifetime") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0593-node-model-lifetime.patch");
+        assert.match(patch.retirement.requires, /private single-use connection completion channel/);
+        assert.match(patch.retirement.requires, /binds the actual model socket/);
+        assert.match(
+          patch.retirement.requires,
+          /preserves unmarked raw frames and public subprotocols/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /closes the data socket if completion becomes uncertain/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /normal, client, upstream, revocation, duplicate-claim and draining-retirement regressions/,
+        );
+        assert.match(patch.retirement.requires, /without inference replay or a byte-lifetime cap/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
