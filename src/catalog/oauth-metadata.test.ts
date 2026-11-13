@@ -41,7 +41,7 @@ test("Sentry's reviewed metadata admits account selection and still refuses docu
     { prompt_values_supported: ["consent", "select_account", "login"] },
   ]) {
     assert.deepEqual(check({ ...sentryMetadata, ...change }), [
-      "sentry/oauth: automatic client metadata is missing or changed",
+      `sentry/oauth: automatic client metadata changed (metadataSha256: ${method.metadataSha256} -> ${catalogDocumentSha256({ ...sentryMetadata, ...change })})`,
     ]);
   }
 });
