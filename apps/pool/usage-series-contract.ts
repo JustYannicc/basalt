@@ -1,4 +1,5 @@
 import type { OverviewMoneyMetric } from "./overview-contract.ts";
+import type { UsageAccountDisplay } from "./usage-account-label-contract.ts";
 
 export const seriesDimensions = [
   "account",
@@ -94,6 +95,7 @@ export interface SeriesKey {
 }
 export interface SeriesGroup {
   key: SeriesKey;
+  accountDisplay?: UsageAccountDisplay;
   buckets: (SeriesBucket | SeriesCounts)[];
 }
 export interface SeriesCoverage {

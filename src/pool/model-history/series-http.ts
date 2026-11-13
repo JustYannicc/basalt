@@ -36,6 +36,7 @@ export async function handleUsageSeries(
     signingKey: string;
     previousSigningKey?: string;
     connectionString: string | undefined;
+    accountLabels?: (pool: string) => Promise<Readonly<Record<string, string>>>;
     currentPrices?: (
       targets: readonly { provider: string; model: string }[],
     ) => Promise<OverviewPriceTable>;
@@ -96,10 +97,14 @@ export async function handleUsageSeries(
     }
     if (action === "poolUsageSeries" || action === "lastSuccessAt") {
       const authority = seriesAuthority(payload.authority);
+      const labels =
+        action === "poolUsageSeries" && Array.isArray(input.by) && input.by.includes("account")
+          ? await access.accountLabels?.(payload.pool)
+          : undefined;
       const result =
         action === "poolUsageSeries"
           ? await withHistoryDatabase(access.connectionString, (db) =>
-              poolUsageSeries(db, input, authority, "owned", access.currentPrices),
+              poolUsageSeries(db, input, authority, "owned", access.currentPrices, labels),
             )
           : input.session !== undefined && access.home !== undefined
             ? await sessionSuccess(access.home, input, authority, {

@@ -1,0 +1,9 @@
+{
+  "identity": "executor-imported-account-labels",
+  "file": "0576-imported-account-labels.patch",
+  "content_sha256": "ad295c3be22bb2261bdfadef81da8fed4ed1e6e57b9d5549ff0638781d4ae82c",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
