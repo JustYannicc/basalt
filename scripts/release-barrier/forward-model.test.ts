@@ -264,3 +264,48 @@ test("a later interrupted journal keeps the live PoolWorker baseline binding ind
   assert.equal(input.workerInputHash, f.frozen.inputHash);
   assert.equal(input.continuation?.containerInputHash, f.frozen.baselineInputHash);
 });
+
+test("forward journal retains admitted operation and redacted State drift details", async () => {
+  const f = await fixture();
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const state = yield* InMemoryService();
+      const stack = { name: "basalt", stage: "production" };
+      yield* state.set({
+        stack: stack.name,
+        stage: stack.stage,
+        fqn: "PoolContainer",
+        value: f.saved,
+      });
+      const journal = yield* beginForwardJournal(stack, f.manifest, encryptionKey).pipe(
+        Effect.provideService(State, Effect.succeed(state)),
+      );
+      assert.ok(journal);
+      for (const failure of [
+        {
+          reason: "alchemy-state-drift",
+          worker: "Api",
+          operation: "verify-native-state" as const,
+          delta: {
+            fqn: "Api",
+            type: "Cloudflare.Worker",
+            changed: [{ path: "attr.workerId", changed: true as const }],
+          },
+        },
+        {
+          reason: "release-operation-failed",
+          worker: "PoolDatabase",
+          operation: "apply-database-resource" as const,
+          provider: { type: "ServiceUnavailable", status: 503, codes: [10001] },
+        },
+      ]) {
+        yield* journal.record({ ...f.receipts.at(-1)!, phase: "admitted", failure });
+        const read = yield* readForwardJournal(stack, encryptionKey).pipe(
+          Effect.provideService(State, Effect.succeed(state)),
+        );
+        assert.ok(read && !read.complete);
+        assert.deepEqual(read.packet.receipt.failure, failure);
+      }
+    }),
+  );
+});
