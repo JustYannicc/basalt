@@ -28,6 +28,7 @@ import { seriesQuery, tokenColumns } from "./series-query.ts";
 import { HistoryInputError, historyObject, timestamp } from "./record.ts";
 import { digest } from "../backend-users.ts";
 import { seriesUsageForecasts } from "./usage-forecasts.ts";
+import { homeCaptureCoverage } from "./capture-coverage.ts";
 
 function bucket(
   row: Record<string, unknown>,
@@ -176,7 +177,7 @@ async function readUsageSeries(
             );
       query = await seriesQuery(db, input, authority, after, personScope, prices);
     }
-    const { coverage, asOf, homeThrough } = await seriesCoverage(
+    const { coverage, asOf } = await seriesCoverage(
       db,
       query,
       input,
@@ -231,7 +232,18 @@ async function readUsageSeries(
       result.next = writeSeriesCursor(scope, String(last.group_key), String(last.at));
     }
     if (input.forecast) {
-      result.forecasts = seriesUsageForecasts(result, homeThrough);
+      const native = coverage.sources.find((source) => source.kind === "home");
+      const capture =
+        native?.backfillComplete === true && result.next === null
+          ? await homeCaptureCoverage(
+              db,
+              String(query.values[0]),
+              query.homeSource,
+              input.from,
+              input.to,
+            )
+          : undefined;
+      result.forecasts = seriesUsageForecasts(result, capture);
       if (new TextEncoder().encode(JSON.stringify(result)).byteLength > maxSeriesBytes)
         result.forecasts = {
           ...result.forecasts,

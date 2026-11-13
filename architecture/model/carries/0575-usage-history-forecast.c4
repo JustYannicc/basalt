@@ -1,7 +1,7 @@
 model {
   extend basalt.modelGateway {
     metadata {
-      constraint "Manager-authorized usage series retain every source and append-only request identity. Optional Zurich daily buckets follow actual local calendar boundaries, including daylight-saving changes, while existing reads stay UTC. Historical usage forecasts use four complete weeks and the same estimator for held-out misses. Incomplete native capture cannot become observed zero-use days; current cursor coverage distinguishes idle reads from a stalled forward scan. Forecasts over known token or price subsets name their exclusions and remain Low confidence. Hidden values stay unknown, while authorized refusal counts include counts-only rows. Usage history never establishes remaining provider quota or routing capacity."
+      constraint "Manager-authorized usage series retain every source and append-only request identity. Optional Zurich daily buckets follow actual local calendar boundaries, including daylight-saving changes, while existing reads stay UTC. Historical usage forecasts use four complete weeks and the same estimator for held-out misses. Incomplete native capture cannot become observed zero-use days. Forecasts and overview share the source-to-ledger completeness proof in one repeatable-read snapshot; uncaptured hours invalidate their local days, including today. Forecasts over known token or price subsets name their exclusions and remain Low confidence. Hidden values stay unknown, while authorized refusal counts include counts-only rows. Usage history never establishes remaining provider quota or routing capacity."
     }
   }
 }

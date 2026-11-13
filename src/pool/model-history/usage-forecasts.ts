@@ -2,6 +2,7 @@ import type { UsageDay, UsageForecasts } from "../../../apps/pool/usage-forecast
 import type { PoolUsageSeriesResult, SeriesBucket, SeriesCounts } from "./series-contract.ts";
 import { addUsageDays, usageDay, usageDayStart } from "../usage-calendar.ts";
 import { usageForecast } from "../usage-forecast.ts";
+import type { HomeCaptureCoverage } from "./capture-coverage.ts";
 
 interface Day {
   requests: number;
@@ -55,7 +56,7 @@ function add(into: Day, bucket: SeriesBucket | SeriesCounts) {
 /** Recorded daily history only. Counts-only data never acquires invented token or price values. */
 export function seriesUsageForecasts(
   result: PoolUsageSeriesResult,
-  homeThrough?: string | null,
+  capture?: HomeCaptureCoverage,
 ): UsageForecasts {
   const byProvider = new Map<string | null, Map<string, Day>>([[null, new Map()]]);
   const warnings: string[] = [];
@@ -80,22 +81,15 @@ export function seriesUsageForecasts(
   const home = result.coverage.sources.find((source) => source.kind === "home");
   const incompleteHome =
     home !== undefined &&
-    (home.backfillComplete !== true ||
-      home.sweep === null ||
-      home.sweep.id !== "0" ||
-      home.sweep.upper !== "0");
-  const capturedThrough = home
-    ? Date.parse(homeThrough ?? result.coverage.capturedThrough ?? "")
-    : Date.parse(result.to);
+    (home.backfillComplete !== true || capture === undefined || capture.incompleteHours === null);
+  const missingDays = new Set(
+    [...(capture?.incompleteHours ?? [])].map((hour) => usageDay(Date.parse(hour))),
+  );
   if (incompleteHome)
     warnings.push("Home capture is incomplete. Uncaptured days cannot train a usage forecast.");
-  else if (
-    home &&
-    (!Number.isFinite(capturedThrough) ||
-      capturedThrough < usageDayStart(usageDay(Date.parse(result.to))))
-  )
+  else if (home && missingDays.size > 0)
     warnings.push(
-      "Home capture has not reached today. Later days and current-period projections remain unknown.",
+      "Home has uncaptured requests. Affected days and current-period projections remain unknown.",
     );
   const today = usageDay(Date.parse(result.to));
   for (const group of result.groups) {
@@ -125,11 +119,7 @@ export function seriesUsageForecasts(
     if (first && result.next === null)
       for (let day = first; day <= today; day = addUsageDays(day, 1)) {
         const value = measured.get(day) ?? empty();
-        const captured =
-          !incompleteHome &&
-          (day === today
-            ? usageDayStart(day) <= capturedThrough
-            : usageDayStart(addUsageDays(day, 1)) <= capturedThrough);
+        const captured = !incompleteHome && !missingDays.has(day);
         tokenMissing += value.tokenMissing;
         unpriced += value.unpriced;
         const cost = Number(value.price) / Number(scale);

@@ -4,7 +4,7 @@ import { addUsageDays, usageDayStart } from "../../src/pool/usage-calendar.ts";
 import { poolUsageSeries } from "../../src/pool/model-history/series.ts";
 import { seriesInput } from "../../src/pool/model-history/series-input.ts";
 import { authority, full, input, seriesFixture } from "./series-fixture.ts";
-import { digest } from "../../src/pool/backend-users.ts";
+import { backendUserName, digest } from "../../src/pool/backend-users.ts";
 import { homeMetadataFixture } from "./history-fixture.ts";
 import { historyBatchSize } from "../../src/pool/model-history/store.ts";
 import { Schema } from "effect";
@@ -194,10 +194,41 @@ test("native forecast coverage distinguishes incomplete backfill, verified idle 
     );
     const idle = await poolUsageSeries(db, query, authority);
     assert.equal(idle.forecasts!.series[0]!.requests.status, "available");
-    await db.query("INSERT INTO usage (id,timestamp) VALUES (2,'2026-11-09T10:59:00Z')");
+    const fingerprint = `sha256:${"a".repeat(64)}`;
+    const otherFingerprint = `sha256:${"b".repeat(64)}`;
+    await db.query('INSERT INTO "user" (id,username) VALUES (1,$1),(2,$2)', [
+      await backendUserName("fixture-member", input.pool),
+      await backendUserName("other-member", "other-pool"),
+    ]);
+    await db.query(
+      "INSERT INTO api_key (id,diagnostic_fingerprint,user_id) VALUES (1,$1,1),(2,$2,2)",
+      [fingerprint, otherFingerprint],
+    );
+    await db.query(
+      "INSERT INTO usage (id,timestamp,api_key) VALUES (4,'2026-11-09T10:59:00Z',$1)",
+      [otherFingerprint],
+    );
+    const otherPool = await poolUsageSeries(db, query, authority);
+    assert.equal(otherPool.forecasts!.series[0]!.requests.status, "available");
+    await db.query(
+      "INSERT INTO usage (id,timestamp,api_key) VALUES (2,'2026-11-09T10:59:00Z',$1)",
+      [fingerprint],
+    );
     const stalled = await poolUsageSeries(db, query, authority);
-    assert.equal(stalled.forecasts!.series[0]!.requests.status, "unavailable");
-    assert.match(stalled.forecasts!.warnings.join(" "), /not reached today/);
+    const current = stalled.forecasts!.series[0]!.requests;
+    assert.equal(current.status, "available");
+    if (current.status === "available") {
+      assert.equal(current.thisWeek.median, null);
+      assert.equal(current.month.median, null);
+      assert.equal(current.confidence, "Low");
+    }
+    assert.match(stalled.forecasts!.warnings.join(" "), /uncaptured requests/);
+    await db.query(
+      "INSERT INTO usage (id,timestamp,api_key) VALUES (3,'2026-11-08T10:59:00Z',$1)",
+      [fingerprint],
+    );
+    const older = await poolUsageSeries(db, query, authority);
+    assert.equal(older.forecasts!.series[0]!.requests.status, "unavailable");
   });
 });
 

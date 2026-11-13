@@ -10,6 +10,7 @@ import { seriesUsageForecasts } from "./model-history/usage-forecasts.ts";
 import { addUsageDays, usageDayStart } from "./usage-calendar.ts";
 
 const now = "2026-11-09T11:00:00Z";
+const capture = (...hours: string[]) => ({ capturedAt: now, incompleteHours: new Set(hours) });
 function fixture(): PoolUsageSeriesResult {
   const buckets: SeriesBucket[] = Array.from({ length: 84 }, (_, day) => {
     const token = { sum: "1000", known: 100, missing: 0 };
@@ -99,21 +100,34 @@ test("native backfill gaps cannot become zero-valued complete training weeks", (
   result.coverage.sources[0]!.backfillComplete = false;
   const old = result.groups[0]!.buckets[0]!;
   result.groups[0]!.buckets = [old, { ...old, at: "2026-11-09T00:00:00Z", requests: 1000 }];
-  const forecast = seriesUsageForecasts(result, now);
+  const forecast = seriesUsageForecasts(result, capture());
   assert.equal(forecast.series[0]!.requests.status, "unavailable");
   assert.match(forecast.warnings.join(" "), /capture is incomplete/);
 });
 
 test("stalled native forward capture leaves later elapsed days unknown", () => {
   const result = fixture();
-  const forecast = seriesUsageForecasts(result, "2026-10-20T12:00:00Z");
+  const forecast = seriesUsageForecasts(result, capture("2026-11-08T08:00:00Z"));
   assert.equal(forecast.series[0]!.requests.status, "unavailable");
-  assert.match(forecast.warnings.join(" "), /not reached today/);
+  assert.match(forecast.warnings.join(" "), /uncaptured requests/);
+});
+
+test("same-day native capture lag keeps current-period actuals and projections unknown", () => {
+  const result = fixture();
+  const forecast = seriesUsageForecasts(result, capture("2026-11-09T08:00:00Z"));
+  const requests = forecast.series[0]!.requests;
+  assert.equal(requests.status, "available");
+  if (requests.status !== "available") return;
+  assert.equal(requests.thisWeek.actual, null);
+  assert.equal(requests.thisWeek.median, null);
+  assert.equal(requests.month.median, null);
+  assert.equal(requests.confidence, "Low");
+  assert.ok(forecast.warnings.length > 0);
 });
 
 test("fresh native capture can establish idle days despite an older last request timestamp", () => {
   const result = fixture();
-  const forecast = seriesUsageForecasts(result, now);
+  const forecast = seriesUsageForecasts(result, capture());
   assert.equal(forecast.series[0]!.requests.status, "available");
   const requests = forecast.series[0]!.requests;
   if (requests.status !== "available") return;
@@ -133,7 +147,7 @@ test("mixed known and missing metrics forecast an explicitly labelled Low-confid
       excluded: { ...value.cost.apiEstimate!.excluded, unpriced: 1 },
     };
   }
-  const forecast = seriesUsageForecasts(result, now).series[0]!;
+  const forecast = seriesUsageForecasts(result, capture()).series[0]!;
   for (const metric of [forecast.tokens, forecast.apiEstimate]) {
     assert.equal(metric.status, "available");
     if (metric.status !== "available") continue;
