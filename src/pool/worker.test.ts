@@ -1104,10 +1104,17 @@ for (const retire of [false, true])
                 const request = new Request(input, init);
                 assert.equal(request.method, "POST");
                 const { envelope } = (await request.json()) as { envelope: string };
-                assert.partialDeepStrictEqual(await openEnvelope(key, "sbcr1", envelope), {
+                const publication = await openEnvelope(key, "sbcr1", envelope);
+                assert.ok(
+                  typeof publication === "object" &&
+                    publication !== null &&
+                    "at" in publication &&
+                    typeof publication.at === "number",
+                );
+                assert.ok(publication.at <= Date.now() && publication.at + 30_000 > Date.now());
+                assert.partialDeepStrictEqual(publication, {
                   action: "publish-changes",
-                  at: Date.now(),
-                  expiresAt: Date.now() + 30_000,
+                  expiresAt: publication.at + 30_000,
                   changes: [
                     { scope: "pool:a", hint: { topic: "pool-samples", resource: "a" } },
                   ],
