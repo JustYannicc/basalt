@@ -1,6 +1,8 @@
 model {
   extend basalt {
     build = module "Build" {
+      // Pool container fixtures select a separately locked stable runtime binary before loading the emulator.
+      // Its dev-only installation neither changes the pinned framework cache nor the published image inputs.
       // Signed provider-adoption proofs partition every declared case exactly once, balancing
       // each spec across two independently bounded steps while retaining every case deadline.
       // Source-preservation baselines await every seeded member's committed management account and link.
