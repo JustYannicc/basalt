@@ -289,7 +289,7 @@ diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.s
 +        ).toBe(200);
 +        expect(
 +          (yield* postApp(ownerApp, appLabelPath, {
-+            version: "retired-version",
++            version: "dpl_stale",
 +            input: labelInput,
 +          })).status,
 +        ).toBe(409);
