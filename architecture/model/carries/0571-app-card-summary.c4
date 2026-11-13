@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "An Apps card asks the host for its line only when nothing needs attention and no account of the caller's or shared one is linked, and the host returns the shared copy for any app it has nothing to say about. The hosted host answers only for apps that speak the Obsidian sync protocol, through the same devices and per-device activity the app's Accounts tab lists: the device count with the newest sync or grant activity, or No devices yet with an invitation to connect. While a drive app's tools load its card shows a loading line, and if the tools or devices can't be read it says its status couldn't be loaded; neither claims devices or that no account is required. Apps without a drive read neither their tool list nor grants for this."
+    }
+  }
+}

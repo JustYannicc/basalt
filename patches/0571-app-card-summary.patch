@@ -1,0 +1,296 @@
+diff --git a/apps/hosted/web/src/contracts/obsidian-devices.ts b/apps/hosted/web/src/contracts/obsidian-devices.ts
+--- a/apps/hosted/web/src/contracts/obsidian-devices.ts
++++ b/apps/hosted/web/src/contracts/obsidian-devices.ts
+@@ -108,3 +108,32 @@ export const deviceSync = (sync: VaultSync, device: ObsidianDevice): DeviceSync
+ export const syncTool = "devices";
+ export const hasSyncTool = (tools: readonly { readonly name: string }[]) =>
+   tools.some((tool) => tool.name === syncTool);
++
++export type DeviceActivity =
++  | { readonly kind: "synced"; readonly at: string; readonly current: boolean }
++  | { readonly kind: "active"; readonly at: string };
++
++/**
++ * A device's latest sign of life: its own sync record, else its grant's last token refresh, the
++ * only sign before the drive recorded syncs. Null when it has neither.
++ */
++export const deviceActivity = (
++  device: ObsidianDevice,
++  sync: VaultSync | undefined,
++): DeviceActivity | null => {
++  const own = sync === undefined ? null : deviceSync(sync, device);
++  if (own !== null) return { kind: "synced", at: own.at, current: own.current };
++  return device.lastActiveAt === null ? null : { kind: "active", at: device.lastActiveAt };
++};
++
++/** The newest sign of life any of the vault's devices shows, by each device's own rule. */
++export const latestActivity = (
++  devices: readonly ObsidianDevice[],
++  sync: VaultSync | undefined,
++): DeviceActivity | null =>
++  devices.reduce<DeviceActivity | null>((newest, device) => {
++    const activity = deviceActivity(device, sync);
++    return activity !== null && (newest === null || Date.parse(activity.at) > Date.parse(newest.at))
++      ? activity
++      : newest;
++  }, null);
+diff --git a/apps/hosted/web/src/implementation/pages/apps.tsx b/apps/hosted/web/src/implementation/pages/apps.tsx
+--- a/apps/hosted/web/src/implementation/pages/apps.tsx
++++ b/apps/hosted/web/src/implementation/pages/apps.tsx
+@@ -1,4 +1,5 @@
+ import { AppScreenBadge } from "./app-screen.tsx";
++import { ObsidianCardSummary } from "./obsidian-devices.tsx";
+ import { useMemo } from "react";
+ import { useAtom } from "@effect/atom-react";
+ import { Option } from "effect";
+@@ -43,6 +44,7 @@ export function AppsPage() {
+     <SharedPage
+       query={atoms.query}
+       screen={(app) => <AppScreenBadge app={app} />}
++      summary={(app, fallback) => <ObsidianCardSummary app={app} fallback={fallback} />}
+       Failure={HostedFailure}
+       pending={
+         Option.isSome(data) && data.value.pendingApp ? (
+diff --git a/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx b/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx
+--- a/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx
++++ b/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx
+@@ -14,6 +14,7 @@ import {
+ } from "@executor-js/ui/components/dialog";
+ import { LocalTime, RelativeTime, shortMoment } from "@executor-js/ui/components/local-time";
+ import { Skeleton } from "@executor-js/ui/components/skeleton";
++import { AppCardNote } from "@executor-js/ui/dashboard/apps";
+ import { useQuery } from "@executor-js/ui/dashboard/context";
+ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ import { connectionToolListAtom } from "../../contracts/apps.ts";
+@@ -24,13 +25,14 @@ import {
+ } from "../../contracts/mcp-connections.ts";
+ import { obsidianTools, supportsObsidian } from "../../contracts/obsidian-connection.ts";
+ import {
+-  deviceSync,
++  deviceActivity,
+   hasSyncTool,
+   obsidianDevices,
+   type ObsidianDevice,
+   type VaultSync,
+ } from "../../contracts/obsidian-devices.ts";
+ import { vaultSyncAtom } from "../../contracts/obsidian-vault-sync.ts";
++import { VaultCardLine } from "./obsidian-vault-card.tsx";
+ import { HostedFailure } from "../components/dashboard-bindings.tsx";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ 
+@@ -258,21 +260,45 @@ function SyncState({
+   readonly device: ObsidianDevice;
+   readonly sync: VaultSync | undefined;
+ }) {
+-  const own = sync === undefined ? null : deviceSync(sync, device);
+-  if (own !== null)
+-    return (
+-      <>
+-        {own.current ? "Up to date · synced " : "Synced "}
+-        <RelativeTime value={own.at} />
+-      </>
+-    );
+-  // Before the drive recorded syncs, the grant's token refresh is the only sign of life.
+-  if (device.lastActiveAt !== null)
+-    return (
+-      <>
+-        {"Active "}
+-        <RelativeTime value={device.lastActiveAt} />
+-      </>
+-    );
+-  return <>No sync yet</>;
++  const activity = deviceActivity(device, sync);
++  if (activity === null) return <>No sync yet</>;
++  return (
++    <>
++      {activity.kind === "active"
++        ? "Active "
++        : activity.current
++          ? "Up to date · synced "
++          : "Synced "}
++      <RelativeTime value={activity.at} />
++    </>
++  );
++}
++
++/**
++ * A vault's line on its Apps card, from the same devices and activity its Accounts tab lists.
++ * Apps that don't speak the Obsidian sync protocol show `fallback`.
++ */
++export function ObsidianCardSummary({
++  app,
++  fallback,
++}: {
++  readonly app: App;
++  readonly fallback: ReactNode;
++}) {
++  return (
++    <ObsidianVault app={app} fallback={fallback}>
++      {(vault) =>
++        // Until its tools load, a drive app may not be a vault at all, so neither state names devices.
++        vault.kind === "pending" ? (
++          <span role="status" aria-label="Loading status">
++            <Skeleton className="h-3 w-28" />
++          </span>
++        ) : vault.kind === "failed" ? (
++          <AppCardNote>Status couldn't be loaded</AppCardNote>
++        ) : (
++          <VaultCardLine devices={vault.devices} sync={vault.sync} />
++        )
++      }
++    </ObsidianVault>
++  );
+ }
+diff --git a/apps/hosted/web/src/implementation/pages/obsidian-vault-card.tsx b/apps/hosted/web/src/implementation/pages/obsidian-vault-card.tsx
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/obsidian-vault-card.tsx
+@@ -0,0 +1,32 @@
++import { RelativeTime } from "@executor-js/ui/components/local-time";
++import { AppCardLine, AppCardNote } from "@executor-js/ui/dashboard/apps";
++import {
++  latestActivity,
++  type ObsidianDevice,
++  type VaultSync,
++} from "../../contracts/obsidian-devices.ts";
++
++/** A vault's devices on its Apps card, worded like an app's linked accounts. */
++export function VaultCardLine({
++  devices,
++  sync,
++}: {
++  readonly devices: readonly ObsidianDevice[];
++  readonly sync: VaultSync | undefined;
++}) {
++  if (devices.length === 0) return <AppCardNote>No devices yet · Connect one</AppCardNote>;
++  const latest = latestActivity(devices, sync);
++  return (
++    <AppCardLine>
++      {devices.length === 1 ? "1 device" : `${devices.length} devices`}
++      {latest === null ? (
++        " · no sync yet"
++      ) : (
++        <>
++          {latest.kind === "synced" ? " · synced " : " · active "}
++          <RelativeTime value={latest.at} />
++        </>
++      )}
++    </AppCardLine>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/apps.tsx b/packages/ui/src/implementation/dashboard/apps.tsx
+--- a/packages/ui/src/implementation/dashboard/apps.tsx
++++ b/packages/ui/src/implementation/dashboard/apps.tsx
+@@ -21,6 +21,34 @@ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { requirementAccountTitle } from "../../contracts/account-identities.ts";
+ 
++/** One line of a card's account summary, marked with a key or, when it needs attention, a warning. */
++export function AppCardLine({
++  warning = false,
++  children,
++}: {
++  readonly warning?: boolean;
++  readonly children: ReactNode;
++}) {
++  return (
++    <span>
++      <HugeiconsIcon
++        icon={warning ? AlertCircleIcon : Key01Icon}
++        strokeWidth={2}
++        aria-hidden
++        size={12}
++      />
++      <span className="app-card-account-label min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
++        {children}
++      </span>
++    </span>
++  );
++}
++
++/** A card's quiet line, for an app with nothing that needs attention. */
++export function AppCardNote({ children }: { readonly children: ReactNode }) {
++  return <span className="muted text-muted-foreground">{children}</span>;
++}
++
+ /** A card for each configured app and its linked accounts. */
+ export function AppsPage<E>({
+   action,
+@@ -31,8 +59,15 @@ export function AppsPage<E>({
+   query,
+   Failure,
+   screen,
++  summary,
+ }: QueryProps<Inventory, E> & {
+   readonly screen?: ((app: App) => ReactNode) | undefined;
++  /**
++   * What a card says when nothing needs attention and no account of the caller's or shared one
++   * is linked. The host can show its own state for the app, such as the devices connected to it,
++   * and returns `fallback` where it has none.
++   */
++  readonly summary?: ((app: App, fallback: ReactNode) => ReactNode) | undefined;
+   readonly action?: ReactNode;
+   readonly connect: ReactNode;
+   readonly filters?: ReactNode;
+@@ -70,6 +105,7 @@ export function AppsPage<E>({
+           <AppsList
+             data={data}
+             screen={screen}
++            summary={summary}
+             search={search}
+             clearSearch={() => setSearch("")}
+             pending={search.length === 0 ? pending : undefined}
+@@ -89,6 +125,7 @@ export function AppsPage<E>({
+ function AppsList({
+   data,
+   screen,
++  summary,
+   search,
+   clearSearch,
+   empty,
+@@ -96,6 +133,7 @@ function AppsList({
+ }: {
+   readonly data: Inventory;
+   readonly screen?: ((app: App) => ReactNode) | undefined;
++  readonly summary?: ((app: App, fallback: ReactNode) => ReactNode) | undefined;
+   readonly search: string;
+   readonly clearSearch: () => void;
+   readonly empty: ReactNode;
+@@ -176,6 +214,7 @@ function AppsList({
+                       ? "No account required"
+                       : "No accounts linked"
+                 : `${userAccounts}${sharedAccounts ? ` · ${sharedAccounts} for everyone` : ""}`;
++            const sharedSummary = <AppCardNote>{accountSummary}</AppCardNote>;
+             return (
+               <Card asChild key={app.id} className="gap-0 rounded-lg p-4 shadow-none">
+                 <AppLink
+@@ -207,23 +246,13 @@ function AppsList({
+                       unavailable ||
+                       selected.length > 0 ||
+                       appAccountCount > 0 ? (
+-                        <span>
+-                          {missing || needsSignIn || unavailable ? (
+-                            <HugeiconsIcon
+-                              icon={AlertCircleIcon}
+-                              strokeWidth={2}
+-                              aria-hidden
+-                              size={12}
+-                            />
+-                          ) : (
+-                            <HugeiconsIcon icon={Key01Icon} strokeWidth={2} aria-hidden size={12} />
+-                          )}
+-                          <span className="app-card-account-label min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+-                            {accountSummary}
+-                          </span>
+-                        </span>
++                        <AppCardLine warning={missing || needsSignIn || unavailable}>
++                          {accountSummary}
++                        </AppCardLine>
++                      ) : summary ? (
++                        summary(app, sharedSummary)
+                       ) : (
+-                        <span className="muted text-muted-foreground">{accountSummary}</span>
++                        sharedSummary
+                       )}
+                     </div>
+                     {screen?.(app)}
