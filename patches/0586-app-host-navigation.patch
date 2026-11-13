@@ -86,7 +86,15 @@ diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/i
  /** A scoped page client. Host-injected context carries only the version, never credentials. */
  export const createAppClient = () => {
    const { runtime, atoms } = makeBrowserTelemetry(
-@@ -103,16 +114,15 @@ export const createAppClient = () => {
+@@ -80,6 +91,7 @@ export const createAppClient = () => {
+     window.dispatchEvent(new Event("executor:deployment-changed"));
+   });
+   let pendingWrites = 0;
++  let disposed = false;
+   const beforeUnload = (event: BeforeUnloadEvent) => {
+     event.preventDefault();
+     event.returnValue = "";
+@@ -103,16 +115,15 @@ export const createAppClient = () => {
      active = !active;
      for (const listener of activeListeners) listener(active);
    };
@@ -111,7 +119,13 @@ diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/i
    };
    window.addEventListener("message", onHostMessage);
    document.addEventListener("visibilitychange", activeChanged);
-@@ -127,6 +137,7 @@ export const createAppClient = () => {
+@@ -122,11 +133,13 @@ export const createAppClient = () => {
+     if (!event.persisted) void dispose().catch((error) => console.error(error));
+   };
+   const dispose = async () => {
++    disposed = true;
+     window.removeEventListener("pagehide", onHide);
+     window.removeEventListener("beforeunload", beforeUnload);
      window.removeEventListener("message", onHostMessage);
      document.removeEventListener("visibilitychange", activeChanged);
      activeListeners.clear();
@@ -119,35 +133,41 @@ diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/i
      optimistic.dispose();
      await runtime.dispose();
    };
-@@ -345,9 +356,42 @@ export const createAppClient = () => {
+@@ -345,9 +358,48 @@ export const createAppClient = () => {
        );
      },
    });
 +  let navigationRequests = 0;
 +  const navigate = (destination: typeof HostDestination.Encoded): Promise<boolean> =>
-+    window.parent === window
-+      ? Promise.resolve(false)
-+      : runtime.runPromise(context).then(
-+          ({ version }) =>
-+            new Promise<boolean>((resolve) => {
-+              const id = `${version}:${++navigationRequests}`;
-+              let timer: ReturnType<typeof setTimeout> | undefined;
-+              const settle = (accepted: boolean) => {
-+                clearTimeout(timer);
-+                navigations.delete(id);
-+                resolve(accepted);
-+              };
-+              navigations.set(id, settle);
-+              timer = setTimeout(() => settle(false), navigationTimeout);
-+              // The request names only this page's version and a destination; nothing in it is
-+              // secret, and only the parent's answer is read.
++    runtime
++      .runPromise(
++        Effect.gen(function* () {
++          if (disposed || window.parent === window) return false;
++          const { version } = yield* context;
++          // Keep sends queued so same-turn owner cleanup can cancel before posting.
++          yield* Effect.yieldNow;
++          return yield* Effect.callback<boolean>((resume) => {
++            if (disposed) {
++              resume(Effect.succeed(false));
++              return;
++            }
++            const id = `${version}:${++navigationRequests}`;
++            navigations.set(id, (accepted) => resume(Effect.succeed(accepted)));
++            try {
 +              window.parent.postMessage(
 +                { type: "executor:navigate", id, version, destination },
 +                "*",
 +              );
-+            }),
-+          () => false,
-+        );
++            } catch {
++              resume(Effect.succeed(false));
++            }
++            return Effect.sync(() => {
++              navigations.delete(id);
++            });
++          }).pipe(Effect.raceFirst(Effect.sleep(navigationTimeout).pipe(Effect.as(false))));
++        }).pipe(Effect.catchCause(() => Effect.succeed(false))),
++      )
++      .catch(() => false);
    return {
      /** Close this client when its page or embedding owner is removed. */
      dispose,
@@ -303,11 +323,10 @@ diff --git a/e2e/tests/app-host-navigation.spec.ts b/e2e/tests/app-host-navigati
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/app-host-navigation.spec.ts
-@@ -0,0 +1,296 @@
+@@ -0,0 +1,280 @@
 +/** An embedded app page opens its host's tabs and accounts through `apps/client`, in one window. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
-+import type { Frame, Page } from "playwright";
 +import { randomUUID } from "node:crypto";
 +import { scenarios } from "../test-plan.ts";
 +import { Actors } from "../support/actors.ts";
@@ -315,82 +334,10 @@ new file mode 100644
 +import { Browser } from "../support/browser.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
 +import { App, Resource } from "../support/contracts.ts";
-+import { appsManifest } from "../support/apps-release.ts";
 +import { waitForAppUrl } from "../support/app-pages.ts";
 +import { connectionsPath } from "../support/app-accounts.ts";
 +import { openThroughBrowser } from "../support/in-app-navigation.ts";
-+
-+const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
-+const service = defineProvider({ name: "Navigation fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
-+export const ping = query({ input: object({}) }, async () => "pong");
-+export default defineApp({ user: { accounts: { service: service.many() } } }, { tools: router({ ping }) });`;
-+
-+/**
-+ * Buttons ask the host through the public client. `sendRaw` posts a hand-written request, as a page
-+ * from another version or with an unknown destination would, and reports the host's answer.
-+ */
-+const files = [
-+  { path: "index.ts", content: source },
-+  {
-+    path: "ui/index.html",
-+    content: `<!doctype html><html><head><title>Navigation fixture</title></head><body><main><h1>Navigation fixture</h1><label>Draft <input name="draft"></label><button id="settings">Open settings</button><button id="account">Show account</button><output></output></main><script type="module" src="./main.ts"></script></body></html>`,
-+  },
-+  {
-+    path: "ui/main.ts",
-+    content: `import { createAppClient } from "apps/client";
-+const client = createAppClient();
-+const context = JSON.parse(document.getElementById("executor-context")?.textContent ?? "{}");
-+document.body.dataset.load = String(Math.random());
-+const output = document.querySelector("output");
-+const go = (destination) =>
-+  client.navigate(destination).then((accepted) => (output.textContent = accepted ? "accepted" : "refused"));
-+document.getElementById("settings").addEventListener("click", () => go({ tab: "settings" }));
-+document.getElementById("account").addEventListener("click", () => go({ account: context.accounts?.service?.[0] }));
-+window.version = context.version;
-+window.sendRaw = (message) =>
-+  new Promise((resolve) => {
-+    const timer = setTimeout(() => resolve("unanswered"), 2000);
-+    const answer = (event) => {
-+      if (event.source !== parent || event.data?.type !== "executor:navigate-result" || event.data.id !== message.id) return;
-+      clearTimeout(timer);
-+      removeEventListener("message", answer);
-+      resolve(event.data.accepted ? "accepted" : "refused");
-+    };
-+    addEventListener("message", answer);
-+    parent.postMessage(message, "*");
-+  });`,
-+  },
-+  appsManifest,
-+];
-+
-+const navigation = (page: Page) => page.getByRole("navigation", { name: "App navigation" });
-+const selected = (page: Page) =>
-+  navigation(page)
-+    .locator('[aria-current="page"]')
-+    .allTextContents()
-+    .then((names) => names.map((name) => name.trim()));
-+
-+/** The app's document among the page's frames, by its origin. */
-+const appFrame = (page: Page, origin: string): Frame => {
-+  const frame = page.frames().find((candidate) => candidate.url().startsWith(origin));
-+  if (frame === undefined) throw new Error("The app's frame is missing");
-+  return frame;
-+};
-+
-+/** What the page keeps while hidden: its load marker, its draft and its last answer. */
-+const kept = (frame: Frame) =>
-+  frame.evaluate(() => ({
-+    load: document.body.dataset.load,
-+    draft: document.querySelector("input")?.value,
-+    answer: document.querySelector("output")?.textContent,
-+  }));
-+
-+const request = (version: string, destination: unknown) => ({
-+  type: "executor:navigate",
-+  id: `raw-${Math.random()}`,
-+  version,
-+  destination,
-+});
++import { appFrame, files, kept, request, selected } from "../support/app-host-navigation.ts";
 +
 +layer(HostedLive, { excludeTestServices: true })("App host navigation", (it) => {
 +  it.effect(scenarios.appHostNavigation.title, (context) =>
@@ -596,7 +543,151 @@ new file mode 100644
 +            kept(appFrame(page, origin)),
 +          ),
 +        ).toEqual({ ...first, answer: "accepted" });
++
++        expect(
++          yield* browser.use("Disposal cancels a queued navigation", (page) =>
++            appFrame(page, origin).evaluate(() =>
++              (
++                window as unknown as { disposeNavigation: () => Promise<boolean> }
++              ).disposeNavigation(),
++            ),
++          ),
++        ).toBe(false);
++        expect(
++          yield* browser.use("Disposed navigation stayed on App", (page) =>
++            Promise.resolve(new URL(page.url()).search),
++          ),
++        ).toBe("");
++
++        const windowPath = `${detail}/window`;
++        yield* openThroughBrowser("Open the app in its own host window", windowPath);
++        yield* browser.use("The own-window app is ready", (page) =>
++          page
++            .frameLocator("iframe")
++            .getByRole("heading", { name: "Navigation fixture" })
++            .waitFor(),
++        );
++        yield* browser.use("Type an own-window draft", (page) =>
++          page.frameLocator("iframe").getByLabel("Draft").fill("window draft"),
++        );
++        const windowFirst = yield* browser.use("Read the own-window document", (page) =>
++          kept(appFrame(page, origin)),
++        );
++        yield* browser.use("The own window opens Settings", (page) =>
++          page
++            .frameLocator("iframe")
++            .getByRole("button", { name: "Open settings" })
++            .click()
++            .then(() =>
++              page.waitForURL(
++                (current) => current.pathname === detail && current.search === "?view=settings",
++              ),
++            ),
++        );
++        yield* browser.use("Back returns to the own window", (page) =>
++          page
++            .goBack()
++            .then(() => page.waitForURL((current) => current.pathname === windowPath))
++            .then(() =>
++              page
++                .frameLocator("iframe")
++                .getByRole("heading", { name: "Navigation fixture" })
++                .waitFor(),
++            ),
++        );
++        expect(
++          yield* browser.use("Own-window navigation preserves its document and draft", (page) =>
++            kept(appFrame(page, origin)),
++          ),
++        ).toEqual({ ...windowFirst, answer: "accepted" });
 +      }),
 +    ),
 +  );
++});
+diff --git a/e2e/support/app-host-navigation.ts b/e2e/support/app-host-navigation.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/app-host-navigation.ts
+@@ -0,0 +1,82 @@
++/** Synthetic author app and browser reads for the host-navigation journey. */
++import type { Frame, Page } from "playwright";
++import { appsManifest } from "./apps-release.ts";
++
++const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
++const service = defineProvider({ name: "Navigation fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
++export const ping = query({ input: object({}) }, async () => "pong");
++export default defineApp({ user: { accounts: { service: service.many() } } }, { tools: router({ ping }) });`;
++
++/**
++ * Buttons ask the host through the public client. `sendRaw` posts a hand-written request, as a page
++ * from another version or with an unknown destination would, and reports the host's answer.
++ */
++export const files = [
++  { path: "index.ts", content: source },
++  {
++    path: "ui/index.html",
++    content: `<!doctype html><html><head><title>Navigation fixture</title></head><body><main><h1>Navigation fixture</h1><label>Draft <input name="draft"></label><button id="settings">Open settings</button><button id="account">Show account</button><output></output></main><script type="module" src="./main.ts"></script></body></html>`,
++  },
++  {
++    path: "ui/main.ts",
++    content: `import { createAppClient } from "apps/client";
++const client = createAppClient();
++const context = JSON.parse(document.getElementById("executor-context")?.textContent ?? "{}");
++document.body.dataset.load = String(Math.random());
++const output = document.querySelector("output");
++const go = (destination) =>
++  client.navigate(destination).then((accepted) => (output.textContent = accepted ? "accepted" : "refused"));
++document.getElementById("settings").addEventListener("click", () => go({ tab: "settings" }));
++document.getElementById("account").addEventListener("click", () => go({ account: context.accounts?.service?.[0] }));
++window.version = context.version;
++window.sendRaw = (message) =>
++  new Promise((resolve) => {
++    const timer = setTimeout(() => resolve("unanswered"), 2000);
++    const answer = (event) => {
++      if (event.source !== parent || event.data?.type !== "executor:navigate-result" || event.data.id !== message.id) return;
++      clearTimeout(timer);
++      removeEventListener("message", answer);
++      resolve(event.data.accepted ? "accepted" : "refused");
++    };
++    addEventListener("message", answer);
++    parent.postMessage(message, "*");
++  });
++window.disposeNavigation = async () => {
++  const disposable = createAppClient();
++  await disposable.navigate({ tab: "app" });
++  const answer = disposable.navigate({ tab: "settings" });
++  await disposable.dispose();
++  return answer;
++};`,
++  },
++  appsManifest,
++];
++
++const navigation = (page: Page) => page.getByRole("navigation", { name: "App navigation" });
++export const selected = (page: Page) =>
++  navigation(page)
++    .locator('[aria-current="page"]')
++    .allTextContents()
++    .then((names) => names.map((name) => name.trim()));
++
++/** The app's document among the page's frames, by its origin. */
++export const appFrame = (page: Page, origin: string): Frame => {
++  const frame = page.frames().find((candidate) => candidate.url().startsWith(origin));
++  if (frame === undefined) throw new Error("The app's frame is missing");
++  return frame;
++};
++
++/** What the page keeps while hidden: its load marker, its draft and its last answer. */
++export const kept = (frame: Frame) =>
++  frame.evaluate(() => ({
++    load: document.body.dataset.load,
++    draft: document.querySelector("input")?.value,
++    answer: document.querySelector("output")?.textContent,
++  }));
++
++export const request = (version: string, destination: unknown) => ({
++  type: "executor:navigate",
++  id: `raw-${Math.random()}`,
++  version,
++  destination,
 +});
