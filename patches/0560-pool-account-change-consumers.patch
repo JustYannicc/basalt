@@ -3104,24 +3104,32 @@ index 3d132e0..01b7016 100644
            document.visibilityState === "visible" &&
            tick - readAt >= delay
 diff --git a/apps/hosted/web/src/contracts/schedules.ts b/apps/hosted/web/src/contracts/schedules.ts
-index 49a0d61..8abf02b 100644
+index 49a0d61..c3122bc 100644
 --- a/apps/hosted/web/src/contracts/schedules.ts
 +++ b/apps/hosted/web/src/contracts/schedules.ts
-@@ -8,11 +8,11 @@ import type { AccountScope, AppId, ScheduleId, ScheduleSettings } from "@executo
+@@ -8,11 +8,9 @@ import type { AccountScope, AppId, ScheduleId, ScheduleSettings } from "@executo
  import { Data, Effect } from "effect";
  import { Atom } from "effect/reactivity";
  import { acknowledge, upsert } from "@executor-js/ui/contracts/mutations";
 -import { pollingQuery, runningSchedules, steadyPolling } from "@executor-js/ui/contracts/polling";
+-import type { ApprovalListItem } from "@executor-js/ui/contracts/schedules";
 +import { pollingQuery, runningSchedules } from "@executor-js/ui/contracts/polling";
- import type { ApprovalListItem } from "@executor-js/ui/contracts/schedules";
  import { HostedClient } from "./api.ts";
  import { OrganizationReference } from "@executor-js/hosted-server/organization";
 -import { inventoryAtom } from "./organization.ts";
-+import { resourceInventoryAtom } from "./resource-access.ts";
  
  class AppKey extends Data.Class<{
    readonly organization: OrganizationReference;
-@@ -144,19 +144,17 @@ const runsSource = Atom.family((organization: OrganizationReference) =>
+@@ -136,7 +134,7 @@ export const scheduleBindings = (
+       : {}),
+   };
+ };
+-const runsSource = Atom.family((organization: OrganizationReference) =>
++export const pendingRunsAtom = Atom.family((organization: OrganizationReference) =>
+   HostedClient.query(
+     "schedules",
+     "runs",
+@@ -144,31 +142,7 @@ const runsSource = Atom.family((organization: OrganizationReference) =>
        params: { organization },
        query: { pending: true },
      }),
@@ -3130,53 +3138,62 @@ index 49a0d61..8abf02b 100644
 -const runsQuery = Atom.family((organization: OrganizationReference) =>
 -  // Approval requests expire, and this queue exists to receive them.
 -  pollingQuery(runsSource(organization), steadyPolling),
-+  ).pipe(protectedQuery, Atom.setIdleTTL("30 minutes")),
- );
- /** Join safe run metadata with app names; keep either read failure visible. */
+-);
+-/** Join safe run metadata with app names; keep either read failure visible. */
 -export const pendingApprovalsAtom = Atom.family((organization: OrganizationReference) =>
 -  HostedClient.runtime.atom((get) =>
-+export const pendingApprovalsAtom = Atom.family((organization: OrganizationReference) => {
-+  const rows = HostedClient.runtime.atom((get) =>
-     Effect.gen(function* () {
+-    Effect.gen(function* () {
 -      // App names come from the inventory; read it alongside the runs rather than after them.
-       const [runs, inventory] = yield* Effect.all(
+-      const [runs, inventory] = yield* Effect.all(
 -        [get.result(runsQuery(organization)), get.result(inventoryAtom(organization))],
-+        [
-+          get.result(runsSource(organization)),
-+          get.resultOnce(resourceInventoryAtom(organization), { suspendOnWaiting: true }),
-+        ],
-         { concurrency: "unbounded" },
-       );
-       return runs.map((run): ApprovalListItem => ({
-@@ -168,8 +166,12 @@ export const pendingApprovalsAtom = Atom.family((organization: OrganizationRefer
-         },
-       }));
-     }),
+-        { concurrency: "unbounded" },
+-      );
+-      return runs.map((run): ApprovalListItem => ({
+-        run,
+-        invocationSummary: run.invocationSummary,
+-        app: {
+-          id: run.app,
+-          name: inventory.apps.find((app) => app.id === run.app)?.name ?? "App unavailable",
+-        },
+-      }));
+-    }),
 -  ),
--);
-+  );
-+  return Atom.readable(
-+    (get) => get(rows),
-+    (refresh) => refresh(runsSource(organization)),
-+  ).pipe(protectedQuery, Atom.setIdleTTL("30 minutes"));
-+});
++  ).pipe(protectedQuery, Atom.setIdleTTL("30 minutes")),
+ );
  
  class ReviewKey extends Data.Class<{
-   readonly organization: OrganizationReference;
+@@ -180,7 +154,7 @@ const review = Atom.family((key: ReviewKey) =>
+     BrowserAtoms,
+     `/api/organizations/${encodeURIComponent(key.organization)}/scheduled-runs/${encodeURIComponent(key.run)}/approval`,
+     (get) =>
+-      acknowledge(get, runsSource(key.organization), (runs) =>
++      acknowledge(get, pendingRunsAtom(key.organization), (runs) =>
+         runs.filter((run) => run.id !== key.run),
+       ),
+   ),
 diff --git a/apps/hosted/web/src/contracts/workflow-inputs.ts b/apps/hosted/web/src/contracts/workflow-inputs.ts
-index b3f62a0..07f8f4f 100644
+index b3f62a0..5539598 100644
 --- a/apps/hosted/web/src/contracts/workflow-inputs.ts
 +++ b/apps/hosted/web/src/contracts/workflow-inputs.ts
-@@ -6,7 +6,7 @@ import { Effect } from "effect";
- import { Atom } from "effect/reactivity";
+@@ -2,12 +2,12 @@ import { revalidated } from "@executor-js/ui/contracts/refresh";
+ import { pollingQuery, steadyPolling } from "@executor-js/ui/contracts/polling";
+ import { approvalQueue, workflowInputPages } from "@executor-js/ui/contracts/workflow-inputs";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+-import { Effect } from "effect";
+-import { Atom } from "effect/reactivity";
++import { Effect, Option } from "effect";
++import { AsyncResult, Atom } from "effect/reactivity";
  import { HostedClient } from "./api.ts";
- import { protectedQuery } from "./protected-query.ts";
+-import { protectedQuery } from "./protected-query.ts";
 -import { inventoryAtom } from "./organization.ts";
-+import { resourceInventoryAtom } from "./resource-access.ts";
- import { pendingApprovalsAtom } from "./schedules.ts";
+-import { pendingApprovalsAtom } from "./schedules.ts";
++import { protectedQuery, retainProtectedFailure } from "./protected-query.ts";
++import { resourceDirectoryAtom } from "./resource-access.ts";
++import { pendingRunsAtom } from "./schedules.ts";
  
  // The family is weak: retain its outer result too, or GC can recreate the raw read on revisit.
-@@ -22,23 +22,38 @@ export const questions = Atom.family((organization: OrganizationReference) =>
+ export const questions = Atom.family((organization: OrganizationReference) =>
+@@ -22,23 +22,65 @@ export const questions = Atom.family((organization: OrganizationReference) =>
          ),
        ),
      )
@@ -3189,16 +3206,11 @@ index b3f62a0..07f8f4f 100644
 +  HostedClient.runtime
 +    .atom((get) =>
 +      Effect.gen(function* () {
-+        const [scheduled, inputs, inventory] = yield* Effect.all(
-+          [
-+            get.result(pendingApprovalsAtom(organization)),
-+            get.result(questions(organization)),
-+            // Labels are a snapshot; retaining a queue must not hold the directory's live watch.
-+            get.resultOnce(resourceInventoryAtom(organization), { suspendOnWaiting: true }),
-+          ],
++        const [runs, inputs] = yield* Effect.all(
++          [get.result(pendingRunsAtom(organization)), get.result(questions(organization))],
 +          { concurrency: "unbounded" },
 +        );
-+        return approvalQueue(scheduled, inputs, inventory.apps);
++        return { runs, inputs };
 +      }),
 +    )
 +    .pipe(protectedQuery, Atom.setIdleTTL("30 minutes")),
@@ -3223,14 +3235,46 @@ index b3f62a0..07f8f4f 100644
 +    (get) => get(queue(organization)),
 +    (refresh) => {
 +      refresh(questions(organization));
-+      refresh(pendingApprovalsAtom(organization));
++      refresh(pendingRunsAtom(organization));
 +    },
 +  ).pipe(revalidated, Atom.setIdleTTL(0), protectedQuery, Atom.setIdleTTL(0)),
-+);
-+/** Only the actual queue view reconciles on its ordinary live cadence. */
-+export const liveApprovalsAtom = Atom.family((organization: OrganizationReference) =>
-+  pollingQuery(approvalsAtom(organization), steadyPolling).pipe(Atom.setIdleTTL(0)),
  );
++/** Only the actual queue view reconciles on its ordinary live cadence. */
++export const liveApprovalsAtom = Atom.family((organization: OrganizationReference) => {
++  const source = pollingQuery(approvalsAtom(organization), steadyPolling).pipe(Atom.setIdleTTL(0));
++  const labels = resourceDirectoryAtom(organization);
++  type Value = AsyncResult.AsyncResult<
++    ReturnType<typeof approvalQueue>,
++    AsyncResult.AsyncResult.Failure<Atom.Type<typeof source> | Atom.Type<typeof labels>>
++  >;
++  return Atom.readable(
++    (get): Value => {
++      const result = get(source);
++      // The question is ready before a separate label fence; names must not hold the whole queue.
++      const directory = get(labels);
++      if (AsyncResult.isFailure(directory) && !retainProtectedFailure(directory.cause))
++        return AsyncResult.failure(directory.cause);
++      const apps = AsyncResult.value(directory).pipe(
++        Option.map((value) => value.apps.map(({ app }) => app)),
++        Option.getOrElse(() => []),
++      );
++      const fallback = directory.waiting ? "Loading app…" : "App unavailable";
++      const name = (id: string) => apps.find((app) => app.id === id)?.name ?? fallback;
++      return AsyncResult.map(result, ({ runs, inputs }) =>
++        approvalQueue(
++          runs.map((run) => ({
++            run,
++            invocationSummary: run.invocationSummary,
++            app: { id: run.app, name: name(run.app) },
++          })),
++          inputs,
++          inputs.map((input) => ({ id: input.app, name: name(input.app) })),
++        ),
++      );
++    },
++    (refresh) => refresh(source),
++  ).pipe(Atom.setIdleTTL(0));
++});
 diff --git a/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx b/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx
 index a48cea8..654aa8d 100644
 --- a/apps/hosted/web/src/implementation/pages/approvals-list-client.tsx
