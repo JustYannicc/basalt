@@ -73,7 +73,7 @@
     },
     {
       "baselineInputHash": "c1fbe678054e1f4d",
-      "candidateInputHash": "2286ea3e790e26c7",
+      "candidateInputHash": "4e8d0c0ba1354b24",
       "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
