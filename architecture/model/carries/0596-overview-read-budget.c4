@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "The manager usage summary is a separate signed inspection read; legacy overview remains unchanged. One repeatable-read snapshot serves daily provider history, optional model history, current official-price slices, recorded-usage forecasts and the Zurich heatmap. Initial load and refresh each allow at most ten history SELECTs and fifteen successful-path SQL statements, including pricing work, with real PostgreSQL baseline and candidate receipts. Coverage and the native cursor are read once; grouping sets share one request-price calculation. Collapsed account drilldowns issue no reads. Only the last hour of real failures is read for incidents; client cancels and proof traffic do not count. Native accounts outside inspection authority retain counts-only redaction. Foreign and no-account history count toward usage without becoming quota capacity, and retained billing basis never determines current API-price availability. Bounded response overflow is explicit and never starts a hidden pagination loop. No production overview load is needed to build or prove this path."
+    }
+  }
+}

@@ -31,7 +31,7 @@ import { seriesUsageForecasts } from "./usage-forecasts.ts";
 import { homeCaptureCoverage } from "./capture-coverage.ts";
 import { importedAccountPattern } from "../usage-account-labels.ts";
 
-function bucket(
+export function seriesBucket(
   row: Record<string, unknown>,
   input: PoolUsageSeriesInput,
   prices?: OverviewPriceTable,
@@ -206,7 +206,7 @@ async function readUsageSeries(
       const key = String(row.group_key),
         known = groups.get(key);
       if (index === maxSeriesRows || (!known && groups.size === maxSeriesGroups)) break;
-      const value = bucket(row, input, prices);
+      const value = seriesBucket(row, input, prices);
       const groupKey = historyObject(JSON.parse(key)) as unknown as SeriesKey;
       const group = known ?? {
         key: groupKey,

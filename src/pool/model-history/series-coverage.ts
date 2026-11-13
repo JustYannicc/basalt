@@ -85,7 +85,18 @@ export async function seriesCoverage(
       },
     ]),
   );
-  const rows = result.rows;
+  return seriesCoverageRows(result.rows, cursor, capturedThrough, query, authority, completionBySource);
+}
+
+/** Reuse one coverage snapshot across overview rollups without rerunning its SQL. */
+export function seriesCoverageRows(
+  rows: readonly Record<string, unknown>[],
+  cursor: Record<string, unknown> | undefined,
+  capturedThrough: string | null,
+  query: { homeSource: string; gatewaySource: string },
+  authority: SeriesAuthority,
+  completionBySource: ReadonlyMap<string, NonNullable<SeriesCoverage["sources"][number]["completion"]>> = new Map(),
+) {
   const sum = (key: string) => {
     const total = rows.reduce((total, row) => total + requestCount(row[key]), 0);
     if (!Number.isSafeInteger(total))
