@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-overview-membership-reuse",
+  "file": "0569-pool-overview-membership-reuse.patch",
+  "content_sha256": "8fcd86cf8807fc360efec54993a90474d9ffce790e05f63a2ba070e17f1084d0",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
