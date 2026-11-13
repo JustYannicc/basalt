@@ -802,7 +802,7 @@ test("allowance rows show source, check age and expiry without changing the read
   const before = structuredClone(snapshot);
   const rows = allowanceRows(snapshot, start);
   assert.deepEqual(
-    rows.map(({ key: _, ...row }) => row),
+    rows.map((row) => Object.fromEntries(Object.entries(row).filter(([field]) => field !== "key"))),
     [
       {
         plan: "Pro (More)",

@@ -1,4 +1,4 @@
-import { allowanceEntry, date, object, sourceMaxAge, type PlanAllowance } from "./data.ts";
+import { allowanceEntry, object, sourceMaxAge, type PlanAllowance } from "./data.ts";
 
 export const vendorSources = {
   openai: [
