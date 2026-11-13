@@ -1,4 +1,3 @@
-import * as Cloudflare from "alchemy/Cloudflare";
 import { Config, Effect, Option } from "effect";
 import { Api } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
 import { poolDatabaseInfrastructure } from "../database.ts";
