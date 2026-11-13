@@ -287,8 +287,8 @@ deployment {
         }
       }
     }
-    zone group-4131e346032c074f "Usage import artifacts" {
-      storage resource-8b145eda56e5de69b2bb9265850f96752fc533d6a24710194156854acecfc701 "Usage import artifacts" {
+    zone group-4131e346032c074f "Usage import chunks" {
+      storage resource-8b145eda56e5de69b2bb9265850f96752fc533d6a24710194156854acecfc701 "Usage import chunks" {
         app = instanceOf basalt.usageImportArtifacts {
           metadata { resource "resource-8b145eda56e5de69b2bb9265850f96752fc533d6a24710194156854acecfc701" }
         }
@@ -536,7 +536,7 @@ views {
     autoLayout TopBottom
   }
   deployment view deployment_group_4131e346032c074f {
-    title "Basalt/Deployment/Usage import artifacts"
+    title "Basalt/Deployment/Usage import chunks"
     include deployed.group-4131e346032c074f.*
     autoLayout TopBottom
   }

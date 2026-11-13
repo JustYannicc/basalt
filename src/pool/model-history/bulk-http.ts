@@ -3,7 +3,6 @@ import { openEnvelope } from "../token.ts";
 import { bulkDefinition, bulkHash, bulkImportPath, type BulkIdentity } from "./bulk-contract.ts";
 import { historyObject, invalidHistory } from "./record.ts";
 import { importFailure } from "./import-page.ts";
-import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 
 export interface BulkSigningAccess {
   signingKey: string;
@@ -50,7 +49,13 @@ export async function bulkCommand(request: Request, access: BulkSigningAccess) {
 export async function routeBulkImport(
   request: Request,
   access: BulkSigningAccess & {
-    jobs?: Pick<DurableObjectNamespace, "jurisdiction">;
+    jobs?: {
+      jurisdiction(region: "eu"): {
+        getByName(name: string): {
+          fetch(input: string, init: RequestInit): Promise<Response>;
+        };
+      };
+    };
   },
 ) {
   try {

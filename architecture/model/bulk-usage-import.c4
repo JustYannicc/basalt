@@ -10,7 +10,7 @@ model {
         bindings "TOOLS_SERVICE=basalt.toolsGateway|UsageImportArtifacts=basalt.usageImportArtifacts|POOL_AUTH_DATABASE=databaseService"
       }
     }
-    usageImportArtifacts = store "Usage import artifacts" {
+    usageImportArtifacts = store "Usage import chunks" {
       #basalt #v1
       description "Immutable NDJSON chunks in EU record storage contain only validated scalar metadata. Each chunk has an approved byte digest, exact-ID digest and row count, with at most 5,000 rows and 8 MiB. Upload is separate from approval. The accepted original manifest and metadata remain the operator's recovery inputs."
       metadata { jurisdiction "eu"; resources "resource-8b145eda56e5de69b2bb9265850f96752fc533d6a24710194156854acecfc701" }
