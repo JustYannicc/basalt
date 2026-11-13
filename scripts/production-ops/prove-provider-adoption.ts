@@ -4,8 +4,21 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile, unlink } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { adoptionStepGate } from "./adoption-step-gate.ts";
+import { adoptionProofSelection } from "./adoption-shards.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
+const args = process.argv.slice(2);
+assert.ok(
+  args.length === 0 || (args.length === 2 && args[0] === "--shard"),
+  "Usage: prove-provider-adoption.ts [--shard 1/2|2/2]",
+);
+const { scenarios } = await import("../../.upstream/e2e/test-plan.ts");
+const selection = adoptionProofSelection(
+  scenarios,
+  process.env.BASALT_ADOPTION_PROOF_PATTERN ?? patternForGroup("production-ops:adoption"),
+  args[1],
+);
+console.log(`Provider adoption ${args[1] ?? "all"}: ${selection.ids.join(", ")}`);
 const database = new URL(
   "../../.upstream/apps/hosted/cloud/src/infrastructure/database.ts",
   import.meta.url,
@@ -68,7 +81,7 @@ try {
       "run",
       "e2e:cloud",
       "--test-name",
-      process.env.BASALT_ADOPTION_PROOF_PATTERN ?? patternForGroup("production-ops:adoption"),
+      selection.pattern,
       "--workers",
       process.env.BASALT_ADOPTION_PROOF_WORKERS ?? "2",
     ],

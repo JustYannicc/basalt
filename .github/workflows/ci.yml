@@ -1261,7 +1261,7 @@ jobs:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-migrations')
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node
@@ -1276,9 +1276,12 @@ jobs:
         run: bun run e2e:prepare
       - name: Install the scenarios' browser engine
         uses: ./.github/actions/setup-browser
-      - name: Verify exact provider account adoption through signed operations
+      - name: Verify provider account adoption through signed operations, shard 1
         timeout-minutes: 5
-        run: node scripts/production-ops/prove-provider-adoption.ts
+        run: node scripts/production-ops/prove-provider-adoption.ts --shard 1/2
+      - name: Verify provider account adoption through signed operations, shard 2
+        timeout-minutes: 5
+        run: node scripts/production-ops/prove-provider-adoption.ts --shard 2/2
       - name: Verify migration ownership through signed apply verification and replay
         timeout-minutes: 5
         run: BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:migrations)" node scripts/production-ops/prove-scope.ts
