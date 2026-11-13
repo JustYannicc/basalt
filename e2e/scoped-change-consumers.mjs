@@ -11,6 +11,7 @@ import { poolCloudHarness } from "./recipes/pool-cloud-harness.mjs";
 import { startScopedChangeFixture } from "./recipes/scoped-change-fixture.mjs";
 import { cloudLocks } from "../.upstream/e2e/support/cloud-locks.ts";
 import { Target } from "../.upstream/e2e/support/platform.ts";
+import { roleHost } from "../.upstream/e2e/support/role-hosts.ts";
 import {
   batchedReads,
   batchPath,
@@ -51,6 +52,7 @@ const program = Effect.gen(function* () {
     resets: true,
     fixtureFactory: startScopedChangeFixture,
   });
+  const browserOrigin = roleHost(h.origin, "app");
   diagnostics.runtimeDirectory = h.runtimeDirectory;
   diagnostics.fixtureFailures = h.fixture.scoped.failures;
   const identity = yield* h.request("GET", "/api/auth/get-session");
@@ -143,7 +145,7 @@ const program = Effect.gen(function* () {
           : route.abort("blockedbyclient");
       }),
     );
-    yield* browserWork(() => splitRoutedReads(context, h.origin));
+    yield* browserWork(() => splitRoutedReads(context, browserOrigin));
     const page = yield* browserWork(() => context.newPage());
     let reads = 0;
     diagnostics.accountProgress = { width, phase: "initial", responses: [], heads: [] };
@@ -165,7 +167,14 @@ const program = Effect.gen(function* () {
       if (count) inFlight.add(request);
     });
     page.on("requestfinished", finished);
-    page.on("requestfailed", finished);
+    page.on("requestfailed", (request) => {
+      if (accountReads(request))
+        (progress.failed ??= []).push({
+          error: request.failure()?.errorText ?? "unknown",
+          path: new URL(request.url()).pathname,
+        });
+      finished(request);
+    });
     page.on("pageerror", (error) => {
       (diagnostics.pageErrors ??= []).push(redactLogText(String(error)));
     });
@@ -185,14 +194,13 @@ const program = Effect.gen(function* () {
           .catch(() => undefined);
       }
       if (resources(new URL(response.url()))) {
+        const entry = { status: response.status(), labels: [] };
+        progress.responses.push(entry);
         void response
           .json()
-          .then((body) =>
-            progress.responses.push({
-              status: response.status(),
-              labels: Array.isArray(body) ? body.map(({ label }) => label) : [],
-            }),
-          )
+          .then((body) => {
+            entry.labels = Array.isArray(body) ? body.map(({ label }) => label) : [];
+          })
           .catch(() => undefined);
       }
     });
@@ -242,7 +250,9 @@ const program = Effect.gen(function* () {
       screenshots.push(name);
     };
     yield* browserWork(() => page.clock.install());
-    yield* browserWork(() => page.goto(`${h.origin}/org/${h.actors.organization.slug}/accounts`));
+    yield* browserWork(() =>
+      page.goto(`${browserOrigin}/org/${h.actors.organization.slug}/accounts`),
+    );
     yield* browserWork(() => row(label).waitFor());
     yield* browserWork(() =>
       currentReads.some((response) => response.status() === 200)
@@ -433,7 +443,9 @@ const program = Effect.gen(function* () {
         screenshots.push(name);
       };
       yield* browserWork(async () => {
-        await page.goto(`${h.origin}/org/${h.actors.organization.slug}/apps/${pool.id}?view=app`);
+        await page.goto(
+          `${browserOrigin}/org/${h.actors.organization.slug}/apps/${pool.id}?view=app`,
+        );
         await frame.getByRole("heading", { name: "Overview", exact: true }).waitFor();
         await frame.locator('a[href="#usage-history"]').first().waitFor();
         await requestTotal(requestCount).waitFor();
