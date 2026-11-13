@@ -265,7 +265,7 @@ index 04760454c58f3ac4a2b41788fc63d910e5914fba..cc3ee7175528f786abda0d14be688b3b
  
 diff --git a/apps/hosted/server/src/implementation/account-change-schema.ts b/apps/hosted/server/src/implementation/account-change-schema.ts
 new file mode 100644
-index 0000000..f81e8cf
+index 0000000..c0566ea
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-change-schema.ts
 @@ -0,0 +1,149 @@
@@ -374,7 +374,7 @@ index 0000000..f81e8cf
 +    ["executor_app_connections", "owner", "accounts,apps", "owner", "updated_at"],
 +    ["executor_account_identities", "owner", "accounts", "owner", ""],
 +    ["executor_oauth_grants", "grant", "accounts", "id", "encrypted,updated_at"],
-+    ["executor_apps", "owner", "apps,accounts,observations", "owner", ""],
++    ["executor_apps", "owner", "apps,accounts,observations", "owner", "repository"],
 +    ["executor_providers", "provider", "accounts", "id", ""],
 +    ["hosted_app_account_links", "app", "accounts,observations", "app", ""],
 +    ["hosted_app_access", "organization", "accounts,apps,observations", "organization_id", ""],
