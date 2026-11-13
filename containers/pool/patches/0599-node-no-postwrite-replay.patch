@@ -1,3 +1,54 @@
+diff --git a/sdk/api/handlers/claude/code_handlers.go b/sdk/api/handlers/claude/code_handlers.go
+--- a/sdk/api/handlers/claude/code_handlers.go
++++ b/sdk/api/handlers/claude/code_handlers.go
+@@ -29,6 +29,7 @@
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+ 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	log "github.com/sirupsen/logrus"
+ )
+ 
+@@ -541,9 +542,11 @@
+ }
+ 
+ type claudeErrorDetail struct {
+-	Type    string              `json:"type"`
+-	Message string              `json:"message"`
+-	Details *claudeErrorDetails `json:"details,omitempty"`
++	Code      string              `json:"code,omitempty"`
++	Retryable *bool               `json:"retryable,omitempty"`
++	Type      string              `json:"type"`
++	Message   string              `json:"message"`
++	Details   *claudeErrorDetails `json:"details,omitempty"`
+ }
+ 
+ type claudeErrorDetails struct {
+@@ -564,6 +567,14 @@
+ }
+ 
+ func (h *ClaudeCodeAPIHandler) toClaudeErrorWithRetryAfter(msg *interfaces.ErrorMessage, retryAfter string) claudeErrorResponse {
++	if msg != nil && httptransport.IsOutcomeUnknown(msg.Error) {
++		retryable := false
++		return claudeErrorResponse{Type: "error", Error: claudeErrorDetail{
++			Type: "api_error", Code: "upstream_outcome_unknown", Retryable: &retryable,
++			Message: "Upstream disconnected after submission. The request was not replayed and its outcome is unknown.",
++		}}
++	}
++
+ 	status := http.StatusInternalServerError
+ 	errText := http.StatusText(status)
+ 	if msg != nil {
+@@ -660,6 +671,9 @@
+ 		}
+ 	}
+ 
++	if msg != nil && httptransport.IsOutcomeUnknown(msg.Error) {
++		c.Writer.Header().Set("x-should-retry", "false")
++	}
+ 	body, err := json.Marshal(h.toClaudeErrorWithRetryAfter(msg, retryAfter))
+ 	if err != nil {
+ 		body = []byte(`{"type":"error","error":{"type":"api_error","message":"Internal Server Error"}}`)
 diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
 --- a/sdk/api/handlers/handlers.go
 +++ b/sdk/api/handlers/handlers.go
@@ -58,7 +109,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_test.go b/sdk/api/handlers/
 new file mode 100644
 --- /dev/null
 +++ b/sdk/api/handlers/openai/http_submission_test.go
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,214 @@
 +package openai
 +
 +import (
@@ -78,11 +129,16 @@ new file mode 100644
 +	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 +	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
 +	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/claude"
 +	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 +	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 +)
 +
 +func submissionRequest(t *testing.T, upstream string, stream bool, transport http.RoundTripper) *httptest.ResponseRecorder {
++	return submissionRequestPath(t, upstream, stream, transport, "/v1/chat/completions")
++}
++
++func submissionRequestPath(t *testing.T, upstream string, stream bool, transport http.RoundTripper, path string) *httptest.ResponseRecorder {
 +	t.Helper()
 +	const provider = "submission-test"
 +	model := "submission-" + strings.ReplaceAll(t.Name(), "/", "-")
@@ -107,8 +163,9 @@ new file mode 100644
 +	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
 +	router := gin.New()
 +	router.POST("/v1/chat/completions", NewOpenAIAPIHandler(base).ChatCompletions)
-+	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}],"stream":%t}`, model, stream)
-+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
++	router.POST("/v1/messages", claude.NewClaudeCodeAPIHandler(base).ClaudeMessages)
++	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":%t}`, model, stream)
++	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 +	request.Header.Set("Content-Type", "application/json")
 +	recorder := httptest.NewRecorder()
 +	router.ServeHTTP(recorder, request)
@@ -228,6 +285,41 @@ new file mode 100644
 +			response := submissionRequest(t, upstream.URL, stream, nil)
 +			if accepted.Load() != 1 || response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"code":"upstream_outcome_unknown"`) {
 +				t.Fatalf("accepted=%d status=%d body=%s", accepted.Load(), response.Code, response.Body.String())
++			}
++		})
++	}
++}
++
++func TestHTTPSubmissionMessagesPostWriteDisconnectDoesNotReplay(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		t.Run(fmt.Sprint(stream), func(t *testing.T) {
++			var accepted atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if _, errRead := io.Copy(io.Discard, r.Body); errRead != nil {
++					t.Error(errRead)
++					return
++				}
++				accepted.Add(1)
++				conn, _, errHijack := w.(http.Hijacker).Hijack()
++				if errHijack != nil {
++					t.Error(errHijack)
++					return
++				}
++				_ = conn.Close()
++			}))
++			defer upstream.Close()
++			response := submissionRequestPath(t, upstream.URL, stream, nil, "/v1/messages")
++			t.Logf("accepted non-idempotent requests=%d, public status=%d", accepted.Load(), response.Code)
++			if accepted.Load() != 1 || response.Code != http.StatusBadGateway {
++				t.Fatalf("accepted=%d status=%d", accepted.Load(), response.Code)
++			}
++			for _, value := range []string{`"type":"error"`, `"code":"upstream_outcome_unknown"`, `"retryable":false`} {
++				if !strings.Contains(response.Body.String(), value) {
++					t.Fatalf("Messages response=%s, missing %s", response.Body.String(), value)
++				}
++			}
++			if got := response.Header().Get("x-should-retry"); got != "false" {
++				t.Fatalf("x-should-retry=%q", got)
 +			}
 +		})
 +	}

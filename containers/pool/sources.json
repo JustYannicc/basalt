@@ -93,7 +93,7 @@
           "sha256": "ea8e7bd4d1a7619358288dd764f8e861a17394d0a29d1c07138f4259c0b15201",
           "retirement": {
             "mode": "manual",
-            "requires": "remove when the pin moves to \u2265 v1.1.8 and the upstream paid omitted-zero, free/unknown-profile, retained-window, supported-client and metadata-only collection regressions pass on the new pin."
+            "requires": "remove when the pin moves to ≥ v1.1.8 and the upstream paid omitted-zero, free/unknown-profile, retained-window, supported-client and metadata-only collection regressions pass on the new pin."
           }
         },
         {
@@ -304,7 +304,7 @@
         {
           "identity": "cliproxy-node-no-postwrite-replay",
           "file": "0599-node-no-postwrite-replay.patch",
-          "sha256": "733a8c0e80984fc8a24ee7a3609b943bcfd74b94f878d2582aa7164c0a8d5c05",
+          "sha256": "a9eada9532f72ab14c83429c0a8ffb636dcdc493eb4ecebd47c479890a163540",
           "retirement": {
             "mode": "manual",
             "requires": "Retire when the pinned upstream release includes terminal unknown-outcome classification after HTTP submission and passes the real post-write EOF, internal POST replay, pre-write connect failure and explicit refusal regressions. Preserve no replay across models, credentials and retry rounds, public 502 upstream_outcome_unknown with retryable false, existing proxy and protocol selection, and release updates. Re-apply on each source update until the upstream fix is released; remove this carry when that release supplies the same behavior."
