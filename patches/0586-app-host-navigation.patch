@@ -1,377 +1,408 @@
-diff --git a/packages/apps/src/contracts/ui.ts b/packages/apps/src/contracts/ui.ts
---- a/packages/apps/src/contracts/ui.ts
-+++ b/packages/apps/src/contracts/ui.ts
-@@ -9,7 +9,7 @@ export {
- } from "@executor-js/app-data";
- import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
- import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
--import { JsonValue } from "./schema.ts";
-+import { AccountId, JsonValue } from "./schema.ts";
- 
- /**
-  * Non-secret page context injected by the serving host. `accounts` names the account IDs the page
-@@ -22,7 +22,12 @@ const UiContextFields = Schema.Struct({
-   ),
- });
- // Pages built with framework releases before versions were named read and send `deployment`.
--export const UiContext = UiContextFields.pipe(withLegacyKeys({ version: "deployment" }));
-+/** A non-authorizing reference to the host's existing scoped-session record. */
-+export const UiNavigationReference = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
-+export const UiContext = Schema.Struct({
-+  ...UiContextFields.fields,
-+  navigation: Schema.optional(UiNavigationReference),
-+}).pipe(withLegacyKeys({ version: "deployment" }));
- /** A problem with one of the page's accounts, from stored state. Labels are the owner's own names. */
- export type UiAccountProblem =
-   | { readonly provider: string; readonly reason: "missing" | "removed" | "incompatible" }
-@@ -136,3 +141,53 @@ export const AppUiApi = HttpApi.make("app-ui").add(
-       }),
-     ),
- );
-+
-+/** The host tabs an embedded page may open on its own app, by the names its URLs use. */
-+export const HostTab = Schema.Literals([
-+  "app",
-+  "overview",
-+  "accounts",
-+  "tools",
-+  "skills",
-+  "workflows",
-+  "schedules",
-+  "webhooks",
-+  "source",
-+  "history",
-+  "versions",
-+  "settings",
-+]);
-+/**
-+ * Where an embedded page asks its host to go, in the same window: a tab of its own app, or the
-+ * Accounts page with one account highlighted. Destinations grant nothing; the host's own
-+ * permissions decide what the person then sees.
-+ */
-+export const HostDestination = Schema.Union([
-+  Schema.Struct({ tab: HostTab }),
-+  Schema.Struct({ account: AccountId }),
-+]);
-+/**
-+ * A page's request to its embedding host. `version` is the page's own, from its context; the host
-+ * refuses a request from any frame other than the app's own document, from any other origin, or
-+ * from a version that is no longer active. The session reference grants no authority; the
-+ * dashboard must verify its stored record against the caller's login before the deadline.
-+ */
-+export const HostNavigationRequest = Schema.Struct({
-+  type: Schema.Literal("executor:navigate"),
-+  id: Schema.NonEmptyString,
-+  version: Schema.NonEmptyString,
-+  destination: HostDestination,
-+  reference: UiNavigationReference,
-+  expiresAt: Schema.Int,
-+});
-+/** Cancel an outstanding request when its client is disposed or stops waiting. */
-+export const HostNavigationCancel = Schema.Struct({
-+  type: Schema.Literal("executor:navigate-cancel"),
-+  id: Schema.NonEmptyString,
-+});
-+/** The host's answer to one request; `accepted` is false when it refused to navigate. */
-+export const HostNavigationResult = Schema.Struct({
-+  type: Schema.Literal("executor:navigate-result"),
-+  id: Schema.NonEmptyString,
-+  accepted: Schema.Boolean,
-+});
-diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/implementation/ui-client.ts
---- a/packages/apps/src/implementation/ui-client.ts
-+++ b/packages/apps/src/implementation/ui-client.ts
-@@ -15,9 +15,16 @@ import {
- } from "effect";
- import { AsyncResult, Atom } from "effect/reactivity";
- import { externalTrace, pendingSpan } from "@executor-js/telemetry";
--import { FetchHttpClient, HttpClientError } from "effect/http";
-+import { FetchHttpClient, HttpClient, HttpClientError } from "effect/http";
- import { HttpApiClient } from "effect/http-api";
--import { AppUiApi, UiContext, UiVersionChanged, UiFailed } from "../contracts/ui.ts";
-+import {
-+  AppUiApi,
-+  HostNavigationResult,
-+  UiContext,
-+  UiVersionChanged,
-+  UiFailed,
-+  type HostDestination,
-+} from "../contracts/ui.ts";
- import { AppQueryFailed, type OperationReference } from "../contracts/live.ts";
- import { JsonValue } from "../contracts/schema.ts";
- import { decoderOf, type Schema } from "./schema.ts";
-@@ -70,7 +77,27 @@ const visibleResult = <E>(
-       });
+diff --git a/apps/hosted/cloud/src/infrastructure/auth-database.ts b/apps/hosted/cloud/src/infrastructure/auth-database.ts
+index 66be9f9bfd7daa199154d0d66ed49cf38d562733..a99a5a933c2aefae9c4056b11092985368a6976f 100644
+--- a/apps/hosted/cloud/src/infrastructure/auth-database.ts
++++ b/apps/hosted/cloud/src/infrastructure/auth-database.ts
+@@ -642,6 +642,8 @@ export const appSessionsPerCall = (
+     complete: (target, request, code, proof) =>
+       Effect.flatMap(sessions, (live) => live.complete(target, request, code, proof)),
+     current: (target, token) => Effect.flatMap(sessions, (live) => live.current(target, token)),
++    navigation: (target, reference, principal) =>
++      Effect.flatMap(sessions, (live) => live.navigation(target, reference, principal)),
+   });
  };
  
--/** A scoped page client. Host-injected context carries only the version, never credentials. */
-+/** A host without host navigation never answers; the request then resolves false. */
-+const navigationTimeout = 3000;
-+/**
-+ * Whether this page's own sign-in is live now. Every open of the host's version watch authorizes
-+ * the page's scoped session and its parent login afresh; only the status is read.
-+ */
-+const sessionLive = Effect.gen(function* () {
-+  // The scope aborts the request once its status is read, closing the watch's stream.
-+  const http = (yield* HttpClient.HttpClient).pipe(HttpClient.withScope);
-+  const response = yield* http.get("/_executor/version", {
-+    headers: { accept: "text/event-stream" },
-+  });
-+  return response.status === 200;
-+}).pipe(
-+  Effect.scoped,
-+  Effect.provide(FetchHttpClient.layer),
-+  Effect.orElseSucceed(() => false),
-+);
-+const isNavigationResult = EffectSchema.is(HostNavigationResult);
-+
-+/** A scoped page client. Host-injected context contains no credentials. */
- export const createAppClient = () => {
-   const { runtime, atoms } = makeBrowserTelemetry(
-     browserSettings("/_executor/api/telemetry", "executor-app-web"),
-@@ -80,6 +107,7 @@ export const createAppClient = () => {
-     window.dispatchEvent(new Event("executor:deployment-changed"));
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/__root.tsx b/apps/hosted/cloud/web/src/implementation/routes/__root.tsx
+index f6c55f57004508909c127913987f643f02f04d88..13cd2f9a6ab38a826421c1052c0daaf260e6d626 100644
+--- a/apps/hosted/cloud/web/src/implementation/routes/__root.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/__root.tsx
+@@ -7,7 +7,7 @@ import { AnalyticsIdentity } from "../analytics.tsx";
+ import { ClientOnly, createRootRoute, Outlet } from "@tanstack/react-router";
+ import { PageError, PageNotFound } from "@executor-js/hosted-web/route-fallbacks";
+ import { AuthBoundary } from "@executor-js/hosted-web/auth";
+-import { OrganizationResumeBoundary } from "@executor-js/hosted-web/organization";
++import { AppFrameRoot, OrganizationResumeBoundary } from "@executor-js/hosted-web/organization";
+ import { TeamSetupBoundary, TeamSetupPending } from "../components/team-setup.tsx";
+ import { useLocation } from "@tanstack/react-router";
+ import { hostedPageTitle } from "@executor-js/hosted-web/contracts/navigation";
+@@ -65,11 +65,14 @@ function Root() {
+         <Outlet />
+       ) : (
+         <AuthBoundary>
+-          <OrganizationResumeBoundary>
+-            <TeamSetupBoundary>
+-              <Outlet />
+-            </TeamSetupBoundary>
+-          </OrganizationResumeBoundary>
++          {/* App documents outlive each route, so the dashboard and an app's own window share them. */}
++          <AppFrameRoot>
++            <OrganizationResumeBoundary>
++              <TeamSetupBoundary>
++                <Outlet />
++              </TeamSetupBoundary>
++            </OrganizationResumeBoundary>
++          </AppFrameRoot>
+         </AuthBoundary>
+       )}
+       {/* A development overlay; it reads the browser origin and has no server markup. */}
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/__root.tsx b/apps/hosted/self-host/web/src/implementation/routes/__root.tsx
+index 2692d5ff48b3ea598fc80f8c77e7c18d20f9bd88..05ff31089ad4160190dbdac7bd6168c08c95512b 100644
+--- a/apps/hosted/self-host/web/src/implementation/routes/__root.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/__root.tsx
+@@ -5,7 +5,7 @@ import { ExecutorDevtools } from "@executor-js/devtools";
+ import { ClientOnly, createRootRoute, Outlet } from "@tanstack/react-router";
+ import { PageError, PageNotFound } from "@executor-js/hosted-web/route-fallbacks";
+ import { AuthBoundary } from "@executor-js/hosted-web/auth";
+-import { OrganizationResumeBoundary } from "@executor-js/hosted-web/organization";
++import { AppFrameRoot, OrganizationResumeBoundary } from "@executor-js/hosted-web/organization";
+ import { useLocation } from "@tanstack/react-router";
+ import { hostedPageTitle } from "@executor-js/hosted-web/contracts/navigation";
+ import { DocumentTitleProvider } from "@executor-js/ui/hooks/document-title";
+@@ -38,9 +38,12 @@ function Root() {
+   return (
+     <DocumentTitleProvider fallbackTitle={hostedPageTitle(pathname)}>
+       <AuthBoundary>
+-        <OrganizationResumeBoundary>
+-          <Outlet />
+-        </OrganizationResumeBoundary>
++        {/* App documents outlive each route, so the dashboard and an app's own window share them. */}
++        <AppFrameRoot>
++          <OrganizationResumeBoundary>
++            <Outlet />
++          </OrganizationResumeBoundary>
++        </AppFrameRoot>
+       </AuthBoundary>
+       {/* A development overlay; it reads the browser origin and has no server markup. */}
+       <ClientOnly>
+diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src/contracts/app-ui.ts
+index cc3ee7175528f786abda0d14be688b3b9b23269e..57499bc81641ca3a094970973e37b0e0c4cddd0d 100644
+--- a/apps/hosted/server/src/contracts/app-ui.ts
++++ b/apps/hosted/server/src/contracts/app-ui.ts
+@@ -13,10 +13,10 @@ import {
+   type RuntimeBuildUnavailable,
+ } from "@executor-js/sdk/core";
+ import { AppReturnPath, AppSignInCode, AppSignInId } from "apps/ui/auth/contracts";
+-import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
++import { UiFailed, UiForbidden, UiUnauthorized, UiNavigationReference } from "apps/ui/contracts";
+ import { Config, Context, type Effect, Schema } from "effect";
+ import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
+-import { Principal } from "./auth.ts";
++import { Principal, RequireUser } from "./auth.ts";
+ import {
+   OrganizationForbidden,
+   OrganizationId,
+@@ -201,9 +201,16 @@ export class HostedAppSessions extends Context.Service<
+         readonly userId: string;
+         readonly sessionId?: typeof Principal.Type.sessionId;
+         readonly expiresAt?: Date;
++        readonly navigation: string;
+       },
+       UiUnauthorized | UiForbidden | UiFailed
+     >;
++    /** A reference alone grants nothing: the dashboard login must match this exact record. */
++    readonly navigation: (
++      target: AppUiTarget,
++      reference: string,
++      principal: Principal,
++    ) => Effect.Effect<void, UiUnauthorized | UiForbidden | UiFailed>;
+   }
+ >()("hosted/AppSessions") {}
+ 
+@@ -239,6 +246,26 @@ export const HostedAppUi = /* @__PURE__ */ (() =>
+         "Get the canonical private app URL. Fails with AppNotDeployed until the app's first deploy. Returns null when the deployed app has no UI or the host has no app domain. Open the returned URL in a browser to sign in; no separate publish step is needed.",
+       )
+       .middleware(RequireOrganization),
++    HttpApiEndpoint.post("navigation", "/api/organizations/:organization/apps/:app/ui/navigation", {
++      params: { organization: OrganizationReference, app: AppId },
++      payload: Schema.Struct({
++        reference: UiNavigationReference,
++        origin: Schema.NonEmptyString,
++        version: Schema.NonEmptyString,
++      }),
++      success: Schema.Boolean,
++      error: [
++        OrganizationForbidden,
++        StorageError,
++        AppNotFound,
++        AppUiAddressInvalid,
++        UiUnauthorized,
++        UiForbidden,
++        UiFailed,
++      ],
++    })
++      .middleware(RequireOrganization)
++      .middleware(RequireUser),
+   ))();
+ /** A browser client can consume the same narrow contract without importing a host's full API. */
+ export const HostedAppUiApi = HttpApi.make("executor-hosted").add(HostedAppUi);
+diff --git a/apps/hosted/server/src/implementation/app-sessions.ts b/apps/hosted/server/src/implementation/app-sessions.ts
+index bc9c021caf0bf6d98542e8bb1de9125608e06dd0..42ea7ec24ca99df3da1a31efc73c0b12e9b78516 100644
+--- a/apps/hosted/server/src/implementation/app-sessions.ts
++++ b/apps/hosted/server/src/implementation/app-sessions.ts
+@@ -254,7 +254,8 @@ export const hostedAppSessions = (
+       }),
+     current: (target, token) =>
+       Effect.gen(function* () {
+-        const stored = yield* readStored(key("session", yield* digest(token)));
++        const navigation = yield* digest(token);
++        const stored = yield* readStored(key("session", navigation));
+         const session = stored.record;
+         if (!Schema.is(AppUiSession)(session) || !sameTarget(session.target, target))
+           return yield* new UiUnauthorized();
+@@ -265,7 +266,20 @@ export const hostedAppSessions = (
+           userId: session.user,
+           sessionId: session.parent,
+           expiresAt: new Date(Math.min(stored.expiresAt.getTime(), login.expiresAt.getTime())),
++          navigation,
+         };
+       }),
++    navigation: (target, reference, principal) =>
++      Effect.gen(function* () {
++        const session = yield* read(key("session", reference));
++        if (
++          !Schema.is(AppUiSession)(session) ||
++          !sameTarget(session.target, target) ||
++          session.parent !== principal.sessionId ||
++          session.user !== principal.userId
++        )
++          return yield* new UiUnauthorized();
++        yield* parent(session.parent, session.user);
++      }),
    });
-   let pendingWrites = 0;
-+  let disposed = false;
-   const beforeUnload = (event: BeforeUnloadEvent) => {
-     event.preventDefault();
-     event.returnValue = "";
-@@ -103,16 +131,15 @@ export const createAppClient = () => {
-     active = !active;
-     for (const listener of activeListeners) listener(active);
-   };
-+  // Navigation requests waiting for the host's answer, by request ID.
-+  const navigations = new Map<string, (accepted: boolean) => void>();
-   const onHostMessage = (event: MessageEvent) => {
--    if (
--      window.parent === window ||
--      event.source !== window.parent ||
--      event.data?.type !== "executor:app-active" ||
--      typeof event.data.active !== "boolean"
--    )
--      return;
--    shown = event.data.active;
--    activeChanged();
-+    if (window.parent === window || event.source !== window.parent) return;
-+    if (event.data?.type === "executor:app-active" && typeof event.data.active === "boolean") {
-+      shown = event.data.active;
-+      activeChanged();
-+    } else if (isNavigationResult(event.data))
-+      navigations.get(event.data.id)?.(event.data.accepted);
-   };
-   window.addEventListener("message", onHostMessage);
-   document.addEventListener("visibilitychange", activeChanged);
-@@ -122,11 +149,17 @@ export const createAppClient = () => {
-     if (!event.persisted) void dispose().catch((error) => console.error(error));
-   };
-   const dispose = async () => {
-+    disposed = true;
-     window.removeEventListener("pagehide", onHide);
-     window.removeEventListener("beforeunload", beforeUnload);
-     window.removeEventListener("message", onHostMessage);
-     document.removeEventListener("visibilitychange", activeChanged);
-     activeListeners.clear();
-+    // Normal completion does not run the wait's interruption cleanup.
-+    for (const [id, settle] of navigations) {
-+      window.parent.postMessage({ type: "executor:navigate-cancel", id }, "*");
-+      settle(false);
-+    }
-     optimistic.dispose();
-     await runtime.dispose();
-   };
-@@ -345,9 +378,61 @@ export const createAppClient = () => {
+ };
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+index 0f00dd008e6dcaf91198048069d0d103cff1f803..cfded7e7043d43e7cbd0e041fb76a3b44307e8d9 100644
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -70,7 +70,12 @@ import {
+   type AppUiAddressInvalid,
+   type AppUiTarget,
+ } from "../contracts/app-ui.ts";
+-import { Authentication, CurrentUserId, type Principal } from "../contracts/auth.ts";
++import {
++  Authentication,
++  CurrentPrincipal,
++  CurrentUserId,
++  type Principal,
++} from "../contracts/auth.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import {
+   CurrentOrganization,
+@@ -272,7 +277,7 @@ export const hostedAppUi = <R = never>(
+           Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
+         ),
        );
-     },
-   });
-+  const navigate = (destination: typeof HostDestination.Encoded): Promise<boolean> => {
-+    const expiresAt = Date.now() + navigationTimeout;
-+    return runtime
-+      .runPromise(
+-      return { ...resolved, access, app, changeSession: identity };
++      return { ...resolved, access, app, changeSession: identity, navigation: identity.navigation };
+     });
+   const authorize = Effect.flatMap(target, authorizeTarget);
+   const assets = (version: VersionMetadata, path: string) =>
+@@ -399,53 +404,83 @@ export const hostedAppUi = <R = never>(
+       ),
+     );
+   const dashboard = HttpApiBuilder.group(HostedAppUiApi, "appUi", (handlers) =>
+-    handlers.handle("location", ({ params }) =>
+-      Effect.gen(function* () {
+-        const access = yield* CurrentOrganization;
+-        // Missing and inaccessible apps fail alike, before the app is read.
+-        yield* requireAppAccess(params.app, "use");
+-        const executor = yield* Effect.flatten(HostedExecutor);
+-        const app = yield* executor.apps.get({ owner: access.owner, app: params.app });
+-        if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
+-        const version = yield* executor.apps.version({
+-          owner: app.owner,
+-          app: app.id,
+-          version: app.activeVersion,
+-          versionOwner: app.owner,
+-        });
+-        // The build, organization and domain reads below fail only when their records are unavailable.
+-        const page = yield* assets(version, "index.html").pipe(
+-          Effect.mapError(() => new AppUiUnavailable()),
+-        );
+-        if (page === undefined)
+-          return {
+-            status: "unavailable" as const,
+-            ...(addresses.embedded ? { embedded: true } : {}),
+-            url: null,
+-            reason: "no_ui" as const,
+-          };
+-        if (!addresses.enabled)
+-          return {
+-            status: "unavailable" as const,
+-            ...(addresses.embedded ? { embedded: true } : {}),
+-            url: null,
+-            reason: "no_app_domain" as const,
+-          };
+-        const sessions = yield* HostedAppSessions;
+-        const organization = yield* sessions
+-          .organization({ id: access.organization })
+-          .pipe(Effect.mapError(() => new AppUiUnavailable()));
+-        const url = yield* addresses
+-          .origin(app, organization.slug)
+-          .pipe(Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())));
+-        const status = yield* domainStatus(organization).pipe(
+-          Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())),
+-        );
+-        return status === "ready"
+-          ? { status, url, ...(addresses.embedded ? { embedded: true } : {}) }
+-          : { status, url: null, ...(addresses.embedded ? { embedded: true } : {}) };
+-      }),
+-    ),
++    handlers
++      .handle("navigation", ({ params, payload }) =>
 +        Effect.gen(function* () {
-+          if (disposed || window.parent === window) return false;
-+          const { version, navigation: reference } = yield* context;
-+          if (reference === undefined) return false;
-+          // A page whose session ended asks nothing; the host also checks its own login.
-+          if (!(yield* sessionLive)) return false;
-+          // Keep sends queued so same-turn owner cleanup can cancel before posting.
-+          yield* Effect.yieldNow;
-+          return yield* Effect.callback<boolean>((resume) => {
-+            if (disposed) {
-+              resume(Effect.succeed(false));
-+              return;
-+            }
-+            const id = crypto.randomUUID();
-+            const settle = (accepted: boolean) => {
-+              navigations.delete(id);
-+              resume(Effect.succeed(accepted));
-+            };
-+            navigations.set(id, settle);
-+            try {
-+              window.parent.postMessage(
-+                { type: "executor:navigate", id, version, destination, reference, expiresAt },
-+                "*",
-+              );
-+            } catch {
-+              settle(false);
-+            }
-+            return Effect.sync(() => {
-+              navigations.delete(id);
-+              window.parent.postMessage({ type: "executor:navigate-cancel", id }, "*");
-+            });
-+          });
-+        }).pipe(
-+          Effect.raceFirst(Effect.sleep(navigationTimeout).pipe(Effect.as(false))),
-+          Effect.catchCause(() => Effect.succeed(false)),
-+        ),
++          const principal = yield* CurrentPrincipal;
++          const access = yield* CurrentOrganization;
++          yield* requireAppAccess(params.app, "use");
++          const executor = yield* Effect.flatten(HostedExecutor);
++          const sessions = yield* HostedAppSessions;
++          const app = yield* executor.apps.get({ owner: access.owner, app: params.app });
++          const organization = yield* sessions.organization({ id: access.organization });
++          const origin = yield* addresses.origin(app, organization.slug);
++          if (
++            !addresses.embedded ||
++            origin !== payload.origin ||
++            app.activeVersion !== payload.version
++          )
++            return false;
++          yield* sessions.navigation(
++            {
++              app: app.id,
++              organization: organization.id,
++              slug: organization.slug,
++              origin,
++            },
++            payload.reference,
++            principal,
++          );
++          return true;
++        }),
 +      )
-+      .catch(() => false);
-+  };
-   return {
-     /** Close this client when its page or embedding owner is removed. */
-     dispose,
-+    /**
-+     * Ask the host that embeds this page to open, in the same window, one of this app's tabs, such
-+     * as `{ tab: "settings" }`, or the Accounts page with one account highlighted, `{ account }`.
-+     * The host keeps this page running, so browser Back returns to it as it was. Resolves true once
-+     * the host navigates, and false when the page is not embedded, its sign-in or the person's
-+     * login has ended, the host refuses (for example because another version is now active) or the
-+     * host does not support it.
-+     */
-+    navigate,
-     /** Query this app once, with a runtime-validated response. Does not populate the mounted query cache. */
-     query: <Input, Output>(
-       reference: OperationReference<Input, Output, "query">,
-diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
---- a/apps/hosted/web/src/implementation/pages/app-screen.tsx
-+++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
-@@ -1,17 +1,34 @@
--import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
-+import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
- import type { App } from "@executor-js/sdk";
- import { Button } from "@executor-js/ui/components/button";
-+import {
-+  hostNavigationResult,
-+  isHostNavigationCancel,
-+  readHostNavigation,
-+  type HostNavigation,
-+} from "@executor-js/ui/contracts/host-navigation";
- import { AsyncResult } from "effect/reactivity";
- import { Option } from "effect";
- import { useEffect, useRef } from "react";
- import { useLocation, useNavigate } from "@tanstack/react-router";
--import { appUiError, appUiLocationAtom, retainAppUiFailure } from "../../contracts/app-ui.ts";
-+import {
-+  appNavigationAuthorityAtom,
-+  appUiError,
-+  appUiLocationAtom,
-+  retainAppUiFailure,
-+} from "../../contracts/app-ui.ts";
- import { AppSkeleton } from "../components/app-frame-view.tsx";
- import { AppFrameSlot, useEvictAppFrame } from "../components/app-frames.tsx";
- import { useOrganizationRoute } from "../components/organization.tsx";
- 
- export { AppSkeleton };
- 
-+/** The app's own embedded document: the iframe whose window sent the message, at its origin. */
-+const appFrame = (source: MessageEventSource | null, origin: string) =>
-+  Array.from(document.querySelectorAll("iframe")).find(
-+    (frame) => frame.contentWindow === source && new URL(frame.src).origin === origin,
-+  )?.contentWindow ?? undefined;
++      .handle("location", ({ params }) =>
++        Effect.gen(function* () {
++          const access = yield* CurrentOrganization;
++          // Missing and inaccessible apps fail alike, before the app is read.
++          yield* requireAppAccess(params.app, "use");
++          const executor = yield* Effect.flatten(HostedExecutor);
++          const app = yield* executor.apps.get({ owner: access.owner, app: params.app });
++          if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
++          const version = yield* executor.apps.version({
++            owner: app.owner,
++            app: app.id,
++            version: app.activeVersion,
++            versionOwner: app.owner,
++          });
++          // The build, organization and domain reads below fail only when their records are unavailable.
++          const page = yield* assets(version, "index.html").pipe(
++            Effect.mapError(() => new AppUiUnavailable()),
++          );
++          if (page === undefined)
++            return {
++              status: "unavailable" as const,
++              ...(addresses.embedded ? { embedded: true } : {}),
++              url: null,
++              reason: "no_ui" as const,
++            };
++          if (!addresses.enabled)
++            return {
++              status: "unavailable" as const,
++              ...(addresses.embedded ? { embedded: true } : {}),
++              url: null,
++              reason: "no_app_domain" as const,
++            };
++          const sessions = yield* HostedAppSessions;
++          const organization = yield* sessions
++            .organization({ id: access.organization })
++            .pipe(Effect.mapError(() => new AppUiUnavailable()));
++          const url = yield* addresses
++            .origin(app, organization.slug)
++            .pipe(Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())));
++          const status = yield* domainStatus(organization).pipe(
++            Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())),
++          );
++          return status === "ready"
++            ? { status, url, ...(addresses.embedded ? { embedded: true } : {}) }
++            : { status, url: null, ...(addresses.embedded ? { embedded: true } : {}) };
++        }),
++      ),
+   );
+   const dataFailure = (error: unknown) =>
+     Schema.is(OrganizationForbidden)(error)
+@@ -771,6 +806,7 @@ export const hostedAppUi = <R = never>(
+         accountsHref: fix.href,
+         parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
+         version: version.id,
++        navigation: current.navigation,
+         asset: (path) => assets(version, path),
+       }),
+     );
+diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contracts/app-ui.ts
+index d7b99acc596fa8ff90272e5a85ac504f9949e1e4..a6c0f649cbaa4fdfcdac671405b94030632238fa 100644
+--- a/apps/hosted/web/src/contracts/app-ui.ts
++++ b/apps/hosted/web/src/contracts/app-ui.ts
+@@ -9,7 +9,7 @@ import {
+ } from "@executor-js/hosted-server/app-ui/contracts";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+ import type { AppId, AppSlug } from "@executor-js/sdk";
+-import { Cause, Data, Effect, Match, Option, Schedule, Schema, Stream } from "effect";
++import { Cause, Data, Effect, Exit, Match, Option, Schedule, Schema, Stream } from "effect";
+ import { Atom, AtomHttpApi } from "effect/reactivity";
+ import type { HttpApiEndpoint } from "effect/http-api";
+ import type { HttpClientError } from "effect/http";
+@@ -108,6 +108,9 @@ const message = Match.type<AppUiError>().pipe(
+     StorageError: () => "This app could not be read. Try again.",
+     AppUiUnavailable: () =>
+       "The app page is unavailable. Check its version and the server’s app URL settings.",
++    UiUnauthorized: () => "Your app session ended. Open the app again.",
++    UiForbidden: () => "You do not have access to this app.",
++    UiFailed: () => "The app session could not be checked. Try again.",
+     Unauthorized: () => "Your session ended. Sign in again.",
+     Forbidden: () => "Open this page from the site’s configured address.",
+     AuthenticationUnavailable: () => "Sign-in is temporarily unavailable.",
+@@ -139,3 +142,42 @@ export const appUiError = (cause: Cause.Cause<AppUiError>) =>
+     onSome: message,
+     onNone: () => "The app could not open. Try again.",
+   });
 +
- /** App metadata keeps the card label in the existing list request. */
- export function AppScreenBadge({ app }: { readonly app: App }) {
-   const hasUi = "hasUi" in app ? app.hasUi : undefined;
-@@ -41,7 +58,7 @@ export function useAppUiLocation(app: App) {
- /** `active` says whether the host shows the screen; a prewarmed one stays mounted while hidden. */
- export function AppScreen({ app, active }: { readonly app: App; readonly active: boolean }) {
-   const { result, refresh } = useAppUiLocation(app);
--  const { slug: organizationSlug } = useOrganizationRoute();
-+  const { slug: organizationSlug, organization } = useOrganizationRoute();
-   const navigate = useNavigate();
-   const historyRoute = useLocation({ select: (location) => location.hash === "usage-history" });
-   const denied = AsyncResult.isFailure(result) && !retainAppUiFailure(result.cause);
-@@ -85,6 +102,79 @@ export function AppScreen({ app, active }: { readonly app: App; readonly active:
-     window.addEventListener("message", back);
-     return () => window.removeEventListener("message", back);
-   }, [active, historyRoute, frameRoute, navigate, organizationSlug, app.id]);
-+  const frameOrigin = frameRoute === undefined ? undefined : new URL(frameRoute).origin;
-+  const authorize = useAtomSet(appNavigationAuthorityAtom({ organization, app: app.id }));
-+  // The shown screen follows its own document's requests to open a tab of this app or an account,
-+  // as a new history entry: Back returns here, and the shared owner keeps the document running.
-+  useEffect(() => {
-+    if (!active || frameOrigin === undefined) return;
-+    let listening = true;
-+    const pending = new Map<string, { readonly timer: ReturnType<typeof setTimeout> }>();
-+    const receive = (event: MessageEvent) => {
-+      const sender = appFrame(event.source, frameOrigin);
-+      if (sender === undefined || event.origin !== frameOrigin) return;
-+      if (isHostNavigationCancel(event.data)) {
-+        const request = pending.get(event.data.id);
-+        if (request !== undefined) clearTimeout(request.timer);
-+        pending.delete(event.data.id);
-+        return;
-+      }
-+      const message = readHostNavigation(event.data);
-+      if (message === undefined || event.origin !== frameOrigin) return;
-+      // Other windows, including frames the app's page opens itself, get no answer.
-+
-+      const answer = (accepted: boolean) =>
-+        sender.postMessage(hostNavigationResult(message.id, accepted), frameOrigin);
-+      if (Option.isNone(message.request)) return answer(false);
-+      const request = message.request.value;
-+      // Authority is read now: an ended login, lost access or a newer active version refuses.
-+      if (request.expiresAt <= Date.now() || request.expiresAt > Date.now() + 3000)
-+        return answer(false);
-+      const previous = pending.get(message.id);
-+      if (previous !== undefined) clearTimeout(previous.timer);
-+      const token = {
-+        timer: setTimeout(() => {
-+          if (pending.get(message.id) === token) pending.delete(message.id);
-+        }, request.expiresAt - Date.now()),
-+      };
-+      pending.set(message.id, token);
-+      authorize({
-+        reference: request.reference,
-+        version: request.version,
-+        origin: frameOrigin,
-+        expiresAt: request.expiresAt,
-+        onResult: (allowed) => {
-+          const current = pending.get(message.id) === token;
-+          if (current) {
-+            clearTimeout(token.timer);
-+            pending.delete(message.id);
-+          }
-+          const accepted = listening && current && request.expiresAt > Date.now() && allowed;
-+          answer(accepted);
-+          if (accepted) follow(request.destination);
-+        },
-+      });
-+    };
-+    const follow = (destination: HostNavigation["destination"]) =>
-+      void ("tab" in destination
-+        ? navigate({
-+            to: "/org/$organizationSlug/apps/$appId",
-+            params: { organizationSlug, appId: app.id },
-+            search: destination.tab === "app" ? {} : { view: destination.tab },
-+          })
-+        : navigate({
-+            to: "/org/$organizationSlug/accounts",
-+            params: { organizationSlug },
-+            search: { account: destination.account },
-+          }));
-+    window.addEventListener("message", receive);
-+    return () => {
-+      listening = false;
-+      for (const request of pending.values()) clearTimeout(request.timer);
-+      pending.clear();
-+      window.removeEventListener("message", receive);
-+    };
-+  }, [active, frameOrigin, navigate, organizationSlug, app.id, authorize]);
-   if (frameRoute !== undefined)
-     return (
-       <>
++class NavigationKey extends Data.Class<{
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++}> {}
++const navigationAuthority = Atom.family((key: NavigationKey) =>
++  AppUiClient.runtime.fn(
++    ({
++      onResult,
++      expiresAt,
++      ...payload
++    }: {
++      readonly reference: string;
++      readonly origin: string;
++      readonly version: string;
++      readonly onResult: (allowed: boolean) => void;
++      readonly expiresAt: number;
++    }) =>
++      Effect.flatMap(AppUiClient, (client) =>
++        client.appUi.navigation({
++          params: { organization: key.organization, app: key.app },
++          payload,
++        }),
++      ).pipe(
++        Effect.timeout(Math.max(0, expiresAt - Date.now())),
++        Effect.onExit((exit) => Effect.sync(() => onResult(Exit.isSuccess(exit) && exit.value))),
++      ),
++    // Each request owns its read and completion, independently of the atom's latest result.
++    { concurrent: true },
++  ),
++);
++/**
++ * Each request verifies the exact scoped-session record and its parent login, app, origin and
++ * active version. The non-authorizing reference is never accepted from a cached read.
++ */
++export const appNavigationAuthorityAtom = (key: {
++  readonly organization: OrganizationReference;
++  readonly app: AppId;
++}) => navigationAuthority(new NavigationKey(key));
 diff --git a/apps/hosted/web/src/implementation/components/app-frames.tsx b/apps/hosted/web/src/implementation/components/app-frames.tsx
+index a70ed3e1d5e23974c9695554c446b33a5795b60e..09e60ffe2ab0a4f7ec5954f8f334bbec39783b48 100644
 --- a/apps/hosted/web/src/implementation/components/app-frames.tsx
 +++ b/apps/hosted/web/src/implementation/components/app-frames.tsx
 @@ -1,6 +1,7 @@
@@ -618,6 +649,7 @@ diff --git a/apps/hosted/web/src/implementation/components/app-frames.tsx b/apps
      (AsyncResult.isFailure(access) && !retainProtectedFailure(access.cause)) ||
      (AsyncResult.isSuccess(access) && !access.value.canUse);
 diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/apps/hosted/web/src/implementation/components/organization.tsx
+index cdb876c48284c792688daa439b606456a3b05a72..989ab00d2d16600bcdf0b9a4d91f36255f0b9cd3 100644
 --- a/apps/hosted/web/src/implementation/components/organization.tsx
 +++ b/apps/hosted/web/src/implementation/components/organization.tsx
 @@ -49,6 +49,8 @@ import { Button } from "@executor-js/ui/components/button";
@@ -629,208 +661,537 @@ diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/ap
  import { useSetupRetentionScope } from "../pages/pool-setup-retention.ts";
  import { HostedDashboard } from "./dashboard-bindings.tsx";
  import {
-diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contracts/app-ui.ts
---- a/apps/hosted/web/src/contracts/app-ui.ts
-+++ b/apps/hosted/web/src/contracts/app-ui.ts
-@@ -9,7 +9,7 @@ import {
- } from "@executor-js/hosted-server/app-ui/contracts";
- import type { OrganizationReference } from "@executor-js/hosted-server/organization";
- import type { AppId, AppSlug } from "@executor-js/sdk";
--import { Cause, Data, Effect, Match, Option, Schedule, Schema, Stream } from "effect";
-+import { Cause, Data, Effect, Exit, Match, Option, Schedule, Schema, Stream } from "effect";
- import { Atom, AtomHttpApi } from "effect/reactivity";
- import type { HttpApiEndpoint } from "effect/http-api";
- import type { HttpClientError } from "effect/http";
-@@ -108,6 +108,9 @@ const message = Match.type<AppUiError>().pipe(
-     StorageError: () => "This app could not be read. Try again.",
-     AppUiUnavailable: () =>
-       "The app page is unavailable. Check its version and the server’s app URL settings.",
-+    UiUnauthorized: () => "Your app session ended. Open the app again.",
-+    UiForbidden: () => "You do not have access to this app.",
-+    UiFailed: () => "The app session could not be checked. Try again.",
-     Unauthorized: () => "Your session ended. Sign in again.",
-     Forbidden: () => "Open this page from the site’s configured address.",
-     AuthenticationUnavailable: () => "Sign-in is temporarily unavailable.",
-@@ -139,3 +142,42 @@ export const appUiError = (cause: Cause.Cause<AppUiError>) =>
-     onSome: message,
-     onNone: () => "The app could not open. Try again.",
-   });
-+
-+class NavigationKey extends Data.Class<{
-+  readonly organization: OrganizationReference;
-+  readonly app: AppId;
-+}> {}
-+const navigationAuthority = Atom.family((key: NavigationKey) =>
-+  AppUiClient.runtime.fn(
-+    ({
-+      onResult,
-+      expiresAt,
-+      ...payload
-+    }: {
-+      readonly reference: string;
-+      readonly origin: string;
-+      readonly version: string;
-+      readonly onResult: (allowed: boolean) => void;
-+      readonly expiresAt: number;
-+    }) =>
-+      Effect.flatMap(AppUiClient, (client) =>
-+        client.appUi.navigation({
-+          params: { organization: key.organization, app: key.app },
-+          payload,
-+        }),
-+      ).pipe(
-+        Effect.timeout(Math.max(0, expiresAt - Date.now())),
-+        Effect.onExit((exit) => Effect.sync(() => onResult(Exit.isSuccess(exit) && exit.value))),
-+      ),
-+    // Each request owns its read and completion, independently of the atom's latest result.
-+    { concurrent: true },
-+  ),
-+);
-+/**
-+ * Each request verifies the exact scoped-session record and its parent login, app, origin and
-+ * active version. The non-authorizing reference is never accepted from a cached read.
-+ */
-+export const appNavigationAuthorityAtom = (key: {
-+  readonly organization: OrganizationReference;
-+  readonly app: AppId;
-+}) => navigationAuthority(new NavigationKey(key));
-diff --git a/apps/hosted/cloud/web/src/implementation/routes/__root.tsx b/apps/hosted/cloud/web/src/implementation/routes/__root.tsx
---- a/apps/hosted/cloud/web/src/implementation/routes/__root.tsx
-+++ b/apps/hosted/cloud/web/src/implementation/routes/__root.tsx
-@@ -7,7 +7,7 @@ import { AnalyticsIdentity } from "../analytics.tsx";
- import { ClientOnly, createRootRoute, Outlet } from "@tanstack/react-router";
- import { PageError, PageNotFound } from "@executor-js/hosted-web/route-fallbacks";
- import { AuthBoundary } from "@executor-js/hosted-web/auth";
--import { OrganizationResumeBoundary } from "@executor-js/hosted-web/organization";
-+import { AppFrameRoot, OrganizationResumeBoundary } from "@executor-js/hosted-web/organization";
- import { TeamSetupBoundary, TeamSetupPending } from "../components/team-setup.tsx";
- import { useLocation } from "@tanstack/react-router";
- import { hostedPageTitle } from "@executor-js/hosted-web/contracts/navigation";
-@@ -65,11 +65,14 @@ function Root() {
-         <Outlet />
-       ) : (
-         <AuthBoundary>
--          <OrganizationResumeBoundary>
--            <TeamSetupBoundary>
--              <Outlet />
--            </TeamSetupBoundary>
--          </OrganizationResumeBoundary>
-+          {/* App documents outlive each route, so the dashboard and an app's own window share them. */}
-+          <AppFrameRoot>
-+            <OrganizationResumeBoundary>
-+              <TeamSetupBoundary>
-+                <Outlet />
-+              </TeamSetupBoundary>
-+            </OrganizationResumeBoundary>
-+          </AppFrameRoot>
-         </AuthBoundary>
-       )}
-       {/* A development overlay; it reads the browser origin and has no server markup. */}
-diff --git a/apps/hosted/self-host/web/src/implementation/routes/__root.tsx b/apps/hosted/self-host/web/src/implementation/routes/__root.tsx
---- a/apps/hosted/self-host/web/src/implementation/routes/__root.tsx
-+++ b/apps/hosted/self-host/web/src/implementation/routes/__root.tsx
-@@ -5,7 +5,7 @@ import { ExecutorDevtools } from "@executor-js/devtools";
- import { ClientOnly, createRootRoute, Outlet } from "@tanstack/react-router";
- import { PageError, PageNotFound } from "@executor-js/hosted-web/route-fallbacks";
- import { AuthBoundary } from "@executor-js/hosted-web/auth";
--import { OrganizationResumeBoundary } from "@executor-js/hosted-web/organization";
-+import { AppFrameRoot, OrganizationResumeBoundary } from "@executor-js/hosted-web/organization";
- import { useLocation } from "@tanstack/react-router";
- import { hostedPageTitle } from "@executor-js/hosted-web/contracts/navigation";
- import { DocumentTitleProvider } from "@executor-js/ui/hooks/document-title";
-@@ -38,9 +38,12 @@ function Root() {
-   return (
-     <DocumentTitleProvider fallbackTitle={hostedPageTitle(pathname)}>
-       <AuthBoundary>
--        <OrganizationResumeBoundary>
--          <Outlet />
--        </OrganizationResumeBoundary>
-+        {/* App documents outlive each route, so the dashboard and an app's own window share them. */}
-+        <AppFrameRoot>
-+          <OrganizationResumeBoundary>
-+            <Outlet />
-+          </OrganizationResumeBoundary>
-+        </AppFrameRoot>
-       </AuthBoundary>
-       {/* A development overlay; it reads the browser origin and has no server markup. */}
-       <ClientOnly>
-diff --git a/packages/app-templates/executor/skills/app-authoring/ui.md b/packages/app-templates/executor/skills/app-authoring/ui.md
---- a/packages/app-templates/executor/skills/app-authoring/ui.md
-+++ b/packages/app-templates/executor/skills/app-authoring/ui.md
-@@ -65,6 +65,16 @@ reads once. Both operation types may fetch external APIs. External changes do
- not invalidate subscriptions, and rolling back a SQL transaction cannot undo
- external effects. All callbacks use Promises; the framework runs Effect internally.
- 
-+To send a person to the host instead of a link, call
-+`client.navigate({ tab: "settings" })` for one of the app's own tabs (`app`,
-+`overview`, `accounts`, `tools`, `skills`, `workflows`, `schedules`, `webhooks`,
-+`source`, `history`, `versions`, `settings`) or `client.navigate({ account })`
-+to open Accounts with that account highlighted. The host opens it in the same
-+window and keeps the app page running, also from the app's own window, so Back
-+returns to it as it was. It resolves `false` when the page is not embedded, its
-+sign-in or the person's login has ended, its version is no longer active, or the
-+host refuses; the person's own permissions decide what they then see.
-+
- Do not include an app ID or credentials in browser code. The host binds both
- identity and authentication. Compiled imports and `ui/public/` files are retained
- with the version. Import images and fonts from scripts or CSS. In `ui/index.html`,
-diff --git a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
---- a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
-+++ b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
-@@ -10,7 +10,7 @@ export const executorSkillDigests: Readonly<Record<string, string>> = {
-   "app-authoring/starter.md": "382bd769d7b10e9c09eaa2367755f23153a31a484aaca9c449ab4aac7d61e224",
-   "app-authoring/storage.md": "d2c2288c8a6dafa0a88f09e7e91409d9afc08158205ea6d25064d0dee67a33df",
-   "app-authoring/tools.md": "460eed5aaf4f84071945f891b955765a39d5372773cb6fff4f4e5d0d99e68a14",
--  "app-authoring/ui.md": "8b1733a4d1c9938c222d1bd011b345f816cdf6f8d8a23ce431878e349b507c63",
-+  "app-authoring/ui.md": "f5e5be69fbc70d053600d21d14f27c787bcdc33c25458211b195a8d847b7fb81",
-   "app-authoring/upgrades/0.0.1-beta.38.md": "0e0e38e0334fbece5bdb8264a32be4f36cef9c51705e8f6b749dc0d3b86dcdb5",
-   "app-authoring/upgrades/0.0.1-beta.90.md": "38c727888b2773efa1d83795e8704f7c38ad9ec27c62fcdd89b5177ec5e338c3",
-   "app-authoring/webhooks.md": "e4ca224cd413b591c3692b389bd88d644b337b4697a067d83551e6bcab657cf3",
-diff --git a/packages/ui/src/contracts/host-navigation.ts b/packages/ui/src/contracts/host-navigation.ts
-new file mode 100644
---- /dev/null
-+++ b/packages/ui/src/contracts/host-navigation.ts
-@@ -0,0 +1,38 @@
-+/**
-+ * Reading an embedded page's navigation request, for hosts that embed app screens. The page sends
-+ * `apps/client`'s `navigate`; the host decides whether to follow it and answers either way.
-+ */
+diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/hosted/web/src/implementation/pages/app-screen.tsx
+index 0826bf9df9ad008df2613a76833f785f3b56a292..beb7a5d158c3af001a1ed1c71acbafac2550807b 100644
+--- a/apps/hosted/web/src/implementation/pages/app-screen.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-screen.tsx
+@@ -1,17 +1,34 @@
+-import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
++import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+ import type { App } from "@executor-js/sdk";
+ import { Button } from "@executor-js/ui/components/button";
 +import {
-+  HostNavigationRequest,
-+  HostNavigationResult,
-+  HostNavigationCancel,
-+} from "apps/ui/contracts";
-+import { Option, Schema } from "effect";
++  hostNavigationResult,
++  isHostNavigationCancel,
++  readHostNavigation,
++  type HostNavigation,
++} from "@executor-js/ui/contracts/host-navigation";
+ import { AsyncResult } from "effect/reactivity";
+ import { Option } from "effect";
+ import { useEffect, useRef } from "react";
+ import { useLocation, useNavigate } from "@tanstack/react-router";
+-import { appUiError, appUiLocationAtom, retainAppUiFailure } from "../../contracts/app-ui.ts";
++import {
++  appNavigationAuthorityAtom,
++  appUiError,
++  appUiLocationAtom,
++  retainAppUiFailure,
++} from "../../contracts/app-ui.ts";
+ import { AppSkeleton } from "../components/app-frame-view.tsx";
+ import { AppFrameSlot, useEvictAppFrame } from "../components/app-frames.tsx";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ 
+ export { AppSkeleton };
+ 
++/** The app's own embedded document: the iframe whose window sent the message, at its origin. */
++const appFrame = (source: MessageEventSource | null, origin: string) =>
++  Array.from(document.querySelectorAll("iframe")).find(
++    (frame) => frame.contentWindow === source && new URL(frame.src).origin === origin,
++  )?.contentWindow ?? undefined;
 +
-+const decode = Schema.decodeUnknownOption(HostNavigationRequest);
-+export const isHostNavigationCancel = Schema.is(HostNavigationCancel);
+ /** App metadata keeps the card label in the existing list request. */
+ export function AppScreenBadge({ app }: { readonly app: App }) {
+   const hasUi = "hasUi" in app ? app.hasUi : undefined;
+@@ -41,7 +58,7 @@ export function useAppUiLocation(app: App) {
+ /** `active` says whether the host shows the screen; a prewarmed one stays mounted while hidden. */
+ export function AppScreen({ app, active }: { readonly app: App; readonly active: boolean }) {
+   const { result, refresh } = useAppUiLocation(app);
+-  const { slug: organizationSlug } = useOrganizationRoute();
++  const { slug: organizationSlug, organization } = useOrganizationRoute();
+   const navigate = useNavigate();
+   const historyRoute = useLocation({ select: (location) => location.hash === "usage-history" });
+   const denied = AsyncResult.isFailure(result) && !retainAppUiFailure(result.cause);
+@@ -85,6 +102,79 @@ export function AppScreen({ app, active }: { readonly app: App; readonly active:
+     window.addEventListener("message", back);
+     return () => window.removeEventListener("message", back);
+   }, [active, historyRoute, frameRoute, navigate, organizationSlug, app.id]);
++  const frameOrigin = frameRoute === undefined ? undefined : new URL(frameRoute).origin;
++  const authorize = useAtomSet(appNavigationAuthorityAtom({ organization, app: app.id }));
++  // The shown screen follows its own document's requests to open a tab of this app or an account,
++  // as a new history entry: Back returns here, and the shared owner keeps the document running.
++  useEffect(() => {
++    if (!active || frameOrigin === undefined) return;
++    let listening = true;
++    const pending = new Map<string, { readonly timer: ReturnType<typeof setTimeout> }>();
++    const receive = (event: MessageEvent) => {
++      const sender = appFrame(event.source, frameOrigin);
++      if (sender === undefined || event.origin !== frameOrigin) return;
++      if (isHostNavigationCancel(event.data)) {
++        const request = pending.get(event.data.id);
++        if (request !== undefined) clearTimeout(request.timer);
++        pending.delete(event.data.id);
++        return;
++      }
++      const message = readHostNavigation(event.data);
++      if (message === undefined || event.origin !== frameOrigin) return;
++      // Other windows, including frames the app's page opens itself, get no answer.
 +
-+export type HostNavigation = typeof HostNavigationRequest.Type;
++      const answer = (accepted: boolean) =>
++        sender.postMessage(hostNavigationResult(message.id, accepted), frameOrigin);
++      if (Option.isNone(message.request)) return answer(false);
++      const request = message.request.value;
++      // Authority is read now: an ended login, lost access or a newer active version refuses.
++      if (request.expiresAt <= Date.now() || request.expiresAt > Date.now() + 3000)
++        return answer(false);
++      const previous = pending.get(message.id);
++      if (previous !== undefined) clearTimeout(previous.timer);
++      const token = {
++        timer: setTimeout(() => {
++          if (pending.get(message.id) === token) pending.delete(message.id);
++        }, request.expiresAt - Date.now()),
++      };
++      pending.set(message.id, token);
++      authorize({
++        reference: request.reference,
++        version: request.version,
++        origin: frameOrigin,
++        expiresAt: request.expiresAt,
++        onResult: (allowed) => {
++          const current = pending.get(message.id) === token;
++          if (current) {
++            clearTimeout(token.timer);
++            pending.delete(message.id);
++          }
++          const accepted = listening && current && request.expiresAt > Date.now() && allowed;
++          answer(accepted);
++          if (accepted) follow(request.destination);
++        },
++      });
++    };
++    const follow = (destination: HostNavigation["destination"]) =>
++      void ("tab" in destination
++        ? navigate({
++            to: "/org/$organizationSlug/apps/$appId",
++            params: { organizationSlug, appId: app.id },
++            search: destination.tab === "app" ? {} : { view: destination.tab },
++          })
++        : navigate({
++            to: "/org/$organizationSlug/accounts",
++            params: { organizationSlug },
++            search: { account: destination.account },
++          }));
++    window.addEventListener("message", receive);
++    return () => {
++      listening = false;
++      for (const request of pending.values()) clearTimeout(request.timer);
++      pending.clear();
++      window.removeEventListener("message", receive);
++    };
++  }, [active, frameOrigin, navigate, organizationSlug, app.id, authorize]);
+   if (frameRoute !== undefined)
+     return (
+       <>
+diff --git a/e2e/support/app-host-navigation.ts b/e2e/support/app-host-navigation.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..400ae3bbe7e8e57d7100aa00fa6f2f7c5932784f
+--- /dev/null
++++ b/e2e/support/app-host-navigation.ts
+@@ -0,0 +1,174 @@
++/** Synthetic author app and browser reads for the host-navigation journey. */
++import type { Frame, Page } from "playwright";
++import { Effect, Fiber } from "effect";
++import { expect } from "@effect/vitest";
++import { Browser } from "./browser.ts";
++import { holdQuery } from "./query-transition.ts";
++import { appsManifest } from "./apps-release.ts";
++
++const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
++const service = defineProvider({ name: "Navigation fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
++export const ping = query({ input: object({}) }, async () => "pong");
++export default defineApp({ user: { accounts: { service: service.many() } } }, { tools: router({ ping }) });`;
 +
 +/**
-+ * A navigation message, by its ID: `request` is none when the message names a destination or
-+ * shape this host does not know, which the host refuses. Any other message is undefined.
++ * Buttons ask the host through the public client. `sendRaw` posts a hand-written request, as a page
++ * from another version or with an unknown destination would, and reports the host's answer.
 + */
-+export const readHostNavigation = (
-+  data: unknown,
-+): { readonly id: string; readonly request: Option.Option<HostNavigation> } | undefined =>
-+  typeof data === "object" &&
-+  data !== null &&
-+  "type" in data &&
-+  data.type === "executor:navigate" &&
-+  "id" in data &&
-+  typeof data.id === "string" &&
-+  data.id !== ""
-+    ? { id: data.id, request: decode(data) }
-+    : undefined;
++export const files = [
++  { path: "index.ts", content: source },
++  {
++    path: "ui/index.html",
++    content: `<!doctype html><html><head><title>Navigation fixture</title></head><body><main><h1>Navigation fixture</h1><label>Draft <input name="draft"></label><button id="settings">Open settings</button><button id="account">Show account</button><output></output></main><script type="module" src="./main.ts"></script></body></html>`,
++  },
++  {
++    path: "ui/main.ts",
++    content: `import { createAppClient } from "apps/client";
++const client = createAppClient();
++const context = JSON.parse(document.getElementById("executor-context")?.textContent ?? "{}");
++document.body.dataset.load = String(Math.random());
++const output = document.querySelector("output");
++const go = (destination) =>
++  client.navigate(destination).then((accepted) => (output.textContent = accepted ? "accepted" : "refused"));
++document.getElementById("settings").addEventListener("click", () => go({ tab: "settings" }));
++document.getElementById("account").addEventListener("click", () => go({ account: context.accounts?.service?.[0] }));
++window.version = context.version;
++window.navigateHost = (destination) => client.navigate(destination);
++const independent = new Map();
++window.startIndependentNavigation = (name) => {
++  const own = createAppClient();
++  independent.set(name, { own, answer: own.navigate({ tab: "app" }) });
++};
++window.independentNavigationAnswers = () => {
++  const entries = [...independent.values()];
++  independent.clear();
++  return Promise.all(entries.map(({ answer }) => answer)).finally(() => Promise.all(entries.map(({ own }) => own.dispose())));
++};
++window.startPostedNavigation = () => {
++  const own = createAppClient();
++  window.disposePostedNavigation = () => own.dispose();
++  return own.navigate({ tab: "settings" });
++};
++window.navigationAnswers = [];
++addEventListener("message", (event) => {
++  if (event.source === parent && event.data?.type === "executor:navigate-result") window.navigationAnswers.push(event.data);
++});
++window.sendRaw = (message) => {
++  message = { reference: context.navigation, expiresAt: Date.now() + 3000, ...message };
++  return new Promise((resolve) => {
++    const timer = setTimeout(() => resolve("unanswered"), 2000);
++    const answer = (event) => {
++      if (event.source !== parent || event.data?.type !== "executor:navigate-result" || event.data.id !== message.id) return;
++      clearTimeout(timer);
++      removeEventListener("message", answer);
++      resolve(event.data.accepted ? "accepted" : "refused");
++    };
++    addEventListener("message", answer);
++    parent.postMessage(message, "*");
++  });
++};
++window.disposeNavigation = async () => {
++  const disposable = createAppClient();
++  await disposable.navigate({ tab: "app" });
++  const answer = disposable.navigate({ tab: "settings" });
++  await disposable.dispose();
++  return answer;
++};`,
++  },
++  appsManifest,
++];
 +
-+/** The answer a host posts back to the page that asked. */
-+export const hostNavigationResult = (
-+  id: string,
-+  accepted: boolean,
-+): typeof HostNavigationResult.Type => ({ type: "executor:navigate-result", id, accepted });
++const navigation = (page: Page) => page.getByRole("navigation", { name: "App navigation" });
++export const selected = (page: Page) =>
++  navigation(page)
++    .locator('[aria-current="page"]')
++    .allTextContents()
++    .then((names) => names.map((name) => name.trim()));
++
++/** The app's document among the page's frames, by its origin. */
++export const appFrame = (page: Page, origin: string): Frame => {
++  const frame = page.frames().find((candidate) => candidate.url().startsWith(origin));
++  if (frame === undefined) throw new Error("The app's frame is missing");
++  return frame;
++};
++
++/** What the page keeps while hidden: its load marker, its draft and its last answer. */
++export const kept = (frame: Frame) =>
++  frame.evaluate(() => ({
++    load: document.body.dataset.load,
++    draft: document.querySelector("input")?.value,
++    answer: document.querySelector("output")?.textContent,
++  }));
++
++export const request = (version: string, destination: unknown) => ({
++  type: "executor:navigate",
++  id: `raw-${Math.random()}`,
++  version,
++  destination,
++});
++
++/** Hold actual requests until the public client's deadline fires, then deliver the late answer. */
++export const navigationDeadlineProbe = (origin: string) =>
++  Effect.scoped(
++    Effect.gen(function* () {
++      const browser = yield* Browser;
++      const navigation = () =>
++        browser.use("Ask the host to open Settings", (page) =>
++          appFrame(page, origin).evaluate(() =>
++            (
++              window as unknown as { navigateHost: (destination: unknown) => Promise<boolean> }
++            ).navigateHost({ tab: "settings" }),
++          ),
++        );
++      const preflight = yield* Effect.scoped(
++        Effect.gen(function* () {
++          const hold = yield* holdQuery(["/_executor/version"], "fail");
++          const started = Date.now();
++          const answer = yield* Effect.forkChild(navigation());
++          yield* hold.requested;
++          const result = yield* Fiber.join(answer);
++          expect(
++            Date.now() - started,
++            "Preflight is inside the public three-second navigation deadline",
++          ).toBeLessThan(4000);
++          yield* hold.release;
++          return result;
++        }),
++      );
++      const hold = yield* holdQuery(/\/ui\/navigation$/, "continue", { method: "POST" });
++      yield* browser.use("Clear previous host answers", (page) =>
++        appFrame(page, origin).evaluate(() => {
++          (window as unknown as { navigationAnswers: unknown[] }).navigationAnswers = [];
++        }),
++      );
++      const started = Date.now();
++      const answer = yield* Effect.forkChild(navigation());
++      yield* hold.requested;
++      const late = yield* Fiber.join(answer);
++      expect(
++        Date.now() - started,
++        "The host reply is inside the public three-second navigation deadline",
++      ).toBeLessThan(4000);
++      yield* hold.release;
++      const host = yield* browser.use("The late host answer refuses to navigate", (page) => {
++        const frame = appFrame(page, origin);
++        return frame
++          .waitForFunction(
++            () =>
++              (window as unknown as { navigationAnswers: unknown[] }).navigationAnswers.length > 0,
++          )
++          .then(() =>
++            frame.evaluate(
++              () =>
++                (
++                  window as unknown as { navigationAnswers: { accepted: boolean }[] }
++                ).navigationAnswers.at(-1)?.accepted,
++            ),
++          );
++      });
++      const search = yield* browser.use("Read the unchanged host route", (page) =>
++        Promise.resolve(new URL(page.url()).search),
++      );
++      return { preflight, late, host, search };
++    }),
++  );
+diff --git a/e2e/support/app-navigation-lifecycle.ts b/e2e/support/app-navigation-lifecycle.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f98f8d6d020bb6200b47821fc1534cee9b709b5e
+--- /dev/null
++++ b/e2e/support/app-navigation-lifecycle.ts
+@@ -0,0 +1,166 @@
++/** Public browser probes for independent navigation requests and posted-request disposal. */
++import { Effect, Fiber } from "effect";
++import { Browser } from "./browser.ts";
++import { holdQuery } from "./query-transition.ts";
++import { appFrame } from "./app-host-navigation.ts";
++
++/** Each client gets its own reply; disposing a posted request cancels the host's pending work. */
++export const navigationLifecycleProbe = (origin: string) =>
++  Effect.scoped(
++    Effect.gen(function* () {
++      const browser = yield* Browser;
++      const clearAnswers = () =>
++        browser.use("Clear previous navigation replies", (page) =>
++          appFrame(page, origin).evaluate(() => {
++            (window as unknown as { navigationAnswers: unknown[] }).navigationAnswers = [];
++          }),
++        );
++      const hostAnswers = (count: number) =>
++        browser.use("Observe the host's completed replies", (page) => {
++          const frame = appFrame(page, origin);
++          return frame
++            .waitForFunction(
++              (needed) =>
++                (window as unknown as { navigationAnswers: unknown[] }).navigationAnswers.length >=
++                needed,
++              count,
++            )
++            .then(() =>
++              frame.evaluate(() =>
++                (
++                  window as unknown as { navigationAnswers: { accepted: boolean }[] }
++                ).navigationAnswers.map((answer) => answer.accepted),
++              ),
++            );
++        });
++      const parallel = yield* Effect.scoped(
++        Effect.gen(function* () {
++          const hold = yield* holdQuery(/\/ui\/navigation$/, "continue", {
++            method: "POST",
++            allRequests: true,
++          });
++          yield* clearAnswers();
++          yield* browser.use("Start one client's request", (page) =>
++            appFrame(page, origin).evaluate(() => {
++              (
++                window as unknown as { startIndependentNavigation: (name: string) => void }
++              ).startIndependentNavigation("first");
++            }),
++          );
++          yield* hold.requested;
++          yield* browser.use(
++            "Another client starts a request before the first completes",
++            (page) => {
++              const requested = page.waitForRequest(
++                (request) =>
++                  request.method() === "POST" &&
++                  new URL(request.url()).pathname.endsWith("/ui/navigation"),
++              );
++              return appFrame(page, origin)
++                .evaluate(() => {
++                  (
++                    window as unknown as { startIndependentNavigation: (name: string) => void }
++                  ).startIndependentNavigation("second");
++                })
++                .then(() => requested)
++                .then(() => undefined);
++            },
++          );
++          yield* hold.release;
++          const answers = yield* browser.use("Read each client's own answer", (page) =>
++            appFrame(page, origin).evaluate(() =>
++              (
++                window as unknown as { independentNavigationAnswers: () => Promise<boolean[]> }
++              ).independentNavigationAnswers(),
++            ),
++          );
++          yield* hostAnswers(2);
++          return answers;
++        }),
++      );
++      const hold = yield* holdQuery(/\/ui\/navigation$/, "continue", { method: "POST" });
++      yield* clearAnswers();
++      const answer = yield* Effect.forkChild(
++        browser.use("Post a request from a disposable client", (page) =>
++          appFrame(page, origin).evaluate(() =>
++            (
++              window as unknown as { startPostedNavigation: () => Promise<boolean> }
++            ).startPostedNavigation(),
++          ),
++        ),
++      );
++      yield* hold.requested;
++      yield* browser.use("Dispose after the host has started authorization", (page) =>
++        appFrame(page, origin).evaluate(() =>
++          (
++            window as unknown as { disposePostedNavigation: () => Promise<void> }
++          ).disposePostedNavigation(),
++        ),
++      );
++      const disposed = yield* Fiber.join(answer);
++      yield* hold.release;
++      const replies = yield* hostAnswers(1);
++      const search = yield* browser.use("Read the route after the released response", (page) =>
++        Promise.resolve(new URL(page.url()).search),
++      );
++      return { parallel, disposed, host: replies.at(-1), search };
++    }),
++  );
++
++/** A refused record cannot borrow the result of a valid request sharing the parent channel. */
++export const navigationAuthorityIsolationProbe = (origin: string) =>
++  Effect.scoped(
++    Effect.gen(function* () {
++      const browser = yield* Browser;
++      const hold = yield* holdQuery(/\/ui\/navigation$/, "continue", { method: "POST" });
++      yield* browser.use("Post a valid request whose read stays pending", (page) =>
++        appFrame(page, origin).evaluate(() => {
++          (
++            window as unknown as { startIndependentNavigation: (name: string) => void }
++          ).startIndependentNavigation("overlapping-valid");
++        }),
++      );
++      yield* hold.requested;
++      yield* browser.use("The other request's own session check is refused", (page) => {
++        const refused = page.waitForResponse(
++          (response) =>
++            new URL(response.url()).pathname.endsWith("/ui/navigation") &&
++            response.status() === 401,
++        );
++        return appFrame(page, origin)
++          .evaluate(() => {
++            const fixture = window as unknown as {
++              version: string;
++              mixedAnswer: Promise<string>;
++              sendRaw: (request: unknown) => Promise<string>;
++            };
++            fixture.mixedAnswer = fixture.sendRaw({
++              type: "executor:navigate",
++              id: `invalid-${Math.random()}`,
++              version: fixture.version,
++              reference: "0".repeat(64),
++              expiresAt: Date.now() + 3000,
++              destination: { tab: "settings" },
++            });
++          })
++          .then(() => refused)
++          .then(() => undefined);
++      });
++      yield* hold.release;
++      const answers = yield* browser.use("Read the separately correlated answers", (page) =>
++        appFrame(page, origin).evaluate(() => {
++          const fixture = window as unknown as {
++            mixedAnswer: Promise<string>;
++            independentNavigationAnswers: () => Promise<boolean[]>;
++          };
++          return Promise.all([fixture.mixedAnswer, fixture.independentNavigationAnswers()]).then(
++            ([invalid, valid]) => ({ invalid, valid: valid[0] }),
++          );
++        }),
++      );
++      const search = yield* browser.use("An invalid record opens no host tab", (page) =>
++        Promise.resolve(new URL(page.url()).search),
++      );
++      return { ...answers, search };
++    }),
++  );
+diff --git a/e2e/support/instant-navigation.ts b/e2e/support/instant-navigation.ts
+index aa1537feeaa3d0ebf2fc8ec1da0d806e9011bbc8..4a8f5fee7d81ab4c05662088e14511f9ea32f200 100644
+--- a/e2e/support/instant-navigation.ts
++++ b/e2e/support/instant-navigation.ts
+@@ -38,21 +38,29 @@ const probe = (input: { readonly start: InstantStart; readonly content: InstantC
+     let started = 0;
+     // The departing page's own loading states are not part of the destination.
+     const departing = new WeakSet<Element>();
++    // The main region, and the retained app documents the console places over it.
++    const within = (main: Element, selector: string) => [
++      ...main.querySelectorAll(selector),
++      ...[...document.querySelectorAll("[data-app-frames]")].flatMap((layer) => [
++        ...layer.querySelectorAll(selector),
++      ]),
++    ];
+     const hasContent = (main: Element) =>
+       (input.content.selector === undefined ||
+-        [...main.querySelectorAll(input.content.selector)].some((element) =>
++        within(main, input.content.selector).some((element) =>
+           element.checkVisibility({ visibilityProperty: true }),
+         )) &&
+       (input.content.text === undefined || (main.textContent ?? "").includes(input.content.text));
+     const initial = document.querySelector("main");
+     const contentAtStart = initial !== null && hasContent(initial);
+-    for (const element of initial?.querySelectorAll(loadingSelector) ?? []) departing.add(element);
++    if (initial !== null)
++      for (const element of within(initial, loadingSelector)) departing.add(element);
+     const sample = () => {
+       samples++;
+       const main = document.querySelector("main");
+       if (main === null) return;
+       const atMs = performance.now() - started;
+-      for (const element of main.querySelectorAll(loadingSelector)) {
++      for (const element of within(main, loadingSelector)) {
+         if (departing.has(element)) continue;
+         const label =
+           element.closest("[aria-label]")?.getAttribute("aria-label") ?? "Unlabelled skeleton";
+@@ -63,7 +71,7 @@ const probe = (input: { readonly start: InstantStart; readonly content: InstantC
+       if (
+         contentMs === null &&
+         hasContent(main) &&
+-        [...main.querySelectorAll(loadingSelector)].every((element) => departing.has(element))
++        within(main, loadingSelector).every((element) => departing.has(element))
+       )
+         contentMs = atMs;
+     };
 diff --git a/e2e/tests/app-host-navigation.spec.ts b/e2e/tests/app-host-navigation.spec.ts
 new file mode 100644
+index 0000000000000000000000000000000000000000..04c471a35026551f18d80a6b4852557a9eabaa25
 --- /dev/null
 +++ b/e2e/tests/app-host-navigation.spec.ts
 @@ -0,0 +1,529 @@
@@ -1363,489 +1724,289 @@ new file mode 100644
 +    ),
 +  );
 +});
-diff --git a/e2e/support/app-host-navigation.ts b/e2e/support/app-host-navigation.ts
-new file mode 100644
---- /dev/null
-+++ b/e2e/support/app-host-navigation.ts
-@@ -0,0 +1,174 @@
-+/** Synthetic author app and browser reads for the host-navigation journey. */
-+import type { Frame, Page } from "playwright";
-+import { Effect, Fiber } from "effect";
-+import { expect } from "@effect/vitest";
-+import { Browser } from "./browser.ts";
-+import { holdQuery } from "./query-transition.ts";
-+import { appsManifest } from "./apps-release.ts";
-+
-+const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
-+const service = defineProvider({ name: "Navigation fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
-+export const ping = query({ input: object({}) }, async () => "pong");
-+export default defineApp({ user: { accounts: { service: service.many() } } }, { tools: router({ ping }) });`;
-+
-+/**
-+ * Buttons ask the host through the public client. `sendRaw` posts a hand-written request, as a page
-+ * from another version or with an unknown destination would, and reports the host's answer.
-+ */
-+export const files = [
-+  { path: "index.ts", content: source },
-+  {
-+    path: "ui/index.html",
-+    content: `<!doctype html><html><head><title>Navigation fixture</title></head><body><main><h1>Navigation fixture</h1><label>Draft <input name="draft"></label><button id="settings">Open settings</button><button id="account">Show account</button><output></output></main><script type="module" src="./main.ts"></script></body></html>`,
-+  },
-+  {
-+    path: "ui/main.ts",
-+    content: `import { createAppClient } from "apps/client";
-+const client = createAppClient();
-+const context = JSON.parse(document.getElementById("executor-context")?.textContent ?? "{}");
-+document.body.dataset.load = String(Math.random());
-+const output = document.querySelector("output");
-+const go = (destination) =>
-+  client.navigate(destination).then((accepted) => (output.textContent = accepted ? "accepted" : "refused"));
-+document.getElementById("settings").addEventListener("click", () => go({ tab: "settings" }));
-+document.getElementById("account").addEventListener("click", () => go({ account: context.accounts?.service?.[0] }));
-+window.version = context.version;
-+window.navigateHost = (destination) => client.navigate(destination);
-+const independent = new Map();
-+window.startIndependentNavigation = (name) => {
-+  const own = createAppClient();
-+  independent.set(name, { own, answer: own.navigate({ tab: "app" }) });
-+};
-+window.independentNavigationAnswers = () => {
-+  const entries = [...independent.values()];
-+  independent.clear();
-+  return Promise.all(entries.map(({ answer }) => answer)).finally(() => Promise.all(entries.map(({ own }) => own.dispose())));
-+};
-+window.startPostedNavigation = () => {
-+  const own = createAppClient();
-+  window.disposePostedNavigation = () => own.dispose();
-+  return own.navigate({ tab: "settings" });
-+};
-+window.navigationAnswers = [];
-+addEventListener("message", (event) => {
-+  if (event.source === parent && event.data?.type === "executor:navigate-result") window.navigationAnswers.push(event.data);
-+});
-+window.sendRaw = (message) => {
-+  message = { reference: context.navigation, expiresAt: Date.now() + 3000, ...message };
-+  return new Promise((resolve) => {
-+    const timer = setTimeout(() => resolve("unanswered"), 2000);
-+    const answer = (event) => {
-+      if (event.source !== parent || event.data?.type !== "executor:navigate-result" || event.data.id !== message.id) return;
-+      clearTimeout(timer);
-+      removeEventListener("message", answer);
-+      resolve(event.data.accepted ? "accepted" : "refused");
-+    };
-+    addEventListener("message", answer);
-+    parent.postMessage(message, "*");
-+  });
-+};
-+window.disposeNavigation = async () => {
-+  const disposable = createAppClient();
-+  await disposable.navigate({ tab: "app" });
-+  const answer = disposable.navigate({ tab: "settings" });
-+  await disposable.dispose();
-+  return answer;
-+};`,
-+  },
-+  appsManifest,
-+];
-+
-+const navigation = (page: Page) => page.getByRole("navigation", { name: "App navigation" });
-+export const selected = (page: Page) =>
-+  navigation(page)
-+    .locator('[aria-current="page"]')
-+    .allTextContents()
-+    .then((names) => names.map((name) => name.trim()));
-+
-+/** The app's document among the page's frames, by its origin. */
-+export const appFrame = (page: Page, origin: string): Frame => {
-+  const frame = page.frames().find((candidate) => candidate.url().startsWith(origin));
-+  if (frame === undefined) throw new Error("The app's frame is missing");
-+  return frame;
-+};
-+
-+/** What the page keeps while hidden: its load marker, its draft and its last answer. */
-+export const kept = (frame: Frame) =>
-+  frame.evaluate(() => ({
-+    load: document.body.dataset.load,
-+    draft: document.querySelector("input")?.value,
-+    answer: document.querySelector("output")?.textContent,
-+  }));
-+
-+export const request = (version: string, destination: unknown) => ({
-+  type: "executor:navigate",
-+  id: `raw-${Math.random()}`,
-+  version,
-+  destination,
-+});
-+
-+/** Hold actual requests until the public client's deadline fires, then deliver the late answer. */
-+export const navigationDeadlineProbe = (origin: string) =>
-+  Effect.scoped(
-+    Effect.gen(function* () {
-+      const browser = yield* Browser;
-+      const navigation = () =>
-+        browser.use("Ask the host to open Settings", (page) =>
-+          appFrame(page, origin).evaluate(() =>
-+            (
-+              window as unknown as { navigateHost: (destination: unknown) => Promise<boolean> }
-+            ).navigateHost({ tab: "settings" }),
-+          ),
-+        );
-+      const preflight = yield* Effect.scoped(
-+        Effect.gen(function* () {
-+          const hold = yield* holdQuery(["/_executor/version"], "fail");
-+          const started = Date.now();
-+          const answer = yield* Effect.forkChild(navigation());
-+          yield* hold.requested;
-+          const result = yield* Fiber.join(answer);
-+          expect(
-+            Date.now() - started,
-+            "Preflight is inside the public three-second navigation deadline",
-+          ).toBeLessThan(4000);
-+          yield* hold.release;
-+          return result;
-+        }),
-+      );
-+      const hold = yield* holdQuery(/\/ui\/navigation$/, "continue", { method: "POST" });
-+      yield* browser.use("Clear previous host answers", (page) =>
-+        appFrame(page, origin).evaluate(() => {
-+          (window as unknown as { navigationAnswers: unknown[] }).navigationAnswers = [];
-+        }),
-+      );
-+      const started = Date.now();
-+      const answer = yield* Effect.forkChild(navigation());
-+      yield* hold.requested;
-+      const late = yield* Fiber.join(answer);
-+      expect(
-+        Date.now() - started,
-+        "The host reply is inside the public three-second navigation deadline",
-+      ).toBeLessThan(4000);
-+      yield* hold.release;
-+      const host = yield* browser.use("The late host answer refuses to navigate", (page) => {
-+        const frame = appFrame(page, origin);
-+        return frame
-+          .waitForFunction(
-+            () =>
-+              (window as unknown as { navigationAnswers: unknown[] }).navigationAnswers.length > 0,
-+          )
-+          .then(() =>
-+            frame.evaluate(
-+              () =>
-+                (
-+                  window as unknown as { navigationAnswers: { accepted: boolean }[] }
-+                ).navigationAnswers.at(-1)?.accepted,
-+            ),
-+          );
-+      });
-+      const search = yield* browser.use("Read the unchanged host route", (page) =>
-+        Promise.resolve(new URL(page.url()).search),
-+      );
-+      return { preflight, late, host, search };
-+    }),
-+  );
-diff --git a/e2e/support/instant-navigation.ts b/e2e/support/instant-navigation.ts
---- a/e2e/support/instant-navigation.ts
-+++ b/e2e/support/instant-navigation.ts
-@@ -38,21 +38,29 @@ const probe = (input: { readonly start: InstantStart; readonly content: InstantC
-     let started = 0;
-     // The departing page's own loading states are not part of the destination.
-     const departing = new WeakSet<Element>();
-+    // The main region, and the retained app documents the console places over it.
-+    const within = (main: Element, selector: string) => [
-+      ...main.querySelectorAll(selector),
-+      ...[...document.querySelectorAll("[data-app-frames]")].flatMap((layer) => [
-+        ...layer.querySelectorAll(selector),
-+      ]),
-+    ];
-     const hasContent = (main: Element) =>
-       (input.content.selector === undefined ||
--        [...main.querySelectorAll(input.content.selector)].some((element) =>
-+        within(main, input.content.selector).some((element) =>
-           element.checkVisibility({ visibilityProperty: true }),
-         )) &&
-       (input.content.text === undefined || (main.textContent ?? "").includes(input.content.text));
-     const initial = document.querySelector("main");
-     const contentAtStart = initial !== null && hasContent(initial);
--    for (const element of initial?.querySelectorAll(loadingSelector) ?? []) departing.add(element);
-+    if (initial !== null)
-+      for (const element of within(initial, loadingSelector)) departing.add(element);
-     const sample = () => {
-       samples++;
-       const main = document.querySelector("main");
-       if (main === null) return;
-       const atMs = performance.now() - started;
--      for (const element of main.querySelectorAll(loadingSelector)) {
-+      for (const element of within(main, loadingSelector)) {
-         if (departing.has(element)) continue;
-         const label =
-           element.closest("[aria-label]")?.getAttribute("aria-label") ?? "Unlabelled skeleton";
-@@ -63,7 +71,7 @@ const probe = (input: { readonly start: InstantStart; readonly content: InstantC
-       if (
-         contentMs === null &&
-         hasContent(main) &&
--        [...main.querySelectorAll(loadingSelector)].every((element) => departing.has(element))
-+        within(main, loadingSelector).every((element) => departing.has(element))
-       )
-         contentMs = atMs;
-     };
-diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src/contracts/app-ui.ts
---- a/apps/hosted/server/src/contracts/app-ui.ts
-+++ b/apps/hosted/server/src/contracts/app-ui.ts
-@@ -13,10 +13,10 @@ import {
-   type RuntimeBuildUnavailable,
- } from "@executor-js/sdk/core";
- import { AppReturnPath, AppSignInCode, AppSignInId } from "apps/ui/auth/contracts";
--import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
-+import { UiFailed, UiForbidden, UiUnauthorized, UiNavigationReference } from "apps/ui/contracts";
- import { Config, Context, type Effect, Schema } from "effect";
- import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
--import { Principal } from "./auth.ts";
-+import { Principal, RequireUser } from "./auth.ts";
- import {
-   OrganizationForbidden,
-   OrganizationId,
-@@ -196,7 +196,16 @@ export class HostedAppSessions extends Context.Service<
-     readonly current: (
-       target: AppUiTarget,
-       token: typeof AppSignInCode.Type,
--    ) => Effect.Effect<{ readonly userId: string }, UiUnauthorized | UiForbidden | UiFailed>;
-+    ) => Effect.Effect<
-+      { readonly userId: string; readonly navigation: string },
-+      UiUnauthorized | UiForbidden | UiFailed
-+    >;
-+    /** A reference alone grants nothing: the dashboard login must match this exact record. */
-+    readonly navigation: (
-+      target: AppUiTarget,
-+      reference: string,
-+      principal: Principal,
-+    ) => Effect.Effect<void, UiUnauthorized | UiForbidden | UiFailed>;
-   }
- >()("hosted/AppSessions") {}
+diff --git a/packages/app-templates/executor/skills/app-authoring/ui.md b/packages/app-templates/executor/skills/app-authoring/ui.md
+index ac3a2449a4c25e6e0910a694cfc2449624ef8571..ce06ff426fbf238c983dd3ab140126801cf33fe5 100644
+--- a/packages/app-templates/executor/skills/app-authoring/ui.md
++++ b/packages/app-templates/executor/skills/app-authoring/ui.md
+@@ -65,6 +65,16 @@ reads once. Both operation types may fetch external APIs. External changes do
+ not invalidate subscriptions, and rolling back a SQL transaction cannot undo
+ external effects. All callbacks use Promises; the framework runs Effect internally.
  
-@@ -232,6 +241,26 @@ export const HostedAppUi = /* @__PURE__ */ (() =>
-         "Get the canonical private app URL. Fails with AppNotDeployed until the app's first deploy. Returns null when the deployed app has no UI or the host has no app domain. Open the returned URL in a browser to sign in; no separate publish step is needed.",
-       )
-       .middleware(RequireOrganization),
-+    HttpApiEndpoint.post("navigation", "/api/organizations/:organization/apps/:app/ui/navigation", {
-+      params: { organization: OrganizationReference, app: AppId },
-+      payload: Schema.Struct({
-+        reference: UiNavigationReference,
-+        origin: Schema.NonEmptyString,
-+        version: Schema.NonEmptyString,
-+      }),
-+      success: Schema.Boolean,
-+      error: [
-+        OrganizationForbidden,
-+        StorageError,
-+        AppNotFound,
-+        AppUiAddressInvalid,
-+        UiUnauthorized,
-+        UiForbidden,
-+        UiFailed,
-+      ],
-+    })
-+      .middleware(RequireOrganization)
-+      .middleware(RequireUser),
-   ))();
- /** A browser client can consume the same narrow contract without importing a host's full API. */
- export const HostedAppUiApi = HttpApi.make("executor-hosted").add(HostedAppUi);
-diff --git a/apps/hosted/server/src/implementation/app-sessions.ts b/apps/hosted/server/src/implementation/app-sessions.ts
---- a/apps/hosted/server/src/implementation/app-sessions.ts
-+++ b/apps/hosted/server/src/implementation/app-sessions.ts
-@@ -251,13 +251,26 @@ export const hostedAppSessions = (
++To send a person to the host instead of a link, call
++`client.navigate({ tab: "settings" })` for one of the app's own tabs (`app`,
++`overview`, `accounts`, `tools`, `skills`, `workflows`, `schedules`, `webhooks`,
++`source`, `history`, `versions`, `settings`) or `client.navigate({ account })`
++to open Accounts with that account highlighted. The host opens it in the same
++window and keeps the app page running, also from the app's own window, so Back
++returns to it as it was. It resolves `false` when the page is not embedded, its
++sign-in or the person's login has ended, its version is no longer active, or the
++host refuses; the person's own permissions decide what they then see.
++
+ Do not include an app ID or credentials in browser code. The host binds both
+ identity and authentication. Compiled imports and `ui/public/` files are retained
+ with the version. Import images and fonts from scripts or CSS. In `ui/index.html`,
+diff --git a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
+index 8e69f03f0992489156bc71a36e0ea1ff97942b37..3ee7de33184b4479632f8569f9e9e29c9a9deaaf 100644
+--- a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
++++ b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
+@@ -10,7 +10,7 @@ export const executorSkillDigests: Readonly<Record<string, string>> = {
+   "app-authoring/starter.md": "382bd769d7b10e9c09eaa2367755f23153a31a484aaca9c449ab4aac7d61e224",
+   "app-authoring/storage.md": "d2c2288c8a6dafa0a88f09e7e91409d9afc08158205ea6d25064d0dee67a33df",
+   "app-authoring/tools.md": "460eed5aaf4f84071945f891b955765a39d5372773cb6fff4f4e5d0d99e68a14",
+-  "app-authoring/ui.md": "8b1733a4d1c9938c222d1bd011b345f816cdf6f8d8a23ce431878e349b507c63",
++  "app-authoring/ui.md": "f5e5be69fbc70d053600d21d14f27c787bcdc33c25458211b195a8d847b7fb81",
+   "app-authoring/upgrades/0.0.1-beta.38.md": "0e0e38e0334fbece5bdb8264a32be4f36cef9c51705e8f6b749dc0d3b86dcdb5",
+   "app-authoring/upgrades/0.0.1-beta.90.md": "38c727888b2773efa1d83795e8704f7c38ad9ec27c62fcdd89b5177ec5e338c3",
+   "app-authoring/webhooks.md": "e4ca224cd413b591c3692b389bd88d644b337b4697a067d83551e6bcab657cf3",
+diff --git a/packages/apps/src/contracts/ui.ts b/packages/apps/src/contracts/ui.ts
+index 1e8eb60757b83d958bca064cada8938ebce2e665..aa5c98af3d924de259c0481db84a012dadf6d226 100644
+--- a/packages/apps/src/contracts/ui.ts
++++ b/packages/apps/src/contracts/ui.ts
+@@ -9,7 +9,7 @@ export {
+ } from "@executor-js/app-data";
+ import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
+ import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
+-import { JsonValue } from "./schema.ts";
++import { AccountId, JsonValue } from "./schema.ts";
+ 
+ /**
+  * Non-secret page context injected by the serving host. `accounts` names the account IDs the page
+@@ -22,7 +22,12 @@ const UiContextFields = Schema.Struct({
+   ),
+ });
+ // Pages built with framework releases before versions were named read and send `deployment`.
+-export const UiContext = UiContextFields.pipe(withLegacyKeys({ version: "deployment" }));
++/** A non-authorizing reference to the host's existing scoped-session record. */
++export const UiNavigationReference = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
++export const UiContext = Schema.Struct({
++  ...UiContextFields.fields,
++  navigation: Schema.optional(UiNavigationReference),
++}).pipe(withLegacyKeys({ version: "deployment" }));
+ /** A problem with one of the page's accounts, from stored state. Labels are the owner's own names. */
+ export type UiAccountProblem =
+   | { readonly provider: string; readonly reason: "missing" | "removed" | "incompatible" }
+@@ -136,3 +141,53 @@ export const AppUiApi = HttpApi.make("app-ui").add(
        }),
-     current: (target, token) =>
-       Effect.gen(function* () {
--        const session = yield* read(key("session", yield* digest(token)));
-+        const navigation = yield* digest(token);
-+        const session = yield* read(key("session", navigation));
-         if (!Schema.is(AppUiSession)(session) || !sameTarget(session.target, target))
-           return yield* new UiUnauthorized();
-         yield* parent(session.parent, session.user);
-         // The serving host checks current membership together with app/account
-         // permissions. A second lookup here adds no authority to that decision.
--        return { userId: session.user };
-+        return { userId: session.user, navigation };
-+      }),
-+    navigation: (target, reference, principal) =>
-+      Effect.gen(function* () {
-+        const session = yield* read(key("session", reference));
-+        if (
-+          !Schema.is(AppUiSession)(session) ||
-+          !sameTarget(session.target, target) ||
-+          session.parent !== principal.sessionId ||
-+          session.user !== principal.userId
-+        )
-+          return yield* new UiUnauthorized();
-+        yield* parent(session.parent, session.user);
-       }),
-   });
- };
-diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
---- a/apps/hosted/server/src/implementation/app-ui.ts
-+++ b/apps/hosted/server/src/implementation/app-ui.ts
-@@ -68,7 +68,12 @@ import {
-   type AppUiAddressInvalid,
-   type AppUiTarget,
- } from "../contracts/app-ui.ts";
--import { Authentication, CurrentUserId, type Principal } from "../contracts/auth.ts";
+     ),
+ );
++
++/** The host tabs an embedded page may open on its own app, by the names its URLs use. */
++export const HostTab = Schema.Literals([
++  "app",
++  "overview",
++  "accounts",
++  "tools",
++  "skills",
++  "workflows",
++  "schedules",
++  "webhooks",
++  "source",
++  "history",
++  "versions",
++  "settings",
++]);
++/**
++ * Where an embedded page asks its host to go, in the same window: a tab of its own app, or the
++ * Accounts page with one account highlighted. Destinations grant nothing; the host's own
++ * permissions decide what the person then sees.
++ */
++export const HostDestination = Schema.Union([
++  Schema.Struct({ tab: HostTab }),
++  Schema.Struct({ account: AccountId }),
++]);
++/**
++ * A page's request to its embedding host. `version` is the page's own, from its context; the host
++ * refuses a request from any frame other than the app's own document, from any other origin, or
++ * from a version that is no longer active. The session reference grants no authority; the
++ * dashboard must verify its stored record against the caller's login before the deadline.
++ */
++export const HostNavigationRequest = Schema.Struct({
++  type: Schema.Literal("executor:navigate"),
++  id: Schema.NonEmptyString,
++  version: Schema.NonEmptyString,
++  destination: HostDestination,
++  reference: UiNavigationReference,
++  expiresAt: Schema.Int,
++});
++/** Cancel an outstanding request when its client is disposed or stops waiting. */
++export const HostNavigationCancel = Schema.Struct({
++  type: Schema.Literal("executor:navigate-cancel"),
++  id: Schema.NonEmptyString,
++});
++/** The host's answer to one request; `accepted` is false when it refused to navigate. */
++export const HostNavigationResult = Schema.Struct({
++  type: Schema.Literal("executor:navigate-result"),
++  id: Schema.NonEmptyString,
++  accepted: Schema.Boolean,
++});
+diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/implementation/ui-client.ts
+index a1b85a15a07c8d6cf6a479a0dcf38486ef486c5f..f8a66634a25de2d723c857425aa21ff2e149e0a7 100644
+--- a/packages/apps/src/implementation/ui-client.ts
++++ b/packages/apps/src/implementation/ui-client.ts
+@@ -15,9 +15,16 @@ import {
+ } from "effect";
+ import { AsyncResult, Atom } from "effect/reactivity";
+ import { externalTrace, pendingSpan } from "@executor-js/telemetry";
+-import { FetchHttpClient, HttpClientError } from "effect/http";
++import { FetchHttpClient, HttpClient, HttpClientError } from "effect/http";
+ import { HttpApiClient } from "effect/http-api";
+-import { AppUiApi, UiContext, UiVersionChanged, UiFailed } from "../contracts/ui.ts";
 +import {
-+  Authentication,
-+  CurrentPrincipal,
-+  CurrentUserId,
-+  type Principal,
-+} from "../contracts/auth.ts";
- import { HostedExecutor } from "../contracts/executor.ts";
- import {
-   CurrentOrganization,
-@@ -270,7 +275,7 @@ export const hostedAppUi = <R = never>(
-           Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
-         ),
++  AppUiApi,
++  HostNavigationResult,
++  UiContext,
++  UiVersionChanged,
++  UiFailed,
++  type HostDestination,
++} from "../contracts/ui.ts";
+ import { AppQueryFailed, type OperationReference } from "../contracts/live.ts";
+ import { JsonValue } from "../contracts/schema.ts";
+ import { decoderOf, type Schema } from "./schema.ts";
+@@ -71,7 +78,27 @@ const visibleResult = <E>(
+       });
+ };
+ 
+-/** A scoped page client. Host-injected context carries only the version, never credentials. */
++/** A host without host navigation never answers; the request then resolves false. */
++const navigationTimeout = 3000;
++/**
++ * Whether this page's own sign-in is live now. Every open of the host's version watch authorizes
++ * the page's scoped session and its parent login afresh; only the status is read.
++ */
++const sessionLive = Effect.gen(function* () {
++  // The scope aborts the request once its status is read, closing the watch's stream.
++  const http = (yield* HttpClient.HttpClient).pipe(HttpClient.withScope);
++  const response = yield* http.get("/_executor/version", {
++    headers: { accept: "text/event-stream" },
++  });
++  return response.status === 200;
++}).pipe(
++  Effect.scoped,
++  Effect.provide(FetchHttpClient.layer),
++  Effect.orElseSucceed(() => false),
++);
++const isNavigationResult = EffectSchema.is(HostNavigationResult);
++
++/** A scoped page client. Host-injected context contains no credentials. */
+ export const createAppClient = () => {
+   const { runtime, atoms } = makeBrowserTelemetry(
+     browserSettings("/_executor/api/telemetry", "executor-app-web"),
+@@ -81,6 +108,7 @@ export const createAppClient = () => {
+     window.dispatchEvent(new Event("executor:deployment-changed"));
+   });
+   let pendingWrites = 0;
++  let disposed = false;
+   const beforeUnload = (event: BeforeUnloadEvent) => {
+     event.preventDefault();
+     event.returnValue = "";
+@@ -104,16 +132,15 @@ export const createAppClient = () => {
+     active = !active;
+     for (const listener of activeListeners) listener(active);
+   };
++  // Navigation requests waiting for the host's answer, by request ID.
++  const navigations = new Map<string, (accepted: boolean) => void>();
+   const onHostMessage = (event: MessageEvent) => {
+-    if (
+-      window.parent === window ||
+-      event.source !== window.parent ||
+-      event.data?.type !== "executor:app-active" ||
+-      typeof event.data.active !== "boolean"
+-    )
+-      return;
+-    shown = event.data.active;
+-    activeChanged();
++    if (window.parent === window || event.source !== window.parent) return;
++    if (event.data?.type === "executor:app-active" && typeof event.data.active === "boolean") {
++      shown = event.data.active;
++      activeChanged();
++    } else if (isNavigationResult(event.data))
++      navigations.get(event.data.id)?.(event.data.accepted);
+   };
+   window.addEventListener("message", onHostMessage);
+   document.addEventListener("visibilitychange", activeChanged);
+@@ -128,12 +155,18 @@ export const createAppClient = () => {
+   };
+   let changes: ChangeFeed | undefined;
+   const dispose = async () => {
++    disposed = true;
+     changes?.close();
+     window.removeEventListener("pagehide", onHide);
+     window.removeEventListener("beforeunload", beforeUnload);
+     window.removeEventListener("message", onHostMessage);
+     document.removeEventListener("visibilitychange", activeChanged);
+     activeListeners.clear();
++    // Normal completion does not run the wait's interruption cleanup.
++    for (const [id, settle] of navigations) {
++      window.parent.postMessage({ type: "executor:navigate-cancel", id }, "*");
++      settle(false);
++    }
+     optimistic.dispose();
+     await runtime.dispose();
+   };
+@@ -352,9 +385,61 @@ export const createAppClient = () => {
        );
--      return { ...resolved, access, app };
-+      return { ...resolved, access, app, navigation: identity.navigation };
-     });
-   const authorize = Effect.flatMap(target, authorizeTarget);
-   const assets = (version: VersionMetadata, path: string) =>
-@@ -397,53 +402,83 @@ export const hostedAppUi = <R = never>(
-       ),
-     );
-   const dashboard = HttpApiBuilder.group(HostedAppUiApi, "appUi", (handlers) =>
--    handlers.handle("location", ({ params }) =>
--      Effect.gen(function* () {
--        const access = yield* CurrentOrganization;
--        // Missing and inaccessible apps fail alike, before the app is read.
--        yield* requireAppAccess(params.app, "use");
--        const executor = yield* Effect.flatten(HostedExecutor);
--        const app = yield* executor.apps.get({ owner: access.owner, app: params.app });
--        if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
--        const version = yield* executor.apps.version({
--          owner: app.owner,
--          app: app.id,
--          version: app.activeVersion,
--          versionOwner: app.owner,
--        });
--        // The build, organization and domain reads below fail only when their records are unavailable.
--        const page = yield* assets(version, "index.html").pipe(
--          Effect.mapError(() => new AppUiUnavailable()),
--        );
--        if (page === undefined)
--          return {
--            status: "unavailable" as const,
--            ...(addresses.embedded ? { embedded: true } : {}),
--            url: null,
--            reason: "no_ui" as const,
--          };
--        if (!addresses.enabled)
--          return {
--            status: "unavailable" as const,
--            ...(addresses.embedded ? { embedded: true } : {}),
--            url: null,
--            reason: "no_app_domain" as const,
--          };
--        const sessions = yield* HostedAppSessions;
--        const organization = yield* sessions
--          .organization({ id: access.organization })
--          .pipe(Effect.mapError(() => new AppUiUnavailable()));
--        const url = yield* addresses
--          .origin(app, organization.slug)
--          .pipe(Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())));
--        const status = yield* domainStatus(organization).pipe(
--          Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())),
--        );
--        return status === "ready"
--          ? { status, url, ...(addresses.embedded ? { embedded: true } : {}) }
--          : { status, url: null, ...(addresses.embedded ? { embedded: true } : {}) };
--      }),
--    ),
-+    handlers
-+      .handle("navigation", ({ params, payload }) =>
+     },
+   });
++  const navigate = (destination: typeof HostDestination.Encoded): Promise<boolean> => {
++    const expiresAt = Date.now() + navigationTimeout;
++    return runtime
++      .runPromise(
 +        Effect.gen(function* () {
-+          const principal = yield* CurrentPrincipal;
-+          const access = yield* CurrentOrganization;
-+          yield* requireAppAccess(params.app, "use");
-+          const executor = yield* Effect.flatten(HostedExecutor);
-+          const sessions = yield* HostedAppSessions;
-+          const app = yield* executor.apps.get({ owner: access.owner, app: params.app });
-+          const organization = yield* sessions.organization({ id: access.organization });
-+          const origin = yield* addresses.origin(app, organization.slug);
-+          if (
-+            !addresses.embedded ||
-+            origin !== payload.origin ||
-+            app.activeVersion !== payload.version
-+          )
-+            return false;
-+          yield* sessions.navigation(
-+            {
-+              app: app.id,
-+              organization: organization.id,
-+              slug: organization.slug,
-+              origin,
-+            },
-+            payload.reference,
-+            principal,
-+          );
-+          return true;
-+        }),
-+      )
-+      .handle("location", ({ params }) =>
-+        Effect.gen(function* () {
-+          const access = yield* CurrentOrganization;
-+          // Missing and inaccessible apps fail alike, before the app is read.
-+          yield* requireAppAccess(params.app, "use");
-+          const executor = yield* Effect.flatten(HostedExecutor);
-+          const app = yield* executor.apps.get({ owner: access.owner, app: params.app });
-+          if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
-+          const version = yield* executor.apps.version({
-+            owner: app.owner,
-+            app: app.id,
-+            version: app.activeVersion,
-+            versionOwner: app.owner,
++          if (disposed || window.parent === window) return false;
++          const { version, navigation: reference } = yield* context;
++          if (reference === undefined) return false;
++          // A page whose session ended asks nothing; the host also checks its own login.
++          if (!(yield* sessionLive)) return false;
++          // Keep sends queued so same-turn owner cleanup can cancel before posting.
++          yield* Effect.yieldNow;
++          return yield* Effect.callback<boolean>((resume) => {
++            if (disposed) {
++              resume(Effect.succeed(false));
++              return;
++            }
++            const id = crypto.randomUUID();
++            const settle = (accepted: boolean) => {
++              navigations.delete(id);
++              resume(Effect.succeed(accepted));
++            };
++            navigations.set(id, settle);
++            try {
++              window.parent.postMessage(
++                { type: "executor:navigate", id, version, destination, reference, expiresAt },
++                "*",
++              );
++            } catch {
++              settle(false);
++            }
++            return Effect.sync(() => {
++              navigations.delete(id);
++              window.parent.postMessage({ type: "executor:navigate-cancel", id }, "*");
++            });
 +          });
-+          // The build, organization and domain reads below fail only when their records are unavailable.
-+          const page = yield* assets(version, "index.html").pipe(
-+            Effect.mapError(() => new AppUiUnavailable()),
-+          );
-+          if (page === undefined)
-+            return {
-+              status: "unavailable" as const,
-+              ...(addresses.embedded ? { embedded: true } : {}),
-+              url: null,
-+              reason: "no_ui" as const,
-+            };
-+          if (!addresses.enabled)
-+            return {
-+              status: "unavailable" as const,
-+              ...(addresses.embedded ? { embedded: true } : {}),
-+              url: null,
-+              reason: "no_app_domain" as const,
-+            };
-+          const sessions = yield* HostedAppSessions;
-+          const organization = yield* sessions
-+            .organization({ id: access.organization })
-+            .pipe(Effect.mapError(() => new AppUiUnavailable()));
-+          const url = yield* addresses
-+            .origin(app, organization.slug)
-+            .pipe(Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())));
-+          const status = yield* domainStatus(organization).pipe(
-+            Effect.catchTag("UiFailed", () => Effect.fail(new AppUiUnavailable())),
-+          );
-+          return status === "ready"
-+            ? { status, url, ...(addresses.embedded ? { embedded: true } : {}) }
-+            : { status, url: null, ...(addresses.embedded ? { embedded: true } : {}) };
-+        }),
-+      ),
-   );
-   const dataFailure = (error: unknown) =>
-     Schema.is(OrganizationForbidden)(error)
-@@ -757,6 +792,7 @@ export const hostedAppUi = <R = never>(
-         accountsHref: fix.href,
-         parentOrigin: addresses.embedded ? addresses.dashboardOrigin : undefined,
-         version: version.id,
-+        navigation: current.navigation,
-         asset: (path) => assets(version, path),
-       }),
-     );
++        }).pipe(
++          Effect.raceFirst(Effect.sleep(navigationTimeout).pipe(Effect.as(false))),
++          Effect.catchCause(() => Effect.succeed(false)),
++        ),
++      )
++      .catch(() => false);
++  };
+   return {
+     /** Close this client when its page or embedding owner is removed. */
+     dispose,
++    /**
++     * Ask the host that embeds this page to open, in the same window, one of this app's tabs, such
++     * as `{ tab: "settings" }`, or the Accounts page with one account highlighted, `{ account }`.
++     * The host keeps this page running, so browser Back returns to it as it was. Resolves true once
++     * the host navigates, and false when the page is not embedded, its sign-in or the person's
++     * login has ended, the host refuses (for example because another version is now active) or the
++     * host does not support it.
++     */
++    navigate,
+     /** Query this app once, with a runtime-validated response. Does not populate the mounted query cache. */
+     query: <Input, Output>(
+       reference: OperationReference<Input, Output, "query">,
 diff --git a/packages/apps/src/implementation/ui-serving.ts b/packages/apps/src/implementation/ui-serving.ts
+index 4bed39eb7508881647279a12630787a24705364b..9274435861eb87e4d91640a5544f9bd5651c9de8 100644
 --- a/packages/apps/src/implementation/ui-serving.ts
 +++ b/packages/apps/src/implementation/ui-serving.ts
 @@ -63,6 +63,7 @@ export const appFile = <E, R>(options: {
@@ -1869,186 +2030,47 @@ diff --git a/packages/apps/src/implementation/ui-serving.ts b/packages/apps/src/
      ).replaceAll("<", "\\u003c");
      const telemetry = yield* CurrentTelemetryConfig;
      const attribute = (text: string) =>
-diff --git a/apps/hosted/cloud/src/infrastructure/auth-database.ts b/apps/hosted/cloud/src/infrastructure/auth-database.ts
---- a/apps/hosted/cloud/src/infrastructure/auth-database.ts
-+++ b/apps/hosted/cloud/src/infrastructure/auth-database.ts
-@@ -642,6 +642,8 @@ export const appSessionsPerCall = (
-     complete: (target, request, code, proof) =>
-       Effect.flatMap(sessions, (live) => live.complete(target, request, code, proof)),
-     current: (target, token) => Effect.flatMap(sessions, (live) => live.current(target, token)),
-+    navigation: (target, reference, principal) =>
-+      Effect.flatMap(sessions, (live) => live.navigation(target, reference, principal)),
-   });
- };
- 
-diff --git a/e2e/support/app-navigation-lifecycle.ts b/e2e/support/app-navigation-lifecycle.ts
+diff --git a/packages/ui/src/contracts/host-navigation.ts b/packages/ui/src/contracts/host-navigation.ts
 new file mode 100644
+index 0000000000000000000000000000000000000000..abb7ae16f10fed1a275767aa8e21495f8053fe00
 --- /dev/null
-+++ b/e2e/support/app-navigation-lifecycle.ts
-@@ -0,0 +1,166 @@
-+/** Public browser probes for independent navigation requests and posted-request disposal. */
-+import { Effect, Fiber } from "effect";
-+import { Browser } from "./browser.ts";
-+import { holdQuery } from "./query-transition.ts";
-+import { appFrame } from "./app-host-navigation.ts";
++++ b/packages/ui/src/contracts/host-navigation.ts
+@@ -0,0 +1,38 @@
++/**
++ * Reading an embedded page's navigation request, for hosts that embed app screens. The page sends
++ * `apps/client`'s `navigate`; the host decides whether to follow it and answers either way.
++ */
++import {
++  HostNavigationRequest,
++  HostNavigationResult,
++  HostNavigationCancel,
++} from "apps/ui/contracts";
++import { Option, Schema } from "effect";
 +
-+/** Each client gets its own reply; disposing a posted request cancels the host's pending work. */
-+export const navigationLifecycleProbe = (origin: string) =>
-+  Effect.scoped(
-+    Effect.gen(function* () {
-+      const browser = yield* Browser;
-+      const clearAnswers = () =>
-+        browser.use("Clear previous navigation replies", (page) =>
-+          appFrame(page, origin).evaluate(() => {
-+            (window as unknown as { navigationAnswers: unknown[] }).navigationAnswers = [];
-+          }),
-+        );
-+      const hostAnswers = (count: number) =>
-+        browser.use("Observe the host's completed replies", (page) => {
-+          const frame = appFrame(page, origin);
-+          return frame
-+            .waitForFunction(
-+              (needed) =>
-+                (window as unknown as { navigationAnswers: unknown[] }).navigationAnswers.length >=
-+                needed,
-+              count,
-+            )
-+            .then(() =>
-+              frame.evaluate(() =>
-+                (
-+                  window as unknown as { navigationAnswers: { accepted: boolean }[] }
-+                ).navigationAnswers.map((answer) => answer.accepted),
-+              ),
-+            );
-+        });
-+      const parallel = yield* Effect.scoped(
-+        Effect.gen(function* () {
-+          const hold = yield* holdQuery(/\/ui\/navigation$/, "continue", {
-+            method: "POST",
-+            allRequests: true,
-+          });
-+          yield* clearAnswers();
-+          yield* browser.use("Start one client's request", (page) =>
-+            appFrame(page, origin).evaluate(() => {
-+              (
-+                window as unknown as { startIndependentNavigation: (name: string) => void }
-+              ).startIndependentNavigation("first");
-+            }),
-+          );
-+          yield* hold.requested;
-+          yield* browser.use(
-+            "Another client starts a request before the first completes",
-+            (page) => {
-+              const requested = page.waitForRequest(
-+                (request) =>
-+                  request.method() === "POST" &&
-+                  new URL(request.url()).pathname.endsWith("/ui/navigation"),
-+              );
-+              return appFrame(page, origin)
-+                .evaluate(() => {
-+                  (
-+                    window as unknown as { startIndependentNavigation: (name: string) => void }
-+                  ).startIndependentNavigation("second");
-+                })
-+                .then(() => requested)
-+                .then(() => undefined);
-+            },
-+          );
-+          yield* hold.release;
-+          const answers = yield* browser.use("Read each client's own answer", (page) =>
-+            appFrame(page, origin).evaluate(() =>
-+              (
-+                window as unknown as { independentNavigationAnswers: () => Promise<boolean[]> }
-+              ).independentNavigationAnswers(),
-+            ),
-+          );
-+          yield* hostAnswers(2);
-+          return answers;
-+        }),
-+      );
-+      const hold = yield* holdQuery(/\/ui\/navigation$/, "continue", { method: "POST" });
-+      yield* clearAnswers();
-+      const answer = yield* Effect.forkChild(
-+        browser.use("Post a request from a disposable client", (page) =>
-+          appFrame(page, origin).evaluate(() =>
-+            (
-+              window as unknown as { startPostedNavigation: () => Promise<boolean> }
-+            ).startPostedNavigation(),
-+          ),
-+        ),
-+      );
-+      yield* hold.requested;
-+      yield* browser.use("Dispose after the host has started authorization", (page) =>
-+        appFrame(page, origin).evaluate(() =>
-+          (
-+            window as unknown as { disposePostedNavigation: () => Promise<void> }
-+          ).disposePostedNavigation(),
-+        ),
-+      );
-+      const disposed = yield* Fiber.join(answer);
-+      yield* hold.release;
-+      const replies = yield* hostAnswers(1);
-+      const search = yield* browser.use("Read the route after the released response", (page) =>
-+        Promise.resolve(new URL(page.url()).search),
-+      );
-+      return { parallel, disposed, host: replies.at(-1), search };
-+    }),
-+  );
++const decode = Schema.decodeUnknownOption(HostNavigationRequest);
++export const isHostNavigationCancel = Schema.is(HostNavigationCancel);
 +
-+/** A refused record cannot borrow the result of a valid request sharing the parent channel. */
-+export const navigationAuthorityIsolationProbe = (origin: string) =>
-+  Effect.scoped(
-+    Effect.gen(function* () {
-+      const browser = yield* Browser;
-+      const hold = yield* holdQuery(/\/ui\/navigation$/, "continue", { method: "POST" });
-+      yield* browser.use("Post a valid request whose read stays pending", (page) =>
-+        appFrame(page, origin).evaluate(() => {
-+          (
-+            window as unknown as { startIndependentNavigation: (name: string) => void }
-+          ).startIndependentNavigation("overlapping-valid");
-+        }),
-+      );
-+      yield* hold.requested;
-+      yield* browser.use("The other request's own session check is refused", (page) => {
-+        const refused = page.waitForResponse(
-+          (response) =>
-+            new URL(response.url()).pathname.endsWith("/ui/navigation") &&
-+            response.status() === 401,
-+        );
-+        return appFrame(page, origin)
-+          .evaluate(() => {
-+            const fixture = window as unknown as {
-+              version: string;
-+              mixedAnswer: Promise<string>;
-+              sendRaw: (request: unknown) => Promise<string>;
-+            };
-+            fixture.mixedAnswer = fixture.sendRaw({
-+              type: "executor:navigate",
-+              id: `invalid-${Math.random()}`,
-+              version: fixture.version,
-+              reference: "0".repeat(64),
-+              expiresAt: Date.now() + 3000,
-+              destination: { tab: "settings" },
-+            });
-+          })
-+          .then(() => refused)
-+          .then(() => undefined);
-+      });
-+      yield* hold.release;
-+      const answers = yield* browser.use("Read the separately correlated answers", (page) =>
-+        appFrame(page, origin).evaluate(() => {
-+          const fixture = window as unknown as {
-+            mixedAnswer: Promise<string>;
-+            independentNavigationAnswers: () => Promise<boolean[]>;
-+          };
-+          return Promise.all([fixture.mixedAnswer, fixture.independentNavigationAnswers()]).then(
-+            ([invalid, valid]) => ({ invalid, valid: valid[0] }),
-+          );
-+        }),
-+      );
-+      const search = yield* browser.use("An invalid record opens no host tab", (page) =>
-+        Promise.resolve(new URL(page.url()).search),
-+      );
-+      return { ...answers, search };
-+    }),
-+  );
++export type HostNavigation = typeof HostNavigationRequest.Type;
++
++/**
++ * A navigation message, by its ID: `request` is none when the message names a destination or
++ * shape this host does not know, which the host refuses. Any other message is undefined.
++ */
++export const readHostNavigation = (
++  data: unknown,
++): { readonly id: string; readonly request: Option.Option<HostNavigation> } | undefined =>
++  typeof data === "object" &&
++  data !== null &&
++  "type" in data &&
++  data.type === "executor:navigate" &&
++  "id" in data &&
++  typeof data.id === "string" &&
++  data.id !== ""
++    ? { id: data.id, request: decode(data) }
++    : undefined;
++
++/** The answer a host posts back to the page that asked. */
++export const hostNavigationResult = (
++  id: string,
++  accepted: boolean,
++): typeof HostNavigationResult.Type => ({ type: "executor:navigate-result", id, accepted });
