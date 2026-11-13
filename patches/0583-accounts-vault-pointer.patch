@@ -1,0 +1,681 @@
+diff --git a/apps/hosted/web/src/implementation/pages/accounts-client.tsx b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+--- a/apps/hosted/web/src/implementation/pages/accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/accounts-client.tsx
+@@ -24,6 +24,7 @@ import { useOrganizationDetails, useOrganizationRoute } from "../components/orga
+ import { OAuthClientsDialog } from "./oauth-clients.tsx";
+ import { ConnectionModal } from "./connection-dialog.tsx";
+ import { HostedAccountObservations, HostedAccountPlan } from "./account-observations.tsx";
++import { vaultAccountsSearch } from "./obsidian-vault-search.tsx";
+ import { inventoryAtom } from "../../contracts/organization.ts";
+ import { savedAccountRowsAtom } from "../../contracts/account-projection.ts";
+ import { accountRowFromSaved } from "@executor-js/ui/dashboard/account-row";
+@@ -153,6 +154,7 @@ export function AccountsPage({
+       <SharedPage
+         query={resourceInventoryAtom(organization)}
+         Failure={HostedFailure}
++        searchElsewhere={vaultAccountsSearch}
+         action={
+           <>
+             <VerifyIdentities
+diff --git a/apps/hosted/web/src/implementation/pages/obsidian-vault-card.tsx b/apps/hosted/web/src/implementation/pages/obsidian-vault-card.tsx
+--- a/apps/hosted/web/src/implementation/pages/obsidian-vault-card.tsx
++++ b/apps/hosted/web/src/implementation/pages/obsidian-vault-card.tsx
+@@ -8,6 +8,9 @@ import {
+   type VaultSync,
+ } from "../../contracts/obsidian-devices.ts";
+ 
++export const deviceCount = (devices: readonly ObsidianDevice[]) =>
++  devices.length === 1 ? "1 device" : `${devices.length} devices`;
++
+ /** A vault's devices on its Apps card, worded like an app's linked accounts. */
+ export function VaultCardLine({
+   devices,
+@@ -24,7 +27,7 @@ export function VaultCardLine({
+   const stale = isStale(latest, now);
+   return (
+     <AppCardLine attention={stale}>
+-      {devices.length === 1 ? "1 device" : `${devices.length} devices`}
++      {deviceCount(devices)}
+       {latest === null ? (
+         " · no sync yet"
+       ) : (
+diff --git a/apps/hosted/web/src/implementation/pages/obsidian-vault-search.tsx b/apps/hosted/web/src/implementation/pages/obsidian-vault-search.tsx
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/obsidian-vault-search.tsx
+@@ -0,0 +1,98 @@
++import { useState } from "react";
++import type { App } from "@executor-js/sdk";
++import { AppIcon } from "@executor-js/ui/dashboard/common";
++import { useDashboard } from "@executor-js/ui/dashboard/context";
++import { HugeiconsIcon } from "@hugeicons/react";
++import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
++import {
++  isStale,
++  latestActivity,
++  type ObsidianDevice,
++  type VaultSync,
++} from "../../contracts/obsidian-devices.ts";
++import { ObsidianVault } from "./obsidian-devices.tsx";
++import { deviceCount } from "./obsidian-vault-card.tsx";
++
++/**
++ * Vaults a search on Accounts names: a vault's access is its devices, not a saved sign-in, so
++ * the search points to each matching vault's Accounts tab. Shown only while a vault matches.
++ */
++export function VaultSearchResults({
++  apps,
++  search,
++}: {
++  readonly apps: readonly App[];
++  readonly search: string;
++}) {
++  const term = search.trim().toLowerCase();
++  // Only an app the search can name is checked, so a search for anything else reads nothing.
++  const named = apps.filter((app) => `${app.name} obsidian vault`.toLowerCase().includes(term));
++  if (term.length === 0 || named.length === 0) return null;
++  return (
++    <section
++      aria-label="Obsidian vaults"
++      className="mx-auto hidden w-full max-w-xl px-4 pb-6 has-[li]:block"
++    >
++      <p className="mb-3 text-center text-[13px] text-muted-foreground">
++        Obsidian vaults don't use a sign-in. The devices that sync each vault are on that vault's
++        Accounts tab.
++      </p>
++      <ul className="divide-y overflow-hidden rounded-lg border">
++        {/* Apps that can't speak the sync protocol fall back to nothing without any read. */}
++        {named.map((app) => (
++          <ObsidianVault key={app.id} app={app} fallback={null}>
++            {(vault) =>
++              vault.kind === "ready" ? (
++                <li>
++                  <VaultSearchRow app={app} devices={vault.devices} sync={vault.sync} />
++                </li>
++              ) : null
++            }
++          </ObsidianVault>
++        ))}
++      </ul>
++    </section>
++  );
++}
++
++function VaultSearchRow({
++  app,
++  devices,
++  sync,
++}: {
++  readonly app: App;
++  readonly devices: readonly ObsidianDevice[];
++  readonly sync: VaultSync | undefined;
++}) {
++  const { AppLink } = useDashboard();
++  // Read once per mount, like the relative times on the vault's own tab.
++  const [now] = useState(() => Date.now());
++  const stale = isStale(latestActivity(devices, sync), now);
++  return (
++    <AppLink
++      app={app.id}
++      view="accounts"
++      className="flex items-center gap-3 px-3.5 py-2.5 text-[13px] hover:bg-muted"
++    >
++      <AppIcon app={app} />
++      <span className="min-w-0 flex-1 truncate font-medium">{app.name}</span>
++      <span className={stale ? "text-sign-in-warning" : "text-muted-foreground"}>
++        {devices.length === 0
++          ? "No devices yet"
++          : `${deviceCount(devices)}${stale ? " · needs attention" : ""}`}
++      </span>
++      <HugeiconsIcon
++        icon={ArrowRight02Icon}
++        size={14}
++        aria-hidden
++        className="shrink-0 text-muted-foreground"
++      />
++    </AppLink>
++  );
++}
++
++/** What Accounts shows under the results of a search. */
++export const vaultAccountsSearch = (
++  search: string,
++  inventory: { readonly apps: readonly App[] },
++) => <VaultSearchResults apps={inventory.apps} search={search} />;
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -119,6 +119,11 @@ export function AccountsPage<E>({
+   ) => ReactNode;
+   /** A linked account is scrolled into view and marked, since accounts have no page of their own. */
+   readonly highlight?: AccountId | undefined;
++  /**
++   * Under the results of a search: where else it may be found, such as apps whose access isn't a
++   * saved sign-in. Nothing, where the host has no such place.
++   */
++  readonly searchElsewhere?: ((search: string, inventory: Inventory) => ReactNode) | undefined;
+ }) {
+   const { result, data, refresh } = useQuery(query);
+   const [search, setSearch] = useState("");
+@@ -174,11 +179,13 @@ function AccountsList({
+   highlight,
+   empty,
+   clearSearch,
++  searchElsewhere,
+ }: {
+   readonly data: Inventory;
+   readonly search: string;
+   readonly empty: ReactNode;
+   readonly clearSearch: () => void;
++  readonly searchElsewhere?: ((search: string, inventory: Inventory) => ReactNode) | undefined;
+   /** `binding` marks one sign-in inside a grouped identity row, not the whole account. */
+   readonly accountActions?: (
+     account: AccountSummary,
+@@ -232,257 +239,267 @@ function AccountsList({
+       {data.accounts.length === 0 ? (
+         empty
+       ) : groups.length === 0 ? (
+-        <Empty
+-          title="No matching accounts"
+-          action={
+-            <Button variant="outline" onClick={clearSearch}>
+-              Clear search
+-            </Button>
+-          }
+-        >
+-          Try another label or provider.
+-        </Empty>
++        <>
++          <Empty
++            title="No matching accounts"
++            action={
++              <Button variant="outline" onClick={clearSearch}>
++                Clear search
++              </Button>
++            }
++          >
++            Try another label or provider.
++          </Empty>
++          {search.trim() && searchElsewhere?.(search, data)}
++        </>
+       ) : (
+-        <div
+-          className={cn(
+-            accountRowsContainer,
+-            "inventory overflow-hidden rounded-[8px] border border-border",
+-          )}
+-        >
+-          <AccountRowHeader
+-            users="Used by"
+-            {...(requests
+-              ? {
+-                  requests: {
+-                    title: traffics.some((traffic) => traffic === undefined)
+-                      ? "Requests in the last 7 days, counted by the account's pool or by the tool calls that used it. An empty cell means there's no request history you can see for that account."
+-                      : undefined,
+-                  },
+-                }
+-              : {})}
+-          />
+-          {groups.map(({ account, bindings }, index) => {
+-            const apps = bindingApps(data, bindings);
+-            const marked = bindings.some((binding) => binding.id === highlight);
+-            const family = bindingFamily(data, account);
+-            const access = bindingAccess(data, bindings);
+-            // Grouping is display only: every saved account keeps its own row input.
+-            const members = bindings.map(
+-              (binding) => accountRow?.(binding) ?? accountRowFromInventory(data, binding),
+-            );
+-            const row = accountRowGroup(members)!;
+-            const traffic = traffics[index];
+-            const appName = (id: string) => {
+-              const app = apps.find((item) => item.id === id);
+-              return app === undefined ? "an app" : appDisplayName(app, brand);
+-            };
+-            const appChip = (app: (typeof apps)[number]) => (
+-              <AppLink app={app.id} view="accounts" key={app.id}>
+-                {row.bindings
+-                  .filter((binding) => binding.app === app.id)
+-                  .map((binding) => (
+-                    <AccountCheckDot key={binding.id} health={binding.check} />
+-                  ))}
+-                <span className="truncate">{appDisplayName(app, brand)}</span>
+-                <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={2} aria-hidden size={12} />
+-              </AppLink>
+-            );
++        <>
++          <div
++            className={cn(
++              accountRowsContainer,
++              "inventory overflow-hidden rounded-[8px] border border-border",
++            )}
++          >
++            <AccountRowHeader
++              users="Used by"
++              {...(requests
++                ? {
++                    requests: {
++                      title: traffics.some((traffic) => traffic === undefined)
++                        ? "Requests in the last 7 days, counted by the account's pool or by the tool calls that used it. An empty cell means there's no request history you can see for that account."
++                        : undefined,
++                    },
++                  }
++                : {})}
++            />
++            {groups.map(({ account, bindings }, index) => {
++              const apps = bindingApps(data, bindings);
++              const marked = bindings.some((binding) => binding.id === highlight);
++              const family = bindingFamily(data, account);
++              const access = bindingAccess(data, bindings);
++              // Grouping is display only: every saved account keeps its own row input.
++              const members = bindings.map(
++                (binding) => accountRow?.(binding) ?? accountRowFromInventory(data, binding),
++              );
++              const row = accountRowGroup(members)!;
++              const traffic = traffics[index];
++              const appName = (id: string) => {
++                const app = apps.find((item) => item.id === id);
++                return app === undefined ? "an app" : appDisplayName(app, brand);
++              };
++              const appChip = (app: (typeof apps)[number]) => (
++                <AppLink app={app.id} view="accounts" key={app.id}>
++                  {row.bindings
++                    .filter((binding) => binding.app === app.id)
++                    .map((binding) => (
++                      <AccountCheckDot key={binding.id} health={binding.check} />
++                    ))}
++                  <span className="truncate">{appDisplayName(app, brand)}</span>
++                  <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={2} aria-hidden size={12} />
++                </AppLink>
++              );
+ 
+-            return (
+-              <AccountRowProvider key={account.id}>
+-                <div
+-                  className={cn(
+-                    accountRowGrid(false, requests),
+-                    "inventory-row accounts-grid min-h-12 gap-y-2 border-t border-t-border py-1.5 pl-2.5 pr-2 data-[highlighted]:bg-accent data-[highlighted]:shadow-[inset_3px_0_0_var(--color-ring)]",
+-                  )}
+-                  {...(marked
+-                    ? { ref: highlighted, "data-highlighted": "", "aria-current": "true" as const }
+-                    : {})}
+-                >
+-                  {/* One app's logo would misname an identity that several visible apps share. */}
+-                  <AccountRowLogo account={account} identityGroup={apps.length > 1} />
+-                  <AccountRowName
+-                    account={account}
+-                    title={accountTitle(account, undefined, accountKindLabel(data, account))}
+-                    secondaryClassName="row-meta"
+-                    tags={accountMeta?.(account)}
+-                  />
+-                  <AccountRowCells
+-                    // Each sign-in keeps its own declared kind, so a mixed group lists them all.
+-                    type={accountRowType(
+-                      bindings.map((binding) => accountKindLabel(data, binding)),
++              return (
++                <AccountRowProvider key={account.id}>
++                  <div
++                    className={cn(
++                      accountRowGrid(false, requests),
++                      "inventory-row accounts-grid min-h-12 gap-y-2 border-t border-t-border py-1.5 pl-2.5 pr-2 data-[highlighted]:bg-accent data-[highlighted]:shadow-[inset_3px_0_0_var(--color-ring)]",
+                     )}
+-                    plan={accountPlan?.(account)}
+-                    {...(requests
++                    {...(marked
+                       ? {
+-                          requests:
+-                            traffic === undefined ? null : (
+-                              <AccountRequestsCell traffic={traffic} now={now} format={format} />
+-                            ),
++                          ref: highlighted,
++                          "data-highlighted": "",
++                          "aria-current": "true" as const,
+                         }
+                       : {})}
+-                    health={
+-                      <AccountHealthCell
+-                        health={accountRowHealth(members)}
+-                        appName={appName}
+-                        accountName={(binding) =>
+-                          accountMenuName(binding, accountKindLabel(data, binding), {
+-                            binding: true,
+-                          })
+-                        }
+-                        link
+-                        traffic={traffic}
+-                      />
+-                    }
+-                    usersLabel="Used by"
+-                    users={
+-                      <span
++                  >
++                    {/* One app's logo would misname an identity that several visible apps share. */}
++                    <AccountRowLogo account={account} identityGroup={apps.length > 1} />
++                    <AccountRowName
++                      account={account}
++                      title={accountTitle(account, undefined, accountKindLabel(data, account))}
++                      secondaryClassName="row-meta"
++                      tags={accountMeta?.(account)}
++                    />
++                    <AccountRowCells
++                      // Each sign-in keeps its own declared kind, so a mixed group lists them all.
++                      type={accountRowType(
++                        bindings.map((binding) => accountKindLabel(data, binding)),
++                      )}
++                      plan={accountPlan?.(account)}
++                      {...(requests
++                        ? {
++                            requests:
++                              traffic === undefined ? null : (
++                                <AccountRequestsCell traffic={traffic} now={now} format={format} />
++                              ),
++                          }
++                        : {})}
++                      health={
++                        <AccountHealthCell
++                          health={accountRowHealth(members)}
++                          appName={appName}
++                          accountName={(binding) =>
++                            accountMenuName(binding, accountKindLabel(data, binding), {
++                              binding: true,
++                            })
++                          }
++                          link
++                          traffic={traffic}
++                        />
++                      }
++                      usersLabel="Used by"
++                      users={
++                        <span
++                          className={cn(
++                            appReferences,
++                            // The margin keeps room for the focus ring inside the clipped line.
++                            "-m-1 flex-nowrap items-center overflow-hidden p-1 @max-[640px]/account-rows:flex-1",
++                          )}
++                          data-used-by
++                        >
++                          {apps.length === 0 ? (
++                            <span className="muted text-muted-foreground">No apps</span>
++                          ) : (
++                            <>
++                              {(apps.length > usedByChips ? apps.slice(0, 1) : apps).map(appChip)}
++                              {apps.length > usedByChips && (
++                                <OutsideAccountRow>
++                                  <Popover>
++                                    <PopoverTrigger asChild>
++                                      <Button
++                                        variant="outline"
++                                        size="xs"
++                                        data-used-by-more
++                                        aria-label={`Used by ${apps.length - 1} more ${apps.length - 1 === 1 ? "app" : "apps"}`}
++                                      >
++                                        +{apps.length - 1} more
++                                      </Button>
++                                    </PopoverTrigger>
++                                    <PopoverContent align="start" className="w-64 p-2">
++                                      <span
++                                        className={cn(appReferences, "flex-col items-start")}
++                                        data-used-by-list
++                                      >
++                                        {apps.slice(1).map(appChip)}
++                                      </span>
++                                    </PopoverContent>
++                                  </Popover>
++                                </OutsideAccountRow>
++                              )}
++                            </>
++                          )}
++                        </span>
++                      }
++                    />
++                    <AccountRowMenu>
++                      {/* Renders only its dialog here; it offers itself from the row's one menu. */}
++                      {account.identity !== undefined && identityActions?.(bindings, data)}
++                      {bindings.length > 1 ? (
++                        <AccountOwnActionsMenu
++                          title={accountTitle(account, undefined, accountKindLabel(data, account))}
++                          manage={
++                            <OutsideAccountRow>
++                              <div className="divide-y divide-border rounded-md border border-border">
++                                {bindings.map((binding) => (
++                                  <div
++                                    key={binding.id}
++                                    className="flex min-w-0 items-center justify-between gap-3 px-3 py-2"
++                                  >
++                                    <span className="min-w-0 text-[13px] wrap-anywhere">
++                                      {bindingApps(data, [binding])
++                                        .map((app) => app.name)
++                                        .join(", ") ||
++                                        binding.providerName ||
++                                        "Saved sign-in"}
++                                    </span>
++                                    {accountActions?.(binding, {
++                                      binding: true,
++                                      name: accountMenuName(
++                                        binding,
++                                        accountKindLabel(data, binding),
++                                        { binding: true },
++                                      ),
++                                    })}
++                                  </div>
++                                ))}
++                              </div>
++                            </OutsideAccountRow>
++                          }
++                        />
++                      ) : accountActions === undefined ? (
++                        <AccountOwnActionsMenu
++                          title={accountTitle(account, undefined, accountKindLabel(data, account))}
++                        />
++                      ) : (
++                        accountActions(account, {
++                          binding: false,
++                          name: accountMenuName(account, accountKindLabel(data, account)),
++                        })
++                      )}
++                    </AccountRowMenu>
++                    {family !== undefined && (
++                      <p
+                         className={cn(
+-                          appReferences,
+-                          // The margin keeps room for the focus ring inside the clipped line.
+-                          "-m-1 flex-nowrap items-center overflow-hidden p-1 @max-[640px]/account-rows:flex-1",
++                          accountRowBand(false),
++                          "unverified-identity -mt-1 text-[11px] leading-4 text-muted-foreground",
+                         )}
+-                        data-used-by
+                       >
+-                        {apps.length === 0 ? (
+-                          <span className="muted text-muted-foreground">No apps</span>
+-                        ) : (
+-                          <>
+-                            {(apps.length > usedByChips ? apps.slice(0, 1) : apps).map(appChip)}
+-                            {apps.length > usedByChips && (
+-                              <OutsideAccountRow>
+-                                <Popover>
+-                                  <PopoverTrigger asChild>
+-                                    <Button
+-                                      variant="outline"
+-                                      size="xs"
+-                                      data-used-by-more
+-                                      aria-label={`Used by ${apps.length - 1} more ${apps.length - 1 === 1 ? "app" : "apps"}`}
+-                                    >
+-                                      +{apps.length - 1} more
+-                                    </Button>
+-                                  </PopoverTrigger>
+-                                  <PopoverContent align="start" className="w-64 p-2">
+-                                    <span
+-                                      className={cn(appReferences, "flex-col items-start")}
+-                                      data-used-by-list
+-                                    >
+-                                      {apps.slice(1).map(appChip)}
+-                                    </span>
+-                                  </PopoverContent>
+-                                </Popover>
+-                              </OutsideAccountRow>
+-                            )}
+-                          </>
+-                        )}
+-                      </span>
+-                    }
+-                  />
+-                  <AccountRowMenu>
+-                    {/* Renders only its dialog here; it offers itself from the row's one menu. */}
+-                    {account.identity !== undefined && identityActions?.(bindings, data)}
+-                    {bindings.length > 1 ? (
+-                      <AccountOwnActionsMenu
+-                        title={accountTitle(account, undefined, accountKindLabel(data, account))}
+-                        manage={
+-                          <OutsideAccountRow>
+-                            <div className="divide-y divide-border rounded-md border border-border">
+-                              {bindings.map((binding) => (
+-                                <div
+-                                  key={binding.id}
+-                                  className="flex min-w-0 items-center justify-between gap-3 px-3 py-2"
+-                                >
+-                                  <span className="min-w-0 text-[13px] wrap-anywhere">
+-                                    {bindingApps(data, [binding])
+-                                      .map((app) => app.name)
+-                                      .join(", ") ||
+-                                      binding.providerName ||
+-                                      "Saved sign-in"}
+-                                  </span>
+-                                  {accountActions?.(binding, {
+-                                    binding: true,
+-                                    name: accountMenuName(
+-                                      binding,
+-                                      accountKindLabel(data, binding),
+-                                      { binding: true },
+-                                    ),
+-                                  })}
+-                                </div>
+-                              ))}
+-                            </div>
+-                          </OutsideAccountRow>
+-                        }
+-                      />
+-                    ) : accountActions === undefined ? (
+-                      <AccountOwnActionsMenu
+-                        title={accountTitle(account, undefined, accountKindLabel(data, account))}
+-                      />
+-                    ) : (
+-                      accountActions(account, {
+-                        binding: false,
+-                        name: accountMenuName(account, accountKindLabel(data, account)),
+-                      })
++                        {family.name} identity not verified, so this sign-in is listed on its own.{" "}
++                        {apps[0] === undefined
++                          ? "Reconnect it from an app to group it."
++                          : `Reconnect it from ${appDisplayName(apps[0], brand)} to group it.`}
++                      </p>
+                     )}
+-                  </AccountRowMenu>
+-                  {family !== undefined && (
+-                    <p
+-                      className={cn(
+-                        accountRowBand(false),
+-                        "unverified-identity -mt-1 text-[11px] leading-4 text-muted-foreground",
+-                      )}
+-                    >
+-                      {family.name} identity not verified, so this sign-in is listed on its own.{" "}
+-                      {apps[0] === undefined
+-                        ? "Reconnect it from an app to group it."
+-                        : `Reconnect it from ${appDisplayName(apps[0], brand)} to group it.`}
+-                    </p>
+-                  )}
+-                  {account.description && (
+-                    <AccountRowDetails>
+-                      <div className={accountRowBand(false)}>
+-                        <AccountRowDescription account={account} />
+-                      </div>
+-                    </AccountRowDetails>
+-                  )}
+-                  {traffic !== undefined && (
+-                    <AccountTrafficDetails traffic={traffic} className={accountRowBand(false)} />
+-                  )}
+-                  {access.length > 0 && (
+-                    <AccountRowDetails>
+-                      <div className={accountRowBand(false)}>
+-                        <RequestedAccess
+-                          apps={access.map(({ app, scopes, capabilities }) => ({
+-                            id: app.id,
+-                            name: appDisplayName(app, brand),
+-                            scopes,
+-                            capabilities,
+-                          }))}
+-                        />
++                    {account.description && (
++                      <AccountRowDetails>
++                        <div className={accountRowBand(false)}>
++                          <AccountRowDescription account={account} />
++                        </div>
++                      </AccountRowDetails>
++                    )}
++                    {traffic !== undefined && (
++                      <AccountTrafficDetails traffic={traffic} className={accountRowBand(false)} />
++                    )}
++                    {access.length > 0 && (
++                      <AccountRowDetails>
++                        <div className={accountRowBand(false)}>
++                          <RequestedAccess
++                            apps={access.map(({ app, scopes, capabilities }) => ({
++                              id: app.id,
++                              name: appDisplayName(app, brand),
++                              scopes,
++                              capabilities,
++                            }))}
++                          />
++                        </div>
++                      </AccountRowDetails>
++                    )}
++                    {accountDetails !== undefined && (
++                      <div className={cn(accountRowBand(false), "empty:hidden")}>
++                        {bindings.length > 1
++                          ? accountDetails(
++                              account,
++                              apps,
++                              bindings.map((binding) => ({
++                                account: binding,
++                                name: accountMenuName(binding, accountKindLabel(data, binding), {
++                                  binding: true,
++                                }),
++                                apps: bindingApps(data, [binding]),
++                              })),
++                            )
++                          : accountDetails(account, apps)}
+                       </div>
+-                    </AccountRowDetails>
+-                  )}
+-                  {accountDetails !== undefined && (
+-                    <div className={cn(accountRowBand(false), "empty:hidden")}>
+-                      {bindings.length > 1
+-                        ? accountDetails(
+-                            account,
+-                            apps,
+-                            bindings.map((binding) => ({
+-                              account: binding,
+-                              name: accountMenuName(binding, accountKindLabel(data, binding), {
+-                                binding: true,
+-                              }),
+-                              apps: bindingApps(data, [binding]),
+-                            })),
+-                          )
+-                        : accountDetails(account, apps)}
+-                    </div>
+-                  )}
+-                </div>
+-              </AccountRowProvider>
+-            );
+-          })}
+-        </div>
++                    )}
++                  </div>
++                </AccountRowProvider>
++              );
++            })}
++          </div>
++          {search.trim() && searchElsewhere?.(search, data)}
++        </>
+       )}
+     </>
+   );
