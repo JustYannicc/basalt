@@ -13,11 +13,12 @@ import {
   historyAppSchemaVersion,
   historyAccountTimeSchemaVersion,
   historyTrafficSchemaVersion,
+  historyTerminalIntegrityVersion,
   historySchemaVersion,
-  historyTrafficSchemaVersion,
   migrateModelHistory,
   type HistoryDatabase,
 } from "../../src/pool/model-history/schema.ts";
+import { historyBulkSchemaVersion } from "../../src/pool/model-history/bulk-schema.ts";
 import { readRequests } from "../../src/pool/model-history/store.ts";
 import { homeMetadataFixture, historyMemoryOwnerFixture } from "./history-fixture.ts";
 
@@ -74,6 +75,8 @@ test("app attribution upgrades additively and new Home attempts retain app perso
         historyAppSchemaVersion,
         historyAccountTimeSchemaVersion,
         historyTrafficSchemaVersion,
+        historyBulkSchemaVersion,
+        historyTerminalIntegrityVersion,
         historySchemaVersion,
       ],
     );
