@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-membership-query-reduction",
+  "file": "0565-pool-membership-query-reduction.patch",
+  "content_sha256": "b496f6dd37f93084d6912b5211e95d697e61fc8675091e96d3518fa955e229d0",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

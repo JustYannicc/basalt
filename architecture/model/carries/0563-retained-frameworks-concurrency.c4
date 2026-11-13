@@ -1,0 +1,7 @@
+model {
+  extend basalt.productionOps {
+    metadata {
+      constraint "Retained inventory resolves only its captured SQL-scoped build references with at most four concurrent record reads, leaving headroom under the six outgoing Worker connections. Metadata remains sequential. In-flight buffer reservations wait for refunds before shrinking a record allowance; failed attempts retain their whole debit, while successful bodies and confirmed absence alone refund unused bytes. Admission waits consume the existing shared 18-second phase budget but do not consume a provider attempt timeout. Each provider attempt keeps its three-second bound and transient-only retry limit. The unchanged outer 25-second operation budget and response reserve still clip the whole phase. Structured concurrency cancels and joins unfinished reads on refusal or interruption. The first refusing or interrupted record position supplies closed class and phase diagnostics alongside elapsed time and aggregate counts without keys or paths. Input ordering and retained tuple completeness remain deterministic."
+    }
+  }
+}

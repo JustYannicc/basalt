@@ -1,0 +1,25 @@
+--- a/apps/hosted/server/src/implementation/pool-membership.ts
++++ b/apps/hosted/server/src/implementation/pool-membership.ts
+@@ -97,12 +97,17 @@
+       const identity = yield* Schema.decodeUnknownEffect(
+         Schema.Struct({ database: Schema.String, schema: Schema.String }),
+       )(found[0]);
++      // Lock the candidate superset in account/binding order; only the final policy read grants membership.
++      const candidates = yield* sql`select a.id from hosted_app_account_links l
++        join executor_apps app on app.id=l.app
++        join executor_accounts a on a.id=l.account and a.owner=app.owner
++        where l.app=${pool} and l.subject is null order by a.id for share of a`;
++      const accountIds = yield* Schema.decodeUnknownEffect(Schema.Array(AccountId))([
++        ...new Set(candidates.map((row) => row.id)),
++      ]);
++      yield* sql`select account from executor_account_acquisitions
++        where ${sql.in("account", accountIds)} order by account for share`;
+       const usable = yield* usableAppLinks(sql, [pool]);
+-      // Match acquisition mutation order: all accounts first, then bindings.
+-      // Shared locks prevent a reference changing after its fresh fingerprint.
+-      yield* sql`select a.id from ${usable} order by a.id for share of a`;
+-      yield* sql`select account from executor_account_acquisitions where account in
+-        (select a.id from ${usable}) order by account for share`;
+       const rows =
+         yield* sql`with linked as (select a.*,l.requirement as linked_requirement,l.created_at as link_order,
+         app.active_deployment from ${usable})
