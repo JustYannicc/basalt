@@ -203,7 +203,7 @@
 +  Layer.succeed(HostedCatalog, createCatalog({ egress, feedUrl }));
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-view-cache.ts
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,189 @@
 +import { Clock, Effect, Schema, Semaphore } from "effect";
 +import { StorageError, observationDeadline, type App } from "@executor-js/sdk/core";
 +import { AccountObservationResult } from "apps/contracts";
@@ -231,8 +231,9 @@
 +/** Expiry changes the presentation even without a write to the change journal. */
 +const presentationDeadline = (value: Schema.Json, now: number): number => {
 +  if (value === null || typeof value !== "object") return Infinity;
++  const observation = isObservationResult(value) ? observationDeadline(value) : Infinity;
 +  return Math.min(
-+    isObservationResult(value) ? observationDeadline(value) : Infinity,
++    observation > now ? observation : Infinity,
 +    ...Object.entries(value).map(([key, child]) => {
 +      const deadline =
 +        typeof child === "string" && ["staleAt", "expiresAt", "resetsAt", "resetAt"].includes(key)

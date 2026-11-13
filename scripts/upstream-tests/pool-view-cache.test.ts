@@ -149,6 +149,9 @@ for (const homeDeadline of [undefined, 900_000]) {
         yield* TestClock.adjust(1);
         assert.deepEqual(yield* load(), view("stale"));
         assert.equal(calls, 2, "the source is read again at its default freshness cutoff");
+        yield* TestClock.adjust(1);
+        assert.deepEqual(yield* load(), view("stale"));
+        assert.equal(calls, 2, "a safely stale result is reusable with unchanged heads");
       }).pipe(Effect.provide(TestClock.layer())),
     ));
 }
