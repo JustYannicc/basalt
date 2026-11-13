@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-card-subtitle",
   "file": "0582-app-card-subtitle.patch",
-  "content_sha256": "1c69b16a2d365ee921042ee71e8a7bcaeedf3c6849b8d89d1eee64b68fb21e4e",
+  "content_sha256": "dba81df1a2a4fcfb3d4fe622c6b7b5adcdf8a0110392afd0938d3127476686d9",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
