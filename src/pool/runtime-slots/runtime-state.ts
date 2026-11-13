@@ -14,6 +14,7 @@ export interface RuntimeState {
     readonly running: boolean;
     start(options: { enableInternet: boolean; env: Record<string, string> }): void;
     destroy(): Promise<void>;
+    monitor(): Promise<void>;
     setInactivityTimeout(milliseconds: number): Promise<void>;
     getTcpPort(port: number): {
       fetch(input: string | Request, init?: RequestInit): Promise<Response>;

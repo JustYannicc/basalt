@@ -1,5 +1,5 @@
 import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
-import { observeRuntimeRetirement } from "./retirement-observation.ts";
+import { RuntimeRetirementMonitor, observeRuntimeRetirement } from "./retirement-observation.ts";
 import { RuntimeReadTrace, runtimeReadStep } from "../runtime-read-trace.ts";
 import { refuseRuntime } from "../runtime-route-diagnostic.ts";
 import {
@@ -57,6 +57,7 @@ export class RuntimeEndpoint {
   private wrap: (response: Response, lease: NativeStreamLease) => Response;
   private queue: Promise<unknown> = Promise.resolve();
   private retirementAttempts = 0;
+  private retirementMonitor: RuntimeRetirementMonitor;
   private options: EndpointOptions;
   constructor(
     ctx: ControllerState,
@@ -67,6 +68,7 @@ export class RuntimeEndpoint {
     options: EndpointOptions = {},
   ) {
     this.ctx = ctx;
+    this.retirementMonitor = new RuntimeRetirementMonitor(ctx.container!);
     this.env = env;
     this.role = role;
     this.code = code;
@@ -365,6 +367,12 @@ export class RuntimeEndpoint {
       if (!sameTarget(target, identity)) throw new SlotRefused("identity");
       await trace.run("activity_retire", () => this.activity.retire(identity));
       signal.throwIfAborted();
+      await trace.run(
+        "monitor_attach",
+        async () => this.retirementMonitor.start(identity),
+        undefined,
+        signal,
+      );
       await trace.run("destroy", () => this.ctx.container!.destroy(), undefined, signal);
       await trace.run("retired_record", () => this.store.put(target, { ...record, retired: true }));
     });
@@ -378,6 +386,7 @@ export class RuntimeEndpoint {
       this.store,
       this.activity,
       trace,
+      this.retirementMonitor,
       signal,
     );
   }

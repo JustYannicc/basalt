@@ -80,6 +80,7 @@ export async function handoffRuntime(
   }
   const storage = options.storage ?? new RuntimeSqlite();
   const background: Promise<unknown>[] = [];
+  const stops = new Set<() => void>();
   const calls = {
     start: 0,
     destroy: 0,
@@ -173,9 +174,14 @@ export async function handoffRuntime(
         running = true;
         bootId = crypto.randomUUID();
       },
+      async monitor() {
+        if (running) await new Promise<void>((resolve) => stops.add(resolve));
+      },
       async destroy() {
         calls.destroy++;
         running = false;
+        for (const stop of stops) stop();
+        stops.clear();
       },
       setInactivityTimeout: async () => {
         calls.keepAlive++;

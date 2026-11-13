@@ -13,6 +13,8 @@ type Phase =
   | "health"
   | "activity_retire"
   | "activity_read"
+  | "monitor_attach"
+  | "monitor"
   | "destroy"
   | "retired_record";
 interface Fields {
