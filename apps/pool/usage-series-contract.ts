@@ -1,4 +1,5 @@
 import type { OverviewMoneyMetric } from "./overview-contract.ts";
+import type { UsageForecasts } from "./usage-forecast-contract.ts";
 
 export const seriesDimensions = [
   "account",
@@ -15,6 +16,9 @@ export interface PoolUsageSeriesInput {
   from: string;
   to: string;
   bucket: "hour" | "day";
+  timezone?: "UTC" | "Europe/Zurich";
+  /** Available only for an unfiltered daily provider series in Zurich time. */
+  forecast?: boolean;
   by: readonly SeriesDimension[];
   accounts?: readonly string[];
   sources?: readonly string[];
@@ -50,9 +54,11 @@ export interface Unavailable {
 }
 export interface SeriesCounts {
   at: string;
+  end?: string;
   partial: boolean;
   requests: number;
   failed: number;
+  limited?: number;
   unassignedFailures: number;
   successRate: number | null;
 }
@@ -133,6 +139,8 @@ export interface PoolUsageSeriesResult {
   from: string;
   to: string;
   bucket: "hour" | "day";
+  timezone?: "UTC" | "Europe/Zurich";
+  forecasts?: UsageForecasts;
   window?: { from: string; to: string };
   asOf: string | null;
   coverage: SeriesCoverage;
