@@ -1,0 +1,252 @@
+diff --git a/apps/hosted/server/src/contracts/service-install.ts b/apps/hosted/server/src/contracts/service-install.ts
+--- a/apps/hosted/server/src/contracts/service-install.ts
++++ b/apps/hosted/server/src/contracts/service-install.ts
+@@ -5,5 +5,11 @@ export const AppServiceIdentity = /* @__PURE__ */ (() =>
+   Schema.Struct({
+     id: Schema.NonEmptyString,
+     newInstance: Schema.Boolean,
++    /**
++     * The service's own name and what one copy is called, such as Obsidian and vault, recorded
++     * when the copy is installed so lists can say what a renamed copy is without the catalog.
++     */
++    name: Schema.optionalKey(Schema.NonEmptyString),
++    noun: Schema.optionalKey(Schema.NonEmptyString),
+   }))();
+ export type AppServiceIdentity = typeof AppServiceIdentity.Type;
+diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/src/implementation/apps.ts
+--- a/apps/hosted/server/src/implementation/apps.ts
++++ b/apps/hosted/server/src/implementation/apps.ts
+@@ -1,7 +1,7 @@
+ import { catalogService, installService, mcpService } from "./service-installs.ts";
+ import { createPool } from "./pools.ts";
+ import { poolCatalogPackage } from "./pool-catalog.ts";
+-import { projectAppServices } from "./service-install-records.ts";
++import { projectAppServices, serviceLabel } from "./service-install-records.ts";
+ import { unknownEntryRecovery } from "@executor-js/catalog/contracts";
+ import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
+ import { policyDatabase, requireAppAccess } from "./resource-policy.ts";
+@@ -120,6 +120,7 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
+       catalogService(entry),
+       input.newInstance === true,
+       createCatalogApp(owner, input),
++      serviceLabel(entry),
+     );
+   });
+ 
+diff --git a/apps/hosted/server/src/implementation/service-install-records.ts b/apps/hosted/server/src/implementation/service-install-records.ts
+--- a/apps/hosted/server/src/implementation/service-install-records.ts
++++ b/apps/hosted/server/src/implementation/service-install-records.ts
+@@ -1,4 +1,5 @@
+ import { HostedCatalog } from "../contracts/catalog.ts";
++import type { CatalogEntry } from "@executor-js/catalog/contracts";
+ import { Context, Effect, Schema } from "effect";
+ import { AppId, StorageError, type App } from "@executor-js/sdk/core";
+ import { type SqlClient } from "effect/sql";
+@@ -54,6 +55,20 @@ export const removeServiceInstall = (sql: SqlClient.SqlClient, app: AppId) =>
+     Effect.catchTag("SqlError", () => new StorageError()),
+   );
+ 
++export type ServiceLabel = Pick<AppServiceIdentity, "name" | "noun">;
++
++/** What a copy of an entry's service is called, recorded with the copy. */
++export const serviceLabel = (entry: CatalogEntry): ServiceLabel => ({
++  name: entry.name,
++  ...(entry.instanceNoun === undefined ? {} : { noun: entry.instanceNoun.singular }),
++});
++
++/** A copy installed before services were recorded: its package's entry names it, when listed. */
++export const legacyService = (name: string, entry: CatalogEntry | undefined): AppServiceIdentity =>
++  entry === undefined
++    ? { id: name, newInstance: false }
++    : { id: entry.service?.id ?? entry.package, newInstance: false, ...serviceLabel(entry) };
++
+ /** Existing catalog copies keep their exact package identity until an explicit claim records one. */
+ export const projectAppServices = (sql: SqlClient.SqlClient, apps: readonly App[]) =>
+   Effect.gen(function* () {
+@@ -66,9 +81,7 @@ export const projectAppServices = (sql: SqlClient.SqlClient, apps: readonly App[
+       : [];
+     const packages = new Map(
+       entries.flatMap((entry) =>
+-        [entry.package, ...(entry.service?.packages ?? [])].map(
+-          (name) => [name, entry.service?.id ?? entry.package] as const,
+-        ),
++        [entry.package, ...(entry.service?.packages ?? [])].map((name) => [name, entry] as const),
+       ),
+     );
+     return apps.map((app) => {
+@@ -76,10 +89,7 @@ export const projectAppServices = (sql: SqlClient.SqlClient, apps: readonly App[
+         recorded.get(app.id) ??
+         (app.copiedFrom === null
+           ? undefined
+-          : {
+-              id: packages.get(app.copiedFrom.name) ?? app.copiedFrom.name,
+-              newInstance: false,
+-            });
++          : legacyService(app.copiedFrom.name, packages.get(app.copiedFrom.name)));
+       return { ...app, ...(service === undefined ? {} : { service }) };
+     });
+   });
+diff --git a/apps/hosted/server/src/implementation/service-installs.ts b/apps/hosted/server/src/implementation/service-installs.ts
+--- a/apps/hosted/server/src/implementation/service-installs.ts
++++ b/apps/hosted/server/src/implementation/service-installs.ts
+@@ -9,6 +9,7 @@ import {
+   poolServiceId,
+   serviceInstallsKey,
+   withServiceInstallCommit,
++  type ServiceLabel,
+ } from "./service-install-records.ts";
+ 
+ export const catalogService = (entry: CatalogEntry): CatalogService => ({
+@@ -72,6 +73,7 @@ export const installService = <E, R>(
+   service: CatalogService,
+   newInstance: boolean,
+   create: Effect.Effect<App, E, R>,
++  label?: ServiceLabel,
+ ) =>
+   Effect.gen(function* () {
+     const { organization } = yield* CurrentOrganization;
+@@ -84,7 +86,7 @@ export const installService = <E, R>(
+         return {
+           ...app,
+           reused: true,
+-          service: { id: service.id, newInstance: existing.new_instance },
++          service: { id: service.id, newInstance: existing.new_instance, ...label },
+         };
+       });
+     if (!newInstance) {
+@@ -106,12 +108,17 @@ export const installService = <E, R>(
+         }
+         yield* tx`update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb),
+           array[${serviceInstallsKey}], coalesce(metadata::jsonb -> ${serviceInstallsKey}, '{}'::jsonb)
+-            || jsonb_build_object(${app.id}::text, jsonb_build_object('id', ${service.id}::text, 'newInstance', ${newInstance}::boolean)))::text
++            || jsonb_build_object(${app.id}::text, jsonb_build_object('id', ${service.id}::text, 'newInstance', ${newInstance}::boolean)
++              || ${JSON.stringify(label ?? {})}::jsonb))::text
+           where id = ${organization}`;
+       }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
+     return yield* create.pipe(
+       withServiceInstallCommit(commit),
+-      Effect.map((app) => ({ ...app, reused: false, service: { id: service.id, newInstance } })),
++      Effect.map((app) => ({
++        ...app,
++        reused: false,
++        service: { id: service.id, newInstance, ...label },
++      })),
+       Effect.catch((error) =>
+         Effect.gen(function* () {
+           const conflicted = yield* Ref.get(conflict);
+diff --git a/e2e/tests/service-install-identity.spec.ts b/e2e/tests/service-install-identity.spec.ts
+--- a/e2e/tests/service-install-identity.spec.ts
++++ b/e2e/tests/service-install-identity.spec.ts
+@@ -71,8 +71,13 @@ layer(HostedLive, { excludeTestServices: true })("Service install identity", (it
+         const final = yield* install("Tracker once more");
+         expect(final).toMatchObject({ id: first.id, reused: true });
+         const get = yield* api.request(actors.owner, "GET", `${prefix}/apps/${first.id}`);
++        // The install recorded what the copy is, so lists can say it without reading the catalog.
+         expect(get.body).toMatchObject({
+-          service: { id: officialApps.tracker.package, newInstance: false },
++          service: {
++            id: officialApps.tracker.package,
++            newInstance: false,
++            name: officialApps.tracker.name,
++          },
+         });
+         const memberImport = yield* api.request(actors.member, "POST", `${prefix}/apps/import`, {
+           source: { kind: "mcp", name: "Private tracker", url: "https://tracker.example.test/mcp" },
+@@ -103,7 +108,11 @@ layer(HostedLive, { excludeTestServices: true })("Service install identity", (it
+         expect(remaining).toMatchObject({
+           id: another.id,
+           reused: true,
+-          service: { id: officialApps.tracker.package, newInstance: true },
++          service: {
++            id: officialApps.tracker.package,
++            newInstance: true,
++            name: officialApps.tracker.name,
++          },
+         });
+         expect(
+           (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${another.id}`)).status,
+diff --git a/packages/ui/src/contracts/dashboard.ts b/packages/ui/src/contracts/dashboard.ts
+--- a/packages/ui/src/contracts/dashboard.ts
++++ b/packages/ui/src/contracts/dashboard.ts
+@@ -62,7 +62,13 @@ export interface AccountDetail {
+   readonly canManage: boolean;
+ }
+ export interface AppSummary extends App {
+-  readonly service?: { readonly id: string; readonly newInstance: boolean };
++  readonly service?: {
++    readonly id: string;
++    readonly newInstance: boolean;
++    /** The service's own name and what one copy is called, when the host recorded them. */
++    readonly name?: string;
++    readonly noun?: string;
++  };
+ }
+ /** The common inventory contains no product permission or organization fields. */
+ export interface Inventory {
+diff --git a/packages/ui/src/implementation/dashboard/apps.tsx b/packages/ui/src/implementation/dashboard/apps.tsx
+--- a/packages/ui/src/implementation/dashboard/apps.tsx
++++ b/packages/ui/src/implementation/dashboard/apps.tsx
+@@ -7,7 +7,7 @@ import { useState, type ReactNode } from "react";
+ import { QueryResult, useQuery, useDashboard } from "./context.tsx";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { AlertCircleIcon, ArrowRight02Icon, Key01Icon } from "@hugeicons/core-free-icons";
+-import type { Inventory, QueryProps } from "../../contracts/dashboard.ts";
++import type { AppSummary, Inventory, QueryProps } from "../../contracts/dashboard.ts";
+ import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
+ import {
+   linkedAccountIds,
+@@ -17,6 +17,7 @@ import {
+ 
+ import { AppIcon, Empty, SearchInput } from "./common.tsx";
+ import { Button } from "../components/button.tsx";
++import type { ProductBrand } from "@executor-js/utils/product-brand";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+ import { requirementAccountTitle } from "../../contracts/account-identities.ts";
+@@ -51,6 +52,19 @@ export function AppCardLine({
+   );
+ }
+ 
++/**
++ * What a copy of a service is, under its own name: "Obsidian vault" under a vault named Personal.
++ * Nothing when the app shows its service's own name, as the built-in app does under the product's
++ * brand, or when its service's name isn't recorded.
++ */
++const serviceSubtitle = (app: AppSummary, brand: ProductBrand) => {
++  const recorded = app.service?.name;
++  if (recorded === undefined) return undefined;
++  const service = appDisplayName({ name: recorded, copiedFrom: app.copiedFrom }, brand);
++  if (service === appDisplayName(app, brand)) return undefined;
++  return app.service?.noun === undefined ? service : `${service} ${app.service.noun}`;
++};
++
+ /** A card's quiet line, for an app with nothing that needs attention. */
+ export function AppCardNote({ children }: { readonly children: ReactNode }) {
+   return <span className="muted text-muted-foreground">{children}</span>;
+@@ -222,12 +236,13 @@ function AppsList({
+                       : "No accounts linked"
+                 : `${userAccounts}${sharedAccounts ? ` · ${sharedAccounts} for everyone` : ""}`;
+             const sharedSummary = <AppCardNote>{accountSummary}</AppCardNote>;
++            const subtitle = serviceSubtitle(app, brand);
+             return (
+               <Card asChild key={app.id} className="gap-0 rounded-lg p-4 shadow-none">
+                 <AppLink
+                   className="app-card flex min-h-[137px] flex-col min-w-0 p-[16px] border border-border rounded-[8px] bg-background [transition:border-color_120ms,_background-color_120ms] hover:border-input hover:bg-muted focus-visible:[outline:2px_solid_var(--ring)] focus-visible:outline-offset-[3px] max-[600px]:grid max-[600px]:min-h-0 max-[600px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[600px]:items-center max-[600px]:gap-x-3 max-[600px]:gap-y-0.5 max-[600px]:px-3.5 max-[600px]:py-3"
+                   app={app.id}
+-                  aria-label={`Open ${appDisplayName(app, brand)}${needsSignIn ? ", needs sign-in" : unavailable ? ", account unavailable" : ""}`}
++                  aria-label={`Open ${appDisplayName(app, brand)}${subtitle ? `, ${subtitle}` : ""}${needsSignIn ? ", needs sign-in" : unavailable ? ", account unavailable" : ""}`}
+                 >
+                   <div className="app-card-heading flex items-center justify-between gap-3 max-[600px]:contents">
+                     <div className="app-cell [.app-card_&_strong]:text-[14px] [.app-card_&_strong]:overflow-hidden [.app-card_&_strong]:text-ellipsis [.app-card_&_strong]:whitespace-nowrap flex items-center gap-3 min-w-0 [&_>_div]:min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_strong]:block [&_strong]:wrap-anywhere max-[740px]:[&_strong]:text-[14px] max-[600px]:contents max-[600px]:[&_>_.provider-icon]:row-span-2">
+@@ -236,6 +251,11 @@ function AppsList({
+                         <strong title={appDisplayName(app, brand)}>
+                           {appDisplayName(app, brand)}
+                         </strong>
++                        {subtitle && (
++                          <span className="block truncate text-[12px] text-muted-foreground max-[600px]:hidden">
++                            {subtitle}
++                          </span>
++                        )}
+                       </div>
+                     </div>
+                     <HugeiconsIcon
