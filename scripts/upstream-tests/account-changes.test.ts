@@ -28,14 +28,25 @@ test("migration 20 preserves saved accounts and repeated setup; real account, bi
       assert.equal(yield* read(), "2");
       yield* sql`insert into hosted_app_account_links values ('app_a','acc_a',null,'models')`;
       assert.equal(yield* read(), "3");
+      const observationsBeforeClaim = yield* read("observations");
       yield* sql`insert into executor_account_observations
       (id,account,owner,source,generation,data,next_allowed_at)
-      values ('observation-a','acc_a','organization:team-a','quota',0,'{}',now())`;
-      assert.equal(yield* read(), "4");
+      values ('observation-a','acc_a','organization:team-a','quota',0,'{"version":1,"result":null,"lastAttempt":null}',now())`;
+      assert.equal(yield* read(), "3", "an unaccepted claim does not change accounts");
+      assert.equal(yield* read("observations"), observationsBeforeClaim);
       yield* sql`update executor_account_observations set lease='collecting',lease_until=now()+interval '1 minute'`;
-      assert.equal(yield* read(), "4", "collection leases do not invalidate a reading");
+      assert.equal(
+        yield* read("observations"),
+        observationsBeforeClaim,
+        "collection leases do not invalidate a reading",
+      );
       yield* sql`update executor_account_observations set data='{"remaining":2}',checked_at=now()`;
-      assert.equal(yield* read(), "5");
+      assert.equal(
+        yield* read("observations"),
+        String(BigInt(observationsBeforeClaim) + 1n),
+        "a settled reading publishes its own topic",
+      );
+      assert.equal(yield* read(), "3", "observation changes do not invalidate account inventory");
       const before = yield* read();
       yield* sql
         .withTransaction(
@@ -47,7 +58,7 @@ test("migration 20 preserves saved accounts and repeated setup; real account, bi
         .pipe(Effect.result);
       assert.equal(yield* read(), before);
       yield* sql`delete from executor_accounts where id='acc_a'`;
-      assert.equal(yield* read(), "6");
+      assert.equal(yield* read(), "4");
     }),
   ));
 
