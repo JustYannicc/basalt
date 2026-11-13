@@ -8,6 +8,7 @@ import {
   type TunnelData,
   type TunnelOpen,
   type TunnelServerFrame,
+  type TunnelLimits,
 } from "../../clients/contracts/tunnel.ts";
 import { nativeModelRequest } from "../native-model.ts";
 import type { TunnelEnvironment } from "./access.ts";
@@ -30,16 +31,19 @@ export class TunnelOperation {
   private send: (frame: TunnelServerFrame) => void;
   private done: () => void;
   private timing: OperationTiming | undefined;
+  private limits: TunnelLimits;
   constructor(
     open: TunnelOpen,
     send: (frame: TunnelServerFrame) => void,
     done: () => void,
     timing?: OperationTiming,
+    limits: TunnelLimits = tunnelLimits,
   ) {
     this.open = open;
     this.send = send;
     this.done = done;
     this.timing = timing;
+    this.limits = limits;
     this.timing?.("open");
     if (open.operation.transport === "http" && open.operation.method === "POST") {
       this.input = new TunnelInput((bytes) =>
@@ -127,6 +131,7 @@ export class TunnelOperation {
             if (!this.stopped) this.send({ v: 1, type: "end", id: this.open.id });
             this.stop();
           },
+          this.limits,
         );
         this.send({ v: 1, type: "response", id: this.open.id, status: 101, headers: {} });
         this.send({ v: 1, type: "credit", id: this.open.id, bytes: tunnelLimits.windowBytes });
