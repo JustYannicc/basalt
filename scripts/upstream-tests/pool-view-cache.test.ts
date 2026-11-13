@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Deferred, Effect, Fiber, type Schema } from "effect";
+import { Clock, Deferred, Effect, Fiber, type Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { SqlClient } from "effect/sql";
 import { makePoolViewCache } from "../../.upstream/apps/hosted/server/src/implementation/pool-view-cache.ts";
@@ -123,6 +123,35 @@ test("the source freshness deadline invalidates an unchanged revision", () =>
       });
     }).pipe(Effect.provide(TestClock.layer())),
   ));
+
+for (const homeDeadline of [undefined, 900_000]) {
+  test(`an observedAt-only report expires from a warm cache with ${homeDeadline === undefined ? "no" : "a later"} Home deadline`, () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const cache = makePoolViewCache();
+        const guard = Effect.succeed({ revisions: [], validUntil: homeDeadline });
+        const result = {
+          observedAt: "1970-01-01T00:00:00.000Z",
+          observation: { offering: "subscription", windows: [], balances: [] },
+        };
+        const view = (freshness: string) => ({ reports: [{ result, freshness }] });
+        let calls = 0;
+        const read = Effect.gen(function* () {
+          calls++;
+          const now = yield* Clock.currentTimeMillis;
+          return view(now < 300_000 ? "fresh" : "stale");
+        });
+        const load = () => cache("caller", guard, read);
+        assert.deepEqual(yield* load(), view("fresh"));
+        yield* TestClock.adjust(299_999);
+        assert.deepEqual(yield* load(), view("fresh"));
+        assert.equal(calls, 1, "the request immediately before expiry is a warm hit");
+        yield* TestClock.adjust(1);
+        assert.deepEqual(yield* load(), view("stale"));
+        assert.equal(calls, 2, "the source is read again at its default freshness cutoff");
+      }).pipe(Effect.provide(TestClock.layer())),
+    ));
+}
 
 test("overlapping unchanged requests share one source fill", () =>
   Effect.runPromise(

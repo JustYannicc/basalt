@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.appCalls {
     metadata {
-      constraint "Only a saved pool registration admits caching; similar authored app requirements run normally. The hosted pool overview caches the complete provider-enriched result only after fresh request authorization. Every warm load reads the four 0560 hosted revision heads and Home history head, skipping account resolution and provider calls. Changed or unavailable heads, policy or identity changes, app versions and presentation deadlines invalidate the result. A write during a fill refuses the result. App pages and MCP share the configured official catalog reader. Model limits, scoped banked resets and provider badges stay visible; an absent icon uses the provider label. No storage migration or protocol change."
+      constraint "Only a saved pool registration admits caching; similar authored app requirements run normally. The hosted pool overview caches the complete provider-enriched result only after fresh request authorization. Every warm load reads the four 0560 hosted revision heads and Home history head, skipping account resolution and provider calls. Changed or unavailable heads, policy or identity changes, app versions and presentation deadlines invalidate the result. Native report reuse ends at the SDK observation deadline, including the five-minute observedAt default. A write during a fill refuses the result. App pages and MCP share the configured official catalog reader. Model limits, scoped banked resets and provider badges stay visible; an absent icon uses the provider label. No storage migration or protocol change."
     }
   }
 }

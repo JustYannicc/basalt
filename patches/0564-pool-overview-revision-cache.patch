@@ -203,9 +203,10 @@
 +  Layer.succeed(HostedCatalog, createCatalog({ egress, feedUrl }));
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-view-cache.ts
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,188 @@
 +import { Clock, Effect, Schema, Semaphore } from "effect";
-+import { StorageError, type App } from "@executor-js/sdk/core";
++import { StorageError, observationDeadline, type App } from "@executor-js/sdk/core";
++import { AccountObservationResult } from "apps/contracts";
 +import { HttpServerRequest } from "effect/http";
 +import { CurrentAuthorization } from "../contracts/authorization.ts";
 +import { CurrentOrganization } from "../contracts/organization.ts";
@@ -225,11 +226,13 @@
 +  return Object.values(value).every(reusable);
 +};
 +const fingerprint = (head: Snapshot) => JSON.stringify([head.identity, head.revisions]);
++const isObservationResult = Schema.is(AccountObservationResult);
 +
 +/** Expiry changes the presentation even without a write to the change journal. */
 +const presentationDeadline = (value: Schema.Json, now: number): number => {
 +  if (value === null || typeof value !== "object") return Infinity;
 +  return Math.min(
++    isObservationResult(value) ? observationDeadline(value) : Infinity,
 +    ...Object.entries(value).map(([key, child]) => {
 +      const deadline =
 +        typeof child === "string" && ["staleAt", "expiresAt", "resetsAt", "resetAt"].includes(key)
