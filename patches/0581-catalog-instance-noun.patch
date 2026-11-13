@@ -1,0 +1,415 @@
+diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
+--- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
++++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
+@@ -9,6 +9,6 @@ export const Route = createFileRoute("/org/$organizationSlug/apps/add/")({
+ });
+ 
+ function Page() {
+-  const { entry } = Route.useSearch();
+-  return <AddAppPage entry={entry} />;
++  const { entry, another } = Route.useSearch();
++  return <AddAppPage entry={entry} another={another} />;
+ }
+diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
+--- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
++++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.add.index.tsx
+@@ -9,6 +9,6 @@ export const Route = createFileRoute("/org/$organizationSlug/apps/add/")({
+ });
+ 
+ function Page() {
+-  const { entry } = Route.useSearch();
+-  return <AddAppPage entry={entry} />;
++  const { entry, another } = Route.useSearch();
++  return <AddAppPage entry={entry} another={another} />;
+ }
+diff --git a/apps/hosted/web/src/contracts/navigation.ts b/apps/hosted/web/src/contracts/navigation.ts
+--- a/apps/hosted/web/src/contracts/navigation.ts
++++ b/apps/hosted/web/src/contracts/navigation.ts
+@@ -44,9 +44,18 @@ export function parseAccountsSearch(search: Record<string, unknown>): {
+ /** Add app can open on one catalog entry, such as the provider app a pool points to. */
+ export function parseAddAppSearch(search: Record<string, unknown>): {
+   readonly entry?: string | undefined;
++  readonly another?: true | undefined;
+ } {
++  const entry = Option.getOrUndefined(
++    Schema.decodeUnknownOption(Schema.NonEmptyString)(search.entry),
++  );
+   return {
+-    entry: Option.getOrUndefined(Schema.decodeUnknownOption(Schema.NonEmptyString)(search.entry)),
++    entry,
++    // Add another needs the entry it adds a copy of.
++    another:
++      entry === undefined
++        ? undefined
++        : Option.getOrUndefined(Schema.decodeUnknownOption(Schema.Literal(true))(search.another)),
+   };
+ }
+ 
+diff --git a/apps/hosted/web/src/contracts/obsidian-connection.ts b/apps/hosted/web/src/contracts/obsidian-connection.ts
+--- a/apps/hosted/web/src/contracts/obsidian-connection.ts
++++ b/apps/hosted/web/src/contracts/obsidian-connection.ts
+@@ -59,3 +59,6 @@ export function obsidianConnectLink(app: Pick<App, "id" | "slug">, connection: s
+   });
+   return `obsidian://signalbox-sync?${query.toString().replace(/\+/gu, "%20")}`;
+ }
++
++/** The catalog entry every Obsidian vault app is a copy of. */
++export const obsidianCatalogEntry = "obsidian";
+diff --git a/apps/hosted/web/src/implementation/pages/add-app.tsx b/apps/hosted/web/src/implementation/pages/add-app.tsx
+--- a/apps/hosted/web/src/implementation/pages/add-app.tsx
++++ b/apps/hosted/web/src/implementation/pages/add-app.tsx
+@@ -8,7 +8,10 @@ import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
+ import { useOrganizationRoute } from "../components/organization.tsx";
+ 
+ /** Catalog apps install into the same organization-owned app records. */
+-export function AddAppPage({ entry }: { readonly entry?: string | undefined } = {}) {
++export function AddAppPage({
++  entry,
++  another,
++}: { readonly entry?: string | undefined; readonly another?: boolean | undefined } = {}) {
+   const atoms = useDashboardAtoms();
+   useAtomMount(atoms.catalog);
+   const { slug: organizationSlug } = useOrganizationRoute();
+@@ -16,6 +19,7 @@ export function AddAppPage({ entry }: { readonly entry?: string | undefined } =
+   return (
+     <Catalog
+       entry={entry}
++      another={another}
+       query={atoms.catalog}
+       Failure={HostedFailure}
+       mutation={atoms.install}
+diff --git a/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx b/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx
+--- a/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx
++++ b/apps/hosted/web/src/implementation/pages/obsidian-devices.tsx
+@@ -18,14 +18,19 @@ import { AppCardNote } from "@executor-js/ui/dashboard/apps";
+ import { useQuery } from "@executor-js/ui/dashboard/context";
+ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ import { HugeiconsIcon } from "@hugeicons/react";
+-import { AlertCircleIcon } from "@hugeicons/core-free-icons";
++import { Add01Icon, AlertCircleIcon } from "@hugeicons/core-free-icons";
++import { Link } from "@tanstack/react-router";
+ import { connectionToolListAtom } from "../../contracts/apps.ts";
+ import {
+   mcpAgentsAtom,
+   mcpConnectionsAtom,
+   revokeMcpAgentAtom,
+ } from "../../contracts/mcp-connections.ts";
+-import { obsidianTools, supportsObsidian } from "../../contracts/obsidian-connection.ts";
++import {
++  obsidianCatalogEntry,
++  obsidianTools,
++  supportsObsidian,
++} from "../../contracts/obsidian-connection.ts";
+ import {
+   deviceActivity,
+   hasSyncTool,
+@@ -307,12 +312,38 @@ export function VaultDevicesSection({ app }: { readonly app: App }) {
+             vault and your other devices aren't affected.
+           </p>
+           <ObsidianDeviceList vault={vault} manage />
++          <AnotherVault />
+         </section>
+       )}
+     </ObsidianVault>
+   );
+ }
+ 
++/** One vault per app, so another vault is another app: the catalog's Add another, opened. */
++function AnotherVault() {
++  const { slug: organizationSlug } = useOrganizationRoute();
++  return (
++    <div className="mt-7 flex items-center justify-between gap-4 rounded-lg border border-dashed px-4 py-3.5 max-[740px]:flex-col max-[740px]:items-stretch">
++      <p className="text-[13px]">
++        Another vault?
++        <span className="block text-[12.5px] text-muted-foreground">
++          Each Obsidian vault is its own app, with its own devices and history.
++        </span>
++      </p>
++      <Button asChild variant="outline">
++        <Link
++          to="/org/$organizationSlug/apps/add"
++          params={{ organizationSlug }}
++          search={{ entry: obsidianCatalogEntry, another: true }}
++        >
++          <HugeiconsIcon icon={Add01Icon} strokeWidth={2} aria-hidden />
++          Add another vault
++        </Link>
++      </Button>
++    </div>
++  );
++}
++
+ /** How many devices sync a vault app, for its Accounts tab; nothing for other apps. */
+ export function VaultDeviceCount({ app }: { readonly app: App }) {
+   return (
+diff --git a/packages/catalog/README.md b/packages/catalog/README.md
+--- a/packages/catalog/README.md
++++ b/packages/catalog/README.md
+@@ -32,6 +32,12 @@ show each message before a person chooses to connect. These notices are operator
+ metadata: they do not change app source or provider identity. Entries without
+ the field keep the usual connection flow.
+ 
++An entry may include `instanceNoun`, `{ singular, plural }`, naming what one
++installed copy of the service is called, such as a `vault`, and
++`instanceNameHint`, guidance for naming a new copy. Hosts use them when someone
++adds another copy and when they count copies. Entries without them name copies
++after the service.
++
+ Every entry installs directly: nothing has to be guessed, because the package
+ already declares its providers and auth methods. The user connects an account
+ through the app's own providers after install. Preparation reads the index
+diff --git a/packages/catalog/src/contracts/catalog.ts b/packages/catalog/src/contracts/catalog.ts
+--- a/packages/catalog/src/contracts/catalog.ts
++++ b/packages/catalog/src/contracts/catalog.ts
+@@ -62,6 +62,15 @@ export const CatalogEntry = Schema.Struct({
+    */
+   requirementTools: Schema.optionalKey(Schema.Record(Schema.NonEmptyString, Schema.NonEmptyString)),
+   category: Schema.optionalKey(Schema.String),
++  /**
++   * What one installed copy of this service is called, such as an Obsidian "vault", for Add
++   * another and the count of copies. Without it, copies are named after the service.
++   */
++  instanceNoun: Schema.optionalKey(
++    Schema.Struct({ singular: Schema.NonEmptyString, plural: Schema.NonEmptyString }),
++  ),
++  /** Guidance under the name field when adding another copy, such as what to name it after. */
++  instanceNameHint: Schema.optionalKey(Schema.NonEmptyString),
+   icons: Schema.Array(CatalogIcon),
+   /** Optional operator notes; they do not change the installed app or its provider. */
+   connectionNotices: Schema.optionalKey(Schema.Array(CatalogConnectionNotice)),
+diff --git a/packages/ui/src/implementation/dashboard/catalog-add-another.tsx b/packages/ui/src/implementation/dashboard/catalog-add-another.tsx
+--- a/packages/ui/src/implementation/dashboard/catalog-add-another.tsx
++++ b/packages/ui/src/implementation/dashboard/catalog-add-another.tsx
+@@ -1,4 +1,4 @@
+-import { useRef, useState, type ComponentType } from "react";
++import { useId, useRef, useState, type ComponentType } from "react";
+ import { Cause, Exit, Option, Predicate } from "effect";
+ import type { CatalogEntry } from "@executor-js/catalog/contracts";
+ import type { AppSummary, FailureProps, InstallApp } from "../../contracts/dashboard.ts";
+@@ -20,6 +20,22 @@ const unconfirmedFailures = [
+   "SchemaError",
+ ] as const;
+ 
++/** The copies a new one starts apart from, by name while there are few: "Work or Reading". */
++const others = (names: readonly string[] | undefined, plural: string) =>
++  names === undefined || names.length === 0 || names.length > 3
++    ? `your other ${plural}`
++    : names.length === 1
++      ? names[0]!
++      : `${names.slice(0, -1).join(", ")} or ${names.at(-1)}`;
++
++const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
++
++/** A copy is named after the catalog's noun for it, such as "Obsidian vault", or the service. */
++const copyName = (target: { readonly entry: CatalogEntry; readonly label: string }) =>
++  target.entry.instanceNoun === undefined
++    ? target.label
++    : `${target.label} ${target.entry.instanceNoun.singular}`;
++
+ /** A version 4 UUID. `crypto.randomUUID` exists only in secure contexts; a self-host can be HTTP. */
+ const newRequestId = () => {
+   const bytes = crypto.getRandomValues(new Uint8Array(16));
+@@ -57,6 +73,8 @@ export function AddAnotherDialog<IE>({
+     | {
+         readonly entry: CatalogEntry;
+         readonly label: string;
++        /** The names of the copies already installed, none of which the new one copies from. */
++        readonly existing?: readonly string[] | undefined;
+         /** Focus goes back here when the dialog closes; the menu that opened it is gone. */
+         readonly returnFocus: HTMLElement | null;
+       }
+@@ -75,10 +93,12 @@ export function AddAnotherDialog<IE>({
+   // State updates land after the event; a second click in the same frame must not send twice.
+   const inFlight = useRef(false);
+   // The dialog keeps its content while it animates closed, after `target` is cleared.
+-  const last = useRef(target);
+-  if (target !== undefined) last.current = target;
+-  const shown = target ?? last.current;
++  const [last, setLast] = useState(target);
++  if (target !== undefined && target !== last) setLast(target);
++  const shown = target ?? last;
+   const entry = shown?.entry;
++  const noun = entry?.instanceNoun;
++  const hintId = useId();
+   const draft: Draft<IE> | undefined =
+     entry &&
+     (drafts.get(entry.id) ?? {
+@@ -146,10 +166,12 @@ export function AddAnotherDialog<IE>({
+           focus.focus({ preventScroll: true });
+         }}
+       >
+-        <DialogTitle>{shown ? `Add another ${shown.label}` : null}</DialogTitle>
++        <DialogTitle>{shown ? `Add another ${copyName(shown)}` : null}</DialogTitle>
+         <DialogDescription>
+           {shown
+-            ? `A separate ${shown.label} with its own name, set up the way ${shown.label} always is. It starts empty: no accounts, links or history are copied.`
++            ? noun === undefined
++              ? `A separate ${shown.label} with its own name, set up the way ${shown.label} always is. It starts empty: no accounts, links or history are copied.`
++              : `A separate ${noun.singular} with its own name, set up the way ${shown.label} always is. It starts empty: nothing is copied from ${others(shown.existing, noun.plural)}.`
+             : null}
+         </DialogDescription>
+         <form
+@@ -160,13 +182,14 @@ export function AddAnotherDialog<IE>({
+           }}
+         >
+           <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium">
+-            Name
++            {noun === undefined ? "Name" : `${capitalize(noun.singular)} name`}
+             <Input
+               required
+               maxLength={120}
+               value={draft?.name ?? ""}
+               readOnly={draft?.unconfirmed}
+               disabled={sending}
++              aria-describedby={entry?.instanceNameHint ? hintId : undefined}
+               onChange={(event) => {
+                 if (entry === undefined || draft === undefined || draft.unconfirmed) return;
+                 const name = event.target.value;
+@@ -180,6 +203,11 @@ export function AddAnotherDialog<IE>({
+               }}
+             />
+           </label>
++          {entry?.instanceNameHint && (
++            <p id={hintId} className="-mt-2 text-[12px] text-muted-foreground">
++              {entry.instanceNameHint}
++            </p>
++          )}
+           {draft?.unconfirmed && (
+             <p className="text-[13px] text-muted-foreground">
+               {`Couldn't confirm whether ${draft.name} was added. Try again keeps the same name and request.`}
+@@ -191,7 +219,11 @@ export function AddAnotherDialog<IE>({
+               Cancel
+             </Button>
+             <Button type="submit" loading={sending} disabled={!draft?.name.trim()}>
+-              {draft?.unconfirmed ? "Try again" : "Add"}
++              {draft?.unconfirmed
++                ? "Try again"
++                : noun === undefined
++                  ? "Add"
++                  : `Add ${noun.singular}`}
+             </Button>
+           </DialogFooter>
+         </form>
+diff --git a/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx b/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx
+--- a/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx
++++ b/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx
+@@ -30,6 +30,7 @@ export type OpenApp = (app: AppSummary, children: ReactNode) => ReactNode;
+  */
+ export function CatalogRowActions({
+   label,
++  noun,
+   instances,
+   adding,
+   open,
+@@ -38,6 +39,8 @@ export function CatalogRowActions({
+ }: {
+   /** The service's display name. */
+   readonly label: string;
++  /** What one copy of the service is called, when the catalog names it. */
++  readonly noun?: string | undefined;
+   readonly instances: readonly AppSummary[];
+   readonly adding: boolean;
+   readonly open: OpenApp;
+@@ -108,7 +111,7 @@ export function CatalogRowActions({
+         items={[
+           {
+             key: "another",
+-            label: "Add another",
++            label: noun === undefined ? "Add another" : `Add another ${noun}`,
+             icon: <HugeiconsIcon icon={Add01Icon} strokeWidth={2} aria-hidden />,
+             onSelect: () => onAddAnother(more.current),
+           },
+diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
+--- a/packages/ui/src/implementation/dashboard/catalog.tsx
++++ b/packages/ui/src/implementation/dashboard/catalog.tsx
+@@ -84,9 +84,12 @@ export function CatalogPage<E, IE>({
+   open,
+   onInstalled,
+   entry: initialEntry,
++  another: openAnother = false,
+ }: QueryProps<readonly CatalogEntry[], E> & {
+   /** Opens on this one catalog entry, such as the provider app a pool sent the person to add. */
+   readonly entry?: string | undefined;
++  /** With `entry`, opens Add another for it, as an installed app's page asks to. */
++  readonly another?: boolean | undefined;
+   /** The install command for one catalog entry; each row has its own. */
+   readonly mutation: (entry: string) => MutationProps<InstallApp, AppSummary, IE>["mutation"];
+   readonly InstallFailure: MutationProps<InstallApp, AppSummary, IE>["Failure"];
+@@ -105,10 +108,8 @@ export function CatalogPage<E, IE>({
+   const result = useAtomValue(query);
+   const templates = AsyncResult.value(result);
+   const all = Option.isSome(templates) ? templates.value : [];
+-  const instances = serviceInstances(
+-    all,
+-    Option.getOrUndefined(AsyncResult.value(useAtomValue(inventory)))?.apps,
+-  );
++  const installed = Option.getOrUndefined(AsyncResult.value(useAtomValue(inventory)))?.apps;
++  const instances = serviceInstances(all, installed);
+   const runInstall = useCatalogInstall(mutation);
+   // State updates land after the event; a second click in the same frame must not install twice.
+   const running = useRef(new Set<string>());
+@@ -136,6 +137,7 @@ export function CatalogPage<E, IE>({
+   const [another, setAnother] = useState<{
+     readonly entry: CatalogEntry;
+     readonly label: string;
++    readonly existing: readonly string[];
+     readonly returnFocus: HTMLElement | null;
+   }>();
+   /**
+@@ -177,6 +179,21 @@ export function CatalogPage<E, IE>({
+         Number(!a.name.toLowerCase().includes(term)) - Number(!b.name.toLowerCase().includes(term)),
+     );
+   const entries = focused === undefined ? matches : [focused];
++  // Opened once, when the linked entry first loads; closing it leaves the catalog as it is.
++  const [askedAnother, setAskedAnother] = useState(false);
++  // Decided once, when the linked entry and the installed apps first load: like the row's own
++  // menu, Add another needs a copy to already exist, and a copy added later never opens it.
++  if (openAnother && !askedAnother && focused !== undefined && installed !== undefined) {
++    setAskedAnother(true);
++    const copies = instances.get(focused.id) ?? [];
++    if (copies.length > 0)
++      setAnother({
++        entry: focused,
++        label: entryName(focused),
++        existing: copies.map((app) => app.name),
++        returnFocus: null,
++      });
++  }
+   const visible = useIncrementalList(entries.length, term, 50);
+   return (
+     <div className="page w-full shrink-0 max-w-315 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
+@@ -244,19 +261,32 @@ export function CatalogPage<E, IE>({
+                   <div className="catalog-row-title flex-1 flex flex-col gap-1.25 min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_span]:text-[12px] [&_span]:text-muted-foreground wrap-anywhere max-[740px]:col-[2]">
+                     <div className="flex flex-wrap items-baseline gap-x-2">
+                       <strong>{entryName(entry)}</strong>
+-                      {added.length > 1 && <span>{added.length} added</span>}
++                      {added.length > 1 && (
++                        <span className="line-clamp-1">
++                          {[added.length, entry.instanceNoun?.plural, "added"]
++                            .filter(Boolean)
++                            .join(" ")}
++                          {` · ${added.map((app) => app.name).join(", ")}`}
++                        </span>
++                      )}
+                     </div>
+                     <span className="line-clamp-1">{entry.description}</span>
+                     <CatalogNotices notices={entry.connectionNotices} />
+                   </div>
+                   <CatalogRowActions
+                     label={entryName(entry)}
++                    noun={entry.instanceNoun?.singular}
+                     instances={added}
+                     adding={adding.has(entry.id)}
+                     open={open}
+                     onAdd={() => void add(entry, entry.name)}
+                     onAddAnother={(returnFocus) =>
+-                      setAnother({ entry, label: entryName(entry), returnFocus })
++                      setAnother({
++                        entry,
++                        label: entryName(entry),
++                        existing: added.map((app) => app.name),
++                        returnFocus,
++                      })
+                     }
+                   />
+                 </div>

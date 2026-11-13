@@ -36,7 +36,14 @@ export const createAppListAtoms = () => ({
 export const groupsAtom = () => fixtureAtom("groups");`,
   "pages/app-screen.tsx": `export const AppScreenBadge = () => null;`,
   "@tanstack/react-router": `import { createElement } from "react";
-export const Link = ({ children }) => createElement("a", null, children);`,
+const path = (to, params = {}) => to.replace(/\\$(\\w+)/g, (_, key) => params[key] ?? "");
+export const Link = ({ children, to, params, search, className }) =>
+  createElement(
+    "a",
+    { className, href: to && path(to, params) + (search ? "?" + new URLSearchParams(search) : "") },
+    children,
+  );
+export const useNavigate = () => () => undefined;`,
   "contracts/apps.ts": `import { fixtureAtom } from "fixture-atoms";
 export const connectionToolListAtom = (key) => fixtureAtom("tools:" + key.app);`,
   "contracts/mcp-connections.ts": `import { fixtureAtom, pendingAtom } from "fixture-atoms";
@@ -45,7 +52,13 @@ export const mcpAgentsAtom = () => fixtureAtom("agents");
 export const revokeMcpAgentAtom = () => pendingAtom;`,
   "contracts/obsidian-vault-sync.ts": `import { fixtureAtom } from "fixture-atoms";
 export const vaultSyncAtom = (key) => fixtureAtom("sync:" + key.app);`,
-  "components/dashboard-bindings.tsx": `export const HostedFailure = () => null;`,
+  "components/dashboard-bindings.tsx": `import { fixtureAtom, pendingAtom } from "fixture-atoms";
+export const HostedFailure = () => null;
+export const useDashboardAtoms = () => ({
+  catalog: fixtureAtom("catalog"),
+  inventory: fixtureAtom("inventory"),
+  install: () => pendingAtom,
+});`,
   "components/organization.tsx": `export const useOrganizationRoute = () => ({
   organization: "org_fixture",
   slug: "fixture",
@@ -169,7 +182,7 @@ export async function loadHostedPages(exports) {
         ),
       );
     });
-    const result = read(container);
+    const result = await read(container);
     await ui.act(async () => root.unmount());
     container.remove();
     return result;
