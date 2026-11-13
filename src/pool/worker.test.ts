@@ -5,7 +5,6 @@ import { test } from "node:test";
 import { openEnvelope, signEnvelope, signPoolToken } from "./token.ts";
 import { membershipPrefix, type NativeMembershipPolicy } from "./membership-contract.ts";
 import { runtimeRecoveryPrefix } from "./runtime-recovery.ts";
-import { MemoryNativeStorage } from "./test/native-storage.ts";
 import { accessPath, accessPrefix, accessTtl } from "./access-contract.ts";
 
 // Node has no Workers runtime; keep the actual Worker and lifecycle with platform adapters stubbed.
@@ -1617,4 +1616,81 @@ test("failed background Home maintenance retains a five-second retry and permits
   await Promise.all(background.splice(0));
   assert.equal(calls, 2);
   assert.equal(deadlines.length, 1, "successful upkeep must retain its ordinary scheduling");
+});
+
+test("committed change delivery survives a shared Home task without delaying fleet alarms", async (t) => {
+  const now = Date.parse("2026-11-13T12:00:00Z");
+  t.mock.timers.enable({ apis: ["Date"], now });
+  const background: Promise<unknown>[] = [];
+  const delivery = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  const counts = { deliveries: 0, fleet: 0, membership: 0 };
+  let alarm: number | null = null;
+  const storage = Object.assign(new RuntimeMap(new Map()), {
+    getAlarm: async () => alarm,
+    setAlarm: async (at: number) => {
+      alarm = at;
+    },
+  });
+  const { PoolAlarms } = await import("./alarms.ts");
+  const alarms = new PoolAlarms(storage);
+  const worker = Object.setPrototypeOf(
+    {
+      ctx: {
+        storage,
+        waitUntil: (work: Promise<unknown>) => {
+          background.push(work);
+        },
+      },
+      env: {
+        POOL_MODEL_HISTORY_ENABLED: "false",
+        POOL_APP_SIGNING_KEY: "ab".repeat(32),
+        TOOLS_SERVICE: { fetch: async () => new Response(null, { status: 204 }) },
+      },
+      alarms,
+      changes: {
+        deliver: async () => {
+          counts.deliveries++;
+          started.resolve();
+          await delivery.promise;
+        },
+      },
+      fleet: {
+        upkeep: async () => {
+          counts.fleet++;
+        },
+      },
+      appModels: { tick: async () => {} },
+      memberships: {
+        tick: async () => {
+          counts.membership++;
+        },
+      },
+      computers: { expire: async () => {}, observeUsage: async () => {} },
+      handoff: { warm: async () => {} },
+      control: { expire: async () => {} },
+      prices: { run: async () => {} },
+      overviewPrices: { refresh: async () => {} },
+      usage: { observe: async () => {} },
+    },
+    PoolContainer.prototype,
+  );
+  try {
+    await alarms.schedule("home", now);
+    await alarms.schedule("fleet", now);
+    alarm = null;
+    await worker.alarm();
+    await started.promise;
+    t.mock.timers.tick(10);
+    await alarms.schedule("home", Date.now());
+    await alarms.schedule("fleet", Date.now());
+    alarm = null;
+    await worker.alarm();
+    assert.deepEqual(counts, { deliveries: 1, fleet: 2, membership: 0 });
+    assert.equal((await alarms.inspect()).homeDeadline, Date.now() + 5_000);
+  } finally {
+    delivery.resolve();
+    await Promise.all(background);
+  }
+  assert.deepEqual(counts, { deliveries: 1, fleet: 2, membership: 1 });
 });
