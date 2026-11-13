@@ -67,8 +67,16 @@ test(
         await context.test(fault!, async () => {
           await mf.dispatchFetch(`http://fixture/clear-read-events?fault=${fault}`);
           const response = await mf.dispatchFetch(`http://fixture/probe?fault=${fault}`);
-          assert.equal(response.status, 200);
-          assert.deepEqual(await response.json(), { caps: true });
+          if (fault === "read-port-headers") {
+            assert.equal(response.status, 200);
+            assert.deepEqual(await response.json(), { caps: true });
+          } else {
+            assert.equal(response.status, 409);
+            assert.deepEqual(await response.json(), {
+              error: "runtime-refused",
+              reason: "runtime_endpoint_health_aborted",
+            });
+          }
           const eventsResponse = await mf.dispatchFetch(
             `http://fixture/read-events?fault=${fault}`,
           );
@@ -82,11 +90,12 @@ test(
           assert.ok(aborted[0].readElapsedMs >= aborted[0].elapsedMs);
           assert.equal(JSON.stringify(events).includes("synthetic-private"), false);
           assert.equal(JSON.stringify(events).includes("synthetic-management"), false);
-          assert.ok(
+          assert.equal(
             events.some(
               (event: { phase: string; outcome: string; port: number }) =>
                 event.phase === "port_headers" && event.outcome === "ok" && event.port === 8329,
             ),
+            fault === "read-port-headers",
           );
           if (fault === "read-port-headers")
             assert.ok(
@@ -103,6 +112,56 @@ test(
           });
           const calls = await mf.dispatchFetch(`http://fixture/calls?fault=${fault}`);
           assert.equal((await calls.json()).calls, 0);
+        });
+      for (const [fault, phase] of [
+        ["read-timeout-headers", "health_headers"],
+        ["read-timeout-body", "health_body"],
+      ])
+        await context.test(fault!, async () => {
+          await mf.dispatchFetch(`http://fixture/clear-read-events?fault=${fault}`);
+          try {
+            const started = performance.now();
+            const response = await mf.dispatchFetch(`http://fixture/probe?fault=${fault}`);
+            assert.equal(response.status, 409);
+            assert.ok(
+              performance.now() - started < 2_500,
+              "Health read waited past its lease window",
+            );
+            assert.deepEqual(await response.json(), {
+              error: "runtime-refused",
+              reason: "runtime_endpoint_health_timeout",
+            });
+            const eventsResponse = await mf.dispatchFetch(
+              `http://fixture/read-events?fault=${fault}`,
+            );
+            const events = await eventsResponse.json();
+            assert.ok(
+              events.some(
+                (event: { phase: string; outcome: string }) =>
+                  event.phase === phase && event.outcome === "error",
+              ),
+            );
+            assert.equal(
+              events.some(
+                (event: { phase: string }) =>
+                  event.phase === "request_prepare" || event.phase === "port_headers",
+              ),
+              false,
+            );
+            await mf.dispatchFetch(`http://fixture/release-health?fault=${fault}`);
+            const cleaned = await mf.dispatchFetch(`http://fixture/health-cleaned?fault=${fault}`);
+            assert.deepEqual(await cleaned.json(), { cancelled: 1, aborted: true });
+            const state = await mf.dispatchFetch(`http://fixture/read-state?fault=${fault}`);
+            assert.partialDeepStrictEqual(await state.json(), {
+              phase: "draining",
+              active: 1,
+              known: true,
+            });
+            const calls = await mf.dispatchFetch(`http://fixture/calls?fault=${fault}`);
+            assert.equal((await calls.json()).calls, 0);
+          } finally {
+            await mf.dispatchFetch(`http://fixture/release-health?fault=${fault}`);
+          }
         });
       await mf.dispatchFetch("http://fixture/clear-read-events?fault=read-port-headers");
       for (const [fault, reason] of [

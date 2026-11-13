@@ -17,21 +17,7 @@ export async function readRuntimeHealth(
   trace?: RuntimeReadTrace,
 ): Promise<PoolStatus> {
   const requestedAt = now();
-  const response = await runtimeReadStep(
-    trace,
-    "health_headers",
-    () =>
-      readiness.fetch("http://pool/ready", {
-        signal,
-        headers: { Authorization: `Bearer ${managementKey}` },
-      }),
-    8318,
-  );
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new PoolRuntimeUnhealthy();
-  }
-  const status: unknown = await runtimeReadStep(trace, "health_body", () => response.json(), 8318);
+  const { response, status } = await healthResponse(readiness, managementKey, signal, trace);
   if (
     typeof status !== "object" ||
     status === null ||
@@ -59,4 +45,94 @@ export async function readRuntimeHealth(
       ? { policyLeaseUntil: requestedAt + milliseconds }
       : {}),
   };
+}
+
+/** A response cannot carry usable authority after the maximum lease window has elapsed. */
+async function healthResponse(
+  readiness: { fetch(input: string, init: RequestInit): Promise<Response> },
+  managementKey: string,
+  signal: AbortSignal,
+  trace?: RuntimeReadTrace,
+) {
+  signal.throwIfAborted();
+  const deadline = new AbortController();
+  const bounded = AbortSignal.any([signal, deadline.signal]);
+  let response: Response | undefined;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  const cancel = () => {
+    const pending = reader ? reader.cancel() : response?.body?.cancel();
+    void pending?.catch(() => {});
+  };
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      cancel();
+      reject(bounded.reason);
+    };
+    bounded.addEventListener("abort", onAbort, { once: true });
+  });
+  const timer = setTimeout(
+    () => deadline.abort(new DOMException("Runtime health deadline exceeded", "TimeoutError")),
+    policyHealthLeaseMs,
+  );
+  try {
+    response = await runtimeReadStep(
+      trace,
+      "health_headers",
+      () =>
+        Promise.race([
+          readiness
+            .fetch("http://pool/ready", {
+              signal: bounded,
+              headers: { Authorization: `Bearer ${managementKey}` },
+            })
+            .then((value) => {
+              response = value;
+              if (bounded.aborted) {
+                cancel();
+                bounded.throwIfAborted();
+              }
+              return value;
+            }),
+          aborted,
+        ]),
+      8318,
+    );
+    const received = response;
+    if (!received.ok) throw new PoolRuntimeUnhealthy();
+    const status: unknown = await runtimeReadStep(
+      trace,
+      "health_body",
+      () =>
+        Promise.race([
+          (async () => {
+            reader = received.body?.getReader();
+            const decoder = new TextDecoder();
+            let text = "";
+            try {
+              while (reader) {
+                const part = await reader.read();
+                bounded.throwIfAborted();
+                if (part.done) break;
+                text += decoder.decode(part.value, { stream: true });
+              }
+              bounded.throwIfAborted();
+              return JSON.parse(text + decoder.decode());
+            } finally {
+              reader?.releaseLock();
+              reader = undefined;
+            }
+          })(),
+          aborted,
+        ]),
+      8318,
+    );
+    return { response: received, status };
+  } catch (error) {
+    cancel();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    bounded.removeEventListener("abort", onAbort);
+  }
 }
