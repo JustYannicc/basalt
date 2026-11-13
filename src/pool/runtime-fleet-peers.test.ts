@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { Schema } from "effect";
 import { RuntimeFleetPeers } from "./runtime-fleet/peers.ts";
 import type { HomePeerEndpoint } from "./runtime-fleet/peers.ts";
-import { peerTarget, type HomePeerSource } from "./runtime-slots/peer-access.ts";
+import { peerTarget, HomePeerSource } from "./runtime-slots/peer-access.ts";
 import { SlotTarget, sameTarget, type SlotIdentity } from "./runtime-slots/contract.ts";
 
 function fixture() {
@@ -50,7 +50,10 @@ function fixture() {
       if (!sourceValid) throw new Error("actual launch changed");
     },
     homePeerSource: async () => (target.slotId === "legacy" ? legacySource : runtimeSource),
-    openHomePeer: async (source) => {
+    fetch: async (request) => {
+      const source = Schema.decodeUnknownSync(HomePeerSource)(
+        JSON.parse(request.headers.get("X-Signalbox-Home-Peer-Source") ?? "null"),
+      );
       calls.push(`open:${peerTarget(source).slotId}`);
       return new Response("opaque");
     },

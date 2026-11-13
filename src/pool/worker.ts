@@ -4,9 +4,9 @@ export { PoolRuntime, PoolRuntimeBlue, PoolRuntimeGreen } from "./runtime-do.wor
 export { PoolHomePeer } from "./home-peer.worker.ts";
 import type { PoolRuntime } from "./runtime-do.worker.ts";
 import { RuntimeHomePeerTransport } from "./home-peer.worker.ts";
+import { handleHomePeerUpgrade, homePeerPath } from "./home-peer-transport.ts";
 import { PoolRuntimeFleet, type FleetNamespace } from "./runtime-fleet/production.ts";
 import { RuntimeProviderReader } from "./runtime-provider/read.ts";
-import type { HomePeerSource } from "./runtime-slots/peer-access.ts";
 import { PoolAlarms } from "./alarms.ts";
 import { RuntimeHandoff, type HandoffEnvironment } from "./runtime-slots/integration.ts";
 import { handleRuntimeHandoff } from "./runtime-slots/http.ts";
@@ -184,7 +184,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       legacyPeers: {
         homePeerSource: (target) => this.peers.source(target),
         assertHomePeer: (source) => this.peers.assert(source),
-        openHomePeer: (source) => this.peers.open(source),
+        fetch: (request) =>
+          handleHomePeerUpgrade(request, { open: (source) => this.peers.open(source) }),
       },
     });
     ctx.waitUntil(this.peers.restore().catch(() => {}));
@@ -415,12 +416,6 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       ),
     ];
   }
-  homePeer(source: HomePeerSource, ordinal: number, request: Request) {
-    if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket")
-      return new Response(null, { status: 403 });
-    return this.fleet.homePeer(source, ordinal);
-  }
-
   private async legacyManagementReady(): Promise<void> {
     const container = this.ctx.container;
     if (container?.running && Date.now() < this.managementReadyUntil) return;
@@ -571,6 +566,14 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   async fetch(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
+    if (pathname.startsWith(`${homePeerPath}/`))
+      return handleHomePeerUpgrade(request, {
+        route: (source, ordinal) => this.fleet.homePeer(source, ordinal),
+        open: (source) => {
+          if (source.kind !== "legacy") throw new Error("Legacy peer source required");
+          return this.peers.open(source);
+        },
+      });
     try {
       await requireActivePoolOrganization(request, {
         signingKey: this.env.POOL_APP_SIGNING_KEY,

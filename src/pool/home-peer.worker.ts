@@ -8,6 +8,7 @@ import {
 } from "./runtime-slots/contract.ts";
 import type { PoolEnvironment } from "./worker.ts";
 import { relayHomePeer } from "./home-peer-relay.ts";
+import { homePeerUpgrade } from "./home-peer-transport.ts";
 
 declare global {
   namespace Cloudflare {
@@ -35,7 +36,7 @@ export class PoolHomePeer extends WorkerEntrypoint<PoolEnvironment, { source: Ho
     const namespace = this.env.PoolContainer.jurisdiction("eu");
     return namespace
       .get(namespace.idFromString(peerTarget(source).controllerId))
-      .homePeer(source, Number(match[1]), request);
+      .fetch(homePeerUpgrade(source, Number(match[1])));
   }
 }
 
