@@ -3,7 +3,8 @@ import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 import * as WebBrowser from "expo-web-browser";
 import { Platform } from "react-native";
-import { tunnelLimits, tunnelProtocol } from "../contracts/tunnel.ts";
+import { tunnelLimits } from "../contracts/tunnel.ts";
+import { negotiatedTunnelSocket } from "../connection/tunnel-socket.ts";
 import type { SocketFactory, WireEvent } from "../contracts/transport.ts";
 import { mobileController } from "./controller.ts";
 
@@ -13,48 +14,49 @@ const options = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY
 const NativeWebSocket: {
   new (url: string, protocol: string, options: { headers: Record<string, string> }): WebSocket;
 } = WebSocket;
-const socket: SocketFactory = (url, token) => {
-  const connection = new NativeWebSocket(url, tunnelProtocol, {
-    headers: { authorization: `Bearer ${token}` },
-  });
-  const pending: WireEvent[] = [];
-  let listener: ((event: WireEvent) => void) | undefined;
-  let stopped = false;
-  const deliver = (event: WireEvent) => {
-    if (stopped) return;
-    if (listener) listener(event);
-    else if (pending.length < 4) pending.push(event);
-    else connection.close();
-  };
-  connection.onmessage = (event) => {
-    if (
-      typeof event.data !== "string" ||
-      new TextEncoder().encode(event.data).length > tunnelLimits.frameBytes
-    ) {
-      deliver({ type: "error" });
-      connection.close();
-      return;
-    }
-    deliver({ type: "message", data: event.data });
-  };
-  connection.onerror = () => deliver({ type: "error" });
-  connection.onclose = (event) => deliver({ type: "close", code: event.code });
-  return {
-    send: (value) => connection.send(value),
-    close: () => {
-      stopped = true;
-      connection.close();
-    },
-    listen: (receive) => {
-      listener = receive;
-      for (const event of pending.splice(0)) receive(event);
-      return () => {
-        listener = undefined;
+const socket: SocketFactory = (url, token) =>
+  negotiatedTunnelSocket((protocol) => {
+    const connection = new NativeWebSocket(url, protocol, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const pending: WireEvent[] = [];
+    let listener: ((event: WireEvent) => void) | undefined;
+    let stopped = false;
+    const deliver = (event: WireEvent) => {
+      if (stopped) return;
+      if (listener) listener(event);
+      else if (pending.length < 4) pending.push(event);
+      else connection.close();
+    };
+    connection.onmessage = (event) => {
+      if (
+        typeof event.data !== "string" ||
+        new TextEncoder().encode(event.data).length > tunnelLimits.frameBytes
+      ) {
+        deliver({ type: "error" });
+        connection.close();
+        return;
+      }
+      deliver({ type: "message", data: event.data });
+    };
+    connection.onerror = () => deliver({ type: "error" });
+    connection.onclose = (event) => deliver({ type: "close", code: event.code });
+    return {
+      send: (value) => connection.send(value),
+      close: () => {
         stopped = true;
-      };
-    },
-  };
-};
+        connection.close();
+      },
+      listen: (receive) => {
+        listener = receive;
+        for (const event of pending.splice(0)) receive(event);
+        return () => {
+          listener = undefined;
+          stopped = true;
+        };
+      },
+    };
+  }, true);
 export const controller = mobileController({
   network: {
     subscribe: (changed) => {
