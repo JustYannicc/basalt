@@ -1,3 +1,7 @@
+import { routingOutlooks } from "./routing-outlooks.ts";
+import type { CapacityOutlookInput } from "./routing-attention.ts";
+import { publishRoutingDemand } from "./routing-demand.ts";
+import type { RoutingDemandInput } from "./routing-demand-contract.ts";
 import type { ReportingProgress } from "./reporting.ts";
 import {
   callerHeader,
@@ -41,6 +45,9 @@ export const isMemberId = (value: unknown): value is string =>
 const stale = 6 * 60_000;
 
 interface Dependencies {
+  /** 0575 supplies calibrated profiles; absence keeps observed-burn routing independent. */
+  routingForecasts?: (pool: string, now: number) => Promise<readonly RoutingDemandInput[]>;
+  routingOutlooks?: (pool: string, now: number) => Promise<readonly CapacityOutlookInput[]>;
   storage: UsageStorage;
   client: HomeClient;
   signingKey: string;
@@ -229,6 +236,21 @@ export class PoolUsage {
             capacityReadings(account.id, account.provider, quota, now.getTime()),
           ),
         });
+        await publishRoutingDemand(
+          client,
+          pool,
+          await this.capacity.demandData(pool, now.getTime() - 6 * 3_600_000),
+          now.getTime(),
+          await this.deps.routingForecasts?.(pool, now.getTime()),
+          this.deps.routingOutlooks
+            ? await routingOutlooks(
+                this.deps.storage,
+                pool,
+                await this.deps.routingOutlooks(pool, now.getTime()),
+                now.getTime(),
+              )
+            : undefined,
+        );
       } catch (error) {
         if (progress) progress.outcome = "partial";
         console.error("Pool capacity sampling failed", error);
