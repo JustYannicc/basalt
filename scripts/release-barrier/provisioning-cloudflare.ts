@@ -11,7 +11,7 @@ import {
   type RuntimeProvisioningManifest,
 } from "./provisioning-contract.ts";
 import { runtimeNamespaceReader } from "./runtime-namespace-read.ts";
-import { provisioningRefusal, sameProvisioningValue } from "./provisioning-refusal.ts";
+import { sameProvisioningValue } from "./provisioning-refusal.ts";
 import type { RuntimeProvisioningProvider } from "./runtime-provisioning.ts";
 import { runtimeNativeState } from "./provisioning-native.ts";
 

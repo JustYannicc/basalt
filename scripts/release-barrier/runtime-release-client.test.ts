@@ -1,150 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ConfigProvider, Effect, Schema } from "effect";
-import { fleetWorkerFixture } from "../pool-tests/runtime-fleet-worker.ts";
-import { runtimeApplicationFixture } from "../pool-tests/runtime-provider-fixture.ts";
-import { runtimeFixtureCode } from "../pool-tests/runtime-handoff-proofs.ts";
+import { Schema } from "effect";
 import { runtimeConfiguration } from "../../src/pool/runtime-slots/configuration.ts";
-import {
-  runtimeHandoffCommandPrefix,
-  decodeRuntimeHandoffCommand,
-} from "../../src/pool/runtime-slots/handoff-command.ts";
-import { openEnvelope } from "../../src/pool/token.ts";
-import { RuntimeReleaseState } from "./runtime-release-state.ts";
-import { runtimeReleaseClient } from "./runtime-release-client.ts";
-import { ordinaryReleaseWriter } from "./runtime-release-writer.ts";
-import { decodeApplication } from "./container-observation.ts";
-
-async function fixture(fault?: "stage" | "promote" | "public") {
-  const f = await fleetWorkerFixture({ candidateColor: "green", publicProbe: true });
-  await f.bootstrap();
-  await f.send("fleet-configure", {
-    operationId: "enable",
-    configuration: { ...f.configuration, targetActive: 100 },
-  });
-  let root = f.worker,
-    fail = fault;
-  const commands: string[] = [];
-  let closes = 0;
-  const accountId = f.applications[0]!.accountId;
-  const stored = (
-    resource: string,
-    raw: ReturnType<typeof runtimeApplicationFixture>,
-    inputHash: string,
-  ) => {
-    const attributes = decodeApplication(raw);
-    const image = attributes.configuration.image;
-    const digest = image.split("@")[1]!;
-    return {
-      resource,
-      attributes: { ...attributes, hash: { image: inputHash, digest } },
-      image: { image, inputHash, digest, applicationId: attributes.applicationId },
-      instanceId: "1".repeat(32),
-      props: {},
-    };
-  };
-  const applications: Record<string, ReturnType<typeof stored>> = {
-    root: stored("PoolContainer", runtimeApplicationFixture(f.old.target), f.old.target.imageInput),
-  };
-  for (const app of f.applications) {
-    const response = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/containers/applications/${app.applicationId}`,
-      { method: "GET", headers: { authorization: "Bearer synthetic-provider-read" } },
-    );
-    const raw = Schema.decodeUnknownSync(Schema.Struct({ result: Schema.Unknown }))(
-      await response.json(),
-    ).result;
-    const attributes = decodeApplication(raw);
-    applications[app.color] = {
-      resource: app.color === "blue" ? "PoolRuntimeBlue" : "PoolRuntimeGreen",
-      attributes: { ...attributes, hash: { image: app.imageInput, digest: app.imageDigest } },
-      image: {
-        image: attributes.configuration.image,
-        inputHash: app.imageInput,
-        digest: app.imageDigest,
-        applicationId: app.applicationId,
-      },
-      instanceId: app.color.repeat(8),
-      props: {},
-    };
-  }
-  const state = Schema.decodeUnknownSync(RuntimeReleaseState)({
-    target: { accountId, worker: "synthetic-pool" },
-    applications,
-    configuration: runtimeConfiguration(f.old.env),
-    deploymentKey: f.old.env.POOL_DEPLOYMENT_KEY,
-  });
-  const writer = ordinaryReleaseWriter({
-    GITHUB_ACTIONS: "true",
-    GITHUB_REF: "refs/heads/main",
-    GITHUB_JOB: "deploy",
-    GITHUB_REPOSITORY: "JustYannicc/basalt",
-    GITHUB_WORKFLOW_REF: "JustYannicc/basalt/.github/workflows/deploy.yml@refs/heads/main",
-    GITHUB_RUN_ID: "1",
-    GITHUB_RUN_ATTEMPT: "1",
-    BASALT_RELEASE_CANDIDATE: runtimeFixtureCode.candidate,
-    ALCHEMY_STAGE: "production",
-  });
-  const run = <A, E>(effect: Effect.Effect<A, E>) =>
-    Effect.runPromise(
-      effect.pipe(
-        Effect.provide(
-          ConfigProvider.layer(
-            ConfigProvider.fromEnv({ env: { CLOUDFLARE_API_TOKEN: "synthetic-provider-read" } }),
-          ),
-        ),
-      ),
-    );
-  const client = await run(
-    runtimeReleaseClient({
-      state,
-      code: runtimeFixtureCode,
-      writer,
-      desiredConfiguration: runtimeConfiguration(f.candidate.env),
-      target: {
-        ...state.target,
-        connect: async () => ({
-          env: {
-            POOL_OPERATIONS: {
-              fetch: async (request) => {
-                const body = Schema.decodeUnknownSync(Schema.Struct({ envelope: Schema.String }))(
-                  await request.clone().json(),
-                );
-                const command = decodeRuntimeHandoffCommand(
-                  await openEnvelope(
-                    state.deploymentKey,
-                    runtimeHandoffCommandPrefix,
-                    body.envelope,
-                  ),
-                );
-                commands.push(command.action);
-                const response = await root.runtimeHandoff(request);
-                if (fail === command.action) {
-                  fail = undefined;
-                  throw new Error("synthetic lost committed reply");
-                }
-                return response;
-              },
-            },
-          },
-          dispose: async () => {
-            closes++;
-          },
-        }),
-      },
-    }),
-  );
-  if (fault === "public") f.onPublicProbe(async () => new Response(null, { status: 503 }));
-  return {
-    ...f,
-    client,
-    commands,
-    closes: () => closes,
-    reconstructRoot: () => {
-      root = f.reconstruct();
-    },
-  };
-}
+import { nativeMembershipKey } from "../../src/pool/runtime-slots/storage.ts";
+import { runtimeReleaseClientFixture as fixture } from "./test/runtime-release-client-fixture.ts";
 
 test(
   "the ordinary release client stages, joins real provider reads, proves public serving and promotes once",
@@ -310,3 +169,94 @@ for (const fault of ["stage", "promote"] as const)
       assert.equal(f.closes(), f.commands.length);
     },
   );
+
+for (const change of ["expiry", "policy"] as const)
+  test(
+    `a lost accepted public probe reply renews settled evidence after ${change} without starting another candidate`,
+    { timeout: 15_000 },
+    async (context) => {
+      let now = Date.now();
+      context.mock.method(Date, "now", () => now);
+      const f = await fixture("candidate-probe");
+      context.after(() => f.cleanup());
+      await assert.rejects(
+        f.client.promote("green-application", "renew-evidence", f.claims.pool),
+        /synthetic lost committed reply/,
+      );
+      assert.equal(f.publicProbeReads(), 1);
+      assert.deepEqual([...new Set(f.attempts.map((attempt) => attempt.generation))], [0]);
+      if (change === "expiry") now += 61_000;
+      else {
+        const policies =
+          await f.old.storage.get<Record<string, { revision: number }>>(nativeMembershipKey);
+        assert.ok(policies?.[f.claims.pool]);
+        policies[f.claims.pool]!.revision++;
+        await f.old.storage.put(nativeMembershipKey, policies);
+      }
+      f.reconstructRoot();
+      const authority = await f.view();
+      assert.equal(authority.response.status, 200);
+      await f.client.promote("green-application", "renew-evidence", f.claims.pool);
+      assert.equal(f.publicProbeReads(), 2);
+      assert.equal(f.commands.filter((action) => action === "stage").length, 1);
+      assert.equal(f.commands.filter((action) => action === "promote").length, 1);
+      assert.deepEqual([...new Set(f.attempts.map((attempt) => attempt.generation))], [0, 1]);
+      assert.equal(f.probeKeys.keys.length, 0);
+      assert.equal([...f.instances.values()][0]!.fixture.calls.start, 1);
+      assert.equal(
+        (await f.client.inspect()).selection!.active.target.applicationId,
+        "green-application",
+      );
+    },
+  );
+
+for (const action of ["candidate-probe", "promote"] as const)
+  test(`an unknown ${action} send without a receipt stays inspection-only after reconstruction`, async (context) => {
+    const f = await fixture(`${action}-before`);
+    context.after(() => f.cleanup());
+    await assert.rejects(
+      f.client.promote("green-application", "unknown-send", f.claims.pool),
+      /synthetic unknown send before receipt/,
+    );
+    f.reconstructRoot();
+    await assert.rejects(
+      f.client.promote("green-application", "unknown-send", f.claims.pool),
+      /inspect-only/,
+    );
+    assert.equal(f.commands.filter((command) => command === action).length, 1);
+    assert.deepEqual([...new Set(f.attempts.map((attempt) => attempt.generation))], [0]);
+    assert.equal(
+      (await f.client.inspect()).selection!.active.identity!.bootId,
+      f.old.identity().bootId,
+    );
+    assert.equal([...f.instances.values()][0]!.fixture.calls.start, 1);
+  });
+
+test("a settled refused promotion gets fresh proof and a new durable attempt without another start", async (context) => {
+  const f = await fixture("promote-refuse");
+  context.after(() => f.cleanup());
+  await assert.rejects(
+    f.client.promote("green-application", "refused-promotion", f.claims.pool),
+    /provisioning-input-drift/,
+  );
+  const receipt = await f.send("receipt", { operationId: "refused-promotion" });
+  assert.equal(
+    Schema.decodeUnknownSync(Schema.Struct({ status: Schema.String }))(receipt).status,
+    "refused",
+  );
+  assert.equal(
+    (await f.client.inspect()).selection!.active.identity!.bootId,
+    f.old.identity().bootId,
+  );
+  f.reconstructRoot();
+  await f.client.promote("green-application", "refused-promotion", f.claims.pool);
+  assert.deepEqual([...new Set(f.attempts.map((attempt) => attempt.generation))], [0, 1]);
+  assert.equal(f.publicProbeReads(), 2);
+  assert.equal(f.commands.filter((command) => command === "promote").length, 2);
+  assert.equal(f.commands.filter((command) => command === "stage").length, 1);
+  assert.equal([...f.instances.values()][0]!.fixture.calls.start, 1);
+  assert.equal(
+    (await f.client.inspect()).selection!.active.target.applicationId,
+    "green-application",
+  );
+});

@@ -8,12 +8,14 @@ import {
 } from "../../src/pool/runtime-slots/contract.ts";
 import { SelectionProof } from "../../src/pool/runtime-slots/admission-proof.ts";
 import { FleetConfiguration } from "../../src/pool/runtime-fleet/configuration.ts";
-import {
-  decodeRuntimeHandoffCommand,
-  type RuntimeHandoffCommand,
-} from "../../src/pool/runtime-slots/handoff-command.ts";
+import { decodeRuntimeHandoffCommand } from "../../src/pool/runtime-slots/handoff-command.ts";
 import type { PoolOperationsTarget } from "../pool-operations.ts";
-import { sendRuntimeCommand } from "./runtime-command-rpc.ts";
+import { sendRuntimeCommand, type RuntimeCommandAction } from "./runtime-command-rpc.ts";
+import {
+  releasePromotionGate,
+  retainReleaseStartup,
+  type ReleasePromotionJournal,
+} from "./runtime-release-promotion.ts";
 import {
   freezeRuntimeHandoff,
   runtimeBridgeKeyDigest,
@@ -34,7 +36,6 @@ import {
   type RuntimeConfiguration,
 } from "../../src/pool/runtime-slots/configuration.ts";
 
-type Action<T> = T extends unknown ? Omit<T, "controllerCode" | "at" | "expiresAt"> : never;
 const Policy = Schema.Struct({
   pool: Schema.String,
   organization: Schema.String,
@@ -79,6 +80,7 @@ export const runtimeReleaseClient = (input: {
   state: Effect.Success<ReturnType<typeof runtimeReleaseState>>;
   code: typeof ControllerCode.Type;
   writer: RuntimeReleaseWriter;
+  promotion: ReleasePromotionJournal;
   desiredConfiguration?: RuntimeConfiguration;
   target?: PoolOperationsTarget;
 }) =>
@@ -89,7 +91,7 @@ export const runtimeReleaseClient = (input: {
     const { state, code, writer } = input;
     const target = input.target ?? state.target;
     const signingKey = state.deploymentKey;
-    const call = (action: Action<RuntimeHandoffCommand>, mutation = false) => {
+    const call = (action: RuntimeCommandAction, mutation = false) => {
       const send = () => {
         writer.assert();
         const at = Date.now();
@@ -272,7 +274,13 @@ export const runtimeReleaseClient = (input: {
         )
           throw new BarrierRefusal("runtime-release-other-candidate-pending", "PoolWorker");
         const retained = await manifest(chosen, operationId);
-        const options = proofInput(retained);
+        const startup = await retainReleaseStartup({
+          manifest: retained,
+          pool,
+          journal: input.promotion,
+          call,
+        });
+        const options = proofInput(startup);
         let identity = before.selection?.candidate?.identity;
         if (!identity) {
           if (before.selection?.candidate)
@@ -285,26 +293,32 @@ export const runtimeReleaseClient = (input: {
             );
           }
         }
-        const gate = result(
-          Schema.Struct({
-            status: Schema.Literal("accepted"),
-            ticket: Schema.Struct({ candidate: SlotIdentity }),
-          }),
-          await call(
-            { action: "candidate-probe", operationId: `probe-${operationId}`, pool },
-            true,
-          ),
-        );
-        sameProvisioningValue("runtime-release.public-candidate", identity, gate.ticket.candidate);
-        const joined = await run(attestRuntimeRelease(options));
-        const intent = {
+        const {
+          gate,
+          operationId: promotionOperationId,
+          beforePromotion,
+        } = await releasePromotionGate({
           operationId,
+          candidate: identity,
+          pool,
+          selection: retained.selection,
+          code,
+          journal: input.promotion,
+          call,
+        });
+        sameProvisioningValue("runtime-release.public-candidate", identity, gate.ticket.candidate);
+        const joined = await run(
+          attestRuntimeRelease({ ...options, selection: retained.selection }),
+        );
+        const intent = {
+          operationId: promotionOperationId,
           controllerCode: code,
           expectedEpoch: retained.selection.expectedEpoch,
           previous: retained.selection.active!,
           candidate: identity,
           policyDigest: retained.selection.policyDigest,
         };
+        await beforePromotion();
         const receipt = result(
           PromotionReceipt,
           await call({ action: "promote", intent, proof: joined.envelope }, true),

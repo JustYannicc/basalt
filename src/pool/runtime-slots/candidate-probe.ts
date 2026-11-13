@@ -78,6 +78,7 @@ export class RuntimeCandidateProbe {
   private async current(ticket: Ticket) {
     const snapshot = await this.deps.slots.inspect();
     if (
+      JSON.stringify(ticket.controllerCode) !== JSON.stringify(this.deps.code) ||
       ticket.expiresAt <= this.now() ||
       snapshot.selection?.epoch !== ticket.expectedEpoch ||
       snapshot.digest !== ticket.policyDigest ||
@@ -93,6 +94,7 @@ export class RuntimeCandidateProbe {
     if (before) {
       if (before.ticket.pool !== pool || before.status !== "accepted")
         throw new SlotRefused("uncertain");
+      await this.current(before.ticket);
       return before;
     }
     const directory = await PoolDirectory.load(this.deps.storage, this.now());

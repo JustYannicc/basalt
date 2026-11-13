@@ -20,14 +20,18 @@ export const finishPlan = (
   activated: ReadonlyMap<string, Worker["Attributes"]>,
   databaseFqns: ReadonlySet<string>,
   activatedContainers: ReadonlyMap<string, ContainerApplication["Attributes"]> = new Map(),
-  runtimeHandoff = false,
+  deferRuntimeVerification = false,
 ) =>
   Effect.gen(function* () {
     const state = yield* yield* State;
     const resources: Plan.Plan["resources"] = {};
     for (const [fqn, node] of Object.entries(prepared.plan.resources)) {
-      // The phased release proves the attested candidate publicly after promotion, before its outer receipt completes.
-      if (runtimeHandoff && fqn === "PoolBackendBudgetRuntimeReady") continue;
+      // Readiness and its budget consumer run together once the new primary serves and the old generation drains.
+      if (
+        deferRuntimeVerification &&
+        ["PoolBackendBudgetRuntimeReady", "PoolBackendBudget"].includes(fqn)
+      )
+        continue;
       if (databaseFqns.has(fqn)) {
         const current = yield* state.get({ stack: prepared.stack, stage: prepared.stage, fqn });
         if (!current || !(current.status === "created" || current.status === "updated"))

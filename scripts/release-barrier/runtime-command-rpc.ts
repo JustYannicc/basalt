@@ -7,6 +7,13 @@ import { signEnvelope } from "../../src/pool/token.ts";
 import { openPoolOperations, type PoolOperationsTarget } from "../pool-operations.ts";
 import { provisioningRefusal } from "./provisioning-refusal.ts";
 
+type Action<T> = T extends unknown ? Omit<T, "controllerCode" | "at" | "expiresAt"> : never;
+export type RuntimeCommandAction = Action<RuntimeHandoffCommand>;
+export type RuntimeCommandCall = (
+  action: RuntimeCommandAction,
+  mutation?: boolean,
+) => Promise<unknown>;
+
 /** One send only. An unknown response must be recovered through the retained operation's read path. */
 export async function sendRuntimeCommand(
   command: RuntimeHandoffCommand,

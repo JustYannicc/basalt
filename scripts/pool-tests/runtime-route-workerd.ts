@@ -15,6 +15,8 @@ import { runtimeConfiguration, configurationDigest } from './src/pool/runtime-sl
 import { NativeStreams } from './src/pool/native-streams.ts';
 import { RuntimeProtection } from './src/pool/runtime-protection.ts';
 import { nativeResponse } from './src/pool/native-response.worker.ts';
+import { SlotRefused } from './src/pool/runtime-slots/contract.ts';
+import { runtimeRouteDiagnostic } from './src/pool/runtime-route-diagnostic.ts';
 const marker='synthetic-private-exception-body';
 const readEvents=[];
 const info=console.info;
@@ -39,7 +41,10 @@ export class Root extends DurableObject {
    const headers=new Headers(request.headers);headers.set('X-Fixture-Fault',fault);
    return this.env.Extra.get(this.env.Extra.idFromString(value.instanceId)).fetch(new Request(request,{headers}));
   }}));
-  if(new URL(request.url).pathname==='/probe')return driver.probeFetch(identity,new Request('http://private.invalid/capabilities?private='+marker),8327);
+  if(new URL(request.url).pathname==='/probe'){
+   try{return await driver.probeFetch(identity,new Request('http://private.invalid/capabilities?private='+marker),8327);}
+   catch(error){return Response.json({refused:error instanceof SlotRefused,diagnostic:runtimeRouteDiagnostic(error)});}
+  }
   const router=new RuntimeSlotRouter({controllerId:this.ctx.id.toString(),driver,
    storage:new RuntimeSlotStorage(storage(this.ctx,'')),streams:slotStreams,
    clock:{now:Date.now,monotonic:()=>performance.now()},defer:work=>this.ctx.waitUntil(work),wrap:nativeResponse});

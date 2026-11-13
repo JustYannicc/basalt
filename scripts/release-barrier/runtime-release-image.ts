@@ -119,5 +119,10 @@ export const runtimeReleaseImage = (input: {
         throw new BarrierRefusal("runtime-release-image-version-not-confirmed", container.id);
       await input.client.health();
     };
-    return { resource: input.resource, prepare, verify } satisfies RuntimeImagePhase;
+    return {
+      resource: input.resource,
+      deferVerification: true,
+      prepare,
+      verify,
+    } satisfies RuntimeImagePhase;
   });

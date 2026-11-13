@@ -143,7 +143,8 @@ export class PoolRuntimeFleet {
     const headroom = await this.imageUpdate.headroom(transaction);
     if (
       headroom &&
-      rows.length + (await physicalPrimaryTargets(transaction)).length >= (launch ? 4 : 3)
+      rows.length + (await physicalPrimaryTargets(transaction)).length >=
+        record.configuration.maximum - (launch ? 0 : 1)
     )
       throw new SlotRefused("draining");
     const reserved = rows.find((row) => sameTarget(row.target, target));
@@ -376,9 +377,12 @@ export class PoolRuntimeFleet {
   }
   private async primaryHeadroom() {
     if (!(await this.imageUpdate.headroom())) return;
+    const permission = await this.configuration.inspect();
+    if (!permission) throw new SlotRefused("selection");
     const rows = await this.state.inspect();
     if (
-      rows.length + (await physicalPrimaryTargets(this.deps.ctx.storage)).length < 4 ||
+      rows.length + (await physicalPrimaryTargets(this.deps.ctx.storage)).length <
+        permission.configuration.maximum ||
       rows.some((row) => ["draining", "retiring", "quarantined"].includes(row.phase))
     )
       return;

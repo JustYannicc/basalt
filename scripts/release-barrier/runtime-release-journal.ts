@@ -9,6 +9,7 @@ import { FleetConfiguration } from "../../src/pool/runtime-fleet/configuration.t
 import { openRecovery, sealRecovery } from "./recovery-envelope.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
+import { ReleasePromotionAttempt } from "./runtime-release-promotion.ts";
 
 const Record = Schema.Struct({
   format: Schema.Literal("pool-image-release-v1"),
@@ -20,6 +21,7 @@ const Record = Schema.Struct({
   bootstrap: Schema.Record(Schema.String, RuntimeProvisioningManifest),
   configurations: Schema.Record(Schema.String, FleetConfiguration),
   update: Schema.optional(ImageUpdateIntent),
+  promotion: Schema.optional(ReleasePromotionAttempt),
 });
 export type RuntimeReleaseRecord = typeof Record.Type;
 const Header = Schema.Struct({

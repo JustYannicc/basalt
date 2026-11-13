@@ -8,6 +8,7 @@ import { provisioningFixture } from "./test/provisioning-fixtures.ts";
 import { runtimeReleaseState, runtimeApplicationPins } from "./runtime-release-state.ts";
 import { runtimeReleaseJournal, type RuntimeReleaseRecord } from "./runtime-release-journal.ts";
 import { ordinaryReleaseWriter } from "./runtime-release-writer.ts";
+import { runtimeProofFixture } from "./test/runtime-proof-fixture.ts";
 
 const scope = { name: "synthetic", stage: "production" };
 const candidate = "a".repeat(40),
@@ -136,18 +137,30 @@ test("the encrypted image journal restores exact settings and bootstrap intent, 
   const f = await fixture();
   const journal = await f.run(runtimeReleaseJournal(scope, writer(), key));
   assert.equal(await journal.read(), undefined);
-  await journal.write(f.record);
+  const startup = (await runtimeProofFixture()).manifest;
+  const record = {
+    ...f.record,
+    promotion: {
+      operationId: startup.operationId,
+      pool: "synthetic-pool",
+      generation: 1,
+      probeSent: true,
+      promotionSent: true,
+      startup,
+    },
+  };
+  await journal.write(record);
   const storageKey = { stack: `${scope.name}-runtime-image-release`, stage: scope.stage };
   const saved = await Effect.runPromise(f.state.getOutput(storageKey));
   assert.ok(!JSON.stringify(saved).includes("synthetic-management-secret"));
   assert.ok(!JSON.stringify(saved).includes("synthetic-future-secret"));
   const reconstructed = await f.run(runtimeReleaseJournal(scope, writer(), key));
-  assert.deepEqual(await reconstructed.read(), JSON.parse(JSON.stringify(f.record)));
+  assert.deepEqual(await reconstructed.read(), JSON.parse(JSON.stringify(record)));
   const foreign = await f.run(runtimeReleaseJournal(scope, writer("c".repeat(40)), key));
   await assert.rejects(foreign.read(), /prior-candidate-unsettled/);
   const wrongKey = await f.run(runtimeReleaseJournal(scope, writer(), "d".repeat(64)));
   await assert.rejects(wrongKey.read(), /authentication-failed/);
-  await journal.write({ ...f.record, complete: true });
+  await journal.write({ ...record, complete: true });
   assert.equal(await foreign.read(), undefined);
   await Effect.runPromise(
     f.state.setOutput({

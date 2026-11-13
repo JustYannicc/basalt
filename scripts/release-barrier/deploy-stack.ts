@@ -482,7 +482,13 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     });
     const finalizing = preserveClassHistory(
       preserveDeclarationHistory(
-        finishPlan(prepared, activated, databaseFqns, activatedContainers, !!options.runtimeImage),
+        finishPlan(
+          prepared,
+          activated,
+          databaseFqns,
+          activatedContainers,
+          options.runtimeImage?.deferVerification,
+        ),
         scope,
       ),
       scope,

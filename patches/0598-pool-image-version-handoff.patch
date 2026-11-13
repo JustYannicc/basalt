@@ -23,12 +23,16 @@ diff --git a/apps/hosted/server/src/contracts/organization-defaults.ts b/apps/ho
 diff --git a/apps/hosted/server/src/implementation/pool-worker-gate.ts b/apps/hosted/server/src/implementation/pool-worker-gate.ts
 --- a/apps/hosted/server/src/implementation/pool-worker-gate.ts
 +++ b/apps/hosted/server/src/implementation/pool-worker-gate.ts
-@@ -8,7 +8,7 @@
+@@ -8,7 +8,11 @@
  
  /** Matches `poolReleasePath` in Basalt's src/pool/release.ts. */
  const releasePath = "/pool/v1/release";
 -const Release = Schema.Struct({ revision: Schema.String, keyVersion: Schema.String });
-+const Release = Schema.Struct({ revision: Schema.String, keyVersion: Schema.String, imageReady: Schema.Boolean });
++const Release = Schema.Struct({
++  revision: Schema.String,
++  keyVersion: Schema.String,
++  imageReady: Schema.Boolean,
++});
  
  const fetchRelease = (origin: string) =>
    Effect.gen(function* () {

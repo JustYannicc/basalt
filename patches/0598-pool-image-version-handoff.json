@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-image-version-handoff",
   "file": "0598-pool-image-version-handoff.patch",
-  "content_sha256": "4175f3943d91368c76785a332dc5a2377586c1b603409f0f35d365888128e78d",
+  "content_sha256": "54279e6bcf528d211385e59d41ca9dadd8d8d782511014395e563233b70fc63a",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

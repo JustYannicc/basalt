@@ -117,6 +117,10 @@ export const releaseRuntimeImage = <A, StackError>(
         code,
         writer: options.writer,
         desiredConfiguration: record.desiredConfiguration,
+        promotion: {
+          read: async () => record.promotion,
+          write: async (promotion) => save({ ...record, promotion }),
+        },
       });
     const retainPhase = async (name: string) => {
       for (const file of [
@@ -147,6 +151,7 @@ export const releaseRuntimeImage = <A, StackError>(
             forwardInput: forward?.continuation,
             preserveRuntimeInputs: true,
             runtimeImage: {
+              deferVerification: true,
               prepare: async () => {
                 throw new BarrierRefusal("runtime-release-active-image-mutation", "PoolContainer");
               },
@@ -288,7 +293,8 @@ export const releaseRuntimeImage = <A, StackError>(
               ].filter(
                 (slot) => slot && slot.target.instanceId !== slot.target.controllerId,
               ).length;
-              return value.fleet.resources.length + primaries < 4;
+              const maximum = value.fleet.permission?.configuration.maximum;
+              return maximum !== undefined && value.fleet.resources.length + primaries < maximum;
             },
             resource,
           ),
