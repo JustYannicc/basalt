@@ -18,7 +18,7 @@ import { startPoolFixture } from "./pool-fixture.mjs";
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** Localize the actual verified pool seed and operator config, preserving native provisioning. */
-const localPoolSetup = async (directory, registry, resetOptions) => {
+const localPoolSetup = async (directory, registry, resetOptions, fixtureFactory) => {
   const upstream = join(root, ".upstream");
   const assetDirectory = join(upstream, "apps/hosted/cloud/.generated/pool-app");
   const sourcePath = join(upstream, "apps/hosted/server/src/implementation/pool-app-source.ts");
@@ -45,7 +45,7 @@ const localPoolSetup = async (directory, registry, resetOptions) => {
         ),
       )
     : [];
-  const fixture = await startPoolFixture(signingKey, { catalog });
+  const fixture = await fixtureFactory(signingKey, { catalog });
   const previous = { path: process.env.PATH, setup: process.env.BASALT_E2E_POOL_SETUP };
   const restore = async () => {
     process.env.PATH = previous.path;
@@ -110,11 +110,14 @@ const localPoolSetup = async (directory, registry, resetOptions) => {
   }
 };
 
-export const poolCloudHarness = (directory, { resets = false } = {}) =>
+export const poolCloudHarness = (
+  directory,
+  { resets = false, fixtureFactory = startPoolFixture } = {},
+) =>
   Effect.gen(function* () {
     const registry = yield* lockedNpmRegistry;
     const setup = yield* Effect.acquireRelease(
-      Effect.promise(() => localPoolSetup(directory, registry, resets)),
+      Effect.promise(() => localPoolSetup(directory, registry, resets, fixtureFactory)),
       (setup) => Effect.promise(() => setup.restore()),
     );
     const base = yield* startEnvironment({ target: "cloud", headless: true });

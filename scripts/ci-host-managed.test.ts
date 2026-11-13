@@ -201,7 +201,7 @@ test("account and pool jobs retain their owned scenarios, commands and execution
     accounts.steps.filter(
       (step: { run?: string }) =>
         step.run ===
-        "node --test scripts/pool-ui-tests/accounts-ready.test.mjs scripts/pool-ui-tests/history-coverage.test.mjs",
+        "node --test scripts/pool-ui-tests/accounts-ready.test.mjs scripts/pool-ui-tests/history-coverage.test.mjs scripts/pool-ui-tests/history-activity.test.mjs",
     ).length,
     1,
   );
