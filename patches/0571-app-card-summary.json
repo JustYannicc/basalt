@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-card-summary",
+  "file": "0571-app-card-summary.patch",
+  "content_sha256": "1b94fc044c0e8da6e380f3e327fcb07735dd87c0a6be2075a54e4fa7020c635d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -10,6 +10,7 @@ import {
   deviceSync,
   hasSyncTool,
   obsidianDevices,
+  latestActivity,
 } from "../../.upstream/apps/hosted/web/src/contracts/obsidian-devices.ts";
 
 const vault = AppId.make("app_fixture_vault");
@@ -183,4 +184,42 @@ test("a device's sync against a vault with no head yet is never current", () => 
     ),
     { at: "2026-11-12T09:59:00.000Z", current: false },
   );
+});
+
+test("a vault's card shows the newest activity any of its devices reports, by each row's rule", () => {
+  const device = (agent: string, lastActiveAt: string | null) => ({
+    agent: GrantId.make(agent),
+    connection: ConnectionId.make(`conn_${agent}`),
+    label: agent,
+    connectedAt: "2026-11-10T08:00:00.000Z",
+    lastActiveAt,
+  });
+  const mac = device("mac", "2026-11-12T08:00:00.000Z");
+  const phone = device("phone", "2026-11-12T09:00:00.000Z");
+  const idle = device("idle", null);
+
+  assert.equal(latestActivity([idle], undefined), null);
+  assert.deepEqual(latestActivity([mac, phone, idle], undefined), {
+    kind: "active",
+    at: "2026-11-12T09:00:00.000Z",
+  });
+  // A device's own sync record replaces its grant activity, as its Accounts row does.
+  const sync = {
+    head: "h2",
+    devices: [{ agent: "mac", lastSyncAt: "2026-11-12T10:00:00.000Z", lastHead: "h1" }],
+  };
+  assert.deepEqual(latestActivity([mac, phone], sync), {
+    kind: "synced",
+    at: "2026-11-12T10:00:00.000Z",
+    current: false,
+  });
+  // An older sync record never hides a newer sign of life from another device.
+  const old = {
+    head: "h2",
+    devices: [{ agent: "mac", lastSyncAt: "2026-11-12T07:00:00.000Z", lastHead: "h2" }],
+  };
+  assert.deepEqual(latestActivity([mac, phone], old), {
+    kind: "active",
+    at: "2026-11-12T09:00:00.000Z",
+  });
 });
