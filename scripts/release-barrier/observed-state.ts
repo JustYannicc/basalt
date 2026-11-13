@@ -16,6 +16,9 @@ export function observedState(
     ...state,
     get: (input) => state.get(input).pipe(observe(input.fqn, read)),
     set: (input) => state.set(input).pipe(observe(input.fqn, write)),
+    list: (input) => state.list(input).pipe(observe(`${input.stack}/${input.stage}`, read)),
+    getReplacedResources: (input) =>
+      state.getReplacedResources(input).pipe(observe(`${input.stack}/${input.stage}`, read)),
     getOutput: (input) => state.getOutput(input).pipe(observe(`${input.stack}/output`, read)),
     setOutput: (input) => state.setOutput(input).pipe(observe(`${input.stack}/output`, write)),
   };

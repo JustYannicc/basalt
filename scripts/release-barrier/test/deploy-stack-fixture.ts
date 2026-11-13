@@ -60,7 +60,9 @@ export const fixture = (
       | "apply"
       | "state-write"
       | "journal-write"
-      | "journal-write-persistent";
+      | "journal-write-persistent"
+      | "plan-list"
+      | "apply-list";
     admittedError?: unknown;
     admittedStateError?: StateStoreError;
     finalizeDrift?: "binding" | "uncovered-env" | "props";
@@ -141,6 +143,14 @@ export const fixture = (
       const memory = yield* InMemoryService();
       return Effect.succeed({
         ...memory,
+        list: (input) =>
+          options.admittedFailure === "plan-list" && receipts.at(-1)?.phase === "admitted"
+            ? Effect.fail(options.admittedStateError!)
+            : memory.list(input),
+        getReplacedResources: (input) =>
+          options.admittedFailure === "apply-list" && receipts.at(-1)?.phase === "admitted"
+            ? Effect.fail(options.admittedStateError!)
+            : memory.getReplacedResources(input),
         get: (input) => {
           if (receipts.at(-1)?.phase === "admitted" && input.fqn === "PoolDatabase") {
             admittedDatabaseReads++;

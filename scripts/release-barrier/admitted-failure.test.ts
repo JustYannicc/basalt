@@ -13,6 +13,8 @@ for (const [scenario, resource, operation] of [
   ["state-read", "Api", "read-native-state"],
   ["state-drift", "Api", "verify-native-state"],
   ["plan", "PoolDatabase", "plan-read-state"],
+  ["plan-list", "fixture/production", "plan-read-state"],
+  ["apply-list", "fixture/production", "apply-read-state"],
   ["apply", "PoolDatabase", "apply-database-resource"],
   ["state-write", "PoolDatabase", "apply-write-state"],
   ["journal-write", "fixture-sql-schema-barrier/output", "write-release-journal"],
@@ -52,6 +54,8 @@ for (const [scenario, resource, operation] of [
       scenario === "state-read" ||
       scenario === "plan" ||
       scenario === "state-write" ||
+      scenario === "plan-list" ||
+      scenario === "apply-list" ||
       scenario.startsWith("journal-write")
     )
       assert.deepEqual(failure.provider, { type: "StateStoreError", status: 503 });
