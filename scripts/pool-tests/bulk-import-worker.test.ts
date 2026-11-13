@@ -421,6 +421,23 @@ test("bulk signed HTTP commands run through SQLite DO, R2 and real PostgreSQL re
         }),
       );
 
+      for (const invalid of [
+        { generate: { prompt: "synthetic rejected text" } },
+        { source_id: { prompt: "synthetic rejected text" } },
+        { source_id: "synthetic rejected text" },
+      ]) {
+        const rejected = await plan([JSON.stringify({ ...event(7000), ...invalid })]);
+        await post(rejected.input);
+        await post(
+          { operation: "upload", job: rejected.definition.job, chunk: 0, data: rejected.parts[0] },
+          400,
+        );
+        assert.equal((await status(rejected.definition)).uploadedChunks, 0);
+        assert.equal(await bucket.get(`usage-import-v1/${rejected.definition.job}/0.ndjson`), null);
+        assert.deepEqual(await receipts(rejected.definition), []);
+      }
+      assert.equal(await countRows(), 5005);
+
       const native = await plan([JSON.stringify(event(6000))]);
       const channel = `bulk_${randomUUID().replaceAll("-", "")}`;
       const listener = new pg.Client({ connectionString: process.env.POOL_TEST_ADMIN_URL! });
