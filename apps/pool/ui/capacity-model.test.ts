@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { vendorPlan, type PlanAllowance, type PlanAllowanceCatalog } from "apps";
 import type {
   CapacityAggregate,
   CapacityForecast,
@@ -7,6 +8,7 @@ import type {
   PoolCapacityHistory,
 } from "../capacity-contract.ts";
 import {
+  allowanceRows,
   capacityLabs,
   candidateName,
   exclusionName,
@@ -62,6 +64,32 @@ function point(
       ? { raw: { minimum: value, last: value, plans }, usable: aggregate(4, 4) }
       : {}),
     ...overrides,
+  };
+}
+
+/** A synthetic current catalog: numbers are fixture values, not vendor facts. */
+function catalog(
+  plans: readonly (readonly [string, string, number, Partial<PlanAllowance>?])[],
+): PlanAllowanceCatalog {
+  return {
+    entries: plans.map(([provider, label, windowSeconds, overrides]) => {
+      const plan = vendorPlan(provider, label);
+      return {
+        vendor: plan.vendor,
+        plan: plan.id,
+        windowSeconds,
+        full: 5,
+        unit: { id: "fixture-unit", label: "fixture-eq" },
+        revision: "fixture",
+        kind: "dataset",
+        verification: "reported",
+        sources: ["https://example.test/plans"],
+        checkedAt: start - 2 * 24 * hourMs,
+        fetchedAt: start,
+        expiresAt: start + 14 * 24 * hourMs,
+        ...overrides,
+      } satisfies PlanAllowance;
+    }),
   };
 }
 
@@ -238,18 +266,18 @@ test("a lone window opens without a pressing note", () => {
   assert.equal(pressing(lab!).text, null);
 });
 
-test("unknown plans are flagged on their chip", () => {
-  const flagged = aggregate(1, 2, 2);
+test("unknown plans say so quietly on their chip", () => {
+  const unknown = aggregate(1, 2, 2);
   const chips = planChips(
-    point(0, 1, { plans: [{ plan: null, minimum: flagged, last: flagged }] }),
+    point(0, 1, { plans: [{ plan: null, minimum: unknown, last: unknown }] }),
   );
   assert.deepEqual(chips, [
     {
       key: "No plan reported",
       plan: "No plan reported",
       accounts: 2,
-      flagged: true,
-      note: "unverified · 1x",
+      unknown: true,
+      note: "unknown · sized as 1 account",
     },
   ]);
 });
@@ -374,8 +402,8 @@ test("plan aliases share one chip without changing capacity measurements", () =>
       key: "Pro (Max)",
       plan: "Pro (Max)",
       accounts: 4,
-      flagged: true,
-      note: "unverified · 1x",
+      unknown: true,
+      note: "unknown · sized as 1 account",
     },
   ]);
   assert.deepEqual(snapshot, original);
@@ -439,7 +467,7 @@ test("tooltip aliases merge usable and raw readings without changing capacity hi
       accounts: 4,
       remaining: 3,
       full: 5,
-      flagged: true,
+      unknown: true,
       sources: ["unknown-plan", "reference-plan"],
       raw: { remaining: 9, full: 12 },
     },
@@ -470,10 +498,10 @@ test("Max 20x policy and retained weekly readings keep their recorded provenance
     ],
   };
   const saved = aggregate(0.4, 1, 1);
-  for (const [reading, unverified, note] of [
+  for (const [reading, unknown, note] of [
     [policy, false, "plan multiplier"],
     [published, false, "published weekly multiplier"],
-    [saved, true, "unverified · 1x"],
+    [saved, true, "unknown · sized as 1 account"],
   ] as const) {
     const snapshot = point(0, reading.remaining, {
       provider: "claude",
@@ -487,14 +515,14 @@ test("Max 20x policy and retained weekly readings keep their recorded provenance
         key: "Max 20x",
         plan: "Max 20x",
         accounts: reading.accountCount,
-        flagged: unverified,
+        unknown,
         note,
       },
     ]);
   }
 });
 
-test("an unverified 1x weight is never described as a conservative bound", () => {
+test("an unknown allowance is described as one account, never as a conservative bound", () => {
   const unverified = aggregate(2, 4, 2);
   const projection = {
     ...forecast(604800, start + 24 * hourMs),
@@ -509,18 +537,24 @@ test("an unverified 1x weight is never described as a conservative bound", () =>
   const result = verdict(line, lineFacts(line, start + 24 * hourMs), 7);
   assert.equal(
     result.detail,
-    "2 of 2 accounts count at an unverified 1x allowance, so the shortfall may be larger or smaller than shown.",
+    "2 of 2 accounts have an unknown allowance; each is sized as one account.",
   );
   assert.deepEqual(forecastReasons(["unknown-account-weight"]), [
-    "an account's allowance multiple is unverified",
+    "an account's allowance is unknown, so it is sized as one account",
   ]);
-  assert.equal(planChips(snapshot)[0]!.note, "unverified · 1x");
+  assert.equal(planChips(snapshot)[0]!.note, "unknown · sized as 1 account");
   const shown = [result.short, result.text, result.detail, ...forecastReasons(projection.reasons)];
-  assert.doesNotMatch(shown.join(" "), /conservative/i);
+  assert.doesNotMatch(shown.join(" "), /conservative|unverified|multiple/i);
 });
 
 test("supported five-hour limits stay selectable without inventing measured capacity", () => {
-  const observed = history([point(0, 2)]);
+  const observed = {
+    ...history([point(0, 2)]),
+    allowanceCatalog: catalog([
+      ["claude", "Max 20x", 604_800],
+      ["claude", "Max 20x", 18_000],
+    ]),
+  };
   const snapshot = structuredClone(observed);
   const accounts = [{ provider: "claude", plan: "Max 20x", windows: [] }];
   const labs = capacityLabs(observed, accounts);
@@ -571,13 +605,22 @@ test("a missing current five-hour window keeps its last reading time without cla
   }
 });
 
-test("limit support follows known subscription plans and never creates a measured point", () => {
+test("limit support follows current catalog windows and never creates a measured point", () => {
   const accounts = [
     { provider: "codex", plan: "Pro 20x", windows: [] },
     { provider: "claude", plan: "Future plan", windows: [] },
     { provider: "typesafe", plan: "Pro", windows: [] },
   ];
-  const labs = capacityLabs(history([]), accounts);
+  const labs = capacityLabs(
+    {
+      ...history([]),
+      allowanceCatalog: catalog([
+        ["codex", "Pro 20x", 604_800],
+        ["codex", "Pro 20x", 18_000],
+      ]),
+    },
+    accounts,
+  );
   assert.deepEqual(
     labs.map((lab) => lab.provider),
     ["codex"],
@@ -658,4 +701,158 @@ test("fresh weekly collection never makes an expired or invalid five-hour value 
       Number.isFinite(parsed) && parsed <= observed.to ? parsed : start,
     );
   }
+});
+
+test("without a catalog only actually reported windows are supported", () => {
+  const reported = {
+    id: "five_hour",
+    label: "5 hours",
+    windowSeconds: 18_000,
+    remainingRatio: 0.5,
+    resetAt: null,
+    observedAt: new Date(start).toISOString(),
+  };
+  const labs = capacityLabs(history([]), [
+    { provider: "codex", plan: "Pro 20x", windows: [] },
+    { provider: "claude", plan: "Max 5x", windows: [reported] },
+  ]);
+  assert.deepEqual(
+    labs.map((lab) => [lab.provider, lab.lines.map((line) => line.windowSeconds)]),
+    [["claude", [18_000]]],
+  );
+});
+
+test("catalog windows expire on read and never drop a reported temporary limit", () => {
+  const reported = {
+    id: "five_hour",
+    label: "5 hours",
+    windowSeconds: 18_000,
+    remainingRatio: 0.5,
+    resetAt: null,
+    observedAt: new Date(start).toISOString(),
+  };
+  const allowanceCatalog = catalog([
+    ["codex", "Pro 20x", 604_800, { expiresAt: start + 12 * hourMs }],
+    ["codex", "Pro 20x", 18_000, { unlimited: true, full: null }],
+  ]);
+  const current = capacityLabs({ ...history([]), allowanceCatalog, to: start + hourMs }, [
+    { provider: "codex", plan: "Pro 20x", windows: [reported] },
+  ]);
+  assert.deepEqual(
+    current[0]!.lines.map((line) => line.windowSeconds),
+    [604_800, 18_000],
+  );
+  const expired = capacityLabs({ ...history([]), allowanceCatalog, to: start + 13 * hourMs }, [
+    { provider: "codex", plan: "Pro 20x", windows: [reported] },
+  ]);
+  assert.deepEqual(
+    expired[0]!.lines.map((line) => line.windowSeconds),
+    [18_000],
+  );
+});
+
+test("allowance rows show source, check age and expiry without changing the reading", () => {
+  const sourced = {
+    ...aggregate(1, 2),
+    weights: [
+      {
+        source: "reported-plan-multiplier" as const,
+        revision: "fixture",
+        accountCount: 2,
+        allowance: {
+          kind: "dataset" as const,
+          verification: "reported" as const,
+          sources: ["https://example.test/plans?x=1", "urn:example:usage"],
+          checkedAt: start - 4 * 24 * hourMs,
+          fetchedAt: start - 30 * 60_000,
+          expiresAt: start + 10 * 24 * hourMs,
+        },
+      },
+    ],
+  };
+  const unknown = {
+    ...aggregate(0.5, 1, 1),
+    accountCount: 1,
+    weights: [
+      {
+        source: "unknown-plan" as const,
+        revision: "account-unit-v1",
+        accountCount: 1,
+        allowance: {
+          kind: "unknown" as const,
+          verification: "unknown" as const,
+          sources: [],
+          checkedAt: null,
+          fetchedAt: null,
+          expiresAt: null,
+          detail: "Unknown allowance; sized as one account",
+        },
+      },
+    ],
+  };
+  const legacy = aggregate(1, 2);
+  const snapshot = point(0, 2, {
+    provider: "codex",
+    plans: [
+      { plan: "pro", minimum: sourced, last: sourced },
+      { plan: "Enterprise Trial", minimum: unknown, last: unknown },
+      { plan: "plus", minimum: legacy, last: legacy },
+    ],
+  });
+  const before = structuredClone(snapshot);
+  const rows = allowanceRows(snapshot, start);
+  assert.deepEqual(
+    rows.map(({ key: _, ...row }) => row),
+    [
+      {
+        plan: "Pro (More)",
+        accounts: 2,
+        basis: "Plan dataset",
+        detail: null,
+        checked: "Checked Thu 29 Oct UTC, 4 days old",
+        expires: "Expires Thu 12 Nov UTC",
+        retrieved: "Retrieved Sun 1 Nov 23:30 UTC",
+        sources: [
+          { label: "example.test/plans", href: "https://example.test/plans?x=1" },
+          { label: "urn:example:usage", href: null },
+        ],
+      },
+      {
+        plan: "Enterprise Trial",
+        accounts: 1,
+        basis: "Unknown allowance; sized as one account",
+        detail: null,
+        checked: null,
+        expires: null,
+        retrieved: null,
+        sources: [],
+      },
+      {
+        plan: "Plus",
+        accounts: 2,
+        basis: "Plan table",
+        detail: "No source details were saved with this reading.",
+        checked: null,
+        expires: null,
+        retrieved: null,
+        sources: [],
+      },
+    ],
+  );
+  assert.equal(
+    allowanceRows(snapshot, start + 11 * 24 * hourMs)[0]!.expires,
+    "Expired Thu 12 Nov UTC",
+  );
+  assert.deepEqual(snapshot, before);
+});
+
+test("lab account counts include every current unit without recounting retired units", () => {
+  const first = point(0, 2, { unit: { id: "plus-eq", label: "Plus-eq" } });
+  const second = point(0, 1, {
+    unit: { id: "unknown-plan-account", label: "Unknown plan account" },
+  });
+  const old = point(-1, 4, { unit: { id: "old-unit", label: "Old unit" } });
+  const retired = { ...old, last: { ...old.last, at: start - hourMs } };
+  const [lab] = capacityLabs(history([first, second, retired]));
+  assert.equal(lab.weeklyAccounts, first.last.accountCount + second.last.accountCount);
 });

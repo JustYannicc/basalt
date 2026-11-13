@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-shared-plan-names",
+  "file": "0589-shared-plan-names.patch",
+  "content_sha256": "45311e5718e0831137df28590994a9ab45e2051f99d2eaf148bc8b27d51e0796",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -1,3 +1,5 @@
+import { PlanAllowances } from "./allowances/registry.ts";
+import { AccountAllowanceMeasurements } from "./allowances/measurements.ts";
 import type { ReportingProgress } from "./reporting.ts";
 import {
   callerHeader,
@@ -52,6 +54,7 @@ interface Dependencies {
   defer?: (work: Promise<void>) => void;
   now?: () => Date;
   collection?: QuotaCollection;
+  allowances?: PlanAllowances;
   officialSummary?: (input: {
     pool: string;
     caller: string;
@@ -71,11 +74,16 @@ export class PoolUsage {
   private history: LimitHistory;
   private capacity: CapacityHistory;
   private ledger: UsageLedger;
+  private measurements: AccountAllowanceMeasurements;
+  private allowances: PlanAllowances;
   private resets: ResetRedemption;
   private syncing?: Promise<void>;
   constructor(deps: Dependencies) {
     this.deps = deps;
+    this.measurements = new AccountAllowanceMeasurements(deps.storage, deps.client);
     const now = () => deps.now?.() ?? new Date();
+    this.allowances =
+      deps.allowances ?? new PlanAllowances(deps.storage, { now: () => now().getTime() });
     this.history = new LimitHistory(deps.storage, now);
     this.capacity = new CapacityHistory(deps.storage);
     this.ledger = new UsageLedger(deps.storage, deps.client, { now, history: this.history });
@@ -137,6 +145,17 @@ export class PoolUsage {
         },
       );
     }
+    const catalog = await this.allowances.read();
+    const measured = await this.measurements.observe(
+      subscriptionAccounts(accountsView(files, quota, ids))
+        .filter((account) => account.state === "active")
+        .map((account) => ({
+          id: account.id,
+          provider: account.provider,
+          quota: quotaObservation(byId.get(account.id) ?? {}),
+        })),
+      now.getTime(),
+    );
     for (const [pool, accounts] of pools) {
       // Home v1.1.6 internal/cluster/quota_snapshots.go:129-150,195-214,
       // 812-828,1034-1091 retains windows after failed/partial probes. An account
@@ -226,7 +245,9 @@ export class PoolUsage {
             })),
           ),
           readings: capacityAccounts.flatMap(({ account, quota }) =>
-            capacityReadings(account.id, account.provider, quota, now.getTime()),
+            capacityReadings(account.id, account.provider, quota, now.getTime(), {
+              entries: [...(measured.get(account.id) ?? []), ...catalog.entries],
+            }),
           ),
         });
       } catch (error) {
@@ -362,7 +383,10 @@ export class PoolUsage {
         if (!Number.isSafeInteger(to) || to > now || to < now - 5 * 60_000)
           return fail(400, "invalid_query", "Use the current overview read time.");
         const from = Math.floor((to - Number(raw) * 86_400_000) / 3_600_000) * 3_600_000;
-        return json(await capacityOverview(this.capacity, claims.pool, from, to));
+        return json({
+          ...(await capacityOverview(this.capacity, claims.pool, from, to)),
+          allowanceCatalog: await this.allowances.read(),
+        });
       }
       if (permissions !== undefined && !permissions.canUse)
         return fail(403, "unauthorized", "This pool is not available to you.");

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "Host plan labels resolve through the same vendor identities as pool capacity and supported windows, preserving existing named tiers without inferring an allowance from a label."
+    }
+  }
+}

@@ -1,0 +1,58 @@
+diff --git a/packages/apps/src/contracts/account-plan-name.ts b/packages/apps/src/contracts/account-plan-name.ts
+--- a/packages/apps/src/contracts/account-plan-name.ts
++++ b/packages/apps/src/contracts/account-plan-name.ts
+@@ -1,49 +1,9 @@
+-/** Plan names from the provider's own clients; already named tiers retain their spelling. */
+-const chatgptPlans: Readonly<Record<string, string>> = {
+-  free: "Free",
+-  go: "Go",
+-  plus: "Plus",
+-  pro: "Pro (More)",
+-  prolite: "Pro",
+-  promax: "Pro (Max)",
+-  team: "Team",
+-  self_serve_business_prolite: "Self Serve Business ProLite",
+-  self_serve_business_usage_based: "Self Serve Business Usage Based",
+-  business: "Business",
+-  ent26: "Enterprise",
+-  enterprise_cbp_automation: "Enterprise (Automation)",
+-  enterprise_cbp_usage_based: "Enterprise CBP Usage Based",
+-  enterprise: "Enterprise",
+-  hc: "Enterprise",
+-  education: "Edu",
+-  edu: "Edu",
+-  edu_plus: "Edu Plus",
+-  edu_pro: "Edu Pro",
+-  sci: "Academic Researchers",
+-  sci_plus: "Academic Researchers Plus",
+-  unknown: "Unknown",
+-  // Retained tier names and spelling variants resolve to the current display names.
+-  "pro 20x": "Pro (More)",
+-  "pro 5x": "Pro",
+-  "pro-lite": "Pro",
+-  pro_lite: "Pro",
+-};
++import { vendorPlan } from "./account-plan-catalog.ts";
+ 
+-const displayNames = new Set(Object.values(chatgptPlans));
+-
+-/** Format tiers using the declared provider family, independent of the sign-in method. */
++/** Preserve the named Pro display tier while raw vendor identities use the shared catalog. */
+ export function accountPlanName(label: string, providerFamilyId?: string) {
+   const value = label.trim();
+-  if (displayNames.has(value)) return value;
+-  const key = value.toLowerCase();
+-  if (
+-    Object.hasOwn(chatgptPlans, key) &&
+-    (key !== "pro" || providerFamilyId?.toLowerCase() === "openai")
+-  )
+-    return chatgptPlans[key]!;
+-  // Preserve provider-supplied names (Max 20x, SuperGrok, Google AI Pro), including acronyms.
+-  return (
+-    value.replace(/[_-]+/gu, " ").replace(/\b[a-z]/gu, (letter) => letter.toUpperCase()) ||
+-    "Unknown"
+-  );
++  if (value === "Pro") return value;
++  const provider = providerFamilyId ?? (value.toLowerCase() === "pro" ? "" : "openai");
++  return vendorPlan(provider, value).name;
+ }

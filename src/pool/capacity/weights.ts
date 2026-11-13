@@ -1,72 +1,62 @@
-/** Capacity policy is separate from plan price, credential mechanism and account health. */
+import {
+  allowanceProvenance,
+  planAllowance,
+  type AllowanceProvenance,
+  type PlanAllowanceCatalog,
+} from "../../../.upstream/packages/apps/src/contracts/account-plan-allowance.ts";
+
+import { seedCatalog } from "../allowances/data.ts";
+
 export interface CapacityWeight {
   readonly multiplier: number;
   readonly source:
     | "reference-plan"
     | "published-session-multiplier"
     | "published-weekly-multiplier"
+    | "reported-plan-multiplier"
+    | "account-calibration"
     | "plan-multiplier"
     | "unknown-plan";
   readonly known: boolean;
   readonly unit: { readonly id: string; readonly label: string };
   readonly revision: string;
+  readonly allowance?: AllowanceProvenance;
 }
 
 export const capacityWeightRevision = "2026-10-30";
-const claudeWeeklyWeightRevision = "2026-11-09";
-const claudeSessionMultiples = new Map([
-  ["max 5x", 5],
-  ["max 20x", 20],
-]);
-// Max 20x follows the pool's 20x plan policy; Max 5x and Ultra retain published weekly limits.
-// https://support.claude.com/en/articles/11049741-what-is-the-max-plan
-// https://support.claude.com/en/articles/17728952-what-is-the-ultra-plan
-const claudeWeeklyMultiples = new Map([
-  ["max 5x", 5],
-  ["max 20x", 20],
-  ["ultra", 10],
-]);
 
-/** A missing plan is a flagged 1x contribution, never a known candidate-account weight. */
+/** Values come from account evidence and expiring source data, never from a tier-name table. */
 export function capacityWeight(
   provider: string,
   plan: string | null,
   windowSeconds: number,
+  options: { readonly catalog?: PlanAllowanceCatalog; readonly now?: number } = {},
 ): CapacityWeight {
-  const name = plan?.trim().toLowerCase();
-  const claude = provider === "claude" || provider === "anthropic";
-  const codex = provider === "codex" || provider === "openai";
-  const unit = claude
-    ? { id: "claude-pro-equivalent", label: "Pro-eq" }
-    : codex
-      ? { id: "chatgpt-plus-equivalent", label: "Plus-eq" }
-      : { id: `${provider}-account-equivalent`, label: "account-eq" };
-  const reference = (claude && name === "pro") || (codex && name === "plus");
-  const multiples =
-    windowSeconds === 18_000
-      ? claudeSessionMultiples
-      : windowSeconds === 604_800
-        ? claudeWeeklyMultiples
-        : undefined;
-  const multiple = claude && name !== undefined ? multiples?.get(name) : undefined;
-  const planPolicy = claude && name === "max 20x" && windowSeconds === 604_800;
+  const value = planAllowance(
+    options.catalog ?? seedCatalog,
+    provider,
+    plan,
+    windowSeconds,
+    options.now ?? Date.now(),
+  );
   return {
-    multiplier: multiple ?? 1,
-    source: planPolicy
-      ? "plan-multiplier"
-      : reference
-        ? "reference-plan"
-        : multiple === undefined
-          ? "unknown-plan"
-          : windowSeconds === 604_800
-            ? "published-weekly-multiplier"
-            : "published-session-multiplier",
-    known: reference || multiple !== undefined,
-    unit,
-    revision: planPolicy
-      ? "2026-11-09-max20x-20"
-      : claude && windowSeconds === 604_800 && multiple !== undefined
-        ? claudeWeeklyWeightRevision
-        : capacityWeightRevision,
+    multiplier: value.full,
+    source: !value.known
+      ? "unknown-plan"
+      : value.kind === "account-calibration"
+        ? "account-calibration"
+        : value.verification === "reference"
+          ? "reference-plan"
+          : value.verification === "policy"
+            ? "plan-multiplier"
+            : value.verification === "reported"
+              ? "reported-plan-multiplier"
+              : windowSeconds === 604_800
+                ? "published-weekly-multiplier"
+                : "published-session-multiplier",
+    known: value.known,
+    unit: value.unit,
+    revision: value.revision,
+    allowance: allowanceProvenance(value),
   };
 }
