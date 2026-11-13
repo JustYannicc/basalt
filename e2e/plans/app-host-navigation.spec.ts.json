@@ -47,6 +47,7 @@
     ".upstream/apps/hosted/server/src/contracts/app-ui.ts",
     ".upstream/apps/hosted/server/src/implementation/app-sessions.ts",
     ".upstream/apps/hosted/server/src/implementation/app-ui.ts",
-    ".upstream/apps/hosted/cloud/src/infrastructure/auth-database.ts"
+    ".upstream/apps/hosted/cloud/src/infrastructure/auth-database.ts",
+    ".upstream/e2e/support/app-navigation-lifecycle.ts"
   ]
 }

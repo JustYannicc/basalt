@@ -162,7 +162,7 @@ diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/i
    };
    window.addEventListener("message", onHostMessage);
    document.addEventListener("visibilitychange", activeChanged);
-@@ -122,11 +149,13 @@ export const createAppClient = () => {
+@@ -122,11 +149,17 @@ export const createAppClient = () => {
      if (!event.persisted) void dispose().catch((error) => console.error(error));
    };
    const dispose = async () => {
@@ -172,15 +172,18 @@ diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/i
      window.removeEventListener("message", onHostMessage);
      document.removeEventListener("visibilitychange", activeChanged);
      activeListeners.clear();
-+    for (const settle of navigations.values()) settle(false);
++    // Normal completion does not run the wait's interruption cleanup.
++    for (const [id, settle] of navigations) {
++      window.parent.postMessage({ type: "executor:navigate-cancel", id }, "*");
++      settle(false);
++    }
      optimistic.dispose();
      await runtime.dispose();
    };
-@@ -345,9 +374,62 @@ export const createAppClient = () => {
+@@ -345,9 +378,61 @@ export const createAppClient = () => {
        );
      },
    });
-+  let navigationRequests = 0;
 +  const navigate = (destination: typeof HostDestination.Encoded): Promise<boolean> => {
 +    const expiresAt = Date.now() + navigationTimeout;
 +    return runtime
@@ -198,7 +201,7 @@ diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/i
 +              resume(Effect.succeed(false));
 +              return;
 +            }
-+            const id = `${version}:${++navigationRequests}`;
++            const id = crypto.randomUUID();
 +            const settle = (accepted: boolean) => {
 +              navigations.delete(id);
 +              resume(Effect.succeed(accepted));
@@ -254,8 +257,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/host
 +  type HostNavigation,
 +} from "@executor-js/ui/contracts/host-navigation";
  import { AsyncResult } from "effect/reactivity";
--import { Option } from "effect";
-+import { Exit, Option } from "effect";
+ import { Option } from "effect";
  import { useEffect, useRef } from "react";
  import { useLocation, useNavigate } from "@tanstack/react-router";
 -import { appUiError, appUiLocationAtom, retainAppUiFailure } from "../../contracts/app-ui.ts";
@@ -289,14 +291,12 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/host
    const navigate = useNavigate();
    const historyRoute = useLocation({ select: (location) => location.hash === "usage-history" });
    const denied = AsyncResult.isFailure(result) && !retainAppUiFailure(result.cause);
-@@ -85,6 +102,84 @@ export function AppScreen({ app, active }: { readonly app: App; readonly active:
+@@ -85,6 +102,79 @@ export function AppScreen({ app, active }: { readonly app: App; readonly active:
      window.addEventListener("message", back);
      return () => window.removeEventListener("message", back);
    }, [active, historyRoute, frameRoute, navigate, organizationSlug, app.id]);
 +  const frameOrigin = frameRoute === undefined ? undefined : new URL(frameRoute).origin;
-+  const authorize = useAtomSet(appNavigationAuthorityAtom({ organization, app: app.id }), {
-+    mode: "promiseExit",
-+  });
++  const authorize = useAtomSet(appNavigationAuthorityAtom({ organization, app: app.id }));
 +  // The shown screen follows its own document's requests to open a tab of this app or an account,
 +  // as a new history entry: Back returns here, and the shared owner keeps the document running.
 +  useEffect(() => {
@@ -331,24 +331,21 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-screen.tsx b/apps/host
 +        }, request.expiresAt - Date.now()),
 +      };
 +      pending.set(message.id, token);
-+      void authorize({
++      authorize({
 +        reference: request.reference,
 +        version: request.version,
 +        origin: frameOrigin,
-+      }).then((exit) => {
-+        const current = pending.get(message.id) === token;
-+        if (current) {
-+          clearTimeout(token.timer);
-+          pending.delete(message.id);
-+        }
-+        const accepted =
-+          listening &&
-+          current &&
-+          request.expiresAt > Date.now() &&
-+          Exit.isSuccess(exit) &&
-+          exit.value;
-+        answer(accepted);
-+        if (accepted) follow(request.destination);
++        expiresAt: request.expiresAt,
++        onResult: (allowed) => {
++          const current = pending.get(message.id) === token;
++          if (current) {
++            clearTimeout(token.timer);
++            pending.delete(message.id);
++          }
++          const accepted = listening && current && request.expiresAt > Date.now() && allowed;
++          answer(accepted);
++          if (accepted) follow(request.destination);
++        },
 +      });
 +    };
 +    const follow = (destination: HostNavigation["destination"]) =>
@@ -635,6 +632,15 @@ diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/ap
 diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contracts/app-ui.ts
 --- a/apps/hosted/web/src/contracts/app-ui.ts
 +++ b/apps/hosted/web/src/contracts/app-ui.ts
+@@ -9,7 +9,7 @@ import {
+ } from "@executor-js/hosted-server/app-ui/contracts";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+ import type { AppId, AppSlug } from "@executor-js/sdk";
+-import { Cause, Data, Effect, Match, Option, Schedule, Schema, Stream } from "effect";
++import { Cause, Data, Effect, Exit, Match, Option, Schedule, Schema, Stream } from "effect";
+ import { Atom, AtomHttpApi } from "effect/reactivity";
+ import type { HttpApiEndpoint } from "effect/http-api";
+ import type { HttpClientError } from "effect/http";
 @@ -108,6 +108,9 @@ const message = Match.type<AppUiError>().pipe(
      StorageError: () => "This app could not be read. Try again.",
      AppUiUnavailable: () =>
@@ -645,7 +651,7 @@ diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contr
      Unauthorized: () => "Your session ended. Sign in again.",
      Forbidden: () => "Open this page from the site’s configured address.",
      AuthenticationUnavailable: () => "Sign-in is temporarily unavailable.",
-@@ -139,3 +142,27 @@ export const appUiError = (cause: Cause.Cause<AppUiError>) =>
+@@ -139,3 +142,42 @@ export const appUiError = (cause: Cause.Cause<AppUiError>) =>
      onSome: message,
      onNone: () => "The app could not open. Try again.",
    });
@@ -656,13 +662,28 @@ diff --git a/apps/hosted/web/src/contracts/app-ui.ts b/apps/hosted/web/src/contr
 +}> {}
 +const navigationAuthority = Atom.family((key: NavigationKey) =>
 +  AppUiClient.runtime.fn(
-+    (payload: { readonly reference: string; readonly origin: string; readonly version: string }) =>
++    ({
++      onResult,
++      expiresAt,
++      ...payload
++    }: {
++      readonly reference: string;
++      readonly origin: string;
++      readonly version: string;
++      readonly onResult: (allowed: boolean) => void;
++      readonly expiresAt: number;
++    }) =>
 +      Effect.flatMap(AppUiClient, (client) =>
 +        client.appUi.navigation({
 +          params: { organization: key.organization, app: key.app },
 +          payload,
 +        }),
++      ).pipe(
++        Effect.timeout(Math.max(0, expiresAt - Date.now())),
++        Effect.onExit((exit) => Effect.sync(() => onResult(Exit.isSuccess(exit) && exit.value))),
 +      ),
++    // Each request owns its read and completion, independently of the atom's latest result.
++    { concurrent: true },
 +  ),
 +);
 +/**
@@ -812,7 +833,7 @@ diff --git a/e2e/tests/app-host-navigation.spec.ts b/e2e/tests/app-host-navigati
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/app-host-navigation.spec.ts
-@@ -0,0 +1,512 @@
+@@ -0,0 +1,529 @@
 +/** An embedded app page opens its host's tabs and accounts through `apps/client`, in one window. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Redacted, Schema } from "effect";
@@ -827,6 +848,10 @@ new file mode 100644
 +import { waitForAppUrl } from "../support/app-pages.ts";
 +import { connectionsPath } from "../support/app-accounts.ts";
 +import { openThroughBrowser } from "../support/in-app-navigation.ts";
++import {
++  navigationLifecycleProbe,
++  navigationAuthorityIsolationProbe,
++} from "../support/app-navigation-lifecycle.ts";
 +import {
 +  appFrame,
 +  files,
@@ -1079,6 +1104,19 @@ new file mode 100644
 +          ),
 +        ).toEqual({ ...first, answer: "accepted" });
 +
++        expect(yield* navigationLifecycleProbe(origin)).toEqual({
++          parallel: [true, true],
++          disposed: false,
++          host: false,
++          search: "",
++        });
++
++        expect(yield* navigationAuthorityIsolationProbe(origin)).toEqual({
++          invalid: "refused",
++          valid: true,
++          search: "",
++        });
++
 +        expect(yield* navigationDeadlineProbe(origin)).toEqual({
 +          preflight: false,
 +          late: false,
@@ -1329,7 +1367,7 @@ diff --git a/e2e/support/app-host-navigation.ts b/e2e/support/app-host-navigatio
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/app-host-navigation.ts
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,174 @@
 +/** Synthetic author app and browser reads for the host-navigation journey. */
 +import type { Frame, Page } from "playwright";
 +import { Effect, Fiber } from "effect";
@@ -1366,6 +1404,21 @@ new file mode 100644
 +document.getElementById("account").addEventListener("click", () => go({ account: context.accounts?.service?.[0] }));
 +window.version = context.version;
 +window.navigateHost = (destination) => client.navigate(destination);
++const independent = new Map();
++window.startIndependentNavigation = (name) => {
++  const own = createAppClient();
++  independent.set(name, { own, answer: own.navigate({ tab: "app" }) });
++};
++window.independentNavigationAnswers = () => {
++  const entries = [...independent.values()];
++  independent.clear();
++  return Promise.all(entries.map(({ answer }) => answer)).finally(() => Promise.all(entries.map(({ own }) => own.dispose())));
++};
++window.startPostedNavigation = () => {
++  const own = createAppClient();
++  window.disposePostedNavigation = () => own.dispose();
++  return own.navigate({ tab: "settings" });
++};
 +window.navigationAnswers = [];
 +addEventListener("message", (event) => {
 +  if (event.source === parent && event.data?.type === "executor:navigate-result") window.navigationAnswers.push(event.data);
@@ -1828,3 +1881,174 @@ diff --git a/apps/hosted/cloud/src/infrastructure/auth-database.ts b/apps/hosted
    });
  };
  
+diff --git a/e2e/support/app-navigation-lifecycle.ts b/e2e/support/app-navigation-lifecycle.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/app-navigation-lifecycle.ts
+@@ -0,0 +1,166 @@
++/** Public browser probes for independent navigation requests and posted-request disposal. */
++import { Effect, Fiber } from "effect";
++import { Browser } from "./browser.ts";
++import { holdQuery } from "./query-transition.ts";
++import { appFrame } from "./app-host-navigation.ts";
++
++/** Each client gets its own reply; disposing a posted request cancels the host's pending work. */
++export const navigationLifecycleProbe = (origin: string) =>
++  Effect.scoped(
++    Effect.gen(function* () {
++      const browser = yield* Browser;
++      const clearAnswers = () =>
++        browser.use("Clear previous navigation replies", (page) =>
++          appFrame(page, origin).evaluate(() => {
++            (window as unknown as { navigationAnswers: unknown[] }).navigationAnswers = [];
++          }),
++        );
++      const hostAnswers = (count: number) =>
++        browser.use("Observe the host's completed replies", (page) => {
++          const frame = appFrame(page, origin);
++          return frame
++            .waitForFunction(
++              (needed) =>
++                (window as unknown as { navigationAnswers: unknown[] }).navigationAnswers.length >=
++                needed,
++              count,
++            )
++            .then(() =>
++              frame.evaluate(() =>
++                (
++                  window as unknown as { navigationAnswers: { accepted: boolean }[] }
++                ).navigationAnswers.map((answer) => answer.accepted),
++              ),
++            );
++        });
++      const parallel = yield* Effect.scoped(
++        Effect.gen(function* () {
++          const hold = yield* holdQuery(/\/ui\/navigation$/, "continue", {
++            method: "POST",
++            allRequests: true,
++          });
++          yield* clearAnswers();
++          yield* browser.use("Start one client's request", (page) =>
++            appFrame(page, origin).evaluate(() => {
++              (
++                window as unknown as { startIndependentNavigation: (name: string) => void }
++              ).startIndependentNavigation("first");
++            }),
++          );
++          yield* hold.requested;
++          yield* browser.use(
++            "Another client starts a request before the first completes",
++            (page) => {
++              const requested = page.waitForRequest(
++                (request) =>
++                  request.method() === "POST" &&
++                  new URL(request.url()).pathname.endsWith("/ui/navigation"),
++              );
++              return appFrame(page, origin)
++                .evaluate(() => {
++                  (
++                    window as unknown as { startIndependentNavigation: (name: string) => void }
++                  ).startIndependentNavigation("second");
++                })
++                .then(() => requested)
++                .then(() => undefined);
++            },
++          );
++          yield* hold.release;
++          const answers = yield* browser.use("Read each client's own answer", (page) =>
++            appFrame(page, origin).evaluate(() =>
++              (
++                window as unknown as { independentNavigationAnswers: () => Promise<boolean[]> }
++              ).independentNavigationAnswers(),
++            ),
++          );
++          yield* hostAnswers(2);
++          return answers;
++        }),
++      );
++      const hold = yield* holdQuery(/\/ui\/navigation$/, "continue", { method: "POST" });
++      yield* clearAnswers();
++      const answer = yield* Effect.forkChild(
++        browser.use("Post a request from a disposable client", (page) =>
++          appFrame(page, origin).evaluate(() =>
++            (
++              window as unknown as { startPostedNavigation: () => Promise<boolean> }
++            ).startPostedNavigation(),
++          ),
++        ),
++      );
++      yield* hold.requested;
++      yield* browser.use("Dispose after the host has started authorization", (page) =>
++        appFrame(page, origin).evaluate(() =>
++          (
++            window as unknown as { disposePostedNavigation: () => Promise<void> }
++          ).disposePostedNavigation(),
++        ),
++      );
++      const disposed = yield* Fiber.join(answer);
++      yield* hold.release;
++      const replies = yield* hostAnswers(1);
++      const search = yield* browser.use("Read the route after the released response", (page) =>
++        Promise.resolve(new URL(page.url()).search),
++      );
++      return { parallel, disposed, host: replies.at(-1), search };
++    }),
++  );
++
++/** A refused record cannot borrow the result of a valid request sharing the parent channel. */
++export const navigationAuthorityIsolationProbe = (origin: string) =>
++  Effect.scoped(
++    Effect.gen(function* () {
++      const browser = yield* Browser;
++      const hold = yield* holdQuery(/\/ui\/navigation$/, "continue", { method: "POST" });
++      yield* browser.use("Post a valid request whose read stays pending", (page) =>
++        appFrame(page, origin).evaluate(() => {
++          (
++            window as unknown as { startIndependentNavigation: (name: string) => void }
++          ).startIndependentNavigation("overlapping-valid");
++        }),
++      );
++      yield* hold.requested;
++      yield* browser.use("The other request's own session check is refused", (page) => {
++        const refused = page.waitForResponse(
++          (response) =>
++            new URL(response.url()).pathname.endsWith("/ui/navigation") &&
++            response.status() === 401,
++        );
++        return appFrame(page, origin)
++          .evaluate(() => {
++            const fixture = window as unknown as {
++              version: string;
++              mixedAnswer: Promise<string>;
++              sendRaw: (request: unknown) => Promise<string>;
++            };
++            fixture.mixedAnswer = fixture.sendRaw({
++              type: "executor:navigate",
++              id: `invalid-${Math.random()}`,
++              version: fixture.version,
++              reference: "0".repeat(64),
++              expiresAt: Date.now() + 3000,
++              destination: { tab: "settings" },
++            });
++          })
++          .then(() => refused)
++          .then(() => undefined);
++      });
++      yield* hold.release;
++      const answers = yield* browser.use("Read the separately correlated answers", (page) =>
++        appFrame(page, origin).evaluate(() => {
++          const fixture = window as unknown as {
++            mixedAnswer: Promise<string>;
++            independentNavigationAnswers: () => Promise<boolean[]>;
++          };
++          return Promise.all([fixture.mixedAnswer, fixture.independentNavigationAnswers()]).then(
++            ([invalid, valid]) => ({ invalid, valid: valid[0] }),
++          );
++        }),
++      );
++      const search = yield* browser.use("An invalid record opens no host tab", (page) =>
++        Promise.resolve(new URL(page.url()).search),
++      );
++      return { ...answers, search };
++    }),
++  );
