@@ -38,7 +38,7 @@ export async function publishRoutingDemand(
   );
   const inputs = [...observed, ...(freshForecasts ?? [])];
   const groups = (await client.allPoolGroups()).filter(
-    (group) => group.channel_name === `${poolGroupPrefix}${pool}`,
+    (group) => group.channel_name === `${poolGroupPrefix}${pool}` && !group.disabled,
   );
   if (!groups.length) return;
   const ids = groups.map((group) => group.id).sort((a, b) => a - b);

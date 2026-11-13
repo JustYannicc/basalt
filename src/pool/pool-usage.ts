@@ -105,10 +105,9 @@ export class PoolUsage {
     const membership = await client.allMembership();
     const pools = new Map<string, Set<string>>();
     const byGroup = new Map(
-      membership.groups.map((group) => [
-        group.id,
-        group.channel_name.slice(poolGroupPrefix.length),
-      ]),
+      membership.groups
+        .filter((group) => !group.disabled)
+        .map((group) => [group.id, group.channel_name.slice(poolGroupPrefix.length)]),
     );
     for (const member of membership.members) {
       const pool = byGroup.get(member.channel_group_id);

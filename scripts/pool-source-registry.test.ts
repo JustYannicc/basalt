@@ -373,6 +373,18 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         );
         assert.match(patch.retirement.requires, /no empty periodic writes/);
         assert.match(patch.retirement.requires, /without a schema or lease change/);
+      } else if (patch.identity === "cliproxy-home-quota-deadline") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0572-home-quota-deadline.patch");
+        assert.match(patch.retirement.requires, /forecast-paced quota deadlines/);
+        assert.match(patch.retirement.requires, /retained smooth weighted credits/);
+        assert.match(patch.retirement.requires, /fallback and affinity safety, admission retry/);
+        assert.match(patch.retirement.requires, /bounded private decision evidence/);
+        assert.match(patch.retirement.requires, /current read-only snapshots/);
+        assert.match(patch.retirement.requires, /staggered-reset availability/);
+        assert.match(patch.retirement.requires, /independent capacity-shortfall classification/);
+        assert.match(patch.retirement.requires, /public pool API/);
+        assert.match(patch.retirement.requires, /without exposing uninspectable account facts/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&

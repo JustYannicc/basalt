@@ -4,7 +4,7 @@ import { poolGroupPrefix } from "./pool-group.ts";
 
 export async function readRoutingDecisions(client: HomeClient, pool: string) {
   const groups = (await client.allPoolGroups()).filter(
-    (group) => group.channel_name === `${poolGroupPrefix}${pool}`,
+    (group) => group.channel_name === `${poolGroupPrefix}${pool}` && !group.disabled,
   );
   const pages: Json[] = [];
   let changedAt: string | undefined;
