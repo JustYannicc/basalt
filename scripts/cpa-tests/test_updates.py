@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -101,6 +102,95 @@ class UpdateTests(unittest.TestCase):
         patch.write_text(patch.read_text() + '\n+rewrite request\n')
         with self.assertRaisesRegex(ValueError, 'carry changes'):
             guard.check(root, 'HEAD')
+
+    def git(self, root, *args):
+        return subprocess.check_output(['git', *args], cwd=root, text=True).strip()
+
+    def commit(self, root):
+        self.git(root, 'add', '.')
+        self.git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                 'commit', '-qm', 'fixture')
+        return self.git(root, 'rev-parse', 'HEAD')
+
+    def batch_fixture(self):
+        root = self.fixture()
+        self.git(root, 'init', '-q')
+        self.git(root, 'branch', '-m', 'batch')
+        base = self.commit(root)
+        self.git(root, 'checkout', '-qb', 'bump')
+        for name, content in update.plan(root, self.candidate(), 'b' * 40, 'c' * 64, self.sums()).items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(content)
+        self.commit(root)
+        return root, base
+
+    def add_carry(self, root):
+        path = root / 'containers/pool/sources.json'
+        sources = json.loads(path.read_text())
+        carry = dict(sources['artifacts']['node']['patches'][0])
+        carry.update(file='reviewed.patch', identity='reviewed-member', sha256='d' * 64)
+        sources['artifacts']['node']['patches'].append(carry)
+        path.write_text(json.dumps(sources))
+        (root / 'containers/pool/patches/reviewed.patch').write_text('+reviewed behavior\n')
+        return self.commit(root)
+
+    def test_bump_member_carry_edits_reject_even_in_a_separate_commit(self):
+        root, base = self.batch_fixture()
+        sources = json.loads((root / 'containers/pool/sources.json').read_text())
+        path = root / 'containers/pool/patches' / sources['artifacts']['node']['patches'][0]['file']
+        path.write_text(path.read_text() + '\n+changed request behavior\n')
+        bump_head = self.commit(root)
+        with self.assertRaisesRegex(ValueError, 'carry changes'):
+            guard.check(root, base, bump_head)
+        self.git(root, 'checkout', 'batch')
+        self.git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                 'merge', '--no-ff', '-qm', 'member', bump_head)
+        with self.assertRaisesRegex(ValueError, 'CPA member .*carry changes'):
+            guard.check_batch(root, base, 'HEAD')
+
+    def test_reviewed_member_adds_carry_alongside_bump(self):
+        root, base = self.batch_fixture()
+        bump_head = self.git(root, 'rev-parse', 'HEAD')
+        self.git(root, 'checkout', 'batch')
+        self.git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                 'merge', '--no-ff', '-qm', 'bump member', bump_head)
+        self.git(root, 'checkout', '-qb', 'reviewed')
+        member_head = self.add_carry(root)
+        self.git(root, 'checkout', 'batch')
+        self.git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                 'merge', '--no-ff', '-qm', 'reviewed member', member_head)
+        guard.check_batch(root, base, 'HEAD')
+        with self.assertRaisesRegex(ValueError, 'carries changed'):
+            guard.check(root, base, 'HEAD')
+
+    def test_bump_member_cannot_add_a_carry(self):
+        root, base = self.batch_fixture()
+        self.add_carry(root)
+        with self.assertRaisesRegex(ValueError, 'carries changed'):
+            guard.check(root, base, 'HEAD')
+
+    def test_pr_comparison_uses_source_head_after_target_advances(self):
+        root, base = self.batch_fixture()
+        bump_head = self.git(root, 'rev-parse', 'HEAD')
+        self.git(root, 'checkout', '-qb', 'main', base)
+        (root / 'target-only.txt').write_text('target advanced\n')
+        target = self.commit(root)
+        self.git(root, 'checkout', '-qb', 'synthetic')
+        self.git(root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                 'merge', '--no-ff', '-qm', 'synthetic PR merge', bump_head)
+        self.assertEqual(self.git(root, 'merge-base', 'HEAD', 'main'), target)
+        self.git(root, 'remote', 'add', 'origin', str(root))
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        step = workflow.split('      - name: Resolve the guard comparison commit\n', 1)[1]
+        script = textwrap.dedent(step.split('        run: |\n', 1)[1].split('      - name:', 1)[0])
+        output = root / 'comparison-output'
+        subprocess.run(['bash', '-e', '-c', script], cwd=root, check=True, env={
+            'PATH': '/usr/bin:/bin', 'PULL_REQUEST': 'true', 'BASE_REF': 'main',
+            'BATCH_PUSH': 'false', 'BASE_SHA': target, 'HEAD_SHA': bump_head,
+            'GITHUB_OUTPUT': str(output),
+        })
+        self.assertEqual(output.read_text().strip(), f'base_sha={base}')
+        guard.check_batch(root, base, bump_head)
 
 if __name__ == '__main__':
     unittest.main()

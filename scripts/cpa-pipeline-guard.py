@@ -17,12 +17,17 @@ def carry_edits(patch):
     return [line for line in patch.splitlines() if line.startswith(("diff --git ", "+", "-"))]
 
 
-def check(root, base):
+def check(root, base, head=None):
     def before(path):
         return subprocess.check_output(["git", "show", f"{base}:{path}"], cwd=root, text=True)
 
+    def current(path):
+        if head is None:
+            return (root / path).read_text()
+        return subprocess.check_output(["git", "show", f"{head}:{path}"], cwd=root, text=True)
+
     old = json.loads(before("containers/pool/sources.json"))
-    new = json.loads((root / "containers/pool/sources.json").read_text())
+    new = json.loads(current("containers/pool/sources.json"))
     old_node, new_node = old["artifacts"]["node"], new["artifacts"]["node"]
     if old_node["commit"] == new_node["commit"]:
         print("CPA source pin unchanged")
@@ -36,9 +41,9 @@ def check(root, base):
         if {k: v for k, v in left.items() if k != "sha256"} != {k: v for k, v in right.items() if k != "sha256"}:
             raise ValueError("CPA carry identity or authority changed")
         path = "containers/pool/patches/" + left["file"]
-        if carry_edits(before(path)) != carry_edits((root / path).read_text()):
+        if carry_edits(before(path)) != carry_edits(current(path)):
             raise ValueError("CPA carry changes request pipeline or diagnostic behavior")
-    paths = subprocess.check_output(["git", "diff", "--name-only", base, "--", "containers/pool"], cwd=root, text=True).splitlines()
+    paths = subprocess.check_output(["git", "diff", "--name-only", base, *([head] if head else []), "--", "containers/pool"], cwd=root, text=True).splitlines()
     allowed = PIN_PATHS | {"containers/pool/patches/" + item["file"] for item in old_carries}
     for path in paths:
         if path not in allowed and not path.endswith(("_test.go.tmpl", ".test.ts")):
@@ -46,8 +51,32 @@ def check(root, base):
     print("CPA pipeline unchanged; existing carry edits are identical")
 
 
+def check_batch(root, base, head):
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
+
+    subprocess.run(["git", "merge-base", "--is-ancestor", base, head], cwd=root, check=True)
+    commits = git("rev-list", "--first-parent", "--reverse", f"{base}..{head}").splitlines()
+    for commit in commits:
+        parents = git("rev-list", "--parents", "-n", "1", commit).split()[1:]
+        if len(parents) > 2:
+            raise ValueError(f"CPA attribution refuses octopus merge {commit}")
+        # A merge's second parent is the immutable member head, including all its commits.
+        member = parents[1] if len(parents) == 2 else commit
+        member_base = git("merge-base", parents[0], member) if len(parents) == 2 else parents[0]
+        try:
+            check(root, member_base, member)
+        except ValueError as error:
+            raise ValueError(f"CPA member {member_base}..{member}: {error}") from error
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True)
+    parser.add_argument("--head")
+    parser.add_argument("--batch", action="store_true")
     args = parser.parse_args()
-    check(ROOT, args.base)
+    if args.batch:
+        check_batch(ROOT, args.base, args.head or "HEAD")
+    else:
+        check(ROOT, args.base, args.head)
