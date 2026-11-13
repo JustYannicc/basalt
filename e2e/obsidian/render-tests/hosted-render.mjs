@@ -93,7 +93,11 @@ export async function loadHostedPages(exports) {
     platform: "browser",
     conditions: ["import", "browser"],
     jsx: "automatic",
-    define: { "import.meta.env.DEV": "false", "process.env.NODE_ENV": '"development"' },
+    define: {
+      "import.meta.env.DEV": "false",
+      "import.meta.env.SSR": "false",
+      "process.env.NODE_ENV": '"development"',
+    },
     loader: { ".svg": "dataurl", ".png": "dataurl", ".css": "empty" },
     logLevel: "silent",
     plugins: [
