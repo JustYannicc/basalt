@@ -126,6 +126,7 @@ const program = Effect.gen(function* () {
     reason: "schema_pending",
   };
   let admissionRoot = process.argv[4];
+  let admittedCandidates = [publication.proposed.hash.image];
   if (!admissionRoot) {
     admissionRoot = temporary;
     mkdirSync(join(temporary, "scripts/release-barrier"), { recursive: true });
@@ -153,13 +154,16 @@ const program = Effect.gen(function* () {
       ),
     );
     info.required_indexes = declarations.transitions[0].requiredIndexes;
+    admittedCandidates = declarations.transitions
+      .filter((entry) => entry.baselineInputHash === baseline)
+      .map((entry) => entry.candidateInputHash);
   }
   yield* publication.verifySource;
   const admit = yield* Effect.promise(() => homeSchemaAdmission(admissionRoot));
   assert.equal(
     admit(selected.identity, info, before),
     true,
-    "checked admission must accept the provider publication hash",
+    `PoolContainer: checked admission must accept the provider publication hash ${selected.identity.sourceInputHash} from ${baseline}; admitted candidates: ${admittedCandidates.join(", ") || "none"}`,
   );
   const { computeStaticSourceHash } = yield* Effect.promise(() => load("Docker/ImageSource"));
   const staticHash = yield* computeStaticSourceHash({ context }, "linux/amd64");
