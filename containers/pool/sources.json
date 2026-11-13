@@ -240,8 +240,8 @@
         },
         {
           "identity": "cliproxy-native-typesafe-registration",
-          "file": "0066-typesafe-native-registration.patch",
-          "sha256": "fe7ebe60f5e90303b0b2f88aa16a6a18941c20ebc7810db179048f0ff8dbfc2e",
+          "file": "0559-typesafe-native-registration.patch",
+          "sha256": "d6b8e6058413d5f641f5d07aa95d375efd4504f2f73724bbdf2f860bf5458e7a",
           "retirement": {
             "mode": "manual",
             "requires": "Retire this carry only after the replacement serves native System One through Home authority and execution, preserves native errors and accounting, and passes stock SDK, compression, multipart, current-generation catalog and revocation proofs. A forced failure during mirror creation, reconnect or deletion must leave no usable stale credential and must recover on retry without replacing the saved Executor account. Migrate each current mirror to the replacement binding before removing the old path, then purge the retired mirrored Home credentials while retaining original Executor token fields and unrelated Home accounts. Prove that the purge is scoped, resumable after a forced failure and idempotent across repeated boots, with no retired credential selectable after unlink, deletion or generation replacement."

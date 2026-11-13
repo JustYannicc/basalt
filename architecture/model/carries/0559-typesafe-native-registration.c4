@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Native System One registration must share the request access manager and Home model authority in foreground and background services while preserving upstream startup error returns and shutdown cleanup. Its replacement retains native errors, accounting, SDK, compression, multipart, catalog, revocation and scoped resumable mirror-retirement obligations."
+    }
+  }
+}
