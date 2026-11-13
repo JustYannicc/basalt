@@ -17,7 +17,7 @@ diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/
  import { AppCodeId, SourceError, SourceFilePath, aesGcmCredentials } from "@executor-js/sdk/core";
  import { externalTrace, TraceContext, traceLinks } from "@executor-js/telemetry";
  import * as Cloudflare from "alchemy/Cloudflare";
-@@ -70,24 +79,51 @@
+@@ -70,24 +79,61 @@
    );
    const attachments = yield* Cloudflare.R2.ReadWriteBucket(VaultAttachments);
    const encryptionKey = yield* cloudEncryptionKey;
@@ -42,7 +42,17 @@ diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/
 +      const access = nativeEnvironment as unknown as Omit<BulkEnvironment, "UsageImportArtifacts">;
 +      bulk = new BulkCoordinator(
 +        state.raw,
-+        { ...access, UsageImportArtifacts: yield* attachments.raw },
++        {
++          POOL_APP_SIGNING_KEY: access.POOL_APP_SIGNING_KEY,
++          ...(access.POOL_APP_SIGNING_KEY_PREVIOUS === undefined
++            ? {}
++            : { POOL_APP_SIGNING_KEY_PREVIOUS: access.POOL_APP_SIGNING_KEY_PREVIOUS }),
++          ...(access.POOL_AUTH_DATABASE === undefined
++            ? {}
++            : { POOL_AUTH_DATABASE: access.POOL_AUTH_DATABASE }),
++          TOOLS_SERVICE: access.TOOLS_SERVICE,
++          UsageImportArtifacts: yield* attachments.raw,
++        },
 +        (job) => state.raw.id.equals(objects.idFromName(bulkObjectName(job))),
 +      );
 +      return bulk;
@@ -81,7 +91,7 @@ diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/
        );
      const acquire = (repository: AppCodeId, rejectedGeneration: string | null) =>
        lock
-@@ -99,6 +135,7 @@
+@@ -99,6 +145,7 @@
                    "source.token.rejected_generation",
                    rejectedGeneration,
                  );
@@ -89,7 +99,7 @@ diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/
                const now = yield* Clock.currentTimeMillis;
                const stored = yield* state.storage.get<unknown>("credential");
                if (stored !== undefined) {
-@@ -162,6 +199,13 @@
+@@ -162,6 +209,13 @@
          )
          .pipe(Effect.mapError(unavailable), Effect.withSpan("source.repository.token.acquire"));
      return {
@@ -103,7 +113,7 @@ diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/
        acquire: (id: string, rejectedGeneration: string | null, trace: TraceContext | undefined) =>
          Schema.decodeUnknownEffect(AppCodeId)(id).pipe(
            Effect.flatMap((repository) =>
-@@ -333,6 +377,7 @@
+@@ -333,6 +387,7 @@
          Effect.scoped(
            Effect.gen(function* () {
              const repository = yield* Schema.decodeUnknownEffect(AppCodeId)(id);
@@ -111,7 +121,7 @@ diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/
              const created = yield* Effect.acquireRelease(
                binding.create(repository, { setDefaultBranch: "main" }).pipe(
                  Effect.tapError((error) =>
-@@ -416,6 +461,11 @@
+@@ -416,6 +471,11 @@
          }),
        alarm: () =>
          Effect.gen(function* () {
@@ -123,7 +133,7 @@ diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/
            const raw = yield* state.storage.get<unknown>("prepare");
            if (raw === undefined) return;
            const pending = yield* Schema.decodeUnknownEffect(pendingPreparation)(raw);
-@@ -466,7 +516,7 @@
+@@ -466,7 +526,7 @@
        ...(yield* cloudObservability),
        workersDev: false,
        compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
