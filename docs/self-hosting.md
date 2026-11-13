@@ -105,6 +105,16 @@ Redeploy cannot recover a lost or rotated state key; after bootstrap, back up `A
 
 The workflow maps `AUTH_GITHUB_*` to upstream's `GITHUB_*` environment variables because GitHub reserves the latter prefix for Actions secrets. Generated signing and lifecycle secrets are created directly in Actions secrets. Their values never belong in logs, repository files or artifacts.
 
+### Pool machine credential
+
+Before enabling pool fleet observation, provision its account-owned Workers Containers Read token through the existing Cloudflare connector. The connected account needs Account API Tokens Write and Secrets Store Write, and the deployment account must already have `default_secrets_store`. The bootstrap does not use the deployment credential or export the OAuth grant.
+
+`node scripts/pool-credential-bootstrap.ts review <plan.json>` produces the plan and program digests for review. The plan contains only identifiers, a stage, operation and attempt UUIDs, a mode, an optional recovery token ID, and an expiry within ten minutes. The schemas are in `scripts/pool-credential-bootstrap/contract.ts`.
+
+After separate mint and store approvals for those exact digests, `arm <packet.json> <retained-journal>` durably records the submission and emits the `tools.cloudflare.mcp.execute` invocation. Execute it once through the connector. Inside that one server-side call, the token value passes directly to `basalt-<stage>-pool-provider-observation` in the existing store. Only token ID, secret name and outcome return. Use `record <plan.json> <retained-journal> <result.json>` to retain that metadata. Keep the journal private and backed up.
+
+A lost reply never permits another create or another execution of the emitted invocation. Use `inspect <plan.json>` with the original operation to find its exact token and store metadata, then record that result. Recovery requires the original submission and inspection, plus separate approvals to rotate the owned token and store its new value, or to revoke only that token. A retained secret entry is not deleted by revocation. `stored` proves custody only; authorize and perform the controller read separately before binding or activation.
+
 ### Account setup
 
 Create a Cloudflare token for the account owning the configured zone. Account permissions: Workers Scripts Edit, Workers R2 Storage Edit, D1 Edit, Hyperdrive Edit, Account Settings Read, Secrets Store Edit, account SSL and Certificates Edit, Workers Observability Edit, Artifacts Edit, Containers Write and permission to publish container registry images. Zone permissions: Zone Read, DNS Edit, Workers Routes Edit, SSL and Certificates Edit, and Email Sending Edit. Enable Workers paid usage and native Email Sending. Alchemy provisions the custom domain and sending subdomain; no manual app DNS record is needed.
