@@ -335,7 +335,12 @@ function aggregate(readings: readonly CapacityReading[], at: number): CapacityAg
     knownWeightCount = 0;
   const weights = new Map<
     string,
-    { source: CapacityReading["source"]; revision: string; accountCount: number }
+    {
+      source: CapacityReading["source"];
+      revision: string;
+      accountCount: number;
+      allowance?: CapacityReading["allowance"];
+    }
   >();
   for (const reading of ordered) {
     remaining += reading.remaining;
@@ -343,10 +348,16 @@ function aggregate(readings: readonly CapacityReading[], at: number): CapacityAg
     observedFrom = Math.min(observedFrom, reading.observedAt);
     observedTo = Math.max(observedTo, reading.observedAt);
     if (reading.knownWeight) knownWeightCount++;
-    const key = JSON.stringify([reading.source, reading.revision]),
+    const key = JSON.stringify([reading.source, reading.revision, reading.allowance ?? null]),
       weight = weights.get(key);
     if (weight) weight.accountCount++;
-    else weights.set(key, { source: reading.source, revision: reading.revision, accountCount: 1 });
+    else
+      weights.set(key, {
+        source: reading.source,
+        revision: reading.revision,
+        accountCount: 1,
+        ...(reading.allowance ? { allowance: reading.allowance } : {}),
+      });
   }
   const provenance = [...weights.values()].sort(
     (a, b) => a.source.localeCompare(b.source) || a.revision.localeCompare(b.revision),

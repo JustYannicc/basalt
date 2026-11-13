@@ -749,3 +749,37 @@ test("unchanged Codex policy preserves training across the weekly-weight rollout
   assert.equal(after.points.length, before.points.length);
   assert.ok(after.points[0]!.demand! > before.points[0]!.demand!);
 });
+
+test("aggregate provenance preserves each account's evidence dates", async () => {
+  const history = new CapacityHistory(new Memory());
+  const evidence = (checkedAt: number, expiresAt: number) => ({
+    kind: "account-absolute" as const,
+    verification: "verified" as const,
+    sources: ["urn:synthetic:quota-api"],
+    checkedAt,
+    fetchedAt: checkedAt,
+    expiresAt,
+  });
+  await history.observe("pool", {
+    at: start,
+    expected: [{ provider: "claude", windowSeconds: 18_000, accounts: 2 }],
+    readings: [
+      reading("a", 2, { allowance: evidence(start - 10_000, start + hour) }),
+      reading("b", 2, { allowance: evidence(start - 5_000, start + 2 * hour) }),
+    ],
+  });
+  const [point] = await history.read("pool");
+  assert.equal(point!.last.weights.length, 2);
+  assert.deepEqual(
+    point!.last.weights.map((weight) => weight.accountCount),
+    [1, 1],
+  );
+  assert.deepEqual(
+    point!.last.weights.map((weight) => weight.allowance?.checkedAt).sort(),
+    [start - 10_000, start - 5_000].sort(),
+  );
+  assert.deepEqual(
+    point!.last.weights.map((weight) => weight.allowance?.expiresAt).sort(),
+    [start + hour, start + 2 * hour].sort(),
+  );
+});

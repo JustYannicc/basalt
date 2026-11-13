@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { quotaObservation } from "../quota-observation.ts";
 import { capacityReadings } from "./normalize.ts";
 
-const now = Date.parse("2026-11-04T00:00:00Z");
+const now = Date.parse("2026-11-13T12:00:00Z");
 
 test("Home's xAI account week trains capacity once alongside its product breakdown", () => {
   const weekly = {
@@ -37,7 +37,7 @@ test("Home's xAI account week trains capacity once alongside its product breakdo
   assert.equal(readings[0]?.full, 1);
   assert.equal(readings[0]?.mode, "fixed");
   assert.equal(readings[0]?.resetAt, Date.parse(weekly.reset_at));
-  assert.equal(readings[0]?.knownWeight, false);
+  assert.equal(readings[0]?.knownWeight, true);
   assert.deepEqual(
     capacityReadings(
       "grok-seat",

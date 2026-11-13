@@ -38,6 +38,7 @@ import { nativeResponse, nativeSession } from "./native-response.worker.ts";
 import { hasActiveHomeApiKey, homeApiKeyCandidates, type HomeApiKeyLookup } from "./model-auth.ts";
 import { PriceUpkeep } from "./prices.ts";
 import { OverviewPrices } from "./overview-prices.ts";
+import { PlanAllowances } from "./allowances/registry.ts";
 import { managedCapPath, managedUsagePath, PoolUsage, summaryPath } from "./pool-usage.ts";
 import { timePoolRead } from "./read-timing.ts";
 import { inventoryCron, reportPoolInventory } from "./inventory.ts";
@@ -125,6 +126,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private overviewPrices: OverviewPrices;
   private usage: PoolUsage;
   private usageAccountLabels: UsageAccountLabels;
+  private allowances: PlanAllowances;
   private managementReadyUntil = 0;
   private managementWarming?: Promise<void>;
   private memberships: NativeMemberships;
@@ -236,7 +238,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       new HomeClient(home, Date.now, () => this.control.invalidateViews()),
       ctx.storage,
     );
+    this.allowances = new PlanAllowances(ctx.storage);
     this.usage = new PoolUsage({
+      allowances: this.allowances,
       storage: ctx.storage,
       client: new HomeClient(home, Date.now, () => this.control.invalidateViews()),
       signingKey: env.POOL_APP_SIGNING_KEY,
@@ -423,6 +427,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       this.computers.observeUsage(undefined, true, progress),
     );
     await this.control.expire();
+    this.ctx.waitUntil(
+      this.allowances.refresh().catch(() => console.error("POOL_PLAN_ALLOWANCE_REFRESH_PENDING")),
+    );
     await this.prices.run();
     await this.overviewPrices.refresh();
     // Usage is a report: a slow or failing read must not hold the pool's own upkeep.

@@ -239,6 +239,15 @@
             "mode": "manual",
             "requires": "Retire only after the pinned selector preserves forecast-paced quota deadlines, retained smooth weighted credits, fallback and affinity safety, admission retry, bounded private decision evidence and current read-only snapshots. Prove staggered-reset availability and independent capacity-shortfall classification through the public pool API without exposing uninspectable account facts."
           }
+        },
+        {
+          "identity": "home-summary-service-tier",
+          "file": "0594-home-summary-service-tier.patch",
+          "sha256": "e00ecfbd3ff8a2705adfbb78fd60595c5169bf0bf0d614b41d1444fc152b107a",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after the pinned Home narrow cursor and pending summary feeds preserve the stored service-tier identity, retain unknown auto values without guessing, and pass the known-tier, unknown-tier and metadata-only privacy regressions."
+          }
         }
       ]
     },
