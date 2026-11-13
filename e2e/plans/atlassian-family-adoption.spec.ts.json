@@ -19,6 +19,7 @@
     },
     "cloudAtlassianFamilySourcePreservation": {
       "fixtures": "actors",
+      "managementApps": ["owner", "admin", "member"],
       "title": "Cloud production operations preserve app source saved before approval or after a dry run",
       "targets": {
         "cloud": {
