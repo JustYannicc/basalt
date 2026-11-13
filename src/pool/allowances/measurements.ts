@@ -1,7 +1,4 @@
-import {
-  vendorPlan,
-  type PlanAllowance,
-} from "../../../.upstream/packages/apps/src/contracts/account-plan-allowance.ts";
+import { vendorPlan, type PlanAllowance } from "apps";
 import type { HomeClient } from "../control.ts";
 import type { UsageStorage } from "../usage-storage.ts";
 import type { QuotaObservation } from "../quota-observation.ts";
@@ -23,6 +20,10 @@ interface WindowState {
   pending?: readonly [AllowanceObservation, AllowanceObservation];
   samples: CalibrationSample[];
   allowance?: PlanAllowance;
+}
+interface Consumption {
+  events: readonly MeasuredConsumption[];
+  rejected: readonly { account: string; at: number }[];
 }
 interface AccountInput {
   id: string;
@@ -98,7 +99,12 @@ export class AccountAllowanceMeasurements {
           ? { ...previous, samples: [...previous.samples] }
           : { last: right, samples: [] };
         if (state.pending && state.pending[1].at <= now - 60_000) {
-          const sample = events && calibrationInterval(...state.pending, events);
+          const [left, right] = state.pending;
+          const rejected = events?.rejected.some(
+            (event) =>
+              event.account === right.account && event.at >= left.at && event.at < right.at,
+          );
+          const sample = events && !rejected && calibrationInterval(left, right, events.events);
           if (sample) {
             if (state.samples.some((value) => value.profile !== sample.profile)) state.samples = [];
             state.samples = [
@@ -148,7 +154,7 @@ export class AccountAllowanceMeasurements {
     return result;
   }
 
-  private async consumption(from: number, to: number): Promise<MeasuredConsumption[] | null> {
+  private async consumption(from: number, to: number): Promise<Consumption | null> {
     try {
       const capabilities = await this.home.data("/capabilities");
       if (
@@ -159,28 +165,25 @@ export class AccountAllowanceMeasurements {
         return null;
       const scan: UsageScan = { from, to, offset: 0, keyset: true };
       const events = new Map<string, MeasuredConsumption>();
+      const rejected: { account: string; at: number }[] = [];
       for (let page = 0; page < 5; page++) {
         const result = await readUsagePage(this.home, scan, true);
         for (const row of result.items) {
           const account = object(row.credential) ? text(row.credential.credential_id) : null;
           const at = Date.parse(text(row.timestamp) ?? "");
-          const id = text(row.id),
+          const id = text(row.id);
+          if (!account || !id || !Number.isFinite(at) || at < from || at >= to) return null;
+          const tier = text(row.service_tier),
             model = text(row.model),
             provider = text(row.provider);
-          if (
-            !account ||
-            !id ||
-            !model ||
-            !provider ||
-            !Number.isFinite(at) ||
-            at < from ||
-            at >= to ||
-            !object(row.token_breakdown) ||
-            row.token_breakdown.quality !== "complete"
-          )
-            return null;
           const breakdown = row.token_breakdown;
           if (
+            !tier ||
+            ["unknown", "unspecified", "auto"].includes(tier.toLowerCase()) ||
+            !model ||
+            !provider ||
+            !object(breakdown) ||
+            breakdown.quality !== "complete" ||
             !object(breakdown.input) ||
             !object(breakdown.output) ||
             [
@@ -192,24 +195,31 @@ export class AccountAllowanceMeasurements {
             ].some(
               (value) => typeof value !== "number" || !Number.isSafeInteger(value) || value < 0,
             )
-          )
-            return null;
+          ) {
+            rejected.push({ account, at });
+            continue;
+          }
           const tokens = recordTokens(row, true);
-          if (tokens.input + tokens.cacheRead + tokens.cacheWrite + tokens.output !== tokens.total)
-            return null;
+          if (
+            tokens.input + tokens.cacheRead + tokens.cacheWrite + tokens.output !==
+            tokens.total
+          ) {
+            rejected.push({ account, at });
+            continue;
+          }
           const event = {
             account,
             at,
             model,
             vendor: vendorPlan(provider, null).vendor,
-            tier: text(row.service_tier) ?? "",
+            tier,
             tokens,
           };
           const previous = events.get(id);
           if (previous && JSON.stringify(previous) !== JSON.stringify(event)) return null;
           events.set(id, event);
         }
-        if (result.complete) return [...events.values()];
+        if (result.complete) return { events: [...events.values()], rejected };
       }
     } catch {
       /* A later complete interval can establish a new estimate. */

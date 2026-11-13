@@ -1,14 +1,7 @@
-import type { PlanAllowanceCatalog } from "../../../.upstream/packages/apps/src/contracts/account-plan-allowance.ts";
+import type { PlanAllowanceCatalog } from "apps";
 import type { ComputerStorage } from "../computer-registry.ts";
 import { digest } from "../backend-users.ts";
-import {
-  allowanceKey,
-  datasetUrl,
-  dayMs,
-  seedCatalog,
-  sourceMaxAge,
-  type PlanAllowance,
-} from "./data.ts";
+import { allowanceKey, datasetUrl, dayMs, seedCatalog, type PlanAllowance } from "./data.ts";
 import { datasetAllowances } from "./dataset.ts";
 import { vendorAllowances, vendorSources, type VendorSourceId } from "./vendors.ts";
 
@@ -119,10 +112,8 @@ export class PlanAllowances {
           ...entry,
           full: null,
           verification: "unknown",
-          contradicted: true,
-          checkedAt: now,
+          contradicted: false,
           fetchedAt: now,
-          expiresAt: now + sourceMaxAge,
           detail: "The source changed or no longer confirms this allowance; sized as one account",
         });
         try {

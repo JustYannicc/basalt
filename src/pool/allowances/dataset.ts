@@ -1,4 +1,4 @@
-import { vendorPlan } from "../../../.upstream/packages/apps/src/contracts/account-plan-allowance.ts";
+import { vendorPlan } from "apps";
 import {
   allowanceEntry,
   datasetUrl,
@@ -45,7 +45,10 @@ export function datasetAllowances(input: unknown, now: number): PlanAllowance[] 
       row.tool === "codex" ? "openai" : row.tool === "claude-code" ? "anthropic" : null;
     if (!vendor) return [];
     const label = row.label.replace(/^(?:ChatGPT|Claude)\s+/u, "");
-    const plan = vendorPlan(vendor, label);
+    const display = vendorPlan(vendor, label);
+    const plan = display.recognized
+      ? display
+      : vendorPlan(vendor, row.id.replace(/^(?:claude-|codex-chatgpt-)/u, "").replaceAll("-", " "));
     if (!plan.recognized) return [];
     // Business seat estimates and Team lower bounds do not prove a shared weekly ratio.
     if (/business|team|enterprise|edu/iu.test(plan.id)) return [];

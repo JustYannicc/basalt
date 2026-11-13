@@ -3,7 +3,7 @@ import {
   planAllowance,
   type AllowanceProvenance,
   type PlanAllowanceCatalog,
-} from "../../../.upstream/packages/apps/src/contracts/account-plan-allowance.ts";
+} from "apps";
 
 import { seedCatalog } from "../allowances/data.ts";
 

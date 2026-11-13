@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PlanAllowances } from "./registry.ts";
@@ -94,7 +95,7 @@ test("a changed source revokes its previous value instead of renewing a seed", a
   assert.equal(value.known, false);
   assert.equal(value.multiplier, 1);
   assert.match(value.unit.id, /promax/);
-  assert.equal(value.allowance?.checkedAt, clock);
+  assert.equal(value.allowance?.checkedAt, Date.parse("2026-11-12T00:00:00Z"));
 });
 
 test("network failure does not renew source age and expiry needs no refresh job", async () => {
@@ -124,4 +125,41 @@ test("network failure does not renew source age and expiry needs no refresh job"
   });
   assert.equal(expired.known, false);
   assert.equal(expired.multiplier, 1);
+});
+
+test("an expired vendor statement cannot contradict a freshly checked dataset", async () => {
+  const bodies: Record<string, string> = JSON.parse(
+    readFileSync(new URL("./fixtures/vendor-sources.json", import.meta.url), "utf8"),
+  );
+  let clock = now;
+  const registry = new PlanAllowances(new Memory(), {
+    now: () => clock,
+    seed: { entries: [] },
+    fetch: async (input) => {
+      const url = String(input);
+      if (url.includes("planyield"))
+        return Response.json({
+          as_of: new Date(clock).toISOString().slice(0, 10),
+          license: "CC BY 4.0",
+          options: [{ ...row(50), checked: new Date(clock).toISOString().slice(0, 10) }],
+        });
+      if (url.includes("subscription.rs")) return new Response(bodies["openai-client"]);
+      if (url.includes("fxtwitter")) return new Response(bodies["openai-statement"]);
+      return new Response(null, { status: 503 });
+    },
+  });
+  await registry.refresh();
+  assert.equal(
+    capacityWeight("codex", "promax", 604_800, { catalog: await registry.read(), now: clock })
+      .multiplier,
+    50,
+  );
+  clock += 15 * 86_400_000;
+  await registry.refresh();
+  const value = capacityWeight("codex", "promax", 604_800, {
+    catalog: await registry.read(),
+    now: clock,
+  });
+  assert.equal(value.multiplier, 50);
+  assert.equal(value.allowance?.kind, "dataset");
 });

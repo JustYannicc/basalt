@@ -334,7 +334,7 @@ function aggregate(readings: readonly CapacityReading[], at: number): CapacityAg
     observedFrom = Math.min(observedFrom, reading.observedAt);
     observedTo = Math.max(observedTo, reading.observedAt);
     if (reading.knownWeight) knownWeightCount++;
-    const key = JSON.stringify([reading.source, reading.revision]),
+    const key = JSON.stringify([reading.source, reading.revision, reading.allowance ?? null]),
       weight = weights.get(key);
     if (weight) weight.accountCount++;
     else

@@ -1,7 +1,4 @@
-import type {
-  AllowanceProvenance,
-  PlanAllowanceCatalog,
-} from "../../.upstream/packages/apps/src/contracts/account-plan-allowance.ts";
+import type { AllowanceProvenance, PlanAllowanceCatalog } from "apps";
 export type CapacityWeightSource =
   | "account-calibration"
   | "reported-plan-multiplier"

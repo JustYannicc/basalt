@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { datasetAllowances } from "./dataset.ts";
 import { PlanAllowances } from "./registry.ts";
 import {
   planAllowance,
@@ -145,4 +146,17 @@ test("a current no-limit fact suppresses older caps while temporary reported win
   assert.equal(planAllowance(catalog, "codex", "promax", 18_000, now).known, false);
   assert.deepEqual(planAllowanceWindows(catalog, "codex", "promax", [], now), []);
   assert.deepEqual(planAllowanceWindows(catalog, "codex", "promax", [18_000], now), [18_000]);
+});
+
+test("a freshly maintained specific Max row resolves its generic display label", async () => {
+  const dataset = JSON.parse(fixture);
+  for (const row of dataset.options)
+    if (row.id === "claude-max-5x") {
+      row.status_class = "ok";
+      row.checked = "2026-11-13";
+    }
+  const entries = datasetAllowances(dataset, now);
+  const value = planAllowance({ entries }, "claude", "max_5x", 604_800, now);
+  assert.equal(value.full, 5);
+  assert.equal(value.kind, "dataset");
 });

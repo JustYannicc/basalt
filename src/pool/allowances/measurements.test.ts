@@ -42,7 +42,7 @@ function account(at: number, remaining: number, resetAt = start + 604_800_000) {
     }),
   };
 }
-function feed(complete = true) {
+function feed(complete = true, tier: string | null = "standard", unrelated = false) {
   return {
     async data(path: string) {
       if (path === "/capabilities")
@@ -55,6 +55,7 @@ function feed(complete = true) {
         timestamp: new Date(start + index * 60_000).toISOString(),
         credential: { credential_id: "synthetic-grok" },
         provider: "xai",
+        service_tier: tier,
         model: "synthetic-model",
         token_breakdown: {
           quality: complete ? "complete" : "incomplete",
@@ -63,7 +64,20 @@ function feed(complete = true) {
           total_tokens: 100,
         },
       })).filter((row) => Date.parse(row.timestamp) >= from && Date.parse(row.timestamp) < to);
-      return { items, next: null };
+      return {
+        items: unrelated
+          ? [
+              ...items,
+              ...items.map((row) => ({
+                ...row,
+                id: String(Number(row.id) + 100),
+                service_tier: null,
+                credential: { credential_id: "unrelated-account" },
+              })),
+            ]
+          : items,
+        next: null,
+      };
     },
   };
 }
@@ -103,4 +117,25 @@ test("incomplete consumption never replaces an account reference unit", async ()
       0,
     );
   }
+});
+
+test("a missing service tier cannot calibrate a mixture of differently billed requests", async () => {
+  const measurements = new AccountAllowanceMeasurements(new Memory(), feed(true, null));
+  for (let index = 0; index <= 5; index++) {
+    const current = account(start + index * step, 1 - index * 0.05);
+    assert.equal(
+      (await measurements.observe([current], start + index * step)).get(current.id)?.length,
+      0,
+    );
+  }
+});
+
+test("unknown tiers on unrelated accounts do not block this account's matched intervals", async () => {
+  const measurements = new AccountAllowanceMeasurements(new Memory(), feed(true, "standard", true));
+  let entries: readonly import("./data.ts").PlanAllowance[] = [];
+  for (let index = 0; index <= 4; index++) {
+    const current = account(start + index * step, 1 - index * 0.05);
+    entries = (await measurements.observe([current], start + index * step)).get(current.id)!;
+  }
+  assert.equal(entries[0]?.full, 10_000);
 });

@@ -1,7 +1,4 @@
-import type {
-  PlanAllowance,
-  PlanAllowanceCatalog,
-} from "../../../.upstream/packages/apps/src/contracts/account-plan-allowance.ts";
+import type { PlanAllowance, PlanAllowanceCatalog } from "apps";
 import seed from "./seed.json" with { type: "json" };
 
 export type { PlanAllowance, PlanAllowanceCatalog };

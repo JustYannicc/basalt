@@ -1,7 +1,4 @@
-import type {
-  AllowanceProvenance,
-  PlanAllowanceCatalog,
-} from "../../../.upstream/packages/apps/src/contracts/account-plan-allowance.ts";
+import type { AllowanceProvenance, PlanAllowanceCatalog } from "apps";
 import type { QuotaObservation, QuotaWindowObservation } from "../quota-observation.ts";
 import { capacityWeight, capacityWeightRevision, type CapacityWeight } from "./weights.ts";
 
