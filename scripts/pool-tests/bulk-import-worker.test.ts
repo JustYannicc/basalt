@@ -439,6 +439,24 @@ test("bulk signed HTTP commands run through SQLite DO, R2 and real PostgreSQL re
       }
       assert.equal(await countRows(), 5005);
 
+      for (const data of [
+        JSON.stringify(event(7200)).replace(
+          '"endpoint":"/v1/responses"',
+          '"endpoint":{"prompt":"synthetic rejected text"},"endpoint":null',
+        ),
+        JSON.stringify(event(7201)).replace(
+          '"endpoint":"/v1/responses"',
+          '"endpoint":"synthetic rejected text","end\\u0070oint":null',
+        ),
+      ]) {
+        const rejected = await plan([data]);
+        await post(rejected.input);
+        await post({ operation: "upload", job: rejected.definition.job, chunk: 0, data }, 400);
+        assert.equal((await status(rejected.definition)).uploadedChunks, 0);
+        assert.equal(await bucket.get(`usage-import-v1/${rejected.definition.job}/0.ndjson`), null);
+        assert.deepEqual(await receipts(rejected.definition), []);
+      }
+
       const metadata = await plan([
         [
           { ...event(7100), source_id: "7100", generate: true, endpoint: null },
