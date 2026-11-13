@@ -167,6 +167,9 @@ const program = Effect.gen(function* () {
   const rejectedCandidateHashes = [
     ...new Set([
       staticHash,
+      "c7646255244ef2e0",
+      "f10a204af47e623f",
+      "349077fb12a21f30",
       "0152ede472b6f78e",
       "f0306fefc74fbf8d",
       "cc52df39f1c5cd82",

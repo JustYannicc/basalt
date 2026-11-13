@@ -29,3 +29,19 @@ for (const tree of ["src", "lib"])
       );
       assert.match(output, /__PROVIDER_ADMISSION_PASS__/);
     });
+
+for (const tree of ["src", "lib"])
+  test(`the real ${tree} publication reaches Home admission from the b75 baseline`, () => {
+    const output = execFileSync(
+      "bun",
+      [
+        fileURLToPath(new URL("./test/provider-admission-proof.mjs", import.meta.url)),
+        tree,
+        "",
+        "",
+        "c7646255244ef2e0",
+      ],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    assert.match(output, /__PROVIDER_ADMISSION_PASS__/);
+  });

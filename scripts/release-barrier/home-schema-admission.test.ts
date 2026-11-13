@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homeSchemaAdmission } from "./home-schema-admission.ts";
 import type { HomeMigrationIdentity, HomeSchemaResult } from "./home-schema-operation.ts";
 
@@ -116,4 +117,57 @@ test("two reviewed serving baselines admit one candidate while stale candidates 
     admit({ ...identity, sourceInputHash, baselineInputHash: "f".repeat(16) }, info, before),
     false,
   );
+});
+
+test("the combined b76 publication requires its b75 baseline and preserves both b75 transitions", async () => {
+  const admit = await homeSchemaAdmission(fileURLToPath(new URL("../../", import.meta.url)));
+  const native = {
+    ...info,
+    required_indexes: [
+      "idx_billing_charge_usage_cover_v1",
+      "idx_billing_charge_overview_time_v1",
+      "idx_usage_billing_complete_v2",
+      "idx_usage_summary_cursor_v1",
+      "idx_usage_key_success_time_v1",
+      "idx_billing_charge_key_usage_v1",
+    ],
+  };
+  const combined = {
+    ...identity,
+    baselineInputHash: "c7646255244ef2e0",
+    sourceInputHash: "5f82807410b4ebd6",
+  };
+  for (const applied_version of [15, 16])
+    assert.equal(admit(combined, native, { ...before, applied_version }), true);
+  for (const sourceInputHash of [
+    "c7646255244ef2e0",
+    "f10a204af47e623f",
+    "349077fb12a21f30",
+    "0152ede472b6f78e",
+    "f0306fefc74fbf8d",
+    "cc52df39f1c5cd82",
+    "ef1236d5c3f08c04",
+    "2fe25d81b60b7025",
+    "6842d68639bcd135",
+    "4290c0e3ed44b007",
+  ])
+    assert.equal(admit({ ...combined, sourceInputHash }, native, before), false);
+  for (const baselineInputHash of ["ef1236d5c3f08c04", "0e2ecb6f105a95f3", "f".repeat(16)])
+    assert.equal(admit({ ...combined, baselineInputHash }, native, before), false);
+  for (const applied_version of [null, 14, 17])
+    assert.equal(admit(combined, native, { ...before, applied_version }), false);
+  assert.equal(admit(combined, { ...native, target_version: 17 }, before), false);
+  assert.equal(
+    admit(combined, { ...native, required_indexes: native.required_indexes.slice(1) }, before),
+    false,
+  );
+  for (const baselineInputHash of ["ef1236d5c3f08c04", "0e2ecb6f105a95f3"])
+    assert.equal(
+      admit(
+        { ...combined, baselineInputHash, sourceInputHash: "c7646255244ef2e0" },
+        native,
+        before,
+      ),
+      true,
+    );
 });
