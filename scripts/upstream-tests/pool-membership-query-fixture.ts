@@ -48,12 +48,13 @@ export const seed = ({
       yield* sql`alter table hosted_account_access add column audience text default 'everyone'`;
       yield* sql`alter table hosted_app_account_links add column linked_by text default 'owner'`;
       yield* sql`create table hosted_account_groups (account_id text, group_id text)`;
-      const { migrateContributedDepartures } = yield* Effect.promise(() =>
-        load("apps/hosted/server/src/implementation/contributed-departure-schema.ts"),
+      const { migrateContributedDepartures } = yield* Effect.promise(
+        () =>
+          import("../../.upstream/apps/hosted/server/src/implementation/contributed-departure-schema.ts"),
       );
       yield* migrateContributedDepartures;
-      const { registerContributedAccountSchema } = yield* Effect.promise(() =>
-        load("apps/hosted/server/src/implementation/app-link-schema.ts"),
+      const { registerContributedAccountSchema } = yield* Effect.promise(
+        () => import("../../.upstream/apps/hosted/server/src/implementation/app-link-schema.ts"),
       );
       registerContributedAccountSchema(sql);
     }
