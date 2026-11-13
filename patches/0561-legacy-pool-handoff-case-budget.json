@@ -1,0 +1,9 @@
+{
+  "identity": "executor-legacy-pool-handoff-case-budget",
+  "file": "0561-legacy-pool-handoff-case-budget.patch",
+  "content_sha256": "fa567719be79108c38a65974573bd9548650caa051cdeb7da9c9cf8477dca75f",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
