@@ -37,6 +37,11 @@
     ".upstream/packages/ui/src/contracts/host-navigation.ts",
     ".upstream/apps/hosted/web/src/implementation/pages/app-screen.tsx",
     ".upstream/apps/hosted/web/src/implementation/components/app-frames.tsx",
-    ".upstream/apps/hosted/web/src/implementation/components/app-frame-view.tsx"
+    ".upstream/apps/hosted/web/src/implementation/components/app-frame-view.tsx",
+    ".upstream/apps/hosted/web/src/contracts/app-ui.ts",
+    ".upstream/apps/hosted/web/src/implementation/components/organization.tsx",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/__root.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/__root.tsx",
+    ".upstream/e2e/support/app-host-navigation.ts"
   ]
 }
