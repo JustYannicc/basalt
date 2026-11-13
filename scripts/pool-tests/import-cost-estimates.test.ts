@@ -209,3 +209,73 @@ test("imported provider counters share current USD estimates across requests, Hi
     assert.equal(await fingerprint(), before);
   });
 });
+
+test("request and History estimates price only local or imported sources, even if other sources gain counters", async () => {
+  await seriesFixture(async (f) => {
+    const source = await digest("pool-gateway-v1");
+    const base = {
+      source,
+      provider: "codex",
+      model: "gpt-6.1-sol",
+      inputTokens: "15000",
+      outputTokens: "30",
+      cacheReadTokens: "2800",
+      cacheWriteTokens: "0",
+      reasoningTokens: "0",
+      totalTokens: "15030",
+      tokenQuality: "legacy" as const,
+    };
+    const [record, eligible] = await f.insert(
+      base,
+      {
+        ...base,
+        source: await digest("fixture-import"),
+        attribution: "import-owner",
+      },
+      { ...base, model: "unsupported-source-model" },
+    );
+    const seen: unknown[] = [];
+    const currentPrices = async (targets: readonly { provider: string; model: string }[]) => {
+      seen.push(targets);
+      return {
+        prices: [prices[0]!, { ...prices[0]!, model: "unsupported-source-model" }],
+        issues: [],
+      };
+    };
+    const url = new URL(process.env.POOL_TEST_ADMIN_URL!);
+    url.searchParams.set("options", `-c search_path=${f.schema}`);
+    const page = await readPricedRequests(
+      url.toString(),
+      { pool: (await digest(pool)).slice(0, 16), from, to },
+      currentPrices,
+    );
+    for (const row of page.records.filter((r) => r.id !== eligible!.id)) {
+      assert.equal(row.api_estimate.amount, null);
+      assert.match(row.api_estimate.reason ?? "", /source does not support/);
+    }
+    assert.equal(
+      page.records.find((r) => r.id === eligible!.id)!.api_estimate.amount,
+      "0.024980000000",
+    );
+    assert.ok(page.records.some((r) => r.id === record!.id));
+    const history = await poolUsageSeries(
+      f.db,
+      { pool, from, to, bucket: "day", by: ["model"] },
+      { canManage: true, mappingProven: true, accounts: [] },
+      "owned",
+      currentPrices,
+    );
+    assert.equal(
+      full(history.groups.find((g) => g.key.model === "unsupported-source-model")!.buckets[0]).cost
+        .apiEstimate?.amount,
+      null,
+    );
+    assert.equal(
+      officialCostMetric(await officialCosts(f.db, { pool, from, to }, prices), prices).amount,
+      "0.024980000000",
+    );
+    const targets = [{ provider: "codex", model: "gpt-6.1-sol" }];
+    assert.deepEqual((await officialCostTargets(f.db, { pool, from, to })).targets, targets);
+    assert.deepEqual(seen, [targets, targets]);
+  });
+});

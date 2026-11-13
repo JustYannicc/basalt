@@ -1,7 +1,7 @@
 model {
   extend basalt.modelGateway {
     metadata {
-      constraint "Current API-equivalent USD estimates price imported and local requests through one read-time token normalization. Recorded totals distinguish inclusive OpenAI and xAI input from separate Anthropic cache buckets when endpoint metadata is absent. Missing model identities, token counters or public rates stay unpriced. Estimates never replace immutable counters, historical billing amounts or their provenance. Import-owner attribution never assigns historical usage to the importing person. Native personal summaries and account-inspection restrictions retain their existing scope."
+      constraint "Current API-equivalent USD estimates price imported and local requests through one read-time token normalization. Recorded totals distinguish inclusive input from separate model provider cache buckets when endpoint metadata is absent. Missing model identities, token counters or public rates stay unpriced. Estimates never replace immutable counters, historical billing amounts or their provenance. Import-owner attribution never assigns historical usage to the importing person. Native personal summaries and account-inspection restrictions retain their existing scope."
     }
   }
 }

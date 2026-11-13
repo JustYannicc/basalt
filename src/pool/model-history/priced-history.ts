@@ -2,6 +2,7 @@ import type {
   OverviewMoneyMetric,
   OverviewPriceTable,
 } from "../../../apps/pool/overview-contract.ts";
+import { digest } from "../backend-users.ts";
 import { officialPriceRows } from "./official-cost.ts";
 import { pricedRowsSql } from "./overview-sql.ts";
 import { withHistoryDatabase } from "./database.ts";
@@ -18,10 +19,13 @@ export async function readPricedRequests(
 ) {
   const page = await withHistoryDatabase(connectionString, (db) => readRequests(db, query));
   if (!page.records.length) return { ...page, records: [] };
+  const source = await digest("home-local-v1");
   const targets = [
     ...new Map(
       page.records.flatMap((row) =>
-        typeof row.provider === "string" && typeof row.model === "string"
+        (row.source === source || row.attribution === "import-owner") &&
+        typeof row.provider === "string" &&
+        typeof row.model === "string"
           ? [
               [
                 JSON.stringify([row.provider, row.model]),
@@ -61,14 +65,15 @@ export async function readPricedRequests(
       `WITH selected AS (
       SELECT r.* FROM unnest($1::character(64)[]) AS ids(id)
       CROSS JOIN LATERAL (SELECT * FROM basalt_model_requests
-        WHERE id=ids.id AND pool=$3 AND ($4::text IS NULL OR person=$4) LIMIT 1) r
-    ), ${pricedRowsSql("selected", "$2", "true", "public_")}
+        WHERE id=ids.id AND pool=$4 AND ($5::text IS NULL OR person=$5) LIMIT 1) r
+    ), ${pricedRowsSql("selected", "$2", "s.source=$3 OR s.attribution='import-owner'", "public_")}
     SELECT id,round(api_cost,12)::text AS amount,token_count_estimate,
       public_price_version,public_price_as_of,public_price_basis,public_price_refresh_failed
     FROM priced`,
       [
         page.records.map((row) => row.id),
         JSON.stringify(officialPriceRows(table.prices)),
+        source,
         query.pool,
         query.person ?? null,
       ],
@@ -89,16 +94,18 @@ export async function readPricedRequests(
         .filter(([, value]) => value === null)
         .map(([name]) => name);
       const missing =
-        record.model === null
-          ? "Model not recorded; cost cannot be estimated."
-          : missingCounters.length
-            ? `Request token counts are missing or incomplete: ${missingCounters.join(", ")}.`
-            : row?.public_price_version == null
-              ? (table.issues.find(
-                  (issue) => issue.provider === record.provider && issue.model === record.model,
-                )?.reason ??
-                (table.prices.length ? `No public price for ${record.model}` : unavailable))
-              : "Request tokens use an incomplete or unsupported accounting format.";
+        record.source !== source && record.attribution !== "import-owner"
+          ? "This request source does not support current API estimates."
+          : record.model === null
+            ? "Model not recorded; cost cannot be estimated."
+            : missingCounters.length
+              ? `Request token counts are missing or incomplete: ${missingCounters.join(", ")}.`
+              : row?.public_price_version == null
+                ? (table.issues.find(
+                    (issue) => issue.provider === record.provider && issue.model === record.model,
+                  )?.reason ??
+                  (table.prices.length ? `No public price for ${record.model}` : unavailable))
+                : "Request tokens use an incomplete or unsupported accounting format.";
       const metric: OverviewMoneyMetric = {
         status: amount === null ? "unavailable" : "available",
         amount,
