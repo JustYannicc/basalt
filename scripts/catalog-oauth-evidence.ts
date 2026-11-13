@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { brand } from "../brand.ts";
 import { handleCatalog } from "../src/catalog/worker.ts";
-import { oauthMethods, type OAuthReview, type OAuthEvidence } from "../src/catalog/oauth-policy.ts";
+import { type OAuthReview, type OAuthEvidence } from "../src/catalog/oauth-policy.ts";
 import type { Feed } from "../src/catalog/feed.ts";
 
 const canonical = (value: unknown): unknown =>
@@ -21,10 +21,27 @@ export const catalogDocumentSha256 = (value: unknown): string =>
     .update(JSON.stringify(canonical(value)))
     .digest("hex");
 
+class CatalogEvidenceReadError extends Error {}
+
 const read = async (url: string): Promise<unknown> => {
-  const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new Error(`Catalog evidence request failed with HTTP ${response.status}`);
-  return response.json();
+  let response: Response;
+  try {
+    response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(30_000) });
+  } catch (error) {
+    throw new CatalogEvidenceReadError(
+      error instanceof DOMException && error.name === "TimeoutError"
+        ? "request timed out"
+        : "request did not complete",
+    );
+  }
+  if (!response.ok) throw new CatalogEvidenceReadError(`HTTP ${response.status}`);
+  try {
+    return await response.json();
+  } catch (error) {
+    throw new CatalogEvidenceReadError(
+      error instanceof SyntaxError ? "invalid JSON" : "response body did not complete",
+    );
+  }
 };
 
 const bounded = async <A>(items: readonly A[], run: (item: A) => Promise<void>) => {
@@ -51,6 +68,7 @@ export async function catalogOAuthEvidence(
   const sources = new Map<string, string>();
   const metadata = new Map<string, { sha256: string; document: unknown }>();
   const failures: string[] = [];
+  const metadataFailures = new Map<string, string>();
   const positiveClaims = new Set(
     reviews
       .filter((review) =>
@@ -88,10 +106,13 @@ export async function catalogOAuthEvidence(
     try {
       const document = await read(url);
       metadata.set(url, { sha256: catalogDocumentSha256(document), document });
-    } catch {
-      failures.push("A reviewed automatic OAuth metadata document could not be read");
+    } catch (error) {
+      metadataFailures.set(
+        url,
+        error instanceof CatalogEvidenceReadError ? error.message : "request did not complete",
+      );
     }
   });
-  const evidence: OAuthEvidence = { sources, hostedClients, metadata };
+  const evidence: OAuthEvidence = { sources, hostedClients, metadata, metadataFailures };
   return { feed, evidence, failures };
 }
