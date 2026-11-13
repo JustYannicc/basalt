@@ -425,12 +425,12 @@ test(
       );
       assert.equal(missing[0]!.billing.amount, 0);
       assert.equal(missing[0]!.billing.matched_price_rule, "default:zero");
-      assert.deepEqual(await ledger.sync(landedSync), { complete: true, pages: 2 });
+      assert.deepEqual(await ledger.sync(landedSync), { complete: true, pages: 1 });
       assert.equal(await ledger.readAt(), landedSync.toISOString());
       assert.equal((await ledger.summary("pool-a", options)).total.requests, 1);
       assert.equal((await ledger.summary("pool-a", options)).total.unpriced, 1);
       console.log(
-        "PASS 4: real held request lands an hour late; reserved sweep counts it as unpriced while fresh readAt advances",
+        "PASS 4: real held request lands an hour late; pending feed counts it as unpriced while readAt advances",
       );
       await fixture.data("/billing/model-prices", "POST", {
         provider: missing[0]!.provider,
