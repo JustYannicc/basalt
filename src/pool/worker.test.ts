@@ -1115,9 +1115,7 @@ for (const retire of [false, true])
                 assert.partialDeepStrictEqual(publication, {
                   action: "publish-changes",
                   expiresAt: publication.at + 30_000,
-                  changes: [
-                    { scope: "pool:a", hint: { topic: "pool-samples", resource: "a" } },
-                  ],
+                  changes: [{ scope: "pool:a", hint: { topic: "pool-samples", resource: "a" } }],
                 });
                 return new Response(null, { status: 204 });
               }
