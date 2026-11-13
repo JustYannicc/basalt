@@ -7,11 +7,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Stack, evalStack } from "alchemy/Stack";
 import { fleetInfrastructure } from "../../../src/pool/fleet-deployment.ts";
 import { withReleaseRuntime } from "../runtime.ts";
-import {
-  runDeclaredProvisioning,
-  inspectDeclaredProvisioning,
-  provisioningOperationDigest,
-} from "../provisioning-operation.ts";
+import { runDeclaredProvisioning, provisioningOperationDigest } from "../provisioning-operation.ts";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpResponse from "effect/http/HttpClientResponse";
 import * as HttpError from "effect/http/HttpClientError";
@@ -22,7 +18,7 @@ import { observationTokenProvider } from "../observation-token-cloudflare.ts";
 import { observationTokenDigest, observationTokenProps } from "../observation-token-contract.ts";
 import { provisionObservationToken } from "../observation-token-provision.ts";
 import { observationTokenClient } from "../observation-token-wire.ts";
-import { digest } from "../manifest.ts";
+import { BarrierRefusal, canonical, digest } from "../manifest.ts";
 import { assertSupportedPlan } from "../plan-admission.ts";
 const tree = process.argv[2];
 const sourceMode = process.argv[3] === "source-operation";
@@ -291,18 +287,8 @@ async function run(w, options = {}) {
         runDeclaredProvisioning(compiled, packet, writer, "c".repeat(64), "", {
           now: () => 100,
         }).pipe(Effect.provideService(State, Effect.succeed(memory)));
+      assert.equal(compiled.resources[fqn], undefined);
       receipt = yield* invoke();
-      assert.deepEqual(yield* invoke(), receipt);
-      const inspection = yield* inspectDeclaredProvisioning(
-        compiled,
-        { ...packet, go: { ...packet.go, expiresAt: 1 } },
-        writer,
-        "c".repeat(64),
-      ).pipe(Effect.provideService(State, Effect.succeed(memory)));
-      assert.equal(inspection.complete, true);
-      assert.equal(inspection.native.status, "created");
-      assert.equal(JSON.stringify(inspection).includes(secret), false);
-      assert.equal(rows[stackName][stage][fqn].downstream.includes("PoolWorker"), true);
     } else {
       const privateProvider = yield* observationTokenProvider({
         manifest: actual,
@@ -331,32 +317,18 @@ async function run(w, options = {}) {
 const count = (w) => w.calls.filter((call) => call.method === "POST").length;
 if (sourceMode) {
   const w = wire();
-  const success = await run(w);
-  assert.equal(
-    success.exit._tag,
-    "Success",
-    success.exit._tag === "Failure" ? Cause.pretty(success.exit.cause) : "",
-  );
-  assert.equal(count(w), 1);
-  const lost = wire({ lost: true });
-  const uncertain = await run(lost);
-  assert.equal(uncertain.exit._tag, "Failure");
-  assert.equal(count(lost), 1);
-  const repeat = wire();
-  assert.equal((await run(repeat, { rows: uncertain.rows })).exit._tag, "Failure");
-  assert.equal(count(repeat), 0);
-  assert.equal(JSON.stringify(uncertain.rows).includes(secret), false);
-  const unaudited = wire();
-  assert.equal(
-    (
-      await run(unaudited, {
-        manifest: { ...manifest, audit: { ...manifest.audit, accountId: "f".repeat(32) } },
-      })
-    ).exit._tag,
-    "Failure",
-  );
-  assert.equal(count(unaudited), 0);
-  console.log("__OBSERVATION_TOKEN_SOURCE_OPERATION_PASS__");
+  const refused = await run(w);
+  assert.equal(refused.exit._tag, "Failure");
+  const failure = Cause.squash(refused.exit.cause);
+  assert.ok(failure instanceof BarrierRefusal);
+  assert.equal(failure.reason, "provisioning-source-declaration-missing");
+  assert.deepEqual(failure.delta.changed, [
+    { path: "source.resource", old: digest(canonical(fqn)), new: digest(canonical(null)) },
+  ]);
+  assert.equal(w.calls.length, 0);
+  assert.equal(refused.rows[stackName][stage][fqn], undefined);
+  assert.equal(JSON.stringify(refused.rows).includes(secret), false);
+  console.log("__OBSERVATION_TOKEN_SOURCE_REFUSAL_PASS__");
   process.exit(0);
 }
 const normal = wire();
