@@ -16,6 +16,7 @@ import {
   historyBaseSchemaVersion,
   historyAppSchemaVersion,
   historyAccountTimeSchemaVersion,
+  historyTrafficSchemaVersion,
   historySchemaVersion,
   historySchemaStatements,
   historySchemaMigrations,
@@ -67,6 +68,7 @@ function hashes(value: Record<string, unknown>) {
       historyBaseSchemaVersion,
       historyAppSchemaVersion,
       historyAccountTimeSchemaVersion,
+      historyTrafficSchemaVersion,
       historySchemaVersion,
     ].includes(String(value.version)) ||
     typeof value.schemaHash !== "string" ||
@@ -78,16 +80,20 @@ function hashes(value: Record<string, unknown>) {
   return { schemaHash: value.schemaHash, catalogHash: value.catalogHash };
 }
 
+function schemaPrefix(version: string) {
+  const end = historySchemaMigrations.findIndex((migration) => migration.name === version);
+  if (end < 0) throw new Error("Invalid history schema plan");
+  const migrations = historySchemaMigrations.slice(0, end + 1);
+  return {
+    migrations,
+    // v1 plans used the statements array directly; keep that historical hash stable.
+    manifest: version === historyBaseSchemaVersion ? historySchemaStatements : migrations,
+  };
+}
+
 function schemaPreview(report: Record<string, unknown>) {
   hashes(report);
-  const manifest =
-    report.version === historyBaseSchemaVersion
-      ? historySchemaStatements
-      : report.version === historyAppSchemaVersion
-        ? historySchemaMigrations.slice(0, 2)
-        : report.version === historyAccountTimeSchemaVersion
-          ? historySchemaMigrations.slice(0, 3)
-          : historySchemaMigrations;
+  const { manifest, migrations } = schemaPrefix(String(report.version));
   if (
     report.schemaHash !== createHash("sha256").update(JSON.stringify(manifest)).digest("hex") ||
     typeof report.applied !== "boolean"
@@ -111,10 +117,12 @@ function schemaPreview(report: Record<string, unknown>) {
         `CREATE TABLE IF NOT EXISTS basalt_model_history_migrations (
       name text PRIMARY KEY, completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
       ];
-  const pending = [historySchemaVersion, historyAccountTimeSchemaVersion].includes(
-    String(report.version),
-  )
-    ? pendingMigrations(report)
+  const pending = [
+    historySchemaVersion,
+    historyTrafficSchemaVersion,
+    historyAccountTimeSchemaVersion,
+  ].includes(String(report.version))
+    ? pendingMigrations(report, migrations)
     : report.applied
       ? []
       : report.version === historyBaseSchemaVersion
@@ -131,19 +139,19 @@ function schemaPreview(report: Record<string, unknown>) {
   };
 }
 
-function pendingMigrations(report: Record<string, unknown>) {
+function pendingMigrations(
+  report: Record<string, unknown>,
+  migrations: typeof historySchemaMigrations,
+) {
   const names = report.pendingMigrations;
   if (
     !Array.isArray(names) ||
-    names.some((name) => !historySchemaMigrations.some((migration) => migration.name === name)) ||
+    names.some((name) => !migrations.some((migration) => migration.name === name)) ||
     report.applied !== (names.length === 0)
   )
     throw new Error("Invalid pending history migrations");
-  const pending = historySchemaMigrations.filter((migration) => names.includes(migration.name));
-  if (
-    JSON.stringify(names) !== JSON.stringify(pending.map((migration) => migration.name)) ||
-    (names.length && names.at(-1) !== report.version)
-  )
+  const pending = migrations.filter((migration) => names.includes(migration.name));
+  if (JSON.stringify(names) !== JSON.stringify(pending.map((migration) => migration.name)))
     throw new Error("Invalid pending history migrations");
   return pending;
 }

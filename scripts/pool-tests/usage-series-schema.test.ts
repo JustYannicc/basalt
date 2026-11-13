@@ -10,6 +10,8 @@ import {
   historyAccountTimeStatements,
   historyAccountTimeSchemaVersion,
   historyTrafficStatements,
+  historyTrafficSchemaVersion,
+  historyTerminalIntegrityStatements,
   historyAppSchemaVersion,
   historyBaseSchemaVersion,
   historySchemaMigrations,
@@ -23,17 +25,23 @@ import { poolUsageSeries } from "../../src/pool/model-history/series.ts";
 import { homeMetadataFixture } from "./history-fixture.ts";
 import { accountAuthority, authority, input, pool, seriesFixture } from "./series-fixture.ts";
 
-test("schema v2 upgrades add only the account-time index and purpose table without rewriting retained rows", async () => {
+test("schema v2 upgrades append traffic and terminal integrity without rewriting retained rows", async () => {
   await seriesFixture(async ({ db, insert }) => {
     await homeMetadataFixture(db);
     // Model a deployed v2 database, retaining its real migrations and append-only triggers.
     await db.query("DROP INDEX basalt_model_requests_account_time");
     await db.query("DROP TABLE basalt_model_traffic");
+    await db.query("DROP TABLE basalt_model_terminal_finishes");
+    await db.query("DROP TABLE basalt_model_terminal_starts");
+    await db.query("DROP INDEX basalt_model_requests_pool_source_request_exact");
     await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
       historyAccountTimeSchemaVersion,
     ]);
     await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
       historySchemaVersion,
+    ]);
+    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+      historyTrafficSchemaVersion,
     ]);
     await insert({ inputTokens: "9007199254740993" });
     const rows = (
@@ -52,11 +60,21 @@ test("schema v2 upgrades add only the account-time index and purpose table witho
     assert.equal(plan.automaticBackfill, false);
     assert.deepEqual(plan.pendingMigrations, [
       historyAccountTimeSchemaVersion,
+      historyTrafficSchemaVersion,
       historySchemaVersion,
     ]);
-    assert.deepEqual(plan.catalogDiff.createTables, ["basalt_model_traffic"]);
+    assert.deepEqual(plan.catalogDiff.createTables, [
+      "basalt_model_traffic",
+      "basalt_model_terminal_starts",
+      "basalt_model_terminal_finishes",
+    ]);
     assert.deepEqual(plan.catalogDiff.addColumns, []);
-    assert.deepEqual(plan.catalogDiff.addIndexes, ["basalt_model_requests_account_time"]);
+    assert.deepEqual(plan.catalogDiff.addIndexes, [
+      "basalt_model_requests_account_time",
+      "basalt_model_requests_pool_source_request_exact",
+      "basalt_model_terminal_starts_pool_time",
+      "basalt_model_terminal_finishes_time",
+    ]);
     assert.equal(plan.lockTimeout, "500ms");
     assert.equal(plan.statementTimeout, "5s");
     assert.equal(
@@ -109,11 +127,16 @@ test("schema v2 upgrades add only the account-time index and purpose table witho
       assert.deepEqual(preview.pendingDdl, [
         ...historyAccountTimeStatements,
         ...historyTrafficStatements,
+        ...historyTerminalIntegrityStatements,
       ]);
       assert.deepEqual(preview.migrationMarkers, [
         {
           text: "INSERT INTO basalt_model_history_migrations (name) VALUES ($1)",
           values: [historyAccountTimeSchemaVersion],
+        },
+        {
+          text: "INSERT INTO basalt_model_history_migrations (name) VALUES ($1)",
+          values: [historyTrafficSchemaVersion],
         },
         {
           text: "INSERT INTO basalt_model_history_migrations (name) VALUES ($1)",
@@ -123,6 +146,7 @@ test("schema v2 upgrades add only the account-time index and purpose table witho
       assert.deepEqual(JSON.parse(await readFile(path, "utf8")).report.pendingDdl, [
         ...historyAccountTimeStatements,
         ...historyTrafficStatements,
+        ...historyTerminalIntegrityStatements,
       ]);
       await runHistoryOperator({ ...options, apply: true }, "a".repeat(32), connect);
       assert.equal(writes, 1);
@@ -156,6 +180,7 @@ test("schema v2 upgrades add only the account-time index and purpose table witho
         historyBaseSchemaVersion,
         historyAppSchemaVersion,
         historyAccountTimeSchemaVersion,
+        historyTrafficSchemaVersion,
         historySchemaVersion,
       ],
     );
@@ -175,7 +200,7 @@ test("schema v2 upgrades add only the account-time index and purpose table witho
   });
 });
 
-test("a retained v3 database needs only the new purpose ledger", async () => {
+test("a retained v3 database gets only the pending traffic and terminal ledgers", async () => {
   await seriesFixture(async ({ db, insert }) => {
     await homeMetadataFixture(db);
     await insert({ inputTokens: "9007199254740993" });
@@ -183,13 +208,27 @@ test("a retained v3 database needs only the new purpose ledger", async () => {
       await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_requests r")
     ).rows;
     await db.query("DROP TABLE basalt_model_traffic");
+    await db.query("DROP TABLE basalt_model_terminal_finishes");
+    await db.query("DROP TABLE basalt_model_terminal_starts");
+    await db.query("DROP INDEX basalt_model_requests_pool_source_request_exact");
+    await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+      historyTrafficSchemaVersion,
+    ]);
     await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
       historySchemaVersion,
     ]);
     const plan = await modelHistorySchemaPlan(db);
-    assert.deepEqual(plan.pendingMigrations, [historySchemaVersion]);
-    assert.deepEqual(plan.catalogDiff.createTables, ["basalt_model_traffic"]);
-    assert.deepEqual(plan.catalogDiff.addIndexes, []);
+    assert.deepEqual(plan.pendingMigrations, [historyTrafficSchemaVersion, historySchemaVersion]);
+    assert.deepEqual(plan.catalogDiff.createTables, [
+      "basalt_model_traffic",
+      "basalt_model_terminal_starts",
+      "basalt_model_terminal_finishes",
+    ]);
+    assert.deepEqual(plan.catalogDiff.addIndexes, [
+      "basalt_model_requests_pool_source_request_exact",
+      "basalt_model_terminal_starts_pool_time",
+      "basalt_model_terminal_finishes_time",
+    ]);
     assert.deepEqual(plan.catalogDiff.addColumns, []);
     await migrateModelHistory(db);
     assert.deepEqual(

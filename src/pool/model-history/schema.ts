@@ -10,7 +10,8 @@ export interface HistoryDatabase {
 export const historyBaseSchemaVersion = "model_request_history_v1";
 export const historyAppSchemaVersion = "model_request_history_v2_app_attribution";
 export const historyAccountTimeSchemaVersion = "model_request_history_v3_account_time";
-export const historySchemaVersion = "model_request_history_v4_traffic_purpose";
+export const historyTrafficSchemaVersion = "model_request_history_v4_traffic_purpose";
+export const historySchemaVersion = "model_request_history_v7_terminal_integrity";
 
 /** Catalog-only preview. The same query works before any history table exists. */
 export async function planModelHistorySchema(db: HistoryDatabase) {
@@ -113,11 +114,49 @@ export const historyTrafficStatements = [
       AND client_key ~ '^[a-f0-9]{64}$' AND evidence ~ '^[a-f0-9]{64}$')
   )`,
 ];
+export const historyTerminalIntegrityStatements = [
+  `CREATE INDEX basalt_model_requests_pool_source_request_exact
+    ON basalt_model_requests (pool, source, request_id, timestamp_exact DESC, id DESC)
+    WHERE request_id IS NOT NULL`,
+  `CREATE TABLE basalt_model_terminal_starts (
+    request_id uuid PRIMARY KEY,
+    pool varchar(16) NOT NULL,
+    person char(64), client_key char(64), endpoint varchar(256),
+    started_at timestamptz NOT NULL,
+    CHECK (pool ~ '^[a-f0-9]{16}$'),
+    CHECK (person IS NULL OR person ~ '^[a-f0-9]{64}$'),
+    CHECK (client_key IS NULL OR client_key ~ '^[a-f0-9]{64}$')
+  )`,
+  `CREATE INDEX basalt_model_terminal_starts_pool_time
+    ON basalt_model_terminal_starts (pool, started_at, request_id)`,
+  `CREATE TABLE basalt_model_terminal_finishes (
+    request_id uuid PRIMARY KEY REFERENCES basalt_model_terminal_starts(request_id),
+    outcome varchar(24) NOT NULL CHECK (outcome IN ('complete','truncated','client_closed','provider_failed','unavailable')),
+    status smallint NOT NULL CHECK (status BETWEEN 100 AND 599),
+    bytes bigint NOT NULL CHECK (bytes >= 0),
+    finished_at timestamptz NOT NULL
+  )`,
+  `CREATE INDEX basalt_model_terminal_finishes_time
+    ON basalt_model_terminal_finishes (finished_at, request_id)`,
+  `CREATE TRIGGER basalt_model_terminal_starts_no_rewrite
+    BEFORE UPDATE OR DELETE ON basalt_model_terminal_starts
+    FOR EACH ROW EXECUTE FUNCTION basalt_model_history_append_only()`,
+  `CREATE TRIGGER basalt_model_terminal_starts_no_truncate
+    BEFORE TRUNCATE ON basalt_model_terminal_starts
+    FOR EACH STATEMENT EXECUTE FUNCTION basalt_model_history_append_only()`,
+  `CREATE TRIGGER basalt_model_terminal_finishes_no_rewrite
+    BEFORE UPDATE OR DELETE ON basalt_model_terminal_finishes
+    FOR EACH ROW EXECUTE FUNCTION basalt_model_history_append_only()`,
+  `CREATE TRIGGER basalt_model_terminal_finishes_no_truncate
+    BEFORE TRUNCATE ON basalt_model_terminal_finishes
+    FOR EACH STATEMENT EXECUTE FUNCTION basalt_model_history_append_only()`,
+];
 export const historySchemaMigrations = [
   { name: historyBaseSchemaVersion, statements: historySchemaStatements },
   { name: historyAppSchemaVersion, statements: historyAppAttributionStatements },
   { name: historyAccountTimeSchemaVersion, statements: historyAccountTimeStatements },
-  { name: historySchemaVersion, statements: historyTrafficStatements },
+  { name: historyTrafficSchemaVersion, statements: historyTrafficStatements },
+  { name: historySchemaVersion, statements: historyTerminalIntegrityStatements },
 ];
 /** Existing collectors keep working while the additive app migration awaits its approved apply. */
 export async function appAttributionReady(db: HistoryDatabase): Promise<boolean> {

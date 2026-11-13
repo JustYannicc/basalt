@@ -166,3 +166,60 @@ test("monitor error text and fields reject unbounded or private diagnostic input
   assertNoPrivateDiagnostics(messages);
   assert.match(event.message, /runtime:unknown/);
 });
+
+test("missing request reliability emits its own incident while availability remains healthy", async (t) => {
+  const messages: ReturnType<typeof unpack>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    messages.push(unpack(init));
+    return new Response(null, { status: 202 });
+  });
+  const receipt = await startPoolMonitor(env);
+  await capturePoolMonitor(env, receipt, {
+    ok: true,
+    failures: [{ guard: "request_reliability", reason: "collection_unavailable" }],
+  });
+  assert.equal(
+    messages.find((item) => item.type === "check_in" && item.payload.status !== "in_progress")
+      ?.payload.status,
+    "ok",
+  );
+  assert.equal(messages.filter((item) => item.type === "event").length, 1);
+  assert.equal(
+    messages.find((item) => item.type === "event")?.payload.tags.error_code,
+    "pool_request_reliability_unavailable",
+  );
+  assertNoPrivateDiagnostics(messages);
+});
+
+test("pending traffic classification reports blindness without a failing-now page", async (t) => {
+  const messages: ReturnType<typeof unpack>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    messages.push(unpack(init));
+    return new Response(null, { status: 202 });
+  });
+  const counts = { requests: 5, failed: 1, unassignedFailures: 1, successRate: 80, failures: [] };
+  const pending = {
+    from: "2026-11-13T00:00:00Z",
+    to: "2026-11-14T00:00:00Z",
+    classification: "pending" as const,
+    real: counts,
+    proof: { ...counts, requests: 0, failed: 0 },
+  };
+  await runAvailabilityProbe(
+    env,
+    async () => ({ ok: true, failures: [] }),
+    async () => ({
+      target: 99,
+      state: "unavailable",
+      reason: "classification_pending",
+      captureAt: null,
+      current: pending,
+      hour: pending,
+      day: pending,
+    }),
+  );
+  const codes = messages
+    .filter((item) => item.type === "event")
+    .map((item) => item.payload.tags.error_code);
+  assert.deepEqual(codes, ["pool_request_reliability_unavailable"]);
+});

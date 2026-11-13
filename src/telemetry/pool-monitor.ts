@@ -31,6 +31,7 @@ const reasons = new Set([
   "unknown",
   "below_target",
   "collection_unavailable",
+  "failing_now",
 ]);
 
 export async function startPoolMonitor(env: SentryEnv) {
@@ -86,8 +87,11 @@ export async function capturePoolMonitor(
   for (const failure of reliability)
     if (failure.reason === "below_target")
       events.push(report("pool_request_success_below_target", [failure]));
-  // Issue notifications can page on any level, so unknown collection stays in Worker logs.
-  if (reliability.some((failure) => failure.reason !== "below_target")) {
+    else if (failure.reason === "failing_now")
+      events.push(report("pool_request_failing_now", [failure]));
+    else events.push(report("pool_request_reliability_unavailable", [failure]));
+  // Missing evidence is a reliability incident, independently of synthetic availability.
+  if (reliability.some((failure) => failure.reason === "collection_unavailable")) {
     const context = input.reliability ? reliabilityContext(input.reliability) : undefined;
     console.warn("POOL_REQUEST_RELIABILITY_UNKNOWN", {
       ...context,
@@ -143,11 +147,14 @@ function reliabilityContext(slo: PoolReliabilitySlo) {
     state: ["ok", "breached", "no_traffic", "unavailable"].includes(slo.state) ? slo.state : null,
     hour: window(slo.hour),
     day: window(slo.day),
+    ...(slo.current ? { current: window(slo.current) } : {}),
     reason: [
       "history_inactive",
       "capture_stale",
       "capture_lagging",
       "classification_pending",
+      "terminal_collection_pending",
+      "terminal_collection_unavailable",
     ].includes(slo.reason ?? "")
       ? slo.reason
       : null,

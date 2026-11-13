@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Worker-generated request identities correlate delivery outcomes with Home usage without replacing per-attempt billing identities or HTTP trace identities. HTTP acknowledgements and private per-request WebSocket markers prove producer support, including duplex successors. Request bodies remain unchanged, and metadata-only context redaction preserves only the validated correlation identity. Missing support remains unmeasured; arrival order never substitutes for a request join."
+    }
+  }
+}
