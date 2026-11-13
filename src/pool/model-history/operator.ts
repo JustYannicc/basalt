@@ -1,3 +1,5 @@
+import { historyImportCompletionPath } from "./import-completion-contract.ts";
+import { handleImportCompletion } from "./import-completion.ts";
 import { digest } from "../backend-users.ts";
 import { activateHomeBackfill, planHomeBackfill, type BackfillPlan } from "./activation.ts";
 import { withHistoryDatabase } from "./database.ts";
@@ -165,8 +167,14 @@ export async function handleModelHistoryOperation(
   const apply = path === historySchemaApplyPath && request.method === "POST";
   const backfill = path === historyBackfillPath;
   const traffic = path === historyTrafficPath;
-  if (!read && !apply && !backfill && !traffic) return new Response(null, { status: 404 });
+  const completion = path === historyImportCompletionPath;
+  if (!read && !apply && !backfill && !traffic && !completion)
+    return new Response(null, { status: 404 });
   try {
+    if (completion)
+      return await withHistoryDatabase(connectionString, (db) =>
+        handleImportCompletion(request, db),
+      );
     if (traffic)
       return await withHistoryDatabase(connectionString, (db) =>
         handleTrafficOperation(request, db),

@@ -14,6 +14,7 @@ import {
   historyAccountTimeSchemaVersion,
   historyTrafficSchemaVersion,
   historySchemaVersion,
+  historyTrafficSchemaVersion,
   migrateModelHistory,
   type HistoryDatabase,
 } from "../../src/pool/model-history/schema.ts";

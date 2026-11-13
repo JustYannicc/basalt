@@ -111,6 +111,15 @@ export interface SeriesCoverage {
     firstAt: string | null;
     lastAt: string | null;
     backfillComplete: boolean | null;
+    completion?: {
+      frozenFrom: string;
+      frozenTo: string;
+      upperSourceId: string;
+      manifestDigest: string;
+      accountMappingDigest: string;
+      idsDigest: string;
+      verifiedRows: string;
+    };
     sweep: { id: string; upper: string } | null;
   }[];
   firstAt: string | null;

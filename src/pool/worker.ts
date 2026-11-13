@@ -1,4 +1,5 @@
 import { stripModelLifetimeRequest } from "./model-lifetime-contract.ts";
+import { historyImportCompletionPath } from "./model-history/import-completion-contract.ts";
 import { reportWhenDue } from "./reporting.ts";
 import { UsageAccountLabels } from "./usage-account-labels.ts";
 import { handleUsageAccountLabel, usageAccountLabelPath } from "./usage-account-label-http.ts";
@@ -799,6 +800,7 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
         historySchemaApplyPath,
         historyBackfillPath,
         historyTrafficPath,
+        historyImportCompletionPath,
       ].includes(path)
     )
       return handleModelHistoryOperation(request, this.env.POOL_AUTH_DATABASE?.connectionString);

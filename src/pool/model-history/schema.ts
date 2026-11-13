@@ -1,3 +1,7 @@
+import {
+  historyImportCompletionVersion,
+  historyImportCompletionStatements,
+} from "./import-completion-schema.ts";
 import { poolDatabase } from "../database-settings.ts";
 import { historyBulkSchemaVersion, historyBulkStatements } from "./bulk-schema.ts";
 
@@ -12,7 +16,7 @@ export const historyBaseSchemaVersion = "model_request_history_v1";
 export const historyAppSchemaVersion = "model_request_history_v2_app_attribution";
 export const historyAccountTimeSchemaVersion = "model_request_history_v3_account_time";
 export const historyTrafficSchemaVersion = "model_request_history_v4_traffic_purpose";
-export const historySchemaVersion = historyBulkSchemaVersion;
+export const historySchemaVersion = historyImportCompletionVersion;
 
 /** Catalog-only preview. The same query works before any history table exists. */
 export async function planModelHistorySchema(db: HistoryDatabase) {
@@ -121,6 +125,7 @@ export const historySchemaMigrations = [
   { name: historyAccountTimeSchemaVersion, statements: historyAccountTimeStatements },
   { name: historyTrafficSchemaVersion, statements: historyTrafficStatements },
   { name: historyBulkSchemaVersion, statements: historyBulkStatements },
+  { name: historyImportCompletionVersion, statements: historyImportCompletionStatements },
 ];
 /** Existing collectors keep working while the additive app migration awaits its approved apply. */
 export async function appAttributionReady(db: HistoryDatabase): Promise<boolean> {

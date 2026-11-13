@@ -1,3 +1,4 @@
+import { historyImportCompletionStatements } from "../../src/pool/model-history/import-completion-schema.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
@@ -11,13 +12,17 @@ import {
   historyAccountTimeSchemaVersion,
   historyTrafficStatements,
   historyTrafficSchemaVersion,
+  historyImportCompletionVersion,
   historyAppSchemaVersion,
   historyBaseSchemaVersion,
   historySchemaMigrations,
   historySchemaVersion,
   migrateModelHistory,
 } from "../../src/pool/model-history/schema.ts";
-import { historyBulkStatements } from "../../src/pool/model-history/bulk-schema.ts";
+import {
+  historyBulkSchemaVersion,
+  historyBulkStatements,
+} from "../../src/pool/model-history/bulk-schema.ts";
 import { modelHistorySchemaPlan } from "../../src/pool/model-history/operator.ts";
 import { historyOperatorOptions, runHistoryOperator } from "../pool-history-operator.ts";
 import { seriesQuery } from "../../src/pool/model-history/series-query.ts";
@@ -25,16 +30,22 @@ import { poolUsageSeries } from "../../src/pool/model-history/series.ts";
 import { homeMetadataFixture } from "./history-fixture.ts";
 import { accountAuthority, authority, input, pool, seriesFixture } from "./series-fixture.ts";
 
-test("schema v2 upgrades add the account-time index, purpose and import tables without rewriting retained rows", async () => {
+test("schema v2 upgrades add the account-time index, purpose, bulk and completion tables without rewriting retained rows", async () => {
   await seriesFixture(async ({ db, insert }) => {
     await homeMetadataFixture(db);
     // Model a deployed v2 database, retaining its real migrations and append-only triggers.
     await db.query("DROP INDEX basalt_model_requests_account_time");
     await db.query("DROP TABLE basalt_model_traffic");
+    await db.query("DROP TABLE basalt_model_import_completion");
     await db.query("DROP TABLE basalt_model_import_receipts");
     await db.query("DROP TABLE basalt_model_import_jobs");
     await db.query("DELETE FROM basalt_model_history_migrations WHERE name=ANY($1::text[])", [
-      [historyAccountTimeSchemaVersion, historyTrafficSchemaVersion, historySchemaVersion],
+      [
+        historyAccountTimeSchemaVersion,
+        historyTrafficSchemaVersion,
+        historyBulkSchemaVersion,
+        historyImportCompletionVersion,
+      ],
     ]);
     await insert({ inputTokens: "9007199254740993" });
     const rows = (
@@ -54,9 +65,11 @@ test("schema v2 upgrades add the account-time index, purpose and import tables w
     assert.deepEqual(plan.pendingMigrations, [
       historyAccountTimeSchemaVersion,
       historyTrafficSchemaVersion,
-      historySchemaVersion,
+      historyBulkSchemaVersion,
+      historyImportCompletionVersion,
     ]);
     assert.deepEqual(plan.catalogDiff.createTables, [
+      "basalt_model_import_completion",
       "basalt_model_import_jobs",
       "basalt_model_import_receipts",
       "basalt_model_traffic",
@@ -117,6 +130,7 @@ test("schema v2 upgrades add the account-time index, purpose and import tables w
         ...historyAccountTimeStatements,
         ...historyTrafficStatements,
         ...historyBulkStatements,
+        ...historyImportCompletionStatements,
       ]);
       assert.deepEqual(preview.migrationMarkers, [
         {
@@ -129,13 +143,18 @@ test("schema v2 upgrades add the account-time index, purpose and import tables w
         },
         {
           text: "INSERT INTO basalt_model_history_migrations (name) VALUES ($1)",
-          values: [historySchemaVersion],
+          values: [historyBulkSchemaVersion],
+        },
+        {
+          text: "INSERT INTO basalt_model_history_migrations (name) VALUES ($1)",
+          values: [historyImportCompletionVersion],
         },
       ]);
       assert.deepEqual(JSON.parse(await readFile(path, "utf8")).report.pendingDdl, [
         ...historyAccountTimeStatements,
         ...historyTrafficStatements,
         ...historyBulkStatements,
+        ...historyImportCompletionStatements,
       ]);
       await runHistoryOperator({ ...options, apply: true }, "a".repeat(32), connect);
       assert.equal(writes, 1);
@@ -170,7 +189,8 @@ test("schema v2 upgrades add the account-time index, purpose and import tables w
         historyAppSchemaVersion,
         historyAccountTimeSchemaVersion,
         historyTrafficSchemaVersion,
-        historySchemaVersion,
+        historyBulkSchemaVersion,
+        historyImportCompletionVersion,
       ],
     );
     assert.equal(await appAttributionReady(db), true);
@@ -189,7 +209,7 @@ test("schema v2 upgrades add the account-time index, purpose and import tables w
   });
 });
 
-test("a retained v3 database needs only the purpose and import ledgers", async () => {
+test("a retained v3 database adds the purpose, bulk and completion ledgers", async () => {
   await seriesFixture(async ({ db, insert }) => {
     await homeMetadataFixture(db);
     await insert({ inputTokens: "9007199254740993" });
@@ -197,14 +217,20 @@ test("a retained v3 database needs only the purpose and import ledgers", async (
       await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_requests r")
     ).rows;
     await db.query("DROP TABLE basalt_model_traffic");
+    await db.query("DROP TABLE basalt_model_import_completion");
     await db.query("DROP TABLE basalt_model_import_receipts");
     await db.query("DROP TABLE basalt_model_import_jobs");
     await db.query("DELETE FROM basalt_model_history_migrations WHERE name=ANY($1::text[])", [
-      [historyTrafficSchemaVersion, historySchemaVersion],
+      [historyTrafficSchemaVersion, historyBulkSchemaVersion, historyImportCompletionVersion],
     ]);
     const plan = await modelHistorySchemaPlan(db);
-    assert.deepEqual(plan.pendingMigrations, [historyTrafficSchemaVersion, historySchemaVersion]);
+    assert.deepEqual(plan.pendingMigrations, [
+      historyTrafficSchemaVersion,
+      historyBulkSchemaVersion,
+      historyImportCompletionVersion,
+    ]);
     assert.deepEqual(plan.catalogDiff.createTables, [
+      "basalt_model_import_completion",
       "basalt_model_import_jobs",
       "basalt_model_import_receipts",
       "basalt_model_traffic",
@@ -224,7 +250,7 @@ test("a retained v3 database needs only the purpose and import ledgers", async (
   });
 });
 
-test("a retained v4 database adds import tables, preserves existing rows and safely repeats without a bulk marker", async () => {
+test("a retained v4 database applies v6 after v8 and preserves imported rows and frozen completion", async () => {
   await seriesFixture(async ({ db, insert }) => {
     await homeMetadataFixture(db);
     await insert({ inputTokens: "9007199254740993" });
@@ -232,23 +258,50 @@ test("a retained v4 database adds import tables, preserves existing rows and saf
       "INSERT INTO basalt_model_traffic (pool,source,client_key,purpose,evidence) VALUES ($1,$2,$3,'real',$4)",
       ["a".repeat(16), "b".repeat(64), "c".repeat(64), "d".repeat(64)],
     );
+    await db.query(
+      `INSERT INTO basalt_model_import_completion
+      (pool,source,frozen_from,frozen_to,upper_source_id,manifest_digest,map_digest,ids_digest,verified_rows)
+      VALUES ($1,$2,$3,$4,42,$5,$6,$7,1)`,
+      [
+        "a".repeat(16),
+        "b".repeat(64),
+        "2026-01-01T00:00:00.000000000Z",
+        "2026-01-02T00:00:00.000000000Z",
+        "c".repeat(64),
+        "d".repeat(64),
+        "e".repeat(64),
+      ],
+    );
     await db.query("DROP TABLE basalt_model_import_receipts");
     await db.query("DROP TABLE basalt_model_import_jobs");
     await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
-      historySchemaVersion,
+      historyBulkSchemaVersion,
     ]);
+    assert.equal(
+      (
+        await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name=$1", [
+          historyImportCompletionVersion,
+        ])
+      ).rows.length,
+      1,
+      "the later v8 marker is retained while v6 is missing",
+    );
     const requests = (
       await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_requests r ORDER BY id")
     ).rows;
     const traffic = (
       await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_traffic r")
     ).rows;
+    const completions = (
+      await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_import_completion r")
+    ).rows;
     const plan = await modelHistorySchemaPlan(db);
     assert.equal(plan.applied, false);
     assert.equal(plan.additive, true);
     assert.equal(plan.writes, false);
     assert.equal(plan.ledgerRows, "1");
-    assert.deepEqual(plan.pendingMigrations, [historySchemaVersion]);
+    assert.equal(plan.version, historySchemaVersion);
+    assert.deepEqual(plan.pendingMigrations, [historyBulkSchemaVersion]);
     assert.deepEqual(plan.catalogDiff, {
       createTables: ["basalt_model_import_jobs", "basalt_model_import_receipts"],
       addColumns: [],
@@ -268,6 +321,13 @@ test("a retained v4 database adds import tables, preserves existing rows and saf
       (await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_traffic r")).rows,
       traffic,
     );
+    assert.deepEqual(
+      (
+        await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_import_completion r")
+      ).rows,
+      completions,
+      "applying v6 must preserve v8 frozen completion fields",
+    );
     await db.query(
       `INSERT INTO basalt_model_import_jobs
       (id,pool,organization,owner,manifest_digest,map_digest,total_rows,total_chunks)
@@ -276,7 +336,8 @@ test("a retained v4 database adds import tables, preserves existing rows and saf
     );
     await db.query(
       `INSERT INTO basalt_model_import_receipts
-      (job,chunk,input_sha,ids_sha,rows,inserted,existing) VALUES ($1,0,$2,$3,1,1,0)`,
+      (job,chunk,start_row,input_sha,ids_sha,rows,inserted,existing,elapsed_ms)
+      VALUES ($1,0,0,$2,$3,1,1,0,1)`,
       ["e".repeat(64), "b".repeat(64), "c".repeat(64)],
     );
     const jobs = (
@@ -286,11 +347,11 @@ test("a retained v4 database adds import tables, preserves existing rows and saf
       await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_import_receipts r")
     ).rows;
     await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
-      historySchemaVersion,
+      historyBulkSchemaVersion,
     ]);
     const retry = await modelHistorySchemaPlan(db);
     assert.equal(retry.applied, false);
-    assert.deepEqual(retry.pendingMigrations, [historySchemaVersion]);
+    assert.deepEqual(retry.pendingMigrations, [historyBulkSchemaVersion]);
     assert.deepEqual(retry.catalogDiff, {
       createTables: [],
       addColumns: [],
@@ -320,7 +381,8 @@ test("a retained v4 database adds import tables, preserves existing rows and saf
         historyAppSchemaVersion,
         historyAccountTimeSchemaVersion,
         historyTrafficSchemaVersion,
-        historySchemaVersion,
+        historyBulkSchemaVersion,
+        historyImportCompletionVersion,
       ],
     );
     assert.deepEqual(

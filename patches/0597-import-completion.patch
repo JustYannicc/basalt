@@ -1,0 +1,98 @@
+diff --git a/apps/hosted/server/src/contracts/pool-usage-series.ts b/apps/hosted/server/src/contracts/pool-usage-series.ts
+index c8eaa7f..b531bfd 100644
+--- a/apps/hosted/server/src/contracts/pool-usage-series.ts
++++ b/apps/hosted/server/src/contracts/pool-usage-series.ts
+@@ -133,6 +133,17 @@ export const PoolUsageSeries = /* @__PURE__ */ (() =>
+           firstAt: nullableAt,
+           lastAt: nullableAt,
+           backfillComplete: Schema.NullOr(Schema.Boolean),
++          completion: Schema.optionalKey(
++            Schema.Struct({
++              frozenFrom: Schema.NonEmptyString,
++              frozenTo: Schema.NonEmptyString,
++              upperSourceId: decimal,
++              manifestDigest: Schema.String,
++              accountMappingDigest: Schema.String,
++              idsDigest: Schema.String,
++              verifiedRows: decimal,
++            }),
++          ),
+           sweep: Schema.NullOr(Schema.Struct({ id: decimal, upper: decimal })),
+         }),
+       ),
+diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
+index 328b1f5..1526b36 100644
+--- a/e2e/support/pool-usage-series-backend.ts
++++ b/e2e/support/pool-usage-series-backend.ts
+@@ -256,7 +256,16 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
+             kind: "import",
+             firstAt: "2026-01-01T00:45:00Z",
+             lastAt: "2026-01-01T00:45:00Z",
+-            backfillComplete: null,
++            backfillComplete: true,
++            completion: {
++              frozenFrom: "2026-01-01T00:45:00.000000000Z",
++              frozenTo: "2026-01-01T00:45:00.000000000Z",
++              upperSourceId: "2",
++              manifestDigest: "1".repeat(64),
++              accountMappingDigest: "2".repeat(64),
++              idsDigest: "3".repeat(64),
++              verifiedRows: "2",
++            },
+             sweep: null,
+           },
+         ],
+diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.spec.ts
+index 18a9d72..34ede29 100644
+--- a/e2e/tests/pool-usage-series.spec.ts
++++ b/e2e/tests/pool-usage-series.spec.ts
+@@ -38,7 +38,26 @@ const PersonalInput = Schema.Struct({
+ const PersonalReply = Schema.Struct({ person: Schema.String });
+ const personHash = (userId: string) => createHash("sha256").update(userId).digest("hex");
+ 
++const ImportCompletion = Schema.Struct({
++  frozenFrom: Schema.String,
++  frozenTo: Schema.String,
++  upperSourceId: Schema.String,
++  manifestDigest: Schema.String,
++  accountMappingDigest: Schema.String,
++  idsDigest: Schema.String,
++  verifiedRows: Schema.String,
++});
+ const Series = Schema.Struct({
++  coverage: Schema.Struct({
++    sources: Schema.Array(
++      Schema.Struct({
++        source: Schema.String,
++        kind: Schema.String,
++        backfillComplete: Schema.NullOr(Schema.Boolean),
++        completion: Schema.optionalKey(ImportCompletion),
++      }),
++    ),
++  }),
+   from: Schema.String,
+   to: Schema.String,
+   asOf: Schema.String,
+@@ -168,6 +187,22 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool usage series", (it) => {
+         expect(result.from).toBe(query.from);
+         expect(result.to).toBe(query.to);
+         expect(result.next).toBeNull();
++        expect(result.coverage.sources).toEqual([
++          {
++            source: "a".repeat(64),
++            kind: "import",
++            backfillComplete: true,
++            completion: {
++              frozenFrom: "2026-01-01T00:45:00.000000000Z",
++              frozenTo: "2026-01-01T00:45:00.000000000Z",
++              upperSourceId: "2",
++              manifestDigest: "1".repeat(64),
++              accountMappingDigest: "2".repeat(64),
++              idsDigest: "3".repeat(64),
++              verifiedRows: "2",
++            },
++          },
++        ]);
+         expect(result.asOf).toBe("2026-01-02T00:00:00Z");
+         expect(result.groups).toHaveLength(1);
+         expect(result.groups[0]?.buckets[0]).toMatchObject({

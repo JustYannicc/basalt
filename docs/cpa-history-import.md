@@ -165,3 +165,34 @@ provider invoice or canonical token-breakdown proof exists in this source, so
 these rows remain unpriced with legacy token quality. After apply, reconcile
 counts and token sums by day and model against the verified source ranges, and
 verify the history on the selected team's live interface.
+
+
+After exact reconciliation, use the private completion operator to record the
+accepted source range. Its selection names the pool, source UUID, canonical
+`frozenFrom` and `frozenTo`, `afterSourceId` and `upperSourceId`, accepted manifest
+and account-map digests, exact ID-set digest, and cumulative `verifiedRows`.
+The first completion starts after source ID `0`; a top-up names the preceding
+checkpoint's upper ID and cannot shrink its range or rewind its source watermark.
+The ID-set digest hashes sorted IDs within each two-character hexadecimal prefix,
+then hashes the sorted `prefix:hash` lines. Both levels join with a newline and
+omit a trailing newline. The operator checks the accepted manifest against that
+same digest before contacting the database. It also checks source-file and page
+hashes, resolved IDs, timestamps and the actual upper source ID. For a top-up,
+repeat the `--file` and `--manifest` pair for every accepted segment in source
+order, including the preceding completed range. The new checkpoint records the
+latest accepted segment manifest and the cumulative verified ID set.
+
+Run `node scripts/pool-import-completion.ts --worker <script> --account-id
+<account> --selection <private-selection.json> --file <frozen-metadata> --manifest <accepted-manifest>
+--plan <new-private-plan.json>` for a read-only plan. After reviewing its exact
+reconciliation and preceding checkpoint, repeat with `--apply --go`. The private
+operations binding supplies authority; the public Worker cannot finalize history.
+A started receipt prevents repeating an uncertain dispatch. Inspect the saved
+plan and receipt, then read a fresh plan instead of retrying a lost response.
+
+Completion records only the explicitly verified frozen range. The pool series
+API reports an incomplete import as `backfillComplete: false` and includes its
+completion range and source watermark after finalization. Consumers must use that
+range rather than treating it as proof of later or earlier history. Home capture
+keeps its separate cursor. Schema v8 adds one small table without a backfill or
+an index on request history.
