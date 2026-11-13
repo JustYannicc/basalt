@@ -1,0 +1,2158 @@
+diff --git a/packages/ui/src/implementation/styles/globals.css b/packages/ui/src/implementation/styles/globals.css
+--- a/packages/ui/src/implementation/styles/globals.css
++++ b/packages/ui/src/implementation/styles/globals.css
+@@ -1,11 +1,12 @@
+ @import "tailwindcss";
+ @import "tw-animate-css";
++@import "./tokens.css";
+ @source "../components";
+ @source "../../../../devtools/src";
+ @source "../../../../dashboard-start/src/implementation/build-change-notice.tsx";
+ 
+-/* Executor's product tokens and bundled Geist faces. Dashboards preload the faces; a face that
+-   misses the first paint is not swapped in, so late fonts never move text. */
++/* Executor's bundled Geist faces. Dashboards preload the faces; a face that misses the first paint
++   is not swapped in, so late fonts never move text. */
+ @font-face {
+   font-family: Geist;
+   src: url("./fonts/geist-sans.woff2") format("woff2");
+@@ -20,131 +21,3 @@
+   font-style: normal;
+   font-display: optional;
+ }
+-@theme inline {
+-  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+-  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+-  --color-background: var(--background);
+-  --color-foreground: var(--foreground);
+-  --color-card: var(--background);
+-  --color-card-foreground: var(--foreground);
+-  --color-popover: var(--background);
+-  --color-popover-foreground: var(--foreground);
+-  --color-primary: var(--primary);
+-  --color-primary-foreground: var(--primary-foreground);
+-  --color-secondary: var(--muted);
+-  --color-secondary-foreground: var(--foreground);
+-  --color-muted: var(--muted);
+-  --color-muted-foreground: var(--muted-foreground);
+-  --color-accent: var(--accent);
+-  --color-accent-foreground: var(--foreground);
+-  --color-destructive: var(--destructive);
+-  --color-border: var(--border);
+-  --color-input: var(--input);
+-  --color-ring: var(--ring);
+-  --color-sign-in-warning: var(--sign-in-warning);
+-  --radius-sm: 5px;
+-  --radius-md: 6px;
+-  --radius-lg: 8px;
+-}
+-:root {
+-  color-scheme: light;
+-  --background: #fff;
+-  --foreground: #111;
+-  --primary: #0a0a0a;
+-  --primary-foreground: #fff;
+-  --muted: #fafafa;
+-  --muted-foreground: #666;
+-  --accent: #f5f5f5;
+-  --destructive: #b4261a;
+-  --border: #eaeaea;
+-  --input: #d4d4d4;
+-  --ring: #888;
+-  --sign-in-warning: #99651a;
+-}
+-@media (prefers-color-scheme: dark) {
+-  :root {
+-    color-scheme: dark;
+-    --background: #0a0a0a;
+-    --foreground: #ededed;
+-    --primary: #fff;
+-    --primary-foreground: #0a0a0a;
+-    --muted: #111;
+-    --muted-foreground: #9a9a9a;
+-    --accent: #1a1a1a;
+-    --destructive: #e0726a;
+-    --border: #242424;
+-    --input: #333;
+-    --ring: #777;
+-    --sign-in-warning: #d6aa65;
+-  }
+-}
+-@layer base {
+-  * {
+-    border-color: var(--border);
+-  }
+-  html,
+-  body,
+-  #root {
+-    margin: 0;
+-    min-height: 100%;
+-    height: 100%;
+-  }
+-  @media (pointer: fine) {
+-    html,
+-    body {
+-      overscroll-behavior-y: none;
+-    }
+-  }
+-  body {
+-    font-family: var(--font-sans);
+-    background: var(--background);
+-    color: var(--foreground);
+-    font-size: 14px;
+-    line-height: 1.5;
+-    letter-spacing: -0.011em;
+-    -webkit-font-smoothing: antialiased;
+-  }
+-  button,
+-  a,
+-  input {
+-    -webkit-tap-highlight-color: transparent;
+-  }
+-  button,
+-  a {
+-    touch-action: manipulation;
+-  }
+-  button:not(:disabled),
+-  [role="tab"] {
+-    cursor: pointer;
+-  }
+-  a {
+-    color: inherit;
+-    text-decoration: none;
+-  }
+-  h1,
+-  h2,
+-  h3,
+-  p {
+-    margin: 0;
+-  }
+-  code,
+-  pre {
+-    font-family: var(--font-mono);
+-  }
+-  ::selection {
+-    background: var(--input);
+-  }
+-  :focus-visible {
+-    outline: 2px solid var(--ring);
+-    outline-offset: 3px;
+-  }
+-}
+-
+-@media (prefers-reduced-motion: reduce) {
+-  *,
+-  *::before,
+-  *::after {
+-    animation-duration: 0.01ms !important;
+-    transition-duration: 0.01ms !important;
+-  }
+-}
+diff --git a/packages/ui/src/implementation/styles/dashboard.css b/packages/ui/src/implementation/styles/dashboard.css
+--- a/packages/ui/src/implementation/styles/dashboard.css
++++ b/packages/ui/src/implementation/styles/dashboard.css
+@@ -1,3 +1,5 @@
++@import "./brand.css";
++
+ /* Dashboard utilities live with their views and are scanned by every product. */
+ @source "../dashboard";
+ 
+@@ -16,97 +18,3 @@ body:has([data-name-account-handoff][data-state="open"])
+   :is([data-slot="dialog-content"], [data-slot="dialog-overlay"])[data-state="closed"] {
+   visibility: hidden;
+ }
+-
+-/*
+- * Lab identity colours (`provider-brand.ts`), one value per lab for icon tiles, healthy usage bars
+- * and pool chart series, plus two lightness steps of the same hue for extra series. Every shade keeps
+- * at least 3:1 against the page, and each lab colour against the usage meter track, on both themes.
+- * Status colours (low, critical, stale) never come from here.
+- */
+-:root {
+-  --brand-openai: light-dark(#0e9473, #19c37d);
+-  --brand-openai-1: light-dark(#0b6e56, #7fe3b8);
+-  --brand-openai-2: light-dark(#07463a, #14a86b);
+-  --brand-anthropic: light-dark(#c4623f, #d97757);
+-  --brand-anthropic-1: light-dark(#8f4129, #f0b59d);
+-  --brand-anthropic-2: light-dark(#b5532f, #c4623f);
+-  --brand-kimi: light-dark(#1773e6, #5aa7ff);
+-  --brand-kimi-1: light-dark(#0d4fa6, #a8d0ff);
+-  --brand-kimi-2: light-dark(#2a64c9, #3d8ef0);
+-  --brand-google: light-dark(#1a73e8, #8ab4f8);
+-  --brand-google-1: light-dark(#0f4fa8, #c3d7fb);
+-  --brand-google-2: light-dark(#3367d6, #6b9ff0);
+-}
+-.brand-fill.brand-openai {
+-  --brand-ink: var(--brand-openai);
+-  --brand-ink-1: var(--brand-openai-1);
+-  --brand-ink-2: var(--brand-openai-2);
+-}
+-.brand-fill.brand-anthropic {
+-  --brand-ink: var(--brand-anthropic);
+-  --brand-ink-1: var(--brand-anthropic-1);
+-  --brand-ink-2: var(--brand-anthropic-2);
+-}
+-.brand-fill.brand-kimi {
+-  --brand-ink: var(--brand-kimi);
+-  --brand-ink-1: var(--brand-kimi-1);
+-  --brand-ink-2: var(--brand-kimi-2);
+-}
+-.brand-fill.brand-google {
+-  --brand-ink: var(--brand-google);
+-  --brand-ink-1: var(--brand-google-1);
+-  --brand-ink-2: var(--brand-google-2);
+-}
+-.brand-fill {
+-  background-color: var(--brand-ink);
+-}
+-.brand-fill.brand-shade-1 {
+-  background-color: var(--brand-ink-1);
+-}
+-.brand-fill.brand-shade-2 {
+-  background-color: var(--brand-ink-2);
+-}
+-
+-/*
+- * Model provider identity on icon tiles (`provider-brand.ts`). The ink tints only the tile behind
+- * the provider's logo and its monogram; account health keeps its own colours. Unlayered so the
+- * tile's utility background and border yield to it. Light and dark follow the page's color-scheme.
+- */
+-.provider-icon[data-provider="openai"] {
+-  --provider-ink: var(--brand-openai);
+-}
+-.provider-icon[data-provider="anthropic"] {
+-  --provider-ink: var(--brand-anthropic);
+-}
+-.provider-icon[data-provider="gemini"] {
+-  --provider-ink: var(--brand-google);
+-}
+-.provider-icon[data-provider="vertex"] {
+-  --provider-ink: var(--brand-google);
+-}
+-.provider-icon[data-provider="antigravity"] {
+-  --provider-ink: var(--brand-google);
+-}
+-.provider-icon[data-provider="kimi"] {
+-  --provider-ink: var(--brand-kimi);
+-}
+-.provider-icon[data-provider="xai"] {
+-  --provider-ink: var(--foreground);
+-}
+-.provider-icon[data-provider="devin"] {
+-  --provider-ink: light-dark(#2469ad, #83bcf5);
+-}
+-.provider-icon[data-provider="meta"] {
+-  --provider-ink: light-dark(#0866c9, #78b5ff);
+-}
+-.provider-icon[data-provider="jev"] {
+-  --provider-ink: light-dark(#6550a7, #bca9eb);
+-}
+-.provider-icon[data-provider="cloudflare"] {
+-  --provider-ink: light-dark(#a6500a, #ffb467);
+-}
+-.provider-icon[data-provider] {
+-  color: var(--provider-ink);
+-  background-color: color-mix(in oklab, var(--provider-ink) 12%, var(--background));
+-  border-color: color-mix(in oklab, var(--provider-ink) 30%, var(--border));
+-}
+diff --git a/packages/ui/src/implementation/dashboard/common.tsx b/packages/ui/src/implementation/dashboard/common.tsx
+--- a/packages/ui/src/implementation/dashboard/common.tsx
++++ b/packages/ui/src/implementation/dashboard/common.tsx
+@@ -1,5 +1,5 @@
+ import { HugeiconsIcon } from "@hugeicons/react";
+-import { PackageIcon, Search01Icon } from "@hugeicons/core-free-icons";
++import { Search01Icon } from "@hugeicons/core-free-icons";
+ import { Atom } from "effect/reactivity";
+ import { useOptionalDashboard } from "./context.tsx";
+ import { useState, type ReactNode } from "react";
+@@ -16,10 +16,10 @@ import { providerDisplayUrl } from "../../contracts/dashboard.ts";
+ import type { App, ProviderDefinition } from "@executor-js/sdk";
+ import type { CatalogIcon } from "@executor-js/catalog/contracts";
+ import { Input } from "@executor-js/ui/components/input";
+-import { cn } from "@executor-js/ui/lib/utils";
+ import { Skeleton } from "../components/skeleton.tsx";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { providerBrand } from "../lib/provider-brand.ts";
++import { ProviderFallbackGlyph, ProviderMonogram, ProviderTile } from "./provider-mark.tsx";
+ import { builtInApp, isDefaultProductBrand } from "../../contracts/product-brand.ts";
+ const noIcons = Atom.make(noCatalogIcons);
+ 
+@@ -102,17 +102,9 @@ export function ProviderIcon({
+     return null;
+   const fail = (key: string) => () =>
+     setFailed((current) => (current.includes(key) ? current : [...current, key]));
++  const tile = large ? "large" : medium ? "medium" : "small";
+   return (
+-    <span
+-      className={cn(
+-        "provider-icon w-8.5 h-8.5 border border-border rounded-[7px] inline-flex items-center justify-center bg-background shrink-0 [&_img]:w-4.25 [&_img]:h-4.25 [&_img]:object-contain [&_>_svg]:w-4.25 [&_>_svg]:h-4.25 [&_>_svg]:object-contain max-[740px]:[.catalog-row_>_&]:row-[1_/_3]",
+-        large &&
+-          "provider-icon-large w-11 h-11 rounded-[9px] [&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
+-        medium && "size-6 rounded-md [&_img]:size-4.5 [&_>_svg]:size-4.5",
+-      )}
+-      data-provider={brand?.key}
+-      aria-hidden
+-    >
++    <ProviderTile brand={brand} size={tile}>
+       {own ? (
+         // The browser picks the variant for the color scheme, so the server renders the same
+         // markup. A srcset ends a URL at whitespace, which a data URI may hold escaped.
+@@ -145,19 +137,11 @@ export function ProviderIcon({
+       ) : waiting ? (
+         <Skeleton className="size-full rounded-[inherit]" data-icon="loading" />
+       ) : brand ? (
+-        <span
+-          data-icon="monogram"
+-          className={cn(
+-            "font-semibold leading-none tracking-[-0.02em]",
+-            large ? "text-[15px]" : medium ? "text-[11px]" : "text-[12px]",
+-          )}
+-        >
+-          {brand.monogram}
+-        </span>
++        <ProviderMonogram brand={brand} size={tile} />
+       ) : showFallback ? (
+-        <HugeiconsIcon icon={PackageIcon} aria-hidden size={large ? 23 : 17} strokeWidth={1.5} />
++        <ProviderFallbackGlyph size={tile} />
+       ) : null}
+-    </span>
++    </ProviderTile>
+   );
+ }
+ 
+diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
+--- a/packages/ui/src/implementation/dashboard/account-row.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row.tsx
+@@ -4,8 +4,6 @@
+  * one field to one field onto the saved account list's rows, so a page swaps only its adapter.
+  */
+ import type { AccountAppHealth, AccountId, AppId } from "@executor-js/sdk";
+-import { HugeiconsIcon } from "@hugeicons/react";
+-import { Tick02Icon } from "@hugeicons/core-free-icons";
+ import {
+   createContext,
+   useContext,
+@@ -19,6 +17,7 @@ import type { AccountSummary, Inventory } from "../../contracts/dashboard.ts";
+ import { DropdownMenuItem, DropdownMenuSeparator } from "../components/dropdown-menu.tsx";
+ import { cn } from "../lib/utils.ts";
+ import { AccountLogo } from "./account-health.tsx";
++import { AccountNameLines, type AccountNameSecondary } from "./account-name.tsx";
+ import { ProviderIcon } from "./common.tsx";
+ 
+ /** One app or pool using the account, with that consumer's own sign-in state and check. */
+@@ -496,7 +495,7 @@ export function AccountRowName({
+   const reported = [account.health?.info?.email, account.health?.info?.username].find(
+     (value) => value !== undefined && value !== title,
+   );
+-  const secondary =
++  const secondary: AccountNameSecondary | undefined =
+     verified !== undefined && verified !== title
+       ? { text: verified, verified: true }
+       : verified === title
+@@ -507,47 +506,13 @@ export function AccountRowName({
+           ? undefined
+           : { text: reported, verified: false };
+   return (
+-    <div className="grid min-w-0 leading-[1.3] @max-[880px]/account-rows:self-start">
+-      <span className="flex min-w-0 items-center gap-1.5">
+-        <strong
+-          className="min-w-0 truncate text-[13px] font-medium"
+-          title={title}
+-          data-account-name
+-          {...(verified === title ? { "data-account-verified": "" } : {})}
+-        >
+-          {title}
+-        </strong>
+-        {verified === title && <VerifiedMark />}
+-        {tags}
+-      </span>
+-      {secondary !== undefined && (
+-        <span
+-          className={cn(
+-            "flex min-w-0 items-center gap-1 text-[12px] text-muted-foreground",
+-            secondaryClassName,
+-          )}
+-        >
+-          <span
+-            className="min-w-0 truncate"
+-            title={secondary.text}
+-            {...("authored" in secondary ? {} : { "data-account-identity": "" })}
+-            {...(secondary.verified ? { "data-account-verified": "" } : {})}
+-          >
+-            {secondary.text}
+-          </span>
+-          {secondary.verified && <VerifiedMark />}
+-        </span>
+-      )}
+-    </div>
+-  );
+-}
+-
+-function VerifiedMark() {
+-  return (
+-    <span className="inline-flex shrink-0 text-muted-foreground" title="Verified at sign-in">
+-      <HugeiconsIcon icon={Tick02Icon} size={12} strokeWidth={2.5} aria-hidden />
+-      <span className="sr-only">, verified</span>
+-    </span>
++    <AccountNameLines
++      title={title}
++      titleVerified={verified === title}
++      secondary={secondary}
++      tags={tags}
++      secondaryClassName={secondaryClassName}
++    />
+   );
+ }
+ 
+diff --git a/packages/ui/src/implementation/dashboard/account-row-health.tsx b/packages/ui/src/implementation/dashboard/account-row-health.tsx
+--- a/packages/ui/src/implementation/dashboard/account-row-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row-health.tsx
+@@ -1,4 +1,4 @@
+-import type { AccountCheckStatus, AccountDriverHealth, AppId } from "@executor-js/sdk";
++import type { AccountDriverHealth, AppId } from "@executor-js/sdk";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+ import { useAtomValue } from "@effect/atom-react";
+@@ -12,7 +12,14 @@ import { shortMoment } from "../components/local-time.tsx";
+ import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
+ import { cn } from "../lib/utils.ts";
+ import { checkExplanation, checkOffersReconnect } from "../../contracts/account-check-recovery.ts";
+-import { describeCheckResult } from "./account-health.tsx";
++import {
++  CheckDot,
++  CheckLabel,
++  checkSeverity,
++  checkStateClass,
++  describeCheckResult,
++  worstChecks,
++} from "./account-check-state.tsx";
+ import type { AccountRowBinding, AccountRowInput } from "./account-row.tsx";
+ import { TrafficHealth, type AccountRowTraffic } from "./account-traffic.tsx";
+ import { observationClock } from "./account-observation-format.ts";
+@@ -44,15 +51,6 @@ export type AccountRowHealth =
+   /** Nothing can check the account, so the cell stays empty. */
+   | { readonly kind: "no-check" };
+ 
+-const severity: readonly AccountCheckStatus[] = [
+-  "credentials_rejected",
+-  "tools_unavailable",
+-  "forbidden",
+-  "upstream_unavailable",
+-  "check_failed",
+-  "healthy",
+-];
+-
+ /** Lower is worse: grant problems, then current results by severity, then outdated ones by severity. */
+ const rank = (health: AccountRowHealth) =>
+   health.kind === "needs-sign-in"
+@@ -60,10 +58,12 @@ const rank = (health: AccountRowHealth) =>
+     : health.kind === "unavailable"
+       ? 1
+       : health.kind === "check"
+-        ? 2 + (health.check.current ? 0 : severity.length) + severity.indexOf(health.check.status)
++        ? 2 +
++          (health.check.current ? 0 : checkSeverity.length) +
++          checkSeverity.indexOf(health.check.status)
+         : health.kind === "not-checked"
+-          ? 2 + 2 * severity.length
+-          : 3 + 2 * severity.length;
++          ? 2 + 2 * checkSeverity.length
++          : 3 + 2 * checkSeverity.length;
+ 
+ const grant = (
+   account: AccountSummary,
+@@ -85,24 +85,20 @@ const worstApp = (
+   account: AccountSummary,
+   bindings: readonly AccountRowBinding[],
+ ): AccountRowHealth | undefined => {
+-  const results = bindings.flatMap((binding) =>
+-    binding.check?.check == null ? [] : [{ check: binding.check.check, app: binding.app }],
++  const matching = worstChecks(
++    bindings.flatMap((binding) =>
++      binding.check?.check == null ? [] : [{ check: binding.check.check, app: binding.app }],
++    ),
+   );
+-  for (const current of [true, false])
+-    for (const status of severity) {
+-      const matching = results.filter(
+-        (result) => result.check.current === current && result.check.status === status,
+-      );
+-      const [first] = matching;
+-      if (first !== undefined)
+-        return {
+-          kind: "check",
+-          check: first.check,
+-          sources: matching.map((result) => ({ account, app: result.app })),
+-          grouped: false,
+-        };
+-    }
+-  return undefined;
++  const [first] = matching;
++  return first === undefined
++    ? undefined
++    : {
++        kind: "check",
++        check: first.check,
++        sources: matching.map((result) => ({ account, app: result.app })),
++        grouped: false,
++      };
+ };
+ 
+ /** One saved account: its own check wins, then its app checks; a saved grant alone says nothing. */
+@@ -177,19 +173,6 @@ export const appRowHealth = (row: AccountRowInput, own: AccountRowBinding): Acco
+   );
+ };
+ 
+-const dots = {
+-  good: "bg-emerald-500",
+-  bad: "bg-destructive",
+-  warn: "bg-amber-500",
+-  muted: "bg-muted-foreground/50",
+-};
+-const texts = {
+-  good: "text-foreground",
+-  bad: "text-destructive",
+-  warn: "text-amber-700 dark:text-amber-400",
+-  muted: "text-muted-foreground",
+-};
+-
+ /**
+  * The account's health in a few words. A current rejection is the row's one inline recovery:
+  * `recover` where the page has one, or with `link` a "Needs re-auth ↗" link to the first rejecting
+@@ -219,16 +202,7 @@ export function AccountHealthCell({
+   const now = useAtomValue(observationClock);
+   const busy = traffic !== undefined && traffic.requests > 0 ? traffic : undefined;
+   const { AppLink } = useDashboard();
+-  const cell = "inline-flex min-w-0 items-center gap-1.5 text-[13px] whitespace-nowrap";
+-  const dot = (tone: keyof typeof dots, hollow = false) => (
+-    <span
+-      aria-hidden
+-      className={cn(
+-        "size-1.5 shrink-0 rounded-full",
+-        hollow ? "shadow-[inset_0_0_0_1.5px_var(--color-muted-foreground)]" : dots[tone],
+-      )}
+-    />
+-  );
++  const cell = checkStateClass;
+   if (health.kind === "needs-sign-in" || health.kind === "unavailable")
+     return (
+       <span
+@@ -259,12 +233,12 @@ export function AccountHealthCell({
+         data-account-health-cell
+         data-health-state={health.kind}
+       >
+-        {dot("muted")}
++        <CheckDot tone="muted" />
+         Not checked
+       </span>
+     );
+   const { check, sources, grouped } = health;
+-  const { label, tone } = describeCheckResult(check);
++  const { label } = describeCheckResult(check);
+   const { message } = checkExplanation(check);
+   const where = sources
+     .map((source) => {
+@@ -289,7 +263,7 @@ export function AccountHealthCell({
+         {...marks}
+         suppressHydrationWarning
+       >
+-        {dot("muted", true)}
++        <CheckDot tone="muted" hollow />
+         Not rechecked
+       </span>
+     );
+@@ -299,20 +273,7 @@ export function AccountHealthCell({
+   // Traffic stands in only for a healthy check; a current failure keeps its label.
+   if (busy !== undefined && check.status === "healthy")
+     return <TrafficHealth traffic={busy} check={title} now={now} format={format} />;
+-  const content = (
+-    <>
+-      {dot(tone)}
+-      <span
+-        className={cn(
+-          "truncate",
+-          tone === "good" ? "text-muted-foreground" : texts[tone],
+-          tone === "bad" && "font-medium",
+-        )}
+-      >
+-        {label}
+-      </span>
+-    </>
+-  );
++  const content = <CheckLabel check={check} />;
+   const first = sources.find((source) => source.app !== undefined)?.app;
+   if (rejected && recover === undefined && link && first !== undefined)
+     return (
+diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
+--- a/packages/ui/src/implementation/dashboard/account-health.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health.tsx
+@@ -1,10 +1,5 @@
+-import type {
+-  AccountAppHealth,
+-  AccountCheckStatus,
+-  AccountDriverHealth,
+-  AccountHealth,
+-} from "@executor-js/sdk";
+-import { Exit, Match, type Cause } from "effect";
++import type { AccountAppHealth, AccountDriverHealth, AccountHealth } from "@executor-js/sdk";
++import { Exit, type Cause } from "effect";
+ import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
+ import { HugeiconsIcon } from "@hugeicons/react";
+ import { UserCircleIcon } from "@hugeicons/core-free-icons";
+@@ -15,11 +10,8 @@ import { LocalTime, shortMoment } from "../components/local-time.tsx";
+ import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
+-import {
+-  checkExplanation,
+-  renewalFailure,
+-  renewalLabel,
+-} from "../../contracts/account-check-recovery.ts";
++import { checkExplanation } from "../../contracts/account-check-recovery.ts";
++import { describeCheckResult } from "./account-check-state.tsx";
+ 
+ import { AccountDisplayStatus } from "./account-status.tsx";
+ import { ProviderIcon } from "./common.tsx";
+@@ -27,28 +19,7 @@ import { cn } from "../lib/utils.ts";
+ 
+ type AccountInfo = NonNullable<AccountHealth["info"]>;
+ 
+-/** What one app's latest check means for the reader; tone matches the other status pills. */
+-export const describeAccountCheck = (status: AccountCheckStatus) =>
+-  Match.value(status).pipe(
+-    Match.when("healthy", () => ({ label: "Healthy", tone: "good" as const })),
+-    Match.when("credentials_rejected", () => ({ label: "Needs re-auth", tone: "bad" as const })),
+-    Match.when("forbidden", () => ({ label: "Missing permission", tone: "warn" as const })),
+-    Match.when("upstream_unavailable", () => ({
+-      label: "Service unavailable",
+-      tone: "warn" as const,
+-    })),
+-    Match.when("check_failed", () => ({ label: "Check failed", tone: "muted" as const })),
+-    Match.when("tools_unavailable", () => ({ label: "Tools unavailable", tone: "bad" as const })),
+-    Match.exhaustive,
+-  );
+-
+-/** One result's label: a failed renewal names itself rather than the outage its status reports. */
+-export const describeCheckResult = (
+-  check: Pick<NonNullable<AccountAppHealth["check"]>, "status" | "failure">,
+-) => {
+-  const described = describeAccountCheck(check.status);
+-  return renewalFailure(check) === undefined ? described : { ...described, label: renewalLabel };
+-};
++export { describeAccountCheck, describeCheckResult } from "./account-check-state.tsx";
+ 
+ /** Capability comes from the retained driver, independently of its last result. */
+ export const driverCanCheck = (driver: AccountDriverHealth | undefined) =>
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -16,6 +16,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
+ import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
+ import type { AccountSummary, FailureProps, Query } from "../../contracts/dashboard.ts";
+ import type { DisplayFormat } from "../../contracts/display.ts";
++import { Badge } from "../components/badge.tsx";
+ import { Button } from "../components/button.tsx";
+ import { useDisplayFormat } from "../hooks/display-format.ts";
+ import { cn } from "../lib/utils.ts";
+@@ -370,14 +371,9 @@ function PlanTags({
+     }),
+   );
+   return [...labels].map((label) => (
+-    <span
+-      key={label}
+-      data-account-plan
+-      title={label}
+-      className="max-w-full truncate rounded-sm border px-1.5 text-[11px] leading-4.5 text-foreground"
+-    >
++    <Badge key={label} data-account-plan>
+       {label}
+-    </span>
++    </Badge>
+   ));
+ }
+ 
+diff --git a/packages/ui/src/contracts/account-check-recovery.ts b/packages/ui/src/contracts/account-check-recovery.ts
+--- a/packages/ui/src/contracts/account-check-recovery.ts
++++ b/packages/ui/src/contracts/account-check-recovery.ts
+@@ -2,8 +2,7 @@
+  * What a failed account check means for the person reading it, and whether signing in again can
+  * fix it. Renewal reasons and causes are the host's closed vocabularies; vendor text never enters.
+  */
+-import type { AccountAppHealth, App, AppId } from "@executor-js/sdk";
+-import type { AccountSummary } from "./dashboard.ts";
++import type { AccountAppHealth } from "apps/contracts";
+ 
+ type Check = NonNullable<AccountAppHealth["check"]>;
+ type Failure = NonNullable<Check["failure"]>;
+@@ -168,13 +167,13 @@ export const checkExplanation = (
+  * The first app whose current check of `account` offers Reconnect and where the page supports it,
+  * so a row's one Reconnect opens the app that reported the problem.
+  */
+-export const reconnectApp = (
+-  account: AccountSummary,
+-  apps: readonly App[],
+-  canReconnect: ((app: App) => boolean) | undefined,
+-): App | undefined => {
++export const reconnectApp = <A extends { readonly id: string }>(
++  account: { readonly health?: { readonly apps: readonly AccountAppHealth[] } | undefined },
++  apps: readonly A[],
++  canReconnect: ((app: A) => boolean) | undefined,
++): A | undefined => {
+   if (canReconnect === undefined) return undefined;
+-  const offering = new Set<AppId>(
++  const offering = new Set<string>(
+     (account.health?.apps ?? []).flatMap((entry) =>
+       entry.check !== null && checkOffersReconnect(entry.check) ? [entry.app] : [],
+     ),
+diff --git a/packages/apps/package.json b/packages/apps/package.json
+--- a/packages/apps/package.json
++++ b/packages/apps/package.json
+@@ -23,6 +23,8 @@
+     "./ui/serving": "./src/ui-serving.ts",
+     "./ui/auth/contracts": "./src/contracts/ui-auth.ts",
+     "./react": "./src/react.ts",
++    "./ui": "./src/ui.tsx",
++    "./ui.css": "./src/ui.css",
+     "./storage/facet": "./src/facet.ts",
+     "./skills": "./src/skills.ts",
+     "./skills/effect": "./src/implementation/skill-files.ts"
+diff --git a/packages/apps/scripts/build.mjs b/packages/apps/scripts/build.mjs
+--- a/packages/apps/scripts/build.mjs
++++ b/packages/apps/scripts/build.mjs
+@@ -13,9 +13,11 @@ const out = join(root, "dist");
+ // TypeScript reports source file names with POSIX separators on every platform.
+ const packagesPrefix = packages.split("\\").join("/") + "/";
+ const manifest = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
++/** Stylesheets are built on their own below; every other subpath is a module entry. */
++const asset = (key) => key.endsWith(".json") || key.endsWith(".css");
+ const entries = Object.fromEntries(
+   Object.entries(manifest.exports)
+-    .filter(([key]) => !key.endsWith(".json"))
++    .filter(([key]) => !asset(key))
+     .map(([key, source]) => [key === "." ? "index" : key.slice(2), join(root, source)]),
+ );
+ await rm(out, { recursive: true, force: true });
+@@ -33,9 +35,28 @@ await build({
+   target: "es2022",
+   mainFields: ["module", "main"],
+   conditions: ["module"],
+-  external: ["node:*", ...Object.keys(manifest.peerDependencies)],
++  jsx: "automatic",
++  // `apps/ui` renders through the app's own React DOM, like the app's own components.
++  external: ["node:*", ...Object.keys(manifest.peerDependencies), "react-dom"],
+ });
+ 
++// `apps/ui.css` is one file: authors import it, and the app compiler adds only Tailwind itself.
++// esbuild names each inlined file in a comment; those name build-machine paths, so they go.
++const stylesheets = Object.entries(manifest.exports).filter(([key]) => key.endsWith(".css"));
++for (const [key, source] of stylesheets) {
++  const { outputFiles } = await build({
++    entryPoints: [join(root, source)],
++    outfile: join(out, key.slice(2)),
++    bundle: true,
++    write: false,
++    conditions: ["style"],
++    external: ["tailwindcss"],
++    logLevel: "error",
++  });
++  for (const file of outputFiles)
++    await writeFile(file.path, file.text.replace(/^\/\* [^\n]*\.css \*\/\n/gm, ""));
++}
++
+ const compilerOptions = {
+   target: ts.ScriptTarget.ES2022,
+   module: ts.ModuleKind.ESNext,
+@@ -44,6 +65,7 @@ const compilerOptions = {
+   exactOptionalPropertyTypes: true,
+   noUncheckedIndexedAccess: true,
+   skipLibCheck: true,
++  jsx: ts.JsxEmit.ReactJSX,
+   declaration: true,
+   emitDeclarationOnly: true,
+   allowImportingTsExtensions: true,
+@@ -104,7 +126,7 @@ async function declarations(directory) {
+       rewritten = rewritten.replaceAll(`"${specifier}"`, JSON.stringify(local));
+     }
+     rewritten = rewritten.replace(
+-      /((?:from\s*|import\s*\(\s*)["'][.][^"']*)\.ts(["'])/g,
++      /((?:from\s*|import\s*\(\s*)["'][.][^"']*)\.tsx?(["'])/g,
+       "$1.js$2",
+     );
+     await writeFile(file, rewritten);
+@@ -127,6 +149,7 @@ const snapshot = async (names, external, sourcemap = false) => {
+     platform: "browser",
+     target: "es2022",
+     minify: true,
++    jsx: "automatic",
+     write: false,
+     external,
+     ...(sourcemap ? { sourcemap: "external", sourcesContent: false } : {}),
+@@ -155,10 +178,12 @@ await writeFile(
+     version: manifest.version,
+     server,
+     browser: Object.fromEntries(
+-      (await snapshot(["index", "client", "effect", "react"], ["react", "react/*"])).map((file) => [
+-        moduleName(file),
+-        file.text,
+-      ]),
++      (
++        await snapshot(
++          ["index", "client", "effect", "react", "ui"],
++          ["react", "react/*", "react-dom", "react-dom/*"],
++        )
++      ).map((file) => [moduleName(file), file.text]),
+     ),
+   }),
+ );
+@@ -190,10 +215,12 @@ const exports = Object.fromEntries(
+     .filter(([key]) => !key.endsWith(".json"))
+     .map(([key, source]) => [
+       key,
+-      {
+-        types: `./types/apps/${source.slice(2).replace(/\.ts$/, ".d.ts")}`,
+-        import: `./js/${key === "." ? "index" : key.slice(2)}.js`,
+-      },
++      key.endsWith(".css")
++        ? key
++        : {
++            types: `./types/apps/${source.slice(2).replace(/\.tsx?$/, ".d.ts")}`,
++            import: `./js/${key === "." ? "index" : key.slice(2)}.js`,
++          },
+     ]),
+ );
+ await writeFile(
+@@ -216,6 +243,7 @@ await writeFile(
+         "types",
+         "runtime.json",
+         "framework-reference.json",
++        ...stylesheets.map(([key]) => key.slice(2)),
+         "check-publish.mjs",
+         "README.md",
+       ],
+diff --git a/packages/apps/scripts/reference.mjs b/packages/apps/scripts/reference.mjs
+--- a/packages/apps/scripts/reference.mjs
++++ b/packages/apps/scripts/reference.mjs
+@@ -13,6 +13,7 @@ const modules = {
+   ".": "tools.md",
+   "./client": "ui.md",
+   "./react": "ui.md",
++  "./ui": "ui.md",
+   "./operations/approval": "tools.md",
+   "./mcp": "integrations.md",
+   "./graphql": "integrations.md",
+@@ -57,7 +58,10 @@ const nodeFlags =
+ export async function generateFrameworkReference() {
+   const manifest = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
+   // A new subpath must be documented for authors or named as a host surface.
+-  const subpaths = Object.keys(manifest.exports).filter((key) => !key.endsWith(".json"));
++  // Stylesheets such as `apps/ui.css` have no exports to describe.
++  const subpaths = Object.keys(manifest.exports).filter(
++    (key) => !key.endsWith(".json") && !key.endsWith(".css"),
++  );
+   const unclassified = [
+     ...subpaths.filter((key) => !Object.hasOwn(modules, key) && !hostModules.has(key)),
+     ...[...Object.keys(modules), ...hostModules].filter((key) => !subpaths.includes(key)),
+diff --git a/packages/sdk/src/implementation/ui-build.ts b/packages/sdk/src/implementation/ui-build.ts
+--- a/packages/sdk/src/implementation/ui-build.ts
++++ b/packages/sdk/src/implementation/ui-build.ts
+@@ -13,10 +13,14 @@ const elements = (node: DefaultTreeAdapterMap["node"]): Element[] => [
+   ...("childNodes" in node ? node.childNodes.flatMap(elements) : []),
+ ];
+ const failed = () => new RuntimeBuildFailed({ stage: "compile" });
+-const browserExports = new Set(["apps", "apps/client", "apps/effect", "apps/react"]);
++const browserExports = new Set(["apps", "apps/client", "apps/effect", "apps/react", "apps/ui"]);
++/** Framework stylesheets a page may `@import`; they load from the selected framework package. */
++const browserStyles = new Set(["apps/ui.css"]);
+ 
+ /** Only these framework subpaths are browser APIs. */
+ export const isBrowserAppImport = (specifier: string) => browserExports.has(specifier);
++/** Only these framework stylesheets are importable from page CSS. */
++export const isBrowserAppStyle = (specifier: string) => browserStyles.has(specifier);
+ /** Authored server implementation cannot enter the executable browser graph. */
+ export const isServerUiImport = (path: string) => path === "index.ts" || path.startsWith("server/");
+ /** Content types for compiled output, from the same table public files are served with. */
+diff --git a/packages/sdk/src/implementation/worker-browser-build.ts b/packages/sdk/src/implementation/worker-browser-build.ts
+--- a/packages/sdk/src/implementation/worker-browser-build.ts
++++ b/packages/sdk/src/implementation/worker-browser-build.ts
+@@ -2,7 +2,12 @@
+ import { InMemoryFileSystem } from "@cloudflare/worker-bundler";
+ import { boundBuildMessage, describeBuildCause, RuntimeBuildFailed } from "../contracts/runtime.ts";
+ import type { CodeFiles } from "../contracts/source.ts";
+-import { isBrowserAppImport, isServerUiImport, uiContentType } from "./ui-build.ts";
++import {
++  isBrowserAppImport,
++  isBrowserAppStyle,
++  isServerUiImport,
++  uiContentType,
++} from "./ui-build.ts";
+ import type { UiBuildEntry, UiBuildFile, UiBuildPlan } from "../contracts/ui-build.ts";
+ import { Effect, Option, Path, Schema } from "effect";
+ import type { Plugin } from "esbuild";
+@@ -131,6 +136,14 @@ export const browserBuild = (
+           if (args.path.startsWith("node:") || args.path.startsWith("cloudflare:"))
+             return { errors: [{ text: "Runtime bindings cannot be imported by the UI." }] };
+           if (args.path === "apps" || args.path.startsWith("apps/")) {
++            // The selected framework's stylesheet; the bundler would otherwise keep every
++            // framework subpath external.
++            if (args.kind === "import-rule" && isBrowserAppStyle(args.path)) {
++              const file = `node_modules/${args.path}`;
++              return filesystem.read(file) === null
++                ? { errors: [{ text: `The selected apps release has no ${args.path}.` }] }
++                : { path: file, namespace: "virtual" };
++            }
+             if (!isBrowserAppImport(args.path))
+               return { errors: [{ text: "This apps entry point is server-only." }] };
+             return {
+diff --git a/packages/ui/src/implementation/styles/tokens.css b/packages/ui/src/implementation/styles/tokens.css
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/implementation/styles/tokens.css
+@@ -0,0 +1,133 @@
++/*
++ * Executor's product tokens and base element styles. The dashboards import them through
++ * globals.css; app pages get the same file through `apps/ui.css`, so both stay one look.
++ * No `@source` or font files here: the app compiler accepts neither.
++ */
++@theme inline {
++  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
++  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
++  --color-background: var(--background);
++  --color-foreground: var(--foreground);
++  --color-card: var(--background);
++  --color-card-foreground: var(--foreground);
++  --color-popover: var(--background);
++  --color-popover-foreground: var(--foreground);
++  --color-primary: var(--primary);
++  --color-primary-foreground: var(--primary-foreground);
++  --color-secondary: var(--muted);
++  --color-secondary-foreground: var(--foreground);
++  --color-muted: var(--muted);
++  --color-muted-foreground: var(--muted-foreground);
++  --color-accent: var(--accent);
++  --color-accent-foreground: var(--foreground);
++  --color-destructive: var(--destructive);
++  --color-border: var(--border);
++  --color-input: var(--input);
++  --color-ring: var(--ring);
++  --color-sign-in-warning: var(--sign-in-warning);
++  --radius-sm: 5px;
++  --radius-md: 6px;
++  --radius-lg: 8px;
++}
++:root {
++  color-scheme: light;
++  --background: #fff;
++  --foreground: #111;
++  --primary: #0a0a0a;
++  --primary-foreground: #fff;
++  --muted: #fafafa;
++  --muted-foreground: #666;
++  --accent: #f5f5f5;
++  --destructive: #b4261a;
++  --border: #eaeaea;
++  --input: #d4d4d4;
++  --ring: #888;
++  --sign-in-warning: #99651a;
++}
++@media (prefers-color-scheme: dark) {
++  :root {
++    color-scheme: dark;
++    --background: #0a0a0a;
++    --foreground: #ededed;
++    --primary: #fff;
++    --primary-foreground: #0a0a0a;
++    --muted: #111;
++    --muted-foreground: #9a9a9a;
++    --accent: #1a1a1a;
++    --destructive: #e0726a;
++    --border: #242424;
++    --input: #333;
++    --ring: #777;
++    --sign-in-warning: #d6aa65;
++  }
++}
++@layer base {
++  * {
++    border-color: var(--border);
++  }
++  html,
++  body,
++  #root {
++    margin: 0;
++    min-height: 100%;
++    height: 100%;
++  }
++  @media (pointer: fine) {
++    html,
++    body {
++      overscroll-behavior-y: none;
++    }
++  }
++  body {
++    font-family: var(--font-sans);
++    background: var(--background);
++    color: var(--foreground);
++    font-size: 14px;
++    line-height: 1.5;
++    letter-spacing: -0.011em;
++    -webkit-font-smoothing: antialiased;
++  }
++  button,
++  a,
++  input {
++    -webkit-tap-highlight-color: transparent;
++  }
++  button,
++  a {
++    touch-action: manipulation;
++  }
++  button:not(:disabled),
++  [role="tab"] {
++    cursor: pointer;
++  }
++  a {
++    color: inherit;
++    text-decoration: none;
++  }
++  h1,
++  h2,
++  h3,
++  p {
++    margin: 0;
++  }
++  code,
++  pre {
++    font-family: var(--font-mono);
++  }
++  ::selection {
++    background: var(--input);
++  }
++  :focus-visible {
++    outline: 2px solid var(--ring);
++    outline-offset: 3px;
++  }
++}
++
++@media (prefers-reduced-motion: reduce) {
++  *,
++  *::before,
++  *::after {
++    animation-duration: 0.01ms !important;
++    transition-duration: 0.01ms !important;
++  }
++}
+diff --git a/packages/ui/src/implementation/styles/brand.css b/packages/ui/src/implementation/styles/brand.css
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/implementation/styles/brand.css
+@@ -0,0 +1,93 @@
++/*
++ * Lab identity colours (`provider-brand.ts`), one value per lab for icon tiles, healthy usage bars
++ * and pool chart series, plus two lightness steps of the same hue for extra series. Every shade keeps
++ * at least 3:1 against the page, and each lab colour against the usage meter track, on both themes.
++ * Status colours (low, critical, stale) never come from here.
++ */
++:root {
++  --brand-openai: light-dark(#0e9473, #19c37d);
++  --brand-openai-1: light-dark(#0b6e56, #7fe3b8);
++  --brand-openai-2: light-dark(#07463a, #14a86b);
++  --brand-anthropic: light-dark(#c4623f, #d97757);
++  --brand-anthropic-1: light-dark(#8f4129, #f0b59d);
++  --brand-anthropic-2: light-dark(#b5532f, #c4623f);
++  --brand-kimi: light-dark(#1773e6, #5aa7ff);
++  --brand-kimi-1: light-dark(#0d4fa6, #a8d0ff);
++  --brand-kimi-2: light-dark(#2a64c9, #3d8ef0);
++  --brand-google: light-dark(#1a73e8, #8ab4f8);
++  --brand-google-1: light-dark(#0f4fa8, #c3d7fb);
++  --brand-google-2: light-dark(#3367d6, #6b9ff0);
++}
++.brand-fill.brand-openai {
++  --brand-ink: var(--brand-openai);
++  --brand-ink-1: var(--brand-openai-1);
++  --brand-ink-2: var(--brand-openai-2);
++}
++.brand-fill.brand-anthropic {
++  --brand-ink: var(--brand-anthropic);
++  --brand-ink-1: var(--brand-anthropic-1);
++  --brand-ink-2: var(--brand-anthropic-2);
++}
++.brand-fill.brand-kimi {
++  --brand-ink: var(--brand-kimi);
++  --brand-ink-1: var(--brand-kimi-1);
++  --brand-ink-2: var(--brand-kimi-2);
++}
++.brand-fill.brand-google {
++  --brand-ink: var(--brand-google);
++  --brand-ink-1: var(--brand-google-1);
++  --brand-ink-2: var(--brand-google-2);
++}
++.brand-fill {
++  background-color: var(--brand-ink);
++}
++.brand-fill.brand-shade-1 {
++  background-color: var(--brand-ink-1);
++}
++.brand-fill.brand-shade-2 {
++  background-color: var(--brand-ink-2);
++}
++
++/*
++ * Model provider identity on icon tiles (`provider-brand.ts`). The ink tints only the tile behind
++ * the provider's logo and its monogram; account health keeps its own colours. Unlayered so the
++ * tile's utility background and border yield to it. Light and dark follow the page's color-scheme.
++ */
++.provider-icon[data-provider="openai"] {
++  --provider-ink: var(--brand-openai);
++}
++.provider-icon[data-provider="anthropic"] {
++  --provider-ink: var(--brand-anthropic);
++}
++.provider-icon[data-provider="gemini"] {
++  --provider-ink: var(--brand-google);
++}
++.provider-icon[data-provider="vertex"] {
++  --provider-ink: var(--brand-google);
++}
++.provider-icon[data-provider="antigravity"] {
++  --provider-ink: var(--brand-google);
++}
++.provider-icon[data-provider="kimi"] {
++  --provider-ink: var(--brand-kimi);
++}
++.provider-icon[data-provider="xai"] {
++  --provider-ink: var(--foreground);
++}
++.provider-icon[data-provider="devin"] {
++  --provider-ink: light-dark(#2469ad, #83bcf5);
++}
++.provider-icon[data-provider="meta"] {
++  --provider-ink: light-dark(#0866c9, #78b5ff);
++}
++.provider-icon[data-provider="jev"] {
++  --provider-ink: light-dark(#6550a7, #bca9eb);
++}
++.provider-icon[data-provider="cloudflare"] {
++  --provider-ink: light-dark(#a6500a, #ffb467);
++}
++.provider-icon[data-provider] {
++  color: var(--provider-ink);
++  background-color: color-mix(in oklab, var(--provider-ink) 12%, var(--background));
++  border-color: color-mix(in oklab, var(--provider-ink) 30%, var(--border));
++}
+diff --git a/packages/ui/src/implementation/styles/app.css b/packages/ui/src/implementation/styles/app.css
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/implementation/styles/app.css
+@@ -0,0 +1,9 @@
++/*
++ * App pages' stylesheet, published as `apps/ui.css`: Tailwind, the dashboard's tokens and base
++ * styles, provider inks and the controls' enter and exit animations. The app compiler runs Tailwind
++ * over each page's own code, so only the utilities a page uses are generated.
++ */
++@import "tailwindcss";
++@import "tw-animate-css";
++@import "./tokens.css";
++@import "./brand.css";
+diff --git a/packages/ui/src/implementation/components/badge.tsx b/packages/ui/src/implementation/components/badge.tsx
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/implementation/components/badge.tsx
+@@ -0,0 +1,25 @@
++import type * as React from "react";
++
++import { cn } from "../lib/utils.ts";
++
++/**
++ * A short neutral label, such as an account's plan. It truncates in a narrow cell and its full text
++ * stays on hover; status keeps its own coloured words and dots, never a tinted badge.
++ */
++function Badge({ className, title, children, ...props }: React.ComponentProps<"span">) {
++  return (
++    <span
++      data-slot="badge"
++      title={title ?? (typeof children === "string" ? children : undefined)}
++      className={cn(
++        "max-w-full truncate rounded-sm border px-1.5 text-[11px] leading-4.5 text-foreground",
++        className,
++      )}
++      {...props}
++    >
++      {children}
++    </span>
++  );
++}
++
++export { Badge };
+diff --git a/packages/ui/src/implementation/dashboard/provider-mark.tsx b/packages/ui/src/implementation/dashboard/provider-mark.tsx
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/provider-mark.tsx
+@@ -0,0 +1,95 @@
++/**
++ * A provider's icon tile, without the dashboard's catalog or favicon lookups, so app pages can draw
++ * the same tile. `ProviderIcon` fills it with a logo when one loads; `ProviderMark` is the tile with
++ * the brand's monogram, the same thing the dashboard shows when no logo loads.
++ */
++import { HugeiconsIcon } from "@hugeicons/react";
++import { PackageIcon } from "@hugeicons/core-free-icons";
++import type { ReactNode } from "react";
++import { cn } from "../lib/utils.ts";
++import { providerBrand, type ProviderBrand } from "../lib/provider-brand.ts";
++
++/** `small` lists apps, `medium` is the compact account row's 24 pixels, `large` heads a page. */
++export type ProviderTileSize = "small" | "medium" | "large";
++
++/** The tinted tile; its ink comes from `brand.css` through `data-provider`. */
++export function ProviderTile({
++  brand,
++  size = "small",
++  children,
++}: {
++  readonly brand: ProviderBrand | undefined;
++  readonly size?: ProviderTileSize;
++  readonly children?: ReactNode;
++}) {
++  return (
++    <span
++      className={cn(
++        "provider-icon w-8.5 h-8.5 border border-border rounded-[7px] inline-flex items-center justify-center bg-background shrink-0 [&_img]:w-4.25 [&_img]:h-4.25 [&_img]:object-contain [&_>_svg]:w-4.25 [&_>_svg]:h-4.25 [&_>_svg]:object-contain max-[740px]:[.catalog-row_>_&]:row-[1_/_3]",
++        size === "large" &&
++          "provider-icon-large w-11 h-11 rounded-[9px] [&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
++        size === "medium" && "size-6 rounded-md [&_img]:size-4.5 [&_>_svg]:size-4.5",
++      )}
++      data-provider={brand?.key}
++      aria-hidden
++    >
++      {children}
++    </span>
++  );
++}
++
++/** The brand's letters in the tile, for a provider whose logo is missing or failed to load. */
++export function ProviderMonogram({
++  brand,
++  size = "small",
++}: {
++  readonly brand: ProviderBrand;
++  readonly size?: ProviderTileSize;
++}) {
++  return (
++    <span
++      data-icon="monogram"
++      className={cn(
++        "font-semibold leading-none tracking-[-0.02em]",
++        size === "large" ? "text-[15px]" : size === "medium" ? "text-[11px]" : "text-[12px]",
++      )}
++    >
++      {brand.monogram}
++    </span>
++  );
++}
++
++/** The generic package glyph for a name without a brand or logo. */
++export function ProviderFallbackGlyph({ size = "small" }: { readonly size?: ProviderTileSize }) {
++  return (
++    <HugeiconsIcon
++      icon={PackageIcon}
++      aria-hidden
++      size={size === "large" ? 23 : 17}
++      strokeWidth={1.5}
++    />
++  );
++}
++
++/**
++ * A provider or lab by its display name, such as "Claude", "ChatGPT" or "Grok": its tinted tile and
++ * monogram, or the package glyph for a name without a brand. Decorative; name it beside the mark.
++ */
++export function ProviderMark({
++  name,
++  size = "small",
++}: {
++  readonly name: string;
++  readonly size?: ProviderTileSize;
++}) {
++  const brand = providerBrand(name);
++  return (
++    <ProviderTile brand={brand} size={size}>
++      {brand === undefined ? (
++        <ProviderFallbackGlyph size={size} />
++      ) : (
++        <ProviderMonogram brand={brand} size={size} />
++      )}
++    </ProviderTile>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/account-name.tsx b/packages/ui/src/implementation/dashboard/account-name.tsx
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-name.tsx
+@@ -0,0 +1,79 @@
++/**
++ * An account's two name lines, shared by the dashboard's account rows and app pages. Callers decide
++ * what the lines say; this module only draws them, so it imports no host data or SDK code.
++ */
++import { HugeiconsIcon } from "@hugeicons/react";
++import { Tick02Icon } from "@hugeicons/core-free-icons";
++import type { ReactNode } from "react";
++import { cn } from "../lib/utils.ts";
++
++/** The muted second line: a verified identity, an authored label, or what a check reported. */
++export interface AccountNameSecondary {
++  readonly text: string;
++  /** Only the host's sign-in proof earns the check mark. */
++  readonly verified: boolean;
++  /** The person's own label, shown under a verified identity; never marked as an identity. */
++  readonly authored?: boolean;
++}
++
++/** The name, then the secondary line, each truncating with its full text on hover. */
++export function AccountNameLines({
++  title,
++  titleVerified = false,
++  secondary,
++  tags,
++  secondaryClassName,
++}: {
++  readonly title: string;
++  /** The title is the verified identity itself. */
++  readonly titleVerified?: boolean;
++  readonly secondary?: AccountNameSecondary | undefined;
++  /** Small labels after the name, such as Personal or Shared. */
++  readonly tags?: ReactNode;
++  /** A page's hook on the second line. */
++  readonly secondaryClassName?: string | undefined;
++}) {
++  return (
++    <div className="grid min-w-0 leading-[1.3] @max-[880px]/account-rows:self-start">
++      <span className="flex min-w-0 items-center gap-1.5">
++        <strong
++          className="min-w-0 truncate text-[13px] font-medium"
++          title={title}
++          data-account-name
++          {...(titleVerified ? { "data-account-verified": "" } : {})}
++        >
++          {title}
++        </strong>
++        {titleVerified && <VerifiedMark />}
++        {tags}
++      </span>
++      {secondary !== undefined && (
++        <span
++          className={cn(
++            "flex min-w-0 items-center gap-1 text-[12px] text-muted-foreground",
++            secondaryClassName,
++          )}
++        >
++          <span
++            className="min-w-0 truncate"
++            title={secondary.text}
++            {...(secondary.authored === true ? {} : { "data-account-identity": "" })}
++            {...(secondary.verified ? { "data-account-verified": "" } : {})}
++          >
++            {secondary.text}
++          </span>
++          {secondary.verified && <VerifiedMark />}
++        </span>
++      )}
++    </div>
++  );
++}
++
++function VerifiedMark() {
++  return (
++    <span className="inline-flex shrink-0 text-muted-foreground" title="Verified at sign-in">
++      <HugeiconsIcon icon={Tick02Icon} size={12} strokeWidth={2.5} aria-hidden />
++      <span className="sr-only">, verified</span>
++    </span>
++  );
++}
+diff --git a/packages/ui/src/implementation/dashboard/account-check-state.tsx b/packages/ui/src/implementation/dashboard/account-check-state.tsx
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/account-check-state.tsx
+@@ -0,0 +1,117 @@
++/**
++ * What an account check says and how it reads, shared by the Accounts list's Health column and app
++ * pages that show their selected accounts. It imports no dashboard context, host data or SDK code,
++ * so app pages draw the same words, order and colours as the host.
++ */
++import type { AccountAppHealth, AccountCheckStatus } from "apps/contracts";
++import { Match } from "effect";
++import { renewalFailure, renewalLabel } from "../../contracts/account-check-recovery.ts";
++import { cn } from "../lib/utils.ts";
++
++type Check = NonNullable<AccountAppHealth["check"]>;
++
++/** What one app's latest check means for the reader; tone matches the other status pills. */
++export const describeAccountCheck = (status: AccountCheckStatus) =>
++  Match.value(status).pipe(
++    Match.when("healthy", () => ({ label: "Healthy", tone: "good" as const })),
++    Match.when("credentials_rejected", () => ({ label: "Needs re-auth", tone: "bad" as const })),
++    Match.when("forbidden", () => ({ label: "Missing permission", tone: "warn" as const })),
++    Match.when("upstream_unavailable", () => ({
++      label: "Service unavailable",
++      tone: "warn" as const,
++    })),
++    Match.when("check_failed", () => ({ label: "Check failed", tone: "muted" as const })),
++    Match.when("tools_unavailable", () => ({ label: "Tools unavailable", tone: "bad" as const })),
++    Match.exhaustive,
++  );
++
++/** One result's label: a failed renewal names itself rather than the outage its status reports. */
++export const describeCheckResult = (check: Pick<Check, "status" | "failure">) => {
++  const described = describeAccountCheck(check.status);
++  return renewalFailure(check) === undefined ? described : { ...described, label: renewalLabel };
++};
++
++/** Check results from worst to best. */
++export const checkSeverity: readonly AccountCheckStatus[] = [
++  "credentials_rejected",
++  "tools_unavailable",
++  "forbidden",
++  "upstream_unavailable",
++  "check_failed",
++  "healthy",
++];
++
++/**
++ * The results in the worst state: current results before outdated ones, then by severity. A
++ * current failure is never hidden behind an older one, and an outdated result never outranks a
++ * current one. Empty when there are no results.
++ */
++export const worstChecks = <T extends { readonly check: Pick<Check, "status" | "current"> }>(
++  results: readonly T[],
++): readonly T[] => {
++  for (const current of [true, false])
++    for (const status of checkSeverity) {
++      const matching = results.filter(
++        (result) => result.check.current === current && result.check.status === status,
++      );
++      if (matching.length > 0) return matching;
++    }
++  return [];
++};
++
++export type CheckTone = ReturnType<typeof describeAccountCheck>["tone"];
++
++const dots: Record<CheckTone, string> = {
++  good: "bg-emerald-500",
++  bad: "bg-destructive",
++  warn: "bg-amber-500",
++  muted: "bg-muted-foreground/50",
++};
++const texts: Record<CheckTone, string> = {
++  good: "text-foreground",
++  bad: "text-destructive",
++  warn: "text-amber-700 dark:text-amber-400",
++  muted: "text-muted-foreground",
++};
++
++/** The Health cell's line box. */
++export const checkStateClass =
++  "inline-flex min-w-0 items-center gap-1.5 text-[13px] whitespace-nowrap";
++
++/** The dot before a health state's words; hollow marks a result from before a change. */
++export function CheckDot({
++  tone,
++  hollow = false,
++}: {
++  readonly tone: CheckTone;
++  readonly hollow?: boolean;
++}) {
++  return (
++    <span
++      aria-hidden
++      className={cn(
++        "size-1.5 shrink-0 rounded-full",
++        hollow ? "shadow-[inset_0_0_0_1.5px_var(--color-muted-foreground)]" : dots[tone],
++      )}
++    />
++  );
++}
++
++/** A current check's dot and words. The caller's line carries its title and data attributes. */
++export function CheckLabel({ check }: { readonly check: Pick<Check, "status" | "failure"> }) {
++  const { label, tone } = describeCheckResult(check);
++  return (
++    <>
++      <CheckDot tone={tone} />
++      <span
++        className={cn(
++          "truncate",
++          tone === "good" ? "text-muted-foreground" : texts[tone],
++          tone === "bad" && "font-medium",
++        )}
++      >
++        {label}
++      </span>
++    </>
++  );
++}
+diff --git a/packages/apps/src/ui.tsx b/packages/apps/src/ui.tsx
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/src/ui.tsx
+@@ -0,0 +1,236 @@
++/**
++ * The dashboard's own controls for app pages, so an app reads as part of the product. Each export
++ * is the dashboard's implementation; these types are the stable part apps build against. Import
++ * `apps/ui.css` once from the page's stylesheet: it brings Tailwind and the dashboard's tokens.
++ * Declare `react` and `react-dom` in the app's dependencies.
++ */
++import type { ComponentProps, JSX, ReactNode } from "react";
++import type { ButtonProps } from "../../ui/src/contracts/button.ts";
++import { Badge as HostBadge } from "../../ui/src/implementation/components/badge.tsx";
++import { Button as HostButton } from "../../ui/src/implementation/components/button.tsx";
++import * as HostDialog from "../../ui/src/implementation/components/dialog.tsx";
++import { Spinner as HostSpinner } from "../../ui/src/implementation/components/spinner.tsx";
++import * as HostTabs from "../../ui/src/implementation/components/tabs.tsx";
++import { checkExplanation } from "../../ui/src/contracts/account-check-recovery.ts";
++import {
++  CheckDot,
++  CheckLabel,
++  checkStateClass,
++  describeCheckResult,
++  worstChecks,
++} from "../../ui/src/implementation/dashboard/account-check-state.tsx";
++import { AccountNameLines } from "../../ui/src/implementation/dashboard/account-name.tsx";
++import { ProviderMark as HostProviderMark } from "../../ui/src/implementation/dashboard/provider-mark.tsx";
++import { cn } from "../../ui/src/implementation/lib/utils.ts";
++import type { SelectedAccountView } from "./contracts/selected-account-read.ts";
++
++/** Props of `Button`. */
++export type { ButtonProps };
++
++/**
++ * The dashboard's button: `variant` and `size` pick its look, `loading` keeps its width under a
++ * spinner, and `disabledReason` keeps a forbidden action visible with its reason on hover, focus
++ * or tap. On phones it keeps a 44-pixel touch target.
++ */
++export const Button: (props: ButtonProps) => JSX.Element = HostButton;
++
++/** A neutral label such as a plan. Status keeps its own words and colours, never a badge. */
++export const Badge: (props: ComponentProps<"span">) => JSX.Element = HostBadge;
++
++/** The dashboard's loading mark. Show it only while something loads; it stops when removed. */
++export const Spinner: (props: { readonly className?: string }) => JSX.Element = HostSpinner;
++
++/** Props of `Tabs`: the selected value, controlled or not, and keyboard behaviour. */
++export interface TabsProps extends Omit<ComponentProps<"div">, "defaultValue" | "dir"> {
++  readonly value?: string;
++  readonly defaultValue?: string;
++  readonly onValueChange?: (value: string) => void;
++  readonly orientation?: "horizontal" | "vertical";
++  /** `manual`: arrow keys move focus and Enter or Space selects. Default: arrows select. */
++  readonly activationMode?: "automatic" | "manual";
++}
++/** Props of `TabsList`, the row of options. */
++export interface TabsListProps extends ComponentProps<"div"> {
++  /** `default` is a segmented control on a muted track; `line` underlines the selected tab. */
++  readonly variant?: "default" | "line";
++  /** `scroll` keeps a row wider than its column inside itself. */
++  readonly overflow?: "visible" | "scroll";
++}
++/** Props of `TabsTrigger`, one option; `value` names it. */
++export interface TabsTriggerProps extends Omit<ComponentProps<"button">, "value"> {
++  readonly value: string;
++}
++/** Props of `TabsContent`, the panel shown while its `value` is selected. */
++export interface TabsContentProps extends ComponentProps<"div"> {
++  readonly value: string;
++}
++
++/**
++ * Tabs, or a segmented control with `TabsList variant="default"`: one selected value, arrow keys
++ * between options, and the selected option announced to assistive technology.
++ */
++export const Tabs: (props: TabsProps) => JSX.Element = HostTabs.Tabs;
++/** The row of options; its `variant` picks segmented or underlined. */
++export const TabsList: (props: TabsListProps) => JSX.Element = HostTabs.TabsList;
++/** One option of `Tabs`. */
++export const TabsTrigger: (props: TabsTriggerProps) => JSX.Element = HostTabs.TabsTrigger;
++/** The panel for one option of `Tabs`. */
++export const TabsContent: (props: TabsContentProps) => JSX.Element = HostTabs.TabsContent;
++
++/** Props of `Dialog`: open state, controlled or not. */
++export interface DialogProps {
++  readonly open?: boolean;
++  readonly defaultOpen?: boolean;
++  readonly onOpenChange?: (open: boolean) => void;
++  readonly children?: ReactNode;
++}
++/** Props of `DialogTrigger` and `DialogClose`. */
++export interface DialogTriggerProps extends ComponentProps<"button"> {
++  /** Make the single child the trigger instead of a button. */
++  readonly asChild?: boolean;
++}
++/** Props of `DialogContent`, the modal panel. */
++export interface DialogContentProps extends ComponentProps<"div"> {
++  /** The corner Close button; true by default. Escape and the backdrop always close. */
++  readonly showCloseButton?: boolean;
++}
++/** Props of `DialogFooter`, the row of actions. */
++export interface DialogFooterProps extends ComponentProps<"div"> {
++  /** Adds an outline Close button after the footer's actions. */
++  readonly showCloseButton?: boolean;
++}
++
++/**
++ * The dashboard's modal: focus moves in on open (to the first field when there is one), stays
++ * inside, and returns to what opened it on close. Give every dialog a `DialogTitle`.
++ */
++export const Dialog: (props: DialogProps) => JSX.Element = HostDialog.Dialog;
++/** Opens its `Dialog`. */
++export const DialogTrigger: (props: DialogTriggerProps) => JSX.Element = HostDialog.DialogTrigger;
++/** The modal panel, with its backdrop. */
++export const DialogContent: (props: DialogContentProps) => JSX.Element = HostDialog.DialogContent;
++/** The title and description block. */
++export const DialogHeader: (props: ComponentProps<"div">) => JSX.Element = HostDialog.DialogHeader;
++/** The actions row; on phones the actions stack, primary last. */
++export const DialogFooter: (props: DialogFooterProps) => JSX.Element = HostDialog.DialogFooter;
++/** The dialog's accessible name. */
++export const DialogTitle: (props: ComponentProps<"h2">) => JSX.Element = HostDialog.DialogTitle;
++/** The dialog's accessible description. */
++export const DialogDescription: (props: ComponentProps<"p">) => JSX.Element =
++  HostDialog.DialogDescription;
++/** Closes its `Dialog`. */
++export const DialogClose: (props: DialogTriggerProps) => JSX.Element = HostDialog.DialogClose;
++
++/**
++ * A provider or lab by its display name, such as "Claude", "ChatGPT" or "Grok": the dashboard's
++ * tinted tile with its monogram, in the same ink as on the Accounts page. Decorative; show the name
++ * beside it. `medium` is the 24-pixel size of an account row.
++ */
++export const ProviderMark: (props: {
++  readonly name: string;
++  readonly size?: "small" | "medium" | "large";
++}) => JSX.Element = HostProviderMark;
++
++/** The native health of an account the app selected, as `SelectedAccountView` delivers it. */
++export type SelectedAccountHealth = Extract<SelectedAccountView, { state: "available" }>["health"];
++
++/**
++ * An account's name, and on a second muted line who its checks say it is (an email, else a
++ * username) when that differs from the name. `title` is the name the app shows, usually the
++ * account's label.
++ */
++export function AccountName({
++  title,
++  health,
++  tags,
++}: {
++  readonly title: string;
++  readonly health?: Pick<SelectedAccountHealth, "info"> | undefined;
++  /** Small labels after the name. */
++  readonly tags?: ReactNode;
++}) {
++  const reported = [health?.info?.email, health?.info?.username].find(
++    (value) => value !== undefined && value !== title,
++  );
++  return (
++    <AccountNameLines
++      title={title}
++      secondary={reported === undefined ? undefined : { text: reported, verified: false }}
++      tags={tags}
++    />
++  );
++}
++
++const checkedAt = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
++
++/**
++ * An account's health in a few words, by the Accounts list's rules: the account's own sign-in
++ * check first, then the worst app check, a current result before an outdated one. An outdated
++ * result reads "Not rechecked"; an account nothing can check shows nothing. `appName` names the
++ * apps behind a result in its tooltip.
++ */
++export function AccountHealth({
++  health,
++  appName,
++}: {
++  readonly health: SelectedAccountHealth;
++  readonly appName?: ((app: string) => string) | undefined;
++}) {
++  const driver = health.driver?.check ?? null;
++  const apps = worstChecks(
++    health.apps.flatMap((entry) =>
++      entry.check === null ? [] : [{ check: entry.check, app: entry.app }],
++    ),
++  );
++  const result =
++    driver === null
++      ? apps[0] === undefined
++        ? undefined
++        : { check: apps[0].check, by: apps.map((entry) => appName?.(entry.app)) }
++      : { check: driver, by: ["sign-in check"] };
++  if (result === undefined) {
++    const checkable =
++      health.driver?.checkable === true || health.apps.some((entry) => entry.checkable);
++    return checkable ? (
++      <span
++        className={cn(checkStateClass, "text-muted-foreground")}
++        data-account-health-cell
++        data-health-state="not-checked"
++      >
++        <CheckDot tone="muted" />
++        Not checked
++      </span>
++    ) : null;
++  }
++  const { check } = result;
++  const { label } = describeCheckResult(check);
++  const { message } = checkExplanation({ ...check, checkedAt: new Date(check.checkedAt) });
++  const by = result.by.filter((name) => name !== undefined);
++  const where = by.length === 0 ? "" : ` by ${by.join(", ")}`;
++  const when = checkedAt.format(new Date(check.checkedAt));
++  const marks = {
++    "data-account-health-cell": "",
++    "data-check-status": check.status,
++    "data-check-current": check.current,
++  };
++  return check.current ? (
++    <span
++      className={checkStateClass}
++      title={`${label}${where} · checked ${when}${message === undefined ? "" : `\n${message}`}`}
++      data-health-state={check.status}
++      {...marks}
++    >
++      <CheckLabel check={check} />
++    </span>
++  ) : (
++    <span
++      className={cn(checkStateClass, "text-muted-foreground")}
++      title={`Last check ${when}${where}, before the credentials or app changed`}
++      data-health-state="not-rechecked"
++      {...marks}
++    >
++      <CheckDot tone="muted" hollow />
++      Not rechecked
++    </span>
++  );
++}
+diff --git a/packages/apps/src/ui.css b/packages/apps/src/ui.css
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/src/ui.css
+@@ -0,0 +1,2 @@
++/* `apps/ui.css`: the package build inlines this into one file; see packages/ui's app.css. */
++@import "../../ui/src/implementation/styles/app.css";
+diff --git a/e2e/tests/app-ui-kit.spec.ts b/e2e/tests/app-ui-kit.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/app-ui-kit.spec.ts
+@@ -0,0 +1,383 @@
++/** An app's page uses the dashboard's controls through `apps/ui`, built by the product's compiler. */
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { scenarios } from "../test-plan.ts";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { withApps } from "../support/apps-release.ts";
++
++const Deployed = Schema.Struct({ ...App.fields, activeVersion: Schema.String });
++
++/** Selected-account health as `SelectedAccountView` delivers it to an app page. */
++const check = (status: string, current: boolean) => ({
++  status,
++  current,
++  checkedAt: "2026-11-13T10:00:00.000Z",
++});
++const accounts = [
++  {
++    provider: "Claude",
++    title: "Research",
++    plan: "Max 20x",
++    health: {
++      account: "account-claude",
++      info: { email: "research@example.test" },
++      infoCheckedAt: null,
++      apps: [],
++      driver: {
++        source: { kind: "driver", id: "claude", version: "1" },
++        checkable: true,
++        check: check("healthy", true),
++      },
++    },
++  },
++  {
++    provider: "ChatGPT",
++    title: "Support",
++    plan: "Pro",
++    health: {
++      account: "account-chatgpt",
++      info: null,
++      infoCheckedAt: null,
++      apps: [
++        { app: "app-codex", checkable: true, check: check("healthy", true) },
++        { app: "app-pool", checkable: true, check: check("credentials_rejected", true) },
++      ],
++    },
++  },
++  {
++    provider: "Grok",
++    title: "Night shift",
++    plan: "Pro",
++    health: {
++      account: "account-grok",
++      info: null,
++      infoCheckedAt: null,
++      apps: [{ app: "app-pool", checkable: true, check: check("healthy", false) }],
++    },
++  },
++  {
++    provider: "Acme",
++    title: "Lab",
++    plan: "Team",
++    health: {
++      account: "account-acme",
++      info: null,
++      infoCheckedAt: null,
++      apps: [{ app: "app-pool", checkable: true, check: null }],
++    },
++  },
++];
++
++const files = [
++  {
++    path: "index.ts",
++    content: `import { defineApp, query, object, router } from "apps";
++export default defineApp({}, { tools: router({ ping: query({ input: object({}) }, async () => "pong") }) });`,
++  },
++  {
++    path: "package.json",
++    content: JSON.stringify({ dependencies: withApps({ react: "19.2.0", "react-dom": "19.2.0" }) }),
++  },
++  {
++    path: "ui/index.html",
++    content:
++      '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Kit fixture</title></head><body><div id="root"></div><script type="module" src="./main.tsx"></script></body></html>',
++  },
++  { path: "ui/style.css", content: '@import "apps/ui.css";\n' },
++  {
++    path: "ui/main.tsx",
++    content: `import { createRoot } from "react-dom/client";
++import {
++  AccountHealth, AccountName, Badge, Button, Dialog, DialogContent, DialogDescription,
++  DialogFooter, DialogHeader, DialogTitle, DialogTrigger, ProviderMark, Tabs, TabsContent,
++  TabsList, TabsTrigger,
++} from "apps/ui";
++import "./style.css";
++const accounts = ${JSON.stringify(accounts)};
++const names = { "app-codex": "Codex", "app-pool": "Pool" };
++createRoot(document.getElementById("root")).render(
++  <main className="flex flex-col gap-4 p-4">
++    <h1 className="text-lg font-semibold">Kit</h1>
++    <div className="flex flex-wrap gap-2">
++      <Button>Primary</Button>
++      <Button variant="outline">Outline</Button>
++      <Button disabled>Disabled</Button>
++      <Button loading>Saving</Button>
++    </div>
++    <Tabs defaultValue="week">
++      <TabsList aria-label="Range">
++        <TabsTrigger value="week">Week</TabsTrigger>
++        <TabsTrigger value="month">Month</TabsTrigger>
++      </TabsList>
++      <TabsContent value="week">Week panel</TabsContent>
++      <TabsContent value="month">Month panel</TabsContent>
++    </Tabs>
++    <Dialog>
++      <DialogTrigger asChild><Button variant="outline">Open details</Button></DialogTrigger>
++      <DialogContent>
++        <DialogHeader>
++          <DialogTitle>Account details</DialogTitle>
++          <DialogDescription>Readings for this account.</DialogDescription>
++        </DialogHeader>
++        <DialogFooter showCloseButton />
++      </DialogContent>
++    </Dialog>
++    <ul aria-label="Accounts" className="flex flex-col gap-3">
++      {accounts.map((account) => (
++        <li key={account.title} data-row={account.provider} className="flex items-center gap-3">
++          <ProviderMark name={account.provider} size="medium" />
++          <AccountName title={account.title} health={account.health} />
++          <Badge>{account.plan}</Badge>
++          <AccountHealth health={account.health} appName={(app) => names[app]} />
++        </li>
++      ))}
++    </ul>
++  </main>,
++);`,
++  },
++];
++
++layer(HostedLive, { excludeTestServices: true })("App UI kit", (it) => {
++  it.effect(scenarios.appUiKit.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          browser = yield* Browser;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++          name: `UI kit ${randomUUID().slice(0, 8)}`,
++          files,
++        });
++        expect(response.status).toBe(200);
++        const app = yield* body(Deployed, response);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
++        );
++        const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
++        yield* browser.omitNetworkTrace;
++        yield* browser.login(actors.owner);
++        yield* browser.use("Use a desktop viewport in light mode", (page) =>
++          page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() =>
++              page.emulateMedia({ colorScheme: "light", reducedMotion: "no-preference" }),
++            ),
++        );
++        yield* openPrivateApp(url);
++        yield* browser.use("The kit's page mounts", (page) =>
++          page.getByRole("list", { name: "Accounts" }).waitFor(),
++        );
++
++        const light = yield* browser.use("Read the dashboard's tokens and controls", (page) =>
++          page.evaluate(() => {
++            const button = (name: string) =>
++              [...document.querySelectorAll("button")].find(
++                (node) => node.textContent?.trim() === name,
++              );
++            const primary = button("Primary"),
++              disabled = button("Disabled"),
++              saving = document.querySelector('button[data-loading=""]');
++            if (!primary || !disabled || !saving) throw new Error("Fixture buttons missing");
++            return {
++              page: getComputedStyle(document.body).backgroundColor,
++              font: getComputedStyle(document.body).fontSize,
++              primary: getComputedStyle(primary).backgroundColor,
++              primaryText: getComputedStyle(primary).color,
++              height: primary.getBoundingClientRect().height,
++              radius: getComputedStyle(primary).borderTopLeftRadius,
++              disabled: getComputedStyle(disabled).opacity,
++              savingDisabled: saving instanceof HTMLButtonElement && saving.disabled,
++              spinner: saving.querySelector('[role="status"]')?.getAttribute("aria-label"),
++            };
++          }),
++        );
++        expect(light).toEqual({
++          page: "rgb(255, 255, 255)",
++          font: "14px",
++          primary: "rgb(10, 10, 10)",
++          primaryText: "rgb(255, 255, 255)",
++          height: 36,
++          radius: "6px",
++          disabled: "0.5",
++          savingDisabled: true,
++          spinner: "Loading",
++        });
++
++        const marks = yield* browser.use("Read provider marks and account cells", (page) =>
++          page.evaluate(() =>
++            [...document.querySelectorAll("li[data-row]")].map((row) => {
++              const tile = row.querySelector(".provider-icon");
++              const health = row.querySelector("[data-account-health-cell]");
++              const label = health?.querySelector("span.truncate");
++              return {
++                row: row.getAttribute("data-row"),
++                provider: tile?.getAttribute("data-provider") ?? null,
++                monogram: tile?.querySelector('[data-icon="monogram"]')?.textContent ?? null,
++                glyph: tile?.querySelector("svg") !== null,
++                tinted: tile
++                  ? getComputedStyle(tile).backgroundColor !== "rgb(255, 255, 255)"
++                  : false,
++                name: row.querySelector("[data-account-name]")?.textContent,
++                identity: row.querySelector("[data-account-identity]")?.textContent ?? null,
++                plan: row.querySelector('[data-slot="badge"]')?.textContent,
++                health: health?.textContent ?? null,
++                state: health?.getAttribute("data-health-state") ?? null,
++                title: health?.getAttribute("title") ?? null,
++                ink: label ? getComputedStyle(label).color : null,
++              };
++            }),
++          ),
++        );
++        expect(marks).toMatchObject([
++          {
++            row: "Claude",
++            provider: "anthropic",
++            monogram: "A",
++            tinted: true,
++            name: "Research",
++            identity: "research@example.test",
++            plan: "Max 20x",
++            health: "Healthy",
++            state: "healthy",
++          },
++          {
++            row: "ChatGPT",
++            provider: "openai",
++            monogram: "OA",
++            tinted: true,
++            identity: null,
++            health: "Needs re-auth",
++            state: "credentials_rejected",
++            ink: "rgb(180, 38, 26)",
++          },
++          { row: "Grok", provider: "xai", monogram: "x", health: "Not rechecked" },
++          { row: "Acme", provider: null, monogram: null, glyph: true, health: "Not checked" },
++        ]);
++        expect(marks[0]?.title).toMatch(/^Healthy by sign-in check · checked /);
++        expect(marks[1]?.title).toMatch(/^Needs re-auth by Pool · checked /);
++        expect(marks[2]?.title).toMatch(
++          /^Last check .+ by Pool, before the credentials or app changed$/,
++        );
++        yield* browser.checkpoint("App page renders the dashboard's controls and account cells");
++
++        yield* browser.use("Keyboard focus reaches the first control with its ring", (page) =>
++          page.keyboard.press("Tab"),
++        );
++        const ring = yield* browser.use("Read the focus ring", (page) =>
++          page.evaluate(() => {
++            const focused = document.activeElement;
++            return {
++              name: focused?.textContent?.trim(),
++              ring: focused ? getComputedStyle(focused).boxShadow : "none",
++            };
++          }),
++        );
++        expect(ring.name).toBe("Primary");
++        expect(ring.ring).not.toBe("none");
++
++        yield* browser.use("Arrow keys move between segments", (page) =>
++          page
++            .getByRole("tab", { name: "Week" })
++            .click()
++            .then(() => page.keyboard.press("ArrowRight")),
++        );
++        yield* browser.use("The next segment is selected with its panel", (page) =>
++          Promise.all([
++            page.getByRole("tab", { name: "Month", selected: true }).waitFor(),
++            page.getByText("Month panel", { exact: true }).waitFor(),
++          ]),
++        );
++
++        yield* browser.use("Open the dialog", (page) =>
++          page.getByRole("button", { name: "Open details" }).click(),
++        );
++        yield* browser.use("The dialog is named and holds focus", (page) =>
++          page.getByRole("dialog", { name: "Account details" }).waitFor(),
++        );
++        expect(
++          yield* browser.use("Focus is inside the dialog", (page) =>
++            page.evaluate(() => document.activeElement?.closest('[role="dialog"]') !== null),
++          ),
++        ).toBe(true);
++        yield* browser.checkpoint("The dialog opens over the app page");
++        yield* browser.use("Escape closes the dialog", (page) => page.keyboard.press("Escape"));
++        yield* browser.use("The dialog closes", (page) =>
++          page.getByRole("dialog").waitFor({ state: "detached" }),
++        );
++        expect(
++          yield* browser.use("Focus returns to what opened it", (page) =>
++            page.evaluate(() => document.activeElement?.textContent?.trim()),
++          ),
++        ).toBe("Open details");
++
++        yield* browser.use("Use a phone viewport in dark mode with reduced motion", (page) =>
++          page
++            .setViewportSize({ width: 390, height: 844 })
++            .then(() => page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" })),
++        );
++        // Reduced motion gives every element a 0.01ms transition, so styles settle a frame later.
++        yield* browser.use("The dark page background takes effect", (page) =>
++          page.waitForFunction(
++            () => getComputedStyle(document.body).backgroundColor === "rgb(10, 10, 10)",
++          ),
++        );
++        const dark = yield* browser.use("Read dark tokens and touch targets", (page) =>
++          page.evaluate(() => {
++            const primary = [...document.querySelectorAll("button")].find(
++              (node) => node.textContent?.trim() === "Primary",
++            );
++            if (!primary) throw new Error("Primary button missing");
++            return {
++              page: getComputedStyle(document.body).backgroundColor,
++              primary: getComputedStyle(primary).backgroundColor,
++              height: primary.getBoundingClientRect().height,
++            };
++          }),
++        );
++        expect(dark).toEqual({
++          page: "rgb(10, 10, 10)",
++          primary: "rgb(255, 255, 255)",
++          height: 44,
++        });
++        yield* browser.checkpoint("Phone width in dark mode keeps touch targets");
++        yield* browser.use("Open the dialog with reduced motion", (page) =>
++          page.getByRole("button", { name: "Open details" }).click(),
++        );
++        const motion = yield* browser.use("Read the dialog's entrance", (page) =>
++          page
++            .getByRole("dialog", { name: "Account details" })
++            .evaluate((node) => getComputedStyle(node).animationDuration),
++        );
++        expect(Number.parseFloat(motion)).toBeLessThan(0.001);
++        yield* browser.use("Close the dialog", (page) => page.keyboard.press("Escape"));
++
++        const urls = yield* browser.use("List the page's stylesheets", (page) =>
++          page.locator('link[rel="stylesheet"]').evaluateAll((links) =>
++            links.map((link) => {
++              if (!(link instanceof HTMLLinkElement)) throw new Error("Expected a stylesheet link");
++              return link.href;
++            }),
++          ),
++        );
++        const css = (yield* Effect.forEach(urls, (url) =>
++          browser.use("Read the compiled stylesheet", (page) =>
++            page
++              .context()
++              .request.get(url)
++              .then((response) => response.text()),
++          ),
++        )).join("\n");
++        expect(css).toContain("--brand-anthropic");
++        expect(css).not.toMatch(/@(?:tailwind|theme|apply|source|utility)\b/);
++      }),
++    ),
++  );
++});
+diff --git a/packages/app-templates/executor/skills/app-authoring/ui.md b/packages/app-templates/executor/skills/app-authoring/ui.md
+--- a/packages/app-templates/executor/skills/app-authoring/ui.md
++++ b/packages/app-templates/executor/skills/app-authoring/ui.md
+@@ -21,6 +21,15 @@ The full Tailwind import includes Preflight, which resets browser button and
+ form styles. Importing only `theme.css` and `utilities.css` omits those resets;
+ use that split only when you supply the required base styles yourself.
+ 
++To look like the dashboard, start the stylesheet with `@import "apps/ui.css";`
++instead. It brings Tailwind and the dashboard's tokens, so `bg-primary`,
++`text-muted-foreground` and `border` match the product in light and dark. Then
++use the dashboard's own controls from `apps/ui`: `Button`, `Tabs` (a segmented
++control with `TabsList`), `Dialog`, `Badge` and `Spinner`, plus `ProviderMark`
++for a provider's tile and `AccountName` and `AccountHealth` for an account the
++app selected, which take the `health` of its `SelectedAccountView`. Keyboard
++focus, phone touch targets and reduced motion come with them.
++
+ For hosted apps, discover and call `appUi.location` after deploying:
+ 
+ ```js
+diff --git a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
+--- a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
++++ b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
+@@ -10,7 +10,7 @@ export const executorSkillDigests: Readonly<Record<string, string>> = {
+   "app-authoring/starter.md": "382bd769d7b10e9c09eaa2367755f23153a31a484aaca9c449ab4aac7d61e224",
+   "app-authoring/storage.md": "d2c2288c8a6dafa0a88f09e7e91409d9afc08158205ea6d25064d0dee67a33df",
+   "app-authoring/tools.md": "460eed5aaf4f84071945f891b955765a39d5372773cb6fff4f4e5d0d99e68a14",
+-  "app-authoring/ui.md": "2b6e53b38d05f11a8eef9c4f06f96f3a447f92e359d9e31d143670b51ea6a7b1",
++  "app-authoring/ui.md": "8b1733a4d1c9938c222d1bd011b345f816cdf6f8d8a23ce431878e349b507c63",
+   "app-authoring/upgrades/0.0.1-beta.38.md": "0e0e38e0334fbece5bdb8264a32be4f36cef9c51705e8f6b749dc0d3b86dcdb5",
+   "app-authoring/upgrades/0.0.1-beta.90.md": "38c727888b2773efa1d83795e8704f7c38ad9ec27c62fcdd89b5177ec5e338c3",
+   "app-authoring/webhooks.md": "e4ca224cd413b591c3692b389bd88d644b337b4697a067d83551e6bcab657cf3",
