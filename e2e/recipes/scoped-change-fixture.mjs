@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/index.js";
+import { createRequire } from "node:module";
 import { startPoolFixture } from "./pool-fixture.mjs";
 import {
   homeMetadataFixture,
@@ -26,6 +26,10 @@ import { openEnvelope } from "../../src/pool/token.ts";
 import { CapacityHistory } from "../../src/pool/capacity/history.ts";
 import { capacityOverview } from "../../src/pool/capacity/overview.ts";
 import { redactLogText } from "../../src/feedback/logs.ts";
+
+const { PGlite } = createRequire(new URL("../../.upstream/package.json", import.meta.url))(
+  "@electric-sql/pglite",
+);
 
 /** Synthetic external Home, real SQL history producers/readers, real signed hosted DO delivery. */
 export async function startScopedChangeFixture(signingKey, options) {
@@ -231,7 +235,7 @@ export async function startScopedChangeFixture(signingKey, options) {
       outgoing.end(Buffer.from(await response.arrayBuffer()));
     } catch (error) {
       failures.push({
-        route: new URL(incoming.url, "http://fixture.invalid").pathname,
+        route: new URL(incoming.url, "http://127.0.0.1").pathname,
         message: redactLogText(String(error)).slice(0, 1000),
       });
       outgoing
@@ -241,9 +245,11 @@ export async function startScopedChangeFixture(signingKey, options) {
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
+  const origin = new URL("http://127.0.0.1");
+  origin.port = String(server.address().port);
   return {
     ...base,
-    origin: `http://127.0.0.1:${server.address().port}`,
+    origin: origin.origin,
     product(origin) {
       productOrigin = origin;
       base.product(origin);

@@ -1,5 +1,4 @@
 import type { UsageStorage } from "./usage-storage.ts";
-import type { DurableObjectStorage, DurableObjectTransaction } from "@cloudflare/workers-types";
 import { signEnvelope } from "./token.ts";
 
 export interface PoolRevision {
@@ -10,10 +9,17 @@ export const poolChangePath = "/api/internal/change-revisions";
 export const poolChangePrefix = "sbcr1";
 const stateKey = "pool-committed-changes-v1";
 type Heads = Record<string, { revision: string; pending: boolean }>;
-type Transaction = Pick<DurableObjectTransaction, "get" | "put" | "delete">;
-type NativeStorage = Pick<DurableObjectStorage, "get" | "put" | "delete"> & {
+interface Transaction {
+  get<T>(key: string): Promise<T | undefined>;
+  get<T>(keys: string[]): Promise<Map<string, T>>;
+  put(key: string, value: unknown): Promise<void>;
+  put(entries: Record<string, unknown>): Promise<void>;
+  delete(key: string): Promise<boolean>;
+  delete(keys: string[]): Promise<number>;
+}
+interface NativeStorage extends Transaction {
   transaction: <T>(work: (tx: Transaction) => Promise<T>) => Promise<T>;
-};
+}
 const keyOf = (pool: string, topic: string) => JSON.stringify([pool, topic]);
 
 /** A pool's derived reports and their pending hints share the native storage transaction. */
