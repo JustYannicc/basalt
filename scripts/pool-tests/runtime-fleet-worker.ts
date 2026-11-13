@@ -165,8 +165,6 @@ export async function fleetWorkerFixture() {
                 (await existing()).worker.homePeerSource(target),
               assertHomePeer: async (source: HomePeerSource) =>
                 (await existing()).worker.assertHomePeer(source),
-              openHomePeer: async (source: HomePeerSource) =>
-                (await existing()).worker.openHomePeer(source),
             };
           };
           return {

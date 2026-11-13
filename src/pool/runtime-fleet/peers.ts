@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { HomePeerSource, peerTarget } from "../runtime-slots/peer-access.ts";
+import { homePeerUpgrade } from "../home-peer-transport.ts";
 import {
   SlotRefused,
   sameIdentity,
@@ -11,7 +12,7 @@ import {
 export interface HomePeerEndpoint {
   homePeerSource(target: SlotTarget): Promise<HomePeerSource>;
   assertHomePeer(source: HomePeerSource): Promise<void>;
-  openHomePeer(source: HomePeerSource): Promise<Response>;
+  fetch(request: Request): Promise<Response>;
 }
 interface Dependencies {
   controllerId: string;
@@ -48,6 +49,6 @@ export class RuntimeFleetPeers {
     const endpoint = this.deps.endpoint(target);
     const destination = await endpoint.homePeerSource(target);
     if (!sameTarget(peerTarget(destination), target)) throw new SlotRefused("identity");
-    return endpoint.openHomePeer(destination);
+    return endpoint.fetch(homePeerUpgrade(destination));
   }
 }
