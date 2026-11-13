@@ -1,0 +1,721 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
+@@ -5,6 +5,10 @@
+ import { SqlError } from "effect/sql";
+ import { ProviderAppsRefused } from "./migrations/provider-apps-schema.ts";
+ import { ProductionOperationRefused } from "./contracts.ts";
++import {
++  RetainedFrameworkReadRefused,
++  RetainedFrameworkReadDiagnostic,
++} from "./retained-frameworks-read.ts";
+
+ const SqlStateClass = Schema.Literals([
+   "08",
+@@ -75,6 +79,7 @@
+   causeKind: Schema.optionalKey(Schema.Literals(["failure", "defect", "interrupted", "composite"])),
+   reason: Schema.optionalKey(Schema.Literal("stale_plan")),
+   source: Schema.optionalKey(SourceRefusal),
++  retainedRead: Schema.optionalKey(RetainedFrameworkReadDiagnostic),
+ });
+ type FailureReceipt = typeof FailureReceipt.Type;
+ type Phase = FailureReceipt["phase"];
+@@ -85,6 +90,10 @@
+     readonly guard: string;
+     readonly reasonCode: string;
+     readonly source?: typeof SourceRefusal.Type;
++    readonly objectClass?: (typeof RetainedFrameworkReadDiagnostic.Type)["objectClass"];
++    readonly readPhase?: (typeof RetainedFrameworkReadDiagnostic.Type)["readPhase"];
++    readonly elapsedMs?: number;
++    readonly work?: (typeof RetainedFrameworkReadDiagnostic.Type)["work"];
+   };
+   constructor(receipt: FailureReceipt, guard: DiagnosticFailure["guard"]) {
+     super("Production operation refused");
+@@ -110,6 +119,15 @@
+       format: "basalt-production-ops-failure-v1",
+       category: "refused",
+       phase,
++      ...(error instanceof RetainedFrameworkReadRefused
++        ? Option.match(
++            Schema.decodeUnknownOption(RetainedFrameworkReadDiagnostic)(error.diagnostic),
++            {
++              onNone: () => ({}),
++              onSome: (retainedRead) => ({ retainedRead }),
++            },
++          )
++        : {}),
+       ...(error instanceof ProductionOperationRefused && error.reason === "stale_plan"
+         ? { reason: "stale_plan" as const }
+         : {}),
+@@ -174,7 +192,10 @@
+ }
+
+ /** Preserve only allowlisted guard codes before phase wrappers discard the underlying error. */
+-export function refusalDiagnostic(cause: Cause.Cause<unknown>, phase: Phase) {
++export function refusalDiagnostic(
++  cause: Cause.Cause<unknown>,
++  phase: Phase,
++): DiagnosticFailure["guard"] {
+   for (const reason of cause.reasons) {
+     const error = Cause.isFailReason(reason)
+       ? reason.error
+@@ -190,7 +211,15 @@
+         source: receipt.source,
+       };
+     const guard = knownRefusalGuard(error instanceof Error ? error.message : undefined);
+-    if (guard !== undefined) return guard;
++    if (guard !== undefined)
++      return {
++        ...guard,
++        ...(error instanceof RetainedFrameworkReadRefused
++          ? Option.getOrUndefined(
++              Schema.decodeUnknownOption(RetainedFrameworkReadDiagnostic)(error.diagnostic),
++            )
++          : {}),
++      };
+   }
+   const receipt = diagnostic(cause, phase);
+   return { guard: `phase_${receipt.phase}`, reasonCode: receipt.category };
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
+@@ -14,6 +14,7 @@
+ import { databaseOrigin } from "./database-identity.ts";
+ import { contention } from "./locking.ts";
+ import { atPhase, diagnostic, refusalDiagnostic } from "./diagnostics.ts";
++import { productionOperationTimeoutMs } from "./retained-frameworks-read.ts";
+ import { cloudRetainedFrameworkObjects } from "./retained-frameworks-r2.ts";
+ export { productionOpsPath } from "./contracts.ts";
+
+@@ -98,7 +99,7 @@
+       signed.value.operation,
+     ).pipe(
+       Effect.provideService(SqlClient.SqlClient, sql),
+-      Effect.timeout("25 seconds"),
++      Effect.timeout(productionOperationTimeoutMs),
+       Effect.catchCause((cause) => {
+         const first = Cause.findErrorOption(cause);
+         const error = Option.isSome(first) ? contention(first.value) : undefined;
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
+@@ -1,5 +1,6 @@
+ import { Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
++import type { Json } from "./contracts.ts";
+ import { producedAccount } from "@executor-js/hosted-server/connection-retention";
+ import {
+   retainedFrameworks,
+@@ -118,11 +119,7 @@
+     where a.owner = 'organization:' || $1 group by a.id, a.provider order by a.id limit 2001`,
+ } as const;
+
+-export const inventory = (
+-  selection: string,
+-  organization: string,
+-  objects?: RetainedFrameworkObjects,
+-) =>
++export const inventorySnapshot = (selection: string, organization: string) =>
+   Effect.gen(function* () {
+     if (!Object.hasOwn(inventoryQueries, selection))
+       return yield* Effect.fail(new Error("Unknown inventory"));
+@@ -135,9 +132,34 @@
+       return yield* selection === "retained-frameworks"
+         ? retainedFrameworkRefused("reference count bound")
+         : Effect.fail(new Error("Inventory exceeds its bound"));
+-    if (selection === "retained-frameworks") {
+-      if (objects === undefined) return yield* retainedFrameworkRefused("binding unavailable");
+-      return { selection, organization, ...(yield* retainedFrameworks(rows, objects)) };
+-    }
+-    return { selection, organization, rows };
++    return { selection, organization, rows: Object.freeze(rows) };
+   });
++
++/** Resolve only the captured associations after the caller has closed its SQL snapshot. */
++export const resolveInventory = (
++  snapshot: {
++    readonly selection: string;
++    readonly organization: string;
++    readonly rows: readonly Json[];
++  },
++  objects?: RetainedFrameworkObjects,
++  budgetMs?: number,
++) =>
++  Effect.gen(function* () {
++    if (snapshot.selection !== "retained-frameworks") return snapshot;
++    if (objects === undefined) return yield* retainedFrameworkRefused("binding unavailable");
++    return {
++      selection: snapshot.selection,
++      organization: snapshot.organization,
++      ...(yield* retainedFrameworks(snapshot.rows, objects, budgetMs)),
++    };
++  });
++
++export const inventory = (
++  selection: string,
++  organization: string,
++  objects?: RetainedFrameworkObjects,
++) =>
++  inventorySnapshot(selection, organization).pipe(
++    Effect.flatMap((snapshot) => resolveInventory(snapshot, objects)),
++  );
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts b/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/refusal-guards.ts
+@@ -50,6 +50,7 @@
+     total_byte_bound: "Retained frameworks: total byte bound",
+     byte_bound: "Retained frameworks: byte bound",
+     time_bound: "Retained frameworks: time bound",
++    read_timeout: "Retained frameworks: read timeout",
+   },
+   provider_apps_apps: {
+     app_must_be_active_in_this_organization:
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-r2.ts b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-r2.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-r2.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-r2.ts
+@@ -1,8 +1,12 @@
+ /** The existing EU AppBuilds binding supplies reads inside the signed Worker invocation. */
+ import { RuntimeContext } from "alchemy";
+ import * as Cloudflare from "alchemy/Cloudflare";
+-import { Effect } from "effect";
++import { Effect, Option } from "effect";
+ import { ProductionOperationRefused } from "./contracts.ts";
++import {
++  retryRetainedFrameworkRead,
++  RetainedFrameworkReadProgress,
++} from "./retained-frameworks-read.ts";
+ import { AppBuilds } from "../blobs.ts";
+ import {
+   retainedFrameworkBounds,
+@@ -36,15 +40,26 @@
+   bucket: RetainedFrameworkBucket,
+ ): RetainedFrameworkObjects => ({
+   list: Effect.gen(function* () {
++    const progressOption = yield* Effect.serviceOption(RetainedFrameworkReadProgress);
++    const progress = Option.getOrUndefined(progressOption);
+     const objects: FrameworkMetadata[] = [];
+     const cursors = new Set<string>();
+     let cursor: string | undefined;
+     for (let pageNumber = 0; pageNumber < 3; pageNumber++) {
+-      const page = yield* bucket.list({
+-        prefix: "frameworks/",
+-        limit: 1000,
+-        ...(cursor === undefined ? {} : { cursor }),
+-      });
++      const page = yield* retryRetainedFrameworkRead(
++        bucket.list({
++          prefix: "frameworks/",
++          limit: 1000,
++          ...(cursor === undefined ? {} : { cursor }),
++        }),
++        () => {
++          if (progress) progress.work.metadataAttempts++;
++        },
++      );
++      if (progress) {
++        progress.work.metadataPages++;
++        progress.work.metadataObjects += page.objects.length;
++      }
+       for (const object of page.objects) {
+         if (!(object.uploaded instanceof Date) || !Number.isFinite(object.uploaded.getTime()))
+           return yield* retainedFrameworkRefused("malformed metadata");
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-read.ts b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-read.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks-read.ts
+@@ -0,0 +1,172 @@
++import { Clock, Context, Effect, Random, Schema } from "effect";
++import { ProductionOperationRefused } from "./contracts.ts";
++
++export const productionOperationTimeoutMs = 25_000;
++
++export const retainedFrameworkReadBounds = {
++  attempts: 3,
++  attemptMs: 3000,
++  inventoryMs: 18_000,
++  responseReserveMs: 2000,
++} as const;
++
++/** SQL may contain several bounded statements. Reserve response time from the whole operation. */
++export const retainedFrameworkReadBudget = (operationStartedAt: number) =>
++  Clock.currentTimeMillis.pipe(
++    Effect.map((now) =>
++      Math.max(
++        0,
++        Math.min(
++          retainedFrameworkReadBounds.inventoryMs,
++          productionOperationTimeoutMs -
++            (now - operationStartedAt) -
++            retainedFrameworkReadBounds.responseReserveMs,
++        ),
++      ),
++    ),
++  );
++
++const Count = (maximum: number) => Schema.Int.check(Schema.isBetween({ minimum: 0, maximum }));
++export const RetainedFrameworkReadWork = Schema.Struct({
++  references: Count(2001),
++  builds: Count(2000),
++  metadataAttempts: Count(9),
++  metadataPages: Count(3),
++  metadataObjects: Count(3000),
++  recordAttempts: Count(12000),
++  completedBuilds: Count(2000),
++});
++export type RetainedFrameworkReadWork = {
++  -readonly [
++    K in keyof typeof RetainedFrameworkReadWork.Type
++  ]: (typeof RetainedFrameworkReadWork.Type)[K];
++};
++
++export const RetainedFrameworkReadDiagnostic = Schema.Struct({
++  objectClass: Schema.Literals([
++    "references",
++    "framework_metadata",
++    "split_record",
++    "legacy_record",
++  ]),
++  readPhase: Schema.Literals(["validate", "list", "read", "project"]),
++  elapsedMs: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 86_400_000 })),
++  work: RetainedFrameworkReadWork,
++});
++export type RetainedFrameworkReadDiagnostic = typeof RetainedFrameworkReadDiagnostic.Type;
++
++export class RetainedFrameworkReadRefused extends ProductionOperationRefused {
++  readonly diagnostic: RetainedFrameworkReadDiagnostic;
++  constructor(message: string, diagnostic: RetainedFrameworkReadDiagnostic) {
++    super({ message });
++    this.diagnostic = diagnostic;
++  }
++}
++
++export interface RetainedFrameworkReadProgress {
++  objectClass: RetainedFrameworkReadDiagnostic["objectClass"];
++  readPhase: RetainedFrameworkReadDiagnostic["readPhase"];
++  work: RetainedFrameworkReadWork;
++}
++export const RetainedFrameworkReadProgress = Context.Service<RetainedFrameworkReadProgress>(
++  "production-ops/RetainedFrameworkReadProgress",
++);
++
++/** One phase owns its deadline and counters; retries never create a new phase or shared state. */
++export const withRetainedFrameworkReadBudget = <A, E, R>(
++  budgetMs: number,
++  read: (progress: RetainedFrameworkReadProgress) => Effect.Effect<A, E, R>,
++) =>
++  Effect.gen(function* () {
++    const startedAt = yield* Clock.currentTimeMillis;
++    const progress: RetainedFrameworkReadProgress = {
++      objectClass: "references",
++      readPhase: "validate",
++      work: {
++        references: 0,
++        builds: 0,
++        metadataAttempts: 0,
++        metadataPages: 0,
++        metadataObjects: 0,
++        recordAttempts: 0,
++        completedBuilds: 0,
++      },
++    };
++    return yield* read(progress).pipe(
++      Effect.timeout(Math.max(0, Math.min(retainedFrameworkReadBounds.inventoryMs, budgetMs))),
++      Effect.catchTag("TimeoutError", () =>
++        Effect.fail(new ProductionOperationRefused({ message: "Retained frameworks: time bound" })),
++      ),
++      Effect.catch((error) =>
++        error instanceof ProductionOperationRefused
++          ? Clock.currentTimeMillis.pipe(
++              Effect.flatMap((now) =>
++                Effect.fail(
++                  new RetainedFrameworkReadRefused(error.message, {
++                    objectClass: progress.objectClass,
++                    readPhase: progress.readPhase,
++                    elapsedMs: Math.min(86_400_000, Math.max(0, now - startedAt)),
++                    work: { ...progress.work },
++                  }),
++                ),
++              ),
++            )
++          : Effect.fail(error),
++      ),
++      Effect.provideService(RetainedFrameworkReadProgress, progress),
++    );
++  });
++
++const transientTypes = new Set([
++  "TimeoutError",
++  "InternalServerError",
++  "BadGateway",
++  "ServiceUnavailable",
++  "GatewayTimeout",
++  "TooManyRequests",
++  "CloudflareRateLimited",
++  "Locked",
++]);
++const field = (value: unknown, name: string): unknown =>
++  typeof value === "object" && value !== null ? Reflect.get(value, name) : undefined;
++
++/** Native binding and stream adapters wrap errors; messages and paths never classify a retry. */
++function retryable(error: unknown): boolean {
++  for (let depth = 0; depth < 3; depth++) {
++    if (error instanceof ProductionOperationRefused) return false;
++    const tag = field(error, "_tag") ?? field(error, "name");
++    if (typeof tag === "string" && transientTypes.has(tag)) return true;
++    if (tag === "HttpClientError")
++      return field(field(error, "reason"), "_tag") === "TransportError";
++    if (tag !== "R2Error" && tag !== "UnknownError") return false;
++    error = field(error, "cause");
++  }
++  return false;
++}
++
++/** The caller keeps one inventory deadline and reserves bytes anew inside each body attempt. */
++export const retryRetainedFrameworkRead = <A, E, R>(
++  work: Effect.Effect<A, E, R>,
++  onAttempt?: () => void,
++) =>
++  Effect.gen(function* () {
++    for (let attempt = 1; ; attempt++) {
++      onAttempt?.();
++      const result = yield* work.pipe(
++        Effect.timeout(retainedFrameworkReadBounds.attemptMs),
++        Effect.match({
++          onSuccess: (value) => ({ ok: true as const, value }),
++          onFailure: (error) => ({ ok: false as const, error }),
++        }),
++      );
++      if (result.ok) return result.value;
++      if (attempt === retainedFrameworkReadBounds.attempts || !retryable(result.error))
++        return yield* field(result.error, "_tag") === "TimeoutError"
++          ? Effect.fail(
++              new ProductionOperationRefused({ message: "Retained frameworks: read timeout" }),
++            )
++          : Effect.fail(result.error);
++      const jitter = yield* Random.next;
++      yield* Effect.sleep(Math.floor(100 * 2 ** (attempt - 1) * (1 + jitter * 0.2)));
++    }
++  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks.ts b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/retained-frameworks.ts
+@@ -3,6 +3,11 @@
+ import { Effect, Schema } from "effect";
+ import { ProductionOperationRefused } from "./contracts.ts";
+ import { sha256 } from "./crypto.ts";
++import {
++  retainedFrameworkReadBounds,
++  retryRetainedFrameworkRead,
++  withRetainedFrameworkReadBudget,
++} from "./retained-frameworks-read.ts";
+
+ export const retainedFrameworkBounds = {
+   records: 2000,
+@@ -119,124 +124,145 @@
+   );
+
+ /** SQL owns the scoped app/version associations; only their build keys may reach R2 bodies. */
+-export const retainedFrameworks = (references: unknown, objects: RetainedFrameworkObjects) =>
+-  Effect.gen(function* () {
+-    const refs = yield* Schema.decodeUnknownEffect(References)(references).pipe(
+-      Effect.mapError(
+-        () =>
+-          new ProductionOperationRefused({ message: "Retained frameworks: malformed references" }),
+-      ),
+-    );
+-    if (refs.length > retainedFrameworkBounds.records)
+-      return yield* retainedFrameworkRefused("record count bound");
+-    const frameworks = yield* objects.list.pipe(
+-      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Metadata))),
+-      Effect.mapError((error) =>
+-        error instanceof ProductionOperationRefused
+-          ? error
+-          : new ProductionOperationRefused({ message: "Retained frameworks: unreadable metadata" }),
+-      ),
+-    );
+-    if (frameworks.length > retainedFrameworkBounds.objects)
+-      return yield* retainedFrameworkRefused("object count bound");
+-    const keys = new Set<string>();
+-    for (const object of frameworks) {
+-      if (
+-        !frameworkName.test(object.key) ||
+-        !Number.isSafeInteger(object.size) ||
+-        !Number.isFinite(Date.parse(object.uploaded)) ||
+-        keys.has(object.key)
+-      )
+-        return yield* retainedFrameworkRefused("malformed metadata");
+-      keys.add(object.key);
+-    }
+-    const grouped = new Map<string, { apps: Set<string>; deployments: Set<string> }>();
+-    const deploymentBuilds = new Map<string, string>();
+-    for (const ref of refs) {
+-      const prior = deploymentBuilds.get(ref.deployment);
+-      if (prior !== undefined && prior !== ref.build)
+-        return yield* retainedFrameworkRefused("inconsistent references");
+-      deploymentBuilds.set(ref.deployment, ref.build);
+-      const group = grouped.get(ref.build) ?? {
+-        apps: new Set<string>(),
+-        deployments: new Set<string>(),
++export const retainedFrameworks = (
++  references: unknown,
++  objects: RetainedFrameworkObjects,
++  budgetMs = retainedFrameworkReadBounds.inventoryMs,
++) =>
++  withRetainedFrameworkReadBudget(budgetMs, (progress) =>
++    Effect.gen(function* () {
++      const refs = yield* Schema.decodeUnknownEffect(References)(references).pipe(
++        Effect.mapError(
++          () =>
++            new ProductionOperationRefused({
++              message: "Retained frameworks: malformed references",
++            }),
++        ),
++      );
++      progress.work.references = refs.length;
++      if (refs.length > retainedFrameworkBounds.records)
++        return yield* retainedFrameworkRefused("record count bound");
++      progress.work.builds = new Set(refs.map((ref) => ref.build)).size;
++      progress.objectClass = "framework_metadata";
++      progress.readPhase = "list";
++      const frameworks = yield* objects.list.pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Metadata))),
++        Effect.mapError((error) =>
++          error instanceof ProductionOperationRefused
++            ? error
++            : new ProductionOperationRefused({
++                message: "Retained frameworks: unreadable metadata",
++              }),
++        ),
++      );
++      progress.readPhase = "validate";
++      if (frameworks.length > retainedFrameworkBounds.objects)
++        return yield* retainedFrameworkRefused("object count bound");
++      const keys = new Set<string>();
++      for (const object of frameworks) {
++        if (
++          !frameworkName.test(object.key) ||
++          !Number.isSafeInteger(object.size) ||
++          !Number.isFinite(Date.parse(object.uploaded)) ||
++          keys.has(object.key)
++        )
++          return yield* retainedFrameworkRefused("malformed metadata");
++        keys.add(object.key);
++      }
++      const grouped = new Map<string, { apps: Set<string>; deployments: Set<string> }>();
++      const deploymentBuilds = new Map<string, string>();
++      for (const ref of refs) {
++        const prior = deploymentBuilds.get(ref.deployment);
++        if (prior !== undefined && prior !== ref.build)
++          return yield* retainedFrameworkRefused("inconsistent references");
++        deploymentBuilds.set(ref.deployment, ref.build);
++        const group = grouped.get(ref.build) ?? {
++          apps: new Set<string>(),
++          deployments: new Set<string>(),
++        };
++        group.apps.add(ref.app);
++        group.deployments.add(ref.deployment);
++        grouped.set(ref.build, group);
++      }
++      let bytes = 0;
++      const read = (key: string) =>
++        retryRetainedFrameworkRead(
++          Effect.gen(function* () {
++            progress.objectClass = key.endsWith("/worker.json") ? "split_record" : "legacy_record";
++            progress.readPhase = "read";
++            const remaining = retainedFrameworkBounds.totalBytes - bytes;
++            const max = Math.min(retainedFrameworkBounds.objectBytes, remaining);
++            if (max <= 0) return yield* retainedFrameworkRefused("total byte bound");
++            // A failed stream may already have delivered bytes. Retain its whole reservation;
++            // only a successful read or confirmed absence can refund the unused allowance.
++            bytes += max;
++            progress.work.recordAttempts++;
++            const body = yield* objects.read(key, max);
++            if (body !== null) {
++              if (body.byteLength > max) return yield* retainedFrameworkRefused("byte bound");
++              bytes -= max - body.byteLength;
++            } else {
++              bytes -= max;
++            }
++            return body;
++          }),
++        );
++      const builds = yield* Effect.forEach([...grouped], ([build, group]) =>
++        Effect.gen(function* () {
++          const body = yield* read(`${build}/worker.json`);
++          const legacy = body === null ? yield* read(`${build}.json`) : null;
++          progress.readPhase = "project";
++          const result: Projection =
++            body !== null
++              ? yield* project(body, true, frameworks)
++              : legacy !== null
++                ? yield* project(legacy, false, frameworks)
++                : { complete: false, reason: "missing_record" };
++          return result;
++        }).pipe(
++          Effect.catch((error) =>
++            error instanceof ProductionOperationRefused
++              ? Effect.fail(error)
++              : Effect.succeed({ complete: false, reason: "unreadable_record" } as const),
++          ),
++          Effect.map((result) => {
++            progress.work.completedBuilds++;
++            return {
++              build,
++              apps: [...group.apps].sort(),
++              deployments: [...group.deployments].sort(),
++              ...result,
++            };
++          }),
++        ),
++      );
++      const tuples = new Map<string, Identity & { apps: Set<string>; deployments: Set<string> }>();
++      for (const build of builds) {
++        if (!build.complete) continue;
++        const { version, sha256, protocol } = build;
++        const key = JSON.stringify([version, sha256, protocol]);
++        const tuple = tuples.get(key) ?? {
++          version,
++          sha256,
++          protocol,
++          apps: new Set<string>(),
++          deployments: new Set<string>(),
++        };
++        build.apps.forEach((app) => tuple.apps.add(app));
++        build.deployments.forEach((deployment) => tuple.deployments.add(deployment));
++        tuples.set(key, tuple);
++      }
++      return {
++        complete: builds.every((build) => build.complete),
++        builds,
++        frameworks,
++        rows: [...tuples.values()].map(({ version, sha256, protocol, apps, deployments }) => ({
++          version,
++          sha256,
++          protocol,
++          apps: [...apps].sort(),
++          deployments: deployments.size,
++        })),
+       };
+-      group.apps.add(ref.app);
+-      group.deployments.add(ref.deployment);
+-      grouped.set(ref.build, group);
+-    }
+-    let bytes = 0;
+-    const read = (key: string) =>
+-      Effect.gen(function* () {
+-        const remaining = retainedFrameworkBounds.totalBytes - bytes;
+-        const max = Math.min(retainedFrameworkBounds.objectBytes, remaining);
+-        if (max <= 0) return yield* retainedFrameworkRefused("total byte bound");
+-        // A failed stream may already have delivered bytes. Retain its whole reservation;
+-        // only a successful read or confirmed absence can refund the unused allowance.
+-        bytes += max;
+-        const body = yield* objects.read(key, max);
+-        if (body !== null) {
+-          if (body.byteLength > max) return yield* retainedFrameworkRefused("byte bound");
+-          bytes -= max - body.byteLength;
+-        } else {
+-          bytes -= max;
+-        }
+-        return body;
+-      });
+-    const builds = yield* Effect.forEach([...grouped], ([build, group]) =>
+-      Effect.gen(function* () {
+-        const body = yield* read(`${build}/worker.json`);
+-        const legacy = body === null ? yield* read(`${build}.json`) : null;
+-        const result: Projection =
+-          body !== null
+-            ? yield* project(body, true, frameworks)
+-            : legacy !== null
+-              ? yield* project(legacy, false, frameworks)
+-              : { complete: false, reason: "missing_record" };
+-        return result;
+-      }).pipe(
+-        Effect.catch((error) =>
+-          error instanceof ProductionOperationRefused
+-            ? Effect.fail(error)
+-            : Effect.succeed({ complete: false, reason: "unreadable_record" } as const),
+-        ),
+-        Effect.map((result) => ({
+-          build,
+-          apps: [...group.apps].sort(),
+-          deployments: [...group.deployments].sort(),
+-          ...result,
+-        })),
+-      ),
+-    );
+-    const tuples = new Map<string, Identity & { apps: Set<string>; deployments: Set<string> }>();
+-    for (const build of builds) {
+-      if (!build.complete) continue;
+-      const { version, sha256, protocol } = build;
+-      const key = JSON.stringify([version, sha256, protocol]);
+-      const tuple = tuples.get(key) ?? {
+-        version,
+-        sha256,
+-        protocol,
+-        apps: new Set<string>(),
+-        deployments: new Set<string>(),
+-      };
+-      build.apps.forEach((app) => tuple.apps.add(app));
+-      build.deployments.forEach((deployment) => tuple.deployments.add(deployment));
+-      tuples.set(key, tuple);
+-    }
+-    return {
+-      complete: builds.every((build) => build.complete),
+-      builds,
+-      frameworks,
+-      rows: [...tuples.values()].map(({ version, sha256, protocol, apps, deployments }) => ({
+-        version,
+-        sha256,
+-        protocol,
+-        apps: [...apps].sort(),
+-        deployments: deployments.size,
+-      })),
+-    };
+-  }).pipe(
+-    Effect.timeout("8 seconds"),
+-    Effect.catchTag("TimeoutError", () => retainedFrameworkRefused("time bound")),
++    }),
+   );
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
+@@ -8,7 +8,8 @@
+ } from "./contracts.ts";
+ import { canonical, openArtifact, protectArtifact, ProtectedArtifact, sha256 } from "./crypto.ts";
+ import { backupSelections, backupTables, snapshotTables } from "./backup.ts";
+-import { inventory } from "./inventory.ts";
++import { inventorySnapshot, resolveInventory } from "./inventory.ts";
++import { retainedFrameworkReadBudget } from "./retained-frameworks-read.ts";
+ import { productionMigrations } from "./migrations.ts";
+ import { checkPlanScope, OrganizationRequest, requireOrganization } from "./scope.ts";
+ import { atPhase } from "./diagnostics.ts";
+@@ -132,19 +133,23 @@
+         protectArtifact(value, settings.encryptionKey, operation.recipient, settings.target),
+       ).pipe(atPhase("encryption"));
+     if (operation.action === "inventory") {
+-      const result = yield* readOnly(
++      const captured = yield* readOnly(
+         Effect.gen(function* () {
+           const database = yield* databaseIdentity(settings.databaseOrigin);
+           return {
+-            ...(yield* inventory(
+-              operation.selection,
+-              organization,
+-              settings.retainedFrameworkObjects,
+-            )),
++            snapshot: yield* inventorySnapshot(operation.selection, organization),
+             database,
+           };
+         }),
+       );
++      const result = {
++        ...(yield* resolveInventory(
++          captured.snapshot,
++          settings.retainedFrameworkObjects,
++          yield* retainedFrameworkReadBudget(now),
++        )),
++        database: captured.database,
++      };
+       return {
+         action: "inventory",
+         rows: result.rows.length,
