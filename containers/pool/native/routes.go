@@ -12,6 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
 )
 
 const Provider = "typesafe"
@@ -56,6 +57,12 @@ func (h *handler) systemOne(c *gin.Context) {
 		Model: model, Body: raw, Headers: c.Request.Header.Clone(), Query: c.Request.URL.Query(), Path: c.Request.URL.Path,
 	})
 	if failed != nil {
+		if httptransport.IsOutcomeUnknown(failed.Error) {
+			// Replay is already stopped; retain the native protocol at the public boundary.
+			c.Header("x-should-retry", "false")
+			c.JSON(http.StatusBadGateway, gin.H{"detail": "TypeSafe request outcome is unknown"})
+			return
+		}
 		if failed.DirectResponse {
 			for name, values := range failed.Headers {
 				c.Writer.Header()[name] = values
