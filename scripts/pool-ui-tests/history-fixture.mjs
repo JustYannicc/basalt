@@ -13,7 +13,32 @@ const { chromium } = require("playwright");
 const { build, stop } = require("esbuild");
 
 /** Real history UI, with source metadata supplied at its ordinary reader boundary. */
-export async function historyFixture({ sourceRef, initialRequests, pageSize } = {}) {
+export async function historyFixture({
+  sourceRef,
+  initialRequests,
+  pageSize,
+  diagnostic = () => {},
+} = {}) {
+  diagnostic("history fixture: building browser assets");
+  const bounded = async (name, work) => {
+    let timer;
+    diagnostic(`history fixture: ${name} started`);
+    try {
+      const value = await Promise.race([
+        Promise.resolve().then(work),
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`History fixture timed out during ${name} after 10000ms`)),
+            10_000,
+          );
+        }),
+      ]);
+      diagnostic(`history fixture: ${name} completed`);
+      return value;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   const built = await build({
     plugins: sourceRef
       ? [
@@ -95,6 +120,7 @@ createRoot(document.getElementById('root')).render(<History changes={pool.change
     "@font-face{font-family:Geist;src:url(/font.woff2);font-weight:100 900}" +
     (await compile(styles.outputFiles[0].text)).build(candidates);
   const backend = await historyBackend({ initialRequests, pageSize });
+  diagnostic("history fixture: launching owned browser");
   const server = await chromium.launchServer({ headless: true }).catch(async (error) => {
     await backend.close();
     throw error;
@@ -104,6 +130,11 @@ createRoot(document.getElementById('root')).render(<History changes={pool.change
     await backend.close();
     throw error;
   });
+  const child = server.process();
+  const exited =
+    child.exitCode !== null || child.signalCode !== null
+      ? Promise.resolve()
+      : new Promise((resolve) => child.once("exit", resolve));
   return {
     requests: backend.requests,
     waitFor: backend.waitFor,
@@ -117,6 +148,8 @@ createRoot(document.getElementById('root')).render(<History changes={pool.change
         colorScheme: "light",
       });
       const page = await context.newPage();
+      page.setDefaultTimeout(10_000);
+      page.setDefaultNavigationTimeout(10_000);
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.route("**/*", (route) => {
@@ -169,15 +202,29 @@ createRoot(document.getElementById('root')).render(<History changes={pool.change
       return { page: frame, host, active, context, errors };
     },
     async close() {
-      await browser.close();
-      await server.close();
-      const child = server.process();
-      assert.ok(
-        child.exitCode !== null || child.signalCode !== null,
-        "Owned headless browser exited",
-      );
-      await backend.close();
-      stop();
+      const problems = [];
+      const step = async (name, work) => {
+        try {
+          await bounded(name, work);
+        } catch (error) {
+          diagnostic(`history fixture: ${name} failed`);
+          problems.push(error);
+        }
+      };
+      await step("browser connection cleanup", () => browser.close());
+      await step("browser server cleanup", () => server.close());
+      if (problems.length && child.exitCode === null && child.signalCode === null)
+        await step("owned browser force stop", () => server.kill());
+      await step("owned browser process exit", async () => {
+        await exited;
+        assert.ok(
+          child.exitCode !== null || child.signalCode !== null,
+          "Owned headless browser exited",
+        );
+      });
+      await step("HTTP and SSE transport cleanup", () => backend.close());
+      await step("esbuild cleanup", () => stop());
+      if (problems.length) throw new AggregateError(problems, "History fixture cleanup failed");
     },
   };
 }
