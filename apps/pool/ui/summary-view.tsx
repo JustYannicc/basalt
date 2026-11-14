@@ -64,16 +64,17 @@ function Choice<T extends string | number>({
   onChange: (value: T) => void;
 }) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 max-w-full items-center gap-2">
       <span className="text-xs text-muted-foreground">{label}</span>
       <Tabs
+        className="min-w-0"
         value={String(value)}
         onValueChange={(next) => {
           const option = options.find((entry) => String(entry.id) === next);
           if (option) onChange(option.id);
         }}
       >
-        <TabsList aria-label={label}>
+        <TabsList aria-label={label} overflow="scroll">
           {options.map((option) => (
             <TabsTrigger key={option.id} value={String(option.id)}>
               {option.label}
@@ -139,7 +140,7 @@ function Header({
       ? `${choice.days} days`
       : sinceLabel(summaryRange(choice, now), choice.first);
   return (
-    <section className="grid gap-4 pt-8 pb-5">
+    <section className="grid min-w-0 gap-4 pt-8 pb-5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h1 className="text-2xl font-semibold tracking-[-0.025em]">How much are we using?</h1>
         {updating && (
@@ -148,7 +149,7 @@ function Header({
           </span>
         )}
       </div>
-      <div className="flex flex-wrap gap-x-5 gap-y-2">
+      <div className="flex min-w-0 flex-wrap gap-x-5 gap-y-2">
         <Choice
           label="Range"
           value={rangeKey(controls.range)}
