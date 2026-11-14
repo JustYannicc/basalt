@@ -1,0 +1,153 @@
+diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/implementation/ui-client.ts
+--- a/packages/apps/src/implementation/ui-client.ts
++++ b/packages/apps/src/implementation/ui-client.ts
+@@ -30,6 +30,7 @@
+ import { decoderOf, type Schema } from "./schema.ts";
+ import { makeOptimisticClient } from "./optimistic.ts";
+ import { queryResult, type ObservedQueryValue } from "./query-commit.ts";
++import { makeChangeFeed, type ChangeFeed } from "../browser/change-feed.ts";
+ 
+ /**
+  * Consecutive failed subscriptions wait 1, 2, 4… seconds, at most a minute, with jitter so pages
+@@ -148,8 +149,14 @@
+   const onHide = (event: PageTransitionEvent) => {
+     if (!event.persisted) void dispose().catch((error) => console.error(error));
+   };
++  const onActiveChange = (listener: (active: boolean) => void) => {
++    activeListeners.add(listener);
++    return () => void activeListeners.delete(listener);
++  };
++  let changes: ChangeFeed | undefined;
+   const dispose = async () => {
+     disposed = true;
++    changes?.close();
+     window.removeEventListener("pagehide", onHide);
+     window.removeEventListener("beforeunload", beforeUnload);
+     window.removeEventListener("message", onHostMessage);
+@@ -438,7 +445,8 @@
+       reference: OperationReference<Input, Output, "query">,
+       input: NoInfer<Input>,
+       output: Schema<NoInfer<Output>, boolean>,
+-    ) => runtime.runPromise(request("query", reference.name, input, output)),
++      options?: { readonly signal?: AbortSignal },
++    ) => runtime.runPromise(request("query", reference.name, input, output), options),
+     /** Execute a write once in this client's queue. Success acknowledges the write; queries reconcile afterward. */
+     mutate: <Input, Output>(
+       reference: OperationReference<Input, Output, "mutation">,
+@@ -452,10 +460,17 @@
+     /** Whether someone can see this page: its browser tab is visible and its host shows it. */
+     isActive: () => active,
+     /** Call `listener` whenever `isActive` changes. Returns a function that stops it. */
+-    onActiveChange: (listener: (active: boolean) => void) => {
+-      activeListeners.add(listener);
+-      return () => void activeListeners.delete(listener);
+-    },
++    onActiveChange,
++    /**
++     * This app's committed-revision feed. One stream per page, opened while a watch exists and
++     * someone sees the page; the server picks the organization, app and topics.
++     */
++    changes: () =>
++      (changes ??= makeChangeFeed({
++        stream: "/_executor/api/changes",
++        current: "/_executor/api/changes/current",
++        activity: { isActive: () => active, onActiveChange },
++      })),
+     /**
+      * Call `refresh` every `interval` milliseconds while this page is active, starting one interval
+      * from now. A page that becomes active after a refresh came due refreshes once, at once; a page
+diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src/contracts/app-ui.ts
+--- a/apps/hosted/server/src/contracts/app-ui.ts
++++ b/apps/hosted/server/src/contracts/app-ui.ts
+@@ -197,7 +197,12 @@
+       target: AppUiTarget,
+       token: typeof AppSignInCode.Type,
+     ) => Effect.Effect<
+-      { readonly userId: string; readonly navigation: string },
++      {
++        readonly userId: string;
++        readonly navigation: string;
++        readonly sessionId?: typeof Principal.Type.sessionId;
++        readonly expiresAt?: Date;
++      },
+       UiUnauthorized | UiForbidden | UiFailed
+     >;
+     /** A reference alone grants nothing: the dashboard login must match this exact record. */
+diff --git a/apps/hosted/server/src/implementation/app-sessions.ts b/apps/hosted/server/src/implementation/app-sessions.ts
+--- a/apps/hosted/server/src/implementation/app-sessions.ts
++++ b/apps/hosted/server/src/implementation/app-sessions.ts
+@@ -83,7 +83,7 @@
+       ),
+       Effect.asVoid,
+     );
+-  const read = (identifier: string, consume = false) =>
++  const readStored = (identifier: string, consume = false) =>
+     Effect.gen(function* () {
+       const row = yield* query(() =>
+         consume
+@@ -96,10 +96,13 @@
+       );
+       if (stored.expiresAt.getTime() <= (yield* Clock.currentTimeMillis))
+         return yield* new UiUnauthorized();
+-      return yield* Schema.decodeUnknownEffect(recordJson)(stored.value).pipe(
++      const record = yield* Schema.decodeUnknownEffect(recordJson)(stored.value).pipe(
+         Effect.mapError(unavailable),
+       );
++      return { record, expiresAt: stored.expiresAt };
+     });
++  const read = (identifier: string, consume = false) =>
++    readStored(identifier, consume).pipe(Effect.map(({ record }) => record));
+   const parent = (id: typeof Principal.Type.sessionId, user: typeof Principal.Type.userId) =>
+     Effect.gen(function* () {
+       const row = yield* query(() =>
+@@ -252,13 +255,19 @@
+     current: (target, token) =>
+       Effect.gen(function* () {
+         const navigation = yield* digest(token);
+-        const session = yield* read(key("session", navigation));
++        const stored = yield* readStored(key("session", navigation));
++        const session = stored.record;
+         if (!Schema.is(AppUiSession)(session) || !sameTarget(session.target, target))
+           return yield* new UiUnauthorized();
+-        yield* parent(session.parent, session.user);
++        const login = yield* parent(session.parent, session.user);
+         // The serving host checks current membership together with app/account
+         // permissions. A second lookup here adds no authority to that decision.
+-        return { userId: session.user, navigation };
++        return {
++          userId: session.user,
++          navigation,
++          sessionId: session.parent,
++          expiresAt: new Date(Math.min(stored.expiresAt.getTime(), login.expiresAt.getTime())),
++        };
+       }),
+     navigation: (target, reference, principal) =>
+       Effect.gen(function* () {
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -12,6 +12,7 @@
+ } from "./pool-app-ui.ts";
+ import { queryDispatch, queryPhase } from "./app-ui-query-timing.ts";
+ import { appUiPhase, appUiPhaseHeaders } from "./app-ui-phase-timing.ts";
++import { makeAppChanges } from "./pool-app-changes.ts";
+ import { visibleObservationHealth } from "./account-observation-policy.ts";
+ import { visibleAccountStatuses } from "./account-identity.ts";
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+@@ -275,7 +276,7 @@
+           Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
+         ),
+       );
+-      return { ...resolved, access, app, navigation: identity.navigation };
++      return { ...resolved, access, app, navigation: identity.navigation, changeSession: identity };
+     });
+   const authorize = Effect.flatMap(target, authorizeTarget);
+   const assets = (version: VersionMetadata, path: string) =>
+@@ -888,6 +889,7 @@
+   return {
+     signIn: signInPage,
+     frameResponse,
++    changes: makeAppChanges(authorize),
+     callback,
+     dashboard,
+     calls,

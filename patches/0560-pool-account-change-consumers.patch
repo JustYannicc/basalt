@@ -243,26 +243,6 @@ index 58aa9e28ecd4f022b0dcc909f7f96d6a643135d8..87bead6b4a1d3c01be7db4f938f729ee
      );
      const bound = yield* HttpServer.HttpServer.pipe(Effect.provideContext(listener));
      const address = bound.address;
-diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src/contracts/app-ui.ts
-index 04760454c58f3ac4a2b41788fc63d910e5914fba..cc3ee7175528f786abda0d14be688b3b9b23269e 100644
---- a/apps/hosted/server/src/contracts/app-ui.ts
-+++ b/apps/hosted/server/src/contracts/app-ui.ts
-@@ -196,7 +196,14 @@ export class HostedAppSessions extends Context.Service<
-     readonly current: (
-       target: AppUiTarget,
-       token: typeof AppSignInCode.Type,
--    ) => Effect.Effect<{ readonly userId: string }, UiUnauthorized | UiForbidden | UiFailed>;
-+    ) => Effect.Effect<
-+      {
-+        readonly userId: string;
-+        readonly sessionId?: typeof Principal.Type.sessionId;
-+        readonly expiresAt?: Date;
-+      },
-+      UiUnauthorized | UiForbidden | UiFailed
-+    >;
-   }
- >()("hosted/AppSessions") {}
- 
 diff --git a/apps/hosted/server/src/implementation/account-change-schema.ts b/apps/hosted/server/src/implementation/account-change-schema.ts
 new file mode 100644
 index 0000000..c0566ea
@@ -418,84 +398,6 @@ index 0000000..c0566ea
 +        for each row execute function hosted_account_changed('${mode}', '${topics}', '${field}', '${ignored}')`,
 +    );
 +});
-diff --git a/apps/hosted/server/src/implementation/app-sessions.ts b/apps/hosted/server/src/implementation/app-sessions.ts
-index db417e27dc253b61e988dbd07548c77fd178544d..bc9c021caf0bf6d98542e8bb1de9125608e06dd0 100644
---- a/apps/hosted/server/src/implementation/app-sessions.ts
-+++ b/apps/hosted/server/src/implementation/app-sessions.ts
-@@ -83,7 +83,7 @@ export const hostedAppSessions = (
-       ),
-       Effect.asVoid,
-     );
--  const read = (identifier: string, consume = false) =>
-+  const readStored = (identifier: string, consume = false) =>
-     Effect.gen(function* () {
-       const row = yield* query(() =>
-         consume
-@@ -96,10 +96,13 @@ export const hostedAppSessions = (
-       );
-       if (stored.expiresAt.getTime() <= (yield* Clock.currentTimeMillis))
-         return yield* new UiUnauthorized();
--      return yield* Schema.decodeUnknownEffect(recordJson)(stored.value).pipe(
-+      const record = yield* Schema.decodeUnknownEffect(recordJson)(stored.value).pipe(
-         Effect.mapError(unavailable),
-       );
-+      return { record, expiresAt: stored.expiresAt };
-     });
-+  const read = (identifier: string, consume = false) =>
-+    readStored(identifier, consume).pipe(Effect.map(({ record }) => record));
-   const parent = (id: typeof Principal.Type.sessionId, user: typeof Principal.Type.userId) =>
-     Effect.gen(function* () {
-       const row = yield* query(() =>
-@@ -251,13 +254,18 @@ export const hostedAppSessions = (
-       }),
-     current: (target, token) =>
-       Effect.gen(function* () {
--        const session = yield* read(key("session", yield* digest(token)));
-+        const stored = yield* readStored(key("session", yield* digest(token)));
-+        const session = stored.record;
-         if (!Schema.is(AppUiSession)(session) || !sameTarget(session.target, target))
-           return yield* new UiUnauthorized();
--        yield* parent(session.parent, session.user);
-+        const login = yield* parent(session.parent, session.user);
-         // The serving host checks current membership together with app/account
-         // permissions. A second lookup here adds no authority to that decision.
--        return { userId: session.user };
-+        return {
-+          userId: session.user,
-+          sessionId: session.parent,
-+          expiresAt: new Date(Math.min(stored.expiresAt.getTime(), login.expiresAt.getTime())),
-+        };
-       }),
-   });
- };
-diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
---- a/apps/hosted/server/src/implementation/app-ui.ts
-+++ b/apps/hosted/server/src/implementation/app-ui.ts
-@@ -10,6 +10,7 @@
- } from "./pool-app-ui.ts";
- import { queryDispatch, queryPhase } from "./app-ui-query-timing.ts";
- import { appUiPhase, appUiPhaseHeaders } from "./app-ui-phase-timing.ts";
-+import { makeAppChanges } from "./pool-app-changes.ts";
- import { visibleObservationHealth } from "./account-observation-policy.ts";
- import { visibleAccountStatuses } from "./account-identity.ts";
- import { CurrentAuthorization } from "../contracts/authorization.ts";
-@@ -268,7 +269,7 @@
-           Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
-         ),
-       );
--      return { ...resolved, access, app };
-+      return { ...resolved, access, app, changeSession: identity };
-     });
-   const authorize = Effect.flatMap(target, authorizeTarget);
-   const assets = (version: VersionMetadata, path: string) =>
-@@ -850,6 +851,7 @@
-   return {
-     signIn: signInPage,
-     frameResponse,
-+    changes: makeAppChanges(authorize),
-     callback,
-     dashboard,
-     calls,
 diff --git a/apps/hosted/server/src/implementation/change-revisions.ts b/apps/hosted/server/src/implementation/change-revisions.ts
 index ea55c1c..338cb94 100644
 --- a/apps/hosted/server/src/implementation/change-revisions.ts
@@ -2511,64 +2413,6 @@ index 9aedb7c..f06c96f 100644
  
  export type {
    AppMutation,
-diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/implementation/ui-client.ts
-index ce7bcb2b08ab00032dfd1022ee182af9b73ca18d..a1b85a15a07c8d6cf6a479a0dcf38486ef486c5f 100644
---- a/packages/apps/src/implementation/ui-client.ts
-+++ b/packages/apps/src/implementation/ui-client.ts
-@@ -23,6 +23,7 @@ import { JsonValue } from "../contracts/schema.ts";
- import { decoderOf, type Schema } from "./schema.ts";
- import { makeOptimisticClient } from "./optimistic.ts";
- import { queryResult, type ObservedQueryValue } from "./query-commit.ts";
-+import { makeChangeFeed, type ChangeFeed } from "../browser/change-feed.ts";
- 
- /**
-  * Consecutive failed subscriptions wait 1, 2, 4… seconds, at most a minute, with jitter so pages
-@@ -121,7 +122,13 @@ export const createAppClient = () => {
-   const onHide = (event: PageTransitionEvent) => {
-     if (!event.persisted) void dispose().catch((error) => console.error(error));
-   };
-+  const onActiveChange = (listener: (active: boolean) => void) => {
-+    activeListeners.add(listener);
-+    return () => void activeListeners.delete(listener);
-+  };
-+  let changes: ChangeFeed | undefined;
-   const dispose = async () => {
-+    changes?.close();
-     window.removeEventListener("pagehide", onHide);
-     window.removeEventListener("beforeunload", beforeUnload);
-     window.removeEventListener("message", onHostMessage);
-@@ -353,7 +360,8 @@ export const createAppClient = () => {
-       reference: OperationReference<Input, Output, "query">,
-       input: NoInfer<Input>,
-       output: Schema<NoInfer<Output>, boolean>,
--    ) => runtime.runPromise(request("query", reference.name, input, output)),
-+      options?: { readonly signal?: AbortSignal },
-+    ) => runtime.runPromise(request("query", reference.name, input, output), options),
-     /** Execute a write once in this client's queue. Success acknowledges the write; queries reconcile afterward. */
-     mutate: <Input, Output>(
-       reference: OperationReference<Input, Output, "mutation">,
-@@ -367,10 +375,17 @@ export const createAppClient = () => {
-     /** Whether someone can see this page: its browser tab is visible and its host shows it. */
-     isActive: () => active,
-     /** Call `listener` whenever `isActive` changes. Returns a function that stops it. */
--    onActiveChange: (listener: (active: boolean) => void) => {
--      activeListeners.add(listener);
--      return () => void activeListeners.delete(listener);
--    },
-+    onActiveChange,
-+    /**
-+     * This app's committed-revision feed. One stream per page, opened while a watch exists and
-+     * someone sees the page; the server picks the organization, app and topics.
-+     */
-+    changes: () =>
-+      (changes ??= makeChangeFeed({
-+        stream: "/_executor/api/changes",
-+        current: "/_executor/api/changes/current",
-+        activity: { isActive: () => active, onActiveChange },
-+      })),
-     /**
-      * Call `refresh` every `interval` milliseconds while this page is active, starting one interval
-      * from now. A page that becomes active after a refresh came due refreshes once, at once; a page
 diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
 index 47c9bd90898e2eecf8cab30bb4430fef0e7debda..92be0049a4bd13dd695f6da2210613813e535293 100644
 --- a/packages/sdk/src/core.ts
