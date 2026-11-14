@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { startupStopKey } from "./startup-abort-contract.ts";
 import { SlotIdentity, SlotRefused, SlotTarget, sameTarget } from "./contract.ts";
 import {
   LaunchAuthorization,
@@ -47,6 +48,7 @@ export class RuntimeWitnessStore {
     return value === undefined ? undefined : Schema.decodeUnknownSync(WitnessRecord)(value);
   }
   async read(target: SlotTarget) {
+    if (await this.storage.get(startupStopKey(target))) throw new SlotRefused("selection");
     const record = await this.retained(target.slotId);
     if (!record || record.retired || !sameTarget(record.authorization.target, target))
       throw new SlotRefused("identity");
@@ -68,6 +70,7 @@ export class RuntimeWitnessStore {
     identity?: SlotIdentity,
   ) {
     const target = Schema.decodeUnknownSync(SlotTarget)(authorization.target);
+    if (await this.storage.get(startupStopKey(target))) throw new SlotRefused("selection");
     const sealed = await sealConfiguration(configuration, this.secret, JSON.stringify(target));
     await this.put(target, { authorization, sealed, ...(identity ? { identity } : {}) });
   }

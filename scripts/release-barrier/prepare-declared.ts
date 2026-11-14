@@ -27,7 +27,12 @@ export const prepareDeclaredRelease = (
     const scope = { stack: stack.name, stage: stack.stage };
     const attempt = (source: Plan.Plan, frozen?: DeclaredStorage) =>
       Effect.gen(function* () {
-        assertSupportedPlan(source, new Map(), options.declarations);
+        assertSupportedPlan(
+          source,
+          new Map(),
+          options.declarations,
+          options.runtimeImage?.resource,
+        );
         const {
           plan,
           buckets: declaredBuckets,
@@ -67,6 +72,7 @@ export const prepareDeclaredRelease = (
           options.declarations,
           declaredStorage,
           options.namespaceRead,
+          options.runtimeImage?.resource,
         );
         const workerBaselines = yield* observeWorkerBaselines(prepared.captured, stack, options.io);
         return {

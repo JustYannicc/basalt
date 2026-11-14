@@ -10,12 +10,17 @@ import {
   equalContainerValues,
   type PreparedContainerPublication,
 } from "alchemy/Cloudflare/Containers/ContainerPublicationHook";
-import { containerDeclarationChanged } from "./container-declaration.ts";
-import { pinnedLegacyDeclaration, preserveLegacyPublication } from "./legacy-image.ts";
+import { containerDeclarationChanged, runtimeImageDeclaration } from "./container-declaration.ts";
+import {
+  pinnedLegacyDeclaration,
+  pinnedRuntimeDeclaration,
+  preserveLegacyPublication,
+} from "./legacy-image.ts";
 import { Config, Effect, Redacted } from "effect";
 import { inspectPoolImage } from "../deploy-safety/pool-image-metadata.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import { changedProps } from "./prop-diff.ts";
+import type { FleetImageResource } from "./runtime-image-phase.ts";
 import { observeContainer } from "./container-cloudflare.ts";
 import {
   equalContainerConfiguration,
@@ -135,9 +140,23 @@ export function assertImageOnlyPublication(
   props: ContainerApplication["Props"],
   olds: ContainerApplication["Props"] | undefined,
   cached: ContainerAttributes,
+  runtimeImage?: FleetImageResource,
 ) {
   const previous: ContainerAttributes = publication.previous;
   const { proposed, rolloutRequest } = publication;
+  const fleet =
+    publication.id === runtimeImage ||
+    (olds &&
+      ["PoolRuntimeBlue", "PoolRuntimeGreen"].includes(publication.id) &&
+      "image" in props &&
+      props.image === previous.configuration.image &&
+      runtimeImageDeclaration(props, olds));
+  const retainedRuntime =
+    publication.id === "PoolRuntime" &&
+    olds?.className === "PoolRuntime" &&
+    props.className === "PoolRuntime" &&
+    pinnedRuntimeDeclaration(props, olds, previous.configuration.image) &&
+    equalContainerConfiguration(previous.configuration, proposed.configuration);
   const refuse = (reason: string, expected: unknown, actual: unknown): never => {
     throw new BarrierRefusal(reason, publication.id, {
       fqn: publication.id,
@@ -146,22 +165,31 @@ export function assertImageOnlyPublication(
     });
   };
   if (
-    publication.id !== "PoolContainer" ||
+    (publication.id !== "PoolContainer" && !fleet && !retainedRuntime) ||
     !olds ||
     (containerDeclarationChanged(props, olds) &&
-      !pinnedLegacyDeclaration(props, olds, publication.previous.configuration.image))
+      !pinnedLegacyDeclaration(props, olds, publication.previous.configuration.image) &&
+      !(fleet && runtimeImageDeclaration(props, olds)) &&
+      !retainedRuntime)
   )
     refuse("unsupported-container-declaration-change", olds, props);
   if (
     props.instanceType !== "basic" ||
-    props.maxInstances !== 1 ||
-    props.instances !== undefined ||
+    (fleet && (props.className !== publication.id || olds?.className !== publication.id)) ||
+    props.maxInstances !== (fleet ? 4 : 1) ||
+    props.instances !== (fleet || retainedRuntime ? 0 : undefined) ||
     props.schedulingPolicy !== "default" ||
     props.rollout !== undefined
   )
     refuse(
       "unsupported-container-policy",
-      { instanceType: "basic", maxInstances: 1, schedulingPolicy: "default" },
+      {
+        instanceType: "basic",
+        maxInstances: fleet ? 4 : 1,
+        instances: fleet || retainedRuntime ? 0 : undefined,
+        className: publication.id,
+        schedulingPolicy: "default",
+      },
       {
         instanceType: props.instanceType,
         maxInstances: props.maxInstances,
@@ -265,11 +293,12 @@ export const stageContainer = (
   olds: ContainerApplication["Props"] | undefined,
   cached: ContainerAttributes,
   inspect = inspectContainer,
+  runtimeImage?: FleetImageResource,
 ) =>
   Effect.gen(function* () {
     const preservation = preserveLegacyPublication(publication, props, olds);
     const candidate = preservation.publication;
-    assertImageOnlyPublication(candidate, props, olds, cached);
+    assertImageOnlyPublication(candidate, props, olds, cached, runtimeImage);
     yield* candidate.verifySource;
     const metadata = yield* inspect(candidate);
     if (

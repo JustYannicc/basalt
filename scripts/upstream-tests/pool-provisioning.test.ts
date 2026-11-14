@@ -906,6 +906,7 @@ test("a rollout left behind by a later release settles without deploying", async
 for (const [name, report, reason] of [
   ["code revision", { revision: "earlier-pool-worker" }, "worker-revision"],
   ["signing key", { keyVersion: "earlier-key" }, "key-version"],
+  ["runtime image", { imageReady: false }, "runtime-image"],
   [
     "code revision and signing key",
     { revision: "earlier-pool-worker", keyVersion: "earlier-key" },
@@ -921,12 +922,16 @@ for (const [name, report, reason] of [
           array['basaltPools', ${poolRecordKey(sql)}, 'bundle'], '"previous-bundle"')::text`;
         yield* sql`update executor_apps set files = ${old}::jsonb, workspace = ${old}::jsonb`;
         const [before] = yield* sql<{ active_deployment: string }>`select * from executor_apps`;
-        const ready = { revision: poolWorkerRevision, keyVersion: yield* poolTokenKeyVersion(key) };
+        const ready = {
+          revision: poolWorkerRevision,
+          keyVersion: yield* poolTokenKeyVersion(key),
+          imageReady: true,
+        };
         const defaults = yield* withPoolDefaults(executor, Option.some(key), () => Effect.void);
         const id = rolloutJob(poolAppVersion, "job");
         yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id)
           values (${id}, 'member', ${organization}, 'person-a')`;
-        const run = (worker: { revision: string; keyVersion: string }) =>
+        const run = (worker: { revision: string; keyVersion: string; imageReady: boolean }) =>
           provision(id, selfHostProvisioningServices).pipe(
             Effect.provideService(OrganizationDefaults, defaults),
             Effect.provideService(PoolWorkerReport, Effect.succeed(worker)),
@@ -968,7 +973,7 @@ test("rotated tokens are never re-signed before the pool Worker reports the new 
           Effect.provideService(OrganizationDefaults, defaults),
           Effect.provideService(
             PoolWorkerReport,
-            Effect.succeed({ revision: poolWorkerRevision, keyVersion }),
+            Effect.succeed({ revision: poolWorkerRevision, keyVersion, imageReady: true }),
           ),
         );
       // The pool Worker still verifies with the previous key: nothing is re-signed yet.
@@ -997,7 +1002,7 @@ test("rotated tokens are never re-signed before the pool Worker reports the new 
 
 test("without BASALT_POOL_ORIGIN the gate reads the pool Worker's release on the hosted origin", async () => {
   // An old pool Worker has no release route yet.
-  let release: { revision: string; keyVersion: string } | null = null;
+  let release: { revision: string; keyVersion: string; imageReady: boolean } | null = null;
   const reads: string[] = [];
   const server = createServer((request, response) => {
     reads.push(request.url ?? "");
@@ -1032,10 +1037,14 @@ test("without BASALT_POOL_ORIGIN the gate reads the pool Worker's release on the
           });
         assert.equal((yield* withPendingReasons(run("behind-1")))._tag, "Failure");
         assert.deepEqual(reasons, ["worker-unreachable"]);
-        release = { revision: "earlier-pool-worker", keyVersion: "" };
+        release = { revision: "earlier-pool-worker", keyVersion: "", imageReady: true };
         assert.equal((yield* withPendingReasons(run("behind-2")))._tag, "Failure");
         assert.deepEqual(reasons, ["worker-revision-and-key"]);
-        release = { revision: poolWorkerRevision, keyVersion: yield* poolTokenKeyVersion(rotated) };
+        release = {
+          revision: poolWorkerRevision,
+          keyVersion: yield* poolTokenKeyVersion(rotated),
+          imageReady: true,
+        };
         assert.equal((yield* run("behind-3"))._tag, "Success");
         assert.deepEqual(reads, ["/pool/v1/release", "/pool/v1/release", "/pool/v1/release"]);
       }),

@@ -13,6 +13,10 @@ import { RuntimeHomePeerTransport } from "./home-peer.worker.ts";
 import { handleHomePeerUpgrade, homePeerPath } from "./home-peer-transport.ts";
 import { PoolRuntimeFleet, type FleetNamespace } from "./runtime-fleet/production.ts";
 import { RuntimeProviderReader } from "./runtime-provider/read.ts";
+import {
+  primaryRetirementProvider,
+  startupAbortProvider,
+} from "./runtime-slots/provider-retirement.ts";
 import { PoolAlarms } from "./alarms.ts";
 import { PoolUpkeepTrace } from "./upkeep-trace.ts";
 import { RuntimeHandoff, type HandoffEnvironment } from "./runtime-slots/integration.ts";
@@ -37,6 +41,7 @@ import { isControlPath } from "../../apps/pool/contract.ts";
 import { PoolControl } from "./attribution.ts";
 import { HomeClient } from "./control.ts";
 import { ComputerHome } from "./computer-home.ts";
+import { RuntimeCandidateProbe, candidateProbeHeader } from "./runtime-slots/candidate-probe.ts";
 import { Computers } from "./computers.ts";
 import { accessPath } from "./access-contract.ts";
 import { requirePoolUse } from "./authorization.ts";
@@ -129,6 +134,7 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnviron
   POOL_APP_SIGNING_KEY_PREVIOUS?: string;
   POOL_CLAUDE_QUOTA_DIAGNOSTIC?: string;
   POOL_IMAGE_HASH: string;
+  POOL_DESIRED_IMAGE_INPUT?: string;
   POOL_DEPLOYMENT_KEY?: string;
   POOL_MODEL_HISTORY_ENABLED?: string;
   POOL_AVAILABILITY_TARGET?: string;
@@ -147,6 +153,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private mirrorHome: HomeClient;
   private computers: Computers;
   private appModels: AppModels;
+  private candidateProbe: RuntimeCandidateProbe;
   private prices: PriceUpkeep;
   private overviewPrices: OverviewPrices;
   private usage: PoolUsage;
@@ -177,13 +184,31 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       { candidate: productionOpsRelease, workerInput: poolWorkerRevision },
       {
         wrap: nativeResponse,
+        retirementProvider: primaryRetirementProvider(
+          new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN),
+        ),
+        startupAbsence: startupAbortProvider(
+          new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN),
+        ),
+        beforeStage: (target, transaction) => this.fleet.stagePrimary(target, transaction),
+        beforePromote: async (intent, transaction) => {
+          if (await this.fleet.configuration.inspect(undefined, transaction))
+            await this.candidateProbe.assertPromotion(intent, transaction);
+          await this.fleet.promotePrimary(intent, transaction);
+        },
         endpoint: {
           beforeBootstrap: (identity) => this.peers.configure({ kind: "legacy", identity }),
         },
         ...(env.PoolRuntime || env.PoolRuntimeBlue
           ? {
               remote: (target) => {
-                const namespace = (env.PoolRuntime ?? env.PoolRuntimeBlue)!.jurisdiction("eu");
+                const binding = this.fleetNamespaces().find(
+                  (value) => value.applicationId === target.applicationId,
+                );
+                if (binding) return binding.endpoint(target);
+                if (!env.PoolRuntime || target.applicationId !== env.POOL_RUNTIME_APPLICATION_ID)
+                  throw new Error("Pool runtime application is not bound");
+                const namespace = env.PoolRuntime.jurisdiction("eu");
                 return namespace.get(namespace.idFromString(target.instanceId));
               },
             }
@@ -279,6 +304,16 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       });
     };
     this.mirrorHome = new HomeClient(home, Date.now, () => this.control.invalidateViews());
+    this.candidateProbe = new RuntimeCandidateProbe({
+      storage: ctx.storage,
+      slots: this.handoff.storage,
+      code: { candidate: productionOpsRelease, workerInput: poolWorkerRevision },
+      secret: env.POOL_DEPLOYMENT_KEY ?? "",
+      home: new ComputerHome(this.mirrorHome),
+      schedule: (at) => this.alarms.schedule("home", at),
+      forward: (request, identity, pool, beforeDispatch) =>
+        this.handoff.forwardCandidate(request, identity, pool, beforeDispatch),
+    });
     this.overviewPrices = new OverviewPrices(this.mirrorHome, this.changes.storage);
     this.control = new PoolControl(ctx.storage, {
       nativeMembership: (pool, organization) =>
@@ -548,6 +583,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private async homeUpkeep(trace = new PoolUpkeepTrace("home")) {
     await this.changes.deliver().catch(() => console.error("POOL_CHANGES_PENDING"));
     await trace
+      .run("candidate_probe", () => this.candidateProbe.tick())
+      .catch(() => console.error("POOL_CANDIDATE_PROBE_KEY_CLEANUP_PENDING"));
+    await trace
+      .run("primary_retirement", () => this.handoff.retireDrained())
+      .catch(() => console.error("POOL_PRIMARY_RETIREMENT_PENDING"));
+    await trace
       .run("app_models", () => this.appModels.tick())
       .catch(() => console.error("POOL_APP_MODEL_KEY_CLEANUP_PENDING"));
     await trace.run("memberships", () => this.memberships.tick());
@@ -607,6 +648,17 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       instanceId: this.ctx.id.toString(),
     };
   }
+  async imageReleaseReady() {
+    try {
+      const selected = await this.handoff.selected();
+      return (
+        !!this.env.POOL_DESIRED_IMAGE_INPUT &&
+        (selected?.imageInput ?? this.env.POOL_IMAGE_HASH) === this.env.POOL_DESIRED_IMAGE_INPUT
+      );
+    } catch {
+      return false;
+    }
+  }
 
   async deploymentReady() {
     return {
@@ -631,6 +683,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       },
       this.env.POOL_DEPLOYMENT_KEY ?? "",
       this.fleet,
+      this.candidateProbe,
     );
   }
 
@@ -828,7 +881,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       streams: this.modelStreams,
       lifecycle: this.lifecycle,
       protection: this.protection,
-      route: (request, target, pool, legacy, beforeDispatch) => {
+      route: (request, target, pool, legacy, beforeDispatch, identity) => {
+        if (request.headers.has(candidateProbeHeader))
+          return this.candidateProbe.route(request, identity, beforeDispatch);
         const primary = () => this.handoff.forward(request, target, pool, legacy, beforeDispatch);
         return target === 8317
           ? this.fleet.forward(request, pool, primary, beforeDispatch)
@@ -856,7 +911,8 @@ export async function handlePoolWorkerRequest(
 ): Promise<Response> {
   const pathname = new URL(request.url).pathname;
   // Answered here, without waking the container.
-  if (pathname === poolReleasePath) return poolRelease(request, env);
+  if (pathname === poolReleasePath)
+    return poolRelease(request, env, undefined, () => singleton(env).imageReleaseReady());
   if (
     pathname === removalIntentPath ||
     pathname === importRemovalPath ||

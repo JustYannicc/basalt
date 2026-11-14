@@ -27,6 +27,7 @@ import { verificationAdmissions, type VerificationAdmission } from "./plan-admis
 import { finishPlan } from "./alchemy-plan.ts";
 import { planStack } from "./plan-stack.ts";
 import { preserveLegacyPlan } from "./legacy-image-plan.ts";
+import { preserveRuntimeInputs } from "./preserve-runtime-plan.ts";
 import {
   readActivePlacements,
   readBaseline,
@@ -80,9 +81,12 @@ import {
   decodeContainerRollout,
   waitForContainerVersion,
 } from "./container-cloudflare.ts";
+import type { RuntimeImagePhase } from "./runtime-image-phase.ts";
 
 export interface DeployStackOptions {
   candidate: string;
+  preserveRuntimeInputs?: boolean;
+  runtimeImage?: RuntimeImagePhase;
   declarations?: DeclaredChanges;
   declared?(progress: BucketProgress | D1Progress): Promise<void>;
   declaredReadiness?(value: DeclaredReadiness): Promise<void>;
@@ -122,8 +126,16 @@ type Services = Effect.Services<ReturnType<typeof readBaseline> | ReturnType<typ
 /** The ordinary release entry uses this full-stack path, including transitive Commands. */
 export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =>
   Effect.gen(function* () {
-    const evaluatedPlan = preserveLegacyPlan(yield* planStack(stack));
-    assertSupportedPlan(evaluatedPlan, new Map(), options.declarations);
+    const imagePlan = preserveLegacyPlan(yield* planStack(stack));
+    const evaluatedPlan = options.preserveRuntimeInputs
+      ? preserveRuntimeInputs(imagePlan)
+      : imagePlan;
+    assertSupportedPlan(
+      evaluatedPlan,
+      new Map(),
+      options.declarations,
+      options.runtimeImage?.resource,
+    );
     const context = yield* Effect.context<Services>();
     const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
       Effect.runPromise(effect.pipe(Effect.provideContext(context)));
@@ -203,16 +215,21 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     if (recordAdmission) yield* Effect.promise(() => recordAdmission(verificationAdmissions(plan)));
     const state = yield* yield* State;
     const io = options.io ?? { baseline: readBaseline, upload: uploadVersion };
+    const releaseContainers = [...prepared.containers.entries()]
+      .filter(
+        ([id]) =>
+          !options.runtimeImage || id === (options.runtimeImage.resource ?? "PoolContainer"),
+      )
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, value]) => value.frozen);
     const manifest: ReleaseManifest = {
       candidate: options.candidate,
       stack: stack.name,
       stage: stack.stage,
-      ...(prepared.containers.size
+      ...(releaseContainers.length
         ? ({
             schemaVersion: 2,
-            containers: [...prepared.containers.entries()]
-              .sort(([a], [b]) => a.localeCompare(b))
-              .map(([, value]) => value.frozen),
+            containers: releaseContainers,
           } as const)
         : {}),
       workers: yield* Effect.promise(() =>
@@ -231,21 +248,22 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
       ),
     };
     for (const { frozen } of prepared.containers.values())
-      assertJournaledBaselineInput(
-        frozen,
-        {
-          bindings: [
-            {
-              name: "POOL_IMAGE_HASH",
-              type: "plain_text",
-              text: manifest.workers.find((worker) => worker.id === "PoolWorker")
-                ?.baselineImageHash,
-            },
-          ],
-        },
-        manifest.workers.find((worker) => worker.id === "PoolWorker"),
-        options.forwardInput,
-      );
+      if (frozen.id === "PoolContainer")
+        assertJournaledBaselineInput(
+          frozen,
+          {
+            bindings: [
+              {
+                name: "POOL_IMAGE_HASH",
+                type: "plain_text",
+                text: manifest.workers.find((worker) => worker.id === "PoolWorker")
+                  ?.baselineImageHash,
+              },
+            ],
+          },
+          manifest.workers.find((worker) => worker.id === "PoolWorker"),
+          options.forwardInput,
+        );
     yield* Effect.promise(() => options.manifest(manifest));
     yield* prerequisites("before-upload");
     if (!options.forwardEncryptionKey) throw new BarrierRefusal("sql-schema-journal-key-required");
@@ -344,6 +362,7 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
                     changedContainers: [...prepared.containers.values()].map(
                       (value) => value.frozen,
                     ),
+                    resource: options.runtimeImage?.resource,
                     encryptionKey: schemaEncryptionKey,
                     retryIntentId: options.homeSchemaRetryIntent,
                     record,
@@ -395,6 +414,13 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
             },
           },
           containers: {
+            prepare: options.runtimeImage
+              ? async (container) => {
+                  if (container.id !== (options.runtimeImage!.resource ?? "PoolContainer"))
+                    throw new BarrierRefusal("runtime-image-target-mismatch", container.id);
+                  await options.runtimeImage!.prepare(container);
+                }
+              : undefined,
             async verifySource(container) {
               const staged = prepared.containers.get(container.id);
               if (!staged) throw new BarrierRefusal("missing-prepared-container", container.id);
@@ -429,17 +455,20 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
               if (!staged) throw new BarrierRefusal("missing-prepared-container", container.id);
               const worker = prepared.captured.get("PoolWorker")?.request;
               if (!worker) throw new BarrierRefusal("missing-pool-serving-target");
-              const serving = await run(
-                (options.io?.serving ?? verifyServingContainer)(
-                  container,
-                  { worker: worker.scriptName, accountId: worker.accountId },
-                  options.candidate,
-                  undefined,
-                  { applicationVersion: observed.version },
-                ),
-              );
-              if (options.serving)
-                await options.serving({ ...serving, applicationVersion: observed.version });
+              if (options.runtimeImage) await options.runtimeImage.verify(container, observed);
+              else {
+                const serving = await run(
+                  (options.io?.serving ?? verifyServingContainer)(
+                    container,
+                    { worker: worker.scriptName, accountId: worker.accountId },
+                    options.candidate,
+                    undefined,
+                    { applicationVersion: observed.version },
+                  ),
+                );
+                if (options.serving)
+                  await options.serving({ ...serving, applicationVersion: observed.version });
+              }
               activatedContainers.set(container.id, {
                 ...staged.publication.proposed,
                 ...observed,
@@ -453,7 +482,13 @@ export const deployStack = (stack: CompiledStack, options: DeployStackOptions) =
     });
     const finalizing = preserveClassHistory(
       preserveDeclarationHistory(
-        finishPlan(prepared, activated, databaseFqns, activatedContainers),
+        finishPlan(
+          prepared,
+          activated,
+          databaseFqns,
+          activatedContainers,
+          options.runtimeImage?.deferVerification,
+        ),
         scope,
       ),
       scope,

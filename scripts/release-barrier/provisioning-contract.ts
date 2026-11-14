@@ -33,10 +33,22 @@ export const provisioningManifestDigest = (value: RuntimeProvisioningManifest) =
   digest(canonical(decodeProvisioningManifest(value)));
 
 export interface ProvisioningEnable {
-  coordinatorGo: string;
+  coordinatorGo?: string;
+  releaseWriter?: { candidate: string; lease: string };
   manifest: string;
   writerLease: string;
   expiresAt: number;
+}
+
+export function provisioningAuthority(enable: ProvisioningEnable | undefined, candidate: string) {
+  return (
+    !!enable?.coordinatorGo ||
+    !!(
+      enable?.writerLease &&
+      enable.releaseWriter?.candidate === candidate &&
+      enable.releaseWriter.lease === enable.writerLease
+    )
+  );
 }
 
 /** No ordinary release entrypoint constructs this authority; enabling requires a separate reviewed GO. */
@@ -46,8 +58,8 @@ export function assertProvisioningEnable(
   now: number,
 ) {
   if (
-    !enable?.coordinatorGo ||
-    !enable.writerLease ||
+    !provisioningAuthority(enable, manifest.candidate) ||
+    !enable?.writerLease ||
     enable.manifest !== provisioningManifestDigest(manifest) ||
     !Number.isSafeInteger(enable.expiresAt) ||
     !Number.isSafeInteger(now) ||

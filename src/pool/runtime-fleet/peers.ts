@@ -17,6 +17,7 @@ export interface HomePeerEndpoint {
 interface Dependencies {
   controllerId: string;
   legacy(): Promise<SlotIdentity | undefined>;
+  sources?(): Promise<readonly SlotIdentity[]>;
   rows(): Promise<readonly { target: SlotTarget; phase: string }[]>;
   endpoint(target: SlotTarget): HomePeerEndpoint;
 }
@@ -34,12 +35,17 @@ export class RuntimeFleetPeers {
     const sourceTarget = peerTarget(source);
     if (sourceTarget.controllerId !== this.deps.controllerId) throw new SlotRefused("identity");
     const legacy = await this.deps.legacy();
+    const primaries = (await this.deps.sources?.()) ?? (legacy ? [legacy] : []);
     const rows = (await this.deps.rows()).filter((row) =>
       ["warming", "uncertain", "ready", "draining", "quarantined"].includes(row.phase),
     );
     if (source.kind === "legacy") {
-      if (!legacy || !sameIdentity(legacy, source.identity)) throw new SlotRefused("identity");
-    } else if (!rows.some((row) => sameTarget(row.target, sourceTarget)))
+      if (!primaries.some((identity) => sameIdentity(identity, source.identity)))
+        throw new SlotRefused("identity");
+    } else if (
+      !rows.some((row) => sameTarget(row.target, sourceTarget)) &&
+      !primaries.some((identity) => sameTarget(identity, sourceTarget))
+    )
       throw new SlotRefused("identity");
     await this.deps.endpoint(sourceTarget).assertHomePeer(source);
     const target =

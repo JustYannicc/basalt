@@ -26,7 +26,7 @@ export function readRuntimeProvisioningHeader(value: unknown, key: string) {
     value,
   );
   const record = decodeProvisioningRecord(
-    openRecovery(header.sealed, key, header.candidate, header.manifest),
+    openRecovery(header.sealed, key, header.candidate, header.manifest, "worker-modules"),
   );
   sameProvisioningValue(
     "journal.authenticatedIdentity",

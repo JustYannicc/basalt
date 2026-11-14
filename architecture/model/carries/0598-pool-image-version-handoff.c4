@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Bundle reconciliation waits for the selected runtime to match the desired image input as well as the Worker revision and signing key. Ordinary releases update only an inactive immutable application under a durable launch freeze, prove attested public serving before promotion, and retain old streams and physical capacity until drained compute is positively absent. Candidate startup registers its original deadline before dispatch, acknowledges before the bridge timeout, and survives request cancellation; recovery observes that launch without extending its deadline or starting another. An operator abort uses the ordinary exclusive release writer, binds the exact retained startup witness and healthy active selection, fences promotion before one destruction, and settles the encrypted release journal only after compute and provider absence are positive. Unknown stop outcomes retain their pending journal and capacity. The terminal abort receipt remains encrypted in release history."
+    }
+  }
+}

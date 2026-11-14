@@ -22,6 +22,9 @@ import type {
 import type { HomePeerSource } from "../../src/pool/runtime-slots/peer-access.ts";
 import { openEnvelope } from "../../src/pool/token.ts";
 import peerProgram from "../../src/pool/home-peer-program.json" with { type: "json" };
+import { fixture as computerFixture } from "../../src/pool/test/computers.ts";
+import { brand } from "../../brand.ts";
+import { runtimeApplicationFixture } from "./runtime-provider-fixture.ts";
 
 type Color = "blue" | "green";
 type Runtime = Awaited<ReturnType<typeof handoffRuntime>>;
@@ -32,7 +35,9 @@ interface Instance {
 }
 
 /** Actual controller and private runtime classes, with only the platform, provider and Home ports doubled. */
-export async function fleetWorkerFixture() {
+export async function fleetWorkerFixture(
+  options: { candidateColor?: Color; publicProbe?: boolean } = {},
+) {
   const original = await runtimeProofFixture();
   const raw = (["blue", "green"] as const).map((color) => ({
     ...structuredClone(original.raw),
@@ -60,16 +65,41 @@ export async function fleetWorkerFixture() {
     })),
   );
   const instances = new Map<string, Instance>();
+  const candidate = applications.find((app) => app.color === (options.candidateColor ?? "blue"))!;
   const pending = new Map<string, Promise<Instance>>();
   let created: (runtime: Runtime, color: Color) => Promise<void> = async () => {};
   let model: (instance: Runtime, request: Request) => Promise<Response | undefined> = async () =>
     undefined;
   const fetchBefore = globalThis.fetch;
+  const keys = computerFixture();
+  let publicRead: (request: Request, forward: () => Promise<Response>) => Promise<Response> = (
+    _request,
+    forward,
+  ) => forward();
+  let publicReads = 0;
   let providerAvailable = true,
     secretAvailable = true;
   const providerReads: string[] = [];
   let providerRead: () => Promise<void> = async () => {};
   globalThis.fetch = async (input, init) => {
+    if (
+      options.publicProbe &&
+      input instanceof Request &&
+      new URL(input.url).origin === `https://${brand.host}`
+    ) {
+      publicReads++;
+      const key = keys.server.keys.find(
+        (key) => input.headers.get("authorization") === `Bearer ${key.api_key}`,
+      );
+      return publicRead(input, () =>
+        f.publicModel(
+          input,
+          key
+            ? { pool: f.claims.pool, person: f.claims.owner, keyId: Number(key.api_key_id) }
+            : undefined,
+        ),
+      );
+    }
     assert.equal(typeof input, "string");
     const url = new URL(String(input));
     assert.equal(url.origin, "https://api.cloudflare.com");
@@ -78,7 +108,8 @@ export async function fleetWorkerFixture() {
     providerReads.push(url.pathname);
     await providerRead();
     if (!providerAvailable) return new Response(null, { status: 403 });
-    const app = raw.find(
+    const legacy = f ? runtimeApplicationFixture(f.old.target) : undefined;
+    const app = [...raw, ...(legacy ? [legacy] : [])].find(
       (app) =>
         url.pathname ===
           `/client/v4/accounts/${app.account_id}/containers/applications/${app.id}` ||
@@ -90,7 +121,12 @@ export async function fleetWorkerFixture() {
       success: true,
       errors: [],
       result: url.pathname.endsWith("instances-v2")
-        ? [...instances.values()]
+        ? (app === legacy
+            ? f.old.ctx.container.running
+              ? [{ fixture: f.old }]
+              : []
+            : [...instances.values()]
+          )
             .filter(
               (instance) =>
                 instance.fixture.target.applicationId === app.id &&
@@ -109,7 +145,24 @@ export async function fleetWorkerFixture() {
   let f: Awaited<ReturnType<typeof handoffWorker>>;
   try {
     f = await handoffWorker({
+      candidateProvider: candidate,
+      candidateTarget: {
+        applicationId: candidate.applicationId,
+        applicationVersion: candidate.applicationVersion,
+        imageDigest: candidate.imageDigest,
+        imageInput: candidate.imageInput,
+      },
       bindings: async ({ old, env }) => {
+        if (options.publicProbe) {
+          keys.server.groups = old.home.groups;
+          old.home.override = (path, init) => {
+            const url = new URL(path, "https://home.invalid");
+            const endpoint = url.pathname.slice("/v8/management".length);
+            return endpoint === "/users" || endpoint === "/access/api-keys"
+              ? keys.home.client.response(`${endpoint}${url.search}`, init)
+              : undefined;
+          };
+        }
         const namespace = (color: Color) => {
           const application = applications.find((app) => app.color === color)!;
           const get = (id: { toString(): string }) => {
@@ -254,12 +307,40 @@ export async function fleetWorkerFixture() {
   return {
     ...f,
     instances,
+    probeKeys: keys.server,
+    onPublicProbe: (hook: typeof publicRead) => {
+      publicRead = hook;
+    },
+    publicProbeReads: () => publicReads,
     resourcesWhen,
     upkeep: async () => {
       await new PoolAlarms(f.old.storage).schedule("fleet", Date.now());
       await f.alarm();
     },
     applications,
+    publishApplication: async (
+      color: Color,
+      version: number,
+      imageDigest: string,
+      imageInput: string,
+    ) => {
+      const index = color === "blue" ? 0 : 1;
+      const app = raw[index]!;
+      app.version = version;
+      app.configuration.image = `${app.configuration.image.split("@")[0]}@${imageDigest}`;
+      Object.assign(applications[index]!, {
+        applicationVersion: String(version),
+        imageDigest,
+        imageInput,
+        applicationConfigDigest: await providerDigest(
+          runtimeApplicationSettings(decodeProviderApplication(app)),
+        ),
+      });
+      f.advanceCurrentBindings({
+        POOL_BLUE_IMAGE_HASH: applications[0]!.imageInput,
+        POOL_GREEN_IMAGE_HASH: applications[1]!.imageInput,
+      });
+    },
     configuration,
     providerReads,
     send,
@@ -287,8 +368,8 @@ export async function fleetWorkerFixture() {
     },
     settle: () => f.old.settle(),
     cleanup: async () => {
-      globalThis.fetch = fetchBefore;
       await f.cleanup();
+      globalThis.fetch = fetchBefore;
       for (const instance of instances.values()) await instance.fixture.cleanup();
     },
   };

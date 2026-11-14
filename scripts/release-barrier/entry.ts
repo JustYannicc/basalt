@@ -2,7 +2,10 @@ import { assertReleaseStateVersion } from "./release-state-version.ts";
 import { homeSchemaRetryAuthorization } from "./home-schema-retry.ts";
 import { loadDeclaredChanges } from "./declared-file.ts";
 import { undoForwardAdoption } from "./forward-undo.ts";
-import { resumeForwardRelease } from "./forward-resume.ts";
+import { releaseRuntimeImage } from "./runtime-image-release.ts";
+import { abortRuntimeRelease } from "./runtime-release-abort.ts";
+import { writeFile, mkdir } from "node:fs/promises";
+import { ordinaryReleaseWriter } from "./runtime-release-writer.ts";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -11,7 +14,6 @@ import { evalStack } from "alchemy/Stack";
 import { Context, Effect } from "effect";
 import { recoverStack } from "./recover-stack.ts";
 import { readRecoveryManifest } from "./recovery.ts";
-import { deployStack } from "./deploy-stack.ts";
 import { withReleaseRuntime } from "./runtime.ts";
 import { releaseEvidence } from "./evidence.ts";
 import { openRecovery } from "./recovery-envelope.ts";
@@ -28,9 +30,12 @@ if (process.env.ALCHEMY_STAGE !== "production")
   throw new Error("Release barrier requires the production stage");
 const homeSchemaRetryIntent = homeSchemaRetryAuthorization(process.env);
 const args = process.argv.slice(2);
+const abortMode = args[0] === "--abort-runtime" && args.length === 2 ? args[1] : undefined;
 const undoPath = args[0] === "--undo-forward" && args.length === 2 ? resolve(args[1]!) : undefined;
-if (args.length && !undoPath && (args.length !== 3 || args[0] !== "--recover"))
-  throw new Error("Use --recover <manifest.json> <receipt.json>");
+if (args.length && !abortMode && !undoPath && (args.length !== 3 || args[0] !== "--recover"))
+  throw new Error(
+    "Use --recover <manifest.json> <receipt.json> or --abort-runtime <plan|inspect|plan-digest>",
+  );
 const recoveryDirectory = args[0] === "--recover" ? dirname(resolve(args[1]!)) : undefined;
 const recovery =
   args[0] === "--recover"
@@ -86,51 +91,73 @@ process.exitCode = await releaseOutcome(evidence, process.env.GITHUB_STEP_SUMMAR
       ),
     ).pipe(
       Effect.flatMap((stack) =>
-        evalStack(
-          stack,
-          (compiled) =>
-            (undoPath
-              ? undoForwardAdoption(compiled, undoPath)
-              : recovery
-                ? recoverStack(
-                    compiled,
-                    recovery.manifest,
-                    recovery.receipt,
-                    (value) => evidence.recovery(value),
-                    containerRecovery,
-                  )
-                : Effect.gen(function* () {
-                    const declarations = yield* Effect.tryPromise({
-                      try: () =>
-                        loadDeclaredChanges(fileURLToPath(new URL("../../", import.meta.url))),
-                      catch: (error) => error,
+        undoPath || recovery || abortMode
+          ? evalStack(
+              stack,
+              (compiled) =>
+                Effect.gen(function* () {
+                  if (abortMode) {
+                    const receipt = yield* abortRuntimeRelease(
+                      compiled,
+                      ordinaryReleaseWriter(process.env),
+                      abortMode,
+                    );
+                    yield* Effect.promise(async () => {
+                      await mkdir(directory, { recursive: true });
+                      await writeFile(
+                        resolve(directory, "runtime-abort.json"),
+                        JSON.stringify(receipt, null, 2) + "\n",
+                        { mode: 0o600 },
+                      );
+                      if (process.env.GITHUB_STEP_SUMMARY) {
+                        const { appendFile } = await import("node:fs/promises");
+                        await appendFile(
+                          process.env.GITHUB_STEP_SUMMARY,
+                          `Runtime startup abort ${receipt.status}. Plan digest: ${receipt.fingerprint}.\n`,
+                        );
+                      }
                     });
-                    const forward = yield* resumeForwardRelease(compiled, { directory });
-                    return yield* deployStack(compiled, {
-                      candidate: process.env.BASALT_RELEASE_CANDIDATE!,
-                      declarations,
-                      declared: evidence.declared,
-                      declaredReadiness: evidence.declaredReadiness,
-                      expansion: evidence.expansion,
-                      forwardInput: forward?.continuation,
-                      forwardEncryptionKey: process.env.EXECUTOR_ENCRYPTION_KEY,
-                      homeSchemaRetryIntent,
-                      record: evidence.record,
-                      publication: evidence.publication,
-                      admission: evidence.admission,
-                      namespaceRead: evidence.namespaceRead,
-                      bucketRead: evidence.bucketRead,
-                      serving: evidence.serving,
-                      manifest: evidence.manifest,
-                    });
-                  })
-            ).pipe(
-              (effect) => assertReleaseStateVersion(compiled).pipe(Effect.andThen(effect)),
-              Effect.provideContext(compiled.services),
-              Effect.provideService(State, Context.get(compiled.services, State)),
-            ),
-          { stage: "production" },
-        ),
+                  } else if (undoPath) yield* undoForwardAdoption(compiled, undoPath);
+                  else
+                    yield* recoverStack(
+                      compiled,
+                      recovery!.manifest,
+                      recovery!.receipt,
+                      (value) => evidence.recovery(value),
+                      containerRecovery,
+                    );
+                }).pipe(
+                  (effect) => assertReleaseStateVersion(compiled).pipe(Effect.andThen(effect)),
+                  Effect.provideContext(compiled.services),
+                  Effect.provideService(State, Context.get(compiled.services, State)),
+                ),
+              { stage: "production" },
+            )
+          : Effect.gen(function* () {
+              const declarations = yield* Effect.tryPromise({
+                try: () => loadDeclaredChanges(fileURLToPath(new URL("../../", import.meta.url))),
+                catch: (error) => error,
+              });
+              return yield* releaseRuntimeImage(stack, {
+                candidate: process.env.BASALT_RELEASE_CANDIDATE!,
+                writer: ordinaryReleaseWriter(process.env),
+                directory,
+                encryptionKey: process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
+                declarations,
+                declared: evidence.declared,
+                declaredReadiness: evidence.declaredReadiness,
+                expansion: evidence.expansion,
+                forwardEncryptionKey: process.env.EXECUTOR_ENCRYPTION_KEY,
+                homeSchemaRetryIntent,
+                record: evidence.record,
+                publication: evidence.publication,
+                admission: evidence.admission,
+                namespaceRead: evidence.namespaceRead,
+                bucketRead: evidence.bucketRead,
+                serving: evidence.serving,
+                manifest: evidence.manifest,
+              });
+            }),
       ),
       withReleaseRuntime,
     ),

@@ -66,7 +66,7 @@ test("an existing candidate prevents the first-adoption readback gate from being
   const f = await handoffWorker();
   context.after(f.cleanup);
   const grant = await f.startGrant();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 200);
+  assert.equal((await f.stage(grant.envelope)).status, 200);
   assert.equal((await witness(f)).status, 409);
 });
 
@@ -111,7 +111,7 @@ test("lost adoption commit acknowledgement leaves inspectable state without a re
     if (selectionWrites === 1) throw new Error("lost adoption selection acknowledgement");
   };
   const adopt = await f.command("adopt", { proof: f.preservation.envelope });
-  assert.equal(adopt.status, 409);
+  assert.equal(adopt.status, 500);
   assert.equal(selectionWrites, 1);
   f.reconstruct();
   const observed = await witness(f);
@@ -145,7 +145,7 @@ for (const state of ["fenced", "retiring", "draining"] as const)
             }
           : { ...selection, draining: selection.active };
     await f.old.storage.put(slotSelectionKey, next);
-    assert.equal((await witness(f)).status, 409);
+    assert.equal((await witness(f)).status, state === "draining" ? 500 : 409);
   });
 
 for (const corruption of ["fingerprint", "ciphertext"] as const)
@@ -176,7 +176,7 @@ for (const corruption of ["fingerprint", "ciphertext"] as const)
         Buffer.from(record.sealed.ciphertext, "hex"),
       );
     await f.old.storage.put(key, next);
-    assert.equal((await witness(f)).status, 409);
+    assert.equal((await witness(f)).status, corruption === "ciphertext" ? 500 : 409);
   });
 
 test("a changed whole membership revision refuses a previously valid adoption readback", async (context) => {

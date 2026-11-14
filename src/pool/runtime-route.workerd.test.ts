@@ -71,10 +71,10 @@ test(
             assert.equal(response.status, 200);
             assert.deepEqual(await response.json(), { caps: true });
           } else {
-            assert.equal(response.status, 409);
+            assert.equal(response.status, 200);
             assert.deepEqual(await response.json(), {
-              error: "runtime-refused",
-              reason: "runtime_endpoint_health_aborted",
+              refused: true,
+              diagnostic: { runtimeStep: "endpoint_health", runtimeReason: "aborted" },
             });
           }
           const eventsResponse = await mf.dispatchFetch(
@@ -122,14 +122,14 @@ test(
           try {
             const started = performance.now();
             const response = await mf.dispatchFetch(`http://fixture/probe?fault=${fault}`);
-            assert.equal(response.status, 409);
+            assert.equal(response.status, 200);
             assert.ok(
               performance.now() - started < 2_500,
               "Health read waited past its lease window",
             );
             assert.deepEqual(await response.json(), {
-              error: "runtime-refused",
-              reason: "runtime_endpoint_health_timeout",
+              refused: true,
+              diagnostic: { runtimeStep: "endpoint_health", runtimeReason: "timeout" },
             });
             const eventsResponse = await mf.dispatchFetch(
               `http://fixture/read-events?fault=${fault}`,
@@ -190,21 +190,24 @@ test(
           const calls = await mf.dispatchFetch(`http://fixture/calls?fault=${fault}`);
           assert.equal((await calls.json()).calls, 0);
         });
-      for (const [fault, reason, count] of [
-        ["model-port-lookup", "runtime_port_lookup_transport", 0],
-        ["model-port-dispatch", "runtime_port_dispatch_transport", 1],
+      for (const [fault, count] of [
+        ["model-port-lookup", 0],
+        ["model-port-dispatch", 1],
       ] as const)
         await context.test(fault, async () => {
           const response = await mf.dispatchFetch(`http://fixture/v1/messages?fault=${fault}`, {
             method: "POST",
             body: "{}",
           });
-          assert.equal(response.status, 409);
+          assert.equal(response.status, 502);
+          assert.equal(response.headers.get("Retry-After"), null);
           assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Step"), null);
           assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Reason"), null);
           const text = await response.text();
           assert.equal(text.includes("synthetic-private-exception-body"), false);
-          assert.deepEqual(JSON.parse(text), { error: "runtime-refused", reason });
+          assert.partialDeepStrictEqual(JSON.parse(text), {
+            error: { code: "upstream_outcome_unknown", retryable: false },
+          });
           const calls = await mf.dispatchFetch(`http://fixture/calls?fault=${fault}`);
           assert.equal((await calls.json()).calls, count);
         });

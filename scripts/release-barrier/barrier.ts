@@ -22,6 +22,7 @@ import { containerDrift } from "./container-diagnostics.ts";
 import type { ContainerRollout } from "./container-cloudflare.ts";
 
 export interface ContainerVersionProvider {
+  prepare?(container: FrozenContainer): Promise<void>;
   verifySource(container: FrozenContainer): Promise<void>;
   read(container: FrozenContainer): Promise<ContainerAttributes>;
   rollout(container: FrozenContainer): Promise<ContainerRollout>;
@@ -174,9 +175,10 @@ export async function releaseWorkers(
     };
     const schemas = await options.sqlSchemas(recordSchemas);
     await recordSchemas(schemas);
-    const candidateHome = manifest.containers?.find(
-      (container) => container.id === "PoolContainer",
-    );
+    const candidateHome =
+      manifest.containers?.find((container) =>
+        ["PoolRuntimeBlue", "PoolRuntimeGreen"].includes(container.id),
+      ) ?? manifest.containers?.find((container) => container.id === "PoolContainer");
     if (candidateHome && schemas.homeImageDigest !== candidateHome.imageDigest) {
       const observed = /^sha256:[a-f0-9]{64}$/.test(schemas.homeImageDigest)
         ? schemas.homeImageDigest
@@ -255,6 +257,20 @@ export async function releaseWorkers(
         delete receipt.pendingContainer;
         await record();
         continue;
+      }
+      if (options.containers!.prepare) {
+        await options.containers!.prepare(container);
+        const preparedBaseline = await options.containers!.read(container);
+        if (!sameContainerState(preparedBaseline, container.baseline))
+          throw containerDrift(
+            "container-baseline-drift",
+            container.baseline,
+            {
+              ...containerSnapshot(preparedBaseline),
+              activeRolloutId: preparedBaseline.activeRolloutId,
+            },
+            container.id,
+          );
       }
       receipt.pendingContainer = { container: container.id, phase: "rollout" };
       await record();

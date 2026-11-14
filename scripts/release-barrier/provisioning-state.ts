@@ -69,7 +69,7 @@ export function stateProvisioningStore(
             candidate: record.candidate,
             manifest: record.manifest,
             complete: record.complete,
-            sealed: sealRecovery(record, key, record.candidate, record.manifest),
+            sealed: sealRecovery(record, key, record.candidate, record.manifest, "worker-modules"),
             ...(previous === undefined ? {} : { previous }),
           },
         }),

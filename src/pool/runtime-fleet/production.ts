@@ -2,8 +2,10 @@ import {
   SlotRefused,
   SlotSelection,
   sameTarget,
+  sameIdentity,
   type ControllerCode,
   type SlotTarget,
+  type PromotionIntent,
 } from "../runtime-slots/contract.ts";
 import { Schema } from "effect";
 import type { RuntimeHandoff, HandoffEnvironment } from "../runtime-slots/integration.ts";
@@ -26,6 +28,8 @@ import type { SlotIdentity } from "../runtime-slots/contract.ts";
 import type { HomePeerSource } from "../runtime-slots/peer-access.ts";
 import type { SlotStorage } from "../runtime-slots/storage.ts";
 import { slotSelectionKey } from "../runtime-slots/storage.ts";
+import { physicalPrimaryTargets } from "./physical.ts";
+import { RuntimeImageUpdate, type ImageUpdateIntent } from "./image-update.ts";
 
 export interface FleetNamespace extends FleetBinding {
   instanceId(name: string): string;
@@ -55,6 +59,7 @@ export class PoolRuntimeFleet {
   private enabled = false;
   private peers: RuntimeFleetPeers;
   private replacement: RuntimeFleetReplacement;
+  private imageUpdate: RuntimeImageUpdate;
   constructor(deps: Dependencies) {
     this.deps = deps;
     this.state = new RuntimeFleetState(deps.ctx.storage, 4, Date.now, (target, transaction) =>
@@ -80,6 +85,14 @@ export class PoolRuntimeFleet {
       },
       occupied: (storage) => this.state.inspect(storage),
       provider: deps.provider,
+      beforeCommit: (configuration, transaction) =>
+        this.imageUpdate.complete(configuration, transaction),
+    });
+    this.imageUpdate = new RuntimeImageUpdate({
+      storage: deps.ctx.storage,
+      configuration: this.configuration,
+      state: this.state,
+      provider: deps.provider,
     });
     this.replacement = new RuntimeFleetReplacement({
       storage: deps.ctx.storage,
@@ -94,6 +107,14 @@ export class PoolRuntimeFleet {
     this.peers = new RuntimeFleetPeers({
       controllerId: deps.ctx.id.toString(),
       legacy: () => deps.handoff.selected(),
+      sources: async () => {
+        const value = await deps.ctx.storage.get(slotSelectionKey);
+        if (value === undefined) return [];
+        const selection = Schema.decodeUnknownSync(SlotSelection)(value);
+        return [selection.active, selection.draining]
+          .filter((slot) => slot?.identity && !slot.retirement)
+          .map((slot) => slot!.identity!);
+      },
       rows: () => this.state.inspect(),
       endpoint: (target) =>
         target.applicationId === deps.env.POOL_CONTAINER_APPLICATION_ID &&
@@ -111,6 +132,7 @@ export class PoolRuntimeFleet {
     return value;
   }
   private async permission(target: SlotTarget, transaction: SlotStorage, launch = false) {
+    await this.imageUpdate.assertLaunch(target, transaction);
     const record = await this.configuration.inspect(undefined, transaction);
     if (!record?.enabled) throw new SlotRefused("selection");
     this.configuration.assertBindings(record.configuration);
@@ -118,8 +140,21 @@ export class PoolRuntimeFleet {
       (entry) => entry.color === record.configuration.active,
     );
     const rows = await this.state.inspect(transaction);
-    const reserved = rows.find((row) => sameTarget(row.target, target));
+    const headroom = await this.imageUpdate.headroom(transaction);
     if (
+      headroom &&
+      rows.length + (await physicalPrimaryTargets(transaction)).length >=
+        record.configuration.maximum - (launch ? 0 : 1)
+    )
+      throw new SlotRefused("draining");
+    const reserved = rows.find((row) => sameTarget(row.target, target));
+    const selected = await transaction.get(slotSelectionKey);
+    const candidate =
+      selected === undefined
+        ? undefined
+        : Schema.decodeUnknownSync(SlotSelection)(selected).candidate;
+    if (
+      candidate?.target.applicationId === target.applicationId ||
       !app ||
       app.applicationId !== target.applicationId ||
       app.applicationVersion !== target.applicationVersion ||
@@ -234,6 +269,28 @@ export class PoolRuntimeFleet {
       permission: await this.configuration.inspect(operationId),
       replacement: operationId ? await this.replacement.inspect(operationId) : undefined,
       resources: await this.state.inspect(),
+      bindings: this.deps
+        .namespaces()
+        .map(({ color, applicationId, imageInput }) => ({ color, applicationId, imageInput })),
+    };
+  }
+  async primaryTarget(operationId: string, applicationId: string): Promise<SlotTarget> {
+    const permission = await this.configuration.inspect();
+    const application = permission?.configuration.applications.find(
+      (app) => app.applicationId === applicationId,
+    );
+    const binding = this.deps.namespaces().find((value) => value.applicationId === applicationId);
+    if (!application || !binding || application.color === permission?.configuration.active)
+      throw new SlotRefused("selection");
+    return {
+      format: "pool-runtime-slot-v1",
+      controllerId: this.deps.ctx.id.toString(),
+      slotId: operationId,
+      instanceId: binding.instanceId(`primary-${operationId}`),
+      applicationId,
+      applicationVersion: application.applicationVersion,
+      imageDigest: application.imageDigest,
+      imageInput: application.imageInput,
     };
   }
   async replace(operationId: string, identity: SlotIdentity) {
@@ -241,7 +298,44 @@ export class PoolRuntimeFleet {
     await this.schedule();
     return receipt;
   }
-  async assertPrimaryChange() {
+  async stagePrimary(target: SlotTarget, transaction: SlotStorage) {
+    await this.imageUpdate.assertLaunch(target, transaction);
+    const record = await this.configuration.inspect(undefined, transaction);
+    const rows = await this.state.inspect(transaction);
+    const primaries = await physicalPrimaryTargets(transaction);
+    if (
+      target.homePeerOrdinal !== undefined ||
+      rows.some((row) => row.target.applicationId === target.applicationId) ||
+      rows.length + primaries.length >= (record?.configuration.maximum ?? 4)
+    )
+      throw new SlotRefused("selection");
+    if (record) {
+      const value = await transaction.get(slotSelectionKey);
+      const selection = Schema.decodeUnknownSync(SlotSelection)(value);
+      if (!sameIdentity(selection.active.identity, record.configuration.legacy))
+        throw new SlotRefused("selection");
+    }
+    await this.imageUpdate.consumeHeadroom(target, transaction);
+  }
+  async promotePrimary(intent: PromotionIntent, transaction: SlotStorage) {
+    if (await this.imageUpdate.inspect(undefined, transaction)) throw new SlotRefused("selection");
+    await this.configuration.promotePrimary(intent, transaction);
+    await this.state.promoteGeneration(intent.candidate, transaction);
+  }
+  async prepareImage(intent: ImageUpdateIntent) {
+    const receipt = await this.imageUpdate.prepare(intent);
+    await this.primaryHeadroom();
+    await this.schedule();
+    return receipt;
+  }
+  inspectImage(operationId: string) {
+    return this.imageUpdate.inspect(operationId);
+  }
+  cancelImage(operationId: string) {
+    return this.imageUpdate.cancel(operationId);
+  }
+  async assertPrimaryChange(action: string) {
+    if (["stage", "promote", "drain", "discard", "startup-abort"].includes(action)) return;
     if ((await this.configuration.inspect())?.enabled || (await this.state.inspect()).length)
       throw new SlotRefused("selection");
   }
@@ -281,8 +375,25 @@ export class PoolRuntimeFleet {
       .filter((at) => at !== undefined);
     if (deadlines.length) await this.deps.schedule(Math.min(...deadlines));
   }
+  private async primaryHeadroom() {
+    if (!(await this.imageUpdate.headroom())) return;
+    const permission = await this.configuration.inspect();
+    if (!permission) throw new SlotRefused("selection");
+    const rows = await this.state.inspect();
+    if (
+      rows.length + (await physicalPrimaryTargets(this.deps.ctx.storage)).length <
+        permission.configuration.maximum ||
+      rows.some((row) => ["draining", "retiring", "quarantined"].includes(row.phase))
+    )
+      return;
+    const candidate = rows
+      .filter((row) => row.phase === "ready" && row.identity)
+      .sort((left, right) => left.active - right.active || left.lastUsedAt - right.lastUsedAt)[0];
+    if (candidate?.identity) await (await this.fleet())?.drain(candidate.identity);
+  }
   async upkeep() {
     try {
+      await this.primaryHeadroom();
       const fleet = await this.fleet();
       if (!this.enabled) await this.replacement.cancel();
       await fleet?.upkeep();

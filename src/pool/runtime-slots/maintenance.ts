@@ -5,12 +5,14 @@ import type { RuntimeState } from "./runtime-state.ts";
 import type { RuntimeChannel } from "./channel.ts";
 import type { RuntimeRetirementMonitor } from "./retirement-observation.ts";
 import type { RuntimeWitnessStore, WitnessRecord } from "./witness-store.ts";
+import type { RuntimeActivity } from "./activity.ts";
 
 interface Dependencies {
   ctx: RuntimeState;
   store: RuntimeWitnessStore;
   channel: RuntimeChannel;
   monitor: RuntimeRetirementMonitor;
+  activity: RuntimeActivity;
   bound(target: SlotTarget): void;
   checked(record: WitnessRecord, status: PoolStatus): unknown;
 }
@@ -28,6 +30,7 @@ export class RuntimeMaintenance {
     this.deps.bound(target);
     const { record, configuration } = await store.read(target);
     try {
+      if (record.identity) await this.deps.activity.reconcile(record.identity);
       const health = await channel.health(configuration, AbortSignal.timeout(2_000));
       this.deps.checked(record, health);
       await channel.keepAlive();
