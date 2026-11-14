@@ -351,7 +351,7 @@ no arbitrary SQL action; this step belongs to the authorized restore procedure.
 After preparing the pinned upstream and its E2E assets, run
 `node scripts/production-ops/prove-scope.ts`. It temporarily registers a synthetic
 migration while the normal managed Cloud suite exercises signed dry-run, apply,
-verification and replay requests. Runner-only controls vary passwords and logins,
+verification and replay requests. The disposable database first proves that the local checkpoint-plus-queue reader sees an unprojected entry, then runs the registered journal activation CLI and retains its prepared/active readback in `change-journal.ndjson`. These acceptance proofs cover activated operation; the separate PostgreSQL contention control preserves the known prepared-mode account-connection failure. Ordinary startup still prepares only. Runner-only controls vary passwords and logins,
 switch the real SQL binding to another database with equivalent rows, and change
 the declared origin or release. Signed requests still use the real HTTP handler
 and SQL transactions. It restores the original registry, connection and release
