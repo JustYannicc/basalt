@@ -7,7 +7,7 @@ import { AccessLifecycle } from "../../.upstream/apps/hosted/server/src/contract
 import { poolAccessLifecycle } from "../../.upstream/apps/hosted/server/src/implementation/pool-access-hook.ts";
 import { openEnvelope } from "../../src/pool/token.ts";
 import { app, organization, postgresFixture } from "./org-lock-postgres-fixture.ts";
-import { nativeRead, owner, runtime, seed } from "./pool-membership-query-fixture.ts";
+import { nativeRead, runtime, seed } from "./pool-membership-query-fixture.ts";
 
 const key = "ab".repeat(32);
 const lifecycle = poolAccessLifecycle(
