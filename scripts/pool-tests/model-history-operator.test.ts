@@ -12,7 +12,13 @@ import {
   historyBackfillPath,
   historySchemaApplyPath,
   historySchemaCatalogPath,
+  historyJournalActivationPath,
+  historyJournalReaderVersion,
 } from "../../src/pool/model-history/operator.ts";
+import {
+  historyJournalPrepareVersion,
+  historyJournalActivateVersion,
+} from "../../src/pool/model-history/change-journal-schema.ts";
 import { loadMiniflare } from "../startup-profiler/profile.ts";
 import { readBundle } from "../worker-startup.ts";
 import { historyTrafficPath } from "../../src/pool/model-history/traffic.ts";
@@ -25,6 +31,8 @@ const expectedTables = [
   "basalt_model_traffic",
   "basalt_pool_change_heads",
   "basalt_pool_change_pending",
+  "basalt_pool_change_batches",
+  "basalt_pool_change_dirty",
   "basalt_model_import_jobs",
   "basalt_model_import_receipts",
   "basalt_model_terminal_starts",
@@ -109,6 +117,7 @@ test("the private schema operator defaults to catalog/count reads and binds writ
       const publicPool = await worker.getWorker("pool");
       for (const path of [
         historySchemaCatalogPath,
+        historyJournalActivationPath,
         historySchemaApplyPath,
         historyBackfillPath,
         historyTrafficPath,
@@ -127,6 +136,14 @@ test("the private schema operator defaults to catalog/count reads and binds writ
         await response.body?.cancel();
       }
       const operator = await worker.getWorker("operator");
+      const activation = await operator.fetch(`http://operator${historyJournalActivationPath}`);
+      assert.equal(activation.status, 200, await activation.clone().text());
+      const activationPlan = await activation.json();
+      assert.equal(activationPlan.writes, false);
+      assert.equal(activationPlan.readersReadyRequired, historyJournalReaderVersion);
+      assert.deepEqual(activationPlan.catalogDiff.conflicts, [
+        `Requires ${historyJournalPrepareVersion} before activation`,
+      ]);
       const catalog = await operator.fetch(`http://operator${historySchemaCatalogPath}`);
       assert.equal(catalog.status, 200, await catalog.clone().text());
       const preview = await catalog.json();
@@ -244,6 +261,32 @@ test("the private schema operator defaults to catalog/count reads and binds writ
     assert.equal(refreshed.applied, true);
     assert.equal(refreshed.catalogDiff.createTables.length, 0);
     assert.equal(refreshed.writes, false);
+    assert.equal(
+      (
+        await db.query("SELECT name FROM basalt_model_history_migrations WHERE name=$1", [
+          historyJournalActivateVersion,
+        ])
+      ).rows.length,
+      0,
+      "normal schema apply prepares readers without activating the queue producer",
+    );
+    const activation = await (await invoke(historyJournalActivationPath)).json();
+    const cutover = {
+      go: true,
+      schemaHash: activation.schemaHash,
+      catalogHash: activation.catalogHash,
+    };
+    assert.equal((await invoke(historyJournalActivationPath, cutover)).status, 400);
+    assert.equal(
+      (
+        await invoke(historyJournalActivationPath, {
+          ...cutover,
+          readersReady: historyJournalReaderVersion,
+        })
+      ).status,
+      200,
+    );
+    assert.equal((await (await invoke(historyJournalActivationPath)).json()).applied, true);
     assert.equal(
       (await db.query("SELECT count(*)::text AS rows FROM basalt_model_history_cursor")).rows[0]
         .rows,
