@@ -2,7 +2,7 @@ import { Schema } from "effect";
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { canonical, digest, BarrierRefusal } from "./manifest.ts";
 import type { JournalFunction } from "./migration-activation-database.ts";
 
@@ -92,13 +92,9 @@ export async function sourceContract(candidate: string, sourceRoot = root) {
       !operatorSource.includes("historyJournalActivationPath")
     )
       throw new Error();
-    const imported: unknown = await import(
-      pathToFileURL(join(root, "scripts/pool-history-operator.ts")).href
-    );
+    const imported: unknown = await import("../pool-history-operator.ts");
     if (!record(imported) || !isOperator(imported.runHistoryOperator)) throw new Error();
-    const schema: unknown = await import(
-      pathToFileURL(join(root, "src/pool/model-history/schema.ts")).href
-    );
+    const schema: unknown = await import("../../src/pool/model-history/schema.ts");
     if (!record(schema)) throw new Error();
     const prepared = Schema.decodeUnknownSync(migrations)(schema.historySchemaMigrations);
     const active = Schema.decodeUnknownSync(
