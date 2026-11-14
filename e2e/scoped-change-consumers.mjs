@@ -442,6 +442,45 @@ const program = Effect.gen(function* () {
         ]);
       const shot = async (phase) => {
         const name = `pool-${width}-${phase}.png`;
+        if (width === 390 && phase === "overview-before") {
+          const body = frame.locator("body");
+          const font = await body.evaluate((element) =>
+            element.style.getPropertyValue("--font-sans"),
+          );
+          try {
+            // System fallback fonts differ by platform; a wider face must keep every range usable.
+            await body.evaluate((element) =>
+              element.style.setProperty("--font-sans", "Verdana, sans-serif"),
+            );
+            await page.screenshot({
+              path: join(directory, "pool-390-fallback-font.png"),
+              fullPage: true,
+            });
+            assert.ok(
+              await body.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+              "Pool app at 390: fallback font has no horizontal overflow",
+            );
+            const ranges = frame.getByRole("tablist", { name: "Range", exact: true });
+            for (const tab of await ranges.getByRole("tab").all()) {
+              await tab.scrollIntoViewIfNeeded();
+              assert.ok(
+                await tab.evaluate((element) => {
+                  const rect = element.getBoundingClientRect();
+                  return rect.left >= -1 && rect.right <= innerWidth + 1;
+                }),
+                "Every range option remains reachable at 390 with the fallback font",
+              );
+            }
+            await ranges.evaluate((element) => {
+              element.scrollLeft = 0;
+            });
+          } finally {
+            await body.evaluate((element, value) => {
+              if (value) element.style.setProperty("--font-sans", value);
+              else element.style.removeProperty("--font-sans");
+            }, font);
+          }
+        }
         assert.ok(
           await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
           `Pool shell at ${width}: no horizontal overflow`,
