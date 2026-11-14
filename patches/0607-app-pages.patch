@@ -5338,7 +5338,7 @@ diff --git a/e2e/tests/app-pages.spec.ts b/e2e/tests/app-pages.spec.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/app-pages.spec.ts
-@@ -0,0 +1,438 @@
+@@ -0,0 +1,448 @@
 +/** App pages declared on `defineApp` are host tabs, read from the app's active retained build. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -5749,7 +5749,17 @@ new file mode 100644
 +              page
 +                .setViewportSize({ width, height: width === 390 ? 844 : 900 })
 +                .then(() => page.emulateMedia({ colorScheme }))
-+                .then(() => page.frameLocator(historyFrame).getByLabel("Draft").waitFor()),
++                .then(() => page.frameLocator(historyFrame).getByLabel("Draft").waitFor())
++                .then(() =>
++                  page.evaluate(() =>
++                    Promise.allSettled(
++                      document
++                        .getAnimations()
++                        .filter((animation) => animation instanceof CSSTransition)
++                        .map((animation) => animation.finished),
++                    ),
++                  ),
++                ),
 +            );
 +            expect(yield* browser.use("History remains selected", selected)).toEqual(["History"]);
 +            yield* browser.checkpoint(`History tab ${width} ${colorScheme}`);
