@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-overview-revision-cache",
   "file": "0564-pool-overview-revision-cache.patch",
-  "content_sha256": "976e7e96dea8f55b19dec3de0b638c145aa0a33dd57b63eb9c8f033b38ede0f9",
+  "content_sha256": "a710f08833dd75d510758b961348b26c469498752b26944f5c4a60ecbd85b351",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
