@@ -17,7 +17,6 @@ import {
 import { publicHistory } from "./history-query.ts";
 export { publicHistory } from "./history-query.ts";
 import type { Computer, PoolChoice } from "./ui/computer-types.ts";
-import { providerAccountView } from "./provider-account-view.ts";
 
 type Context = QueryContext<typeof requirements>;
 
@@ -28,8 +27,7 @@ export const view = query(
     input: object({ fresh: boolean().optional() }),
   },
   async (ctx: Context, { fresh }): Promise<Result<PoolView>> => {
-    const result = await control<PoolView>(ctx, fresh ? "/pool?fresh=true" : "/pool");
-    return result.ok ? { ok: true, value: await providerAccountView(ctx, result.value) } : result;
+    return control<PoolView>(ctx, fresh ? "/pool?fresh=true" : "/pool");
   },
 );
 
