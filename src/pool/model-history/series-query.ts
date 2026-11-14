@@ -81,7 +81,7 @@ export async function seriesQuery(
   const priceParameter = prices
     ? `$${values.push(JSON.stringify(officialPriceRows(prices.prices)))}`
     : undefined;
-  const aggregates = seriesAggregates(prices !== undefined);
+  const aggregates = seriesAggregates(prices !== undefined, true);
   const key = ["'currency'", "currency"];
   const redactedKey = ["'currency'", "NULL", "'account'", "saved_account"];
   for (const dimension of input.by)
