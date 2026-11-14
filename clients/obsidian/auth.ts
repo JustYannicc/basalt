@@ -1,4 +1,4 @@
-import { endpoint, json, number, object, text, type Http } from "./http.ts";
+import { endpoint, json, number, object, text, type Http, type HttpReply } from "./http.ts";
 export interface Session {
   resource: string;
   clientId: string;
@@ -245,6 +245,23 @@ export async function revokeSession(http: Http, session: Session): Promise<void>
       session.revocationEndpoint,
       form({ ...value, client_id: session.clientId }),
     );
-    if (reply.status !== 200) throw new RevocationRefused(reply.status);
+    if (reply.status !== 200 && !alreadyInvalid(reply)) throw new RevocationRefused(reply.status);
+  }
+}
+
+/**
+ * RFC 7009 §2.2 answers 200 for a token the server no longer honours, but servers before that fix
+ * answered 400 invalid_request: for the access token the refresh revocation just invalidated, and
+ * for both tokens on a retry. Without this a device could never finish disconnecting from them.
+ */
+function alreadyInvalid(reply: HttpReply) {
+  if (reply.status !== 400) return false;
+  try {
+    const body: unknown = JSON.parse(reply.body);
+    return typeof body === "object" && body !== null && "error" in body
+      ? body.error === "invalid_request"
+      : false;
+  } catch {
+    return false;
   }
 }
