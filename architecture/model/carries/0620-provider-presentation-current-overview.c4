@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.appCalls {
     metadata {
-      constraint "The provider presentation correction applies after the frozen history and accepted-reader carries. It binds the revision cache into the final app reader imports and keeps every provider reading, warm cache, revocation, logo, model limit and reset assertion on the current summary and capacity interface. Older merged carries stay immutable."
+      constraint "The provider presentation correction applies after the frozen history and accepted-reader carries. It binds the revision cache into the final app reader imports and keeps every provider reading, warm cache, revocation, logo, model limit and reset assertion on the current summary and capacity interface. Head-count instrumentation recognizes the committed-revision SQL function and the retained table fallback without changing the four-head assertion. Older merged carries stay immutable."
     }
   }
 }

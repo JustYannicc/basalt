@@ -286,3 +286,15 @@ diff --git a/e2e/tests/pool-provider-native-presentation.spec.ts b/e2e/tests/poo
        }),
      ),
    );
+diff --git a/e2e/support/provider-account-product.ts b/e2e/support/provider-account-product.ts
+--- a/e2e/support/provider-account-product.ts
++++ b/e2e/support/provider-account-product.ts
+@@ -42,7 +42,7 @@
+     parent = parent.value.parent;
+   }
+   const [text] = statement.compile();
+-  appendFileSync(measurement, JSON.stringify({ trace: span.traceId, select: /^\\s*select\\b/iu.test(text), head: /from hosted_change_heads/iu.test(text), sdk }) + "\\n");
++  appendFileSync(measurement, JSON.stringify({ trace: span.traceId, select: /^\\s*select\\b/iu.test(text), head: /hosted_change_revision\\s*\\(|from\\s+hosted_change_heads\\b/iu.test(text), sdk }) + "\\n");
+   return statement;
+ });`
+     : ""
