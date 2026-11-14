@@ -675,6 +675,12 @@ const program = Effect.gen(function* () {
     "short desktop window choices keep the approved header height",
     Effect.gen(function* () {
       yield* page(() => owner.setViewportSize({ width: 1280, height: 900 }));
+      // The host resizes before its embedded document receives the new viewport.
+      yield* page(async () => {
+        const element = await owner.locator(screenFrame).elementHandle();
+        const frame = await element.contentFrame();
+        await frame.waitForFunction(() => innerWidth > 740);
+      });
       const article = screen.getByRole("article", { name: "ChatGPT", exact: true });
       const control = article.getByRole("radiogroup", {
         name: "ChatGPT limit window",
@@ -691,6 +697,7 @@ const program = Effect.gen(function* () {
           ).size,
           switchHeight: element.getBoundingClientRect().height,
           headerHeight: element.closest("article").firstElementChild.getBoundingClientRect().height,
+          viewportWidth: innerWidth,
         })),
       );
       diagnostics.desktopCapacity = geometry;
