@@ -11,7 +11,9 @@ export class HomeOwnershipAuthorityError extends Error {
   readonly _tag = "HomeOwnershipAuthorityError";
   readonly observedRole: string | undefined;
   constructor(observedRole: string | undefined) {
-    super("Home table ownership normalization requires current_user postgres");
+    super(
+      `Home table ownership normalization refused: current_user ${JSON.stringify(observedRole ?? "unknown")} -> required "postgres"; only postgres may normalize Home trigger targets`,
+    );
     this.observedRole = observedRole;
   }
 }
@@ -20,7 +22,9 @@ export class HomeOwnershipScopeError extends Error {
   readonly _tag = "HomeOwnershipScopeError";
   readonly observedSchema: string | undefined;
   constructor(observedSchema: string | undefined) {
-    super("Home table ownership normalization requires current_schema public");
+    super(
+      `Home table ownership normalization refused: current_schema ${JSON.stringify(observedSchema ?? "unknown")} -> required "public"; Home trigger targets are limited to public`,
+    );
     this.observedSchema = observedSchema;
   }
 }
@@ -30,7 +34,9 @@ export class HomeTriggerTargetError extends Error {
   readonly relation: string;
   readonly reason: string;
   constructor(relation: string, reason: string) {
-    super(`Home trigger target "${relation}" is not a supported table`);
+    super(
+      `Home trigger target public.${JSON.stringify(relation)} -> required a supported table; ${reason}`,
+    );
     this.relation = relation;
     this.reason = reason;
   }

@@ -461,3 +461,57 @@ test("an unknown Home table owner remains typed and refuses before any ownership
   assert.equal(fake.statements.includes('SET LOCAL ROLE "basalt_pool_owner"'), false);
   assert.deepEqual(fake.events, ["connect cluster", "connect pool", "end cluster", "end pool"]);
 });
+
+test("ownership refusals retain observed authority, schema and target reasons in the release message", async () => {
+  const cases = [
+    {
+      identity: { session_role: "unexpected_role", schema_name: "public" },
+      expected: ['current_user "unexpected_role" -> required "postgres"'],
+    },
+    {
+      identity: { schema_name: "public" },
+      expected: ['current_user "unknown" -> required "postgres"'],
+    },
+    {
+      identity: { session_role: "postgres", schema_name: "unexpected_schema" },
+      expected: ['current_schema "unexpected_schema" -> required "public"'],
+    },
+    {
+      identity: { session_role: "postgres" },
+      expected: ['current_schema "unknown" -> required "public"'],
+    },
+    {
+      target: { table_name: "user", relation_kind: "v", owner_name: "postgres" },
+      expected: ['public."user"', "supported table", "relation is not a table"],
+    },
+    {
+      target: { table_name: "user", owner_name: "postgres" },
+      expected: ['public."user"', "supported table", "catalog row is malformed"],
+    },
+  ];
+  for (const refusal of cases) {
+    const fake = cluster({
+      answer: (sql) =>
+        refusal.identity !== undefined && sql.includes("current_user::text AS session_role")
+          ? { rowCount: 1, rows: [refusal.identity] }
+          : refusal.target !== undefined && sql.includes("FROM pg_catalog.pg_class AS c")
+            ? { rowCount: 1, rows: [refusal.target] }
+            : undefined,
+    });
+    await assert.rejects(
+      provisionPoolDatabase({ runtimeLogin: "pool_runtime", connect: fake.connect, ...instant }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        const reason = error.message;
+        for (const detail of refusal.expected) assert.ok(reason.includes(detail), reason);
+        return true;
+      },
+    );
+    assert.ok(fake.statements.includes("ROLLBACK"));
+    assert.equal(
+      fake.statements.some((sql) => sql.startsWith("ALTER TABLE")),
+      false,
+    );
+    assert.equal(fake.statements.includes('SET LOCAL ROLE "basalt_pool_owner"'), false);
+  }
+});
