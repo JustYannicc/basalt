@@ -260,8 +260,8 @@ index 7acfd20b6a..d6f8d17f7a 100644
 -		return resp, statusErr{code: wsResp.Status, msg: string(wsResp.Body)}
 +		return resp, statusErr{code: wsResp.Status, msg: string(wsResp.Body), providerErrorPayload: wsResp.Status >= 400 && wsResp.Status < 600}
  	}
- 	if body.action != "countTokens" {
- 		cacheAntigravityReasoningReplayFromResponse(ctx, body.replayScope, body.replayRequestPayload, wsResp.Body)
+ 	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
+ 	reporter.ObserveResponseModel(wsResp.Body)
 @@ -300,7 +300,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
  			if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, body.replayScope, firstEvent.Status, errBody.Bytes()); errClear != nil {
  				logAntigravityReasoningReplayDegraded(body.replayScope, "invalidate", errClear)
@@ -1136,7 +1136,7 @@ index f257f63099..edef7b8dfc 100644
  				break
  			}
  		}
-@@ -1272,16 +1272,17 @@ func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, b
+@@ -1272,19 +1272,20 @@ func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, b
  	if status < http.StatusBadRequest || status > 599 {
  		status = http.StatusBadGateway
  	}
@@ -1158,6 +1158,9 @@ index f257f63099..edef7b8dfc 100644
 +	streamTruncated      bool
 +	providerErrorPayload bool
 +	transientRateLimit   bool
+ 	tosViolation       bool
+ 	tosAppealURL       string
+ 	tosAppealURLText   string
  	// diagnostic is a content-free detail for logs only; it never reaches clients.
  	diagnostic string
  }
@@ -2678,7 +2681,7 @@ index 1d2f83c31d..2dd6c49923 100644
  			executionSeq := m.nextExecutionSeq()
  			resp, errExec := c.executor.Execute(creditsCtx, c.auth, execReq, creditsOpts)
 +			errExec = httptransport.ClassifySubmissionError(creditsCtx, errExec)
- 			result := Result{AuthID: c.auth.ID, Provider: c.provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: creditsOpts, CredentialVersion: c.auth.CredentialVersion, RegistrationEpoch: c.auth.RegistrationEpoch, ExecutionSeq: executionSeq}
+ 			result := Result{AuthID: c.auth.ID, Provider: c.provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: creditsOpts, AccessToken: authAccessTokenForRequest(creditsCtx, c.auth, creditsOpts.Headers), RefreshToken: authRefreshToken(c.auth), CredentialVersion: c.auth.CredentialVersion, RegistrationEpoch: c.auth.RegistrationEpoch, ExecutionSeq: executionSeq}
  			if errExec != nil {
  				result.Error = resultErrorFromError(errExec)
 diff --git a/sdk/cliproxy/executor/websocket.go b/sdk/cliproxy/executor/websocket.go
