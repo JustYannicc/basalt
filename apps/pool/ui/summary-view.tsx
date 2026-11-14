@@ -2,7 +2,7 @@ import { Button, Tabs, TabsList, TabsTrigger } from "apps/ui";
 import type { PoolView, Provider } from "../contract.ts";
 import type { PoolUsageSummaryResult } from "../usage-overview-contract.ts";
 import type { PoolApi } from "./api.ts";
-import { providerName } from "./accounts.tsx";
+import { summaryLabName } from "./summary-names.ts";
 import { CapacitySection } from "./capacity-view.tsx";
 import { capacityInputs } from "./account-view.ts";
 import { accountWindows } from "./account-limits.ts";
@@ -422,8 +422,7 @@ export function SummaryOverview({
   onHistory: (search: Record<string, string>) => void;
 }) {
   const summary = state?.summary;
-  const name = (provider: string | null) =>
-    provider === null ? "Unknown lab" : providerName(providers, provider);
+  const name = (provider: string | null) => summaryLabName(providers, provider);
   // Banked resets are counted per lab and kind, never as one pooled number. Spending stays in Accounts.
   const resets = view
     ? [...new Set(overviewAccounts(view).map((account) => account.provider))].flatMap((lab) => {
@@ -474,12 +473,12 @@ export function SummaryOverview({
         </div>
       )}
       <CapacitySection
-        result={currentCapacity(state?.capacity, view)}
+        result={view === undefined ? undefined : currentCapacity(state?.capacity, view)}
         empty={view !== undefined && overviewAccounts(view).length === 0}
         providers={providers}
         accounts={capacityInputs(overviewAccounts(view)).map(accountWindows)}
         days={state?.bounds?.days ?? (controls.range.kind === "days" ? controls.range.days : 7)}
-        coherent={state?.coherent === true}
+        coherent={view !== undefined && state?.coherent === true}
         onRetry={onRetry}
       />
       {resets.length > 0 && (

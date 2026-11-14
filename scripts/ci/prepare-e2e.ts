@@ -10,6 +10,7 @@ export function e2eCorrections(root: string) {
     "webhook-removal-recovery",
     "atlassian-fixture-preparation",
     "sso-billing-settlement",
+    "retained-pool-overview",
   ]
     .map((name) => join(root, `e2e/${name}.patch`))
     .filter(existsSync);
