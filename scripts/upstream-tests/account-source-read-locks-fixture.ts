@@ -186,6 +186,7 @@ export const sourceReadLocks = (work: (fixture: SourceFixture) => Promise<void>)
                     finished = true;
                   });
                 let result: LockResult;
+                let outcome: Awaited<typeof running>;
                 try {
                   await blockedOrDone(observer, worker, blocker, () => finished);
                   const {
@@ -199,9 +200,9 @@ export const sourceReadLocks = (work: (fixture: SourceFixture) => Promise<void>)
                   result = { blocked: lock.blocked, finishedUnderReadLock: finished, ...counts };
                 } finally {
                   await a.query("rollback");
-                  const outcome = await running;
-                  if (!outcome.ok) throw outcome.error;
+                  outcome = await running;
                 }
+                if (!outcome.ok) throw outcome.error;
                 return result;
               },
             }),
