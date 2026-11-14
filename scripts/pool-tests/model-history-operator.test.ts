@@ -12,10 +12,33 @@ import {
   historyBackfillPath,
   historySchemaApplyPath,
   historySchemaCatalogPath,
+  historyJournalActivationPath,
+  historyJournalReaderVersion,
 } from "../../src/pool/model-history/operator.ts";
+import {
+  historyJournalPrepareVersion,
+  historyJournalActivateVersion,
+} from "../../src/pool/model-history/change-journal-schema.ts";
 import { loadMiniflare } from "../startup-profiler/profile.ts";
 import { readBundle } from "../worker-startup.ts";
 import { historyTrafficPath } from "../../src/pool/model-history/traffic.ts";
+
+const expectedTables = [
+  "basalt_model_history_migrations",
+  "basalt_model_requests",
+  ...Array.from({ length: 16 }, (_, part) => `basalt_model_requests_${part}`),
+  "basalt_model_history_cursor",
+  "basalt_model_traffic",
+  "basalt_pool_change_heads",
+  "basalt_pool_change_pending",
+  "basalt_pool_change_batches",
+  "basalt_pool_change_dirty",
+  "basalt_model_import_jobs",
+  "basalt_model_import_receipts",
+  "basalt_model_terminal_starts",
+  "basalt_model_terminal_finishes",
+  "basalt_model_import_completion",
+].sort();
 
 const adminUrl = process.env.POOL_TEST_ADMIN_URL;
 if (!adminUrl || !["localhost", "127.0.0.1"].includes(new URL(adminUrl).hostname))
@@ -94,6 +117,7 @@ test("the private schema operator defaults to catalog/count reads and binds writ
       const publicPool = await worker.getWorker("pool");
       for (const path of [
         historySchemaCatalogPath,
+        historyJournalActivationPath,
         historySchemaApplyPath,
         historyBackfillPath,
         historyTrafficPath,
@@ -112,13 +136,21 @@ test("the private schema operator defaults to catalog/count reads and binds writ
         await response.body?.cancel();
       }
       const operator = await worker.getWorker("operator");
+      const activation = await operator.fetch(`http://operator${historyJournalActivationPath}`);
+      assert.equal(activation.status, 200, await activation.clone().text());
+      const activationPlan = await activation.json();
+      assert.equal(activationPlan.writes, false);
+      assert.equal(activationPlan.readersReadyRequired, historyJournalReaderVersion);
+      assert.deepEqual(activationPlan.catalogDiff.conflicts, [
+        `Requires ${historyJournalPrepareVersion} before activation`,
+      ]);
       const catalog = await operator.fetch(`http://operator${historySchemaCatalogPath}`);
       assert.equal(catalog.status, 200, await catalog.clone().text());
       const preview = await catalog.json();
       assert.equal(preview.writes, false);
       assert.equal(preview.history.rows, "2");
       assert.equal(preview.history.privacyReady, true);
-      assert.equal(preview.catalogDiff.createTables.length, 25);
+      assert.deepEqual([...preview.catalogDiff.createTables].sort(), expectedTables);
       const backfill = await operator.fetch(`http://operator${historyBackfillPath}`);
       assert.equal(backfill.status, 200, await backfill.clone().text());
       assert.equal((await backfill.json()).writes, false);
@@ -153,6 +185,37 @@ test("the private schema operator defaults to catalog/count reads and binds writ
         ),
         url.toString(),
       );
+    await db.query('CREATE TABLE "user" (id text)');
+    const rejectedCatalog = await invoke(historySchemaCatalogPath);
+    const rejectedPlan = await rejectedCatalog.json();
+    const errors: unknown[][] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+    try {
+      const rejected = await invoke(historySchemaApplyPath, {
+        go: true,
+        schemaHash: rejectedPlan.schemaHash,
+        catalogHash: rejectedPlan.catalogHash,
+      });
+      assert.equal(rejected.status, 503);
+      assert.equal(await rejected.text(), "");
+      assert.deepEqual(errors, [
+        [
+          "Model history schema apply failed",
+          { type: "PostgresError", code: "42501", resource: { kind: "table", name: "user" } },
+        ],
+      ]);
+      assert.equal(
+        (await db.query("SELECT to_regclass('basalt_model_requests') AS name")).rows[0].name,
+        null,
+        "failed apply rolls back its schema",
+      );
+    } finally {
+      console.error = originalError;
+      await db.query('DROP TABLE "user"');
+    }
     const dry = await invoke(historySchemaCatalogPath);
     assert.equal(dry.status, 200, await dry.clone().text());
     const plan = (await dry.json()) as {
@@ -168,7 +231,7 @@ test("the private schema operator defaults to catalog/count reads and binds writ
     assert.equal(plan.history.rows, "2");
     assert.equal(plan.history.privacyReady, true);
     assert.equal(plan.ledgerRows, "0");
-    assert.equal(plan.catalogDiff.createTables.length, 25);
+    assert.deepEqual([...plan.catalogDiff.createTables].sort(), expectedTables);
     assert.equal(
       (await db.query("SELECT to_regclass('basalt_model_requests') AS name")).rows[0].name,
       null,
@@ -198,6 +261,32 @@ test("the private schema operator defaults to catalog/count reads and binds writ
     assert.equal(refreshed.applied, true);
     assert.equal(refreshed.catalogDiff.createTables.length, 0);
     assert.equal(refreshed.writes, false);
+    assert.equal(
+      (
+        await db.query("SELECT name FROM basalt_model_history_migrations WHERE name=$1", [
+          historyJournalActivateVersion,
+        ])
+      ).rows.length,
+      0,
+      "normal schema apply prepares readers without activating the queue producer",
+    );
+    const activation = await (await invoke(historyJournalActivationPath)).json();
+    const cutover = {
+      go: true,
+      schemaHash: activation.schemaHash,
+      catalogHash: activation.catalogHash,
+    };
+    assert.equal((await invoke(historyJournalActivationPath, cutover)).status, 400);
+    assert.equal(
+      (
+        await invoke(historyJournalActivationPath, {
+          ...cutover,
+          readersReady: historyJournalReaderVersion,
+        })
+      ).status,
+      200,
+    );
+    assert.equal((await (await invoke(historyJournalActivationPath)).json()).applied, true);
     assert.equal(
       (await db.query("SELECT count(*)::text AS rows FROM basalt_model_history_cursor")).rows[0]
         .rows,

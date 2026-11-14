@@ -1,5 +1,5 @@
 import { Button } from "apps/ui";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { PoolView } from "../contract.ts";
 import type { PoolApi } from "./api.ts";
 import { poolOrigin } from "../deployment.ts";
@@ -55,6 +55,7 @@ export function App({
     return (
       <div className="mx-auto w-full max-w-[56rem] px-6 max-[540px]:px-4">
         <History
+          changes={api.changes}
           series={api.series}
           publicHistory={publicHistory}
           providers={view?.providers ?? []}
@@ -78,6 +79,8 @@ function Overview({
   reload: () => Promise<unknown>;
 }) {
   const now = useNow();
+  const changes = api.changes();
+  const stream = useSyncExternalStore(changes.onStatus, changes.status);
   const [range, setRange] = useState<RangeChoice>({ kind: "days", days: 7 });
   const [by, setBy] = useState<Breakdown>("provider");
   const [metric, setMetric] = useState<Metric>("cost");
@@ -90,9 +93,13 @@ function Overview({
         <div className="flex justify-end pt-3">
           <Freshness
             view={view}
-            updating={updating}
+            updating={updating || usage.updating}
             now={now}
             onRetry={error ? undefined : () => void reload()}
+            paused={stream === "paused"}
+            onReconnect={changes.reconnect}
+            stale={usage.failed}
+            onStaleRetry={() => void usage.reload()}
           />
         </div>
       )}

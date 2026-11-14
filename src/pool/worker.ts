@@ -3,6 +3,12 @@ import { historyImportCompletionPath } from "./model-history/import-completion-c
 import { reportWhenDue } from "./reporting.ts";
 import { UsageAccountLabels } from "./usage-account-labels.ts";
 import { handleUsageAccountLabel, usageAccountLabelPath } from "./usage-account-label-http.ts";
+import { PoolChanges, publishPoolChanges } from "./change-revisions.ts";
+import { poolChangesPath, readCommittedPoolChanges } from "./change-http.ts";
+import {
+  readPoolHistorySnapshot,
+  deliverPoolHistoryChanges,
+} from "./model-history/change-revisions.ts";
 import { creditRoutingPaths, handleCreditRouting } from "./credit-routing-http.ts";
 export { PoolRuntime } from "./runtime-do.worker.ts";
 import type { PoolRuntime } from "./runtime-do.worker.ts";
@@ -44,7 +50,7 @@ import { PlanAllowances } from "./allowances/registry.ts";
 import { managedCapPath, managedUsagePath, PoolUsage, summaryPath } from "./pool-usage.ts";
 import { timePoolRead } from "./read-timing.ts";
 import { inventoryCron, reportPoolInventory } from "./inventory.ts";
-import { probePool } from "./availability.ts";
+import { probePool, type ProbeRuntimeIdentity } from "./availability.ts";
 import { availabilityCron, validProbeTarget } from "./availability-config.ts";
 import { availabilityRuntime } from "./availability-runtime.ts";
 import { runAvailabilityProbe } from "./availability-schedule.ts";
@@ -68,6 +74,7 @@ import {
   historyBackfillPath,
   historySchemaApplyPath,
   historySchemaCatalogPath,
+  historyJournalActivationPath,
 } from "./model-history/operator.ts";
 import { handleUsageImport, modelImportPath } from "./model-history/import-http.ts";
 import { handleOwnerUsageImport, ownerModelImportPath } from "./model-history/import-owner-http.ts";
@@ -142,10 +149,17 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private protection: RuntimeProtection;
   private importRemoval: ImportRemoval;
   private recovery: RuntimeRecovery;
+  private changes: PoolChanges;
 
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
     super(ctx, env);
     this.usageAccountLabels = new UsageAccountLabels(ctx.storage);
+    this.changes = new PoolChanges(
+      ctx.storage,
+      (changes) => publishPoolChanges(env.TOOLS_SERVICE, env.POOL_APP_SIGNING_KEY, changes),
+      () =>
+        ctx.waitUntil(this.changes.deliver().catch(() => console.error("POOL_CHANGES_PENDING"))),
+    );
     this.handoff = new RuntimeHandoff(
       ctx,
       env,
@@ -231,7 +245,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       });
     };
     this.mirrorHome = new HomeClient(home, Date.now, () => this.control.invalidateViews());
-    this.overviewPrices = new OverviewPrices(this.mirrorHome, ctx.storage);
+    this.overviewPrices = new OverviewPrices(this.mirrorHome, this.changes.storage);
     this.control = new PoolControl(ctx.storage, {
       nativeMembership: (pool, organization) =>
         readNativeMembership(env.TOOLS_SERVICE, env.POOL_APP_SIGNING_KEY, pool, organization),
@@ -249,7 +263,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     this.allowances = new PlanAllowances(ctx.storage);
     this.usage = new PoolUsage({
       allowances: this.allowances,
-      storage: ctx.storage,
+      storage: this.changes.storage,
       client: new HomeClient(home, Date.now, () => this.control.invalidateViews()),
       signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
@@ -373,8 +387,22 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     return this.managementWarming;
   }
 
-  async availabilityProbe(pool: string) {
+  async availabilityProbe(pool: string, includeRuntime = false) {
     const selected = await this.handoff.selected();
+    const identity: ProbeRuntimeIdentity = {
+      source: selected ? "selected" : "legacy",
+      running: selected ? null : (this.ctx.container?.running ?? false),
+      applicationVersion: selected?.applicationVersion ?? null,
+      bootId: null,
+      expectedBootId: selected?.bootId ?? null,
+      imageInput: selected?.imageInput ?? this.env.POOL_IMAGE_HASH,
+    };
+    const observed = (status: { boot_id: string }) => {
+      identity.bootId = status.boot_id;
+      identity.running = true;
+    };
+    const complete = (result: Awaited<ReturnType<typeof probePool>>) =>
+      includeRuntime ? { ...result, runtime: identity } : result;
     if (selected) {
       const runtime = availabilityRuntime(
         {
@@ -388,21 +416,27 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         },
         this.env.POOL_MANAGEMENT_KEY,
         this.env.POOL_APP_SIGNING_KEY,
+        observed,
       );
-      return probePool(pool, {
-        ...runtime,
-        native: (policy, signal) => this.handoff.probeNative(policy, signal),
-        membership: (target) => this.memberships.inspect(target),
-      });
+      return complete(
+        await probePool(pool, {
+          ...runtime,
+          native: (policy, signal) => this.handoff.probeNative(policy, signal),
+          membership: (target) => this.memberships.inspect(target),
+        }),
+      );
     }
-    return probePool(pool, {
-      ...availabilityRuntime(
-        this.ctx.container,
-        this.env.POOL_MANAGEMENT_KEY,
-        this.env.POOL_APP_SIGNING_KEY,
-      ),
-      membership: (target) => this.memberships.inspect(target),
-    });
+    return complete(
+      await probePool(pool, {
+        ...availabilityRuntime(
+          this.ctx.container,
+          this.env.POOL_MANAGEMENT_KEY,
+          this.env.POOL_APP_SIGNING_KEY,
+          observed,
+        ),
+        membership: (target) => this.memberships.inspect(target),
+      }),
+    );
   }
 
   private async automaticRecoveryCondition(pool: string) {
@@ -427,6 +461,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async alarm() {
+    await this.changes.deliver().catch(() => console.error("POOL_CHANGES_PENDING"));
     await this.appModels.tick().catch(() => console.error("POOL_APP_MODEL_KEY_CLEANUP_PENDING"));
     await this.memberships.tick();
     await this.computers.expire();
@@ -453,6 +488,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, async (db) => {
             const result = await captureHomeRequests(db);
             progress.rows = result.state === "active" ? result.scanned : 0;
+            await deliverPoolHistoryChanges(db, result.pending, (changes) =>
+              publishPoolChanges(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY, changes),
+            );
           }),
         );
       } catch {
@@ -501,6 +539,21 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   async fetch(request: Request): Promise<Response> {
     const pathname = new URL(request.url).pathname;
+    if (pathname === poolChangesPath)
+      return readCommittedPoolChanges(request, {
+        signingKey: this.env.POOL_APP_SIGNING_KEY,
+        previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+        current: async (pool) => {
+          const snapshot = await withHistoryDatabase(
+            this.env.POOL_AUTH_DATABASE?.connectionString,
+            (db) => readPoolHistorySnapshot(db, pool),
+          );
+          return {
+            revisions: [...(await this.changes.current(pool)), ...snapshot.revisions],
+            ...(snapshot.deadline ? { validUntil: Date.parse(snapshot.deadline) } : {}),
+          };
+        },
+      });
     try {
       await requireActivePoolOrganization(request, {
         signingKey: this.env.POOL_APP_SIGNING_KEY,
@@ -798,6 +851,7 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
     if (
       [
         historySchemaCatalogPath,
+        historyJournalActivationPath,
         historySchemaApplyPath,
         historyBackfillPath,
         historyTrafficPath,
@@ -841,7 +895,7 @@ export default {
     if (event.cron === availabilityCron) {
       await runAvailabilityProbe(
         env,
-        (pool) => singleton(env).availabilityProbe(pool),
+        (pool) => singleton(env).availabilityProbe(pool, true),
         (pool) => {
           if (env.POOL_MODEL_HISTORY_ENABLED !== "true")
             throw new Error("Model request history is disabled");
@@ -849,6 +903,7 @@ export default {
             readPoolReliabilitySlo(db, pool),
           );
         },
+        productionOpsRelease,
       );
       return;
     }

@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { ChangeReadRetry, type ChangeWatch } from "apps/client";
 import type { PoolApi } from "./api.ts";
 import { Button, Problem } from "./controls.tsx";
 import { ImportSession, type ImportProgress } from "./import-session.ts";
@@ -35,7 +36,7 @@ export function ImportBoundary({
   const [hash, setHash] = useState(() => location.hash);
   const [manager, setManager] = useState<boolean>();
   const [accessError, setAccessError] = useState<string>();
-  const [retryAccess, setRetryAccess] = useState<() => void>(() => () => {});
+  const accessReaders = useRef(new Set<() => void>());
   const previousHash = useRef("");
   const [previous] = useState(() => {
     try {
@@ -46,10 +47,32 @@ export function ImportBoundary({
   });
   // The existing usage read checks current management access; isOwner only names the original owner.
   const observedApi = useMemo(() => {
+    const feed = api.changes();
+    const changes: PoolApi["changes"] = () => ({
+      ...feed,
+      watch(options) {
+        const current = feed.watch(options);
+        accessReaders.current.add(current.request);
+        const observed: ChangeWatch = {
+          ...current,
+          async read(work, publish) {
+            try {
+              return await current.read(work, publish);
+            } catch (error) {
+              if (error instanceof ChangeReadRetry && error.reason !== "hidden")
+                setAccessError("Pool access could not be checked. Try again.");
+              throw error;
+            }
+          },
+          stop() {
+            accessReaders.current.delete(current.request);
+            current.stop();
+          },
+        };
+        return observed;
+      },
+    });
     const summary: PoolApi["summary"] = async (input) => {
-      setRetryAccess(() => () => {
-        void summary(input);
-      });
       const result = await api.summary(input);
       if (result.ok) {
         setManager(true);
@@ -60,8 +83,12 @@ export function ImportBoundary({
       } else setAccessError(result.message);
       return result;
     };
-    return { ...api, summary };
+    return { ...api, changes, summary };
   }, [api, session]);
+  const retryAccess = () => {
+    api.changes().reconnect();
+    for (const request of accessReaders.current) request();
+  };
   useEffect(() => {
     const navigate = () =>
       setHash((prior) => {

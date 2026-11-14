@@ -1,3 +1,4 @@
+import { UnexpectedHomeTableOwner } from "./pool-database-ownership.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -45,6 +46,9 @@ function cluster(
         if (answer === "hang") return new Promise(() => {});
         if (answer instanceof Error) throw answer;
         if (answer) return answer;
+        if (sql.includes("current_user::text AS session_role"))
+          return { rowCount: 1, rows: [{ session_role: "postgres", schema_name: "public" }] };
+        if (sql.includes("FROM pg_catalog.pg_class AS c")) return { rowCount: 0, rows: [] };
         if (sql.includes("FROM pg_roles WHERE rolname") && sql.includes("rolsuper"))
           return { rowCount: 1, rows: [{ rolcanlogin: false, rolsuper: false }] };
         if (sql.includes("FROM pg_database"))
@@ -81,6 +85,13 @@ test("provisioning on an existing cluster runs the same idempotent statements in
     ...sessionLimits,
     "REVOKE ALL ON SCHEMA public FROM PUBLIC",
     'GRANT ALL ON SCHEMA public TO "basalt_pool_owner"',
+    "BEGIN",
+    "SET LOCAL lock_timeout = '500ms'",
+    "SET LOCAL statement_timeout = '5s'",
+    "SELECT pg_advisory_xact_lock(1409, 20)",
+    "SELECT current_user::text AS session_role, current_schema()::text AS schema_name",
+    fake.statements.find((sql) => sql.includes("FROM pg_catalog.pg_class AS c"))!,
+    "COMMIT",
     "BEGIN",
     'SET LOCAL ROLE "basalt_pool_owner"',
     "SET LOCAL lock_timeout = '500ms'",
@@ -307,7 +318,7 @@ for (const code of ["42501", "55P03", "57014"]) {
   test(`history migration ${code} aborts release with a safe step and SQLSTATE`, async () => {
     const fake = cluster({
       answer: (sql) =>
-        sql === "SELECT pg_advisory_xact_lock(1409, 20)" ? postgresError(code) : undefined,
+        sql === 'SET LOCAL ROLE "basalt_pool_owner"' ? postgresError(code) : undefined,
     });
     const logs: string[] = [];
     await assert.rejects(
@@ -329,20 +340,21 @@ for (const code of ["42501", "55P03", "57014"]) {
     assert.equal(fake.events.filter((event) => event === "end pool").length, attempts);
     assert.equal(logs.length, attempts - 1);
     for (const line of logs) assert.doesNotMatch(line, /cluster\.example|fixture-secret|admin@/);
-    assert.ok(!fake.statements.includes("COMMIT"));
+    assert.equal(fake.statements.filter((sql) => sql === "COMMIT").length, attempts);
+    assert.equal(fake.statements.at(-1), "ROLLBACK");
   });
 }
 
 test("history migration retries roll back and reopen both sessions before completing", async () => {
   const fake = cluster({
     answer: (sql, attempt) =>
-      sql === "SELECT pg_advisory_xact_lock(1409, 20)" && attempt === 1
+      sql === 'SET LOCAL ROLE "basalt_pool_owner"' && attempt === 1
         ? postgresError("55P03")
         : undefined,
   });
   await provisionPoolDatabase({ runtimeLogin: "pool_runtime", connect: fake.connect, ...instant });
   assert.equal(fake.statements.filter((sql) => sql === "ROLLBACK").length, 1);
-  assert.equal(fake.statements.filter((sql) => sql === "COMMIT").length, 1);
+  assert.equal(fake.statements.filter((sql) => sql === "COMMIT").length, 3);
   assert.deepEqual(fake.events, [
     "connect cluster",
     "connect pool",
@@ -358,7 +370,7 @@ test("history migration retries roll back and reopen both sessions before comple
 test("a failed history migration stops the release before any Worker activation", async () => {
   const fake = cluster({
     answer: (sql) =>
-      sql === "SELECT pg_advisory_xact_lock(1409, 20)" ? postgresError("42501") : undefined,
+      sql === 'SET LOCAL ROLE "basalt_pool_owner"' ? postgresError("42501") : undefined,
   });
   const activations: string[] = [];
   let uploads = 0;
@@ -413,4 +425,93 @@ test("a failed history migration stops the release before any Worker activation"
   assert.equal(uploads, 1);
   assert.deepEqual(activations, []);
   assert.ok(fake.statements.includes("ROLLBACK"));
+});
+
+test("an unknown Home table owner remains typed and refuses before any ownership or trigger write", async () => {
+  const fake = cluster({
+    answer: (sql) =>
+      sql.includes("FROM pg_catalog.pg_class AS c")
+        ? {
+            rowCount: 2,
+            rows: [
+              { table_name: "api_key", relation_kind: "r", owner_name: "postgres" },
+              { table_name: "user", relation_kind: "r", owner_name: "unrecognized_owner" },
+            ],
+          }
+        : undefined,
+  });
+  await assert.rejects(
+    provisionPoolDatabase({ runtimeLogin: "pool_runtime", connect: fake.connect, ...instant }),
+    (error) =>
+      error instanceof UnexpectedHomeTableOwner &&
+      error._tag === "UnexpectedHomeTableOwner" &&
+      error.table === "user" &&
+      error.owner === "unrecognized_owner" &&
+      error.message.includes('"user"') &&
+      error.message.includes('"unrecognized_owner"'),
+  );
+  assert.equal(
+    fake.statements.some((sql) => sql.startsWith("ALTER TABLE")),
+    false,
+  );
+  assert.equal(
+    fake.statements.some((sql) => sql.includes("CREATE OR REPLACE TRIGGER")),
+    false,
+  );
+  assert.equal(fake.statements.includes('SET LOCAL ROLE "basalt_pool_owner"'), false);
+  assert.deepEqual(fake.events, ["connect cluster", "connect pool", "end cluster", "end pool"]);
+});
+
+test("ownership refusals retain observed authority, schema and target reasons in the release message", async () => {
+  const cases = [
+    {
+      identity: { session_role: "unexpected_role", schema_name: "public" },
+      expected: ['current_user "unexpected_role" -> required "postgres"'],
+    },
+    {
+      identity: { schema_name: "public" },
+      expected: ['current_user "unknown" -> required "postgres"'],
+    },
+    {
+      identity: { session_role: "postgres", schema_name: "unexpected_schema" },
+      expected: ['current_schema "unexpected_schema" -> required "public"'],
+    },
+    {
+      identity: { session_role: "postgres" },
+      expected: ['current_schema "unknown" -> required "public"'],
+    },
+    {
+      target: { table_name: "user", relation_kind: "v", owner_name: "postgres" },
+      expected: ['public."user"', "supported table", "relation is not a table"],
+    },
+    {
+      target: { table_name: "user", owner_name: "postgres" },
+      expected: ['public."user"', "supported table", "catalog row is malformed"],
+    },
+  ];
+  for (const refusal of cases) {
+    const fake = cluster({
+      answer: (sql) =>
+        refusal.identity !== undefined && sql.includes("current_user::text AS session_role")
+          ? { rowCount: 1, rows: [refusal.identity] }
+          : refusal.target !== undefined && sql.includes("FROM pg_catalog.pg_class AS c")
+            ? { rowCount: 1, rows: [refusal.target] }
+            : undefined,
+    });
+    await assert.rejects(
+      provisionPoolDatabase({ runtimeLogin: "pool_runtime", connect: fake.connect, ...instant }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        const reason = error.message;
+        for (const detail of refusal.expected) assert.ok(reason.includes(detail), reason);
+        return true;
+      },
+    );
+    assert.ok(fake.statements.includes("ROLLBACK"));
+    assert.equal(
+      fake.statements.some((sql) => sql.startsWith("ALTER TABLE")),
+      false,
+    );
+    assert.equal(fake.statements.includes('SET LOCAL ROLE "basalt_pool_owner"'), false);
+  }
 });

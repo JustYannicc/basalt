@@ -4,6 +4,8 @@ How Executor updates and carried patches land, how database changes ship, and wh
 
 ## Carried patches
 
+- `0613-accepted-read-page-app-assets.patch` supersedes retired `0602-accepted-read-combined-app-assets.patch`. Do not replay 0602. The normal pinned generator produces 0613 from the combined revision client and declared-page navigation after 0612; frozen 0607 stays unchanged.
+
 - `0001-optional-cloud-vendors.patch`: absent optional vendors do not require accounts or make external calls. This manual Basalt overlay stays carried while [executor#2378](https://github.com/UsefulSoftwareCo/executor/issues/2378) asks whether third-party Cloud deployments are in scope. [PR #2348](https://github.com/UsefulSoftwareCo/executor/pull/2348) closed pending an explicit scope decision.
 - `0002-cloud-deployment.patch`: exports the upstream deployment composition, accepts Actions-supplied MCP signing keys, leaves the public domain to the router and configures native mail senders.
 - `0003-eu-durable-objects.patch`: constrains Basalt namespace bindings before native and Effect adapters capture them. Other stacks keep their existing bindings. R2 jurisdiction is set in the deployment patch. This manual Basalt EU-deployment overlay retains [issue #2364](https://github.com/UsefulSoftwareCo/executor/issues/2364) as provenance. That issue closed as not planned, pointing to the existing jurisdiction seam in [PR #2303](https://github.com/UsefulSoftwareCo/executor/pull/2303). The carry remains manual.
@@ -100,6 +102,14 @@ Before backup, the read-only runner probe compares every production Worker’s d
 A failed release retains its barrier receipts and stops for recorded recovery or an explicit rollback decision. For a database-changing release, dispatch `Manual production rollback` on `main` with `release_sha` set to the exact latest database-changing release, including one whose deployment succeeded before a problem was found. Read its recorded rollback target first. After a roll-forward, use `rollbackBackup.name` from the production deployment payload; otherwise use `backupName`. Restore that exact backup, then dispatch with `restored_backup` set to its name. The plan fails unless the name matches the recorded recovery point. The rollback job has no approval step and refuses to deploy across a Workflow identity change while any Workflow instance is unfinished. The trusted runner validates the deployment and baseline, rebuilds that baseline's pins, deploys them through the barrier, and requires its public smoke check before recording success. Database restore remains manual in v1; a code revert alone does not reverse migrations. Never destroy production as a rollback operation. Losing state metadata remains recoverable through adoption; losing its encryption key remains the documented recovery limitation.
 
 The simulated release and broken-patch checks verify update mechanics without cloud credentials. Live preview, automatic release merge, database restore and provider teardown acceptance remain pending until the required accounts and dedicated subscription secrets are configured.
+
+### Activate prepared change journals
+
+Release the candidate normally first, with both the reader-ready journal code and activation client included. In **Manual release of main**, select `main`, set `candidate` to that exact successful production SHA and set `migration_activation` to `plan`. This path keeps the deployment lock and checks the release hold, but does not redeploy. Retain `migration-activation.json` and review its digest, routing and reader-adoption evidence, app inventory hash and prepared hosted 21/model-history v9 state.
+
+With approval for that exact plan, dispatch the same workflow and candidate with `migration_activation` set to its 64-character digest. Changed evidence or either target already being active refuses a fresh plan. The existing hosted CLI and pool operator activate hosted 22 and model-history v10 once, with a durable encrypted intent recorded first.
+
+For a lost reply or pending result, dispatch the same candidate with `migration_activation=inspect`. Inspection is read-only and never resends a command or clears the pending journal. A pending journal blocks ordinary releases. If inspection proves both targets active, an explicitly authorized dispatch of the original digest may record completion without sending again. Any other partial or unknown outcome needs a recovery decision; do not retry activation or roll back automatically. Verify the released product separately before calling the cutover accepted.
 
 ### Retire unused pool transport tokens
 

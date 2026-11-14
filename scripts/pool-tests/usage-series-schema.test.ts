@@ -15,6 +15,7 @@ import {
   historyAccountTimeSchemaVersion,
   historyTrafficStatements,
   historyTrafficSchemaVersion,
+  historyChangeSchemaVersion,
   historyTerminalIntegrityStatements,
   historyTerminalIntegrityVersion,
   historyAppSchemaVersion,
@@ -211,9 +212,11 @@ test("schema v2 upgrades apply selected v3, v4, v6, v7 and v8 migrations without
         historyAppSchemaVersion,
         historyAccountTimeSchemaVersion,
         historyTrafficSchemaVersion,
+        historyChangeSchemaVersion,
         historyBulkSchemaVersion,
         historyTerminalIntegrityVersion,
         historyImportCompletionVersion,
+        historySchemaVersion,
       ],
     );
     assert.equal(await appAttributionReady(db), true);
@@ -418,9 +421,11 @@ test("a retained v4 database applies v6 after v8 and preserves imported rows and
         historyAppSchemaVersion,
         historyAccountTimeSchemaVersion,
         historyTrafficSchemaVersion,
+        historyChangeSchemaVersion,
         historyBulkSchemaVersion,
         historyTerminalIntegrityVersion,
         historyImportCompletionVersion,
+        historySchemaVersion,
       ],
     );
     assert.deepEqual(

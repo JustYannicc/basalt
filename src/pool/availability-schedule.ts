@@ -8,6 +8,7 @@ export async function runAvailabilityProbe(
   env: SentryEnv & { POOL_AVAILABILITY_TARGET?: string },
   probe: (pool: string) => Promise<ProbeResult>,
   reliability?: (pool: string) => Promise<PoolReliabilitySlo>,
+  release?: string,
 ): Promise<void> {
   if (env.POOL_AVAILABILITY_TARGET === undefined || env.POOL_AVAILABILITY_TARGET === "") return;
   const receipt = await startPoolMonitor(env);
@@ -38,6 +39,6 @@ export async function runAvailabilityProbe(
     result = { ok: false, failures: [{ guard: "runtime", reason: "unavailable" }] };
   }
   if (!result.ok) console.error("POOL_AVAILABILITY_FAILURE", result.failures);
-  if (!(await capturePoolMonitor(env, receipt, result)))
+  if (!(await capturePoolMonitor(env, receipt, { ...result, release })))
     throw new Error("Pool availability alert delivery failed");
 }

@@ -4,6 +4,13 @@ import {
 } from "./import-completion-schema.ts";
 import { poolDatabase } from "../database-settings.ts";
 import { historyBulkSchemaVersion, historyBulkStatements } from "./bulk-schema.ts";
+import { historyChangeStatements } from "./change-schema.ts";
+import {
+  historyJournalPrepareVersion,
+  historyJournalPrepareStatements,
+  historyJournalActivateVersion,
+  historyJournalActivateStatements,
+} from "./change-journal-schema.ts";
 
 export interface HistoryDatabase {
   query(
@@ -16,8 +23,9 @@ export const historyBaseSchemaVersion = "model_request_history_v1";
 export const historyAppSchemaVersion = "model_request_history_v2_app_attribution";
 export const historyAccountTimeSchemaVersion = "model_request_history_v3_account_time";
 export const historyTrafficSchemaVersion = "model_request_history_v4_traffic_purpose";
-export const historySchemaVersion = historyImportCompletionVersion;
+export const historySchemaVersion = historyJournalPrepareVersion;
 export const historyTerminalIntegrityVersion = "model_request_history_v7_terminal_integrity";
+export const historyChangeSchemaVersion = "model_request_history_v5_change_revisions";
 
 /** Catalog-only preview. The same query works before any history table exists. */
 export async function planModelHistorySchema(db: HistoryDatabase) {
@@ -162,10 +170,16 @@ export const historySchemaMigrations = [
   { name: historyAppSchemaVersion, statements: historyAppAttributionStatements },
   { name: historyAccountTimeSchemaVersion, statements: historyAccountTimeStatements },
   { name: historyTrafficSchemaVersion, statements: historyTrafficStatements },
+  { name: historyChangeSchemaVersion, statements: historyChangeStatements },
   { name: historyBulkSchemaVersion, statements: historyBulkStatements },
   { name: historyTerminalIntegrityVersion, statements: historyTerminalIntegrityStatements },
   { name: historyImportCompletionVersion, statements: historyImportCompletionStatements },
+  { name: historyJournalPrepareVersion, statements: historyJournalPrepareStatements },
 ];
+export const historyJournalActivationMigration = {
+  name: historyJournalActivateVersion,
+  statements: historyJournalActivateStatements,
+};
 /** Existing collectors keep working while the additive app migration awaits its approved apply. */
 export async function appAttributionReady(db: HistoryDatabase): Promise<boolean> {
   const result = await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name = $1", [
@@ -176,15 +190,35 @@ export async function appAttributionReady(db: HistoryDatabase): Promise<boolean>
 
 /** Additive, separate from Home's numbered migrations. Never reads or copies historical payloads. */
 export async function migrateModelHistory(db: HistoryDatabase): Promise<void> {
+  return migrateHistory(db, historySchemaMigrations);
+}
+
+/** Explicit activation cannot prepare and switch a retained database in one operation. */
+export async function activateModelHistoryJournal(db: HistoryDatabase): Promise<void> {
+  return migrateHistory(db, [historyJournalActivationMigration], true);
+}
+
+async function migrateHistory(
+  db: HistoryDatabase,
+  migrations: readonly { readonly name: string; readonly statements: readonly string[] }[],
+  activation = false,
+): Promise<void> {
   await db.query("BEGIN");
   try {
     await db.query(`SET LOCAL ROLE "${poolDatabase.owner}"`);
     await db.query("SET LOCAL lock_timeout = '500ms'");
     await db.query("SET LOCAL statement_timeout = '5s'");
     await db.query("SELECT pg_advisory_xact_lock(1409, 20)");
+    if (activation) {
+      const ready = await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name=$1", [
+        historyJournalPrepareVersion,
+      ]);
+      if (ready.rows.length !== 1)
+        throw new Error("Prepare the model history change journal before activation");
+    }
     await db.query(`CREATE TABLE IF NOT EXISTS basalt_model_history_migrations (
       name text PRIMARY KEY, completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`);
-    for (const migration of historySchemaMigrations) {
+    for (const migration of migrations) {
       const applied = await db.query(
         "SELECT 1 FROM basalt_model_history_migrations WHERE name = $1",
         [migration.name],

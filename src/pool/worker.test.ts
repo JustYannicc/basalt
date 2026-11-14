@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { openEnvelope, signEnvelope, signPoolToken } from "./token.ts";
 import { membershipPrefix, type NativeMembershipPolicy } from "./membership-contract.ts";
 import { runtimeRecoveryPrefix } from "./runtime-recovery.ts";
+import { MemoryNativeStorage } from "./test/native-storage.ts";
 import { accessPath, accessPrefix, accessTtl } from "./access-contract.ts";
 
 // Node has no Workers runtime; keep the actual Worker and lifecycle with platform adapters stubbed.
@@ -1076,17 +1077,12 @@ for (const retire of [false, true])
           waitUntil: (work: Promise<unknown>) => {
             background.push(work);
           },
-          storage: {
-            get: async (name: string) => structuredClone(values.get(name)),
-            put: async (name: string, value: unknown) => {
-              values.set(name, structuredClone(value));
-            },
-            delete: async (name: string) => values.delete(name),
+          storage: Object.assign(new MemoryNativeStorage(values), {
             getAlarm: async () => alarm,
             setAlarm: async (at: number) => {
               alarm = at;
             },
-          },
+          }),
         },
         {
           POOL_DATABASE_URL: "postgres://fixture",
@@ -1547,6 +1543,7 @@ test("five-second membership alarms run persisted reporting jobs only every five
         },
       },
     },
+    changes: { deliver: async () => {} },
     appModels: { tick: async () => {} },
     memberships: {
       tick: async () => {

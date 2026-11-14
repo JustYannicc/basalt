@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, useSyncExternalStore, type FormEvent } from "react";
 import type { Provider } from "../contract.ts";
 import type { PoolApi } from "./api.ts";
 import { providerName as displayProvider } from "./accounts.tsx";
@@ -46,10 +46,12 @@ const narrowKey = (filters: HistoryFilters) =>
   `${filters.lab ?? ""} ${filters.failed ? "failed" : ""}`;
 
 export function History({
+  changes,
   series,
   publicHistory,
   providers,
 }: {
+  changes: PoolApi["changes"];
   series: PoolApi["series"];
   publicHistory?: PublicHistoryReader;
   providers: readonly Provider[];
@@ -67,6 +69,10 @@ export function History({
     loaded,
     loading,
     loadError,
+    newer,
+    updating,
+    failed,
+    retry,
     pageError,
     loadingNext,
     page,
@@ -75,7 +81,7 @@ export function History({
     previousPage,
     loadUntil,
     snapshot,
-  } = useHistory(series, publicHistory, filter);
+  } = useHistory(changes, series, publicHistory, filter);
   // A narrowed list pages its own matches within one read of the range. A reload or a re-applied
   // filter starts a new read from its first page, so the match page starts over with it.
   const matchKey = narrowKey(narrow);
@@ -86,6 +92,8 @@ export function History({
   }>({ key: matchKey, snapshot, page: 0 });
   const matchPage =
     matchPaging.key === matchKey && matchPaging.snapshot === snapshot ? matchPaging.page : 0;
+  const feed = changes();
+  const stream = useSyncExternalStore(feed.onStatus, feed.status);
 
   const applyDates = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -150,12 +158,9 @@ export function History({
     // The read this click started from; a reload meanwhile makes its answer moot.
     const started = snapshot;
     const need = (matchPage + 1) * 10;
-    const all =
-      records.length > need
-        ? loaded?.records
-        : await loadUntil(
-            (rows) => rows.filter((record) => matchesRecord(narrow, record)).length > need,
-          );
+    const all = await loadUntil(
+      (rows) => rows.filter((record) => matchesRecord(narrow, record)).length > need,
+    );
     if (!all) return;
     const count = all.filter((record) => matchesRecord(narrow, record)).length;
     setMatchPaging({
@@ -254,6 +259,23 @@ export function History({
           )}
           <div className="flex flex-wrap items-start justify-between gap-3 text-xs text-muted-foreground">
             <span>{currentRange}</span>
+            {updating && <span role="status">Updating…</span>}
+            {failed && (
+              <span role="status">
+                <span className="text-destructive">{failed}</span> ·{" "}
+                <Button size="inline" variant="link" className="text-xs" onClick={retry}>
+                  Try again
+                </Button>
+              </span>
+            )}
+            {stream === "paused" && (
+              <span role="status">
+                Live updates paused ·{" "}
+                <Button size="inline" variant="link" className="text-xs" onClick={feed.reconnect}>
+                  Try again
+                </Button>
+              </span>
+            )}
             {loaded && (
               <Button size="sm" variant="ghost" onClick={reload}>
                 Reload
@@ -297,6 +319,14 @@ export function History({
                 >
                   Grouped totals are partial. Narrow the date range for complete totals; all request
                   pages remain available.
+                </p>
+              )}
+              {newer && (
+                <p
+                  role="status"
+                  className="border-b border-border py-3 text-sm text-muted-foreground"
+                >
+                  Newer usage arrived. Reload to include it.
                 </p>
               )}
               {loaded.series.changed && (
