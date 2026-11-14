@@ -45,6 +45,10 @@
     ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
     ".upstream/apps/hosted/web/src/implementation/pages/app-screen.tsx",
     ".upstream/apps/hosted/web/src/implementation/components/app-frames.tsx",
-    ".upstream/e2e/support/app-host-navigation.ts"
+    ".upstream/e2e/support/app-host-navigation.ts",
+    "patches/0610-app-page-search.patch",
+    ".upstream/packages/apps/src/contracts/protocol-version.ts",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.apps.$appId.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.apps.$appId.tsx"
   ]
 }

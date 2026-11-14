@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.appPages {
+    metadata {
+      constraint "Protocol 43 adds optional bounded search parameters to a declared-page destination. Each map has at most 16 string entries, with keys of 1 to 64 characters, values of at most 1024 characters and at most 4096 total key and value characters. Hosted dashboards validate the map both from frame messages and direct host links. They only set query parameters of the active version's declared same-origin path; origin, path and fragment remain declared by the app. Query values are encoded by URLSearchParams, never interpreted as an address. App, version, scoped-session, origin, cancellation and deadline authority are identical to page navigation without search. Cloud and self-host retain the parameters through direct entry, reload and browser history. Protocol 42 and its recorded boundary stay frozen, earlier app messages keep their adapters, and no storage or migration changes."
+    }
+  }
+}
