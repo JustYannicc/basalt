@@ -1,7 +1,7 @@
 {
   "identity": "basalt-accepted-read-page-app-assets",
   "file": "0613-accepted-read-page-app-assets.patch",
-  "content_sha256": "71db98da591076e377dad2786930b7b4cadd784d593e55a2dc237ba1b39de2c4",
+  "content_sha256": "cd442c662d88eaf4c9d9db80878f9e36abb0b328c30b8dc455bf9ecb16870694",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
