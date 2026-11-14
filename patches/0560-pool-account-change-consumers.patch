@@ -398,62 +398,53 @@ index 0000000..c0566ea
 +    );
 +});
 diff --git a/apps/hosted/server/src/implementation/change-revisions.ts b/apps/hosted/server/src/implementation/change-revisions.ts
+index ea55c1c..338cb94 100644
 --- a/apps/hosted/server/src/implementation/change-revisions.ts
 +++ b/apps/hosted/server/src/implementation/change-revisions.ts
-@@ -1,6 +1,7 @@
- import { Effect, Result, Schema } from "effect";
- import { SqlClient } from "effect/sql";
- import { RevisionHint, type ChangeKey } from "apps/ui/contracts";
-+import { changeJournalPrepared, projectCommittedChanges } from "./change-projection.ts";
- 
- const Pending = Schema.Struct({ scope: Schema.String, ...RevisionHint.fields });
- export class ChangeDispatchFailed extends Schema.TaggedError<ChangeDispatchFailed>()(
-@@ -13,21 +14,28 @@
- /** Captures the request's uncached SQL client, never a rendered answer or authorization verdict. */
- export const makeChangeJournal = (sql: SqlClient.SqlClient) => ({
-   current: (scope: string, keys: readonly ChangeKey[]) =>
--    Effect.forEach(keys, (key) =>
--      sql`select revision::text as revision from hosted_change_heads
--        where scope = ${scope} and topic = ${key.topic} and resource = ${key.resource}`.pipe(
--        Effect.flatMap(
--          Schema.decodeUnknownEffect(
--            Schema.Array(Schema.Struct({ revision: RevisionHint.fields.revision })),
-+    Effect.gen(function* () {
-+      const prepared = yield* changeJournalPrepared(sql);
-+      return yield* Effect.forEach(keys, (key) =>
-+        (prepared
-+          ? sql`select hosted_change_revision(${scope},${key.topic},${key.resource})::text as revision`
-+          : sql`select revision::text as revision from hosted_change_heads
-+          where scope = ${scope} and topic = ${key.topic} and resource = ${key.resource}`
-+        ).pipe(
-+          Effect.flatMap(
-+            Schema.decodeUnknownEffect(
-+              Schema.Array(Schema.Struct({ revision: RevisionHint.fields.revision })),
-+            ),
-           ),
-+          Effect.map((rows) => ({ ...key, revision: rows[0]?.revision ?? "0" })),
-         ),
--        Effect.map((rows) => ({ ...key, revision: rows[0]?.revision ?? "0" })),
--      ),
--    ),
-+      );
-+    }),
-   /** Network I/O holds no transaction. The pass leaves five seconds for host cleanup before a forced stop. */
+@@ -24,26 +24,29 @@ export const makeChangeJournal = (sql: SqlClient.SqlClient) => ({
+         Effect.map((rows) => ({ ...key, revision: rows[0]?.revision ?? "0" })),
+       ),
+     ),
+-  /** Network I/O holds no SQL transaction or row lock. A newer pending revision survives its predecessor's ack. */
++  /** Network I/O holds no transaction. The pass leaves five seconds for host cleanup before a forced stop. */
    deliver: <E, R>(send: (scope: string, hint: RevisionHint) => Effect.Effect<void, E, R>) =>
      Effect.gen(function* () {
-       while (true) {
-+        const projected = yield* projectCommittedChanges(sql);
-         const rows = yield* sql`select scope, topic, resource, revision::text as revision
+-      const rows = yield* sql`select scope, topic, resource, revision::text as revision
++      while (true) {
++        const rows = yield* sql`select scope, topic, resource, revision::text as revision
          from hosted_change_pending order by updated_at, scope, topic, resource limit 100`;
-         const pending = yield* Schema.decodeUnknownEffect(Schema.Array(Pending))(rows);
-@@ -46,7 +54,7 @@
-         );
-         const failed = results.filter(Result.isFailure).length;
-         if (failed > 0) return yield* new ChangeDispatchFailed({ pending: failed });
--        if (pending.length < 100) return;
-+        if (projected < 100 && pending.length < 100) return;
-       }
-     }).pipe(Effect.interruptible, Effect.timeout("10 seconds")),
+-      const pending = yield* Schema.decodeUnknownEffect(Schema.Array(Pending))(rows);
+-      const results = yield* Effect.forEach(pending, ({ scope, ...hint }) =>
+-        send(scope, hint).pipe(
+-          Effect.timeout("5 seconds"),
+-          Effect.andThen(sql`delete from hosted_change_pending where scope = ${scope}
++        const pending = yield* Schema.decodeUnknownEffect(Schema.Array(Pending))(rows);
++        const results = yield* Effect.forEach(pending, ({ scope, ...hint }) =>
++          send(scope, hint).pipe(
++            Effect.timeout("5 seconds"),
++            Effect.andThen(sql`delete from hosted_change_pending where scope = ${scope}
+             and topic = ${hint.topic} and resource = ${hint.resource} and revision = ${hint.revision}::bigint`),
+-          Effect.tapError(
+-            () => sql`update hosted_change_pending set updated_at = clock_timestamp()
++            Effect.tapError(
++              () => sql`update hosted_change_pending set updated_at = clock_timestamp()
+             where scope = ${scope} and topic = ${hint.topic} and resource = ${hint.resource}
+               and revision = ${hint.revision}::bigint`,
++            ),
++            Effect.result,
+           ),
+-          Effect.result,
+-        ),
+-      );
+-      const failed = results.filter(Result.isFailure).length;
+-      if (failed > 0) return yield* new ChangeDispatchFailed({ pending: failed });
+-    }),
++        );
++        const failed = results.filter(Result.isFailure).length;
++        if (failed > 0) return yield* new ChangeDispatchFailed({ pending: failed });
++        if (pending.length < 100) return;
++      }
++    }).pipe(Effect.interruptible, Effect.timeout("10 seconds")),
  });
 diff --git a/apps/hosted/server/src/implementation/deferred-change-schema.ts b/apps/hosted/server/src/implementation/deferred-change-schema.ts
 new file mode 100644
@@ -3842,15 +3833,51 @@ diff --git a/e2e/tests/deleted-org-pool-token.spec.ts b/e2e/tests/deleted-org-po
 diff --git a/e2e/tests/pool-legacy-handoff.spec.ts b/e2e/tests/pool-legacy-handoff.spec.ts
 --- a/e2e/tests/pool-legacy-handoff.spec.ts
 +++ b/e2e/tests/pool-legacy-handoff.spec.ts
-@@ -215,7 +215,7 @@
-                 page
-                   .frameLocator(`iframe[title="${pool.name} app"]`)
-                   .getByText(
--                    empty ? "Pick your first account" : "4 subscription accounts across 2 labs",
-+                    empty ? "Pick your first account" : "How much are we using?",
-                     { exact: false },
-                   )
-                   .waitFor(),
+@@ -12,6 +12,7 @@
+ import { legacyPoolHome } from "../support/legacy-pool-home.ts";
+ import { legacyPoolKey } from "../support/legacy-pool-key.ts";
+ import { driver, Target } from "../support/platform.ts";
++import { poolHistoryDatabase } from "../support/pool-history-database.ts";
+ import { poolWorkerRuntime } from "../support/pool-worker-runtime.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -88,7 +89,12 @@
+               Effect.asVoid,
+             ),
+         );
+-        const worker = yield* poolWorkerRuntime(target.metadata.origin, home.origin);
++        const historyDatabase = yield* poolHistoryDatabase;
++        const worker = yield* poolWorkerRuntime(
++          target.metadata.origin,
++          home.origin,
++          historyDatabase.connection,
++        );
+         expect(yield* home.members).toEqual([]);
+         expect(
+           (yield* api.request(actors.owner, "POST", "/native-provider-fixture/product-peer", {
+@@ -125,14 +131,6 @@
+             expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+           }).pipe(Effect.orDie),
+         );
+-        // Apply the production history schema through its private operations API on this run's database.
+-        for (const sql of [
+-          "DO $$ BEGIN CREATE ROLE basalt_pool_owner NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+-          "GRANT USAGE, CREATE ON SCHEMA public TO basalt_pool_owner",
+-          "create table usage (id bigint, timestamp timestamptz)",
+-          "create table home_data_migration (name text, completed boolean)",
+-        ])
+-          yield* database.run({ sql });
+         const plan = yield* worker.operations("/model-history/schema/catalog");
+         expect(plan.status).toBe(200);
+         const hashes = yield* driver("Read isolated history schema plan", () => plan.json()).pipe(
+@@ -149,6 +147,7 @@
+             body: JSON.stringify({ go: true, ...hashes }),
+           })).status,
+         ).toBe(200);
++        expect(yield* historyDatabase.cloudUserTriggers).toEqual([]);
+         const read = () =>
+           api.request(actors.owner, "POST", `${appPath}/tools/call`, {
+             tool: "view",
 diff --git a/e2e/support/pool-history-database.ts b/e2e/support/pool-history-database.ts
 new file mode 100644
 --- /dev/null
@@ -4070,6 +4097,64 @@ diff --git a/e2e/support/cloud-locks.ts b/e2e/support/cloud-locks.ts
 +  });
 +
 +export const cloudLocks = cloudLocksFor();
+diff --git a/apps/hosted/server/src/implementation/change-revisions.ts b/apps/hosted/server/src/implementation/change-revisions.ts
+--- a/apps/hosted/server/src/implementation/change-revisions.ts
++++ b/apps/hosted/server/src/implementation/change-revisions.ts
+@@ -1,6 +1,7 @@
+ import { Effect, Result, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { RevisionHint, type ChangeKey } from "apps/ui/contracts";
++import { changeJournalPrepared, projectCommittedChanges } from "./change-projection.ts";
+ 
+ const Pending = Schema.Struct({ scope: Schema.String, ...RevisionHint.fields });
+ export class ChangeDispatchFailed extends Schema.TaggedError<ChangeDispatchFailed>()(
+@@ -13,21 +14,28 @@
+ /** Captures the request's uncached SQL client, never a rendered answer or authorization verdict. */
+ export const makeChangeJournal = (sql: SqlClient.SqlClient) => ({
+   current: (scope: string, keys: readonly ChangeKey[]) =>
+-    Effect.forEach(keys, (key) =>
+-      sql`select revision::text as revision from hosted_change_heads
+-        where scope = ${scope} and topic = ${key.topic} and resource = ${key.resource}`.pipe(
+-        Effect.flatMap(
+-          Schema.decodeUnknownEffect(
+-            Schema.Array(Schema.Struct({ revision: RevisionHint.fields.revision })),
++    Effect.gen(function* () {
++      const prepared = yield* changeJournalPrepared(sql);
++      return yield* Effect.forEach(keys, (key) =>
++        (prepared
++          ? sql`select hosted_change_revision(${scope},${key.topic},${key.resource})::text as revision`
++          : sql`select revision::text as revision from hosted_change_heads
++          where scope = ${scope} and topic = ${key.topic} and resource = ${key.resource}`
++        ).pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Array(Schema.Struct({ revision: RevisionHint.fields.revision })),
++            ),
+           ),
++          Effect.map((rows) => ({ ...key, revision: rows[0]?.revision ?? "0" })),
+         ),
+-        Effect.map((rows) => ({ ...key, revision: rows[0]?.revision ?? "0" })),
+-      ),
+-    ),
++      );
++    }),
+   /** Network I/O holds no transaction. The pass leaves five seconds for host cleanup before a forced stop. */
+   deliver: <E, R>(send: (scope: string, hint: RevisionHint) => Effect.Effect<void, E, R>) =>
+     Effect.gen(function* () {
+       while (true) {
++        const projected = yield* projectCommittedChanges(sql);
+         const rows = yield* sql`select scope, topic, resource, revision::text as revision
+         from hosted_change_pending order by updated_at, scope, topic, resource limit 100`;
+         const pending = yield* Schema.decodeUnknownEffect(Schema.Array(Pending))(rows);
+@@ -46,7 +54,7 @@
+         );
+         const failed = results.filter(Result.isFailure).length;
+         if (failed > 0) return yield* new ChangeDispatchFailed({ pending: failed });
+-        if (pending.length < 100) return;
++        if (projected < 100 && pending.length < 100) return;
+       }
+     }).pipe(Effect.interruptible, Effect.timeout("10 seconds")),
+ });
 diff --git a/apps/hosted/server/src/implementation/change-journal-schema.ts b/apps/hosted/server/src/implementation/change-journal-schema.ts
 new file mode 100644
 --- /dev/null
@@ -4364,6 +4449,18 @@ diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.
        peer.mirrors,
        HttpRouter.add(
          "GET",
+diff --git a/e2e/tests/pool-legacy-handoff.spec.ts b/e2e/tests/pool-legacy-handoff.spec.ts
+--- a/e2e/tests/pool-legacy-handoff.spec.ts
++++ b/e2e/tests/pool-legacy-handoff.spec.ts
+@@ -215,7 +215,7 @@
+                 page
+                   .frameLocator(`iframe[title="${pool.name} app"]`)
+                   .getByText(
+-                    empty ? "Pick your first account" : "4 subscription accounts across 2 labs",
++                    empty ? "Pick your first account" : "How much are we using?",
+                     { exact: false },
+                   )
+                   .waitFor(),
 diff --git a/e2e/tests/listed-account-actions.spec.ts b/e2e/tests/listed-account-actions.spec.ts
 --- a/e2e/tests/listed-account-actions.spec.ts
 +++ b/e2e/tests/listed-account-actions.spec.ts
@@ -4557,3 +4654,14 @@ new file mode 100644
 +);
 +await appendFile(receipt, JSON.stringify(evidence) + "\n", { mode: 0o600 });
 +console.log(JSON.stringify(evidence));
+diff --git a/apps/hosted/cloud/src/contracts/job-outcome.ts b/apps/hosted/cloud/src/contracts/job-outcome.ts
+--- a/apps/hosted/cloud/src/contracts/job-outcome.ts
++++ b/apps/hosted/cloud/src/contracts/job-outcome.ts
+@@ -12,6 +12,7 @@
+ const JobErrorTag = Schema.Literals([
+   "BillingUnavailable",
+   "ChangeDispatchFailed",
++  "ChangeProjectionInTransaction",
+   "DataStepUnavailable",
+   "EmailDeliveryFailed",
+   "GrantExpiryUnavailable",

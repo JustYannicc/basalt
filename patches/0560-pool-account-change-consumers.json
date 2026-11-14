@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-account-change-consumers",
   "file": "0560-pool-account-change-consumers.patch",
-  "content_sha256": "0cca1bb8967f7618c40844513c0f0f5e5bf13e3fb195a84500b99038b398041e",
+  "content_sha256": "ddf8eece896b5747c16148c80350553f5c33d0e5f752389e61e80a5bc36138cb",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

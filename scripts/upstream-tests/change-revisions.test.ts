@@ -76,6 +76,20 @@ test("a failed notification job reports its category and retries its retained pe
     }),
   ));
 
+test("a notification job reports projection attempted inside a transaction", () =>
+  run(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const job = sql
+        .withTransaction(makeChangeJournal(sql).deliver(() => Effect.void))
+        .pipe(Effect.as(jobCompleted), handledJob(Effect.void));
+      assert.deepEqual(yield* job, {
+        outcome: "failed",
+        failure: "ChangeProjectionInTransaction",
+      });
+    }),
+  ));
+
 test("a committed activation survives a crash before dispatch and a new journal delivers it", () =>
   run(
     Effect.gen(function* () {
