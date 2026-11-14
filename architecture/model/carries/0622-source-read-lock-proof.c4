@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.appCalls {
+    metadata {
+      constraint "Public account-source reads observe their own SQL trace in a dedicated measurement file. Established selections, including saved refusals, remain unchanged without write or advisory locks; unresolved selections retain locked authority checks."
+    }
+  }
+}
