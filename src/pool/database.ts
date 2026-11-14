@@ -121,6 +121,8 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
           include: [
             "ensure-pool-database.ts",
             "pool-database-provisioning.ts",
+            "pool-database-ownership.ts",
+            "../src/pool/model-history/change-schema.ts",
             "../src/pool/model-history/schema.ts",
             "../src/pool/database-settings.ts",
           ],

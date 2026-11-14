@@ -1,3 +1,12 @@
+import { historyChangeStatements } from "../src/pool/model-history/change-schema.ts";
+import {
+  normalizeHomeTriggerTableOwners,
+  UnexpectedHomeTableOwner,
+  HomeOwnershipAuthorityError,
+  HomeOwnershipScopeError,
+  HomeTriggerTargetError,
+  HomeTriggerListError,
+} from "./pool-database-ownership.ts";
 import { poolDatabase, postgresRoleName } from "../src/pool/database-settings.ts";
 import { migrateModelHistory } from "../src/pool/model-history/schema.ts";
 
@@ -80,7 +89,15 @@ const clientMessages: Record<string, string> = {
 
 /** A log-safe reason, and whether a fresh attempt could succeed. Driver messages can contain hosts or logins. */
 export function classify(error: unknown): { reason: string; retryable: boolean } {
-  if (error instanceof ProvisioningError) return { reason: error.message, retryable: false };
+  if (
+    error instanceof ProvisioningError ||
+    error instanceof UnexpectedHomeTableOwner ||
+    error instanceof HomeOwnershipAuthorityError ||
+    error instanceof HomeOwnershipScopeError ||
+    error instanceof HomeTriggerTargetError ||
+    error instanceof HomeTriggerListError
+  )
+    return { reason: error.message, retryable: false };
   if (error instanceof AttemptExpired)
     return { reason: "attempt deadline exceeded", retryable: true };
   const code = error instanceof Error && "code" in error ? String(error.code) : "";
@@ -154,6 +171,8 @@ async function provisionOnce(
   await scoped.query("REVOKE ALL ON SCHEMA public FROM PUBLIC");
   step("grant the public schema to the owner");
   await scoped.query(`GRANT ALL ON SCHEMA public TO ${owner}`);
+  step("normalize Home trigger table ownership");
+  await normalizeHomeTriggerTableOwners(scoped, poolDatabase.owner, historyChangeStatements);
   step("migrate model request history");
   await migrateModelHistory(scoped);
 }
@@ -227,6 +246,7 @@ export async function provisionPoolDatabase(options: ProvisionOptions): Promise<
       await Promise.race([run, deadline]);
       return;
     } catch (error) {
+      if (error instanceof UnexpectedHomeTableOwner) throw error;
       const { reason, retryable } = classify(error);
       const where = `Pool database provisioning failed at "${current}"`;
       if (!retryable) throw new Error(`${where}: ${reason}`);
