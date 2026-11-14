@@ -1,0 +1,53 @@
+{
+  "scenarios": {
+    "appHostNavigation": {
+      "fixtures": "actors",
+      "appOrigin": true,
+      "title": "an embedded app page opens its own host tab and an account highlight in the same window, Back returns to the same document, and other versions, destinations, origins and frames are refused",
+      "serverEnvironment": {
+        "EXECUTOR_PRODUCT_NAME": "Signalbox",
+        "BETTER_AUTH_URL": "http://app.fixture.localhost:0",
+        "EXECUTOR_APP_UI_BASE_URL": "http://fixture.localhost:0",
+        "EXECUTOR_APP_UI_ADDRESS_SCHEME": "opaque",
+        "EXECUTOR_APP_UI_EMBEDDED": "true"
+      },
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "This scenario owns a self-host process with opaque addressing and embedding enabled; Cloud shares the same dashboard receiver."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host app origins."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appHostNavigation": ["declared:self-host"]
+  },
+  "inputs": [
+    "patches/0586-app-host-navigation.patch",
+    "framework-release.ts",
+    ".upstream/packages/apps/src/contracts/ui.ts",
+    ".upstream/packages/apps/src/implementation/ui-client.ts",
+    ".upstream/packages/ui/src/contracts/host-navigation.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-screen.tsx",
+    ".upstream/apps/hosted/web/src/implementation/components/app-frames.tsx",
+    ".upstream/apps/hosted/web/src/implementation/components/app-frame-view.tsx",
+    ".upstream/apps/hosted/web/src/contracts/app-ui.ts",
+    ".upstream/apps/hosted/web/src/implementation/components/organization.tsx",
+    ".upstream/apps/hosted/cloud/web/src/implementation/routes/__root.tsx",
+    ".upstream/apps/hosted/self-host/web/src/implementation/routes/__root.tsx",
+    ".upstream/e2e/support/app-host-navigation.ts",
+    ".upstream/packages/apps/src/implementation/ui-serving.ts",
+    ".upstream/apps/hosted/server/src/contracts/app-ui.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-sessions.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-ui.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/auth-database.ts",
+    ".upstream/e2e/support/app-navigation-lifecycle.ts"
+  ]
+}
