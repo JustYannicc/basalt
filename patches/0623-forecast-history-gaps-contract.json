@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-forecast-history-gaps-contract",
+  "file": "0623-forecast-history-gaps-contract.patch",
+  "content_sha256": "ea1f5b382d679b05358a4b4284fff0f104aaf418c33780bde823406a8bb92ed1",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

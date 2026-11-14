@@ -1,0 +1,19 @@
+diff --git a/apps/hosted/server/src/contracts/pool-usage-forecast.ts b/apps/hosted/server/src/contracts/pool-usage-forecast.ts
+--- a/apps/hosted/server/src/contracts/pool-usage-forecast.ts
++++ b/apps/hosted/server/src/contracts/pool-usage-forecast.ts
+@@ -16,6 +16,15 @@
+     Schema.Struct({
+       status: Schema.Literal("unavailable"),
+       reason: Schema.Literals(["invalid-input", "insufficient-history", "insufficient-use"]),
++      historyGaps: Schema.optionalKey(
++        Schema.Array(
++          Schema.Struct({
++            week: Schema.String,
++            missingDays: Schema.Array(Schema.String),
++            unknownDays: Schema.Array(Schema.String),
++          }),
++        ),
++      ),
+       comparableWeeks: count,
+       calculatedAt: Schema.String,
+     }),
