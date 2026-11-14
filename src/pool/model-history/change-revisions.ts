@@ -1,4 +1,5 @@
 import type { HistoryDatabase } from "./schema.ts";
+import { historyJournalPrepared } from "./change-projection.ts";
 
 export type PoolHistoryTopic = "pool-readings" | "pool-usage";
 export interface RevisionHint {
@@ -40,13 +41,13 @@ export function pendingPoolHistoryChanges(value: unknown): PoolHistoryChange[] {
   });
 }
 
-function currentPoolHistoryQuery(snapshot: boolean) {
+function currentPoolHistoryQuery(snapshot: boolean, prepared: boolean) {
   return `WITH registered AS (
       INSERT INTO basalt_pool_change_heads(pool,topic,revision)
       VALUES($1,'pool-readings',0),($1,'pool-usage',0)
       ON CONFLICT(pool,topic) DO NOTHING RETURNING pool,topic,revision
     )${snapshot ? ",deadline AS MATERIALIZED (SELECT basalt_pool_change_deadline($1) AS at)" : ""}
-    SELECT $1::text AS pool,t.topic,COALESCE(h.revision,r.revision,0)::text AS revision
+    SELECT $1::text AS pool,t.topic,${prepared ? "basalt_pool_change_revision($1,t.topic)" : "COALESCE(h.revision,r.revision,0)"}::text AS revision
     ${
       snapshot
         ? `,(SELECT to_char(at AT TIME ZONE 'UTC',
@@ -65,14 +66,18 @@ export async function readPoolHistoryChanges(
   pool: string,
 ): Promise<RevisionHint[]> {
   if (!poolId(pool)) throw new Error("Invalid pool ID");
-  const result = await db.query(currentPoolHistoryQuery(false), [pool]);
+  const result = await db.query(currentPoolHistoryQuery(false, await historyJournalPrepared(db)), [
+    pool,
+  ]);
   return result.rows.map(hint);
 }
 
 /** One current-read snapshot; the deadline changes no source observation or reset timestamp. */
 export async function readPoolHistorySnapshot(db: HistoryDatabase, pool: string) {
   if (!poolId(pool)) throw new Error("Invalid pool ID");
-  const result = await db.query(currentPoolHistoryQuery(true), [pool]);
+  const result = await db.query(currentPoolHistoryQuery(true, await historyJournalPrepared(db)), [
+    pool,
+  ]);
   const deadline = result.rows[0]?.deadline;
   if (deadline !== null && (typeof deadline !== "string" || !Number.isFinite(Date.parse(deadline))))
     throw new Error("Invalid pool change deadline");

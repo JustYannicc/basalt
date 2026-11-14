@@ -5,6 +5,7 @@ import { homeHistorySelect, homeHistorySource, homeRequest } from "./home.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import { historyBatchSize, insertRequests } from "./store.ts";
 import { pendingPoolHistoryChanges, poolHistoryPendingProjection } from "./change-revisions.ts";
+import { projectPoolHistoryChanges } from "./change-projection.ts";
 
 /** Source reads, inserts and cursor changes commit together. Home owns its existing usage writes. */
 export async function captureHomeRequests(db: HistoryDatabase) {
@@ -14,11 +15,14 @@ export async function captureHomeRequests(db: HistoryDatabase) {
     await db.query("SET LOCAL lock_timeout = '500ms'");
     // New capture code can run before the operator applies the additive change tables.
     const readiness = await db.query(`SELECT set_config('statement_timeout','5s',true),
-      to_regclass('basalt_pool_change_pending') IS NOT NULL AS pending_ready`);
+      to_regclass('basalt_pool_change_pending') IS NOT NULL AS pending_ready,
+      to_regprocedure('basalt_pool_change_revision(text,text)') IS NOT NULL AS journal_ready`);
+    const journalReady = readiness.rows[0]?.journal_ready === true;
     const pendingProjection =
       readiness.rows[0]?.pending_ready === true ? poolHistoryPendingProjection : "'[]'::jsonb";
     const result = await db.query(
-      `SELECT cursor.*,${pendingProjection} AS pending
+      `SELECT cursor.*,${pendingProjection} AS pending,
+        ${journalReady ? "EXISTS(SELECT 1 FROM basalt_pool_change_batches)" : "false"} AS unprojected
       FROM (SELECT 1) AS upkeep LEFT JOIN LATERAL (
         SELECT source,forward_id::text,backfill_upper::text,backfill_id::text,backfill_complete,sweep_id::text,sweep_upper::text
         FROM basalt_model_history_cursor WHERE source = $1 FOR UPDATE
@@ -26,11 +30,19 @@ export async function captureHomeRequests(db: HistoryDatabase) {
       [source],
     );
     const state = result.rows[0];
-    const pending = pendingPoolHistoryChanges(state?.pending);
+    let pending = pendingPoolHistoryChanges(state?.pending);
+    const project = async (produced: boolean) => {
+      if (journalReady && (state?.unprojected === true || produced)) {
+        await projectPoolHistoryChanges(db);
+        const result = await db.query(`SELECT ${poolHistoryPendingProjection} AS pending`);
+        pending = pendingPoolHistoryChanges(result.rows[0]?.pending);
+      }
+    };
     // Deployment cannot opt a database into collection. The operator first approves its
     // count-only dry run and creates this cursor through the activation command.
     if (!state?.source) {
       await db.query("COMMIT");
+      await project(false);
       return { state: "inactive" as const, pending };
     }
     await requireHomePrivacyReady(db);
@@ -115,6 +127,7 @@ export async function captureHomeRequests(db: HistoryDatabase) {
       [source, next, seen, old, complete, sweepUpper],
     );
     await db.query("COMMIT");
+    await project(inserted > 0);
     return {
       state: "active" as const,
       scanned,

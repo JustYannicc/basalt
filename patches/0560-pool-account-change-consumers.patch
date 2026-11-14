@@ -4520,3 +4520,314 @@ diff --git a/e2e/support/cloud-locks.ts b/e2e/support/cloud-locks.ts
 +  });
 +
 +export const cloudLocks = cloudLocksFor();
+diff --git a/apps/hosted/server/src/implementation/change-revisions.ts b/apps/hosted/server/src/implementation/change-revisions.ts
+--- a/apps/hosted/server/src/implementation/change-revisions.ts
++++ b/apps/hosted/server/src/implementation/change-revisions.ts
+@@ -1,6 +1,7 @@
+ import { Effect, Result, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { RevisionHint, type ChangeKey } from "apps/ui/contracts";
++import { changeJournalPrepared, projectCommittedChanges } from "./change-projection.ts";
+ 
+ const Pending = Schema.Struct({ scope: Schema.String, ...RevisionHint.fields });
+ export class ChangeDispatchFailed extends Schema.TaggedError<ChangeDispatchFailed>()(
+@@ -13,21 +14,28 @@
+ /** Captures the request's uncached SQL client, never a rendered answer or authorization verdict. */
+ export const makeChangeJournal = (sql: SqlClient.SqlClient) => ({
+   current: (scope: string, keys: readonly ChangeKey[]) =>
+-    Effect.forEach(keys, (key) =>
+-      sql`select revision::text as revision from hosted_change_heads
+-        where scope = ${scope} and topic = ${key.topic} and resource = ${key.resource}`.pipe(
+-        Effect.flatMap(
+-          Schema.decodeUnknownEffect(
+-            Schema.Array(Schema.Struct({ revision: RevisionHint.fields.revision })),
++    Effect.gen(function* () {
++      const prepared = yield* changeJournalPrepared(sql);
++      return yield* Effect.forEach(keys, (key) =>
++        (prepared
++          ? sql`select hosted_change_revision(${scope},${key.topic},${key.resource})::text as revision`
++          : sql`select revision::text as revision from hosted_change_heads
++          where scope = ${scope} and topic = ${key.topic} and resource = ${key.resource}`
++        ).pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Array(Schema.Struct({ revision: RevisionHint.fields.revision })),
++            ),
+           ),
++          Effect.map((rows) => ({ ...key, revision: rows[0]?.revision ?? "0" })),
+         ),
+-        Effect.map((rows) => ({ ...key, revision: rows[0]?.revision ?? "0" })),
+-      ),
+-    ),
++      );
++    }),
+   /** Network I/O holds no transaction. The pass leaves five seconds for host cleanup before a forced stop. */
+   deliver: <E, R>(send: (scope: string, hint: RevisionHint) => Effect.Effect<void, E, R>) =>
+     Effect.gen(function* () {
+       while (true) {
++        const projected = yield* projectCommittedChanges(sql);
+         const rows = yield* sql`select scope, topic, resource, revision::text as revision
+         from hosted_change_pending order by updated_at, scope, topic, resource limit 100`;
+         const pending = yield* Schema.decodeUnknownEffect(Schema.Array(Pending))(rows);
+@@ -46,7 +54,7 @@
+         );
+         const failed = results.filter(Result.isFailure).length;
+         if (failed > 0) return yield* new ChangeDispatchFailed({ pending: failed });
+-        if (pending.length < 100) return;
++        if (projected < 100 && pending.length < 100) return;
+       }
+     }).pipe(Effect.interruptible, Effect.timeout("10 seconds")),
+ });
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -25,6 +25,7 @@
+ import { migrateAccountObservations } from "./account-observation-schema.ts";
+ import { migrateChangeRevisions } from "./change-revision-schema.ts";
+ import { migrateAccountChanges } from "./account-change-schema.ts";
++import { prepareChangeJournal, activateChangeJournal } from "./change-journal-schema.ts";
+ 
+ /**
+  * Migration failures stop startup; callers must not log the driver's secret-bearing cause. The
+@@ -38,9 +39,12 @@
+     causeTags: Schema.optionalKey(Schema.Array(Schema.String)),
+     sqlState: Schema.optionalKey(Schema.String),
+     migrationVersion: Schema.optionalKey(Schema.String),
++    preparationRequired: Schema.optionalKey(Schema.Literal("21_change_journal_prepare")),
+   },
+ ) {
+   override get message() {
++    if (this.preparationRequired)
++      return "Cannot activate change journal 22: private_hosted_migrations is missing 21_change_journal_prepare";
+     const tags = this.causeTags?.join(" > ") ?? "unknown cause";
+     return `${this.stage} migration failed${this.migrationVersion ? ` at executor version ${this.migrationVersion}` : ""}: ${tags}${this.sqlState ? ` (SQLSTATE ${this.sqlState})` : ""}`;
+   }
+@@ -50,6 +54,7 @@
+ export const migrationFailed =
+   (stage: HostedMigrationFailed["stage"]) =>
+   (cause: unknown): HostedMigrationFailed => {
++    if (cause instanceof HostedMigrationFailed) return cause;
+     if (cause instanceof StorageMigrationFailed)
+       return new HostedMigrationFailed({
+         stage,
+@@ -157,7 +162,32 @@
+   }),
+   "19_change_revisions": migrateChangeRevisions,
+   "20_account_changes": migrateAccountChanges,
++  "21_change_journal_prepare": prepareChangeJournal,
+ });
++
++/** Activation is deliberately absent from startup migrations; the operator owns the reader cutover. */
++export const activateHostedChangeJournal = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql.withTransaction(
++    Effect.gen(function* () {
++      yield* sql`set local lock_timeout = '5s'`;
++      yield* sql`set local statement_timeout = '60s'`;
++      yield* sql`select pg_advisory_xact_lock(641028113)`;
++      const prepared = yield* sql`select 1 from private_hosted_migrations where migration_id=21`;
++      if (prepared.length !== 1)
++        return yield* new HostedMigrationFailed({
++          stage: "product",
++          preparationRequired: "21_change_journal_prepare",
++        });
++      const applied = yield* sql`select 1 from private_hosted_migrations where migration_id=22`;
++      if (applied.length !== 0) return;
++      yield* activateChangeJournal;
++      // Activation may follow a later preparation release, so test this exact ID, not the latest ID.
++      yield* sql`insert into private_hosted_migrations(migration_id,name)
++      values(22,'change_journal_activate')`;
++    }),
++  );
++}).pipe(Effect.mapError(migrationFailed("product")));
+ 
+ /**
+  * Explicit, serialized migration job. Better Auth owns its tables; FumaDB owns executor_*.
+diff --git a/apps/hosted/server/src/implementation/change-journal-schema.ts b/apps/hosted/server/src/implementation/change-journal-schema.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/change-journal-schema.ts
+@@ -0,0 +1,73 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** Preparation leaves the running producer and physical heads unchanged. */
++export const prepareChangeJournal = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create index hosted_change_dirty_key on hosted_change_dirty (scope,topic,resource)`;
++  yield* sql`alter table hosted_change_dirty add constraint hosted_change_dirty_mode check (
++    (revision is not null) = (topic in ('pool-readings','pool-usage','pool-samples','pool-prices')))`;
++  yield* sql`create function hosted_change_revision(target_scope text,target_topic text,target_resource text)
++    returns bigint language sql stable as $$
++    select case when $2 in ('pool-readings','pool-usage','pool-samples','pool-prices')
++      then greatest(coalesce(h.revision,0),coalesce(q.explicit,0))
++      else coalesce(h.revision,0)+q.implicit end
++    from (select count(*) filter (where revision is null) as implicit,max(revision) as explicit
++      from hosted_change_dirty where scope=$1 and topic=$2 and resource=$3) q
++    left join hosted_change_heads h on h.scope=$1 and h.topic=$2 and h.resource=$3
++  $$`;
++  yield* sql`create function hosted_project_changes(batch_limit integer) returns integer
++    language plpgsql as $$
++    declare batches bigint[]; item record; accepted bigint;
++    begin
++      if batch_limit < 1 or batch_limit > 100 then
++        raise exception 'Change projection batch must be between 1 and 100' using errcode='22023';
++      end if;
++      select array_agg(transaction_id) into batches from (
++        select transaction_id from hosted_change_batches order by transaction_id
++          limit batch_limit for update skip locked
++      ) claimed;
++      if batches is null then return 0; end if;
++      for item in select scope,topic,resource,
++        count(*) filter (where revision is null) as implicit,max(revision) as explicit
++        from hosted_change_dirty where transaction_id=any(batches)
++        group by scope,topic,resource
++        order by scope collate "C",topic collate "C",resource collate "C" loop
++        accepted := null;
++        if item.explicit is null then
++          insert into hosted_change_heads(scope,topic,resource,revision)
++            values(item.scope,item.topic,item.resource,item.implicit)
++            on conflict(scope,topic,resource) do update
++              set revision=hosted_change_heads.revision+excluded.revision
++            returning revision into accepted;
++        else
++          insert into hosted_change_heads(scope,topic,resource,revision)
++            values(item.scope,item.topic,item.resource,item.explicit)
++            on conflict(scope,topic,resource) do update set revision=excluded.revision
++              where hosted_change_heads.revision < excluded.revision
++            returning revision into accepted;
++        end if;
++        if accepted is not null then
++          insert into hosted_change_pending(scope,topic,resource,revision)
++            values(item.scope,item.topic,item.resource,accepted)
++            on conflict(scope,topic,resource) do update
++              set revision=greatest(hosted_change_pending.revision,excluded.revision),updated_at=now();
++        end if;
++      end loop;
++      delete from hosted_change_dirty where transaction_id=any(batches);
++      delete from hosted_change_batches where transaction_id=any(batches);
++      return cardinality(batches);
++    end $$`;
++});
++
++/** Apply separately, after every reader and delivery worker understands the committed queue. */
++export const activateChangeJournal = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`select hosted_change_revision('', 'deployment', '')`;
++  yield* sql`create or replace function hosted_flush_changes() returns trigger language plpgsql as $$
++    begin
++      perform pg_notify('hosted_committed_changes','');
++      return null;
++    end $$`;
++  yield* sql`drop function hosted_record_change(text,text,text)`;
++});
+diff --git a/apps/hosted/server/src/implementation/change-projection.ts b/apps/hosted/server/src/implementation/change-projection.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/change-projection.ts
+@@ -0,0 +1,35 @@
++import { Effect, Option, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++
++const prepared = new WeakSet<SqlClient.SqlClient>();
++export class ChangeProjectionInTransaction extends Schema.TaggedError<ChangeProjectionInTransaction>()(
++  "ChangeProjectionInTransaction",
++  {},
++) {}
++
++/** Only cache committed, additive schema capability; an older database can be prepared later. */
++export const changeJournalPrepared = (sql: SqlClient.SqlClient) =>
++  Effect.gen(function* () {
++    if (prepared.has(sql)) return true;
++    const rows =
++      yield* sql`select to_regprocedure('hosted_change_revision(text,text,text)') is not null as ready`;
++    const ready = rows[0]?.ready === true;
++    if (ready && Option.isNone(yield* Effect.serviceOption(sql.transactionService)))
++      prepared.add(sql);
++    return ready;
++  });
++
++/** A producer's snapshot must never inherit the shared checkpoint writes. */
++export const projectCommittedChanges = (sql: SqlClient.SqlClient) =>
++  Effect.gen(function* () {
++    if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
++      return yield* new ChangeProjectionInTransaction();
++    if (!(yield* changeJournalPrepared(sql))) return 0;
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        yield* sql`set transaction isolation level read committed`;
++        const rows = yield* sql`select hosted_project_changes(100) as projected`;
++        return yield* Schema.decodeUnknownEffect(Schema.Number)(rows[0]?.projected);
++      }),
++    );
++  });
+diff --git a/apps/hosted/cloud/src/migrate.ts b/apps/hosted/cloud/src/migrate.ts
+--- a/apps/hosted/cloud/src/migrate.ts
++++ b/apps/hosted/cloud/src/migrate.ts
+@@ -3,6 +3,19 @@
+ import { Duration, Runtime } from "effect";
+ import { migrationHardLimit } from "./implementation/migration-guard.ts";
+ import { migrateCloudDatabase } from "./implementation/migrations.ts";
++import { activateHostedChangeJournalJob } from "./implementation/change-journal-activation.ts";
++
++const args = process.argv.slice(2);
++const activating =
++  args.length === 2 &&
++  args[0] === "--activate-change-journal" &&
++  args[1] === "--readers-ready=checkpoint-count-v1";
++if (args.length !== 0 && !activating) {
++  process.stderr.write(
++    "Use no arguments to prepare schemas, or --activate-change-journal --readers-ready=checkpoint-count-v1 after verifying every serving reader.\n",
++  );
++  process.exit(2);
++}
+ 
+ // A last stop outside the Effect runtime, so the deploy command never times out on this job.
+ setTimeout(() => {
+@@ -13,7 +26,7 @@
+ }, Duration.toMillis(migrationHardLimit)).unref();
+ 
+ // Exit on success too: a session the job gave up closing must not keep a finished job running.
+-NodeRuntime.runMain(migrateCloudDatabase, {
++NodeRuntime.runMain(activating ? activateHostedChangeJournalJob : migrateCloudDatabase, {
+   teardown: (exit, onExit) =>
+     Runtime.defaultTeardown(exit, (code) => {
+       onExit(code);
+diff --git a/apps/hosted/cloud/src/implementation/change-journal-activation.ts b/apps/hosted/cloud/src/implementation/change-journal-activation.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/change-journal-activation.ts
+@@ -0,0 +1,33 @@
++import { PgClient } from "@effect/sql-pg";
++import { databaseUrl } from "@executor-js/hosted-server/database";
++import {
++  activateHostedChangeJournal,
++  migrationFailed,
++  migrationPhase,
++} from "@executor-js/hosted-server/migrations";
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++import {
++  blockerReport,
++  guardMigration,
++  migrationLimits,
++  migrationSessionSettings,
++} from "./migration-guard.ts";
++
++/** The operator has verified all readers before invoking this separate, schema-only job. */
++export const activateHostedChangeJournalJob = Effect.gen(function* () {
++  const url = yield* databaseUrl;
++  const attempt = Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    yield* migrationPhase("activate the prepared change journal");
++    for (const setting of migrationSessionSettings)
++      yield* sql.unsafe(setting).pipe(Effect.mapError(migrationFailed("product")));
++    yield* activateHostedChangeJournal;
++  }).pipe(
++    Effect.provide(
++      PgClient.layer({ url, maxConnections: 1, connectTimeout: migrationLimits.connect }),
++    ),
++  );
++  yield* guardMigration({ attempt, report: blockerReport(url) });
++  yield* Effect.log("Hosted change journal activated");
++});

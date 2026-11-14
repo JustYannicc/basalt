@@ -1,3 +1,4 @@
+import { historyJournalPrepareVersion } from "./change-journal-schema.ts";
 import { historyImportCompletionPath } from "./import-completion-contract.ts";
 import { handleImportCompletion } from "./import-completion.ts";
 import { digest } from "../backend-users.ts";
@@ -14,6 +15,8 @@ import {
 } from "./record.ts";
 import { handleTrafficOperation, historyTrafficPath } from "./traffic.ts";
 import {
+  activateModelHistoryJournal,
+  historyJournalActivationMigration,
   historySchemaMigrations,
   historyAppSchemaVersion,
   historySchemaVersion,
@@ -25,10 +28,22 @@ import {
 export const historySchemaCatalogPath = "/model-history/schema/catalog";
 export const historySchemaApplyPath = "/model-history/schema";
 export const historyBackfillPath = "/model-history/backfill";
+export const historyJournalActivationPath = "/model-history/journal-activation";
+export const historyJournalReaderVersion = "checkpoint-count-v1";
+export const historyJournalActivationManifest = {
+  migration: historyJournalActivationMigration,
+  readersReady: historyJournalReaderVersion,
+};
+
 export const historyBackfillVersion = "model_request_backfill_v1";
 
 /** Only the named private operator entrypoint calls this service. It never returns usage records. */
-export async function modelHistorySchemaPlan(db: HistoryDatabase) {
+export async function modelHistorySchemaPlan(
+  db: HistoryDatabase,
+  operation: "schema" | "journal-activation" = "schema",
+) {
+  const activation = operation === "journal-activation";
+  const migrations = activation ? [historyJournalActivationMigration] : historySchemaMigrations;
   const catalog = await planModelHistorySchema(db);
   const history = await planHomeBackfill(db);
   const existingTables = new Set(
@@ -49,12 +64,12 @@ export async function modelHistorySchemaPlan(db: HistoryDatabase) {
           (
             await db.query(
               "SELECT name FROM basalt_model_history_migrations WHERE name=ANY($1::text[])",
-              [historySchemaMigrations.map((migration) => migration.name)],
+              [[...migrations.map((migration) => migration.name), historyJournalPrepareVersion]],
             )
           ).rows.map((row) => String(row.name)),
         )
       : new Set<string>();
-    const pending = historySchemaMigrations.filter((migration) => !markers.has(migration.name));
+    const pending = migrations.filter((migration) => !markers.has(migration.name));
     const applied = pending.length === 0;
     const appApplied = markers.has(historyAppSchemaVersion);
     const neededTables = [
@@ -79,11 +94,28 @@ export async function modelHistorySchemaPlan(db: HistoryDatabase) {
         )
       : "0";
     await db.query("COMMIT");
+    const selectedCatalog = activation
+      ? {
+          ...catalog,
+          journalPrepared: markers.has(historyJournalPrepareVersion),
+          journalActivated: applied,
+          readersReadyRequired: historyJournalReaderVersion,
+        }
+      : catalog;
     return {
-      version: historySchemaVersion,
-      schemaHash: await digest(JSON.stringify(historySchemaMigrations)),
-      catalogHash: await digest(JSON.stringify(catalog)),
-      catalog,
+      version: activation ? historyJournalActivationMigration.name : historySchemaVersion,
+      schemaHash: await digest(
+        JSON.stringify(activation ? historyJournalActivationManifest : migrations),
+      ),
+      catalogHash: await digest(JSON.stringify(selectedCatalog)),
+      catalog: selectedCatalog,
+      ...(activation
+        ? {
+            readersReadyRequired: historyJournalReaderVersion,
+            readerInventory:
+              "Verify every deployed reader uses checkpoint-count-v1 before activation. This plan does not inspect deployed readers.",
+          }
+        : {}),
       history,
       ledgerRows,
       applied,
@@ -91,11 +123,15 @@ export async function modelHistorySchemaPlan(db: HistoryDatabase) {
         createTables: neededTables
           .filter((table) => !existingTables.has(table.name))
           .map((table) => table.name),
-        addColumns: appApplied
-          ? []
-          : ["basalt_model_requests.app_id", "basalt_model_requests.requirement"],
+        addColumns:
+          activation || appApplied
+            ? []
+            : ["basalt_model_requests.app_id", "basalt_model_requests.requirement"],
         addIndexes: neededIndexes.filter((name) => !existingIndexes.has(name)),
         conflicts: [
+          ...(activation && !markers.has(historyJournalPrepareVersion)
+            ? [`Requires ${historyJournalPrepareVersion} before activation`]
+            : []),
           ...neededTables
             .filter((table) => existingTables.has(table.name) && !table.ifNotExists)
             .map((table) => table.name),
@@ -106,7 +142,7 @@ export async function modelHistorySchemaPlan(db: HistoryDatabase) {
       lockTimeout: "500ms",
       statementTimeout: "5s",
       indexBuild: "transactional, write-blocking, bounded by the timeouts",
-      additive: true,
+      additive: !activation,
       writes: false,
       automaticBackfill: false,
     };
@@ -177,11 +213,14 @@ export async function handleModelHistoryOperation(
 ): Promise<Response> {
   const path = new URL(request.url).pathname;
   const read = path === historySchemaCatalogPath && request.method === "GET";
-  const apply = path === historySchemaApplyPath && request.method === "POST";
+  const activation = path === historyJournalActivationPath;
+  const apply = (path === historySchemaApplyPath || activation) && request.method === "POST";
   const backfill = path === historyBackfillPath;
   const traffic = path === historyTrafficPath;
   const completion = path === historyImportCompletionPath;
-  if (!read && !apply && !backfill && !traffic && !completion)
+  if (activation && request.method !== "GET" && request.method !== "POST")
+    return new Response(null, { status: 405 });
+  if (!read && !apply && !backfill && !traffic && !completion && !activation)
     return new Response(null, { status: 404 });
   try {
     if (completion)
@@ -201,11 +240,12 @@ export async function handleModelHistoryOperation(
       approval &&
       (approval.go !== true ||
         typeof approval.schemaHash !== "string" ||
-        typeof approval.catalogHash !== "string")
+        typeof approval.catalogHash !== "string" ||
+        (activation && approval.readersReady !== historyJournalReaderVersion))
     )
       return new Response(null, { status: 400 });
     return await withHistoryDatabase(connectionString, async (db) => {
-      const plan = await modelHistorySchemaPlan(db);
+      const plan = await modelHistorySchemaPlan(db, activation ? "journal-activation" : "schema");
       if (!approval)
         return Response.json(
           { status: "dry-run", ...plan },
@@ -217,13 +257,15 @@ export async function handleModelHistoryOperation(
         plan.catalogDiff.conflicts.length
       )
         return new Response(null, { status: 409 });
-      await migrateModelHistory(db);
+      if (activation) await activateModelHistoryJournal(db);
+      else await migrateModelHistory(db);
       return Response.json(
         {
           status: "complete",
           version: plan.version,
           schemaHash: plan.schemaHash,
           applied: !plan.applied,
+          ...(activation ? { readersReady: historyJournalReaderVersion } : {}),
           automaticBackfill: false,
         },
         { headers: { "Cache-Control": "no-store" } },

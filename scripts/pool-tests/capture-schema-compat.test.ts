@@ -7,6 +7,7 @@ import { backendUserName } from "../../src/pool/backend-users.ts";
 import { activateHomeBackfill, planHomeBackfill } from "../../src/pool/model-history/activation.ts";
 import { captureHomeRequests } from "../../src/pool/model-history/capture.ts";
 import { readPoolHistoryChanges } from "../../src/pool/model-history/change-revisions.ts";
+import { historyJournalPrepareVersion } from "../../src/pool/model-history/change-journal-schema.ts";
 import {
   historySchemaMigrations,
   migrateModelHistory,
@@ -46,7 +47,11 @@ test("capture preserves old-schema history and begins pending delivery after the
       "CREATE TABLE basalt_model_history_migrations (name text PRIMARY KEY,completed_at timestamptz DEFAULT CURRENT_TIMESTAMP)",
     );
     for (const migration of historySchemaMigrations) {
-      if (migration.name === "model_request_history_v5_change_revisions") continue;
+      if (
+        migration.name === "model_request_history_v5_change_revisions" ||
+        migration.name === historyJournalPrepareVersion
+      )
+        continue;
       for (const statement of migration.statements) await db.query(statement);
       await db.query("INSERT INTO basalt_model_history_migrations(name) VALUES($1)", [
         migration.name,

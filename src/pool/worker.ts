@@ -73,6 +73,7 @@ import {
   historyBackfillPath,
   historySchemaApplyPath,
   historySchemaCatalogPath,
+  historyJournalActivationPath,
 } from "./model-history/operator.ts";
 import { handleUsageImport, modelImportPath } from "./model-history/import-http.ts";
 import { handleOwnerUsageImport, ownerModelImportPath } from "./model-history/import-owner-http.ts";
@@ -828,6 +829,7 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
     if (
       [
         historySchemaCatalogPath,
+        historyJournalActivationPath,
         historySchemaApplyPath,
         historyBackfillPath,
         historyTrafficPath,
