@@ -6,10 +6,14 @@ import test from "node:test";
 import { classifyCurrentRelease } from "./release-plan.ts";
 import { assertNoReleaseHold } from "./runtime.ts";
 
-const workflow = (name: string) => readFileSync(new URL(`../../.github/workflows/${name}.yml`, import.meta.url), "utf8");
+const workflow = (name: string) =>
+  readFileSync(new URL(`../../.github/workflows/${name}.yml`, import.meta.url), "utf8");
 
 test("a set release hold stops releases with a clear message, and an empty one doesn't", async () => {
-  assert.throws(() => assertNoReleaseHold({ PRODUCTION_RELEASE_HOLD: "restoring backup" }), /on hold: PRODUCTION_RELEASE_HOLD is set/);
+  assert.throws(
+    () => assertNoReleaseHold({ PRODUCTION_RELEASE_HOLD: "restoring backup" }),
+    /on hold: PRODUCTION_RELEASE_HOLD is set/,
+  );
   assert.doesNotThrow(() => assertNoReleaseHold({ PRODUCTION_RELEASE_HOLD: "" }));
   assert.doesNotThrow(() => assertNoReleaseHold({ PRODUCTION_RELEASE_HOLD: "  " }));
   assert.doesNotThrow(() => assertNoReleaseHold({}));
@@ -28,7 +32,7 @@ test("a set release hold stops releases with a clear message, and an empty one d
 test("every release job receives the hold and the rollback workflow doesn't", () => {
   const hold = /PRODUCTION_RELEASE_HOLD: \$\{\{ vars\.PRODUCTION_RELEASE_HOLD \}\}/g;
   assert.equal(workflow("deploy").match(hold)?.length, 1);
-  assert.equal(workflow("release-main").match(hold)?.length, 2);
+  assert.equal(workflow("release-main").match(hold)?.length, 3);
   assert.equal(workflow("release-manual").match(hold)?.length, 2);
   assert.doesNotMatch(workflow("release-rollback"), /PRODUCTION_RELEASE_HOLD/);
 });
