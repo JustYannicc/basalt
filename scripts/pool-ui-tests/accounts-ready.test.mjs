@@ -2489,7 +2489,7 @@ test(
         );
       });
 
-    // Capacity panels reuse provider icons; summary rows keep their own provider marks.
+    // Overview badges use provider labels; supplied native readings still control inspection.
     const mark = (fill) =>
       `data:image/svg+xml;base64,${Buffer.from(
         `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="${fill}"/></svg>`,
@@ -2498,7 +2498,7 @@ test(
     const darkMark = mark("#9be7c4");
     for (const width of [1280, 390])
       await t.test(
-        `overview reuses provider icons and retains summary marks at ${width}px`,
+        `overview letter badges are independent of provider icons at ${width}px`,
         async () => {
           const f = quotaSamplingFixture(Date.now() - minute, samplerUsage);
           await f.usage.observe();
@@ -2686,16 +2686,12 @@ test(
                   );
                   return;
                 }
-                if (scenario.src === null) {
-                  assert.equal(await lab.getByText("C", { exact: true }).count(), 1);
-                  assert.equal(await lab.locator("picture").count(), 0);
-                } else {
-                  assert.equal(await lab.locator('[data-lab-mark="icon"]').count(), 1);
-                  assert.equal(
-                    await lab.locator("img").evaluate((image) => image.currentSrc),
-                    scenario.src,
-                  );
-                }
+                assert.equal(
+                  await lab.getByText("C", { exact: true }).count(),
+                  1,
+                  "Each lab entry shows the provider label's initial regardless of icons",
+                );
+                assert.equal(await lab.locator("img, picture").count(), 0);
                 const resets = frame.getByRole("list", { name: "Banked resets", exact: true });
                 const resetText = await resets.innerText();
                 assert.match(resetText, /2 weekly resets/);
