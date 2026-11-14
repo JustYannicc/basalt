@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AccountLimitsDialog, ModelLimits } from "./account-limits-view.tsx";
 import { Button, Tabs, TabsList, TabsTrigger } from "apps/ui";
+import { Button as InlineButton } from "./controls.tsx";
 import type { PoolView, Provider } from "../contract.ts";
 import type { PoolUsageSummaryResult } from "../usage-overview-contract.ts";
 import type { PoolApi } from "./api.ts";
@@ -424,8 +425,10 @@ export function SummaryOverview({
   /** Opens the host's History page with these filters. */
   onHistory: (search: Record<string, string>) => void;
 }) {
-  const [details, setDetails] = useState<readonly string[]>([]);
-  const detailAccounts = overviewAccounts(view).filter((account) => details.includes(account.id));
+  const [details, setDetails] = useState<{ title: string; ids: readonly string[] }>();
+  const detailAccounts = overviewAccounts(view).filter((account) =>
+    details?.ids.includes(account.id),
+  );
   const summary = state?.summary;
   const name = (provider: string | null) => summaryLabName(providers, provider);
   // Banked resets are counted per lab and kind, never as one pooled number. Spending stays in Accounts.
@@ -435,7 +438,7 @@ export function SummaryOverview({
           { ...view, accounts: view.accounts.filter((account) => account.provider === lab) },
           now,
         );
-        return line ? [{ lab, text: line.text }] : [];
+        return line ? [{ lab, ...line }] : [];
       })
     : [];
   return (
@@ -490,21 +493,35 @@ export function SummaryOverview({
         accounts={overviewAccounts(view)}
         providers={providers}
         now={now}
-        onOpen={(account) => setDetails([account.id])}
+        onOpen={(account) => setDetails({ title: "Account limits", ids: [account.id] })}
       />
       <AccountLimitsDialog
-        title="Account limits"
+        title={details?.title ?? "Account limits"}
         accounts={detailAccounts}
         providers={providers}
         now={now}
-        onClose={() => setDetails([])}
+        onClose={() => setDetails(undefined)}
       />
       {resets.length > 0 && (
         <ul aria-label="Banked resets" className="grid gap-1 pt-3 text-sm text-muted-foreground">
           {resets.map((reset) => (
             <li key={reset.lab} className="text-pretty">
-              <span className="font-medium text-foreground">{name(reset.lab)}</span> banked:{" "}
-              {reset.text}
+              <InlineButton
+                variant="link"
+                size="inline"
+                aria-label={`Details of ${name(reset.lab)} banked resets`}
+                onClick={() =>
+                  setDetails({
+                    title: "Banked resets",
+                    ids: reset.accounts.map((account) => account.id),
+                  })
+                }
+              >
+                <span className="text-left font-normal whitespace-normal text-muted-foreground">
+                  <span className="font-medium text-foreground">{name(reset.lab)}</span> banked:{" "}
+                  {reset.text}
+                </span>
+              </InlineButton>
             </li>
           ))}
           <li className="text-xs">Spend them from Accounts.</li>

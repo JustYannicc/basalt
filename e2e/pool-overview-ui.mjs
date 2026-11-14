@@ -565,6 +565,42 @@ const program = Effect.gen(function* () {
     yield* page(() => screen.getByRole("button", { name: /use reset/iu }).count()),
     0,
   );
+  yield* section(
+    "banked-reset details without model limits",
+    Effect.gen(function* () {
+      checked(
+        "reset-only accounts need no model-limit section",
+        yield* page(() =>
+          screen.getByRole("region", { name: "Model limits", exact: true }).count(),
+        ),
+        0,
+      );
+      for (const width of [1280, 390]) {
+        yield* page(() => owner.setViewportSize({ width, height: 900 }));
+        const dialog = screen.getByRole("dialog", { name: "Banked resets", exact: true });
+        yield* page(() =>
+          screen.getByRole("button", { name: /Details of .+ banked resets/u }).click(),
+        );
+        yield* page(() => dialog.getByText("Synthetic Codex", { exact: true }).waitFor());
+        checked(
+          `reset Details at ${width}px explains that nothing is spent`,
+          yield* page(() =>
+            dialog.innerText().then((text) => text.includes("Nothing is spent from here")),
+          ),
+          true,
+        );
+        checked(
+          `reset Details at ${width}px stays within the viewport`,
+          yield* page(() =>
+            owner.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+          ),
+          true,
+        );
+        yield* page(() => dialog.getByRole("button", { name: "Close", exact: true }).click());
+      }
+      yield* page(() => owner.setViewportSize({ width: 1280, height: 900 }));
+    }),
+  );
   yield* shoot("drilldown", screen, "#usage-breakdown-heading");
   yield* section(
     "hourly heatmap values on a phone",
