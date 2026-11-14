@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { pins, sha, digest } from "../releases/fixtures.test-helpers.ts";
 import type { ClassificationReport } from "../releases/types.ts";
 import { SafetyGateError } from "./contracts.ts";
@@ -35,6 +39,30 @@ const secondReceipt = qualifiedFrameworkRegistry(
   sha("2"),
   artifacts,
 );
+
+test("generated registry decodes every publication byte without changing order or identity", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "framework-registry-roundtrip-"));
+  try {
+    const registries = [
+      [],
+      [canonical],
+      secondReceipt.releases,
+      [{ ...first, version: "another-release" }, second],
+    ];
+    for (const [index, releases] of registries.entries()) {
+      const path = join(directory, `registry-${index}.ts`);
+      await writeFile(path, renderQualifiedFrameworkRegistry(releases));
+      const generated = await import(pathToFileURL(path).href);
+      assert.deepEqual(generated.generatedFrameworkReleases, releases);
+      assert.equal(
+        frameworkRegistryDigest(generated.generatedFrameworkReleases),
+        frameworkRegistryDigest(releases),
+      );
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("successive framework registries preserve canonical and earlier release identities", () => {
   const next = qualifiedFrameworkRegistry(
