@@ -2077,10 +2077,9 @@ index 0000000000..04401a0eb7
 +	}
 +}
 diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go b/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go
-index 4a8d44cbde..2b267f455b 100644
 --- a/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go
 +++ b/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go
-@@ -2,16 +2,14 @@ package openai
+@@ -2,8 +2,6 @@
  
  import (
  	"context"
@@ -2089,16 +2088,15 @@ index 4a8d44cbde..2b267f455b 100644
  	"io"
  	"net/http"
  	"net/http/httptest"
- 	"strings"
- 	"sync/atomic"
+@@ -12,6 +10,7 @@
  	"testing"
--	"time"
+ 	"time"
  
 +	"github.com/MoeForge/moego/ojson"
  	"github.com/gin-gonic/gin"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-@@ -61,10 +59,7 @@ func TestHTTPSubmissionClaudeAcceptedErrorAndMalformedStart(t *testing.T) {
+@@ -61,10 +60,7 @@
  				}
  				// Count fully received requests, not executor invocations or TCP dials.
  				attempt := submissions.Add(1)
@@ -2110,7 +2108,7 @@ index 4a8d44cbde..2b267f455b 100644
  					invalidRequests.Add(1)
  					t.Errorf("wrong upstream path: method=%s path=%s body=%s", r.Method, r.URL.Path, body)
  				}
-@@ -98,14 +93,14 @@ func TestHTTPSubmissionClaudeAcceptedErrorAndMalformedStart(t *testing.T) {
+@@ -98,8 +94,9 @@
  			router.POST("/v1/chat/completions", NewOpenAIAPIHandler(base).ChatCompletions)
  			public := httptest.NewServer(router)
  			defer public.Close()
@@ -2122,13 +2120,7 @@ index 4a8d44cbde..2b267f455b 100644
  			if errRequest != nil {
  				t.Fatal(errRequest)
  			}
- 			request.Header.Set("Content-Type", "application/json")
- 			client := public.Client()
--			client.Timeout = 10 * time.Second
- 			response, errResponse := client.Do(request)
- 			if errResponse != nil {
- 				t.Fatal(errResponse)
-@@ -131,16 +126,9 @@ func TestHTTPSubmissionClaudeAcceptedErrorAndMalformedStart(t *testing.T) {
+@@ -131,16 +128,9 @@
  				t.Fatal("probe did not reach the expected Claude upstream stream path")
  			}
  			if tc.valid {
@@ -2148,7 +2140,7 @@ index 4a8d44cbde..2b267f455b 100644
  					t.Fatalf("valid terminal response changed: status=%d body=%s", response.StatusCode, body)
  				}
  				return
-@@ -148,13 +136,8 @@ func TestHTTPSubmissionClaudeAcceptedErrorAndMalformedStart(t *testing.T) {
+@@ -148,13 +138,8 @@
  			if response.StatusCode != http.StatusBadGateway {
  				t.Errorf("status=%d, want 502", response.StatusCode)
  			}
@@ -2165,10 +2157,9 @@ index 4a8d44cbde..2b267f455b 100644
  			}
  			if got := response.Header.Get("x-should-retry"); got != "false" {
 diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go b/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go
-index e3a7e5e03f..98d4e4f19c 100644
 --- a/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go
 +++ b/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go
-@@ -2,16 +2,14 @@ package openai
+@@ -2,8 +2,6 @@
  
  import (
  	"context"
@@ -2177,16 +2168,15 @@ index e3a7e5e03f..98d4e4f19c 100644
  	"io"
  	"net/http"
  	"net/http/httptest"
- 	"strings"
- 	"sync/atomic"
+@@ -12,6 +10,7 @@
  	"testing"
--	"time"
+ 	"time"
  
 +	"github.com/MoeForge/moego/ojson"
  	"github.com/gin-gonic/gin"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-@@ -51,10 +49,7 @@ func TestHTTPSubmissionClaudeAcceptedValidationDoesNotReplay(t *testing.T) {
+@@ -51,10 +50,7 @@
  				}
  				// Count fully received requests, not executor invocations or TCP dials.
  				submissions.Add(1)
@@ -2198,7 +2188,7 @@ index e3a7e5e03f..98d4e4f19c 100644
  					invalidRequests.Add(1)
  					t.Errorf("wrong upstream path: method=%s path=%s body=%s", r.Method, r.URL.Path, body)
  				}
-@@ -84,14 +79,14 @@ func TestHTTPSubmissionClaudeAcceptedValidationDoesNotReplay(t *testing.T) {
+@@ -84,8 +80,9 @@
  			router.POST("/v1/chat/completions", NewOpenAIAPIHandler(base).ChatCompletions)
  			public := httptest.NewServer(router)
  			defer public.Close()
@@ -2210,13 +2200,7 @@ index e3a7e5e03f..98d4e4f19c 100644
  			if errRequest != nil {
  				t.Fatal(errRequest)
  			}
- 			request.Header.Set("Content-Type", "application/json")
- 			client := public.Client()
--			client.Timeout = 10 * time.Second
- 			response, errResponse := client.Do(request)
- 			if errResponse != nil {
- 				t.Fatal(errResponse)
-@@ -113,16 +108,9 @@ func TestHTTPSubmissionClaudeAcceptedValidationDoesNotReplay(t *testing.T) {
+@@ -113,16 +110,9 @@
  				t.Fatal("probe did not reach the expected Claude upstream stream path")
  			}
  			if tc.valid {
@@ -2236,7 +2220,7 @@ index e3a7e5e03f..98d4e4f19c 100644
  					t.Fatalf("valid terminal response changed: status=%d body=%s", response.StatusCode, body)
  				}
  				return
-@@ -130,13 +118,8 @@ func TestHTTPSubmissionClaudeAcceptedValidationDoesNotReplay(t *testing.T) {
+@@ -130,13 +120,8 @@
  			if response.StatusCode != http.StatusBadGateway {
  				t.Errorf("status=%d, want 502", response.StatusCode)
  			}
