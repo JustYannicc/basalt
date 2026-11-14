@@ -339,16 +339,17 @@ proof(
     const { createRequire } = await import("node:module");
     const { Effect, Redacted } = await import("effect");
     const { SqlClient } = await import("effect/sql");
-    const { makeChangeJournal } = await import(
-      "../../.upstream/apps/hosted/server/src/implementation/change-revisions.ts"
-    );
+    const { makeChangeJournal } =
+      await import("../../.upstream/apps/hosted/server/src/implementation/change-revisions.ts");
     const { makeRevisionFence } = await import("../../.upstream/packages/apps/src/client.ts");
     const require = createRequire(
       new URL("../../.upstream/packages/fumadb-effect/package.json", import.meta.url),
     );
     const PgClient: typeof import("../../.upstream/packages/fumadb-effect/node_modules/@effect/sql-pg/dist/PgClient.js") =
       await import(require.resolve("@effect/sql-pg/PgClient"));
-    const schema = String((await observer.query("select current_schema() as schema")).rows[0].schema);
+    const schema = String(
+      (await observer.query("select current_schema() as schema")).rows[0].schema,
+    );
     const key = { topic: "accounts", resource: "*" };
     await a.query("update executor_accounts set label='Before delayed read' where id='acc_a'");
     assert.equal(await project(a), 1);
