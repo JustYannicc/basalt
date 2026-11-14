@@ -61,7 +61,6 @@ test("initial, refresh and model summary reads stay within the populated real-Po
       "certified-refresh",
       "certified-model",
     ] as const) {
-      const certified = action.startsWith("certified-");
       const models = action.endsWith("model");
       const proof = action === "certified-initial" ? await summaryCompletionFixture(f) : undefined;
       let priceReads = 0;
@@ -122,8 +121,8 @@ test("initial, refresh and model summary reads stay within the populated real-Po
       const priced = statements.filter(({ text }) => /\bpriced\s+AS\s*\(/i.test(text));
       assert.ok(selects <= 10, `${action} used ${selects} history SELECTs`);
       assert.ok(statements.length <= 15, `${action} used ${statements.length} SQL statements`);
-      assert.equal(selects, certified ? 10 : 9);
-      assert.equal(statements.length, certified ? 15 : 14);
+      assert.equal(selects, 10);
+      assert.equal(statements.length, 15);
       assert.equal(priced.length, 1);
       assert.equal(priceReads, 1);
       console.log(

@@ -153,6 +153,7 @@ export async function poolUsageSummary(
       nativeComplete &&
         missingHours !== null &&
         ![...missingHours].some((at) => Date.parse(at) + 3_600_000 > incidentFrom),
+      observed.terminalReady,
     );
     const forecasts = seriesUsageForecasts(series, capture, historyCoverage.known);
     let result: PoolUsageSummaryResult = {

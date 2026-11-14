@@ -6,12 +6,10 @@ diff --git a/apps/hosted/server/src/contracts/pool-usage.ts b/apps/hosted/server
  import { AccountSelectionPolicy, UsageCreditPolicy, AccountUsageRouting } from "apps/contracts";
  import { AccountId, AppId, StorageError } from "@executor-js/sdk/core";
  import { ApiError } from "@executor-js/utils/api-error";
-@@ -189,6 +190,18 @@ export const HostedPoolUsage = /* @__PURE__ */ (() =>
-         },
-       ).annotate(RequiredAction, "manage"),
+@@ -226,6 +227,18 @@
      )
-+    .add(
-+      HttpApiEndpoint.post(
+     .add(
+       HttpApiEndpoint.post(
 +        "poolUsageSummary",
 +        "/api/organizations/:organization/apps/:app/pool-usage/summary",
 +        {
@@ -22,48 +20,54 @@ diff --git a/apps/hosted/server/src/contracts/pool-usage.ts b/apps/hosted/server
 +        },
 +      ).annotate(RequiredAction, "manage"),
 +    )
-     .add(
-       HttpApiEndpoint.post(
++    .add(
++      HttpApiEndpoint.post(
          "poolUsageSeries",
+         "/api/organizations/:organization/apps/:app/pool-usage/series",
+         {
 diff --git a/apps/hosted/server/src/implementation/pool-backend.ts b/apps/hosted/server/src/implementation/pool-backend.ts
 --- a/apps/hosted/server/src/implementation/pool-backend.ts
 +++ b/apps/hosted/server/src/implementation/pool-backend.ts
-@@ -34,6 +34,7 @@ type PoolCommand =
+@@ -36,6 +36,7 @@
    | "setSelectionPolicy"
    | "managed-usage"
    | "managed-cap"
 +  | "poolUsageSummary"
    | "poolUsageSeries"
+   | "setUsageAccountLabel"
    | "lastSuccessAt"
-   | "poolOverview"
-@@ -53,17 +54,19 @@ export const sendPoolCommandResponse = (action: PoolCommand, payload: Record<str
+@@ -56,19 +57,21 @@
      const client = yield* HttpClient.HttpClient;
      // Match the public pool usage paths in Basalt's src/pool/model-history/series-http.ts.
      const path =
 -      action === "importUsage"
 -        ? "/pool/v1/usage/import/owner"
--        : action === "poolUsageSeries"
--          ? "/pool/v1/usage/series"
--          : action === "lastSuccessAt"
--            ? "/pool/v1/usage/last-success"
--            : action === "poolOverview"
--              ? "/pool/v1/usage/overview"
--              : action === "poolPersonalOverview"
--                ? "/pool/v1/usage/personal-overview"
--                : `/pool/v1/${action}`;
+-        : action === "importUsageBulk"
+-          ? "/pool/v1/usage/import/bulk"
+-          : action === "poolUsageSeries"
+-            ? "/pool/v1/usage/series"
+-            : action === "lastSuccessAt"
+-              ? "/pool/v1/usage/last-success"
+-              : action === "poolOverview"
+-                ? "/pool/v1/usage/overview"
+-                : action === "poolPersonalOverview"
+-                  ? "/pool/v1/usage/personal-overview"
+-                  : `/pool/v1/${action}`;
 +      action === "poolUsageSummary"
 +        ? "/pool/v1/usage/summary"
 +        : action === "importUsage"
 +          ? "/pool/v1/usage/import/owner"
-+          : action === "poolUsageSeries"
-+            ? "/pool/v1/usage/series"
-+            : action === "lastSuccessAt"
-+              ? "/pool/v1/usage/last-success"
-+              : action === "poolOverview"
-+                ? "/pool/v1/usage/overview"
-+                : action === "poolPersonalOverview"
-+                  ? "/pool/v1/usage/personal-overview"
-+                  : `/pool/v1/${action}`;
++          : action === "importUsageBulk"
++            ? "/pool/v1/usage/import/bulk"
++            : action === "poolUsageSeries"
++              ? "/pool/v1/usage/series"
++              : action === "lastSuccessAt"
++                ? "/pool/v1/usage/last-success"
++                : action === "poolOverview"
++                  ? "/pool/v1/usage/overview"
++                  : action === "poolPersonalOverview"
++                    ? "/pool/v1/usage/personal-overview"
++                    : `/pool/v1/${action}`;
      const response = yield* client.post(new URL(path, origin).href, {
        body: HttpBody.jsonUnsafe({ envelope }),
      });
@@ -75,14 +79,14 @@ diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/s
  import { readPool, sendPoolCommand, withPool } from "./pool-backend.ts";
  import {
    poolAccountRouting,
-@@ -252,6 +253,7 @@ export const hostedPoolUsageHandlers = HttpApiBuilder.group(HostedApi, "poolUsag
+@@ -274,6 +275,7 @@
      .handle("setSelectionPolicy", ({ params, payload }) =>
        setPoolSelectionPolicy(params.app, payload.accountSelectionPolicy),
      )
 +    .handle("poolUsageSummary", ({ params, payload }) => poolUsageOverviewRead(params.app, payload))
      .handle("poolUsageSeries", ({ params, payload }) => poolUsageSeries(params.app, payload))
-     .handle("lastSuccessAt", ({ params, payload }) => lastSuccessAt(params.app, payload))
-     .handle("get", ({ params, query }) => poolUsage(params.app, query.after))
+     .handle("setUsageAccountLabel", ({ params, payload }) =>
+       setUsageAccountLabel(params.app, payload),
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
@@ -91,7 +95,7 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
  import { withSelectedAccountInspection } from "./selected-account-read.ts";
  import { SelectedAccountInspection } from "@executor-js/sdk/core";
  import {
-@@ -16,7 +17,7 @@ import { CurrentAuthorization } from "../contracts/authorization.ts";
+@@ -18,7 +19,7 @@
  import { CurrentUsage, recordUsage } from "../contracts/product-analytics.ts";
  import { fullAuthority } from "@executor-js/authorization";
  import { GroupDatabase } from "../contracts/groups.ts";
@@ -100,7 +104,7 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
  /** Hosted policy around the shared app browser protocol and retained asset renderer. */
  import {
    AccountRequired,
-@@ -271,6 +272,35 @@ export const hostedAppUi = <R = never>(
+@@ -273,6 +274,35 @@
        return { ...resolved, access, app };
      });
    const authorize = Effect.flatMap(target, authorizeTarget);
@@ -136,7 +140,7 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
    const assets = (version: VersionMetadata, path: string) =>
      Effect.gen(function* () {
        const runtime = yield* HostedAppRuntime;
-@@ -859,6 +889,10 @@ export const hostedAppUi = <R = never>(
+@@ -861,6 +891,10 @@
      originAccess,
      sessionAccess,
      telemetry,
@@ -144,15 +148,15 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
 +      path: poolAppUsageSummaryPath,
 +      read: poolAppUsageSummary(authorizePoolSummary),
 +    } as const,
-     poolUsage: { path: poolAppUsagePath, read: poolAppUsage(authorize) } as const,
-     poolPersonalUsageOverview: {
-       path: poolAppPersonalUsageOverviewPath,
+     poolUsageAccountLabel: {
+       path: poolAppUsageAccountLabelPath,
+       write: poolAppUsageAccountLabel(authorize),
 diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
 --- a/apps/hosted/self-host/src/implementation/routes.ts
 +++ b/apps/hosted/self-host/src/implementation/routes.ts
-@@ -244,6 +244,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
-       HttpRouter.add("GET", "/_executor/version", appUi.versions),
+@@ -250,6 +250,7 @@
        HttpRouter.add("POST", appUi.poolUsage.path, appUi.poolUsage.read),
+       HttpRouter.add("POST", appUi.poolUsageAccountLabel.path, appUi.poolUsageAccountLabel.write),
        HttpRouter.add("POST", appUi.poolUsageOverview.path, appUi.poolUsageOverview.read),
 +      HttpRouter.add("POST", appUi.poolUsageSummary.path, appUi.poolUsageSummary.read),
        HttpRouter.add(
@@ -161,9 +165,9 @@ diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/se
 diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
 --- a/apps/hosted/cloud/src/app-ui.ts
 +++ b/apps/hosted/cloud/src/app-ui.ts
-@@ -176,6 +176,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
-       HttpRouter.add("GET", "/_executor/version", appUi.versions),
+@@ -177,6 +177,7 @@
        HttpRouter.add("POST", appUi.poolUsage.path, appUi.poolUsage.read),
+       HttpRouter.add("POST", appUi.poolUsageAccountLabel.path, appUi.poolUsageAccountLabel.write),
        HttpRouter.add("POST", appUi.poolUsageOverview.path, appUi.poolUsageOverview.read),
 +      HttpRouter.add("POST", appUi.poolUsageSummary.path, appUi.poolUsageSummary.read),
        HttpRouter.add(
@@ -172,7 +176,7 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
 diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.spec.ts
 --- a/e2e/tests/pool-usage-series.spec.ts
 +++ b/e2e/tests/pool-usage-series.spec.ts
-@@ -346,6 +346,7 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool usage series", (it) => {
+@@ -381,6 +381,7 @@
            expect(cost.importedApiPrice.amount).toBe("0.123456789012");
          }
          yield* backend.respond((assertion) => {
@@ -180,10 +184,11 @@ diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.s
            if (assertion.action === "poolOverview") return { result: "Overview is ready" };
            if (assertion.action !== "poolPersonalOverview") return {};
            return {
-@@ -395,6 +396,111 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool usage series", (it) => {
+@@ -437,6 +438,111 @@
+             "overview-backend",
            ].sort(),
          );
- 
++
 +        const summaryPath = "/_executor/api/pool-usage/summary";
 +        const summaryQuery = { from: range.from, to: range.to, by: "provider" as const };
 +        const summaryCallsBefore = (yield* backend.calls).length;
@@ -288,10 +293,9 @@ diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.s
 +            audience: { kind: "everyone" },
 +          })).status,
 +        ).toBe(200);
-+
+ 
          const memberResponse = yield* postApp(memberApp, personalPath, attack(ownerIdentity));
          expect(memberResponse.status).toBe(200);
-         expect(
 diff --git a/apps/hosted/server/src/contracts/pool-usage-summary.ts b/apps/hosted/server/src/contracts/pool-usage-summary.ts
 new file mode 100644
 --- /dev/null
@@ -426,23 +430,23 @@ new file mode 100644
 diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
 --- a/e2e/support/pool-usage-series-backend.ts
 +++ b/e2e/support/pool-usage-series-backend.ts
-@@ -47,6 +47,7 @@ const PersonalOverviewInput = Schema.Struct({
+@@ -47,6 +47,7 @@
  });
  const Assertion = Schema.Struct({
    action: Schema.Literals([
 +    "poolUsageSummary",
      "poolUsageSeries",
+     "setUsageAccountLabel",
      "lastSuccessAt",
-     "poolOverview",
-@@ -62,6 +63,7 @@ const Assertion = Schema.Struct({
+@@ -64,6 +65,7 @@
  
  // Public paths are shared by the signed native series, last-success and overview reads.
  const assertionPaths = {
 +  poolUsageSummary: "/pool/v1/usage/summary",
    poolUsageSeries: "/pool/v1/usage/series",
+   setUsageAccountLabel: "/pool/v1/setUsageAccountLabel",
    lastSuccessAt: "/pool/v1/usage/last-success",
-   poolOverview: "/pool/v1/usage/overview",
-@@ -109,7 +111,7 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
+@@ -112,7 +114,7 @@
      )
        return HttpServerResponse.empty({ status: 401 });
      const authority =
@@ -451,11 +455,11 @@ diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-s
          ? yield* Schema.decodeUnknownEffect(PoolOverviewAssertion)(assertion.input).pipe(
              Effect.map((value) => value.authority),
              Effect.catch(() => Effect.succeed(undefined)),
-@@ -345,6 +347,7 @@ export const poolUsageSeriesBackend = Effect.gen(function* () {
+@@ -355,6 +357,7 @@
+     HttpRouter.serve(
        Layer.mergeAll(
          // Match the public pool usage paths in Basalt's src/pool/model-history/series-http.ts.
-         HttpRouter.add("POST", "/pool/v1/usage/series", handler),
 +        HttpRouter.add("POST", "/pool/v1/usage/summary", handler),
+         HttpRouter.add("POST", "/pool/v1/usage/series", handler),
+         HttpRouter.add("POST", "/pool/v1/setUsageAccountLabel", handler),
          HttpRouter.add("POST", "/pool/v1/usage/last-success", handler),
-         HttpRouter.add("POST", "/pool/v1/usage/overview", handler),
-         HttpRouter.add("POST", "/pool/v1/usage/personal-overview", handler),

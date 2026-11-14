@@ -89,10 +89,6 @@ export async function summaryFixture(f: Fixture) {
 
 /** The reader's synthetic approved receipt, using the completion owner's seven-field contract. */
 export async function summaryCompletionFixture(f: Fixture) {
-  await f.db.query(`CREATE TABLE basalt_model_import_completion (
-    pool char(16),source char(64),frozen_from varchar(30),frozen_to varchar(30),
-    upper_source_id numeric(20,0),manifest_digest char(64),map_digest char(64),
-    ids_digest char(64),verified_rows bigint,PRIMARY KEY(pool,source))`);
   const source = await digest("fixture-import");
   const completion = {
     frozenFrom: timestamp("2026-01-02T01:45:00Z"),

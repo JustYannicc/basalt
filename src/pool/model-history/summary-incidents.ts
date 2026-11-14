@@ -7,11 +7,12 @@ export async function summaryIncidents(
   pool: string,
   to: string,
   captureComplete: boolean,
+  terminalReady: boolean,
 ): Promise<UsageSummaryIncidents> {
   const from = new Date(Date.parse(to) - 3_600_000).toISOString();
   await db.query("SAVEPOINT summary_incidents");
   try {
-    const value = await readPoolReliability(db, pool, from, to);
+    const value = await readPoolReliability(db, pool, from, to, terminalReady);
     const canceled = value.real.failures.find((failure) => failure.status === 499)?.count ?? 0;
     await db.query("RELEASE SAVEPOINT summary_incidents");
     if (value.classification !== "ready")

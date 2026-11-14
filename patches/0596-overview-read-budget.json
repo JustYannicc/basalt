@@ -1,7 +1,7 @@
 {
   "identity": "basalt-overview-read-budget",
   "file": "0596-overview-read-budget.patch",
-  "content_sha256": "dc1be31e074e40c3f63a99939f7a5cdc0c65604a93bbdf7764ddc4ffda9b1d50",
+  "content_sha256": "ef83cdd0a91cbd22c94ffe3208469c493f34611143c8d869cb5663a34f1f914d",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
