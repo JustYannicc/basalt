@@ -75,6 +75,8 @@ export interface PoolUsageSummaryResult {
   /** Coverage and forecasting share this broader history snapshot. */
   readonly readFrom: string;
   readonly asOf: string | null;
+  /** Earliest retained record in this pool when its bounded lookup is conclusive, not capture proof. */
+  readonly retainedFirstAt?: string | null;
   readonly coverage: SeriesCoverage;
   /** Each day covers only its intersection with these bounds, including the current partial day. */
   readonly historyCoverage: {

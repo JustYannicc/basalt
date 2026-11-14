@@ -81,3 +81,243 @@ diff --git a/e2e/tests/pool-provider-native-presentation.spec.ts b/e2e/tests/poo
            );
          }
        }),
+diff --git a/apps/hosted/server/src/contracts/pool-usage-directory.ts b/apps/hosted/server/src/contracts/pool-usage-directory.ts
+new file mode 100644
+index 0000000..c91b481
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/pool-usage-directory.ts
+@@ -0,0 +1,11 @@
++import { Schema } from "effect";
++
++/** Current pool-access names, attached by the host; no backend identity can name a person. */
++export const PoolUsageDirectory = /* @__PURE__ */ (() =>
++  Schema.Array(
++    Schema.Struct({
++      person: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
++      displayName: Schema.String.check(Schema.isMaxLength(256)),
++      active: Schema.Boolean,
++    }),
++  ).check(Schema.isMaxLength(500)))();
+diff --git a/apps/hosted/server/src/contracts/pool-usage-overview.ts b/apps/hosted/server/src/contracts/pool-usage-overview.ts
+index 7485a62..f3a865f 100644
+--- a/apps/hosted/server/src/contracts/pool-usage-overview.ts
++++ b/apps/hosted/server/src/contracts/pool-usage-overview.ts
+@@ -1 +1,2 @@
++import { PoolUsageDirectory } from "./pool-usage-directory.ts";
+ import { AccountId, AppId } from "@executor-js/sdk/core";
+@@ -21,9 +22,3 @@ const Directory = /* @__PURE__ */ (() =>
+   Schema.Struct({
+-    members: Schema.Array(
+-      Schema.Struct({
+-        person: hash,
+-        displayName: Schema.String.check(Schema.isMaxLength(256)),
+-        active: Schema.Boolean,
+-      }),
+-    ).check(Schema.isMaxLength(500)),
++    members: PoolUsageDirectory,
+     activeCount: count,
+diff --git a/apps/hosted/server/src/contracts/pool-usage-series.ts b/apps/hosted/server/src/contracts/pool-usage-series.ts
+index 2fa52cd..80ba666 100644
+--- a/apps/hosted/server/src/contracts/pool-usage-series.ts
++++ b/apps/hosted/server/src/contracts/pool-usage-series.ts
+@@ -1 +1,2 @@
++import { PoolUsageDirectory } from "./pool-usage-directory.ts";
+ import { AccountId } from "@executor-js/sdk/core";
+@@ -150,3 +151,3 @@ const mapping = /* @__PURE__ */ (() =>
+   }))();
+-export const PoolUsageSeries = /* @__PURE__ */ (() =>
++export const PoolUsageSeriesData = /* @__PURE__ */ (() =>
+   Schema.Struct({
+@@ -238 +239,7 @@ export const LastSuccessAt = /* @__PURE__ */ (() =>
+   }))();
++
++export const PoolUsageSeries = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    ...PoolUsageSeriesData.fields,
++    directory: Schema.optionalKey(PoolUsageDirectory),
++  }))();
+diff --git a/apps/hosted/server/src/implementation/pool-usage-directory.ts b/apps/hosted/server/src/implementation/pool-usage-directory.ts
+new file mode 100644
+index 0000000..eb2eed5
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-usage-directory.ts
+@@ -0,0 +1,43 @@
++import { StorageError } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { Principal } from "../contracts/auth.ts";
++import { policyDatabase } from "./resource-policy.ts";
++
++const DirectoryPerson = Schema.Struct({
++  user: Principal.fields.userId,
++  displayName: Schema.String,
++});
++const digest = async (value: string) => {
++  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
++  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
++};
++
++/** Names come only from the current authorized pool audience in this organization. */
++export const poolMemberDirectory = (pool: {
++  readonly organization: string;
++  readonly users: readonly string[];
++}) =>
++  Effect.gen(function* () {
++    const users = [...new Set(pool.users)].sort();
++    if (users.length > 500) return yield* new StorageError();
++    const sql = yield* policyDatabase;
++    const rows =
++      users.length === 0
++        ? []
++        : yield* sql`
++    select m."userId" as "user", coalesce(u.name, '') as "displayName"
++    from member m join "user" u on u.id = m."userId"
++    where m."organizationId" = ${pool.organization} and ${sql.in("m.userId", users)}
++    order by m."userId"`;
++    const people = yield* Schema.decodeUnknownEffect(Schema.Array(DirectoryPerson))(rows);
++    return yield* Effect.forEach(people, (person) =>
++      Effect.tryPromise(() => digest(person.user)).pipe(
++        Effect.mapError(() => new StorageError()),
++        Effect.map((personHash) => ({
++          person: personHash,
++          displayName: person.displayName,
++          active: true as const,
++        })),
++      ),
++    );
++  });
+diff --git a/apps/hosted/server/src/implementation/pool-usage-overview.ts b/apps/hosted/server/src/implementation/pool-usage-overview.ts
+index 3733048..c49a034 100644
+--- a/apps/hosted/server/src/implementation/pool-usage-overview.ts
++++ b/apps/hosted/server/src/implementation/pool-usage-overview.ts
+@@ -1,2 +1,3 @@
+-import { AppId, StorageError, identifyProvider } from "@executor-js/sdk/core";
++import { poolMemberDirectory } from "./pool-usage-directory.ts";
++import { AppId, identifyProvider } from "@executor-js/sdk/core";
+ import { Crypto, Effect, Schema } from "effect";
+@@ -4,3 +5,2 @@ import { SqlClient } from "effect/sql";
+ import { providerDeclaration } from "apps/host";
+-import { Principal } from "../contracts/auth.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+@@ -17,11 +17,2 @@ import { appUiPhase } from "./app-ui-phase-timing.ts";
+ 
+-const DirectoryPerson = Schema.Struct({
+-  user: Principal.fields.userId,
+-  displayName: Schema.String,
+-});
+-const digest = async (value: string) => {
+-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+-  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+-};
+-
+ type Pool = {
+@@ -145,29 +136,3 @@ export const poolOverviewSignedInput = (pool: Pool, input: PoolOverviewInput) =>
+   Effect.gen(function* () {
+-    const users = [...new Set(pool.users)].sort();
+-    if (users.length > 500) return yield* new StorageError();
+-    const sql = yield* policyDatabase;
+-    const members = yield* appUiPhase(
+-      "overview-directory",
+-      Effect.gen(function* () {
+-        const rows =
+-          users.length === 0
+-            ? []
+-            : yield* sql`select m."userId" as "user", coalesce(u.name, '') as "displayName"
+-            from member m join "user" u on u.id = m."userId"
+-            where m."organizationId" = ${pool.organization}
+-              and ${sql.in("m.userId", users)}
+-            order by m."userId"`;
+-        const people = yield* Schema.decodeUnknownEffect(Schema.Array(DirectoryPerson))(rows);
+-        return yield* Effect.forEach(people, (person) =>
+-          Effect.tryPromise(() => digest(person.user)).pipe(
+-            Effect.mapError(() => new StorageError()),
+-            Effect.map((personHash) => ({
+-              person: personHash,
+-              displayName: person.displayName,
+-              active: true as const,
+-            })),
+-          ),
+-        );
+-      }),
+-    );
++    const members = yield* appUiPhase("overview-directory", poolMemberDirectory(pool));
+ 
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+index 051e4d4..dc1db2e 100644
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -25,3 +25,3 @@ import {
+   type LastSuccessAtInput,
+-  PoolUsageSeries,
++  PoolUsageSeriesData,
+   type PoolUsageSeriesInput,
+@@ -34,2 +34,3 @@ import { HostedExecutor } from "../contracts/executor.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
++import { poolMemberDirectory } from "./pool-usage-directory.ts";
+ 
+@@ -134,3 +135,3 @@ export const poolUsageSeries = (app: AppId, input: PoolUsageSeriesInput) =>
+       const accounts = yield* usageSeriesAccounts(pool, input.accounts);
+-      return yield* sendPoolCommand(
++      const result = yield* sendPoolCommand(
+         "poolUsageSeries",
+@@ -143,4 +144,7 @@ export const poolUsageSeries = (app: AppId, input: PoolUsageSeriesInput) =>
+         },
+-        PoolUsageSeries,
++        PoolUsageSeriesData,
+       );
++      return input.by.includes("person") && input.after === undefined
++        ? { ...result, directory: yield* poolMemberDirectory(pool) }
++        : result;
+     }),
+diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.spec.ts
+index ec5ddb9..433e441 100644
+--- a/e2e/tests/pool-usage-series.spec.ts
++++ b/e2e/tests/pool-usage-series.spec.ts
+@@ -392,2 +392,37 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool usage series", (it) => {
+         const retainedSeries = JSON.parse(appSeries.text);
++        const forgedDirectory = [
++          { person: "f".repeat(64), displayName: "Forged member", active: true },
++        ];
++        yield* backend.respond(() => ({ ...retainedSeries, directory: forgedDirectory }));
++        const personQuery = { ...query, by: ["person"] };
++        const named = yield* postApp(ownerApp, "/_executor/api/pool-usage/series", {
++          version: app.activeVersion,
++          input: { ...personQuery, directory: forgedDirectory },
++        });
++        expect(named.status).toBe(200);
++        const directory = JSON.parse(named.text).directory;
++        expect(directory).toHaveLength(3);
++        expect(directory).toContainEqual({
++          person: ownerPerson,
++          displayName: "Test Owner",
++          active: true,
++        });
++        expect(directory).toContainEqual({
++          person: memberPerson,
++          displayName: "Test member",
++          active: true,
++        });
++        expect(named.text).not.toContain("@example.test");
++        expect(named.text).not.toContain("Forged member");
++        expect(named.text).not.toContain(ownerIdentity);
++        expect(named.text).not.toContain(memberIdentity.userId);
++        for (const input of [{ ...personQuery, after: "continuation" }, query]) {
++          const page = yield* postApp(ownerApp, "/_executor/api/pool-usage/series", {
++            version: app.activeVersion,
++            input,
++          });
++          expect(page.status).toBe(200);
++          expect(JSON.parse(page.text).directory).toBeUndefined();
++        }
++
+         for (const apiEstimate of [
+@@ -434,2 +469,10 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool usage series", (it) => {
+         expect((yield* backend.calls).length).toBe(beforeMemberLabel);
++        expect(
++          (yield* postApp(memberApp, "/_executor/api/pool-usage/series", {
++            version: app.activeVersion,
++            input: personQuery,
++          })).status,
++        ).toBe(403);
++        expect((yield* backend.calls).length).toBe(beforeMemberLabel);
++
+         const personalPath = "/_executor/api/pool-usage/personal-overview";

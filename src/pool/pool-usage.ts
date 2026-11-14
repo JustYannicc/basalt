@@ -410,8 +410,8 @@ export class PoolUsage {
       if (!caller) return fail(403, "unauthorized", "Sign in to see your usage on this pool.");
       const raw = new URL(request.url).searchParams.get("days") ?? String(usageDays);
       const capacityRequest = new URL(request.url).pathname === `${controlBasePath}/usage/capacity`;
-      const maxDays = capacityRequest ? 90 : usageDays;
-      if (!/^[1-9][0-9]?$/.test(raw) || Number(raw) > maxDays)
+      const maxDays = capacityRequest ? 400 : usageDays;
+      if (!/^[1-9][0-9]{0,2}$/.test(raw) || Number(raw) > maxDays)
         return fail(400, "invalid_query", `Ask for 1 to ${maxDays} days.`);
       const permissions = await this.deps.permissions?.(claims.pool, caller);
       const canManage = permissions?.canManage ?? caller === claims.owner;

@@ -6,6 +6,8 @@ import { summaryCoverageQuery } from "./summary-query.ts";
 import { requestCount, seriesCoverageFromSnapshot } from "./series-coverage.ts";
 import { timestamp } from "./record.ts";
 
+const retainedStartLimit = 1000;
+
 export async function summaryCoverage(
   db: HistoryDatabase,
   selection: Awaited<ReturnType<typeof summarySelection>>,
@@ -14,11 +16,12 @@ export async function summaryCoverage(
   const query = summaryCoverageQuery(selection);
   const rows = (await db.query(query.text, query.values)).rows;
   if (rows.length > 500) throw new Error("Usage source coverage exceeds its bound");
+  // Read one indexed timestamp bucket. Too many microsecond ties leave the exact start unknown.
   const state = (
     await db.query(
       `SELECT c.forward_id::text,c.backfill_complete,c.sweep_id::text,c.sweep_upper::text,
         to_char(c.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at,
-        r.timestamp_exact AS captured_through,
+        r.timestamp_exact AS captured_through, retained.first_at AS retained_first_at,
         EXISTS(SELECT 1 FROM basalt_model_history_migrations WHERE name=$2) AS completion_ready,
         (to_regclass('basalt_model_terminal_starts') IS NOT NULL
           AND to_regclass('basalt_model_terminal_finishes') IS NOT NULL
@@ -29,8 +32,22 @@ export async function summaryCoverage(
         WHERE source=c.source AND c.forward_id<>0 AND source_record=
           encode(sha256(convert_to('["usage","'||c.forward_id::text||'"]','UTF8')),'hex')
         LIMIT 1
-      ) r ON true`,
-      [selection.homeSource, historyImportCompletionVersion, historyTerminalIntegrityVersion],
+      ) r ON true
+      LEFT JOIN LATERAL (
+        SELECT min(timestamp_exact) AS first_at FROM (
+          SELECT timestamp_exact FROM basalt_model_requests
+          WHERE pool=$4 AND timestamp=(
+            SELECT timestamp FROM basalt_model_requests WHERE pool=$4
+            ORDER BY timestamp,id LIMIT 1
+          ) ORDER BY id LIMIT ${retainedStartLimit + 1}
+        ) first_bucket HAVING count(*) <= ${retainedStartLimit}
+      ) retained ON true`,
+      [
+        selection.homeSource,
+        historyImportCompletionVersion,
+        historyTerminalIntegrityVersion,
+        selection.values[0],
+      ],
     )
   ).rows[0];
   const cursor = typeof state?.forward_id === "string" ? state : undefined;
@@ -51,6 +68,8 @@ export async function summaryCoverage(
   const native = rows.find((row) => row.source === selection.homeSource);
   return {
     ...result,
+    retainedFirstAt:
+      typeof state?.retained_first_at === "string" ? timestamp(state.retained_first_at) : null,
     terminalReady: state?.terminal_ready === true,
     nativeMappingProven:
       authority.mappingProven &&

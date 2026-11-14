@@ -163,6 +163,7 @@ export async function poolUsageSummary(
       previous,
       readFrom,
       asOf: observed.asOf,
+      retainedFirstAt: observed.retainedFirstAt,
       coverage: observed.coverage,
       historyCoverage: {
         from: readFrom,

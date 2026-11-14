@@ -139,6 +139,30 @@ test("initial, refresh and model summary reads stay within the populated real-Po
         }),
       );
       if (action === "initial") {
+        const checkpoint = statements.find(({ text }) => text.includes("retained_first_at"));
+        assert.ok(checkpoint);
+        const retainedPlan = await f.db.query(
+          `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${checkpoint.text}`,
+          checkpoint.values,
+        );
+        const retainedRoot = (
+          retainedPlan.rows[0]!["QUERY PLAN"] as { Plan: Record<string, unknown> }[]
+        )[0]!.Plan;
+        let inspected = 0;
+        const countRetainedReads = (node: Record<string, unknown>) => {
+          if (
+            typeof node["Relation Name"] === "string" &&
+            node["Relation Name"].startsWith("basalt_model_requests")
+          )
+            inspected +=
+              (Number(node["Actual Rows"]) + Number(node["Rows Removed by Filter"] ?? 0)) *
+              Number(node["Actual Loops"]);
+          for (const child of (node.Plans ?? []) as Record<string, unknown>[])
+            countRetainedReads(child);
+        };
+        countRetainedReads(retainedRoot);
+        assert.ok(inspected < 2100, `retained-start lookup inspected ${inspected} rows`);
+        console.log(JSON.stringify({ proof: "usage-summary-retained-start-plan", inspected }));
         const statement = priced[0]!;
         const plan = await f.db.query(
           `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${statement.text}`,
