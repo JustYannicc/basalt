@@ -1,7 +1,6 @@
 import { Button, Tabs, TabsList, TabsTrigger } from "apps/ui";
 import type { PoolView, Provider } from "../contract.ts";
 import type { PoolUsageSummaryResult } from "../usage-overview-contract.ts";
-import { reliabilityNotificationMinimumRequests } from "../reliability-contract.ts";
 import type { PoolApi } from "./api.ts";
 import { summaryLabName } from "./summary-names.ts";
 import { CapacitySection } from "./capacity-view.tsx";
@@ -14,6 +13,7 @@ import { SummaryBreakdown } from "./summary-breakdown.tsx";
 import { SummaryChart } from "./summary-chart.tsx";
 import type { SummaryState } from "./summary-data.ts";
 import { SummaryForecasts } from "./summary-forecast.tsx";
+import { SummaryReliability } from "./summary-reliability.tsx";
 import {
   formatCount,
   formatDay,
@@ -217,9 +217,6 @@ function Incident({
       <span className="text-muted-foreground">
         {top}
         {now.partial ? " · some of the hour couldn't be read" : ""}
-        {now.requests < reliabilityNotificationMinimumRequests
-          ? ` · Low sample: fewer than ${reliabilityNotificationMinimumRequests} real requests`
-          : ""}
       </span>
       <Button
         size="sm"
@@ -462,6 +459,7 @@ export function SummaryOverview({
       ) : (
         <div data-summary-as-of={summary.value.asOf ?? ""}>
           <Incident summary={summary.value} onHistory={onHistory} />
+          <SummaryReliability summary={summary.value} />
           <Coverage summary={summary.value} />
           <Kpis summary={summary.value} metric={controls.metric} />
           <SummaryChart summary={summary.value} by={shownBy} metric={controls.metric} name={name} />

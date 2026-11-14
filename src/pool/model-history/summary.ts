@@ -146,7 +146,7 @@ export async function poolUsageSummary(
       }
     const complete = new Set(completeHours.map((at) => Date.parse(at)));
     const incidentFrom = now - 3_600_000;
-    const incidents = await summaryIncidents(
+    const reliability = await summaryIncidents(
       db,
       pool,
       incidentTo,
@@ -211,7 +211,7 @@ export async function poolUsageSummary(
           }
         : {}),
       heatmap: hourly.heatmap,
-      incidents,
+      ...reliability,
       homeCapture: {
         status:
           !nativeComplete || !hourly.nativeAvailable
