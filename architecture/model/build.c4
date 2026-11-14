@@ -1,6 +1,8 @@
 model {
   extend basalt {
     build = module "Build" {
+      // Pool recipes serve signed revision assertions through the production change handler
+      // before pool-token routes, reading committed heads from transactional fixture storage.
       // Pool container fixtures select a separately locked stable runtime binary before loading the emulator.
       // Its dev-only installation neither changes the pinned framework cache nor the published image inputs.
       // Signed provider-adoption proofs partition every declared case exactly once, balancing

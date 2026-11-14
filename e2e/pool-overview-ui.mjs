@@ -272,12 +272,20 @@ const program = Effect.gen(function* () {
 
   // One refresh is one summary read plus the existing capacity read; the legacy read never runs.
   const heading = screen.getByRole("heading", { name: "How much are we using?", exact: true });
+  const summaryUpdating = heading.locator("..").getByRole("status");
   yield* page(() => heading.waitFor());
   yield* page(() => screen.getByText("Where it's heading").waitFor());
   yield* page(() =>
     screen.getByRole("heading", { name: "Do we have enough accounts?", exact: true }).waitFor(),
   );
-  yield* page(() => owner.waitForLoadState("networkidle"));
+  // Revision streams stay open; accepted content and a finished refresh mark readiness.
+  yield* page(() =>
+    screen
+      .getByRole("group", { name: /capacity\. Measured history/ })
+      .first()
+      .waitFor(),
+  );
+  yield* page(() => summaryUpdating.waitFor({ state: "hidden" }));
   const loaded = usage.requests.slice(before);
   diagnostics.initialRequests = loaded;
   const input = (index) => {
@@ -379,11 +387,24 @@ const program = Effect.gen(function* () {
 
   const toggles = screen.getByRole("button", { name: /^Accounts/u });
   const summaryCount = (count) =>
-    until(
-      Effect.sync(() => calls("summary")),
-      (list) => list.length === count,
-      `the summary was not read ${count} times`,
-    );
+    Effect.gen(function* () {
+      yield* until(
+        Effect.sync(() => calls("summary")),
+        (list) => list.length === count,
+        `the summary was not read ${count} times`,
+      );
+      // A dispatched request has not yet passed its revision fence or updated the drilldown.
+      yield* page(() =>
+        screen.locator(`[data-summary-as-of=${JSON.stringify(input(-1).to)}]`).waitFor(),
+      );
+      yield* page(() =>
+        screen
+          .getByRole("status")
+          .filter({ hasText: "Reading accounts…" })
+          .first()
+          .waitFor({ state: "hidden" }),
+      );
+    });
   yield* section(
     "shared drilldown follows the range",
     Effect.gen(function* () {
@@ -732,7 +753,7 @@ const program = Effect.gen(function* () {
         (asked) => Date.parse(asked.to) - Date.parse(asked.from) > 28 * 86_400_000,
         "the 30-day range was not read",
       );
-      yield* page(() => screen.getByText("Updating…").waitFor({ state: "hidden" }));
+      yield* page(() => summaryUpdating.waitFor({ state: "hidden" }));
       yield* page(() =>
         screen.getByRole("button", { name: "History", exact: true }).first().click(),
       );
