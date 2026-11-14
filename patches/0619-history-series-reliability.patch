@@ -47,7 +47,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-history-read-phase.ts b/
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-history-read-phase.ts
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,19 @@
 +import { Effect, Exit } from "effect";
 +
 +/** Cloud invocation metadata correlates phases; no caller, query or account data enters logs. */
@@ -59,17 +59,11 @@ new file mode 100644
 +    const started = performance.now();
 +    return yield* operation.pipe(
 +      Effect.onExit((exit) =>
-+        Effect.sync(() => {
-+          try {
-+            console.info("pool_history_phase", {
-+              phase,
-+              durationMs: Math.max(0, Math.round(performance.now() - started)),
-+              outcome: Exit.isSuccess(exit) ? "ok" : "failed",
-+            });
-+          } catch {
-+            // Diagnostic delivery must not change the read's result.
-+          }
-+        }),
++        Effect.logInfo("pool_history_phase", {
++          phase,
++          durationMs: Math.max(0, Math.round(performance.now() - started)),
++          outcome: Exit.isSuccess(exit) ? "ok" : "failed",
++        }).pipe(Effect.catchCause(() => Effect.void)),
 +      ),
 +    );
 +  });
