@@ -24,7 +24,7 @@ const {
     ctx: object,
     env: object,
   ) => {
-    availabilityProbe(pool: string): Promise<ProbeResult>;
+    availabilityProbe(pool: string, includeRuntime?: boolean): Promise<ProbeResult>;
     automaticRecoveryObservation(pool: string): Promise<unknown>;
   };
   PoolOperations: {
@@ -77,9 +77,9 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
           getByName(name: string) {
             assert.equal(name, "control-plane");
             return {
-              availabilityProbe(pool: string) {
+              availabilityProbe(pool: string, includeRuntime?: boolean) {
                 probeTarget = pool;
-                return object.availabilityProbe(pool);
+                return object.availabilityProbe(pool, includeRuntime);
               },
               automaticRecoveryObservation(pool: string) {
                 return object.automaticRecoveryObservation(pool);
@@ -111,7 +111,7 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
               native.push(url.pathname);
               if (url.pathname === "/ready")
                 return Response.json(
-                  { boot_id: "fixture-boot", started_at: "fixture-start" },
+                  { boot_id: "12345678-1234-4234-8234-123456789abc", started_at: "fixture-start" },
                   { headers: { "X-Signalbox-Policy-Lease-Ms": "1500" } },
                 );
               assert.equal(url.pathname, "/native-policy/check");
@@ -145,6 +145,13 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
   assert.match(messages[1]!, /"status":"ok"/);
   assert.match(messages[2]!, /"error_code":"pool_request_reliability_unavailable"/);
   assert.match(messages[2]!, /"reason":"collection_unavailable"/);
+  const event = JSON.parse(messages[2]!.split("\n")[2]!);
+  assert.match(event.release, /^[a-f0-9]{40}$/);
+  assert.equal(event.tags.probe_origin, "availability_cron");
+  assert.equal(event.tags.boot_id, "12345678-1234-4234-8234-123456789abc");
+  assert.equal(event.tags.application_version, "unavailable");
+  assert.equal(event.contexts.pool_probe.runtime.source, "legacy");
+  assert.equal(event.contexts.pool_probe.runtime.running, true);
   assert.deepEqual(diagnostics, [
     [
       "POOL_REQUEST_RELIABILITY_UNKNOWN",
@@ -168,7 +175,7 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
   const observed = await automatic.json();
   assert.equal(observed.enabled, false);
   assert.equal(observed.condition, "healthy");
-  assert.equal(observed.runtime.bootId, "fixture-boot");
+  assert.equal(observed.runtime.bootId, "12345678-1234-4234-8234-123456789abc");
   assert.equal(observed.runtime.instanceId, "a".repeat(64));
   assert.equal(messages.length, 3);
   assert.equal(

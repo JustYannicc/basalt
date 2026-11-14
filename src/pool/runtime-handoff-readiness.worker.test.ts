@@ -29,6 +29,11 @@ test("selected readiness joins the actual provider instance and boot after sibli
   assert.notEqual(provider.instanceId, f.old.identity().instanceId);
   assert.equal(ready.instanceId, provider.instanceId);
   assert.equal(ready.bootId, provider.bootId);
+  const observation = await f.worker.availabilityProbe(f.claims.pool, true);
+  assert.equal(observation.runtime?.source, "selected");
+  assert.equal(observation.runtime?.applicationVersion, provider.applicationVersion);
+  assert.equal(observation.runtime?.bootId, provider.bootId);
+  assert.equal(observation.runtime?.expectedBootId, provider.bootId);
 });
 
 test("reconstructing the production controller for only passive reads never renews the adopted boot or writes state", async (context) => {
