@@ -26,9 +26,35 @@ export async function readPoolReliability(
   to: string,
   terminalReadyOverride?: boolean,
 ): Promise<PoolReliability> {
-  const start = timestamp(from),
-    end = timestamp(to);
-  if (start >= end || Date.parse(end) - Date.parse(start) > 90 * 86_400_000 + 3_600_000)
+  const [result] = await readPoolReliabilityWindows(
+    db,
+    pool,
+    [{ from, to }],
+    terminalReadyOverride,
+  );
+  if (result === undefined) throw new HistoryInputError();
+  return result;
+}
+
+export async function readPoolReliabilityWindows(
+  db: HistoryDatabase,
+  pool: string,
+  windows: readonly Pick<PoolReliability, "from" | "to">[],
+  terminalReadyOverride?: boolean,
+): Promise<PoolReliability[]> {
+  if (windows.length === 0) return [];
+  const ranges = windows.map(({ from, to }) => {
+    const start = timestamp(from),
+      end = timestamp(to);
+    if (start >= end || Date.parse(end) - Date.parse(start) > 90 * 86_400_000 + 3_600_000)
+      throw new HistoryInputError();
+    return { from: start, to: end };
+  });
+  const [first] = ranges;
+  if (first === undefined) throw new HistoryInputError();
+  const start = ranges.reduce((at, range) => (range.from < at ? range.from : at), first.from);
+  const end = ranges.reduce((at, range) => (range.to > at ? range.to : at), first.to);
+  if (Date.parse(end) - Date.parse(start) > 90 * 86_400_000 + 3_600_000)
     throw new HistoryInputError();
   const sources = await Promise.all([digest("home-local-v1"), digest("pool-gateway-v1")]);
   const terminalReady = terminalReadyOverride ?? (await terminalCollectionReady(db));
@@ -79,12 +105,17 @@ export async function readPoolReliability(
     ),`
     : "";
   const result = await db.query(
-    `WITH ${latestHomeCtes} selected AS (
+    `WITH ranges(ordinal,from_at,to_at) AS (VALUES ${ranges
+      .map((_, index) => `(${index},$${6 + index * 2}::text,$${7 + index * 2}::text)`)
+      .join(",")}),
+    ${latestHomeCtes} selected AS ${ranges.length > 1 ? "MATERIALIZED " : ""}(
       SELECT r.pool,r.source,r.client_key,
         (r.failed OR ${terminalFailure}) AS failed,
         ${statusCode} AS status_code,
         ((r.failed OR ${terminalFailure})
-          AND r.account IS NULL) AS unassigned
+          AND r.account IS NULL) AS unassigned,
+        ${terminalReady ? `CASE WHEN ${finalAttempt} THEN NULL ELSE r.timestamp_exact END` : "r.timestamp_exact"} AS raw_at,
+        ${terminalReady ? `CASE WHEN ${finalAttempt} THEN f.finished_at ELSE NULL END` : "NULL::timestamptz"} AS finished_at
       FROM basalt_model_requests r
       ${terminalReady ? "LEFT JOIN latest_home last ON last.pool=r.pool AND last.request_id=r.request_id AND last.id=r.id" : ""}
       ${
@@ -98,7 +129,7 @@ export async function readPoolReliability(
         AND ${homeTimeRange}
       UNION ALL
       SELECT r.pool,r.source,r.client_key,r.failed,r.status_code,
-        (r.failed AND r.account IS NULL) AS unassigned
+        (r.failed AND r.account IS NULL) AS unassigned,r.timestamp_exact AS raw_at,NULL::timestamptz AS finished_at
       FROM basalt_model_requests r
       WHERE r.pool=$1 AND r.source=ANY($2::character(64)[]) AND r.source<>$3
         AND ${rawTimeRange}
@@ -107,7 +138,7 @@ export async function readPoolReliability(
           ? `UNION ALL
       SELECT s.pool,$3::character(64) AS source,s.client_key,
         (f.outcome IN ('truncated','client_closed','provider_failed')) AS failed,f.status AS status_code,
-        (f.outcome IN ('truncated','client_closed','provider_failed')) AS unassigned
+        (f.outcome IN ('truncated','client_closed','provider_failed')) AS unassigned,NULL::text AS raw_at,f.finished_at
       FROM basalt_model_terminal_starts s
       JOIN basalt_model_terminal_finishes f ON f.request_id=s.request_id
       WHERE s.pool=$1
@@ -120,12 +151,21 @@ export async function readPoolReliability(
           : ""
       }
     )
-    SELECT ${isProof} AS proof, failed, status_code,
+    SELECT ranges.ordinal,${isProof} AS proof, failed, status_code,
       count(*)::text AS requests,
       count(*) FILTER (WHERE failed AND unassigned)::text AS unassigned
-    FROM selected r
-    GROUP BY proof,failed,status_code ORDER BY proof,status_code NULLS LAST`,
-    [(await digest(pool)).slice(0, 16), sources, sources[0], start, end],
+    FROM selected r JOIN ranges ON
+      (r.raw_at >= ranges.from_at AND r.raw_at < ranges.to_at)
+      OR (r.finished_at >= ranges.from_at::timestamptz AND r.finished_at < ranges.to_at::timestamptz)
+    GROUP BY ranges.ordinal,proof,failed,status_code ORDER BY ranges.ordinal,proof,status_code NULLS LAST`,
+    [
+      (await digest(pool)).slice(0, 16),
+      sources,
+      sources[0],
+      start,
+      end,
+      ...ranges.flatMap(({ from, to }) => [from, to]),
+    ],
   );
   const counts = (): ReliabilityCounts => ({
     requests: 0,
@@ -134,8 +174,6 @@ export async function readPoolReliability(
     successRate: null,
     failures: [],
   });
-  const real = counts(),
-    proof = counts();
   function sum(traffic: ReliabilityCounts, row: Record<string, unknown>): ReliabilityCounts {
     const count = requestCount(row.requests),
       unassigned = requestCount(row.unassigned);
@@ -161,17 +199,22 @@ export async function readPoolReliability(
           : traffic.failures,
     };
   }
-  let realCounts = real,
-    proofCounts = proof;
+  const classification = ready ? ("ready" as const) : ("pending" as const);
+  const output = ranges.map(({ from, to }) => ({
+    from,
+    to,
+    classification,
+    real: counts(),
+    proof: counts(),
+  }));
   for (const row of result.rows) {
-    if (row.proof === true) proofCounts = sum(proofCounts, row);
-    else realCounts = sum(realCounts, row);
+    const ordinal = Number(row.ordinal);
+    if (!Number.isInteger(ordinal) || ordinal < 0 || ordinal >= output.length)
+      throw new HistoryInputError();
+    const current = output[ordinal];
+    if (current === undefined) throw new HistoryInputError();
+    if (row.proof === true) current.proof = sum(current.proof, row);
+    else current.real = sum(current.real, row);
   }
-  return {
-    from: start,
-    to: end,
-    classification: ready ? "ready" : "pending",
-    real: realCounts,
-    proof: proofCounts,
-  };
+  return output;
 }

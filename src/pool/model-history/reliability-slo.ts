@@ -1,7 +1,8 @@
 import type { PoolReliabilitySlo } from "../../../apps/pool/reliability-contract.ts";
 import { digest } from "../backend-users.ts";
 import { historyTerminalIntegrityVersion, type HistoryDatabase } from "./schema.ts";
-import { readPoolReliability, terminalCollectionReady } from "./reliability.ts";
+import { readPoolReliabilityWindows, terminalCollectionReady } from "./reliability.ts";
+import { HistoryInputError } from "./record.ts";
 
 export function reliabilityState(
   hour: PoolReliabilitySlo["hour"],
@@ -27,27 +28,17 @@ export async function readPoolReliabilitySlo(
   try {
     await db.query("SET LOCAL statement_timeout = '5s'");
     const terminalReady = await terminalCollectionReady(db);
-    const hour = await readPoolReliability(
+    const [hour, day, current] = await readPoolReliabilityWindows(
       db,
       pool,
-      new Date(now - 3_600_000).toISOString(),
-      to,
+      [3_600_000, 86_400_000, 300_000].map((duration) => ({
+        from: new Date(now - duration).toISOString(),
+        to,
+      })),
       terminalReady,
     );
-    const day = await readPoolReliability(
-      db,
-      pool,
-      new Date(now - 86_400_000).toISOString(),
-      to,
-      terminalReady,
-    );
-    const current = await readPoolReliability(
-      db,
-      pool,
-      new Date(now - 5 * 60_000).toISOString(),
-      to,
-      terminalReady,
-    );
+    if (hour === undefined || day === undefined || current === undefined)
+      throw new HistoryInputError();
     const row = (
       await db.query(
         `SELECT backfill_complete,forward_id::text,
