@@ -58,7 +58,7 @@ diff --git a/apps/hosted/server/src/contracts/pool-usage-bulk-import.ts b/apps/h
 +  regressionAt: Schema.NullOr(count),
 +  consecutiveRegressions: count,
 +});
- 
+
  export const PoolUsageBulkImportInput = Schema.Union([
    Schema.Struct({
 @@ -53,6 +106,10 @@
