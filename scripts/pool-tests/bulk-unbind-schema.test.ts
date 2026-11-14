@@ -43,6 +43,7 @@ test("an existing v6 bulk import journal upgrades through v8 without losing its 
         "model_request_history_v2_app_attribution",
         "model_request_history_v3_account_time",
         "model_request_history_v4_traffic_purpose",
+        "model_request_history_v5_change_revisions",
         "model_request_history_v6_bulk_import",
         "model_request_history_v7_terminal_integrity",
         "model_request_history_v8_import_completion",

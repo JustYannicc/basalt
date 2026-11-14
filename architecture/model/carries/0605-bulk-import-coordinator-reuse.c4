@@ -1,7 +1,7 @@
 model {
   extend basalt.bulkUsageImport {
     metadata {
-      constraint "Bulk import reuses the existing ArtifactsTokenCoordinator class under one canonical EU bulk-usage-import:<job> object per job and only the usage-import-v1/<job>/ prefix in the retained vault attachment bucket. Native object-id checks separate source, vault and import calls; an atomically published job marker selects the import alarm after eviction without running source preparation. The existing scheduler, SQL writer lock, CPU thresholds, chunk bounds and serving guards remain unchanged. PoolWorker binds the foreign class without a local class migration; every added service, secret, database and storage binding refers to an existing production resource."
+      constraint "Bulk import reuses the existing ArtifactsTokenCoordinator class under one canonical EU bulk-usage-import:<job> object per job and only the usage-import-v1/<job>/ prefix in the retained vault attachment bucket. Native object-id checks separate source, vault and import calls; an atomically published job marker selects the import alarm after eviction without running source preparation. The existing scheduler, SQL writer lock, CPU thresholds, chunk bounds and serving guards remain unchanged. PoolWorker binds the foreign class without a local class migration; every added service, secret, database and storage binding refers to an existing production resource. Local Alchemy development omits these production-only bulk bindings without reading vendor settings; production still requires its database and signing configuration."
     }
   }
 }
