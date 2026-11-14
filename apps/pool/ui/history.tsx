@@ -39,13 +39,11 @@ export function History({
   publicHistory,
   directory,
   providers,
-  onBack,
 }: {
   series: PoolApi["series"];
   publicHistory?: PublicHistoryReader;
   directory: readonly MemberDirectoryEntry[];
   providers: readonly Provider[];
-  onBack: () => void;
 }) {
   const [mode, setMode] = useState<Mode>("all");
   const [draftFrom, setDraftFrom] = useState("");
@@ -124,19 +122,6 @@ export function History({
 
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-[56rem] flex-col px-6 pb-16 max-[540px]:px-4">
-      <header className="flex min-h-14 items-center justify-between gap-3 border-b border-border">
-        <button
-          type="button"
-          onClick={onBack}
-          className="min-h-11 rounded-sm text-sm text-muted-foreground underline decoration-muted-foreground/40 underline-offset-4 hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
-        >
-          Back
-        </button>
-        <span className="min-w-0 text-right text-sm font-semibold">
-          Pool <span className="font-normal text-muted-foreground">/ Usage history</span>
-        </span>
-      </header>
-
       <main className="flex-1">
         <section className="grid gap-5 border-b border-border py-8">
           <div className="grid gap-1">

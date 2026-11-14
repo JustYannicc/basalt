@@ -23,6 +23,7 @@
     "poolProviderNativePresentation": ["declared:self-host"]
   },
   "inputs": [
+    "patches/0577-pool-history-page.patch",
     ".upstream/apps/hosted/server/src/implementation/account-source-connections.ts",
     ".upstream/apps/hosted/server/src/implementation/selected-account-read.ts",
     ".upstream/e2e/support/provider-account-product.ts",
@@ -32,10 +33,9 @@
     "apps/pool/index.ts",
     "apps/pool/provider-account-view.ts",
     "apps/pool/requirements.ts",
-    "apps/pool/ui/account-limits-view.tsx",
     "apps/pool/ui/capacity-view.tsx",
     "apps/pool/ui/lab.tsx",
-    "apps/pool/ui/overview.tsx",
+    "apps/pool/ui/summary-view.tsx",
     "apps/pool/ui/usage-groups.tsx",
     "scripts/pool-app-bundle.ts",
     "scripts/provider-app-source.ts",

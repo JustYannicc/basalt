@@ -173,6 +173,8 @@ export const areas = [
       "containers/pool/**",
       "scripts/pool-*",
       "scripts/pool-*/**",
+      "e2e/pool-*.mjs",
+      "e2e/recipes/pool-*.mjs",
     ],
     jobs: [...accounts, "pool-runtime", "pool-inventory", "upstream-contracts"],
   },

@@ -105,7 +105,7 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
  import {
    AccountRequired,
 @@ -273,6 +274,35 @@
-       return { ...resolved, access, app };
+       return { ...resolved, access, app, navigation: identity.navigation };
      });
    const authorize = Effect.flatMap(target, authorizeTarget);
 +  const authorizePoolSummary = Effect.gen(function* () {
