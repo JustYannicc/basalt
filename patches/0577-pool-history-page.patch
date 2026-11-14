@@ -14,29 +14,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/pool-usage.tsx b/apps/host
 diff --git a/e2e/tests/pool-provider-native-presentation.spec.ts b/e2e/tests/pool-provider-native-presentation.spec.ts
 --- a/e2e/tests/pool-provider-native-presentation.spec.ts
 +++ b/e2e/tests/pool-provider-native-presentation.spec.ts
-@@ -364,6 +364,13 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
-         const elapsed = (yield* Clock.currentTimeMillis) - started;
-         expect(response.status, JSON.stringify(response.body)).toBe(200);
-         const reply = yield* body(PoolReply, response);
-+        // The pool view carries the provider's own view of its source account, read through the
-+        // exact saved source binding.
-+        expect(reply.value.accounts[0]?.nativeView).toMatchObject({
-+          state: "available",
-+          canInspect: true,
-+          account: { id: account },
-+        });
-         const trace = (yield* evidence.requests)
-           .filter((request) => request.path.endsWith("/data/query"))
-           .at(-1)!.traceId;
-@@ -409,7 +416,6 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
-           windows,
-           bankedResets,
-         });
--        expect(reply.value.accounts[0]?.nativeView).toBeUndefined();
-         expect(reply.value.providers).toEqual([{ id: "codex", name: "OpenAI" }]);
-         expect(JSON.stringify(response.body)).not.toContain("Provider plan");
-         expect((yield* home.calls).filter((call) => call.action === "observe")).toHaveLength(
-@@ -422,21 +428,18 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
+@@ -422,21 +422,18 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
  
          const url = yield* waitForAppUrl(actors.owner, `${poolPath}/ui`);
          yield* openPrivateApp(url);
@@ -64,7 +42,7 @@ diff --git a/e2e/tests/pool-provider-native-presentation.spec.ts b/e2e/tests/poo
                  .then(() =>
                    page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
                  );
-@@ -444,36 +447,9 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
+@@ -444,36 +441,9 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
            );
            expect(overviewFits).toBe(true);
            yield* evidence.attach(
