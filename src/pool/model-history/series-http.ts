@@ -22,11 +22,14 @@ import type {
   PoolPersonalOverviewSignedInput,
 } from "../../../apps/pool/overview-contract.ts";
 import { lastSuccessAt } from "./last-success.ts";
+import { poolUsageSummary } from "./summary.ts";
+import { summaryInput } from "./summary-input.ts";
 
 export const poolUsageSeriesPath = `${controlBasePath}/usage/series`;
 export const lastSuccessAtPath = `${controlBasePath}/usage/last-success`;
 export const poolOverviewPath = `${controlBasePath}/usage/overview`;
 export const poolPersonalOverviewPath = `${controlBasePath}/usage/personal-overview`;
+export const poolUsageSummaryPath = `${controlBasePath}/usage/summary`;
 
 /** Native host policy authorizes this exact signed read while holding its organization lock. */
 export async function handleUsageSeries(
@@ -55,13 +58,15 @@ export async function handleUsageSeries(
         : undefined;
     const path = new URL(request.url).pathname;
     const action =
-      path === poolUsageSeriesPath
-        ? "poolUsageSeries"
-        : path === poolOverviewPath
-          ? "poolOverview"
-          : path === poolPersonalOverviewPath
-            ? "poolPersonalOverview"
-            : "lastSuccessAt";
+      path === poolUsageSummaryPath
+        ? "poolUsageSummary"
+        : path === poolUsageSeriesPath
+          ? "poolUsageSeries"
+          : path === poolOverviewPath
+            ? "poolOverview"
+            : path === poolPersonalOverviewPath
+              ? "poolPersonalOverview"
+              : "lastSuccessAt";
     if (
       !object(payload) ||
       payload.action !== action ||
@@ -115,6 +120,15 @@ export async function handleUsageSeries(
                 lastSuccessAt(db, input, authority),
               );
       return json(result);
+    }
+    if (action === "poolUsageSummary") {
+      seriesAuthority(input.authority);
+      summaryInput(input);
+      return json(
+        await withHistoryDatabase(access.connectionString, (db) =>
+          poolUsageSummary(db, input, access.currentPrices),
+        ),
+      );
     }
     const result =
       action === "poolOverview"

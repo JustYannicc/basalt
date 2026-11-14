@@ -332,3 +332,107 @@ proof(
       await assert.rejects(project(a, limit), (error) => code(error) === "22023");
   },
 );
+
+proof(
+  "A delayed legacy head read after activation is read-only and the current journal delivery invalidates it",
+  async ({ a, observer }) => {
+    const { createRequire } = await import("node:module");
+    const { Effect, Redacted } = await import("effect");
+    const { SqlClient } = await import("effect/sql");
+    const { makeChangeJournal } = await import(
+      "../../.upstream/apps/hosted/server/src/implementation/change-revisions.ts"
+    );
+    const { makeRevisionFence } = await import("../../.upstream/packages/apps/src/client.ts");
+    const require = createRequire(
+      new URL("../../.upstream/packages/fumadb-effect/package.json", import.meta.url),
+    );
+    const PgClient: typeof import("../../.upstream/packages/fumadb-effect/node_modules/@effect/sql-pg/dist/PgClient.js") =
+      await import(require.resolve("@effect/sql-pg/PgClient"));
+    const schema = String((await observer.query("select current_schema() as schema")).rows[0].schema);
+    const key = { topic: "accounts", resource: "*" };
+    await a.query("update executor_accounts set label='Before delayed read' where id='acc_a'");
+    assert.equal(await project(a), 1);
+    await a.query("delete from hosted_change_pending");
+    const delayedLegacyRead = () =>
+      observer.query(
+        `select topic,resource,revision::text from hosted_change_heads
+        where scope=$1 and topic=$2 and resource=$3`,
+        [owner, key.topic, key.resource],
+      );
+
+    await a.query(
+      "update executor_accounts set label='Committed after activation' where id='acc_a'",
+    );
+    const domain = (
+      await observer.query(
+        "select row_to_json(account) as row from executor_accounts account where id='acc_a'",
+      )
+    ).rows[0].row;
+    await observer.query("begin read only");
+    const legacy = (await delayedLegacyRead()).rows;
+    await observer.query("commit");
+    assert.deepEqual(legacy, [{ ...key, revision: "1" }]);
+    assert.deepEqual(await state(observer), {
+      logical: "2",
+      physical: "1",
+      pending: null,
+      dirty: 1,
+      batches: 1,
+    });
+    const fence = makeRevisionFence(owner, [key]);
+    const connection = fence.begin();
+    assert.equal(fence.handshake(connection, legacy), true);
+    assert.equal(fence.accept(connection, legacy), true);
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const journal = makeChangeJournal(sql);
+        const current = yield* journal.current(owner, [key]);
+        assert.deepEqual(current, [{ ...key, revision: "2" }]);
+        const sent: (typeof current)[number][] = [];
+        yield* journal.deliver((scope, hint) =>
+          Effect.gen(function* () {
+            assert.equal(scope, owner);
+            if (hint.topic !== key.topic || hint.resource !== key.resource) return;
+            assert.deepEqual(yield* Effect.promise(() => state(observer)), {
+              logical: "2",
+              physical: "2",
+              pending: "2",
+              dirty: 0,
+              batches: 0,
+            });
+            fence.observe(hint);
+            sent.push(hint);
+          }),
+        );
+        assert.deepEqual(sent, current);
+        assert.equal(fence.accept(connection, legacy), false);
+        assert.equal(fence.accept(connection, yield* journal.current(owner, [key])), true);
+      }).pipe(
+        Effect.provide(
+          PgClient.layer({
+            url: Redacted.make(process.env.POOL_TEST_ADMIN_URL!),
+            maxConnections: 1,
+            startupParameters: { search_path: schema },
+          }),
+        ),
+      ),
+    );
+    assert.deepEqual(await state(observer), {
+      logical: "2",
+      physical: "2",
+      pending: null,
+      dirty: 0,
+      batches: 0,
+    });
+    assert.deepEqual(
+      (
+        await observer.query(
+          "select row_to_json(account) as row from executor_accounts account where id='acc_a'",
+        )
+      ).rows[0].row,
+      domain,
+    );
+  },
+);

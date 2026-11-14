@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The normal pinned MCP generator runs after the combined accepted-read client and declared-page navigation. Generated renderer bytes and content-hashed paths are regenerated together; this tail overlay supersedes the retired earlier generated overlay without editing a released carry."
+    }
+  }
+}

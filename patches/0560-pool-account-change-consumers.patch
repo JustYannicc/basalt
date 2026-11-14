@@ -4781,3 +4781,15 @@ diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.
        peer.mirrors,
        HttpRouter.add(
          "GET",
+diff --git a/e2e/tests/pool-legacy-handoff.spec.ts b/e2e/tests/pool-legacy-handoff.spec.ts
+--- a/e2e/tests/pool-legacy-handoff.spec.ts
++++ b/e2e/tests/pool-legacy-handoff.spec.ts
+@@ -215,7 +215,7 @@
+                 page
+                   .frameLocator(`iframe[title="${pool.name} app"]`)
+                   .getByText(
+-                    empty ? "Pick your first account" : "4 subscription accounts across 2 labs",
++                    empty ? "Pick your first account" : "How much are we using?",
+                     { exact: false },
+                   )
+                   .waitFor(),

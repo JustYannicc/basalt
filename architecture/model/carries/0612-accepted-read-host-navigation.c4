@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "The scoped app session exposes both the released navigation reference and the accepted-read principal and expiry from one token lookup. Navigation still checks the exact parent login, user and app target; a reference alone grants nothing. Accepted bodies and revision streams keep their principal-bound fence and session deadline. Client disposal closes the change feed and settles pending host navigation without retaining listeners. The combined overlay follows the released navigation carry without modifying it."
+      constraint "Declared app page and search destinations preserve the host's version, user and parent checks. The scoped app session exposes both the released navigation reference and the accepted-read principal and expiry from one token lookup. Navigation still checks the exact parent login, user and app target; a reference alone grants nothing. Accepted bodies and revision streams keep their principal-bound fence and session deadline. Client disposal closes the change feed and settles pending host navigation without retaining listeners. The combined overlay follows the released navigation carry without modifying it."
     }
   }
 }

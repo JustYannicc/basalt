@@ -17,6 +17,7 @@ import {
 } from "../../src/pool/model-history/change-revisions.ts";
 import { readCommittedPoolChanges, poolChangesPath } from "../../src/pool/change-http.ts";
 import { publishPoolChanges } from "../../src/pool/change-revisions.ts";
+import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
 import { poolUsageOverview, poolPersonalOverview } from "../../src/pool/model-history/overview.ts";
 import { poolUsageSeries } from "../../src/pool/model-history/series.ts";
 import { historyCaller } from "../../src/pool/model-history/http.ts";
@@ -190,6 +191,7 @@ export async function startScopedChangeFixture(signingKey, options) {
       return Response.json(result);
     }
     const action = {
+      "/pool/v1/usage/summary": "poolUsageSummary",
       "/pool/v1/usage/overview": "poolOverview",
       "/pool/v1/usage/personal-overview": "poolPersonalOverview",
       "/pool/v1/usage/series": "poolUsageSeries",
@@ -199,13 +201,15 @@ export async function startScopedChangeFixture(signingKey, options) {
       const value = await hostAssertion(request, action);
       reads.push({ kind: action, pool: value.pool });
       const result = await serial(() =>
-        action === "poolOverview"
-          ? poolUsageOverview(db, { ...value.input, prices: [] })
-          : action === "poolPersonalOverview"
-            ? poolPersonalOverview(db, value.input, [])
-            : action === "lastSuccessAt"
-              ? lastSuccessAt(db, value.input, value.authority)
-              : poolUsageSeries(db, value.input, value.authority),
+        action === "poolUsageSummary"
+          ? poolUsageSummary(db, value.input, async () => ({ prices: [], issues: [] }))
+          : action === "poolOverview"
+            ? poolUsageOverview(db, { ...value.input, prices: [] })
+            : action === "poolPersonalOverview"
+              ? poolPersonalOverview(db, value.input, [])
+              : action === "lastSuccessAt"
+                ? lastSuccessAt(db, value.input, value.authority)
+                : poolUsageSeries(db, value.input, value.authority),
       );
       await holdResponse(action);
       return Response.json(result);
@@ -263,7 +267,7 @@ export async function startScopedChangeFixture(signingKey, options) {
         return hold("history");
       },
       holdOverview() {
-        return hold("poolOverview");
+        return hold("poolUsageSummary");
       },
       initialize(pool, person) {
         return serial(async () => {

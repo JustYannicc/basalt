@@ -67,6 +67,7 @@ import {
   poolOverviewPath,
   poolPersonalOverviewPath,
   poolUsageSeriesPath,
+  poolUsageSummaryPath,
 } from "./model-history/series-http.ts";
 import {
   handleModelHistoryOperation,
@@ -633,6 +634,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       });
     if (
       pathname === poolUsageSeriesPath ||
+      pathname === poolUsageSummaryPath ||
       pathname === lastSuccessAtPath ||
       pathname === poolOverviewPath ||
       pathname === poolPersonalOverviewPath

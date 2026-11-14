@@ -61,8 +61,8 @@ window.showTab=()=>{
  document.dispatchEvent(new Event('visibilitychange'));
 };
 createRoot(document.getElementById('root')).render(<History changes={pool.changes} series={pool.series}
- publicHistory={pool.publicHistory} directory={[]}
- providers={[{id:'codex',name:'ChatGPT'}]} onBack={()=>{}}/>);`,
+ publicHistory={pool.publicHistory}
+ providers={[{id:'codex',name:'ChatGPT'}]}/>);`,
       resolveDir: root,
       loader: "tsx",
     },
@@ -75,6 +75,7 @@ createRoot(document.getElementById('root')).render(<History changes={pool.change
   });
   const javascript = built.outputFiles[0].text;
   const styles = await build({
+    conditions: ["style"],
     entryPoints: [join(root, "apps/pool/ui/style.css")],
     bundle: true,
     write: false,

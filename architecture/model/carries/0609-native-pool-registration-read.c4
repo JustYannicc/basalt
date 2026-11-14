@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.poolMembership {
+    metadata {
+      constraint "Inside the existing organization access lock and tracked transaction, native membership reads current organization-owned pool registration once on steady reads. Active legacy entries still use the signed handoff and a fresh registration reread, including mixed duplicate metadata and receiver refusal. Account and binding locks, current account policy and exact reference fingerprints remain authoritative. No registration authority is cached across reads."
+    }
+  }
+}

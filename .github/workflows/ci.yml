@@ -1732,7 +1732,7 @@ jobs:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'pool-inventory')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node
@@ -1760,6 +1760,8 @@ jobs:
         run: node e2e/pool-reset-ui.mjs .generated/pool-reset-ui/ci
       - name: Verify scoped account and pool updates without idle polling
         run: node e2e/scoped-change-consumers.mjs .generated/scoped-change-consumers/ci
+      - name: Verify the pool usage overview in a browser with synthetic usage
+        run: node e2e/pool-overview-ui.mjs .generated/pool-overview-ui/ci
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -1787,6 +1789,9 @@ jobs:
             .generated/scoped-change-consumers/**/report.json
             .generated/scoped-change-consumers/**/failure.json
             .generated/scoped-change-consumers/**/*.png
+            .generated/pool-overview-ui/**/report.json
+            .generated/pool-overview-ui/**/failure.json
+            .generated/pool-overview-ui/**/*.png
             .upstream/.local/e2e/**/results.json
             .upstream/.local/e2e/**/cloud.log
             .upstream/.local/e2e/**/report/**

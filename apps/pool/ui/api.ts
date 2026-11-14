@@ -50,7 +50,7 @@ export const pool = {
         result<UsageImportResult>(),
       ),
     ),
-  capacity: (days: 7 | 30 | 90, to?: number, signal?: AbortSignal) =>
+  capacity: (days: number, to?: number, signal?: AbortSignal) =>
     read(
       client.query(
         queryReference<typeof capacity>("capacity"),
@@ -59,32 +59,41 @@ export const pool = {
         signal === undefined ? undefined : { signal },
       ),
     ),
-  overviewUsage: async (
-    input: import("../overview-contract.ts").PoolOverviewInput,
-  ): Promise<Result<import("../overview-contract.ts").PoolOverviewResult>> => {
+  /** The manager overview's one usage read; the host answers 403 to anyone who can't manage. */
+  summary: async (
+    input: import("../usage-overview-contract.ts").PoolUsageSummaryInput,
+  ): Promise<Result<import("../usage-overview-contract.ts").PoolUsageSummaryResult>> => {
     try {
-      const context = JSON.parse(document.getElementById("executor-context")?.textContent ?? "{}");
-      const response = await fetch("/_executor/api/pool-usage/overview", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ version: context.version ?? context.deployment, input }),
+      return await readWhileActive(client, async (signal) => {
+        const context = JSON.parse(
+          document.getElementById("executor-context")?.textContent ?? "{}",
+        );
+        const response = await fetch("/_executor/api/pool-usage/summary", {
+          signal,
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ version: context.version ?? context.deployment, input }),
+        });
+        if (!response.ok)
+          return {
+            ok: false,
+            error: response.status === 403 ? "unauthorized" : "backend_unavailable",
+            message:
+              response.status === 403
+                ? "Pool usage is available to managers only."
+                : response.status === 409
+                  ? "This pool app was just updated. Reload to read its usage."
+                  : "Usage could not be read. Try again.",
+          };
+        return { ok: true, value: await response.json() };
       });
-      if (!response.ok)
-        return {
-          ok: false,
-          error: response.status === 403 ? "unauthorized" : "backend_unavailable",
-          message:
-            response.status === 403
-              ? "Pool usage is available to managers only."
-              : "Overview could not be read. Reload and try again.",
-        };
-      return { ok: true, value: await response.json() };
-    } catch {
+    } catch (error) {
+      if (error instanceof ChangeReadRetry) throw error;
       return {
         ok: false,
         error: "backend_unavailable",
-        message: "Overview could not be read. Try again.",
+        message: "Usage could not be read. Try again.",
       };
     }
   },
@@ -175,6 +184,8 @@ export const pool = {
   poll: client.poll,
   /** Committed-revision feed; pool data reads again only when it reports a change. */
   changes: client.changes,
+  /** Opens a host tab, a declared page or an account in the embedding window; false when it can't. */
+  navigate: client.navigate,
 };
 
 export type PoolApi = typeof pool;

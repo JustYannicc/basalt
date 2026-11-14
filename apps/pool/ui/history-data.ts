@@ -256,7 +256,72 @@ export function useHistory(
     }
   };
 
+  /**
+   * Reads further source pages, without moving the request page, until `enough` holds for the
+   * records loaded so far, the source ends or `maxPages` pages were read. A narrowed list uses it
+   * to page its own matches. Resolves the loaded records, or null when the range changed or a read
+   * failed, which then shows as the page error.
+   */
+  const loadUntil = async (
+    enough: (records: readonly PublicHistoryRecord[]) => boolean,
+    maxPages = 20,
+  ): Promise<readonly PublicHistoryRecord[] | null> => {
+    const sync = syncing.current;
+    if (!state || !loaded || paging.current || !publicHistory || sync === undefined) return null;
+    const current = revision.current;
+    const scoped = sync.generation();
+    const stale = () => revision.current !== current || sync.generation() !== scoped;
+    const onSnapshot = (apply: (previous: HistoryState) => HistoryState) =>
+      setResult((previous) =>
+        previous === undefined || previous.loaded !== loaded || stale()
+          ? previous
+          : apply(previous),
+      );
+    paging.current = true;
+    let records = loaded.records;
+    let next = loaded.next;
+    onSnapshot((previous) => ({ ...previous, loadingNext: true, pageError: undefined }));
+    const fail = (pageError: string) => {
+      if (!stale())
+        onSnapshot((previous) => ({
+          ...previous,
+          loadingNext: false,
+          pageError,
+          loaded: { ...loaded, records, next },
+        }));
+      return null;
+    };
+    try {
+      for (let page = 0; page < maxPages && next !== null && !enough(records); page++) {
+        const result = await sync.pages.read(() =>
+          publicHistory({ ...loaded.bounds, after: next ?? undefined }),
+        );
+        if (stale()) return null;
+        if (!result.ok) return fail(result.message);
+        if (result.value.records.length === 0 && result.value.next !== null)
+          return fail("The next request page was empty. Reload history to continue.");
+        records = [...records, ...result.value.records];
+        next = result.value.next;
+      }
+      if (stale()) return null;
+      onSnapshot((previous) => ({
+        ...previous,
+        loadingNext: false,
+        pageError: undefined,
+        loaded: { ...loaded, records, next },
+      }));
+      return records;
+    } catch {
+      return fail("The next request page could not be read. Try again.");
+    } finally {
+      if (!stale()) paging.current = false;
+    }
+  };
+
   return {
+    /** Changes with every new read of the range (reload or a new filter), not with appended pages. */
+    snapshot: state?.request,
+    loadUntil,
     loaded,
     loading: state === undefined,
     loadError: state?.loadError,

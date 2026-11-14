@@ -64,6 +64,8 @@ export function terminalSocket(
   let sequence = 0,
     closed = false;
   let active: string | undefined;
+  upstream.binaryType = "arraybuffer";
+  server.binaryType = "arraybuffer";
   upstream.accept();
   server.accept();
   const close = (
