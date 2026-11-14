@@ -1,0 +1,149 @@
+diff --git a/apps/hosted/server/src/contracts/pool-usage-bulk-import.ts b/apps/hosted/server/src/contracts/pool-usage-bulk-import.ts
+--- a/apps/hosted/server/src/contracts/pool-usage-bulk-import.ts
++++ b/apps/hosted/server/src/contracts/pool-usage-bulk-import.ts
+@@ -5,6 +5,59 @@
+ const label = Schema.NonEmptyString.check(Schema.isMaxLength(256));
+ const job = { job: hash };
+ const chunkBytes = 8 * 1024 * 1024;
++
++const nonNegative = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
++const streamMode = Schema.Literals(["stream", "non-stream", "not-applicable"]);
++const servingKind = Schema.Literals(["model-completion", "serving-dependency"]);
++const servingRoute = Schema.Struct({
++  route: Schema.String,
++  streamMode,
++  successful: count,
++  failures: count,
++  serverErrors: count,
++  total: count,
++  p99Ms: Schema.NullOr(nonNegative),
++});
++const servingWindow = {
++  from: count,
++  to: count,
++  routes: Schema.Array(servingRoute).check(Schema.isMinLength(1), Schema.isMaxLength(64)),
++};
++const servingBaseline = Schema.Struct({ ...servingWindow, nonRelease: Schema.Literal(true) });
++const servingObservation = Schema.Struct({
++  source: Schema.NonEmptyString,
++  kind: servingKind,
++  available: Schema.Boolean,
++  observedAt: count,
++  computedAt: count,
++  baseline: Schema.optional(servingBaseline),
++  window: Schema.optional(Schema.Struct(servingWindow)),
++});
++const servingState = Schema.Struct({
++  source: Schema.NullOr(Schema.String),
++  kind: Schema.NullOr(servingKind),
++  status: Schema.Literals(["not available", "available", "unavailable", "stale", "regressed"]),
++  baseline: Schema.NullOr(servingBaseline),
++  thresholds: Schema.Array(
++    Schema.Struct({
++      route: Schema.String,
++      streamMode,
++      successful: count,
++      total: count,
++      p99Ms: nonNegative,
++      maximumP99Ms: nonNegative,
++      failureRate: nonNegative,
++      maximumFailureRate: nonNegative,
++      zeroServerErrors: Schema.Boolean,
++      sampleQuality: Schema.Literals(["noisy", "preferred"]),
++    }),
++  ).check(Schema.isMaxLength(64)),
++  window: Schema.NullOr(Schema.Struct(servingWindow)),
++  observedAt: Schema.NullOr(count),
++  computedAt: Schema.NullOr(count),
++  regressionAt: Schema.NullOr(count),
++  consecutiveRegressions: count,
++});
+
+ export const PoolUsageBulkImportInput = Schema.Union([
+   Schema.Struct({
+@@ -53,6 +106,10 @@
+     observation: Schema.Struct({
+       observedAt: count,
+       expiresAt: count,
++      cpuAt: count,
++      releaseReadComplete: Schema.Boolean,
++      releaseWindowActive: Schema.Boolean,
++      serving: Schema.optional(servingObservation),
+       ready: Schema.Boolean,
+       cpu: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+       poolErrors: count,
+@@ -77,5 +134,10 @@
+   inserted: count,
+   existing: count,
+   reason: Schema.NullOr(Schema.String),
++  chunkSize: count.check(Schema.isGreaterThanOrEqualTo(100), Schema.isLessThanOrEqualTo(5000)),
++  rateRowsPerSecond: nonNegative,
++  nextBatchAt: count,
++  requiresAttention: Schema.Boolean,
++  serving: servingState,
+ });
+ export type PoolUsageBulkImportStatus = typeof PoolUsageBulkImportStatus.Type;
+diff --git a/e2e/tests/pool-owner-import.spec.ts b/e2e/tests/pool-owner-import.spec.ts
+--- a/e2e/tests/pool-owner-import.spec.ts
++++ b/e2e/tests/pool-owner-import.spec.ts
+@@ -36,6 +36,11 @@
+   inserted: Schema.Number,
+   existing: Schema.Number,
+   reason: Schema.NullOr(Schema.String),
++  chunkSize: Schema.Number,
++  rateRowsPerSecond: Schema.Number,
++  nextBatchAt: Schema.Number,
++  requiresAttention: Schema.Boolean,
++  serving: Schema.Unknown,
+ });
+ const BulkAssertion = Schema.Struct({
+   action: Schema.Literal("importUsageBulk"),
+@@ -227,7 +232,7 @@
+         );
+         const status = {
+           job,
+-          state: "staged",
++          state: "uploading",
+           manifestDigest: digest(JSON.stringify(manifest)),
+           accountMappingDigest: dry.accountMappingDigest,
+           totalRows: 1,
+@@ -237,6 +242,22 @@
+           inserted: 0,
+           existing: 0,
+           reason: null,
++          chunkSize: 500,
++          rateRowsPerSecond: 0,
++          nextBatchAt: 0,
++          requiresAttention: false,
++          serving: {
++            source: null,
++            kind: null,
++            status: "not available",
++            baseline: null,
++            thresholds: [],
++            window: null,
++            observedAt: null,
++            computedAt: null,
++            regressionAt: null,
++            consecutiveRegressions: 0,
++          },
+         };
+         const bulk = yield* bulkImportBackend(viewer.userId, status);
+         yield* serverControl("stop");
+@@ -260,6 +281,16 @@
+             observation: {
+               observedAt: now,
+               expiresAt: now + 30_000,
++              cpuAt: now - 60_000,
++              releaseReadComplete: true,
++              releaseWindowActive: false,
++              serving: {
++                source: "fixture-serving-dependency",
++                kind: "serving-dependency",
++                available: false,
++                observedAt: now,
++                computedAt: now,
++              },
+               ready: true,
+               cpu: 0.1,
+               poolErrors: 0,
