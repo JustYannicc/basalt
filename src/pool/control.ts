@@ -546,7 +546,7 @@ export class PoolHome {
     }
   }
   async readView(now: () => Date, fresh = false): Promise<HomeViewData> {
-    // Another Home writer can change a group's policy without touching this process cache.
+    // Another Home writer can change a group policy without touching this process cache.
     if (fresh) this.client.invalidateGroups();
     const readAt: HomeViewData["readAt"] = { membership: "" };
     const controller = new AbortController();

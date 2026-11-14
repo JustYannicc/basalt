@@ -12,9 +12,13 @@ export async function captureHomeRequests(db: HistoryDatabase) {
   await db.query("BEGIN");
   try {
     await db.query("SET LOCAL lock_timeout = '500ms'");
-    await db.query("SET LOCAL statement_timeout = '5s'");
+    // New capture code can run before the operator applies the additive change tables.
+    const readiness = await db.query(`SELECT set_config('statement_timeout','5s',true),
+      to_regclass('basalt_pool_change_pending') IS NOT NULL AS pending_ready`);
+    const pendingProjection =
+      readiness.rows[0]?.pending_ready === true ? poolHistoryPendingProjection : "'[]'::jsonb";
     const result = await db.query(
-      `SELECT cursor.*,${poolHistoryPendingProjection} AS pending
+      `SELECT cursor.*,${pendingProjection} AS pending
       FROM (SELECT 1) AS upkeep LEFT JOIN LATERAL (
         SELECT source,forward_id::text,backfill_upper::text,backfill_id::text,backfill_complete,sweep_id::text,sweep_upper::text
         FROM basalt_model_history_cursor WHERE source = $1 FOR UPDATE
