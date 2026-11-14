@@ -1,6 +1,7 @@
 import { Button, Tabs, TabsList, TabsTrigger } from "apps/ui";
 import type { PoolView, Provider } from "../contract.ts";
 import type { PoolUsageSummaryResult } from "../usage-overview-contract.ts";
+import { reliabilityNotificationMinimumRequests } from "../reliability-contract.ts";
 import type { PoolApi } from "./api.ts";
 import { summaryLabName } from "./summary-names.ts";
 import { CapacitySection } from "./capacity-view.tsx";
@@ -216,6 +217,9 @@ function Incident({
       <span className="text-muted-foreground">
         {top}
         {now.partial ? " · some of the hour couldn't be read" : ""}
+        {now.requests < reliabilityNotificationMinimumRequests
+          ? ` · Low sample: fewer than ${reliabilityNotificationMinimumRequests} real requests`
+          : ""}
       </span>
       <Button
         size="sm"

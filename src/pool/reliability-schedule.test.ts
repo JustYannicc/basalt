@@ -32,6 +32,7 @@ const slo = (state: PoolReliabilitySlo["state"]): PoolReliabilitySlo => ({
   captureAt: "2026-11-12T03:00:00Z",
   hour: window(100, 2),
   day: window(1000, 2),
+  ...(state === "breached" ? { current: window(1, 1) } : {}),
 });
 
 for (const state of ["breached", "unavailable"] as const)
@@ -53,7 +54,7 @@ for (const state of ["breached", "unavailable"] as const)
         ...(state === "unavailable" ? { reason: "capture_stale" as const } : {}),
       }),
     );
-    assert.equal(envelopes.length, 3);
+    assert.equal(envelopes.length, state === "breached" ? 4 : 3);
     const checks = envelopes
       .filter((entry) => entry.type === "check_in")
       .map((entry) => entry.payload);

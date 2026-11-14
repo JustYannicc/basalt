@@ -1,3 +1,5 @@
+export const reliabilityNotificationMinimumRequests = 100;
+
 export interface ReliabilityCounts {
   readonly requests: number;
   readonly failed: number;
