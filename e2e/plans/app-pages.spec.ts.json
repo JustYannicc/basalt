@@ -1,0 +1,50 @@
+{
+  "scenarios": {
+    "appPages": {
+      "fixtures": "actors",
+      "appOrigin": true,
+      "title": "pages an app declares are host tabs from its active build, with direct links, reload, Back and Forward, app-origin navigation and retained documents, and undeclared or unsafe pages are refused",
+      "serverEnvironment": {
+        "EXECUTOR_PRODUCT_NAME": "Signalbox",
+        "BETTER_AUTH_URL": "http://app.fixture.localhost:0",
+        "EXECUTOR_APP_UI_BASE_URL": "http://fixture.localhost:0",
+        "EXECUTOR_APP_UI_ADDRESS_SCHEME": "opaque",
+        "EXECUTOR_APP_UI_EMBEDDED": "true"
+      },
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "This scenario owns a self-host process with opaque addressing and embedding enabled; Cloud shares the same dashboard and declaration path."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host app origins."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appPages": ["declared:self-host"]
+  },
+  "inputs": [
+    "patches/0607-app-pages.patch",
+    "framework-release.ts",
+    ".upstream/packages/apps/src/contracts/pages.ts",
+    ".upstream/packages/apps/src/contracts/ui.ts",
+    ".upstream/packages/apps/src/contracts/protocols/current.ts",
+    ".upstream/packages/apps/src/implementation/app.ts",
+    ".upstream/packages/apps/src/implementation/host.ts",
+    ".upstream/packages/sdk/src/contracts/apps.ts",
+    ".upstream/packages/sdk/src/implementation/apps.ts",
+    ".upstream/packages/sdk/src/implementation/app-protocols.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/app-detail.tsx",
+    ".upstream/apps/hosted/web/src/contracts/navigation.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-screen.tsx",
+    ".upstream/apps/hosted/web/src/implementation/components/app-frames.tsx",
+    ".upstream/e2e/support/app-host-navigation.ts"
+  ]
+}
