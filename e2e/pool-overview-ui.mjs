@@ -5,18 +5,26 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { Effect, Redacted } from "effect";
 import { root, runtime, until } from "./recipes/harness.mjs";
 import { poolCloudHarness } from "./recipes/pool-cloud-harness.mjs";
-import { capacityReply, importedLabel, seriesReply, summaryReply } from "./pool-overview-usage.mjs";
+import {
+  capacityReply,
+  historyReply,
+  importedLabel,
+  retainedFirstAt,
+  seriesReply,
+  summaryReply,
+} from "./pool-overview-usage.mjs";
 
 const { chromium } = createRequire(join(root, ".upstream/package.json"))("playwright");
 const directory = resolve(
   process.argv[2] ?? join(root, ".generated/pool-overview-ui", randomBytes(6).toString("hex")),
 );
-// "after" checks the overview; "before" only records how the current pool app looks.
-const phase = process.argv[3] === "before" ? "before" : "after";
+// "after" checks the overview; "before" only records how the current pool app looks; "red" runs
+// the correction checks against an older app and records each first failure.
+const phase = ["before", "red"].includes(process.argv[3]) ? process.argv[3] : "after";
 await mkdir(directory, { recursive: true, mode: 0o700 });
 process.chdir(join(root, ".upstream"));
 const checks = [];
@@ -24,6 +32,16 @@ const checked = (name, actual, expected) => {
   assert.deepEqual(actual, expected, name);
   checks.push(name);
 };
+// The red phase keeps going after a failed correction so one run records each first failure.
+const reds = [];
+const section = (name, effect) =>
+  phase === "red"
+    ? effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.sync(() => reds.push({ section: name, failure: String(cause).slice(0, 600) })),
+        ),
+      )
+    : effect;
 const page = (fn) => Effect.promise(fn);
 const diagnostics = {};
 const screenFrame = '[data-app-frames] iframe:not([src*="/history"])';
@@ -95,14 +113,34 @@ const program = Effect.gen(function* () {
     native: entry.nativeAccountId === saved.account.id,
     label: entry.label,
   }));
+  diagnostics.nativeView = inPool.nativeView?.state ?? "absent";
+  diagnostics.nativeBinding =
+    inPool.nativeAccountId === undefined
+      ? "none"
+      : inPool.nativeAccountId === null
+        ? "withheld"
+        : "bound";
+  // History names come from the host's current members; a former member and imports stay unnamed.
+  const people = {
+    member: createHash("sha256").update(identity.user.id).digest("hex"),
+    former: createHash("sha256").update("former-member").digest("hex"),
+  };
   const usage = h.fixture.usage;
   usage.respond = (route, payload) => {
     if (route === "/pool/v1/usage/summary") return summaryReply(payload.input ?? payload);
-    if (route === "/pool/v1/usage/series") return seriesReply(payload, inPool?.id ?? null);
+    if (route === "/pool/v1/usage/series") return seriesReply(payload, inPool?.id ?? null, people);
     // Anything else, including the legacy overview, is counted and then refused.
     return undefined;
   };
-  usage.capacity = capacityReply;
+  const capacityAsks = [];
+  usage.capacity = (url) => {
+    capacityAsks.push({
+      days: Number(url.searchParams.get("days")),
+      to: Number(url.searchParams.get("to")),
+    });
+    return capacityReply(url);
+  };
+  usage.history = (url) => historyReply(url, people);
   const calls = (route) => usage.calls.filter((call) => call.route === `/pool/v1/usage/${route}`);
 
   const browser = yield* Effect.acquireRelease(
@@ -118,6 +156,22 @@ const program = Effect.gen(function* () {
   );
   yield* Effect.addFinalizer(() => Effect.promise(() => context.close()));
   const owner = yield* Effect.promise(() => context.newPage());
+  owner.setDefaultTimeout(phase === "red" ? 8_000 : 30_000);
+  // Every request the pages send, by path only, with its time: the browser half of the inventory.
+  const browserRequests = [];
+  const started = Date.now();
+  owner.on("request", (request) => {
+    // A request from a frame with no address yet has no document to attribute it to.
+    const where = (text) => URL.parse(text ?? "")?.pathname ?? "";
+    const path = where(request.url());
+    if (path.startsWith("/_executor/") || path.startsWith("/api/"))
+      browserRequests.push({
+        at: Date.now() - started,
+        method: request.method(),
+        path,
+        document: where(request.frame()?.url()),
+      });
+  });
   const cookies = Redacted.value(yield* h.actors.owner.cookies);
   yield* Effect.promise(() => context.addCookies([...cookies]));
   const screen = owner.frameLocator(screenFrame);
@@ -223,15 +277,18 @@ const program = Effect.gen(function* () {
   yield* page(() => owner.waitForLoadState("networkidle"));
   const loaded = usage.requests.slice(before);
   diagnostics.initialRequests = loaded;
+  const input = (index) => {
+    const call = calls("summary").at(index);
+    return call?.payload.input ?? call?.payload;
+  };
+  const accountReads = () =>
+    calls("series").filter((call) => call.payload.input?.by?.includes("account"));
   checked("the first load reads the summary once", calls("summary").length, 1);
+  checked("the first load reads capacity once", capacityAsks.length, 1);
   checked("the first load never reads the legacy overview", calls("overview").length, 0);
-  checked("collapsed labs read no account detail", calls("series").length, 0);
-  checked(
-    "the summary read asks for labs over whole Zurich days",
-    calls("summary")[0].payload.input?.by ?? calls("summary")[0].payload.by,
-    "provider",
-  );
-
+  checked("collapsed labs read no account detail", accountReads().length, 0);
+  checked("the summary read asks for labs", input(0).by, "provider");
+  checked("capacity ends at the summary's exact end", capacityAsks[0].to, Date.parse(input(0).to));
   // Current incidents only: a client hang-up (499) is not a pool failure.
   checked(
     "the alert counts only real failures in the last hour",
@@ -239,6 +296,48 @@ const program = Effect.gen(function* () {
       "3 of 40 requests failed in the last hour",
     ),
     true,
+  );
+
+  yield* section(
+    "honest coverage",
+    Effect.gen(function* () {
+      const pills = yield* page(() =>
+        screen.getByRole("list", { name: "Coverage", exact: true }).innerText(),
+      );
+      checked(
+        "an import certificate names the interval it proves",
+        /Import complete \w+ \d+ to \w+ \d+/u.test(pills),
+        true,
+      );
+      checked(
+        "unproven capture is never called days without records",
+        /Capture unproven on 1 day of \d+/u.test(pills) && !pills.includes("without records"),
+        true,
+      );
+    }),
+  );
+  yield* section(
+    "known-subset tokens and gapped sparks",
+    Effect.gen(function* () {
+      const tokens = yield* page(() =>
+        screen.getByRole("region", { name: "Tokens", exact: true }).innerText(),
+      );
+      checked(
+        "a partly counted token total says it is a known subset",
+        tokens.includes("≥") && /known for all but 4 requests/u.test(tokens),
+        true,
+      );
+      checked(
+        "an unpriced day breaks the cost sparkline instead of dipping to zero",
+        yield* page(() =>
+          screen
+            .getByRole("region", { name: "Est. cost", exact: true })
+            .locator("polyline")
+            .count(),
+        ),
+        2,
+      );
+    }),
   );
   yield* shoot("overview", screen);
 
@@ -249,57 +348,123 @@ const program = Effect.gen(function* () {
   );
   checked("switching the metric reads nothing", calls("summary").length, 1);
 
-  // Models are one more summary read of the same range; capacity doesn't change with them.
-  const capacityReads = () =>
-    usage.requests.filter((request) => request === "GET /pool/v1/usage/capacity").length;
-  const capacityBefore = capacityReads();
-  yield* page(() => screen.getByRole("tab", { name: "Model", exact: true }).click());
-  yield* page(() => screen.getByRole("heading", { name: "By model", exact: true }).waitFor());
-  // The model view appears only with its own answer, never over the lab answer it replaces.
-  checked("a model breakdown is one more summary read", calls("summary").length, 2);
-  checked("a model breakdown reads no capacity", capacityReads(), capacityBefore);
-  checked(
-    "that read asks for models",
-    calls("summary")[1].payload.input?.by ?? calls("summary")[1].payload.by,
-    "model",
-  );
-  checked(
-    "an unrecorded model stays unknown",
-    (yield* page(() => screen.getByText("Unknown model").count())) > 0,
-    true,
+  yield* section(
+    "breakdown switch keeps the answered bounds",
+    Effect.gen(function* () {
+      const capacityBefore = capacityAsks.length;
+      yield* page(() => screen.getByRole("tab", { name: "Model", exact: true }).click());
+      yield* page(() => screen.getByRole("heading", { name: "By model", exact: true }).waitFor());
+      checked("a model breakdown is one more summary read", calls("summary").length, 2);
+      checked("a model breakdown reads no capacity", capacityAsks.length, capacityBefore);
+      checked("that read asks for models", input(1).by, "model");
+      checked(
+        "the model read keeps the paired lab answer's exact bounds",
+        [input(1).from, input(1).to],
+        [input(0).from, input(0).to],
+      );
+      checked(
+        "an unrecorded model stays unknown",
+        (yield* page(() => screen.getByText("Unknown model").count())) > 0,
+        true,
+      );
+    }),
   );
   yield* shoot("models", screen);
   yield* page(() => screen.getByRole("tab", { name: "Lab", exact: true }).click());
   yield* page(() => screen.getByRole("heading", { name: "By lab", exact: true }).waitFor());
-  yield* page(() => screen.getByRole("tab", { name: "30 days", exact: true }).click());
-  yield* until(
-    Effect.sync(() => calls("summary")),
-    (list) => list.length === 4,
-    "a range change did not read once",
-  );
-  const thirty = calls("summary")[3].payload.input ?? calls("summary")[3].payload;
-  yield* until(
-    Effect.sync(capacityReads),
-    (count) => count === capacityBefore + 1,
-    "a range change did not read capacity once",
-  );
-  checks.push("a range change reads capacity once");
-  // Whole Zurich days back to a midnight, through today so far.
-  const calendarDay = (at) =>
-    Date.parse(
-      new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Zurich" }).format(new Date(at)),
-    );
-  checked(
-    "a 30-day range asks for 30 Zurich days",
-    (calendarDay(thirty.to) - calendarDay(thirty.from)) / 86_400_000 + 1,
-    30,
-  );
-  yield* page(() => screen.getByRole("tab", { name: "7 days", exact: true }).click());
   yield* page(() => screen.getByRole("tab", { name: "Est. cost", exact: true }).click());
-  yield* until(
-    Effect.sync(() => calls("summary")),
-    (list) => list.length === 5,
-    "returning to 7 days did not read once",
+
+  const toggles = screen.getByRole("button", { name: /^Accounts/u });
+  const summaryCount = (count) =>
+    until(
+      Effect.sync(() => calls("summary")),
+      (list) => list.length === count,
+      `the summary was not read ${count} times`,
+    );
+  yield* section(
+    "shared drilldown follows the range",
+    Effect.gen(function* () {
+      checked("both labs offer their accounts", yield* page(() => toggles.count()), 2);
+      yield* page(() => toggles.nth(1).click());
+      yield* page(() => screen.getByText(importedLabel).waitFor());
+      checked("opening a lab reads every account page once", accountReads().length, 2);
+      checked(
+        "the merged page keeps the imported account's own label",
+        yield* page(() => screen.getByText(importedLabel).count()),
+        1,
+      );
+      yield* page(() => screen.getByText("Imported only").first().waitFor());
+      yield* page(() => screen.getByText("No account recorded").waitFor());
+      yield* page(() => screen.getByText("Unattributed").first().waitFor());
+      yield* page(() => toggles.nth(0).click());
+      yield* page(() => screen.getByText(inPool.label, { exact: true }).first().waitFor());
+      checked("a second lab reuses the same account read", accountReads().length, 2);
+
+      // An open lab reads again for a new range by itself, pinned to the answered bounds.
+      const summaries = calls("summary").length;
+      yield* page(() => screen.getByRole("tab", { name: "30 days", exact: true }).click());
+      yield* summaryCount(summaries + 1);
+      yield* page(() => screen.getByText(importedLabel).waitFor());
+      checked("open labs read their accounts again for the new range", accountReads().length, 4);
+      const read = accountReads().at(-1).payload.input;
+      checked(
+        "account reads pin to the answered summary bounds",
+        [read.from, read.to],
+        [input(-1).from, input(-1).to],
+      );
+      // A range whose accounts outrun the page budget says so instead of looking complete.
+      yield* page(() => screen.getByRole("tab", { name: "90 days", exact: true }).click());
+      yield* summaryCount(summaries + 2);
+      yield* page(() =>
+        screen
+          .getByText(/Accounts are partial/u)
+          .first()
+          .waitFor(),
+      );
+      checked("an overflowing account read stops at its page budget", accountReads().length, 24);
+      yield* page(() => screen.getByRole("tab", { name: "7 days", exact: true }).click());
+      yield* summaryCount(summaries + 3);
+      yield* page(() => screen.getByText(importedLabel).waitFor());
+    }),
+  );
+
+  yield* section(
+    "since the first retained request",
+    Effect.gen(function* () {
+      const summaries = calls("summary").length;
+      const pairs = capacityAsks.length;
+      yield* page(() => screen.getByRole("tab", { name: "Since May", exact: true }).click());
+      yield* summaryCount(summaries + 1);
+      // Capacity is read beside the summary; wait for it rather than for a fixed time.
+      yield* until(
+        Effect.sync(() => capacityAsks.length),
+        (count) => count === pairs + 1,
+        "the since-start range did not read capacity once",
+      );
+      const asked = input(-1);
+      checked(
+        "the since-start range starts at the first retained Zurich day",
+        asked.from,
+        "2026-05-02T22:00:00.000Z",
+      );
+      checked(
+        "it is the retained start, not the training coverage",
+        retainedFirstAt.slice(0, 10),
+        "2026-05-03",
+      );
+      const pair = capacityAsks.at(-1);
+      checked("capacity pairs with the same end", pair.to, Date.parse(asked.to));
+      checked(
+        "capacity covers the same whole days",
+        pair.days,
+        Math.ceil((Date.parse(asked.to) - Date.parse(asked.from)) / 86_400_000),
+      );
+      yield* page(() => screen.getByText(/the day of the first retained request/u).waitFor());
+      yield* shoot("since", screen);
+      yield* page(() => screen.getByRole("tab", { name: "7 days", exact: true }).click());
+      yield* summaryCount(summaries + 2);
+      yield* page(() => screen.getByText(importedLabel).waitFor());
+    }),
   );
 
   // Producer forecasts only; a lab without enough weeks says so instead of guessing.
@@ -311,24 +476,11 @@ const program = Effect.gen(function* () {
   );
   yield* page(() => screen.getByRole("heading", { name: "When we use it", exact: true }).waitFor());
 
-  // Account detail loads on the first opened lab, once, across both pages.
-  const toggles = screen.getByRole("button", { name: /^Accounts/u });
-  checked("both labs offer their accounts", yield* page(() => toggles.count()), 2);
-  yield* page(() => toggles.nth(1).click());
-  yield* page(() => screen.getByText(importedLabel).waitFor());
-  checked("opening a lab reads every account page once", calls("series").length, 2);
-  checked(
-    "the merged page keeps the imported account's own label",
-    yield* page(() => screen.getByText(importedLabel).count()),
-    1,
+  // This harness's pool account has no native source binding, so the pool view attaches no
+  // provider view here; the packaged native presentation journey proves that path. Recorded only.
+  diagnostics.healthCells = yield* page(() =>
+    screen.locator("#accounts-codex [data-account-health-cell]").count(),
   );
-  yield* page(() => screen.getByText("Imported only").first().waitFor());
-  yield* page(() => screen.getByText("No account recorded").waitFor());
-  yield* page(() => screen.getByText("Unattributed").first().waitFor());
-  yield* page(() => toggles.nth(0).click());
-  // An in-pool account reads as the pool names it.
-  yield* page(() => screen.getByText(inPool.label, { exact: true }).first().waitFor());
-  checked("a second lab reuses the same account read", calls("series").length, 2);
 
   // Capacity renders the pool's own verdict from its history, in the lab's own unit.
   checked(
@@ -337,7 +489,6 @@ const program = Effect.gen(function* () {
     0,
   );
   yield* page(() => screen.locator("#capacity").getByText("ChatGPT").first().waitFor());
-  // Banked resets are counted per lab and kind; spending stays in Accounts.
   yield* page(() => screen.getByRole("list", { name: "Banked resets" }).waitFor());
   checked(
     "no reset can be spent from the overview",
@@ -348,57 +499,120 @@ const program = Effect.gen(function* () {
   yield* shoot("forecast", screen, "#forecast-heading");
   yield* shoot("capacity", screen, "#capacity-heading");
 
-  // History is the host's own tab for the app's page; Back returns to the same overview.
-  const summaries = calls("summary").length;
-  yield* page(() =>
-    owner
-      .getByRole("link", { name: "History", exact: true })
-      .click()
-      .then(() =>
-        owner
-          .frameLocator(historyFrame)
-          .getByRole("heading", { name: "Usage history", exact: true })
+  // History: the host's own tab, opened already filtered, loaded with authorized names.
+  const historyScreen = owner.frameLocator(historyFrame);
+  const historyLoaded = () =>
+    historyScreen.getByRole("heading", { name: "Requests", exact: true }).waitFor();
+  yield* section(
+    "failures open History loaded and filtered",
+    Effect.gen(function* () {
+      const summaries = calls("summary").length;
+      yield* page(() =>
+        screen.getByRole("button", { name: "See failed requests", exact: true }).click(),
+      );
+      yield* page(historyLoaded);
+      checked(
+        "the History document carries the failure filter",
+        (yield* page(() => owner.locator(historyFrame).getAttribute("src"))).includes(
+          "status=failed",
+        ),
+        true,
+      );
+      yield* page(() =>
+        historyScreen
+          .getByRole("status", { name: "History filters", exact: true })
+          .getByText("Failed requests")
           .waitFor(),
-      ),
+      );
+      const listed = yield* page(() =>
+        historyScreen.getByRole("region", { name: "Request history", exact: true }).innerText(),
+      );
+      checked(
+        "only failed requests are listed",
+        listed.includes("Failed") && !listed.includes("Completed"),
+        true,
+      );
+      checked(
+        "a current member is named from the host's directory",
+        (yield* page(() => historyScreen.getByText(identity.user.name).count())) > 0,
+        true,
+      );
+      yield* shoot("history", historyScreen);
+      yield* page(() => owner.goBack().then(() => heading.waitFor()));
+      checked(
+        "Back returns to the kept overview without reading it again",
+        calls("summary").length,
+        summaries,
+      );
+      checked(
+        "the kept overview keeps its open labs",
+        yield* page(() => screen.getByText(importedLabel).count()),
+        1,
+      );
+    }),
   );
-  checked(
-    "History has no duplicate in-frame header",
-    yield* page(() =>
-      owner.frameLocator(historyFrame).getByRole("button", { name: "Back", exact: true }).count(),
-    ),
-    0,
-  );
-  yield* shoot("history", owner.frameLocator(historyFrame));
-  yield* page(() => owner.goBack().then(() => heading.waitFor()));
-  checked(
-    "Back returns to the kept overview without reading it again",
-    calls("summary").length,
-    summaries,
-  );
-  checked(
-    "the kept overview keeps its open lab",
-    yield* page(() => screen.getByText(importedLabel).count()),
-    1,
+  yield* section(
+    "a lab opens History filtered and survives a reload",
+    Effect.gen(function* () {
+      yield* page(() =>
+        screen.getByRole("button", { name: "History", exact: true }).first().click(),
+      );
+      yield* page(historyLoaded);
+      const filters = historyScreen.getByRole("status", { name: "History filters", exact: true });
+      yield* page(() => filters.getByText("ChatGPT").waitFor());
+      yield* page(() => owner.reload());
+      yield* page(historyLoaded);
+      yield* page(() => filters.getByText("ChatGPT").waitFor());
+      checks.push("a reload keeps History's filters and loads again");
+    }),
   );
   yield* page(() =>
     owner
       .goto(`${app}?page=history`)
       .then(() =>
-        owner
-          .frameLocator(historyFrame)
-          .getByRole("heading", { name: "Usage history", exact: true })
-          .waitFor(),
+        historyScreen.getByRole("heading", { name: "Usage history", exact: true }).waitFor(),
       ),
   );
-  checks.push("a direct link opens History");
+  yield* page(historyLoaded);
+  yield* page(() =>
+    historyScreen
+      .getByText(/retained records/u)
+      .first()
+      .waitFor(),
+  );
+  checks.push("a direct link opens History loaded");
+  yield* section(
+    "unfiltered History keeps unknown people unnamed",
+    Effect.gen(function* () {
+      checked(
+        "a former member stays unnamed",
+        (yield* page(() => historyScreen.getByText("Name unavailable").count())) > 0,
+        true,
+      );
+      yield* shoot("history-all", historyScreen);
+    }),
+  );
   checked("no screen ever read the legacy overview", calls("overview").length, 0);
   diagnostics.requests = usage.requests.slice(before);
+  if (phase === "red") return { phase, reds, checks };
+  // The host-to-pool half of the inventory, with the pool view's own refresh cadence.
+  const views = usage.log.filter((entry) => entry.route === "GET /pool/v1/pool").map((e) => e.at);
   return {
     checks,
     phase,
     syntheticOnly: true,
-    calls: usage.calls.map((call) => call.route),
+    nativeView: diagnostics.nativeView,
+    nativeBinding: diagnostics.nativeBinding,
+    healthCells: diagnostics.healthCells,
+    calls: usage.calls.map((call) => ({
+      route: call.route,
+      by: call.payload?.input?.by ?? call.payload?.by ?? null,
+    })),
+    capacityAsks,
     initialRequests: loaded,
+    poolLog: usage.log.map((entry) => ({ at: entry.at - started, route: entry.route })),
+    poolViewIntervals: views.slice(1).map((at, index) => at - views[index]),
+    browserRequests,
     runtimeDirectory: h.runtimeDirectory,
   };
 });
@@ -412,7 +626,7 @@ try {
 } catch (error) {
   await writeFile(
     join(directory, "failure.json"),
-    JSON.stringify({ phase, checks, message: String(error), diagnostics }, null, 2) + "\n",
+    JSON.stringify({ phase, checks, reds, message: String(error), diagnostics }, null, 2) + "\n",
     { mode: 0o600 },
   );
   throw error;

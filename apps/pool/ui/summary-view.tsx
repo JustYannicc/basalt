@@ -18,6 +18,7 @@ import {
   formatDay,
   formatDelta,
   formatMetric,
+  formatMonth,
   formatShare,
   metricLabel,
   plural,
@@ -27,19 +28,25 @@ import {
   dayTotal,
   delta,
   incident,
+  knownRuns,
+  maxRangeDays,
   pricing,
+  rangeKey,
+  sinceOption,
   stack,
+  summaryRange,
   total,
   type Breakdown,
   type Metric,
-  type RangeDays,
+  type RangeChoice,
+  type SummaryBounds,
 } from "./summary-model.ts";
 
 export interface SummaryControls {
-  readonly days: RangeDays;
+  readonly range: RangeChoice;
   readonly by: Breakdown;
   readonly metric: Metric;
-  readonly onDays: (days: RangeDays) => void;
+  readonly onRange: (range: RangeChoice) => void;
   readonly onBy: (by: Breakdown) => void;
   readonly onMetric: (metric: Metric) => void;
 }
@@ -77,7 +84,31 @@ function Choice<T extends string | number>({
   );
 }
 
-function Header({ controls, updating }: { controls: SummaryControls; updating: boolean }) {
+/** The since-start label names the first retained month, or says the window is capped. */
+function sinceLabel(bounds: SummaryBounds, first: string) {
+  return bounds.bounded ? `Last ${maxRangeDays} days` : `Since ${formatMonth(first)}`;
+}
+
+function Header({
+  controls,
+  updating,
+  since,
+  bounds,
+}: {
+  controls: SummaryControls;
+  updating: boolean;
+  since: ReturnType<typeof sinceOption>;
+  bounds: SummaryBounds | undefined;
+}) {
+  const fixed: RangeChoice[] = [7, 30, 90].map((days) => ({ kind: "days", days }) as RangeChoice);
+  // A selected since-start window stays offered while a newer answer is on its way.
+  const sinceChoice =
+    since?.choice ?? (controls.range.kind === "since" ? controls.range : undefined);
+  const ranges = sinceChoice ? [...fixed, sinceChoice] : fixed;
+  const label = (choice: RangeChoice) =>
+    choice.kind === "days"
+      ? `${choice.days} days`
+      : sinceLabel(summaryRange(choice, Date.now()), choice.first);
   return (
     <section className="grid gap-4 pt-8 pb-5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -91,13 +122,12 @@ function Header({ controls, updating }: { controls: SummaryControls; updating: b
       <div className="flex flex-wrap gap-x-5 gap-y-2">
         <Choice
           label="Range"
-          value={controls.days}
-          onChange={controls.onDays}
-          options={[
-            { id: 7, label: "7 days" },
-            { id: 30, label: "30 days" },
-            { id: 90, label: "90 days" },
-          ]}
+          value={rangeKey(controls.range)}
+          onChange={(key) => {
+            const next = ranges.find((choice) => rangeKey(choice) === key);
+            if (next) controls.onRange(next);
+          }}
+          options={ranges.map((choice) => ({ id: rangeKey(choice), label: label(choice) }))}
         />
         <Choice
           label="Show"
@@ -119,12 +149,25 @@ function Header({ controls, updating }: { controls: SummaryControls; updating: b
           ]}
         />
       </div>
+      {controls.range.kind === "since" && bounds && (
+        <p className="text-xs text-muted-foreground text-pretty">
+          {bounds.bounded
+            ? `From ${formatDay(bounds.from)}, the oldest day a ${maxRangeDays}-day range reaches. Retained requests start earlier, on ${formatDay(controls.range.first)}.`
+            : `From ${formatDay(bounds.from)}, the day of the first retained request.`}
+        </p>
+      )}
     </section>
   );
 }
 
 /** Only failures happening now earn an alert; a quiet hour says nothing at all. */
-function Incident({ summary }: { summary: PoolUsageSummaryResult }) {
+function Incident({
+  summary,
+  onHistory,
+}: {
+  summary: PoolUsageSummaryResult;
+  onHistory: (search: Record<string, string>) => void;
+}) {
   const now = incident(summary.incidents);
   if (now.state !== "failing") return null;
   const top = now.failures
@@ -144,6 +187,20 @@ function Incident({ summary }: { summary: PoolUsageSummaryResult }) {
         {top}
         {now.partial ? " · some of the hour couldn't be read" : ""}
       </span>
+      <Button
+        size="sm"
+        variant="link"
+        className="ml-auto"
+        onClick={() =>
+          onHistory({
+            status: "failed",
+            from: summary.incidents.from.slice(0, 10),
+            to: summary.incidents.to.slice(0, 10),
+          })
+        }
+      >
+        See failed requests
+      </Button>
     </div>
   );
 }
@@ -152,32 +209,35 @@ function Coverage({ summary }: { summary: PoolUsageSummaryResult }) {
   const sources = summary.coverage.sources;
   const live = sources.filter((source) => source.kind !== "import");
   const imported = sources.filter((source) => source.kind === "import");
-  const firstOf = (list: typeof sources) =>
-    list
-      .map((source) => source.firstAt)
-      .filter((at): at is string => at !== null)
-      .sort()[0];
-  const liveFrom = firstOf(live);
-  const importFrom = firstOf(imported);
+  const liveFrom = live
+    .map((source) => source.firstAt)
+    .filter((at): at is string => at !== null)
+    .sort()[0];
   const money = pricing(summary.daily);
-  const gaps = summary.historyCoverage.gapDays.length;
+  const history = summary.historyCoverage;
+  const gaps = history.gapDays.length;
   const pills = [
     live.length > 0 && (liveFrom ? `Live since ${formatDay(liveFrom)}` : "Live, no requests yet"),
-    imported.length > 0 &&
-      (importFrom
-        ? `Imported from ${formatDay(importFrom)}${imported.every((source) => source.completion) ? ", complete" : ""}`
-        : "Import has no records yet"),
-    gaps > 0 && `${plural(gaps, "day", "days")} without records`,
+    // A completion certificate covers only its frozen interval; an import without one is unproven.
+    ...imported.map((source) =>
+      source.completion
+        ? `Import complete ${formatDay(source.completion.frozenFrom)} to ${formatDay(source.completion.frozenTo)}`
+        : source.firstAt
+          ? `Imported from ${formatDay(source.firstAt)}, completeness not certified`
+          : "Import has no records yet",
+    ),
+    gaps > 0 &&
+      `Capture unproven on ${plural(gaps, "day", "days")} of ${formatCount(gaps + history.knownDays.length)}, ${formatDay(history.from)} to ${formatDay(history.to)}`,
   ].filter((pill): pill is string => typeof pill === "string");
   return (
     <div className="mb-6 grid gap-2 text-xs text-muted-foreground">
-      <div className="flex flex-wrap gap-1.5">
+      <ul aria-label="Coverage" className="flex flex-wrap gap-1.5">
         {pills.map((pill) => (
-          <span key={pill} className="rounded-full border px-2 py-0.5">
+          <li key={pill} className="rounded-full border px-2 py-0.5">
             {pill}
-          </span>
+          </li>
         ))}
-      </div>
+      </ul>
       <p className="max-w-[44rem] text-pretty">
         Counts every request through this pool. Cost is what the same tokens would cost at current
         official API prices
@@ -190,22 +250,29 @@ function Coverage({ summary }: { summary: PoolUsageSummaryResult }) {
   );
 }
 
+/** Known days only: an unknown day breaks the line, it never dips to zero. */
 function Spark({ values }: { values: readonly (number | null)[] }) {
-  const known = values.map((value) => value ?? 0);
-  const max = Math.max(...known, 0);
-  if (values.length < 2 || max === 0) return <div className="h-6" aria-hidden="true" />;
-  const points = known
-    .map((value, index) => `${(index / (values.length - 1)) * 100},${24 - (value / max) * 22}`)
-    .join(" ");
+  const runs = knownRuns(values);
+  const max = Math.max(0, ...runs.flat().map((point) => point.value));
+  if (values.length < 2 || max === 0 || runs.every((run) => run.length < 2))
+    return <div className="h-6" aria-hidden="true" />;
+  const x = (index: number) => (index / (values.length - 1)) * 100;
   return (
     <svg viewBox="0 0 100 24" preserveAspectRatio="none" className="h-6 w-full" aria-hidden="true">
-      <polyline
-        points={points}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        vectorEffect="non-scaling-stroke"
-      />
+      {runs
+        .filter((run) => run.length > 1)
+        .map((run) => (
+          <polyline
+            key={run[0]!.index}
+            points={run
+              .map((point) => `${x(point.index)},${24 - (point.value / max) * 22}`)
+              .join(" ")}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
     </svg>
   );
 }
@@ -219,19 +286,25 @@ function Kpi(props: {
 }) {
   const change = formatDelta(props.change);
   return (
-    <div className="grid min-w-0 content-start gap-1 rounded-lg border px-4 pt-3 pb-2">
+    <section
+      aria-label={props.label}
+      className="grid min-w-0 content-start gap-1 rounded-lg border px-4 pt-3 pb-2"
+    >
       <span className="text-xs text-muted-foreground">{props.label}</span>
       <span className="truncate text-2xl font-semibold tracking-[-0.02em] tabular-nums">
         {props.value}
       </span>
-      <span className="truncate text-xs text-muted-foreground">
+      <span
+        className="truncate text-xs text-muted-foreground"
+        title={props.note ? `${change ?? ""} ${props.note}`.trim() : undefined}
+      >
         {change === null ? "no earlier range to compare" : `${change} vs previous`}
         {props.note ? ` · ${props.note}` : ""}
       </span>
       <span className="text-muted-foreground/70">
         <Spark values={props.spark} />
       </span>
-    </div>
+    </section>
   );
 }
 
@@ -243,12 +316,13 @@ function Kpis({ summary, metric }: { summary: PoolUsageSummaryResult; metric: Me
   const before = (m: Metric) => total(summary.previousDaily, m).value;
   const share = cacheShare(summary.daily);
   const dayCount = Math.max(1, stack(summary.daily, "provider", metric).days.length);
-  const selected = total(summary.daily, metric).value;
+  const chosen = total(summary.daily, metric);
+  const selected = chosen.value;
   return (
     <div className="mb-6 grid grid-cols-4 gap-3 max-[720px]:grid-cols-2">
       <Kpi
         label="Est. cost"
-        value={formatMetric("cost", cost.value)}
+        value={`${cost.missing > 0 && cost.value !== null ? "≥ " : ""}${formatMetric("cost", cost.value)}`}
         change={delta(cost.value, before("cost"))}
         note={cost.missing > 0 ? `${formatCount(cost.missing)} unpriced` : undefined}
         spark={days("cost")}
@@ -261,14 +335,25 @@ function Kpis({ summary, metric }: { summary: PoolUsageSummaryResult; metric: Me
       />
       <Kpi
         label="Tokens"
-        value={formatMetric("tokens", tokens.value)}
+        value={`${tokens.missing > 0 && tokens.value !== null ? "≥ " : ""}${formatMetric("tokens", tokens.value)}`}
         change={delta(tokens.value, before("tokens"))}
-        note={share === null ? undefined : `${formatShare(share)} cache`}
+        note={
+          [
+            tokens.missing > 0
+              ? `known for all but ${plural(tokens.missing, "request", "requests")}`
+              : null,
+            share.share === null
+              ? null
+              : `${formatShare(share.share)} cache${share.partial ? " of fully counted days" : ""}`,
+          ]
+            .filter(Boolean)
+            .join(" · ") || undefined
+        }
         spark={days("tokens")}
       />
       <Kpi
         label={`${metricLabel[metric]} per day`}
-        value={formatMetric(metric, selected === null ? null : selected / dayCount)}
+        value={`${chosen.missing > 0 && selected !== null ? "≥ " : ""}${formatMetric(metric, selected === null ? null : selected / dayCount)}`}
         change={delta(selected, before(metric))}
         spark={days(metric)}
       />
@@ -286,6 +371,7 @@ export function SummaryOverview({
   providers,
   now,
   onRetry,
+  onHistory,
 }: {
   api: PoolApi;
   state: SummaryState | undefined;
@@ -297,6 +383,8 @@ export function SummaryOverview({
   providers: readonly Provider[];
   now: number;
   onRetry: () => void;
+  /** Opens the host's History page with these filters. */
+  onHistory: (search: Record<string, string>) => void;
 }) {
   const summary = state?.summary;
   const name = (provider: string | null) =>
@@ -313,7 +401,12 @@ export function SummaryOverview({
     : [];
   return (
     <>
-      <Header controls={controls} updating={updating} />
+      <Header
+        controls={controls}
+        updating={updating}
+        since={summary?.ok ? sinceOption(summary.value.retainedFirstAt, now) : null}
+        bounds={state?.bounds}
+      />
       {summary === undefined ? (
         <div aria-hidden="true" className="grid gap-3">
           <div className="h-28 animate-pulse rounded-lg bg-accent" />
@@ -328,7 +421,7 @@ export function SummaryOverview({
         </div>
       ) : (
         <div data-summary-as-of={summary.value.asOf ?? ""}>
-          <Incident summary={summary.value} />
+          <Incident summary={summary.value} onHistory={onHistory} />
           <Coverage summary={summary.value} />
           <Kpis summary={summary.value} metric={controls.metric} />
           <SummaryChart summary={summary.value} by={shownBy} metric={controls.metric} name={name} />
@@ -339,6 +432,7 @@ export function SummaryOverview({
             metric={controls.metric}
             view={view}
             name={name}
+            onHistory={onHistory}
           />
           <SummaryForecasts summary={summary.value} metric={controls.metric} name={name} />
         </div>
@@ -348,7 +442,7 @@ export function SummaryOverview({
         empty={view !== undefined && overviewAccounts(view).length === 0}
         providers={providers}
         accounts={capacityInputs(overviewAccounts(view)).map(accountWindows)}
-        days={controls.days}
+        days={state?.bounds?.days ?? (controls.range.kind === "days" ? controls.range.days : 7)}
         coherent={state?.coherent === true}
         onRetry={onRetry}
       />
