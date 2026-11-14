@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Host-owned acquisition bindings outlive the app that first connected an account. Reconnect preserves the saved account ID; explicit deletion uses its retained binding and retry receipt, while app removal keeps the account. Driver health is resolved from the actual stored account after batched reads, and typed acquisition refusals remain distinct from request rejection."
+    }
+  }
+}

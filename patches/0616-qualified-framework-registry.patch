@@ -1,0 +1,51 @@
+diff --git a/packages/sdk/src/implementation/basalt-framework-releases.ts b/packages/sdk/src/implementation/basalt-framework-releases.ts
+--- a/packages/sdk/src/implementation/basalt-framework-releases.ts
++++ b/packages/sdk/src/implementation/basalt-framework-releases.ts
+@@ -1,6 +1,7 @@
+-/** Exact reviewed publication bytes. New builds must match; they never grant themselves admission. */
++/** Historic qualifications remain available before a host build generates its cumulative registry. */
+ import type { FrameworkProvenance } from "../contracts/framework-provenance.ts";
+-const releases: readonly FrameworkProvenance[] = [
++import { generatedFrameworkReleases } from "./basalt-qualified-framework-releases.ts";
++const canonical: readonly FrameworkProvenance[] = [
+   {
+     version: "0.0.1-beta.104-basalt.13",
+     sha256: "4820bfe41e955ad2f684e82fc56083899603ad7e71125b05bf2a01e3959638b4",
+@@ -221,20 +222,15 @@
+       sha256: "dfc2ff7d8f6a447ef01ede1d30c4a61ff1ec9346e6c673cb94ffde57386f2b37",
+     },
+   },
+-  {
+-    version: "0.0.1-beta.104-basalt.16",
+-    sha256: "6f0fc08785d00bb8dcd987d33f7dfb0a295ae023e88ca9470337be09fe3d843f",
+-    protocol: 42,
+-    browserSha256: "17cd00ee1d61ef903df1df4b221e7ea6f5d83e2f2d04029a4df482b881077773",
+-    source: {
+-      origin: "basalt",
+-      revision: "source-sha256:01a96cda2eac4c882f4e2534653cbe6b05cc46bed24ebcfd8666d35bc3f7d174",
+-      sha256: "aedfd770acd0001f0bed7cb4a80b3694a905ff112db6acedef46d37a73b1873c",
+-    },
+-  },
+ ];
+-export const approvedFrameworkReleases = Object.freeze(
+-  releases.map((release) =>
++export const canonicalFrameworkReleases = Object.freeze(
++  canonical.map((release) =>
+     Object.freeze({ ...release, source: Object.freeze({ ...release.source }) }),
+   ),
+ );
++
++export const approvedFrameworkReleases = Object.freeze(
++  (generatedFrameworkReleases.length ? generatedFrameworkReleases : canonicalFrameworkReleases).map(
++    (release) => Object.freeze({ ...release, source: Object.freeze({ ...release.source }) }),
++  ),
++);
+diff --git a/packages/sdk/src/implementation/basalt-qualified-framework-releases.ts b/packages/sdk/src/implementation/basalt-qualified-framework-releases.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/basalt-qualified-framework-releases.ts
+@@ -0,0 +1,4 @@
++import type { FrameworkProvenance } from "../contracts/framework-provenance.ts";
++
++// The host build replaces this bootstrap with cumulative qualified history before bundling.
++export const generatedFrameworkReleases: readonly FrameworkProvenance[] = [];

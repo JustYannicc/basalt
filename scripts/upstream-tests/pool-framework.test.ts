@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import { Effect } from "effect";
+import { admitFramework } from "../../.upstream/packages/sdk/src/implementation/framework-provenance.ts";
 import { poolFrameworkVersion } from "../pool-app-bundle.ts";
 
 const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
@@ -42,7 +43,12 @@ test("the hosted compiler selects its configured patched framework without npm",
       },
     }),
   );
-  assert.equal(await Effect.runPromise((dependencies as { framework: Effect.Effect<boolean, unknown> }).framework), true);
+  assert.equal(
+    await Effect.runPromise(
+      (dependencies as { framework: Effect.Effect<boolean, unknown> }).framework,
+    ),
+    true,
+  );
   assert.equal(reads, 1);
   // framework.release returns this shared host version.
   const { appsVersion } = await load("packages/app-templates/src/implementation/files.ts");
@@ -75,6 +81,17 @@ test(
     assert.equal(JSON.parse(files["framework-reference.json"]!).version, poolFrameworkVersion);
     const { appProtocol } = await load("packages/sdk/src/implementation/app-protocols.ts");
     await Effect.runPromise(appProtocol(runtime.protocol));
+
+    const admitted = await Effect.runPromise(
+      admitFramework({
+        framework: { version: runtime.version, modules: runtime.server },
+        protocol: runtime.protocol,
+        browser: runtime.browser,
+      }),
+    );
+    assert.equal(admitted.version, poolFrameworkVersion);
+    assert.equal(admitted.protocol, frameworkProtocol);
+
     const author = await load("packages/apps/dist/js/index.js");
     const host = await load("packages/apps/dist/js/host.js");
     const handler = host.createAppHandler(

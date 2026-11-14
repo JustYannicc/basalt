@@ -157,7 +157,19 @@ test("all six expectations derive from the actual candidate registries and suppl
     const source = await readFile(resolve(root, sourcePath), "utf8");
     assert.deepEqual(
       expectations.find((entry) => entry.namespace === namespace)!.expected,
-      parseProductMigrationMarkers(source, journal),
+      parseProductMigrationMarkers(
+        source,
+        journal,
+        namespace === "cloud"
+          ? await readFile(
+              resolve(
+                root,
+                ".upstream/apps/hosted/cloud/src/implementation/cloud-migration-runner.ts",
+              ),
+              "utf8",
+            )
+          : undefined,
+      ),
     );
   }
 });

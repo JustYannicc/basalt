@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Cloud dashboard batches share one SQL pool and request runtime across their endpoint child scopes. The outer HTTP request owns those resources and closes them only after every read settles; no pool survives into the next request. Concurrent-batch proofs count initialization independently of self-host authentication timing."
+    }
+  }
+}

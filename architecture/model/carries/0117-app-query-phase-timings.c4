@@ -1,0 +1,7 @@
+model {
+  extend basalt.telemetry {
+    metadata {
+      constraint "App query traces retain separate session, access, caller-account and dispatch durations in completion order. Export only the fixed phase names and finite nonnegative durations, without changing authorization or dispatch behavior. The formatter preserves these measurements and their typed attributes."
+    }
+  }
+}

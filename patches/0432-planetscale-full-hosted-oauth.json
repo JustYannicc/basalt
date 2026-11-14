@@ -1,7 +1,7 @@
 {
   "identity": "basalt-planetscale-full-hosted-oauth",
   "file": "0432-planetscale-full-hosted-oauth.patch",
-  "content_sha256": "abaab99d73fb1a47f65d6cd1c252c5fa439f2b9392dac20ffca25618296312c3",
+  "content_sha256": "e0a6e81c2570e4f7ea97bcc1c3b3e0df8f4408bcd1551d7032745dea55d13b44",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

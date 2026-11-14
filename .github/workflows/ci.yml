@@ -2464,6 +2464,11 @@ jobs:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-build')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: read
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:

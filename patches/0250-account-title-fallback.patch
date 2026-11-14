@@ -107,10 +107,10 @@ index 8c3ec05..683233e 100644
            page
              .setViewportSize({ width: 1280, height: 900 })
 diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
-index 9c24453..52ba9b6 100644
+index 07d6425..a6e170b 100644
 --- a/e2e/tests/account-health.spec.ts
 +++ b/e2e/tests/account-health.spec.ts
-@@ -457,7 +457,8 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+@@ -458,7 +458,8 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
            yield* browser.use("The account row shows the reported photo", (page) => {
              const photo = page
                .locator(".accounts-section li")
@@ -120,7 +120,7 @@ index 9c24453..52ba9b6 100644
                .locator("[data-slot='account-avatar'] [data-slot='avatar-image']");
              return photo.waitFor({ state: "visible" }).then(() => photo.getAttribute("src"));
            }),
-@@ -465,7 +466,7 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
+@@ -466,7 +467,7 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
          yield* browser.use("The outdated result is checked again on view", (page) =>
            page
              .locator(".accounts-section li")
@@ -208,10 +208,10 @@ index 5038abb..f1c15bd 100644
            {provider.definition.name} ·{" "}
            {provider.definition.auth[account.method]?.type === "oauth2" ? "OAuth" : account.method}
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 47cef52..accf7b1 100644
+index 8a90d08..c2a2264 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -21,7 +21,7 @@ import {
+@@ -34,7 +34,7 @@ import {
    type FailureProps,
    type Query,
  } from "../../contracts/dashboard.ts";
@@ -220,7 +220,7 @@ index 47cef52..accf7b1 100644
  import { AppProviderIcon, ProviderIcon } from "./common.tsx";
  import { AccountCheckResult } from "./account-health.tsx";
  import {
-@@ -114,13 +114,9 @@ const automaticAccount = (requirement: AccountRequirement, account: Account): Ac
+@@ -129,13 +129,9 @@ const automaticAccount = (requirement: AccountRequirement, account: Account): Ac
    providerUrl: providerDisplayUrl(requirement.definition),
  });
  
@@ -236,7 +236,7 @@ index 47cef52..accf7b1 100644
  
  /**
   * An account's actions in this app: the host's items, then unlinking when the host offers it.
-@@ -299,7 +295,8 @@ function DeleteUnusedAccount<E, A>({
+@@ -314,7 +310,8 @@ function DeleteUnusedAccount<E, A>({
          <div className="flex min-w-0 items-center gap-2.5 text-sm font-medium">
            <ProviderIcon name={provider} url={providerDisplayUrl(data.provider.definition)} />
            <span className="min-w-0 break-words">
@@ -270,7 +270,7 @@ index 30c804d..2f4e917 100644
                appAccountCount === 0
                  ? ""
 diff --git a/packages/ui/src/implementation/dashboard/connection-app-picker.tsx b/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
-index 882ca42..73d2ab0 100644
+index 3dc592b..35dad58 100644
 --- a/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
 +++ b/packages/ui/src/implementation/dashboard/connection-app-picker.tsx
 @@ -27,6 +27,7 @@ import { AppIcon } from "./common.tsx";
@@ -291,18 +291,30 @@ index 882ca42..73d2ab0 100644
        accounts: [account.id],
        provider: account.provider,
 diff --git a/packages/ui/src/implementation/dashboard/scoped-connections.tsx b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
-index a875f2c..f029114 100644
+index 8064335..4a23d9d 100644
 --- a/packages/ui/src/implementation/dashboard/scoped-connections.tsx
 +++ b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
-@@ -61,6 +61,7 @@ import { McpInstallInstructions } from "./connect.tsx";
- import { publicDocsBaseUrl } from "../../contracts/documentation.ts";
+@@ -71,6 +71,7 @@ import {
+ import { useIncrementalList } from "./incremental-list.tsx";
  import { useProductBrand } from "../hooks/product-brand.ts";
- import { appDisplayName, productNamed } from "../../contracts/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
 +import { accountTitle } from "../../contracts/account-title.ts";
  
  /** Each host supplies its existing authorized catalog read of the app's tools. */
  export interface ConnectionToolPickerProps {
-@@ -509,7 +510,7 @@ function AssignAccount({
+@@ -333,7 +334,10 @@ function ConnectionCard({
+ 
+ const choicesFor = (inventory: Inventory): ReadonlyMap<AppId, AppChoices> =>
+   new Map(
+-    inventory.apps.map((app) => [app.id, appChoices(app, inventory.links, inventory.accounts, inventory.hostManagedLinks)]),
++    inventory.apps.map((app) => [
++      app.id,
++      appChoices(app, inventory.links, inventory.accounts, inventory.hostManagedLinks),
++    ]),
+   );
+ 
+ /** A stored connection as an editable draft, keeping removed apps and accounts visible. */
+@@ -934,7 +938,7 @@ function AssignAccount({
        const existing = options.get(account.id);
        if (existing === undefined)
          options.set(account.id, {

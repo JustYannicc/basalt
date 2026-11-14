@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-window",
   "file": "0075-app-window.patch",
-  "content_sha256": "b443f82581c27144cab0c8e19521256b5187ae2593cd750c540d6070675165ec",
+  "content_sha256": "22d351a36cc76c3ace3dbc021dcb97738c1b6152eb094635d145649b24409535",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

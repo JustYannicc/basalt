@@ -15,11 +15,22 @@ import {
   type RollbackBackup,
 } from "./contracts.ts";
 import { record, requestJson, stringField, withBearer, type Fetcher } from "./http.ts";
+import {
+  parseFrameworkQualification,
+  type FrameworkQualification,
+} from "./framework-qualification.ts";
 
 const apiOrigin = "https://api.github.com";
 const pageSize = 100;
 const maximumPages = 1000;
 const systemName = "basalt-deploy-safety";
+const githubHeaders = {
+  Accept: "application/vnd.github+json",
+  "X-GitHub-Api-Version": "2022-11-28",
+  "Content-Type": "application/json",
+};
+
+export type FrameworkHistoryEnvironment = { repository: string; token?: string };
 
 export type LedgerEnvironment = {
   token: string;
@@ -43,6 +54,7 @@ export type DeploymentPayload = {
   databaseChanged: boolean;
   workflowChanged: boolean;
   reportDigest: string;
+  frameworkQualification?: FrameworkQualification;
   backupName?: string;
   /** The full metadata behind `backupName`'s digest. Parsing verifies it and fills it in for a legacy v1 name. */
   backupMetadata?: BackupMetadata;
@@ -158,6 +170,34 @@ export async function readBackupDeploymentHistory(
         (status === "inactive" && statuses.some((item) => item.state === "success")),
       ...(payload ? { payload } : {}),
     });
+  }
+  return history;
+}
+
+/** Qualification survives a failed or interrupted activation; statuses cannot revoke it. */
+export async function readQualifiedFrameworkHistory(
+  environment: FrameworkHistoryEnvironment,
+  fetcher: Fetcher = fetch,
+): Promise<FrameworkQualification[]> {
+  const history: FrameworkQualification[] = [];
+  for (const deployment of await listDeployments(environment, fetcher)) {
+    const raw = deployment.payload;
+    if (!raw || typeof raw !== "object" || !Object.hasOwn(raw, "frameworkQualification")) continue;
+    try {
+      const payload = parseDeploymentPayload(raw);
+      if (deployment.environment !== "production")
+        throw new SafetyGateError("frameworkQualification requires environment production");
+      if (payload.gitCommit !== deployment.sha)
+        throw new SafetyGateError(
+          "frameworkQualification deployment SHA differs from payload.gitCommit",
+        );
+      if (payload.frameworkQualification === undefined)
+        throw new SafetyGateError("frameworkQualification is missing");
+      history.push(payload.frameworkQualification);
+    } catch (error) {
+      if (!(error instanceof SafetyGateError)) throw error;
+      throw new SafetyGateError(`GitHub deployment ${deployment.id}: ${error.message}`);
+    }
   }
   return history;
 }
@@ -366,6 +406,7 @@ export async function beginReleaseDeployment(
   fetcher: Fetcher = fetch,
   backup?: RecordedBackup,
   rollForward?: RollForward,
+  frameworkQualification?: FrameworkQualification,
 ): Promise<number> {
   const ledger = keepRollForwardGates(
     await readDeploymentLedger(environment, fetcher, rollForward),
@@ -385,6 +426,7 @@ export async function beginReleaseDeployment(
     report.candidate.pins,
     "release",
     backup,
+    frameworkQualification,
   );
   const superseded = ledger.state === "ready" ? ledger.superseded : undefined;
   if (superseded) {
@@ -510,10 +552,11 @@ export function deploymentPayloadFor(
   report: ClassificationReport,
   kind: "release" | "rollback" = "release",
   backup?: RecordedBackup,
+  frameworkQualification?: FrameworkQualification,
 ): DeploymentPayload {
   const gitCommit = kind === "release" ? report.candidate.gitCommit : report.base.gitCommit;
   const pins = kind === "release" ? report.candidate.pins : report.base.pins;
-  return makePayload(report, gitCommit, pins, kind, backup);
+  return makePayload(report, gitCommit, pins, kind, backup, frameworkQualification);
 }
 
 /** The protected backup the latest production release recorded, verified when its payload was parsed. */
@@ -601,6 +644,7 @@ function makePayload(
   pins: ClassificationReport["candidate"]["pins"],
   kind: "release" | "rollback",
   backup?: RecordedBackup,
+  frameworkQualification?: FrameworkQualification,
 ): DeploymentPayload {
   const payload: DeploymentPayload = {
     system: systemName,
@@ -618,6 +662,16 @@ function makePayload(
   if (backup) {
     payload.backupName = backup.name;
     payload.backupMetadata = backup.metadata;
+  }
+  if (frameworkQualification !== undefined) {
+    if (kind !== "release")
+      throw new SafetyGateError("Rollback deployment cannot record frameworkQualification");
+    const qualification = parseFrameworkQualification(frameworkQualification);
+    if (qualification.producerGitCommit !== gitCommit.toLowerCase())
+      throw new SafetyGateError(
+        "frameworkQualification.producerGitCommit differs from deployment gitCommit",
+      );
+    payload.frameworkQualification = qualification;
   }
   return payload;
 }
@@ -648,6 +702,16 @@ function parseDeploymentPayload(value: unknown): DeploymentPayload {
     workflowChanged: payload.workflowChanged,
     reportDigest: hexDigest(payload.reportDigest, "deployment report digest"),
   };
+  if (Object.hasOwn(payload, "frameworkQualification")) {
+    if (parsed.kind !== "release")
+      throw new SafetyGateError("Rollback deployment cannot record frameworkQualification");
+    const qualification = parseFrameworkQualification(payload.frameworkQualification);
+    if (qualification.producerGitCommit !== parsed.gitCommit)
+      throw new SafetyGateError(
+        "frameworkQualification.producerGitCommit differs from deployment gitCommit",
+      );
+    parsed.frameworkQualification = qualification;
+  }
   if (payload.backupName !== undefined) {
     if (typeof payload.backupName !== "string")
       throw new SafetyGateError("Deployment backup name is invalid");
@@ -705,7 +769,7 @@ function assertBackupMatchesReport(backup: RecordedBackup, report: Classificatio
 }
 
 async function listDeployments(
-  environment: LedgerEnvironment,
+  environment: FrameworkHistoryEnvironment,
   fetcher: Fetcher,
 ): Promise<Deployment[]> {
   const all: Deployment[] = [];
@@ -719,7 +783,7 @@ async function listDeployments(
     const url = `${apiOrigin}/repos/${repositoryPath(environment.repository)}/deployments?${query}`;
     const reply = await requestJson(fetcher, "GitHub", url, {
       method: "GET",
-      headers: headers(environment.token),
+      headers: environment.token === undefined ? githubHeaders : headers(environment.token),
     });
     if (!Array.isArray(reply.body))
       throw new SafetyGateError("GitHub deployment list omitted results");
@@ -1072,11 +1136,7 @@ function runLink(environment: LedgerEnvironment): { log_url?: string } {
 }
 
 function headers(token: string): Record<string, string> {
-  return withBearer(token, {
-    Accept: "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-    "Content-Type": "application/json",
-  });
+  return withBearer(token, githubHeaders);
 }
 
 function repositoryPath(repository: string): string {

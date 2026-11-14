@@ -1,6 +1,6 @@
 diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-apply.ts b/apps/hosted/cloud/scripts/pool-token-retirement-apply.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..69ef4c5bc3ab8c6c8acc74363eb0ec492d4c1782
+index 0000000..69ef4c5
 --- /dev/null
 +++ b/apps/hosted/cloud/scripts/pool-token-retirement-apply.ts
 @@ -0,0 +1,231 @@
@@ -237,7 +237,7 @@ index 0000000000000000000000000000000000000000..69ef4c5bc3ab8c6c8acc74363eb0ec49
 +  }).pipe(Effect.withTracerEnabled(false));
 diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-checkpoint.ts b/apps/hosted/cloud/scripts/pool-token-retirement-checkpoint.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..bf39588cfe5cf542cc29f31ba23cd5e5a8cdd0a3
+index 0000000..bf39588
 --- /dev/null
 +++ b/apps/hosted/cloud/scripts/pool-token-retirement-checkpoint.ts
 @@ -0,0 +1,104 @@
@@ -347,7 +347,7 @@ index 0000000000000000000000000000000000000000..bf39588cfe5cf542cc29f31ba23cd5e5
 +  });
 diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-contracts.ts b/apps/hosted/cloud/scripts/pool-token-retirement-contracts.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..eea481c0b276ec4f41ac8730fff27d5d6582fc23
+index 0000000..eea481c
 --- /dev/null
 +++ b/apps/hosted/cloud/scripts/pool-token-retirement-contracts.ts
 @@ -0,0 +1,117 @@
@@ -470,7 +470,7 @@ index 0000000000000000000000000000000000000000..eea481c0b276ec4f41ac8730fff27d5d
 +export const retirementStep = "basalt-retired-pool-tokens-v1:";
 diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-database.ts b/apps/hosted/cloud/scripts/pool-token-retirement-database.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..d7b9d11aa762d33b9fbb4c32578d273695706c7c
+index 0000000..d7b9d11
 --- /dev/null
 +++ b/apps/hosted/cloud/scripts/pool-token-retirement-database.ts
 @@ -0,0 +1,147 @@
@@ -623,7 +623,7 @@ index 0000000000000000000000000000000000000000..d7b9d11aa762d33b9fbb4c32578d2736
 +};
 diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-inventory.ts b/apps/hosted/cloud/scripts/pool-token-retirement-inventory.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..5d3659a4c32aabad011771547880db92c87d8c18
+index 0000000..5d3659a
 --- /dev/null
 +++ b/apps/hosted/cloud/scripts/pool-token-retirement-inventory.ts
 @@ -0,0 +1,287 @@
@@ -916,7 +916,7 @@ index 0000000000000000000000000000000000000000..5d3659a4c32aabad011771547880db92
 +};
 diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts b/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..1ed16b96aa02b8d3f4493c13ab911cbb7ed1c998
+index 0000000..1ed16b9
 --- /dev/null
 +++ b/apps/hosted/cloud/scripts/pool-token-retirement-queries.ts
 @@ -0,0 +1,56 @@
@@ -978,7 +978,7 @@ index 0000000000000000000000000000000000000000..1ed16b96aa02b8d3f4493c13ab911cbb
 +} as const;
 diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..4a2a5e7368c731643e24d368455389cccaf1e916
+index 0000000..4a2a5e7
 --- /dev/null
 +++ b/apps/hosted/cloud/scripts/pool-token-retirement-reader.ts
 @@ -0,0 +1,201 @@
@@ -1185,7 +1185,7 @@ index 0000000000000000000000000000000000000000..4a2a5e7368c731643e24d368455389cc
 +  });
 diff --git a/apps/hosted/cloud/scripts/pool-token-retirement-report.ts b/apps/hosted/cloud/scripts/pool-token-retirement-report.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..60151a9a5c3d464bac04d94baac6b35511fed0ae
+index 0000000..60151a9
 --- /dev/null
 +++ b/apps/hosted/cloud/scripts/pool-token-retirement-report.ts
 @@ -0,0 +1,117 @@
@@ -1308,7 +1308,7 @@ index 0000000000000000000000000000000000000000..60151a9a5c3d464bac04d94baac6b355
 +  }).pipe(Effect.withTracerEnabled(false));
 diff --git a/apps/hosted/cloud/scripts/retired-pool-tokens.ts b/apps/hosted/cloud/scripts/retired-pool-tokens.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..5d66293c045e0672a44a0ac12808255b2c1e1ed7
+index 0000000..5d66293
 --- /dev/null
 +++ b/apps/hosted/cloud/scripts/retired-pool-tokens.ts
 @@ -0,0 +1,140 @@
@@ -1453,7 +1453,7 @@ index 0000000000000000000000000000000000000000..5d66293c045e0672a44a0ac12808255b
 +  process.exitCode = 1;
 +}
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
-index a73438533a74c8ddea5887206c66f4e77cde69bc..040c2a542999ccdcbd5023b8e85b141ee596e708 100644
+index 9240ae1..f7d5c7f 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -41,7 +41,8 @@
@@ -1465,10 +1465,10 @@ index a73438533a74c8ddea5887206c66f4e77cde69bc..040c2a542999ccdcbd5023b8e85b141e
 +    "./pool-token": "./src/implementation/pool-token.ts"
    },
    "dependencies": {
-     "@better-auth/api-key": "1.7.5",
+     "@better-auth/api-key": "1.7.16",
 diff --git a/e2e/support/retired-pool-token-command.ts b/e2e/support/retired-pool-token-command.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..42e513a98598a5f683bf2ca83ddd6fd29a45abf0
+index 0000000..42e513a
 --- /dev/null
 +++ b/e2e/support/retired-pool-token-command.ts
 @@ -0,0 +1,116 @@
@@ -1590,7 +1590,7 @@ index 0000000000000000000000000000000000000000..42e513a98598a5f683bf2ca83ddd6fd2
 +  });
 diff --git a/e2e/support/retired-pool-token-fixture.ts b/e2e/support/retired-pool-token-fixture.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..7ad5accfb1d144248aab02c140913b1593075e5c
+index 0000000..7ad5acc
 --- /dev/null
 +++ b/e2e/support/retired-pool-token-fixture.ts
 @@ -0,0 +1,210 @@
@@ -1806,7 +1806,7 @@ index 0000000000000000000000000000000000000000..7ad5accfb1d144248aab02c140913b15
 +});
 diff --git a/e2e/support/retired-pool-token-inventory.ts b/e2e/support/retired-pool-token-inventory.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..6bc59c14e89daf2c40699bdba6361122ab0334ba
+index 0000000..6bc59c1
 --- /dev/null
 +++ b/e2e/support/retired-pool-token-inventory.ts
 @@ -0,0 +1,113 @@
@@ -1924,10 +1924,10 @@ index 0000000000000000000000000000000000000000..6bc59c14e89daf2c40699bdba6361122
 +  };
 +};
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 15cc6479fad8fef5df2fd1bc2da6a13cab0867c0..48c71b39e1681192832ba8cf798288117b5e1009 100644
+index 8471071..41c017a 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -2214,6 +2214,28 @@ export const scenarios = plan({
+@@ -2737,6 +2737,28 @@ export const scenarios = plan({
        local: na("The inventory is an internal Cloud job using the Cloud runtime database."),
      },
    },
@@ -1958,7 +1958,7 @@ index 15cc6479fad8fef5df2fd1bc2da6a13cab0867c0..48c71b39e1681192832ba8cf79828811
      file: "cloud-database-placement.spec.ts",
 diff --git a/e2e/tests/retired-pool-token-batch.spec.ts b/e2e/tests/retired-pool-token-batch.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..182323e12ce8a70ed08999c93c9fd6768e8c1c78
+index 0000000..182323e
 --- /dev/null
 +++ b/e2e/tests/retired-pool-token-batch.spec.ts
 @@ -0,0 +1,108 @@
@@ -2072,7 +2072,7 @@ index 0000000000000000000000000000000000000000..182323e12ce8a70ed08999c93c9fd676
 +});
 diff --git a/e2e/tests/retired-pool-tokens.spec.ts b/e2e/tests/retired-pool-tokens.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..a009125c7adf6b215865bef782382bb7daea7afd
+index 0000000..a009125
 --- /dev/null
 +++ b/e2e/tests/retired-pool-tokens.spec.ts
 @@ -0,0 +1,329 @@

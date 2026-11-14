@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/app-outbound.ts b/apps/hosted/cloud/src/infrastructure/app-outbound.ts
-index c89c57a..3a897e3 100644
+index 90a9be6..3808654 100644
 --- a/apps/hosted/cloud/src/infrastructure/app-outbound.ts
 +++ b/apps/hosted/cloud/src/infrastructure/app-outbound.ts
 @@ -2,7 +2,7 @@
@@ -11,7 +11,7 @@ index c89c57a..3a897e3 100644
  import { HttpServerRequest, HttpServerResponse } from "effect/http";
  import { recordRoute } from "@executor-js/telemetry";
  import type { Fetcher } from "@cloudflare/workers-types";
-@@ -18,18 +18,30 @@ import { platformObservability } from "./telemetry.ts";
+@@ -19,21 +19,33 @@ import { platformObservability } from "./telemetry.ts";
  
  export const AppOutbound = Effect.gen(function* () {
    if (globalThis.__ALCHEMY_RUNTIME__) return yield* Cloudflare.Worker.ref("AppOutbound");
@@ -21,7 +21,10 @@ index c89c57a..3a897e3 100644
 +  );
    return yield* Cloudflare.Worker("AppOutbound", {
      workersDev: false,
-     compatibility: { date: "2026-09-08", flags: ["global_fetch_strictly_public"] },
+     compatibility: {
+       date: "2026-09-08",
+       flags: ["global_fetch_strictly_public", "no_brotli_content_encoding"],
+     },
 +    env: { E2E_LOCAL_ORIGIN: localOrigin },
      // This private service has no application bindings or credentials.
      script: `export default {
@@ -358,10 +361,10 @@ index a1ce5ee..0aac4d1 100644
      forward: (line: string) => {
        // oxlint-disable-next-line no-control-regex -- Alchemy colors its resource announcements.
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 2594f78..e24344c 100644
+index b960981..cc5dea6 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -405,6 +405,10 @@ export const startCloudEnvironment = (input: {
+@@ -418,6 +418,10 @@ export const startCloudEnvironment = (input: {
        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `${collector}/v1/traces`,
        OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: `${collector}/v1/logs`,
        EXECUTOR_ENVIRONMENT: "test-local",

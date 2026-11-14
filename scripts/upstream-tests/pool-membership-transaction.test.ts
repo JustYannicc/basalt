@@ -21,7 +21,7 @@ test("native membership resolves its acquisition binding without write-lock rech
         const sql = yield* SqlClient.SqlClient;
         const storage = yield* sdk.makeExecutorStorage({ provider: "postgresql" });
         yield* storage.migrate;
-        const db = storage.orm("4.0.22");
+        const db = storage.orm("4.0.28");
         const organization = "org_membership_transaction";
         const owner = sdk.OwnerId.make(`organization:${organization}`);
         const account = sdk.AccountId.make("acc_membership_transaction");
@@ -31,7 +31,7 @@ test("native membership resolves its acquisition binding without write-lock rech
           "create table organization (id text primary key, metadata text)",
           'create table member (id text primary key, "organizationId" text, "userId" text, role text)',
           "create table hosted_account_access (account_id text primary key, organization_id text, kind text, personal_user_id text, creator_id text)",
-          "create table hosted_app_account_links (app text, requirement text, subject text, account text, created_at timestamptz)",
+          "create table hosted_app_account_links (app text, requirement text, subject text, account text, created_at timestamptz, linked_by text)",
         ])
           yield* sql.unsafe(statement);
         yield* sql`insert into organization values (${organization}, ${JSON.stringify({

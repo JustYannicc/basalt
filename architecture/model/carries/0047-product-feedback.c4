@@ -1,0 +1,7 @@
+model {
+  extend basalt.feedback {
+    metadata {
+      constraint "The sidebar feedback form posts to the configured same-origin host through native session authority and bounded screenshot and log inputs. Browser requests use the current injected fetch transport; server rendering uses the server's ordinary fetch services. State revision remains shared across both contracts so failed submissions preserve the current form."
+    }
+  }
+}

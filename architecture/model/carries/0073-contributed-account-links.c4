@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.contributedLinks {
+    metadata {
+      constraint "Opted-in many-account links require current app and account use and retain the contributor. That person or an app editor may detach without deleting saved credentials or other links. Caller-visible health projects after audited credential reads; app documents consume the current accounts-and-notice result, and linked-account queries preserve exact owner and policy checks."
+    }
+  }
+}

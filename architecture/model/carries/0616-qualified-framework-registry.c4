@@ -1,0 +1,7 @@
+model {
+  extend basalt.frameworkRelease {
+    metadata {
+      constraint "Every host build embeds all canonical and qualified production framework identities plus its checked producer before bundling. Only the trusted release records a candidate-bound producer qualification in the existing production deployment ledger before activation. Failed or unknown activation never removes qualification; later hosts retain all earlier qualified identities. Production verifies the exact producer, complete history and generated registry before recording. App builds cannot enroll identities, and runtime admission remains offline and exact."
+    }
+  }
+}

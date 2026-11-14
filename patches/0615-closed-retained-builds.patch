@@ -1,0 +1,1069 @@
+diff --git a/apps/hosted/cloud/src/app-data.ts b/apps/hosted/cloud/src/app-data.ts
+--- a/apps/hosted/cloud/src/app-data.ts
++++ b/apps/hosted/cloud/src/app-data.ts
+@@ -18,7 +18,7 @@
+ import { RuntimeContext } from "alchemy";
+ import { defaultProviderMode } from "alchemy/ProviderMode";
+ import { CacheCommand } from "@executor-js/app-cache/contracts";
+-import { BlobStore } from "@executor-js/sdk/core";
++import { BlobStore, FrameworkProvenanceRefused } from "@executor-js/sdk/core";
+ import {
+   IsolateStarted,
+   makeAppRunner,
+@@ -30,12 +30,18 @@
+   type AppDataHost,
+   type AppRunnerHost,
+   type RemoteCapabilities,
++  type RetainedFrameworkTuple,
+ } from "@executor-js/sdk/workerd";
+ import { owned, withRemoteSpan } from "@executor-js/telemetry";
+ import { cloudBuildReader } from "./infrastructure/blobs.ts";
+ import { cloudOrigin } from "./infrastructure/stage.ts";
+ import { loadCloudBuildRecord, loadCloudFramework } from "./implementation/build-storage.ts";
+ import { cachedRuntimeBuilds } from "./implementation/runtime-build-cache.ts";
++import {
++  decodePinReply,
++  encodePinReply,
++  makeUnverifiedRetainedBuildPin,
++} from "./implementation/unverified-retained-build-pins.ts";
+ import { appCredentialOutbound, appOutboundBindings } from "./infrastructure/app-outbound.ts";
+ import { sentryBindings } from "./infrastructure/sentry.ts";
+ import { workerBuild } from "./infrastructure/worker-build.ts";
+@@ -187,6 +193,18 @@
+             ),
+           ),
+       );
++      const pinRetainedBuild = (app: string, build: string, tuple: RetainedFrameworkTuple) => {
++        const pin = options.data(app).pinRetainedBuild;
++        return pin === undefined
++          ? Effect.fail(
++              new FrameworkProvenanceRefused({
++                build,
++                reason: "conflicting-lineage",
++                comparison: "The app data host cannot commit this retained-build tuple pin.",
++              }),
++            )
++          : pin(build, tuple);
++      };
+       return serveAppRunner(
+         makeAppRunner({
+           loader: yield* Schema.decodeUnknownEffect(NativeLoader)(environment.AppDataLoader).pipe(
+@@ -211,7 +229,12 @@
+           waitUntil: options.waitUntil,
+           ...(options.within === undefined ? {} : { within: options.within }),
+         }),
+-        read,
++        (build, app) =>
++          read(
++            build,
++            app === undefined ? undefined : (tuple) => pinRetainedBuild(app, build, tuple),
++          ),
++        pinRetainedBuild,
+       );
+     });
+ });
+@@ -234,6 +257,7 @@
+         environment.AppDataSupervisor,
+       ).pipe(Effect.orDie);
+       const serves = (app: string) => state.raw.id.equals(supervisors.idFromName(app));
++      const pinRetainedBuild = makeUnverifiedRetainedBuildPin(state.raw.storage, serves);
+       // Facets send through this Worker's fetch, specialized for their app.
+       const supervisor = yield* makeFacetSupervisor(
+         state.raw,
+@@ -246,7 +270,7 @@
+       const notifications = makeChangeNotifications(state.raw);
+       // A database call's runner runs here, beside the facet it calls: the caller reaches this
+       // object directly instead of through a runner isolate that would only forward the call.
+-      const local: AppDataHost = {
++      const local: Omit<AppDataHost, "pinRetainedBuild"> = {
+         invoke: (input, load, elicit, controls, models) =>
+           supervisor
+             .invoke(input, load, elicit, controls, models)
+@@ -254,12 +278,17 @@
+         cancel: (id) => supervisor.cancel(id),
+         cache: (namespace, command) => supervisor.cache(namespace, command),
+       };
++      const localForApp = (app: string): AppDataHost => ({
++        ...local,
++        pinRetainedBuild: (build, tuple) => pinRetainedBuild({ app, build, tuple }),
++      });
+       const waitUntil = (task: Promise<unknown>) => state.raw.waitUntil(task);
+       const colo = () => coloOf((lookup) => state.raw.waitUntil(Effect.runPromise(lookup)));
+       // Start this isolate's colo lookup as the instance starts, ahead of its first reply.
+       colo();
+       return {
+         publishChange: notifications.publish,
++        pinRetainedBuild: (input: unknown) => encodePinReply(pinRetainedBuild(input)),
+         // The reply carries how the supervisor ran, for the runner's span; the runner's reply
+         // decoder ignores the extra field, so runners from before it read the reply unchanged.
+         cache: (namespace: string, command: unknown, trace?: string, invocation?: string) =>
+@@ -296,7 +325,7 @@
+          */
+         run: (invocation: string, capabilities: RemoteCapabilities) =>
+           runnerFor({
+-            data: () => local,
++            data: (app) => localForApp(app),
+             waitUntil,
+             within: { supervisor: { serves } },
+           }).pipe(Effect.flatMap((served) => served.invoke(invocation, capabilities))),
+@@ -381,6 +410,11 @@
+                   attributes: { "executor.wake.reason": reason },
+                 }),
+               ),
++            pinRetainedBuild: (build, tuple) =>
++              target.pinRetainedBuild({ app, build, tuple }).pipe(
++                Effect.provide(RuntimeContext.phantom),
++                Effect.flatMap((reply) => decodePinReply(reply, build)),
++              ),
+             cache: (namespace, command) =>
+               Schema.decodeUnknownEffect(CacheCommand)(command).pipe(
+                 Effect.tap((parsed) =>
+diff --git a/apps/hosted/cloud/src/implementation/runtime-build-cache.ts b/apps/hosted/cloud/src/implementation/runtime-build-cache.ts
+--- a/apps/hosted/cloud/src/implementation/runtime-build-cache.ts
++++ b/apps/hosted/cloud/src/implementation/runtime-build-cache.ts
+@@ -15,6 +15,7 @@
+   RetainedFramework,
+   RetainedWorkerBuild,
+   type StoredWorkerBuild,
++  type RetainedBuildPin,
+ } from "@executor-js/sdk/workerd";
+ import { Clock, Effect, FiberSet, Option, Schema, Semaphore, Struct } from "effect";
+ import {
+@@ -400,6 +401,7 @@
+     });
+   return (
+     build: BuildId,
++    pin?: RetainedBuildPin,
+   ): Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable | FrameworkProvenanceRefused, R> =>
+     Effect.gen(function* () {
+       const deadline = (yield* Clock.currentTimeMillis) + readTimeout;
+@@ -425,7 +427,7 @@
+         "executor.build.cache": source,
+         "executor.build.record_accounted_bytes": bytes,
+       });
+-      return yield* linkWorkerBuild(value, (identity) => framework(identity, deadline), build);
++      return yield* linkWorkerBuild(value, (identity) => framework(identity, deadline), build, pin);
+     }).pipe(
+       Effect.tap(() =>
+         Effect.annotateCurrentSpan({
+diff --git a/apps/hosted/cloud/src/implementation/unverified-retained-build-pins.ts b/apps/hosted/cloud/src/implementation/unverified-retained-build-pins.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/unverified-retained-build-pins.ts
+@@ -0,0 +1,118 @@
++import type { DurableObjectStorage } from "@cloudflare/workers-types";
++import { Effect, Schema } from "effect";
++import { FrameworkProvenanceRefused } from "@executor-js/sdk/core";
++import {
++  CommittedRetainedBuildPin,
++  RetainedFrameworkTuple,
++  findUnverifiedRetainedBuild,
++} from "@executor-js/sdk/workerd";
++
++const PinReply = Schema.Union([
++  Schema.Struct({ ok: Schema.Literal(true), pin: CommittedRetainedBuildPin }),
++  Schema.Struct({ ok: Schema.Literal(false), error: FrameworkProvenanceRefused }),
++]);
++export type PinReply = typeof PinReply.Encoded;
++
++const sameTuple = (left: RetainedFrameworkTuple, right: RetainedFrameworkTuple) =>
++  left.version === right.version &&
++  left.protocol === right.protocol &&
++  left.sha256 === right.sha256;
++
++const tupleLabel = ({ version, protocol, sha256 }: RetainedFrameworkTuple) => {
++  const safeVersion = Array.from(version, (char) => {
++    const code = char.charCodeAt(0);
++    return code < 32 || code === 127 ? "?" : char;
++  }).join("");
++  const boundedVersion = safeVersion.length > 96 ? `${safeVersion.slice(0, 96)}…` : safeVersion;
++  return `${boundedVersion}/${protocol}/${sha256.slice(0, 12)}`;
++};
++
++const refused = (build: string | undefined, comparison: string) =>
++  new FrameworkProvenanceRefused({
++    reason: "conflicting-lineage",
++    ...(build === undefined ? {} : { build }),
++    comparison,
++  });
++
++/** A per-app first-observation pin. The object identity and one transaction own the decision. */
++export const makeUnverifiedRetainedBuildPin =
++  (storage: DurableObjectStorage, serves: (app: string) => boolean) =>
++  (input: unknown): Effect.Effect<CommittedRetainedBuildPin, FrameworkProvenanceRefused> =>
++    Effect.gen(function* () {
++      if (!Schema.is(CommittedRetainedBuildPin)(input))
++        return yield* Effect.fail(refused(undefined, "Malformed retained-build pin request."));
++
++      const { app, build, tuple } = input;
++      const entry = findUnverifiedRetainedBuild(build);
++      if (entry === undefined || entry.policy !== "pin-first-observation" || entry.app !== app)
++        return yield* Effect.fail(
++          refused(build, "The app and build are not the closed pin-first retained-build entry."),
++        );
++      if (!Schema.is(RetainedFrameworkTuple)(tuple))
++        return yield* Effect.fail(refused(build, "Malformed observed framework tuple."));
++      if (!serves(app))
++        return yield* Effect.fail(
++          refused(build, "This Durable Object is not the configured supervisor for the app."),
++        );
++
++      const key = `executor:unverified-retained-build:${app}:${build}`;
++      const candidate = Object.freeze({
++        app,
++        build,
++        tuple: Object.freeze({ ...tuple }),
++      });
++      const saved = yield* Effect.tryPromise({
++        try: () =>
++          storage.transaction(async (transaction) => {
++            const current = await transaction.get<unknown>(key);
++            if (current !== undefined) return current;
++            await transaction.put(key, candidate);
++            return candidate;
++          }),
++        catch: () =>
++          refused(
++            build,
++            "The supervisor could not atomically read or commit the retained-build pin.",
++          ),
++      });
++
++      if (!Schema.is(CommittedRetainedBuildPin)(saved))
++        return yield* Effect.fail(refused(build, "The committed retained-build pin is malformed."));
++      if (saved.app !== app || saved.build !== build)
++        return yield* Effect.fail(
++          refused(build, "The committed retained-build pin belongs to another app or build."),
++        );
++      if (!sameTuple(saved.tuple, tuple))
++        return yield* Effect.fail(
++          refused(
++            build,
++            `Committed tuple ${tupleLabel(saved.tuple)} differs from observed tuple ${tupleLabel(tuple)}.`,
++          ),
++        );
++      return saved;
++    });
++
++/** RPC errors cross as plain schema data; callers reconstruct the tagged error locally. */
++export const encodePinReply = (
++  effect: Effect.Effect<CommittedRetainedBuildPin, FrameworkProvenanceRefused>,
++) =>
++  effect.pipe(
++    Effect.match({
++      onSuccess: (pin) => ({ ok: true as const, pin }),
++      onFailure: (error) => ({
++        ok: false as const,
++        error: Schema.encodeUnknownSync(FrameworkProvenanceRefused)(error),
++      }),
++    }),
++  );
++
++export const decodePinReply = (
++  reply: unknown,
++  build?: string,
++): Effect.Effect<CommittedRetainedBuildPin, FrameworkProvenanceRefused> =>
++  Schema.decodeUnknownEffect(PinReply)(reply).pipe(
++    Effect.mapError(() => refused(build, "The app-data supervisor returned an invalid pin reply.")),
++    Effect.flatMap((result) =>
++      result.ok ? Effect.succeed(result.pin) : Effect.fail(result.error),
++    ),
++  );
+diff --git a/apps/hosted/cloud/src/infrastructure/app-data.ts b/apps/hosted/cloud/src/infrastructure/app-data.ts
+--- a/apps/hosted/cloud/src/infrastructure/app-data.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-data.ts
+@@ -2,10 +2,11 @@
+ import * as Cloudflare from "alchemy/Cloudflare";
+ import type { Effect } from "effect";
+ import type { makeFacetSupervisor } from "@executor-js/app-data/cloudflare";
+-import type { RemoteCapabilities } from "@executor-js/sdk/workerd";
++import type { CommittedRetainedBuildPin, RemoteCapabilities } from "@executor-js/sdk/workerd";
+ import { AppData } from "./app-data-worker.ts";
+ import type { RevisionHint } from "@executor-js/app-data";
+ import type { ChangeNotificationFailed } from "@executor-js/app-data/cloudflare";
++import type { PinReply } from "../implementation/unverified-retained-build-pins.ts";
+ 
+ type FacetSupervisor = Effect.Success<ReturnType<typeof makeFacetSupervisor>>;
+ type Supervisor = Pick<FacetSupervisor, "invoke" | "cancel" | "evaluated" | "wake" | "unload"> & {
+@@ -21,6 +22,8 @@
+     trace?: string,
+     invocation?: string,
+   ) => Effect.Effect<unknown, Effect.Error<ReturnType<FacetSupervisor["observedCache"]>>>;
++  /** A plain JSON RPC result keeps the tagged refusal intact across the Worker boundary. */
++  readonly pinRetainedBuild: (input: CommittedRetainedBuildPin) => Effect.Effect<PinReply>;
+   /**
+    * Run a call that uses the app's database (see `runsInFacet`) with its runner inside this
+    * supervisor, as the AppData Worker's runner `invoke` runs any call.
+diff --git a/apps/hosted/cloud/src/infrastructure/runtime.ts b/apps/hosted/cloud/src/infrastructure/runtime.ts
+--- a/apps/hosted/cloud/src/infrastructure/runtime.ts
++++ b/apps/hosted/cloud/src/infrastructure/runtime.ts
+@@ -19,6 +19,7 @@
+   remoteAppRunner,
+   runsInFacet,
+ } from "@executor-js/sdk/workerd";
++import type { RetainedFrameworkTuple } from "@executor-js/sdk/workerd";
+ import { HostRequirementsError, DeclaredRequirements, HostResponse } from "apps/contracts";
+ import { RuntimeContext } from "alchemy";
+ import { RpcCallError } from "alchemy/Rpc";
+@@ -27,6 +28,7 @@
+ import { dataChanges } from "../implementation/data-changes.ts";
+ import { runtimeActor } from "../implementation/runtime-actor.ts";
+ import { cacheRuntimeBuild, cachedRuntimeBuilds } from "../implementation/runtime-build-cache.ts";
++import { decodePinReply } from "../implementation/unverified-retained-build-pins.ts";
+ import type { DurableObjectNamespace } from "@cloudflare/workers-types";
+ import { CloudCompileResult } from "../contracts/builds.ts";
+ import { withCompilerRequest } from "../implementation/compiler-request.ts";
+@@ -125,10 +127,21 @@
+       },
+       (write) => FiberSet.run(warming, write).pipe(Effect.asVoid),
+     );
++    const pinRetainedBuild = (app: string, build: string, tuple: RetainedFrameworkTuple) =>
++      databases
++        .getByName(app)
++        .pinRetainedBuild({ app, build, tuple })
++        .pipe(
++          Effect.provide(RuntimeContext.phantom),
++          Effect.flatMap((reply) => decodePinReply(reply, build)),
++        );
++    const loadBuild = (build: BuildId, app?: string) =>
++      load(build, app === undefined ? undefined : (tuple) => pinRetainedBuild(app, build, tuple));
+     const runtime = yield* appRuntime({
+       name: "runtime.cloud",
+       actor: runtimeActor,
+-      loadBuild: load,
++      loadBuild,
++      pinRetainedBuild,
+       invoke: (invocation, capabilities) =>
+         withActor(
+           (runsInFacet(invocation) ? supervised(invocation.app) : runner).invoke(
+diff --git a/packages/sdk/src/contracts/apps.ts b/packages/sdk/src/contracts/apps.ts
+--- a/packages/sdk/src/contracts/apps.ts
++++ b/packages/sdk/src/contracts/apps.ts
+@@ -3,6 +3,7 @@
+ import { ApiError } from "@executor-js/utils/api-error";
+ import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
+ import { DeclaredRequirements } from "apps/contracts";
++import { UnverifiedRetainedBuild } from "./unverified-retained-build.ts";
+ import { AppSlug } from "./app-slug.ts";
+ export { AppSlug, appSlug, appSlugFits } from "./app-slug.ts";
+ /** Apps own deployed code and declared requirements. Callers choose accounts for each operation. */
+@@ -222,6 +223,12 @@
+     activeVersion: Schema.NullOr(VersionId),
+     copiedFrom: Schema.NullOr(AppCopyOrigin),
+     requirements: AppRequirements,
++    unverifiedFramework: Schema.optionalKey(
++      Schema.Struct({
++        build: UnverifiedRetainedBuild.fields.build,
++        reason: UnverifiedRetainedBuild.fields.reason,
++      }),
++    ),
+     createdAt: Schema.Date,
+   }))();
+ /**
+diff --git a/packages/sdk/src/contracts/storage.ts b/packages/sdk/src/contracts/storage.ts
+--- a/packages/sdk/src/contracts/storage.ts
++++ b/packages/sdk/src/contracts/storage.ts
+@@ -66,7 +66,7 @@
+  */
+ export const StoredApp = /* @__PURE__ */ (() =>
+   Schema.Struct({
+-    ...AppFields.mapFields(Struct.omit(["requirements"])).fields,
++    ...AppFields.mapFields(Struct.omit(["requirements", "unverifiedFramework"])).fields,
+     deploySequence: Schema.Int,
+     activatedSequence: Schema.Int,
+   })
+diff --git a/packages/sdk/src/contracts/unverified-retained-build.ts b/packages/sdk/src/contracts/unverified-retained-build.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/contracts/unverified-retained-build.ts
+@@ -0,0 +1,28 @@
++import { Schema } from "effect";
++
++export const RetainedFrameworkTuple = Schema.Struct({
++  version: Schema.NonEmptyString,
++  protocol: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
++  sha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
++});
++export type RetainedFrameworkTuple = typeof RetainedFrameworkTuple.Type;
++
++export const unverifiedRetainedBuildReason = "active at sync, provenance unproven";
++
++/** Permission for one existing build to serve; this asserts no framework source provenance. */
++export const UnverifiedRetainedBuild = Schema.Struct({
++  _tag: Schema.Literal("UnverifiedRetainedBuild"),
++  app: Schema.NonEmptyString,
++  build: Schema.NonEmptyString,
++  reason: Schema.Literal(unverifiedRetainedBuildReason),
++  tuple: RetainedFrameworkTuple,
++});
++export type UnverifiedRetainedBuild = typeof UnverifiedRetainedBuild.Type;
++
++/** Supplied only by the host's atomic pin transaction, never by a loaded build or transport. */
++export const CommittedRetainedBuildPin = Schema.Struct({
++  app: Schema.NonEmptyString,
++  build: Schema.NonEmptyString,
++  tuple: RetainedFrameworkTuple,
++});
++export type CommittedRetainedBuildPin = typeof CommittedRetainedBuildPin.Type;
+diff --git a/packages/sdk/src/contracts/worker-build.ts b/packages/sdk/src/contracts/worker-build.ts
+--- a/packages/sdk/src/contracts/worker-build.ts
++++ b/packages/sdk/src/contracts/worker-build.ts
+@@ -1,6 +1,7 @@
+ /** Retained Worker code and optional private browser asset metadata. */
+ import { UiAsset } from "./runtime.ts";
+ import { Effect, Schema } from "effect";
++import { UnverifiedRetainedBuild } from "./unverified-retained-build.ts";
+ import { FrameworkProvenance } from "./framework-provenance.ts";
+ 
+ export { FrameworkProvenance, FrameworkReleaseSource } from "./framework-provenance.ts";
+@@ -101,5 +102,6 @@
+     protocol: AppProtocolVersion,
+     /** Older transports decode, but execution refuses until the host proves the identity. */
+     framework: Schema.optionalKey(FrameworkProvenance),
++    unverified: Schema.optionalKey(UnverifiedRetainedBuild),
+   }))();
+ export type LoadedWorkerBuild = typeof LoadedWorkerBuild.Type;
+diff --git a/packages/sdk/src/implementation/app-runner.ts b/packages/sdk/src/implementation/app-runner.ts
+--- a/packages/sdk/src/implementation/app-runner.ts
++++ b/packages/sdk/src/implementation/app-runner.ts
+@@ -54,6 +54,15 @@
+ } from "../contracts/runtime.ts";
+ import type { LoadedWorkerBuild, WorkerBundle } from "../contracts/worker-build.ts";
+ import type { StartedPart } from "../contracts/runtime.ts";
++import type {
++  CommittedRetainedBuildPin,
++  RetainedFrameworkTuple,
++} from "../contracts/unverified-retained-build.ts";
++import {
++  findUnverifiedRetainedBuild,
++  selectInvocationFrameworkProtocol,
++  type RetainedBuildPin,
++} from "./unverified-retained-build.ts";
+ import type { FrameworkProvenance } from "../contracts/framework-provenance.ts";
+ import {
+   FrameworkProvenanceRegistry,
+@@ -76,6 +85,10 @@
+ 
+ /** One app's data supervisor. It owns the facet and its database; the runner only calls it. */
+ export interface AppDataHost {
++  readonly pinRetainedBuild?: (
++    build: string,
++    tuple: RetainedFrameworkTuple,
++  ) => Effect.Effect<CommittedRetainedBuildPin, FrameworkProvenanceRefused>;
+   readonly invoke: (
+     input: typeof FacetInvocation.Type,
+     load: () => Promise<typeof FacetBundle.Type>,
+@@ -359,8 +372,18 @@
+   waitUntil: (task: Promise<unknown>) => void,
+   /** Called when this call reads the build itself: this isolate has not learned its protocol. */
+   reading: () => void,
++  invocation: Pick<AppInvocation, "app" | "build">,
++  pin?: RetainedBuildPin,
+ ) =>
+   Effect.gen(function* () {
++    if (findUnverifiedRetainedBuild(build) !== undefined) {
++      reading();
++      const loaded = yield* Effect.tryPromise({ try: load, catch: (cause) => cause }).pipe(
++        Effect.catch(failedBuild),
++      );
++      const protocol = yield* selectInvocationFrameworkProtocol(loaded, invocation, pin);
++      return { protocol, load: async () => loaded };
++    }
+     const started = yield* Clock.currentTimeMillis;
+     const registry = yield* FrameworkProvenanceRegistry;
+     while (true) {
+@@ -787,9 +810,14 @@
+     bundle: LoadedWorkerBuild,
+     headers: Readonly<Record<string, string>>,
+     explain: boolean,
++    retainedProtocol?: AppProtocol,
+   ) =>
+     Effect.gen(function* () {
+-      const protocol = yield* selectFrameworkProtocol(bundle).pipe(
++      const protocol = yield* (
++        retainedProtocol === undefined
++          ? selectFrameworkProtocol(bundle)
++          : Effect.succeed(retainedProtocol)
++      ).pipe(
+         Effect.catchTag("RuntimeProtocolUnsupported", (cause) =>
+           failed("unsupported", cause, explain),
+         ),
+@@ -907,6 +935,7 @@
+           "executor.worker.identity": name,
+         });
+         const data = host.data(invocation.app);
++        const pin = data.pinRetainedBuild;
+         const services = yield* Effect.context<never>();
+         // A cold call's supervisor is usually idle too, and its isolate takes about as long to start
+         // as the app Worker's. A Worker call wakes it once, in the background, as soon as the call
+@@ -932,8 +961,13 @@
+         // the host's current model whichever protocol the retained bundle speaks.
+         const { protocol, load } = yield* runnerPhase(
+           "protocol",
+-          protocolOf(invocation.build, capabilities.load, host.waitUntil, () =>
+-            wakeSupervisor("build"),
++          protocolOf(
++            invocation.build,
++            capabilities.load,
++            host.waitUntil,
++            () => wakeSupervisor("build"),
++            invocation,
++            pin === undefined ? undefined : (tuple) => pin(invocation.build, tuple),
+           ),
+         );
+         // A command this protocol's bundles would not run as asked fails without reaching them.
+@@ -943,7 +977,7 @@
+           const bundle = yield* Effect.tryPromise({ try: load, catch: (cause) => cause }).pipe(
+             Effect.catch(failedBuild),
+           );
+-          const reply = yield* declare(bundle, invocation.headers, false).pipe(
++          const reply = yield* declare(bundle, invocation.headers, false, protocol).pipe(
+             Effect.flatMap(Schema.decodeUnknownEffect(HostResponse)),
+             Effect.catchTag("SchemaError", () => failed("invalid-reply")),
+           );
+diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/implementation/app-runtime.ts
+--- a/packages/sdk/src/implementation/app-runtime.ts
++++ b/packages/sdk/src/implementation/app-runtime.ts
+@@ -55,7 +55,14 @@
+ import type { LoadedWorkerBuild } from "../contracts/worker-build.ts";
+ import type { BlobStore } from "../contracts/blobs.ts";
+ import { appWorker, type AppCapabilities, type AppInvocation } from "./app-runner.ts";
+-import { selectFrameworkProtocol } from "./framework-provenance.ts";
++import type {
++  CommittedRetainedBuildPin,
++  RetainedFrameworkTuple,
++} from "../contracts/unverified-retained-build.ts";
++import {
++  selectInvocationFrameworkProtocol,
++  type RetainedBuildPin,
++} from "./unverified-retained-build.ts";
+ import { invocationElicitation } from "./worker-elicitation.ts";
+ import { invocationModels } from "./worker-model-rpc.ts";
+ import { invocationWorkflowControls } from "./worker-workflow-rpc.ts";
+@@ -85,6 +92,7 @@
+ export const invocationBuildLoader = <R>(
+   invocation: Pick<AppInvocation, "app" | "build" | "database" | "command" | "accounts" | "run">,
+   read: Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable | FrameworkProvenanceRefused, R>,
++  pin?: RetainedBuildPin,
+ ): Effect.Effect<
+   {
+     readonly load: AppCapabilities["load"];
+@@ -114,7 +122,7 @@
+         Effect.runPromiseWith(services)(
+           read.pipe(
+             Effect.tap((loaded) =>
+-              selectFrameworkProtocol(loaded, { build: invocation.build }).pipe(
++              selectInvocationFrameworkProtocol(loaded, invocation, pin).pipe(
+                 Effect.tapError((error) =>
+                   Effect.sync(() => {
+                     refusal = error;
+@@ -156,8 +164,14 @@
+    */
+   readonly actor?: Effect.Effect<Readonly<Record<string, string>>>;
+   /** Read one retained build, with the protocol its framework speaks, from this host's store. */
++  readonly pinRetainedBuild?: (
++    app: string,
++    build: string,
++    tuple: RetainedFrameworkTuple,
++  ) => Effect.Effect<CommittedRetainedBuildPin, FrameworkProvenanceRefused>;
+   readonly loadBuild: (
+     build: BuildId,
++    app?: string,
+   ) => Effect.Effect<
+     LoadedWorkerBuild,
+     RuntimeBuildUnavailable | FrameworkProvenanceRefused,
+@@ -223,7 +237,12 @@
+           };
+           // Only the trusted runner or data supervisor calls the loader. The runner may sit behind
+           // RPC, so the loader keeps an unsupported protocol as this call's typed failure.
+-          const loader = yield* invocationBuildLoader(invocation, host.loadBuild(build));
++          const pin = host.pinRetainedBuild;
++          const loader = yield* invocationBuildLoader(
++            invocation,
++            host.loadBuild(build, invocation.app),
++            pin === undefined ? undefined : (tuple) => pin(invocation.app, build, tuple),
++          );
+           const capabilities: AppCapabilities = {
+             load: loader.load,
+             elicit:
+diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+--- a/packages/sdk/src/implementation/apps.ts
++++ b/packages/sdk/src/implementation/apps.ts
+@@ -1,3 +1,5 @@
++import { findUnverifiedRetainedBuild } from "./unverified-retained-build.ts";
++import { BuildId } from "../contracts/shared.ts";
+ import { versionBuildFailed } from "./version-build-failure.ts";
+ import type { ResourceLifecycle } from "../contracts/executor.ts";
+ import { AppWorkflowsActive } from "../contracts/apps.ts";
+@@ -186,9 +188,16 @@
+     ),
+     Effect.map((deployed) => deployed.some((version) => version.requirements.sql === true)),
+   );
++const StoredActiveVersion = Schema.Struct({ ...StoredVersionRequirements.fields, build: BuildId });
++const unverifiedFramework = (app: string, build: string) => {
++  const entry = findUnverifiedRetainedBuild(build);
++  return entry?.app === app
++    ? { unverifiedFramework: { build: entry.build, reason: entry.reason } }
++    : {};
++};
+ const AppProjection = Schema.Struct({
+   app: StoredApp,
+-  version: Schema.NullOr(StoredVersionRequirements),
++  version: Schema.NullOr(StoredActiveVersion),
+ });
+ const projectedApp = (row: { readonly app: unknown; readonly version: unknown }) =>
+   Schema.decodeUnknownEffect(AppProjection)(row).pipe(
+@@ -198,6 +207,7 @@
+       return Effect.succeed({
+         ...Struct.omit(app, ["deploySequence", "activatedSequence"]),
+         requirements: version === null ? { accounts: {} } : version.requirements,
++        ...(version === null ? {} : unverifiedFramework(app.id, version.build)),
+       });
+     }),
+   );
+@@ -231,14 +241,14 @@
+     });
+   return query(() =>
+     db.findFirst("deployments", {
+-      select: ["requirements"],
++      select: ["requirements", "build"],
+       where: (b) => b.and(b("id", "=", app.activeVersion), b("code", "=", app.code)),
+     }),
+   ).pipe(
+     Effect.flatMap((row) =>
+       row === null
+         ? Effect.fail(new StorageError())
+-        : Schema.decodeUnknownEffect(StoredVersionRequirements)(row).pipe(
++        : Schema.decodeUnknownEffect(StoredActiveVersion)(row).pipe(
+             Effect.mapError(() => new StorageError()),
+           ),
+     ),
+@@ -246,6 +256,7 @@
+     Effect.map((version): App => ({
+       ...Struct.omit(app, ["deploySequence", "activatedSequence"]),
+       requirements: version.requirements,
++      ...unverifiedFramework(app.id, version.build),
+     })),
+   );
+ }
+@@ -820,7 +831,7 @@
+       Effect.gen(function* () {
+         const row = yield* query(() =>
+           db.findFirst("apps", {
+-            join: (b) => b.deployment({ select: ["requirements"] }),
++            join: (b) => b.deployment({ select: ["requirements", "build"] }),
+             where: (b) =>
+               b.and(
+                 b("id", "=", input.app),
+@@ -835,7 +846,7 @@
+       Effect.gen(function* () {
+         const rows = yield* query(() =>
+           db.findMany("apps", {
+-            join: (b) => b.deployment({ select: ["requirements"] }),
++            join: (b) => b.deployment({ select: ["requirements", "build"] }),
+             where: (b) =>
+               b.and(
+                 input.owner === undefined ? true : b("owner", "=", input.owner),
+diff --git a/packages/sdk/src/implementation/closed-retained-builds.ts b/packages/sdk/src/implementation/closed-retained-builds.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/closed-retained-builds.ts
+@@ -0,0 +1,96 @@
++import {
++  type RetainedFrameworkTuple,
++  unverifiedRetainedBuildReason,
++} from "../contracts/unverified-retained-build.ts";
++
++export type ClosedRetainedBuild = Readonly<
++  {
++    app: string;
++    build: string;
++    deployment: string;
++    reason: typeof unverifiedRetainedBuildReason;
++  } & (
++    | { policy: "fixed-tuple"; tuple: RetainedFrameworkTuple }
++    | { policy: "pin-first-observation"; tuple: null }
++  )
++>;
++
++// Closed at sync. Admission and compilation must never consult this list.
++const entries = [
++  {
++    app: "app_27d2872c-3316-4ad3-bf5b-554f197ceb33",
++    build: "bld_5ea177d1-3c08-4e22-8a6f-b3dc8384257c",
++    deployment: "dpl_d90f8de6-06de-4e03-bf71-4b4a32d5c5fe",
++    reason: unverifiedRetainedBuildReason,
++    policy: "fixed-tuple",
++    tuple: {
++      version: "0.0.1-beta.104-basalt.15",
++      protocol: 41,
++      sha256: "d5a70ee9e282c9460441b80fb1f36ce912feee66c4c4748293e675bc2c321cc2",
++    },
++  },
++  {
++    app: "app_90398837-bdeb-4f95-93be-d6e54bb144c7",
++    build: "bld_8773a4df-df1b-4c0b-8b44-5ae06360109c",
++    deployment: "dpl_64b585c7-fd8f-4abc-ae78-f0608f8bf3b1",
++    reason: unverifiedRetainedBuildReason,
++    policy: "fixed-tuple",
++    tuple: {
++      version: "0.0.1-beta.104-basalt.15",
++      protocol: 41,
++      sha256: "5cb736d6d1981b4fc1c5159aad31ad655d9af8a13ce2ccf938dab00abb77fa18",
++    },
++  },
++  {
++    app: "app_99357c1c-23f4-4bb5-94c1-27d69980ce32",
++    build: "bld_9368eb53-ebd7-467b-91a0-4d163dc5284d",
++    deployment: "dpl_946ad5fe-b5e2-4f21-a7e8-60d8adf529a6",
++    reason: unverifiedRetainedBuildReason,
++    policy: "pin-first-observation",
++    tuple: null,
++  },
++  {
++    app: "app_a3b8bae6-0476-4bc9-a114-e498d132f7dc",
++    build: "bld_75df1215-0417-41fa-96b5-f463a13bc34c",
++    deployment: "dpl_5be96def-1252-450b-b308-b20403db2a02",
++    reason: unverifiedRetainedBuildReason,
++    policy: "fixed-tuple",
++    tuple: {
++      version: "0.0.1-beta.104-basalt.1",
++      protocol: 17,
++      sha256: "f29f81e789b23481044fdadd395a0c7ecf2bb39b9e3c327bd2bb5745b06d14e0",
++    },
++  },
++  {
++    app: "app_dfd3755c-3e75-4268-8bde-af2e7cfbcb08",
++    build: "bld_6c0998d6-3a59-4582-853e-e447b1c1044f",
++    deployment: "dpl_efb08e3f-8f31-4f8c-b530-8bbe9fe7e86d",
++    reason: unverifiedRetainedBuildReason,
++    policy: "fixed-tuple",
++    tuple: {
++      version: "0.0.1-beta.100",
++      protocol: 13,
++      sha256: "68beb35d304833f416e0ec885a4b10345ef26acbe2f924bab6f1833de2ebd49c",
++    },
++  },
++  {
++    app: "app_ff44a911-0dab-4c9d-81e7-9f097495daab",
++    build: "bld_34a68228-42f8-4180-82a6-7521e123476f",
++    deployment: "dpl_dc65eb40-f281-466c-bb39-ca7082a71c17",
++    reason: unverifiedRetainedBuildReason,
++    policy: "fixed-tuple",
++    tuple: {
++      version: "0.0.1-beta.104-basalt.10",
++      protocol: 35,
++      sha256: "50d3f2ed4333ecf5f72ea8716012ac48795dbcb419313c901134b90451c403e1",
++    },
++  },
++] as const satisfies readonly ClosedRetainedBuild[];
++
++export const closedRetainedBuilds: readonly ClosedRetainedBuild[] = Object.freeze(
++  entries.map((entry): ClosedRetainedBuild =>
++    entry.policy === "pin-first-observation"
++      ? Object.freeze({ ...entry })
++      : Object.freeze({ ...entry, tuple: Object.freeze({ ...entry.tuple }) }),
++  ),
++);
+diff --git a/packages/sdk/src/implementation/remote-app-runner.ts b/packages/sdk/src/implementation/remote-app-runner.ts
+--- a/packages/sdk/src/implementation/remote-app-runner.ts
++++ b/packages/sdk/src/implementation/remote-app-runner.ts
+@@ -28,6 +28,10 @@
+   FrameworkProvenanceRefused,
+   type RuntimeBuildUnavailable,
+ } from "../contracts/runtime.ts";
++import type {
++  CommittedRetainedBuildPin,
++  RetainedFrameworkTuple,
++} from "../contracts/unverified-retained-build.ts";
+ import { BuildId } from "../contracts/shared.ts";
+ import { LoadedWorkerBuild } from "../contracts/worker-build.ts";
+ import { WorkerInvocation } from "../contracts/workerd-host.ts";
+@@ -424,7 +428,13 @@
+   runner: AppRunner,
+   read: (
+     build: BuildId,
++    app?: string,
+   ) => Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable | FrameworkProvenanceRefused>,
++  pin?: (
++    app: string,
++    build: string,
++    tuple: RetainedFrameworkTuple,
++  ) => Effect.Effect<CommittedRetainedBuildPin, FrameworkProvenanceRefused>,
+ ): RemoteAppRunner<Effect.Effect<string>> => ({
+   invoke: (invocation, capabilities) =>
+     runnerReply(
+@@ -442,7 +452,8 @@
+           return yield* Effect.gen(function* () {
+             const loader = yield* invocationBuildLoader(
+               decoded,
+-              runnerPhase("build-read", read(build)),
++              runnerPhase("build-read", read(build, decoded.app)),
++              pin === undefined ? undefined : (tuple) => pin(decoded.app, build, tuple),
+             );
+             const value = yield* loader.refused(
+               runner.invoke(decoded, yield* localCapabilities(capabilities, loader.load)),
+diff --git a/packages/sdk/src/implementation/unverified-retained-build.ts b/packages/sdk/src/implementation/unverified-retained-build.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/unverified-retained-build.ts
+@@ -0,0 +1,147 @@
++import { Effect, Schema } from "effect";
++import { FrameworkProvenanceRefused } from "../contracts/runtime.ts";
++import {
++  CommittedRetainedBuildPin,
++  RetainedFrameworkTuple,
++  UnverifiedRetainedBuild,
++} from "../contracts/unverified-retained-build.ts";
++import type { LoadedWorkerBuild } from "../contracts/worker-build.ts";
++import { appProtocol } from "./app-protocols.ts";
++import { frameworkIdentity } from "./framework-identity.ts";
++import { inlinedFramework, selectFrameworkProtocol } from "./framework-provenance.ts";
++import { closedRetainedBuilds, type ClosedRetainedBuild } from "./closed-retained-builds.ts";
++
++/** Storage has only the build ID. Invocation validation must also check the app ID. */
++export const findUnverifiedRetainedBuild = (build: string) =>
++  closedRetainedBuilds.find((entry) => entry.build === build);
++
++const sameTuple = (left: RetainedFrameworkTuple, right: RetainedFrameworkTuple) =>
++  left.version === right.version &&
++  left.protocol === right.protocol &&
++  left.sha256 === right.sha256;
++
++const describe = (tuple: RetainedFrameworkTuple) =>
++  `${tuple.version}/${tuple.protocol}/${tuple.sha256}`;
++
++const refused = (build: string, comparison: string) =>
++  new FrameworkProvenanceRefused({ build, reason: "conflicting-lineage", comparison });
++
++const entryFor = (build: string) => {
++  const entry = findUnverifiedRetainedBuild(build);
++  return entry === undefined
++    ? Effect.fail(refused(build, `Build ${build} is absent from the closed retained-build list.`))
++    : Effect.succeed(entry);
++};
++
++const verifyTuple = (
++  build: string,
++  expected: RetainedFrameworkTuple,
++  observed: RetainedFrameworkTuple,
++) =>
++  Schema.is(RetainedFrameworkTuple)(observed) && sameTuple(expected, observed)
++    ? Effect.void
++    : Effect.fail(
++        refused(
++          build,
++          `Expected retained tuple ${describe(expected)}; observed ${describe(observed)}.`,
++        ),
++      );
++
++const marker = (
++  entry: ClosedRetainedBuild,
++  tuple: RetainedFrameworkTuple,
++): UnverifiedRetainedBuild =>
++  Object.freeze({
++    _tag: "UnverifiedRetainedBuild",
++    app: entry.app,
++    build: entry.build,
++    reason: entry.reason,
++    tuple: Object.freeze({ ...tuple }),
++  });
++
++/** The caller recomputes the framework hash from loaded bytes before calling. */
++export const verifyFixedRetainedBuild = (build: string, observed: RetainedFrameworkTuple) =>
++  Effect.gen(function* () {
++    const entry = yield* entryFor(build);
++    if (entry.policy !== "fixed-tuple")
++      return yield* refused(build, `Build ${build} requires an atomic durable tuple pin.`);
++    yield* verifyTuple(build, entry.tuple, observed);
++    return marker(entry, entry.tuple);
++  });
++
++/** The receipt must come from a committed app+build pin, including on later loads. */
++export const verifyPinnedRetainedBuild = (
++  build: string,
++  observed: RetainedFrameworkTuple,
++  pin: CommittedRetainedBuildPin,
++) =>
++  Effect.gen(function* () {
++    const entry = yield* entryFor(build);
++    if (entry.policy !== "pin-first-observation")
++      return yield* refused(
++        build,
++        `Build ${build} has a fixed tuple; a durable pin cannot replace it.`,
++      );
++    if (!Schema.is(CommittedRetainedBuildPin)(pin))
++      return yield* refused(build, `Build ${build} has no valid committed durable tuple pin.`);
++    if (pin.app !== entry.app || pin.build !== entry.build)
++      return yield* refused(
++        build,
++        `Expected pin for ${entry.app}/${entry.build}; observed ${pin.app}/${pin.build}.`,
++      );
++    yield* verifyTuple(build, pin.tuple, observed);
++    return marker(entry, observed);
++  });
++
++/** The host obtains a receipt from its own atomic app storage, never the build transport. */
++export type RetainedBuildPin = (
++  tuple: RetainedFrameworkTuple,
++) => Effect.Effect<CommittedRetainedBuildPin, FrameworkProvenanceRefused>;
++
++export const retainedBuildMarker = (
++  build: string,
++  observed: RetainedFrameworkTuple,
++  pin?: RetainedBuildPin,
++) =>
++  Effect.gen(function* () {
++    const entry = yield* entryFor(build);
++    if (entry.policy === "fixed-tuple") return yield* verifyFixedRetainedBuild(build, observed);
++    if (pin === undefined)
++      return yield* refused(build, `Build ${build} requires its host's durable tuple pin.`);
++    return yield* verifyPinnedRetainedBuild(build, observed, yield* pin(observed));
++  });
++
++/** Existing app calls have an exact app and build; compilation and public declaration do not. */
++export const selectInvocationFrameworkProtocol = (
++  loaded: LoadedWorkerBuild,
++  invocation: { readonly app: string; readonly build: string },
++  pin?: RetainedBuildPin,
++) =>
++  Effect.gen(function* () {
++    const entry = findUnverifiedRetainedBuild(invocation.build);
++    if (entry === undefined)
++      return yield* selectFrameworkProtocol(loaded, { build: invocation.build });
++    if (!Schema.is(UnverifiedRetainedBuild)(loaded.unverified))
++      return yield* refused(
++        invocation.build,
++        `Build ${invocation.build} has no retained-build marker.`,
++      );
++    if (
++      entry.app !== invocation.app ||
++      loaded.unverified.app !== invocation.app ||
++      loaded.unverified.build !== invocation.build
++    )
++      return yield* refused(
++        invocation.build,
++        `Retained app ${entry.app} and marker ${loaded.unverified.app}/${loaded.unverified.build} differ from invocation ${invocation.app}/${invocation.build}.`,
++      );
++    const framework = yield* inlinedFramework(
++      loaded,
++      loaded.unverified.tuple.version,
++      invocation.build,
++    );
++    const observed = { ...(yield* frameworkIdentity(framework)), protocol: loaded.protocol };
++    yield* verifyTuple(invocation.build, loaded.unverified.tuple, observed);
++    const verified = yield* retainedBuildMarker(invocation.build, observed, pin);
++    return yield* appProtocol(verified.tuple.protocol);
++  });
+diff --git a/packages/sdk/src/implementation/worker-build-storage.ts b/packages/sdk/src/implementation/worker-build-storage.ts
+--- a/packages/sdk/src/implementation/worker-build-storage.ts
++++ b/packages/sdk/src/implementation/worker-build-storage.ts
+@@ -18,8 +18,14 @@
+ import {
+   admitFramework,
+   admitInlinedFramework,
++  inlinedFramework,
+   admitLoadedFramework,
+ } from "./framework-provenance.ts";
++import {
++  findUnverifiedRetainedBuild,
++  retainedBuildMarker,
++  type RetainedBuildPin,
++} from "./unverified-retained-build.ts";
+ export { frameworkIdentity } from "./framework-identity.ts";
+ import {
+   type FrameworkIdentity,
+@@ -214,8 +220,45 @@
+   stored: StoredWorkerBuild,
+   framework: (identity: FrameworkIdentity) => Effect.Effect<RetainedFramework, E, R>,
+   build?: BuildId,
++  pin?: RetainedBuildPin,
+ ): Effect.Effect<LoadedWorkerBuild, E | FrameworkProvenanceRefused, R> =>
+   Effect.gen(function* () {
++    const entry = build === undefined ? undefined : findUnverifiedRetainedBuild(build);
++    if (entry !== undefined) {
++      const linked =
++        stored.format === 1
++          ? yield* inlinedFramework(stored, entry.tuple?.version ?? "unlabelled", build)
++          : yield* framework(stored.framework);
++      const identity = yield* frameworkIdentity(linked);
++      if (
++        stored.format === 2 &&
++        (identity.version !== stored.framework.version ||
++          identity.sha256 !== stored.framework.sha256 ||
++          ("sha256" in linked && linked.sha256 !== identity.sha256))
++      )
++        return yield* new FrameworkProvenanceRefused({
++          build: entry.build,
++          reason: "content-mismatch",
++          version: identity.version,
++          declaredHash: stored.framework.sha256,
++          computedHash: identity.sha256,
++          comparison:
++            "The retained framework's bytes or identity differ from the stored build reference.",
++        });
++      const unverified = yield* retainedBuildMarker(
++        entry.build,
++        { ...identity, protocol: stored.protocol },
++        pin,
++      );
++      const bundle =
++        stored.format === 1 ? stored : assembleWorkerBundle(stored, { modules: linked.modules });
++      return {
++        mainModule: bundle.mainModule,
++        modules: bundle.modules,
++        protocol: stored.protocol,
++        unverified,
++      };
++    }
+     if (stored.format === 1) {
+       const admitted = yield* admitInlinedFramework(stored, stored.protocol, build);
+       return {
+diff --git a/packages/sdk/src/workerd.ts b/packages/sdk/src/workerd.ts
+--- a/packages/sdk/src/workerd.ts
++++ b/packages/sdk/src/workerd.ts
+@@ -1,3 +1,10 @@
++export * from "./contracts/unverified-retained-build.ts";
++export {
++  findUnverifiedRetainedBuild,
++  retainedBuildMarker,
++  selectInvocationFrameworkProtocol,
++  type RetainedBuildPin,
++} from "./implementation/unverified-retained-build.ts";
+ /** Portable workerd app compilation, protocol adapters, and immutable build storage. */
+ export * from "./contracts/worker-build.ts";
+ export * from "./contracts/framework-provenance.ts";
+diff --git a/packages/ui/src/implementation/dashboard/app-settings.tsx b/packages/ui/src/implementation/dashboard/app-settings.tsx
+--- a/packages/ui/src/implementation/dashboard/app-settings.tsx
++++ b/packages/ui/src/implementation/dashboard/app-settings.tsx
+@@ -20,6 +20,7 @@
+   readonly children?: ReactNode;
+ }) {
+   const brand = useProductBrand();
++  const unverified = app.unverifiedFramework;
+   return (
+     <div className="w-full">
+       <div className="max-w-3xl space-y-6 p-7 max-[740px]:p-4">
+@@ -60,6 +61,22 @@
+             </p>
+           </section>
+         )}
++        {unverified && (
++          <section aria-label="Framework" className="rounded-lg border p-5">
++            <h3 className="text-sm font-medium">Framework</h3>
++            <p className="mt-2 flex items-center gap-1.5 text-sm text-amber-700 dark:text-amber-400">
++              <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-amber-500" />
++              Unverified framework
++            </p>
++            <p className="mt-1 text-xs text-muted-foreground">
++              Build <code className="break-all">{unverified.build}</code>
++            </p>
++            <p className="mt-3 text-xs leading-5 text-muted-foreground">
++              Active at sync, provenance unproven. This build was already running when the host
++              synced, and its framework can't be traced to an approved release.
++            </p>
++          </section>
++        )}
+         {copyAction && (
+           <section
+             aria-label="Copy app"

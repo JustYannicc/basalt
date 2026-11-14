@@ -343,11 +343,10 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
  import { basaltSyncVersion } from "./obsidian-plugin-version.ts";
  
  /**
-@@ -14,16 +14,6 @@
- export const basaltSyncFiles = ["main.js", "manifest.json", "styles.css"] as const;
+@@ -15,16 +15,6 @@ export const basaltSyncFiles = ["main.js", "manifest.json", "styles.css"] as con
  /** BRAT is the community plugin that installs a plugin from a GitHub release. */
  export const bratStoreLink = "obsidian://show-plugin?id=obsidian42-brat";
--
+ 
 -const githubRepository =
 -  /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/u;
 -
@@ -357,13 +356,15 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
 - */
 -export const basaltSyncRepository = (source: string | undefined): string | null =>
 -  source === undefined ? null : (githubRepository.exec(source)?.[1] ?? null);
- 
+-
  /**
   * Opens BRAT's add dialog on its "latest" track. Any other version is one BRAT freezes and never
-@@ -59,66 +49,17 @@
+  * updates at startup, so every install would stay on the version it was connected with.
+@@ -58,67 +48,18 @@ export function basaltSyncReleaseStatus(status: number | null, body: unknown): B
+   return basaltSyncFiles.every((file) => names.has(file)) ? "available" : "unavailable";
  }
  
- /**
+-/**
 - * GitHub answers with Access-Control-Allow-Origin "*", which a browser refuses for a credentialed
 - * request, and its preflight rejects Effect's trace headers. So the release is read as a plain
 - * anonymous request: no credentials, no trace headers, no extra headers, through the page's
@@ -376,7 +377,7 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-plugin.ts b/apps/hosted/web/
 -  ),
 -);
 -
--/**
+ /**
   * A published release never changes, so finding it holds for the browser session. A missing one
   * may still be published under this tag, so only "available" is remembered.
   */
@@ -640,7 +641,7 @@ diff --git a/apps/hosted/web/src/implementation/components/dashboard-frame.tsx b
 +  Download04Icon,
    FingerPrintIcon,
    Key01Icon,
-   Plug01Icon,
+   ConnectIcon,
 @@ -12,6 +13,7 @@ import {
    HandHelpingIcon,
  } from "@hugeicons/core-free-icons";
@@ -694,7 +695,7 @@ diff --git a/apps/hosted/web/src/implementation/components/dashboard-frame.tsx b
 diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/web/src/implementation/pages/connect.tsx
 --- a/apps/hosted/web/src/implementation/pages/connect.tsx
 +++ b/apps/hosted/web/src/implementation/pages/connect.tsx
-@@ -23,6 +23,7 @@ import {
+@@ -28,6 +28,7 @@ import {
  } from "../../contracts/mcp-connections.ts";
  import { useDocumentationUrl } from "../documentation.ts";
  import { useResourceOrigins } from "../resource-origin.ts";
@@ -702,7 +703,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/
  import { useMemo } from "react";
  import { ClaudeLogo } from "@executor-js/ui/dashboard/assistant-logos";
  import { ClaudeDesktopSetup } from "./claude-desktop-setup.tsx";
-@@ -78,6 +79,23 @@ function PersonalTokenSetup({
+@@ -95,6 +96,23 @@ function PersonalTokenSetup({
    );
  }
  
@@ -723,21 +724,21 @@ diff --git a/apps/hosted/web/src/implementation/pages/connect.tsx b/apps/hosted/
 +  );
 +}
 +
- /** Installed apps, MCP connections and connected agents. */
- export const connectPageReads: OrganizationPageReads = (organization) => [
-   resourceInventoryAtom(organization),
-@@ -158,6 +176,7 @@ export function ConnectPage() {
-       installation={
-         // Only the person's own setup gets the pool; a scoped connection keeps the built-in guides.
-         <AssistantGuideExtensionsProvider value={extensions}>
-+          <SignalboxAppsLink />
-           <McpInstallInstructions
-             endpoint={`${mcpOrigin}/mcp`}
-             docs={docs}
+ function ConnectionLink({ connection, className, children }: ConnectionLinkProps) {
+   const { slug: organizationSlug } = useOrganizationRoute();
+   return connection === undefined ? (
+@@ -172,6 +190,7 @@ function FullAccessInstallation({
+   );
+   return (
+     <AssistantGuideExtensionsProvider value={extensions}>
++      <SignalboxAppsLink />
+       <McpInstallInstructions
+         endpoint={endpoint}
+         docs={docs}
 diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
 --- a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
 +++ b/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx
-@@ -24,9 +24,9 @@ import {
+@@ -22,9 +22,9 @@ import {
    prepareObsidianConnectionAtom,
    type ObsidianProtocolUnavailable,
  } from "../../contracts/obsidian-sync.ts";
@@ -748,7 +749,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/obsidian-connect.tsx b/app
    bratInstallLink,
    bratStoreLink,
  } from "../../contracts/obsidian-plugin.ts";
-@@ -132,7 +132,7 @@ function ConnectObsidian({ app }: { readonly app: App }) {
+@@ -124,7 +124,7 @@ function ConnectObsidian({ app, label }: { readonly app: App; readonly label: st
            </ul>
            {/* Mounted only while open, so the release is checked when someone is connecting. */}
            <ConnectSteps

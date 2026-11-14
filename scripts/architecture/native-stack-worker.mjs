@@ -74,6 +74,11 @@ try {
         TEST_STAGE_EXPIRES_AT: "4070908800000",
       }
     : deployEnvironment(synthetic);
+  Object.assign(process.env, {
+    BASALT_RELEASE_CANDIDATE: settings.BASALT_RELEASE_CANDIDATE ?? "a".repeat(40),
+    BASALT_EXECUTOR_MARKER_POLICY: "fixture-executor-marker-policy.json",
+    BASALT_RELEASE_EVIDENCE_DIRECTORY: "fixture-release-evidence",
+  });
   if (settings.BASALT_RELEASE_ATTEMPT)
     process.env.BASALT_RELEASE_ATTEMPT = settings.BASALT_RELEASE_ATTEMPT;
   settings.EXECUTOR_E2E_MANUAL_CRON = process.env.NATIVE_STACK_MANUAL_CRON ?? "false";

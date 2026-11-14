@@ -21,7 +21,7 @@ model {
 
 
     frameworkRelease = part "Served framework release" {
-      description "One framework version shared by deployment settings, app-source producers and the connector catalog."
+      description "One framework version shared by deployment settings, app-source producers and the connector catalog. Builds resolve qualified producer history; release gates authorize new framework identities."
       metadata { code "framework-release.ts"; configuration "true" }
     }
 
@@ -359,7 +359,7 @@ model {
   basalt.deployment -[sync]-> basalt.build "run deployment commands"
   basalt.deployment -[sync]-> basalt.productionOps "reuse canonical reviewed-plan hashing"
   basalt.releaseUpdates -[sync]-> basalt.pool "read pool control contract"
-  basalt.releaseUpdates -[sync]-> basalt.modelGateway "sign owner-scoped export claims"
+  basalt.releaseUpdates -[sync]-> basalt.modelGateway "sign owner-scoped exports and run-owned model-only native grants"
   basalt.releaseUpdates -[sync]-> basalt.brandConfig "derive public credential export origin"
   basalt.releaseUpdates -[sync]-> basalt.router "export exact dedicated owner accounts through pool control API"
   basalt.releaseUpdates -[sync]-> basalt.build "prepare pinned source and verify carried patches"
@@ -369,8 +369,8 @@ model {
   basalt.releaseUpdates -[sync]-> basalt.toolsGateway "sign in with native preview auth and use credential-free tool search"
   basalt.releaseUpdates -[sync]-> basalt.setupHost "mint and revoke separate preview computers through public setup routes"
   basalt.releaseUpdates -[sync]-> basalt.setupInstaller "download and run the public installer; undo isolated client configuration"
-  basalt.releaseUpdates -[sync]-> localClient "run both native clients with dedicated preview credentials"
-  localClient -[sync]-> basalt.releaseUpdates "return native model and tool-call evidence"
+  basalt.releaseUpdates -[sync]-> localClient "exercise live inference and synthetic native client transport in isolated homes"
+  localClient -[sync]-> basalt.releaseUpdates "return separately labeled live and fixture model and tool-call evidence"
   basalt.deployment -[sync]-> basalt.modelGateway "provision pool; supply POOL_APP_SIGNING_KEY and optional telemetry settings"
   basalt.deployment -[sync]-> basalt.poolRuntime "configure pool image"
   basalt.deployment -[sync]-> basalt.toolsGateway "provision tools; supply POOL_APP_SIGNING_KEY, patched apps framework and optional telemetry relay config"
