@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { historyApplyFailure } from "../../src/pool/model-history/operator-failure.ts";
 import pg from "pg";
 import {
   handleModelHistoryOperation,
@@ -249,5 +250,27 @@ test("the private schema operator defaults to catalog/count reads and binds writ
     await db.end();
     await administration.query(`DROP DATABASE ${database} WITH (FORCE)`);
     await administration.end();
+  }
+});
+
+test("schema apply diagnostics discard driver messages, credentials and nested causes", () => {
+  const secret = "postgres://secret-user:secret-password@private-host/private-db";
+  for (const code of ["42501", "ECONNREFUSED", "EPIPE", "arbitrary-secret-code"]) {
+    const error = Object.assign(new Error(secret), {
+      code,
+      detail: secret,
+      hint: secret,
+      cause: new Error(secret),
+    });
+    const diagnostic = historyApplyFailure(error);
+    assert.ok(!JSON.stringify(diagnostic).includes(secret));
+    assert.deepEqual(
+      diagnostic,
+      code === "42501"
+        ? { type: "PostgresError", code }
+        : code === "arbitrary-secret-code"
+          ? { type: "UnknownError" }
+          : { type: "ConnectionError", code },
+    );
   }
 });
