@@ -115,3 +115,14 @@ diff --git a/e2e/tests/resource-prefetch.spec.ts b/e2e/tests/resource-prefetch.s
        }),
      ),
    );
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -6298,6 +6298,7 @@
+   },
+   resourcePrefetch: {
+     fixtures: "actors",
++    managementApps: ["owner", "admin", "member"],
+     file: "resource-prefetch.spec.ts",
+     title: "Organization entry prefetches resources without retaining a polling subscription",
+     targets: {
