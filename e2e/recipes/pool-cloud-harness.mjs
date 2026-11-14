@@ -18,7 +18,13 @@ import { startPoolFixture } from "./pool-fixture.mjs";
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** Localize the actual verified pool seed and operator config, preserving native provisioning. */
-const localPoolSetup = async (directory, registry, resetOptions, fixtureFactory) => {
+const localPoolSetup = async (
+  directory,
+  registry,
+  resetOptions,
+  fixtureFactory,
+  catalogProviders,
+) => {
   const upstream = join(root, ".upstream");
   const assetDirectory = join(upstream, "apps/hosted/cloud/.generated/pool-app");
   const sourcePath = join(upstream, "apps/hosted/server/src/implementation/pool-app-source.ts");
@@ -38,7 +44,7 @@ const localPoolSetup = async (directory, registry, resetOptions, fixtureFactory)
   const signingKey = randomBytes(32).toString("hex");
   const catalog = resetOptions
     ? await Promise.all(
-        ["openai", "anthropic"].map(async (lab) =>
+        catalogProviders.map(async (lab) =>
           JSON.parse(
             await readFile(join(root, "src/catalog/provider-apps", `${lab}.json`), "utf8"),
           ),
@@ -112,12 +118,18 @@ const localPoolSetup = async (directory, registry, resetOptions, fixtureFactory)
 
 export const poolCloudHarness = (
   directory,
-  { resets = false, fixtureFactory = startPoolFixture } = {},
+  {
+    resets = false,
+    fixtureFactory = startPoolFixture,
+    catalogProviders = ["openai", "anthropic"],
+  } = {},
 ) =>
   Effect.gen(function* () {
     const registry = yield* lockedNpmRegistry;
     const setup = yield* Effect.acquireRelease(
-      Effect.promise(() => localPoolSetup(directory, registry, resets, fixtureFactory)),
+      Effect.promise(() =>
+        localPoolSetup(directory, registry, resets, fixtureFactory, catalogProviders),
+      ),
       (setup) => Effect.promise(() => setup.restore()),
     );
     const base = yield* startEnvironment({ target: "cloud", headless: true });

@@ -5,9 +5,10 @@ import {
   pollConnection,
   refreshSession,
   revokeSession,
+  RevocationRefused,
   connectionUrl,
 } from "./auth.ts";
-import type { Http } from "./http.ts";
+import type { Http, HttpReply } from "./http.ts";
 const source = "https://vault.fixture.invalid/mcp?connection=device-one",
   resource = source + "&elicitation_mode=native",
   issuer = "https://identity.fixture.invalid/auth";
@@ -165,4 +166,58 @@ test("a device names itself and its vault when it connects; without a report it 
   assert.equal(plain.registered, "Signalbox Obsidian Sync");
   assert.equal("device_name" in plain.device, false);
   assert.equal("device_context" in plain.device, false);
+});
+test("disconnecting from a server that refuses already-invalid tokens still completes", async () => {
+  // Servers before RFC 7009's fix answered 400 invalid_request for a token they no longer honour:
+  // the access token the refresh revocation just invalidated, or both tokens on a retry.
+  const session = {
+    resource,
+    clientId: "public-device",
+    tokenEndpoint: issuer + "/token",
+    revocationEndpoint: issuer + "/revoke",
+    accessToken: "device-access",
+    refreshToken: "device-refresh",
+    expiresAt: 0,
+  };
+  const revoking = (answer: (token: string | null) => HttpReply) => {
+    const sent: (string | null)[] = [];
+    const http: Http = async (_url, init) => {
+      const token = new URLSearchParams(init.body).get("token");
+      sent.push(token);
+      return answer(token);
+    };
+    return { http, sent };
+  };
+  // Those servers' exact answers for a token they no longer honour.
+  const gone = (error_description: string) =>
+    response({ error: "invalid_request", error_description }, 400);
+  const first = revoking((token) =>
+    token === "device-refresh" ? response(null) : gone("Invalid access token"),
+  );
+  await revokeSession(first.http, session);
+  assert.deepEqual(first.sent, ["device-refresh", "device-access"]);
+  const retry = revoking((token) =>
+    gone(token === "device-refresh" ? "refresh token revoked" : "token not found"),
+  );
+  await revokeSession(retry.http, session);
+  assert.deepEqual(retry.sent, ["device-refresh", "device-access"]);
+  // Any other refusal still keeps the device connected, including request errors that share the
+  // code but are refused before the server looks at the token.
+  for (const refusal of [
+    response({ error: "invalid_request" }, 400),
+    gone("client_id must not be repeated"),
+    gone("A request must use only one client authentication method"),
+    gone("missing a required token for introspection"),
+    response({ error: "invalid_client" }, 400),
+    response({ error: "unsupported_token_type" }, 400),
+    response({ error: "invalid_request" }, 401),
+    response({}, 503),
+    { status: 400, headers: {}, body: "Bad Request" },
+  ]) {
+    const refused = revoking(() => refusal);
+    await assert.rejects(
+      revokeSession(refused.http, session),
+      (error) => error instanceof RevocationRefused && error.status === refusal.status,
+    );
+  }
 });

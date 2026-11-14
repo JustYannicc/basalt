@@ -1,6 +1,7 @@
 import type {
   UsageDay,
   UsageForecast,
+  UsageHistoryGap,
   UsageMiss,
   UsageProjection,
 } from "../../apps/pool/usage-forecast-contract.ts";
@@ -36,11 +37,13 @@ export function usageForecast(input: {
   let comparableWeeks = 0;
   const unavailable = (
     reason: "invalid-input" | "insufficient-history" | "insufficient-use",
+    historyGaps?: readonly UsageHistoryGap[],
   ): UsageForecast => ({
     status: "unavailable",
     reason,
     comparableWeeks,
     calculatedAt: input.calculatedAt,
+    ...(historyGaps === undefined ? {} : { historyGaps }),
   });
   if (!Number.isFinite(now) || input.days.length > 401) return unavailable("invalid-input");
   const today = usageDay(now);
@@ -58,19 +61,28 @@ export function usageForecast(input: {
     days.set(day.day, day);
   }
   const monday = usageMonday(today);
+  const trainingWeeks = Array.from({ length: trainingCount }, (_, index) =>
+    addUsageDays(monday, (index - trainingCount) * 7),
+  );
+  const historyGaps = () =>
+    trainingWeeks.flatMap((week) => {
+      const weekDays = Array.from({ length: 7 }, (_, index) => addUsageDays(week, index));
+      const missingDays = weekDays.filter((day) => !days.has(day));
+      const unknownDays = weekDays.filter((day) => days.get(day)?.value === null);
+      return missingDays.length || unknownDays.length ? [{ week, missingDays, unknownDays }] : [];
+    });
   const weeks = new Map<string, number[]>();
   const first = [...days.keys()].sort()[0];
-  if (!first) return unavailable("insufficient-history");
+  if (!first) return unavailable("insufficient-history", historyGaps());
   if (first < addUsageDays(today, -400)) return unavailable("invalid-input");
   for (let at = usageMonday(first); at < monday; at = addUsageDays(at, 7)) {
     const values = Array.from({ length: 7 }, (_, day) => days.get(addUsageDays(at, day))?.value);
     if (values.every((value): value is number => typeof value === "number")) weeks.set(at, values);
   }
   comparableWeeks = weeks.size;
-  const trainingWeeks = Array.from({ length: trainingCount }, (_, index) =>
-    addUsageDays(monday, (index - trainingCount) * 7),
-  );
-  if (trainingWeeks.some((week) => !weeks.has(week))) return unavailable("insufficient-history");
+
+  if (trainingWeeks.some((week) => !weeks.has(week)))
+    return unavailable("insufficient-history", historyGaps());
   const recent = [...days.values()].filter((day) => day.day >= addUsageDays(today, -29));
   if (sum(recent.map((day) => day.requests)) < 1000) return unavailable("insufficient-use");
   const fitted = pattern(trainingWeeks.map((week) => weeks.get(week)!));

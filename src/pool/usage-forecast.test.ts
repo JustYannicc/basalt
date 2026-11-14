@@ -113,3 +113,21 @@ test("Zurich day boundaries retain the spring and autumn DST day lengths", () =>
   assert.equal(usageDayStart("2026-10-26") - usageDayStart("2026-10-25"), 25 * 3_600_000);
   assert.equal(addUsageDays("2026-03-29", 1), "2026-03-30");
 });
+
+test("five full weeks still explain a recent week with missing and unknown days", () => {
+  const days = history([70, 70, 70, 70, 70, 70])
+    .filter((entry) => entry.day !== "2026-10-13")
+    .map((entry) => (entry.day === "2026-10-14" ? { ...entry, value: null } : entry));
+  const result = usageForecast({ days, calculatedAt: "2026-10-26T01:00:00Z" });
+  assert.equal(result.status, "unavailable");
+  if (result.status !== "unavailable") return;
+  assert.equal(result.reason, "insufficient-history");
+  assert.equal(result.comparableWeeks, 5);
+  assert.deepEqual(result.historyGaps, [
+    {
+      week: "2026-10-12",
+      missingDays: ["2026-10-13"],
+      unknownDays: ["2026-10-14"],
+    },
+  ]);
+});

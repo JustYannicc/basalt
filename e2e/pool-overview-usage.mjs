@@ -113,7 +113,14 @@ function forecast(now, available, scale) {
     return {
       status: "unavailable",
       reason: "insufficient-history",
-      comparableWeeks: 2,
+      comparableWeeks: 5,
+      historyGaps: [
+        {
+          week: "2026-11-02",
+          missingDays: ["2026-11-03"],
+          unknownDays: ["2026-11-04"],
+        },
+      ],
       calculatedAt: new Date(now).toISOString(),
     };
   return {
@@ -429,9 +436,8 @@ export function seriesReply(payload, inPool, people) {
 }
 
 /**
- * The worker's capacity history for one lab: a week of hourly readings of a single Plus account
- * drawing its weekly allowance down, with no forecast yet. The pool app's own capacity view
- * decides the verdict from it.
+ * Hourly Plus readings and two fixed weekly Grok units, as a retained unit change can produce.
+ * The pool app decides the verdict and renders the unit choices from this history.
  */
 export function capacityReply(url) {
   const hour = 3_600_000;
@@ -462,6 +468,21 @@ export function capacityReply(url) {
       last: value,
       plans: [{ plan: "Plus", minimum: value, last: value }],
     });
+    for (const unit of [
+      { id: "account-eq", label: "account-eq" },
+      { id: "grok-pro-account", label: "Grok Pro account" },
+    ]) {
+      points.push({
+        provider: "xai",
+        windowSeconds: 604800,
+        mode: "fixed",
+        unit,
+        hour: at,
+        minimum: value,
+        last: value,
+        plans: [],
+      });
+    }
   }
   return {
     from,
