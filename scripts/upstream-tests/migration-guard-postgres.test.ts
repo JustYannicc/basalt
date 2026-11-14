@@ -198,8 +198,11 @@ test(
       const fresh = await migrate(fixtureUrl.toString());
       assert.equal(fresh.status, 0, fresh.stderr);
       await client.connect();
-      // A missing marker with retained DDL makes this exact numbered step fail.
-      await client.query("delete from private_hosted_migrations where migration_id = 19");
+      // Exercise an appended journal entry too: the migrator starts above the highest recorded id.
+      await client.query(`insert into private_hosted_migrations (migration_id, name)
+        select max(migration_id) + 1, 'fixture_later_migration' from private_hosted_migrations`);
+      // Rewind the entire journal suffix so retained DDL makes the target step fail.
+      await client.query("delete from private_hosted_migrations where migration_id >= 19");
       const failed = await migrate(fixtureUrl.toString());
       assert.equal(failed.status, 1);
       assert.match(

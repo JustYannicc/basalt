@@ -1,7 +1,7 @@
 model {
   extend basalt.deployment {
     metadata {
-      constraint "Hosted and cloud product migration steps record their registered key before execution. Failure output retains only the existing safe SQLSTATE and SDK version before error wrapping. The release barrier derives allowed registry names from the exact candidate and retains bounded reconstructed diagnostics plus command exit in its receipt and summary. Driver text, SQL, relation and row identifiers never enter those reports. This observation changes no SQL, migration journal, retry policy or activation rule."
+      constraint "Hosted and cloud product migration steps record their registered key before execution. Failure output retains only the existing safe SQLSTATE and SDK version before error wrapping. The release barrier derives allowed registry names from the exact candidate and retains bounded reconstructed diagnostics plus command exit in its receipt and summary. Driver text, SQL, relation and row identifiers never enter those reports. Failure-injection proofs rewind the isolated journal suffix so later migrations cannot suppress the registered-step failure. This observation changes no production SQL, migration journal, retry policy or activation rule."
     }
   }
 }
