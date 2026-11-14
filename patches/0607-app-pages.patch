@@ -2685,7 +2685,7 @@ new file mode 100644
 +                        "id": "effect/schema/isPattern",
 +                        "payload": {
 +                          "source": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",
-+                          "flags": ""
++                          "flags": "u"
 +                        }
 +                      }
 +                    },
@@ -5338,7 +5338,7 @@ diff --git a/e2e/tests/app-pages.spec.ts b/e2e/tests/app-pages.spec.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/app-pages.spec.ts
-@@ -0,0 +1,376 @@
+@@ -0,0 +1,438 @@
 +/** App pages declared on `defineApp` are host tabs, read from the app's active retained build. */
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
@@ -5353,7 +5353,7 @@ new file mode 100644
 +import type { Response } from "../support/platform.ts";
 +import { appsManifest } from "../support/apps-release.ts";
 +import { waitForAppUrl } from "../support/app-pages.ts";
-+import { openThroughBrowser } from "../support/in-app-navigation.ts";
++import { openInApp, openThroughBrowser } from "../support/in-app-navigation.ts";
 +import { kept, request, selected } from "../support/app-host-navigation.ts";
 +
 +const historyPath = "/history?range=7d";
@@ -5620,7 +5620,57 @@ new file mode 100644
 +          ),
 +        ).toEqual({ ...screenAfterReload, answer: "accepted" });
 +
++        yield* browser.use("Open History before leaving its host routes", (page) =>
++          navigation(page)
++            .getByRole("link", { name: "History", exact: true })
++            .click()
++            .then(() =>
++              page.waitForURL((current) => current.searchParams.get("page") === "history"),
++            ),
++        );
++        for (const [label, destination] of [
++          ["Settings", `${detail}?view=settings`],
++          ["Accounts", `/org/${actors.organization.slug}/accounts`],
++          ["the standalone window", `${detail}/window`],
++        ] as const) {
++          yield* openInApp(`Leave History for ${label}`, destination);
++          yield* browser.use(`${label} hides the History document`, (page) =>
++            page
++              .waitForURL((current) => current.pathname + current.search === destination)
++              .then(() => page.locator(historyFrame).waitFor({ state: "hidden" })),
++          );
++          if (destination.endsWith("/window"))
++            yield* browser.use("The standalone screen is ready", (page) =>
++              page
++                .frameLocator(screenFrame)
++                .getByRole("heading", { name: "Pages fixture" })
++                .waitFor(),
++            );
++          yield* browser.use(`Back returns from ${label} to History`, (page) =>
++            page
++              .goBack()
++              .then(() =>
++                page.waitForURL(
++                  (current) =>
++                    current.pathname === detail && current.searchParams.get("page") === "history",
++                ),
++              )
++              .then(() => page.frameLocator(historyFrame).getByLabel("Draft").waitFor()),
++          );
++          expect(
++            yield* browser.use(`History kept its document and draft through ${label}`, (page) =>
++              kept(frameAt(page, origin, true)),
++            ),
++          ).toEqual(historyFirst);
++        }
++
 +        // Undeclared pages and other versions are refused; the screen stays put.
++        yield* browser.use("Return to the screen for refused requests", (page) =>
++          navigation(page)
++            .getByRole("link", { name: "App", exact: true })
++            .click()
++            .then(() => page.waitForURL((current) => !current.searchParams.has("page"))),
++        );
 +        yield* browser.use("The screen asks for a page it never declared", (page) =>
 +          page
 +            .frameLocator(screenFrame)
@@ -5693,6 +5743,18 @@ new file mode 100644
 +        );
 +        expect(yield* browser.use("History is selected on a phone", selected)).toEqual(["History"]);
 +        yield* browser.checkpoint("History tab on a phone in dark mode");
++        for (const width of [1280, 390]) {
++          for (const colorScheme of ["dark", "light"] as const) {
++            yield* browser.use(`View History at ${width} in ${colorScheme}`, (page) =>
++              page
++                .setViewportSize({ width, height: width === 390 ? 844 : 900 })
++                .then(() => page.emulateMedia({ colorScheme }))
++                .then(() => page.frameLocator(historyFrame).getByLabel("Draft").waitFor()),
++            );
++            expect(yield* browser.use("History remains selected", selected)).toEqual(["History"]);
++            yield* browser.checkpoint(`History tab ${width} ${colorScheme}`);
++          }
++        }
 +
 +        // Declarations are checked when the app's module loads: an unsafe page never deploys.
 +        for (const [label, pages] of [
