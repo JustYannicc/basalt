@@ -59,7 +59,9 @@ export function Segmented<T extends string | number>({
   value,
   options,
   onChange,
+  wrap = false,
 }: {
+  wrap?: boolean;
   label: string;
   value: T;
   options: readonly { readonly id: T; readonly label: string }[];
@@ -77,7 +79,9 @@ export function Segmented<T extends string | number>({
     <div
       role="radiogroup"
       aria-label={label}
-      className="inline-flex h-8 w-fit rounded-md border border-border p-0.5 max-[740px]:h-11"
+      className={`inline-flex rounded-md border border-border p-0.5 ${
+        wrap ? "h-auto w-full max-w-full flex-wrap" : "h-8 w-fit max-[740px]:h-11"
+      }`}
     >
       {options.map((option) => (
         <button
@@ -92,7 +96,11 @@ export function Segmented<T extends string | number>({
             event.preventDefault();
             move(event.key === "ArrowRight" ? 1 : -1, event.currentTarget);
           }}
-          className={`rounded-[4px] px-3 text-xs font-medium whitespace-nowrap transition-colors duration-150 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 max-[740px]:min-w-11 ${
+          className={`rounded-[4px] px-3 text-xs font-medium transition-colors duration-150 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
+            wrap
+              ? "min-h-7 min-w-0 max-w-full flex-1 basis-48 py-1 whitespace-normal [overflow-wrap:anywhere] max-[740px]:min-h-11"
+              : "whitespace-nowrap max-[740px]:min-w-11"
+          } ${
             value === option.id
               ? "bg-accent text-foreground"
               : "text-muted-foreground hover:text-foreground"

@@ -2,7 +2,7 @@
 // served by the hosted product, reading synthetic usage through the host's summary bridge. Every
 // usage answer is synthetic and nothing leaves the fixture.
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
@@ -49,7 +49,10 @@ const screenFrame = '[data-app-frames] iframe:not([src*="/history"])';
 const historyFrame = '[data-app-frames] iframe[src*="/history"]';
 
 const program = Effect.gen(function* () {
-  const h = yield* poolCloudHarness(directory, { resets: true });
+  const h = yield* poolCloudHarness(directory, {
+    resets: true,
+    catalogProviders: ["openai", "anthropic", "xai"],
+  });
   const identity = yield* h.request("GET", "/api/auth/get-session");
   const pool = yield* until(
     h.request("GET", `${h.prefix}/apps`),
@@ -99,6 +102,34 @@ const program = Effect.gen(function* () {
     "the account's reading has no banked resets",
   );
 
+  const grokApp = yield* h.request("POST", `${h.prefix}/apps/install`, {
+    entry: "provider-xai",
+    name: "Synthetic xAI",
+  });
+  h.fixture.prepareAcquisition(null, "synthetic-grok-overview", "xai", 0);
+  const grokPending = yield* h.request(
+    "POST",
+    `${h.appPath(grokApp.id)}/accounts/app/xai/connections`,
+    { destination: { kind: "shared", audience: { kind: "everyone" } } },
+  );
+  const grokConnection = `${h.prefix}/connections/${grokPending.id}/interactive`;
+  yield* h.request("POST", `${grokConnection}/start`, { method: "xai" });
+  const grokSaved = yield* until(
+    h.request("GET", `${grokConnection}/status`),
+    (entry) => entry.state === "connected",
+    "the Grok connection did not finish",
+  );
+  checked("the Grok account saves through the real host", grokSaved.state, "connected");
+  yield* h.request("PUT", `${h.appPath(pool.id)}/accounts/app/xai/${grokSaved.account.id}`);
+  yield* until(
+    h.call(pool.id, "view"),
+    (view) => {
+      const value = view?.value ?? view?.result ?? view?.data ?? view;
+      return value?.accounts?.some((entry) => entry.provider === "xai");
+    },
+    "the pool has not listed its Grok account",
+  );
+
   // The worker keys an in-pool account by the pool's own account ID, the one its view lists.
   const poolView = yield* h.call(pool.id, "view");
   const unwrap = (value) =>
@@ -107,7 +138,7 @@ const program = Effect.gen(function* () {
       : value;
   const listed = unwrap(poolView)?.accounts ?? [];
   diagnostics.poolViewShape = Object.keys(poolView ?? {});
-  const inPool = listed[0];
+  const inPool = listed.find((entry) => entry.provider === "codex");
   assert.ok(inPool, "the pool lists its account");
   diagnostics.poolAccounts = listed.map((entry) => ({
     id: entry.id === saved.account.id ? "host id" : entry.id ? "pool id" : null,
@@ -157,6 +188,18 @@ const program = Effect.gen(function* () {
     }),
   );
   yield* Effect.addFinalizer(() => Effect.promise(() => context.close()));
+  yield* page(() =>
+    context.route("**/brand/fonts/*", async (route) => {
+      const name = new URL(route.request().url()).pathname.split("/").at(-1);
+      assert.ok(["geist-sans.woff2", "geist-mono.woff2"].includes(name));
+      await route.fulfill({
+        contentType: "font/woff2",
+        body: await readFile(
+          join(root, ".upstream/packages/ui/src/implementation/styles/fonts", name),
+        ),
+      });
+    }),
+  );
   const owner = yield* Effect.promise(() => context.newPage());
   owner.setDefaultTimeout(phase === "red" ? 8_000 : 30_000);
   // Every request the pages send, by path only, with its time: the browser half of the inventory.
@@ -407,6 +450,19 @@ const program = Effect.gen(function* () {
       const summaries = calls("summary").length;
       yield* page(() => screen.getByRole("tab", { name: "30 days", exact: true }).click());
       yield* summaryCount(summaries + 1);
+      yield* until(
+        Effect.sync(accountReads),
+        (reads) =>
+          reads.length === 4 &&
+          reads
+            .slice(-2)
+            .every(
+              (read) =>
+                read.payload.input.from === input(-1).from &&
+                read.payload.input.to === input(-1).to,
+            ),
+        "the open labs did not read both account pages for the new range",
+      );
       yield* page(() => screen.getByText(importedLabel).waitFor());
       checked("open labs read their accounts again for the new range", accountReads().length, 4);
       // The 30-day answer is sparse: only its last week has usage. The daily average still
@@ -497,7 +553,19 @@ const program = Effect.gen(function* () {
   );
 
   // Producer forecasts only; a lab without enough weeks says so instead of guessing.
-  yield* page(() => screen.getByText("Not enough full weeks of history yet").first().waitFor());
+  yield* page(() =>
+    screen
+      .getByText(/No forecast yet\. It needs the last 4 full weeks in a row\./u)
+      .first()
+      .waitFor(),
+  );
+  checked(
+    "the forecast distinguishes missing records from unknown metric values",
+    (yield* page(() =>
+      screen.getByText(/Week of Nov 2 has 1 day with no records and 1 day with unknown /u).count(),
+    )) > 0,
+    true,
+  );
   checked(
     "a forecast shows the producer's confidence",
     (yield* page(() => screen.getByText("Medium confidence").count())) > 0,
@@ -543,6 +611,64 @@ const program = Effect.gen(function* () {
     "no reset can be spent from the overview",
     yield* page(() => screen.getByRole("button", { name: /use reset/iu }).count()),
     0,
+  );
+  yield* section(
+    "Grok weekly units fit on a phone",
+    Effect.gen(function* () {
+      const control = screen.getByRole("radiogroup", { name: /^(?:grok|xai) limit window$/iu });
+      yield* page(() => control.waitFor());
+      for (const scheme of ["light", "dark"]) {
+        yield* page(() => owner.emulateMedia({ colorScheme: scheme }));
+        yield* page(() => owner.setViewportSize({ width: 390, height: 844 }));
+        yield* page(() => settled(screen));
+        yield* page(() => control.scrollIntoViewIfNeeded());
+        yield* page(() =>
+          owner.screenshot({ path: join(directory, `${phase}-grok-390-${scheme}.png`) }),
+        );
+        const bounds = yield* page(() =>
+          control.evaluate((element) => ({
+            left: element.getBoundingClientRect().left,
+            right: element.getBoundingClientRect().right,
+            width: element.getBoundingClientRect().width,
+            pageWidth: document.documentElement.clientWidth,
+            pageScrollWidth: document.documentElement.scrollWidth,
+          })),
+        );
+        diagnostics[`grok-390-${scheme}`] = bounds;
+        checked(
+          `Grok window switch fits at 390 in ${scheme}`,
+          bounds.right <= bounds.pageWidth,
+          true,
+        );
+        checked(
+          `Grok capacity keeps the page within 390 px in ${scheme}`,
+          yield* page(() =>
+            screen
+              .locator("body")
+              .evaluate(
+                () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+              ),
+          ),
+          true,
+        );
+        for (const label of ["Weekly · fixed · account-eq", "Weekly · fixed · Grok Pro account"]) {
+          const option = control.getByRole("radio", { name: label, exact: true });
+          yield* page(() => option.click());
+          checked(
+            `Grok ${label} remains selectable at 390 in ${scheme}`,
+            yield* page(() => option.getAttribute("aria-checked")),
+            "true",
+          );
+        }
+      }
+      checked(
+        "Grok window labels print each unit once",
+        (yield* page(() => control.getByRole("radio").allTextContents())).sort(),
+        ["Weekly · fixed · Grok Pro account", "Weekly · fixed · account-eq"],
+      );
+      yield* page(() => owner.emulateMedia({ colorScheme: "light" }));
+      yield* page(() => owner.setViewportSize({ width: 1280, height: 900 }));
+    }),
   );
   yield* shoot("drilldown", screen, "#usage-breakdown-heading");
   yield* section(
@@ -887,7 +1013,7 @@ const program = Effect.gen(function* () {
   );
   checked("no screen ever read the legacy overview", calls("overview").length, 0);
   diagnostics.requests = usage.requests.slice(before);
-  if (phase === "red") return { phase, reds, checks };
+  if (phase === "red") return { phase, reds, checks, diagnostics };
   // The host-to-pool half of the inventory, with the pool view's own refresh cadence.
   const views = usage.log.filter((entry) => entry.route === "GET /pool/v1/pool").map((e) => e.at);
   return {

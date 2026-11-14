@@ -423,8 +423,13 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     seedReset(pool, id, provider = "codex", count = 2) {
       this.seed(pool, id);
       files.set(id, { id, provider, disabled: false });
-      resets.seed(id, provider, count);
-      readings.get(id).reset_credits = resets.balances(id);
+      if (provider === "codex" || provider === "claude") {
+        resets.seed(id, provider, count);
+        readings.get(id).reset_credits = resets.balances(id);
+      } else {
+        readings.get(id).reset_credits = null;
+        readings.get(id).windows = [];
+      }
     },
     seed(
       pool,
