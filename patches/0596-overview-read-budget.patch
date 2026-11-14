@@ -1,0 +1,465 @@
+diff --git a/apps/hosted/server/src/contracts/pool-usage.ts b/apps/hosted/server/src/contracts/pool-usage.ts
+--- a/apps/hosted/server/src/contracts/pool-usage.ts
++++ b/apps/hosted/server/src/contracts/pool-usage.ts
+@@ -1,3 +1,4 @@
++import { PoolUsageOverviewReadInput } from "./pool-usage-summary.ts";
+ import { AccountSelectionPolicy, UsageCreditPolicy, AccountUsageRouting } from "apps/contracts";
+ import { AccountId, AppId, StorageError } from "@executor-js/sdk/core";
+ import { ApiError } from "@executor-js/utils/api-error";
+@@ -226,6 +227,18 @@
+     )
+     .add(
+       HttpApiEndpoint.post(
++        "poolUsageSummary",
++        "/api/organizations/:organization/apps/:app/pool-usage/summary",
++        {
++          params,
++          payload: PoolUsageOverviewReadInput,
++          success: Schema.Unknown,
++          error: [OrganizationForbidden, StorageError, PoolUsageUnavailable],
++        },
++      ).annotate(RequiredAction, "manage"),
++    )
++    .add(
++      HttpApiEndpoint.post(
+         "poolUsageSeries",
+         "/api/organizations/:organization/apps/:app/pool-usage/series",
+         {
+diff --git a/apps/hosted/server/src/implementation/pool-backend.ts b/apps/hosted/server/src/implementation/pool-backend.ts
+--- a/apps/hosted/server/src/implementation/pool-backend.ts
++++ b/apps/hosted/server/src/implementation/pool-backend.ts
+@@ -36,6 +36,7 @@
+   | "setSelectionPolicy"
+   | "managed-usage"
+   | "managed-cap"
++  | "poolUsageSummary"
+   | "poolUsageSeries"
+   | "setUsageAccountLabel"
+   | "lastSuccessAt"
+@@ -56,19 +57,21 @@
+     const client = yield* HttpClient.HttpClient;
+     // Match the public pool usage paths in Basalt's src/pool/model-history/series-http.ts.
+     const path =
+-      action === "importUsage"
+-        ? "/pool/v1/usage/import/owner"
+-        : action === "importUsageBulk"
+-          ? "/pool/v1/usage/import/bulk"
+-          : action === "poolUsageSeries"
+-            ? "/pool/v1/usage/series"
+-            : action === "lastSuccessAt"
+-              ? "/pool/v1/usage/last-success"
+-              : action === "poolOverview"
+-                ? "/pool/v1/usage/overview"
+-                : action === "poolPersonalOverview"
+-                  ? "/pool/v1/usage/personal-overview"
+-                  : `/pool/v1/${action}`;
++      action === "poolUsageSummary"
++        ? "/pool/v1/usage/summary"
++        : action === "importUsage"
++          ? "/pool/v1/usage/import/owner"
++          : action === "importUsageBulk"
++            ? "/pool/v1/usage/import/bulk"
++            : action === "poolUsageSeries"
++              ? "/pool/v1/usage/series"
++              : action === "lastSuccessAt"
++                ? "/pool/v1/usage/last-success"
++                : action === "poolOverview"
++                  ? "/pool/v1/usage/overview"
++                  : action === "poolPersonalOverview"
++                    ? "/pool/v1/usage/personal-overview"
++                    : `/pool/v1/${action}`;
+     const response = yield* client.post(new URL(path, origin).href, {
+       body: HttpBody.jsonUnsafe({ envelope }),
+     });
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -1,3 +1,4 @@
++import { poolUsageOverviewRead } from "./pool-usage-summary.ts";
+ import { readPool, sendPoolCommand, withPool } from "./pool-backend.ts";
+ import {
+   poolAccountRouting,
+@@ -274,6 +275,7 @@
+     .handle("setSelectionPolicy", ({ params, payload }) =>
+       setPoolSelectionPolicy(params.app, payload.accountSelectionPolicy),
+     )
++    .handle("poolUsageSummary", ({ params, payload }) => poolUsageOverviewRead(params.app, payload))
+     .handle("poolUsageSeries", ({ params, payload }) => poolUsageSeries(params.app, payload))
+     .handle("setUsageAccountLabel", ({ params, payload }) =>
+       setUsageAccountLabel(params.app, payload),
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -1,3 +1,4 @@
++import { poolAppUsageSummary, poolAppUsageSummaryPath } from "./pool-summary-app-ui.ts";
+ import { withSelectedAccountInspection } from "./selected-account-read.ts";
+ import { SelectedAccountInspection } from "@executor-js/sdk/core";
+ import {
+@@ -18,7 +19,7 @@
+ import { CurrentUsage, recordUsage } from "../contracts/product-analytics.ts";
+ import { fullAuthority } from "@executor-js/authorization";
+ import { GroupDatabase } from "../contracts/groups.ts";
+-import { requireAppAccess, requireAppUse } from "./resource-policy.ts";
++import { requireAppAccess, requireAppUse, resourceAuthorityForApp } from "./resource-policy.ts";
+ /** Hosted policy around the shared app browser protocol and retained asset renderer. */
+ import {
+   AccountRequired,
+@@ -273,6 +274,35 @@
+       return { ...resolved, access, app, navigation: identity.navigation };
+     });
+   const authorize = Effect.flatMap(target, authorizeTarget);
++  const authorizePoolSummary = Effect.gen(function* () {
++    const resolved = yield* target;
++    const token = Schema.decodeUnknownOption(AppSignInCode)(
++      resolved.request.cookies[sessionCookie(resolved.target.origin)],
++    );
++    if (Option.isNone(token)) return yield* new UiUnauthorized();
++    const sessions = yield* HostedAppSessions;
++    const identity = yield* sessions.current(resolved.target, token.value);
++    const { actor, access } = yield* resourceAuthorityForApp(
++      resolved.target.organization,
++      identity.userId,
++      resolved.app.id,
++    ).pipe(
++      Effect.mapError((error) =>
++        Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
++      ),
++    );
++    if (resolved.app.owner !== organizationOwner(actor.organization) || !access.canManage)
++      return yield* new UiForbidden();
++    return {
++      ...resolved,
++      access: {
++        organization: actor.organization,
++        owner: organizationOwner(actor.organization),
++        role: actor.role,
++        userId: actor.user,
++      },
++    };
++  });
+   const assets = (version: VersionMetadata, path: string) =>
+     Effect.gen(function* () {
+       const runtime = yield* HostedAppRuntime;
+@@ -861,6 +891,10 @@
+     originAccess,
+     sessionAccess,
+     telemetry,
++    poolUsageSummary: {
++      path: poolAppUsageSummaryPath,
++      read: poolAppUsageSummary(authorizePoolSummary),
++    } as const,
+     poolUsageAccountLabel: {
+       path: poolAppUsageAccountLabelPath,
+       write: poolAppUsageAccountLabel(authorize),
+diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
+--- a/apps/hosted/self-host/src/implementation/routes.ts
++++ b/apps/hosted/self-host/src/implementation/routes.ts
+@@ -250,6 +250,7 @@
+       HttpRouter.add("POST", appUi.poolUsage.path, appUi.poolUsage.read),
+       HttpRouter.add("POST", appUi.poolUsageAccountLabel.path, appUi.poolUsageAccountLabel.write),
+       HttpRouter.add("POST", appUi.poolUsageOverview.path, appUi.poolUsageOverview.read),
++      HttpRouter.add("POST", appUi.poolUsageSummary.path, appUi.poolUsageSummary.read),
+       HttpRouter.add(
+         "POST",
+         appUi.poolPersonalUsageOverview.path,
+diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
+--- a/apps/hosted/cloud/src/app-ui.ts
++++ b/apps/hosted/cloud/src/app-ui.ts
+@@ -177,6 +177,7 @@
+       HttpRouter.add("POST", appUi.poolUsage.path, appUi.poolUsage.read),
+       HttpRouter.add("POST", appUi.poolUsageAccountLabel.path, appUi.poolUsageAccountLabel.write),
+       HttpRouter.add("POST", appUi.poolUsageOverview.path, appUi.poolUsageOverview.read),
++      HttpRouter.add("POST", appUi.poolUsageSummary.path, appUi.poolUsageSummary.read),
+       HttpRouter.add(
+         "POST",
+         appUi.poolPersonalUsageOverview.path,
+diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.spec.ts
+--- a/e2e/tests/pool-usage-series.spec.ts
++++ b/e2e/tests/pool-usage-series.spec.ts
+@@ -381,6 +381,7 @@
+           expect(cost.importedApiPrice.amount).toBe("0.123456789012");
+         }
+         yield* backend.respond((assertion) => {
++          if (assertion.action === "poolUsageSummary") return { result: "Summary is ready" };
+           if (assertion.action === "poolOverview") return { result: "Overview is ready" };
+           if (assertion.action !== "poolPersonalOverview") return {};
+           return {
+@@ -437,6 +438,111 @@
+             "overview-backend",
+           ].sort(),
+         );
++
++        const summaryPath = "/_executor/api/pool-usage/summary";
++        const summaryQuery = { from: range.from, to: range.to, by: "provider" as const };
++        const summaryCallsBefore = (yield* backend.calls).length;
++        for (const action of ["initial", "refresh"]) {
++          const summary = yield* postApp(ownerApp, summaryPath, {
++            version: app.activeVersion,
++            input: {
++              ...summaryQuery,
++              pool: "spoofed-pool",
++              authority: { canManage: true, accounts: [{ account: "spoofed-account" }] },
++              directory: { members: [{ person: "spoofed-person" }] },
++            },
++          });
++          expect(summary.status, action).toBe(200);
++          expect(JSON.parse(summary.text)).toEqual({ result: "Summary is ready" });
++        }
++        const summaryCalls = (yield* backend.calls).slice(summaryCallsBefore);
++        expect(summaryCalls).toHaveLength(2);
++        for (const call of summaryCalls) {
++          expect(call.action).toBe("poolUsageSummary");
++          expect(call.input).toEqual({
++            ...summaryQuery,
++            pool: app.id,
++            authority: { canManage: true, accounts: [], mappingProven: true },
++          });
++          expect(call.pool).toBe(app.id);
++          expect(call.user).toBe(ownerIdentity);
++          expect(call.authority).toBeUndefined();
++        }
++        const summaryRejected = (yield* backend.calls).length;
++        for (const [session, payload, status] of [
++          [ownerApp, { version: "dpl_stale", input: summaryQuery }, 409],
++          [memberApp, { version: app.activeVersion, input: summaryQuery }, 403],
++          [
++            { origin: ownerApp.origin, cookies: new Map<string, string>() },
++            { version: app.activeVersion, input: summaryQuery },
++            401,
++          ],
++        ] as const) {
++          expect((yield* postApp(session, summaryPath, payload)).status).toBe(status);
++          expect((yield* backend.calls).length).toBe(summaryRejected);
++        }
++        expect(
++          (yield* api.request(actors.admin, "POST", `${path}/summary`, summaryQuery)).status,
++        ).toBe(200);
++        expect(
++          (yield* api.request(actors.member, "POST", `${path}/summary`, summaryQuery)).status,
++        ).toBe(403);
++
++        const emptyAudience = yield* api
++          .request(actors.owner, "POST", `${prefix}/groups`, {
++            name: "Summary managers without use",
++            description: "",
++            memberIds: [],
++          })
++          .pipe(Effect.flatMap((response) => body(Schema.Struct({ id: Schema.String }), response)));
++        const currentAccess = yield* api
++          .request(actors.owner, "GET", accessPath)
++          .pipe(
++            Effect.flatMap((response) =>
++              body(Schema.Struct({ revision: Schema.String }), response),
++            ),
++          );
++        expect(
++          (yield* api.request(actors.owner, "PATCH", accessPath, {
++            revision: currentAccess.revision,
++            audience: { kind: "groups", groups: [emptyAudience.id] },
++          })).status,
++        ).toBe(200);
++        const manageOnly = yield* api.request(actors.owner, "GET", accessPath).pipe(
++          Effect.flatMap((response) =>
++            body(
++              Schema.Struct({
++                revision: Schema.String,
++                canManage: Schema.Boolean,
++                canUse: Schema.Boolean,
++              }),
++              response,
++            ),
++          ),
++        );
++        expect(manageOnly).toMatchObject({ canManage: true, canUse: false });
++        expect(
++          (yield* postApp(ownerApp, summaryPath, {
++            version: app.activeVersion,
++            input: summaryQuery,
++          })).status,
++        ).toBe(200);
++        expect(
++          (yield* api.request(actors.owner, "POST", `${path}/summary`, summaryQuery)).status,
++        ).toBe(200);
++        expect(
++          (yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/tools/call`, {
++            tool: "identity",
++            kind: "query",
++            input: {},
++          })).status,
++        ).toBe(403);
++        expect(
++          (yield* api.request(actors.owner, "PATCH", accessPath, {
++            revision: manageOnly.revision,
++            audience: { kind: "everyone" },
++          })).status,
++        ).toBe(200);
+ 
+         const memberResponse = yield* postApp(memberApp, personalPath, attack(ownerIdentity));
+         expect(memberResponse.status).toBe(200);
+diff --git a/apps/hosted/server/src/contracts/pool-usage-summary.ts b/apps/hosted/server/src/contracts/pool-usage-summary.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/pool-usage-summary.ts
+@@ -0,0 +1,9 @@
++import { Schema } from "effect";
++
++export const PoolUsageOverviewReadInput = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    from: Schema.NonEmptyString,
++    to: Schema.NonEmptyString,
++    by: Schema.optionalKey(Schema.Literals(["provider", "model"])),
++  }))();
++export type PoolUsageOverviewReadInput = typeof PoolUsageOverviewReadInput.Type;
+diff --git a/apps/hosted/server/src/implementation/pool-usage-summary.ts b/apps/hosted/server/src/implementation/pool-usage-summary.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-usage-summary.ts
+@@ -0,0 +1,45 @@
++import { StorageError, StorageHost, type AppId } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { PoolUsageUnavailable } from "../contracts/pool-usage.ts";
++import type { PoolUsageOverviewReadInput } from "../contracts/pool-usage-summary.ts";
++import { readPool, sendPoolCommand } from "./pool-backend.ts";
++import { usageSeriesAccounts } from "./pool-usage-series-accounts.ts";
++import { appUiPhase } from "./app-ui-phase-timing.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++
++const trackedRead = <A, E, R>(read: Effect.Effect<A, E, R>) =>
++  Effect.gen(function* () {
++    const executor = yield* Effect.flatten(HostedExecutor);
++    return yield* executor[StorageHost].transaction(read);
++  });
++
++/** The manager lock and per-account inspection stay authoritative through the signed read. */
++export const poolUsageOverviewRead = (app: AppId, input: PoolUsageOverviewReadInput) =>
++  readPool(app, (pool) =>
++    Effect.gen(function* () {
++      const accounts = yield* usageSeriesAccounts(pool, undefined);
++      return yield* appUiPhase(
++        "overview-backend",
++        sendPoolCommand(
++          "poolUsageSummary",
++          {
++            pool: pool.pool,
++            organization: pool.organization,
++            user: pool.user,
++            input: {
++              ...input,
++              pool: pool.pool,
++              authority: { canManage: true, accounts, mappingProven: true },
++            },
++          },
++          Schema.Unknown,
++        ),
++      );
++    }),
++  ).pipe(
++    trackedRead,
++    Effect.catchTags({
++      SqlError: () => new StorageError(),
++      SchemaError: () => new PoolUsageUnavailable(),
++    }),
++  );
+diff --git a/apps/hosted/server/src/implementation/pool-summary-app-ui.ts b/apps/hosted/server/src/implementation/pool-summary-app-ui.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-summary-app-ui.ts
+@@ -0,0 +1,62 @@
++import { VersionId, type App } from "@executor-js/sdk/core";
++import { fullAuthority } from "@executor-js/authorization";
++import { appPrivateHeaders } from "apps/ui/auth";
++import { UiForbidden, UiUnauthorized } from "apps/ui/contracts";
++import { Effect, Schema } from "effect";
++import { HttpServerRequest, HttpServerResponse } from "effect/http";
++import { CurrentAuthorization } from "../contracts/authorization.ts";
++import { CurrentUserId } from "../contracts/auth.ts";
++import {
++  CurrentOrganization,
++  OrganizationForbidden,
++  type OrganizationAccess,
++} from "../contracts/organization.ts";
++import { PoolUsageOverviewReadInput } from "../contracts/pool-usage-summary.ts";
++import { poolUsageOverviewRead } from "./pool-usage-summary.ts";
++import { appUiPhase } from "./app-ui-phase-timing.ts";
++
++export const poolAppUsageSummaryPath = "/_executor/api/pool-usage/summary";
++const Request = Schema.Struct({ version: VersionId, input: PoolUsageOverviewReadInput });
++const json = (body: unknown, status = 200) =>
++  HttpServerResponse.jsonUnsafe(body, { status, headers: appPrivateHeaders });
++
++/** The app origin supplies the pool and current viewer; submitted authority is discarded. */
++export const poolAppUsageSummary = <E, R>(
++  authorize: Effect.Effect<
++    {
++      readonly app: Pick<App, "id" | "activeVersion">;
++      readonly access: OrganizationAccess & { readonly userId: string };
++    },
++    E,
++    R
++  >,
++) =>
++  Effect.gen(function* () {
++    const current = yield* appUiPhase("overview-authorize", authorize);
++    if (typeof current.access.userId !== "string" || !current.access.userId)
++      return json({ _tag: "UiUnauthorized" }, 401);
++    const payload = yield* HttpServerRequest.schemaBodyJson(Request).pipe(
++      Effect.catch(() => Effect.succeed(undefined)),
++    );
++    if (payload === undefined)
++      return json(
++        { error: "invalid_query", message: "Provide usage bounds and this page's version." },
++        400,
++      );
++    if (payload.version !== current.app.activeVersion)
++      return json({ _tag: "UiDeploymentChanged" }, 409);
++    const result = yield* poolUsageOverviewRead(current.app.id, payload.input).pipe(
++      Effect.provideService(CurrentOrganization, current.access),
++      Effect.provideService(CurrentUserId, current.access.userId),
++      Effect.provideService(CurrentAuthorization, fullAuthority),
++    );
++    return json(result);
++  }).pipe(
++    Effect.catch((error) => {
++      if (Schema.is(UiUnauthorized)(error))
++        return Effect.succeed(json({ _tag: "UiUnauthorized" }, 401));
++      if (Schema.is(UiForbidden)(error) || Schema.is(OrganizationForbidden)(error))
++        return Effect.succeed(json({ _tag: "UiForbidden" }, 403));
++      return Effect.succeed(json({ _tag: "UiFailed", reason: "unavailable" }, 503));
++    }),
++  );
+diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
+--- a/e2e/support/pool-usage-series-backend.ts
++++ b/e2e/support/pool-usage-series-backend.ts
+@@ -47,6 +47,7 @@
+ });
+ const Assertion = Schema.Struct({
+   action: Schema.Literals([
++    "poolUsageSummary",
+     "poolUsageSeries",
+     "setUsageAccountLabel",
+     "lastSuccessAt",
+@@ -64,6 +65,7 @@
+ 
+ // Public paths are shared by the signed native series, last-success and overview reads.
+ const assertionPaths = {
++  poolUsageSummary: "/pool/v1/usage/summary",
+   poolUsageSeries: "/pool/v1/usage/series",
+   setUsageAccountLabel: "/pool/v1/setUsageAccountLabel",
+   lastSuccessAt: "/pool/v1/usage/last-success",
+@@ -112,7 +114,7 @@
+     )
+       return HttpServerResponse.empty({ status: 401 });
+     const authority =
+-      assertion.action === "poolOverview"
++      assertion.action === "poolOverview" || assertion.action === "poolUsageSummary"
+         ? yield* Schema.decodeUnknownEffect(PoolOverviewAssertion)(assertion.input).pipe(
+             Effect.map((value) => value.authority),
+             Effect.catch(() => Effect.succeed(undefined)),
+@@ -355,6 +357,7 @@
+     HttpRouter.serve(
+       Layer.mergeAll(
+         // Match the public pool usage paths in Basalt's src/pool/model-history/series-http.ts.
++        HttpRouter.add("POST", "/pool/v1/usage/summary", handler),
+         HttpRouter.add("POST", "/pool/v1/usage/series", handler),
+         HttpRouter.add("POST", "/pool/v1/setUsageAccountLabel", handler),
+         HttpRouter.add("POST", "/pool/v1/usage/last-success", handler),
