@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-page-search",
+  "file": "0610-app-page-search.patch",
+  "content_sha256": "cc96332ed0aebe9019b61c4829648127cb5cded8314f6dbd1ffeff416ff574ae",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
