@@ -222,6 +222,15 @@ export async function refreshSession(
   return token(object(json(reply)), session, now);
 }
 
+/** The server answered a revocation with something other than success. */
+export class RevocationRefused extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super("Device access could not be revoked. Keep this device connected and try again.");
+    this.status = status;
+  }
+}
+
 export async function revokeSession(http: Http, session: Session): Promise<void> {
   if (!session.revocationEndpoint)
     throw new Error("This server requires removing this device in Signalbox Connections.");
@@ -236,9 +245,6 @@ export async function revokeSession(http: Http, session: Session): Promise<void>
       session.revocationEndpoint,
       form({ ...value, client_id: session.clientId }),
     );
-    if (reply.status !== 200)
-      throw new Error(
-        "Device access could not be revoked. Keep this device connected and try again.",
-      );
+    if (reply.status !== 200) throw new RevocationRefused(reply.status);
   }
 }
