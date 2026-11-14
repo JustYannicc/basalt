@@ -501,7 +501,6 @@ test(
             stream.write(`event: changed\ndata: ${JSON.stringify({ kind: "changed", hint })}\n\n`);
         response.writeHead(204).end();
       } else if (request.url === "/main.js") {
-
         response.setHeader("content-type", "application/javascript");
         response.end(javascript);
       } else if (request.url === "/main.css" && stylesheet !== null) {
