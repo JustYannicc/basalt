@@ -40,10 +40,15 @@ import { routeBulkImport } from "./src/pool/model-history/bulk-http.ts";
 export { BulkUsageImport };
 export class FixtureBulkUsageImport extends BulkUsageImport {
   offset = 0;
+  instance = crypto.randomUUID();
   now() { return Date.now() + this.offset; }
   // Dispatch the production callback explicitly so timer races cannot hide a failed guard.
   async alarm() {}
   async fetch(request) {
+    if (new URL(request.url).pathname === "/__fixture/instance")
+      return Response.json({ instance: this.instance });
+    if (new URL(request.url).pathname === "/__fixture/evict")
+      this.ctx.abort("fixture eviction");
     if (new URL(request.url).pathname === "/__fixture/tick") {
       this.offset += 1000;
       await super.alarm();
@@ -56,10 +61,12 @@ export class FixtureBulkUsageImport extends BulkUsageImport {
 export default {
   fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === "/__fixture/tick")
-      return env.UsageImports.getByName(url.searchParams.get("job")).fetch(request);
+    if (url.pathname.startsWith("/__fixture/"))
+      return env.UsageImports.getByName("bulk-usage-import:" + url.searchParams.get("job")).fetch(request);
     const jobs = url.searchParams.get("native") === "1" ? env.NativeUsageImports : env.UsageImports;
-    return routeBulkImport(request, { signingKey: env.POOL_APP_SIGNING_KEY, jobs: { jurisdiction: () => jobs } });
+    return routeBulkImport(request, { signingKey: env.POOL_APP_SIGNING_KEY, jobs: {
+      jurisdiction: () => ({ getByName: name => jobs.getByName(url.searchParams.get("object") ?? name) })
+    } });
   }
 };`,
       resolveDir: resolve("."),
@@ -213,6 +220,9 @@ test("bulk signed HTTP commands run through SQLite DO, R2 and real PostgreSQL re
     try {
       await worker.ready;
       const runtime = await worker.getWorker("bulk");
+      const sharedBucket = await worker.getR2Bucket("UsageImportArtifacts", "bulk");
+      const vaultKey = "vault-fixture/attachments/objects/retained.json";
+      await sharedBucket.put(vaultKey, "retained vault bytes");
       const post = async (
         input: object,
         expected = 200,
@@ -327,12 +337,42 @@ test("bulk signed HTTP commands run through SQLite DO, R2 and real PostgreSQL re
       assert.equal(admissions.length, admissionsBeforeExpired);
       assert.equal(await countRows(), 1);
       await guard(first.definition);
+      const inspectInstance = async () => {
+        const response = await runtime.fetch(
+          `https://bulk.test/__fixture/instance?job=${first.definition.job}`,
+        );
+        assert.equal(response.status, 200);
+        return response.json() as Promise<{ instance: string }>;
+      };
+      const beforeEviction = await inspectInstance();
+      await runtime
+        .fetch(`https://bulk.test/__fixture/evict?job=${first.definition.job}`)
+        .catch(() => undefined);
+      assert.notEqual((await inspectInstance()).instance, beforeEviction.instance);
       await tick(first.definition);
       const progress = await status(first.definition);
       assert.equal(progress.committedChunks, 1);
       assert.equal(progress.inserted, 1);
       assert.equal(progress.existing, 1);
       assert.equal(await countRows(), 2);
+      const wrongObject = await runtime.fetch(
+        `https://bulk.test${bulkImportPath}?object=bulk-usage-import:${"0".repeat(64)}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            envelope: await signEnvelope(signingKey, "sbs1", {
+              action: "importUsageBulk",
+              ...identity,
+              user: identity.owner,
+              expiresAt: Date.now() + 25_000,
+              input: { operation: "status", job: first.definition.job },
+            }),
+          }),
+        },
+      );
+      assert.equal(wrongObject.status, 401);
+      assert.equal(await countRows(), 2);
+      assert.equal(await (await sharedBucket.get(vaultKey))!.text(), "retained vault bytes");
       assert.deepEqual(await receipts(first.definition), [
         { chunk: 0, rows: 2, inserted: 1, existing: 1 },
       ]);

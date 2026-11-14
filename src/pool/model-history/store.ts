@@ -173,10 +173,10 @@ export async function insertRequests(
 
 export interface HistoryQuery {
   pool: string;
-  person?: string;
+  person?: string | undefined;
   from: string;
   to: string;
-  after?: { timestamp: string; id: string };
+  after?: { timestamp: string; id: string } | undefined;
 }
 
 /** Keyset pagination stays bounded even when a pool has years of retained history. */

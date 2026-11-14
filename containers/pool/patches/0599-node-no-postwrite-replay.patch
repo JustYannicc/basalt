@@ -1,0 +1,2660 @@
+diff --git a/internal/runtime/executor/claude_executor_stream.go b/internal/runtime/executor/claude_executor_stream.go
+--- a/internal/runtime/executor/claude_executor_stream.go
++++ b/internal/runtime/executor/claude_executor_stream.go
+@@ -459,7 +459,7 @@
+ 					errScan = upstreamStreamErr
+ 				}
+ 				if errScan == nil && ctx.Err() == nil {
+-					errScan = statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before message_stop"}
++					errScan = statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before message_stop", streamTruncated: true}
+ 				}
+ 				if errScan != nil {
+ 					errScan = wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errScan)
+@@ -562,7 +562,7 @@
+ 				errScan = upstreamStreamErr
+ 			}
+ 			if errScan == nil && ctx.Err() == nil {
+-				errScan = statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before message_stop"}
++				errScan = statusErr{code: http.StatusBadGateway, msg: "upstream stream closed before message_stop", streamTruncated: true}
+ 			}
+ 			if errScan != nil {
+ 				errScan = wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errScan)
+@@ -606,7 +606,7 @@
+ 		}
+ 		hasData = true
+ 		if !ojson.ValidBytes(payload) {
+-			return statusErr{code: http.StatusBadGateway, msg: "claude executor: upstream returned malformed stream data"}
++			return statusErr{code: http.StatusBadGateway, msg: "claude executor: upstream returned malformed stream data", streamTruncated: true}
+ 		}
+ 
+ 		root := util.ParseGJSONBytesNoCopy(payload)
+@@ -623,7 +623,7 @@
+ 		case "message_start":
+ 			message := root.Get("message")
+ 			if strings.TrimSpace(message.Get("id").String()) == "" || strings.TrimSpace(message.Get("model").String()) == "" {
+-				return statusErr{code: http.StatusBadGateway, msg: "claude executor: upstream stream message_start is missing id or model"}
++				return statusErr{code: http.StatusBadGateway, msg: "claude executor: upstream stream message_start is missing id or model", streamTruncated: true}
+ 			}
+ 			hasMessageStart = true
+ 		case "message_delta":
+@@ -634,13 +634,13 @@
+ 		return errScan
+ 	}
+ 	if !hasData {
+-		return statusErr{code: http.StatusBadGateway, msg: "claude executor: upstream returned empty stream response"}
++		return statusErr{code: http.StatusBadGateway, msg: "claude executor: upstream returned empty stream response", streamTruncated: true}
+ 	}
+ 	if !hasMessageStart {
+-		return statusErr{code: http.StatusBadGateway, msg: "claude executor: upstream stream response is missing message_start"}
++		return statusErr{code: http.StatusBadGateway, msg: "claude executor: upstream stream response is missing message_start", streamTruncated: true}
+ 	}
+ 	if !hasMessageDelta {
+-		return statusErr{code: http.StatusBadGateway, msg: "claude executor: upstream stream response ended before message completion"}
++		return statusErr{code: http.StatusBadGateway, msg: "claude executor: upstream stream response ended before message completion", streamTruncated: true}
+ 	}
+ 	return nil
+ }
+diff --git a/internal/runtime/executor/fast_cooling_regression_test.go b/internal/runtime/executor/fast_cooling_regression_test.go
+new file mode 100644
+--- /dev/null
++++ b/internal/runtime/executor/fast_cooling_regression_test.go
+@@ -0,0 +1,102 @@
++package executor_test
++
++import (
++	"context"
++	"errors"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
++)
++
++type fastLocalTransport struct{ target *url.URL }
++
++func (t fastLocalTransport) RoundTrip(r *http.Request) (*http.Response, error) {
++	c := r.Clone(r.Context())
++	u := *r.URL
++	u.Scheme = t.target.Scheme
++	u.Host = t.target.Host
++	c.URL = &u
++	return http.DefaultTransport.RoundTrip(c)
++}
++
++type fastCoolingHook struct {
++	coreauth.NoopHook
++	mu      sync.Mutex
++	results []coreauth.Result
++}
++
++func (h *fastCoolingHook) OnResult(_ context.Context, r coreauth.Result) {
++	h.mu.Lock()
++	defer h.mu.Unlock()
++	h.results = append(h.results, r)
++}
++
++func TestFastCredential429RecordsResultAndCools(t *testing.T) {
++	var attempts atomic.Int32
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		b, _ := io.ReadAll(r.Body)
++		if !strings.Contains(string(b), `"speed":"fast"`) {
++			t.Errorf("not Fast: %s", b)
++		}
++		attempts.Add(1)
++		w.Header().Set("Content-Type", "application/json")
++		w.Header().Set("Anthropic-Ratelimit-Unified-Status", "rejected")
++		w.Header().Set("Anthropic-Ratelimit-Unified-5h-Status", "rejected")
++		w.Header().Set("Retry-After", "60")
++		w.WriteHeader(429)
++		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"rate_limit_error","message":"credential quota exceeded"}}`)
++	}))
++	defer upstream.Close()
++	hook := &fastCoolingHook{}
++	manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, hook)
++	manager.RegisterExecutor(runtimeexecutor.NewClaudeExecutor(&config.Config{}))
++	const model = "claude-opus-5"
++	auth := &coreauth.Auth{ID: "fast-real-429", Provider: "claude", Status: coreauth.StatusActive, Attributes: map[string]string{"api_key": "synthetic", "base_url": "https://api.anthropic.com"}}
++	if _, err := manager.Register(context.Background(), auth); err != nil {
++		t.Fatal(err)
++	}
++	registry.GetGlobalRegistry().RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: model}})
++	manager.RefreshSchedulerEntry(auth.ID)
++	defer registry.GetGlobalRegistry().UnregisterClient(auth.ID)
++	target, _ := url.Parse(upstream.URL)
++	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", http.RoundTripper(fastLocalTransport{target: target}))
++	_, err := manager.ExecuteStream(ctx, []string{"claude"}, cliproxyexecutor.Request{Model: model, Payload: []byte(`{"model":"claude-opus-5","max_tokens":16,"speed":"fast","messages":[{"role":"user","content":"hello"}],"stream":true}`)}, cliproxyexecutor.Options{Stream: true, SourceFormat: sdktranslator.FormatClaude, ResponseFormat: sdktranslator.FormatClaude})
++	var direct *cliproxyexecutor.RequestTerminatedError
++	if !errors.As(err, &direct) || direct.StatusCode() != 429 {
++		t.Fatalf("want real Fast direct 429, got %T %v", err, err)
++	}
++	var scoped interface{ IsCredentialScoped() bool }
++	if !errors.As(err, &scoped) || !scoped.IsCredentialScoped() {
++		t.Fatalf("not credential scoped: %T %v", err, err)
++	}
++	current, _ := manager.GetByID(auth.ID)
++	hook.mu.Lock()
++	defer hook.mu.Unlock()
++	cooled := current.Unavailable && current.NextRetryAfter.After(time.Now())
++	t.Logf("attempts=%d results=%d credentialUnavailable=%t retryInFuture=%t", attempts.Load(), len(hook.results), current.Unavailable, current.NextRetryAfter.After(time.Now()))
++	if attempts.Load() != 1 {
++		t.Errorf("attempts=%d want1", attempts.Load())
++	}
++	if len(hook.results) != 1 {
++		t.Errorf("results=%d want1", len(hook.results))
++	} else if !hook.results[0].CredentialScope {
++		t.Error("result lost credential scope")
++	}
++	if !cooled {
++		t.Errorf("credential not cooled: unavailable=%t next=%s", current.Unavailable, current.NextRetryAfter)
++	}
++}
+diff --git a/internal/runtime/executor/helps/response_decode.go b/internal/runtime/executor/helps/response_decode.go
+--- a/internal/runtime/executor/helps/response_decode.go
++++ b/internal/runtime/executor/helps/response_decode.go
+@@ -47,7 +47,14 @@
+ 
+ // DecodeResponseBody decodes declared encodings in reverse order, or sniffs gzip/zstd without a header.
+ // Closing the returned body also closes all decoders and the original body, including on setup errors.
+-func DecodeResponseBody(body io.ReadCloser, header http.Header) (io.ReadCloser, error) {
++func DecodeResponseBody(body io.ReadCloser, header http.Header) (decoded io.ReadCloser, failed error) {
++	defer func() {
++		if failed != nil {
++			failed = responseDecodeError{failed}
++		} else if decoded != nil {
++			decoded = &decodedResponseBody{decoded}
++		}
++	}()
+ 	contentEncoding := strings.Join(header.Values("Content-Encoding"), ",")
+ 	if body == nil {
+ 		return nil, fmt.Errorf("response body is nil")
+@@ -221,3 +228,20 @@
+ 	}
+ 	return errDecoder
+ }
++
++// A decoder failure leaves an accepted response incomplete, unlike a decoded
++// provider error payload whose refusal semantics remain available to the caller.
++type responseDecodeError struct{ error }
++
++func (responseDecodeError) IsResponseIncomplete() bool { return true }
++func (e responseDecodeError) Unwrap() error            { return e.error }
++
++type decodedResponseBody struct{ io.ReadCloser }
++
++func (b *decodedResponseBody) Read(p []byte) (int, error) {
++	n, errRead := b.ReadCloser.Read(p)
++	if errRead != nil && errRead != io.EOF {
++		errRead = responseDecodeError{errRead}
++	}
++	return n, errRead
++}
+diff --git a/internal/runtime/executor/openai_compat_executor.go b/internal/runtime/executor/openai_compat_executor.go
+--- a/internal/runtime/executor/openai_compat_executor.go
++++ b/internal/runtime/executor/openai_compat_executor.go
+@@ -539,7 +539,7 @@
+ 			if len(dataLines) > 1 {
+ 				for _, dataLine := range dataLines {
+ 					if bytes.Equal(bytes.TrimSpace(dataLine), []byte("[DONE]")) {
+-						publishStreamError(statusErr{code: http.StatusBadGateway, msg: "upstream stream ended with incomplete data before [DONE]"}, false)
++						publishStreamError(statusErr{code: http.StatusBadGateway, msg: "upstream stream ended with incomplete data before [DONE]", streamTruncated: true}, false)
+ 						return true
+ 					}
+ 				}
+@@ -551,7 +551,7 @@
+ 				return true
+ 			}
+ 			if !isDone && !json.Valid(dataPayload) {
+-				publishStreamError(statusErr{code: http.StatusBadGateway, msg: "upstream stream ended with incomplete SSE data frame"}, false)
++				publishStreamError(statusErr{code: http.StatusBadGateway, msg: "upstream stream ended with incomplete SSE data frame", streamTruncated: true}, false)
+ 				return true
+ 			}
+ 			if !isDone {
+diff --git a/sdk/api/handlers/claude/code_handlers.go b/sdk/api/handlers/claude/code_handlers.go
+--- a/sdk/api/handlers/claude/code_handlers.go
++++ b/sdk/api/handlers/claude/code_handlers.go
+@@ -29,6 +29,7 @@
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+ 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	log "github.com/sirupsen/logrus"
+ )
+ 
+@@ -518,7 +519,7 @@
+ 			}
+ 			state.ensureSSEEventBoundary(c.Writer)
+ 
+-			errorBytes, _ := json.Marshal(h.toClaudeError(errMsg))
++			errorBytes := claudeErrorDocument(h.toClaudeError(errMsg)).Bytes()
+ 			_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", errorBytes)
+ 		},
+ 		CloseError: func() *interfaces.ErrorMessage {
+@@ -541,9 +542,11 @@
+ }
+ 
+ type claudeErrorDetail struct {
+-	Type    string              `json:"type"`
+-	Message string              `json:"message"`
+-	Details *claudeErrorDetails `json:"details,omitempty"`
++	Code      string              `json:"code,omitempty"`
++	Retryable *bool               `json:"retryable,omitempty"`
++	Type      string              `json:"type"`
++	Message   string              `json:"message"`
++	Details   *claudeErrorDetails `json:"details,omitempty"`
+ }
+ 
+ type claudeErrorDetails struct {
+@@ -564,6 +567,14 @@
+ }
+ 
+ func (h *ClaudeCodeAPIHandler) toClaudeErrorWithRetryAfter(msg *interfaces.ErrorMessage, retryAfter string) claudeErrorResponse {
++	if msg != nil && httptransport.IsOutcomeUnknown(msg.Error) {
++		retryable := false
++		return claudeErrorResponse{Type: "error", Error: claudeErrorDetail{
++			Type: "api_error", Code: "upstream_outcome_unknown", Retryable: &retryable,
++			Message: "Upstream disconnected after submission. The request was not replayed and its outcome is unknown.",
++		}}
++	}
++
+ 	status := http.StatusInternalServerError
+ 	errText := http.StatusText(status)
+ 	if msg != nil {
+@@ -620,12 +631,10 @@
+ 		}
+ 		body := bytes.Clone(msg.Body)
+ 		if clienterror.IsClaudeThreadNotFound(status, errors.New(string(body))) {
+-			if markedBody, errMarshal := json.Marshal(h.toClaudeError(&interfaces.ErrorMessage{
++			body = claudeErrorDocument(h.toClaudeError(&interfaces.ErrorMessage{
+ 				StatusCode: status,
+ 				Error:      errors.New(string(body)),
+-			})); errMarshal == nil {
+-				body = markedBody
+-			}
++			})).Bytes()
+ 		}
+ 		appendClaudeAPIResponse(c, body)
+ 		if !c.Writer.Written() && c.Writer.Header().Get("Content-Type") == "" {
+@@ -660,10 +669,10 @@
+ 		}
+ 	}
+ 
+-	body, err := json.Marshal(h.toClaudeErrorWithRetryAfter(msg, retryAfter))
+-	if err != nil {
+-		body = []byte(`{"type":"error","error":{"type":"api_error","message":"Internal Server Error"}}`)
+-	}
++	if msg != nil && httptransport.IsOutcomeUnknown(msg.Error) {
++		c.Writer.Header().Set("x-should-retry", "false")
++	}
++	body := claudeErrorDocument(h.toClaudeErrorWithRetryAfter(msg, retryAfter)).Bytes()
+ 	appendClaudeAPIResponse(c, body)
+ 	if !c.Writer.Written() {
+ 		c.Writer.Header().Set("Content-Type", "application/json")
+diff --git a/sdk/api/handlers/claude/code_handlers_error_envelope.go b/sdk/api/handlers/claude/code_handlers_error_envelope.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/api/handlers/claude/code_handlers_error_envelope.go
+@@ -0,0 +1,20 @@
++package claude
++
++import "github.com/MoeForge/moego/ojson"
++
++func claudeErrorDocument(response claudeErrorResponse) *ojson.Doc {
++	doc := ojson.NewDocString(`{"type":"error","error":{}}`)
++	_ = doc.Set("type", response.Type)
++	_ = doc.Set("error.type", response.Error.Type)
++	_ = doc.Set("error.message", response.Error.Message)
++	if response.Error.Code != "" {
++		_ = doc.Set("error.code", response.Error.Code)
++	}
++	if response.Error.Retryable != nil {
++		_ = doc.Set("error.retryable", *response.Error.Retryable)
++	}
++	if response.Error.Details != nil {
++		_ = doc.Set("error.details.error_code", response.Error.Details.ErrorCode)
++	}
++	return doc
++}
+diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
+--- a/sdk/api/handlers/handlers.go
++++ b/sdk/api/handlers/handlers.go
+@@ -84,6 +84,9 @@
+ 
+ 	trimmed := strings.TrimSpace(errText)
+ 
++	if httptransport.IsOutcomeUnknown(err) {
++		return []byte((&httptransport.OutcomeUnknownError{}).Error())
++	}
+ 	if coreauth.IsTerminalAuthError(err) {
+ 		message := errText
+ 		if trimmed != "" && json.Valid([]byte(trimmed)) {
+diff --git a/sdk/api/handlers/handlers_errors.go b/sdk/api/handlers/handlers_errors.go
+--- a/sdk/api/handlers/handlers_errors.go
++++ b/sdk/api/handlers/handlers_errors.go
+@@ -11,6 +11,7 @@
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+ 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	"golang.org/x/net/context"
+ )
+ 
+@@ -143,6 +144,10 @@
+ 				c.Writer.Header().Add(key, value)
+ 			}
+ 		}
++	}
++
++	if msg != nil && httptransport.IsOutcomeUnknown(msg.Error) {
++		c.Writer.Header().Set("x-should-retry", "false")
+ 	}
+ 
+ 	errText := http.StatusText(status)
+diff --git a/sdk/api/handlers/handlers_stream.go b/sdk/api/handlers/handlers_stream.go
+--- a/sdk/api/handlers/handlers_stream.go
++++ b/sdk/api/handlers/handlers_stream.go
+@@ -11,6 +11,7 @@
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+ 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+ 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+ 	"golang.org/x/net/context"
+@@ -577,6 +578,9 @@
+ 	}
+ 
+ 	bootstrapEligible := func(err error) bool {
++		if httptransport.IsOutcomeUnknown(err) {
++			return false
++		}
+ 		status := statusFromError(err)
+ 		if status == 0 {
+ 			return true
+diff --git a/sdk/api/handlers/openai/http_submission_antigravity_credits_pool_test.go b/sdk/api/handlers/openai/http_submission_antigravity_credits_pool_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_antigravity_credits_pool_test.go
+@@ -0,0 +1,188 @@
++package openai
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++// Model cooldown forces entry through the real credits fallback. Home mode would
++// skip that fallback entirely, so a Home dispatcher cannot exercise this bug.
++func TestHTTPSubmissionAntigravityCreditsAliasPool(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		for _, refusal := range []bool{false, true} {
++			const credentials = 1
++			t.Run(fmt.Sprintf("stream=%t/refusal=%t", stream, refusal), func(t *testing.T) {
++				var submissions atomic.Int32
++				var modelsMu sync.Mutex
++				var models []string
++				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					body, errRead := io.ReadAll(r.Body)
++					if errRead != nil {
++						t.Error(errRead)
++						return
++					}
++					if r.Method != http.MethodPost || (r.URL.Path != "/v1internal:generateContent" && r.URL.Path != "/v1internal:streamGenerateContent") {
++						t.Errorf("unexpected upstream request: %s %s", r.Method, r.URL.Path)
++						w.WriteHeader(http.StatusBadRequest)
++						return
++					}
++					attempt := submissions.Add(1)
++					modelsMu.Lock()
++					models = append(models, ojson.GetBytes(body, "model").String())
++					modelsMu.Unlock()
++					if ojson.GetBytes(body, "enabledCreditTypes.0").String() != "GOOGLE_ONE_AI" {
++						t.Errorf("generation did not come through credits fallback: %s", body)
++					}
++					if refusal {
++						if attempt == 1 {
++							w.WriteHeader(http.StatusServiceUnavailable)
++							_, _ = io.WriteString(w, `{"error":{"code":503,"status":"UNAVAILABLE","message":"generation rejected"}}`)
++							return
++						}
++						w.Header().Set("Content-Type", "text/event-stream")
++						_, _ = io.WriteString(w, `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"safe-fallback"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}}`+"\n\n")
++						return
++					}
++					// Read the complete generation request, then lose the connection
++					// before response headers. Its execution outcome is unknowable.
++					conn, _, errHijack := w.(http.Hijacker).Hijack()
++					if errHijack != nil {
++						t.Error(errHijack)
++						return
++					}
++					_ = conn.Close()
++				}))
++				defer upstream.Close()
++
++				const model = "claude-credits-alias-pool"
++				cfg := &config.Config{
++					QuotaExceeded: config.QuotaExceeded{AntigravityCredits: true},
++					OpenAICompatibility: []config.OpenAICompatibility{{
++						Name: "antigravity",
++						Models: []config.OpenAICompatibilityModel{
++							{Name: "claude-sonnet-4-6", Alias: model},
++							{Name: "claude-opus-4-6", Alias: model},
++						},
++					}},
++				}
++				manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++				manager.SetConfig(cfg)
++				manager.SetRetryConfig(0, 0, 0)
++				adapter := runtimeexecutor.NewAntigravityExecutor(cfg)
++				manager.RegisterExecutor(adapter)
++				// Configured model pools resolve this credential through the
++				// compatibility provider key. Keep the real adapter behind that key.
++				manager.RegisterExecutor(&creditsPoolRoutedAntigravityExecutor{adapter})
++				until := time.Now().Add(30 * time.Minute)
++				for index := 0; index < credentials; index++ {
++					authID := fmt.Sprintf("credits-alias-pool-%s-%d", t.Name(), index)
++					auth := &coreauth.Auth{
++						ID: authID, Provider: "antigravity", Status: coreauth.StatusActive,
++						ProxyURL: "direct",
++						Attributes: map[string]string{
++							"base_url":     upstream.URL,
++							"source":       "config:antigravity",
++							"compat_name":  "antigravity",
++							"provider_key": "antigravity",
++						},
++						Metadata: map[string]any{
++							"access_token": "synthetic-credits-token",
++							"project_id":   "synthetic-credits-project",
++							"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
++						},
++						ModelStates: map[string]*coreauth.ModelState{
++							"claude-sonnet-4-6": {
++								Unavailable: true, NextRetryAfter: until,
++								Quota: coreauth.QuotaState{Exceeded: true, NextRecoverAt: until},
++							},
++							"claude-opus-4-6": {
++								Unavailable: true, NextRetryAfter: until,
++								Quota: coreauth.QuotaState{Exceeded: true, NextRecoverAt: until},
++							},
++							model: {
++								Unavailable: true, NextRetryAfter: until,
++								Quota: coreauth.QuotaState{Exceeded: true, NextRecoverAt: until},
++							},
++						},
++					}
++					if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++						t.Fatal(errRegister)
++					}
++					registry.GetGlobalRegistry().RegisterClient(authID, "antigravity", []*registry.ModelInfo{{ID: model}})
++					// Fresh hints prevent background loadCodeAssist refreshes.
++					coreauth.SetAntigravityCreditsHint(authID, coreauth.AntigravityCreditsHint{Known: true, Available: true, UpdatedAt: time.Now()})
++					t.Cleanup(func() {
++						registry.GetGlobalRegistry().UnregisterClient(authID)
++						coreauth.SetAntigravityCreditsHint(authID, coreauth.AntigravityCreditsHint{})
++					})
++				}
++
++				base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++				router := gin.New()
++				router.POST("/v1/chat/completions", NewOpenAIAPIHandler(base).ChatCompletions)
++				body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":%t}`, model, stream)
++				request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
++				request.Header.Set("Content-Type", "application/json")
++				response := httptest.NewRecorder()
++				router.ServeHTTP(response, request)
++
++				wire := response.Body.String()
++				modelsMu.Lock()
++				defer modelsMu.Unlock()
++				t.Logf("generation submissions=%d status=%d body=%s", submissions.Load(), response.Code, wire)
++				if refusal {
++					if len(models) != 2 || models[0] == models[1] {
++						t.Errorf("refusal did not advance within the model pool: %v", models)
++					}
++					if got := submissions.Load(); got != 2 || response.Code != http.StatusOK || !strings.Contains(wire, "safe-fallback") {
++						t.Errorf("definitive refusal did not fail over safely: submissions=%d status=%d body=%s", got, response.Code, wire)
++					}
++					return
++				}
++				if got := submissions.Load(); got != 1 {
++					t.Errorf("credits fallback submitted generation %d times after post-write disconnect, want 1", got)
++				}
++				if response.Code != http.StatusBadGateway {
++					t.Errorf("status=%d, want 502 for unknown generation outcome", response.Code)
++				}
++				if !ojson.Valid(wire) || ojson.Get(wire, "error.code").String() != "upstream_outcome_unknown" {
++					t.Errorf("credits fallback discarded unknown outcome: %s", wire)
++				}
++				retryable := ojson.Get(wire, "error.retryable")
++				if !retryable.Exists() || retryable.Bool() {
++					t.Errorf("unknown outcome must advertise retryable=false: %s", wire)
++				}
++				if got := response.Header().Get("x-should-retry"); got != "false" {
++					t.Errorf("x-should-retry=%q, want false", got)
++				}
++			})
++		}
++	}
++}
++
++// Only registry identity changes; both generation methods are the real adapter.
++type creditsPoolRoutedAntigravityExecutor struct {
++	*runtimeexecutor.AntigravityExecutor
++}
++
++func (*creditsPoolRoutedAntigravityExecutor) Identifier() string {
++	return "openai-compatible-antigravity"
++}
+diff --git a/sdk/api/handlers/openai/http_submission_antigravity_credits_test.go b/sdk/api/handlers/openai/http_submission_antigravity_credits_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_antigravity_credits_test.go
+@@ -0,0 +1,125 @@
++package openai
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++// Model cooldown forces entry through the real credits fallback. Home mode would
++// skip that fallback entirely, so a Home dispatcher cannot exercise this bug.
++func TestHTTPSubmissionAntigravityCreditsDisconnectIsTerminal(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		for _, credentials := range []int{1, 2} {
++			t.Run(fmt.Sprintf("stream=%t/credentials=%d", stream, credentials), func(t *testing.T) {
++				var submissions atomic.Int32
++				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					body, errRead := io.ReadAll(r.Body)
++					if errRead != nil {
++						t.Error(errRead)
++						return
++					}
++					if r.Method != http.MethodPost || (r.URL.Path != "/v1internal:generateContent" && r.URL.Path != "/v1internal:streamGenerateContent") {
++						t.Errorf("unexpected upstream request: %s %s", r.Method, r.URL.Path)
++						w.WriteHeader(http.StatusBadRequest)
++						return
++					}
++					submissions.Add(1)
++					if ojson.GetBytes(body, "enabledCreditTypes.0").String() != "GOOGLE_ONE_AI" {
++						t.Errorf("generation did not come through credits fallback: %s", body)
++					}
++					// Read the complete generation request, then lose the connection
++					// before response headers. Its execution outcome is unknowable.
++					conn, _, errHijack := w.(http.Hijacker).Hijack()
++					if errHijack != nil {
++						t.Error(errHijack)
++						return
++					}
++					_ = conn.Close()
++				}))
++				defer upstream.Close()
++
++				cfg := &config.Config{QuotaExceeded: config.QuotaExceeded{AntigravityCredits: true}}
++				manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++				manager.SetConfig(cfg)
++				manager.SetRetryConfig(0, 0, 0)
++				manager.RegisterExecutor(runtimeexecutor.NewAntigravityExecutor(cfg))
++				const model = "claude-sonnet-4-6"
++				until := time.Now().Add(30 * time.Minute)
++				for index := 0; index < credentials; index++ {
++					authID := fmt.Sprintf("credits-terminal-%s-%d", t.Name(), index)
++					auth := &coreauth.Auth{
++						ID: authID, Provider: "antigravity", Status: coreauth.StatusActive,
++						ProxyURL:   "direct",
++						Attributes: map[string]string{"base_url": upstream.URL},
++						Metadata: map[string]any{
++							"access_token": "synthetic-credits-token",
++							"project_id":   "synthetic-credits-project",
++							"expired":      time.Now().Add(time.Hour).Format(time.RFC3339),
++						},
++						ModelStates: map[string]*coreauth.ModelState{
++							model: {
++								Unavailable: true, NextRetryAfter: until,
++								Quota: coreauth.QuotaState{Exceeded: true, NextRecoverAt: until},
++							},
++						},
++					}
++					if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++						t.Fatal(errRegister)
++					}
++					registry.GetGlobalRegistry().RegisterClient(authID, "antigravity", []*registry.ModelInfo{{ID: model}})
++					// Fresh hints prevent background loadCodeAssist refreshes.
++					coreauth.SetAntigravityCreditsHint(authID, coreauth.AntigravityCreditsHint{Known: true, Available: true, UpdatedAt: time.Now()})
++					t.Cleanup(func() {
++						registry.GetGlobalRegistry().UnregisterClient(authID)
++						coreauth.SetAntigravityCreditsHint(authID, coreauth.AntigravityCreditsHint{})
++					})
++				}
++
++				base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++				router := gin.New()
++				router.POST("/v1/chat/completions", NewOpenAIAPIHandler(base).ChatCompletions)
++				body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":%t}`, model, stream)
++				request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
++				request.Header.Set("Content-Type", "application/json")
++				response := httptest.NewRecorder()
++				router.ServeHTTP(response, request)
++
++				wire := response.Body.String()
++				t.Logf("generation submissions=%d status=%d body=%s", submissions.Load(), response.Code, wire)
++				if got := submissions.Load(); got != 1 {
++					t.Errorf("credits fallback submitted generation %d times after post-write disconnect, want 1", got)
++				}
++				if response.Code != http.StatusBadGateway {
++					t.Errorf("status=%d, want 502 for unknown generation outcome", response.Code)
++				}
++				if !ojson.Valid(wire) || ojson.Get(wire, "error.code").String() != "upstream_outcome_unknown" {
++					t.Errorf("credits fallback discarded unknown outcome: %s", wire)
++				}
++				retryable := ojson.Get(wire, "error.retryable")
++				if !retryable.Exists() || retryable.Bool() {
++					t.Errorf("unknown outcome must advertise retryable=false: %s", wire)
++				}
++				if got := response.Header().Get("x-should-retry"); got != "false" {
++					t.Errorf("x-should-retry=%q, want false", got)
++				}
++			})
++		}
++	}
++}
+diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go b/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go
+@@ -0,0 +1,165 @@
++package openai
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++// Explicit provider errors must stay distinguishable from incomplete responses.
++func TestHTTPSubmissionClaudeAcceptedErrorAndMalformedStart(t *testing.T) {
++	const messageStart = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_synthetic\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n"
++	const content = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
++		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n" +
++		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
++	const messageDelta = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n"
++	const messageStop = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
++	const validTerminal = messageStart + content + messageDelta + messageStop
++	for _, tc := range []struct {
++		name     string
++		body     string
++		valid    bool
++		failover bool
++	}{
++		{
++			name:  "explicit_error_can_fail_over",
++			body:  "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"synthetic explicit refusal\"}}\n\n",
++			valid: true, failover: true,
++		},
++		{
++			name: "message_start_missing_id",
++			body: "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5\",\"content\":[]}}\n\n" + content + messageDelta + messageStop,
++		},
++		{
++			name: "message_start_missing_model",
++			body: "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_synthetic\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}\n\n" + content + messageDelta + messageStop,
++		},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			var submissions, invalidRequests atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				body, errRead := io.ReadAll(r.Body)
++				if errRead != nil {
++					t.Errorf("read upstream request: %v", errRead)
++					return
++				}
++				// Count fully received requests, not executor invocations or TCP dials.
++				attempt := submissions.Add(1)
++				var request struct {
++					Stream bool `json:"stream"`
++				}
++				if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" || json.Unmarshal(body, &request) != nil || !request.Stream {
++					invalidRequests.Add(1)
++					t.Errorf("wrong upstream path: method=%s path=%s body=%s", r.Method, r.URL.Path, body)
++				}
++				w.Header().Set("Content-Type", "text/event-stream")
++				w.WriteHeader(http.StatusOK)
++				responseBody := tc.body
++				if tc.failover && attempt > 1 {
++					responseBody = validTerminal
++				}
++				_, _ = io.WriteString(w, responseBody)
++			}))
++			defer upstream.Close()
++
++			manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++			manager.RegisterExecutor(runtimeexecutor.NewClaudeExecutor(&config.Config{}))
++			model := "claude-accepted-" + strings.ReplaceAll(t.Name(), "/", "-")
++			for _, suffix := range []string{"a", "b"} {
++				auth := &coreauth.Auth{
++					ID: model + "-" + suffix, Provider: "claude", Status: coreauth.StatusActive,
++					ProxyURL: "direct", Attributes: map[string]string{"base_url": upstream.URL, "api_key": "synthetic-" + suffix},
++				}
++				if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++					t.Fatal(errRegister)
++				}
++				registry.GetGlobalRegistry().RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: model}})
++				authID := auth.ID
++				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(authID) })
++			}
++			base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++			router := gin.New()
++			router.POST("/v1/chat/completions", NewOpenAIAPIHandler(base).ChatCompletions)
++			public := httptest.NewServer(router)
++			defer public.Close()
++			requestBody := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":false}`, model)
++			request, errRequest := http.NewRequest(http.MethodPost, public.URL+"/v1/chat/completions", strings.NewReader(requestBody))
++			if errRequest != nil {
++				t.Fatal(errRequest)
++			}
++			request.Header.Set("Content-Type", "application/json")
++			client := public.Client()
++			client.Timeout = 10 * time.Second
++			response, errResponse := client.Do(request)
++			if errResponse != nil {
++				t.Fatal(errResponse)
++			}
++			defer func() {
++				if errClose := response.Body.Close(); errClose != nil {
++					t.Errorf("response body close: %v", errClose)
++				}
++			}()
++			body, errRead := io.ReadAll(response.Body)
++			if errRead != nil {
++				t.Fatal(errRead)
++			}
++			t.Logf("accepted_submissions=%d public_status=%d x-should-retry=%q body=%s", submissions.Load(), response.StatusCode, response.Header.Get("x-should-retry"), body)
++			wantSubmissions := int32(1)
++			if tc.failover {
++				wantSubmissions = 2
++			}
++			if got := submissions.Load(); got != wantSubmissions {
++				t.Errorf("accepted upstream submissions=%d, want %d", got, wantSubmissions)
++			}
++			if invalidRequests.Load() != 0 {
++				t.Fatal("probe did not reach the expected Claude upstream stream path")
++			}
++			if tc.valid {
++				var completion struct {
++					Object  string `json:"object"`
++					Choices []struct {
++						Message struct {
++							Content string `json:"content"`
++						} `json:"message"`
++						FinishReason string `json:"finish_reason"`
++					} `json:"choices"`
++				}
++				if response.StatusCode != http.StatusOK || json.Unmarshal(body, &completion) != nil || completion.Object != "chat.completion" || len(completion.Choices) != 1 || completion.Choices[0].Message.Content != "done" || completion.Choices[0].FinishReason != "stop" {
++					t.Fatalf("valid terminal response changed: status=%d body=%s", response.StatusCode, body)
++				}
++				return
++			}
++			if response.StatusCode != http.StatusBadGateway {
++				t.Errorf("status=%d, want 502", response.StatusCode)
++			}
++			var failure struct {
++				Error struct {
++					Code      string `json:"code"`
++					Retryable *bool  `json:"retryable"`
++				} `json:"error"`
++			}
++			if json.Unmarshal(body, &failure) != nil || failure.Error.Code != "upstream_outcome_unknown" || failure.Error.Retryable == nil || *failure.Error.Retryable {
++				t.Errorf("missing nonretryable unknown outcome: %s", body)
++			}
++			if got := response.Header.Get("x-should-retry"); got != "false" {
++				t.Errorf("x-should-retry=%q, want false", got)
++			}
++		})
++	}
++}
+diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go b/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go
+@@ -0,0 +1,147 @@
++package openai
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++// This file is self-contained so the same probe can run before carry 0599.
++func TestHTTPSubmissionClaudeAcceptedValidationDoesNotReplay(t *testing.T) {
++	const messageStart = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_synthetic\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n"
++	const content = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
++		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n" +
++		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
++	const messageDelta = "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n"
++	const messageStop = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
++	for _, tc := range []struct {
++		name  string
++		body  string
++		valid bool
++	}{
++		{name: "empty", body: ""},
++		{name: "malformed", body: "data: {\n\n"},
++		{name: "missing_events", body: "event: ping\ndata: {\"type\":\"ping\"}\n\n"},
++		{name: "missing_message_delta", body: messageStart + content},
++		{name: "valid_terminal", body: messageStart + content + messageDelta + messageStop, valid: true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			var submissions, invalidRequests atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				body, errRead := io.ReadAll(r.Body)
++				if errRead != nil {
++					t.Errorf("read upstream request: %v", errRead)
++					return
++				}
++				// Count fully received requests, not executor invocations or TCP dials.
++				submissions.Add(1)
++				var request struct {
++					Stream bool `json:"stream"`
++				}
++				if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" || json.Unmarshal(body, &request) != nil || !request.Stream {
++					invalidRequests.Add(1)
++					t.Errorf("wrong upstream path: method=%s path=%s body=%s", r.Method, r.URL.Path, body)
++				}
++				w.Header().Set("Content-Type", "text/event-stream")
++				w.WriteHeader(http.StatusOK)
++				_, _ = io.WriteString(w, tc.body)
++			}))
++			defer upstream.Close()
++
++			manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++			manager.RegisterExecutor(runtimeexecutor.NewClaudeExecutor(&config.Config{}))
++			model := "claude-accepted-" + strings.ReplaceAll(t.Name(), "/", "-")
++			for _, suffix := range []string{"a", "b"} {
++				auth := &coreauth.Auth{
++					ID: model + "-" + suffix, Provider: "claude", Status: coreauth.StatusActive,
++					ProxyURL: "direct", Attributes: map[string]string{"base_url": upstream.URL, "api_key": "synthetic-" + suffix},
++				}
++				if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++					t.Fatal(errRegister)
++				}
++				registry.GetGlobalRegistry().RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: model}})
++				authID := auth.ID
++				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(authID) })
++			}
++			base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++			router := gin.New()
++			router.POST("/v1/chat/completions", NewOpenAIAPIHandler(base).ChatCompletions)
++			public := httptest.NewServer(router)
++			defer public.Close()
++			requestBody := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":false}`, model)
++			request, errRequest := http.NewRequest(http.MethodPost, public.URL+"/v1/chat/completions", strings.NewReader(requestBody))
++			if errRequest != nil {
++				t.Fatal(errRequest)
++			}
++			request.Header.Set("Content-Type", "application/json")
++			client := public.Client()
++			client.Timeout = 10 * time.Second
++			response, errResponse := client.Do(request)
++			if errResponse != nil {
++				t.Fatal(errResponse)
++			}
++			defer func() {
++				if errClose := response.Body.Close(); errClose != nil {
++					t.Errorf("response body close: %v", errClose)
++				}
++			}()
++			body, errRead := io.ReadAll(response.Body)
++			if errRead != nil {
++				t.Fatal(errRead)
++			}
++			t.Logf("accepted_submissions=%d public_status=%d x-should-retry=%q body=%s", submissions.Load(), response.StatusCode, response.Header.Get("x-should-retry"), body)
++			if got := submissions.Load(); got != 1 {
++				t.Errorf("accepted upstream submissions=%d, want 1", got)
++			}
++			if invalidRequests.Load() != 0 {
++				t.Fatal("probe did not reach the expected Claude upstream stream path")
++			}
++			if tc.valid {
++				var completion struct {
++					Object  string `json:"object"`
++					Choices []struct {
++						Message struct {
++							Content string `json:"content"`
++						} `json:"message"`
++						FinishReason string `json:"finish_reason"`
++					} `json:"choices"`
++				}
++				if response.StatusCode != http.StatusOK || json.Unmarshal(body, &completion) != nil || completion.Object != "chat.completion" || len(completion.Choices) != 1 || completion.Choices[0].Message.Content != "done" || completion.Choices[0].FinishReason != "stop" {
++					t.Fatalf("valid terminal response changed: status=%d body=%s", response.StatusCode, body)
++				}
++				return
++			}
++			if response.StatusCode != http.StatusBadGateway {
++				t.Errorf("status=%d, want 502", response.StatusCode)
++			}
++			var failure struct {
++				Error struct {
++					Code      string `json:"code"`
++					Retryable *bool  `json:"retryable"`
++				} `json:"error"`
++			}
++			if json.Unmarshal(body, &failure) != nil || failure.Error.Code != "upstream_outcome_unknown" || failure.Error.Retryable == nil || *failure.Error.Retryable {
++				t.Errorf("missing nonretryable unknown outcome: %s", body)
++			}
++			if got := response.Header.Get("x-should-retry"); got != "false" {
++				t.Errorf("x-should-retry=%q, want false", got)
++			}
++		})
++	}
++}
+diff --git a/sdk/api/handlers/openai/http_submission_followup_test.go b/sdk/api/handlers/openai/http_submission_followup_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_followup_test.go
+@@ -0,0 +1,147 @@
++package openai
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/claude"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++func TestHTTPSubmissionRedirectedResultDoesNotReplayPOST(t *testing.T) {
++	for _, mode := range []string{"disconnect", "truncated", "refusal", "success"} {
++		t.Run(mode, func(t *testing.T) {
++			var posts atomic.Int32
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				if r.Method == http.MethodPost {
++					posts.Add(1)
++					w.Header().Set("Location", "/result")
++					w.WriteHeader(http.StatusSeeOther)
++					return
++				}
++				if mode == "success" {
++					w.Header().Set("Content-Type", "application/json")
++					_, _ = io.WriteString(w, `{"id":"ok","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
++					return
++				}
++				if mode == "refusal" {
++					w.WriteHeader(http.StatusServiceUnavailable)
++					_, _ = io.WriteString(w, `{"error":{"message":"result unavailable"}}`)
++					return
++				}
++				if mode == "truncated" {
++					w.Header().Set("Content-Length", "1000")
++					_, _ = io.WriteString(w, `{"id":"partial"`)
++					return
++				}
++				conn, _, errHijack := w.(http.Hijacker).Hijack()
++				if errHijack != nil {
++					t.Error(errHijack)
++					return
++				}
++				_ = conn.Close()
++			}))
++			defer server.Close()
++			response := submissionRequest(t, server.URL, false, nil)
++			t.Logf("posts=%d status=%d body=%s", posts.Load(), response.Code, response.Body.String())
++			if mode == "success" {
++				if posts.Load() != 1 || response.Code != http.StatusOK {
++					t.Fatal("successful redirect changed")
++				}
++				return
++			}
++			if posts.Load() != 1 || response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"code":"upstream_outcome_unknown"`) {
++				t.Fatal("redirected result caused replay or lost unknown outcome")
++			}
++		})
++	}
++}
++
++func TestHTTPSubmissionCodexMalformedAcceptedResponseDoesNotReplay(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		t.Run(fmt.Sprint(stream), func(t *testing.T) {
++			var posts atomic.Int32
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				posts.Add(1)
++				w.Header().Set("Content-Encoding", "synthetic-unsupported")
++				w.WriteHeader(http.StatusOK)
++				_, _ = io.WriteString(w, `{}`)
++			}))
++			defer server.Close()
++			manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++			manager.RegisterExecutor(runtimeexecutor.NewCodexExecutor(&config.Config{}))
++			const model = "gpt-5.2-codex"
++			for _, suffix := range []string{"a", "b"} {
++				auth := &coreauth.Auth{ID: "malformed-codex-" + suffix, Provider: "codex", Status: coreauth.StatusActive, ProxyURL: "direct", Attributes: map[string]string{"base_url": server.URL, "api_key": "synthetic"}}
++				if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++					t.Fatal(errRegister)
++				}
++				registry.GetGlobalRegistry().RegisterClient(auth.ID, "codex", []*registry.ModelInfo{{ID: model}})
++				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++			}
++			base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++			router := gin.New()
++			router.POST("/v1/responses", NewOpenAIResponsesAPIHandler(base).Responses)
++			request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"model":"gpt-5.2-codex","input":"hello","stream":%t}`, stream)))
++			request.Header.Set("Content-Type", "application/json")
++			response := httptest.NewRecorder()
++			router.ServeHTTP(response, request)
++			t.Logf("posts=%d status=%d body=%s", posts.Load(), response.Code, response.Body.String())
++			if posts.Load() != 1 || response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"code":"upstream_outcome_unknown"`) || response.Header().Get("x-should-retry") != "false" {
++				t.Fatal("accepted malformed response replayed or missing unknown contract")
++			}
++		})
++	}
++}
++
++func TestHTTPSubmissionClaudeMalformedAcceptedResponseDoesNotReplay(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		t.Run(fmt.Sprint(stream), func(t *testing.T) {
++			var posts atomic.Int32
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				posts.Add(1)
++				w.Header().Set("Content-Encoding", "synthetic-unsupported")
++				w.WriteHeader(http.StatusOK)
++				_, _ = io.WriteString(w, `{}`)
++			}))
++			defer server.Close()
++			manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++			manager.RegisterExecutor(runtimeexecutor.NewClaudeExecutor(&config.Config{}))
++			const model = "claude-opus-5"
++			for _, suffix := range []string{"a", "b"} {
++				auth := &coreauth.Auth{ID: "malformed-claude-" + suffix, Provider: "claude", Status: coreauth.StatusActive, ProxyURL: "direct", Attributes: map[string]string{"base_url": server.URL, "api_key": "synthetic"}}
++				if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++					t.Fatal(errRegister)
++				}
++				registry.GetGlobalRegistry().RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: model}})
++				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++			}
++			base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++			router := gin.New()
++			router.POST("/v1/messages", claude.NewClaudeCodeAPIHandler(base).ClaudeMessages)
++			request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(fmt.Sprintf(`{"model":"claude-opus-5","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"stream":%t}`, stream)))
++			request.Header.Set("Content-Type", "application/json")
++			response := httptest.NewRecorder()
++			router.ServeHTTP(response, request)
++			t.Logf("posts=%d status=%d body=%s", posts.Load(), response.Code, response.Body.String())
++			if posts.Load() != 1 || response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"code":"upstream_outcome_unknown"`) || response.Header().Get("x-should-retry") != "false" {
++				t.Fatal("accepted malformed response replayed or missing unknown contract")
++			}
++		})
++	}
++}
+diff --git a/sdk/api/handlers/openai/http_submission_reporting_test.go b/sdk/api/handlers/openai/http_submission_reporting_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_reporting_test.go
+@@ -0,0 +1,256 @@
++package openai
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/claude"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++func TestHTTPSubmissionClaudeCountTokensDisconnectCanFailOver(t *testing.T) {
++	for _, homeMode := range []bool{false, true} {
++		t.Run(fmt.Sprintf("home=%t", homeMode), func(t *testing.T) {
++			runSubmissionClaudeCountTokensDisconnect(t, homeMode)
++		})
++	}
++}
++
++func runSubmissionClaudeCountTokensDisconnect(t *testing.T, homeMode bool) {
++	var accepted atomic.Int32
++	var keys []string
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = io.Copy(io.Discard, r.Body)
++		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/count_tokens" {
++			t.Errorf("unexpected count request: %s %s", r.Method, r.URL.Path)
++		}
++		keys = append(keys, r.Header.Get("X-Api-Key"))
++		if accepted.Add(1) == 1 {
++			conn, _, errHijack := w.(http.Hijacker).Hijack()
++			if errHijack != nil {
++				t.Error(errHijack)
++				return
++			}
++			_ = conn.Close()
++			return
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"input_tokens":42}`)
++	}))
++	defer upstream.Close()
++	target, errURL := url.Parse(upstream.URL)
++	if errURL != nil {
++		t.Fatal(errURL)
++	}
++	transport := http.DefaultTransport.(*http.Transport).Clone()
++	transport.Proxy = nil
++	defer transport.CloseIdleConnections()
++	manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++	manager.RegisterExecutor(runtimeexecutor.NewClaudeExecutor(&config.Config{}))
++	manager.SetRoundTripperProvider(submissionTransport{countLoopbackTransport{t: t, target: target, next: transport}})
++	model := "claude-sonnet-5-5"
++	var auths []*coreauth.Auth
++	for _, suffix := range []string{"a", "b"} {
++		auth := &coreauth.Auth{ID: "count-disconnect-" + suffix, Provider: "claude", Status: coreauth.StatusActive, Attributes: map[string]string{"api_key": "synthetic-" + suffix}}
++		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++			t.Fatal(errRegister)
++		}
++		auths = append(auths, auth)
++		registry.GetGlobalRegistry().RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: model}})
++		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++	}
++	if homeMode {
++		manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
++		manager.PublishHomeDispatch(&submissionHomeDispatcher{auths: auths}, executionregistry.New(), 1)
++	}
++	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++	router := gin.New()
++	router.POST("/v1/messages/count_tokens", claude.NewClaudeCodeAPIHandler(base).ClaudeCountTokens)
++	request := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(`{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hello"}]}`))
++	request.Header.Set("Content-Type", "application/json")
++	response := httptest.NewRecorder()
++	router.ServeHTTP(response, request)
++	t.Logf("count POSTs=%d status=%d body=%s", accepted.Load(), response.Code, response.Body.String())
++	if response.Code != http.StatusOK || accepted.Load() != 2 || ojson.GetBytes(response.Body.Bytes(), "input_tokens").Int() != 42 {
++		t.Fatalf("side-effect-free count did not recover: count POSTs=%d status=%d body=%s", accepted.Load(), response.Code, response.Body.String())
++	}
++	if len(keys) != 2 || keys[0] == keys[1] {
++		t.Fatalf("count did not fail over to another credential: %v", keys)
++	}
++}
++
++// Keep the first-party count decision while directing every byte to the fixture.
++type countLoopbackTransport struct {
++	t      *testing.T
++	target *url.URL
++	next   http.RoundTripper
++}
++
++func (c countLoopbackTransport) RoundTrip(request *http.Request) (*http.Response, error) {
++	if request.URL.Host != "api.anthropic.com" {
++		c.t.Errorf("count did not use the native upstream path: %s", request.URL.Host)
++	}
++	cloned := request.Clone(request.Context())
++	cloned.URL.Scheme = c.target.Scheme
++	cloned.URL.Host = c.target.Host
++	cloned.Host = c.target.Host
++	return c.next.RoundTrip(cloned)
++}
++
++func TestHTTPSubmissionOutcomeUnknownWireJSON(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		t.Run(fmt.Sprint(stream), func(t *testing.T) {
++			var accepted atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				accepted.Add(1)
++				if stream {
++					w.Header().Set("Content-Type", "text/event-stream")
++					_, _ = io.WriteString(w, `data: {"id":"cut","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`+"\n\n")
++					w.(http.Flusher).Flush()
++					_, _ = io.WriteString(w, `data: {"id":"cut"`)
++					return
++				}
++				conn, _, errHijack := w.(http.Hijacker).Hijack()
++				if errHijack != nil {
++					t.Error(errHijack)
++					return
++				}
++				_ = conn.Close()
++			}))
++			defer upstream.Close()
++			response := submissionRequest(t, upstream.URL, stream, nil)
++			body := response.Body.String()
++			t.Logf("accepted=%d status=%d wire=%s", accepted.Load(), response.Code, body)
++			if accepted.Load() != 1 {
++				t.Fatal("generation was replayed")
++			}
++			if !stream {
++				if response.Code != http.StatusBadGateway {
++					t.Fatalf("non-stream status=%d", response.Code)
++				}
++				assertSubmissionUnknownJSON(t, body)
++				return
++			}
++			if response.Code != http.StatusOK || !strings.Contains(body, "partial") {
++				t.Fatalf("late SSE lost partial output: %s", body)
++			}
++			found := false
++			for _, line := range strings.Split(body, "\n") {
++				data, ok := strings.CutPrefix(line, "data: ")
++				if !ok {
++					continue
++				}
++				if !ojson.Valid(data) {
++					t.Fatalf("SSE data is not JSON: %q", data)
++				}
++				if ojson.Get(data, "error").Exists() {
++					assertSubmissionUnknownJSON(t, data)
++					found = true
++				}
++			}
++			if !found {
++				t.Fatal("SSE did not contain a decodable unknown-outcome error")
++			}
++		})
++	}
++}
++
++func assertSubmissionUnknownJSON(t *testing.T, body string) {
++	t.Helper()
++	if !ojson.Valid(body) || ojson.Get(body, "error.code").String() != "upstream_outcome_unknown" {
++		t.Fatalf("unknown-outcome envelope is not decodable: %q", body)
++	}
++	retryable := ojson.Get(body, "error.retryable")
++	if !retryable.Exists() || retryable.Bool() {
++		t.Fatalf("unknown-outcome retryable is not false: %q", body)
++	}
++}
++
++type submissionResultHook struct {
++	coreauth.NoopHook
++	mu      sync.Mutex
++	results []coreauth.Result
++}
++
++func (h *submissionResultHook) OnResult(_ context.Context, result coreauth.Result) {
++	h.mu.Lock()
++	defer h.mu.Unlock()
++	h.results = append(h.results, result)
++}
++
++func TestHTTPSubmissionUnknownStreamRecordsResult(t *testing.T) {
++	for _, homeMode := range []bool{false, true} {
++		for _, mode := range []string{"disconnect", "bootstrap", "empty"} {
++			t.Run(fmt.Sprintf("home=%t/%s", homeMode, mode), func(t *testing.T) {
++				var accepted atomic.Int32
++				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					_, _ = io.Copy(io.Discard, r.Body)
++					accepted.Add(1)
++					if mode != "disconnect" {
++						w.Header().Set("Content-Type", "text/event-stream")
++						w.WriteHeader(http.StatusOK)
++						if mode == "bootstrap" {
++							_, _ = io.WriteString(w, `data: {"id":"cut"`)
++						}
++						return
++					}
++					conn, _, errHijack := w.(http.Hijacker).Hijack()
++					if errHijack != nil {
++						t.Error(errHijack)
++						return
++					}
++					_ = conn.Close()
++				}))
++				defer upstream.Close()
++				hook := &submissionResultHook{}
++				response := submissionRequestWithHook(t, upstream.URL, true, nil, "/v1/chat/completions", hook, homeMode)
++				hook.mu.Lock()
++				defer hook.mu.Unlock()
++				t.Logf("accepted=%d status=%d results=%d", accepted.Load(), response.Code, len(hook.results))
++				if accepted.Load() != 1 || response.Code != http.StatusBadGateway || len(hook.results) != 1 {
++					t.Fatalf("terminal attempt missing or duplicated: status=%d accepted=%d results=%d", response.Code, accepted.Load(), len(hook.results))
++				}
++				result := hook.results[0]
++				if result.Success || result.CompletedResponse || result.CredentialScope || result.ExecutionSeq == 0 || result.Error == nil || !result.Error.IsRequestScoped() || result.Error.HTTPStatus != http.StatusBadGateway {
++					t.Fatalf("terminal result is not a request-scoped failed attempt: %+v", result)
++				}
++			})
++		}
++	}
++}
++
++type submissionHomeDispatcher struct {
++	auths []*coreauth.Auth
++	next  atomic.Int32
++}
++
++func (*submissionHomeDispatcher) HeartbeatOK() bool       { return true }
++func (*submissionHomeDispatcher) AbortAmbiguousDispatch() {}
++func (d *submissionHomeDispatcher) RPopAuth(context.Context, string, string, http.Header, int) ([]byte, error) {
++	index := int(d.next.Add(1)) - 1
++	if index >= len(d.auths) {
++		return nil, fmt.Errorf("fixture credentials exhausted")
++	}
++	doc := ojson.NewDoc([]byte(`{}`))
++	if errSet := doc.Set("auth", d.auths[index]); errSet != nil {
++		return nil, errSet
++	}
++	return doc.Bytes(), nil
++}
+diff --git a/sdk/api/handlers/openai/http_submission_stream_test.go b/sdk/api/handlers/openai/http_submission_stream_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_stream_test.go
+@@ -0,0 +1,184 @@
++package openai
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/claude"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++func TestHTTPSubmissionEmptyAcceptedStreamDoesNotReplayPooledModel(t *testing.T) {
++	var accepted atomic.Int32
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = io.Copy(io.Discard, r.Body)
++		accepted.Add(1)
++		w.Header().Set("Content-Type", "text/event-stream")
++		w.WriteHeader(http.StatusOK)
++	}))
++	defer upstream.Close()
++	const provider = "openai-compatible-submission-empty-images"
++	const compatName = "submission-empty-images"
++	const model = "submission-pooled-image"
++	cfg := &config.Config{OpenAICompatibility: []config.OpenAICompatibility{{
++		Name: compatName, BaseURL: upstream.URL,
++		Models: []config.OpenAICompatibilityModel{
++			{Name: "image-a", Alias: model, Image: true},
++			{Name: "image-b", Alias: model, Image: true},
++		},
++	}}}
++	manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++	manager.SetConfig(cfg)
++	manager.RegisterExecutor(runtimeexecutor.NewOpenAICompatExecutor(provider, cfg))
++	auth := &coreauth.Auth{ID: provider, Provider: provider, Status: coreauth.StatusActive, ProxyURL: "direct",
++		Attributes: map[string]string{"base_url": upstream.URL, "api_key": "synthetic", "compat_name": compatName, "provider_key": provider}}
++	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++		t.Fatal(errRegister)
++	}
++	registry.GetGlobalRegistry().RegisterClient(auth.ID, provider, []*registry.ModelInfo{{ID: model, Type: registry.OpenAIImageModelType}})
++	manager.RefreshSchedulerEntry(auth.ID)
++	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++	handler := NewOpenAIAPIHandler(base)
++	response := performImagesEndpointRequest(t, imagesGenerationsPath, "application/json",
++		strings.NewReader(`{"model":"`+model+`","prompt":"synthetic","stream":true}`), handler.ImagesGenerations)
++	t.Logf("accepted requests=%d, public status=%d", accepted.Load(), response.Code)
++	if accepted.Load() != 1 || response.Code != http.StatusBadGateway {
++		t.Fatalf("accepted=%d status=%d body=%s", accepted.Load(), response.Code, response.Body.String())
++	}
++	for _, value := range []string{`"code":"upstream_outcome_unknown"`, `"retryable":false`} {
++		if !strings.Contains(response.Body.String(), value) {
++			t.Fatalf("body=%s, missing %s", response.Body.String(), value)
++		}
++	}
++	if response.Header().Get("x-should-retry") != "false" {
++		t.Fatalf("x-should-retry=%q", response.Header().Get("x-should-retry"))
++	}
++}
++
++func TestHTTPSubmissionMessagesLateTruncationHasUnknownOutcome(t *testing.T) {
++	for _, complete := range []bool{false, true} {
++		t.Run(fmt.Sprint(complete), func(t *testing.T) {
++			var accepted atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				accepted.Add(1)
++				w.Header().Set("Content-Type", "text/event-stream")
++				_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"synthetic\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
++				_, _ = io.WriteString(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n")
++				w.(http.Flusher).Flush()
++				if complete {
++					_, _ = io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
++				}
++			}))
++			defer upstream.Close()
++			manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++			manager.RegisterExecutor(runtimeexecutor.NewClaudeExecutor(&config.Config{}))
++			auth := &coreauth.Auth{ID: "submission-late-" + t.Name(), Provider: "claude", Status: coreauth.StatusActive, ProxyURL: "direct",
++				Attributes: map[string]string{"base_url": upstream.URL, "api_key": "synthetic"}}
++			if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++				t.Fatal(errRegister)
++			}
++			const model = "claude-opus-5"
++			registry.GetGlobalRegistry().RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: model}})
++			t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++			base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++			router := gin.New()
++			router.POST("/v1/messages", claude.NewClaudeCodeAPIHandler(base).ClaudeMessages)
++			request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"`+model+`","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"stream":true}`))
++			request.Header.Set("Content-Type", "application/json")
++			response := httptest.NewRecorder()
++			router.ServeHTTP(response, request)
++			body := response.Body.String()
++			if accepted.Load() != 1 || response.Code != http.StatusOK || !strings.Contains(body, "hello") {
++				t.Fatalf("accepted=%d status=%d body=%s", accepted.Load(), response.Code, body)
++			}
++			if complete {
++				if !strings.Contains(body, "event: message_stop") || strings.Contains(body, "upstream_outcome_unknown") || strings.Contains(body, "event: error") {
++					t.Fatalf("complete stream=%s", body)
++				}
++				return
++			}
++			for _, value := range []string{"event: error", `"code":"upstream_outcome_unknown"`, `"retryable":false`} {
++				if !strings.Contains(body, value) {
++					t.Fatalf("truncated stream=%s, missing %s", body, value)
++				}
++			}
++			if strings.Contains(body, "event: message_stop") {
++				t.Fatalf("truncated stream invented completion: %s", body)
++			}
++		})
++	}
++}
++
++func TestHTTPSubmissionExplicitStreamErrorCanFailOver(t *testing.T) {
++	var attempts atomic.Int32
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = io.Copy(io.Discard, r.Body)
++		w.Header().Set("Content-Type", "text/event-stream")
++		if attempts.Add(1) == 1 {
++			_, _ = io.WriteString(w, "event: error\ndata: {\"error\":{\"message\":\"not accepted\",\"code\":503}}\n\n")
++			return
++		}
++		_, _ = io.WriteString(w, "data: {\"id\":\"synthetic\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"recovered\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
++	}))
++	defer upstream.Close()
++	response := submissionRequest(t, upstream.URL, true, nil)
++	if attempts.Load() != 2 || response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "recovered") {
++		t.Fatalf("attempts=%d status=%d body=%s", attempts.Load(), response.Code, response.Body.String())
++	}
++}
++
++func TestHTTPSubmissionIncompleteFrameDoesNotReplay(t *testing.T) {
++	for _, late := range []bool{false, true} {
++		for _, ending := range []string{"eof", "done"} {
++			t.Run(fmt.Sprintf("late=%t/%s", late, ending), func(t *testing.T) {
++				var accepted atomic.Int32
++				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					_, _ = io.Copy(io.Discard, r.Body)
++					accepted.Add(1)
++					w.Header().Set("Content-Type", "text/event-stream")
++					if late {
++						_, _ = io.WriteString(w, `data: {"id":"cut","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`+"\n\n")
++						w.(http.Flusher).Flush()
++					}
++					_, _ = io.WriteString(w, `data: {"id":"cut"`)
++					if ending == "done" {
++						_, _ = io.WriteString(w, "\ndata: [DONE]\n\n")
++					}
++				}))
++				defer upstream.Close()
++				response := submissionRequest(t, upstream.URL, true, nil)
++				body := response.Body.String()
++				t.Logf("accepted=%d status=%d body=%s", accepted.Load(), response.Code, body)
++				if accepted.Load() != 1 {
++					t.Fatalf("incomplete accepted frame replayed: accepted=%d", accepted.Load())
++				}
++				for _, value := range []string{`"code":"upstream_outcome_unknown"`, `"retryable":false`} {
++					if !strings.Contains(body, value) {
++						t.Fatalf("body=%s, missing %s", body, value)
++					}
++				}
++				if late {
++					if response.Code != http.StatusOK || !strings.Contains(body, "partial") || strings.Contains(body, "[DONE]") || strings.Contains(body, `"finish_reason":"stop"`) {
++						t.Fatalf("late truncation status=%d body=%s", response.Code, body)
++					}
++				} else if response.Code != http.StatusBadGateway || response.Header().Get("x-should-retry") != "false" {
++					t.Fatalf("preheader status=%d retry=%q body=%s", response.Code, response.Header().Get("x-should-retry"), body)
++				}
++			})
++		}
++	}
++}
+diff --git a/sdk/api/handlers/openai/http_submission_test.go b/sdk/api/handlers/openai/http_submission_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/api/handlers/openai/http_submission_test.go
+@@ -0,0 +1,225 @@
++package openai
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/claude"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++func submissionRequest(t *testing.T, upstream string, stream bool, transport http.RoundTripper) *httptest.ResponseRecorder {
++	return submissionRequestPath(t, upstream, stream, transport, "/v1/chat/completions")
++}
++
++func submissionRequestPath(t *testing.T, upstream string, stream bool, transport http.RoundTripper, path string) *httptest.ResponseRecorder {
++	return submissionRequestWithHook(t, upstream, stream, transport, path, nil, false)
++}
++
++func submissionRequestWithHook(t *testing.T, upstream string, stream bool, transport http.RoundTripper, path string, hook coreauth.Hook, homeMode bool) *httptest.ResponseRecorder {
++	t.Helper()
++	const provider = "submission-test"
++	model := "submission-" + strings.ReplaceAll(t.Name(), "/", "-")
++	manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, hook)
++	manager.RegisterExecutor(runtimeexecutor.NewOpenAICompatExecutor(provider, &config.Config{}))
++	if transport != nil {
++		manager.SetRoundTripperProvider(submissionTransport{transport})
++	}
++	var auths []*coreauth.Auth
++	for _, suffix := range []string{"a", "b"} {
++		auth := &coreauth.Auth{ID: model + suffix, Provider: provider, Status: coreauth.StatusActive,
++			ProxyURL: "direct", Attributes: map[string]string{"base_url": upstream, "api_key": "synthetic"}}
++		// The injected transport exercises a real failed TCP connect before its successful attempt.
++		if transport != nil {
++			auth.ProxyURL = ""
++		}
++		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++			t.Fatal(errRegister)
++		}
++		auths = append(auths, auth)
++		registry.GetGlobalRegistry().RegisterClient(auth.ID, provider, []*registry.ModelInfo{{ID: model}})
++		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
++	}
++	if homeMode {
++		manager.SetConfig(&config.Config{Home: config.HomeConfig{Enabled: true}})
++		manager.PublishHomeDispatch(&submissionHomeDispatcher{auths: auths}, executionregistry.New(), 1)
++	}
++	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++	router := gin.New()
++	router.POST("/v1/chat/completions", NewOpenAIAPIHandler(base).ChatCompletions)
++	router.POST("/v1/messages", claude.NewClaudeCodeAPIHandler(base).ClaudeMessages)
++	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":%t}`, model, stream)
++	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
++	request.Header.Set("Content-Type", "application/json")
++	recorder := httptest.NewRecorder()
++	router.ServeHTTP(recorder, request)
++	return recorder
++}
++
++type submissionTransport struct{ transport http.RoundTripper }
++
++func (s submissionTransport) RoundTripperFor(*coreauth.Auth) http.RoundTripper { return s.transport }
++
++func TestHTTPSubmissionPostWriteDisconnectDoesNotReplay(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		t.Run(fmt.Sprint(stream), func(t *testing.T) {
++			var accepted atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if _, errRead := io.Copy(io.Discard, r.Body); errRead != nil {
++					t.Error(errRead)
++					return
++				}
++				accepted.Add(1)
++				conn, _, errHijack := w.(http.Hijacker).Hijack()
++				if errHijack != nil {
++					t.Error(errHijack)
++					return
++				}
++				_ = conn.Close()
++			}))
++			defer upstream.Close()
++			response := submissionRequest(t, upstream.URL, stream, nil)
++			t.Logf("accepted non-idempotent requests=%d, public status=%d", accepted.Load(), response.Code)
++			if got := accepted.Load(); got != 1 {
++				t.Fatalf("upstream accepted %d requests after post-write EOF, want 1", got)
++			}
++			if response.Code != http.StatusBadGateway {
++				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
++			}
++			for _, value := range []string{`"code":"upstream_outcome_unknown"`, `"retryable":false`} {
++				if !strings.Contains(response.Body.String(), value) {
++					t.Fatalf("body=%s, missing %s", response.Body.String(), value)
++				}
++			}
++			if got := response.Header().Get("x-should-retry"); got != "false" {
++				t.Fatalf("x-should-retry=%q", got)
++			}
++		})
++	}
++}
++
++func TestHTTPSubmissionPreWriteConnectFailureCanRetry(t *testing.T) {
++	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
++	if errListen != nil {
++		t.Fatal(errListen)
++	}
++	refused := listener.Addr().String()
++	_ = listener.Close()
++	var accepted, dials atomic.Int32
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = io.Copy(io.Discard, r.Body)
++		accepted.Add(1)
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"id":"ok","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
++	}))
++	defer upstream.Close()
++	transport := http.DefaultTransport.(*http.Transport).Clone()
++	transport.Proxy = nil
++	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
++		if dials.Add(1) == 1 {
++			address = refused
++		}
++		return (&net.Dialer{}).DialContext(ctx, network, address)
++	}
++	defer transport.CloseIdleConnections()
++	response := submissionRequest(t, upstream.URL, false, transport)
++	if response.Code != http.StatusOK || accepted.Load() != 1 || dials.Load() != 2 {
++		t.Fatalf("status=%d accepted=%d dials=%d body=%s", response.Code, accepted.Load(), dials.Load(), response.Body.String())
++	}
++}
++
++func TestHTTPSubmissionExplicitRefusalCanFailOver(t *testing.T) {
++	var attempts atomic.Int32
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		_, _ = io.Copy(io.Discard, r.Body)
++		if attempts.Add(1) == 1 {
++			w.WriteHeader(http.StatusServiceUnavailable)
++			_, _ = io.WriteString(w, `{"error":{"message":"not accepted"}}`)
++			return
++		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"id":"ok","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
++	}))
++	defer upstream.Close()
++	response := submissionRequest(t, upstream.URL, false, nil)
++	if response.Code != http.StatusOK || attempts.Load() != 2 {
++		t.Fatalf("status=%d attempts=%d body=%s", response.Code, attempts.Load(), response.Body.String())
++	}
++}
++
++func TestHTTPSubmissionAcceptedResponseDisconnectDoesNotReplay(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		t.Run(fmt.Sprint(stream), func(t *testing.T) {
++			var accepted atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				_, _ = io.Copy(io.Discard, r.Body)
++				accepted.Add(1)
++				w.Header().Set("Content-Length", "1000")
++				w.Header().Set("Content-Type", "text/event-stream")
++				w.WriteHeader(http.StatusOK)
++				w.(http.Flusher).Flush()
++				conn, _, errHijack := w.(http.Hijacker).Hijack()
++				if errHijack != nil {
++					t.Error(errHijack)
++					return
++				}
++				_ = conn.Close()
++			}))
++			defer upstream.Close()
++			response := submissionRequest(t, upstream.URL, stream, nil)
++			if accepted.Load() != 1 || response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), `"code":"upstream_outcome_unknown"`) {
++				t.Fatalf("accepted=%d status=%d body=%s", accepted.Load(), response.Code, response.Body.String())
++			}
++		})
++	}
++}
++
++func TestHTTPSubmissionMessagesPostWriteDisconnectDoesNotReplay(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		t.Run(fmt.Sprint(stream), func(t *testing.T) {
++			var accepted atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if _, errRead := io.Copy(io.Discard, r.Body); errRead != nil {
++					t.Error(errRead)
++					return
++				}
++				accepted.Add(1)
++				conn, _, errHijack := w.(http.Hijacker).Hijack()
++				if errHijack != nil {
++					t.Error(errHijack)
++					return
++				}
++				_ = conn.Close()
++			}))
++			defer upstream.Close()
++			response := submissionRequestPath(t, upstream.URL, stream, nil, "/v1/messages")
++			t.Logf("accepted non-idempotent requests=%d, public status=%d", accepted.Load(), response.Code)
++			if accepted.Load() != 1 || response.Code != http.StatusBadGateway {
++				t.Fatalf("accepted=%d status=%d", accepted.Load(), response.Code)
++			}
++			for _, value := range []string{`"type":"error"`, `"code":"upstream_outcome_unknown"`, `"retryable":false`} {
++				if !strings.Contains(response.Body.String(), value) {
++					t.Fatalf("Messages response=%s, missing %s", response.Body.String(), value)
++				}
++			}
++			if got := response.Header().Get("x-should-retry"); got != "false" {
++				t.Fatalf("x-should-retry=%q", got)
++			}
++		})
++	}
++}
+diff --git a/sdk/cliproxy/auth/conductor_cooldown.go b/sdk/cliproxy/auth/conductor_cooldown.go
+--- a/sdk/cliproxy/auth/conductor_cooldown.go
++++ b/sdk/cliproxy/auth/conductor_cooldown.go
+@@ -24,6 +24,7 @@
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ )
+ 
+ var quotaCooldownDisabled atomic.Bool
+@@ -2807,6 +2808,8 @@
+ 		resultErr.HTTPStatus = statusCodeFromError(err)
+ 	}
+ 	switch {
++	case httptransport.IsOutcomeUnknown(err):
++		resultErr.Code = requestScopedErrorCode
+ 	case isCredentialScopedError(err):
+ 		// A credential-scoped failure always stays on the credential quota path;
+ 		// normalize conflicting model-only or cooldown-skipping codes so MarkResult
+diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
+--- a/sdk/cliproxy/auth/conductor_execution.go
++++ b/sdk/cliproxy/auth/conductor_execution.go
+@@ -21,6 +21,7 @@
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	cliproxysession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
+ 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+ 	log "github.com/sirupsen/logrus"
+ )
+@@ -30,12 +31,16 @@
+ 	if RequestScopedErrorConfigFromContext(ctx) == nil {
+ 		ctx = WithRequestScopedErrorConfig(ctx, m.runtimeConfigSnapshot())
+ 	}
+-	return cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
++	return cliproxyexecutor.WithUpstreamAttemptTracker(httptransport.WithoutSubmissionTracking(ctx))
+ }
+ 
+ func newUpstreamAttemptContext(ctx context.Context) context.Context {
+ 	ctx = logging.WithFreshResponseHeadersHolder(ctx)
+-	return cliproxyexecutor.WithUpstreamAttemptTracker(ctx)
++	return cliproxyexecutor.WithUpstreamAttemptTracker(httptransport.WithoutSubmissionTracking(ctx))
++}
++
++func (m *Manager) newGenerationAttemptContext(ctx context.Context) context.Context {
++	return httptransport.WithSubmissionTracking(m.newUpstreamAttemptContext(ctx))
+ }
+ 
+ func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) error {
+@@ -80,6 +85,7 @@
+ }
+ 
+ func markUpstreamExecutionAttemptFromContext(ctx context.Context, err error) error {
++	err = httptransport.ClassifySubmissionError(ctx, err)
+ 	if err == nil || !cliproxyexecutor.UpstreamAttempted(ctx) {
+ 		return err
+ 	}
+@@ -447,7 +453,7 @@
+ 
+ func isRequestTerminatedError(err error) bool {
+ 	var terminated *cliproxyexecutor.RequestTerminatedError
+-	return (errors.As(err, &terminated) && terminated != nil) || cliproxyexecutor.IsUpstreamWebsocketTurnError(err)
++	return (errors.As(err, &terminated) && terminated != nil) || cliproxyexecutor.IsUpstreamWebsocketTurnError(err) || httptransport.IsOutcomeUnknown(err)
+ }
+ 
+ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExecutor, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options, error) {
+@@ -677,7 +683,7 @@
+ 		}
+ 		execCtx = contextWithRequestedModelAlias(execCtx, pickOpts, routeModel)
+ 		execCtx = coreusage.WithSelectionID(execCtx, selectionIDFromOptions(pickOpts))
+-		execCtx = m.newUpstreamAttemptContext(execCtx)
++		execCtx = m.newGenerationAttemptContext(execCtx)
+ 
+ 		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAliasForRequest(execCtx, auth, routeModel, pickOpts.Headers)
+ 		if len(models) == 0 {
+@@ -703,7 +709,7 @@
+ 		var authErr error
+ 		didRefreshOnUnauthorized := false
+ 		for _, upstreamModel := range models {
+-			execCtx = m.newUpstreamAttemptContext(execCtx)
++			execCtx = m.newGenerationAttemptContext(execCtx)
+ 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
+ 			execReq := req
+ 			execReq.Model = upstreamModel
+@@ -754,7 +760,7 @@
+ 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized, execOpts.Headers); okRefresh {
+ 					auth = refreshed
+ 					didRefreshOnUnauthorized = true
+-					execCtx = m.newUpstreamAttemptContext(execCtx)
++					execCtx = m.newGenerationAttemptContext(execCtx)
+ 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
+ 					executionSeq = m.nextExecutionSeq()
+ 					startRetry := time.Now()
+@@ -1349,6 +1355,13 @@
+ 			if hasUpstreamExecutionAttempt(errStream) {
+ 				upstreamErr = errStream
+ 			}
++			if httptransport.IsOutcomeUnknown(errStream) {
++				if selection != nil {
++					releaseAttempt()
++					selection.End("outcome_unknown")
++				}
++				return nil, errStream
++			}
+ 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.requestScopedErrorConfig(execCtx))
+ 			stoppedByRule := isRequestStopError(errStream) || isRequestScopedStop(action, okAction)
+ 			if stoppedByRule || (!okAction && (isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream))) {
+@@ -2421,7 +2434,7 @@
+ 		Metadata:        map[string]any{cliproxyexecutor.CanonicalSessionIDMetadataKey: sessionID},
+ 	}
+ 
+-	execCtx := m.newUpstreamAttemptContext(ctx)
++	execCtx := m.newGenerationAttemptContext(ctx)
+ 	execCtx = syncMetadataSessionToContext(execCtx, opts.Metadata)
+ 	executionSeq := m.nextExecutionSeq()
+ 	accessToken := authAccessTokenForRequest(execCtx, auth, opts.Headers)
+diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
+--- a/sdk/cliproxy/auth/conductor_home.go
++++ b/sdk/cliproxy/auth/conductor_home.go
+@@ -17,6 +17,7 @@
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	log "github.com/sirupsen/logrus"
+ )
+ 
+@@ -1500,7 +1501,7 @@
+ 		clearSchedulerSelectionID(creditsOpts.Metadata)
+ 		creditsCtx = contextWithRequestedModelAlias(creditsCtx, creditsOpts, routeModel)
+ 		creditsCtx = coreusage.WithSelectionID(creditsCtx, "")
+-		creditsCtx = m.newUpstreamAttemptContext(creditsCtx)
++		creditsCtx = m.newGenerationAttemptContext(creditsCtx)
+ 		preparedAuth, errPrepare := m.prepareRequestAuth(creditsCtx, c.executor, c.auth)
+ 		if errPrepare != nil {
+ 			continue
+@@ -1512,7 +1513,7 @@
+ 			continue
+ 		}
+ 		for _, upstreamModel := range models {
+-			creditsCtx = m.newUpstreamAttemptContext(creditsCtx)
++			creditsCtx = m.newGenerationAttemptContext(creditsCtx)
+ 			resultModel := m.stateModelForExecution(c.auth, routeModel, upstreamModel, pooled)
+ 			execReq := req
+ 			execReq.Model = upstreamModel
+@@ -1529,6 +1530,9 @@
+ 					result.CredentialScope = true
+ 				}
+ 				m.MarkResult(creditsCtx, result)
++				if httptransport.IsOutcomeUnknown(errExec) {
++					return cliproxyexecutor.Response{}, false, errExec
++				}
+ 				if result.CredentialScope {
+ 					break
+ 				}
+@@ -1568,7 +1572,7 @@
+ 		clearSchedulerSelectionID(creditsOpts.Metadata)
+ 		creditsCtx = contextWithRequestedModelAlias(creditsCtx, creditsOpts, routeModel)
+ 		creditsCtx = coreusage.WithSelectionID(creditsCtx, "")
+-		creditsCtx = m.newUpstreamAttemptContext(creditsCtx)
++		creditsCtx = m.newGenerationAttemptContext(creditsCtx)
+ 		preparedAuth, errPrepare := m.prepareRequestAuth(creditsCtx, c.executor, c.auth)
+ 		if errPrepare != nil {
+ 			continue
+@@ -1582,6 +1586,9 @@
+ 		creditsCtx = syncMetadataSessionToContext(creditsCtx, creditsOpts.Metadata)
+ 		result, errStream := m.executeStreamWithModelPool(creditsCtx, c.executor, c.auth, c.provider, req, creditsOpts, routeModel, "", models, pooled, aliasResult, routing, true, false)
+ 		if errStream != nil {
++			if httptransport.IsOutcomeUnknown(errStream) {
++				return nil, false, errStream
++			}
+ 			continue
+ 		}
+ 		return result, true, nil
+diff --git a/sdk/cliproxy/auth/conductor_home_execution.go b/sdk/cliproxy/auth/conductor_home_execution.go
+--- a/sdk/cliproxy/auth/conductor_home_execution.go
++++ b/sdk/cliproxy/auth/conductor_home_execution.go
+@@ -10,6 +10,7 @@
+ 	"github.com/MoeForge/moego/ojson"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ )
+ 
+ func (m *Manager) executeHome(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, countTokens bool) (cliproxyexecutor.Response, error) {
+@@ -178,6 +179,9 @@
+ 		}
+ 		for _, upstreamModel := range models {
+ 			execCtx = m.newUpstreamAttemptContext(execCtx)
++			if !countTokens {
++				execCtx = httptransport.WithSubmissionTracking(execCtx)
++			}
+ 			resultModel := m.stateModelForExecution(preparedAuth, routeModel, upstreamModel, pooled)
+ 			execReq := req
+ 			execReq.Model = upstreamModel
+diff --git a/sdk/cliproxy/auth/conductor_request_scoped_errors.go b/sdk/cliproxy/auth/conductor_request_scoped_errors.go
+--- a/sdk/cliproxy/auth/conductor_request_scoped_errors.go
++++ b/sdk/cliproxy/auth/conductor_request_scoped_errors.go
+@@ -10,6 +10,7 @@
+ 
+ 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ )
+ 
+ type requestScopedErrorConfigContextKey struct{}
+@@ -369,6 +370,9 @@
+ }
+ 
+ func matchRequestScopedErrorAction(auth *Auth, err error, cfg *internalconfig.Config) (string, bool) {
++	if httptransport.IsOutcomeUnknown(err) {
++		return "", false
++	}
+ 	if err == nil || cliproxyexecutor.IsUpstreamWebsocketTurnError(err) {
+ 		return "", false
+ 	}
+diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conductor_selection.go
+--- a/sdk/cliproxy/auth/conductor_selection.go
++++ b/sdk/cliproxy/auth/conductor_selection.go
+@@ -1768,7 +1768,7 @@
+ }
+ 
+ func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts cliproxyexecutor.Options, err error, attempt int, providers []string, model string, maxWait time.Duration, homeRetryLimit int, defaultRequestRetry int, attempted map[string]struct{}) (time.Duration, bool) {
+-	if err == nil {
++	if err == nil || isRequestTerminatedError(err) {
+ 		return 0, false
+ 	}
+ 	var homeBusy *HomeConcurrencyBusyError
+diff --git a/sdk/cliproxy/auth/conductor_stream.go b/sdk/cliproxy/auth/conductor_stream.go
+--- a/sdk/cliproxy/auth/conductor_stream.go
++++ b/sdk/cliproxy/auth/conductor_stream.go
+@@ -9,6 +9,7 @@
+ 	"time"
+ 
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ )
+ 
+ func discardStreamChunks(ch <-chan cliproxyexecutor.StreamChunk) {
+@@ -160,6 +161,7 @@
+ 			rewriter = NewStreamRewriter(StreamRewriteOptions{RewriteModel: aliasResult.OriginalAlias})
+ 		}
+ 		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
++			chunk.Err = httptransport.ClassifySubmissionError(ctx, chunk.Err)
+ 			if chunk.Err != nil && !failed {
+ 				failed = true
+ 				entry := logEntryWithRequestID(ctx)
+@@ -412,7 +414,7 @@
+ 	var upstreamErr error
+ 	didRefreshOnUnauthorized := false
+ 	for idx, execModel := range execModels {
+-		ctx = m.newUpstreamAttemptContext(ctx)
++		ctx = m.newGenerationAttemptContext(ctx)
+ 		resultModel := m.stateModelForExecution(auth, routeModel, execModel, pooled)
+ 		execReq := req
+ 		execReq.Model = execModel
+@@ -456,7 +458,7 @@
+ 					auth = refreshed
+ 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
+ 					didRefreshOnUnauthorized = true
+-					ctx = m.newUpstreamAttemptContext(ctx)
++					ctx = m.newGenerationAttemptContext(ctx)
+ 					ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
+ 					executionSeq = m.nextExecutionSeq()
+ 					startRetry := time.Now()
+@@ -497,6 +499,9 @@
+ 			}
+ 			applyRequestScopedActionToResult(action, okAction, &result)
+ 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
++			if isRequestTerminatedError(errStream) {
++				return nil, errStream
++			}
+ 			errStream = annotateTrustedRetryAfterByHint(errStream)
+ 			syncPreferredUpstreamError(&upstreamErr, errStream)
+ 			if okAction {
+@@ -538,7 +543,7 @@
+ 					auth = refreshed
+ 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
+ 					didRefreshOnUnauthorized = true
+-					ctx = m.newUpstreamAttemptContext(ctx)
++					ctx = m.newGenerationAttemptContext(ctx)
+ 					executionSeq = m.nextExecutionSeq()
+ 					startRetry := time.Now()
+ 					retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
+@@ -578,6 +583,14 @@
+ 			}
+ 		}
+ 		if bootstrapErr != nil {
++			if isRequestTerminatedError(bootstrapErr) {
++				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(bootstrapErr), Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
++				result.RetryAfter = retryAfterFromError(bootstrapErr)
++				result.CredentialScope = isCredentialScopedError(bootstrapErr)
++				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
++				discardStreamChunks(streamResult.Chunks)
++				return nil, bootstrapErr
++			}
+ 			action, okAction := matchRequestScopedErrorAction(auth, bootstrapErr, m.requestScopedErrorConfig(ctx))
+ 			if okAction {
+ 				rerr := resultErrorFromError(bootstrapErr)
+@@ -650,14 +663,21 @@
+ 		}
+ 
+ 		if closed && len(buffered) == 0 {
+-			emptyErr := markUpstreamExecutionAttemptFromContext(ctx, &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true})
++			emptyErr := httptransport.ClassifyIncompleteResponse(ctx, &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true})
++			emptyErr = markUpstreamExecutionAttemptFromContext(ctx, emptyErr)
+ 			currentErr := newStreamBootstrapError(emptyErr, streamResult.Headers)
++			if isRequestTerminatedError(emptyErr) && !httptransport.IsOutcomeUnknown(emptyErr) {
++				return nil, currentErr
++			}
+ 			if hasUpstreamExecutionAttempt(emptyErr) {
+ 				upstreamErr = currentErr
+ 			}
+ 			warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), emptyErr)
+ 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(emptyErr), Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
+ 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
++			if httptransport.IsOutcomeUnknown(emptyErr) {
++				return nil, currentErr
++			}
+ 			if idx < len(execModels)-1 {
+ 				lastErr = emptyErr
+ 				continue
+diff --git a/sdk/cliproxy/auth/conductor_terminal_result_test.go b/sdk/cliproxy/auth/conductor_terminal_result_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/cliproxy/auth/conductor_terminal_result_test.go
+@@ -0,0 +1,35 @@
++package auth
++
++import (
++	"context"
++	"net/http"
++	"testing"
++	"time"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++func TestTerminalBootstrapRecordsCredentialCooldown(t *testing.T) {
++	terminal := &cliproxyexecutor.RequestTerminatedError{HTTPStatus: http.StatusTooManyRequests, Body: []byte(`{"error":"credential quota"}`)}
++	failure := credentialTerminalResponseError{error: terminal}
++	executor := &claudeCancellationTestExecutor{streamFn: func(context.Context, *Auth) (*cliproxyexecutor.StreamResult, error) {
++		chunks := make(chan cliproxyexecutor.StreamChunk, 1)
++		chunks <- cliproxyexecutor.StreamChunk{Err: failure}
++		close(chunks)
++		return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
++	}}
++	hook := &resultCaptureHook{}
++	manager, auth, model := newClaudeCancellationTestManager(t, executor, hook)
++	requireTerminalResponse(t, invokeTerminalResponse(manager, executor.Identifier(), model, "bootstrap"), terminal)
++	results := hook.Results()
++	current, _ := manager.GetByID(auth.ID)
++	t.Logf("results=%d unavailable=%t retryInFuture=%t", len(results), current.Unavailable, current.NextRetryAfter.After(time.Now()))
++	if len(results) != 1 {
++		t.Errorf("result hooks=%d, want1", len(results))
++	} else if !results[0].CredentialScope {
++		t.Error("lost credential scope")
++	}
++	if !current.Unavailable || !current.NextRetryAfter.After(time.Now()) {
++		t.Error("credential not cooled")
++	}
++}
+diff --git a/sdk/httptransport/decorator.go b/sdk/httptransport/decorator.go
+--- a/sdk/httptransport/decorator.go
++++ b/sdk/httptransport/decorator.go
+@@ -1,4 +1,5 @@
+-// Package httptransport exposes an additive, request-scoped observation seam.
++// Package httptransport preserves selected transports while observing requests
++// and preventing replay after ambiguous provider submission.
+ // A decorator wraps the transport already selected by the executor: it must not
+ // replace provider fingerprints, proxy routing, pools, or HTTP protocol policy.
+ package httptransport
+@@ -27,9 +28,10 @@
+ 
+ // WithoutDecorator suppresses intermediate helper decoration. A specialized
+ // executor that further configures its helper's transport must apply Decorate
+-// once, after its own protocol/pool policy is complete.
++// once, after its own protocol/pool policy is complete. Submission tracking is
++// suppressed here too so it wraps that final transport exactly once.
+ func WithoutDecorator(ctx context.Context) context.Context {
+-	return WithDecorator(ctx, nil)
++	return context.WithValue(WithDecorator(ctx, nil), submissionKey{}, (*submissionState)(nil))
+ }
+ 
+ // InheritDecorator copies a decorator from fallback into ctx when ctx does not
+@@ -50,24 +52,32 @@
+ 	return ctx
+ }
+ 
+-// Decorate applies a context decorator AFTER transport selection. With no
+-// decorator, the exact original client is returned. Only the client value is
+-// copied; the original selected transport/pool and all client policy survive.
++// Decorate applies observation and submission tracking after transport selection.
++// Without either, the exact original client is returned. The selected pool, proxy
++// and protocol policy survive; only the client value is copied.
+ func Decorate(ctx context.Context, client *http.Client) *http.Client {
+ 	if ctx == nil || client == nil {
+ 		return client
+ 	}
+ 	decorator, _ := ctx.Value(decoratorKey{}).(Decorator)
+-	if decorator == nil {
++	state, _ := ctx.Value(submissionKey{}).(*submissionState)
++	if decorator == nil && state == nil {
+ 		return client
+ 	}
+ 	next := client.Transport
+ 	if next == nil {
+ 		next = http.DefaultTransport
+ 	}
+-	wrapped := decorator(next)
+-	if wrapped == nil {
+-		return client
++	wrapped := next
++	if decorator != nil {
++		if observed := decorator(next); observed != nil {
++			wrapped = observed
++		} else if state == nil {
++			return client
++		}
++	}
++	if state != nil {
++		wrapped = &submissionTransport{next: wrapped, state: state}
+ 	}
+ 	clone := *client
+ 	clone.Transport = wrapped
+diff --git a/sdk/httptransport/submission.go b/sdk/httptransport/submission.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/httptransport/submission.go
+@@ -0,0 +1,184 @@
++package httptransport
++
++import (
++	"context"
++	"errors"
++	"io"
++	"net/http"
++	"net/http/httptrace"
++	"strings"
++	"sync/atomic"
++
++	"github.com/MoeForge/moego/ojson"
++)
++
++type submissionKey struct{}
++type submissionState struct {
++	accepted   atomic.Bool
++	redirected atomic.Bool
++	terminal   atomic.Pointer[OutcomeUnknownError]
++}
++
++func (s *submissionState) fail(err error) error {
++	unknown := &OutcomeUnknownError{Cause: err}
++	s.terminal.CompareAndSwap(nil, unknown)
++	return s.terminal.Load()
++}
++
++// WithSubmissionTracking starts one provider attempt. Explicit HTTP refusals do
++// not make later attempts ambiguous; a successful response does.
++func WithSubmissionTracking(ctx context.Context) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, submissionKey{}, &submissionState{})
++}
++
++// WithoutSubmissionTracking keeps side-effect-free operations replayable even
++// when their context came from a generation attempt.
++func WithoutSubmissionTracking(ctx context.Context) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, submissionKey{}, (*submissionState)(nil))
++}
++
++// OutcomeUnknownError means the provider may have executed the request. Its
++// transport cause is available to operators, never included in the public body.
++type OutcomeUnknownError struct{ Cause error }
++
++func (*OutcomeUnknownError) Error() string {
++	doc := ojson.NewDoc([]byte(`{}`))
++	_ = doc.Set("error.message", "Upstream disconnected after submission. The request was not replayed and its outcome is unknown.")
++	_ = doc.Set("error.type", "server_error")
++	_ = doc.Set("error.code", "upstream_outcome_unknown")
++	_ = doc.Set("error.retryable", false)
++	return doc.String()
++}
++func (e *OutcomeUnknownError) Unwrap() error       { return e.Cause }
++func (*OutcomeUnknownError) StatusCode() int       { return http.StatusBadGateway }
++func (*OutcomeUnknownError) IsRequestScoped() bool { return true }
++
++// IsOutcomeUnknown reports an attempt that must never be replayed, even when a
++// configured error rule would otherwise select another model or credential.
++func IsOutcomeUnknown(err error) bool {
++	var unknown *OutcomeUnknownError
++	return errors.As(err, &unknown)
++}
++
++// ClassifySubmissionError preserves observed transport failures and classifies
++// incomplete responses. A definitive provider error can still allow failover.
++func ClassifySubmissionError(ctx context.Context, err error) error {
++	var truncated interface{ IsStreamTruncated() bool }
++	var malformed interface{ IsResponseIncomplete() bool }
++	incomplete := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
++		(errors.As(err, &truncated) && truncated.IsStreamTruncated()) ||
++		(errors.As(err, &malformed) && malformed.IsResponseIncomplete())
++	return classifySubmissionError(ctx, err, incomplete)
++}
++
++// ClassifyIncompleteResponse marks a protocol failure that left an accepted
++// request without a known outcome, such as a stream with no payload or terminal.
++func ClassifyIncompleteResponse(ctx context.Context, err error) error {
++	return classifySubmissionError(ctx, err, true)
++}
++
++func classifySubmissionError(ctx context.Context, err error, incomplete bool) error {
++	if err == nil || IsOutcomeUnknown(err) || ctx == nil {
++		return err
++	}
++	state, _ := ctx.Value(submissionKey{}).(*submissionState)
++	if state == nil {
++		return err
++	}
++	if terminal := state.terminal.Load(); terminal != nil {
++		return terminal
++	}
++	if !state.accepted.Load() || (!incomplete && !state.redirected.Load()) {
++		return err
++	}
++	return state.fail(err)
++}
++
++type submissionTransport struct {
++	next  http.RoundTripper
++	state *submissionState
++}
++
++func (s *submissionTransport) RoundTrip(req *http.Request) (*http.Response, error) {
++	if terminal := s.state.terminal.Load(); terminal != nil {
++		if req.Body != nil {
++			_ = req.Body.Close()
++		}
++		return nil, terminal
++	}
++	switch req.Method {
++	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
++		if !s.state.accepted.Load() {
++			return s.next.RoundTrip(req)
++		}
++	}
++	var written, responseStarted atomic.Bool
++	trace := &httptrace.ClientTrace{
++		// Even a partial body can be accepted by an upstream that replies early.
++		WroteHeaders: func() { written.Store(true) },
++		WroteRequest: func(info httptrace.WroteRequestInfo) {
++			if info.Err == nil {
++				written.Store(true)
++			}
++		},
++		GotFirstResponseByte: func() { responseStarted.Store(true) },
++	}
++	cloned := req.Clone(httptrace.WithClientTrace(req.Context(), trace))
++	// A replayable body lets net/http repeat a POST with an Idempotency-Key inside
++	// RoundTrip, before the manager can inspect the failed attempt.
++	cloned.GetBody = nil
++	if cloned.Body == nil || cloned.Body == http.NoBody {
++		// net/http treats canonical idempotency map keys as permission to replay an
++		// empty mutation. HTTP field names are case-insensitive: recasing the cloned
++		// keys preserves their wire values and Content-Length: 0 without that opt-in.
++		for _, key := range []string{"Idempotency-Key", "X-Idempotency-Key"} {
++			if values, ok := cloned.Header[key]; ok {
++				lower := strings.ToLower(key)
++				cloned.Header[lower] = append(cloned.Header[lower], values...)
++				delete(cloned.Header, key)
++			}
++		}
++	}
++	response, err := s.next.RoundTrip(cloned)
++	if err != nil {
++		if s.state.accepted.Load() || written.Load() || responseStarted.Load() {
++			return nil, s.state.fail(err)
++		}
++		return response, err
++	}
++	if response != nil {
++		switch response.StatusCode {
++		case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther:
++			if req.Method != http.MethodGet && req.Method != http.MethodHead {
++				s.state.redirected.Store(true)
++				s.state.accepted.Store(true)
++			}
++		}
++		if response.StatusCode >= 200 && response.StatusCode < 300 {
++			s.state.accepted.Store(true)
++		}
++		if s.state.accepted.Load() && response.Body != nil {
++			response.Body = &submissionBody{ReadCloser: response.Body, state: s.state}
++		}
++	}
++	return response, nil
++}
++
++type submissionBody struct {
++	io.ReadCloser
++	state *submissionState
++}
++
++func (b *submissionBody) Read(p []byte) (int, error) {
++	n, err := b.ReadCloser.Read(p)
++	if err != nil && !errors.Is(err, io.EOF) {
++		err = b.state.fail(err)
++	}
++	return n, err
++}
+diff --git a/sdk/httptransport/submission_lifecycle_test.go b/sdk/httptransport/submission_lifecycle_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/httptransport/submission_lifecycle_test.go
+@@ -0,0 +1,34 @@
++package httptransport
++
++import (
++	"context"
++	"errors"
++	"io"
++	"net/http"
++	"strings"
++	"sync/atomic"
++	"testing"
++)
++
++type terminalCloseBody struct {
++	io.Reader
++	closed atomic.Bool
++}
++
++func (b *terminalCloseBody) Close() error { b.closed.Store(true); return nil }
++
++func TestSubmissionGuardTerminalClosesNextBody(t *testing.T) {
++	ctx := WithSubmissionTracking(context.Background())
++	state, _ := ctx.Value(submissionKey{}).(*submissionState)
++	state.fail(errors.New("accepted disconnect"))
++	body := &terminalCloseBody{Reader: strings.NewReader("fallback")}
++	request, errNew := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.invalid", body)
++	if errNew != nil {
++		t.Fatal(errNew)
++	}
++	transport := &submissionTransport{state: state}
++	_, errRoundTrip := transport.RoundTrip(request)
++	if !IsOutcomeUnknown(errRoundTrip) || !body.closed.Load() {
++		t.Fatalf("error=%v bodyClosed=%t", errRoundTrip, body.closed.Load())
++	}
++}
+diff --git a/sdk/httptransport/submission_test.go b/sdk/httptransport/submission_test.go
+new file mode 100644
+--- /dev/null
++++ b/sdk/httptransport/submission_test.go
+@@ -0,0 +1,139 @@
++package httptransport
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"net/http/httptrace"
++	"strings"
++	"sync/atomic"
++	"testing"
++)
++
++func TestSubmissionGuardPreventsInternalPOSTReplay(t *testing.T) {
++	for _, method := range []string{http.MethodPost, http.MethodPatch} {
++		for _, tc := range []struct {
++			name   string
++			body   func() io.Reader
++			header string
++		}{
++			{"payload", func() io.Reader { return strings.NewReader("non-idempotent operation") }, "Idempotency-Key"},
++			{"nil", func() io.Reader { return nil }, "Idempotency-Key"},
++			{"no-body", func() io.Reader { return http.NoBody }, "Idempotency-Key"},
++			{"nil-x-key", func() io.Reader { return nil }, "X-Idempotency-Key"},
++			{"no-body-x-key", func() io.Reader { return http.NoBody }, "X-Idempotency-Key"},
++		} {
++			t.Run(method+"/"+tc.name, func(t *testing.T) {
++				var calls atomic.Int32
++				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					bodyBytes, _ := io.Copy(io.Discard, r.Body)
++					if calls.Add(1) == 1 {
++						w.WriteHeader(http.StatusNoContent)
++						return
++					}
++					if tc.name != "payload" && (r.ContentLength != 0 || len(r.TransferEncoding) != 0) {
++						t.Errorf("zero framing changed: length=%d transfer=%v", r.ContentLength, r.TransferEncoding)
++					}
++					if tc.name != "payload" && bodyBytes != 0 {
++						t.Errorf("empty request acquired a payload: bytes=%d", bodyBytes)
++					}
++					if r.Header.Get(tc.header) != "synthetic-key" {
++						t.Errorf("idempotency header lost: %q", r.Header.Get(tc.header))
++					}
++					conn, _, errHijack := w.(http.Hijacker).Hijack()
++					if errHijack != nil {
++						t.Error(errHijack)
++						return
++					}
++					_ = conn.Close()
++				}))
++				defer server.Close()
++				client := Decorate(WithSubmissionTracking(context.Background()), server.Client())
++				warm, errWarm := client.Get(server.URL)
++				if errWarm != nil {
++					t.Fatal(errWarm)
++				}
++				_, _ = io.Copy(io.Discard, warm.Body)
++				_ = warm.Body.Close()
++				var reused, wrote atomic.Bool
++				trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { reused.Store(info.Reused) }, WroteRequest: func(info httptrace.WroteRequestInfo) { wrote.Store(info.Err == nil) }}
++				request, errRequest := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace), method, server.URL, tc.body())
++				if errRequest != nil {
++					t.Fatal(errRequest)
++				}
++				request.Header.Set(tc.header, "synthetic-key")
++				originalBody := request.Body
++				_, errDo := client.Do(request)
++				if request.Header.Get(tc.header) != "synthetic-key" {
++					t.Fatal("original request header changed")
++				}
++				if request.Body != originalBody {
++					t.Fatal("original request body changed")
++				}
++				if !IsOutcomeUnknown(errDo) {
++					t.Fatalf("error=%v, want unknown outcome", errDo)
++				}
++				t.Logf("upstream requests including warm GET=%d, reused=%t", calls.Load(), reused.Load())
++				if got := calls.Load(); got != 2 {
++					t.Fatalf("requests=%d, want warm GET plus one POST", got)
++				}
++				if !reused.Load() || !wrote.Load() {
++					t.Fatalf("existing trace lost or warm connection not reused: reused=%v wrote=%v", reused.Load(), wrote.Load())
++				}
++				// An executor's internal fallback must not bypass the manager's terminal decision.
++				_, errRetry := client.Post(server.URL, "text/plain", strings.NewReader("same operation"))
++				if !IsOutcomeUnknown(errRetry) || calls.Load() != 2 {
++					t.Fatalf("internal retry: error=%v requests=%d", errRetry, calls.Load())
++				}
++			})
++		}
++	}
++}
++
++func TestSubmissionGuardHTTPRefusalIsNotAcceptance(t *testing.T) {
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }))
++	defer server.Close()
++	ctx := WithSubmissionTracking(context.Background())
++	client := Decorate(ctx, server.Client())
++	response, errDo := client.Post(server.URL, "text/plain", strings.NewReader("request"))
++	if errDo != nil {
++		t.Fatal(errDo)
++	}
++	_ = response.Body.Close()
++	if response.StatusCode != http.StatusServiceUnavailable {
++		t.Fatal(response.StatusCode)
++	}
++	if err := ClassifySubmissionError(ctx, io.EOF); IsOutcomeUnknown(err) {
++		t.Fatal("explicit refusal marked accepted")
++	}
++}
++
++func TestSubmissionGuardPreservesSafeEmptyRequestRetry(t *testing.T) {
++	var calls atomic.Int32
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if calls.Add(1) != 2 {
++			w.WriteHeader(http.StatusNoContent)
++			return
++		}
++		conn, _, errHijack := w.(http.Hijacker).Hijack()
++		if errHijack != nil {
++			t.Error(errHijack)
++			return
++		}
++		_ = conn.Close()
++	}))
++	defer server.Close()
++	client := Decorate(WithSubmissionTracking(context.Background()), server.Client())
++	for range 2 {
++		response, errGet := client.Get(server.URL)
++		if errGet != nil {
++			t.Fatal(errGet)
++		}
++		_, _ = io.Copy(io.Discard, response.Body)
++		_ = response.Body.Close()
++	}
++	if calls.Load() != 3 {
++		t.Fatalf("safe request not retried: calls=%d", calls.Load())
++	}
++}

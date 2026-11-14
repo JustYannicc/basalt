@@ -431,6 +431,45 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           /normal, client, upstream, revocation, duplicate-claim and draining-retirement regressions/,
         );
         assert.match(patch.retirement.requires, /without inference replay or a byte-lifetime cap/);
+      } else if (patch.identity === "cliproxy-node-no-postwrite-replay") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0599-node-no-postwrite-replay.patch");
+        assert.match(patch.retirement.requires, /terminal unknown-outcome classification/);
+        assert.match(patch.retirement.requires, /real post-write EOF/);
+        assert.match(patch.retirement.requires, /empty accepted model-pool stream/);
+        assert.match(patch.retirement.requires, /incomplete SSE frames/);
+        assert.match(patch.retirement.requires, /internal POST replay/);
+        assert.match(
+          patch.retirement.requires,
+          /generation-only submission tracking with replayable token counting/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /exactly one request-scoped failed stream result for local and Home observers/,
+        );
+        assert.match(patch.retirement.requires, /JSON document error envelopes/);
+        assert.match(patch.retirement.requires, /terminal Antigravity credits fallback/);
+        assert.match(
+          patch.retirement.requires,
+          /buffered Claude incomplete-response classification/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /direct Fast credential-rate-limit result recording and cooldown/,
+        );
+        assert.match(patch.retirement.requires, /explicit HTTP and SSE refusal regressions/);
+        assert.match(
+          patch.retirement.requires,
+          /no replay across models, credentials and retry rounds/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /public 502 upstream_outcome_unknown with retryable false/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /existing proxy and protocol selection, and release updates/,
+        );
       } else if (patch.identity === "cliproxy-home-oauth-dispatch-expiry") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0600-home-oauth-dispatch-expiry.patch");
@@ -449,6 +488,14 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /quota-deadline compatibility through native public requests/,
         );
+      } else if (patch.identity === "cliproxy-node-home-funding-test-fixtures") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0604-node-home-funding-test-fixtures.patch");
+        assert.match(patch.retirement.requires, /approved ValidateUsageCreditTurn methods/);
+        assert.match(patch.retirement.requires, /five retained-account Home dispatcher fixtures/);
+        assert.match(patch.retirement.requires, /no product Go changes/);
+        assert.match(patch.retirement.requires, /without dropping existing selections/);
+        assert.match(patch.retirement.requires, /funding-denial and missing-validator controls/);
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
