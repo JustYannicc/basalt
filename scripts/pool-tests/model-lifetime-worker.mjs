@@ -37,6 +37,7 @@ const policy = {
 };
 
 export class Proxy extends DurableObject {
+  terminals = { starts: [], finishes: [] };
   waiters = new Set();
   retired = [];
   constructor(ctx, env) {
@@ -138,6 +139,7 @@ export class Proxy extends DurableObject {
         new Request("https://node" + path + url.search, request),
       );
     if (path === "/state") return Response.json(this.state());
+    if (path === "/terminals") return Response.json(this.terminals);
     if (path === "/settled") {
       if (!this.empty()) await new Promise((resolve) => this.waiters.add(resolve));
       return Response.json(this.state());
@@ -166,8 +168,22 @@ export class Proxy extends DurableObject {
     return forwardPoolRequest(request, 8317, {
       env: {
         POOL_APP_SIGNING_KEY: "ab".repeat(32),
-        ...(path === "/v1/responses" ? { POOL_MODEL_HISTORY_ENABLED: "true" } : {}),
+        ...(path === "/v1/responses" && this.env.TERMINAL_RECORDING !== "disabled"
+          ? { POOL_MODEL_HISTORY_ENABLED: "true" }
+          : {}),
       },
+      ...(this.env.TERMINAL_RECORDING === "enabled"
+        ? {
+            terminal: {
+              start: async (input) => {
+                this.terminals.starts.push(input);
+              },
+              finish: async (id, result) => {
+                this.terminals.finishes.push({ id, ...result });
+              },
+            },
+          }
+        : {}),
       streams: this.model,
       memberships: {
         configured: async () => !url.searchParams.has("unleased"),
@@ -182,7 +198,15 @@ export class Proxy extends DurableObject {
             pool: "pool",
             person: "person",
             keyId: "key",
-            request: new Request(request, { signal: lease.signal }),
+            request: new Request(request, {
+              headers: this.env.MODEL_DRAIN
+                ? {
+                    ...Object.fromEntries(request.headers),
+                    "Sec-WebSocket-Protocol": "basalt.model-drain.v1",
+                  }
+                : request.headers,
+              signal: lease.signal,
+            }),
           };
         },
       },
