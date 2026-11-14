@@ -4718,7 +4718,7 @@ diff --git a/e2e/support/pool-product-peer.ts b/e2e/support/pool-product-peer.ts
          headers: forwardedHeaders,
        });
      }).pipe(Effect.provide(FetchHttpClient.layer));
-+  const signedPost = (path: string) =>
++  const signedPost = (path: "/pool/v1/usage/*" | "/pool/v1/changeRevisions") =>
 +    HttpRouter.add(
 +      "POST",
 +      path,
