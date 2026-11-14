@@ -44,11 +44,20 @@ export function connectionUrl(input: string, allowLoopback = false) {
   const query = new URLSearchParams({ connection, elicitation_mode: "native" });
   return `${url.origin}/mcp?${query}`;
 }
+/** What this device says about itself when it asks to connect; Signalbox shows it as its claim. */
+export interface DeviceReport {
+  /** The device's own name, such as "MacBook Pro". It becomes the device's name in Signalbox. */
+  readonly device?: string | undefined;
+  /** The vault it connects, which names a vault app still named after the catalog. */
+  readonly vault?: string | undefined;
+}
+
 export async function beginConnection(
   http: Http,
   input: string,
   now = Date.now(),
   allowLoopback = false,
+  report: DeviceReport = {},
 ): Promise<Connecting> {
   const resource = connectionUrl(input, allowLoopback),
     url = new URL(resource);
@@ -93,7 +102,7 @@ export async function beginConnection(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      client_name: "Signalbox Obsidian Sync",
+      client_name: report.device ?? "Signalbox Obsidian Sync",
       token_endpoint_auth_method: "none",
       grant_types: [grant, "refresh_token"],
       response_types: [],
@@ -115,6 +124,9 @@ export async function beginConnection(
       scope: "mcp offline_access",
       code_challenge: challenge,
       code_challenge_method: "S256",
+      // Optional fields: servers that predate them ignore them.
+      ...(report.device === undefined ? {} : { device_name: report.device }),
+      ...(report.vault === undefined ? {} : { device_context: report.vault }),
     }),
   );
   if (reply.status !== 200) throw new Error("Signalbox could not start device authorization");

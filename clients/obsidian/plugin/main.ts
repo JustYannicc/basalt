@@ -24,6 +24,7 @@ import { ConflictModal } from "./ui-conflicts.ts";
 import { ConnectModal } from "./ui-connect.ts";
 import { BasaltSettingTab } from "./ui-settings.ts";
 import { watchRemoteChanges } from "../remote-wake.ts";
+import { desktopDeviceName, mobileDeviceName } from "../device-name.ts";
 
 // Like Git: edits pile up in the working tree and one checkpoint commits them all. A checkpoint
 // runs after this long without edits, when Obsidian is hidden, or on Sync now.
@@ -56,6 +57,23 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
   private listeners = new Set<() => void>();
   private statusBar: HTMLElement | null = null;
   private checkpointWhenIdle!: Debouncer<[], void>;
+
+  /** This device's name for Signalbox: the computer's name, or the kind of phone or tablet. */
+  deviceName(): string | undefined {
+    if (!Platform.isDesktopApp) return mobileDeviceName(Platform);
+    try {
+      // Desktop Obsidian runs on Node, which knows the computer's name; mobile has no `os`.
+      const os: unknown = require("node:os");
+      return typeof os === "object" &&
+        os !== null &&
+        "hostname" in os &&
+        typeof os.hostname === "function"
+        ? desktopDeviceName(String(os.hostname()))
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
 
   get vaultName() {
     return this.app.vault.getName();
@@ -104,6 +122,7 @@ export default class BasaltSyncPlugin extends Plugin implements SyncHost {
           },
           key: this.store.secretKey,
           changed: proxy.notify,
+          report: () => ({ device: this.deviceName(), vault: this.vaultName }),
           binary: async ({ appId, remote, signal, resolve }) =>
             createBinaryClient({
               text: this.local,

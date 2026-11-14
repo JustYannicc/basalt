@@ -6,6 +6,7 @@ import {
   revokeSession,
   connectionUrl,
   type Connecting,
+  type DeviceReport,
   type Session,
 } from "./auth.ts";
 import { createRemote } from "./remote.ts";
@@ -79,6 +80,8 @@ export async function createController(input: {
   secrets: SecretStore;
   key: string;
   changed: () => void;
+  /** What this device reports about itself when it connects. */
+  report?: () => DeviceReport;
   binary?: (input: {
     appId: string;
     remote: ReturnType<typeof createRemote>;
@@ -221,7 +224,13 @@ export async function createController(input: {
       driveAbort.abort();
       await active?.catch(() => {});
       try {
-        const request = await beginConnection(http, selected.connection);
+        const request = await beginConnection(
+          http,
+          selected.connection,
+          undefined,
+          undefined,
+          input.report?.(),
+        );
         pending = { config: selected, request, previousPaused };
         secrets.set(key + "-pending", JSON.stringify(pending));
         changed();

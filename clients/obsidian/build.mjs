@@ -24,8 +24,9 @@ mkdirSync(outdir, { recursive: true });
 // Only the plugin's own files are replaced: an outdir inside a vault also holds its sync state.
 const shipped = ["main.js", "manifest.json", "styles.css"];
 for (const file of [...shipped, "desktop-reader.cjs"]) rmSync(join(outdir, file), { force: true });
-// The desktop reader is bundled behind its lazy require; only these built-ins stay external.
-const desktopBuiltins = ["node:fs/promises", "node:path"];
+// The desktop reader is bundled behind its lazy require, and the device name asks the computer for
+// its name on desktop only; only these built-ins stay external.
+const desktopBuiltins = ["node:fs/promises", "node:path", "node:os"];
 
 const result = spawnSync(
   esbuild,
@@ -58,12 +59,12 @@ const forbidden = [
 ];
 if (forbidden.length) {
   console.error(
-    `main.js must only import "obsidian" and the desktop reader's built-ins; found: ${[...new Set(forbidden)].join(", ")}`,
+    `main.js must only import "obsidian" and the desktop-only built-ins; found: ${[...new Set(forbidden)].join(", ")}`,
   );
   process.exit(1);
 }
 // Load it the way a phone does: "obsidian" resolves and every Node built-in throws. Passing
-// proves the desktop reader's built-ins are only required on desktop, not when the plugin loads.
+// proves the desktop-only built-ins are only required on desktop, not when the plugin loads.
 const obsidian = new Proxy({}, { get: () => class {} });
 const mobile = { exports: {} };
 new Function("require", "module", "exports", bundle)(
@@ -86,5 +87,5 @@ if (missing.length) {
   process.exit(1);
 }
 console.log(
-  `Built ${join(outdir, "main.js")} (${bundle.length.toLocaleString("en-US")} bytes; Obsidian import and lazily required desktop reader)`,
+  `Built ${join(outdir, "main.js")} (${bundle.length.toLocaleString("en-US")} bytes; Obsidian import and lazily required desktop-only built-ins)`,
 );
