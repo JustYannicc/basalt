@@ -158,12 +158,7 @@ diff --git a/apps/hosted/server/src/implementation/app-data.ts b/apps/hosted/ser
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
-@@ -1,3 +1,4 @@
-+import { withPoolViewCache } from "./pool-view-cache.ts";
- import { withSelectedAccountInspection } from "./selected-account-read.ts";
- import { SelectedAccountInspection } from "@executor-js/sdk/core";
- import {
-@@ -492,8 +493,8 @@
+@@ -492,8 +492,8 @@
    const data = (kind: "query" | "mutate", payload: typeof UiOperation.Type) =>
      Effect.gen(function* () {
        const current = yield* CurrentAppUi;
@@ -173,7 +168,7 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
          const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
          return yield* executor.appData[kind](input).pipe(
            withSelectedAccountInspection,
-@@ -504,7 +505,19 @@
+@@ -504,7 +504,19 @@
            Effect.mapError(dataFailure),
          );
        });
