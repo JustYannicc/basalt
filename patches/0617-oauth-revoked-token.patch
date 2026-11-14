@@ -1,0 +1,52 @@
+diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
+--- a/packages/mcp-auth/src/implementation/oauth.ts
++++ b/packages/mcp-auth/src/implementation/oauth.ts
+@@ -24,6 +24,7 @@ import { authCall, parse, runAuth } from "./auth-call.ts";
+ import { deviceAuthorizationPlugin, devicePollsPerRequest } from "./device-authorization.ts";
+ import { deviceDecisionStep } from "./device-decision-step.ts";
+ import { normalizeNativeRevokeBody } from "./native-revoke-body.ts";
++import { revokedTokenHook } from "./revocation.ts";
+ import { isNativeGrant, nativeGrants, type NativeGrantHost } from "./native-grants.ts";
+ import { deviceVerificationPath } from "../contracts/device.ts";
+ export { NativeGrantAccess, NativeGrantPolicy, type NativeGrantHost } from "./native-grants.ts";
+@@ -1636,6 +1637,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+           ),
+         },
+       ],
++      after: [revokedTokenHook],
+     },
+   } satisfies BetterAuthPlugin;
+   return {
+diff --git a/packages/mcp-auth/src/implementation/revocation.ts b/packages/mcp-auth/src/implementation/revocation.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/mcp-auth/src/implementation/revocation.ts
+@@ -0,0 +1,28 @@
++import { createAuthMiddleware, isAPIError } from "better-auth/api";
++import { Schema } from "effect";
++
++const Revocation = Schema.Struct({ token: Schema.NonEmptyString });
++const InvalidToken = Schema.Struct({ error: Schema.Literal("invalid_request") });
++
++/**
++ * RFC 7009 §2.2: a token that is already invalid revokes successfully. Better Auth 1.7.5 means to
++ * answer 200 there but compares the error's `name` (always "APIError") with its status, so every
++ * unknown or already-revoked token gets 400. A client revoking its refresh token and then the
++ * access token that refresh already invalidated could then never finish disconnecting.
++ *
++ * Only a request that named a token and was refused as `invalid_request` succeeds; a missing
++ * token, an unknown client and an unsupported token type keep their refusals.
++ */
++export const revokedTokenHook = {
++  matcher: (ctx: { path?: string }) => ctx.path === "/oauth2/revoke",
++  handler: createAuthMiddleware(async (ctx) => {
++    const returned = ctx.context.returned;
++    if (
++      isAPIError(returned) &&
++      returned.statusCode === 400 &&
++      Schema.is(InvalidToken)(returned.body) &&
++      Schema.is(Revocation)(ctx.body)
++    )
++      return new Response(null, { status: 200 });
++  }),
++};

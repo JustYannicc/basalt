@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-oauth-revoked-token",
+  "file": "0617-oauth-revoked-token.patch",
+  "content_sha256": "ed00854ef9190346bb20cd88e20d13c0ad9f7ca537ebc8998a20abe0736cd133",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
