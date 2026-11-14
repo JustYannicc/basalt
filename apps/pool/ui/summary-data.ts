@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PoolCapacityHistory } from "../capacity-contract.ts";
 import type { PoolPersonalOverviewResult } from "../overview-contract.ts";
 import type { PoolUsageSummaryResult } from "../usage-overview-contract.ts";
@@ -62,8 +62,11 @@ function withRequests(capacity: PoolCapacityHistory, summary: PoolUsageSummaryRe
 export function useSummary(api: PoolApi, range: RangeChoice, by: Breakdown) {
   const key = rangeKey(range);
   const query = useMemo(() => ({ api, key, by }), [api, key, by]);
+  // Reads use the committed choice; layout effects run before the load effect below.
   const choice = useRef(range);
-  choice.current = range;
+  useLayoutEffect(() => {
+    choice.current = range;
+  }, [range]);
   const [snapshot, setSnapshot] = useState<{ query: typeof query; value: SummaryState }>();
   const latest = useRef({ id: 0 });
   const kept = useRef<{

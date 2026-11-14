@@ -233,6 +233,8 @@ export function useHistory(
   };
 
   return {
+    /** Changes with every new read of the range (reload or a new filter), not with appended pages. */
+    snapshot: state?.request,
     loadUntil,
     loaded,
     loading: state === undefined,
