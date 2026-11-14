@@ -188,15 +188,26 @@ test("disconnecting from a server that refuses already-invalid tokens still comp
     };
     return { http, sent };
   };
-  const invalid = response({ error: "invalid_request", error_description: "token not found" }, 400);
-  const first = revoking((token) => (token === "device-refresh" ? response(null) : invalid));
+  // Those servers' exact answers for a token they no longer honour.
+  const gone = (error_description: string) =>
+    response({ error: "invalid_request", error_description }, 400);
+  const first = revoking((token) =>
+    token === "device-refresh" ? response(null) : gone("Invalid access token"),
+  );
   await revokeSession(first.http, session);
   assert.deepEqual(first.sent, ["device-refresh", "device-access"]);
-  const retry = revoking(() => invalid);
+  const retry = revoking((token) =>
+    gone(token === "device-refresh" ? "refresh token revoked" : "token not found"),
+  );
   await revokeSession(retry.http, session);
   assert.deepEqual(retry.sent, ["device-refresh", "device-access"]);
-  // Any other refusal still keeps the device connected.
+  // Any other refusal still keeps the device connected, including request errors that share the
+  // code but are refused before the server looks at the token.
   for (const refusal of [
+    response({ error: "invalid_request" }, 400),
+    gone("client_id must not be repeated"),
+    gone("A request must use only one client authentication method"),
+    gone("missing a required token for introspection"),
     response({ error: "invalid_client" }, 400),
     response({ error: "unsupported_token_type" }, 400),
     response({ error: "invalid_request" }, 401),

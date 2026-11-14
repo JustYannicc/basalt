@@ -253,14 +253,19 @@ export async function revokeSession(http: Http, session: Session): Promise<void>
  * RFC 7009 §2.2 answers 200 for a token the server no longer honours, but servers before that fix
  * answered 400 invalid_request: for the access token the refresh revocation just invalidated, and
  * for both tokens on a retry. Without this a device could never finish disconnecting from them.
+ * Only their token-lookup descriptions count: the same code also refuses malformed requests
+ * before the token is looked at, and those revoked nothing.
  */
+const tokenGone = new Set(["token not found", "refresh token revoked", "Invalid access token"]);
 function alreadyInvalid(reply: HttpReply) {
   if (reply.status !== 400) return false;
   try {
-    const body: unknown = JSON.parse(reply.body);
-    return typeof body === "object" && body !== null && "error" in body
-      ? body.error === "invalid_request"
-      : false;
+    const body = object(JSON.parse(reply.body));
+    return (
+      body.error === "invalid_request" &&
+      typeof body.error_description === "string" &&
+      tokenGone.has(body.error_description)
+    );
   } catch {
     return false;
   }
