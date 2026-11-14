@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-page-search",
   "file": "0610-app-page-search.patch",
-  "content_sha256": "86caf70965cf526bbeeae5bd0f78211c985a03ba94917383f8dd435c65b8f47b",
+  "content_sha256": "971315ddf80330c5af8a5cbf593d58ee35e19f9ecb84db99215f8a7c7ce86fd7",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
