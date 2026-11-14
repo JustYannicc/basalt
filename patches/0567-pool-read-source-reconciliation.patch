@@ -1,0 +1,393 @@
+diff --git a/apps/hosted/server/src/implementation/account-source-connections.ts b/apps/hosted/server/src/implementation/account-source-connections.ts
+--- a/apps/hosted/server/src/implementation/account-source-connections.ts
++++ b/apps/hosted/server/src/implementation/account-source-connections.ts
+@@ -44,10 +44,22 @@
+   readonly subject: string | undefined;
+   readonly scope: AccountScope;
+ };
+-const sameSelection = (selection: AppConnectionSelection, input: SelectedSourceInput) =>
++type SourceSelection = Pick<SelectedSourceInput, "scope" | "requirement" | "account">;
++const sameSelection = (selection: AppConnectionSelection, input: SourceSelection) =>
+   selection.scope === input.scope &&
+   selection.requirement === input.requirement &&
+   selection.account === input.account;
++
++/** A saved refusal stays managed until an explicit native selection replaces it. */
++export const hasAccountSourceSelection = (
++  bindings: Effect.Success<ReturnType<AppCallsHost["bindings"]["list"]>>,
++  input: SourceSelection,
++) =>
++  bindings.some(
++    (binding) =>
++      binding.connection.dependency === dependency &&
++      binding.selections?.some((entry) => sameSelection(entry, input)),
++  );
+ 
+ /** Read setup provenance after the native reader checked the original viewer and selected row. */
+ export const selectedAccountSource = (input: SelectedSourceInput) =>
+@@ -135,15 +147,7 @@
+       app: input.app,
+       owner: input.owner,
+     });
+-    if (
+-      input.source === undefined &&
+-      bindings.some(
+-        (binding) =>
+-          binding.connection.dependency === dependency &&
+-          binding.selections?.some((entry) => sameSelection(entry, input)),
+-      )
+-    )
+-      return;
++    if (input.source === undefined && hasAccountSourceSelection(bindings, input)) return;
+     const options =
+       (yield* accountSourceOptions({ ...input, app, accounts: [input.account] })).get(
+         input.account,
+diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
+--- a/apps/hosted/server/src/implementation/app-accounts.ts
++++ b/apps/hosted/server/src/implementation/app-accounts.ts
+@@ -1,4 +1,5 @@
+-import { bindAccountSource } from "./account-source-connections.ts";
++import { bindAccountSource, hasAccountSourceSelection } from "./account-source-connections.ts";
++import { registeredPool } from "./provider-account-policy.ts";
+ import { AccountListReads } from "./account-list-reads.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { HostedRoutesConfiguration } from "../contracts/hosted-routes.ts";
+@@ -18,6 +19,7 @@
+  */
+ import {
+   AccountAcquisitionConfiguration,
++  AppCallsHost,
+   AccountRequirement,
+   AuthMethodInvalid,
+   planAccountConsumerMethod,
+@@ -305,29 +307,44 @@
+       return;
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const sql = yield* policyDatabase;
++    if (!(yield* registeredPool(app.id))) return;
+     const reads = yield* appAccountReads(sql, { app: app.id, subject });
+-    for (const scope of ["app", "user"] as const) {
+-      for (const link of reads[scope]) {
++    const links = (["app", "user"] as const).flatMap((scope) =>
++      reads[scope].flatMap((link) => {
+         const slot = app.requirements.accounts[link.requirement];
+-        if (slot?.scope !== scope || (scope === "app" && slot.contributed !== true)) continue;
+-        const change = () =>
+-          bindAccountSource({
+-            executor,
+-            owner: app.owner,
+-            app: app.id,
+-            requirement: link.requirement,
+-            scope,
+-            account: link.id,
+-            subject,
+-          });
+-        if (scope === "app")
+-          yield* lockedChange(
+-            executor,
+-            { app: app.id, access: "contribute", requirement: link.requirement },
+-            change,
+-          );
+-        else yield* lockedChange(executor, { app: app.id, access: "use" }, change);
+-      }
++        return slot?.scope === scope && (scope !== "app" || slot.contributed === true)
++          ? [{ scope, link }]
++          : [];
++      }),
++    );
++    if (links.length === 0) return;
++    const bindings = yield* executor[AppCallsHost].bindings.list({ app: app.id, owner: app.owner });
++    for (const { scope, link } of links) {
++      if (
++        hasAccountSourceSelection(bindings, {
++          scope,
++          requirement: link.requirement,
++          account: link.id,
++        })
++      )
++        continue;
++      const change = () =>
++        bindAccountSource({
++          executor,
++          owner: app.owner,
++          app: app.id,
++          requirement: link.requirement,
++          scope,
++          account: link.id,
++          subject,
++        });
++      if (scope === "app")
++        yield* lockedChange(
++          executor,
++          { app: app.id, access: "contribute", requirement: link.requirement },
++          change,
++        );
++      else yield* lockedChange(executor, { app: app.id, access: "use" }, change);
+     }
+   }).pipe(Effect.mapError(() => new StorageError()));
+ 
+diff --git a/e2e/support/pool-source-query-proof.ts b/e2e/support/pool-source-query-proof.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/pool-source-query-proof.ts
+@@ -0,0 +1,113 @@
++import { expect } from "@effect/vitest";
++import { Clock, Effect, FileSystem, Path, Schema } from "effect";
++import type { Session } from "./api.ts";
++import { Browser } from "./browser.ts";
++import { waitForAppUrl } from "./app-pages.ts";
++import { Evidence } from "./evidence.ts";
++import { Target } from "./platform.ts";
++
++export const sourceQueryFiles = [
++  {
++    path: "ui/index.html",
++    content:
++      '<!doctype html><html><body><p role="status">Source queries ready</p><script type="module" src="./main.ts"></script></body></html>',
++  },
++  {
++    path: "ui/main.ts",
++    content: `import { json } from "apps";
++import { createAppClient, queryReference } from "apps/client";
++const client = createAppClient();
++Object.assign(globalThis, { sourceViews: (accounts: string[]) => Promise.all(accounts.map(account => client.query(queryReference("resolve"), {account}, json()))) });`,
++  },
++];
++
++/** Observe each real query's own SQL trace without retaining statements or bind values. */
++export const sourceQueryProof = (actor: Session, appPath: string) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser,
++      evidence = yield* Evidence,
++      fs = yield* FileSystem.FileSystem,
++      path = yield* Path.Path;
++    yield* browser.login(actor);
++    const appUrl = yield* waitForAppUrl(actor, appPath);
++    yield* browser.use("Open the source-query page", (page) => page.goto(appUrl));
++    yield* browser.use("The source-query page is ready", (page) =>
++      page.getByRole("status").filter({ hasText: "Source queries ready" }).waitFor(),
++    );
++    return (name: string, accounts: readonly string[]) =>
++      Effect.gen(function* () {
++        const start = yield* Clock.currentTimeNanos;
++        const responses = yield* browser.use(
++          `Run three concurrent ${name} source queries`,
++          (page) => {
++            const queries: Promise<{
++              trace: string | undefined;
++              timing: string | null;
++              status: number;
++            }>[] = [];
++            const observe = (response: import("playwright").Response) => {
++              if (!response.url().endsWith("/_executor/api/query")) return;
++              queries.push(
++                response.headerValue("server-timing").then((timing) => ({
++                  trace: response.request().headers()["traceparent"]?.split("-")[1],
++                  timing,
++                  status: response.status(),
++                })),
++              );
++            };
++            page.on("response", observe);
++            return page
++              .evaluate(`globalThis.sourceViews(${JSON.stringify(accounts)})`)
++              .then((replies) => Promise.all(queries).then((queries) => ({ replies, queries })))
++              .finally(() => page.off("response", observe));
++          },
++        );
++        const milliseconds = Number((yield* Clock.currentTimeNanos) - start) / 1_000_000;
++        expect(responses.queries).toHaveLength(3);
++        for (const query of responses.queries) expect(query.status).toBe(200);
++        const traces = new Set(responses.queries.map((query) => query.trace));
++        expect(traces.size).toBe(3);
++        const records = (yield* fs.readFileString(
++          path.join((yield* Target).directory, "provider-query-statements.jsonl"),
++        ))
++          .trim()
++          .split("\n")
++          .filter(Boolean)
++          .map((line) =>
++            Schema.decodeUnknownSync(
++              Schema.fromJsonString(
++                Schema.Struct({
++                  trace: Schema.String,
++                  writeLock: Schema.Boolean,
++                  advisoryLock: Schema.Boolean,
++                }),
++              ),
++            )(line),
++          )
++          .filter((record) => traces.has(record.trace));
++        yield* evidence.json(`${name}-concurrent-source-resolution.json`, {
++          queries: traces.size,
++          milliseconds,
++          phases: responses.queries.map((query) => query.timing),
++          statements: records.length,
++          writeLocks: records.filter((record) => record.writeLock).length,
++          advisoryLocks: records.filter((record) => record.advisoryLock).length,
++        });
++        for (const trace of traces) {
++          expect(trace).toMatch(/^[a-f0-9]{32}$/u);
++          expect(
++            records.filter((record) => record.trace === trace).length,
++            "Every query must contribute its own measured SQL statements",
++          ).toBeGreaterThan(0);
++        }
++        expect(
++          records.filter((record) => record.writeLock),
++          "Existing source selections must not acquire write locks during concurrent queries",
++        ).toEqual([]);
++        expect(
++          records.filter((record) => record.advisoryLock),
++          "Existing source selections must not acquire advisory locks during concurrent queries",
++        ).toEqual([]);
++        return responses.replies;
++      });
++  });
+diff --git a/e2e/support/provider-account-product.ts b/e2e/support/provider-account-product.ts
+--- a/e2e/support/provider-account-product.ts
++++ b/e2e/support/provider-account-product.ts
+@@ -41,7 +41,7 @@
+     parent = parent.value.parent;
+   }
+   const [text] = statement.compile();
+-  appendFileSync(measurement, JSON.stringify({ trace: span.traceId, select: /^\\s*select\\b/iu.test(text), head: /from hosted_change_heads/iu.test(text), sdk }) + "\\n");
++  appendFileSync(measurement, JSON.stringify({ trace: span.traceId, select: /^\\s*select\\b/iu.test(text), head: /from hosted_change_heads/iu.test(text), writeLock: /pg_advisory_xact_lock\\s*\\(|\\bfor\\s+(?:no\\s+key\\s+)?update\\b/iu.test(text), advisoryLock: /pg_advisory_xact_lock(?:_shared)?\\s*\\(/iu.test(text), sdk }) + "\\n");
+   return statement;
+ });`
+     : ""
+diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-account-source-bindings.spec.ts
+--- a/e2e/tests/pool-account-source-bindings.spec.ts
++++ b/e2e/tests/pool-account-source-bindings.spec.ts
+@@ -1,12 +1,12 @@
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
++import { sourceQueryFiles, sourceQueryProof } from "../support/pool-source-query-proof.ts";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body, type Session } from "../support/api.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+-import { withHostedHttpCase } from "../support/case.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { Resource } from "../support/contracts.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+-import { RuntimeLive } from "../support/platform.ts";
+ import { providerAccountProduct } from "../support/provider-account-product.ts";
+ import { providerAppsCatalog } from "../support/provider-apps-catalog.ts";
+ import { serverControl } from "../support/server-control.ts";
+@@ -37,6 +37,7 @@
+   }),
+   Schema.Struct({ state: Schema.Literal("denied"), account: Resource }),
+ ]);
++const Resolution = Schema.Struct({ selected: Schema.Array(Schema.String), native: Native });
+ const View = Schema.Struct({
+   selected: Schema.Array(Schema.String),
+   native: Native,
+@@ -64,12 +65,18 @@
+   }
+   return {selected:selected.map(account=>account.id),native,reused};
+ });
++const resolve = query({input:object({account:string()})}, async(ctx,input) => {
++  const selected=ctx.app.accounts.openai;
++  const account=selected.find(account=>account.id===input.account);
++  if(!account) throw new Error("Account is not selected");
++  return {selected:selected.map(account=>account.id),native:await account.read()};
++});
+ const forward=query({input:object({target:string(),tool:string(),payload:json()})},async(ctx,input)=>ctx.apps.call({connection:"accountView",target:input.target,tool:input.tool,kind:"query",input:input.payload}));
+-export default defineApp({app:{accounts:{openai:providers.openai.many().requiring("model-inference").contributed()}},${connected ? 'dependencies:{accountView:{scope:"app",cardinality:"many",tools:{accountView:{kind:"query"}}}},' : ""}},{tools:router({view,forward})});`;
+-
+-layer(RuntimeLive, { excludeTestServices: true })("Pool account sources", (it) => {
++export default defineApp({app:{accounts:{openai:providers.openai.many().requiring("model-inference").contributed()}},${connected ? 'dependencies:{accountView:{scope:"app",cardinality:"many",tools:{accountView:{kind:"query"}}}},' : ""}},{tools:router({view,resolve,forward})});`;
++
++layer(HostedLive, { excludeTestServices: true })("Pool account sources", (it) => {
+   it.effect(scenarios.poolAccountSourceBindings.title, (context) =>
+-    withHostedHttpCase(
++    withHostedCase(
+       context,
+       Effect.gen(function* () {
+         const api = yield* Api,
+@@ -87,7 +94,13 @@
+               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
+           }).pipe(Effect.orDie),
+         );
+-        yield* providerAccountProduct(catalog.origin, `${catalog.origin}/catalog/index.json`);
++        yield* providerAccountProduct(
++          catalog.origin,
++          `${catalog.origin}/catalog/index.json`,
++          true,
++          serverControl,
++          true,
++        );
+         const canonical = catalog.sources
+           .get("openai")!
+           .files.filter((file) => file.path !== "index.ts" && file.path !== "package.json");
+@@ -95,6 +108,7 @@
+           appsManifest,
+           ...canonical,
+           { path: "index.ts", content: poolSource(connected) },
++          ...sourceQueryFiles,
+         ];
+         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+           name: "Source binding pool",
+@@ -270,6 +284,7 @@
+           });
+           expect(refused.status).not.toBe(200);
+         }
++        expect((yield* choose(ambiguous, yield* source(second))).status).toBe(200);
+         const beforeRevocation = (yield* connections()).find(
+           (connection) => connection.target === first,
+         )!;
+@@ -290,10 +305,37 @@
+         expect(yield* nativeIds()).toEqual(membership);
+         expect(yield* catalog.mirrors).toEqual(mirrors);
+ 
++        const querySources = yield* sourceQueryProof(actors.member, `${poolPath}/ui`);
++        const concurrentViews = (name: string, denied: boolean, expectedAmbiguous = first) =>
++          Effect.gen(function* () {
++            const selected = (yield* view(b)).selected;
++            expect([...selected].sort()).toEqual([...firstView.selected].sort());
++            const replies = yield* Schema.decodeUnknownEffect(Schema.Array(Resolution))(
++              yield* querySources(name, [a, b, ambiguous]),
++            );
++            for (const reply of replies) expect(reply.selected).toEqual(selected);
++            expect(replies[0]!.native.state).toBe(denied ? "denied" : "available");
++            expect(replies[1]!.native).toMatchObject({
++              state: "available",
++              sourceConnection: { target: second, account: b },
++            });
++            expect(replies[2]!.native).toMatchObject({
++              state: "available",
++              sourceConnection: { target: expectedAmbiguous, account: ambiguous },
++            });
++          });
++
++        yield* concurrentViews("disabled", true, second);
++        expect(
++          (yield* connections()).find((connection) => connection.target === first),
++        ).toMatchObject({ id: beforeRevocation.id, enabled: false });
++        expect(yield* nativeIds()).toEqual(membership);
++
+         // Explicitly choosing another account cannot restore authority for the revoked account.
+         expect((yield* choose(ambiguous, yield* source(first))).status).toBe(200);
+         expect((yield* view(ambiguous)).reused?.sourceApp.id).toBe(first);
+         expect((yield* view(a)).native).toEqual({ state: "denied", account: { id: a } });
++        yield* concurrentViews("revoked", true);
+         expect((yield* view(b)).reused?.sourceApp.id).toBe(second);
+         expect(
+           (yield* api.request(actors.member, "DELETE", `${poolPath}/accounts/app/openai/${a}`))
+@@ -302,6 +344,8 @@
+         expect((yield* choose(a, yield* source(first))).status).toBe(200);
+         expect((yield* view(a)).reused?.sourceApp.id).toBe(first);
+         expect(yield* nativeIds()).toEqual(membership);
++
++        yield* concurrentViews("managed", false);
+ 
+         const oldSource = yield* source(first);
+         const providerFiles = catalog.sources.get("openai")!.files;
+@@ -345,6 +389,7 @@
+           (yield* api.request(actors.member, "DELETE", `${providerPath(first)}/${a}`)).status,
+         ).toBe(200);
+         expect((yield* view(a)).native).toEqual({ state: "denied", account: { id: a } });
++        yield* concurrentViews("denied", true);
+         expect(yield* nativeIds()).toEqual(membership);
+         expect(yield* catalog.mirrors).toEqual(mirrors);
+ 
