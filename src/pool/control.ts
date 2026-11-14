@@ -611,7 +611,11 @@ export class PoolHome {
   ): Promise<PoolView> {
     const result = views
       ? await views.view(this.pool, fresh, () => this.readView(now, fresh))
-      : { data: await this.readView(now, fresh), source: "live" as const, revalidationFailed: false };
+      : {
+          data: await this.readView(now, fresh),
+          source: "live" as const,
+          revalidationFailed: false,
+        };
     const accounts = result.data.accounts.map((account) =>
       result.source === "snapshot" ? retainedAccount(account, now().getTime()) : account,
     );
