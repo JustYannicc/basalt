@@ -12,6 +12,17 @@ export const failureCodec = Schema.Struct({
       type: Schema.String,
       reason: Schema.optional(Schema.String),
       status: Schema.optional(Schema.Number),
+      exitCode: Schema.optional(Schema.NullOr(Schema.Number)),
+      migration: Schema.optional(
+        Schema.Struct({
+          phase: Schema.String,
+          registry: Schema.optional(Schema.Literals(["hosted", "cloud"])),
+          migration: Schema.optional(Schema.String),
+          version: Schema.optional(Schema.String),
+          sqlState: Schema.optional(Schema.String),
+          message: Schema.String,
+        }),
+      ),
       codes: Schema.optional(Schema.Array(Schema.Number)),
     }),
   ),

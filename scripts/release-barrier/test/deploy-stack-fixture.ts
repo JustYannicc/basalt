@@ -64,6 +64,7 @@ export const fixture = (
       | "plan-list"
       | "apply-list";
     admittedError?: unknown;
+    migrationError?: unknown;
     admittedStateError?: StateStoreError;
     finalizeDrift?: "binding" | "uncovered-env" | "props";
     cyclicImage?: "changed" | "unchanged";
@@ -202,6 +203,12 @@ export const fixture = (
         run: (news) =>
           Effect.sync(() => {
             events.push(`command:${news.command}`);
+            if (
+              news.command === "node src/migrate.ts" &&
+              options.migrationError &&
+              receipts.at(-1)?.phase === "admitted"
+            )
+              throw options.migrationError;
             if (options.admittedFailure === "apply" && receipts.at(-1)?.phase === "admitted")
               throw options.admittedError;
             return { exitCode: 0, stdout: "", stderr: "" };
@@ -229,7 +236,14 @@ export const fixture = (
           command: "node unmodeled.ts",
           memo: false,
         });
-      yield* Command.Exec("PoolDatabase", { command: "node ensure-pool-database.ts", memo: false });
+      const migrations = options.migrationError
+        ? yield* Command.Exec("Migrations", { command: "node src/migrate.ts", memo: false })
+        : undefined;
+      yield* Command.Exec("PoolDatabase", {
+        command: "node ensure-pool-database.ts",
+        memo: false,
+        ...(migrations ? { env: { READY: migrations.hash.pipe(Output.map(() => "ready")) } } : {}),
+      });
       if (options.orphanedDatabaseCommand)
         yield* Command.Exec("Migrations", { command: "node src/migrate.ts", memo: false });
       const api = yield* FixtureWorker("Api", { revision: "candidate" });

@@ -1,6 +1,7 @@
 import { StateStoreError } from "alchemy/State/State";
 import { Cause, Effect } from "effect";
 import { BarrierRefusal } from "./refusal.ts";
+import { migrationCommandFailure, type MigrationDiagnostic } from "./migration-failure.ts";
 
 export type ReleaseOperation =
   | "plan-read-state"
@@ -80,8 +81,19 @@ const field = (value: unknown, key: string): unknown =>
 const integer = (value: unknown, minimum: number, maximum: number): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= minimum && value <= maximum;
 
-/** Provider messages, bodies, URLs and stacks can contain credentials. Copy only closed types and numeric diagnostics. */
-export function safeProviderFailure(error: unknown) {
+export interface ProviderFailure {
+  type: string;
+  reason?: string;
+  status?: number;
+  codes?: number[];
+  exitCode?: number | null;
+  migration?: MigrationDiagnostic;
+}
+
+/** Provider messages, bodies, URLs and stacks can contain credentials. Copy only closed diagnostics. */
+export function safeProviderFailure(error: unknown): ProviderFailure {
+  const migration = migrationCommandFailure(error);
+  if (migration) return migration;
   const tag = field(error, "_tag") ?? field(error, "name");
   const type = typeof tag === "string" && knownTypes.has(tag) ? tag : "unknown";
   const httpReason = type === "HttpClientError" ? field(error, "reason") : undefined;
