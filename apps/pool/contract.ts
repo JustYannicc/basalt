@@ -343,6 +343,7 @@ export type ControlErrorCode =
   | "invalid_login_file"
   | "not_found"
   | "backend_unavailable"
+  | "history_timeout"
   | "bulk_import_not_provisioned"
   | "busy";
 

@@ -1,4 +1,4 @@
-import { seriesAggregates } from "./series-aggregates.ts";
+import { seriesAggregates, tokenColumns } from "./series-aggregates.ts";
 import type { OverviewPriceTable } from "../../../apps/pool/overview-contract.ts";
 import { officialPriceRows } from "./official-cost.ts";
 import { pricedRowsSql } from "./overview-sql.ts";
@@ -9,16 +9,9 @@ import { timestamp } from "./record.ts";
 import { accountHistoryReferences, importAccountPrefix } from "./import-account-reference.ts";
 import { seriesBounds, type SeriesCursor } from "./series-input.ts";
 import type { PoolUsageSeriesInput, SeriesAuthority } from "./series-contract.ts";
+import { seriesGrouping } from "./series-grouping.ts";
 
 export { tokenColumns } from "./series-aggregates.ts";
-const dimensionColumns = {
-  person: "person",
-  model: "model",
-  provider: "provider",
-  app: "app_id",
-  attribution: "attribution",
-  source: "source",
-};
 export const utcSql = (value: string) =>
   `to_char(${value} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 
@@ -82,27 +75,7 @@ export async function seriesQuery(
     ? `$${values.push(JSON.stringify(officialPriceRows(prices.prices)))}`
     : undefined;
   const aggregates = seriesAggregates(prices !== undefined, true);
-  const key = ["'currency'", "currency"];
-  const redactedKey = ["'currency'", "NULL", "'account'", "saved_account"];
-  for (const dimension of input.by)
-    key.push(
-      `'${dimension}'`,
-      dimension === "account"
-        ? "saved_account"
-        : dimension === "person"
-          ? "CASE WHEN attribution = 'import-owner' THEN NULL ELSE person END"
-          : dimensionColumns[dimension],
-    );
-  for (const dimension of input.by)
-    if (dimension !== "account") redactedKey.push(`'${dimension}'`, "NULL");
-  // Import-owner person groups remain separate even when attribution was not explicitly selected.
-  if (input.by.includes("person") && !input.by.includes("attribution"))
-    key.push(
-      "'attribution'",
-      "CASE WHEN attribution = 'import-owner' THEN 'import-owner' ELSE NULL END",
-    );
-  if (input.by.includes("person") && !input.by.includes("attribution"))
-    redactedKey.push("'attribution'", "NULL");
+  const grouping = seriesGrouping(input.by);
   const app = (await appAttributionReady(db)) ? "r.app_id" : "NULL::text AS app_id";
   const timezone = input.timezone ?? "UTC";
   const localBucket = `date_trunc('${input.bucket}', (left(timestamp_exact,19)::timestamp AT TIME ZONE 'UTC') AT TIME ZONE '${timezone}')`;
@@ -110,7 +83,7 @@ export async function seriesQuery(
   const foreignAccount = input.by.includes("account")
     ? "'imported:' || encode(sha256(convert_to($1::text || ':' || r.source || ':' || r.account, 'UTF8')), 'hex')"
     : "'unmapped'";
-  const prefix = `WITH bindings AS (SELECT * FROM jsonb_to_recordset($4::jsonb) AS b(history text,saved text)),
+  const selection = `WITH bindings AS (SELECT * FROM jsonb_to_recordset($4::jsonb) AS b(history text,saved text)),
     selected AS (SELECT r.*, $6::text AS gateway_source,
       ${app === "r.app_id" ? "" : `${app},`}
       CASE WHEN r.account IS NULL THEN NULL
@@ -122,16 +95,44 @@ export async function seriesQuery(
       WHERE r.pool = $1
         AND r.timestamp >= $2::text::timestamptz - interval '1 microsecond'
         AND r.timestamp < $3::text::timestamptz + interval '1 microsecond'
-        AND r.timestamp_exact >= $2::text AND r.timestamp_exact < $3::text${where}${personalWhere}ACCOUNT_FILTER),
-    ${prices ? `${pricedRowsSql("selected", priceParameter!, "(s.source=$5 OR s.attribution='import-owner') AND NOT s.counts_only", "public_")},` : ""}
-    keyed AS (SELECT *, CASE WHEN counts_only THEN jsonb_build_object(${redactedKey.join(", ")})
-      ELSE jsonb_build_object(${key.join(", ")}) END::text COLLATE "C" AS group_key,
-      ${localBucket} AT TIME ZONE '${timezone}' AS bucket_at,
-      (${localBucket} + interval '1 ${input.bucket}') AT TIME ZONE '${timezone}' AS bucket_end
-      FROM ${prices ? "priced" : "selected"})`;
-  const aggregate = `${prefix.replace("ACCOUNT_FILTER", accountWhere)}, aggregated AS (SELECT group_key, bucket_at, bucket_end, ${aggregates.join(",\n      ")}
-      FROM keyed GROUP BY group_key,bucket_at,bucket_end)
-    SELECT *, ${utcSql("bucket_at")} AS at, ${utcSql("bucket_end")} AS end_at FROM aggregated`;
+        AND r.timestamp_exact >= $2::text AND r.timestamp_exact < $3::text${where}${personalWhere}ACCOUNT_FILTER)`;
+  const prefix = `${selection}${prices ? `,${pricedRowsSql("selected", priceParameter!, "(s.source=$5 OR s.attribution='import-owner') AND NOT s.counts_only", "public_", true)}` : ""}`;
+  const metadataValues = values.slice(0, prices ? -1 : undefined);
+  const rows = prices ? "priced" : "selected";
+  const aggregateInputs = [
+    ...Object.values(tokenColumns),
+    "failed",
+    "status_code",
+    "account",
+    "source",
+    "timestamp_exact",
+    "token_quality",
+    "cost",
+    "cost_basis",
+    "currency",
+    "attribution",
+    "counts_only",
+    ...(prices
+      ? [
+          "api_cost",
+          "token_count_estimate",
+          "public_price_as_of",
+          "public_price_version",
+          "public_price_basis",
+          "public_price_refresh_failed",
+        ]
+      : []),
+  ];
+  // OFFSET 0 makes aggregate filters reuse each calculated request price.
+  const aggregate = `${prefix.replace("ACCOUNT_FILTER", accountWhere)},
+    normalized AS (SELECT ${aggregateInputs.join(",")}, ${grouping.projection}, ${localBucket} AS bucket_local FROM ${rows} OFFSET 0),
+    aggregated AS (SELECT ${grouping.columns}, bucket_local, ${aggregates.join(",\n      ")}
+      FROM normalized GROUP BY ${grouping.columns},bucket_local),
+    keyed AS (SELECT (${grouping.key})::text COLLATE "C" AS group_key,
+      bucket_local AT TIME ZONE '${timezone}' AS bucket_at,
+      (bucket_local + interval '1 ${input.bucket}') AT TIME ZONE '${timezone}' AS bucket_end,
+      aggregated.* FROM aggregated)
+    SELECT *, ${utcSql("bucket_at")} AS at, ${utcSql("bucket_end")} AS end_at FROM keyed`;
   let condition = "";
   if (after) {
     values.push(after.key, timestamp(after.at));
@@ -140,7 +141,7 @@ export async function seriesQuery(
   return {
     text: `${aggregate}${condition} ORDER BY group_key,bucket_at LIMIT 5001`,
     values,
-    coverageText: `${prefix.replace("ACCOUNT_FILTER", authority.mappingProven ? accountWhere : "")} SELECT source, min(timestamp_exact) AS first_at,max(timestamp_exact) AS last_at,
+    coverageText: `${selection.replace("ACCOUNT_FILTER", authority.mappingProven ? accountWhere : "")} SELECT source, min(timestamp_exact) AS first_at,max(timestamp_exact) AS last_at,
       ${utcSql("max(ingested_at)")} AS ingested_at, count(*)::text AS requests,
       count(*) FILTER (WHERE saved_account NOT IN ('unmapped','otherAccounts') AND saved_account NOT LIKE 'imported:%')::text AS mapped,
       count(*) FILTER (WHERE saved_account = 'unmapped' OR saved_account LIKE 'imported:%')::text AS unmapped,
@@ -151,10 +152,10 @@ export async function seriesQuery(
       count(*) FILTER (WHERE counts_only OR cost_basis = 'historical-api-price' AND currency <> 'USD')::text AS missing,
       count(*) FILTER (WHERE NOT counts_only AND cost_basis <> 'unpriced' AND price_snapshot IS NULL)::text AS missing_snapshot,
       count(*) FILTER (WHERE NOT counts_only AND cost_basis <> 'unpriced' AND price_version IS NULL)::text AS missing_version
-      FROM keyed GROUP BY source ORDER BY source LIMIT 501`,
-    coverageValues: values.slice(0, after ? -2 : undefined),
-    targetsText: `${prefix.replace("ACCOUNT_FILTER", accountWhere)} SELECT DISTINCT provider,model FROM keyed WHERE NOT counts_only AND (source=$5 OR attribution='import-owner') AND provider IS NOT NULL AND model IS NOT NULL ORDER BY provider,model LIMIT 101`,
-    targetsValues: values.slice(0, after ? -2 : undefined),
+      FROM selected GROUP BY source ORDER BY source LIMIT 501`,
+    coverageValues: metadataValues,
+    targetsText: `${selection.replace("ACCOUNT_FILTER", accountWhere)} SELECT DISTINCT provider,model FROM selected WHERE NOT counts_only AND (source=$5 OR attribution='import-owner') AND provider IS NOT NULL AND model IS NOT NULL ORDER BY provider,model LIMIT 101`,
+    targetsValues: metadataValues,
     homeSource: source,
     gatewaySource: gateway,
   };
