@@ -16,6 +16,21 @@ import { loadMiniflare } from "../startup-profiler/profile.ts";
 import { readBundle } from "../worker-startup.ts";
 import { historyTrafficPath } from "../../src/pool/model-history/traffic.ts";
 
+const expectedTables = [
+  "basalt_model_history_migrations",
+  "basalt_model_requests",
+  ...Array.from({ length: 16 }, (_, part) => `basalt_model_requests_${part}`),
+  "basalt_model_history_cursor",
+  "basalt_model_traffic",
+  "basalt_pool_change_heads",
+  "basalt_pool_change_pending",
+  "basalt_model_import_jobs",
+  "basalt_model_import_receipts",
+  "basalt_model_terminal_starts",
+  "basalt_model_terminal_finishes",
+  "basalt_model_import_completion",
+].sort();
+
 const adminUrl = process.env.POOL_TEST_ADMIN_URL;
 if (!adminUrl || !["localhost", "127.0.0.1"].includes(new URL(adminUrl).hostname))
   throw new Error("POOL_TEST_ADMIN_URL must point to isolated local test Postgres");
@@ -117,7 +132,7 @@ test("the private schema operator defaults to catalog/count reads and binds writ
       assert.equal(preview.writes, false);
       assert.equal(preview.history.rows, "2");
       assert.equal(preview.history.privacyReady, true);
-      assert.equal(preview.catalogDiff.createTables.length, 25);
+      assert.deepEqual([...preview.catalogDiff.createTables].sort(), expectedTables);
       const backfill = await operator.fetch(`http://operator${historyBackfillPath}`);
       assert.equal(backfill.status, 200, await backfill.clone().text());
       assert.equal((await backfill.json()).writes, false);
@@ -167,7 +182,7 @@ test("the private schema operator defaults to catalog/count reads and binds writ
     assert.equal(plan.history.rows, "2");
     assert.equal(plan.history.privacyReady, true);
     assert.equal(plan.ledgerRows, "0");
-    assert.equal(plan.catalogDiff.createTables.length, 25);
+    assert.deepEqual([...plan.catalogDiff.createTables].sort(), expectedTables);
     assert.equal(
       (await db.query("SELECT to_regclass('basalt_model_requests') AS name")).rows[0].name,
       null,

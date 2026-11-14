@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeReadRetry, type ChangeWatch } from "apps/client";
 import type { PoolCapacityHistory } from "../capacity-contract.ts";
 import type { PoolOverviewResult, PoolPersonalOverviewResult } from "../overview-contract.ts";
 import type { PoolUsageSeriesResult } from "../usage-series-contract.ts";
@@ -6,6 +7,7 @@ import type { Result } from "../index.ts";
 import type { PoolApi } from "./api.ts";
 import type { SeriesQuery, SeriesRead } from "./series-model.ts";
 import { coherentOverview } from "./overview-snapshot.ts";
+import { unconfirmed } from "./pool-view.ts";
 
 export type RangeDays = 7 | 30 | 90;
 
@@ -37,14 +39,29 @@ export interface Overview {
   readonly coherent?: boolean;
 }
 
-/** What one refresh has received so far. Pieces from different refreshes never share one. */
+/** Parts share one range; accepted head versions decide whether they form one verdict. */
 interface OverviewPieces {
   readonly capacity?: Result<PoolCapacityHistory>;
   readonly usage?: Result<PoolOverviewResult>;
   readonly personal?: Result<PoolPersonalOverviewResult>;
 }
 
-const refresh = 5 * 60_000;
+/** Capacity, usage, people, models and their prices; the directory comes with membership. */
+const topics = [
+  "accounts",
+  "apps",
+  "membership",
+  "session",
+  "pool-readings",
+  "pool-usage",
+  "pool-samples",
+  "pool-prices",
+];
+const unreachable = {
+  ok: false,
+  error: "backend_unavailable",
+  message: "Overview could not be read. Try again.",
+} as const;
 
 export function seriesRead(result: PoolUsageSeriesResult): SeriesRead {
   return {
@@ -101,7 +118,7 @@ function overviewFrom(
   };
 }
 
-/** Each refresh keeps its own parts; a completed usage read never waits on capacity. */
+/** Each part publishes after its own revision fence; a slow part cannot hold the others. */
 export function useOverview(api: PoolApi, days: RangeDays) {
   const query = useMemo(() => ({ api, days }), [api, days]);
   const [snapshot, setSnapshot] = useState<{
@@ -110,40 +127,132 @@ export function useOverview(api: PoolApi, days: RangeDays) {
   }>();
   const state = snapshot?.query === query ? snapshot.value : {};
   const latest = useRef({ id: 0 });
+  const watch = useRef<ChangeWatch | undefined>(undefined);
+  const capacityRead = useRef<
+    | {
+        query: typeof query;
+        to: number;
+        controller: AbortController;
+        publish: (value: Result<PoolCapacityHistory>, version: string) => void;
+        reject: (error: unknown) => void;
+        finish: () => void;
+      }
+    | undefined
+  >(undefined);
+  /** This view's own read is in flight; the pool header says nothing about it. */
+  const [reading, setReading] = useState<object>();
+  /** The last read was rejected; the figures on screen are the last confirmed ones. */
+  const [failed, setFailed] = useState<{ query: typeof query; message: string }>();
   const load = useCallback(async () => {
+    const current = watch.current;
+    if (current === undefined) return;
     const pending = latest.current;
     const id = ++pending.id;
-    const to = Date.now();
+    const marker = {};
+    setReading(marker);
+    const done = () => setReading((value) => (value === marker ? undefined : value));
+    const ongoing = capacityRead.current?.query === query ? capacityRead.current : undefined;
+    const to = ongoing?.to ?? Date.now();
     const range = seriesRange(days, to);
     const input = { from: range.from, to: range.to, days };
     let pieces: OverviewPieces = {};
-    const take = (next: OverviewPieces) => {
-      if (id !== pending.id) return false;
-      pieces = { ...pieces, ...next };
-      const value = overviewFrom(pieces, range);
-      const usageArrived = pieces.usage !== undefined;
-      // Retain the old pair until usage answers, then show only this refresh's parts.
-      setSnapshot((previous) =>
-        !usageArrived && previous?.query === query ? previous : { query, value },
-      );
-      return true;
+    const versions = new Map<keyof OverviewPieces, string>();
+    let remaining = 2;
+    const finish = () => {
+      if (--remaining !== 0) return;
+      done();
+      // A part may have retried across a revision while another already committed.
+      if (id === pending.id && new Set(versions.values()).size > 1) current.request();
     };
-    await Promise.all([
-      api.capacity(days, to).then((capacity) => void take({ capacity })),
-      api.overviewUsage(input).then(async (usage) => {
-        if (!take({ usage }) || !managersOnly(usage)) return;
-        take({ personal: await api.personalOverview(input) });
-      }),
-    ]);
+    const publish = (part: OverviewPieces, version: string) => {
+      if (id !== pending.id) return;
+      pieces = { ...pieces, ...part };
+      for (const key of Object.keys(part) as (keyof OverviewPieces)[]) versions.set(key, version);
+      if (pieces.usage === undefined) return;
+      const matching = new Set(versions.values()).size === 1;
+      const value = overviewFrom(pieces, range);
+      setFailed(undefined);
+      setSnapshot({ query, value: { ...value, coherent: value.coherent === true && matching } });
+    };
+    const reject = (error: unknown) => {
+      if (id !== pending.id || !(error instanceof ChangeReadRetry)) return;
+      if (error.reason === "hidden") return;
+      setFailed({ query, message: unconfirmed });
+      setSnapshot((previous) =>
+        previous?.query === query
+          ? previous
+          : { query, value: overviewFrom({ usage: unreachable }, range) },
+      );
+    };
+    const callbacks = {
+      publish: (capacity: Result<PoolCapacityHistory>, version: string) =>
+        publish({ capacity }, version),
+      reject,
+      finish,
+    };
+    if (ongoing !== undefined) Object.assign(ongoing, callbacks);
+    else {
+      // A retry joins pending capacity instead of exhausting the connection slots with duplicates.
+      const entry = { query, to, controller: new AbortController(), ...callbacks };
+      capacityRead.current = entry;
+      void current
+        .read(
+          () => api.capacity(days, to, entry.controller.signal),
+          (value, version) => entry.publish(value, version),
+        )
+        .catch((error: unknown) => entry.reject(error))
+        .finally(() => {
+          if (capacityRead.current === entry) capacityRead.current = undefined;
+          entry.finish();
+        });
+    }
+    try {
+      const usage = await current.read(
+        () => api.overviewUsage(input),
+        (usage, version) => publish({ usage }, version),
+      );
+      if (managersOnly(usage))
+        await current.read(
+          () => api.personalOverview(input),
+          (personal, version) => publish({ personal }, version),
+        );
+    } catch (error) {
+      reject(error);
+    } finally {
+      finish();
+    }
   }, [api, days, query]);
   useEffect(() => {
     const pending = latest.current;
-    void load();
-    const stop = api.poll(() => void load(), refresh);
+    const current = api.changes().watch({
+      topics,
+      refresh: load,
+      revoked: () => {
+        pending.id++;
+        if (capacityRead.current?.query === query) capacityRead.current.controller.abort();
+        setSnapshot(undefined);
+      },
+    });
+    watch.current = current;
     return () => {
       pending.id++;
-      stop();
+      if (capacityRead.current?.query === query) capacityRead.current.controller.abort();
+      watch.current = undefined;
+      current.stop();
     };
-  }, [api, load]);
-  return { ...state, reload: load, member: managersOnly(state.usage) };
+  }, [api, load, query]);
+  return {
+    ...state,
+    reload: load,
+    member: managersOnly(state.usage),
+    // Only a read over data already on screen is an update.
+    updating: reading !== undefined && snapshot?.query === query,
+    // Only claim retained figures when confirmed ones are on screen.
+    failed:
+      failed?.query === query &&
+      reading === undefined &&
+      (state.usage?.ok === true || state.personal?.ok === true)
+        ? failed.message
+        : undefined,
+  };
 }

@@ -4,6 +4,7 @@ import {
 } from "./import-completion-schema.ts";
 import { poolDatabase } from "../database-settings.ts";
 import { historyBulkSchemaVersion, historyBulkStatements } from "./bulk-schema.ts";
+import { historyChangeStatements } from "./change-schema.ts";
 
 export interface HistoryDatabase {
   query(
@@ -18,6 +19,7 @@ export const historyAccountTimeSchemaVersion = "model_request_history_v3_account
 export const historyTrafficSchemaVersion = "model_request_history_v4_traffic_purpose";
 export const historySchemaVersion = historyImportCompletionVersion;
 export const historyTerminalIntegrityVersion = "model_request_history_v7_terminal_integrity";
+export const historyChangeSchemaVersion = "model_request_history_v5_change_revisions";
 
 /** Catalog-only preview. The same query works before any history table exists. */
 export async function planModelHistorySchema(db: HistoryDatabase) {
@@ -162,6 +164,7 @@ export const historySchemaMigrations = [
   { name: historyAppSchemaVersion, statements: historyAppAttributionStatements },
   { name: historyAccountTimeSchemaVersion, statements: historyAccountTimeStatements },
   { name: historyTrafficSchemaVersion, statements: historyTrafficStatements },
+  { name: historyChangeSchemaVersion, statements: historyChangeStatements },
   { name: historyBulkSchemaVersion, statements: historyBulkStatements },
   { name: historyTerminalIntegrityVersion, statements: historyTerminalIntegrityStatements },
   { name: historyImportCompletionVersion, statements: historyImportCompletionStatements },
