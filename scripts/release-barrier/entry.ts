@@ -3,6 +3,8 @@ import { homeSchemaRetryAuthorization } from "./home-schema-retry.ts";
 import { loadDeclaredChanges } from "./declared-file.ts";
 import { undoForwardAdoption } from "./forward-undo.ts";
 import { releaseRuntimeImage } from "./runtime-image-release.ts";
+import { abortRuntimeRelease } from "./runtime-release-abort.ts";
+import { writeFile, mkdir } from "node:fs/promises";
 import { ordinaryReleaseWriter } from "./runtime-release-writer.ts";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -28,9 +30,12 @@ if (process.env.ALCHEMY_STAGE !== "production")
   throw new Error("Release barrier requires the production stage");
 const homeSchemaRetryIntent = homeSchemaRetryAuthorization(process.env);
 const args = process.argv.slice(2);
+const abortMode = args[0] === "--abort-runtime" && args.length === 2 ? args[1] : undefined;
 const undoPath = args[0] === "--undo-forward" && args.length === 2 ? resolve(args[1]!) : undefined;
-if (args.length && !undoPath && (args.length !== 3 || args[0] !== "--recover"))
-  throw new Error("Use --recover <manifest.json> <receipt.json>");
+if (args.length && !abortMode && !undoPath && (args.length !== 3 || args[0] !== "--recover"))
+  throw new Error(
+    "Use --recover <manifest.json> <receipt.json> or --abort-runtime <plan|inspect|plan-digest>",
+  );
 const recoveryDirectory = args[0] === "--recover" ? dirname(resolve(args[1]!)) : undefined;
 const recovery =
   args[0] === "--recover"
@@ -86,12 +91,33 @@ process.exitCode = await releaseOutcome(evidence, process.env.GITHUB_STEP_SUMMAR
       ),
     ).pipe(
       Effect.flatMap((stack) =>
-        undoPath || recovery
+        undoPath || recovery || abortMode
           ? evalStack(
               stack,
               (compiled) =>
                 Effect.gen(function* () {
-                  if (undoPath) yield* undoForwardAdoption(compiled, undoPath);
+                  if (abortMode) {
+                    const receipt = yield* abortRuntimeRelease(
+                      compiled,
+                      ordinaryReleaseWriter(process.env),
+                      abortMode,
+                    );
+                    yield* Effect.promise(async () => {
+                      await mkdir(directory, { recursive: true });
+                      await writeFile(
+                        resolve(directory, "runtime-abort.json"),
+                        JSON.stringify(receipt, null, 2) + "\n",
+                        { mode: 0o600 },
+                      );
+                      if (process.env.GITHUB_STEP_SUMMARY) {
+                        const { appendFile } = await import("node:fs/promises");
+                        await appendFile(
+                          process.env.GITHUB_STEP_SUMMARY,
+                          `Runtime startup abort ${receipt.status}. Plan digest: ${receipt.fingerprint}.\n`,
+                        );
+                      }
+                    });
+                  } else if (undoPath) yield* undoForwardAdoption(compiled, undoPath);
                   else
                     yield* recoverStack(
                       compiled,

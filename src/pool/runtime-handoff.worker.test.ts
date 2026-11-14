@@ -65,7 +65,7 @@ test("real Worker and SQLite preserve first-attempt fresh and snapshot reads dur
     }
   };
   const grant = await f.startGrant();
-  const staging = f.command("stage", { proof: grant.envelope });
+  const staging = f.stage(grant.envelope);
   try {
     await entered.promise;
     await successfulView(f, true);
@@ -115,7 +115,7 @@ test("a real retired-denial rejection refuses promotion while the selected old r
     if (policy.pool === "retired-pool") throw new Error("fixture retired denial rejected");
   };
   const grant = await f.startGrant();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 409);
+  assert.equal((await f.stage(grant.envelope)).status, 409);
   await successfulView(f, true);
   await successfulView(f, false);
   const joined = await f.joined(grant),
@@ -134,7 +134,7 @@ test("a lost actual start reply survives controller reconstruction and recovers 
   context.after(f.cleanup);
   const grant = await f.startGrant();
   f.loseStartReply();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 409);
+  assert.equal((await f.stage(grant.envelope)).status, 409);
   assert.equal(f.candidate.calls.start, 1);
   assert.equal((await f.inspect()).selection.candidate?.identity, undefined);
   f.reconstruct();
@@ -162,7 +162,7 @@ test("promotion keeps an old response body alive and refuses destruction until t
     );
   const oldResponse = await f.model();
   const grant = await f.startGrant();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 200);
+  assert.equal((await f.stage(grant.envelope)).status, 200);
   const intent = await f.intent(),
     joined = await f.joined(grant);
   assert.equal((await f.command("promote", { proof: joined.envelope, intent })).status, 200);
@@ -189,7 +189,7 @@ test("a real dirty reservation during promotion aborts the old stream and preven
   const f = await handoffWorker();
   context.after(f.cleanup);
   const grant = await f.startGrant();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 200);
+  assert.equal((await f.stage(grant.envelope)).status, 200);
   f.old.hooks.model = async () =>
     new Response(
       new ReadableStream({
@@ -242,7 +242,7 @@ test("a lost SQLite promotion acknowledgement retains its atomic selection and r
   const f = await handoffWorker();
   context.after(f.cleanup);
   const grant = await f.startGrant();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 200);
+  assert.equal((await f.stage(grant.envelope)).status, 200);
   const intent = await f.intent(),
     joined = await f.joined(grant);
   let lost = false;
@@ -274,7 +274,7 @@ test("an admitted remote selection with a missing runtime binding refuses reques
   const f = await handoffWorker();
   context.after(f.cleanup);
   const grant = await f.startGrant();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 200);
+  assert.equal((await f.stage(grant.envelope)).status, 200);
   const joined = await f.joined(grant);
   assert.equal(
     (await f.command("promote", { intent: await f.intent(), proof: joined.envelope })).status,

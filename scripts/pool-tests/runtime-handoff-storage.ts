@@ -14,6 +14,20 @@ export class RuntimeSqlite implements SqliteTransaction {
   private queue: Promise<unknown> = Promise.resolve();
   private changed: string[] = [];
   afterCommit: (keys: readonly string[]) => void = () => {};
+  private observers = new Set<() => void>();
+  async when(key: string, predicate: (value: unknown) => boolean) {
+    await this.queue;
+    return new Promise<void>((resolve) => {
+      const check = () => {
+        if (predicate(this.read(key))) {
+          this.observers.delete(check);
+          resolve();
+        }
+      };
+      this.observers.add(check);
+      check();
+    });
+  }
   constructor() {
     this.database.exec("CREATE TABLE storage (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   }
@@ -94,6 +108,7 @@ export class RuntimeSqlite implements SqliteTransaction {
         this.database.exec("ROLLBACK");
         throw error;
       }
+      for (const observer of this.observers) observer();
       this.afterCommit(this.changed);
       return result;
     });

@@ -6,7 +6,7 @@ import { runtimeApplicationFixture } from "../../scripts/pool-tests/runtime-prov
 async function promoted() {
   const f = await handoffWorker();
   const grant = await f.startGrant();
-  const staged = await f.command("stage", { proof: grant.envelope });
+  const staged = await f.stage(grant.envelope);
   assert.equal(staged.status, 200, await staged.clone().text());
   const joined = await f.joined(grant);
   const response = await f.command("promote", { intent: await f.intent(), proof: joined.envelope });

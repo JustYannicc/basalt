@@ -11,7 +11,10 @@ import {
   membershipReadPrefix,
 } from "../../src/pool/membership-contract.ts";
 import { nativeMembershipKey } from "../../src/pool/runtime-slots/storage.ts";
-import type { EndpointEnvironment } from "../../src/pool/runtime-slots/endpoint.ts";
+import type {
+  EndpointEnvironment,
+  EndpointOptions,
+} from "../../src/pool/runtime-slots/endpoint.ts";
 import { deploymentReadinessPrefix } from "../../src/pool/deployment-readiness.ts";
 import { openEnvelope, signEnvelope, signPoolToken } from "../../src/pool/token.ts";
 import type {
@@ -22,6 +25,7 @@ import type {
 } from "../../src/pool/runtime-slots/contract.ts";
 import type { PoolView } from "../../apps/pool/contract.ts";
 import type { RuntimeStub } from "../../src/pool/runtime-slots/transport.ts";
+import type { StartupAbortIntent } from "../../src/pool/runtime-slots/startup-abort-contract.ts";
 import type { HomePeerEndpoint } from "../../src/pool/runtime-fleet/peers.ts";
 type RuntimeWorker = RuntimeStub & HomePeerEndpoint & { alarm(): Promise<void> };
 import type { ProbeResult } from "../../src/pool/availability.ts";
@@ -82,6 +86,7 @@ type RuntimeFixture = Awaited<ReturnType<typeof handoffRuntime>>;
 export async function handoffWorker(
   options: {
     candidateTarget?: Partial<SlotTarget>;
+    candidateEndpoint?: EndpointOptions;
     candidateProvider?: { accountId: string; namespaceId: string; applicationConfigDigest: string };
     rotateSigningKey?: boolean;
     adopt?: boolean;
@@ -135,7 +140,10 @@ export async function handoffWorker(
         }
       : {}),
   };
-  const candidate = await handoffRuntime(candidateTarget, nextEnv, { home: old.home });
+  const candidate = await handoffRuntime(candidateTarget, nextEnv, {
+    home: old.home,
+    endpoint: options.candidateEndpoint,
+  });
   const claims = { pool: "pool-a", owner: "fixture-owner", organization: "fixture-organization" };
   const now = Date.now();
   const policy = {
@@ -286,7 +294,7 @@ export async function handoffWorker(
     fields: {
       proof?: string;
       target?: SlotTarget;
-      intent?: PromotionIntent;
+      intent?: PromotionIntent | StartupAbortIntent;
       operationId?: string;
       identity?: SlotIdentity;
       sourceSha?: string;
@@ -384,6 +392,28 @@ export async function handoffWorker(
     policy,
     worker,
     command,
+    stage: async (proof: string) => {
+      const response = await command("stage", { proof });
+      if (!response.ok) return response;
+      const grant = Schema.decodeUnknownSync(StartAuthorization)(
+        await openEnvelope(old.env.POOL_DEPLOYMENT_KEY!, "pool-runtime-attestation-v1", proof),
+      );
+      await old.storage.when(`runtime-slots-v1:startup:${grant.target.slotId}`, (value) =>
+        Schema.is(Schema.Struct({ status: Schema.Literals(["ready", "failed"]) }))(value),
+      );
+      const observed = await command("stage-inspect", { target: grant.target });
+      const record = Schema.decodeUnknownSync(
+        Schema.Struct({
+          result: Schema.Struct({
+            status: Schema.String,
+            identity: Schema.optional(Schema.Unknown),
+          }),
+        }),
+      )(await observed.json()).result;
+      return record.status === "ready"
+        ? Response.json({ result: record.identity })
+        : Response.json({ error: "runtime-startup-failed" }, { status: 409 });
+    },
     view,
     model,
     publicModel: (

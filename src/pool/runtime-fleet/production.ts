@@ -335,7 +335,7 @@ export class PoolRuntimeFleet {
     return this.imageUpdate.cancel(operationId);
   }
   async assertPrimaryChange(action: string) {
-    if (["stage", "promote", "drain", "discard"].includes(action)) return;
+    if (["stage", "promote", "drain", "discard", "startup-abort"].includes(action)) return;
     if ((await this.configuration.inspect())?.enabled || (await this.state.inspect()).length)
       throw new SlotRefused("selection");
   }

@@ -63,6 +63,8 @@ export const releaseRuntimeImage = <A, StackError>(
           options.encryptionKey,
         );
         let record = yield* Effect.promise(journal.read);
+        if (record?.abort)
+          throw new BarrierRefusal("runtime-release-candidate-aborted-or-pending", "PoolWorker");
         if (!record) {
           yield* resumeForwardRelease(compiled, { directory: options.directory });
           const baseline = yield* runtimeReleaseState(compiled);

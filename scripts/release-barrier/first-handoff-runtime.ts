@@ -28,6 +28,7 @@ import { observeFirstHandoffLegacy, observeFirstHandoffSelected } from "./first-
 import { signRuntimeAdmission } from "./runtime-slot-proof.ts";
 import { authorizeRuntimeStart, attestRuntimeRelease } from "./runtime-slot-admission.ts";
 import { runtimeHandoffRequest } from "./runtime-slot-rpc.ts";
+import { awaitRuntimeStartup } from "./runtime-startup-client.ts";
 import {
   decodeProvisioningInput,
   provisioningRefusal,
@@ -44,10 +45,7 @@ export const decodeHandoffGrant = decodeProvisioningInput(
 );
 export type HandoffGrant = ReturnType<typeof decodeHandoffGrant>;
 type Action<T> = T extends unknown ? Omit<T, "controllerCode" | "at" | "expiresAt"> : never;
-const identityResponse = decodeProvisioningInput(
-  Schema.Struct({ result: SlotIdentity }),
-  "firstHandoff.start",
-);
+
 const promotionResponse = decodeProvisioningInput(
   Schema.Struct({ result: PromotionReceipt }),
   "firstHandoff.promotion",
@@ -117,7 +115,11 @@ export const firstHandoffRuntime = (input: {
     const now = input.now ?? Date.now;
     const enabled = (role: "legacy" | "candidate") =>
       firstHandoffRuntimeEnable(manifest, role, input.enable, now());
-    const call = (role: "legacy" | "candidate", command: Action<RuntimeHandoffCommand>) => {
+    const call = (
+      role: "legacy" | "candidate",
+      command: Action<RuntimeHandoffCommand>,
+      signal?: AbortSignal,
+    ) => {
       const at = now();
       return runtimeHandoffRequest(
         manifest[role],
@@ -134,6 +136,7 @@ export const firstHandoffRuntime = (input: {
         ),
         target,
         now,
+        signal,
       );
     };
     const legacyProof = (grant: HandoffGrant) => {
@@ -201,9 +204,12 @@ export const firstHandoffRuntime = (input: {
       start: async (grant) => {
         sameProvisioningValue("firstHandoff.start.kind", "start", grant.proof.kind);
         decodeAdmissionProof(grant.proof, now());
-        const result = identityResponse(
-          await call("candidate", { action: "stage", proof: grant.envelope }),
-        ).result;
+        const result = await awaitRuntimeStartup({
+          call: (command, _mutation, signal) => call("candidate", command, signal),
+          target: manifest.candidate.target,
+          operationId: grant.proof.operationId,
+          proof: grant.envelope,
+        });
         sameProvisioningValue("firstHandoff.started.target", manifest.candidate.target, {
           ...result,
           bootId: undefined,

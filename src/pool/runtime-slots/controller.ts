@@ -83,10 +83,10 @@ export class RuntimeSlots {
     });
   }
 
-  async stage(
+  async prepareStage(
     value: SlotTarget,
     expected?: { epoch: number; active: SlotIdentity; digest: string },
-    admit?: () => Promise<void>,
+    prepared?: (transaction: SlotStorage) => Promise<void>,
   ) {
     const target = Schema.decodeUnknownSync(SlotTarget)(value);
     if (target.controllerId !== this.deps.controllerId) throw new SlotRefused("identity");
@@ -109,15 +109,37 @@ export class RuntimeSlots {
       )
         throw new SlotRefused("selection");
       currentPolicies(snapshot, this.clock);
+      await prepared?.(transaction);
       await this.deps.beforeStage?.(target, transaction);
       await transaction.put(slotSelectionKey, {
         ...selection,
         candidate: { target, fenced: false },
       });
     });
-    // Registration precedes startup. Concurrent revocation sees even an unready candidate.
+    return target;
+  }
+
+  async stage(
+    value: SlotTarget,
+    expected?: { epoch: number; active: SlotIdentity; digest: string },
+    admit?: () => Promise<void>,
+  ) {
+    const target = await this.prepareStage(value, expected);
     await admit?.();
-    const health = await this.deps.driver.start(target, AbortSignal.timeout(180_000));
+    return this.startStage(target, AbortSignal.timeout(180_000));
+  }
+
+  async startStage(target: SlotTarget, signal: AbortSignal) {
+    const beforeStart = await this.inspect();
+    if (
+      !beforeStart.selection?.candidate ||
+      !sameTarget(beforeStart.selection.candidate.target, target) ||
+      beforeStart.selection?.candidate?.fenced ||
+      beforeStart.selection?.candidate?.retirement
+    )
+      throw new SlotRefused("selection");
+    // Registration precedes startup. Concurrent revocation sees even an unready candidate.
+    const health = await this.deps.driver.start(target, signal);
     const identity = this.identity(health.identity);
     if (!sameTarget(identity, target)) throw new SlotRefused("identity");
     healthy(health, identity, this.clock);
@@ -134,6 +156,11 @@ export class RuntimeSlots {
         candidate: { ...selection.candidate, identity },
       });
     });
+    return this.verifyCandidate(identity);
+  }
+
+  async verifyCandidate(identity: SlotIdentity) {
+    const target = identity;
     const before = await this.inspect();
     const proof = await proveSlot(this.deps.driver, identity, before, this.clock);
     await this.deps.storage.transact(async (current, transaction) => {
@@ -143,6 +170,7 @@ export class RuntimeSlots {
         selection.candidate.fenced ||
         selection.candidate.retirement ||
         !sameTarget(selection.candidate.target, target) ||
+        !sameIdentity(selection.candidate.identity, identity) ||
         current.digest !== before.digest
       )
         throw new SlotRefused("selection");
@@ -168,7 +196,7 @@ export class RuntimeSlots {
   async observeCandidate() {
     const before = await this.inspect();
     const candidate = before.selection?.candidate;
-    if (!candidate || candidate.retirement) throw new SlotRefused("selection");
+    if (!candidate || candidate.retirement || candidate.fenced) throw new SlotRefused("selection");
     const health = await this.deps.driver.observe(candidate.target, AbortSignal.timeout(2_000));
     const identity = this.identity(health.identity);
     if (
@@ -183,6 +211,7 @@ export class RuntimeSlots {
         !selection ||
         !current ||
         current.retirement ||
+        current.fenced ||
         !sameTarget(current.target, candidate.target) ||
         (current.identity && !sameIdentity(current.identity, identity))
       )

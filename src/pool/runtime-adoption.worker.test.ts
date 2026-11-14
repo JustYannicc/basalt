@@ -66,7 +66,7 @@ test("an existing candidate prevents the first-adoption readback gate from being
   const f = await handoffWorker();
   context.after(f.cleanup);
   const grant = await f.startGrant();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 200);
+  assert.equal((await f.stage(grant.envelope)).status, 200);
   assert.equal((await witness(f)).status, 409);
 });
 

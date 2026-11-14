@@ -11,7 +11,9 @@ async function candidate(f: Awaited<ReturnType<typeof fleetWorkerFixture>>) {
   await f.send("fleet-configure", { operationId: "enable", configuration: f.configuration });
   const grant = await f.startGrant();
   const identity = Schema.decodeUnknownSync(SlotIdentity)(
-    await f.send("stage", { proof: grant.envelope }),
+    Schema.decodeUnknownSync(Schema.Struct({ result: SlotIdentity }))(
+      await (await f.stage(grant.envelope)).json(),
+    ).result,
   );
   const runtime = f.instances.get(identity.instanceId)!.fixture;
   return joinedRuntimeProof(

@@ -43,7 +43,7 @@ test("a primary version promotion keeps fleet permission, Home authority and the
   const originalBoot = old.headers.get("X-Signalbox-Pool-Boot");
   const reading = old.text();
   const grant = await f.startGrant();
-  const staged = await f.command("stage", { proof: grant.envelope });
+  const staged = await f.stage(grant.envelope);
   assert.equal(staged.status, 200, await staged.clone().text());
   const identity = Schema.decodeUnknownSync(Schema.Struct({ result: SlotIdentity }))(
     await staged.json(),
@@ -153,7 +153,9 @@ test(
     assert.ok(oldRows.every((row) => row.active === 1));
     const grant = await f.startGrant();
     const staged = Schema.decodeUnknownSync(SlotIdentity)(
-      await f.send("stage", { proof: grant.envelope }),
+      Schema.decodeUnknownSync(Schema.Struct({ result: SlotIdentity }))(
+        await (await f.stage(grant.envelope)).json(),
+      ).result,
     );
     const runtime = f.instances.get(staged.instanceId)!.fixture;
     const joined = await joinedRuntimeProof(

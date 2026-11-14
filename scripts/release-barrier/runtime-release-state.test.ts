@@ -170,3 +170,47 @@ test("the encrypted image journal restores exact settings and bootstrap intent, 
   );
   await assert.rejects(reconstructed.read(), /authentication-failed/);
 });
+
+test("a confirmed startup abort settles the encrypted failed-candidate journal and preserves its terminal receipt", async () => {
+  const f = await fixture();
+  const proof = await runtimeProofFixture();
+  const startup = proof.manifest;
+  const journal = await f.run(runtimeReleaseJournal(scope, writer(), key));
+  const record = {
+    ...f.record,
+    promotion: {
+      operationId: startup.operationId,
+      pool: "synthetic-pool",
+      generation: 0,
+      startup,
+    },
+  };
+  await journal.write(record);
+  const foreign = await f.run(runtimeReleaseJournal(scope, writer("c".repeat(40)), key));
+  await assert.rejects(foreign.read(), /prior-candidate-unsettled/);
+  const abort = {
+    intent: {
+      operationId: "operator-abort",
+      target: startup.target,
+      witness: proof.witness,
+      startupOperationId: startup.operationId,
+      expectedEpoch: startup.selection.expectedEpoch,
+      active: startup.selection.active!,
+    },
+    status: "aborted" as const,
+    sent: true,
+  };
+  await journal.write({ ...record, abort: { ...abort, status: "pending" } });
+  await assert.rejects(foreign.read(), /prior-candidate-unsettled/);
+  await journal.write({ ...record, abort });
+  assert.equal(await foreign.read(), undefined);
+  const retained = await Effect.runPromise(
+    f.state.getOutput({
+      stack: `${scope.name}-runtime-image-release-history-${candidate}`,
+      stage: scope.stage,
+    }),
+  );
+  assert.ok(retained);
+  assert.ok(!JSON.stringify(retained).includes("synthetic-management-secret"));
+  assert.deepEqual((await journal.read())?.abort, abort);
+});

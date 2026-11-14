@@ -101,7 +101,7 @@ for (const maximum of [1, 2, 3, 4])
         },
       });
       const fullGrant = await f.startGrant();
-      assert.equal((await f.command("stage", { proof: fullGrant.envelope })).status, 409);
+      assert.equal((await f.stage(fullGrant.envelope)).status, 409);
       now += 101;
       await f.upkeep();
       const draining = (await state.inspect()).filter((row) => row.phase === "draining");
@@ -129,7 +129,7 @@ for (const maximum of [1, 2, 3, 4])
       await f.upkeep();
       assert.equal((await state.inspect()).length, maximum - 1);
       const grant = await f.startGrant();
-      assert.equal((await f.command("stage", { proof: grant.envelope })).status, 200);
+      assert.equal((await f.stage(grant.envelope)).status, 200);
       assert.equal(await state.physicalCount(), maximum);
       for (const row of await state.inspect())
         assert.equal(f.instances.get(row.target.instanceId)!.fixture.calls.destroy, 0);

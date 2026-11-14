@@ -32,7 +32,7 @@ test("the signed release freeze refuses an active image and releases only after 
     "prepared",
   );
   const grant = await f.startGrant();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 409);
+  assert.equal((await f.stage(grant.envelope)).status, 409);
   assert.equal(f.instances.size, 0);
   assert.equal(
     (await f.command("image-prepare", { update: { ...update, imageInput: "7".repeat(16) } }))
@@ -99,14 +99,14 @@ test("unknown provider state keeps the freeze across reconstruction and cancella
   );
   assert.equal((await f.command("image-cancel", { operationId: update.operationId })).status, 409);
   const grant = await f.startGrant();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 409);
+  assert.equal((await f.stage(grant.envelope)).status, 409);
   assert.equal(f.instances.size, 0);
   f.providerAvailable(true);
   assert.equal(
     phase(await f.send("image-cancel", { operationId: update.operationId })),
     "cancelled",
   );
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 200);
+  assert.equal((await f.stage(grant.envelope)).status, 200);
 });
 
 for (const changedImage of [false, true])

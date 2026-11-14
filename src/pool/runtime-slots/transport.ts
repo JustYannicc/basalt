@@ -9,6 +9,7 @@ import {
   runtimeResponseDiagnostic,
 } from "../runtime-route-diagnostic.ts";
 import { Schema } from "effect";
+import { StartupStopIntent, StartupStopRecord } from "./startup-abort-contract.ts";
 import {
   SlotIdentity,
   SlotTarget,
@@ -122,6 +123,15 @@ export class BoundSlotDriver implements SlotDriver {
   async witness(target: SlotTarget) {
     return (await this.call(target, "witness", { target }, AbortSignal.timeout(2_000))).json();
   }
+  async abortStartup(intent: StartupStopIntent, inspect: boolean) {
+    const response = await this.call(
+      intent.target,
+      inspect ? "startup-abort-inspect" : "startup-abort",
+      { intent },
+      AbortSignal.timeout(5_000),
+    );
+    return Schema.decodeUnknownSync(StartupStopRecord)(await response.json());
+  }
   async ready(identity: SlotIdentity, configurationFingerprint: string, imageInput: string) {
     const requestedAt = performance.now();
     const response = await this.call(
@@ -218,6 +228,15 @@ export async function runtimeRequest(
       );
       if (action === "/admit") await endpoint.admit(envelope);
       else await endpoint.attest(envelope);
+    } else if (action === "/startup-abort" || action === "/startup-abort-inspect") {
+      const { intent } = Schema.decodeUnknownSync(Schema.Struct({ intent: StartupStopIntent }))(
+        value,
+      );
+      return Response.json(
+        action === "/startup-abort"
+          ? await endpoint.abortStartup(intent, request.signal)
+          : await endpoint.inspectStartupAbort(intent),
+      );
     } else if (action === "/witness") {
       const { target } = Schema.decodeUnknownSync(Schema.Struct({ target: SlotTarget }))(value);
       return Response.json(await endpoint.witness(target));

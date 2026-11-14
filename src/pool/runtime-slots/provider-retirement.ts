@@ -14,3 +14,15 @@ export function primaryRetirementProvider(reader: RuntimeProviderReader): Retire
     }
   };
 }
+
+export function startupAbortProvider(reader: RuntimeProviderReader) {
+  return async (record: import("./startup-abort-contract.ts").StartupStopRecord) => {
+    if (
+      !(await reader.absent(
+        { ...record.intent.target, ...record.provider },
+        record.intent.target.instanceId,
+      ))
+    )
+      throw new SlotRefused("uncertain");
+  };
+}

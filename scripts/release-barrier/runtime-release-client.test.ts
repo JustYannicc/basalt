@@ -151,10 +151,13 @@ for (const fault of ["stage", "promote"] as const)
     async (context) => {
       const f = await fixture(fault);
       context.after(() => f.cleanup());
-      await assert.rejects(
-        f.client.promote("green-application", "lost-reply", f.claims.pool),
-        /synthetic lost committed reply/,
-      );
+      if (fault === "stage")
+        await f.client.promote("green-application", "lost-reply", f.claims.pool);
+      else
+        await assert.rejects(
+          f.client.promote("green-application", "lost-reply", f.claims.pool),
+          /synthetic lost committed reply/,
+        );
       f.reconstructRoot();
       await f.client.promote("green-application", "lost-reply", f.claims.pool);
       assert.equal(f.commands.filter((action) => action === "stage").length, 1);

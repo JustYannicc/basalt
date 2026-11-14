@@ -39,6 +39,8 @@ import type { NativeStreamLease } from "../native-streams.ts";
 import { proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 import { RuntimeMaintenance } from "./maintenance.ts";
+import { RuntimeStartupStop } from "./startup-stop.ts";
+import type { StartupStopIntent } from "./startup-abort-contract.ts";
 
 export interface EndpointEnvironment extends RuntimeEnvironment {
   POOL_RUNTIME_APPLICATION_ID?: string;
@@ -64,6 +66,7 @@ export class RuntimeEndpoint {
   private retirementMonitor: RuntimeRetirementMonitor;
   private options: EndpointOptions;
   private maintenance: RuntimeMaintenance;
+  private startupStop: RuntimeStartupStop;
   constructor(
     ctx: ControllerState,
     env: EndpointEnvironment,
@@ -78,6 +81,7 @@ export class RuntimeEndpoint {
     this.role = role;
     this.code = code;
     this.store = new RuntimeWitnessStore(ctx.storage, env.POOL_DEPLOYMENT_KEY ?? "");
+    this.startupStop = new RuntimeStartupStop(ctx, this.store);
     this.channel = new RuntimeChannel(ctx, env);
     this.activity = new RuntimeActivity(ctx.storage);
     this.maintenance = new RuntimeMaintenance({
@@ -193,10 +197,19 @@ export class RuntimeEndpoint {
         configuration,
         signal,
         this.options.beforeStart,
+        () => this.startupStop.assertStart(target),
       );
       signal.throwIfAborted();
       return this.complete(target, signal);
     });
+  }
+  abortStartup(intent: StartupStopIntent, signal: AbortSignal) {
+    this.bound(intent.target);
+    return this.startupStop.abort(intent, signal);
+  }
+  inspectStartupAbort(intent: StartupStopIntent) {
+    this.bound(intent.target);
+    return this.startupStop.inspect(intent);
   }
   private checked(record: WitnessRecord, status: PoolStatus) {
     if (record.identity && status.boot_id !== record.identity.bootId)

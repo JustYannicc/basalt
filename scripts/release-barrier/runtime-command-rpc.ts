@@ -12,6 +12,7 @@ export type RuntimeCommandAction = Action<RuntimeHandoffCommand>;
 export type RuntimeCommandCall = (
   action: RuntimeCommandAction,
   mutation?: boolean,
+  signal?: AbortSignal,
 ) => Promise<unknown>;
 
 /** One send only. An unknown response must be recovered through the retained operation's read path. */
@@ -20,17 +21,20 @@ export async function sendRuntimeCommand(
   signingKey: string,
   target: PoolOperationsTarget,
   assertCurrent: () => void,
+  signal?: AbortSignal,
 ) {
   const envelope = await signEnvelope(signingKey, runtimeHandoffCommandPrefix, command);
   const bridge = await openPoolOperations(target);
   try {
     assertCurrent();
     const response = await bridge.service.fetch(
-      new Request(`https://pool-operations.invalid${runtimeHandoffPath}`, {
+      new Request(`http://pool-operations${runtimeHandoffPath}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ envelope }),
-        signal: AbortSignal.timeout(15_000),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
+          : AbortSignal.timeout(15_000),
       }),
     );
     if (response.status !== 200) {

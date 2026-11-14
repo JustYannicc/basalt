@@ -50,7 +50,16 @@ export async function handleRuntimeHandoff(
     );
     if (!sameControllerCode(value.controllerCode, code)) return new Response(null, { status: 409 });
     if (
-      ["adopt", "stage", "promote", "drain", "discard", "fence", "unfence"].includes(value.action)
+      [
+        "adopt",
+        "stage",
+        "promote",
+        "drain",
+        "discard",
+        "fence",
+        "unfence",
+        "startup-abort",
+      ].includes(value.action)
     )
       await fleet?.assertPrimaryChange?.(value.action);
     let result: unknown;
@@ -118,7 +127,16 @@ export async function handleRuntimeHandoff(
         result = await handoff.adopt(value.proof);
         break;
       case "stage":
-        result = await handoff.stage(value.proof);
+        result = await handoff.beginStage(value.proof);
+        break;
+      case "startup-abort":
+        result = await handoff.startupAbort.abort(value.intent);
+        break;
+      case "startup-abort-inspect":
+        result = await handoff.startupAbort.inspect(value.operationId);
+        break;
+      case "stage-inspect":
+        result = await handoff.staging.inspect(value.target);
         break;
       case "observe":
         result = await handoff.slots.observeCandidate();

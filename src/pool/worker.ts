@@ -13,7 +13,10 @@ import { RuntimeHomePeerTransport } from "./home-peer.worker.ts";
 import { handleHomePeerUpgrade, homePeerPath } from "./home-peer-transport.ts";
 import { PoolRuntimeFleet, type FleetNamespace } from "./runtime-fleet/production.ts";
 import { RuntimeProviderReader } from "./runtime-provider/read.ts";
-import { primaryRetirementProvider } from "./runtime-slots/provider-retirement.ts";
+import {
+  primaryRetirementProvider,
+  startupAbortProvider,
+} from "./runtime-slots/provider-retirement.ts";
 import { PoolAlarms } from "./alarms.ts";
 import { PoolUpkeepTrace } from "./upkeep-trace.ts";
 import { RuntimeHandoff, type HandoffEnvironment } from "./runtime-slots/integration.ts";
@@ -182,6 +185,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       {
         wrap: nativeResponse,
         retirementProvider: primaryRetirementProvider(
+          new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN),
+        ),
+        startupAbsence: startupAbortProvider(
           new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN),
         ),
         beforeStage: (target, transaction) => this.fleet.stagePrimary(target, transaction),

@@ -4,6 +4,9 @@ import type { UnattestedActive } from "./admission-proof.ts";
 import { RuntimeSlotAuthority } from "./authority.ts";
 import { configurationDigest, runtimeConfiguration } from "./configuration.ts";
 import { RuntimeSlots } from "./controller.ts";
+import { RuntimeStaging } from "./staging.ts";
+import { RuntimeStartupAbort } from "./startup-abort.ts";
+import type { StartupStopRecord } from "./startup-abort-contract.ts";
 import { slotSelectionKey, RuntimeSlotStorage } from "./storage.ts";
 import { RuntimeSlotRouter } from "./router.ts";
 import { SlotStreams } from "./streams.ts";
@@ -35,12 +38,15 @@ interface Options {
   beforeStage?(target: SlotTarget, transaction: SlotStorage): Promise<void>;
   beforePromote?(intent: PromotionIntent, transaction: SlotStorage): Promise<void>;
   retirementProvider?: RetirementProvider;
+  startupAbsence?(record: StartupStopRecord): Promise<void>;
 }
 /** No selection means the existing deployment. A broken admitted selection never falls back. */
 export class RuntimeHandoff {
   readonly storage: RuntimeSlotStorage;
   private authorityCheck?: RuntimeSlotAuthority;
   private controller?: RuntimeSlots;
+  private startup?: RuntimeStaging;
+  private abortingStartup?: RuntimeStartupAbort;
   private controllerCode: ControllerCode;
   private driver: BoundSlotDriver;
   private routing?: RuntimeSlotRouter;
@@ -88,6 +94,22 @@ export class RuntimeHandoff {
       beforePromote: this.options.beforePromote,
       retirementProvider: this.options.retirementProvider,
     }));
+  }
+  get startupAbort() {
+    return (this.abortingStartup ??= new RuntimeStartupAbort(
+      this.storage,
+      this.ctx.storage,
+      this.driver,
+      this.options.startupAbsence,
+    ));
+  }
+  get staging() {
+    return (this.startup ??= new RuntimeStaging(
+      this.slots,
+      this.storage,
+      this.ctx.storage,
+      (work) => this.ctx.waitUntil(work),
+    ));
   }
   private get router() {
     return (this.routing ??= new RuntimeSlotRouter({
@@ -211,6 +233,12 @@ export class RuntimeHandoff {
       },
       () => this.driver.admit(proof.target, envelope),
     );
+  }
+  async beginStage(envelope: string) {
+    const proof = await this.authority.read(envelope);
+    if (proof.kind !== "start" || !proof.selection.active) throw new SlotRefused("identity");
+    await this.authority.selection(proof);
+    return this.staging.begin(proof, () => this.driver.admit(proof.target, envelope));
   }
   async startInitial(envelope: string) {
     const proof = await this.authority.read(envelope);

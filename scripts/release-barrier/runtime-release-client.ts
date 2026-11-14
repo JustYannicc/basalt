@@ -30,6 +30,7 @@ import { runtimeApplicationPins, type runtimeReleaseState } from "./runtime-rele
 import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
 import { verifyContainerHealth } from "./container-health.ts";
 import { BarrierRefusal } from "./refusal.ts";
+import { awaitRuntimeStartup } from "./runtime-startup-client.ts";
 import { sameProvisioningValue } from "./provisioning-refusal.ts";
 import {
   configurationDigest,
@@ -91,7 +92,7 @@ export const runtimeReleaseClient = (input: {
     const { state, code, writer } = input;
     const target = input.target ?? state.target;
     const signingKey = state.deploymentKey;
-    const call = (action: RuntimeCommandAction, mutation = false) => {
+    const call = (action: RuntimeCommandAction, mutation = false, signal?: AbortSignal) => {
       const send = () => {
         writer.assert();
         const at = Date.now();
@@ -99,10 +100,16 @@ export const runtimeReleaseClient = (input: {
           { ...action, controllerCode: code, at, expiresAt: at + 60_000 },
           at,
         );
-        return sendRuntimeCommand(command, signingKey, target, () => {
-          writer.assert();
-          decodeRuntimeHandoffCommand(command);
-        });
+        return sendRuntimeCommand(
+          command,
+          signingKey,
+          target,
+          () => {
+            writer.assert();
+            decodeRuntimeHandoffCommand(command);
+          },
+          signal,
+        );
       };
       return mutation ? writer.exclusive(send) : send();
     };
@@ -283,15 +290,15 @@ export const runtimeReleaseClient = (input: {
         const options = proofInput(startup);
         let identity = before.selection?.candidate?.identity;
         if (!identity) {
-          if (before.selection?.candidate)
-            identity = result(SlotIdentity, await call({ action: "observe" }, true));
-          else {
-            const grant = await run(authorizeRuntimeStart(options));
-            identity = result(
-              SlotIdentity,
-              await call({ action: "stage", proof: grant.envelope }, true),
-            );
-          }
+          const grant = before.selection?.candidate
+            ? undefined
+            : await run(authorizeRuntimeStart(options));
+          identity = await awaitRuntimeStartup({
+            call,
+            target: chosen,
+            operationId,
+            ...(grant ? { proof: grant.envelope } : {}),
+          });
         }
         const {
           gate,

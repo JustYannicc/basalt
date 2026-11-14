@@ -212,7 +212,10 @@ test("Manual release of main releases a dispatched candidate main contains, and 
     /\n\s+id: trusted\n\s+run: echo "commit=\$\(git rev-parse HEAD\)" >> "\$GITHUB_OUTPUT"\n/,
   );
   assert.ok(backup.indexOf("id: trusted") < backup.indexOf("id: candidate"));
-  assert.match(deploy, /^          ref: \$\{\{ needs\.backup\.outputs\.trusted \}\}$/m);
+  assert.match(
+    deploy,
+    /^          ref: \$\{\{ needs\.backup\.outputs\.trusted \|\| github\.sha \}\}$/m,
+  );
   assert.doesNotMatch(deploy, /^          ref: main$/m);
   // A dispatched run can replace a newer commit's pending Deploy run, so it releases the newest passing commit.
   assert.match(
@@ -239,7 +242,7 @@ test("Manual release of main releases a dispatched candidate main contains, and 
   assert.ok(backup.indexOf("baseline-probe-entry.ts") < backup.indexOf("release.ts backup-only"));
   assert.match(
     deploy,
-    /^    if: github\.ref == 'refs\/heads\/main' && needs\.backup\.outputs\.already_live == 'false'$/m,
+    /^    if: always\(\) && !cancelled\(\) && github\.ref == 'refs\/heads\/main' && \(inputs\.runtime_abort != '' \|\| needs\.backup\.outputs\.already_live == 'false'\)$/m,
   );
   // The deploy job only needs main to still contain the backed-up candidate, not to equal it.
   assert.match(
@@ -247,4 +250,29 @@ test("Manual release of main releases a dispatched candidate main contains, and 
     /run: node scripts\/release-merge\/main-candidate\.ts\n\s+env:\n\s+MAIN_RELEASE_CANDIDATE: \$\{\{ needs\.backup\.outputs\.head \}\}\n\s+MAIN_RELEASE_REQUIRE_CANDIDATE: "true"\n/,
   );
   assert.doesNotMatch(release, /MAIN_RELEASE_EXPECTED_HEAD|MAIN_RELEASE_REQUIRE_EXPECTED/);
+});
+
+test("runtime startup recovery uses the existing trusted deploy job and excludes normal release writes", () => {
+  const release = readFileSync(
+    new URL("../../.github/workflows/release-main.yml", import.meta.url),
+    "utf8",
+  );
+  const backup = release.slice(release.indexOf("\n  backup:\n"), release.indexOf("\n  deploy:\n"));
+  const deploy = release.slice(release.indexOf("\n  deploy:\n"));
+  assert.match(backup, /if: github.ref == 'refs\/heads\/main' && inputs.runtime_abort == ''/);
+  assert.match(deploy, /environment: production-release/);
+  assert.match(release, /group: deploy-production\n  cancel-in-progress: false/);
+  assert.match(
+    deploy,
+    /run: bun scripts\/release-barrier\/entry.ts --abort-runtime "\$RUNTIME_ABORT_MODE"/,
+  );
+  assert.match(deploy, /BASALT_RELEASE_CANDIDATE: \$\{\{ inputs.candidate \}\}/);
+  for (const name of [
+    "Select the same immutable release source",
+    "Rebuild and check the backed-up candidate",
+    "Journal changes require all existing workflow runs drained before deployment",
+    "Recheck the backup and deploy the release",
+  ])
+    assert.ok(deploy.includes(`name: ${name}\n        if: inputs.runtime_abort == ''`));
+  assert.doesNotMatch(deploy, /run: [^\n]*\$\{\{ inputs.runtime_abort/);
 });

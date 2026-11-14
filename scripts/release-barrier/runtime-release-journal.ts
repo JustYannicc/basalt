@@ -10,6 +10,8 @@ import { openRecovery, sealRecovery } from "./recovery-envelope.ts";
 import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import type { RuntimeReleaseWriter } from "./runtime-release-writer.ts";
 import { ReleasePromotionAttempt } from "./runtime-release-promotion.ts";
+import { StartupAbortReceipt } from "../../src/pool/runtime-slots/startup-abort-contract.ts";
+import { sameProvisioningValue } from "./provisioning-refusal.ts";
 
 const Record = Schema.Struct({
   format: Schema.Literal("pool-image-release-v1"),
@@ -22,6 +24,8 @@ const Record = Schema.Struct({
   configurations: Schema.Record(Schema.String, FleetConfiguration),
   update: Schema.optional(ImageUpdateIntent),
   promotion: Schema.optional(ReleasePromotionAttempt),
+  abort: Schema.optional(StartupAbortReceipt),
+  abortPlanDigest: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u))),
 });
 export type RuntimeReleaseRecord = typeof Record.Type;
 const Header = Schema.Struct({
@@ -49,7 +53,7 @@ export const runtimeReleaseJournal = (
       if (record.candidate !== header.candidate || digest(canonical(record)) !== header.fingerprint)
         throw new BarrierRefusal("runtime-release-journal-identity", "PoolWorker");
       if (record.candidate !== writer.candidate) {
-        if (record.complete) return undefined;
+        if (record.complete || record.abort?.status === "aborted") return undefined;
         throw new BarrierRefusal("runtime-release-prior-candidate-unsettled", "PoolWorker");
       }
       return record;
@@ -61,17 +65,46 @@ export const runtimeReleaseJournal = (
           const record = Schema.decodeUnknownSync(Record)(value);
           if (record.candidate !== writer.candidate)
             throw new BarrierRefusal("runtime-release-journal-candidate", "PoolWorker");
+          if (record.abort) {
+            if (record.complete || !record.promotion)
+              throw new BarrierRefusal("runtime-release-abort-journal-state");
+            const startup = record.promotion.startup;
+            sameProvisioningValue(
+              "runtime-release.abort.target",
+              startup.target,
+              record.abort.intent.target,
+            );
+            sameProvisioningValue(
+              "runtime-release.abort.startup",
+              startup.operationId,
+              record.abort.intent.startupOperationId,
+            );
+            sameProvisioningValue(
+              "runtime-release.abort.active",
+              startup.selection.active,
+              record.abort.intent.active,
+            );
+            sameProvisioningValue(
+              "runtime-release.abort.epoch",
+              startup.selection.expectedEpoch,
+              record.abort.intent.expectedEpoch,
+            );
+          }
           const fingerprint = digest(canonical(record));
-          await Effect.runPromise(
-            state.setOutput({
-              ...key,
-              value: {
-                candidate: record.candidate,
-                fingerprint,
-                sealed: sealRecovery(record, encryptionKey, record.candidate, fingerprint),
-              },
-            }),
-          );
+          const sealedValue = {
+            candidate: record.candidate,
+            fingerprint,
+            sealed: sealRecovery(record, encryptionKey, record.candidate, fingerprint),
+          };
+          if (record.abort?.status === "aborted")
+            await Effect.runPromise(
+              state.setOutput({
+                stack: `${stack.name}-runtime-image-release-history-${record.candidate}`,
+                stage: stack.stage,
+                value: sealedValue,
+              }),
+            );
+          await Effect.runPromise(state.setOutput({ ...key, value: sealedValue }));
         }),
     };
   });
