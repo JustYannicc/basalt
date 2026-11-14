@@ -51,12 +51,13 @@ export const pool = {
         result<import("../capacity-contract.ts").PoolCapacityHistory>(),
       ),
     ),
-  overviewUsage: async (
-    input: import("../overview-contract.ts").PoolOverviewInput,
-  ): Promise<Result<import("../overview-contract.ts").PoolOverviewResult>> => {
+  /** The manager overview's one usage read; the host answers 403 to anyone who can't manage. */
+  summary: async (
+    input: import("../usage-overview-contract.ts").PoolUsageSummaryInput,
+  ): Promise<Result<import("../usage-overview-contract.ts").PoolUsageSummaryResult>> => {
     try {
       const context = JSON.parse(document.getElementById("executor-context")?.textContent ?? "{}");
-      const response = await fetch("/_executor/api/pool-usage/overview", {
+      const response = await fetch("/_executor/api/pool-usage/summary", {
         method: "POST",
         credentials: "same-origin",
         headers: { "content-type": "application/json" },
@@ -69,14 +70,16 @@ export const pool = {
           message:
             response.status === 403
               ? "Pool usage is available to managers only."
-              : "Overview could not be read. Reload and try again.",
+              : response.status === 409
+                ? "This pool app was just updated. Reload to read its usage."
+                : "Usage could not be read. Try again.",
         };
       return { ok: true, value: await response.json() };
     } catch {
       return {
         ok: false,
         error: "backend_unavailable",
-        message: "Overview could not be read. Try again.",
+        message: "Usage could not be read. Try again.",
       };
     }
   },
@@ -159,6 +162,8 @@ export const pool = {
     read(client.query(queryReference<typeof usage>("usage"), { days: 30 }, result<UsageSummary>())),
   /** Refreshes on an interval only while someone sees the page, including behind the host's other tabs. */
   poll: client.poll,
+  /** Opens a host tab, a declared page or an account in the embedding window; false when it can't. */
+  navigate: client.navigate,
 };
 
 export type PoolApi = typeof pool;

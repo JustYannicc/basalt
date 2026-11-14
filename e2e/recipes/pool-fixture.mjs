@@ -10,6 +10,7 @@ import { NativeMemberships } from "../../src/pool/membership.ts";
 import { readNativeMembership } from "../../src/pool/membership-read.ts";
 import { HomeMembership } from "../../src/pool/home-membership.ts";
 import { Computers } from "../../src/pool/computers.ts";
+import { openEnvelope } from "../../src/pool/token.ts";
 
 /** The production control API with only its external Home management service simulated. */
 export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
@@ -208,11 +209,51 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     },
   });
   const traces = [];
+  // Signed usage reads the model-history worker would answer. A journey that sets `respond`
+  // supplies their synthetic data; every other journey keeps the production control's answers.
+  const usage = { respond: undefined, capacity: undefined, calls: [], requests: [] };
+  const usageRoutes = new Set([
+    "/pool/v1/usage/summary",
+    "/pool/v1/usage/series",
+    "/pool/v1/usage/overview",
+    "/pool/v1/usage/personal-overview",
+    "/pool/v1/usage/last-success",
+  ]);
   const server = createServer(async (request, response) => {
     try {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const body = Buffer.concat(chunks);
+      // Method and path only, for the journey's request inventory; never bodies or credentials.
+      usage.requests.push(
+        `${request.method} ${new URL(request.url ?? "/", "http://127.0.0.1").pathname}`,
+      );
+      const address = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (
+        usage.capacity &&
+        request.method === "GET" &&
+        address.pathname === "/pool/v1/usage/capacity"
+      ) {
+        response
+          .writeHead(200, { "Content-Type": "application/json" })
+          .end(JSON.stringify(await usage.capacity(address)));
+        return;
+      }
+      if (usage.respond && request.method === "POST" && usageRoutes.has(request.url)) {
+        let envelope = "";
+        try {
+          envelope = JSON.parse(body.toString("utf8")).envelope ?? "";
+        } catch {}
+        const payload = await openEnvelope(signingKey, "sbs1", envelope);
+        usage.calls.push({ route: request.url, payload: payload ?? null });
+        const reply = payload === undefined ? undefined : await usage.respond(request.url, payload);
+        if (reply === undefined) response.writeHead(payload === undefined ? 401 : 404).end();
+        else
+          response
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(JSON.stringify(reply));
+        return;
+      }
       if (request.url === "/send" && request.method === "POST") {
         sends.push(JSON.parse(body.toString()));
         response
@@ -318,6 +359,7 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
   const origin = new URL("http://127.0.0.1");
   origin.port = String(server.address().port);
   const fixture = {
+    usage,
     prepareAcquisition(pool, id, provider = "codex", resetCount = 2) {
       acquisition = { pool, id, provider, resetCount };
     },

@@ -1,0 +1,83 @@
+diff --git a/apps/hosted/web/src/implementation/pages/pool-usage.tsx b/apps/hosted/web/src/implementation/pages/pool-usage.tsx
+--- a/apps/hosted/web/src/implementation/pages/pool-usage.tsx
++++ b/apps/hosted/web/src/implementation/pages/pool-usage.tsx
+@@ -117,8 +117,7 @@ export function PoolUsageSection({
+             <Link
+               to="/org/$organizationSlug/apps/$appId"
+               params={{ organizationSlug, appId: app }}
+-              search={{ view: "app" }}
+-              hash="usage-history"
++              search={{ page: "history" }}
+               className="inline-flex min-h-11 items-center rounded-sm text-xs font-medium text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+             >
+               View all history
+diff --git a/e2e/tests/pool-provider-native-presentation.spec.ts b/e2e/tests/pool-provider-native-presentation.spec.ts
+--- a/e2e/tests/pool-provider-native-presentation.spec.ts
++++ b/e2e/tests/pool-provider-native-presentation.spec.ts
+@@ -422,21 +422,18 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
+ 
+         const url = yield* waitForAppUrl(actors.owner, `${poolPath}/ui`);
+         yield* openPrivateApp(url);
++        // The usage overview names each lab's banked resets by kind; per-model limits and spending
++        // stay on the host's Accounts tab.
+         for (const width of [1280, 390]) {
+           const overviewFits = yield* browser.use(
+-            `Read Home model limits and resets at ${width}px`,
++            `Read Home banked resets at ${width}px`,
+             (page) => {
+-              const limits = page.getByRole("region", { name: "Model limits", exact: true });
++              const resets = page.getByRole("list", { name: "Banked resets", exact: true });
+               return page
+                 .setViewportSize({ width, height: 900 })
+                 .then(() => page.goto(url))
+-                .then(() => limits.getByText("Fable weekly", { exact: true }).waitFor())
+-                .then(() =>
+-                  page
+-                    .getByRole("button", { name: "2 weekly resets available", exact: true })
+-                    .waitFor(),
+-                )
+-                .then(() => limits.scrollIntoViewIfNeeded())
++                .then(() => resets.getByText(/2 weekly resets/u).waitFor())
++                .then(() => resets.scrollIntoViewIfNeeded())
+                 .then(() =>
+                   page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+                 );
+@@ -444,36 +441,9 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
+           );
+           expect(overviewFits).toBe(true);
+           yield* evidence.attach(
+-            `pool-model-limits-${width}.png`,
++            `pool-banked-resets-${width}.png`,
+             "image/png",
+-            yield* browser.use("Capture Home model limits", (page) => page.screenshot()),
+-          );
+-          const details = yield* browser.use(`Open model-limit Details at ${width}px`, (page) => {
+-            const dialog = page.getByRole("dialog", { name: "Account limits", exact: true });
+-            return page
+-              .getByRole("region", { name: "Model limits", exact: true })
+-              .getByRole("button", { name: /Details/ })
+-              .click()
+-              .then(() => dialog.waitFor())
+-              .then(() =>
+-                Promise.all([
+-                  dialog.innerText(),
+-                  page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+-                ]),
+-              )
+-              .then(([text, fits]) => ({ text, fits }));
+-          });
+-          expect(details.text).toContain("Fable weekly");
+-          expect(details.text).toContain("Weekly resets");
+-          expect(details.text).toContain("2 resets");
+-          expect(details.fits).toBe(true);
+-          yield* evidence.attach(
+-            `pool-account-limits-details-${width}.png`,
+-            "image/png",
+-            yield* browser.use("Capture Home limits Details", (page) => page.screenshot()),
+-          );
+-          yield* browser.use("Close limits Details", (page) =>
+-            page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click(),
++            yield* browser.use("Capture Home banked resets", (page) => page.screenshot()),
+           );
+         }
+       }),
