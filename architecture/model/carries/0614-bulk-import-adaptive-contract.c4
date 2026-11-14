@@ -1,0 +1,7 @@
+model {
+  extend basalt.bulkUsageImport {
+    metadata {
+      constraint "The tools gateway preserves the bulk actor's adaptive pacing, operator-attention and serving status, plus the CPU timestamp, release-window evidence and optional serving observation on guard commands. Owner-session HTTP and CLI consumers share those fields without permissive fallbacks; missing required safety evidence refuses before forwarding. Existing job identities, immutable manifests, SQL receipts, CPU policy and storage layout remain unchanged."
+    }
+  }
+}
