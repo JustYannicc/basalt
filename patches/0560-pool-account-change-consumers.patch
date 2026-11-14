@@ -4711,3 +4711,73 @@ new file mode 100644
 +  // This runs before normal migrations, so a fresh install cannot prepare and activate at once.
 +  if (Option.isSome(readersReady)) yield* activateHostedChangeJournal;
 +});
+diff --git a/e2e/support/pool-product-peer.ts b/e2e/support/pool-product-peer.ts
+--- a/e2e/support/pool-product-peer.ts
++++ b/e2e/support/pool-product-peer.ts
+@@ -38,6 +38,27 @@
+         headers: forwardedHeaders,
+       });
+     }).pipe(Effect.provide(FetchHttpClient.layer));
++  const signedPost = (path: string) =>
++    HttpRouter.add(
++      "POST",
++      path,
++      Effect.gen(function* () {
++        const request = yield* HttpServerRequest.HttpServerRequest;
++        const raw = yield* request.text;
++        const input = yield* Schema.decodeUnknownEffect(
++          Schema.fromJsonString(Schema.Struct({ envelope: Schema.String })),
++        )(raw);
++        const encoded = input.envelope.split(".")[1];
++        if (encoded === undefined) return HttpServerResponse.empty({ status: 401 });
++        const claims = yield* Schema.decodeUnknownEffect(
++          Schema.fromJsonString(Schema.Struct({ pool: Schema.String })),
++        )(Buffer.from(encoded, "base64url").toString());
++        return (
++          (yield* forward(claims.pool, request.url, "POST", request.headers, raw)) ??
++          HttpServerResponse.empty({ status: 404 })
++        );
++      }),
++    );
+   return {
+     forward,
+     configure: HttpRouter.add(
+@@ -96,25 +117,7 @@
+         );
+       }),
+     ),
+-    usage: HttpRouter.add(
+-      "POST",
+-      "/pool/v1/usage/*",
+-      Effect.gen(function* () {
+-        const request = yield* HttpServerRequest.HttpServerRequest;
+-        const raw = yield* request.text;
+-        const input = yield* Schema.decodeUnknownEffect(
+-          Schema.fromJsonString(Schema.Struct({ envelope: Schema.String })),
+-        )(raw);
+-        const encoded = input.envelope.split(".")[1];
+-        if (encoded === undefined) return HttpServerResponse.empty({ status: 401 });
+-        const claims = yield* Schema.decodeUnknownEffect(
+-          Schema.fromJsonString(Schema.Struct({ pool: Schema.String })),
+-        )(Buffer.from(encoded, "base64url").toString());
+-        return (
+-          (yield* forward(claims.pool, request.url, "POST", request.headers, raw)) ??
+-          HttpServerResponse.empty({ status: 404 })
+-        );
+-      }),
+-    ),
++    usage: signedPost("/pool/v1/usage/*"),
++    changes: signedPost("/pool/v1/changeRevisions"),
+   };
+ });
+diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
+--- a/e2e/support/cloud-pool-gateway.ts
++++ b/e2e/support/cloud-pool-gateway.ts
+@@ -211,6 +211,7 @@
+       peer.configure,
+       peer.control,
+       peer.usage,
++      peer.changes,
+       peer.mirrors,
+       HttpRouter.add(
+         "GET",

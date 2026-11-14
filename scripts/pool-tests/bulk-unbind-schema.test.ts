@@ -9,7 +9,7 @@ import {
 import { historyBulkSchemaVersion } from "../../src/pool/model-history/bulk-schema.ts";
 import { historyMemoryOwnerFixture } from "./history-fixture.ts";
 
-test("an existing v6 bulk import journal upgrades through v8 without losing its job", async () => {
+test("an existing v6 bulk import journal upgrades through v9 without losing its job", async () => {
   const database = new PGlite();
   const db: HistoryDatabase = {
     query: async (text, values) => {
@@ -43,9 +43,11 @@ test("an existing v6 bulk import journal upgrades through v8 without losing its 
         "model_request_history_v2_app_attribution",
         "model_request_history_v3_account_time",
         "model_request_history_v4_traffic_purpose",
+        "model_request_history_v5_change_revisions",
         "model_request_history_v6_bulk_import",
         "model_request_history_v7_terminal_integrity",
         "model_request_history_v8_import_completion",
+        "model_request_history_v9_change_journal_prepare",
       ],
     );
     assert.deepEqual((await db.query("SELECT id,total_rows FROM basalt_model_import_jobs")).rows, [
