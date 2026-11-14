@@ -3,6 +3,8 @@ import { SafetyGateError, stableStringify } from "./contracts.ts";
 import { frameworkDifferences, refuseFramework } from "./framework-refusal.ts";
 import {
   parseFrameworkQualification,
+  parseFrameworkProvenance,
+  type FrameworkArtifactHashes,
   type FrameworkQualification,
   type FrameworkReleaseProvenance,
 } from "./framework-qualification.ts";
@@ -32,13 +34,7 @@ export function samePublication(
   );
 }
 
-function provenance(value: unknown): FrameworkReleaseProvenance {
-  return parseFrameworkQualification({
-    producerGitCommit: "0".repeat(40),
-    provenance: value,
-    registrySha256: "0".repeat(64),
-  }).provenance;
-}
+const provenance = parseFrameworkProvenance;
 
 function releaseKey(release: FrameworkReleaseProvenance) {
   return `${release.version}/${release.sha256}`;
@@ -49,6 +45,7 @@ export function qualifiedFrameworkRegistry(
   history: readonly FrameworkQualification[],
   produced: FrameworkReleaseProvenance,
   producerGitCommit: string,
+  artifacts: FrameworkArtifactHashes,
 ): FrameworkBuildReceipt {
   const indexed = new Map<string, FrameworkReleaseProvenance>();
   for (const value of [
@@ -84,6 +81,7 @@ export function qualifiedFrameworkRegistry(
     qualification: parseFrameworkQualification({
       producerGitCommit,
       provenance: current,
+      artifacts,
       registrySha256: frameworkRegistryDigest(releases),
     }),
     releases,
@@ -175,9 +173,10 @@ export function validateFrameworkBuildReceipt(
   canonical: readonly FrameworkReleaseProvenance[],
   history: readonly FrameworkQualification[],
   generated: string,
+  artifacts: FrameworkArtifactHashes,
 ) {
   const receipt = parseFrameworkBuildReceipt(value);
-  const expected = qualifiedFrameworkRegistry(canonical, history, actual, candidate);
+  const expected = qualifiedFrameworkRegistry(canonical, history, actual, candidate, artifacts);
   const differences = [
     ...frameworkDifferences("framework producer", expected.produced, receipt.produced),
     ...frameworkDifferences(
@@ -194,6 +193,18 @@ export function validateFrameworkBuildReceipt(
               property: `qualification.${property}`,
               expected: expected.qualification[property],
               observed: receipt.qualification[property],
+            },
+          ],
+    ),
+    ...(["runtimeJsonSha256", "frameworkJsonSha256"] as const).flatMap((property) =>
+      expected.qualification.artifacts[property] === receipt.qualification.artifacts[property]
+        ? []
+        : [
+            {
+              resource: "framework-qualification.json",
+              property: `qualification.artifacts.${property}`,
+              expected: expected.qualification.artifacts[property],
+              observed: receipt.qualification.artifacts[property],
             },
           ],
     ),

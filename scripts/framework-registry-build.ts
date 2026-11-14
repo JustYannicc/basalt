@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canonicalFrameworkReleases } from "../.upstream/packages/sdk/src/implementation/basalt-framework-releases.ts";
 import { builtFrameworkEvidence } from "./framework-provenance.ts";
+import { readFrameworkArtifacts } from "./framework-artifacts.ts";
 import { readQualifiedFrameworkHistory } from "./deploy-safety/github-ledger.ts";
 import { parseFrameworkQualification } from "./deploy-safety/framework-qualification.ts";
 import {
@@ -39,6 +40,7 @@ export async function generateFrameworkRegistry(root: string) {
     await frameworkHistory(),
     await builtFrameworkEvidence(root),
     candidate,
+    readFrameworkArtifacts(root),
   );
   writeFileSync(generatedRegistryPath(root), renderQualifiedFrameworkRegistry(receipt.releases));
   mkdirSync(join(root, ".generated"), { recursive: true });

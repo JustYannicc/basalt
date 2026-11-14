@@ -15,6 +15,7 @@ async function producer(name: string) {
   const identity = await Effect.runPromise(frameworkIdentity({ version, modules }));
   return {
     modules,
+    artifacts: { runtimeJsonSha256: name.repeat(64), frameworkJsonSha256: name.repeat(64) },
     release: {
       ...identity,
       protocol: 40,
@@ -44,7 +45,7 @@ test("fresh default hosts retain A through B and a failed C activation through s
       b = await producer("b"),
       c = await producer("c"),
       d = await producer("d");
-    const releaseA = qualifiedFrameworkRegistry([], [], a.release, "a".repeat(40));
+    const releaseA = qualifiedFrameworkRegistry([], [], a.release, "a".repeat(40), a.artifacts);
     const hostA = await buildRegistryHost(directory, "a", releaseA.releases);
     assert.equal(
       run(hostA, { action: "retain", id: "bld_release_a", ...a, release: a.release }).ok,
@@ -55,6 +56,7 @@ test("fresh default hosts retain A through B and a failed C activation through s
       [releaseA.qualification],
       b.release,
       "b".repeat(40),
+      b.artifacts,
     );
     const hostB = await buildRegistryHost(directory, "b", releaseB.releases);
     for (const [id, format] of [
@@ -86,6 +88,7 @@ test("fresh default hosts retain A through B and a failed C activation through s
       [releaseA.qualification, releaseB.qualification],
       c.release,
       "c".repeat(40),
+      c.artifacts,
     );
     const hostC = await buildRegistryHost(directory, "c", releaseC.releases);
     assert.equal(
@@ -97,6 +100,7 @@ test("fresh default hosts retain A through B and a failed C activation through s
       [releaseA.qualification, releaseB.qualification, releaseC.qualification],
       d.release,
       "d".repeat(40),
+      d.artifacts,
     );
     const hostD = await buildRegistryHost(directory, "d", releaseD.releases);
     for (const id of [

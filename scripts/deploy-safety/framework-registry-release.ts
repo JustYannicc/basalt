@@ -4,7 +4,8 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { SafetyGateError } from "./contracts.ts";
 import { refuseFramework } from "./framework-refusal.ts";
-import { parseFrameworkQualification } from "./framework-qualification.ts";
+import { parseFrameworkProvenance } from "./framework-qualification.ts";
+import { readFrameworkArtifacts } from "../framework-artifacts.ts";
 import { validateFrameworkBuildReceipt } from "./framework-registry.ts";
 import { readQualifiedFrameworkHistory } from "./github-ledger.ts";
 import type { Fetcher } from "./http.ts";
@@ -86,11 +87,7 @@ export function candidateFrameworkEvidence(sourceRoot: string, candidate: string
     ]);
   const parse = (input: unknown, resource: string, property: string) => {
     try {
-      return parseFrameworkQualification({
-        producerGitCommit: "0".repeat(40),
-        provenance: input,
-        registrySha256: "0".repeat(64),
-      }).provenance;
+      return parseFrameworkProvenance(input);
     } catch {
       return refuseFramework(reason, [
         { resource, property, expected: "framework provenance", observed: "malformed" },
@@ -102,6 +99,7 @@ export function candidateFrameworkEvidence(sourceRoot: string, candidate: string
     canonical: value.canonical.map((entry, index) =>
       parse(entry, canonical, `canonical[${index}]`),
     ),
+    artifacts: readFrameworkArtifacts(root),
   };
 }
 
@@ -161,6 +159,7 @@ export async function releaseFrameworkQualification(
       evidence.canonical,
       history,
       generated,
+      evidence.artifacts,
     );
   } catch (error) {
     if (!(error instanceof SafetyGateError)) throw error;

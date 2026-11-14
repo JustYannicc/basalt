@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -10,6 +11,7 @@ import {
 } from "./framework-registry.ts";
 import type { FrameworkReleaseProvenance } from "./framework-qualification.ts";
 import { record } from "./http.ts";
+import { readFrameworkArtifacts } from "../framework-artifacts.ts";
 
 const commit = "2".repeat(40);
 const release = (version: string, digit: string): FrameworkReleaseProvenance => ({
@@ -43,6 +45,10 @@ function fixture(t: TestContext) {
     mkdirSync(dirname(destination), { recursive: true });
     copyFileSync(new URL(file, import.meta.url), destination);
   }
+  copyFileSync(
+    new URL("../framework-artifacts.ts", import.meta.url),
+    join(controller, "scripts/framework-artifacts.ts"),
+  );
   write(controller, "package.json", '{"type":"module"}');
   write(candidate, "package.json", '{"type":"module"}');
   write(
@@ -61,6 +67,15 @@ function fixture(t: TestContext) {
     'export const servedFrameworkVersion = "candidate-version"; export const servedFrameworkProtocol = 44;',
   );
   const actual = release("candidate-version", "2");
+  const runtime = JSON.stringify({ version: "candidate-version", server: {} });
+  actual.source.sha256 = createHash("sha256").update(runtime).digest("hex");
+  write(candidate, ".upstream/packages/apps/dist/runtime.json", runtime);
+  write(
+    candidate,
+    ".upstream/.local/basalt-framework/framework.json",
+    JSON.stringify({ "runtime.json": runtime }),
+  );
+  const artifacts = readFrameworkArtifacts(candidate);
   const canonical = [release("candidate-canonical-version", "1")];
   write(candidate, ".fixture-producer.json", JSON.stringify(actual));
   const canonicalPath = ".upstream/packages/sdk/src/implementation/basalt-framework-releases.ts";
@@ -86,7 +101,7 @@ export async function builtFrameworkEvidence(root) {
 }
 `,
   );
-  const receipt = qualifiedFrameworkRegistry(canonical, [], actual, commit);
+  const receipt = qualifiedFrameworkRegistry(canonical, [], actual, commit, artifacts);
   write(candidate, ".generated/framework-qualification.json", JSON.stringify(receipt));
   const generatedPath =
     ".upstream/packages/sdk/src/implementation/basalt-qualified-framework-releases.ts";
@@ -149,6 +164,8 @@ try {
     canonicalPath,
     generatedPath,
     receipt,
+    runtime,
+    artifacts,
     write,
     run,
   };
@@ -173,6 +190,45 @@ test("unprepared trusted controller qualifies the separately prepared candidate'
   assert.equal(changed.status, 1);
   assert.equal(changed.result.activated, false);
   assert.match(String(changed.result.error), /new-candidate-canonical-version/);
+});
+
+test("changed publication bytes refuse before activation even when the producer identity stays the same", (t) => {
+  const value = fixture(t);
+  const frameworkPath = ".upstream/.local/basalt-framework/framework.json";
+  value.write(
+    value.candidate,
+    frameworkPath,
+    JSON.stringify({ "runtime.json": value.runtime, "index.d.ts": "changed declarations" }),
+  );
+  const changedPackage = value.run();
+  assert.equal(changedPackage.status, 1);
+  assert.equal(changedPackage.result.activated, false);
+  assert.match(
+    String(changedPackage.result.error),
+    /qualification.artifacts.frameworkJsonSha256.*expected.*observed/,
+  );
+  value.write(
+    value.candidate,
+    frameworkPath,
+    JSON.stringify({ "runtime.json": "changed runtime" }),
+  );
+  const splitRuntime = value.run();
+  assert.equal(splitRuntime.status, 1);
+  assert.equal(splitRuntime.result.activated, false);
+  assert.match(String(splitRuntime.result.error), /runtime.json.sha256.*expected.*observed/);
+  value.write(value.candidate, ".upstream/packages/apps/dist/runtime.json", "changed runtime");
+  const changedRuntime = value.run();
+  assert.equal(changedRuntime.status, 1);
+  assert.equal(changedRuntime.result.activated, false);
+  assert.match(
+    String(changedRuntime.result.error),
+    /artifacts.runtimeJsonSha256.*expected.*observed/,
+  );
+  rmSync(join(value.candidate, frameworkPath));
+  const missing = value.run();
+  assert.equal(missing.status, 1);
+  assert.equal(missing.result.activated, false);
+  assert.ok(String(missing.result.error).includes(frameworkPath));
 });
 
 test("a changed release candidate or its live producer constants refuses before activation", (t) => {

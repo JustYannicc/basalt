@@ -23,15 +23,17 @@ const release = (digit: string): FrameworkReleaseProvenance => ({
   browserSha256: digest("a"),
   source: { origin: "basalt", revision: `source-${digit}`, sha256: digest("b") },
 });
+const artifacts = { runtimeJsonSha256: digest("b"), frameworkJsonSha256: digest("d") };
 const canonical = release("0");
 const first = release("1");
 const second = release("2");
-const firstReceipt = qualifiedFrameworkRegistry([canonical], [], first, sha("1"));
+const firstReceipt = qualifiedFrameworkRegistry([canonical], [], first, sha("1"), artifacts);
 const secondReceipt = qualifiedFrameworkRegistry(
   [canonical],
   [firstReceipt.qualification],
   second,
   sha("2"),
+  artifacts,
 );
 
 test("successive framework registries preserve canonical and earlier release identities", () => {
@@ -40,6 +42,7 @@ test("successive framework registries preserve canonical and earlier release ide
     [firstReceipt.qualification, secondReceipt.qualification],
     release("3"),
     sha("3"),
+    artifacts,
   );
   assert.deepEqual(next.releases, [canonical, first, second, release("3")]);
   const repeated = qualifiedFrameworkRegistry(
@@ -52,12 +55,14 @@ test("successive framework registries preserve canonical and earlier release ide
     ],
     second,
     sha("2"),
+    artifacts,
   );
   const shuffled = qualifiedFrameworkRegistry(
     [canonical],
     [secondReceipt.qualification, firstReceipt.qualification],
     second,
     sha("2"),
+    artifacts,
   );
   assert.deepEqual(repeated.releases, [canonical, first, second]);
   assert.deepEqual(shuffled, repeated);
@@ -74,6 +79,7 @@ test("byte-identical publication reuses its original source binding after a sour
     [firstReceipt.qualification],
     produced,
     sha("4"),
+    artifacts,
   );
   assert.deepEqual(receipt.produced, produced);
   assert.deepEqual(receipt.qualification.provenance, first);
@@ -87,6 +93,7 @@ test("byte-identical publication reuses its original source binding after a sour
       [canonical],
       [firstReceipt.qualification],
       renderQualifiedFrameworkRegistry(receipt.releases),
+      artifacts,
     ),
     receipt.qualification,
   );
@@ -100,12 +107,16 @@ test("one version and server identity cannot acquire different browser, protocol
   ];
   for (const conflict of conflicts) {
     assert.throws(
-      () => qualifiedFrameworkRegistry([first], [], conflict, sha("2")),
+      () => qualifiedFrameworkRegistry([first], [], conflict, sha("2"), artifacts),
       /Produced framework conflicts with qualified/,
     );
-    const conflictingHistory = { ...firstReceipt.qualification, provenance: conflict };
+    const conflictingHistory = {
+      ...firstReceipt.qualification,
+      provenance: conflict,
+      artifacts: { ...artifacts, runtimeJsonSha256: conflict.source.sha256 },
+    };
     assert.throws(
-      () => qualifiedFrameworkRegistry([first], [conflictingHistory], second, sha("2")),
+      () => qualifiedFrameworkRegistry([first], [conflictingHistory], second, sha("2"), artifacts),
       /Conflicting qualified framework/,
     );
   }
@@ -114,14 +125,14 @@ test("one version and server identity cannot acquire different browser, protocol
     provenance: { ...first, source: { ...first.source, revision: "conflicting saved source" } },
   };
   assert.throws(
-    () => qualifiedFrameworkRegistry([first], [conflictingSource], second, sha("2")),
+    () => qualifiedFrameworkRegistry([first], [conflictingSource], second, sha("2"), artifacts),
     /Conflicting qualified framework/,
   );
   const anotherServer = { ...second, version: first.version };
-  assert.deepEqual(qualifiedFrameworkRegistry([first], [], anotherServer, sha("2")).releases, [
-    first,
-    anotherServer,
-  ]);
+  assert.deepEqual(
+    qualifiedFrameworkRegistry([first], [], anotherServer, sha("2"), artifacts).releases,
+    [first, anotherServer],
+  );
 });
 
 test("activation validates the checked candidate, producer, complete history and generated source", () => {
@@ -134,7 +145,15 @@ test("activation validates the checked candidate, producer, complete history and
     qualifications: FrameworkQualification[] = history,
     source = generated,
   ) =>
-    validateFrameworkBuildReceipt(value, candidate, produced, [canonical], qualifications, source);
+    validateFrameworkBuildReceipt(
+      value,
+      candidate,
+      produced,
+      [canonical],
+      qualifications,
+      source,
+      artifacts,
+    );
   assert.deepEqual(validate(), secondReceipt.qualification);
   const attempts: [string, () => unknown][] = [
     ["candidate changed", () => validate(secondReceipt, sha("3"))],
@@ -247,7 +266,7 @@ test("next release registry retains failed and status-less qualifications read f
   };
   const environment = { repository: "owner/repo" };
   const history = await readQualifiedFrameworkHistory(environment, fetcher);
-  const next = qualifiedFrameworkRegistry([canonical], history, release("3"), sha("3"));
+  const next = qualifiedFrameworkRegistry([canonical], history, release("3"), sha("3"), artifacts);
   assert.deepEqual(next.releases, [canonical, first, second, release("3")]);
   rows.push({
     id: 3,
@@ -259,7 +278,7 @@ test("next release registry retains failed and status-less qualifications read f
   statuses.set(3, ["success"]);
   const freshHistory = await readQualifiedFrameworkHistory(environment, fetcher);
   assert.deepEqual(
-    qualifiedFrameworkRegistry([canonical], freshHistory, release("3"), sha("3")),
+    qualifiedFrameworkRegistry([canonical], freshHistory, release("3"), sha("3"), artifacts),
     next,
   );
   assert.equal(statusReads, 0);

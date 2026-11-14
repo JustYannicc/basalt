@@ -22,8 +22,12 @@ test("framework refusals name every changed identity and field in job errors and
     browserSha256: "2".repeat(64),
     source: { origin: "basalt" as const, revision: "source", sha256: "3".repeat(64) },
   };
+  const artifacts = {
+    runtimeJsonSha256: release.source.sha256,
+    frameworkJsonSha256: "d".repeat(64),
+  };
   const candidate = "a".repeat(40);
-  const receipt = qualifiedFrameworkRegistry([], [], release, candidate);
+  const receipt = qualifiedFrameworkRegistry([], [], release, candidate, artifacts);
   const generated = renderQualifiedFrameworkRegistry(receipt.releases);
   try {
     let diagnostic = "";
@@ -36,6 +40,7 @@ test("framework refusals name every changed identity and field in job errors and
           [],
           [],
           generated,
+          artifacts,
         ),
       (error) => {
         assert.ok(error instanceof SafetyGateError);
@@ -59,6 +64,7 @@ test("framework refusals name every changed identity and field in job errors and
         sha256: "5".repeat(64),
       },
       "b".repeat(40),
+      artifacts,
     );
     assert.throws(
       () =>
@@ -69,6 +75,7 @@ test("framework refusals name every changed identity and field in job errors and
           [],
           [earlier.qualification],
           generated,
+          artifacts,
         ),
       (error) => {
         assert.ok(error instanceof SafetyGateError);

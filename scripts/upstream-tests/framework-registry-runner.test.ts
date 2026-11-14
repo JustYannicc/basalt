@@ -43,6 +43,10 @@ async function producer(runtime: typeof PublishedAppFramework.Type, name: string
   );
   return {
     modules,
+    artifacts: {
+      runtimeJsonSha256: digest(JSON.stringify(publication)),
+      frameworkJsonSha256: digest(`package-${name}`),
+    },
     release: {
       ...identity,
       protocol: runtime.protocol,
@@ -121,12 +125,14 @@ test(
         [],
         a.release,
         "a".repeat(40),
+        a.artifacts,
       );
       const releaseB = qualifiedFrameworkRegistry(
         canonicalFrameworkReleases,
         [releaseA.qualification],
         b.release,
         "b".repeat(40),
+        b.artifacts,
       );
       const bundle = await registryAuthoredBundle();
       const sourceA = await bundleRegistryRunner(directory, "A", releaseA.releases);
@@ -200,6 +206,7 @@ test(
         [releaseA.qualification, releaseB.qualification],
         c.release,
         "c".repeat(40),
+        c.artifacts,
       );
       const sourceC = await bundleRegistryRunner(directory, "C", releaseC.releases);
       host = start(sourceC);
@@ -214,6 +221,7 @@ test(
         [releaseA.qualification, releaseB.qualification, releaseC.qualification],
         d.release,
         "d".repeat(40),
+        d.artifacts,
       );
       const sourceD = await bundleRegistryRunner(directory, "D", releaseD.releases);
       host = start(sourceD);
