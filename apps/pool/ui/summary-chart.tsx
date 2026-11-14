@@ -37,7 +37,11 @@ export function SummaryChart({
 }) {
   const groups = by === "model" ? (summary.models?.groups ?? []) : summary.daily;
   const modelsMissing = by === "model" && summary.models?.status !== "available";
-  const { keys, days } = stack(groups, by, metric);
+  const { keys, days } = stack(groups, by, metric, {
+    from: summary.from,
+    to: summary.to,
+    knownDays: summary.historyCoverage.knownDays,
+  });
   const colors = inks(summary, by, keys);
   const forecast = forecastFor(summary.forecasts, null, metric);
   const last = days.at(-1)?.day;

@@ -247,7 +247,37 @@ export interface Stack {
 }
 
 /** One column per Zurich day the summary returned, one stacked part per group. */
-export function stack(groups: readonly UsageSummaryGroup[], by: Breakdown, metric: Metric): Stack {
+/** Every Zurich calendar day the answered bounds touch, today included, at most 401. */
+export function calendarDays(from: string, to: string): string[] {
+  const end = Date.parse(to);
+  if (!Number.isFinite(Date.parse(from)) || !Number.isFinite(end)) return [];
+  const last = zurichDay(end - 1);
+  const days: string[] = [];
+  for (let day = zurichDay(from); day <= last && days.length <= maxRangeDays;) {
+    days.push(day);
+    day = zurichDay(zurichMidnight(day) + 36 * 3_600_000);
+  }
+  return days;
+}
+
+/** The answered window: its bounds and the days whose capture the producer proved complete. */
+export interface Calendar {
+  readonly from: string;
+  readonly to: string;
+  readonly knownDays: readonly string[];
+}
+
+/**
+ * One column per calendar day of the answered range, one stacked part per group. A day the summary
+ * returned no bucket for is unknown, unless the producer proved that day's capture complete, which
+ * makes its absence a true zero.
+ */
+export function stack(
+  groups: readonly UsageSummaryGroup[],
+  by: Breakdown,
+  metric: Metric,
+  calendar?: Calendar,
+): Stack {
   const keys = [...new Set(groups.map((group) => groupKey(group, by)))];
   const days = new Map<string, { partial: boolean; values: (number | null)[] }>();
   for (const group of groups) {
@@ -263,6 +293,15 @@ export function stack(groups: readonly UsageSummaryGroup[], by: Breakdown, metri
       if (value !== null) entry.values[index] = (entry.values[index] ?? 0) + value;
       days.set(day, entry);
     }
+  }
+  if (calendar !== undefined) {
+    const known = new Set(calendar.knownDays);
+    for (const day of calendarDays(calendar.from, calendar.to))
+      if (!days.has(day))
+        days.set(day, {
+          partial: false,
+          values: keys.map(() => (known.has(day) ? 0 : null)),
+        });
   }
   return {
     keys,
@@ -347,6 +386,36 @@ export function heat(summary: PoolUsageSummaryResult["heatmap"], provider: strin
     if (entry === undefined || entry.hours === 0) return null;
     return entry.unknown && entry.tokens === 0 ? null : entry.tokens / entry.hours;
   };
+}
+
+/** Each sampled hour of the heatmap for a readable list: a value, or null when tokens went unrecorded. */
+export function heatHours(summary: PoolUsageSummaryResult["heatmap"]) {
+  const hours = new Map<
+    string,
+    { weekday: number; hour: number; tokens: number; unknown: boolean; samples: number }
+  >();
+  for (const cell of summary.cells) {
+    if (cell.sampleHours === 0) continue;
+    const key = `${cell.weekday}:${cell.hour}`;
+    const entry = hours.get(key) ?? {
+      weekday: cell.weekday,
+      hour: cell.hour,
+      tokens: 0,
+      unknown: false,
+      samples: 0,
+    };
+    if (cell.tokens.sum === null) entry.unknown = true;
+    else entry.tokens += Number(cell.tokens.sum);
+    entry.samples = Math.max(entry.samples, cell.sampleHours);
+    hours.set(key, entry);
+  }
+  return [...hours.values()]
+    .sort((a, b) => a.weekday - b.weekday || a.hour - b.hour)
+    .map((entry) => ({
+      weekday: entry.weekday,
+      hour: entry.hour,
+      value: entry.unknown && entry.tokens === 0 ? null : entry.tokens / entry.samples,
+    }));
 }
 
 /**

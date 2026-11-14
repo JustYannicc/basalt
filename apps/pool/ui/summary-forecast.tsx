@@ -1,4 +1,5 @@
-import { Badge } from "apps/ui";
+import { Badge, Button } from "apps/ui";
+import { useState } from "react";
 import type { UsageForecast, UsageProjection } from "../usage-forecast-contract.ts";
 import type { PoolUsageSummaryResult } from "../usage-overview-contract.ts";
 import {
@@ -9,7 +10,7 @@ import {
   metricLabel,
   plural,
 } from "./summary-format.ts";
-import { forecastFor, heat, type Metric } from "./summary-model.ts";
+import { forecastFor, heat, heatHours, type Metric } from "./summary-model.ts";
 
 // Every number here is the producer's: median, range, confidence and misses. A null bound is shown
 // as no range, never as a band drawn from elapsed time.
@@ -194,7 +195,53 @@ function Heatmap({ summary }: { summary: PoolUsageSummaryResult }) {
           ))}
         </div>
       )}
+      {map.status !== "unavailable" && <HourlyValues summary={summary} />}
     </section>
+  );
+}
+
+const clock = (hour: number) => `${String(hour).padStart(2, "0")}:00`;
+
+/** The heatmap's hours as words, so a phone or keyboard can read what each cell means. */
+function HourlyValues({ summary }: { summary: PoolUsageSummaryResult }) {
+  const [open, setOpen] = useState(false);
+  const hours = heatHours(summary.heatmap);
+  if (hours.length === 0) return null;
+  return (
+    <div className="grid justify-items-start gap-2">
+      <Button
+        size="sm"
+        variant="ghost"
+        aria-expanded={open}
+        aria-controls="heatmap-hours"
+        onClick={() => setOpen(!open)}
+      >
+        {open ? "Hide hourly values" : "Show hourly values"}
+      </Button>
+      {open && (
+        <ul
+          id="heatmap-hours"
+          aria-label="Hourly values"
+          className="grid w-full gap-x-6 gap-y-1 text-xs sm:grid-cols-2"
+        >
+          {hours.map((entry) => (
+            <li
+              key={`${entry.weekday} ${entry.hour}`}
+              className="flex justify-between gap-3 border-b border-border py-1"
+            >
+              <span className="text-muted-foreground">
+                {weekdays[entry.weekday]} {clock(entry.hour)}
+              </span>
+              <span className="tabular-nums">
+                {entry.value === null
+                  ? "Tokens not recorded"
+                  : `${formatMetric("tokens", entry.value)} tokens an hour`}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

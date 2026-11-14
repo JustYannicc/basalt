@@ -9,6 +9,7 @@ import {
   historyMembers,
   matchesGroup,
   matchesRecord,
+  nextMatchPage,
   parseHistoryFilters,
   type HistoryFilters,
 } from "./history-filters.ts";
@@ -41,6 +42,9 @@ function requestTime(value: string): string {
   );
 }
 
+const narrowKey = (filters: HistoryFilters) =>
+  `${filters.lab ?? ""} ${filters.failed ? "failed" : ""}`;
+
 export function History({
   series,
   publicHistory,
@@ -69,7 +73,12 @@ export function History({
     reload,
     nextPage,
     previousPage,
+    loadUntil,
   } = useHistory(series, publicHistory, filter);
+  // A narrowed list pages its own matches; the request pages behind it only grow.
+  const matchKey = JSON.stringify([narrowKey(narrow), loaded?.bounds ?? null]);
+  const [matchPaging, setMatchPaging] = useState({ key: matchKey, page: 0 });
+  const matchPage = matchPaging.key === matchKey ? matchPaging.page : 0;
 
   const applyDates = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -126,8 +135,22 @@ export function History({
       source.lastAt === null ? date : date === null || source.lastAt > date ? source.lastAt : date,
     null,
   );
-  const pagesLoaded = loaded ? Math.ceil(records.length / 10) : 0;
-  const hasNext = loaded !== undefined && (page + 1 < pagesLoaded || loaded.next !== null);
+  const pagesLoaded = loaded ? Math.ceil(loaded.records.length / 10) : 0;
+  const hasNext = narrowed
+    ? loaded !== undefined && ((matchPage + 1) * 10 < records.length || loaded.next !== null)
+    : loaded !== undefined && (page + 1 < pagesLoaded || loaded.next !== null);
+  const nextMatches = async () => {
+    const need = (matchPage + 1) * 10;
+    const all =
+      records.length > need
+        ? loaded?.records
+        : await loadUntil(
+            (rows) => rows.filter((record) => matchesRecord(narrow, record)).length > need,
+          );
+    if (!all) return;
+    const count = all.filter((record) => matchesRecord(narrow, record)).length;
+    setMatchPaging({ key: matchKey, page: nextMatchPage(count, matchPage, 10) });
+  };
   const currentRange = loaded
     ? filter.from || filter.to
       ? [
@@ -335,11 +358,15 @@ export function History({
                 providerName={name}
                 totalRecords={narrow.failed ? null : (summary?.requests ?? null)}
                 partial={loaded.series.partial}
-                page={page}
+                page={narrowed ? matchPage : page}
                 hasNext={hasNext}
                 loadingNext={loadingNext}
-                onPrevious={previousPage}
-                onNext={nextPage}
+                onPrevious={
+                  narrowed
+                    ? () => setMatchPaging({ key: matchKey, page: Math.max(0, matchPage - 1) })
+                    : previousPage
+                }
+                onNext={narrowed ? () => void nextMatches() : nextPage}
               />
             </>
           )

@@ -60,3 +60,10 @@ export function historyMembers(
     active: requested.has(member.person),
   }));
 }
+
+/**
+ * The matching page Next lands on: the following page only once its matches are loaded. Otherwise
+ * the current page stays, now showing any matches the extra reads found.
+ */
+export const nextMatchPage = (matches: number, page: number, size: number) =>
+  matches > (page + 1) * size ? page + 1 : page;

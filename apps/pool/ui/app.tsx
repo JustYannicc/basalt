@@ -12,7 +12,7 @@ import { PersonalOverview } from "./personal-overview.tsx";
 import { usePool } from "./pool-view.ts";
 import { useSummary } from "./summary-data.ts";
 import type { Breakdown, Metric, RangeChoice } from "./summary-model.ts";
-import { SummaryOverview } from "./summary-view.tsx";
+import { FixedRange, SummaryOverview } from "./summary-view.tsx";
 
 function useNow(every = 30_000) {
   const [now, setNow] = useState(() => Date.now());
@@ -113,6 +113,9 @@ function Overview({
           <p className="pb-4 text-sm text-muted-foreground text-pretty">
             Shared with you. You use its accounts without seeing their credentials.
           </p>
+          <div className="pb-4">
+            <FixedRange range={range} onRange={setRange} />
+          </div>
           <PersonalOverview
             data={usage.state?.personal}
             days={range.kind === "days" ? range.days : 7}

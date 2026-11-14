@@ -25,6 +25,7 @@ import {
 } from "./summary-format.ts";
 import {
   cacheShare,
+  calendarDays,
   dayTotal,
   delta,
   incident,
@@ -81,6 +82,31 @@ function Choice<T extends string | number>({
         </TabsList>
       </Tabs>
     </div>
+  );
+}
+
+/**
+ * A member's range: the fixed windows the member route accepts, never the since-start range. A
+ * demoted manager's since-start choice shows as the 7 days the member read falls back to.
+ */
+export function FixedRange({
+  range,
+  onRange,
+}: {
+  range: RangeChoice;
+  onRange: (range: RangeChoice) => void;
+}) {
+  return (
+    <Choice
+      label="Range"
+      value={range.kind === "days" ? String(range.days) : "7"}
+      onChange={(key) => onRange({ kind: "days", days: Number(key) as 7 | 30 | 90 })}
+      options={[
+        { id: "7", label: "7 days" },
+        { id: "30", label: "30 days" },
+        { id: "90", label: "90 days" },
+      ]}
+    />
   );
 }
 
@@ -309,13 +335,19 @@ function Kpi(props: {
 }
 
 function Kpis({ summary, metric }: { summary: PoolUsageSummaryResult; metric: Metric }) {
-  const days = (m: Metric) => stack(summary.daily, "provider", m).days.map(dayTotal);
+  // The selected calendar, not just the days that had usage, so a quiet week averages honestly.
+  const calendar = {
+    from: summary.from,
+    to: summary.to,
+    knownDays: summary.historyCoverage.knownDays,
+  };
+  const days = (m: Metric) => stack(summary.daily, "provider", m, calendar).days.map(dayTotal);
   const cost = total(summary.daily, "cost");
   const requests = total(summary.daily, "requests");
   const tokens = total(summary.daily, "tokens");
   const before = (m: Metric) => total(summary.previousDaily, m).value;
   const share = cacheShare(summary.daily);
-  const dayCount = Math.max(1, stack(summary.daily, "provider", metric).days.length);
+  const dayCount = Math.max(1, calendarDays(summary.from, summary.to).length);
   const chosen = total(summary.daily, metric);
   const selected = chosen.value;
   return (
