@@ -57,6 +57,7 @@ function add(into: Day, bucket: SeriesBucket | SeriesCounts) {
 export function seriesUsageForecasts(
   result: PoolUsageSeriesResult,
   capture?: HomeCaptureCoverage,
+  knownDays?: ReadonlySet<string>,
 ): UsageForecasts {
   const byProvider = new Map<string | null, Map<string, Day>>([[null, new Map()]]);
   const warnings: string[] = [];
@@ -85,9 +86,9 @@ export function seriesUsageForecasts(
   const missingDays = new Set(
     [...(capture?.incompleteHours ?? [])].map((hour) => usageDay(Date.parse(hour))),
   );
-  if (incompleteHome)
+  if (incompleteHome && knownDays === undefined)
     warnings.push("Home capture is incomplete. Uncaptured days cannot train a usage forecast.");
-  else if (home && missingDays.size > 0)
+  else if (home && missingDays.size > 0 && knownDays === undefined)
     warnings.push(
       "Home has uncaptured requests. Affected days and current-period projections remain unknown.",
     );
@@ -119,7 +120,11 @@ export function seriesUsageForecasts(
     if (first && result.next === null)
       for (let day = first; day <= today; day = addUsageDays(day, 1)) {
         const value = measured.get(day) ?? empty();
-        const captured = !incompleteHome && !missingDays.has(day);
+        const captured =
+          knownDays === undefined ? !incompleteHome && !missingDays.has(day) : knownDays.has(day);
+        const gap =
+          "Some days have uncaptured or unproven history outside native capture and certified imported ranges. Those days remain unknown.";
+        if (!captured && knownDays !== undefined && !warnings.includes(gap)) warnings.push(gap);
         tokenMissing += value.tokenMissing;
         unpriced += value.unpriced;
         const cost = Number(value.price) / Number(scale);
