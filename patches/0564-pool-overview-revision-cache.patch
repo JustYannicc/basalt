@@ -1,3 +1,4 @@
+diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
 --- a/apps/hosted/cloud/src/app-ui.ts
 +++ b/apps/hosted/cloud/src/app-ui.ts
 @@ -1,3 +1,4 @@
@@ -13,6 +14,7 @@
        },
        compatibility: {
          date: "2026-09-08",
+diff --git a/apps/hosted/cloud/src/infrastructure/serving-product.ts b/apps/hosted/cloud/src/infrastructure/serving-product.ts
 --- a/apps/hosted/cloud/src/infrastructure/serving-product.ts
 +++ b/apps/hosted/cloud/src/infrastructure/serving-product.ts
 @@ -1,6 +1,10 @@
@@ -47,6 +49,7 @@
 +    );
 +    return Layer.mergeAll(services, catalog);
 +  });
+diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-server.ts
 --- a/apps/hosted/cloud/src/mcp-server.ts
 +++ b/apps/hosted/cloud/src/mcp-server.ts
 @@ -1,3 +1,4 @@
@@ -62,9 +65,10 @@
        },
      };
    }),
+diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
 --- a/apps/hosted/self-host/src/implementation/routes.ts
 +++ b/apps/hosted/self-host/src/implementation/routes.ts
-@@ -171,20 +171,19 @@
+@@ -155,20 +155,19 @@
      const organizationChanges = makeOrganizationChanges();
      const mcp = yield* selfHostMcp.pipe(Effect.provide(HttpServer.layerServices));
      const document = lazyHostedApiDocument(() => executorSelfHostApiDocument(auth.origin));
@@ -93,7 +97,7 @@
        Layer.provide(hostedMiddlewareLive),
        // Organization middleware reads the product's removal tombstones when it is built.
        Layer.provide(executorServices),
-@@ -207,6 +206,7 @@
+@@ -191,6 +190,7 @@
      ).pipe(
        HttpRouter.provideRequest(executorServices),
        HttpRouter.provideRequest(auth.mcpIdentity),
@@ -101,7 +105,7 @@
      );
      const authoring = gitRoutes.pipe(
        HttpRouter.provideRequest(hostedAppGitAccess),
-@@ -262,7 +262,9 @@
+@@ -246,7 +246,9 @@
        HttpRouter.add("GET", "*", dashboard),
      );
      const notFound = HttpServerResponse.empty({ status: 404 });
@@ -112,6 +116,7 @@
      const appRoutes = Layer.mergeAll(
        HttpApiBuilder.layer(AppUiApi).pipe(
          Layer.provide(appUi.calls),
+diff --git a/apps/hosted/server/src/implementation/app-data.ts b/apps/hosted/server/src/implementation/app-data.ts
 --- a/apps/hosted/server/src/implementation/app-data.ts
 +++ b/apps/hosted/server/src/implementation/app-data.ts
 @@ -24,7 +24,8 @@
@@ -122,7 +127,7 @@
 +import { withPoolViewCache } from "./pool-view-cache.ts";
 +import { currentOwner, selectedApp, usableApp } from "./access.ts";
  import { stillLinked } from "./app-accounts.ts";
-
+ 
  /** Recheck both login and membership on long-lived streams; initial middleware is not a saved grant. */
 @@ -79,13 +80,18 @@
        return yield* new OrganizationForbidden();
@@ -150,6 +155,7 @@
    });
  /** Shared routes; the host supplies request-owned SDK and authentication services. */
  export const hostedAppDataHandlers = HttpApiBuilder.group(HostedApi, "appData", (handlers) =>
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
 @@ -10,6 +10,7 @@
@@ -157,10 +163,10 @@
  import { queryDispatch, queryPhase } from "./app-ui-query-timing.ts";
  import { appUiPhase, appUiPhaseHeaders } from "./app-ui-phase-timing.ts";
 +import { withPoolViewCache } from "./pool-view-cache.ts";
- import { makeAppChanges } from "./pool-app-changes.ts";
  import { visibleObservationHealth } from "./account-observation-policy.ts";
  import { visibleAccountStatuses } from "./account-identity.ts";
-@@ -493,8 +494,8 @@
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+@@ -492,8 +493,8 @@
    const data = (kind: "query" | "mutate", payload: typeof UiOperation.Type) =>
      Effect.gen(function* () {
        const current = yield* CurrentAppUi;
@@ -170,7 +176,7 @@
          const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
          return yield* executor.appData[kind](input).pipe(
            withSelectedAccountInspection,
-@@ -505,7 +506,19 @@
+@@ -504,7 +505,19 @@
            Effect.mapError(dataFailure),
          );
        });
@@ -191,6 +197,7 @@
      });
    const calls = HttpApiBuilder.group(AppUiApi, "ui", (handlers) =>
      handlers
+diff --git a/apps/hosted/server/src/implementation/catalog.ts b/apps/hosted/server/src/implementation/catalog.ts
 --- a/apps/hosted/server/src/implementation/catalog.ts
 +++ b/apps/hosted/server/src/implementation/catalog.ts
 @@ -78,3 +78,7 @@
@@ -201,6 +208,8 @@
 +/** Serving Workers resolve saved provider sources without composing authoring or API documents. */
 +export const catalogReadLive = (egress: HostEgress, feedUrl?: string) =>
 +  Layer.succeed(HostedCatalog, createCatalog({ egress, feedUrl }));
+diff --git a/apps/hosted/server/src/implementation/pool-view-cache.ts b/apps/hosted/server/src/implementation/pool-view-cache.ts
+new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-view-cache.ts
 @@ -0,0 +1,190 @@
@@ -394,6 +403,7 @@
 +    ]);
 +    return yield* cached(key, current(app), read, registeredPool(app.id));
 +  });
+diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
 --- a/apps/hosted/server/src/index.ts
 +++ b/apps/hosted/server/src/index.ts
 @@ -6,7 +6,7 @@
@@ -405,6 +415,7 @@
  export {
    hostedApiDocumentRoute,
    lazyHostedApiDocument,
+diff --git a/e2e/support/provider-account-product.ts b/e2e/support/provider-account-product.ts
 --- a/e2e/support/provider-account-product.ts
 +++ b/e2e/support/provider-account-product.ts
 @@ -41,7 +41,7 @@
@@ -416,6 +427,7 @@
    return statement;
  });`
      : ""
+diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-catalog.ts
 --- a/e2e/support/provider-apps-catalog.ts
 +++ b/e2e/support/provider-apps-catalog.ts
 @@ -88,6 +88,8 @@
@@ -427,55 +439,23 @@
    const poolViewCallers = yield* Ref.make<readonly (string | null)[]>([]);
    const checkAnswer = yield* Ref.make<Schema.Json>(null);
    const checkGate = yield* Ref.make<
-@@ -100,6 +102,47 @@
-   const xaiComplete = yield* Ref.make(false);
-   const sequence = yield* Ref.make(0);
-   const routes = Layer.mergeAll(
-+    HttpRouter.add(
-+      "POST",
-+      "/pool/v1/changeRevisions",
-+      Effect.gen(function* () {
-+        const { envelope } = yield* HttpServerRequest.schemaBodyJson(
-+          Schema.Struct({ envelope: Schema.String }),
-+        );
-+        const [prefix, payload, signature, extra] = envelope.split(".");
-+        if (
-+          prefix !== "sbs1" ||
-+          payload === undefined ||
-+          signature === undefined ||
-+          extra !== undefined
-+        )
-+          return HttpServerResponse.empty({ status: 401 });
-+        const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
-+          .update(`${prefix}.${payload}`)
-+          .digest();
-+        const actual = Buffer.from(signature, "base64url");
-+        if (actual.byteLength !== expected.byteLength || !timingSafeEqual(actual, expected))
-+          return HttpServerResponse.empty({ status: 401 });
-+        const input = yield* Schema.decodeUnknownEffect(
-+          Schema.fromJsonString(
-+            Schema.Struct({
-+              action: Schema.Literal("changeRevisions"),
-+              pool: Schema.String,
-+              expiresAt: Schema.Number,
-+            }),
-+          ),
-+        )(Buffer.from(payload, "base64url").toString());
-+        if (input.expiresAt <= (yield* Clock.currentTimeMillis))
-+          return HttpServerResponse.empty({ status: 401 });
+@@ -130,12 +132,14 @@
+             }),
+           ),
+         )(Buffer.from(payload, "base64url").toString());
 +        yield* Ref.update(poolHeadCalls, (count) => count + 1);
 +        const revision = String(yield* Ref.get(poolHead));
-+        return HttpServerResponse.jsonUnsafe({
-+          revisions: ["pool-readings", "pool-usage", "pool-samples", "pool-prices"].map(
-+            (topic) => ({ topic, resource: input.pool, revision }),
-+          ),
-+        });
-+      }),
-+    ),
-     HttpRouter.add(
-       "GET",
-       "/pool/v1/pool",
-@@ -324,7 +367,9 @@
+         const now = yield* Clock.currentTimeMillis;
+         if (assertion.expiresAt <= now || assertion.expiresAt > now + 30_000)
+           return HttpServerResponse.empty({ status: 401 });
+         return HttpServerResponse.jsonUnsafe({
+           revisions: ["pool-readings", "pool-usage", "pool-samples", "pool-prices"].map(
+-            (topic) => ({ topic, resource: assertion.pool, revision: "0" }),
++            (topic) => ({ topic, resource: assertion.pool, revision }),
+           ),
+         });
+       }),
+@@ -364,7 +368,9 @@
        return { started: Deferred.await(started), release: resume };
      }),
      observation: (value: Schema.Json) => Ref.set(observation, value),
@@ -486,6 +466,7 @@
      poolViewCallers: Ref.get(poolViewCallers),
      advance: (milliseconds: number) => Ref.update(clockOffset, (offset) => offset + milliseconds),
    };
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
 @@ -3916,7 +3916,7 @@
@@ -497,9 +478,10 @@
      targets: {
        "self-host": scheduled,
        cloud: na(
+diff --git a/e2e/tests/pool-provider-native-presentation.spec.ts b/e2e/tests/pool-provider-native-presentation.spec.ts
 --- a/e2e/tests/pool-provider-native-presentation.spec.ts
 +++ b/e2e/tests/pool-provider-native-presentation.spec.ts
-@@ -19,7 +19,7 @@ import { scenarios } from "../test-plan.ts";
+@@ -19,7 +19,7 @@
  
  const Native = Schema.Struct({
    state: Schema.String,
@@ -508,7 +490,7 @@
    sourceApp: Schema.optionalKey(
      Schema.Struct({
        id: Schema.String,
-@@ -198,6 +198,10 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
+@@ -198,6 +198,10 @@
              yield* browser.use("Capture Accounts provider logo", (page) => page.screenshot()),
            );
          }
@@ -519,7 +501,7 @@
          const owner = (yield* body(
            Schema.Struct({ userId: Schema.String }),
            yield* api.request(actors.owner, "GET", "/api/viewer"),
-@@ -322,8 +326,29 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
+@@ -322,8 +326,29 @@
            observation: {
              offering: "subscription",
              plan: { label: "Provider plan", observedAt: at },
@@ -551,7 +533,7 @@
            },
          });
          expect(
-@@ -356,6 +381,12 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
+@@ -356,6 +381,12 @@
          });
  
          const readsBefore = (yield* home.calls).filter((call) => call.action === "observe").length;
@@ -564,7 +546,7 @@
          const started = yield* Clock.currentTimeMillis;
          const response = yield* api.request(actors.owner, "POST", `${poolPath}/data/query`, {
            name: "view",
-@@ -367,24 +398,29 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
+@@ -367,24 +398,29 @@
          const trace = (yield* evidence.requests)
            .filter((request) => request.path.endsWith("/data/query"))
            .at(-1)!.traceId;
@@ -612,7 +594,7 @@
          const selects = records.filter((record) => record.select).length;
          yield* evidence.json("overview-statements.json", {
            accounts: 1,
-@@ -399,7 +435,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
+@@ -399,7 +435,7 @@
          expect(selects).toBeGreaterThan(0);
          expect(
            selects,
@@ -621,7 +603,7 @@
          ).toBeLessThanOrEqual(24);
          expect(reply.value.accounts).toHaveLength(1);
          expect(reply.value.accounts[0]).toMatchObject({
-@@ -409,9 +445,14 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
+@@ -409,9 +445,14 @@
            windows,
            bankedResets,
          });
@@ -639,7 +621,7 @@
          expect((yield* home.calls).filter((call) => call.action === "observe")).toHaveLength(
            readsBefore,
          );
-@@ -420,8 +461,46 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
+@@ -420,8 +461,46 @@
            poolBefore,
          );
  
@@ -686,7 +668,7 @@
          for (const width of [1280, 390]) {
            const overviewFits = yield* browser.use(
              `Read Home model limits and resets at ${width}px`,
-@@ -446,7 +525,9 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
+@@ -446,7 +525,9 @@
            yield* evidence.attach(
              `pool-model-limits-${width}.png`,
              "image/png",
@@ -697,7 +679,7 @@
            );
            const details = yield* browser.use(`Open model-limit Details at ${width}px`, (page) => {
              const dialog = page.getByRole("dialog", { name: "Account limits", exact: true });
-@@ -470,12 +551,65 @@ layer(HostedLive, { excludeTestServices: true })("Packaged pool Home presentatio
+@@ -470,12 +551,65 @@
            yield* evidence.attach(
              `pool-account-limits-details-${width}.png`,
              "image/png",
@@ -764,6 +746,7 @@
        }),
      ),
    );
+diff --git a/e2e/tests/app-ui-phase-headers.spec.ts b/e2e/tests/app-ui-phase-headers.spec.ts
 --- a/e2e/tests/app-ui-phase-headers.spec.ts
 +++ b/e2e/tests/app-ui-phase-headers.spec.ts
 @@ -121,7 +121,7 @@
