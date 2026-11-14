@@ -37,7 +37,7 @@
 -                page
 -                  .frameLocator(`iframe[title="${pool.name} app"]`)
 -                  .getByText(
--                    empty ? "Pick your first account" : "4 subscription accounts across 2 labs",
+-                    empty ? "Pick your first account" : "How much are we using?",
 -                    { exact: false },
 -                  )
 -                  .waitFor(),
