@@ -14,7 +14,7 @@ async function bundle(name: string) {
     format: "esm",
     platform: "browser",
     target: "es2023",
-    external: ["cloudflare:workers"],
+    external: ["cloudflare:workers", "node:*"],
     plugins: [
       {
         name: "no-fixture-database",
@@ -47,7 +47,7 @@ for (const observed of [false, true])
         {
           name: "pool",
           modules: true,
-          script: await bundle("model-lifetime-worker"),
+          script: await bundle("terminal-binary-pool"),
           compatibilityDate: "2026-09-08",
           compatibilityFlags: ["nodejs_compat"],
           durableObjects: {
