@@ -101,13 +101,14 @@ test("runtime commands cross the production Bun to Node dispatcher to the actual
 test("stage acknowledges through the real 15 second IPC bound before a 16 second cold boot", async (context) => {
   const c = await controller();
   const boot = deferred();
+  let release: ReturnType<typeof setTimeout> | undefined;
   c.f.onRuntimeCreated(async (runtime) => {
     runtime.hooks.health = () => boot.promise;
+    release = setTimeout(() => boot.resolve(), 16000);
   });
-  const release = setTimeout(() => boot.resolve(), 16000);
   context.after(async () => {
     boot.resolve();
-    clearTimeout(release);
+    if (release) clearTimeout(release);
     await c.close();
   });
   const grant = await c.f.startGrant();
