@@ -49,7 +49,7 @@ test("a failed detail collection leaves a capacity gap despite fresh credential 
   assert.deepEqual(await f.history.read("fixture"), []);
 });
 
-test("90-day capacity reads preserve the requested bounds and real tracking start", async () => {
+test("capacity reads preserve requested bounds and tracking start through 400 days", async () => {
   const at = Date.parse("2026-11-12T08:01:00Z");
   const f = quotaSamplingFixture(at);
   await f.usage.observe();
@@ -85,7 +85,13 @@ test("90-day capacity reads preserve the requested bounds and real tracking star
       (point: { hour: number }) => point.hour === Math.floor(at / 3600000) * 3600000,
     ),
   );
-  assert.equal((await request(91)).status, 400);
+  const longest = await request(400);
+  assert.equal(longest.status, 200);
+  const retained = await longest.json();
+  assert.equal(retained.from, Math.floor((at - 400 * 86400000) / 3600000) * 3600000);
+  assert.equal(retained.to, at);
+  assert.equal(retained.trackingSince, at);
+  assert.equal((await request(401)).status, 400);
 });
 
 test("the capacity RPC includes a measured Grok week and excludes its product breakdown", async () => {
