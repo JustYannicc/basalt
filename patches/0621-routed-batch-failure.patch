@@ -1,0 +1,145 @@
+diff --git a/e2e/support/read-batches.ts b/e2e/support/read-batches.ts
+--- a/e2e/support/read-batches.ts
++++ b/e2e/support/read-batches.ts
+@@ -4,7 +4,7 @@
+  * fail and count reads by routing their own URLs. So that such a route still sees its read, the
+  * page's `fetch` sends any batched read an active test route matches as the page's own request,
+  * through that route, and merges its answer into the batch's stream as soon as it arrives. A read
+- * the route aborts gets no answer, so the dashboard sees it fail. Reads no route matches stay in
++ * the route aborts gets a synthetic failed status, so held siblings cannot hide its failure. Reads no route matches stay in
+  * the batch, and a held read holds back no other.
+  */
+ import type { BrowserContext, Page } from "playwright";
+@@ -157,8 +157,10 @@
+                   }),
+                 );
+               }),
+-            // A read the route aborts has no answer; the dashboard sees it fail.
+-            () => undefined,
++            // The wire format has no per-read transport error. Give this routed test read
++            // its own failed status while held siblings keep waiting. Connection-failure
++            // scenarios still abort the actual batch request instead of a routed read.
++            () => send(JSON.stringify({ id: read.id, status: 599 })),
+           ),
+         ];
+       });
+diff --git a/e2e/support/query-transition.ts b/e2e/support/query-transition.ts
+--- a/e2e/support/query-transition.ts
++++ b/e2e/support/query-transition.ts
+@@ -5,9 +5,9 @@
+ 
+ /**
+  * Hold real reads until the scenario observes the UI; a refresh cycle can include concurrent requests.
+- * `fail` drops the connection, which the dashboard explains as a lost connection when the read went
+- * on its own, but as an unanswered read when it shared a batch. `undeclared` answers with a status
+- * no endpoint declares, an unexpected failure either way.
++ * `fail` drops the connection. A direct read sees a lost connection; a routed batched read gets a
++ * synthetic failed status so other held reads cannot postpone that failure. Connection-failure
++ * scenarios abort the whole real batch. `undeclared` answers with a status no endpoint declares.
+  */
+ export const holdQuery = (
+   paths: readonly string[] | RegExp,
+diff --git a/e2e/tests/dashboard-read-batches.spec.ts b/e2e/tests/dashboard-read-batches.spec.ts
+--- a/e2e/tests/dashboard-read-batches.spec.ts
++++ b/e2e/tests/dashboard-read-batches.spec.ts
+@@ -17,6 +17,7 @@
+ import { targetHosts } from "../support/role-hosts.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { scenarios } from "../test-plan.ts";
++import { holdQuery } from "../support/query-transition.ts";
+ 
+ const Viewer = Schema.Struct({ userId: Schema.String });
+ const App = Schema.Struct({ id: Schema.String });
+@@ -286,9 +287,91 @@
+           `/org/${actors.organization.slug}/apps/${app.id}`,
+         );
+         yield* browser.use("Wait for the app's reads", (page) =>
+-          page.waitForLoadState("networkidle"),
++          page.getByRole("link", { name: "Batched reads overview", exact: true }).waitFor(),
+         );
+         expect(sent).toBeGreaterThan(0);
++
++        yield* Effect.scoped(
++          Effect.gen(function* () {
++            const failed = yield* holdQuery([viewer.path], "fail");
++            const held = yield* holdQuery([source.path], "continue");
++            yield* browser.use("Start an aborted read beside a held read", (page) =>
++              page.evaluate(
++                ({ batchPath, params }) => {
++                  const answers: Array<{ id: number; status: number }> = [];
++                  const progress = { answers, ended: false };
++                  Object.assign(window, { routedBatchRegression: progress });
++                  void (async () => {
++                    const response = await fetch(batchPath, {
++                      method: "POST",
++                      headers: { "content-type": "application/json" },
++                      body: JSON.stringify({
++                        reads: [
++                          { id: 0, group: "viewer", endpoint: "get", params: {}, query: {} },
++                          { id: 1, group: "apps", endpoint: "source", params, query: {} },
++                        ],
++                      }),
++                    });
++                    const reader = response.body!.getReader();
++                    const decoder = new TextDecoder();
++                    let buffered = "";
++                    for (;;) {
++                      const chunk = await reader.read();
++                      if (chunk.done) break;
++                      buffered += decoder.decode(chunk.value, { stream: true });
++                      const lines = buffered.split("\n");
++                      buffered = lines.pop() ?? "";
++                      for (const line of lines.filter(Boolean)) answers.push(JSON.parse(line));
++                    }
++                    progress.ended = true;
++                  })();
++                },
++                { batchPath, params: source.params! },
++              ),
++            );
++            yield* failed.requested;
++            yield* held.requested;
++            yield* failed.release;
++            const Progress = Schema.Struct({
++              ended: Schema.Boolean,
++              answers: Schema.Array(Schema.Struct({ id: Schema.Number, status: Schema.Number })),
++            });
++            const readProgress = () =>
++              browser
++                .use("Read the routed batch's progress", (page) =>
++                  page.evaluate((): unknown => Reflect.get(window, "routedBatchRegression")),
++                )
++                .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Progress)));
++            yield* browser.use("The failed read answers while its sibling remains held", (page) =>
++              page.waitForFunction(
++                () => {
++                  const progress: { answers: Array<{ id: number }> } = Reflect.get(
++                    window,
++                    "routedBatchRegression",
++                  );
++                  return progress.answers.some((answer) => answer.id === 0);
++                },
++                undefined,
++                { timeout: 5_000 },
++              ),
++            );
++            const pending = yield* readProgress();
++            expect(pending.ended).toBe(false);
++            expect(pending.answers).toEqual([{ id: 0, status: 599 }]);
++            yield* held.release;
++            yield* browser.use("The sibling still returns its own response", (page) =>
++              page.waitForFunction(() => {
++                const progress: { ended: boolean } = Reflect.get(window, "routedBatchRegression");
++                return progress.ended;
++              }),
++            );
++            const completed = yield* readProgress();
++            expect(completed.answers).toEqual([
++              { id: 0, status: 599 },
++              { id: 1, status: 200 },
++            ]);
++          }),
++        );
+ 
+         // A batch reply that ends early fails every read it did not answer, as a lost request
+         // fails, instead of leaving it waiting.
