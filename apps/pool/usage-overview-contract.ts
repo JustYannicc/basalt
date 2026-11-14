@@ -1,5 +1,6 @@
 import type { OverviewMoneyMetric, OverviewUsageSlice } from "./overview-contract.ts";
 import type { UsageForecasts } from "./usage-forecast-contract.ts";
+import type { PoolReliabilitySlo } from "./reliability-contract.ts";
 import type {
   SeriesAuthority,
   SeriesBucket,
@@ -97,6 +98,8 @@ export interface PoolUsageSummaryResult {
   readonly usageSlicesUnavailableReason?: string;
   readonly heatmap: UsageSummaryHeatmap;
   readonly incidents: UsageSummaryIncidents;
+  /** Raw real/proof windows, independent of notification eligibility and the selected range. */
+  readonly reliability?: Pick<PoolReliabilitySlo, "hour" | "day">;
   readonly homeCapture: {
     readonly status: "available" | "partial" | "unavailable";
     readonly reason?: string;
