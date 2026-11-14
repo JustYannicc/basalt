@@ -50,7 +50,7 @@ diff --git a/e2e/tests/dashboard-read-batches.spec.ts b/e2e/tests/dashboard-read
  
  const Viewer = Schema.Struct({ userId: Schema.String });
  const App = Schema.Struct({ id: Schema.String });
-@@ -286,9 +287,91 @@
+@@ -286,9 +287,94 @@
            `/org/${actors.organization.slug}/apps/${app.id}`,
          );
          yield* browser.use("Wait for the app's reads", (page) =>
@@ -69,30 +69,33 @@ diff --git a/e2e/tests/dashboard-read-batches.spec.ts b/e2e/tests/dashboard-read
 +                  const answers: Array<{ id: number; status: number }> = [];
 +                  const progress = { answers, ended: false };
 +                  Object.assign(window, { routedBatchRegression: progress });
-+                  void (async () => {
-+                    const response = await fetch(batchPath, {
-+                      method: "POST",
-+                      headers: { "content-type": "application/json" },
-+                      body: JSON.stringify({
-+                        reads: [
-+                          { id: 0, group: "viewer", endpoint: "get", params: {}, query: {} },
-+                          { id: 1, group: "apps", endpoint: "source", params, query: {} },
-+                        ],
-+                      }),
-+                    });
++                  void fetch(batchPath, {
++                    method: "POST",
++                    headers: { "content-type": "application/json" },
++                    body: JSON.stringify({
++                      reads: [
++                        { id: 0, group: "viewer", endpoint: "get", params: {}, query: {} },
++                        { id: 1, group: "apps", endpoint: "source", params, query: {} },
++                      ],
++                    }),
++                  }).then((response) => {
 +                    const reader = response.body!.getReader();
 +                    const decoder = new TextDecoder();
 +                    let buffered = "";
-+                    for (;;) {
-+                      const chunk = await reader.read();
-+                      if (chunk.done) break;
-+                      buffered += decoder.decode(chunk.value, { stream: true });
-+                      const lines = buffered.split("\n");
-+                      buffered = lines.pop() ?? "";
-+                      for (const line of lines.filter(Boolean)) answers.push(JSON.parse(line));
-+                    }
-+                    progress.ended = true;
-+                  })();
++                    const drain = (): Promise<void> =>
++                      reader.read().then((chunk) => {
++                        if (chunk.done) {
++                          progress.ended = true;
++                          return;
++                        }
++                        buffered += decoder.decode(chunk.value, { stream: true });
++                        const lines = buffered.split("\n");
++                        buffered = lines.pop() ?? "";
++                        for (const line of lines.filter(Boolean)) answers.push(JSON.parse(line));
++                        return drain();
++                      });
++                    return drain();
++                  });
 +                },
 +                { batchPath, params: source.params! },
 +              ),
