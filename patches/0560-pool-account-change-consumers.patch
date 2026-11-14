@@ -2994,10 +2994,10 @@ index b4c35cf..ca1a7a1 100644
   * there and each read starts once for that request.
 diff --git a/apps/hosted/self-host/src/implementation/committed-change-delivery.ts b/apps/hosted/self-host/src/implementation/committed-change-delivery.ts
 new file mode 100644
-index 0000000..5645264
+index 0000000..6323cb8
 --- /dev/null
 +++ b/apps/hosted/self-host/src/implementation/committed-change-delivery.ts
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,31 @@
 +/** Wake on committed journal changes; ordinary reads never probe an empty outbox. */
 +import { PgliteClient } from "@effect/sql-pglite";
 +import { Effect, Queue, Result } from "effect";
@@ -3024,7 +3024,6 @@ index 0000000..5645264
 +      // Recover retained rows once, then retry only a failed delivery or an actual commit.
 +      yield* deliver;
 +      while (true) {
-+        yield* Queue.take(changes);
 +        yield* Queue.takeAll(changes);
 +        yield* deliver;
 +      }
