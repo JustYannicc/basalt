@@ -97,6 +97,7 @@ export const deploymentSqlSources = (
     const poolUrl = clientConfig(secret(pool.POOL_DATABASE_ADMIN_URL), "pool").connectionString;
     return {
       sources: { tools: source(toolsUrl), pool: source(poolUrl) },
+      toolsUrl: Redacted.make(toolsUrl),
       poolUrl: Redacted.make(poolUrl),
     };
   });
