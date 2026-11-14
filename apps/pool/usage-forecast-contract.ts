@@ -21,10 +21,17 @@ export interface UsageMiss {
   readonly share: number | null;
 }
 
+export interface UsageHistoryGap {
+  readonly week: string;
+  readonly missingDays: readonly string[];
+  readonly unknownDays: readonly string[];
+}
+
 export type UsageForecast =
   | {
       readonly status: "unavailable";
       readonly reason: "invalid-input" | "insufficient-history" | "insufficient-use";
+      readonly historyGaps?: readonly UsageHistoryGap[];
       readonly comparableWeeks: number;
       readonly calculatedAt: string;
     }

@@ -153,6 +153,8 @@ export async function fixture(
       missingBudgetIncrement = { arrive, released };
       return { arrived, release };
     },
+    /** Server-only endpoints, as a host calls them. */
+    api: auth.api,
     userId: signupUser.id as string,
     raw: (path: string, init: RequestInit) =>
       auth.handler(new Request(`${origin}/api/auth${path}`, init)),

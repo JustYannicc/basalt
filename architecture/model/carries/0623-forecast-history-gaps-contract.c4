@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Usage-series wire decoding preserves the producer's unavailable-forecast history gaps, including each week, missing day and unknown metric day. Gap details remain optional for older results; malformed gap values are rejected without changing forecast training or unavailable status."
+    }
+  }
+}
