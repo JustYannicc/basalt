@@ -80,3 +80,25 @@ test("an app is still deleted when its connections can't be updated", async () =
   // Nothing changed, so the person can still revoke the leftover connection on Connections.
   assert.equal(Object.keys(await f.listed(f.owner)).length, 3);
 });
+
+test("apps deleted at the same time each leave the connection, whatever order they land in", async () => {
+  using f = await organization();
+  const a = AppId.make("app_fixture_a"),
+    b = AppId.make("app_fixture_b"),
+    c = AppId.make("app_fixture_c");
+  const connect = (id: string, apps: readonly AppId[]) =>
+    Effect.runPromise(
+      f.store.create(f.owner, {
+        id: ConnectionId.make(id),
+        name: id,
+        policy: { apps: apps.map(entry) },
+      }),
+    );
+  await connect("conn_fixture_three", [a, b, c]);
+  await connect("conn_fixture_two", [a, b]);
+  await Promise.all([a, b].map((app) => Effect.runPromise(f.store.forgetApp(app))));
+  const listed = await f.listed(f.owner);
+  assert.deepEqual(listed.conn_fixture_three, [c]);
+  // Each deletion took one of its two apps; together they leave nothing, so it is revoked.
+  assert.equal(listed.conn_fixture_two, undefined);
+});

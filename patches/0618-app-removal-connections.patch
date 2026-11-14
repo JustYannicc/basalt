@@ -259,10 +259,44 @@ diff --git a/apps/hosted/server/src/implementation/mcp-oauth.ts b/apps/hosted/se
      agents: (owner) =>
        request((api) => api.listMcpAgents({ body: owner }), Schema.Array(ConnectedAgent)).pipe(
          Effect.mapError(unavailable),
+diff --git a/apps/local/server/src/implementation/app-removal.ts b/apps/local/server/src/implementation/app-removal.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/local/server/src/implementation/app-removal.ts
+@@ -0,0 +1,22 @@
++import type { AppId, Executor } from "@executor-js/sdk/core";
++import { Effect } from "effect";
++
++/**
++ * Delete one app. Connections stop naming it, and one that named only this app is revoked, so
++ * no device keeps a link to nothing.
++ */
++export const removeApp = (
++  executor: Executor,
++  forgetApp: (app: AppId) => Effect.Effect<unknown, unknown>,
++  input: Parameters<Executor["apps"]["remove"]>[0],
++) =>
++  Effect.gen(function* () {
++    const removed = yield* executor.apps.remove(input);
++    // The app is gone; a leftover connection stays revocable on Connections, so only log.
++    yield* forgetApp(input.app).pipe(
++      Effect.catchCause((cause) =>
++        Effect.logWarning("Connections naming a removed app were not updated", cause),
++      ),
++    );
++    return removed;
++  });
 diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
 --- a/apps/local/server/src/implementation/dashboard.ts
 +++ b/apps/local/server/src/implementation/dashboard.ts
-@@ -117,6 +117,7 @@ export const dashboard = (
+@@ -1,5 +1,6 @@
+ import { localAccountChecks } from "./account-checks.ts";
+ import { dashboardOAuthConnections } from "./dashboard-oauth-connections.ts";
++import { removeApp } from "./app-removal.ts";
+ import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
+ import { connectOptions, connectionClient } from "./oauth-clients.ts";
+ import { localResourceHandlers } from "./resources.ts";
+@@ -117,6 +118,7 @@ export const dashboard = (
      managedAccount,
      ownerMigration,
      wakeWebhookSources,
@@ -270,7 +304,7 @@ diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/serv
    }: {
      /** The official app feed's index.json; without one the catalog lists no apps. */
      readonly catalogFeedUrl?: string | undefined;
-@@ -126,6 +127,8 @@ export const dashboard = (
+@@ -126,6 +128,8 @@ export const dashboard = (
      readonly ownerMigration: Effect.Effect<LocalOwnerMigration | null>;
      /** Wakes webhook source reconciliation after saved intent commits. */
      readonly wakeWebhookSources: Effect.Effect<void>;
@@ -279,21 +313,12 @@ diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/serv
    },
  ) => {
    const appCatalog = createCatalog({
-@@ -626,7 +629,16 @@ export const dashboard = (
+@@ -626,7 +630,7 @@ export const dashboard = (
        .handle("deleteApp", ({ params }) =>
          params.app === managedApp
            ? Effect.fail(new AppDeletionBlocked(params))
 -          : executor.apps.remove(params),
-+          : executor.apps.remove(params).pipe(
-+              // The app is gone; a leftover connection stays revocable on Connections, so only log.
-+              Effect.tap(() =>
-+                forgetApp(params.app).pipe(
-+                  Effect.catchCause((cause) =>
-+                    Effect.logWarning("Connections naming a removed app were not updated", cause),
-+                  ),
-+                ),
-+              ),
-+            ),
++          : removeApp(executor, forgetApp, params),
        )
        .handle("source", ({ params }) => executor.apps.source(params))
        .handle("sourceDisplay", ({ params }) =>
@@ -323,7 +348,53 @@ diff --git a/apps/local/server/src/implementation/server.ts b/apps/local/server/
 diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
 --- a/packages/mcp-auth/src/implementation/oauth.ts
 +++ b/packages/mcp-auth/src/implementation/oauth.ts
-@@ -1330,6 +1330,71 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+@@ -352,6 +352,45 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+     parse(Schema.fromJsonString(ConnectionPolicy), row.policy).pipe(
+       Effect.mapError(() => new APIError("SERVICE_UNAVAILABLE")),
+     );
++  /**
++   * Take one app out of a live connection, revoking it when no app is left. The write is
++   * conditional on the policy it read, so concurrent changes, such as two apps deleted at once,
++   * reread instead of overwriting each other.
++   */
++  const forgetConnectionApp = (
++    context: GenericEndpointContext,
++    read: typeof ConnectionRecord.Type,
++    app: string,
++  ) =>
++    Effect.gen(function* () {
++      let row: typeof ConnectionRecord.Type | undefined = read;
++      for (let attempt = 0; attempt < 8; attempt += 1) {
++        if (row === undefined || row.revoked) return "unchanged" as const;
++        const policy = yield* connectionPolicy(row);
++        const kept = policy.apps.filter((entry) => entry.app !== app);
++        if (kept.length === policy.apps.length) return "unchanged" as const;
++        if (kept.length === 0) {
++          yield* revokeConnection(context, row);
++          return "revoked" as const;
++        }
++        const current: typeof ConnectionRecord.Type = row;
++        // Connected agents read this record on their next request.
++        const saved = yield* authCall(() =>
++          context.context.adapter.update({
++            model: "mcpConnection",
++            where: [
++              { field: "id", value: current.id },
++              { field: "revoked", value: false },
++              { field: "policy", value: current.policy },
++            ],
++            update: { policy: JSON.stringify({ ...policy, apps: kept }), updatedAt: new Date() },
++          }),
++        );
++        if (saved !== null) return "narrowed" as const;
++        row = yield* findConnection(context, current.id);
++      }
++      return yield* Effect.fail(new APIError("SERVICE_UNAVAILABLE"));
++    });
+   const connectionView = (row: typeof ConnectionRecord.Type) =>
+     connectionPolicy(row).pipe(
+       Effect.map((policy) =>
+@@ -1330,6 +1369,50 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
              }),
            ),
        ),
@@ -363,29 +434,8 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
 +                for (const value of rows) {
 +                  const row = yield* parse(ConnectionRecord, value);
 +                  after = row.id;
-+                  const policy = yield* connectionPolicy(row);
-+                  const kept = policy.apps.filter((entry) => entry.app !== app);
-+                  if (kept.length === policy.apps.length) continue;
-+                  if (kept.length === 0) {
-+                    yield* revokeConnection(ctx, row);
-+                    changed.revoked += 1;
-+                    continue;
-+                  }
-+                  // Connected agents read this record on their next request.
-+                  yield* authCall(() =>
-+                    ctx.context.adapter.update({
-+                      model: "mcpConnection",
-+                      where: [
-+                        { field: "id", value: row.id },
-+                        { field: "revoked", value: false },
-+                      ],
-+                      update: {
-+                        policy: JSON.stringify({ ...policy, apps: kept }),
-+                        updatedAt: new Date(),
-+                      },
-+                    }),
-+                  );
-+                  changed.narrowed += 1;
++                  const outcome = yield* forgetConnectionApp(ctx, row, app);
++                  if (outcome !== "unchanged") changed[outcome] += 1;
 +                }
 +                if (rows.length < grantBatch) return changed;
 +              }

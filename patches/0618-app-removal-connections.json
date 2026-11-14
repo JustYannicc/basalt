@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-removal-connections",
   "file": "0618-app-removal-connections.patch",
-  "content_sha256": "e66e1f887dd69a110cc5c954bd23baf4aa2bdf6b4b60c00027c098543bd3af7b",
+  "content_sha256": "32abe250deb2b3c7d291415e8e93d15544e80b71caf0cfbc34cfbda0ff3e5a35",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
