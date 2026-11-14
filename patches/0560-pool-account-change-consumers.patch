@@ -4305,16 +4305,16 @@ diff --git a/e2e/support/pool-history-database.ts b/e2e/support/pool-history-dat
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/pool-history-database.ts
-@@ -0,0 +1,91 @@
-+import pg from "pg";
+@@ -0,0 +1,66 @@
 +import { Effect, FileSystem, Redacted, Schema } from "effect";
-+import { driver, Target } from "./platform.ts";
-+import type { Statement } from "./cloud-locks.ts";
++import { Target } from "./platform.ts";
++import { cloudLocks, cloudLocksFor } from "./cloud-locks.ts";
 +
 +/** Home has its own database in production; its triggers must never attach to Cloud SSO tables. */
 +export const poolHistoryDatabase = Effect.gen(function* () {
 +  const fs = yield* FileSystem.FileSystem,
-+    target = yield* Target;
++    target = yield* Target,
++    admin = yield* cloudLocks;
 +  const configuration = yield* fs
 +    .readFileString(`${target.directory}/sso-database.json`)
 +    .pipe(
@@ -4326,74 +4326,197 @@ new file mode 100644
 +        ),
 +      ),
 +    );
-+  const connect = (connection: Redacted.Redacted<string>) =>
-+    Effect.gen(function* () {
-+      const client = yield* Effect.acquireRelease(
-+        Effect.sync(() => new pg.Client({ connectionString: Redacted.value(connection) })),
-+        (client) =>
-+          driver("close fixture database connection", () => client.end()).pipe(Effect.orDie),
-+      );
-+      yield* driver("connect fixture database", () => client.connect());
-+      return client;
-+    });
-+  const admin = yield* connect(configuration.database);
++  // The owner is cluster-wide. Serialize fixture leases so parallel cases cannot drop each other's role.
++  yield* admin.hold({
++    sql: "SELECT pg_advisory_xact_lock(hashtextextended('e2e-pool-history-owner',0))",
++  });
 +  yield* Effect.acquireRelease(
-+    driver("provision fixture Home owner", async () => {
-+      try {
-+        await admin.query("CREATE ROLE basalt_pool_owner NOLOGIN");
-+        return true;
-+      } catch (error) {
-+        if (
-+          typeof error === "object" &&
-+          error !== null &&
-+          "code" in error &&
-+          error.code === "42710"
-+        )
-+          return false;
-+        throw error;
-+      }
++    Effect.gen(function* () {
++      const existing = yield* admin.run({
++        sql: "SELECT 1 FROM pg_roles WHERE rolname='basalt_pool_owner'",
++      });
++      if (existing.length > 0) return false;
++      yield* admin.run({ sql: "CREATE ROLE basalt_pool_owner NOLOGIN" });
++      return true;
 +    }),
 +    (created) =>
-+      created
-+        ? driver("remove fixture Home owner", () =>
-+            admin.query("DROP ROLE basalt_pool_owner"),
-+          ).pipe(Effect.orDie)
-+        : Effect.void,
++      created ? admin.run({ sql: "DROP ROLE basalt_pool_owner" }).pipe(Effect.asVoid) : Effect.void,
 +  );
 +  const name = `pool_home_${crypto.randomUUID().replaceAll("-", "")}`;
 +  yield* Effect.acquireRelease(
-+    driver("create isolated Home database", () =>
-+      admin.query(`CREATE DATABASE ${name} OWNER basalt_pool_owner`),
-+    ),
-+    () =>
-+      driver("remove isolated Home database", () =>
-+        admin.query(`DROP DATABASE ${name} WITH (FORCE)`),
-+      ).pipe(Effect.orDie),
++    admin.run({ sql: `CREATE DATABASE ${name} OWNER basalt_pool_owner` }),
++    () => admin.run({ sql: `DROP DATABASE ${name} WITH (FORCE)` }).pipe(Effect.asVoid),
 +  );
 +  const url = new URL(Redacted.value(configuration.database));
 +  url.pathname = `/${name}`;
 +  const connection = Redacted.make(url.toString());
-+  const home = yield* connect(connection);
-+  yield* driver("seed isolated Home schema", async () => {
-+    await home.query("SET ROLE basalt_pool_owner");
-+    await home.query("CREATE TABLE usage (id bigint, timestamp timestamptz)");
-+    await home.query("CREATE TABLE home_data_migration (name text, completed boolean)");
-+  });
++  const file = `${target.directory}/${name}.json`;
++  yield* Effect.acquireRelease(
++    fs.writeFileString(file, JSON.stringify({ database: Redacted.value(connection) }), {
++      mode: 0o600,
++    }),
++    () => fs.remove(file).pipe(Effect.orDie),
++  );
++  const home = yield* cloudLocksFor(file);
++  for (const sql of [
++    "SET ROLE basalt_pool_owner",
++    "CREATE TABLE usage (id bigint, timestamp timestamptz)",
++    "CREATE TABLE home_data_migration (name text, completed boolean)",
++  ])
++    yield* home.run({ sql });
 +  return {
 +    connection,
-+    run: (statement: Statement) =>
-+      driver("query isolated Home fixture", async () => {
-+        const result = await home.query<Record<string, unknown>>(
-+          statement.sql,
-+          statement.params === undefined ? undefined : [...statement.params],
-+        );
-+        return result.rows;
-+      }),
-+    cloudUserTriggers: driver("check Cloud SSO has no Home triggers", async () => {
-+      const result = await admin.query<Record<string, unknown>>(
-+        "SELECT tgname FROM pg_trigger WHERE tgrelid='public.\"user\"'::regclass AND tgname LIKE 'basalt_pool_%'",
-+      );
-+      return result.rows;
++    run: home.run,
++    cloudUserTriggers: admin.run({
++      sql: "SELECT tgname FROM pg_trigger WHERE tgrelid='public.\"user\"'::regclass AND tgname LIKE 'basalt_pool_%'",
 +    }),
 +  };
 +});
+diff --git a/e2e/support/cloud-locks.ts b/e2e/support/cloud-locks.ts
+--- a/e2e/support/cloud-locks.ts
++++ b/e2e/support/cloud-locks.ts
+@@ -15,73 +15,76 @@
+ }
+ const Rows = Schema.fromJsonString(Schema.Array(Schema.Record(Schema.String, Schema.Unknown)));
+ 
+-export const cloudLocks = Effect.gen(function* () {
+-  const target = yield* Target,
+-    processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+-  const commands = yield* Queue.unbounded<string, Cause.Done>();
+-  const child = yield* processes.spawn(
+-    ChildProcess.make(
+-      "node",
+-      [
+-        "apps/hosted/testing/cloud-locks-fixture.ts",
+-        "--configuration",
+-        `${target.directory}/sso-database.json`,
+-        "--container",
+-        `${target.directory}/postgres-container.json`,
+-      ],
+-      {
+-        env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" },
+-        extendEnv: false,
+-        stdin: Stream.fromQueue(commands).pipe(
+-          Stream.map((line) => `${line}\n`),
+-          Stream.encodeText,
++export const cloudLocksFor = (configuration?: string) =>
++  Effect.gen(function* () {
++    const target = yield* Target,
++      processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++    const commands = yield* Queue.unbounded<string, Cause.Done>();
++    const child = yield* processes.spawn(
++      ChildProcess.make(
++        "node",
++        [
++          "apps/hosted/testing/cloud-locks-fixture.ts",
++          "--configuration",
++          configuration ?? `${target.directory}/sso-database.json`,
++          "--container",
++          `${target.directory}/postgres-container.json`,
++        ],
++        {
++          env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" },
++          extendEnv: false,
++          stdin: Stream.fromQueue(commands).pipe(
++            Stream.map((line) => `${line}\n`),
++            Stream.encodeText,
++          ),
++          stderr: "inherit",
++        },
++      ),
++    );
++    // Ending its input rolls back the held transaction before the fixture exits.
++    yield* Effect.addFinalizer(() => Queue.end(commands));
++    const replies = yield* Queue.unbounded<string, PlatformError.PlatformError | Cause.Done>();
++    yield* child.stdout.pipe(
++      Stream.decodeText(),
++      Stream.splitLines,
++      Stream.runIntoQueue(replies),
++      Effect.forkScoped,
++    );
++    const send = (instruction: unknown) =>
++      Queue.offer(commands, JSON.stringify(instruction)).pipe(
++        Effect.andThen(Queue.take(replies)),
++        Effect.flatMap(Schema.decodeUnknownEffect(Rows)),
++        Effect.timeout("30 seconds"),
++        Effect.orDie,
++      );
++    const resume = (pid: number) => Effect.asVoid(send({ signal: { pid, stop: false } }));
++    return {
++      /** Run a statement in the transaction the fixture keeps open until `release`. */
++      hold: (statement: Statement) => send({ hold: statement }),
++      /** Run a statement on another connection, outside the held transaction. */
++      run: (statement: Statement) => send({ run: statement }),
++      /** Try a NOWAIT row lock, reporting only the expected contention code. */
++      probe: (statement: Statement) => send({ probe: statement }),
++      /** Commit the held transaction, releasing its locks. */
++      release: Effect.asVoid(send({ release: true })),
++      /**
++       * Stop a database backend process: its connection stops answering until `resume` or until
++       * the caller's scope closes, which resumes it. The fixture also resumes it when it exits.
++       */
++      stop: (pid: number) =>
++        Effect.acquireRelease(Effect.asVoid(send({ signal: { pid, stop: true } })), () =>
++          resume(pid),
+         ),
+-        stderr: "inherit",
+-      },
+-    ),
+-  );
+-  // Ending its input rolls back the held transaction before the fixture exits.
+-  yield* Effect.addFinalizer(() => Queue.end(commands));
+-  const replies = yield* Queue.unbounded<string, PlatformError.PlatformError | Cause.Done>();
+-  yield* child.stdout.pipe(
+-    Stream.decodeText(),
+-    Stream.splitLines,
+-    Stream.runIntoQueue(replies),
+-    Effect.forkScoped,
+-  );
+-  const send = (instruction: unknown) =>
+-    Queue.offer(commands, JSON.stringify(instruction)).pipe(
+-      Effect.andThen(Queue.take(replies)),
+-      Effect.flatMap(Schema.decodeUnknownEffect(Rows)),
+-      Effect.timeout("30 seconds"),
+-      Effect.orDie,
+-    );
+-  const resume = (pid: number) => Effect.asVoid(send({ signal: { pid, stop: false } }));
+-  return {
+-    /** Run a statement in the transaction the fixture keeps open until `release`. */
+-    hold: (statement: Statement) => send({ hold: statement }),
+-    /** Run a statement on another connection, outside the held transaction. */
+-    run: (statement: Statement) => send({ run: statement }),
+-    /** Try a NOWAIT row lock, reporting only the expected contention code. */
+-    probe: (statement: Statement) => send({ probe: statement }),
+-    /** Commit the held transaction, releasing its locks. */
+-    release: Effect.asVoid(send({ release: true })),
+-    /**
+-     * Stop a database backend process: its connection stops answering until `resume` or until
+-     * the caller's scope closes, which resumes it. The fixture also resumes it when it exits.
+-     */
+-    stop: (pid: number) =>
+-      Effect.acquireRelease(Effect.asVoid(send({ signal: { pid, stop: true } })), () =>
+-        resume(pid),
++      /** Resume a backend process `stop` stopped; any other process is left alone. */
++      resume,
++      /**
++       * Refuse new connections to the database until the caller's scope closes; open ones stay.
++       * The fixture also allows them again when it exits.
++       */
++      refuseConnections: Effect.acquireRelease(Effect.asVoid(send({ connections: false })), () =>
++        Effect.asVoid(send({ connections: true })),
+       ),
+-    /** Resume a backend process `stop` stopped; any other process is left alone. */
+-    resume,
+-    /**
+-     * Refuse new connections to the database until the caller's scope closes; open ones stay.
+-     * The fixture also allows them again when it exits.
+-     */
+-    refuseConnections: Effect.acquireRelease(Effect.asVoid(send({ connections: false })), () =>
+-      Effect.asVoid(send({ connections: true })),
+-    ),
+-  };
+-});
++    };
++  });
++
++export const cloudLocks = cloudLocksFor();
