@@ -1,7 +1,7 @@
 {
   "identity": "basalt-routed-batch-failure",
   "file": "0621-routed-batch-failure.patch",
-  "content_sha256": "54b2a686fcb8757af2b73ee817890999255be2488c2f0682b445ab8f5e9e0b12",
+  "content_sha256": "d0e7f98afc31b40debb89bf04ea7516c6f19172d43d65f5a197ce6653cf73de2",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

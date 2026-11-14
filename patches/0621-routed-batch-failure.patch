@@ -50,7 +50,7 @@ diff --git a/e2e/tests/dashboard-read-batches.spec.ts b/e2e/tests/dashboard-read
  
  const Viewer = Schema.Struct({ userId: Schema.String });
  const App = Schema.Struct({ id: Schema.String });
-@@ -286,9 +287,94 @@
+@@ -286,25 +287,122 @@
            `/org/${actors.organization.slug}/apps/${app.id}`,
          );
          yield* browser.use("Wait for the app's reads", (page) =>
@@ -146,3 +146,42 @@ diff --git a/e2e/tests/dashboard-read-batches.spec.ts b/e2e/tests/dashboard-read
  
          // A batch reply that ends early fails every read it did not answer, as a lost request
          // fails, instead of leaving it waiting.
+         let unanswered = 0;
++        const incompleteBatch = (url: URL) => url.pathname === batchPath;
++        const activeReplies = new Set<Promise<void>>();
++        const truncateBatch = (route: import("playwright").Route) => {
++          const reply = route.fetch().then((response) =>
++            response.text().then((text) => {
++              const lines = text.split("\n").filter((line) => line !== "");
++              unanswered += batchedReads(route.request().postData()).length - 1;
++              return route.fulfill({ response, body: `${lines[0] ?? ""}\n` });
++            }),
++          );
++          activeReplies.add(reply);
++          return reply.finally(() => activeReplies.delete(reply));
++        };
++        yield* Effect.addFinalizer(() =>
++          browser
++            .use("Drain incomplete batch replies before closing the page", (page) =>
++              page
++                .unroute(incompleteBatch, truncateBatch)
++                .then(() => Promise.all([...activeReplies]).then(() => undefined)),
++            )
++            .pipe(Effect.orDie),
++        );
+         yield* browser.use("Cut each batch reply off after its first answer", (page) =>
+-          page.route(
+-            (url) => url.pathname === batchPath,
+-            (route) =>
+-              route.fetch().then((response) =>
+-                response.text().then((text) => {
+-                  const lines = text.split("\n").filter((line) => line !== "");
+-                  unanswered += batchedReads(route.request().postData()).length - 1;
+-                  return route.fulfill({ response, body: `${lines[0] ?? ""}\n` });
+-                }),
+-              ),
+-          ),
++          page.route(incompleteBatch, truncateBatch),
+         );
+         yield* browser.use("Open a page that does not read the app", (page) =>
+           page.goto(`/org/${actors.organization.slug}/connect`),
