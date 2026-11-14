@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { dispatchTimingHeader } from "../../src/pool/dispatch-timing.ts";
+import { modelDrainProtocol } from "../../src/pool/model-drain-contract.ts";
+import { socketRequestId } from "../../src/pool/terminal-socket.worker.ts";
 const protocol = "basalt.model-lifetime.v1";
 const lifetimePath = "/v1/__basalt/model-lifetime";
 const lifetimeHeader = "x-basalt-model-lifetime-id";
@@ -11,6 +13,7 @@ export class ModelLifetimeNode extends DurableObject {
   closedBoots = [];
   waiters = new Set();
   mode = "ready";
+  messages = [];
   async fetch(request) {
     const url = new URL(request.url),
       path = url.pathname;
@@ -60,6 +63,7 @@ export class ModelLifetimeNode extends DurableObject {
         lifetimes: this.entries.size,
         closed: this.closed,
         closedBoots: this.closedBoots,
+        messages: this.messages,
       });
     const entry =
       this.entries.get(id) ??
@@ -93,7 +97,36 @@ export class ModelLifetimeNode extends DurableObject {
     pair[1].addEventListener("close", complete);
     pair[1].addEventListener("error", complete);
     pair[1].addEventListener("message", (event) => {
-      if (event.data === "finish") pair[1].close(1000, "done");
+      if (request.headers.get("Sec-WebSocket-Protocol") === modelDrainProtocol) {
+        const binary = event.data instanceof ArrayBuffer;
+        const frame = binary ? new Uint8Array(event.data) : new Uint8Array();
+        this.messages.push({ binary, bytes: frame.byteLength });
+        if (frame[0] !== 0 || frame.byteLength < 5) {
+          pair[1].close(1008, "Invalid model consumer frame");
+          return;
+        }
+        const payload = frame.subarray(5);
+        const message = JSON.parse(new TextDecoder().decode(payload));
+        this.messages.at(-1).message = message;
+        const receipt = new Uint8Array(9);
+        receipt[0] = 2;
+        new DataView(receipt.buffer).setUint32(1, new DataView(event.data).getUint32(1));
+        new DataView(receipt.buffer).setUint32(5, payload.byteLength);
+        pair[1].send(receipt);
+        const output = (value) => {
+          const bytes = new TextEncoder().encode(JSON.stringify(value));
+          const data = new Uint8Array(bytes.byteLength + 1);
+          data.set(bytes, 1);
+          pair[1].send(data);
+        };
+        const session = request.headers.get("X-Basalt-Request-Id");
+        if (session)
+          output({ type: "basalt.request_started", request_id: socketRequestId(session, 1) });
+        output({
+          type: "response.completed",
+          response: { id: "synthetic-response", status: "completed", model: message.model },
+        });
+      } else if (event.data === "finish") pair[1].close(1000, "done");
       else if (event.data === "upstream-close") pair[1].close(1011, "upstream ended");
       else pair[1].send(event.data);
     });
@@ -102,6 +135,7 @@ export class ModelLifetimeNode extends DurableObject {
     const headers = new Headers({ [dispatchTimingHeader]: "fixture" });
     const offered = request.headers.get("Sec-WebSocket-Protocol");
     if (offered) headers.set("Sec-WebSocket-Protocol", offered);
+    if (offered === modelDrainProtocol) headers.set("X-Basalt-Terminal-Protocol", "1");
     return new Response(null, { status: 101, webSocket: pair[0], headers });
   }
 }

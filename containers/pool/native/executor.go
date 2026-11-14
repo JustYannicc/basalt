@@ -46,7 +46,7 @@ func (e *executor) Execute(ctx context.Context, account *auth.Auth, req coreexec
 		}
 	}
 	reporter.StartResponseTTFT()
-	response, errSend := e.HttpRequest(ctx, account, outgoing)
+	response, errSend := e.httpRequest(ctx, account, outgoing, reporter)
 	if errSend != nil {
 		// An uncertain send must return to the caller before its SDK decides whether to retry.
 		return result, terminal(502, []byte(`{"detail":"TypeSafe request outcome is unknown"}`), nil)
@@ -108,6 +108,10 @@ func (e *executor) prepare(req coreexecutor.Request, opts coreexecutor.Options) 
 }
 
 func (e *executor) HttpRequest(ctx context.Context, account *auth.Auth, request *http.Request) (*http.Response, error) {
+	return e.httpRequest(ctx, account, request, nil)
+}
+
+func (e *executor) httpRequest(ctx context.Context, account *auth.Auth, request *http.Request, reporter *helps.UsageReporter) (*http.Response, error) {
 	if request == nil || request.URL.Scheme != "https" || request.URL.Host != "api.typesafe.ai" || !strings.HasPrefix(request.URL.Path, "/v1/") {
 		return nil, fmt.Errorf("TypeSafe transport requires its native API origin")
 	}
@@ -122,6 +126,7 @@ func (e *executor) HttpRequest(ctx context.Context, account *auth.Auth, request 
 	outgoing.Header = request.Header.Clone()
 	outgoing.Header.Set("Authorization", "Bearer "+token)
 	client := helps.NewProxyAwareHTTPClient(ctx, e.cfg, account, 0)
+	client = reporter.TrackHTTPClient(client)
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return client.Do(outgoing)
 }

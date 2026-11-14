@@ -46,11 +46,11 @@ export function ImportBoundary({
   });
   // The existing usage read checks current management access; isOwner only names the original owner.
   const observedApi = useMemo(() => {
-    const overviewUsage: PoolApi["overviewUsage"] = async (input) => {
+    const summary: PoolApi["summary"] = async (input) => {
       setRetryAccess(() => () => {
-        void overviewUsage(input);
+        void summary(input);
       });
-      const result = await api.overviewUsage(input);
+      const result = await api.summary(input);
       if (result.ok) {
         setManager(true);
         setAccessError(undefined);
@@ -60,7 +60,7 @@ export function ImportBoundary({
       } else setAccessError(result.message);
       return result;
     };
-    return { ...api, overviewUsage };
+    return { ...api, summary };
   }, [api, session]);
   useEffect(() => {
     const navigate = () =>

@@ -1,0 +1,8 @@
+model {
+  extend basalt.toolsGateway {
+    appPages = part "App pages" {
+      description "Pages an app declares on `defineApp` are host tabs after its screen. Hosts read them from the active version's recorded requirements, so a deploy adds or removes tabs; each page opens its own document at its declared path on the app's origin, kept by the shared frame owner, and the app's own navigation reaches only pages that exact version declares."
+      metadata { code ".upstream/packages/apps/src/contracts/pages.ts|.upstream/apps/hosted/web/src/implementation/pages/app-detail.tsx" }
+    }
+  }
+}
