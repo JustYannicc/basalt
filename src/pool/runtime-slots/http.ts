@@ -1,7 +1,13 @@
+import { runtimeInput } from "./input.ts";
 import { Schema } from "effect";
-import { ProviderObservationRefused } from "../runtime-provider/read.ts";
+import { runtimeErrorResponse } from "./request-error.ts";
 import { openEnvelope } from "../token.ts";
-import { sameControllerCode, type ControllerCode, type SlotIdentity } from "./contract.ts";
+import {
+  sameControllerCode,
+  SlotRefused,
+  type ControllerCode,
+  type SlotIdentity,
+} from "./contract.ts";
 import { decodeRuntimeHandoffCommand, runtimeHandoffCommandPrefix } from "./handoff-command.ts";
 import type { RuntimeHandoff } from "./integration.ts";
 import type {
@@ -42,13 +48,15 @@ export async function handleRuntimeHandoff(
   try {
     const text = await request.text();
     if (text.length > 256 * 1024) return new Response(null, { status: 413 });
-    const { envelope } = Schema.decodeUnknownSync(Schema.Struct({ envelope: Schema.String }), {
-      onExcessProperty: "error",
-    })(JSON.parse(text));
+    const { envelope } = runtimeInput(() =>
+      Schema.decodeUnknownSync(Schema.Struct({ envelope: Schema.String }), {
+        onExcessProperty: "error",
+      })(JSON.parse(text)),
+    );
     const value = decodeRuntimeHandoffCommand(
       await openEnvelope(secret, runtimeHandoffCommandPrefix, envelope),
     );
-    if (!sameControllerCode(value.controllerCode, code)) return new Response(null, { status: 409 });
+    if (!sameControllerCode(value.controllerCode, code)) throw new SlotRefused("identity");
     if (
       [
         "adopt",
@@ -162,12 +170,6 @@ export async function handleRuntimeHandoff(
     }
     return Response.json({ result: result ?? null }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    return Response.json(
-      {
-        error: "runtime-handoff-refused",
-        ...(error instanceof ProviderObservationRefused ? { cause: error.code } : {}),
-      },
-      { status: 409 },
-    );
+    return runtimeErrorResponse(error, "handoff");
   }
 }

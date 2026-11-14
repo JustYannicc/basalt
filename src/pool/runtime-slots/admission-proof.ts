@@ -1,5 +1,6 @@
+import { runtimeInput } from "./input.ts";
 import { Schema } from "effect";
-import { ControllerCode, SlotIdentity, SlotTarget } from "./contract.ts";
+import { ControllerCode, SlotIdentity, SlotTarget, SlotRefused } from "./contract.ts";
 import { launchGeneration, launchOperationId } from "../launch-contract.ts";
 
 export const runtimeAttestationFormat = "pool-runtime-attestation-v1";
@@ -125,16 +126,18 @@ export function launchWitnessKey(slot: string) {
 }
 
 export function decodeAdmissionProof(value: unknown, now = Date.now()): AdmissionProof {
-  const proof = Schema.decodeUnknownSync(AdmissionProof, { onExcessProperty: "error" })(value);
+  const proof = runtimeInput(() =>
+    Schema.decodeUnknownSync(AdmissionProof, { onExcessProperty: "error" })(value),
+  );
   if (
     proof.at > now + 5_000 ||
     proof.expiresAt <= now ||
     proof.expiresAt <= proof.at ||
     proof.expiresAt > proof.at + 60_000
   )
-    throw new Error("Runtime attestation validity refused");
+    throw new SlotRefused("identity");
   if (proof.provider.observedAt > now + 5_000 || proof.provider.observedAt < now - 30_000)
-    throw new Error("Runtime provider observation expired");
+    throw new SlotRefused("identity");
   const { target, provider, selection } = proof;
   if (
     provider.applicationId !== target.applicationId ||
@@ -142,37 +145,36 @@ export function decodeAdmissionProof(value: unknown, now = Date.now()): Admissio
     provider.imageDigest !== target.imageDigest ||
     (!isLaunchAuthorization(proof) && proof.provider.instanceId !== target.instanceId)
   )
-    throw new Error("Runtime provider identity differs");
+    throw new SlotRefused("identity");
   if ((selection.expectedEpoch === 0) !== (selection.active === null))
-    throw new Error("Runtime selection epoch differs");
+    throw new SlotRefused("identity");
   if (proof.kind === "unattested-active" && selection.active !== null)
-    throw new Error("Runtime bootstrap already selected");
+    throw new SlotRefused("identity");
   const initial = proof.kind === "initial-start" || proof.kind === "initial-attested";
-  if (initial && target.homePeerOrdinal === undefined)
-    throw new Error("Initial Home identity is missing");
+  if (initial && target.homePeerOrdinal === undefined) throw new SlotRefused("identity");
   if (initial && (selection.active !== null || selection.expectedEpoch !== 0))
-    throw new Error("Initial runtime already selected");
+    throw new SlotRefused("identity");
   if (!initial && proof.kind !== "unattested-active" && selection.active === null)
-    throw new Error("Runtime candidate requires an active selection");
+    throw new SlotRefused("identity");
   if (
     selection.active &&
     (selection.active.controllerId !== target.controllerId ||
       selection.active.applicationId === target.applicationId ||
       selection.active.instanceId === target.instanceId)
   )
-    throw new Error("Runtime candidate overlaps active");
+    throw new SlotRefused("identity");
   if (
     selection.active?.homePeerOrdinal !== undefined &&
     (target.homePeerOrdinal === undefined ||
       target.homePeerOrdinal === selection.active.homePeerOrdinal)
   )
-    throw new Error("Runtime candidate overlaps Home identity");
+    throw new SlotRefused("identity");
   const keys = selection.revisions.map((row) => row.pool);
   if (
     new Set(keys).size !== keys.length ||
     JSON.stringify([...keys].sort((left, right) => left.localeCompare(right))) !==
       JSON.stringify(keys)
   )
-    throw new Error("Runtime policy revisions are not canonical");
+    throw new SlotRefused("identity");
   return proof;
 }

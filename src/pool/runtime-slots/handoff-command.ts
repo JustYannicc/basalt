@@ -1,5 +1,12 @@
+import { runtimeInput } from "./input.ts";
 import { Schema, Tuple } from "effect";
-import { ControllerCode, PromotionIntent, SlotIdentity, SlotTarget } from "./contract.ts";
+import {
+  ControllerCode,
+  PromotionIntent,
+  SlotIdentity,
+  SlotTarget,
+  SlotRefused,
+} from "./contract.ts";
 import { deploymentReadinessPrefix } from "../deployment-readiness.ts";
 import { FleetConfiguration } from "../runtime-fleet/configuration.ts";
 import { ImageUpdateIntent } from "../runtime-fleet/image-update.ts";
@@ -110,8 +117,8 @@ export const RuntimeHandoffCommand = Schema.Union([
 export type RuntimeHandoffCommand = typeof RuntimeHandoffCommand.Type;
 
 export function decodeRuntimeHandoffCommand(value: unknown, now = Date.now()) {
-  const command = Schema.decodeUnknownSync(RuntimeHandoffCommand, { onExcessProperty: "error" })(
-    value,
+  const command = runtimeInput(() =>
+    Schema.decodeUnknownSync(RuntimeHandoffCommand, { onExcessProperty: "error" })(value),
   );
   if (
     command.at > now + 5_000 ||
@@ -119,6 +126,6 @@ export function decodeRuntimeHandoffCommand(value: unknown, now = Date.now()) {
     command.expiresAt <= command.at ||
     command.expiresAt > command.at + 60_000
   )
-    throw new Error("Runtime handoff command expired");
+    throw new SlotRefused("identity");
   return command;
 }

@@ -71,7 +71,7 @@ test("a lost public-read acknowledgement is recovered from its receipt without a
   });
   assert.equal(
     (await f.command("candidate-probe", { operationId: "lost-reply", pool: f.claims.pool })).status,
-    409,
+    500,
   );
   f.reconstruct();
   assert.equal(

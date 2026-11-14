@@ -34,7 +34,7 @@ for (const fault of ["before", "after"] as const) {
         if (!injected++) throw new Error("synthetic lost endpoint destroy acknowledgement");
       });
     }
-    assert.equal((await f.command("drain", { operationId })).status, 409);
+    assert.equal((await f.command("drain", { operationId })).status, 500);
     assert.equal(injected, 1);
     assert.equal(f.old.calls.destroy, fault === "before" ? 0 : 1);
     assert.ok((await f.inspect()).selection.draining);
