@@ -82,3 +82,27 @@ test("malformed expected scalar registries refuse instead of accepting a future 
     assert.throws(() => validateSqlExpectations(list), /expectations-invalid/);
   }
 });
+
+test("registered activation markers stay optional during prepare and valid after activation", () => {
+  const hosted: SqlSchemaExpectation = {
+    namespace: "hosted",
+    database: "tools",
+    journal: "private_hosted_migrations",
+    kind: "markers",
+    expected: ["21_change_journal_prepare"],
+    optional: ["22_change_journal_activate"],
+  };
+  assert.equal(observeSqlVersions(hosted, ["21_change_journal_prepare"]).status, "ready");
+  const active = observeSqlVersions(hosted, [
+    "21_change_journal_prepare",
+    "22_change_journal_activate",
+  ]);
+  assert.equal(active.status, "ready");
+  assert.deepEqual(active.pending, []);
+  assert.deepEqual(active.unexpected, []);
+  assert.equal(observeSqlVersions(hosted, ["22_change_journal_activate"]).status, "pending");
+  assert.equal(
+    observeSqlVersions(hosted, ["21_change_journal_prepare", "23_unknown"]).status,
+    "incompatible",
+  );
+});

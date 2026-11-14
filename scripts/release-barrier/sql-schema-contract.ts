@@ -18,6 +18,8 @@ export interface SqlSchemaExpectation {
   journal: string;
   kind: "markers" | "version" | "home";
   expected: readonly string[];
+  /** Explicit cutovers remain optional during prepare and valid on every later deploy. */
+  optional?: readonly string[];
   registered?: readonly string[];
 }
 
@@ -73,6 +75,13 @@ export function validateSqlExpectations(expectations: readonly SqlSchemaExpectat
         !entry.expected.length ||
         new Set(entry.expected).size !== entry.expected.length ||
         entry.expected.some((version) => !/^[a-zA-Z0-9_.-]{1,160}$/.test(version)) ||
+        (entry.optional !== undefined &&
+          (entry.kind !== "markers" ||
+            new Set(entry.optional).size !== entry.optional.length ||
+            entry.optional.some(
+              (version) =>
+                !/^[a-zA-Z0-9_.-]{1,160}$/.test(version) || entry.expected.includes(version),
+            ))) ||
         (entry.kind !== "markers" && entry.expected.length !== 1) ||
         (entry.registered !== undefined &&
           (!entry.registered.length ||
@@ -119,7 +128,10 @@ export function observeSqlVersions(
   let unexpected: readonly string[];
   if (expectation.kind === "markers") {
     pending = expectation.expected.filter((version) => !applied.includes(version));
-    unexpected = applied.filter((version) => !expectation.expected.includes(version));
+    unexpected = applied.filter(
+      (version) =>
+        !expectation.expected.includes(version) && !expectation.optional?.includes(version),
+    );
   } else {
     const current = applied[0];
     const target = expectation.expected[0]!;
