@@ -140,11 +140,18 @@ test("an optional incident SQL failure preserves the usage snapshot and releases
     const fixture = await summaryFixture(f);
     await fixture.native(1, "2026-01-01T01:00:00Z");
     await fixture.cursor(1);
+    let incidents = false;
+    let injected = 0;
     const fault: HistoryDatabase = {
-      query: (text, values) =>
-        text.includes("GROUP BY proof,failed,status_code")
-          ? f.db.query("SELECT missing_summary_incident_column")
-          : f.db.query(text, values),
+      query: (text, values) => {
+        if (text === "SAVEPOINT summary_incidents") incidents = true;
+        if (text === "RELEASE SAVEPOINT summary_incidents") incidents = false;
+        if (incidents && text.includes("FROM basalt_model_requests r")) {
+          injected++;
+          return f.db.query("SELECT missing_summary_incident_column");
+        }
+        return f.db.query(text, values);
+      },
     };
     const result = await poolUsageSummary(
       fault,
@@ -152,6 +159,7 @@ test("an optional incident SQL failure preserves the usage snapshot and releases
       prices,
       Date.parse(to),
     );
+    assert.equal(injected, 1);
     assert.equal(result.incidents.status, "unavailable");
     assert.equal(result.daily[0]?.buckets[0]?.requests, 1);
     assert.equal((await f.db.query("SELECT 1 AS ready")).rows[0]?.ready, 1);
