@@ -14,28 +14,44 @@ diff --git a/e2e/tests/resource-prefetch.spec.ts b/e2e/tests/resource-prefetch.s
          yield* Effect.addFinalizer(() =>
            api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(
              Effect.tap((result) => Effect.sync(() => expect(result.status).toBe(200))),
-@@ -44,27 +50,33 @@
+@@ -44,27 +50,49 @@
          );
          yield* browser.login(actors.owner);
          yield* installBrowserClock;
 -        let completed = yield* Deferred.make<void>();
-+        let released = yield* Deferred.make<string>();
-+        let stream: Request | undefined;
-+        const release = () => Deferred.await(released).pipe(Effect.timeout("10 seconds"));
++        const generation = (request?: Request) => ({
++          request,
++          ended: Deferred.makeUnsafe<string>(),
++        });
++        let stream = generation();
++        const release = () =>
++          Effect.gen(function* () {
++            for (;;) {
++              const observed = stream;
++              const error = yield* Deferred.await(observed.ended);
++              if (observed !== stream) continue;
++              expect(error).toBe("net::ERR_ABORTED");
++              return observed;
++            }
++          }).pipe(Effect.timeout("10 seconds"));
          const requests: string[] = [];
          const resources = /^\/api\/organizations\/[^/]+\/resources$/;
          const record = (request: Request) => {
            const path = new URL(request.url()).pathname;
            if (request.method() === "GET" && resources.test(path)) requests.push(path);
-+          if (path === `${prefix}/changes`) stream = request;
++          if (path === `${prefix}/changes`) {
++            const previous = stream;
++            stream = generation(request);
++            Deferred.doneUnsafe(previous.ended, Effect.succeed("replaced"));
++          }
          };
 -        const finished = (request: Request) => {
 -          if (resources.test(new URL(request.url()).pathname))
 -            Deferred.doneUnsafe(completed, Effect.void);
 +        const failed = (request: Request) => {
-+          if (request === stream)
++          if (request === stream.request)
 +            Deferred.doneUnsafe(
-+              released,
++              stream.ended,
 +              Effect.succeed(request.failure()?.errorText ?? "unknown"),
 +            );
          };
@@ -54,12 +70,12 @@ diff --git a/e2e/tests/resource-prefetch.spec.ts b/e2e/tests/resource-prefetch.s
                return Promise.resolve();
              })
              .pipe(Effect.orDie),
-@@ -80,27 +92,44 @@
+@@ -80,27 +108,45 @@
          );
          expect(requests).toEqual([`${prefix}/resources`]);
          yield* held.release;
 -        yield* Deferred.await(completed);
-+        expect(yield* release()).toBe("net::ERR_ABORTED");
++        yield* release();
 +        const prefetched = requests.length;
          yield* openInApp("Open the prefetched Apps list", `${organization}/apps`);
          yield* browser.use("The prefetched directory supplies the app card", (page) =>
@@ -71,8 +87,7 @@ diff --git a/e2e/tests/resource-prefetch.spec.ts b/e2e/tests/resource-prefetch.s
 -        // A new document has never visited Apps, so route-intent preloads cannot keep its poll alive.
 -        completed = yield* Deferred.make<void>();
 +        // Old-document cancellation must not satisfy the new document's release.
-+        released = yield* Deferred.make<string>();
-+        stream = undefined;
++        stream = generation();
          const unused = yield* holdQuery(resources, "continue");
          yield* browser.use("Start an independent settings-only document", (page) =>
            page.goto(`${organization}/organization`),
@@ -90,27 +105,30 @@ diff --git a/e2e/tests/resource-prefetch.spec.ts b/e2e/tests/resource-prefetch.s
 +        yield* retryBody.requested;
 +        yield* rename("during retry");
 +        yield* retryBody.release;
-+        expect(yield* release()).toBe("net::ERR_ABORTED");
++        const settledStream = yield* release();
 +        const settled = requests.length;
          yield* browser.use("Advance beyond two idle directory polls", (page) =>
            page.context().clock.runFor(60_001),
          );
 -        expect(requests).toHaveLength(2);
++        expect(stream).toBe(settledStream);
 +        expect(requests).toHaveLength(settled);
 +        yield* rename("after prefetch release");
 +        yield* browser.use("Committed changes do not restart the released prefetch", (page) =>
 +          page.context().clock.runFor(60_001),
 +        );
++        expect(stream).toBe(settledStream);
 +        expect(requests).toHaveLength(settled);
 +        yield* evidence.json("resource-prefetch-release.json", { prefetched, settled, requests });
          yield* openInApp(
            "Enter an organization without access",
            `/org/prefetch-missing-${randomUUID()}/organization`,
-@@ -111,7 +140,7 @@
+@@ -111,7 +157,8 @@
          yield* browser.use("A refused destination starts no directory poll", (page) =>
            page.context().clock.runFor(60_001),
          );
 -        expect(requests).toHaveLength(2);
++        expect(stream).toBe(settledStream);
 +        expect(requests).toHaveLength(settled);
        }),
      ),
