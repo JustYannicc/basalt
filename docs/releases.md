@@ -4,6 +4,8 @@ How Executor updates and carried patches land, how database changes ship, and wh
 
 ## Carried patches
 
+- `0613-accepted-read-page-app-assets.patch` supersedes retired `0602-accepted-read-combined-app-assets.patch`. Do not replay 0602. The normal pinned generator produces 0613 from the combined revision client and declared-page navigation after 0612; frozen 0607 stays unchanged.
+
 - `0001-optional-cloud-vendors.patch`: absent optional vendors do not require accounts or make external calls. This manual Basalt overlay stays carried while [executor#2378](https://github.com/UsefulSoftwareCo/executor/issues/2378) asks whether third-party Cloud deployments are in scope. [PR #2348](https://github.com/UsefulSoftwareCo/executor/pull/2348) closed pending an explicit scope decision.
 - `0002-cloud-deployment.patch`: exports the upstream deployment composition, accepts Actions-supplied MCP signing keys, leaves the public domain to the router and configures native mail senders.
 - `0003-eu-durable-objects.patch`: constrains Basalt namespace bindings before native and Effect adapters capture them. Other stacks keep their existing bindings. R2 jurisdiction is set in the deployment patch. This manual Basalt EU-deployment overlay retains [issue #2364](https://github.com/UsefulSoftwareCo/executor/issues/2364) as provenance. That issue closed as not planned, pointing to the existing jurisdiction seam in [PR #2303](https://github.com/UsefulSoftwareCo/executor/pull/2303). The carry remains manual.

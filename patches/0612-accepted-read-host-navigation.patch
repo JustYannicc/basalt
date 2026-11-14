@@ -24,7 +24,7 @@ diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/i
      window.removeEventListener("pagehide", onHide);
      window.removeEventListener("beforeunload", beforeUnload);
      window.removeEventListener("message", onHostMessage);
-@@ -438,7 +445,8 @@
+@@ -439,7 +446,8 @@
        reference: OperationReference<Input, Output, "query">,
        input: NoInfer<Input>,
        output: Schema<NoInfer<Output>, boolean>,
@@ -34,7 +34,7 @@ diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/i
      /** Execute a write once in this client's queue. Success acknowledges the write; queries reconcile afterward. */
      mutate: <Input, Output>(
        reference: OperationReference<Input, Output, "mutation">,
-@@ -452,10 +460,17 @@
+@@ -453,10 +461,17 @@
      /** Whether someone can see this page: its browser tab is visible and its host shows it. */
      isActive: () => active,
      /** Call `listener` whenever `isActive` changes. Returns a function that stops it. */
@@ -126,7 +126,7 @@ diff --git a/apps/hosted/server/src/implementation/app-sessions.ts b/apps/hosted
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
 --- a/apps/hosted/server/src/implementation/app-ui.ts
 +++ b/apps/hosted/server/src/implementation/app-ui.ts
-@@ -12,6 +12,7 @@
+@@ -13,6 +13,7 @@
  } from "./pool-app-ui.ts";
  import { queryDispatch, queryPhase } from "./app-ui-query-timing.ts";
  import { appUiPhase, appUiPhaseHeaders } from "./app-ui-phase-timing.ts";
@@ -134,7 +134,7 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
  import { visibleObservationHealth } from "./account-observation-policy.ts";
  import { visibleAccountStatuses } from "./account-identity.ts";
  import { CurrentAuthorization } from "../contracts/authorization.ts";
-@@ -275,7 +276,7 @@
+@@ -276,7 +277,7 @@
            Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
          ),
        );
@@ -142,8 +142,8 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
 +      return { ...resolved, access, app, navigation: identity.navigation, changeSession: identity };
      });
    const authorize = Effect.flatMap(target, authorizeTarget);
-   const assets = (version: VersionMetadata, path: string) =>
-@@ -888,6 +889,7 @@
+   const authorizePoolSummary = Effect.gen(function* () {
+@@ -918,6 +919,7 @@
    return {
      signIn: signInPage,
      frameResponse,

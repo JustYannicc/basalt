@@ -73,7 +73,7 @@ test(
             const page = await context.newPage();
             page.on("pageerror", (error) => errors.push(error.message));
             page.on("request", (request) => {
-              if (request.url().endsWith("/_executor/api/pool-usage/overview"))
+              if (request.url().endsWith("/_executor/api/pool-usage/summary"))
                 overview.push(request.url());
             });
             const refused = page.waitForResponse(

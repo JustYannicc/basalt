@@ -1,3 +1,5 @@
+import { ChangeReadRetry, type ChangeWatch } from "apps/client";
+import { unconfirmed } from "./pool-view.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PoolCapacityHistory } from "../capacity-contract.ts";
 import type { PoolPersonalOverviewResult } from "../overview-contract.ts";
@@ -14,7 +16,21 @@ import {
   type SummaryBounds,
 } from "./summary-model.ts";
 
-const refresh = 5 * 60_000;
+const topics = [
+  "accounts",
+  "apps",
+  "membership",
+  "session",
+  "pool-readings",
+  "pool-usage",
+  "pool-samples",
+  "pool-prices",
+];
+const unreachable = {
+  ok: false,
+  error: "backend_unavailable",
+  message: "Usage could not be read. Try again.",
+} as const;
 
 export interface SummaryState {
   readonly summary?: Result<PoolUsageSummaryResult>;
@@ -51,108 +67,191 @@ function withRequests(capacity: PoolCapacityHistory, summary: PoolUsageSummaryRe
   };
 }
 
-/**
- * One refresh is one summary read and the existing capacity read, side by side. The legacy
- * overview read is never issued. Capacity doesn't depend on the breakdown, so switching between
- * labs and models reads only the summary, for the exact bounds that capacity was paired with, and
- * the pair stays coherent only when the new answer returns those same bounds. A refresh or a range
- * change reads a new pair. A refused summary makes this a member's page, which then reads only that
- * person's usage.
- */
+/** Summary and capacity publish independently after their own accepted revision reads. */
 export function useSummary(api: PoolApi, range: RangeChoice, by: Breakdown) {
   const key = rangeKey(range);
   const query = useMemo(() => ({ api, key, by }), [api, key, by]);
-  // Reads use the committed choice; layout effects run before the load effect below.
   const choice = useRef(range);
   useLayoutEffect(() => {
     choice.current = range;
   }, [range]);
   const [snapshot, setSnapshot] = useState<{ query: typeof query; value: SummaryState }>();
   const latest = useRef({ id: 0 });
+  const watch = useRef<ChangeWatch | undefined>(undefined);
+  const [reading, setReading] = useState<object>();
+  const [failed, setFailed] = useState<{ query: typeof query; message: string }>();
   const kept = useRef<{
+    api: PoolApi;
     key: string;
     bounds: SummaryBounds;
-    capacity: SummaryState["capacity"];
-    coherent: boolean;
+    capacity: NonNullable<SummaryState["capacity"]>;
+    version: string;
+  }>(undefined);
+  const capacityRead = useRef<{
+    api: PoolApi;
+    key: string;
+    bounds: SummaryBounds;
+    now: number;
+    controller: AbortController;
+    publish: (value: NonNullable<SummaryState["capacity"]>, version: string) => void;
+    reject: (error: unknown) => void;
+    finish: () => void;
   }>(undefined);
   const load = useCallback(
     async (fresh = true) => {
+      const current = watch.current;
+      if (current === undefined) return;
       const pending = latest.current;
       const id = ++pending.id;
-      const now = Date.now();
-      const reuse = !fresh && kept.current?.key === key ? kept.current : undefined;
-      const bounds = reuse?.bounds ?? summaryRange(choice.current, now);
-      let pieces: Omit<SummaryState, "coherent" | "bounds"> = {};
-      const take = (next: Omit<SummaryState, "coherent" | "bounds">) => {
-        if (id !== pending.id) return false;
-        pieces = { ...pieces, ...next };
-        const { summary, capacity } = pieces;
-        const answered =
-          summary?.ok === true &&
-          summary.value.from === bounds.from &&
-          summary.value.to === bounds.to;
-        const value: SummaryState =
-          reuse !== undefined
-            ? {
-                ...pieces,
-                bounds,
-                capacity: reuse.capacity,
-                // The kept capacity was paired with these bounds; a different answer is not.
-                coherent: reuse.coherent && answered,
-              }
-            : {
-                ...pieces,
-                bounds,
-                capacity:
-                  capacity?.ok && summary?.ok
-                    ? { ok: true, value: withRequests(capacity.value, summary.value) }
-                    : capacity,
-                coherent:
-                  answered && capacity?.ok === true && capacity.value.to === Date.parse(bounds.to),
-              };
-        if (reuse === undefined && capacity !== undefined && summary !== undefined)
-          kept.current = { key, bounds, capacity: value.capacity, coherent: value.coherent };
-        // Keep the last answer until this refresh's usage arrives, then show only this refresh.
-        setSnapshot((previous) =>
-          summary === undefined && previous !== undefined ? previous : { query, value },
-        );
-        return true;
+      const marker = {};
+      setReading(marker);
+      setFailed(undefined);
+      const ongoing =
+        capacityRead.current?.api === api && capacityRead.current.key === key
+          ? capacityRead.current
+          : undefined;
+      const reuse =
+        !fresh && ongoing === undefined && kept.current?.api === api && kept.current.key === key
+          ? kept.current
+          : undefined;
+      const now = ongoing?.now ?? (reuse ? Date.parse(reuse.bounds.to) : Date.now());
+      const bounds = ongoing?.bounds ?? reuse?.bounds ?? summaryRange(choice.current, now);
+      let pieces: Omit<SummaryState, "coherent" | "bounds"> = reuse
+        ? { capacity: reuse.capacity }
+        : {};
+      const versions = new Map<keyof typeof pieces, string>();
+      if (reuse) versions.set("capacity", reuse.version);
+      let remaining = reuse ? 1 : 2;
+      const finish = () => {
+        if (--remaining !== 0) return;
+        setReading((value) => (value === marker ? undefined : value));
+        if (id === pending.id && new Set(versions.values()).size > 1) current.request();
       };
-      const input = { from: bounds.from, to: bounds.to, by };
-      await Promise.all([
-        reuse === undefined
-          ? api.capacity(bounds.days, now).then((capacity) => void take({ capacity }))
-          : undefined,
-        api.summary(input).then(async (summary) => {
-          if (!take({ summary }) || !managersOnly(summary)) return;
-          // The member route keeps its fixed windows; a since-start range is managers' only.
-          take({
-            personal: await api.personalOverview(personalRange(choice.current, bounds, now)),
-          });
-        }),
-      ]);
+      const publish = (next: typeof pieces, version: string) => {
+        if (id !== pending.id) return;
+        pieces = { ...pieces, ...next };
+        for (const part of Object.keys(next) as (keyof typeof pieces)[])
+          versions.set(part, version);
+        const { summary, capacity } = pieces;
+        if (summary === undefined) return;
+        const answered =
+          summary.ok && summary.value.from === bounds.from && summary.value.to === bounds.to;
+        setFailed(undefined);
+        setSnapshot({
+          query,
+          value: {
+            ...pieces,
+            bounds,
+            capacity:
+              capacity?.ok && summary.ok
+                ? { ok: true, value: withRequests(capacity.value, summary.value) }
+                : capacity,
+            coherent:
+              answered &&
+              capacity?.ok === true &&
+              capacity.value.to === Date.parse(bounds.to) &&
+              new Set(versions.values()).size === 1,
+          },
+        });
+      };
+      const reject = (error: unknown) => {
+        if (id !== pending.id || !(error instanceof ChangeReadRetry) || error.reason === "hidden")
+          return;
+        setFailed({ query, message: unconfirmed });
+        setSnapshot(
+          (previous) =>
+            previous ?? { query, value: { coherent: false, bounds, summary: unreachable } },
+        );
+      };
+      const startCapacity = () => {
+        const callbacks = {
+          publish: (capacity: NonNullable<SummaryState["capacity"]>, version: string) => {
+            if (id === pending.id) kept.current = { api, key, bounds, capacity, version };
+            publish({ capacity }, version);
+          },
+          reject,
+          finish,
+        };
+        if (ongoing) Object.assign(ongoing, callbacks);
+        else {
+          const entry = { api, key, bounds, now, controller: new AbortController(), ...callbacks };
+          capacityRead.current = entry;
+          void current
+            .read(
+              () => api.capacity(bounds.days, now, entry.controller.signal),
+              (capacity, version) => entry.publish(capacity, version),
+            )
+            .catch((error: unknown) => entry.reject(error))
+            .finally(() => {
+              if (capacityRead.current === entry) capacityRead.current = undefined;
+              entry.finish();
+            });
+        }
+      };
+      if (!reuse) startCapacity();
+      try {
+        const summary = await current.read(
+          () => api.summary({ from: bounds.from, to: bounds.to, by }),
+          (summary, version) => {
+            publish({ summary }, version);
+            // A breakdown may reuse capacity only under the same accepted authority and heads.
+            if (reuse && reuse.version !== version) {
+              remaining++;
+              startCapacity();
+            }
+          },
+        );
+        if (managersOnly(summary))
+          await current.read(
+            () => api.personalOverview(personalRange(choice.current, bounds, now)),
+            (personal, version) => publish({ personal }, version),
+          );
+      } catch (error) {
+        reject(error);
+      } finally {
+        finish();
+      }
     },
     [api, key, by, query],
   );
   useEffect(() => {
     const pending = latest.current;
-    // A new breakdown of the same range keeps its capacity; a refresh reads both again.
-    void load(false);
-    const stop = api.poll(() => void load(), refresh);
+    let initial = true;
+    const current = api.changes().watch({
+      topics,
+      refresh: () => {
+        const fresh = !initial;
+        initial = false;
+        return load(fresh);
+      },
+      revoked: () => {
+        pending.id++;
+        kept.current = undefined;
+        capacityRead.current?.controller.abort();
+        capacityRead.current = undefined;
+        setSnapshot(undefined);
+      },
+    });
+    watch.current = current;
     return () => {
       pending.id++;
-      stop();
+      capacityRead.current?.controller.abort();
+      capacityRead.current = undefined;
+      watch.current = undefined;
+      current.stop();
     };
   }, [api, load]);
   const state = snapshot?.query === query ? snapshot.value : undefined;
-  // A switch keeps the previous answer on screen, marked as updating, instead of a blank page.
   const shown = state ?? snapshot?.value;
   return {
     state: shown,
-    updating: state === undefined && shown !== undefined,
-    /** The breakdown the shown answer was read with, which can trail the selected one. */
+    updating: shown !== undefined && (state === undefined || reading !== undefined),
     by: snapshot?.query.by ?? by,
     reload: () => load(),
     member: managersOnly(shown?.summary),
+    failed:
+      failed?.query === query && (shown?.summary?.ok || shown?.personal?.ok)
+        ? failed.message
+        : undefined,
   };
 }

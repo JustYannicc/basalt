@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { capacityFixture } from "./overview-fixture.mjs";
-import { summaryReply } from "../../e2e/pool-overview-usage.mjs";
+import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
 import { handleSelfUsageImport } from "../../src/pool/model-history/self-import-http.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
 import { bundlePoolApp } from "../pool-app-bundle.ts";
@@ -109,7 +109,26 @@ export async function importAppFixture(connectionString) {
           response.writeHead(403).end();
           return;
         }
-        json(summaryReply(input));
+        const { default: pg } = await import(
+          createRequire(join(root, "package.json")).resolve("pg")
+        );
+        const database = new pg.Client({ connectionString });
+        await database.connect();
+        try {
+          json(
+            await poolUsageSummary(
+              database,
+              {
+                ...input,
+                pool: "fixture-ui-pool",
+                authority: { canManage: true, mappingProven: false, accounts: [] },
+              },
+              async () => ({ prices: [], issues: [] }),
+            ),
+          );
+        } finally {
+          await database.end();
+        }
       } else if (request.url === "/_executor/api/pool-usage/personal-overview") {
         response.writeHead(503).end();
       } else if (
@@ -293,11 +312,11 @@ for(const [entry,target] of [['apps/pool/ui/main.tsx','browser'],['host.ts','nod
   const javascript = readFileSync(join(directory, "dist/main.js"));
   const { build } = require("esbuild");
   const styles = await build({
+    conditions: ["style"],
     entryPoints: [join(app, "ui/style.css")],
     write: false,
     bundle: true,
     outfile: "main.css",
-    conditions: ["style"],
     alias: { tailwindcss: join(root, ".upstream/packages/ui/node_modules/tailwindcss/index.css") },
   });
   const { compile } = webRequire("tailwindcss");
