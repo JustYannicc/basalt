@@ -4719,7 +4719,7 @@ new file mode 100644
 +      perform pg_notify('hosted_committed_changes','');
 +      return null;
 +    end $$`;
-+  yield* sql`drop function hosted_record_change(text,text,text)`;
++  // Transactions already executing the old flush can still need its helper at cutover.
 +});
 diff --git a/apps/hosted/server/src/implementation/change-projection.ts b/apps/hosted/server/src/implementation/change-projection.ts
 new file mode 100644
@@ -4830,4 +4830,40 @@ new file mode 100644
 +  );
 +  yield* guardMigration({ attempt, report: blockerReport(url) });
 +  yield* Effect.log("Hosted change journal activated");
++});
+diff --git a/apps/hosted/self-host/src/implementation/database-schema.ts b/apps/hosted/self-host/src/implementation/database-schema.ts
+--- a/apps/hosted/self-host/src/implementation/database-schema.ts
++++ b/apps/hosted/self-host/src/implementation/database-schema.ts
+@@ -6,6 +6,7 @@
+ import { SqlClient } from "effect/sql";
+ import { AuthDatabase } from "../contracts/database.ts";
+ import { makeAuthDatabase } from "./auth-database.ts";
++import { selfHostChangeJournalCutover } from "./change-journal-cutover.ts";
+ /** Acquire one engine and initialize both schemas before exposing services. */
+ export const selfHostDatabaseSchema = Layer.effect(
+   AuthDatabase,
+@@ -13,6 +14,7 @@
+     const db = yield* makeAuthDatabase;
+     const database = AuthDatabase.of({ db, type: "postgres", transaction: true });
+     const settings = yield* selfHostAuthSettings;
++    yield* selfHostChangeJournalCutover;
+     yield* migrateHostedSchemas({
+       // Migrations read plugin schemas only. SSO adds none, so this reads no provider metadata.
+       ...selfHostAuthOptions(settings, [], null),
+diff --git a/apps/hosted/self-host/src/implementation/change-journal-cutover.ts b/apps/hosted/self-host/src/implementation/change-journal-cutover.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/self-host/src/implementation/change-journal-cutover.ts
+@@ -0,0 +1,12 @@
++import { activateHostedChangeJournal } from "@executor-js/hosted-server/migrations";
++import { Config, Effect, Option } from "effect";
++
++/** Native hosts forward EXECUTOR_ settings; absent acknowledgement keeps legacy producers. */
++export const selfHostChangeJournalCutover = Effect.gen(function* () {
++  const readersReady = yield* Config.Literals(
++    ["checkpoint-count-v1"],
++    "EXECUTOR_CHANGE_JOURNAL_READERS_READY",
++  ).pipe(Config.option);
++  // This runs before normal migrations, so a fresh install cannot prepare and activate at once.
++  if (Option.isSome(readersReady)) yield* activateHostedChangeJournal;
 +});

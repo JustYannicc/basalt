@@ -92,6 +92,14 @@ test(
       );
       await run(activateHostedChangeJournal);
       await run(activateHostedChangeJournal);
+      assert.equal(
+        (
+          await a.query(
+            "select to_regprocedure('hosted_record_change(text,text,text)') is not null as retained",
+          )
+        ).rows[0].retained,
+        true,
+      );
       assert.deepEqual(
         (await a.query("select migration_id from private_hosted_migrations order by migration_id"))
           .rows,

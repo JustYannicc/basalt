@@ -44,6 +44,16 @@ Required services are Cloudflare Workers, R2, Hyperdrive, native Email Sending, 
 
 Autumn billing, Axiom telemetry and Context.dev company suggestions are optional. When unconfigured, Basalt carries an upstream patch that allows product use without billing, exports no Axiom telemetry and skips company suggestions. It never substitutes hosted emulators. Sentry and PostHog configuration belongs to the analytics integration work.
 
+### Activate committed-change journals
+
+Deploy once with the activation settings absent to prepare the databases. Verify that every serving tools host and pool Worker uses the queue-aware readers before activating either producer. The commands acknowledge that inventory; they do not inspect deployed readers.
+
+For the cloud tools service, run its existing migration entrypoint with `--activate-change-journal --readers-ready=checkpoint-count-v1` and the usual migration database connection. This separate operation requires the earlier preparation and changes no auth or cloud provisioning. For the standalone native host, restart with `EXECUTOR_CHANGE_JOURNAL_READERS_READY=checkpoint-count-v1`; remove the setting after activation. It refuses activation before a previously committed preparation.
+
+For pool history, run `bun scripts/pool-history-operator.ts --worker <deployed-script> --plan <private-file> --operation journal-activation`. Review the saved catalog and SQL, then repeat with `--apply --go --readers-ready checkpoint-count-v1`. Each activation records its exact migration once, including when a later preparation is already installed.
+
+After activation, rollback builds must retain queue-aware readers. Removing an activation setting does not undo committed SQL.
+
 ### Restart one exact pool runtime
 
 Use [Exact pool runtime recovery](../.github/workflows/pool-runtime-recovery.yml) on `main` when a reviewed incident plan calls for one restart. It uses the `production-release` environment and waits behind production releases. Keep `POOL_APP_SIGNING_KEY` in Actions.
