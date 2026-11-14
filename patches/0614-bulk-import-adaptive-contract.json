@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-bulk-import-adaptive-contract",
+  "file": "0614-bulk-import-adaptive-contract.patch",
+  "content_sha256": "59ca70e406eea8d7a6c7abf584c27f75bfece7d08efe5b85660e5c3ad6b5fdcf",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
