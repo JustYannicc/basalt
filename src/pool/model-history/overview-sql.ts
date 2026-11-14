@@ -26,8 +26,60 @@ export function priceQuery(personScoped = false, retained = false, includeImport
 }
 
 /** One request-level calculation is shared by overview, settings and retained history. */
-export function pricedRowsSql(selected = "selected", table = "$7", guard = "true", prefix = "") {
-  return `priced AS (
+export function pricedRowsSql(
+  selected = "selected",
+  table = "$7",
+  guard = "true",
+  prefix = "",
+  materialized = false,
+) {
+  const definitions = `provider text,model text,currency text,input text,output text,
+          cache_read text,cache_write text,request text,tier text,min_input text,as_of text,source text,version text,basis text,refresh_failed boolean`;
+  const records = `jsonb_to_recordset(${table}::jsonb) AS x(${definitions})`;
+  const rateColumns = [
+    "price_version",
+    "price_as_of",
+    "price_basis",
+    "price_refresh_failed",
+    "input_rate",
+    "output_rate",
+    "cache_read_rate",
+    "cache_write_rate",
+    "request_rate",
+  ];
+  const rangeMatch = (alias: string) => `${alias}.provider=s.provider AND ${alias}.model=s.model
+    AND ${alias}.min_input<=coalesce(context.context_input,0)
+    AND (${alias}.next_input IS NULL OR coalesce(context.context_input,0)<${alias}.next_input)`;
+  const priceJoin = materialized
+    ? `LEFT JOIN price_rows specific ON (${guard}) AND ${rangeMatch("specific")}
+        AND specific.tier=s.service_tier AND specific.tier<>'*'
+      LEFT JOIN price_rows fallback ON (${guard}) AND specific.min_input IS NULL AND ${rangeMatch("fallback")}
+        AND fallback.tier='*'
+      CROSS JOIN LATERAL (SELECT ${rateColumns.map((column) => `CASE WHEN specific.min_input IS NOT NULL THEN specific.${column} ELSE fallback.${column} END AS ${column}`).join(",")}) p`
+    : `LEFT JOIN LATERAL (
+        SELECT version AS price_version,as_of AS price_as_of,basis AS price_basis,refresh_failed AS price_refresh_failed,input::numeric AS input_rate,output::numeric AS output_rate,
+          cache_read::numeric AS cache_read_rate,cache_write::numeric AS cache_write_rate,request::numeric AS request_rate
+        FROM ${records}
+        WHERE x.provider=s.provider AND x.model=s.model AND x.currency='USD' AND x.source='models.dev'
+          AND (x.tier='*' OR x.tier=coalesce(s.service_tier,'*')) AND x.min_input::numeric<=coalesce(context.context_input,0)
+        ORDER BY (x.tier<>'*') DESC,x.min_input::numeric DESC LIMIT 1
+      ) p ON ${guard}`;
+  return `${
+    materialized
+      ? `price_candidates AS MATERIALIZED (
+    SELECT provider,model,tier,min_input::numeric AS min_input,ordinality,
+      input::numeric AS input_rate,output::numeric AS output_rate,cache_read::numeric AS cache_read_rate,
+      cache_write::numeric AS cache_write_rate,request::numeric AS request_rate,
+      as_of AS price_as_of,version AS price_version,basis AS price_basis,refresh_failed AS price_refresh_failed
+    FROM ROWS FROM (jsonb_to_recordset(${table}::jsonb) AS (${definitions})) WITH ORDINALITY AS x
+    WHERE currency='USD' AND source='models.dev' AND tier IS NOT NULL AND min_input IS NOT NULL
+  ), price_rows AS MATERIALIZED (
+    SELECT *,lead(min_input) OVER (PARTITION BY provider,model,tier ORDER BY min_input) AS next_input
+    FROM (SELECT DISTINCT ON (provider,model,tier,min_input) * FROM price_candidates
+      ORDER BY provider,model,tier,min_input,ordinality) unique_rates
+  ), `
+      : ""
+  }priced AS (
       SELECT s.*,context.context_input,p.price_version AS ${prefix}price_version,p.price_as_of AS ${prefix}price_as_of,p.price_basis AS ${prefix}price_basis,p.price_refresh_failed AS ${prefix}price_refresh_failed,
         (s.token_quality='legacy' AND coalesce(s.api_type,'') NOT IN ('responses','responses-compact','messages')) AS token_count_estimate,
         CASE WHEN p.price_version IS NULL OR s.token_quality NOT IN ('complete','legacy')
@@ -52,15 +104,7 @@ export function pricedRowsSql(selected = "selected", table = "$7", guard = "true
           + output.output_total*p.output_rate + s.cache_read_tokens::numeric*p.cache_read_rate
           + s.cache_write_tokens::numeric*CASE WHEN p.cache_write_rate=0 THEN p.input_rate ELSE p.cache_write_rate END)/1000000 + p.request_rate
         END AS api_cost
-      FROM ${selected} s ${counterShapeSql} LEFT JOIN LATERAL (
-        SELECT version AS price_version,as_of AS price_as_of,basis AS price_basis,refresh_failed AS price_refresh_failed,input::numeric AS input_rate,output::numeric AS output_rate,
-          cache_read::numeric AS cache_read_rate,cache_write::numeric AS cache_write_rate,request::numeric AS request_rate
-        FROM jsonb_to_recordset(${table}::jsonb) AS x(provider text,model text,currency text,input text,output text,
-          cache_read text,cache_write text,request text,tier text,min_input text,as_of text,source text,version text,basis text,refresh_failed boolean)
-        WHERE x.provider=s.provider AND x.model=s.model AND x.currency='USD' AND x.source='models.dev'
-          AND (x.tier='*' OR x.tier=coalesce(s.service_tier,'*')) AND x.min_input::numeric<=coalesce(context.context_input,0)
-        ORDER BY (x.tier<>'*') DESC,x.min_input::numeric DESC LIMIT 1
-      ) p ON ${guard}
+      FROM ${selected} s ${counterShapeSql} ${priceJoin}
     )`;
 }
 

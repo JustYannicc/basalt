@@ -72,8 +72,8 @@ export function ImportBoundary({
         return observed;
       },
     });
-    const overviewUsage: PoolApi["overviewUsage"] = async (input) => {
-      const result = await api.overviewUsage(input);
+    const summary: PoolApi["summary"] = async (input) => {
+      const result = await api.summary(input);
       if (result.ok) {
         setManager(true);
         setAccessError(undefined);
@@ -83,7 +83,7 @@ export function ImportBoundary({
       } else setAccessError(result.message);
       return result;
     };
-    return { ...api, changes, overviewUsage };
+    return { ...api, changes, summary };
   }, [api, session]);
   const retryAccess = () => {
     api.changes().reconnect();

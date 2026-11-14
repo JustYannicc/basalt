@@ -21,7 +21,7 @@ model {
     }
   }
 
-  basalt.modelGateway -[sync]-> basalt.bulkUsageImport "forward signed bulk commands through a foreign binding to the existing repository-token coordinator class; refuse as not provisioned while unbound"
+  basalt.modelGateway -[sync]-> basalt.bulkUsageImport "forward signed bulk commands through a foreign binding to the existing repository-token coordinator class; refuse as HTTP 409 not provisioned while unbound, keeping expected 4xx below error telemetry and reporting unexpected 5xx"
   basalt.bulkUsageImport -[sync]-> basalt.modelGateway "reuse exact history parsing, signed envelopes, database sessions and durable chunk storage"
   basalt.bulkUsageImport -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: fresh signed owner admission before every chunk; host transaction ends before reply"
   basalt.bulkUsageImport -[sync]-> basalt.usageImportArtifacts "store and reload only usage-import-v1/<job>/ keys, disjoint from every vault-<app>/ operation"

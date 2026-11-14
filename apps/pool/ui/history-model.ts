@@ -1,8 +1,8 @@
-import type { SeriesCoverage, SeriesGroup } from "../usage-series-contract.ts";
+import type { SeriesCoverage, SeriesGroup, UsageSeriesMember } from "../usage-series-contract.ts";
 import type { Result } from "../control.ts";
 import type { HistoryBounds } from "../history-contract.ts";
 import type { SeriesFetch, SeriesQuery } from "./series-model.ts";
-import { readSeries } from "./series-model.ts";
+import { mergeGroup, readSeries } from "./series-model.ts";
 
 const utcDay = 86_400_000;
 const maxSeriesRange = 400 * utcDay;
@@ -93,6 +93,8 @@ export interface HistorySeriesRead {
   readonly asOf: string | null;
   readonly changed: boolean;
   readonly partial: boolean;
+  /** The host's current pool members from the first window's person read. */
+  readonly directory?: readonly UsageSeriesMember[];
 }
 
 function groupId(group: SeriesGroup): string {
@@ -166,6 +168,7 @@ export async function readHistorySeries(
   let coverage: SeriesCoverage | undefined;
   let changed = false;
   let partial = false;
+  let directory: readonly UsageSeriesMember[] | undefined;
 
   for (const window of historyWindows(bounds.from, bounds.to)) {
     const query: SeriesQuery = {
@@ -181,14 +184,12 @@ export async function readHistorySeries(
     coverage = coverage === undefined ? page.coverage : mergeCoverage(coverage, page.coverage);
     changed ||= page.asOfChanged;
     partial ||= page.truncated;
+    directory ??= page.directory;
 
     for (const group of page.groups) {
       const key = groupId(group);
       const existing = groups.get(key);
-      groups.set(
-        key,
-        existing ? { key: existing.key, buckets: [...existing.buckets, ...group.buckets] } : group,
-      );
+      groups.set(key, existing ? mergeGroup(existing, group) : group);
     }
   }
 
@@ -206,6 +207,7 @@ export async function readHistorySeries(
       asOf,
       changed,
       partial,
+      ...(directory === undefined ? {} : { directory }),
     },
   };
 }

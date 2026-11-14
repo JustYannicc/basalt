@@ -249,7 +249,8 @@ test("the signed native reader returns only current app links and verified Home 
           yield* sql`insert into executor_account_acquisitions
             (account, owner, provider, method, generation, driver, driver_revision, revision, removal) values
               (${account}, ${owner}, ${p}, 'apiKey', ${account === "acc_stale" ? 1 : 2}, ${driver},
-                ${account === "acc_driver_changed" ? "home-r0" : "home-r1"}, 'binding-r1', ${removal})`;
+                ${account === "acc_driver_changed" ? "home-r0" : "home-r1"},
+                ${account === "acc_changed" ? "binding-r2" : "binding-r1"}, ${removal})`;
         }
         yield* sql`insert into hosted_account_access values
             ('acc_unbound', ${organization}, 'shared', null, 'owner')`;

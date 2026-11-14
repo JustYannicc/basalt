@@ -7,7 +7,7 @@ import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.t
 const upstream = new URL("../../.upstream/", import.meta.url);
 const load = (path: string) => import(new URL(path, upstream).href);
 
-test("native membership rechecks its acquisition binding through the tracked ORM transaction", async () => {
+test("native membership resolves its acquisition binding without write-lock rechecks", async () => {
   const [sdk, membership, runtime, analytics, setup] = await Promise.all([
     load("packages/sdk/src/core.ts"),
     load("apps/hosted/server/src/implementation/pool-membership.ts"),
@@ -73,7 +73,7 @@ test("native membership rechecks its acquisition binding through the tracked ORM
         });
         yield* sql`insert into hosted_account_access values (${account}, ${organization}, 'shared', null, 'owner')`;
         yield* sql`insert into hosted_app_account_links values (${pool}, 'home', null, ${account}, now())`;
-        // The production source.current locks both ORM rows, even when their values stay the same.
+        // A membership read must not ask the SDK to UPDATE rows already held FOR SHARE.
         yield* sql`create table binding_rechecks (account text)`;
         yield* sql.unsafe(`create function record_binding_recheck() returns trigger language plpgsql as $$
       begin insert into binding_rechecks values (new.account); return new; end $$`);
@@ -112,7 +112,7 @@ test("native membership rechecks its acquisition binding through the tracked ORM
           })),
           [{ account, homeReference: "opaque-home-reference" }],
         );
-        assert.deepEqual(yield* sql`select account from binding_rechecks`, [{ account }]);
+        assert.deepEqual(yield* sql`select account from binding_rechecks`, []);
         assert.equal(sourceReads, 1);
         const registration = {};
         yield* Effect.tryPromise(() =>
@@ -126,7 +126,7 @@ test("native membership rechecks its acquisition binding through the tracked ORM
         const cached = yield* membership.nativePoolMembership(organization, pool, executor);
         assert.equal(cached.accounts[0].homeReference, "opaque-home-reference");
         assert.equal(sourceReads, 2);
-        assert.equal((yield* sql`select account from binding_rechecks`).length, 2);
+        assert.equal((yield* sql`select account from binding_rechecks`).length, 0);
         const nextRaw = {
           ...executor,
           [sdk.AccountAcquisitionHost]: { ...executor[sdk.AccountAcquisitionHost] },

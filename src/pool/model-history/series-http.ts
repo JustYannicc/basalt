@@ -22,11 +22,16 @@ import type {
   PoolPersonalOverviewSignedInput,
 } from "../../../apps/pool/overview-contract.ts";
 import { lastSuccessAt } from "./last-success.ts";
+import { poolUsageSummary } from "./summary.ts";
+import { summaryInput } from "./summary-input.ts";
+import { HistoryDeadline } from "./series-deadline.ts";
+import { historyPhase, historySeriesDiagnostics } from "./series-diagnostics.ts";
 
 export const poolUsageSeriesPath = `${controlBasePath}/usage/series`;
 export const lastSuccessAtPath = `${controlBasePath}/usage/last-success`;
 export const poolOverviewPath = `${controlBasePath}/usage/overview`;
 export const poolPersonalOverviewPath = `${controlBasePath}/usage/personal-overview`;
+export const poolUsageSummaryPath = `${controlBasePath}/usage/summary`;
 
 /** Native host policy authorizes this exact signed read while holding its organization lock. */
 export async function handleUsageSeries(
@@ -42,34 +47,50 @@ export async function handleUsageSeries(
     ) => Promise<OverviewPriceTable>;
   },
 ): Promise<Response> {
+  const path = new URL(request.url).pathname;
+  const diagnostics = path === poolUsageSeriesPath ? historySeriesDiagnostics() : undefined;
+  const deadline = diagnostics ? new HistoryDeadline(5_000, request.signal) : undefined;
+  const bounded = <T>(work: () => Promise<T>) => (deadline ? deadline.run(work) : work());
   try {
     if (request.method !== "POST")
       return fail(404, "not_found", "This pool endpoint does not exist.");
-    const bytes = await readBody(request, 2_097_152);
+    const bytes = await bounded(() => readBody(request, 2_097_152));
     if (bytes === undefined)
       return fail(413, "invalid_query", "The usage assertion exceeds its limit.");
     const body: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    const payload =
-      object(body) && typeof body.envelope === "string"
-        ? await openEnvelope(access.signingKey, "sbs1", body.envelope, access.previousSigningKey)
-        : undefined;
-    const path = new URL(request.url).pathname;
     const action =
-      path === poolUsageSeriesPath
-        ? "poolUsageSeries"
-        : path === poolOverviewPath
-          ? "poolOverview"
-          : path === poolPersonalOverviewPath
-            ? "poolPersonalOverview"
-            : "lastSuccessAt";
-    if (
-      !object(payload) ||
-      payload.action !== action ||
-      typeof payload.expiresAt !== "number" ||
-      payload.expiresAt <= Date.now() ||
-      payload.expiresAt > Date.now() + 30_000
-    )
-      return fail(401, "unauthorized", "A valid host usage assertion is required.");
+      path === poolUsageSummaryPath
+        ? "poolUsageSummary"
+        : path === poolUsageSeriesPath
+          ? "poolUsageSeries"
+          : path === poolOverviewPath
+            ? "poolOverview"
+            : path === poolPersonalOverviewPath
+              ? "poolPersonalOverview"
+              : "lastSuccessAt";
+    // This DO validates the signed host assertion. Membership is read by the host.
+    const payload = await historyPhase(diagnostics, "signed_envelope_validation", () =>
+      bounded(async () => {
+        const payload =
+          object(body) && typeof body.envelope === "string"
+            ? await openEnvelope(
+                access.signingKey,
+                "sbs1",
+                body.envelope,
+                access.previousSigningKey,
+              )
+            : undefined;
+        if (
+          !object(payload) ||
+          payload.action !== action ||
+          typeof payload.expiresAt !== "number" ||
+          payload.expiresAt <= Date.now() ||
+          payload.expiresAt > Date.now() + 30_000
+        )
+          return fail(401, "unauthorized", "A valid host usage assertion is required.");
+        return payload;
+      }),
+    );
     const input = historyObject(payload.input);
     if (
       typeof payload.pool !== "string" ||
@@ -97,14 +118,42 @@ export async function handleUsageSeries(
     }
     if (action === "poolUsageSeries" || action === "lastSuccessAt") {
       const authority = seriesAuthority(payload.authority);
+      const pool = payload.pool;
+      const currentPrices = access.currentPrices;
       const labels =
         action === "poolUsageSeries" && Array.isArray(input.by) && input.by.includes("account")
-          ? await access.accountLabels?.(payload.pool)
+          ? await historyPhase(diagnostics, "account_labels", () =>
+              bounded(async () => access.accountLabels?.(pool)),
+            )
           : undefined;
       const result =
         action === "poolUsageSeries"
-          ? await withHistoryDatabase(access.connectionString, (db) =>
-              poolUsageSeries(db, input, authority, "owned", access.currentPrices, labels),
+          ? await historyPhase(diagnostics, "series_read", () =>
+              bounded(() =>
+                withHistoryDatabase(
+                  access.connectionString,
+                  (db) =>
+                    poolUsageSeries(
+                      db,
+                      input,
+                      authority,
+                      "owned",
+                      currentPrices
+                        ? (targets) =>
+                            historyPhase(diagnostics, "price_callback", () =>
+                              bounded(() => currentPrices(targets)),
+                            )
+                        : undefined,
+                      labels,
+                    ),
+                  {
+                    totalTimeoutMs: 5_000,
+                    timeoutFailure: "history",
+                    signal: deadline?.signal,
+                    diagnostics,
+                  },
+                ),
+              ),
             )
           : input.session !== undefined && access.home !== undefined
             ? await sessionSuccess(access.home, input, authority, {
@@ -115,6 +164,15 @@ export async function handleUsageSeries(
                 lastSuccessAt(db, input, authority),
               );
       return json(result);
+    }
+    if (action === "poolUsageSummary") {
+      seriesAuthority(input.authority);
+      summaryInput(input);
+      return json(
+        await withHistoryDatabase(access.connectionString, (db) =>
+          poolUsageSummary(db, input, access.currentPrices),
+        ),
+      );
     }
     const result =
       action === "poolOverview"
@@ -199,5 +257,7 @@ export async function handleUsageSeries(
         400,
       );
     return failureResponse(error);
+  } finally {
+    deadline?.dispose();
   }
 }

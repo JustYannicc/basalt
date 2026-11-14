@@ -10,6 +10,7 @@ import type {
   SeriesCoverage,
   SeriesGroup,
   SeriesKey,
+  UsageSeriesMember,
 } from "../usage-series-contract.ts";
 
 // Usage series, read the way the overview needs it: every page of one pinned query, then rolled up
@@ -31,6 +32,8 @@ export interface SeriesRead {
   readonly asOfChanged: boolean;
   /** More pages remained after `maxSeriesPages`. */
   readonly truncated: boolean;
+  /** Current pool members the host named on the first page of a person read. */
+  readonly directory?: readonly UsageSeriesMember[];
 }
 
 const keyId = (key: SeriesKey) =>
@@ -55,10 +58,7 @@ export async function readSeries(
     for (const group of value.groups) {
       const id = keyId(group.key);
       const known = groups.get(id);
-      groups.set(
-        id,
-        known ? { key: known.key, buckets: [...known.buckets, ...group.buckets] } : group,
-      );
+      groups.set(id, known ? mergeGroup(known, group) : group);
     }
     if (value.next === null)
       return {
@@ -69,6 +69,7 @@ export async function readSeries(
           asOf: first.asOf,
           asOfChanged: changed,
           truncated: false,
+          ...(first.directory === undefined ? {} : { directory: first.directory }),
         },
       };
     after = value.next;
@@ -83,7 +84,18 @@ export async function readSeries(
       asOf: read.asOf,
       asOfChanged: changed,
       truncated: true,
+      ...(read.directory === undefined ? {} : { directory: read.directory }),
     },
+  };
+}
+
+/** One group continued on a later page; its account display rides on whichever page carried it. */
+export function mergeGroup(known: SeriesGroup, next: SeriesGroup): SeriesGroup {
+  const accountDisplay = known.accountDisplay ?? next.accountDisplay;
+  return {
+    key: known.key,
+    ...(accountDisplay === undefined ? {} : { accountDisplay }),
+    buckets: [...known.buckets, ...next.buckets],
   };
 }
 
