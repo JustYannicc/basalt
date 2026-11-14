@@ -1,7 +1,7 @@
 import type { StateService } from "alchemy/State/State";
 import type { CompiledStack } from "alchemy/Stack";
 import { Effect, Schema } from "effect";
-import { canonical, digest, BarrierRefusal } from "./manifest.ts";
+import { canonical, BarrierRefusal } from "./manifest.ts";
 import {
   checkpointReaderContract,
   migrationActivationTargets,
