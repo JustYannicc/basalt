@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
+import { historyApplyFailure } from "../../src/pool/model-history/operator-failure.ts";
 import pg from "pg";
 import {
   handleModelHistoryOperation,
@@ -167,6 +168,37 @@ test("the private schema operator defaults to catalog/count reads and binds writ
         ),
         url.toString(),
       );
+    await db.query('CREATE TABLE "user" (id text)');
+    const rejectedCatalog = await invoke(historySchemaCatalogPath);
+    const rejectedPlan = await rejectedCatalog.json();
+    const errors: unknown[][] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+    try {
+      const rejected = await invoke(historySchemaApplyPath, {
+        go: true,
+        schemaHash: rejectedPlan.schemaHash,
+        catalogHash: rejectedPlan.catalogHash,
+      });
+      assert.equal(rejected.status, 503);
+      assert.equal(await rejected.text(), "");
+      assert.deepEqual(errors, [
+        [
+          "Model history schema apply failed",
+          { type: "PostgresError", code: "42501", resource: { kind: "table", name: "user" } },
+        ],
+      ]);
+      assert.equal(
+        (await db.query("SELECT to_regclass('basalt_model_requests') AS name")).rows[0].name,
+        null,
+        "failed apply rolls back its schema",
+      );
+    } finally {
+      console.error = originalError;
+      await db.query('DROP TABLE "user"');
+    }
     const dry = await invoke(historySchemaCatalogPath);
     assert.equal(dry.status, 200, await dry.clone().text());
     const plan = (await dry.json()) as {
@@ -264,5 +296,27 @@ test("the private schema operator defaults to catalog/count reads and binds writ
     await db.end();
     await administration.query(`DROP DATABASE ${database} WITH (FORCE)`);
     await administration.end();
+  }
+});
+
+test("schema apply diagnostics discard driver messages, credentials and nested causes", () => {
+  const secret = "postgres://secret-user:secret-password@private-host/private-db";
+  for (const code of ["42501", "ECONNREFUSED", "EPIPE", "arbitrary-secret-code"]) {
+    const error = Object.assign(new Error(secret), {
+      code,
+      detail: secret,
+      hint: secret,
+      cause: new Error(secret),
+    });
+    const diagnostic = historyApplyFailure(error);
+    assert.ok(!JSON.stringify(diagnostic).includes(secret));
+    assert.deepEqual(
+      diagnostic,
+      code === "42501"
+        ? { type: "PostgresError", code }
+        : code === "arbitrary-secret-code"
+          ? { type: "UnknownError" }
+          : { type: "ConnectionError", code },
+    );
   }
 });

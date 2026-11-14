@@ -4166,3 +4166,234 @@ diff --git a/e2e/tests/catalog-instances.spec.ts b/e2e/tests/catalog-instances.s
          expect(reused.status).toBe(200);
          expect(yield* Schema.decodeUnknownEffect(InstallResult)(reused.body)).toEqual({
            id: mail.id,
+diff --git a/e2e/support/pool-worker-runtime.ts b/e2e/support/pool-worker-runtime.ts
+--- a/e2e/support/pool-worker-runtime.ts
++++ b/e2e/support/pool-worker-runtime.ts
+@@ -9,7 +9,11 @@
+ import { driver, Target } from "./platform.ts";
+ 
+ /** Full production pool routes and durable storage, forwarding authority reads to managed Cloud. */
+-export const poolWorkerRuntime = (toolsOrigin: string, homeOrigin?: string) =>
++export const poolWorkerRuntime = (
++  toolsOrigin: string,
++  homeOrigin?: string,
++  historyDatabase?: Redacted.Redacted<string>,
++) =>
+   Effect.gen(function* () {
+     const path = yield* Path.Path,
+       fs = yield* FileSystem.FileSystem,
+@@ -92,9 +96,11 @@
+                   POOL_APP_SIGNING_KEY: "ab".repeat(32),
+                   POOL_MANAGEMENT_KEY: "synthetic-management-key",
+                   POOL_IMAGE_HASH: "synthetic-image",
+-                  POOL_DATABASE_URL: Redacted.value(configuration.database),
++                  POOL_DATABASE_URL: Redacted.value(historyDatabase ?? configuration.database),
+                 },
+-                hyperdrives: { POOL_AUTH_DATABASE: Redacted.value(configuration.database) },
++                hyperdrives: {
++                  POOL_AUTH_DATABASE: Redacted.value(historyDatabase ?? configuration.database),
++                },
+                 serviceBindings: {
+                   ...(homeOrigin === undefined
+                     ? {}
+diff --git a/e2e/tests/deleted-org-pool-token.spec.ts b/e2e/tests/deleted-org-pool-token.spec.ts
+--- a/e2e/tests/deleted-org-pool-token.spec.ts
++++ b/e2e/tests/deleted-org-pool-token.spec.ts
+@@ -6,6 +6,7 @@
+ import { cloudLocks } from "../support/cloud-locks.ts";
+ import { Evidence } from "../support/evidence.ts";
+ import { RuntimeLive, Target, driver } from "../support/platform.ts";
++import { poolHistoryDatabase } from "../support/pool-history-database.ts";
+ import { poolWorkerRuntime } from "../support/pool-worker-runtime.ts";
+ import { Organization } from "../support/contracts.ts";
+ import { scenarios } from "../test-plan.ts";
+@@ -61,7 +62,12 @@
+           authorization: `Bearer ${Redacted.value(credential.token)}`,
+           "x-signalbox-caller": viewer.userId,
+         };
+-        const worker = yield* poolWorkerRuntime(target.metadata.origin);
++        const historyDatabase = yield* poolHistoryDatabase;
++        const worker = yield* poolWorkerRuntime(
++          target.metadata.origin,
++          undefined,
++          historyDatabase.connection,
++        );
+         const otherOrg = yield* api
+           .request(actors.owner, "POST", "/api/auth/organization/create", {
+             name: "Active token control",
+@@ -113,14 +119,6 @@
+         const otherCapacity = () =>
+           worker.request("/pool/v1/usage/capacity", { headers: otherHeaders });
+         expect((yield* otherCapacity()).status).toBe(200);
+-        // History migrations use the stable owner provisioned by production.
+-        for (const sql of [
+-          "DO $$ BEGIN CREATE ROLE basalt_pool_owner NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+-          "GRANT USAGE, CREATE ON SCHEMA public TO basalt_pool_owner",
+-          "create table usage (id bigint, timestamp timestamptz)",
+-          "create table home_data_migration (name text, completed boolean)",
+-        ])
+-          yield* locks.run({ sql });
+         const plan = yield* worker.operations("/model-history/schema/catalog");
+         expect(plan.status).toBe(200);
+         const hashes = yield* driver("read history schema plan", () => plan.json()).pipe(
+@@ -136,6 +134,7 @@
+           body: JSON.stringify({ go: true, ...hashes }),
+         });
+         expect(applied.status).toBe(200);
++        expect(yield* historyDatabase.cloudUserTriggers).toEqual([]);
+         const history = "/pool/v1/usage/history?from=2019-01-01T00:00:00Z&to=2021-01-01T00:00:00Z";
+         const payload = {
+           source: crypto.randomUUID(),
+@@ -238,7 +237,7 @@
+                 approval: Redacted.value(approval.approval),
+               })).status,
+             ).toBe(403);
+-            const saved = yield* locks
++            const saved = yield* historyDatabase
+               .run({ sql: "select count(*)::text as count from basalt_model_requests" })
+               .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Rows)));
+             expect(saved[0]?.count).toBe("1");
+diff --git a/e2e/tests/pool-legacy-handoff.spec.ts b/e2e/tests/pool-legacy-handoff.spec.ts
+--- a/e2e/tests/pool-legacy-handoff.spec.ts
++++ b/e2e/tests/pool-legacy-handoff.spec.ts
+@@ -12,6 +12,7 @@
+ import { legacyPoolHome } from "../support/legacy-pool-home.ts";
+ import { legacyPoolKey } from "../support/legacy-pool-key.ts";
+ import { driver, Target } from "../support/platform.ts";
++import { poolHistoryDatabase } from "../support/pool-history-database.ts";
+ import { poolWorkerRuntime } from "../support/pool-worker-runtime.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -88,7 +89,12 @@
+               Effect.asVoid,
+             ),
+         );
+-        const worker = yield* poolWorkerRuntime(target.metadata.origin, home.origin);
++        const historyDatabase = yield* poolHistoryDatabase;
++        const worker = yield* poolWorkerRuntime(
++          target.metadata.origin,
++          home.origin,
++          historyDatabase.connection,
++        );
+         expect(yield* home.members).toEqual([]);
+         expect(
+           (yield* api.request(actors.owner, "POST", "/native-provider-fixture/product-peer", {
+@@ -125,14 +131,6 @@
+             expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+           }).pipe(Effect.orDie),
+         );
+-        // Apply the production history schema through its private operations API on this run's database.
+-        for (const sql of [
+-          "DO $$ BEGIN CREATE ROLE basalt_pool_owner NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+-          "GRANT USAGE, CREATE ON SCHEMA public TO basalt_pool_owner",
+-          "create table usage (id bigint, timestamp timestamptz)",
+-          "create table home_data_migration (name text, completed boolean)",
+-        ])
+-          yield* database.run({ sql });
+         const plan = yield* worker.operations("/model-history/schema/catalog");
+         expect(plan.status).toBe(200);
+         const hashes = yield* driver("Read isolated history schema plan", () => plan.json()).pipe(
+@@ -149,6 +147,7 @@
+             body: JSON.stringify({ go: true, ...hashes }),
+           })).status,
+         ).toBe(200);
++        expect(yield* historyDatabase.cloudUserTriggers).toEqual([]);
+         const read = () =>
+           api.request(actors.owner, "POST", `${appPath}/tools/call`, {
+             tool: "view",
+diff --git a/e2e/support/pool-history-database.ts b/e2e/support/pool-history-database.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/pool-history-database.ts
+@@ -0,0 +1,91 @@
++import pg from "pg";
++import { Effect, FileSystem, Redacted, Schema } from "effect";
++import { driver, Target } from "./platform.ts";
++import type { Statement } from "./cloud-locks.ts";
++
++/** Home has its own database in production; its triggers must never attach to Cloud SSO tables. */
++export const poolHistoryDatabase = Effect.gen(function* () {
++  const fs = yield* FileSystem.FileSystem,
++    target = yield* Target;
++  const configuration = yield* fs
++    .readFileString(`${target.directory}/sso-database.json`)
++    .pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(
++          Schema.fromJsonString(
++            Schema.Struct({ database: Schema.RedactedFromValue(Schema.String) }),
++          ),
++        ),
++      ),
++    );
++  const connect = (connection: Redacted.Redacted<string>) =>
++    Effect.gen(function* () {
++      const client = yield* Effect.acquireRelease(
++        Effect.sync(() => new pg.Client({ connectionString: Redacted.value(connection) })),
++        (client) =>
++          driver("close fixture database connection", () => client.end()).pipe(Effect.orDie),
++      );
++      yield* driver("connect fixture database", () => client.connect());
++      return client;
++    });
++  const admin = yield* connect(configuration.database);
++  yield* Effect.acquireRelease(
++    driver("provision fixture Home owner", async () => {
++      try {
++        await admin.query("CREATE ROLE basalt_pool_owner NOLOGIN");
++        return true;
++      } catch (error) {
++        if (
++          typeof error === "object" &&
++          error !== null &&
++          "code" in error &&
++          error.code === "42710"
++        )
++          return false;
++        throw error;
++      }
++    }),
++    (created) =>
++      created
++        ? driver("remove fixture Home owner", () =>
++            admin.query("DROP ROLE basalt_pool_owner"),
++          ).pipe(Effect.orDie)
++        : Effect.void,
++  );
++  const name = `pool_home_${crypto.randomUUID().replaceAll("-", "")}`;
++  yield* Effect.acquireRelease(
++    driver("create isolated Home database", () =>
++      admin.query(`CREATE DATABASE ${name} OWNER basalt_pool_owner`),
++    ),
++    () =>
++      driver("remove isolated Home database", () =>
++        admin.query(`DROP DATABASE ${name} WITH (FORCE)`),
++      ).pipe(Effect.orDie),
++  );
++  const url = new URL(Redacted.value(configuration.database));
++  url.pathname = `/${name}`;
++  const connection = Redacted.make(url.toString());
++  const home = yield* connect(connection);
++  yield* driver("seed isolated Home schema", async () => {
++    await home.query("SET ROLE basalt_pool_owner");
++    await home.query("CREATE TABLE usage (id bigint, timestamp timestamptz)");
++    await home.query("CREATE TABLE home_data_migration (name text, completed boolean)");
++  });
++  return {
++    connection,
++    run: (statement: Statement) =>
++      driver("query isolated Home fixture", async () => {
++        const result = await home.query<Record<string, unknown>>(
++          statement.sql,
++          statement.params === undefined ? undefined : [...statement.params],
++        );
++        return result.rows;
++      }),
++    cloudUserTriggers: driver("check Cloud SSO has no Home triggers", async () => {
++      const result = await admin.query<Record<string, unknown>>(
++        "SELECT tgname FROM pg_trigger WHERE tgrelid='public.\"user\"'::regclass AND tgname LIKE 'basalt_pool_%'",
++      );
++      return result.rows;
++    }),
++  };
++});

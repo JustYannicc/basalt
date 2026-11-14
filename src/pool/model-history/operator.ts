@@ -3,6 +3,7 @@ import { handleImportCompletion } from "./import-completion.ts";
 import { digest } from "../backend-users.ts";
 import { activateHomeBackfill, planHomeBackfill, type BackfillPlan } from "./activation.ts";
 import { withHistoryDatabase } from "./database.ts";
+import { historyApplyFailure } from "./operator-failure.ts";
 import {
   counter,
   historyObject,
@@ -229,6 +230,8 @@ export async function handleModelHistoryOperation(
       );
     });
   } catch (error) {
+    if (apply && !(error instanceof HistoryInputError) && !(error instanceof SyntaxError))
+      console.error("Model history schema apply failed", historyApplyFailure(error));
     return new Response(null, {
       status: error instanceof HistoryInputError || error instanceof SyntaxError ? 400 : 503,
     });
