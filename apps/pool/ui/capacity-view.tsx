@@ -3,6 +3,7 @@ import type { PoolCapacityHistory } from "../capacity-contract.ts";
 import type { Account, Provider } from "../contract.ts";
 import type { Result } from "../index.ts";
 import { providerName } from "./accounts.tsx";
+import { capacityWindowOptions } from "./capacity-window-options.ts";
 import { CapacityChart } from "./capacity-chart.tsx";
 import {
   allowanceRows,
@@ -212,34 +213,13 @@ function Panel({
   const windowLines = lab.lines.filter(
     (entry) => entry.windowSeconds === 604_800 || entry.windowSeconds === 18_000,
   );
-  const optionLabels = new Map<string, string>();
-  for (const entry of windowLines) {
-    const label = entry.windowSeconds === 18_000 ? "5-hour" : "Weekly";
-    const sameWindow = windowLines.filter((other) => other.windowSeconds === entry.windowSeconds);
-    optionLabels.set(
-      entry.key,
-      entry.mode
-        ? sameWindow.length > 1
-          ? `${entry.label} · ${entry.unit.label}`
-          : entry.label
-        : sameWindow.length > 1
-          ? `${label} · ${entry.unit.label}`
-          : label,
-    );
-  }
-  for (const entry of windowLines) {
-    const label = optionLabels.get(entry.key)!;
-    if (
-      windowLines.some((other) => other.key !== entry.key && optionLabels.get(other.key) === label)
-    )
-      optionLabels.set(entry.key, `${label} (${entry.unit.id})`);
-  }
+  const options = capacityWindowOptions(windowLines);
   return (
     <article
       aria-labelledby={`lab-${lab.provider}`}
       className={first ? "pt-1 pb-6" : "border-t border-border pt-5 pb-6"}
     >
-      <div className="grid grid-cols-[auto_1fr_auto] items-start gap-x-3 gap-y-1 max-[540px]:grid-cols-[auto_1fr]">
+      <div className="grid grid-cols-[auto_minmax(min-content,1fr)_auto] items-start gap-x-3 gap-y-1 max-[540px]:grid-cols-[auto_1fr]">
         <LabMark provider={lab.provider} name={name} />
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <h3 id={`lab-${lab.provider}`} className="text-[15px] font-semibold tracking-[-0.015em]">
@@ -249,17 +229,14 @@ function Panel({
             {accountLabel} · in {line.unit.label}
           </span>
         </div>
-        <div className="justify-self-end max-[540px]:col-span-full max-[540px]:justify-self-start">
+        <div className="min-w-0 max-w-full justify-self-end max-[540px]:col-span-full max-[540px]:w-full max-[540px]:justify-self-start">
           {windowLines.length > 1 && (
-            <div className="grid justify-items-end gap-1 max-[540px]:justify-items-start">
+            <div className="grid min-w-0 max-w-full justify-items-end gap-1 max-[540px]:justify-items-start">
               <Segmented
+                wrap
                 label={`${name} limit window`}
                 value={line.key}
-                options={lab.lines
-                  .filter(
-                    (entry) => entry.windowSeconds === 604_800 || entry.windowSeconds === 18_000,
-                  )
-                  .map((entry) => ({ id: entry.key, label: optionLabels.get(entry.key)! }))}
+                options={options}
                 onChange={onChoose}
               />
               {press.text && line.key === press.key && (

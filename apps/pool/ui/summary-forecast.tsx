@@ -11,15 +11,10 @@ import {
   plural,
 } from "./summary-format.ts";
 import { forecastFor, heat, heatHours, type Metric } from "./summary-model.ts";
+import { forecastUnavailableText } from "./summary-forecast-status.ts";
 
 // Every number here is the producer's: median, range, confidence and misses. A null bound is shown
 // as no range, never as a band drawn from elapsed time.
-
-const unavailable: Record<Extract<UsageForecast, { status: "unavailable" }>["reason"], string> = {
-  "insufficient-history": "Not enough full weeks of history yet",
-  "insufficient-use": "Too little use to forecast",
-  "invalid-input": "This range can't be forecast",
-};
 
 function Projection({
   label,
@@ -101,11 +96,7 @@ function ForecastRow({
         <span className="text-sm text-muted-foreground">No forecast for this lab.</span>
       ) : forecast.status === "unavailable" ? (
         <span className="text-sm text-muted-foreground">
-          {unavailable[forecast.reason]}
-          {forecast.reason === "insufficient-history"
-            ? ` (${plural(forecast.comparableWeeks, "full week", "full weeks")} so far)`
-            : ""}
-          .
+          {forecastUnavailableText(forecast, metric)}
         </span>
       ) : (
         <div className="grid grid-cols-[1fr_1fr_auto] items-end gap-4 max-[540px]:grid-cols-2">
