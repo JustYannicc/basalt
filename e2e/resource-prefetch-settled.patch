@@ -1,0 +1,117 @@
+diff --git a/e2e/tests/resource-prefetch.spec.ts b/e2e/tests/resource-prefetch.spec.ts
+--- a/e2e/tests/resource-prefetch.spec.ts
++++ b/e2e/tests/resource-prefetch.spec.ts
+@@ -36,6 +36,12 @@
+         });
+         expect(response.status).toBe(200);
+         const app = yield* body(App, response);
++        const rename = (suffix: string) =>
++          api
++            .request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/name`, {
++              name: `${name} ${suffix}`,
++            })
++            .pipe(Effect.tap((result) => Effect.sync(() => expect(result.status).toBe(200))));
+         yield* Effect.addFinalizer(() =>
+           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(
+             Effect.tap((result) => Effect.sync(() => expect(result.status).toBe(200))),
+@@ -44,27 +50,33 @@
+         );
+         yield* browser.login(actors.owner);
+         yield* installBrowserClock;
+-        let completed = yield* Deferred.make<void>();
++        let released = yield* Deferred.make<string>();
++        let stream: Request | undefined;
++        const release = () => Deferred.await(released).pipe(Effect.timeout("10 seconds"));
+         const requests: string[] = [];
+         const resources = /^\/api\/organizations\/[^/]+\/resources$/;
+         const record = (request: Request) => {
+           const path = new URL(request.url()).pathname;
+           if (request.method() === "GET" && resources.test(path)) requests.push(path);
++          if (path === `${prefix}/changes`) stream = request;
+         };
+-        const finished = (request: Request) => {
+-          if (resources.test(new URL(request.url()).pathname))
+-            Deferred.doneUnsafe(completed, Effect.void);
++        const failed = (request: Request) => {
++          if (request === stream)
++            Deferred.doneUnsafe(
++              released,
++              Effect.succeed(request.failure()?.errorText ?? "unknown"),
++            );
+         };
+         yield* browser.use("Observe the ordinary resource read", (page) => {
+           page.on("request", record);
+-          page.on("requestfinished", finished);
++          page.on("requestfailed", failed);
+           return Promise.resolve();
+         });
+         yield* Effect.addFinalizer(() =>
+           browser
+             .use("Remove resource observers", (page) => {
+               page.off("request", record);
+-              page.off("requestfinished", finished);
++              page.off("requestfailed", failed);
+               return Promise.resolve();
+             })
+             .pipe(Effect.orDie),
+@@ -80,27 +92,44 @@
+         );
+         expect(requests).toEqual([`${prefix}/resources`]);
+         yield* held.release;
+-        yield* Deferred.await(completed);
++        expect(yield* release()).toBe("net::ERR_ABORTED");
++        const prefetched = requests.length;
+         yield* openInApp("Open the prefetched Apps list", `${organization}/apps`);
+         yield* browser.use("The prefetched directory supplies the app card", (page) =>
+           page.getByText(name, { exact: true }).first().waitFor(),
+         );
+-        expect(requests).toHaveLength(1);
++        expect(requests).toHaveLength(prefetched);
+         yield* evidence.json("resource-prefetch-navigation.json", { requests });
+-        // A new document has never visited Apps, so route-intent preloads cannot keep its poll alive.
+-        completed = yield* Deferred.make<void>();
++        // Old-document cancellation must not satisfy the new document's release.
++        released = yield* Deferred.make<string>();
++        stream = undefined;
+         const unused = yield* holdQuery(resources, "continue");
+         yield* browser.use("Start an independent settings-only document", (page) =>
+           page.goto(`${organization}/organization`),
+         );
+         yield* unused.requested;
++        const afterBody = yield* holdQuery([`${prefix}/changes/current`], "continue");
+         yield* unused.release;
+-        yield* Deferred.await(completed);
+-        expect(requests).toHaveLength(2);
++        yield* afterBody.requested;
++        const retryBody = yield* holdQuery(resources, "continue");
++        // A committed change between heads must retry before the prefetch can release.
++        yield* rename("during first fence");
++        yield* afterBody.release;
++        yield* retryBody.requested;
++        yield* rename("during retry");
++        yield* retryBody.release;
++        expect(yield* release()).toBe("net::ERR_ABORTED");
++        const settled = requests.length;
+         yield* browser.use("Advance beyond two idle directory polls", (page) =>
+           page.context().clock.runFor(60_001),
+         );
+-        expect(requests).toHaveLength(2);
++        expect(requests).toHaveLength(settled);
++        yield* rename("after prefetch release");
++        yield* browser.use("Committed changes do not restart the released prefetch", (page) =>
++          page.context().clock.runFor(60_001),
++        );
++        expect(requests).toHaveLength(settled);
++        yield* evidence.json("resource-prefetch-release.json", { prefetched, settled, requests });
+         yield* openInApp(
+           "Enter an organization without access",
+           `/org/prefetch-missing-${randomUUID()}/organization`,
+@@ -111,7 +140,7 @@
+         yield* browser.use("A refused destination starts no directory poll", (page) =>
+           page.context().clock.runFor(60_001),
+         );
+-        expect(requests).toHaveLength(2);
++        expect(requests).toHaveLength(settled);
+       }),
+     ),
+   );
