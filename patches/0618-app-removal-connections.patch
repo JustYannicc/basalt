@@ -1,0 +1,397 @@
+diff --git a/apps/hosted/cloud/src/contracts/mcp-grant-rpc.ts b/apps/hosted/cloud/src/contracts/mcp-grant-rpc.ts
+--- a/apps/hosted/cloud/src/contracts/mcp-grant-rpc.ts
++++ b/apps/hosted/cloud/src/contracts/mcp-grant-rpc.ts
+@@ -35,6 +35,7 @@ export const grantReplies = {
+   create: reply(Connection, Schema.Union([ConnectionIdTaken, AuthenticationUnavailable])),
+   update: reply(Connection, Schema.Union([ConnectionNotFound, AuthenticationUnavailable])),
+   revoke: reply(Schema.Void, Schema.Union([ConnectionNotFound, AuthenticationUnavailable])),
++  forgetApp: reply(Schema.Void, AuthenticationUnavailable),
+   agents: reply(Schema.Array(ConnectedAgent), AuthenticationUnavailable),
+   revokeAgent: reply(
+     Schema.Void,
+@@ -62,6 +63,9 @@ export type McpGrantRpc = {
+   readonly mcpConnectionRevoke: (
+     ...input: Parameters<Store["revoke"]>
+   ) => Reply<typeof grantReplies.revoke>;
++  readonly mcpConnectionForgetApp: (
++    ...input: Parameters<Store["forgetApp"]>
++  ) => Reply<typeof grantReplies.forgetApp>;
+   readonly mcpConnectionAgents: (
+     ...input: Parameters<Store["agents"]>
+   ) => Reply<typeof grantReplies.agents>;
+diff --git a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts b/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
+--- a/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
++++ b/apps/hosted/cloud/src/infrastructure/mcp-auth.ts
+@@ -90,6 +90,7 @@ type McpGrantApi = Pick<
+   | "createMcpConnection"
+   | "updateMcpConnection"
+   | "revokeMcpConnection"
++  | "forgetMcpConnectionApp"
+   | "listMcpAgents"
+   | "revokeMcpAgent"
+ > & {
+diff --git a/apps/hosted/cloud/src/infrastructure/mcp-grant-server.ts b/apps/hosted/cloud/src/infrastructure/mcp-grant-server.ts
+--- a/apps/hosted/cloud/src/infrastructure/mcp-grant-server.ts
++++ b/apps/hosted/cloud/src/infrastructure/mcp-grant-server.ts
+@@ -28,6 +28,8 @@ export const makeMcpGrantRpc = Effect.fn(function* (identity: Layer.Layer<McpAut
+       answer(Schema.encodeSync(grantReplies.update), auth.connections.update(...input)),
+     mcpConnectionRevoke: (...input) =>
+       answer(Schema.encodeSync(grantReplies.revoke), auth.connections.revoke(...input)),
++    mcpConnectionForgetApp: (...input) =>
++      answer(Schema.encodeSync(grantReplies.forgetApp), auth.connections.forgetApp(...input)),
+     mcpConnectionAgents: (...input) =>
+       answer(Schema.encodeSync(grantReplies.agents), auth.connections.agents(...input)),
+     mcpConnectionRevokeAgent: (...input) =>
+diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session-auth.ts b/apps/hosted/cloud/src/infrastructure/mcp-session-auth.ts
+--- a/apps/hosted/cloud/src/infrastructure/mcp-session-auth.ts
++++ b/apps/hosted/cloud/src/infrastructure/mcp-session-auth.ts
+@@ -80,6 +80,13 @@ export const cloudMcpIdentity = Effect.gen(function* () {
+               worker.mcpConnectionRevoke(...input),
+             ),
+           ),
++        forgetApp: (...input) =>
++          bound(
++            readGrantReply(
++              Schema.decodeUnknownEffect(grantReplies.forgetApp),
++              worker.mcpConnectionForgetApp(...input),
++            ),
++          ),
+         agents: (...input) =>
+           bound(
+             readGrantReply(
+diff --git a/apps/hosted/server/src/contracts/mcp.ts b/apps/hosted/server/src/contracts/mcp.ts
+--- a/apps/hosted/server/src/contracts/mcp.ts
++++ b/apps/hosted/server/src/contracts/mcp.ts
+@@ -117,6 +117,11 @@ export interface McpConnectionStore {
+     owner: ConnectionOwner,
+     id: ConnectionId,
+   ) => Effect.Effect<void, ConnectionNotFound | AuthenticationUnavailable>;
++  /**
++   * After an app is deleted, every person's live connection stops naming it. A connection that
++   * named only that app is revoked like `revoke`; others keep their remaining apps.
++   */
++  readonly forgetApp: (app: string) => Effect.Effect<void, AuthenticationUnavailable>;
+   /** The owner's authorized MCP and API clients, one per live grant. */
+   readonly agents: (
+     owner: ConnectionOwner,
+diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/src/implementation/apps.ts
+--- a/apps/hosted/server/src/implementation/apps.ts
++++ b/apps/hosted/server/src/implementation/apps.ts
+@@ -19,13 +19,14 @@ import {
+   type SourceFilePath,
+   type OwnerId,
+ } from "@executor-js/sdk/core";
+-import { Effect } from "effect";
++import { Effect, type Context } from "effect";
+ import { CurrentOrganization, CurrentOrganizationNamespace } from "../contracts/organization.ts";
+ import { HttpApiBuilder } from "effect/http-api";
+ import { HostedApi } from "../contracts/api.ts";
+ import type { DeployApp, InstallApp } from "../contracts/apps.ts";
+ import { executorCatalogPackage, HostedCatalog } from "../contracts/catalog.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
++import { McpAuthentication } from "../contracts/mcp.ts";
+ import { recordUsage } from "../contracts/product-analytics.ts";
+ import { appManagerOwner, currentOwner } from "./access.ts";
+ import { applyCatalogAppOffer, catalogAppOffer } from "./catalog-app-offers.ts";
+@@ -224,11 +225,27 @@ export const renameApp = (
+       );
+     return saved;
+   });
+-/** Delete one configured copy while preserving its reusable accounts. */
+-export const removeApp = (owner: OwnerId, input: { readonly app: AppId }) =>
++/**
++ * Delete one configured copy while preserving its reusable accounts. Connections stop naming
++ * it, and one that named only this app is revoked, so no device keeps a link to nothing.
++ */
++export const removeApp = (
++  owner: OwnerId,
++  input: { readonly app: AppId },
++  connections: Context.Service.Shape<typeof McpAuthentication>["connections"],
++) =>
+   Effect.gen(function* () {
+     const executor = yield* Effect.flatten(HostedExecutor);
+-    return yield* executor.apps.remove({ ...input, owner });
++    const removed = yield* executor.apps.remove({ ...input, owner });
++    // The app is gone; a leftover connection stays revocable on Connections, so only log.
++    yield* connections
++      .forgetApp(input.app)
++      .pipe(
++        Effect.catchCause((cause) =>
++          Effect.logWarning("Connections naming a removed app were not updated", cause),
++        ),
++      );
++    return removed;
+   });
+ 
+ /** Resolve current authority before running app operations. */
+@@ -243,56 +260,60 @@ const versionDisplayFile = (
+     ),
+   );
+ export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handlers) =>
+-  handlers
+-    .handle("install", ({ payload }) =>
+-      Effect.flatMap(currentOwner, (owner) => installApp(owner, payload)),
+-    )
+-    .handle("importCustom", ({ payload }) =>
+-      Effect.flatMap(currentOwner, (owner) =>
+-        importCustomApp(owner, payload.source, payload.newInstance === true),
++  Effect.map(McpAuthentication, ({ connections }) =>
++    handlers
++      .handle("install", ({ payload }) =>
++        Effect.flatMap(currentOwner, (owner) => installApp(owner, payload)),
++      )
++      .handle("importCustom", ({ payload }) =>
++        Effect.flatMap(currentOwner, (owner) =>
++          importCustomApp(owner, payload.source, payload.newInstance === true),
++        ),
++      )
++      .handle("deploy", ({ payload }) =>
++        Effect.flatMap(currentOwner, (owner) => deployApp(owner, payload)),
++      )
++      .handle("get", ({ params }) => Effect.flatMap(currentOwner, (owner) => getApp(owner, params)))
++      .handle("versions", ({ params }) =>
++        Effect.flatMap(appManagerOwner(params.app), (owner) => appVersions(owner, params.app)),
++      )
++      .handle("deployments", ({ params }) =>
++        Effect.flatMap(appManagerOwner(params.app), (owner) => appVersions(owner, params.app)),
++      )
++      .handle("source", ({ params, query }) =>
++        Effect.flatMap(appManagerOwner(params.app), (owner) =>
++          appSource(owner, params.app, query.version),
++        ),
++      )
++      .handle("sourceDisplay", ({ params, query }) =>
++        Effect.flatMap(appManagerOwner(params.app), (owner) =>
++          appSource(owner, params.app, query.version).pipe(Effect.flatMap(sourceDisplay)),
++        ),
++      )
++      .handle("sourceDisplayFile", ({ params, query }) => versionDisplayFile(params, query.path))
++      .handle("legacySourceDisplayFile", ({ params, query }) =>
++        versionDisplayFile(params, query.path),
++      )
++      .handle("catalogUpdate", ({ params }) =>
++        Effect.flatMap(appManagerOwner(params.app), (owner) => catalogUpdate(owner, params.app)),
++      )
++      .handle("applyCatalogUpdate", ({ params }) =>
++        Effect.andThen(appManagerOwner(params.app), applyCatalogUpdate(params.app)),
++      )
++      .handle("activate", ({ params, payload }) =>
++        Effect.flatMap(appManagerOwner(params.app), (owner) =>
++          activateApp(owner, params.app, payload.version, payload.expectedVersion),
++        ),
++      )
++      .handle("rename", ({ params, payload }) =>
++        Effect.flatMap(appManagerOwner(params.app), (owner) =>
++          renameApp(owner, params.app, payload.name, payload),
++        ),
++      )
++      .handle("remove", ({ params }) =>
++        Effect.flatMap(appManagerOwner(params.app), (owner) =>
++          removeApp(owner, params, connections),
++        ),
+       ),
+-    )
+-    .handle("deploy", ({ payload }) =>
+-      Effect.flatMap(currentOwner, (owner) => deployApp(owner, payload)),
+-    )
+-    .handle("get", ({ params }) => Effect.flatMap(currentOwner, (owner) => getApp(owner, params)))
+-    .handle("versions", ({ params }) =>
+-      Effect.flatMap(appManagerOwner(params.app), (owner) => appVersions(owner, params.app)),
+-    )
+-    .handle("deployments", ({ params }) =>
+-      Effect.flatMap(appManagerOwner(params.app), (owner) => appVersions(owner, params.app)),
+-    )
+-    .handle("source", ({ params, query }) =>
+-      Effect.flatMap(appManagerOwner(params.app), (owner) =>
+-        appSource(owner, params.app, query.version),
+-      ),
+-    )
+-    .handle("sourceDisplay", ({ params, query }) =>
+-      Effect.flatMap(appManagerOwner(params.app), (owner) =>
+-        appSource(owner, params.app, query.version).pipe(Effect.flatMap(sourceDisplay)),
+-      ),
+-    )
+-    .handle("sourceDisplayFile", ({ params, query }) => versionDisplayFile(params, query.path))
+-    .handle("legacySourceDisplayFile", ({ params, query }) =>
+-      versionDisplayFile(params, query.path),
+-    )
+-    .handle("catalogUpdate", ({ params }) =>
+-      Effect.flatMap(appManagerOwner(params.app), (owner) => catalogUpdate(owner, params.app)),
+-    )
+-    .handle("applyCatalogUpdate", ({ params }) =>
+-      Effect.andThen(appManagerOwner(params.app), applyCatalogUpdate(params.app)),
+-    )
+-    .handle("activate", ({ params, payload }) =>
+-      Effect.flatMap(appManagerOwner(params.app), (owner) =>
+-        activateApp(owner, params.app, payload.version, payload.expectedVersion),
+-      ),
+-    )
+-    .handle("rename", ({ params, payload }) =>
+-      Effect.flatMap(appManagerOwner(params.app), (owner) =>
+-        renameApp(owner, params.app, payload.name, payload),
+-      ),
+-    )
+-    .handle("remove", ({ params }) =>
+-      Effect.flatMap(appManagerOwner(params.app), (owner) => removeApp(owner, params)),
+-    ),
++  ),
+ );
+diff --git a/apps/hosted/server/src/implementation/mcp-oauth.ts b/apps/hosted/server/src/implementation/mcp-oauth.ts
+--- a/apps/hosted/server/src/implementation/mcp-oauth.ts
++++ b/apps/hosted/server/src/implementation/mcp-oauth.ts
+@@ -275,6 +275,7 @@ export interface McpConnectionApi {
+   readonly revokeMcpConnection: (input: {
+     body: { userId: string; resource: string; id: string };
+   }) => Promise<unknown>;
++  readonly forgetMcpConnectionApp: (input: { body: { app: string } }) => Promise<unknown>;
+   readonly listMcpAgents: (input: {
+     body: { userId: string; resource: string };
+   }) => Promise<unknown>;
+@@ -337,6 +338,11 @@ export const mcpConnectionStore = (
+             : new AuthenticationUnavailable(),
+         ),
+       ),
++    forgetApp: (app) =>
++      request(
++        (api) => api.forgetMcpConnectionApp({ body: { app } }),
++        Schema.Struct({ revoked: Schema.Number, narrowed: Schema.Number }),
++      ).pipe(Effect.asVoid, Effect.mapError(unavailable)),
+     agents: (owner) =>
+       request((api) => api.listMcpAgents({ body: owner }), Schema.Array(ConnectedAgent)).pipe(
+         Effect.mapError(unavailable),
+diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
+--- a/apps/local/server/src/implementation/dashboard.ts
++++ b/apps/local/server/src/implementation/dashboard.ts
+@@ -117,6 +117,7 @@ export const dashboard = (
+     managedAccount,
+     ownerMigration,
+     wakeWebhookSources,
++    forgetApp,
+   }: {
+     /** The official app feed's index.json; without one the catalog lists no apps. */
+     readonly catalogFeedUrl?: string | undefined;
+@@ -126,6 +127,8 @@ export const dashboard = (
+     readonly ownerMigration: Effect.Effect<LocalOwnerMigration | null>;
+     /** Wakes webhook source reconciliation after saved intent commits. */
+     readonly wakeWebhookSources: Effect.Effect<void>;
++    /** Stops connections naming a deleted app, revoking any that named only it. */
++    readonly forgetApp: (app: AppId) => Effect.Effect<unknown, unknown>;
+   },
+ ) => {
+   const appCatalog = createCatalog({
+@@ -626,7 +629,16 @@ export const dashboard = (
+       .handle("deleteApp", ({ params }) =>
+         params.app === managedApp
+           ? Effect.fail(new AppDeletionBlocked(params))
+-          : executor.apps.remove(params),
++          : executor.apps.remove(params).pipe(
++              // The app is gone; a leftover connection stays revocable on Connections, so only log.
++              Effect.tap(() =>
++                forgetApp(params.app).pipe(
++                  Effect.catchCause((cause) =>
++                    Effect.logWarning("Connections naming a removed app were not updated", cause),
++                  ),
++                ),
++              ),
++            ),
+       )
+       .handle("source", ({ params }) => executor.apps.source(params))
+       .handle("sourceDisplay", ({ params }) =>
+diff --git a/apps/local/server/src/implementation/mcp-oauth.ts b/apps/local/server/src/implementation/mcp-oauth.ts
+--- a/apps/local/server/src/implementation/mcp-oauth.ts
++++ b/apps/local/server/src/implementation/mcp-oauth.ts
+@@ -311,6 +311,8 @@ export const makeLocalMcpOAuth = <E>(
+         ),
+       revoke: (id: ConnectionId) =>
+         connectionCall(() => auth.api.revokeMcpConnection({ body: { ...connectionOwner, id } })),
++      forgetApp: (app: string) =>
++        connectionCall(() => auth.api.forgetMcpConnectionApp({ body: { app } })),
+     };
+     return {
+       origin,
+diff --git a/apps/local/server/src/implementation/server.ts b/apps/local/server/src/implementation/server.ts
+--- a/apps/local/server/src/implementation/server.ts
++++ b/apps/local/server/src/implementation/server.ts
+@@ -470,6 +470,7 @@ export const localApi = (
+           managedAccount: managed.account,
+           ownerMigration: Ref.get(ownerMigration),
+           wakeWebhookSources,
++          forgetApp: oauth.connections.forgetApp,
+         },
+       );
+       const web = options.web ?? (yield* webFiles);
+diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
+--- a/packages/mcp-auth/src/implementation/oauth.ts
++++ b/packages/mcp-auth/src/implementation/oauth.ts
+@@ -1330,6 +1330,71 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+             }),
+           ),
+       ),
++      /**
++       * An app was deleted: every person's live connection stops naming it. A connection that
++       * named only that app is revoked with its grants and tokens; one that named others too
++       * keeps them.
++       */
++      forgetMcpConnectionApp: createAuthEndpoint(
++        "/mcp/connections/forget-app",
++        {
++          ...serverOnly,
++          body: Schema.toStandardSchemaV1(Schema.Struct({ app: Schema.NonEmptyString })),
++        },
++        (ctx) =>
++          runAuth(
++            Effect.gen(function* () {
++              const { app } = ctx.body;
++              const changed = { revoked: 0, narrowed: 0 };
++              // Pages by id, so connections this call changes never shift the next page.
++              let after: string | undefined;
++              for (;;) {
++                const rows = yield* authCall(() =>
++                  ctx.context.adapter.findMany({
++                    model: "mcpConnection",
++                    where: [
++                      { field: "revoked", value: false },
++                      { field: "policy", operator: "contains", value: app },
++                      ...(after === undefined
++                        ? []
++                        : [{ field: "id", operator: "gt" as const, value: after }]),
++                    ],
++                    sortBy: { field: "id", direction: "asc" },
++                    limit: grantBatch,
++                  }),
++                );
++                for (const value of rows) {
++                  const row = yield* parse(ConnectionRecord, value);
++                  after = row.id;
++                  const policy = yield* connectionPolicy(row);
++                  const kept = policy.apps.filter((entry) => entry.app !== app);
++                  if (kept.length === policy.apps.length) continue;
++                  if (kept.length === 0) {
++                    yield* revokeConnection(ctx, row);
++                    changed.revoked += 1;
++                    continue;
++                  }
++                  // Connected agents read this record on their next request.
++                  yield* authCall(() =>
++                    ctx.context.adapter.update({
++                      model: "mcpConnection",
++                      where: [
++                        { field: "id", value: row.id },
++                        { field: "revoked", value: false },
++                      ],
++                      update: {
++                        policy: JSON.stringify({ ...policy, apps: kept }),
++                        updatedAt: new Date(),
++                      },
++                    }),
++                  );
++                  changed.narrowed += 1;
++                }
++                if (rows.length < grantBatch) return changed;
++              }
++            }),
++          ),
++      ),
+       listMcpAgents: createAuthEndpoint(
+         "/mcp/agents/list",
+         { ...serverOnly, body: Schema.toStandardSchemaV1(Schema.Struct(ConnectionOwner)) },
