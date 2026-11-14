@@ -21,12 +21,24 @@ diff --git a/packages/mcp-auth/src/implementation/revocation.ts b/packages/mcp-a
 new file mode 100644
 --- /dev/null
 +++ b/packages/mcp-auth/src/implementation/revocation.ts
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,41 @@
 +import { createAuthMiddleware, isAPIError } from "better-auth/api";
 +import { Schema } from "effect";
 +
 +const Revocation = Schema.Struct({ token: Schema.NonEmptyString });
-+const InvalidToken = Schema.Struct({ error: Schema.Literal("invalid_request") });
++/**
++ * The refusals Better Auth 1.7.5 raises only from its token lookups, after the client has
++ * authenticated. Malformed client authentication is also `invalid_request` but names another
++ * description, and must stay refused: nothing was revoked.
++ */
++const InvalidToken = Schema.Struct({
++  error: Schema.Literal("invalid_request"),
++  error_description: Schema.Literals([
++    "token not found",
++    "refresh token revoked",
++    "Invalid access token",
++  ]),
++});
 +
 +/**
 + * RFC 7009 §2.2: a token that is already invalid revokes successfully. Better Auth 1.7.5 means to
@@ -34,8 +46,9 @@ new file mode 100644
 + * unknown or already-revoked token gets 400. A client revoking its refresh token and then the
 + * access token that refresh already invalidated could then never finish disconnecting.
 + *
-+ * Only a request that named a token and was refused as `invalid_request` succeeds; a missing
-+ * token, an unknown client and an unsupported token type keep their refusals.
++ * Only an authenticated client's request naming a token the server no longer honours succeeds; a
++ * missing token, malformed client authentication, an unknown client and an unsupported token
++ * type keep their refusals.
 + */
 +export const revokedTokenHook = {
 +  matcher: (ctx: { path?: string }) => ctx.path === "/oauth2/revoke",

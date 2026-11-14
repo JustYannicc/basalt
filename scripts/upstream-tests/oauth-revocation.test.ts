@@ -125,3 +125,32 @@ test("a malformed revocation or an unknown client is still refused", async () =>
     200,
   );
 });
+
+test("malformed client authentication is refused before the token, and revokes nothing", async () => {
+  using f = await issued();
+  const live = async () =>
+    (await f.raw("/native/access", { headers: { authorization: `Bearer ${f.access_token}` } }))
+      .status;
+  const duplicated = await f.raw("/oauth2/revoke", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: `token=${f.access_token}&token_type_hint=access_token&client_id=${f.client_id}&client_id=${f.client_id}`,
+  });
+  assert.equal(duplicated.status, 400);
+  assert.equal((await duplicated.json()).error, "invalid_request");
+  // A client secret and a client assertion together: two authentication methods.
+  const mixed = await revoke(f, {
+    token: f.access_token,
+    token_type_hint: "access_token",
+    client_id: f.client_id,
+    client_secret: "synthetic-secret",
+    client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+    client_assertion: "synthetic-assertion",
+  });
+  assert.equal(mixed.status, 400);
+  assert.deepEqual(await mixed.json(), {
+    error: "invalid_request",
+    error_description: "A request must use only one client authentication method",
+  });
+  assert.equal(await live(), 200);
+});
