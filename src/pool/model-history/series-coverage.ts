@@ -60,14 +60,41 @@ export async function seriesCoverage(
         historyImportCompletionVersion,
       ])
     ).rows.length > 0;
-  const completions = ready
+  return seriesCoverageFromSnapshot(
+    db,
+    {
+      pool: query.coverageValues[0],
+      rows: result.rows,
+      cursor,
+      capturedThrough,
+      completionReady: ready,
+    },
+    query,
+    authority,
+  );
+}
+
+/** Completion reads and projection share the canonical migration gate and the caller's snapshot. */
+export async function seriesCoverageFromSnapshot(
+  db: HistoryDatabase,
+  snapshot: {
+    pool: unknown;
+    rows: readonly Record<string, unknown>[];
+    cursor: Record<string, unknown> | undefined;
+    capturedThrough: string | null;
+    completionReady: boolean;
+  },
+  query: { homeSource: string; gatewaySource: string },
+  authority: SeriesAuthority,
+) {
+  const completions = snapshot.completionReady
     ? (
         await db.query(
           `SELECT source,frozen_from AS "frozenFrom",frozen_to AS "frozenTo",
     upper_source_id::text AS "upperSourceId",manifest_digest AS "manifestDigest",map_digest AS "accountMappingDigest",
     ids_digest AS "idsDigest",verified_rows::text AS "verifiedRows" FROM basalt_model_import_completion
     WHERE pool=$1 AND source=ANY($2::text[])`,
-          [query.coverageValues[0], result.rows.map((row) => row.source)],
+          [snapshot.pool, snapshot.rows.map((row) => row.source)],
         )
       ).rows
     : [];
@@ -85,7 +112,7 @@ export async function seriesCoverage(
       },
     ]),
   );
-  const rows = result.rows;
+  const { rows, cursor, capturedThrough } = snapshot;
   const sum = (key: string) => {
     const total = rows.reduce((total, row) => total + requestCount(row[key]), 0);
     if (!Number.isSafeInteger(total))

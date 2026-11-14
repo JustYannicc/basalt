@@ -31,4 +31,6 @@ export const requirements = {
       ...nativePoolAccounts,
     },
   },
+  /** Usage history is its own host tab; its document renders from `/history`. */
+  pages: { history: { label: "History", path: "/history" } },
 };

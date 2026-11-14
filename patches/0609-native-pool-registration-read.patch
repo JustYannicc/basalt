@@ -1,0 +1,91 @@
+diff --git a/apps/hosted/server/src/implementation/pool-membership-reconcile.ts b/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
+--- a/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
++++ b/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
+@@ -1,7 +1,45 @@
+ import type { AppId } from "@executor-js/sdk/core";
+-import { Effect } from "effect";
++import { Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
++
++const Registration = Schema.Struct({
++  database: Schema.String,
++  schema: Schema.String,
++  native: Schema.Boolean,
++  legacy: Schema.Boolean,
++});
++
++const poolRegistrations = (organization: string, pool: AppId) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql`select current_database() as database,current_schema() as schema,
++      coalesce(entry.value ->> 'membership' = 'executor-links-v1',false) as native,
++      (app.active_deployment is not null
++        and entry.value ->> 'membership' is distinct from 'executor-links-v1') as legacy
++      from organization o
++      cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++      join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
++      where o.id = ${organization} and app.id = ${pool}`;
++    return yield* Schema.decodeUnknownEffect(Schema.Array(Registration))(rows);
++  });
++
++const handoff = (pool: AppId) =>
++  Effect.gen(function* () {
++    const lifecycle = yield* AccessLifecycle;
++    yield* lifecycle.appAccountLinksChanged?.({ apps: [pool] }) ?? Effect.void;
++  });
++
++/** The organization lock protects this read; a handoff must finish before native authority is read. */
++export const readNativePoolRegistration = (organization: string, pool: AppId) =>
++  Effect.gen(function* () {
++    let registrations = yield* poolRegistrations(organization, pool);
++    if (registrations.some((registration) => registration.legacy)) {
++      yield* handoff(pool);
++      registrations = yield* poolRegistrations(organization, pool);
++    }
++    return registrations.find((registration) => registration.native);
++  });
+ 
+ /** Reuse the host's signed handoff; reads never infer Home identities or rewrite saved links. */
+ export const reconcilePoolMembership = (organization: string, pool: AppId) =>
+@@ -13,6 +51,5 @@
+       where o.id = ${organization} and app.id = ${pool} and app.active_deployment is not null
+         and entry.value ->> 'membership' is distinct from 'executor-links-v1'`;
+     if (legacy.length === 0) return;
+-    const lifecycle = yield* AccessLifecycle;
+-    yield* lifecycle.appAccountLinksChanged?.({ apps: [pool] }) ?? Effect.void;
++    yield* handoff(pool);
+   });
+diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
+--- a/apps/hosted/server/src/implementation/pool-membership.ts
++++ b/apps/hosted/server/src/implementation/pool-membership.ts
+@@ -16,7 +16,7 @@
+ import { policyDatabase } from "./resource-policy.ts";
+ import { openEnvelope } from "./pool-token.ts";
+ import { preparePoolMembershipMirrors } from "./pool-membership-mirrors.ts";
+-import { reconcilePoolMembership } from "./pool-membership-reconcile.ts";
++import { readNativePoolRegistration } from "./pool-membership-reconcile.ts";
+ import { poolMembershipReferences } from "./pool-membership-reference-cache.ts";
+ import { readNativePoolAccountRows } from "./pool-membership-rows.ts";
+ 
+@@ -86,18 +86,8 @@
+     organization,
+     Effect.gen(function* () {
+       const sql = yield* SqlClient.SqlClient;
+-      yield* reconcilePoolMembership(organization, pool);
+-      const found =
+-        yield* sql`select app.id,current_database() as database,current_schema() as schema from organization o
+-        cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
+-        join executor_apps app on app.id = entry.value ->> 'app'
+-          and app.owner = 'organization:' || o.id
+-        where o.id = ${organization} and app.id = ${pool}
+-          and entry.value ->> 'membership' = 'executor-links-v1'`;
+-      if (found.length === 0) return { pool, organization, native: false, accounts: [] };
+-      const identity = yield* Schema.decodeUnknownEffect(
+-        Schema.Struct({ database: Schema.String, schema: Schema.String }),
+-      )(found[0]);
++      const identity = yield* readNativePoolRegistration(organization, pool);
++      if (identity === undefined) return { pool, organization, native: false, accounts: [] };
+       // Lock the candidate superset in account/binding order; only the final policy read grants membership.
+       const candidates = yield* sql`select a.id from hosted_app_account_links l
+         join executor_apps app on app.id=l.app

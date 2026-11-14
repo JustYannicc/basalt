@@ -13,6 +13,7 @@ import { recordGatewayRefusal } from "../../src/pool/model-history/gateway.ts";
 import { modelHistorySchemaPlan } from "../../src/pool/model-history/operator.ts";
 import {
   readPoolReliability,
+  readPoolReliabilityWindows,
   terminalCollectionReady,
 } from "../../src/pool/model-history/reliability.ts";
 import { reference, timestamp } from "../../src/pool/model-history/record.ts";
@@ -99,6 +100,127 @@ async function fixture(work: (db: HistoryDatabase) => Promise<void>) {
     await database.close();
   }
 }
+
+test("one SLO read aggregates its overlapping windows in one history statement", async () => {
+  await fixture(async (db) => {
+    const now = Date.parse("2026-11-12T12:00:00Z");
+    await insertHomeAttempt(db, {
+      requestId: randomUUID(),
+      keyId: 1,
+      at: "2026-11-12T11:59:00Z",
+      failed: false,
+      status: 200,
+    });
+    await insertHomeAttempt(db, {
+      requestId: randomUUID(),
+      keyId: 1,
+      at: "2026-11-12T11:30:00Z",
+      failed: true,
+      status: 500,
+    });
+    await insertHomeAttempt(db, {
+      requestId: randomUUID(),
+      keyId: 1,
+      at: "2026-11-12T10:00:00Z",
+      failed: false,
+      status: 200,
+    });
+    const expected = await Promise.all(
+      [3_600_000, 86_400_000, 300_000].map((duration) =>
+        readPoolReliability(
+          db,
+          "fixture",
+          new Date(now - duration).toISOString(),
+          new Date(now).toISOString(),
+        ),
+      ),
+    );
+    let aggregateStatements = 0;
+    const counted: HistoryDatabase = {
+      query: (text, values) => {
+        if (text.includes("GROUP BY") && text.includes("FROM selected")) aggregateStatements++;
+        return db.query(text, values);
+      },
+    };
+    const actual = await readPoolReliabilitySlo(counted, "fixture", now);
+    assert.deepEqual([actual.hour, actual.day, actual.current], expected);
+    assert.equal(
+      aggregateStatements,
+      1,
+      "one snapshot must not scan the same history for each SLO window",
+    );
+  });
+});
+
+test("batched reliability keeps exact boundaries and global retry attribution in each window", async () => {
+  await fixture(async (db) => {
+    const beforeFinish = randomUUID(),
+      laterRetry = randomUUID();
+    await insertHomeAttempt(db, {
+      requestId: beforeFinish,
+      keyId: 1,
+      at: "2026-11-12T11:54:00Z",
+      failed: false,
+      status: 200,
+    });
+    await insertHomeAttempt(db, {
+      requestId: beforeFinish,
+      keyId: 1,
+      at: "2026-11-12T11:58:00Z",
+      failed: false,
+      status: 200,
+      attempt: 2,
+    });
+    await insertTerminal(db, beforeFinish, 1, "truncated", 502, "2026-11-12T12:01:00Z");
+    await insertHomeAttempt(db, {
+      requestId: laterRetry,
+      keyId: 1,
+      at: "2026-11-12T11:57:00Z",
+      failed: false,
+      status: 200,
+    });
+    await insertHomeAttempt(db, {
+      requestId: laterRetry,
+      keyId: 1,
+      at: "2026-11-12T12:01:00Z",
+      failed: false,
+      status: 200,
+      attempt: 2,
+    });
+    await insertTerminal(db, laterRetry, 1, "complete", 200, "2026-11-12T12:02:00Z");
+    for (const at of [
+      "2026-11-12T11:55:00.000000001Z",
+      "2026-11-12T11:54:59.999999999Z",
+      "2026-11-12T12:00:00Z",
+    ])
+      await insertHomeAttempt(db, {
+        requestId: randomUUID(),
+        keyId: 1,
+        at,
+        failed: false,
+        status: 200,
+      });
+    await insertTerminal(db, randomUUID(), 1, "complete", 200, "2026-11-12T11:56:00Z");
+    const windows = [
+      { from: "2026-11-12T11:00:00Z", to: "2026-11-12T12:00:00Z" },
+      { from: "2026-11-11T12:00:00Z", to: "2026-11-12T12:00:00Z" },
+      { from: "2026-11-12T11:55:00Z", to: "2026-11-12T12:00:00Z" },
+      { from: "2026-11-12T11:55:00Z", to: "2026-11-12T12:00:00.000000001Z" },
+    ];
+    const expected = await Promise.all(
+      windows.map(({ from, to }) => readPoolReliability(db, "fixture", from, to)),
+    );
+    assert.deepEqual(
+      expected.map((value) => value.real.requests),
+      [5, 5, 3, 4],
+    );
+    assert.deepEqual(await readPoolReliabilityWindows(db, "fixture", windows), expected);
+    const raw = await Promise.all(
+      windows.map(({ from, to }) => readPoolReliability(db, "fixture", from, to, false)),
+    );
+    assert.deepEqual(await readPoolReliabilityWindows(db, "fixture", windows, false), raw);
+  });
+});
 
 test("proof failures stay visible separately while unknown traffic counts toward real reliability", async () => {
   const database = new PGlite();

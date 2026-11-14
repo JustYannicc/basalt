@@ -496,6 +496,19 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /no product Go changes/);
         assert.match(patch.retirement.requires, /without dropping existing selections/);
         assert.match(patch.retirement.requires, /funding-denial and missing-validator controls/);
+      } else if (patch.identity === "cliproxy-node-generation-submission") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0611-node-generation-submission.patch");
+        assert.match(patch.retirement.requires, /guards only generation sends/);
+        assert.match(
+          patch.retirement.requires,
+          /ambiguous WebSocket frame writes as terminal unknown/,
+        );
+        assert.match(patch.retirement.requires, /positively validates provider refusal payloads/);
+        assert.match(
+          patch.retirement.requires,
+          /Generic credential, refresh and auxiliary HTTP calls remain untracked/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&

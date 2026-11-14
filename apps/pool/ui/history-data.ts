@@ -182,7 +182,60 @@ export function useHistory(
     }
   };
 
+  /**
+   * Reads further source pages, without moving the request page, until `enough` holds for the
+   * records loaded so far, the source ends or `maxPages` pages were read. A narrowed list uses it
+   * to page its own matches. Resolves the loaded records, or null when the range changed or a read
+   * failed, which then shows as the page error.
+   */
+  const loadUntil = async (
+    enough: (records: readonly PublicHistoryRecord[]) => boolean,
+    maxPages = 20,
+  ): Promise<readonly PublicHistoryRecord[] | null> => {
+    if (!state || !loaded || paging.current || !publicHistory) return null;
+    const current = revision.current;
+    paging.current = true;
+    let records = loaded.records;
+    let next = loaded.next;
+    setResult({ ...state, loadingNext: true, pageError: undefined });
+    const fail = (pageError: string) => {
+      if (revision.current === current)
+        setResult({
+          ...state,
+          loadingNext: false,
+          pageError,
+          loaded: { ...loaded, records, next },
+        });
+      return null;
+    };
+    try {
+      for (let page = 0; page < maxPages && next !== null && !enough(records); page++) {
+        const result = await publicHistory({ ...loaded.bounds, after: next });
+        if (revision.current !== current) return null;
+        if (!result.ok) return fail(result.message);
+        if (result.value.records.length === 0 && result.value.next !== null)
+          return fail("The next request page was empty. Reload history to continue.");
+        records = [...records, ...result.value.records];
+        next = result.value.next;
+      }
+      setResult({
+        ...state,
+        loadingNext: false,
+        pageError: undefined,
+        loaded: { ...loaded, records, next },
+      });
+      return records;
+    } catch {
+      return fail("The next request page could not be read. Try again.");
+    } finally {
+      if (revision.current === current) paging.current = false;
+    }
+  };
+
   return {
+    /** Changes with every new read of the range (reload or a new filter), not with appended pages. */
+    snapshot: state?.request,
+    loadUntil,
     loaded,
     loading: state === undefined,
     loadError: state?.loadError,
