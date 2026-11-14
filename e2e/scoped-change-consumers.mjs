@@ -243,10 +243,11 @@ const program = Effect.gen(function* () {
       }),
     );
     const row = (name) => page.getByRole("button", { name: `Manage ${name}`, exact: true }).first();
-    const updating = () => page
-      .getByRole("status")
-      .filter({ hasText: /updating/i })
-      .first();
+    const updating = () =>
+      page
+        .getByRole("status")
+        .filter({ hasText: /updating/i })
+        .first();
     const flush = () =>
       Promise.all([
         page.evaluate(
