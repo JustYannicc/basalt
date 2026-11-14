@@ -12,6 +12,7 @@ import {
 import type { FrameworkReleaseProvenance } from "./framework-qualification.ts";
 import { record } from "./http.ts";
 import { readFrameworkArtifacts } from "../framework-artifacts.ts";
+import { preparedFrameworkRegistrySource } from "../framework-registry-source.ts";
 
 const commit = "2".repeat(40);
 const release = (version: string, digit: string): FrameworkReleaseProvenance => ({
@@ -190,6 +191,41 @@ test("unprepared trusted controller qualifies the separately prepared candidate'
   assert.equal(changed.status, 1);
   assert.equal(changed.result.activated, false);
   assert.match(String(changed.result.error), /new-candidate-canonical-version/);
+});
+
+test("offline prepared source checks bind the generated registry to its candidate and publication", (t) => {
+  const value = fixture(t);
+  assert.equal(
+    preparedFrameworkRegistrySource(value.candidate, commit),
+    renderQualifiedFrameworkRegistry(value.receipt.releases),
+  );
+  assert.throws(
+    () => preparedFrameworkRegistrySource(value.candidate, "3".repeat(40)),
+    /producerGitCommit/,
+  );
+  value.write(
+    value.candidate,
+    value.canonicalPath,
+    `export const canonicalFrameworkReleases = ${JSON.stringify([release("missing-canonical", "3")])};`,
+  );
+  assert.throws(
+    () => preparedFrameworkRegistrySource(value.candidate, commit),
+    /canonical entry.*expected.*observed/,
+  );
+  value.write(
+    value.candidate,
+    value.canonicalPath,
+    `export const canonicalFrameworkReleases = ${JSON.stringify(value.canonical)};`,
+  );
+  value.write(
+    value.candidate,
+    ".upstream/.local/basalt-framework/framework.json",
+    JSON.stringify({ "runtime.json": value.runtime, changed: "declaration" }),
+  );
+  assert.throws(
+    () => preparedFrameworkRegistrySource(value.candidate, commit),
+    /artifacts.frameworkJsonSha256.*expected.*observed/,
+  );
 });
 
 test("changed publication bytes refuse before activation even when the producer identity stays the same", (t) => {
