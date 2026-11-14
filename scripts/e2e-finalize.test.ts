@@ -79,6 +79,8 @@ test("successful CI export preserves scope-proof metadata before pruning the ori
   const { root, run, artifacts } = fixture(t);
   const receipts = {
     "environment.json": JSON.stringify({ prebuiltFramework: true }),
+    "change-journal.ndjson":
+      '{"mode":"prepared","readerReady":true}\n{"mode":"active","markers":[21,22]}\n',
     "runtime-preboot.json": JSON.stringify({ binding: "host", launches: 2 }),
     "runtime-launches.ndjson": '{"launch":1}\n{"launch":2}\n',
     "runtime-switches.ndjson": '{"binding":"host","launches":2}\n',

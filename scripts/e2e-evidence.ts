@@ -3,6 +3,7 @@ import { dirname, join, relative } from "node:path";
 
 const diagnosticFiles = new Set([
   "environment.json",
+  "change-journal.ndjson",
   "runtime-preboot.json",
   "runtime-launches.ndjson",
   "runtime-switches.ndjson",

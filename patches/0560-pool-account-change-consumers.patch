@@ -1675,15 +1675,16 @@ index 93fabe9a5ea8b9ff5b34d1717c214d347dce8e3d..5a4869d6bd1304ca080d66b9acffecb9
        });
        return new Promise<typeof server>((resolve, reject) => {
 diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
-index 7db694c0fcbef364a5703598338dedff88df6b0c..0d1e99114b7f01fc72bdae0268c4b62be1203498 100644
 --- a/e2e/support/profile-removal-rollback.ts
 +++ b/e2e/support/profile-removal-rollback.ts
-@@ -1,6 +1,54 @@
-+/** Undo hosted migration 20 before reconstructing its dependency layout. */
+@@ -1,6 +1,56 @@
++/** Undo the hosted journal before reconstructing its dependency layout. */
 +const beforeHostedAccountChanges = () =>
 +  [
 +    // A dropped SDK table also drops its migration-20 trigger. Rewind the whole step so startup
 +    // reinstalls every trigger after the older SDK layout has been reconstructed.
++    { sql: "DROP FUNCTION IF EXISTS hosted_change_revision(text, text, text)" },
++    { sql: "DROP FUNCTION IF EXISTS hosted_project_changes(integer)" },
 +    { sql: "DROP FUNCTION IF EXISTS hosted_account_changed() CASCADE" },
 +    { sql: "DROP FUNCTION IF EXISTS hosted_flush_changes() CASCADE" },
 +    { sql: "DROP FUNCTION IF EXISTS hosted_queue_change(text, text, text, bigint)" },
@@ -1693,7 +1694,7 @@ index 7db694c0fcbef364a5703598338dedff88df6b0c..0d1e99114b7f01fc72bdae0268c4b62b
 +      sql: `DO $rollback$
 +        BEGIN
 +          IF to_regclass('private_hosted_migrations') IS NOT NULL THEN
-+            DELETE FROM private_hosted_migrations WHERE migration_id = 20;
++            DELETE FROM private_hosted_migrations WHERE migration_id IN (20, 21, 22);
 +            IF EXISTS (SELECT 1 FROM private_hosted_migrations WHERE migration_id = 19)
 +              AND to_regprocedure('hosted_record_change(text,text,text)') IS NOT NULL THEN
 +              EXECUTE $migration19$
@@ -1733,7 +1734,7 @@ index 7db694c0fcbef364a5703598338dedff88df6b0c..0d1e99114b7f01fc72bdae0268c4b62b
      { sql: "DROP TABLE executor_account_targets" },
      { sql: "DROP TABLE executor_app_call_receipts" },
      { sql: "DROP TABLE executor_app_connections" },
-@@ -24,6 +72,7 @@ export const beforeAccountIdentities = () =>
+@@ -24,6 +74,7 @@
  /** Remove the latest hosted objects and journal together so earlier migrations can replay. */
  export const beforeHostedAccountRechecks = () =>
    [
@@ -4488,3 +4489,196 @@ diff --git a/e2e/tests/pool-legacy-handoff.spec.ts b/e2e/tests/pool-legacy-hando
                      { exact: false },
                    )
                    .waitFor(),
+diff --git a/e2e/tests/listed-account-actions.spec.ts b/e2e/tests/listed-account-actions.spec.ts
+--- a/e2e/tests/listed-account-actions.spec.ts
++++ b/e2e/tests/listed-account-actions.spec.ts
+@@ -243,7 +243,9 @@
+               yield* browser.checkpoint(`${width} edit details while the account is read`);
+               yield* held.release;
+               yield* browser.use("The failed account read offers a retry", (page) =>
+-                editDialog(page).getByRole("button", { name: "Try again", exact: true }).waitFor(),
++                editDialog(page)
++                  .getByRole("button", { name: /^(Try again|Retry)$/u })
++                  .waitFor(),
+               );
+               expect(
+                 yield* browser.use("Read the form after the failed read", (page) =>
+@@ -252,7 +254,9 @@
+                 "A failed account read keeps the typed name and keeps Save waiting",
+               ).toEqual({ visible: true, value: typed, editable: true, saveDisabled: true });
+               yield* browser.use("Retry the account read", (page) =>
+-                editDialog(page).getByRole("button", { name: "Try again", exact: true }).click(),
++                editDialog(page)
++                  .getByRole("button", { name: /^(Try again|Retry)$/u })
++                  .click(),
+               );
+             }),
+           );
+diff --git a/e2e/support/provider-apps-catalog.ts b/e2e/support/provider-apps-catalog.ts
+--- a/e2e/support/provider-apps-catalog.ts
++++ b/e2e/support/provider-apps-catalog.ts
+@@ -101,6 +101,46 @@
+   const sequence = yield* Ref.make(0);
+   const routes = Layer.mergeAll(
+     HttpRouter.add(
++      "POST",
++      "/pool/v1/changeRevisions",
++      Effect.gen(function* () {
++        const { envelope } = yield* HttpServerRequest.schemaBodyJson(
++          Schema.Struct({ envelope: Schema.String }),
++        );
++        const [prefix, payload, signature, extra] = envelope.split(".");
++        if (
++          prefix !== "sbs1" ||
++          payload === undefined ||
++          signature === undefined ||
++          extra !== undefined
++        )
++          return HttpServerResponse.empty({ status: 401 });
++        const expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++          .update(`${prefix}.${payload}`)
++          .digest();
++        const actual = Buffer.from(signature, "base64url");
++        if (actual.byteLength !== expected.byteLength || !timingSafeEqual(actual, expected))
++          return HttpServerResponse.empty({ status: 401 });
++        const assertion = yield* Schema.decodeUnknownEffect(
++          Schema.fromJsonString(
++            Schema.Struct({
++              action: Schema.Literal("changeRevisions"),
++              pool: Schema.String,
++              expiresAt: Schema.Number,
++            }),
++          ),
++        )(Buffer.from(payload, "base64url").toString());
++        const now = yield* Clock.currentTimeMillis;
++        if (assertion.expiresAt <= now || assertion.expiresAt > now + 30_000)
++          return HttpServerResponse.empty({ status: 401 });
++        return HttpServerResponse.jsonUnsafe({
++          revisions: ["pool-readings", "pool-usage", "pool-samples", "pool-prices"].map(
++            (topic) => ({ topic, resource: assertion.pool, revision: "0" }),
++          ),
++        });
++      }),
++    ),
++    HttpRouter.add(
+       "GET",
+       "/pool/v1/pool",
+       Effect.gen(function* () {
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -729,6 +729,48 @@
+     const originalListener = prebootBinding === undefined ? apiListener : yield* cloudListener;
+     let serverScope = yield* launch(originalListener);
+     if (prebootBinding !== undefined) yield* apiListener.set(originalListener.url);
++    if (process.env.BASALT_E2E_PRODUCTION_OPS === "1") {
++      // Acceptance exercises the explicit cutover; ordinary fixture startup remains prepared.
++      const activationEnv = {
++        ...env,
++        NODE_ENV: "test",
++        DATABASE_URL: `postgres://executor:${databasePassword}@127.0.0.1:${databaseBackendPort}/executor`,
++        JOURNAL_FIXTURE_RECEIPT: `${directory}/change-journal.ndjson`,
++      };
++      for (const step of [
++        {
++          cwd: path.resolve(cloud, "../../.."),
++          args: ["apps/hosted/testing/change-reader-fixture.ts", "prepared"],
++        },
++        {
++          cwd: cloud,
++          args: [
++            "src/migrate.ts",
++            "--activate-change-journal",
++            "--readers-ready=checkpoint-count-v1",
++          ],
++        },
++        {
++          cwd: path.resolve(cloud, "../../.."),
++          args: ["apps/hosted/testing/change-reader-fixture.ts", "active"],
++        },
++      ]) {
++        const code = yield* processes.exitCode(
++          ChildProcess.make("node", step.args, {
++            cwd: step.cwd,
++            env: activationEnv,
++            extendEnv: false,
++            stdout: "inherit",
++            stderr: "inherit",
++          }),
++        );
++        if (code !== 0)
++          return yield* new CloudStartFailed({
++            operation: "Explicit operator-fixture journal activation",
++          });
++      }
++    }
++
+     const fixtures = {
+       ...(yield* startFixtureControl(input.origin, directory, browser)),
+       mcpSessionKeys: {
+diff --git a/apps/hosted/testing/change-reader-fixture.ts b/apps/hosted/testing/change-reader-fixture.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/testing/change-reader-fixture.ts
+@@ -0,0 +1,61 @@
++/** Disposable operator-fixture precondition and readback, never part of a serving Worker. */
++import assert from "node:assert/strict";
++import { appendFile } from "node:fs/promises";
++import { randomUUID } from "node:crypto";
++import { PgClient } from "@effect/sql-pg";
++import { makeChangeJournal } from "@executor-js/hosted-server";
++import { Effect, Redacted } from "effect";
++import { SqlClient } from "effect/sql";
++
++const mode = process.argv[2];
++assert.ok(mode === "prepared" || mode === "active");
++assert.equal(process.env.NODE_ENV, "test");
++const url = process.env.DATABASE_URL;
++assert.ok(url && new URL(url).hostname === "127.0.0.1");
++const receipt = process.env.JOURNAL_FIXTURE_RECEIPT;
++assert.ok(receipt);
++const evidence = await Effect.runPromise(
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    return yield* sql.withTransaction(
++      Effect.gen(function* () {
++        const markers = yield* sql<{ migration_id: number }>`select migration_id
++        from private_hosted_migrations where migration_id in (21,22) order by migration_id`;
++        assert.deepEqual(
++          markers.map((row) => row.migration_id),
++          mode === "prepared" ? [21] : [21, 22],
++        );
++        const scope = `fixture-reader:${randomUUID()}`;
++        yield* sql`savepoint fixture_reader`;
++        yield* sql`select hosted_queue_change(${scope},'accounts','*')`;
++        const heads = yield* makeChangeJournal(sql).current(scope, [
++          { topic: "accounts", resource: "*" },
++        ]);
++        assert.deepEqual(heads, [{ topic: "accounts", resource: "*", revision: "1" }]);
++        const physical = yield* sql`select 1 from hosted_change_heads where scope=${scope}`;
++        assert.equal(
++          physical.length,
++          0,
++          "The actual reader must include an unprojected queue entry",
++        );
++        yield* sql`rollback to savepoint fixture_reader`;
++        const [flush] = yield* sql<{ body: string }>`select prosrc as body from pg_proc
++        where oid='hosted_flush_changes()'::regprocedure`;
++        assert.ok(flush);
++        assert.equal(flush.body.includes("hosted_record_change"), mode === "prepared");
++        const triggers =
++          yield* sql`select 1 from pg_trigger where tgrelid='executor_account_connections'::regclass
++        and tgname='hosted_committed_change' and tgenabled='O' and not tgisinternal`;
++        assert.equal(triggers.length, 1);
++        return {
++          mode,
++          readerReady: true,
++          markers: markers.map((row) => row.migration_id),
++          queueOnly: mode === "active",
++        };
++      }),
++    );
++  }).pipe(Effect.provide(PgClient.layer({ url: Redacted.make(url), maxConnections: 1 }))),
++);
++await appendFile(receipt, JSON.stringify(evidence) + "\n", { mode: 0o600 });
++console.log(JSON.stringify(evidence));
