@@ -275,6 +275,7 @@ for(const [entry,target] of [['apps/pool/ui/main.tsx','browser'],['host.ts','nod
     write: false,
     bundle: true,
     outfile: "main.css",
+    conditions: ["style"],
     alias: { tailwindcss: join(root, ".upstream/packages/ui/node_modules/tailwindcss/index.css") },
   });
   const { compile } = webRequire("tailwindcss");
