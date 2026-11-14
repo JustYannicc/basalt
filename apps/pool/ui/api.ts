@@ -43,7 +43,7 @@ export const pool = {
         result<UsageImportResult>(),
       ),
     ),
-  capacity: (days: 7 | 30 | 90, to?: number) =>
+  capacity: (days: number, to?: number) =>
     read(
       client.query(
         queryReference<typeof capacity>("capacity"),

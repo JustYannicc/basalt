@@ -1,6 +1,11 @@
 model {
   extend basalt.pool {
     metadata {
+      constraint "The pool view restores SelectedAccountView through the existing exact-source providerAccountView helper, with at most eight inspections in flight and denied or changed bindings withheld. UI health consumes that returned authority. Endpoint latency and complete host/backend call counts at the actual cadence remain a separate measured S2 merge gate."
+
+      constraint "History's first person-grouped series page receives at most 500 current pool members from one organization-and-audience constrained host directory read. Only hashes, names and current access are returned. Backend or browser directories cannot name people; continuation and non-person pages omit the directory. The legacy overview reuses the same authority helper."
+      constraint "The summary exposes an observed retained start independently of selected-range capture. Its existing checkpoint SELECT reads at most 1001 rows in the earliest indexed timestamp bucket; an overfull bucket leaves the exact start unknown. This adds no SQL statement or ledger pricing pass, and never establishes import completion. Summary and capacity history share the existing maximum of 400 days."
+
       constraint "Settings' View all history opens the pool app's declared History page through the host's `page` parameter, the same tab Overview's own History tab shows, so History has one route and Back is the browser's. The pool app no longer posts a back message or renders its own header, tab bar or Back button; the host's older usage-history fragment still opens the App tab, where it now shows the overview. The overview drops its per-model limits and account-limits dialog; banked resets show per lab and kind, and per-model limits and spending stay on the host's Accounts tab; the native presentation journey checks the banked-reset list instead."
     }
   }

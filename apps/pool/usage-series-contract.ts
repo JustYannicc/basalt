@@ -146,7 +146,15 @@ export interface SeriesCoverage {
   percentiles: Unavailable;
   seasonalTrainingRange: Unavailable;
 }
+/** Host-authorized current pool member; active means current access, not observed usage. */
+export interface UsageSeriesMember {
+  readonly person: string;
+  readonly displayName: string;
+  readonly active: boolean;
+}
+
 export interface PoolUsageSeriesResult {
+  directory?: readonly UsageSeriesMember[];
   from: string;
   to: string;
   bucket: "hour" | "day";
