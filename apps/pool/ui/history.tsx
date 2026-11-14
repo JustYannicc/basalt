@@ -158,12 +158,9 @@ export function History({
     // The read this click started from; a reload meanwhile makes its answer moot.
     const started = snapshot;
     const need = (matchPage + 1) * 10;
-    const all =
-      records.length > need
-        ? loaded?.records
-        : await loadUntil(
-            (rows) => rows.filter((record) => matchesRecord(narrow, record)).length > need,
-          );
+    const all = await loadUntil(
+      (rows) => rows.filter((record) => matchesRecord(narrow, record)).length > need,
+    );
     if (!all) return;
     const count = all.filter((record) => matchesRecord(narrow, record)).length;
     setMatchPaging({

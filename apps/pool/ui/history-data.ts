@@ -18,6 +18,7 @@ import {
 } from "./history-model.ts";
 
 export interface LoadedHistory {
+  readonly snapshot: object;
   readonly bounds: HistoryBounds;
   readonly firstAt: string | null;
   readonly series: HistorySeriesRead;
@@ -96,6 +97,7 @@ async function readHistory(
     }
     return {
       loaded: {
+        snapshot: {},
         bounds,
         firstAt,
         series: usage.ok ? usage.value : { groups: [], asOf: null, changed: false, partial: false },
@@ -133,6 +135,7 @@ export function useHistory(
   const page = state?.page ?? 0;
   const revision = useRef(0);
   const paging = useRef(false);
+  const pagedSnapshot = useRef<object | undefined>(undefined);
   /** A change-driven read is in flight over the history on screen. */
   const [refreshing, setRefreshing] = useState<object>();
   const syncing = useRef<HistorySync | undefined>(undefined);
@@ -141,6 +144,7 @@ export function useHistory(
     const current = ++revision.current;
     const live = () => current === revision.current;
     paging.current = false;
+    pagedSnapshot.current = undefined;
     let marker: object | undefined;
     const sync = syncHistory(changes(), {
       read: () => readHistory(series, publicHistory, filter, live),
@@ -158,9 +162,20 @@ export function useHistory(
       apply: (value, reset) => {
         if (!live()) return;
         const paged = paging.current;
-        if (reset) paging.current = false;
+        if (reset) {
+          paging.current = false;
+          pagedSnapshot.current = undefined;
+        }
         setResult((previous) =>
-          settleRefresh(previous, value, { request, paged, reset, failed: unconfirmed }),
+          settleRefresh(previous, value, {
+            request,
+            paged:
+              paged ||
+              (pagedSnapshot.current !== undefined &&
+                pagedSnapshot.current === previous?.loaded?.snapshot),
+            reset,
+            failed: unconfirmed,
+          }),
         );
       },
       // Synchronously on an authority hint: nothing from the old grant stays on screen while its
@@ -168,6 +183,7 @@ export function useHistory(
       clear: () => {
         if (!live()) return;
         paging.current = false;
+        pagedSnapshot.current = undefined;
         setResult(undefined);
       },
       // A rejected read keeps the confirmed history and says it may be behind, unless a reset is
@@ -266,49 +282,64 @@ export function useHistory(
     enough: (records: readonly PublicHistoryRecord[]) => boolean,
     maxPages = 20,
   ): Promise<readonly PublicHistoryRecord[] | null> => {
-    if (!state || !loaded || paging.current || !publicHistory) return null;
+    const sync = syncing.current;
+    if (!state || !loaded || paging.current || !publicHistory || sync === undefined) return null;
+    // Filtered pages have their own visible index, including matches already loaded locally.
+    pagedSnapshot.current = loaded.snapshot;
+    if (enough(loaded.records)) return loaded.records;
     const current = revision.current;
+    const scoped = sync.generation();
+    const stale = () => revision.current !== current || sync.generation() !== scoped;
+    const onSnapshot = (apply: (previous: HistoryState) => HistoryState) =>
+      setResult((previous) =>
+        previous === undefined || previous.loaded !== loaded || stale()
+          ? previous
+          : apply(previous),
+      );
     paging.current = true;
     let records = loaded.records;
     let next = loaded.next;
-    setResult({ ...state, loadingNext: true, pageError: undefined });
+    onSnapshot((previous) => ({ ...previous, loadingNext: true, pageError: undefined }));
     const fail = (pageError: string) => {
-      if (revision.current === current)
-        setResult({
-          ...state,
+      if (!stale())
+        onSnapshot((previous) => ({
+          ...previous,
           loadingNext: false,
           pageError,
           loaded: { ...loaded, records, next },
-        });
+        }));
       return null;
     };
     try {
       for (let page = 0; page < maxPages && next !== null && !enough(records); page++) {
-        const result = await publicHistory({ ...loaded.bounds, after: next });
-        if (revision.current !== current) return null;
+        const result = await sync.pages.read(() =>
+          publicHistory({ ...loaded.bounds, after: next ?? undefined }),
+        );
+        if (stale()) return null;
         if (!result.ok) return fail(result.message);
         if (result.value.records.length === 0 && result.value.next !== null)
           return fail("The next request page was empty. Reload history to continue.");
         records = [...records, ...result.value.records];
         next = result.value.next;
       }
-      setResult({
-        ...state,
+      if (stale()) return null;
+      onSnapshot((previous) => ({
+        ...previous,
         loadingNext: false,
         pageError: undefined,
         loaded: { ...loaded, records, next },
-      });
+      }));
       return records;
     } catch {
       return fail("The next request page could not be read. Try again.");
     } finally {
-      if (revision.current === current) paging.current = false;
+      if (!stale()) paging.current = false;
     }
   };
 
   return {
     /** Changes with every new read of the range (reload or a new filter), not with appended pages. */
-    snapshot: state?.request,
+    snapshot: loaded?.snapshot,
     loadUntil,
     loaded,
     loading: state === undefined,
