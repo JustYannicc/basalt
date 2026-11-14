@@ -2,10 +2,16 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { readDeploymentLedger, readLedgerEnvironment } from "../deploy-safety/github-ledger.ts";
+import { assertNoReleaseHold } from "../deploy-safety/runtime.ts";
 import { validateMainCandidate } from "../release-merge/main-candidate.ts";
 import { BarrierRefusal } from "./manifest.ts";
 
 export function migrationActivationInput(source: Record<string, string | undefined>) {
+  try {
+    assertNoReleaseHold(source);
+  } catch {
+    throw new BarrierRefusal("migration-activation-release-held", "PRODUCTION_RELEASE_HOLD");
+  }
   const candidate = source.BASALT_RELEASE_CANDIDATE ?? "";
   const mode = source.MIGRATION_ACTIVATION_MODE ?? "";
   if (!/^[a-f0-9]{40}$/u.test(candidate))

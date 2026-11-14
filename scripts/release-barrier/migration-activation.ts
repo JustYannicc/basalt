@@ -74,8 +74,13 @@ export function migrationActivationIntent(
         .filter(Boolean)
         .join(","),
     );
-  if (!allowActive && before.hosted.active && before.pool.active)
-    throw new BarrierRefusal("migration-activation-already-active", "hosted.22,model-history.v10");
+  if (!allowActive && (before.hosted.active || before.pool.active))
+    throw new BarrierRefusal(
+      "migration-activation-already-active",
+      [before.hosted.active ? "hosted.22" : "", before.pool.active ? "model-history.v10" : ""]
+        .filter(Boolean)
+        .join(","),
+    );
   if (
     !sha.test(before.hosted.fingerprint) ||
     !sha.test(before.pool.schemaHash) ||

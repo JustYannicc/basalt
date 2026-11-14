@@ -68,6 +68,27 @@ test("activation refuses PR, non-main and different workflow contexts before con
   );
 });
 
+test("a production release hold refuses every activation input before connecting", () => {
+  for (const mode of ["plan", "inspect", "b".repeat(64)]) {
+    assert.throws(
+      () =>
+        migrationActivationInput({
+          ...environment,
+          MIGRATION_ACTIVATION_MODE: mode,
+          PRODUCTION_RELEASE_HOLD: "restore in progress",
+        }),
+      /migration-activation-release-held.*PRODUCTION_RELEASE_HOLD/,
+    );
+    assert.doesNotThrow(() =>
+      migrationActivationInput({
+        ...environment,
+        MIGRATION_ACTIVATION_MODE: mode,
+        PRODUCTION_RELEASE_HOLD: "  ",
+      }),
+    );
+  }
+});
+
 test("the activation workflow keeps the release lock and excludes all ordinary deployment work", () => {
   const require = createRequire(new URL("../architecture/package.json", import.meta.url));
   const { parse } = require("yaml");

@@ -115,6 +115,8 @@ test("the exact candidate, preparations and already-active state cannot be repla
   for (const namespace of ["hosted", "pool"] as const) {
     const changed = { ...f.snapshot, [namespace]: { ...f.snapshot[namespace], prepared: false } };
     assert.throws(() => migrationActivationIntent(candidate, changed), /not-prepared/);
+    const active = { ...f.snapshot, [namespace]: { ...f.snapshot[namespace], active: true } };
+    assert.throws(() => migrationActivationIntent(candidate, active), /already-active/);
   }
   const changed = structuredClone(f.snapshot);
   changed.hosted = { ...changed.hosted, active: true };
