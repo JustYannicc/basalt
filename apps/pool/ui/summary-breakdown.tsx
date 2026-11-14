@@ -1,5 +1,5 @@
 import { AccountHealth, AccountName, Badge, Button, ProviderMark, Spinner } from "apps/ui";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PoolView } from "../contract.ts";
 import type { PoolUsageSummaryResult } from "../usage-overview-contract.ts";
 import type { SeriesGroup } from "../usage-series-contract.ts";
@@ -28,8 +28,11 @@ function useAccounts(api: PoolApi, summary: PoolUsageSummaryResult, wanted: bool
   const key = `${summary.from} ${summary.to}`;
   const [read, setRead] = useState<AccountRead>();
   const current = read?.key === key ? read : undefined;
+  // The committed range, for dropping answers that arrive after it changed.
   const latest = useRef(key);
-  latest.current = key;
+  useLayoutEffect(() => {
+    latest.current = key;
+  }, [key]);
   const attempt = current?.attempt ?? 0;
   const settled = current?.result !== undefined;
   const inflight = useRef<string>(undefined);

@@ -721,6 +721,54 @@ const program = Effect.gen(function* () {
     }),
   );
   yield* section(
+    "a reloaded filtered History starts at its first matching page",
+    Effect.gen(function* () {
+      // A lab's History over 30 days has explicit From/To dates and 12 matching requests, so a
+      // reload or the same dates applied again read the identical range from its first page.
+      yield* page(() => owner.goto(`${app}?view=app`).then(() => heading.waitFor()));
+      yield* page(() => screen.getByRole("tab", { name: "30 days", exact: true }).click());
+      yield* until(
+        Effect.sync(() => input(-1)),
+        (asked) => Date.parse(asked.to) - Date.parse(asked.from) > 28 * 86_400_000,
+        "the 30-day range was not read",
+      );
+      yield* page(() => screen.getByText("Updating…").waitFor({ state: "hidden" }));
+      yield* page(() =>
+        screen.getByRole("button", { name: "History", exact: true }).first().click(),
+      );
+      yield* page(historyLoaded);
+      const rows = historyScreen
+        .getByRole("region", { name: "Request history", exact: true })
+        .locator("tbody tr");
+      const showing = (count, label) =>
+        Effect.gen(function* () {
+          yield* until(
+            page(() => rows.count()),
+            (n) => n === count,
+            `expected ${count} rows`,
+          );
+          yield* page(() => historyScreen.getByText(label, { exact: true }).waitFor());
+        });
+      const next = () =>
+        page(() => historyScreen.getByRole("button", { name: "Next", exact: true }).click());
+      yield* showing(5, "Page 1");
+      yield* next();
+      yield* showing(2, "Page 2");
+      checks.push("the second matching page holds the last 2 of 12 matches");
+      yield* page(() =>
+        historyScreen.getByRole("button", { name: "Reload", exact: true }).first().click(),
+      );
+      yield* showing(5, "Page 1");
+      checks.push("a reload starts the filtered list again at its first page");
+      yield* next();
+      yield* showing(2, "Page 2");
+      yield* page(() => historyScreen.getByRole("button", { name: "Apply", exact: true }).click());
+      yield* showing(5, "Page 1");
+      checks.push("applying the same dates starts at the first page too");
+      yield* shoot("history-reloaded", historyScreen);
+    }),
+  );
+  yield* section(
     "a shared-pool member controls their own range",
     Effect.gen(function* () {
       const accessPath = `${h.appPath(pool.id)}/access`;

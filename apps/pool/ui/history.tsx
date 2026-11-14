@@ -74,11 +74,18 @@ export function History({
     nextPage,
     previousPage,
     loadUntil,
+    snapshot,
   } = useHistory(series, publicHistory, filter);
-  // A narrowed list pages its own matches; the request pages behind it only grow.
-  const matchKey = JSON.stringify([narrowKey(narrow), loaded?.bounds ?? null]);
-  const [matchPaging, setMatchPaging] = useState({ key: matchKey, page: 0 });
-  const matchPage = matchPaging.key === matchKey ? matchPaging.page : 0;
+  // A narrowed list pages its own matches within one read of the range. A reload or a re-applied
+  // filter starts a new read from its first page, so the match page starts over with it.
+  const matchKey = narrowKey(narrow);
+  const [matchPaging, setMatchPaging] = useState<{
+    key: string;
+    snapshot: object | undefined;
+    page: number;
+  }>({ key: matchKey, snapshot, page: 0 });
+  const matchPage =
+    matchPaging.key === matchKey && matchPaging.snapshot === snapshot ? matchPaging.page : 0;
 
   const applyDates = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -140,6 +147,8 @@ export function History({
     ? loaded !== undefined && ((matchPage + 1) * 10 < records.length || loaded.next !== null)
     : loaded !== undefined && (page + 1 < pagesLoaded || loaded.next !== null);
   const nextMatches = async () => {
+    // The read this click started from; a reload meanwhile makes its answer moot.
+    const started = snapshot;
     const need = (matchPage + 1) * 10;
     const all =
       records.length > need
@@ -149,7 +158,11 @@ export function History({
           );
     if (!all) return;
     const count = all.filter((record) => matchesRecord(narrow, record)).length;
-    setMatchPaging({ key: matchKey, page: nextMatchPage(count, matchPage, 10) });
+    setMatchPaging({
+      key: matchKey,
+      snapshot: started,
+      page: nextMatchPage(count, matchPage, 10),
+    });
   };
   const currentRange = loaded
     ? filter.from || filter.to
@@ -363,7 +376,12 @@ export function History({
                 loadingNext={loadingNext}
                 onPrevious={
                   narrowed
-                    ? () => setMatchPaging({ key: matchKey, page: Math.max(0, matchPage - 1) })
+                    ? () =>
+                        setMatchPaging({
+                          key: matchKey,
+                          snapshot,
+                          page: Math.max(0, matchPage - 1),
+                        })
                     : previousPage
                 }
                 onNext={narrowed ? () => void nextMatches() : nextPage}

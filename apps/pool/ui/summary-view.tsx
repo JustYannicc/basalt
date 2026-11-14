@@ -120,10 +120,13 @@ function Header({
   updating,
   since,
   bounds,
+  now,
 }: {
   controls: SummaryControls;
   updating: boolean;
   since: ReturnType<typeof sinceOption>;
+  /** The page's clock tick, so labels stay stable between renders. */
+  now: number;
   bounds: SummaryBounds | undefined;
 }) {
   const fixed: RangeChoice[] = [7, 30, 90].map((days) => ({ kind: "days", days }) as RangeChoice);
@@ -134,7 +137,7 @@ function Header({
   const label = (choice: RangeChoice) =>
     choice.kind === "days"
       ? `${choice.days} days`
-      : sinceLabel(summaryRange(choice, Date.now()), choice.first);
+      : sinceLabel(summaryRange(choice, now), choice.first);
   return (
     <section className="grid gap-4 pt-8 pb-5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -438,6 +441,7 @@ export function SummaryOverview({
         updating={updating}
         since={summary?.ok ? sinceOption(summary.value.retainedFirstAt, now) : null}
         bounds={state?.bounds}
+        now={now}
       />
       {summary === undefined ? (
         <div aria-hidden="true" className="grid gap-3">
