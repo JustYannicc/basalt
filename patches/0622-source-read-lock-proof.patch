@@ -173,15 +173,16 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
  import { providerAccountProduct } from "../support/provider-account-product.ts";
  import { providerAppsCatalog } from "../support/provider-apps-catalog.ts";
  import { serverControl } from "../support/server-control.ts";
-@@ -37,6 +37,7 @@
+@@ -37,6 +37,8 @@
    }),
    Schema.Struct({ state: Schema.Literal("denied"), account: Resource }),
  ]);
 +const Resolution = Schema.Struct({ selected: Schema.Array(Schema.String), account: Schema.String });
++const Inspection = Schema.Struct({ selected: Schema.Array(Schema.String), native: Native });
  const View = Schema.Struct({
    selected: Schema.Array(Schema.String),
    native: Native,
-@@ -64,12 +65,18 @@
+@@ -64,12 +66,24 @@
    }
    return {selected:selected.map(account=>account.id),native,reused};
  });
@@ -191,11 +192,17 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
 +  if(!account) throw new Error("Account is not selected");
 +  return {selected:selected.map(account=>account.id),account:account.id};
 +});
++const inspect = query({input:object({account:string()})}, async(ctx,input) => {
++  const selected=ctx.app.accounts.openai;
++  const account=selected.find(account=>account.id===input.account);
++  if(!account) throw new Error("Account is not selected");
++  return {selected:selected.map(account=>account.id),native:await account.read()};
++});
  const forward=query({input:object({target:string(),tool:string(),payload:json()})},async(ctx,input)=>ctx.apps.call({connection:"accountView",target:input.target,tool:input.tool,kind:"query",input:input.payload}));
 -export default defineApp({app:{accounts:{openai:providers.openai.many().requiring("model-inference").contributed()}},${connected ? 'dependencies:{accountView:{scope:"app",cardinality:"many",tools:{accountView:{kind:"query"}}}},' : ""}},{tools:router({view,forward})});`;
 -
 -layer(RuntimeLive, { excludeTestServices: true })("Pool account sources", (it) => {
-+export default defineApp({app:{accounts:{openai:providers.openai.many().requiring("model-inference").contributed()}},${connected ? 'dependencies:{accountView:{scope:"app",cardinality:"many",tools:{accountView:{kind:"query"}}}},' : ""}},{tools:router({view,resolve,forward})});`;
++export default defineApp({app:{accounts:{openai:providers.openai.many().requiring("model-inference").contributed()}},${connected ? 'dependencies:{accountView:{scope:"app",cardinality:"many",tools:{accountView:{kind:"query"}}}},' : ""}},{tools:router({view,resolve,inspect,forward})});`;
 +
 +layer(HostedLive, { excludeTestServices: true })("Pool account sources", (it) => {
    it.effect(scenarios.poolAccountSourceBindings.title, (context) =>
@@ -204,7 +211,7 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
        context,
        Effect.gen(function* () {
          const api = yield* Api,
-@@ -87,7 +94,14 @@
+@@ -87,7 +101,14 @@
                yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
            }).pipe(Effect.orDie),
          );
@@ -220,7 +227,7 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
          const canonical = catalog.sources
            .get("openai")!
            .files.filter((file) => file.path !== "index.ts" && file.path !== "package.json");
-@@ -95,6 +109,7 @@
+@@ -95,6 +116,7 @@
            appsManifest,
            ...canonical,
            { path: "index.ts", content: poolSource(connected) },
@@ -228,7 +235,22 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
          ];
          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
            name: "Source binding pool",
-@@ -270,6 +285,7 @@
+@@ -204,6 +226,14 @@
+               input: { account },
+             })
+             .pipe(Effect.flatMap((response) => body(View, response)));
++        const inspect = (account: string) =>
++          api
++            .request(actors.member, "POST", `${poolPath}/tools/call`, {
++              tool: "inspect",
++              kind: "query",
++              input: { account },
++            })
++            .pipe(Effect.flatMap((response) => body(Inspection, response)));
+         const connections = () =>
+           api.request(actors.member, "GET", `${poolPath}/connections`).pipe(
+             Effect.flatMap((response) => body(Connections, response)),
+@@ -270,6 +300,7 @@
            });
            expect(refused.status).not.toBe(200);
          }
@@ -236,7 +258,7 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
          const beforeRevocation = (yield* connections()).find(
            (connection) => connection.target === first,
          )!;
-@@ -290,10 +306,43 @@
+@@ -290,10 +321,43 @@
          expect(yield* nativeIds()).toEqual(membership);
          expect(yield* catalog.mirrors).toEqual(mirrors);
  
@@ -253,7 +275,7 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
 +              expect(resolution.selected).toEqual(selected);
 +              expect(resolution.account).toBe(inputs[index]);
 +            }
-+            const replies = yield* Effect.forEach(inputs, view, { concurrency: "unbounded" });
++            const replies = yield* Effect.forEach(inputs, inspect, { concurrency: "unbounded" });
 +            for (const reply of replies) expect(reply.selected).toEqual(selected);
 +            expect(replies[0]!.native.state).toBe(denied ? "denied" : "available");
 +            expect(replies[1]!.native).toMatchObject({
@@ -280,7 +302,7 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
          expect((yield* view(b)).reused?.sourceApp.id).toBe(second);
          expect(
            (yield* api.request(actors.member, "DELETE", `${poolPath}/accounts/app/openai/${a}`))
-@@ -302,6 +351,8 @@
+@@ -302,6 +366,8 @@
          expect((yield* choose(a, yield* source(first))).status).toBe(200);
          expect((yield* view(a)).reused?.sourceApp.id).toBe(first);
          expect(yield* nativeIds()).toEqual(membership);
@@ -289,7 +311,7 @@ diff --git a/e2e/tests/pool-account-source-bindings.spec.ts b/e2e/tests/pool-acc
  
          const oldSource = yield* source(first);
          const providerFiles = catalog.sources.get("openai")!.files;
-@@ -345,6 +396,7 @@
+@@ -345,6 +411,7 @@
            (yield* api.request(actors.member, "DELETE", `${providerPath(first)}/${a}`)).status,
          ).toBe(200);
          expect((yield* view(a)).native).toEqual({ state: "denied", account: { id: a } });
