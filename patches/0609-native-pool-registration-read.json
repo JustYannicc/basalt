@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-native-pool-registration-read",
+  "file": "0609-native-pool-registration-read.patch",
+  "content_sha256": "11b987e18d2089761f27f79f75d596552ec601410024c968db35e8f6245decd0",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
