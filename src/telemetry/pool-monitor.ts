@@ -1,6 +1,7 @@
 import { eventId, sendEnvelope } from "./sentry-envelope.ts";
 import type { SentryEnv } from "./sentry-target.ts";
 import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
+import type { ProbeRuntimeIdentity } from "../pool/availability.ts";
 
 const guards = new Set([
   "configuration",
@@ -56,6 +57,8 @@ export async function capturePoolMonitor(
     ok: boolean;
     failures: readonly { guard: string; reason: string; backendStatus?: number }[];
     reliability?: PoolReliabilitySlo;
+    release?: string;
+    runtime?: ProbeRuntimeIdentity;
   },
 ): Promise<boolean> {
   const failures = input.failures.slice(0, 8).map((failure) => ({
@@ -105,6 +108,7 @@ export async function capturePoolMonitor(
 
   function report(errorCode: string, diagnostics: typeof failures) {
     const id = eventId();
+    const runtime = probeRuntimeContext(input.runtime);
     return sendEnvelope(env, {
       id,
       type: "event",
@@ -115,14 +119,19 @@ export async function capturePoolMonitor(
         level: "error",
         message: `${errorCode} ${diagnostics.map((failure) => `${failure.guard}:${failure.reason}${failure.backend_status ? `:HTTP${failure.backend_status}` : ""}`).join(" ") || "runtime:unknown"}`,
         logger: "pool-availability",
+        ...(/^[a-f0-9]{40}$/.test(input.release ?? "") ? { release: input.release } : {}),
         fingerprint: ["basalt", errorCode],
         tags: {
           error_code: errorCode,
           guard: diagnostics[0]?.guard ?? "runtime",
           reason: diagnostics[0]?.reason ?? "unknown",
+          probe_origin: "availability_cron",
+          runtime_source: runtime.source,
+          application_version: runtime.application_version,
+          boot_id: runtime.boot_id,
         },
         contexts: {
-          pool_probe: { check_in_id: receipt.id, failures },
+          pool_probe: { check_in_id: receipt.id, failures, runtime },
           ...(input.reliability
             ? { request_reliability: reliabilityContext(input.reliability) }
             : reliability.length
@@ -132,6 +141,27 @@ export async function capturePoolMonitor(
       },
     });
   }
+}
+
+function probeRuntimeContext(input: ProbeRuntimeIdentity | undefined) {
+  const identity = (value: unknown, pattern: RegExp) =>
+    typeof value === "string" && pattern.test(value) ? value : "unavailable";
+  const source =
+    input?.source === "legacy" || input?.source === "selected" ? input.source : "unavailable";
+  return {
+    source,
+    running: typeof input?.running === "boolean" ? input.running : null,
+    application_version: identity(input?.applicationVersion, /^[1-9][0-9]{0,15}$/),
+    boot_id: identity(input?.bootId, /^[a-zA-Z0-9-]{1,128}$/),
+    expected_boot_id: identity(input?.expectedBootId, /^[a-zA-Z0-9-]{1,128}$/),
+    image_input: identity(input?.imageInput, /^[a-f0-9]{16,64}$/),
+    image_input_source:
+      source === "selected"
+        ? "selected"
+        : source === "legacy"
+          ? "worker_configuration"
+          : "unavailable",
+  };
 }
 
 function reliabilityContext(slo: PoolReliabilitySlo) {

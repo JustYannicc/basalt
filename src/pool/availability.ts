@@ -33,6 +33,15 @@ export interface ProbeResult {
   ok: boolean;
   failures: ProbeFailure[];
   reliability?: PoolReliabilitySlo;
+  runtime?: ProbeRuntimeIdentity;
+}
+export interface ProbeRuntimeIdentity {
+  source: "legacy" | "selected";
+  running: boolean | null;
+  applicationVersion: string | null;
+  bootId: string | null;
+  expectedBootId: string | null;
+  imageInput: string;
 }
 interface ProbePolicy extends NativeMembershipPolicy {
   native: boolean;

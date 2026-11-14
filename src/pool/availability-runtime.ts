@@ -3,6 +3,7 @@ import { BackendFailure } from "./json.ts";
 import { policyUsePrefix, type NativeMembershipPolicy } from "./membership-contract.ts";
 import { readRuntimeHealth } from "./runtime-health.ts";
 import { signEnvelope } from "./token.ts";
+import type { PoolStatus } from "./lifecycle.ts";
 
 interface Runtime {
   running: boolean;
@@ -16,6 +17,7 @@ export function availabilityRuntime(
   runtime: Runtime | undefined,
   managementKey: string,
   signingKey: string,
+  observed?: (status: PoolStatus) => void,
 ) {
   const port = (number: number) => {
     if (!runtime?.running) throw new Error("Pool stopped");
@@ -24,6 +26,7 @@ export function availabilityRuntime(
   return {
     async runtime(signal: AbortSignal) {
       const status = await readRuntimeHealth(port(8318), managementKey, signal);
+      observed?.(status);
       if (!status.policyLeaseUntil || status.policyLeaseUntil <= performance.now())
         throw new Error("Policy health unavailable");
     },

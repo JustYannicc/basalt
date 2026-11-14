@@ -44,7 +44,7 @@ import { PlanAllowances } from "./allowances/registry.ts";
 import { managedCapPath, managedUsagePath, PoolUsage, summaryPath } from "./pool-usage.ts";
 import { timePoolRead } from "./read-timing.ts";
 import { inventoryCron, reportPoolInventory } from "./inventory.ts";
-import { probePool } from "./availability.ts";
+import { probePool, type ProbeRuntimeIdentity } from "./availability.ts";
 import { availabilityCron, validProbeTarget } from "./availability-config.ts";
 import { availabilityRuntime } from "./availability-runtime.ts";
 import { runAvailabilityProbe } from "./availability-schedule.ts";
@@ -372,8 +372,22 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     return this.managementWarming;
   }
 
-  async availabilityProbe(pool: string) {
+  async availabilityProbe(pool: string, includeRuntime = false) {
     const selected = await this.handoff.selected();
+    const identity: ProbeRuntimeIdentity = {
+      source: selected ? "selected" : "legacy",
+      running: selected ? null : (this.ctx.container?.running ?? false),
+      applicationVersion: selected?.applicationVersion ?? null,
+      bootId: null,
+      expectedBootId: selected?.bootId ?? null,
+      imageInput: selected?.imageInput ?? this.env.POOL_IMAGE_HASH,
+    };
+    const observed = (status: { boot_id: string }) => {
+      identity.bootId = status.boot_id;
+      identity.running = true;
+    };
+    const complete = (result: Awaited<ReturnType<typeof probePool>>) =>
+      includeRuntime ? { ...result, runtime: identity } : result;
     if (selected) {
       const runtime = availabilityRuntime(
         {
@@ -387,21 +401,27 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         },
         this.env.POOL_MANAGEMENT_KEY,
         this.env.POOL_APP_SIGNING_KEY,
+        observed,
       );
-      return probePool(pool, {
-        ...runtime,
-        native: (policy, signal) => this.handoff.probeNative(policy, signal),
-        membership: (target) => this.memberships.inspect(target),
-      });
+      return complete(
+        await probePool(pool, {
+          ...runtime,
+          native: (policy, signal) => this.handoff.probeNative(policy, signal),
+          membership: (target) => this.memberships.inspect(target),
+        }),
+      );
     }
-    return probePool(pool, {
-      ...availabilityRuntime(
-        this.ctx.container,
-        this.env.POOL_MANAGEMENT_KEY,
-        this.env.POOL_APP_SIGNING_KEY,
-      ),
-      membership: (target) => this.memberships.inspect(target),
-    });
+    return complete(
+      await probePool(pool, {
+        ...availabilityRuntime(
+          this.ctx.container,
+          this.env.POOL_MANAGEMENT_KEY,
+          this.env.POOL_APP_SIGNING_KEY,
+          observed,
+        ),
+        membership: (target) => this.memberships.inspect(target),
+      }),
+    );
   }
 
   private async automaticRecoveryCondition(pool: string) {
@@ -839,7 +859,7 @@ export default {
     if (event.cron === availabilityCron) {
       await runAvailabilityProbe(
         env,
-        (pool) => singleton(env).availabilityProbe(pool),
+        (pool) => singleton(env).availabilityProbe(pool, true),
         (pool) => {
           if (env.POOL_MODEL_HISTORY_ENABLED !== "true")
             throw new Error("Model request history is disabled");
@@ -847,6 +867,7 @@ export default {
             readPoolReliabilitySlo(db, pool),
           );
         },
+        productionOpsRelease,
       );
       return;
     }
