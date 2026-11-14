@@ -80,7 +80,7 @@ export function Segmented<T extends string | number>({
       role="radiogroup"
       aria-label={label}
       className={`inline-flex rounded-md border border-border p-0.5 ${
-        wrap ? "h-auto w-full max-w-full flex-wrap" : "h-8 w-fit max-[740px]:h-11"
+        wrap ? "min-h-8 w-fit max-w-full flex-wrap" : "h-8 w-fit max-[740px]:h-11"
       }`}
     >
       {options.map((option) => (
@@ -98,7 +98,7 @@ export function Segmented<T extends string | number>({
           }}
           className={`rounded-[4px] px-3 text-xs font-medium transition-colors duration-150 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
             wrap
-              ? "min-h-7 min-w-0 max-w-full flex-1 basis-48 py-1 whitespace-normal [overflow-wrap:anywhere] max-[740px]:min-h-11"
+              ? "min-w-0 max-w-full flex-auto py-1 whitespace-normal [overflow-wrap:anywhere] max-[740px]:min-h-11"
               : "whitespace-nowrap max-[740px]:min-w-11"
           } ${
             value === option.id

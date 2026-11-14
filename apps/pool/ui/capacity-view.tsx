@@ -219,7 +219,7 @@ function Panel({
       aria-labelledby={`lab-${lab.provider}`}
       className={first ? "pt-1 pb-6" : "border-t border-border pt-5 pb-6"}
     >
-      <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-1 max-[540px]:grid-cols-[auto_1fr]">
+      <div className="grid grid-cols-[auto_minmax(min-content,1fr)_auto] items-start gap-x-3 gap-y-1 max-[540px]:grid-cols-[auto_1fr]">
         <LabMark provider={lab.provider} name={name} />
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <h3 id={`lab-${lab.provider}`} className="text-[15px] font-semibold tracking-[-0.015em]">
@@ -229,9 +229,9 @@ function Panel({
             {accountLabel} · in {line.unit.label}
           </span>
         </div>
-        <div className="min-w-0 max-w-full justify-self-end max-[740px]:col-span-full max-[740px]:w-full max-[740px]:justify-self-start">
+        <div className="min-w-0 max-w-full justify-self-end max-[540px]:col-span-full max-[540px]:w-full max-[540px]:justify-self-start">
           {windowLines.length > 1 && (
-            <div className="grid min-w-0 max-w-full justify-items-end gap-1 max-[740px]:justify-items-start">
+            <div className="grid min-w-0 max-w-full justify-items-end gap-1 max-[540px]:justify-items-start">
               <Segmented
                 wrap
                 label={`${name} limit window`}

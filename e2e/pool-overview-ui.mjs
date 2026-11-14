@@ -613,6 +613,38 @@ const program = Effect.gen(function* () {
     0,
   );
   yield* section(
+    "short desktop window choices keep the approved header height",
+    Effect.gen(function* () {
+      yield* page(() => owner.setViewportSize({ width: 1280, height: 900 }));
+      const article = screen.getByRole("article", { name: "ChatGPT", exact: true });
+      const control = article.getByRole("radiogroup", {
+        name: "ChatGPT limit window",
+        exact: true,
+      });
+      yield* page(() => settled(screen));
+      const geometry = yield* page(() =>
+        control.evaluate((element) => ({
+          optionRows: new Set(
+            Array.from(
+              element.querySelectorAll("button"),
+              (button) => button.getBoundingClientRect().top,
+            ),
+          ).size,
+          switchHeight: element.getBoundingClientRect().height,
+          headerHeight: element.closest("article").firstElementChild.getBoundingClientRect().height,
+        })),
+      );
+      diagnostics.desktopCapacity = geometry;
+      checked("ChatGPT window options share one row at 1280", geometry.optionRows, 1);
+      checked(
+        "ChatGPT desktop switch retains its approved 32 px height",
+        geometry.switchHeight,
+        32,
+      );
+      checked("ChatGPT header retains its approved desktop height", geometry.headerHeight, 129.5);
+    }),
+  );
+  yield* section(
     "Grok weekly units fit on a phone",
     Effect.gen(function* () {
       const control = screen.getByRole("radiogroup", { name: /^(?:grok|xai) limit window$/iu });
@@ -1027,6 +1059,10 @@ const program = Effect.gen(function* () {
       by: call.payload?.input?.by ?? call.payload?.by ?? null,
     })),
     capacityAsks,
+    capacityLayout: {
+      desktop: diagnostics.desktopCapacity,
+      phone: [diagnostics["grok-390-light"], diagnostics["grok-390-dark"]],
+    },
     initialRequests: loaded,
     poolLog: usage.log.map((entry) => ({ at: entry.at - started, route: entry.route })),
     poolViewIntervals: views.slice(1).map((at, index) => at - views[index]),
