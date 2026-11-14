@@ -4067,3 +4067,102 @@ index e599ad1..f792d7a 100644
          }),
        ),
      );
+diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
+--- a/e2e/tests/account-health.spec.ts
++++ b/e2e/tests/account-health.spec.ts
+@@ -1,5 +1,5 @@
+ import { expect, layer } from "@effect/vitest";
+-import { Effect, Schema } from "effect";
++import { Effect, Fiber, Schema } from "effect";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+@@ -427,10 +427,16 @@
+                   .isVisible(),
+               );
+             const loading = yield* providerVisible();
++            // The change stream stays open; wait for the photo failure itself.
++            const failedPhoto = yield* browser
++              .use("Wait for the failed photo requests to finish", (page) =>
++                page.waitForEvent("requestfailed", {
++                  predicate: (request) => new URL(request.url()).pathname === "/avatar.svg",
++                }),
++              )
++              .pipe(Effect.forkChild({ startImmediately: true }));
+             yield* held.release;
+-            yield* browser.use("Wait for the failed photo requests to finish", (page) =>
+-              page.waitForLoadState("networkidle"),
+-            );
++            yield* Fiber.join(failedPhoto);
+             return { loading, failed: yield* providerVisible() };
+           }),
+         );
+diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-account.spec.ts
+--- a/e2e/tests/executor-key-account.spec.ts
++++ b/e2e/tests/executor-key-account.spec.ts
+@@ -316,6 +316,11 @@
+           }),
+           Effect.timeout("90 seconds"),
+         );
++        const { app: executor } = yield* managementApp(actors.owner);
++        const publishInstallation = (name: string) =>
++          api
++            .request(actors.owner, "PATCH", `${prefix}/apps/${executor.id}/name`, { name })
++            .pipe(Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))));
+         yield* browser.login(actors.owner);
+         yield* Effect.scoped(
+           Effect.gen(function* () {
+@@ -350,6 +355,8 @@
+             );
+             yield* browser.checkpoint("One app skeleton while team installation runs");
+             yield* held.stop;
++            // The synthetic directory state needs the same committed signal as provisioning.
++            yield* publishInstallation("Executor stopped");
+             yield* browser.use("Stopped installation does not leave an endless skeleton", (page) =>
+               page.getByRole("heading", { name: "No apps available", exact: true }).waitFor(),
+             );
+@@ -367,7 +374,7 @@
+               "settled directories keep only the bounded idle reconciliation",
+             ).toBeLessThanOrEqual(1);
+             yield* held.resume;
+-            // A settled directory learns about the retry at its next idle reconciliation.
++            yield* publishInstallation("Executor retry");
+             yield* advanceToReconciliation;
+             yield* browser.use("Retried installation shows the skeleton again", (page) =>
+               page.getByRole("status", { name: "Installing app", exact: true }).waitFor(),
+@@ -376,6 +383,7 @@
+               page.getByRole("textbox", { name: "Search apps…" }).fill("Executor"),
+             );
+             yield* held.release;
++            yield* publishInstallation(executor.name);
+             yield* browser.use("The real app arrives without a reload", (page) =>
+               page.getByRole("link", { name: "Open Executor", exact: true }).waitFor(),
+             );
+diff --git a/e2e/tests/catalog-instances.spec.ts b/e2e/tests/catalog-instances.spec.ts
+--- a/e2e/tests/catalog-instances.spec.ts
++++ b/e2e/tests/catalog-instances.spec.ts
+@@ -252,6 +252,12 @@
+         expect(yield* links(mail.id)).toEqual(originalLinks);
+         yield* browser.checkpoint("Another mail instance opens fresh setup without copying links");
+         yield* ui.staleInventory(catalog, [mail.id, secondMail.id]);
++        // A changed body is reread only after a committed app revision.
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${work.id}/name`, {
++            name: "Tracker work refreshed",
++          })).status,
++        ).toBe(200);
+         yield* browser.use("Stale inventory offers Add", (page) =>
+           row(page, officialApps.mail.name)
+             .getByRole("button", { name: `Add ${officialApps.mail.name}` })
+@@ -260,6 +266,11 @@
+         // The stale read has reached the UI. Remove the route before app navigation cancels reads.
+         yield* ui.clearStaleInventory;
+         const reused = yield* ui.submit(`Add ${officialApps.mail.name}`);
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${work.id}/name`, {
++            name: work.name,
++          })).status,
++        ).toBe(200);
+         expect(reused.status).toBe(200);
+         expect(yield* Schema.decodeUnknownEffect(InstallResult)(reused.body)).toEqual({
+           id: mail.id,
