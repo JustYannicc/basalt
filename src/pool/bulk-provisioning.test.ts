@@ -101,7 +101,7 @@ test("an authenticated bulk command refuses with its provisioning code before jo
     }),
     { signingKey: key },
   );
-  assert.equal(response.status, 503);
+  assert.equal(response.status, 409);
   assert.deepEqual(await response.json(), {
     error: "bulk_import_not_provisioned",
     message: "Bulk import is not provisioned yet.",

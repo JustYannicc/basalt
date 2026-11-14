@@ -21,7 +21,7 @@ model {
     }
   }
 
-  basalt.modelGateway -[sync]-> basalt.bulkUsageImport "refuse signed bulk commands as not provisioned before any job or artifact work"
+  basalt.modelGateway -[sync]-> basalt.bulkUsageImport "refuse signed bulk commands as HTTP 409 not provisioned before any job or artifact work; expected 4xx refusals stay below error telemetry and unexpected 5xx still report"
   basalt.bulkUsageImport -[sync]-> basalt.modelGateway "reuse exact history parsing, signed envelopes, database sessions and durable chunk storage"
   basalt.bulkUsageImport -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: fresh signed owner admission before every chunk; host transaction ends before reply"
   basalt.bulkUsageImport -[sync]-> basalt.usageImportArtifacts "store and reload immutable metadata chunks"
