@@ -1,0 +1,7 @@
+model {
+  extend basalt.setupHost {
+    metadata {
+      constraint "OAuth token revocation answers 200 for a named token the server no longer honours, as RFC 7009 section 2.2 requires, including an access token its refresh token's revocation already invalidated. Better Auth 1.7.5 intends that answer but returns 400 invalid_request; an after hook on /oauth2/revoke restores it without patching the package, only for the token-lookup refusals the library raises after the client authenticated (token not found, refresh token revoked, Invalid access token). Malformed client authentication, a missing token, an unknown client and an unsupported token type keep their refusals, and a refused revocation revokes nothing."
+    }
+  }
+}
