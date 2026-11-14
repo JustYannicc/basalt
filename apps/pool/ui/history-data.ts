@@ -18,6 +18,7 @@ import {
 } from "./history-model.ts";
 
 export interface LoadedHistory {
+  readonly snapshot: object;
   readonly bounds: HistoryBounds;
   readonly firstAt: string | null;
   readonly series: HistorySeriesRead;
@@ -96,6 +97,7 @@ async function readHistory(
     }
     return {
       loaded: {
+        snapshot: {},
         bounds,
         firstAt,
         series: usage.ok ? usage.value : { groups: [], asOf: null, changed: false, partial: false },
@@ -133,6 +135,7 @@ export function useHistory(
   const page = state?.page ?? 0;
   const revision = useRef(0);
   const paging = useRef(false);
+  const pagedSnapshot = useRef<object | undefined>(undefined);
   /** A change-driven read is in flight over the history on screen. */
   const [refreshing, setRefreshing] = useState<object>();
   const syncing = useRef<HistorySync | undefined>(undefined);
@@ -141,6 +144,7 @@ export function useHistory(
     const current = ++revision.current;
     const live = () => current === revision.current;
     paging.current = false;
+    pagedSnapshot.current = undefined;
     let marker: object | undefined;
     const sync = syncHistory(changes(), {
       read: () => readHistory(series, publicHistory, filter, live),
@@ -158,9 +162,20 @@ export function useHistory(
       apply: (value, reset) => {
         if (!live()) return;
         const paged = paging.current;
-        if (reset) paging.current = false;
+        if (reset) {
+          paging.current = false;
+          pagedSnapshot.current = undefined;
+        }
         setResult((previous) =>
-          settleRefresh(previous, value, { request, paged, reset, failed: unconfirmed }),
+          settleRefresh(previous, value, {
+            request,
+            paged:
+              paged ||
+              (pagedSnapshot.current !== undefined &&
+                pagedSnapshot.current === previous?.loaded?.snapshot),
+            reset,
+            failed: unconfirmed,
+          }),
         );
       },
       // Synchronously on an authority hint: nothing from the old grant stays on screen while its
@@ -168,6 +183,7 @@ export function useHistory(
       clear: () => {
         if (!live()) return;
         paging.current = false;
+        pagedSnapshot.current = undefined;
         setResult(undefined);
       },
       // A rejected read keeps the confirmed history and says it may be behind, unless a reset is
@@ -268,6 +284,9 @@ export function useHistory(
   ): Promise<readonly PublicHistoryRecord[] | null> => {
     const sync = syncing.current;
     if (!state || !loaded || paging.current || !publicHistory || sync === undefined) return null;
+    // Filtered pages have their own visible index, including matches already loaded locally.
+    pagedSnapshot.current = loaded.snapshot;
+    if (enough(loaded.records)) return loaded.records;
     const current = revision.current;
     const scoped = sync.generation();
     const stale = () => revision.current !== current || sync.generation() !== scoped;
@@ -320,7 +339,7 @@ export function useHistory(
 
   return {
     /** Changes with every new read of the range (reload or a new filter), not with appended pages. */
-    snapshot: state?.request,
+    snapshot: loaded?.snapshot,
     loadUntil,
     loaded,
     loading: state === undefined,
