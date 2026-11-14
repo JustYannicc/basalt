@@ -51,6 +51,7 @@ createRoot(document.getElementById('root')).render(<History series={series}
     bundle: true,
     write: false,
     outfile: "main.css",
+    conditions: ["style"],
     alias: { tailwindcss: join(root, ".upstream/packages/ui/node_modules/tailwindcss/index.css") },
   });
   const { compile } = web("tailwindcss");
