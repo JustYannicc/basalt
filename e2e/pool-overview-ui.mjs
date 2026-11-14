@@ -184,7 +184,8 @@ const program = Effect.gen(function* () {
           .getAnimations()
           // A loading pulse repeats forever; only finite transitions are waited for.
           .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
-          .map((animation) => animation.finished),
+          // A transition cancelled by a resize is settled too; its promise rejects.
+          .map((animation) => animation.finished.catch(() => undefined)),
       ),
     );
   const shoot = (name, frame, anchor) =>
@@ -406,6 +407,32 @@ const program = Effect.gen(function* () {
       yield* summaryCount(summaries + 1);
       yield* page(() => screen.getByText(importedLabel).waitFor());
       checked("open labs read their accounts again for the new range", accountReads().length, 4);
+      // The 30-day answer is sparse: only its last week has usage. The daily average still
+      // spreads over all 30 calendar days instead of over the days that happened to return rows.
+      const sparse = summaryReply(input(-1));
+      const spent = sparse.daily
+        .flatMap((group) => group.buckets)
+        .reduce(
+          (sum, bucket) =>
+            sum +
+            (bucket.details?.apiEstimate.status === "available"
+              ? Number(bucket.details.apiEstimate.amount)
+              : 0),
+          0,
+        );
+      const perDay = new Intl.NumberFormat("en", {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(spent / 30);
+      checked(
+        "a sparse 30-day range averages over all 30 calendar days",
+        (yield* page(() =>
+          screen.getByRole("region", { name: "Est. cost per day", exact: true }).innerText(),
+        )).includes(perDay),
+        true,
+      );
       const read = accountReads().at(-1).payload.input;
       checked(
         "account reads pin to the answered summary bounds",
@@ -516,6 +543,39 @@ const program = Effect.gen(function* () {
     0,
   );
   yield* shoot("drilldown", screen, "#usage-breakdown-heading");
+  yield* section(
+    "hourly heatmap values on a phone",
+    Effect.gen(function* () {
+      yield* page(() => owner.setViewportSize({ width: 390, height: 844 }));
+      const toggle = screen.getByRole("button", { name: "Show hourly values", exact: true });
+      yield* page(() => toggle.scrollIntoViewIfNeeded().then(() => toggle.click()));
+      const hours = screen.getByRole("list", { name: "Hourly values", exact: true });
+      const known = yield* page(() =>
+        hours.getByRole("listitem").filter({ hasText: "Mon 10:00" }).innerText(),
+      );
+      checked("a phone reads a known hour's value", /2K tokens an hour/u.test(known), true);
+      const unknown = yield* page(() =>
+        hours.getByRole("listitem").filter({ hasText: "Wed 12:00" }).innerText(),
+      );
+      checked(
+        "a phone reads an unrecorded hour as unknown",
+        unknown.includes("Tokens not recorded"),
+        true,
+      );
+      checked(
+        "the hourly list keeps the page within a phone's width",
+        yield* page(() =>
+          screen
+            .locator("body")
+            .evaluate(
+              () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+            ),
+        ),
+        true,
+      );
+      yield* page(() => owner.setViewportSize({ width: 1280, height: 900 }));
+    }),
+  );
   yield* shoot("forecast", screen, "#forecast-heading");
   yield* shoot("capacity", screen, "#capacity-heading");
 
@@ -584,6 +644,52 @@ const program = Effect.gen(function* () {
       yield* page(historyLoaded);
       yield* page(() => filters.getByText("ChatGPT").waitFor());
       checks.push("a reload keeps History's filters and loads again");
+    }),
+  );
+  yield* section(
+    "sparse failures page through every source page",
+    Effect.gen(function* () {
+      // The host carries page filters set through navigation, so enter from the alert, then widen
+      // to every retained day while keeping the failure filter.
+      yield* page(() => owner.goto(`${app}?view=app`).then(() => heading.waitFor()));
+      yield* page(() =>
+        screen.getByRole("button", { name: "See failed requests", exact: true }).click(),
+      );
+      yield* page(historyLoaded);
+      yield* page(() =>
+        historyScreen.getByRole("radio", { name: "All retained", exact: true }).click(),
+      );
+      yield* page(historyLoaded);
+      const rows = historyScreen
+        .getByRole("region", { name: "Request history", exact: true })
+        .locator("tbody tr");
+      // The first source page holds 2 of the 6 failures; two more pages hold the rest.
+      yield* until(
+        page(() => rows.count()),
+        (count) => count === 2,
+        "the first loaded page did not list its two failures",
+      );
+      const before = usage.log.filter(
+        (entry) => entry.route === "GET /pool/v1/usage/history",
+      ).length;
+      yield* page(() => historyScreen.getByRole("button", { name: "Next", exact: true }).click());
+      yield* until(
+        page(() => rows.count()),
+        (count) => count === 6,
+        "Next did not gather the remaining failures",
+      );
+      checked(
+        "Next read the remaining source pages once",
+        usage.log.filter((entry) => entry.route === "GET /pool/v1/usage/history").length - before,
+        2,
+      );
+      checked(
+        "with the source exhausted, Next is done",
+        yield* page(() =>
+          historyScreen.getByRole("button", { name: "Next", exact: true }).isDisabled(),
+        ),
+        true,
+      );
     }),
   );
   yield* page(() =>

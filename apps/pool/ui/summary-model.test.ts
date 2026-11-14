@@ -4,7 +4,11 @@ import type { UsageSummaryBucket, UsageSummaryGroup } from "../usage-overview-co
 import {
   breakdown,
   cacheShare,
+  calendarDays,
+  dayTotal,
   delta,
+  heatHours,
+  stack,
   incident,
   knownRuns,
   personalRange,
@@ -203,4 +207,71 @@ test("the member route never receives a since-start range", () => {
     to: thirty.to,
     days: 30,
   });
+});
+
+test("a sparse week has seven calendar days; absent days stay unknown unless proven", () => {
+  const now = Date.parse("2026-11-14T10:00:00Z");
+  const week = summaryRange({ kind: "days", days: 7 }, now);
+  const days = calendarDays(week.from, week.to);
+  assert.equal(days.length, 7);
+  assert.deepEqual([days[0], days[6]], ["2026-11-08", "2026-11-14"]);
+  const one = { ...bucket(10, "7"), at: "2026-11-12T23:00:00.000Z" };
+  const known = stack([group("codex", [one])], "provider", "cost", {
+    ...week,
+    knownDays: ["2026-11-09"],
+  });
+  assert.deepEqual(
+    known.days.map((day) => [day.day, dayTotal(day)]),
+    [
+      ["2026-11-08", null],
+      ["2026-11-09", 0],
+      ["2026-11-10", null],
+      ["2026-11-11", null],
+      ["2026-11-12", null],
+      ["2026-11-13", 7],
+      ["2026-11-14", null],
+    ],
+  );
+});
+
+test("the calendar follows Zurich days across DST and the 400-day bound", () => {
+  const dst = summaryRange({ kind: "days", days: 7 }, Date.parse("2026-10-27T10:00:00Z"));
+  assert.deepEqual(calendarDays(dst.from, dst.to), [
+    "2026-10-21",
+    "2026-10-22",
+    "2026-10-23",
+    "2026-10-24",
+    "2026-10-25",
+    "2026-10-26",
+    "2026-10-27",
+  ]);
+  const now = Date.parse("2026-11-14T03:00:00Z");
+  const old = sinceOption("2024-01-02T00:00:00.000Z", now)!;
+  const days = calendarDays(old.bounds.from, old.bounds.to);
+  assert.equal(days.length, 400);
+  assert.deepEqual([days[0], days.at(-1)], ["2025-10-11", "2026-11-14"]);
+});
+
+test("hourly values name unrecorded tokens instead of a zero", () => {
+  const cell = (weekday: number, hour: number, sum: string | null) => ({
+    provider: "codex",
+    weekday,
+    hour,
+    requests: 1,
+    tokens: { sum, known: 1, missing: 0 },
+    sampleHours: 8,
+  });
+  assert.deepEqual(
+    heatHours({
+      from: "",
+      to: "",
+      basis: "recorded-usage",
+      status: "available",
+      cells: [cell(2, 12, null), cell(0, 10, "16000"), { ...cell(1, 3, "5"), sampleHours: 0 }],
+    }),
+    [
+      { weekday: 0, hour: 10, value: 2000 },
+      { weekday: 2, hour: 12, value: null },
+    ],
+  );
 });

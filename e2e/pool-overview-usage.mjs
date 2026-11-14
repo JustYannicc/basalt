@@ -235,6 +235,13 @@ export function summaryReply(input, now = Date.now()) {
     to: from,
   };
   const known = days(from, to).map((entry) => zurichDay.format(new Date(entry.at)));
+  // A long range is sparse: only the last week returned usage and proved its capture.
+  const sparse = span > 20 * day;
+  const recent = (list) =>
+    list.map((group) => ({
+      ...group,
+      buckets: group.buckets.filter((bucket) => Date.parse(bucket.at) >= Date.parse(to) - 7 * day),
+    }));
   const cells = [];
   for (let weekday = 0; weekday < 5; weekday++)
     for (let hour = 9; hour < 18; hour++)
@@ -257,8 +264,10 @@ export function summaryReply(input, now = Date.now()) {
     retainedFirstAt,
     asOf: to,
     coverage: coverage(from, to),
-    historyCoverage: { from, to, knownDays: known.slice(1), gapDays: known.slice(0, 1) },
-    daily: groups(from, to, 1, false),
+    historyCoverage: sparse
+      ? { from, to, knownDays: known.slice(-7), gapDays: known.slice(0, -7) }
+      : { from, to, knownDays: known.slice(1), gapDays: known.slice(0, 1) },
+    daily: sparse ? recent(groups(from, to, 1, false)) : groups(from, to, 1, false),
     previousDaily: groups(previous.from, previous.to, 0.8, false),
     models:
       input.by === "model" ? { status: "available", groups: groups(from, to, 1, true) } : null,
@@ -471,7 +480,10 @@ export function capacityReply(url) {
  * Retained request metadata, ascending by timestamp then id, ten to a page. A current member, a
  * former member the host no longer names, and imported usage with no person.
  */
-export function historyRecords(people, now = Date.now()) {
+// One instant for the whole journey, so cursor pages over these records stay consistent.
+const recordsNow = Date.now();
+
+export function historyRecords(people, now = recordsNow) {
   const records = [];
   for (let index = 0; index < 24; index++) {
     const at = now - (23 - index) * 9 * 3_600_000 - 60_000;

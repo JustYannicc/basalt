@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SeriesGroup } from "../usage-series-contract.ts";
-import { historyMembers, parseHistoryFilters } from "./history-filters.ts";
+import { historyMembers, nextMatchPage, parseHistoryFilters } from "./history-filters.ts";
 import { mergeGroup } from "./series-model.ts";
 
 test("History reads only the filters it supports from its address", () => {
@@ -55,4 +55,12 @@ test("an imported account keeps its label when its usage continues on a later pa
   assert.deepEqual(merged.accountDisplay, { kind: "imported-only", label: "Old laptop export" });
   assert.equal(merged.buckets.length, 2);
   assert.deepEqual(mergeGroup(group("a", 1), first).accountDisplay, first.accountDisplay);
+});
+
+test("Next on a sparse match list lands only on a page that has matches", () => {
+  // Two matches loaded, the source read to its end: six matches still fit the first page.
+  assert.equal(nextMatchPage(6, 0, 10), 0);
+  // Eleven matches: the second page now exists.
+  assert.equal(nextMatchPage(11, 0, 10), 1);
+  assert.equal(nextMatchPage(20, 1, 10), 1);
 });
