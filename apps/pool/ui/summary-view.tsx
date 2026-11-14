@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { AccountLimitsDialog, ModelLimits } from "./account-limits-view.tsx";
 import { Button, Tabs, TabsList, TabsTrigger } from "apps/ui";
 import type { PoolView, Provider } from "../contract.ts";
 import type { PoolUsageSummaryResult } from "../usage-overview-contract.ts";
@@ -422,6 +424,8 @@ export function SummaryOverview({
   /** Opens the host's History page with these filters. */
   onHistory: (search: Record<string, string>) => void;
 }) {
+  const [details, setDetails] = useState<readonly string[]>([]);
+  const detailAccounts = overviewAccounts(view).filter((account) => details.includes(account.id));
   const summary = state?.summary;
   const name = (provider: string | null) => summaryLabName(providers, provider);
   // Banked resets are counted per lab and kind, never as one pooled number. Spending stays in Accounts.
@@ -481,6 +485,19 @@ export function SummaryOverview({
         days={state?.bounds?.days ?? (controls.range.kind === "days" ? controls.range.days : 7)}
         coherent={view !== undefined && state?.coherent === true}
         onRetry={onRetry}
+      />
+      <ModelLimits
+        accounts={overviewAccounts(view)}
+        providers={providers}
+        now={now}
+        onOpen={(account) => setDetails([account.id])}
+      />
+      <AccountLimitsDialog
+        title="Account limits"
+        accounts={detailAccounts}
+        providers={providers}
+        now={now}
+        onClose={() => setDetails([])}
       />
       {resets.length > 0 && (
         <ul aria-label="Banked resets" className="grid gap-1 pt-3 text-sm text-muted-foreground">

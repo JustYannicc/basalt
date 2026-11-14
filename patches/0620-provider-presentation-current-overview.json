@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-provider-presentation-current-overview",
+  "file": "0620-provider-presentation-current-overview.patch",
+  "content_sha256": "6be5d6d6ff11bfe61ddaa9d1e8bcbb7fac4324a90ea12a2045ab2a447850e104",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
