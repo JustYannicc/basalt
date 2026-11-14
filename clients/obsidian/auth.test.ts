@@ -146,3 +146,23 @@ test("a broad or unsafe login is refused before sending credentials; expired pai
   await assert.rejects(pollConnection(s.http, pending, pending.expiresAt), /expired/);
   assert.equal(s.calls.length, before);
 });
+
+test("a device names itself and its vault when it connects; without a report it asks as before", async () => {
+  const sent = async (report?: { device?: string; vault?: string }) => {
+    const s = server();
+    await beginConnection(s.http, source, 1000, false, report);
+    const body = (path: string) => s.calls.find((call) => call.url.endsWith(path))?.body ?? "";
+    return {
+      registered: JSON.parse(body("/register")).client_name,
+      device: Object.fromEntries(new URLSearchParams(body("/device"))),
+    };
+  };
+  const named = await sent({ device: "Alex MacBook Pro", vault: "Personal" });
+  assert.equal(named.registered, "Alex MacBook Pro");
+  assert.equal(named.device.device_name, "Alex MacBook Pro");
+  assert.equal(named.device.device_context, "Personal");
+  const plain = await sent();
+  assert.equal(plain.registered, "Signalbox Obsidian Sync");
+  assert.equal("device_name" in plain.device, false);
+  assert.equal("device_context" in plain.device, false);
+});

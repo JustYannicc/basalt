@@ -4,8 +4,10 @@ import {
   beginConnection,
   pollConnection,
   revokeSession,
+  RevocationRefused,
   connectionUrl,
   type Connecting,
+  type DeviceReport,
   type Session,
 } from "./auth.ts";
 import { createRemote } from "./remote.ts";
@@ -72,6 +74,10 @@ function connecting(input: unknown): Connecting {
     interval: number(value, "interval"),
   };
 }
+/** The same vault app on the same server, whichever connection reaches it. */
+const sameVaultApp = (a: DeviceConfig, b: DeviceConfig) =>
+  a.appId === b.appId && new URL(a.connection).origin === new URL(b.connection).origin;
+
 export async function createController(input: {
   http: Http;
   local: LocalVault;
@@ -79,6 +85,8 @@ export async function createController(input: {
   secrets: SecretStore;
   key: string;
   changed: () => void;
+  /** What this device reports about itself when it connects. */
+  report?: () => DeviceReport;
   binary?: (input: {
     appId: string;
     remote: ReturnType<typeof createRemote>;
@@ -156,6 +164,66 @@ export async function createController(input: {
       progress: changed,
     });
   };
+  /**
+   * Revoke the access a reconnect replaced. Until the server confirms, it stays saved and is
+   * retried when the plugin next starts; the device syncs with its new access meanwhile.
+   */
+  const replacedKey = key + "-replaced";
+  /** Replaced sessions still to revoke; an entry that can't be read has nothing to retry. */
+  const replacedSessions = (): Session[] => {
+    try {
+      const value: unknown = JSON.parse(secrets.get(replacedKey) || "[]");
+      return (Array.isArray(value) ? value : [value]).flatMap((entry) => {
+        try {
+          return [session(entry)];
+        } catch {
+          return [];
+        }
+      });
+    } catch {
+      return [];
+    }
+  };
+  const saveReplaced = (sessions: readonly Session[]) =>
+    secrets.set(replacedKey, sessions.length === 0 ? "" : JSON.stringify(sessions));
+  /** Whether a replaced session no longer needs revoking: revoked now, or refused for good. */
+  const retire = async (old: Session) => {
+    // A server without a revocation endpoint can only remove it in Signalbox; nothing to retry.
+    if (!old.revocationEndpoint) return true;
+    try {
+      await revokeSession(http, old);
+      return true;
+    } catch (failure) {
+      // A request the server rejects outright won't succeed later; outages and limits will.
+      return (
+        failure instanceof RevocationRefused &&
+        failure.status >= 400 &&
+        failure.status < 500 &&
+        failure.status !== 408 &&
+        failure.status !== 429
+      );
+    }
+  };
+  let retiring: Promise<void> = Promise.resolve();
+  /**
+   * Revoke the access reconnects replaced. Until the server confirms, each stays saved and is
+   * retried when the plugin next starts; the device syncs with its new access meanwhile. Runs
+   * one at a time and removes only what it confirmed, so no replaced access is ever dropped.
+   */
+  const retireReplaced = () => {
+    retiring = retiring
+      .then(async () => {
+        const done = new Set<string>();
+        for (const old of replacedSessions()) if (await retire(old)) done.add(old.accessToken);
+        saveReplaced(replacedSessions().filter((old) => !done.has(old.accessToken)));
+      })
+      // Whatever failed stays saved for the next start; later retries still run.
+      .catch(() => {});
+    return retiring;
+  };
+  // Never awaited, and first: an unreachable server must not hold up syncing or the plugin's
+  // start, and a connection that fails to open must not keep earlier access listed.
+  void retireReplaced();
   await open();
   const status = (): DeviceStatus => {
     const base = client?.status() ?? {
@@ -221,7 +289,13 @@ export async function createController(input: {
       driveAbort.abort();
       await active?.catch(() => {});
       try {
-        const request = await beginConnection(http, selected.connection);
+        const request = await beginConnection(
+          http,
+          selected.connection,
+          undefined,
+          undefined,
+          input.report?.(),
+        );
         pending = { config: selected, request, previousPaused };
         secrets.set(key + "-pending", JSON.stringify(pending));
         changed();
@@ -249,10 +323,18 @@ export async function createController(input: {
         return false;
       }
       await remote?.close();
+      const replaced = current;
       current = { config: pending.config, session: result.session, paused: false };
       retain();
       pending = null;
       secrets.set(key + "-pending", "");
+      // Signalbox can't tell a reconnect from a new device: it registers a new client. Its earlier
+      // access to the same vault app would stay listed as a second device, so it goes, once the
+      // new access is saved. Access to another app or server is left as it was.
+      if (replaced && sameVaultApp(replaced.config, current.config)) {
+        saveReplaced([...replacedSessions(), replaced.session]);
+        void retireReplaced();
+      }
       await open();
       changed();
       return true;
