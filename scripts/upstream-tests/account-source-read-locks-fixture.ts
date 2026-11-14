@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { Crypto, Effect, Redacted } from "effect";
+import { Crypto, Effect, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { CurrentTransformer } from "effect/sql/Statement";
 import * as sdk from "../../.upstream/packages/sdk/src/core.ts";
@@ -69,22 +69,29 @@ export const sourceReadLocks = (work: (fixture: SourceFixture) => Promise<void>)
           const owner = sdk.OwnerId.make("organization:team-a");
           const account = sdk.AccountId.make("acc_a");
           const declaration = { scope: "user" as const, cardinality: "many" as const, tools: {} };
-          // Reconciliation reads these fields; app execution and deployment are outside this seam.
-          const app = {
+          const app = Schema.decodeUnknownSync(sdk.AppFields)({
             id: appId,
+            slug: "pool",
+            code: "code_fixture",
+            repository: null,
             owner,
+            name: "Pool",
             activeVersion: null,
+            copiedFrom: null,
+            createdAt: new Date(0),
             requirements: {
               accounts: {
                 models: {
                   scope: "user",
                   provider: sdk.ProviderId.make("prv_a"),
-                  definition: { auth: {} },
+                  definition: { name: "Fixture provider", auth: {} },
+                  cardinality: "many",
+                  contributed: false,
                 },
               },
               dependencies: { accountView: declaration },
             },
-          } as sdk.App;
+          });
           const credentials = yield* aesGcmCredentials(
             Redacted.make("19".repeat(32)),
             globalThis.crypto,
