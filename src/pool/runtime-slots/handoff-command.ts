@@ -125,7 +125,10 @@ export function decodeRuntimeHandoffCommand(value: unknown, now = Date.now()) {
     command.expiresAt <= now ||
     command.expiresAt <= command.at ||
     command.expiresAt > command.at + 60_000
-  )
-    throw new SlotRefused("identity");
+  ) {
+    const refusal = new SlotRefused("identity");
+    refusal.message = "Runtime handoff command expired";
+    throw refusal;
+  }
   return command;
 }
