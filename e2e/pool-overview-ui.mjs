@@ -13,6 +13,7 @@ import {
   capacityReply,
   historyReply,
   importedLabel,
+  personalReply,
   retainedFirstAt,
   seriesReply,
   summaryReply,
@@ -129,6 +130,7 @@ const program = Effect.gen(function* () {
   usage.respond = (route, payload) => {
     if (route === "/pool/v1/usage/summary") return summaryReply(payload.input ?? payload);
     if (route === "/pool/v1/usage/series") return seriesReply(payload, inPool?.id ?? null, people);
+    if (route === "/pool/v1/usage/personal-overview") return personalReply(payload);
     // Anything else, including the legacy overview, is counted and then refused.
     return undefined;
   };
@@ -716,6 +718,123 @@ const program = Effect.gen(function* () {
         true,
       );
       yield* shoot("history-all", historyScreen);
+    }),
+  );
+  yield* section(
+    "a shared-pool member controls their own range",
+    Effect.gen(function* () {
+      const accessPath = `${h.appPath(pool.id)}/access`;
+      const access = yield* h.request("GET", accessPath);
+      yield* h.request("PATCH", accessPath, {
+        revision: access.revision,
+        audience: { kind: "everyone" },
+      });
+      const memberIdentity = yield* h.requestAs("member", "GET", "/api/auth/get-session");
+      const memberHash = createHash("sha256").update(memberIdentity.user.id).digest("hex");
+      const memberContext = yield* Effect.acquireRelease(
+        Effect.promise(() => browser.newContext({ viewport: { width: 390, height: 844 } })),
+        (value) => Effect.promise(() => value.close()),
+      );
+      const memberCookies = Redacted.value(yield* h.actors.member.cookies);
+      yield* page(() => memberContext.addCookies([...memberCookies]));
+      const member = yield* page(() => memberContext.newPage());
+      const memberScreen = member.frameLocator(screenFrame);
+      const refusals = [];
+      member.on("response", (response) => {
+        if (new URL(response.url()).pathname === "/_executor/api/pool-usage/summary")
+          refusals.push(response.status());
+      });
+      yield* page(() => member.goto(app));
+      yield* page(() =>
+        memberScreen.getByRole("heading", { name: "Your usage", exact: true }).waitFor(),
+      );
+      yield* page(() =>
+        memberScreen
+          .getByText("Your requests through this pool in the last 7 days. Nobody else's show here.")
+          .waitFor(),
+      );
+      checked(
+        "a member cannot choose Since",
+        yield* page(() => memberScreen.getByRole("tab", { name: "Since", exact: true }).count()),
+        0,
+      );
+      for (const days of [30, 90, 7]) {
+        const previous = calls("personal-overview").length;
+        yield* page(() =>
+          Promise.all([
+            member.waitForResponse(
+              (response) =>
+                new URL(response.url()).pathname ===
+                  "/_executor/api/pool-usage/personal-overview" && response.status() === 200,
+            ),
+            memberScreen.getByRole("tab", { name: `${days} days`, exact: true }).click(),
+          ]),
+        );
+        yield* page(() =>
+          memberScreen
+            .getByText(
+              `Your requests through this pool in the last ${days} days. Nobody else's show here.`,
+            )
+            .waitFor(),
+        );
+        const answer = calls("personal-overview").at(-1)?.payload?.input;
+        checked(
+          `member ${days}-day control makes one personal read`,
+          calls("personal-overview").length - previous,
+          1,
+        );
+        checked(
+          `member ${days}-day read carries the caller and matching span`,
+          {
+            person: answer?.person,
+            days: answer?.days,
+            span:
+              (Date.parse(
+                new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Zurich" }).format(
+                  new Date(answer.to),
+                ),
+              ) -
+                Date.parse(
+                  new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Zurich" }).format(
+                    new Date(answer.from),
+                  ),
+                )) /
+                86_400_000 +
+              1,
+          },
+          { person: memberHash, days, span: days },
+        );
+      }
+      checked("every member summary is refused by the real host", refusals, [403, 403, 403, 403]);
+      checked(
+        "the member cannot see the manager's overview",
+        yield* page(() =>
+          memberScreen
+            .getByRole("heading", { name: "How much are we using?", exact: true })
+            .count(),
+        ),
+        0,
+      );
+      for (const scheme of ["light", "dark"]) {
+        yield* page(() => member.emulateMedia({ colorScheme: scheme }));
+        yield* page(() => settled(memberScreen));
+        checked(
+          `member range has no phone overflow in ${scheme}`,
+          yield* page(() =>
+            memberScreen
+              .locator("body")
+              .evaluate(
+                () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+              ),
+          ),
+          true,
+        );
+        yield* page(() =>
+          memberScreen
+            .locator("body")
+            .screenshot({ path: join(directory, `after-member-390-${scheme}.png`) }),
+        );
+      }
     }),
   );
   checked("no screen ever read the legacy overview", calls("overview").length, 0);

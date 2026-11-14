@@ -584,3 +584,54 @@ function historySeriesReply(input, people) {
     next: null,
   };
 }
+
+/** The external worker answers only the person the real host authorized. */
+export function personalReply(payload) {
+  const { from, to, person } = payload.input;
+  const unavailable = { status: "unavailable", reason: "Synthetic personal metric unavailable." };
+  const noMoney = {
+    ...unavailable,
+    amount: null,
+    currency: "USD",
+    pricedRequests: 0,
+    excluded: { unknownKind: 0, unknownKindValue: null, unpriced: 0 },
+    price: null,
+  };
+  return {
+    from,
+    to,
+    person,
+    asOf: to,
+    consistency: "consistent",
+    partial: false,
+    series: {
+      from,
+      to,
+      bucket: "day",
+      timezone: "Europe/Zurich",
+      asOf: to,
+      coverage: coverage(from, to),
+      next: null,
+      groups: [
+        {
+          key: { person, provider: "codex", model: "codex-personal", currency: "USD" },
+          buckets: days(from, to).map((entry) => seriesBucket(entry, 3, 0.05)),
+        },
+      ],
+    },
+    metrics: {
+      requestTokens: {
+        ...unavailable,
+        percentiles: null,
+        requests: 3,
+        excluded: { missing: 0, unknownKind: 0 },
+        byPerson: [],
+        byModel: [],
+        byModelPerson: [],
+      },
+      apiBilled: noMoney,
+      subscriptionValue: noMoney,
+      usageSlices: [],
+    },
+  };
+}
