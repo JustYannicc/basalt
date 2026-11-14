@@ -52,6 +52,20 @@ export async function importAppFixture(connectionString) {
     manager = true,
     hold,
     failReply = false;
+  const revisions = [
+    "accounts",
+    "apps",
+    "membership",
+    "session",
+    "pool-readings",
+    "pool-usage",
+    "pool-samples",
+    "pool-prices",
+  ].map((topic) => ({ topic, resource: "fixture", revision: "1" }));
+  const heads = () => ({
+    revisions,
+    identity: manager ? "fixture-manager" : "fixture-member",
+  });
   const server = createServer(async (request, response) => {
     try {
       const body = async () => {
@@ -63,7 +77,14 @@ export async function importAppFixture(connectionString) {
         response.setHeader("content-type", "application/json");
         response.end(JSON.stringify(value));
       };
-      if (request.url === "/main.js") {
+      if (request.url === "/_executor/api/changes/current") {
+        json(heads());
+      } else if (request.url === "/_executor/api/changes") {
+        response.setHeader("content-type", "text/event-stream");
+        response.write(
+          `event: current\ndata: ${JSON.stringify({ kind: "current", ...heads(), snapshotRequired: true })}\n\n`,
+        );
+      } else if (request.url === "/main.js") {
         response.setHeader("content-type", "text/javascript");
         response.end(javascript);
       } else if (request.url === "/main.css") {
