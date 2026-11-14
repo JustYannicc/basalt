@@ -158,6 +158,9 @@ function AccountRows({
         title,
         where,
         health,
+        // A current pool account whose provider returned no health says so; imported and
+        // unattributed usage has no live account to be healthy or not.
+        healthUnknown: account !== undefined && health === undefined,
         value: seriesValue(group, metric),
         requests: group.buckets.reduce((sum, bucket) => sum + bucket.requests, 0),
       };
@@ -176,7 +179,13 @@ function AccountRows({
               health={row.health}
               tags={<Badge className="text-muted-foreground">{row.where}</Badge>}
             />
-            {row.health && <AccountHealth health={row.health} />}
+            {row.health ? (
+              <AccountHealth health={row.health} />
+            ) : (
+              row.healthUnknown && (
+                <span className="text-xs text-muted-foreground">Health unavailable</span>
+              )
+            )}
           </div>
           <span className="text-right tabular-nums">
             <Amount metric={metric} value={row.value} />

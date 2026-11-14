@@ -476,10 +476,30 @@ const program = Effect.gen(function* () {
   );
   yield* page(() => screen.getByRole("heading", { name: "When we use it", exact: true }).waitFor());
 
-  // This harness's pool account has no native source binding, so the pool view attaches no
-  // provider view here; the packaged native presentation journey proves that path. Recorded only.
-  diagnostics.healthCells = yield* page(() =>
-    screen.locator("#accounts-codex [data-account-health-cell]").count(),
+  // This harness's pool account has no native source binding, so its provider returned no health:
+  // the row says so plainly, and imported or unattributed usage never claims live health.
+  yield* section(
+    "unavailable account health",
+    Effect.gen(function* () {
+      checked(
+        "the pool view returned no provider health in this harness",
+        diagnostics.nativeView,
+        "absent",
+      );
+      yield* page(() =>
+        screen
+          .locator("#accounts-codex")
+          .getByText("Health unavailable", { exact: true })
+          .waitFor(),
+      );
+      checked(
+        "imported and unattributed usage shows no account health",
+        yield* page(() =>
+          screen.locator("#accounts-claude").getByText("Health unavailable").count(),
+        ),
+        0,
+      );
+    }),
   );
 
   // Capacity renders the pool's own verdict from its history, in the lab's own unit.
@@ -603,7 +623,6 @@ const program = Effect.gen(function* () {
     syntheticOnly: true,
     nativeView: diagnostics.nativeView,
     nativeBinding: diagnostics.nativeBinding,
-    healthCells: diagnostics.healthCells,
     calls: usage.calls.map((call) => ({
       route: call.route,
       by: call.payload?.input?.by ?? call.payload?.by ?? null,
