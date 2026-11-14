@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import * as sdk from "../../.upstream/packages/sdk/src/core.ts";
+export { sdk };
 import { Effect, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import type { NativePoolAccount } from "../../.upstream/apps/hosted/server/src/implementation/pool-membership.ts";
@@ -6,10 +8,7 @@ import { app, organization } from "./org-lock-postgres-fixture.ts";
 
 const upstream = new URL("../../.upstream/", import.meta.url);
 const load = (path: string) => import(new URL(path, upstream).href);
-export const [sdk, membership] = await Promise.all([
-  load("packages/sdk/src/core.ts"),
-  load("apps/hosted/server/src/implementation/pool-membership.ts"),
-]);
+export const membership = await load("apps/hosted/server/src/implementation/pool-membership.ts");
 export const owner = `organization:${organization}`;
 export const provider = "prv_membership_query";
 export const home = "acc_membership_000";
@@ -68,12 +67,13 @@ export const runtime = (sql: SqlClient.SqlClient, hold = Effect.void) => {
       source: ({ account }: { account: string }) =>
         Effect.gen(function* () {
           reads++;
+          yield* hold;
           const [row] = yield* sql<{
             revision: string;
             generation: number;
           }>`select revision,generation from executor_account_acquisitions where account=${account}`;
           assert.ok(row);
-          const binding = {
+          const binding = sdk.AccountAcquisitionBinding.make({
             account: sdk.AccountId.make(account),
             owner: sdk.OwnerId.make(owner),
             provider: sdk.ProviderId.make(provider),
@@ -83,12 +83,12 @@ export const runtime = (sql: SqlClient.SqlClient, hold = Effect.void) => {
             driverRevision: "driver-one",
             revision: row.revision,
             removal: null,
-          };
+          });
           return {
             binding,
             source: { kind: "driver", id: "basalt-home", version: "driver-one" },
             hostReference: Redacted.make(`fixture-reference-${row.revision}`),
-            current: hold.pipe(Effect.as(binding)),
+            current: Effect.succeed(binding),
           };
         }),
     },
@@ -96,7 +96,22 @@ export const runtime = (sql: SqlClient.SqlClient, hold = Effect.void) => {
   return { executor, reads: () => reads };
 };
 
-export const nativeRead = (executor: ReturnType<typeof runtime>["executor"]) =>
+type MembershipExecutor = {
+  [sdk.StorageHost]: { transaction: SqlClient.SqlClient["withTransaction"] };
+  [sdk.AccountAcquisitionHost]: {
+    source(input: { account: string }): Effect.Effect<
+      {
+        binding: sdk.AccountAcquisitionBinding;
+        source: { kind: string; id: string; version: string };
+        hostReference: Redacted.Redacted<string>;
+        current: Effect.Effect<sdk.AccountAcquisitionBinding, unknown>;
+      },
+      unknown
+    >;
+  };
+};
+
+export const nativeRead = (executor: MembershipExecutor) =>
   membership.nativePoolMembership(organization, app, executor) as Effect.Effect<
     { accounts: readonly (typeof NativePoolAccount.Type)[] },
     unknown,

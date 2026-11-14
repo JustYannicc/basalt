@@ -126,11 +126,18 @@ export const pool = {
       if (!response.ok)
         return {
           ok: false,
-          error: "unauthorized",
+          error:
+            response.status === 403
+              ? "unauthorized"
+              : response.status === 504
+                ? "history_timeout"
+                : "backend_unavailable",
           message:
             response.status === 403
               ? "Pool usage is available to managers only."
-              : "Usage could not be read. Reload and try again.",
+              : response.status === 504
+                ? "History is taking too long. Try again."
+                : "Usage could not be read. Reload and try again.",
         };
       return { ok: true, value: await response.json() };
     } catch {

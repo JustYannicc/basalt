@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-history-series-reliability",
+  "file": "0619-history-series-reliability.patch",
+  "content_sha256": "ad65874e8fc3a189499c2a85dcedd854a6edaac7c2bff8406e9fc3a0548fa061",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

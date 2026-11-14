@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.poolMembership {
+    metadata {
+      constraint "Native membership retains organization, account and acquisition locks while resolving opaque references. Its locked policy snapshot and the SDK-resolved binding must agree on account, owner, provider, method, generation, driver, driver revision, binding revision and removal state. The read must not invoke the SDK write-lock recheck through another connection while holding SHARE locks. Revoked, removed and rebound acquisitions cannot reuse an old reference. History retains the full requested range and exact decimal, grouping, redaction and cursor semantics while avoiding per-request JSON grouping and price-table parsing. Signed series reads have a five-second database and callback deadline, distinct fixed timeout recovery, content-free phase durations and closed SQL timeout classes; the host retains authorization and its transaction until completion or cancellation."
+    }
+  }
+}

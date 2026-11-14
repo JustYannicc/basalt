@@ -167,6 +167,8 @@ async function readUsageSeries(
     await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
   try {
     await db.query("SET LOCAL statement_timeout = '5s'");
+    // Short interactive reads should not spend their statement budget compiling JIT code.
+    await db.query("SET LOCAL jit = off");
     let prices = typeof priceInput === "function" ? undefined : priceInput;
     let query = await seriesQuery(db, input, authority, after, personScope, prices);
     if (typeof priceInput === "function") {
