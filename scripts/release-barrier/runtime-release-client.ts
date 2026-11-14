@@ -288,18 +288,15 @@ export const runtimeReleaseClient = (input: {
           call,
         });
         const options = proofInput(startup);
-        let identity = before.selection?.candidate?.identity;
-        if (!identity) {
-          const grant = before.selection?.candidate
-            ? undefined
-            : await run(authorizeRuntimeStart(options));
-          identity = await awaitRuntimeStartup({
-            call,
-            target: chosen,
-            operationId,
-            ...(grant ? { proof: grant.envelope } : {}),
-          });
-        }
+        const grant = before.selection?.candidate
+          ? undefined
+          : await run(authorizeRuntimeStart(options));
+        const identity = await awaitRuntimeStartup({
+          call,
+          target: chosen,
+          operationId,
+          ...(grant ? { proof: grant.envelope } : {}),
+        });
         const {
           gate,
           operationId: promotionOperationId,

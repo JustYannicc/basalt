@@ -33,11 +33,14 @@ export async function awaitRuntimeStartup(input: {
       ).result;
       sameProvisioningValue("runtime-startup.target", input.target, record.target);
       sameProvisioningValue("runtime-startup.operation", input.operationId, record.operationId);
-      deadline = Math.min(deadline, record.deadline);
       if (record.status === "failed")
         throw new BarrierRefusal("runtime-startup-failed", "PoolWorker");
       if (record.status === "ready") {
-        if (Date.now() >= deadline)
+        if (
+          record.readyAt === undefined ||
+          record.readyAt >= record.deadline ||
+          record.readyAt < record.deadline - 180_000
+        )
           throw new BarrierRefusal("runtime-startup-deadline", "PoolWorker");
         const identity = Schema.decodeUnknownSync(SlotIdentity)(record.identity);
         sameProvisioningValue(
@@ -47,6 +50,7 @@ export async function awaitRuntimeStartup(input: {
         );
         return identity;
       }
+      deadline = Math.min(deadline, record.deadline);
     }
     await setTimeout(Math.min(250, Math.max(1, deadline - Date.now())), undefined, { signal });
     try {

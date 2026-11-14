@@ -10,6 +10,7 @@ export const RuntimeStageRecord = Schema.Struct({
   deadline: Schema.Number,
   status: Schema.Literals(["starting", "ready", "failed"]),
   identity: Schema.optional(SlotIdentity),
+  readyAt: Schema.optional(Schema.Number),
 });
 export type RuntimeStageRecord = typeof RuntimeStageRecord.Type;
 const key = (target: SlotTarget) => `runtime-slots-v1:startup:${target.slotId}`;
@@ -46,10 +47,13 @@ export class RuntimeStaging {
     return this.storage.transact(async (_, transaction) => {
       const current = await this.read(record.target, transaction);
       if (current.status !== "starting") return current;
+      const finishedAt = this.now();
+      const ready = identity !== undefined && finishedAt < current.deadline;
       const next: RuntimeStageRecord = {
         ...current,
-        status: identity && this.now() < current.deadline ? "ready" : "failed",
+        status: ready ? "ready" : "failed",
         ...(identity ? { identity } : {}),
+        ...(ready ? { readyAt: finishedAt } : {}),
       };
       await transaction.put(key(record.target), next);
       return next;

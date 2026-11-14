@@ -263,3 +263,36 @@ test("a settled refused promotion gets fresh proof and a new durable attempt wit
     "green-application",
   );
 });
+
+for (const outcome of ["failed", "ready"] as const)
+  test(`release recovery respects the terminal ${outcome} startup result after its original deadline`, async (context) => {
+    const f = await fixture("public");
+    context.after(f.cleanup);
+    await assert.rejects(f.client.promote("green-application", "terminal-startup", f.claims.pool));
+    const target = f.attempts.at(-1)!.startup.target;
+    const key = `runtime-slots-v1:startup:${target.slotId}`;
+    const before = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown))(
+      await f.old.storage.get(key),
+    );
+    const deadline = Date.now() - 1000;
+    await f.old.storage.put(key, {
+      ...before,
+      status: outcome,
+      deadline,
+      ...(outcome === "ready" ? { readyAt: deadline - 1 } : {}),
+    });
+    assert.ok((await f.client.inspect()).selection?.candidate?.identity);
+    f.onPublicProbe((_request, forward) => forward());
+    if (outcome === "failed")
+      await assert.rejects(
+        f.client.promote("green-application", "terminal-startup", f.claims.pool),
+        /runtime-startup-failed/,
+      );
+    else await f.client.promote("green-application", "terminal-startup", f.claims.pool);
+    assert.equal(f.commands.filter((action) => action === "stage").length, 1);
+    assert.equal(
+      f.commands.filter((action) => action === "promote").length,
+      outcome === "ready" ? 1 : 0,
+    );
+    assert.equal([...f.instances.values()][0]!.fixture.calls.start, 1);
+  });
