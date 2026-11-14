@@ -4,6 +4,7 @@ import { Effect, Redacted, Schema } from "effect";
 import {
   HostInvocation,
   CredentialHost,
+  credentialHostsProtocol,
 } from "../../.upstream/packages/apps/src/contracts/host.ts";
 import {
   HostInvocation as PreviousInvocation,
@@ -76,8 +77,8 @@ test("p39 and p40 retain their original credential-host grammar", () => {
   }
 });
 
-test("protocol42 keeps underscore metadata while still sealing credentials", async () => {
-  const adapter = await Effect.runPromise(appProtocol(42));
+test(`protocol ${credentialHostsProtocol} keeps underscore metadata while still sealing credentials`, async () => {
+  const adapter = await Effect.runPromise(appProtocol(credentialHostsProtocol));
   const selected = await Effect.runPromise(
     bundleAccounts(adapter, fixture.app, fixture.key, fixture.accounts()),
   );
@@ -91,7 +92,7 @@ test("protocol42 keeps underscore metadata while still sealing credentials", asy
     assert.equal(Schema.is(CredentialHost)(host), true);
 });
 
-for (const version of supportedProtocols.filter((version) => version < 42)) {
+for (const version of supportedProtocols.filter((version) => version < credentialHostsProtocol)) {
   test(`protocol ${version} composes strict hosts with its invocation and Workflow account rules`, async () => {
     const adapter = await Effect.runPromise(appProtocol(version));
     const boundary = () => bundleAccounts(adapter, fixture.app, fixture.key, fixture.accounts());

@@ -70,3 +70,24 @@ diff --git a/packages/sdk/src/implementation/basalt-framework-releases.ts b/pack
      },
    },
    {
+diff --git a/packages/sdk/src/implementation/basalt-framework-releases.ts b/packages/sdk/src/implementation/basalt-framework-releases.ts
+--- a/packages/sdk/src/implementation/basalt-framework-releases.ts
++++ b/packages/sdk/src/implementation/basalt-framework-releases.ts
+@@ -154,6 +154,17 @@
+       origin: "basalt",
+       revision: "91a301c35f835a21fdce5e1371ea00a16700c5c7",
+       sha256: "06fe1834e286ef68f9b960d238a9c4e3797b6ad3fe61a6856d58014d19527a1b",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "a875c05b7217090557fe2ce7d771aeefa0c8d37694daa8eca5db28c48a629d90",
++    protocol: 43,
++    browserSha256: "5102b8172aa54f148e56624b63c969685f7dff5bc1331a1a5a811f42075fd947",
++    source: {
++      origin: "basalt",
++      revision: "release-log-bound-reproducible-build:c9726f7ef3babb06fce07f3b642aafa14c6b7292:manual-release-43640279209:rebuild-43643430877",
++      sha256: "29622fdb47357d493d4068e02a9326cbbab273d5c796eee526156f8d777abbaa",
+     },
+   },
+   {

@@ -1,7 +1,7 @@
 model {
   extend basalt.frameworkRelease {
     metadata {
-      constraint "Every host build embeds all canonical and qualified production framework identities plus its checked producer before bundling. Only the trusted release records a candidate-bound producer qualification with exact runtime.json and framework.json hashes in the existing production deployment ledger before activation. Production rereads both files and verifies their identical runtime bytes, the exact producer, complete history and generated registry before recording. Failed or unknown activation never removes qualification; later hosts retain all earlier qualified identities. The two approved pre-enrollment releases have a distinct release-log-bound reproducible-build source revision and never claim a serving-byte match. App builds cannot enroll identities, and runtime admission remains offline and exact."
+      constraint "Every host build embeds all canonical and qualified production framework identities plus its checked producer before bundling. Only the trusted release records a candidate-bound producer qualification with exact runtime.json and framework.json hashes in the existing production deployment ledger before activation. Production rereads both files and verifies their identical runtime bytes, the exact producer, complete history and generated registry before recording. Failed or unknown activation never removes qualification; later hosts retain all earlier qualified identities. Both approved pre-enrollment releases are canonical qualifications with distinct release-log-bound reproducible-build source revisions and never claim a serving-byte match. App builds cannot enroll identities, and runtime admission remains offline and exact."
     }
   }
 }
