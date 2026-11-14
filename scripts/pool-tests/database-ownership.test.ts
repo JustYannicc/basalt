@@ -335,3 +335,34 @@ test("an existing history trigger target with an unknown owner refuses before tr
     assert.equal(await tableOwner(db, "basalt_model_requests"), other);
   });
 });
+
+test("the refusal names every unknown owner and expected owner before altering any target", async () => {
+  await fixture(async ({ db, createRole }) => {
+    const first = `other_${randomUUID().replaceAll("-", "")}`;
+    const second = `other_${randomUUID().replaceAll("-", "")}`;
+    await createRole(first);
+    await createRole(second);
+    await db.query("CREATE TABLE public.api_key (id bigint PRIMARY KEY)");
+    await db.query("CREATE TABLE public.auth (id bigint PRIMARY KEY)");
+    await db.query('CREATE TABLE public."user" (id bigint PRIMARY KEY)');
+    await db.query(`GRANT CREATE ON SCHEMA public TO ${quote(first)},${quote(second)}`);
+    await db.query(`ALTER TABLE public.auth OWNER TO ${quote(first)}`);
+    await db.query(`ALTER TABLE public."user" OWNER TO ${quote(second)}`);
+    const before = tracked(db);
+    await assert.rejects(
+      normalizeHomeTriggerTableOwners(before.session, owner, historyChangeStatements),
+      (error) =>
+        error instanceof UnexpectedHomeTableOwner &&
+        error.blocked.length === 2 &&
+        error.message.includes(`public."auth" owner "${first}" -> required "${owner}"`) &&
+        error.message.includes(`public."user" owner "${second}" -> required "${owner}"`),
+    );
+    assert.equal(
+      before.statements.some((sql) => sql.startsWith("ALTER TABLE")),
+      false,
+    );
+    assert.equal(await tableOwner(db, "api_key"), "postgres");
+    assert.equal(await tableOwner(db, "auth"), first);
+    assert.equal(await tableOwner(db, "user"), second);
+  });
+});

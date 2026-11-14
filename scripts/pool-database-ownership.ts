@@ -40,8 +40,22 @@ export class UnexpectedHomeTableOwner extends Error {
   readonly _tag = "UnexpectedHomeTableOwner";
   readonly table: string;
   readonly owner: string;
-  constructor(table: string, owner: string) {
-    super(`Home trigger table "${table}" has unexpected owner "${owner}"`);
+  readonly blocked: readonly { table: string; owner: string }[];
+  constructor(
+    table: string,
+    owner: string,
+    others: readonly { table: string; owner: string }[] = [],
+  ) {
+    const blocked = [{ table, owner }, ...others];
+    super(
+      `Home trigger table ownership refused: ${blocked
+        .map(
+          (entry) =>
+            `public.${JSON.stringify(entry.table)} owner ${JSON.stringify(entry.owner)} -> required "basalt_pool_owner"`,
+        )
+        .join("; ")}`,
+    );
+    this.blocked = blocked;
     this.table = table;
     this.owner = owner;
   }
@@ -118,6 +132,7 @@ export async function normalizeHomeTriggerTableOwners(
 
     const targetSet = new Set(targets);
     const existing = new Map<string, { kind: string; owner: string }>();
+    const blocked: { table: string; owner: string }[] = [];
     for (const row of catalog.rows) {
       const table = row.table_name;
       const kind = row.relation_kind;
@@ -131,10 +146,12 @@ export async function normalizeHomeTriggerTableOwners(
         throw new HomeTriggerTargetError(String(table ?? "unknown"), "catalog row is malformed");
       if (kind !== "r" && kind !== "p")
         throw new HomeTriggerTargetError(table, "relation is not a table");
-      if (owner !== "postgres" && owner !== schemaOwner)
-        throw new UnexpectedHomeTableOwner(table, owner);
+      if (owner !== "postgres" && owner !== schemaOwner) blocked.push({ table, owner });
       existing.set(table, { kind, owner });
     }
+
+    const [first, ...others] = blocked;
+    if (first) throw new UnexpectedHomeTableOwner(first.table, first.owner, others);
 
     const changed: string[] = [];
     const alreadyOwned: string[] = [];
