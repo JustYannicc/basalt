@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "The browser test batch splitter immediately answers an aborted routed read with synthetic status 599 while sibling reads remain held. Each sibling still returns its own response. Real batch connection failures keep using the production transport and existing recovery assertions and deadlines. The held-sibling regression runs in the existing self-host and Cloud account-action groups; the unrelated inherited build-change scenario stays byte-identical."
+      constraint "The browser test batch splitter immediately answers an aborted routed read with synthetic status 599 while sibling reads remain held. Each sibling still returns its own response. Real batch connection failures keep using the production transport and existing recovery assertions and deadlines."
     }
   }
 }
