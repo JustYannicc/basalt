@@ -111,7 +111,7 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
               native.push(url.pathname);
               if (url.pathname === "/ready")
                 return Response.json(
-                  { boot_id: "fixture-boot", started_at: "fixture-start" },
+                  { boot_id: "12345678-1234-4234-8234-123456789abc", started_at: "fixture-start" },
                   { headers: { "X-Signalbox-Policy-Lease-Ms": "1500" } },
                 );
               assert.equal(url.pathname, "/native-policy/check");
@@ -148,7 +148,7 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
   const event = JSON.parse(messages[2]!.split("\n")[2]!);
   assert.match(event.release, /^[a-f0-9]{40}$/);
   assert.equal(event.tags.probe_origin, "availability_cron");
-  assert.equal(event.tags.boot_id, "fixture-boot");
+  assert.equal(event.tags.boot_id, "12345678-1234-4234-8234-123456789abc");
   assert.equal(event.tags.application_version, "unavailable");
   assert.equal(event.contexts.pool_probe.runtime.source, "legacy");
   assert.equal(event.contexts.pool_probe.runtime.running, true);
@@ -175,7 +175,7 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
   const observed = await automatic.json();
   assert.equal(observed.enabled, false);
   assert.equal(observed.condition, "healthy");
-  assert.equal(observed.runtime.bootId, "fixture-boot");
+  assert.equal(observed.runtime.bootId, "12345678-1234-4234-8234-123456789abc");
   assert.equal(observed.runtime.instanceId, "a".repeat(64));
   assert.equal(messages.length, 3);
   assert.equal(

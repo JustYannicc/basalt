@@ -1,7 +1,7 @@
 import { eventId, sendEnvelope } from "./sentry-envelope.ts";
 import type { SentryEnv } from "./sentry-target.ts";
 import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
-import type { ProbeRuntimeIdentity } from "../pool/availability.ts";
+import { probeRuntimeContext, type ProbeRuntimeIdentity } from "./pool-probe-identity.ts";
 
 const guards = new Set([
   "configuration",
@@ -141,27 +141,6 @@ export async function capturePoolMonitor(
       },
     });
   }
-}
-
-function probeRuntimeContext(input: ProbeRuntimeIdentity | undefined) {
-  const identity = (value: unknown, pattern: RegExp) =>
-    typeof value === "string" && pattern.test(value) ? value : "unavailable";
-  const source =
-    input?.source === "legacy" || input?.source === "selected" ? input.source : "unavailable";
-  return {
-    source,
-    running: typeof input?.running === "boolean" ? input.running : null,
-    application_version: identity(input?.applicationVersion, /^[1-9][0-9]{0,15}$/),
-    boot_id: identity(input?.bootId, /^[a-zA-Z0-9-]{1,128}$/),
-    expected_boot_id: identity(input?.expectedBootId, /^[a-zA-Z0-9-]{1,128}$/),
-    image_input: identity(input?.imageInput, /^[a-f0-9]{16,64}$/),
-    image_input_source:
-      source === "selected"
-        ? "selected"
-        : source === "legacy"
-          ? "worker_configuration"
-          : "unavailable",
-  };
 }
 
 function reliabilityContext(slo: PoolReliabilitySlo) {

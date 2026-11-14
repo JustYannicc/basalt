@@ -1,3 +1,5 @@
+import type { ProbeRuntimeIdentity } from "../telemetry/pool-probe-identity.ts";
+export type { ProbeRuntimeIdentity } from "../telemetry/pool-probe-identity.ts";
 import type { NativeMembershipPolicy } from "./membership-contract.ts";
 import { poolFailureDiagnostic, type PoolFailureDiagnostic } from "./json.ts";
 import { validProbeTarget } from "./availability-config.ts";
@@ -35,14 +37,7 @@ export interface ProbeResult {
   reliability?: PoolReliabilitySlo;
   runtime?: ProbeRuntimeIdentity;
 }
-export interface ProbeRuntimeIdentity {
-  source: "legacy" | "selected";
-  running: boolean | null;
-  applicationVersion: string | null;
-  bootId: string | null;
-  expectedBootId: string | null;
-  imageInput: string;
-}
+
 interface ProbePolicy extends NativeMembershipPolicy {
   native: boolean;
   installedRevision: number;
