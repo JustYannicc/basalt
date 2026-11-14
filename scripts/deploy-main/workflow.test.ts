@@ -239,7 +239,7 @@ test("Manual release of main releases a dispatched candidate main contains, and 
   assert.ok(backup.indexOf("baseline-probe-entry.ts") < backup.indexOf("release.ts backup-only"));
   assert.match(
     deploy,
-    /^    if: github\.ref == 'refs\/heads\/main' && needs\.backup\.outputs\.already_live == 'false'$/m,
+    /^    if: github\.ref == 'refs\/heads\/main' && inputs\.migration_activation == '' && needs\.backup\.outputs\.already_live == 'false'$/m,
   );
   // The deploy job only needs main to still contain the backed-up candidate, not to equal it.
   assert.match(
