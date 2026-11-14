@@ -93,7 +93,7 @@
           "sha256": "ea8e7bd4d1a7619358288dd764f8e861a17394d0a29d1c07138f4259c0b15201",
           "retirement": {
             "mode": "manual",
-            "requires": "remove when the pin moves to \u2265 v1.1.8 and the upstream paid omitted-zero, free/unknown-profile, retained-window, supported-client and metadata-only collection regressions pass on the new pin."
+            "requires": "remove when the pin moves to ≥ v1.1.8 and the upstream paid omitted-zero, free/unknown-profile, retained-window, supported-client and metadata-only collection regressions pass on the new pin."
           }
         },
         {
@@ -363,6 +363,15 @@
             "mode": "manual",
             "requires": "Retire when the pinned Node tests implement approved ValidateUsageCreditTurn methods for the five retained-account Home dispatcher fixtures, all five original assertions pass with no product Go changes, the CI Node test selector includes those exact names without dropping existing selections, and funding-denial and missing-validator controls remain passing."
           }
+        },
+        {
+          "identity": "cliproxy-node-generation-submission",
+          "file": "0611-node-generation-submission.patch",
+          "sha256": "a67f38c8c9538c88583d12a0b095470febb7df2a4083152390e4a9339e7c351a",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after the pinned upstream release guards only generation sends, treats every local failure after accepted HTTP responses or ambiguous WebSocket frame writes as terminal unknown, and positively validates provider refusal payloads before allowing failover. Pass actual provider and native public error projections, two-credential HTTP and WebSocket disconnect and partial-write proofs, nil-connection pre-write recovery, plugin and token-count auxiliary controls, and retained Home funding fixtures without weakening assertions. Preserve no automatic replay across models, credentials or retry rounds, native error envelopes and correlation identities. Generic credential, refresh and auxiliary HTTP calls remain untracked. Re-apply on each source update until the upstream release supplies the same behavior."
+          }
         }
       ]
     }
@@ -373,9 +382,7 @@
       "tag": "v1.0.5",
       "commit": "19d9868ffa24e94a2919ea1d1a761afa634de669",
       "sha256": "79b6ae8702b0ace76c10102d42a1401259e7dc772baacce2d47c90c33c6b25e7",
-      "auth_providers": [
-        "gemini-cli"
-      ]
+      "auth_providers": ["gemini-cli"]
     }
   }
 }
