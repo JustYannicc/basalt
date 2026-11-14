@@ -9,6 +9,7 @@ const failed = "Couldn't confirm the latest changes. Showing the last confirmed 
 /** A loaded history whose records and totals belong to `owner`'s grant. */
 function loaded(owner: string, records: number, seriesUnavailable?: string): LoadedHistory {
   return {
+    snapshot: {},
     bounds: { from: "2026-11-01T00:00:00.000Z", to: "2026-11-13T00:00:00.000Z" },
     firstAt: records === 0 ? null : "2026-11-01T00:00:00.000Z",
     series: { groups: [{ owner }], asOf: null, changed: false, partial: false },
