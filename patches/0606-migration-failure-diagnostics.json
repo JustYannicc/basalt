@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-migration-failure-diagnostics",
+  "file": "0606-migration-failure-diagnostics.patch",
+  "content_sha256": "d9461068e195459383949ae4125bd71d46cb1b55df2ab21ca6a91cad40a4e52b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

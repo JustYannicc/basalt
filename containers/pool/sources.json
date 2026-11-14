@@ -345,6 +345,24 @@
             "mode": "manual",
             "requires": "Retire only when the pinned Node exposes a private single-use connection completion channel that binds the actual model socket, preserves unmarked raw frames and public subprotocols, closes the data socket if completion becomes uncertain, and passes normal, client, upstream, revocation, duplicate-claim and draining-retirement regressions without inference replay or a byte-lifetime cap."
           }
+        },
+        {
+          "identity": "cliproxy-node-no-postwrite-replay",
+          "file": "0599-node-no-postwrite-replay.patch",
+          "sha256": "d0b4d0cc13755bb8dbdc534d59a0abe2f458ea895af351a327a30f4481fac0b6",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire when the pinned upstream release includes terminal unknown-outcome classification after HTTP submission and passes the real post-write EOF, empty accepted model-pool stream, late truncation, incomplete SSE frames, malformed accepted decoding, submitted POST redirects, header-only framing, terminal request-body closure, generation-only submission tracking with replayable token counting, exactly one request-scoped failed stream result for local and Home observers, JSON document error envelopes, terminal Antigravity credits fallback across model pools and credentials, buffered Claude incomplete-response classification, direct Fast credential-rate-limit result recording and cooldown, internal POST replay, pre-write connect failure and explicit HTTP and SSE refusal regressions. Preserve no replay across models, credentials and retry rounds, public 502 upstream_outcome_unknown with retryable false, existing proxy and protocol selection, and release updates. Re-apply on each source update until the upstream fix is released; remove this carry when that release supplies the same behavior."
+          }
+        },
+        {
+          "identity": "cliproxy-node-home-funding-test-fixtures",
+          "file": "0604-node-home-funding-test-fixtures.patch",
+          "sha256": "d47c2c2ec04a7fc0ad99063dd17c7fec58abe49825ffc2b1518e377563adc0ce",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire when the pinned Node tests implement approved ValidateUsageCreditTurn methods for the five retained-account Home dispatcher fixtures, all five original assertions pass with no product Go changes, the CI Node test selector includes those exact names without dropping existing selections, and funding-denial and missing-validator controls remain passing."
+          }
         }
       ]
     }

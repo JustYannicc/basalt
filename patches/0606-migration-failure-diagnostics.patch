@@ -1,0 +1,38 @@
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -5,7 +5,7 @@
+ import { getMigrations } from "better-auth/db/migration";
+ import { createDataStepJournal } from "@executor-js/app-management/data-steps";
+ import { makeExecutorStorage, StorageMigrationFailed } from "@executor-js/sdk/core";
+-import { Context, Effect, Schema } from "effect";
++import { Cause, Console, Context, Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import * as Migrator from "effect/sql/Migrator";
+ import { migrateHostedRoutes } from "./hosted-routes-schema.ts";
+@@ -106,7 +106,25 @@
+       created_at timestamp with time zone not null default now(),
+       name text not null
+     )`;
+-    yield* Migrator.make({})({ table, loader: Migrator.fromRecord(steps) });
++    const observed = Object.fromEntries(
++      Object.entries(steps).map(([key, step]) => {
++        const registry = table === "private_hosted_migrations" ? "hosted" : "cloud";
++        const phase = `run ${registry} migration ${key}`;
++        return [
++          key,
++          migrationPhase(phase).pipe(
++            Effect.andThen(step),
++            // Observe before the migrator wraps the cause; preserve its failure and retry behavior.
++            Effect.tapCause((cause) =>
++              Console.error(
++                `Migration step failed at "${phase}": ${migrationFailed("product")(Cause.squash(cause)).message}`,
++              ),
++            ),
++          ),
++        ];
++      }),
++    );
++    yield* Migrator.make({})({ table, loader: Migrator.fromRecord(observed) });
+   }).pipe(
+     Effect.catchDefect((error) =>
+       error instanceof Migrator.MigrationError

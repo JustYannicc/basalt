@@ -43,7 +43,7 @@ export interface BulkGuard {
   cpuAt: number;
   releaseReadComplete: boolean;
   releaseWindowActive: boolean;
-  serving?: ServingObservation;
+  serving?: ServingObservation | undefined;
   poolErrors: number;
   queryErrors: number;
 }

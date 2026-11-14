@@ -6,8 +6,21 @@ import type { Feed } from "./feed.ts";
 import reviewData from "./oauth-reviews.json" with { type: "json" };
 import workosMetadata from "./workos.oauth-metadata.json" with { type: "json" };
 
-test("WorkOS's reviewed issuer-response capability still refuses metadata drift", () => {
-  // RFC 9207 advertises issuer identification in authorization responses.
+test("WorkOS's reviewed token-revocation addition still refuses metadata drift", () => {
+  const { revocation_endpoint, revocation_endpoint_auth_methods_supported, ...previous } =
+    workosMetadata;
+  assert.equal(revocation_endpoint, "https://signin.workos.com/oauth2/revoke");
+  assert.deepEqual(revocation_endpoint_auth_methods_supported, [
+    "none",
+    "client_secret_post",
+    "client_secret_basic",
+    "private_key_jwt",
+  ]);
+  // These two RFC 7009 fields are additive; every previously reviewed field is unchanged.
+  assert.equal(
+    catalogDocumentSha256(previous),
+    "e803c89a2dcd92f4391b1857923793d3b18add3764d3d3b882fdb55c1b97bf12",
+  );
   assert.equal(workosMetadata.authorization_response_iss_parameter_supported, true);
   const review = oauthReviews(reviewData).find((item) => item.entry === "workos")!;
   const method = review.methods.oauth!;
@@ -41,6 +54,10 @@ test("WorkOS's reviewed issuer-response capability still refuses metadata drift"
     { token_endpoint: "https://unreviewed.example/token" },
     { scopes_supported: [...workosMetadata.scopes_supported, "unreviewed:scope"] },
     { authorization_response_iss_parameter_supported: false },
+    { client_id_metadata_document_supported: false },
+    { code_challenge_methods_supported: ["plain"] },
+    { grant_types_supported: ["client_credentials"] },
+    { revocation_endpoint: "https://unreviewed.example/revoke" },
     { unreviewed_capability: true },
   ]) {
     assert.deepEqual(check({ ...workosMetadata, ...change }), [

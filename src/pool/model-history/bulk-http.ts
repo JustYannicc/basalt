@@ -6,7 +6,7 @@ import { importFailure } from "./import-page.ts";
 
 export interface BulkSigningAccess {
   signingKey: string;
-  previousSigningKey?: string;
+  previousSigningKey?: string | undefined;
 }
 
 export async function bulkCommand(request: Request, access: BulkSigningAccess) {
@@ -64,7 +64,7 @@ export async function routeBulkImport(
       return fail(401, "unauthorized", "A current pool owner import assertion is required.");
     if (!access.jobs)
       return fail(503, "bulk_import_not_provisioned", "Bulk import is not provisioned yet.");
-    const stub = access.jobs.jurisdiction("eu").getByName(command.job);
+    const stub = access.jobs.jurisdiction("eu").getByName(`bulk-usage-import:${command.job}`);
     return await stub.fetch(request.url, {
       method: "POST",
       body: new TextDecoder().decode(command.bytes),

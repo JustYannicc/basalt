@@ -1,0 +1,70 @@
+name: Historical framework hashes
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full historical source commit
+        required: true
+        type: string
+      toolchain:
+        description: Logged Ubuntu and Bun versions; Node is fixed at 24.18.0
+        required: true
+        type: choice
+        options:
+          - ubuntu-24.04-bun-1.4.2
+          - ubuntu-26.04-bun-1.4.2
+          - ubuntu-24.04-bun-1.4.4
+          - ubuntu-24.04-bun-1.4.4-workspace
+      generation_uuid:
+        description: Logged prepared-generation UUID; empty for direct-install sources
+        required: false
+        type: string
+      dependency_key:
+        description: Logged dependency SHA-256; empty for direct-install sources
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: framework-rebuild-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ startsWith(inputs.toolchain, 'ubuntu-26.04') && 'ubuntu-26.04' || 'ubuntu-24.04' }}
+    timeout-minutes: 45
+    env:
+      REBUILD_COMMIT: ${{ inputs.commit }}
+      REBUILD_TOOLCHAIN: ${{ inputs.toolchain }}
+      REBUILD_GENERATION_UUID: ${{ inputs.generation_uuid }}
+      REBUILD_DEPENDENCY_KEY: ${{ inputs.dependency_key }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - name: Validate inputs and retain the current rebuild controller
+        run: node scripts/framework-rebuild/run.ts stage
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ contains(inputs.toolchain, 'bun-1.4.4') && '1.4.4' || '1.4.2' }}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - name: Build and hash only the historical framework packages
+        run: node "$RUNNER_TEMP/framework-rebuild-controller/run.ts" build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: framework-hashes-${{ github.run_id }}
+          path: ${{ runner.temp }}/framework-rebuild-hashes/hash-manifest.json
+          if-no-files-found: error
+          retention-days: 30

@@ -95,7 +95,7 @@ export function observeNativePolicyFailure(
 export class ControlFailure extends Error {
   readonly status: number;
   readonly code: ControlErrorCode;
-  readonly retryAfterSeconds?: number;
+  readonly retryAfterSeconds: number | undefined;
   constructor(status: number, code: ControlErrorCode, message: string, retryAfterSeconds?: number) {
     super(message);
     this.status = status;
