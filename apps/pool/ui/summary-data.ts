@@ -6,6 +6,7 @@ import type { Result } from "../index.ts";
 import type { PoolApi } from "./api.ts";
 import { managersOnly } from "./overview-data.ts";
 import {
+  personalRange,
   rangeKey,
   summaryRange,
   type Breakdown,
@@ -122,9 +123,8 @@ export function useSummary(api: PoolApi, range: RangeChoice, by: Breakdown) {
         api.summary(input).then(async (summary) => {
           if (!take({ summary }) || !managersOnly(summary)) return;
           // The member route keeps its fixed windows; a since-start range is managers' only.
-          const days = choice.current.kind === "days" ? choice.current.days : 7;
           take({
-            personal: await api.personalOverview({ from: bounds.from, to: bounds.to, days }),
+            personal: await api.personalOverview(personalRange(choice.current, bounds, now)),
           });
         }),
       ]);

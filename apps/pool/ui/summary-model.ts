@@ -105,6 +105,16 @@ export function summaryRange(choice: RangeChoice, now: number): SummaryBounds {
   };
 }
 
+/**
+ * What the member route is asked for: its own fixed windows only. A since-start choice falls back to
+ * the last 7 days, sent with their own bounds, never the dynamic range.
+ */
+export function personalRange(choice: RangeChoice, bounds: SummaryBounds, now: number) {
+  if (choice.kind === "days") return { from: bounds.from, to: bounds.to, days: choice.days };
+  const week = summaryRange({ kind: "days", days: 7 }, now);
+  return { from: week.from, to: week.to, days: 7 as const };
+}
+
 /** The since-start option, only when the pool's first retained request is known. */
 export function sinceOption(retainedFirstAt: string | null | undefined, now: number) {
   if (typeof retainedFirstAt !== "string") return null;

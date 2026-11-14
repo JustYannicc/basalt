@@ -7,6 +7,7 @@ import {
   delta,
   incident,
   knownRuns,
+  personalRange,
   sinceOption,
   summaryRange,
   total,
@@ -185,4 +186,21 @@ test("a since-start range begins at the first retained day, capped at 400 days",
   assert.ok(now - Date.parse(old.bounds.from) <= 400 * 86_400_000);
   assert.equal(zurichDay(old.bounds.from), "2025-10-11");
   assert.equal(old.bounds.days, 400);
+});
+
+test("the member route never receives a since-start range", () => {
+  const now = Date.parse("2026-11-14T03:00:00Z");
+  const since = sinceOption("2026-05-03T09:15:00.000Z", now)!;
+  const week = summaryRange({ kind: "days", days: 7 }, now);
+  assert.deepEqual(personalRange(since.choice, since.bounds, now), {
+    from: week.from,
+    to: week.to,
+    days: 7,
+  });
+  const thirty = summaryRange({ kind: "days", days: 30 }, now);
+  assert.deepEqual(personalRange({ kind: "days", days: 30 }, thirty, now), {
+    from: thirty.from,
+    to: thirty.to,
+    days: 30,
+  });
 });
