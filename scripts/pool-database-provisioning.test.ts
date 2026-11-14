@@ -492,9 +492,9 @@ test("ownership refusals retain observed authority, schema and target reasons in
   for (const refusal of cases) {
     const fake = cluster({
       answer: (sql) =>
-        "identity" in refusal && sql.includes("current_user::text AS session_role")
+        refusal.identity !== undefined && sql.includes("current_user::text AS session_role")
           ? { rowCount: 1, rows: [refusal.identity] }
-          : "target" in refusal && sql.includes("FROM pg_catalog.pg_class AS c")
+          : refusal.target !== undefined && sql.includes("FROM pg_catalog.pg_class AS c")
             ? { rowCount: 1, rows: [refusal.target] }
             : undefined,
     });
