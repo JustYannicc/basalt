@@ -71,10 +71,12 @@ async function fixture(work: (value: Fixture) => Promise<void>): Promise<void> {
   await admin.connect();
   try {
     const ownerRole = await admin.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [owner]);
-    if (ownerRole.rowCount === 0)
+    if (ownerRole.rowCount === 0) {
       await admin.query(
         `CREATE ROLE ${quote(owner)} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`,
       );
+      roles.add(owner);
+    }
     await admin.query(`GRANT ${quote(owner)} TO postgres`);
     await admin.query(`CREATE DATABASE ${quote(database)} OWNER ${quote(owner)}`);
     db = new pg.Client({ connectionString: databaseUrl(database) });
