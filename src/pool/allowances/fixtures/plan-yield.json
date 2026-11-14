@@ -1,0 +1,246 @@
+{
+  "as_of": "2026-11-13",
+  "license": "https://creativecommons.org/licenses/by/4.0/",
+  "options": [
+    {
+      "id": "codex-chatgpt-plus",
+      "label": "ChatGPT Plus",
+      "tool": "codex",
+      "multiple": {
+        "x": 1,
+        "floor": "",
+        "base": "ChatGPT Plus",
+        "basis": "baseline",
+        "basis_label": "The 1x baseline",
+        "text": "1x (the baseline)",
+        "short": "1x",
+        "source": "\u201cPro 500 50x Plus\u201d (ChatGPT Pro row)",
+        "calc": "",
+        "note": "The 1x baseline. From \u201cPro 500 50x Plus\u201d (ChatGPT Pro row)."
+      },
+      "windows": [
+        [
+          "5-hour",
+          "Yes"
+        ],
+        [
+          "Weekly",
+          "May apply"
+        ]
+      ],
+      "checked": "2026-11-04",
+      "status_class": "warn",
+      "source": "https://learn.chatgpt.com/docs/pricing"
+    },
+    {
+      "id": "claude-pro",
+      "label": "Claude Pro",
+      "tool": "claude-code",
+      "multiple": {
+        "x": 1,
+        "floor": "",
+        "base": "Claude Pro",
+        "basis": "baseline",
+        "basis_label": "The 1x baseline",
+        "text": "1x (the baseline)",
+        "short": "1x",
+        "source": "\u201c5x Pro per 5h session and per week\u201d (Claude Max row)",
+        "calc": "",
+        "note": "The 1x baseline. From \u201c5x Pro per 5h session and per week\u201d (Claude Max row)."
+      },
+      "windows": [
+        [
+          "5-hour",
+          "Yes, rolling"
+        ],
+        [
+          "Weekly",
+          "Yes"
+        ]
+      ],
+      "checked": "2026-11-10",
+      "status_class": "warn",
+      "source": "https://claude.com/pricing"
+    },
+    {
+      "id": "claude-team-25",
+      "label": "Claude Team, Standard seat",
+      "tool": "claude-code",
+      "multiple": {
+        "x": 1,
+        "floor": ">",
+        "base": "Claude Pro",
+        "basis": "published",
+        "basis_label": "Published by the vendor",
+        "text": "more than 1x Claude Pro",
+        "short": "more than 1x",
+        "source": "\u201cStandard > Pro\u201d",
+        "calc": "",
+        "note": "Published by the vendor. From \u201cStandard > Pro\u201d."
+      },
+      "windows": [
+        [
+          "5-hour",
+          "Yes"
+        ],
+        [
+          "Weekly",
+          "Yes"
+        ]
+      ],
+      "checked": "2026-11-10",
+      "status_class": "warn",
+      "source": "https://claude.com/pricing"
+    },
+    {
+      "id": "codex-chatgpt-pro-100",
+      "label": "ChatGPT Pro 100",
+      "tool": "codex",
+      "multiple": {
+        "x": 10,
+        "floor": "",
+        "base": "ChatGPT Plus",
+        "basis": "reported",
+        "basis_label": "Reported, not stated on the vendor's page",
+        "text": "10x ChatGPT Plus",
+        "short": "10x",
+        "source": "\u201cPro 100 10x Plus\u201d",
+        "calc": "",
+        "note": "Reported, not stated on the vendor's page. 10x Plus confirmed in the 8 Nov staff post; absolute weekly size unpublished. From \u201cPro 100 10x Plus\u201d."
+      },
+      "windows": [
+        [
+          "5-hour",
+          "None"
+        ],
+        [
+          "Weekly",
+          "Yes"
+        ]
+      ],
+      "checked": "2026-11-09",
+      "status_class": "warn",
+      "source": "https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers"
+    },
+    {
+      "id": "claude-max-5x",
+      "label": "Claude Max",
+      "tool": "claude-code",
+      "multiple": {
+        "x": 5,
+        "floor": "",
+        "base": "Claude Pro",
+        "basis": "published",
+        "basis_label": "Published by the vendor",
+        "text": "5x Claude Pro per 5-hour session and per week",
+        "short": "5x",
+        "source": "\u201c5x Pro per 5h session and per week\u201d",
+        "calc": "",
+        "note": "Published by the vendor. From \u201c5x Pro per 5h session and per week\u201d."
+      },
+      "windows": [
+        [
+          "5-hour",
+          "Yes"
+        ],
+        [
+          "Weekly",
+          "Yes"
+        ]
+      ],
+      "checked": "2026-11-02",
+      "status_class": "stale",
+      "source": "https://claude.com/pricing"
+    },
+    {
+      "id": "codex-chatgpt-pro-200",
+      "label": "ChatGPT Pro 200",
+      "tool": "codex",
+      "multiple": {
+        "x": 20,
+        "floor": "",
+        "base": "ChatGPT Plus",
+        "basis": "reported",
+        "basis_label": "Reported, not stated on the vendor's page",
+        "text": "20x ChatGPT Plus",
+        "short": "20x",
+        "source": "\u201cPro 200 20x Plus\u201d",
+        "calc": "",
+        "note": "Reported, not stated on the vendor's page. OpenAI cancelled the Pro 200 cut, and its Help Center says subscribers on the lower allowance had it doubled to match the higher one, so every Pro 200 subscriber now has the higher allowance, confirmed as 20x Plus in the 8 Nov staff post; absolute weekly size unpublished. From \u201cPro 200 20x Plus\u201d."
+      },
+      "windows": [
+        [
+          "5-hour",
+          "None"
+        ],
+        [
+          "Weekly",
+          "Yes"
+        ]
+      ],
+      "checked": "2026-11-09",
+      "status_class": "warn",
+      "source": "https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers"
+    },
+    {
+      "id": "claude-max-20x",
+      "label": "Claude Ultra",
+      "tool": "claude-code",
+      "multiple": {
+        "x": 10,
+        "floor": "",
+        "base": "Claude Pro",
+        "basis": "published",
+        "basis_label": "Published by the vendor",
+        "text": "10x Claude Pro per week",
+        "short": "10x",
+        "source": "\u201c10x Pro per week\u201d",
+        "calc": "",
+        "note": "Published by the vendor. Weekly only: Ultra has no 5-hour limit for verified accounts. From \u201c10x Pro per week\u201d."
+      },
+      "windows": [
+        [
+          "5-hour",
+          "None"
+        ],
+        [
+          "Weekly",
+          "Yes"
+        ]
+      ],
+      "checked": "2026-11-10",
+      "status_class": "warn",
+      "source": "https://claude.com/pricing"
+    },
+    {
+      "id": "codex-chatgpt-pro-500",
+      "label": "ChatGPT Pro 500",
+      "tool": "codex",
+      "multiple": {
+        "x": 50,
+        "floor": "",
+        "base": "ChatGPT Plus",
+        "basis": "reported",
+        "basis_label": "Reported, not stated on the vendor's page",
+        "text": "50x ChatGPT Plus",
+        "short": "50x",
+        "source": "\u201cPro 500 50x Plus\u201d",
+        "calc": "",
+        "note": "Reported, not stated on the vendor's page. 50x Plus confirmed in the 8 Nov staff post; OpenAI's Help Center states no multiple; absolute weekly size unpublished. From \u201cPro 500 50x Plus\u201d."
+      },
+      "windows": [
+        [
+          "5-hour",
+          "None"
+        ],
+        [
+          "Weekly",
+          "Yes"
+        ]
+      ],
+      "checked": "2026-11-09",
+      "status_class": "warn",
+      "source": "https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers"
+    }
+  ]
+}

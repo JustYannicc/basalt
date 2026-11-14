@@ -95,6 +95,7 @@ export async function seriesQuery(
   const aggregates = [
     "count(*)::text AS requests",
     "count(*) FILTER (WHERE failed)::text AS failed",
+    "count(*) FILTER (WHERE status_code = 429)::text AS limited",
     "count(*) FILTER (WHERE failed AND account IS NULL AND source = $6)::text AS unassigned",
     "max(timestamp_exact) FILTER (WHERE NOT failed) AS last_success",
     ...columns,
@@ -146,10 +147,18 @@ export async function seriesQuery(
   if (input.by.includes("person") && !input.by.includes("attribution"))
     redactedKey.push("'attribution'", "NULL");
   const app = (await appAttributionReady(db)) ? "r.app_id" : "NULL::text AS app_id";
+  const timezone = input.timezone ?? "UTC";
+  const localBucket = `date_trunc('${input.bucket}', (left(timestamp_exact,19)::timestamp AT TIME ZONE 'UTC') AT TIME ZONE '${timezone}')`;
+  // Totals scan imported history too; hash foreign identities only for account drill-downs.
+  const foreignAccount = input.by.includes("account")
+    ? "'imported:' || encode(sha256(convert_to($1::text || ':' || r.source || ':' || r.account, 'UTF8')), 'hex')"
+    : "'unmapped'";
   const prefix = `WITH bindings AS (SELECT * FROM jsonb_to_recordset($4::jsonb) AS b(history text,saved text)),
     selected AS (SELECT r.*, $6::text AS gateway_source,
       ${app === "r.app_id" ? "" : `${app},`}
-      CASE WHEN r.account IS NULL THEN NULL WHEN NOT ${nativeAccount} OR NOT $7::boolean OR b.history IS NULL THEN 'unmapped'
+      CASE WHEN r.account IS NULL THEN NULL
+        WHEN NOT ${nativeAccount} AND r.source <> $6 THEN ${foreignAccount}
+        WHEN NOT ${nativeAccount} OR NOT $7::boolean OR b.history IS NULL THEN 'unmapped'
         WHEN b.saved IS NULL THEN 'otherAccounts' ELSE b.saved END AS saved_account,
       ${personScope === undefined ? `(${nativeAccount} AND r.account IS NOT NULL AND (NOT $7::boolean OR b.history IS NULL OR b.saved IS NULL))` : "false"} AS counts_only
       FROM basalt_model_requests r LEFT JOIN bindings b ON ${nativeAccount} AND r.account = b.history::character(64)
@@ -157,14 +166,15 @@ export async function seriesQuery(
         AND r.timestamp >= $2::text::timestamptz - interval '1 microsecond'
         AND r.timestamp < $3::text::timestamptz + interval '1 microsecond'
         AND r.timestamp_exact >= $2::text AND r.timestamp_exact < $3::text${where}${personalWhere}ACCOUNT_FILTER),
-    ${prices ? `${pricedRowsSql("selected", priceParameter!, "s.source=$5 AND NOT s.counts_only", "public_")},` : ""}
+    ${prices ? `${pricedRowsSql("selected", priceParameter!, "(s.source=$5 OR s.attribution='import-owner') AND NOT s.counts_only", "public_")},` : ""}
     keyed AS (SELECT *, CASE WHEN counts_only THEN jsonb_build_object(${redactedKey.join(", ")})
       ELSE jsonb_build_object(${key.join(", ")}) END::text COLLATE "C" AS group_key,
-      date_trunc('${input.bucket}', left(timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' AS bucket_at
+      ${localBucket} AT TIME ZONE '${timezone}' AS bucket_at,
+      (${localBucket} + interval '1 ${input.bucket}') AT TIME ZONE '${timezone}' AS bucket_end
       FROM ${prices ? "priced" : "selected"})`;
-  const aggregate = `${prefix.replace("ACCOUNT_FILTER", accountWhere)}, aggregated AS (SELECT group_key, bucket_at, ${aggregates.join(",\n      ")}
-      FROM keyed GROUP BY group_key,bucket_at)
-    SELECT *, ${utcSql("bucket_at")} AS at FROM aggregated`;
+  const aggregate = `${prefix.replace("ACCOUNT_FILTER", accountWhere)}, aggregated AS (SELECT group_key, bucket_at, bucket_end, ${aggregates.join(",\n      ")}
+      FROM keyed GROUP BY group_key,bucket_at,bucket_end)
+    SELECT *, ${utcSql("bucket_at")} AS at, ${utcSql("bucket_end")} AS end_at FROM aggregated`;
   let condition = "";
   if (after) {
     values.push(after.key, timestamp(after.at));
@@ -175,8 +185,8 @@ export async function seriesQuery(
     values,
     coverageText: `${prefix.replace("ACCOUNT_FILTER", authority.mappingProven ? accountWhere : "")} SELECT source, min(timestamp_exact) AS first_at,max(timestamp_exact) AS last_at,
       ${utcSql("max(ingested_at)")} AS ingested_at, count(*)::text AS requests,
-      count(*) FILTER (WHERE saved_account NOT IN ('unmapped','otherAccounts'))::text AS mapped,
-      count(*) FILTER (WHERE saved_account = 'unmapped')::text AS unmapped,
+      count(*) FILTER (WHERE saved_account NOT IN ('unmapped','otherAccounts') AND saved_account NOT LIKE 'imported:%')::text AS mapped,
+      count(*) FILTER (WHERE saved_account = 'unmapped' OR saved_account LIKE 'imported:%')::text AS unmapped,
       count(*) FILTER (WHERE counts_only AND saved_account = 'otherAccounts')::text AS other,
       count(*) FILTER (WHERE NOT counts_only AND cost_basis = 'home-charge')::text AS home_priced,
       count(*) FILTER (WHERE NOT counts_only AND cost_basis = 'historical-api-price' AND currency = 'USD')::text AS imported_priced,
@@ -186,7 +196,7 @@ export async function seriesQuery(
       count(*) FILTER (WHERE NOT counts_only AND cost_basis <> 'unpriced' AND price_version IS NULL)::text AS missing_version
       FROM keyed GROUP BY source ORDER BY source LIMIT 501`,
     coverageValues: values.slice(0, after ? -2 : undefined),
-    targetsText: `${prefix.replace("ACCOUNT_FILTER", accountWhere)} SELECT DISTINCT provider,model FROM keyed WHERE NOT counts_only AND source=$5 AND provider IS NOT NULL AND model IS NOT NULL ORDER BY provider,model LIMIT 101`,
+    targetsText: `${prefix.replace("ACCOUNT_FILTER", accountWhere)} SELECT DISTINCT provider,model FROM keyed WHERE NOT counts_only AND (source=$5 OR attribution='import-owner') AND provider IS NOT NULL AND model IS NOT NULL ORDER BY provider,model LIMIT 101`,
     targetsValues: values.slice(0, after ? -2 : undefined),
     homeSource: source,
     gatewaySource: gateway,

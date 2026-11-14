@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "Plan identity and display naming share one vendor catalog. Account measurements and expiring external allowance facts outrank seeds; unknown or contradicted plans retain a separate one-account unit and historical readings keep their original values."
+    }
+  }
+}

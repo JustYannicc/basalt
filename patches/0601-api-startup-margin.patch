@@ -1,0 +1,154 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory-operation.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory-operation.ts
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/inventory-operation.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory-operation.ts
+@@ -4,14 +4,17 @@
+ import { atPhase } from "./diagnostics.ts";
+ import { inventorySnapshot, resolveInventory } from "./inventory.ts";
+ import { readOnly } from "./read-only.ts";
+-import { retainedFrameworkPage } from "./retained-frameworks-page.ts";
+ import type { Operation, OpsSettings } from "./runner.ts";
+ 
+ /** Every inventory releases its SQL snapshot before external record reads or encryption. */
+ export const inventoryOperation = (settings: OpsSettings, operation: Operation, now: number) =>
+   Effect.gen(function* () {
+-    if (operation.selection === "retained-frameworks")
++    if (operation.selection === "retained-frameworks") {
++      const { retainedFrameworkPage } = yield* Effect.promise(
++        () => import("./retained-frameworks-page.ts"),
++      );
+       return yield* retainedFrameworkPage(settings, operation, now);
++    }
+     const captured = yield* readOnly(
+       Effect.gen(function* () {
+         const database = yield* databaseIdentity(settings.databaseOrigin);
+diff --git a/apps/hosted/server/src/contracts/pool-usage-forecast.ts b/apps/hosted/server/src/contracts/pool-usage-forecast.ts
+--- a/apps/hosted/server/src/contracts/pool-usage-forecast.ts
++++ b/apps/hosted/server/src/contracts/pool-usage-forecast.ts
+@@ -1,66 +1,68 @@
+ import { Schema } from "effect";
+ 
+-const number = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
+-const amount = Schema.NullOr(number);
+-const count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+-const projection = Schema.Struct({
+-  from: Schema.String,
+-  through: Schema.String,
+-  actual: amount,
+-  median: amount,
+-  low: amount,
+-  high: amount,
+-});
+-const forecast = Schema.Union([
+-  Schema.Struct({
+-    status: Schema.Literal("unavailable"),
+-    reason: Schema.Literals(["invalid-input", "insufficient-history", "insufficient-use"]),
+-    comparableWeeks: count,
+-    calculatedAt: Schema.String,
+-  }),
+-  Schema.Struct({
+-    status: Schema.Literal("available"),
++export const PoolUsageForecasts = /* @__PURE__ */ Schema.suspend(() => {
++  const number = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
++  const amount = Schema.NullOr(number);
++  const count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
++  const projection = Schema.Struct({
++    from: Schema.String,
++    through: Schema.String,
++    actual: amount,
++    median: amount,
++    low: amount,
++    high: amount,
++  });
++  const forecast = Schema.Union([
++    Schema.Struct({
++      status: Schema.Literal("unavailable"),
++      reason: Schema.Literals(["invalid-input", "insufficient-history", "insufficient-use"]),
++      comparableWeeks: count,
++      calculatedAt: Schema.String,
++    }),
++    Schema.Struct({
++      status: Schema.Literal("available"),
++      calculatedAt: Schema.String,
++      timezone: Schema.Literal("Europe/Zurich"),
++      method: Schema.Literal("Median of the last 4 full weeks, shaped by day of week"),
++      confidence: Schema.Literals(["Low", "Medium", "High"]),
++      coverage: Schema.Struct({
++        basis: Schema.Literals(["recorded-total", "known-subset"]),
++        excludedRequests: count,
++      }),
++      interval: Schema.Literal(0.8),
++      comparableWeeks: count,
++      trainingWeeks: Schema.Array(Schema.String).check(Schema.isMaxLength(4)),
++      misses: Schema.Array(
++        Schema.Struct({
++          week: Schema.String,
++          predicted: number,
++          actual: number,
++          error: Schema.Finite,
++          share: amount,
++        }),
++      ).check(Schema.isMaxLength(8)),
++      thisWeek: projection,
++      nextWeek: projection,
++      month: projection,
++      daily: Schema.Array(
++        Schema.Struct({ day: Schema.String, median: number, low: amount, high: amount }),
++      ).check(Schema.isMaxLength(45)),
++    }),
++  ]);
++
++  return Schema.Struct({
+     calculatedAt: Schema.String,
+     timezone: Schema.Literal("Europe/Zurich"),
+-    method: Schema.Literal("Median of the last 4 full weeks, shaped by day of week"),
+-    confidence: Schema.Literals(["Low", "Medium", "High"]),
+-    coverage: Schema.Struct({
+-      basis: Schema.Literals(["recorded-total", "known-subset"]),
+-      excludedRequests: count,
+-    }),
+-    interval: Schema.Literal(0.8),
+-    comparableWeeks: count,
+-    trainingWeeks: Schema.Array(Schema.String).check(Schema.isMaxLength(4)),
+-    misses: Schema.Array(
++    basis: Schema.Literal("recorded-usage"),
++    warnings: Schema.Array(Schema.String),
++    series: Schema.Array(
+       Schema.Struct({
+-        week: Schema.String,
+-        predicted: number,
+-        actual: number,
+-        error: Schema.Finite,
+-        share: amount,
++        provider: Schema.NullOr(Schema.String),
++        requests: forecast,
++        tokens: forecast,
++        apiEstimate: forecast,
++        excluded: Schema.Struct({ tokens: count, apiEstimate: count }),
+       }),
+-    ).check(Schema.isMaxLength(8)),
+-    thisWeek: projection,
+-    nextWeek: projection,
+-    month: projection,
+-    daily: Schema.Array(
+-      Schema.Struct({ day: Schema.String, median: number, low: amount, high: amount }),
+-    ).check(Schema.isMaxLength(45)),
+-  }),
+-]);
+-
+-export const PoolUsageForecasts = Schema.Struct({
+-  calculatedAt: Schema.String,
+-  timezone: Schema.Literal("Europe/Zurich"),
+-  basis: Schema.Literal("recorded-usage"),
+-  warnings: Schema.Array(Schema.String),
+-  series: Schema.Array(
+-    Schema.Struct({
+-      provider: Schema.NullOr(Schema.String),
+-      requests: forecast,
+-      tokens: forecast,
+-      apiEstimate: forecast,
+-      excluded: Schema.Struct({ tokens: count, apiEstimate: count }),
+-    }),
+-  ),
++    ),
++  });
+ });

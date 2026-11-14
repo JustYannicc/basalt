@@ -87,6 +87,13 @@ const typedColumns = `id char(64), source char(64), source_record char(64), time
   latency_ms bigint, failed boolean, status_code smallint, cost numeric(28,12), currency varchar(16),
   cost_basis varchar(32), price_version char(64), original_price_rule varchar(1024), price_snapshot jsonb, attribution varchar(32)`;
 
+export function historyRecordLayout(appAttribution: boolean) {
+  const selected = columns + (appAttribution ? ", app_id, requirement" : "");
+  const types =
+    typedColumns + (appAttribution ? ", app_id varchar(256), requirement varchar(64)" : "");
+  return { selected, types, names: selected.split(",").map((name) => name.trim()) };
+}
+
 export async function existingRequests(
   db: HistoryDatabase,
   records: readonly ModelRequest[],
@@ -105,10 +112,7 @@ export async function existingRequests(
     const appAttribution = await appAttributionReady(db);
     if (!appAttribution && records.some((row) => row.appId != null || row.requirement != null))
       throw new HistoryConflict();
-    const selected = columns + (appAttribution ? ", app_id, requirement" : "");
-    const types =
-      typedColumns + (appAttribution ? ", app_id varchar(256), requirement varchar(64)" : "");
-    const names = selected.split(",").map((name) => name.trim());
+    const { selected, types, names } = historyRecordLayout(appAttribution);
     const conflicts = await db.query(
       `SELECT incoming.id FROM jsonb_to_recordset($1::jsonb) AS incoming(${types})
       CROSS JOIN LATERAL (SELECT ${selected} FROM basalt_model_requests
@@ -155,9 +159,7 @@ export async function insertRequests(
   if (!appAttribution && records.some((row) => row.appId != null || row.requirement != null))
     throw new Error("App model attribution migration is not ready");
   if (!missing.length) return 0;
-  const selected = columns + (appAttribution ? ", app_id, requirement" : "");
-  const types =
-    typedColumns + (appAttribution ? ", app_id varchar(256), requirement varchar(64)" : "");
+  const { selected, types } = historyRecordLayout(appAttribution);
   const result = await db.query(
     `INSERT INTO basalt_model_requests (${selected})
     SELECT ${selected} FROM jsonb_to_recordset($1::jsonb) AS incoming(${types})

@@ -919,17 +919,12 @@ function Tip({
       <table className="w-full border-collapse">
         <tbody>
           {plans.map((plan) => {
-            const flagged = plan.flagged;
             const sources = plan.sources.map((source) => weightSourceLabel[source]).join(", ");
             return (
               <tr key={plan.plan}>
                 <td className="py-0.5 align-top break-words [overflow-wrap:anywhere]">
                   {plan.plan} ×{plan.accounts}
-                  <span
-                    className={`block text-[11px] ${flagged ? "text-warning" : "text-muted-foreground"}`}
-                  >
-                    {sources}
-                  </span>
+                  <span className="block text-[11px] text-muted-foreground">{sources}</span>
                   {line.windowSeconds === 18_000 && plan.raw !== null && (
                     <span className="block text-[11px] text-muted-foreground">
                       Provider quota: {amount(plan.raw.remaining)} / {amount(plan.raw.full)}
@@ -966,7 +961,7 @@ function Tip({
         <span>
           {point.minimum.accountCount} {point.minimum.accountCount === 1 ? "account" : "accounts"}
           {point.minimum.unknownWeightCount > 0
-            ? ` · ${point.minimum.unknownWeightCount} at an unverified 1x`
+            ? ` · ${point.minimum.unknownWeightCount} with an unknown allowance, sized as 1 account each`
             : ""}
         </span>
         <span>

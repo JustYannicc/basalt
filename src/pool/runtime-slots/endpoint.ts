@@ -1,3 +1,4 @@
+import { logRuntimeEndpointFailure } from "../runtime-endpoint-failure.ts";
 import {
   SlotIdentity,
   SlotRefused,
@@ -51,6 +52,22 @@ export class RuntimeEndpoint {
     this.code = code;
     this.store = new RuntimeWitnessStore(ctx.storage, env.POOL_DEPLOYMENT_KEY ?? "");
     this.channel = new RuntimeChannel(ctx, env);
+  }
+  recordFailure(operation: string, error: unknown) {
+    logRuntimeEndpointFailure(
+      error,
+      operation,
+      {
+        role: this.role,
+        instanceId: this.ctx.id.toString(),
+        applicationId:
+          this.role === "legacy"
+            ? this.env.POOL_CONTAINER_APPLICATION_ID
+            : this.env.POOL_RUNTIME_APPLICATION_ID,
+        ...this.code,
+      },
+      this.env,
+    );
   }
   private serialize<T>(work: () => Promise<T>): Promise<T> {
     const pending = this.queue.then(work);

@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-retained-inventory-pages",
+  "file": "0568-retained-inventory-pages.patch",
+  "content_sha256": "97cb8634df0aa15da54f184ea92df8ec339a83f7f1a202871117fd492cb739a9",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": true
+}

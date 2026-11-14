@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "One Obsidian app stands for one vault, named after it. Connect Obsidian links name that vault as vaultName, never vault, which Obsidian itself routes on before the plugin runs; the plugin then warns before a device in a different vault connects and imports into this one, and the person can still connect. An app still named after the catalog entry, or whose name the plugin would not accept, names no vault, and its link carries none."
+    }
+  }
+}

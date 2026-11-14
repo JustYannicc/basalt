@@ -18,6 +18,8 @@ const reasons: Record<NonNullable<PoolReliabilitySlo["reason"]>, string> = {
   capture_stale: "the last capture is over 10 minutes old",
   capture_lagging: "request capture hasn't caught up yet",
   classification_pending: "proof checks aren't separated yet",
+  terminal_collection_pending: "some requests have no terminal result yet",
+  terminal_collection_unavailable: "request completion could not be verified",
 };
 
 const windowText = (label: string, real: ReliabilityCounts) =>
@@ -75,7 +77,11 @@ export function brokenAnswer({
       answer: `${needYou} ${needYou === 1 ? "account needs" : "accounts need"} you`,
       sub,
     };
+  if (slo.current?.classification === "ready" && slo.current.real.failed)
+    return { tone: "bad", answer: "Requests are failing now", sub };
   if (slo.state === "breached") return { tone: "bad", answer: `Below ${slo.target}% success`, sub };
+  if (slo.state === "unavailable" && !real.requests)
+    return { tone: "warn", answer: "Success rate unavailable", sub };
   if (!real.requests) return { answer: pending ? "No requests yet" : "No real requests", sub };
   if (real.failed) return { tone: "warn", answer: failed!, sub };
   if (slo.state === "unavailable") return { tone: "warn", answer: "Success rate unavailable", sub };
@@ -101,6 +107,14 @@ export function failureItems(reliability: ReliabilityRead, days: number): Failur
   const { range, slo } = reliability;
   const { real, proof } = range;
   const items: FailureItem[] = [];
+  if (slo.current?.classification === "ready" && slo.current.real.failed) {
+    const count = slo.current.real.failed;
+    items.push({
+      tone: "bad",
+      text: `${count.toLocaleString()} real ${count === 1 ? "request failed" : "requests failed"} in the last 5 minutes`,
+      sub: "Recent request failures, with proof checks counted separately.",
+    });
+  }
   if (slo.state === "unavailable")
     items.push({ tone: "warn", text: "Request success rate unavailable", sub: sloText(slo) });
   if (slo.state === "breached")
@@ -121,7 +135,7 @@ export function failureItems(reliability: ReliabilityRead, days: number): Failur
           : `${real.failed.toLocaleString()} of ${real.requests.toLocaleString()} real requests failed in ${days} days`,
       sub: [
         real.unassignedFailures
-          ? `${real.unassignedFailures.toLocaleString()} failed before reaching any account.`
+          ? `${real.unassignedFailures.toLocaleString()} failed without a known account.`
           : "Which accounts they hit is on the Accounts tab.",
         range.classification === "pending"
           ? "Includes proof checks; they aren't separated yet."

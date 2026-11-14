@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-vault-named-by-device",
+  "file": "0584-vault-named-by-device.patch",
+  "content_sha256": "ce70a93125ce31d259e9fe6794d2580d6118e0eb988919cfa313355bb9ce55f3",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

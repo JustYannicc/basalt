@@ -27,6 +27,9 @@ import { requestCount, seriesCoverage } from "./series-coverage.ts";
 import { seriesQuery, tokenColumns } from "./series-query.ts";
 import { HistoryInputError, historyObject, timestamp } from "./record.ts";
 import { digest } from "../backend-users.ts";
+import { seriesUsageForecasts } from "./usage-forecasts.ts";
+import { homeCaptureCoverage } from "./capture-coverage.ts";
+import { importedAccountPattern } from "../usage-account-labels.ts";
 
 function bucket(
   row: Record<string, unknown>,
@@ -40,9 +43,13 @@ function bucket(
     failed = requestCount(row.failed);
   const counts: SeriesCounts = {
     at,
-    partial: nanos(at) < nanos(bounds.from) || nanos(at) + span > nanos(bounds.to),
+    ...(input.timezone && typeof row.end_at === "string" ? { end: timestamp(row.end_at) } : {}),
+    partial:
+      nanos(at) < nanos(bounds.from) ||
+      (typeof row.end_at === "string" ? nanos(row.end_at) : nanos(at) + span) > nanos(bounds.to),
     requests,
     failed,
+    ...(input.timezone ? { limited: requestCount(row.limited ?? "0") } : {}),
     unassignedFailures: requestCount(row.unassigned),
     successRate: successRate(requests, failed),
   };
@@ -142,6 +149,7 @@ async function readUsageSeries(
   priceInput?:
     | OverviewPriceTable
     | ((targets: readonly { provider: string; model: string }[]) => Promise<OverviewPriceTable>),
+  labels: Readonly<Record<string, string>> = {},
 ): Promise<PoolUsageSeriesResult> {
   const input = seriesInput(raw);
   if (personScope === undefined) authorizeSeries(input, authority);
@@ -183,6 +191,7 @@ async function readUsageSeries(
       from: input.from,
       to: input.to,
       bucket: input.bucket,
+      ...(input.timezone ? { timezone: input.timezone } : {}),
       ...(input.window ? { window: input.window } : {}),
       asOf,
       coverage,
@@ -190,15 +199,27 @@ async function readUsageSeries(
       next: null,
     };
     let last: Record<string, unknown> | undefined;
-    let used = new TextEncoder().encode(JSON.stringify(result)).byteLength;
+    let used =
+      new TextEncoder().encode(JSON.stringify(result)).byteLength + (input.forecast ? 8192 : 0);
     const groups = new Map<string, (typeof result.groups)[number]>();
     for (const [index, row] of rows.entries()) {
       const key = String(row.group_key),
         known = groups.get(key);
       if (index === maxSeriesRows || (!known && groups.size === maxSeriesGroups)) break;
       const value = bucket(row, input, prices);
+      const groupKey = historyObject(JSON.parse(key)) as unknown as SeriesKey;
       const group = known ?? {
-        key: historyObject(JSON.parse(key)) as unknown as SeriesKey,
+        key: groupKey,
+        ...(typeof groupKey.account === "string" && importedAccountPattern.test(groupKey.account)
+          ? {
+              accountDisplay: {
+                kind: "imported-only" as const,
+                label: labels[groupKey.account] ?? null,
+              },
+            }
+          : groupKey.account === null
+            ? { accountDisplay: { kind: "no-account-recorded" as const, label: null } }
+            : {}),
         buckets: [],
       };
       // Include group framing, commas, the complete cursor, and its JSON escaping in the byte bound.
@@ -223,6 +244,26 @@ async function readUsageSeries(
       if (!last) throw new Error("Usage coverage exceeds the page byte bound");
       result.next = writeSeriesCursor(scope, String(last.group_key), String(last.at));
     }
+    if (input.forecast) {
+      const native = coverage.sources.find((source) => source.kind === "home");
+      const capture =
+        native?.backfillComplete === true && result.next === null
+          ? await homeCaptureCoverage(
+              db,
+              String(query.values[0]),
+              query.homeSource,
+              input.from,
+              input.to,
+            )
+          : undefined;
+      result.forecasts = seriesUsageForecasts(result, capture);
+      if (new TextEncoder().encode(JSON.stringify(result)).byteLength > maxSeriesBytes)
+        result.forecasts = {
+          ...result.forecasts,
+          series: [],
+          warnings: ["Forecasts exceed the response budget. Use a shorter training range."],
+        };
+    }
     if (new TextEncoder().encode(JSON.stringify(result)).byteLength > maxSeriesBytes)
       throw new Error("Usage page exceeds its byte bound");
     if (transaction === "owned") await db.query("COMMIT");
@@ -241,8 +282,9 @@ export async function poolUsageSeries(
   prices?:
     | OverviewPriceTable
     | ((targets: readonly { provider: string; model: string }[]) => Promise<OverviewPriceTable>),
+  labels: Readonly<Record<string, string>> = {},
 ): Promise<PoolUsageSeriesResult> {
-  return readUsageSeries(db, raw, authority, transaction, undefined, prices);
+  return readUsageSeries(db, raw, authority, transaction, undefined, prices, labels);
 }
 
 /** Signed personal overview only: account bindings stay absent and the caller hash is the SQL scope. */

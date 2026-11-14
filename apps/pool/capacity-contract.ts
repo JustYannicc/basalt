@@ -1,4 +1,7 @@
+import type { AllowanceProvenance, PlanAllowanceCatalog } from "apps";
 export type CapacityWeightSource =
+  | "account-calibration"
+  | "reported-plan-multiplier"
   | "reference-plan"
   | "published-session-multiplier"
   | "published-weekly-multiplier"
@@ -21,6 +24,7 @@ export interface CapacityAggregate {
     readonly source: CapacityWeightSource;
     readonly revision: string;
     readonly accountCount: number;
+    readonly allowance?: AllowanceProvenance;
   }[];
 }
 
@@ -132,6 +136,7 @@ export interface CapacityRefillEvent {
 }
 
 export interface PoolCapacityHistory {
+  readonly allowanceCatalog?: PlanAllowanceCatalog;
   readonly from: number;
   readonly to: number;
   readonly readAt: number | null;

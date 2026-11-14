@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Accounts lists saved sign-ins only. Under the results of a search, a host may show where else it is found; the hosted host lists the Obsidian vaults whose name, or the words Obsidian vault, match it, each with its device count, flagged when its newest device has been idle more than two days, and linking to that vault's Accounts tab. Devices never become saved accounts, so the count and Verify keep meaning sign-ins, apps the search cannot name, and apps that cannot be a vault, read nothing for this. An organization with no saved accounts shows no search, so no pointer."
+    }
+  }
+}

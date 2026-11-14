@@ -1,4 +1,6 @@
 import type { OverviewMoneyMetric } from "./overview-contract.ts";
+import type { UsageForecasts } from "./usage-forecast-contract.ts";
+import type { UsageAccountDisplay } from "./usage-account-label-contract.ts";
 
 export const seriesDimensions = [
   "account",
@@ -15,6 +17,9 @@ export interface PoolUsageSeriesInput {
   from: string;
   to: string;
   bucket: "hour" | "day";
+  timezone?: "UTC" | "Europe/Zurich";
+  /** Available only for an unfiltered daily provider series in Zurich time. */
+  forecast?: boolean;
   by: readonly SeriesDimension[];
   accounts?: readonly string[];
   sources?: readonly string[];
@@ -50,9 +55,11 @@ export interface Unavailable {
 }
 export interface SeriesCounts {
   at: string;
+  end?: string;
   partial: boolean;
   requests: number;
   failed: number;
+  limited?: number;
   unassignedFailures: number;
   successRate: number | null;
 }
@@ -94,6 +101,7 @@ export interface SeriesKey {
 }
 export interface SeriesGroup {
   key: SeriesKey;
+  accountDisplay?: UsageAccountDisplay;
   buckets: (SeriesBucket | SeriesCounts)[];
 }
 export interface SeriesCoverage {
@@ -103,6 +111,15 @@ export interface SeriesCoverage {
     firstAt: string | null;
     lastAt: string | null;
     backfillComplete: boolean | null;
+    completion?: {
+      frozenFrom: string;
+      frozenTo: string;
+      upperSourceId: string;
+      manifestDigest: string;
+      accountMappingDigest: string;
+      idsDigest: string;
+      verifiedRows: string;
+    };
     sweep: { id: string; upper: string } | null;
   }[];
   firstAt: string | null;
@@ -133,6 +150,8 @@ export interface PoolUsageSeriesResult {
   from: string;
   to: string;
   bucket: "hour" | "day";
+  timezone?: "UTC" | "Europe/Zurich";
+  forecasts?: UsageForecasts;
   window?: { from: string; to: string };
   asOf: string | null;
   coverage: SeriesCoverage;

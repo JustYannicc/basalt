@@ -1,0 +1,370 @@
+diff --git a/apps/hosted/server/src/implementation/pool-backend.ts b/apps/hosted/server/src/implementation/pool-backend.ts
+--- a/apps/hosted/server/src/implementation/pool-backend.ts
++++ b/apps/hosted/server/src/implementation/pool-backend.ts
+@@ -35,6 +35,7 @@
+   | "managed-usage"
+   | "managed-cap"
+   | "poolUsageSeries"
++  | "setUsageAccountLabel"
+   | "lastSuccessAt"
+   | "poolOverview"
+   | "poolPersonalOverview";
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -22,6 +22,7 @@
+   type LastSuccessAtInput,
+   PoolUsageSeries,
+   type PoolUsageSeriesInput,
++  type UsageAccountLabelInput,
+ } from "../contracts/pool-usage-series.ts";
+ import { usageSeriesAccounts } from "./pool-usage-series-accounts.ts";
+ import type { PoolOverviewInput } from "../contracts/pool-usage-overview.ts";
+@@ -166,6 +167,23 @@
+     }),
+   ).pipe(
+     trackedUsageRead,
++    Effect.catchTags({
++      SqlError: () => new StorageError(),
++      SchemaError: () => new PoolUsageUnavailable(),
++    }),
++  );
++
++export const setUsageAccountLabel = (app: AppId, input: UsageAccountLabelInput) =>
++  withPool(app, (pool) =>
++    sendPoolCommand(
++      "setUsageAccountLabel",
++      { pool: pool.pool, organization: pool.organization, user: pool.user, canManage: true, input },
++      Schema.Struct({ success: Schema.Literal(true) }),
++    ),
++  ).pipe(
++    Effect.flatMap((result) =>
++      result === null ? new PoolUsageUnavailable() : Effect.succeed(result),
++    ),
+     Effect.catchTags({
+       SqlError: () => new StorageError(),
+       SchemaError: () => new PoolUsageUnavailable(),
+@@ -253,6 +271,9 @@
+       setPoolSelectionPolicy(params.app, payload.accountSelectionPolicy),
+     )
+     .handle("poolUsageSeries", ({ params, payload }) => poolUsageSeries(params.app, payload))
++    .handle("setUsageAccountLabel", ({ params, payload }) =>
++      setUsageAccountLabel(params.app, payload),
++    )
+     .handle("lastSuccessAt", ({ params, payload }) => lastSuccessAt(params.app, payload))
+     .handle("get", ({ params, query }) => poolUsage(params.app, query.after))
+     .handle("setCap", ({ params, payload }) =>
+diff --git a/apps/hosted/server/src/contracts/pool-usage.ts b/apps/hosted/server/src/contracts/pool-usage.ts
+--- a/apps/hosted/server/src/contracts/pool-usage.ts
++++ b/apps/hosted/server/src/contracts/pool-usage.ts
+@@ -16,6 +16,7 @@
+   LastSuccessAtInput,
+   PoolUsageSeries,
+   PoolUsageSeriesInput,
++  UsageAccountLabelInput,
+ } from "./pool-usage-series.ts";
+ import {
+   OrganizationForbidden,
+@@ -203,6 +204,18 @@
+     )
+     .add(
+       HttpApiEndpoint.post(
++        "setUsageAccountLabel",
++        "/api/organizations/:organization/apps/:app/pool-usage/account-label",
++        {
++          params,
++          payload: UsageAccountLabelInput,
++          success: Schema.Struct({ success: Schema.Literal(true) }),
++          error: [OrganizationForbidden, StorageError, PoolUsageUnavailable],
++        },
++      ).annotate(RequiredAction, "manage"),
++    )
++    .add(
++      HttpApiEndpoint.post(
+         "lastSuccessAt",
+         "/api/organizations/:organization/apps/:app/pool-usage/last-success",
+         {
+diff --git a/apps/hosted/server/src/contracts/pool-usage-series.ts b/apps/hosted/server/src/contracts/pool-usage-series.ts
+--- a/apps/hosted/server/src/contracts/pool-usage-series.ts
++++ b/apps/hosted/server/src/contracts/pool-usage-series.ts
+@@ -61,6 +61,30 @@
+     after: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(8192))),
+   }))();
+ export type PoolUsageSeriesInput = typeof PoolUsageSeriesInput.Type;
++export const UsageAccountLabelInput = /* @__PURE__ */ (() =>
++  Schema.Struct({
++    account: Schema.String.check(Schema.isPattern(/^imported:[a-f0-9]{64}$/u)),
++    label: Schema.NullOr(
++      Schema.String.check(
++        Schema.isMinLength(1),
++        Schema.isMaxLength(80),
++        Schema.makeFilter(
++          (label) =>
++            label.trim().length > 0 &&
++            !Array.from(label).some((character) => {
++              const code = character.codePointAt(0)!;
++              return code < 32 || code === 127;
++            }),
++        ),
++      ),
++    ),
++  }))();
++export type UsageAccountLabelInput = typeof UsageAccountLabelInput.Type;
++const accountDisplay = /* @__PURE__ */ (() =>
++  Schema.Union([
++    Schema.Struct({ kind: Schema.Literal("imported-only"), label: Schema.NullOr(Schema.String) }),
++    Schema.Struct({ kind: Schema.Literal("no-account-recorded"), label: Schema.Null }),
++  ]))();
+ const key = /* @__PURE__ */ (() =>
+   Schema.Struct({
+     currency: Schema.NullOr(Schema.String),
+@@ -162,6 +186,7 @@
+       Schema.Union([
+         Schema.Struct({
+           key: key.check(Schema.makeFilter((key) => key.account !== "otherAccounts")),
++          accountDisplay: Schema.optionalKey(accountDisplay),
+           buckets: Schema.Array(bucket),
+         }),
+         Schema.Struct({
+diff --git a/apps/hosted/server/src/implementation/pool-app-ui.ts b/apps/hosted/server/src/implementation/pool-app-ui.ts
+--- a/apps/hosted/server/src/implementation/pool-app-ui.ts
++++ b/apps/hosted/server/src/implementation/pool-app-ui.ts
+@@ -14,13 +14,20 @@
+   type OrganizationAccess,
+ } from "../contracts/organization.ts";
+ import { PoolOverviewInput } from "../contracts/pool-usage-overview.ts";
+-import { PoolUsageSeriesInput } from "../contracts/pool-usage-series.ts";
+-import { poolPersonalUsageOverview, poolUsageOverview, poolUsageSeries } from "./pool-usage.ts";
++import { PoolUsageSeriesInput, UsageAccountLabelInput } from "../contracts/pool-usage-series.ts";
++import {
++  poolPersonalUsageOverview,
++  poolUsageOverview,
++  poolUsageSeries,
++  setUsageAccountLabel,
++} from "./pool-usage.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
+ 
+ export const poolAppUsagePath = "/_executor/api/pool-usage/series";
+ export const poolAppUsageOverviewPath = "/_executor/api/pool-usage/overview";
+ export const poolAppPersonalUsageOverviewPath = "/_executor/api/pool-usage/personal-overview";
++export const poolAppUsageAccountLabelPath = "/_executor/api/pool-usage/account-label";
++const LabelRequest = Schema.Struct({ version: VersionId, input: UsageAccountLabelInput });
+ const SeriesRequest = Schema.Struct({ version: VersionId, input: PoolUsageSeriesInput });
+ const OverviewRequest = Schema.Struct({ version: VersionId, input: PoolOverviewInput });
+ const json = (body: unknown, status = 200) =>
+@@ -115,3 +122,46 @@
+ export const poolAppPersonalUsageOverview = <E, R>(
+   authorize: Parameters<typeof appUsageOverview<E, R>>[0],
+ ) => appUsageOverview(authorize, poolPersonalUsageOverview);
++
++export const poolAppUsageAccountLabel = <E, R>(
++  authorize: Effect.Effect<
++    {
++      readonly app: Pick<App, "id" | "activeVersion">;
++      readonly access: OrganizationAccess & { readonly userId: string };
++    },
++    E,
++    R
++  >,
++) =>
++  Effect.gen(function* () {
++    const current = yield* authorize;
++    if (typeof current.access.userId !== "string" || !current.access.userId)
++      return json({ _tag: "UiUnauthorized" }, 401);
++    const payload = yield* HttpServerRequest.schemaBodyJson(LabelRequest).pipe(
++      Effect.catch(() => Effect.succeed(undefined)),
++    );
++    if (payload === undefined)
++      return json(
++        {
++          error: "invalid_query",
++          message: "Provide an imported-account label and this page's version.",
++        },
++        400,
++      );
++    if (payload.version !== current.app.activeVersion)
++      return json({ _tag: "UiDeploymentChanged" }, 409);
++    const result = yield* setUsageAccountLabel(current.app.id, payload.input).pipe(
++      Effect.provideService(CurrentOrganization, current.access),
++      Effect.provideService(CurrentUserId, current.access.userId),
++      Effect.provideService(CurrentAuthorization, fullAuthority),
++    );
++    return json(result);
++  }).pipe(
++    Effect.catch((error) => {
++      if (Schema.is(UiUnauthorized)(error))
++        return Effect.succeed(json({ _tag: "UiUnauthorized" }, 401));
++      if (Schema.is(UiForbidden)(error) || Schema.is(OrganizationForbidden)(error))
++        return Effect.succeed(json({ _tag: "UiForbidden" }, 403));
++      return Effect.succeed(json({ _tag: "UiFailed", reason: "unavailable" }, 503));
++    }),
++  );
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -2,6 +2,8 @@
+ import { SelectedAccountInspection } from "@executor-js/sdk/core";
+ import {
+   poolAppUsage,
++  poolAppUsageAccountLabel,
++  poolAppUsageAccountLabelPath,
+   poolAppPersonalUsageOverview,
+   poolAppPersonalUsageOverviewPath,
+   poolAppUsageOverview,
+@@ -859,6 +861,10 @@
+     originAccess,
+     sessionAccess,
+     telemetry,
++    poolUsageAccountLabel: {
++      path: poolAppUsageAccountLabelPath,
++      write: poolAppUsageAccountLabel(authorize),
++    } as const,
+     poolUsage: { path: poolAppUsagePath, read: poolAppUsage(authorize) } as const,
+     poolPersonalUsageOverview: {
+       path: poolAppPersonalUsageOverviewPath,
+diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
+--- a/apps/hosted/cloud/src/app-ui.ts
++++ b/apps/hosted/cloud/src/app-ui.ts
+@@ -175,6 +175,7 @@
+       HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
+       HttpRouter.add("GET", "/_executor/version", appUi.versions),
+       HttpRouter.add("POST", appUi.poolUsage.path, appUi.poolUsage.read),
++      HttpRouter.add("POST", appUi.poolUsageAccountLabel.path, appUi.poolUsageAccountLabel.write),
+       HttpRouter.add("POST", appUi.poolUsageOverview.path, appUi.poolUsageOverview.read),
+       HttpRouter.add(
+         "POST",
+diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
+--- a/apps/hosted/self-host/src/implementation/routes.ts
++++ b/apps/hosted/self-host/src/implementation/routes.ts
+@@ -243,6 +243,7 @@
+       HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
+       HttpRouter.add("GET", "/_executor/version", appUi.versions),
+       HttpRouter.add("POST", appUi.poolUsage.path, appUi.poolUsage.read),
++      HttpRouter.add("POST", appUi.poolUsageAccountLabel.path, appUi.poolUsageAccountLabel.write),
+       HttpRouter.add("POST", appUi.poolUsageOverview.path, appUi.poolUsageOverview.read),
+       HttpRouter.add(
+         "POST",
+diff --git a/e2e/tests/pool-usage-series.spec.ts b/e2e/tests/pool-usage-series.spec.ts
+--- a/e2e/tests/pool-usage-series.spec.ts
++++ b/e2e/tests/pool-usage-series.spec.ts
+@@ -220,6 +220,28 @@
+           (yield* api.request(actors.admin, "POST", `${path}/series`, {
+             ...query,
+             accounts: Array(501).fill("acc_11111111-1111-4111-8111-111111111111"),
++          })).status,
++        ).toBe(400);
++        const labelInput = { account: "imported:" + "c".repeat(64), label: "Archive subscription" };
++        const labelCalls = (yield* backend.calls).length;
++        expect(
++          (yield* api.request(actors.member, "POST", path + "/account-label", labelInput)).status,
++        ).toBe(403);
++        expect((yield* backend.calls).length).toBe(labelCalls);
++        expect(
++          (yield* api.request(actors.admin, "POST", path + "/account-label", labelInput)).status,
++        ).toBe(200);
++        const labelAssertion = (yield* backend.calls).at(-1);
++        expect(labelAssertion).toMatchObject({
++          action: "setUsageAccountLabel",
++          pool: app.id,
++          canManage: true,
++          input: labelInput,
++        });
++        expect(
++          (yield* api.request(actors.admin, "POST", path + "/account-label", {
++            ...labelInput,
++            account: "saved-native",
+           })).status,
+         ).toBe(400);
+         const target = yield* Target;
+@@ -312,6 +334,19 @@
+         const memberPerson = personHash(memberIdentity.userId);
+         expect(memberPerson).not.toBe(ownerPerson);
+         const ownerApp = yield* openAppSession(actors.owner);
++        const appLabelPath = "/_executor/api/pool-usage/account-label";
++        expect(
++          (yield* postApp(ownerApp, appLabelPath, {
++            version: app.activeVersion,
++            input: labelInput,
++          })).status,
++        ).toBe(200);
++        expect(
++          (yield* postApp(ownerApp, appLabelPath, {
++            version: "dpl_stale",
++            input: labelInput,
++          })).status,
++        ).toBe(409);
+         const appSeries = yield* postApp(ownerApp, "/_executor/api/pool-usage/series", {
+           version: app.activeVersion,
+           input: query,
+@@ -353,6 +388,14 @@
+           };
+         });
+         const memberApp = yield* openAppSession(actors.member);
++        const beforeMemberLabel = (yield* backend.calls).length;
++        expect(
++          (yield* postApp(memberApp, appLabelPath, {
++            version: app.activeVersion,
++            input: labelInput,
++          })).status,
++        ).toBe(403);
++        expect((yield* backend.calls).length).toBe(beforeMemberLabel);
+         const personalPath = "/_executor/api/pool-usage/personal-overview";
+         const managerPath = "/_executor/api/pool-usage/overview";
+         const range = {
+diff --git a/e2e/support/pool-usage-series-backend.ts b/e2e/support/pool-usage-series-backend.ts
+--- a/e2e/support/pool-usage-series-backend.ts
++++ b/e2e/support/pool-usage-series-backend.ts
+@@ -48,6 +48,7 @@
+ const Assertion = Schema.Struct({
+   action: Schema.Literals([
+     "poolUsageSeries",
++    "setUsageAccountLabel",
+     "lastSuccessAt",
+     "poolOverview",
+     "poolPersonalOverview",
+@@ -58,11 +59,13 @@
+   expiresAt: Schema.Number,
+   input: Schema.Unknown,
+   authority: Schema.optionalKey(NativeAuthority),
++  canManage: Schema.optionalKey(Schema.Boolean),
+ });
+ 
+ // Public paths are shared by the signed native series, last-success and overview reads.
+ const assertionPaths = {
+   poolUsageSeries: "/pool/v1/usage/series",
++  setUsageAccountLabel: "/pool/v1/setUsageAccountLabel",
+   lastSuccessAt: "/pool/v1/usage/last-success",
+   poolOverview: "/pool/v1/usage/overview",
+   poolPersonalOverview: "/pool/v1/usage/personal-overview",
+@@ -115,7 +118,13 @@
+             Effect.catch(() => Effect.succeed(undefined)),
+           )
+         : assertion.authority;
+-    if (assertion.action !== "poolPersonalOverview" && authority === undefined)
++    if (assertion.action === "setUsageAccountLabel" && assertion.canManage !== true)
++      return HttpServerResponse.empty({ status: 401 });
++    if (
++      assertion.action !== "poolPersonalOverview" &&
++      assertion.action !== "setUsageAccountLabel" &&
++      authority === undefined
++    )
+       return HttpServerResponse.empty({ status: 401 });
+     if (
+       assertion.expiresAt <= now ||
+@@ -126,6 +135,8 @@
+     yield* Ref.update(calls, (values) => [...values, assertion]);
+     const respond = yield* Ref.get(responder);
+     if (respond !== undefined) return HttpServerResponse.jsonUnsafe(respond(assertion));
++    if (assertion.action === "setUsageAccountLabel")
++      return HttpServerResponse.jsonUnsafe({ success: true });
+     if (personal !== undefined)
+       return HttpServerResponse.jsonUnsafe({
+         from: personal.from,
+@@ -345,6 +356,7 @@
+       Layer.mergeAll(
+         // Match the public pool usage paths in Basalt's src/pool/model-history/series-http.ts.
+         HttpRouter.add("POST", "/pool/v1/usage/series", handler),
++        HttpRouter.add("POST", "/pool/v1/setUsageAccountLabel", handler),
+         HttpRouter.add("POST", "/pool/v1/usage/last-success", handler),
+         HttpRouter.add("POST", "/pool/v1/usage/overview", handler),
+         HttpRouter.add("POST", "/pool/v1/usage/personal-overview", handler),

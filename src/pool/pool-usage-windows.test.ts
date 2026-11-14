@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { callerHeader } from "../../apps/pool/contract.ts";
 import { quotaSamplingFixture } from "./quota-sampling.test-helpers.ts";
+import { seedCatalog } from "./allowances/data.ts";
 import { signPoolToken } from "./token.ts";
 
 test("the alarm retains a five-hour allowance crowded out of Home's list summary", async () => {
@@ -24,7 +25,10 @@ test("the alarm retains a five-hour allowance crowded out of Home's list summary
   );
   assert.equal(response.status, 200);
   const value = await f.capacity(Math.floor((at - 7 * 86_400_000) / 3_600_000) * 3_600_000, at);
-  assert.deepEqual(await response.json(), value);
+  assert.deepEqual(await response.json(), {
+    ...value,
+    allowanceCatalog: { entries: seedCatalog.entries },
+  });
   assert.deepEqual(
     value.points.map((point) => point.windowSeconds).sort((a, b) => a - b),
     [18_000, 604_800],
@@ -124,7 +128,10 @@ test("the capacity RPC includes a measured Grok week and excludes its product br
   );
   assert.equal(response.status, 200);
   const value = await f.capacity(Math.floor((at - 7 * 86400000) / 3600000) * 3600000, at);
-  assert.deepEqual(await response.json(), value);
+  assert.deepEqual(await response.json(), {
+    ...value,
+    allowanceCatalog: { entries: seedCatalog.entries },
+  });
   assert.equal(value.points.length, 1);
   const point = value.points[0]!;
   assert.equal(point.provider, "xai");
@@ -136,4 +143,105 @@ test("the capacity RPC includes a measured Grok week and excludes its product br
     f.calls.some((route) => route.endsWith("/collect")),
     false,
   );
+});
+
+async function sampledCapacity(options: {
+  sourceMinutes: number;
+  sampleMinutes?: number;
+  durationMinutes?: number;
+  interrupt?: "membership" | "collection" | "window";
+  resumeOutage?: boolean;
+}) {
+  const start = Date.parse("2026-11-09T08:00:00Z");
+  const f = quotaSamplingFixture(start);
+  const token = await signPoolToken("ab".repeat(32), {
+    pool: "fixture",
+    owner: "owner",
+    organization: "synthetic",
+  });
+  const interval = options.sourceMinutes * 60_000;
+  for (
+    let elapsed = 0;
+    elapsed <= (options.durationMinutes ?? 210) * 60_000;
+    elapsed += (options.sampleMinutes ?? 5) * 60_000
+  ) {
+    if (options.resumeOutage && elapsed > 0 && elapsed < 20 * 60_000) continue;
+    const sequence = Math.floor(elapsed / interval);
+    const sourceAt = start + sequence * interval;
+    const observedAt = new Date(sourceAt).toISOString();
+    f.detail.collection.observed_at = observedAt;
+    f.credential.observed_at = observedAt;
+    if (options.interrupt === "membership") f.select(elapsed !== 10 * 60_000);
+    f.detail.collection.status =
+      options.interrupt === "collection" && elapsed === 10 * 60_000
+        ? "failed"
+        : options.interrupt === "window" && elapsed === 10 * 60_000
+          ? "partial"
+          : "success";
+    for (const window of f.detail.windows) {
+      window.observed_at = observedAt;
+      window.expires_at = new Date(sourceAt + 30 * 60_000).toISOString();
+      const remaining = 90 - sequence;
+      window.remaining = remaining;
+      window.remaining_ratio = remaining / 100;
+      window.status =
+        options.interrupt === "window" && elapsed === 10 * 60_000 ? "failed" : "healthy";
+    }
+    await f.sampleAt(start + elapsed);
+  }
+  const response = await f.usage.handle(
+    new Request("https://pool.example.test/pool/v1/usage/capacity?days=7", {
+      headers: { authorization: `Bearer ${token}`, [callerHeader]: "owner" },
+    }),
+  );
+  assert.equal(response.status, 200);
+  const value = await response.json();
+  const forecast = value.forecasts.find(
+    (entry: { windowSeconds: number }) => entry.windowSeconds === 604800,
+  );
+  assert.ok(forecast, "the weekly quota remains visible");
+  assert.equal(
+    f.calls.some((route) => route.endsWith("/collect")),
+    false,
+  );
+  return forecast;
+}
+
+test("automatic half-hour quota observations train capacity despite collection jitter", async () => {
+  for (const sourceMinutes of [30.03, 34.04]) {
+    const forecast = await sampledCapacity({ sourceMinutes });
+    assert.ok(
+      forecast.history.observedHours >= 2,
+      `${sourceMinutes}-minute source cadence must train completed hours`,
+    );
+  }
+});
+
+test("weekly training rejects long source intervals and sampler outages", async () => {
+  for (const options of [{ sourceMinutes: 35.01 }, { sourceMinutes: 34.04, sampleMinutes: 20 }]) {
+    const forecast = await sampledCapacity(options);
+    assert.equal(forecast.history.observedHours, 0);
+  }
+});
+
+test("removing an account or failing collection breaks historical source continuity", async () => {
+  const uninterrupted = await sampledCapacity({ sourceMinutes: 34.04, durationMinutes: 75 });
+  assert.equal(uninterrupted.history.observedHours, 1);
+  for (const interrupt of ["membership", "collection", "window"] as const) {
+    const forecast = await sampledCapacity({
+      sourceMinutes: 34.04,
+      durationMinutes: 75,
+      interrupt,
+    });
+    assert.equal(forecast.history.observedHours, 0, interrupt);
+  }
+});
+
+test("a resumed sampler cannot train across its earlier outage", async () => {
+  const forecast = await sampledCapacity({
+    sourceMinutes: 34.04,
+    durationMinutes: 75,
+    resumeOutage: true,
+  });
+  assert.equal(forecast.history.observedHours, 0);
 });

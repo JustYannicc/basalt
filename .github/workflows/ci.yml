@@ -248,6 +248,7 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --cwd clients --frozen-lockfile
+      - run: bun install --cwd src/tunnel --frozen-lockfile
       - run: bun run --cwd clients typecheck
       - name: Verify headless connection through independent processes
         run: bun run --cwd clients test
@@ -2154,6 +2155,9 @@ jobs:
   fast:
     needs: select
     runs-on: ubuntu-latest
+    env:
+      # Bytecode inside the pool context changes its reviewed publication identity.
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
         with:

@@ -8,6 +8,7 @@ import {
   type TunnelData,
   type TunnelOpen,
   type TunnelServerFrame,
+  type TunnelLimits,
 } from "../../clients/contracts/tunnel.ts";
 import { nativeModelRequest } from "../native-model.ts";
 import type { TunnelEnvironment } from "./access.ts";
@@ -16,6 +17,7 @@ import { upgradedSocket } from "./platform.ts";
 import { TunnelWebSocket } from "./websocket.ts";
 import { recordTunnelFailure, tunnelFailure } from "./failure.ts";
 import type { OperationTiming } from "./timing.ts";
+import { modelDrainProtocol } from "../pool/model-drain-contract.ts";
 
 export class TunnelOperation {
   readonly output = new TunnelOutput();
@@ -30,16 +32,19 @@ export class TunnelOperation {
   private send: (frame: TunnelServerFrame) => void;
   private done: () => void;
   private timing: OperationTiming | undefined;
+  private limits: TunnelLimits;
   constructor(
     open: TunnelOpen,
     send: (frame: TunnelServerFrame) => void,
     done: () => void,
     timing?: OperationTiming,
+    limits: TunnelLimits = tunnelLimits,
   ) {
     this.open = open;
     this.send = send;
     this.done = done;
     this.timing = timing;
+    this.limits = limits;
     this.timing?.("open");
     if (open.operation.transport === "http" && open.operation.method === "POST") {
       this.input = new TunnelInput((bytes) =>
@@ -104,7 +109,12 @@ export class TunnelOperation {
       this.timing?.("dispatch");
       const response =
         this.open.operation.service === "models"
-          ? await nativeModelRequest(target, env)
+          ? await nativeModelRequest(
+              target,
+              env,
+              this.limits.websocketMessageBytes !== undefined &&
+                this.open.operation.transport === "websocket",
+            )
           : await env.TOOLS_SERVICE.fetch(target);
       this.timing?.("headers");
       if (this.stopped) {
@@ -114,6 +124,13 @@ export class TunnelOperation {
       if (this.open.operation.transport === "websocket" && response.status === 101) {
         const socket = upgradedSocket(response);
         if (!socket) throw new Error("Missing model socket");
+        if (
+          this.limits.websocketMessageBytes !== undefined &&
+          response.headers.get("sec-websocket-protocol") !== modelDrainProtocol
+        ) {
+          socket.close(1000, "Model consumer protocol unavailable");
+          throw new Error("Model consumer protocol unavailable");
+        }
         this.socket = new TunnelWebSocket(
           socket,
           this.open.id,
@@ -127,6 +144,7 @@ export class TunnelOperation {
             if (!this.stopped) this.send({ v: 1, type: "end", id: this.open.id });
             this.stop();
           },
+          this.limits,
         );
         this.send({ v: 1, type: "response", id: this.open.id, status: 101, headers: {} });
         this.send({ v: 1, type: "credit", id: this.open.id, bytes: tunnelLimits.windowBytes });

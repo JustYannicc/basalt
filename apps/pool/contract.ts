@@ -343,6 +343,7 @@ export type ControlErrorCode =
   | "invalid_login_file"
   | "not_found"
   | "backend_unavailable"
+  | "bulk_import_not_provisioned"
   | "busy";
 
 export interface ControlError {

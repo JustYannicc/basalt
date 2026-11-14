@@ -6,7 +6,7 @@ import { AccountLimitsDialog, ModelLimits } from "./account-limits-view.tsx";
 import { capacityInputs } from "./account-view.ts";
 import type { Result } from "../index.ts";
 import type { PoolPersonalOverviewResult } from "../overview-contract.ts";
-import { capacityLabs, duration, gaps, hourMs, planChips } from "./capacity-model.ts";
+import { capacityLabs, duration, gaps, hourMs } from "./capacity-model.ts";
 import {
   CapacitySection,
   labSummaries,
@@ -15,7 +15,7 @@ import {
   type Tone,
 } from "./capacity-view.tsx";
 import { StateIcon } from "./controls.tsx";
-import { LabMark } from "./lab.tsx";
+import { LabMark, labProvider } from "./lab.tsx";
 import { seriesRead, type Overview, type RangeDays } from "./overview-data.ts";
 import { rows, total } from "./series-model.ts";
 import { Money, WhoUses } from "./usage-groups.tsx";
@@ -106,7 +106,14 @@ export function ManagerOverview({
           </button>
         </p>
       )}
-      <Answers data={current} labs={labs} days={days} name={name} view={view} />
+      <Answers
+        data={current}
+        labs={labs}
+        days={days}
+        name={name}
+        lab={labProvider(providers)}
+        view={view}
+      />
       <CapacitySection
         result={current.capacity?.ok && !providers ? undefined : current.capacity}
         empty={view !== undefined && overviewAccounts(view).length === 0}
@@ -123,6 +130,7 @@ export function ManagerOverview({
         onOpen={(account) => openDetails("Account limits", [account])}
       />
       <WhoUses
+        lab={labProvider(providers)}
         overview={data.usage?.ok ? data.usage.value : undefined}
         people={data.people}
         models={data.models}
@@ -201,6 +209,7 @@ export function PersonalOverview({
         </p>
       )}
       <WhoUses
+        lab={labProvider(providers)}
         overview={undefined}
         personal={data.value}
         people={read}
@@ -249,12 +258,14 @@ function Answers({
   labs,
   days,
   name,
+  lab: provider,
   view,
 }: {
   data: Overview;
   labs: readonly LabSummary[];
   days: number;
   name: (id: string) => string;
+  lab: (id: string) => Provider | undefined;
   view: PoolView | undefined;
 }) {
   const worst = labs.find((entry) => entry.verdict.tone === "warn" || entry.verdict.tone === "bad");
@@ -342,7 +353,7 @@ function Answers({
         <span className="grid gap-0.5 text-[13px]">
           {labs.map(({ lab, verdict }) => (
             <span key={lab.provider} className="flex min-w-0 items-center gap-1.5">
-              <LabMark provider={lab.provider} name={name(lab.provider)} small />
+              <LabMark provider={provider(lab.provider)} small />
               <span className={toneText[verdict.tone]}>
                 {name(lab.provider)}: {verdict.short.toLowerCase()}
               </span>
@@ -453,19 +464,8 @@ function Attention({
   if (view && data.capacity?.ok) {
     const history = data.capacity.value;
     for (const lab of capacityLabs(history)) {
-      const flagged = new Set(
-        lab.lines.flatMap((line) =>
-          planChips(line.points.at(-1) ?? null)
-            .filter((chip) => chip.flagged)
-            .map((chip) => chip.plan),
-        ),
-      );
-      if (flagged.size)
-        items.push({
-          tone: "warn",
-          text: `${name(lab.provider)}: no verified allowance multiple for ${[...flagged].join(", ")}`,
-          sub: "Remaining percentages are measured. Totals use an unverified 1x allowance; account sizing is unavailable.",
-        });
+      // An unknown allowance is sized as one account and explained in the capacity details. It
+      // is never an attention item: nobody can fix missing vendor documentation.
       const missing = Math.max(
         0,
         ...lab.lines.map((line) =>

@@ -162,7 +162,7 @@ test("a client reference or discover URL alone cannot establish automatic sign-i
   missingMetadata.metadata.clear();
   assert.match(
     oauthFitness(feed, reviews, missingMetadata).join("\n"),
-    /automatic client metadata is missing or changed/,
+    /automatic client metadata is unavailable/,
   );
   const changedMetadata = evidence();
   changedMetadata.metadata.set("https://fixture.example/metadata", {
@@ -171,7 +171,7 @@ test("a client reference or discover URL alone cannot establish automatic sign-i
   });
   assert.match(
     oauthFitness(feed, reviews, changedMetadata).join("\n"),
-    /automatic client metadata is missing or changed/,
+    /automatic client metadata changed/,
   );
   const cimd: readonly OAuthReview[] = [
     {
@@ -361,4 +361,43 @@ test("account endpoint reviews bind source without inventing fixed OAuth metadat
     () => oauthReviews({ version: 1, entries: [{ ...input.entries[0], sourceSha256: undefined }] }),
     /reviewed source digest/,
   );
+});
+
+test("invalid reviewed metadata names every protocol property and observed value", () => {
+  const invalid = evidence();
+  invalid.metadata.set("https://fixture.example/metadata", {
+    sha256: sha,
+    document: {
+      issuer: "http://fixture.example",
+      token_endpoint: null,
+      registration_endpoint: 42,
+    },
+  });
+  assert.deepEqual(oauthFitness(feed, reviews, invalid), [
+    'automatic/oauth: automatic client metadata does not support the reviewed protocol (issuer: expected HTTPS URL, observed "http://fixture.example")',
+    "automatic/oauth: automatic client metadata does not support the reviewed protocol (authorization_endpoint: expected HTTPS URL, observed missing)",
+    "automatic/oauth: automatic client metadata does not support the reviewed protocol (token_endpoint: expected HTTPS URL, observed null)",
+    "automatic/oauth: automatic client metadata does not support the reviewed protocol (registration_endpoint: expected HTTPS URL, observed 42)",
+  ]);
+  invalid.metadata.set("https://fixture.example/metadata", { sha256: sha, document: null });
+  assert.deepEqual(oauthFitness(feed, reviews, invalid), [
+    "automatic/oauth: automatic client metadata does not support the reviewed protocol (document: expected object, observed null)",
+  ]);
+  const automatic = reviews[0]!;
+  const method = automatic.methods.oauth!;
+  if (method.kind !== "automatic") throw new Error("Expected automatic review");
+  const cimd = { ...automatic, methods: { oauth: { ...method, protocol: "cimd" as const } } };
+  const missingCimd = evidence();
+  assert.deepEqual(oauthFitness({ ...feed, apps: [feed.apps[0]!] }, [cimd], missingCimd), [
+    "automatic/oauth: automatic client metadata does not support the reviewed protocol (client_id_metadata_document_supported: expected true, observed missing)",
+  ]);
+  const document = missingCimd.metadata.get(method.metadata)!.document;
+  assert.ok(typeof document === "object" && document !== null);
+  missingCimd.metadata.set(method.metadata, {
+    sha256: sha,
+    document: { ...document, client_id_metadata_document_supported: false },
+  });
+  assert.deepEqual(oauthFitness({ ...feed, apps: [feed.apps[0]!] }, [cimd], missingCimd), [
+    "automatic/oauth: automatic client metadata does not support the reviewed protocol (client_id_metadata_document_supported: expected true, observed false)",
+  ]);
 });

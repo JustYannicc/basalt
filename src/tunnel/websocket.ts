@@ -2,12 +2,14 @@ import {
   encodeTunnelBytes,
   tunnelLimits,
   type TunnelServerFrame,
+  type TunnelLimits,
 } from "../../clients/contracts/tunnel.ts";
 import type { TunnelOutput } from "./flow.ts";
 import type { TunnelSocket } from "./platform.ts";
 import { tunnelFailure, type TunnelFailure } from "./failure.ts";
+import { ModelDrain } from "./model-drain.ts";
 
-/** A provider cannot be paused by WebSocket.send; close instead of buffering beyond one window. */
+/** Provider sends cannot be paused; retain at most the negotiated message budget. */
 export class TunnelWebSocket {
   private socket: TunnelSocket;
   private output: TunnelOutput;
@@ -24,6 +26,10 @@ export class TunnelWebSocket {
   private received = 0;
   private upstreamClosed = false;
   private ended: () => void;
+  private limits: TunnelLimits;
+  private drain: ModelDrain | undefined;
+  private inputCredit: number = tunnelLimits.windowBytes;
+  private pendingCredit = 0;
   constructor(
     socket: TunnelSocket,
     id: number,
@@ -31,6 +37,7 @@ export class TunnelWebSocket {
     send: (frame: TunnelServerFrame) => void,
     fail: (failure: TunnelFailure) => void,
     ended: () => void,
+    limits: TunnelLimits = tunnelLimits,
   ) {
     this.socket = socket;
     this.id = id;
@@ -38,14 +45,36 @@ export class TunnelWebSocket {
     this.send = send;
     this.fail = fail;
     this.ended = ended;
+    this.limits = limits;
+    this.drain =
+      limits.websocketMessageBytes === undefined
+        ? undefined
+        : new ModelDrain(socket, limits.websocketMessageBytes);
     socket.binaryType = "arraybuffer";
     socket.addEventListener("message", (event) => {
+      if (this.stopped) return;
       try {
         const data: unknown = event.data;
-        const text = typeof data === "string";
-        if (!text && !(data instanceof ArrayBuffer)) throw new Error("Invalid model socket data");
-        const bytes = text ? new TextEncoder().encode(data) : new Uint8Array(data as ArrayBuffer);
-        if (Math.max(1, bytes.length) + this.queuedBytes > tunnelLimits.windowBytes)
+        let bytes: Uint8Array, text: boolean;
+        if (this.drain) {
+          const message = this.drain.receive(data);
+          if (!message) {
+            if (this.drain.idle) this.releaseCredit();
+            return;
+          }
+          ({ bytes, text } = message);
+        } else {
+          text = typeof data === "string";
+          if (!text && !(data instanceof ArrayBuffer)) throw new Error("Invalid model socket data");
+          bytes =
+            typeof data === "string"
+              ? new TextEncoder().encode(data)
+              : new Uint8Array(data as ArrayBuffer);
+        }
+        if (
+          Math.max(1, bytes.length) + this.queuedBytes > this.messageBytes ||
+          (limits.websocketMessageBytes !== undefined && this.queued.length >= 256)
+        )
           throw new Error("Model socket buffer exceeded");
         this.queued.push({ bytes, text });
         this.queuedBytes += Math.max(1, bytes.length);
@@ -70,35 +99,61 @@ export class TunnelWebSocket {
     if (bytes.length === 0 && more) throw new Error("Empty message continuation");
     if (this.stopped || (this.incomingText !== undefined && text !== this.incomingText))
       throw new Error("Invalid model message continuation");
+    if (this.drain) {
+      if (bytes.length > this.inputCredit) throw new Error("Model input credit exceeded.");
+      this.inputCredit -= bytes.length;
+      this.pendingCredit += bytes.length;
+    }
     this.incomingText = text;
     this.incomingBytes += bytes.length;
-    this.received += bytes.length;
+    if (this.limits.websocketMessageBytes === undefined) this.received += bytes.length;
     if (
-      this.incomingBytes > tunnelLimits.windowBytes ||
-      this.received > tunnelLimits.websocketRequestBytes
+      this.incomingBytes > this.messageBytes ||
+      (this.limits.websocketMessageBytes === undefined &&
+        this.received > tunnelLimits.websocketRequestBytes)
     )
       throw new Error("Model socket request limit exceeded");
     this.incoming.push(bytes);
-    if (more) return;
+    if (more) {
+      // v2 credit bounds transport chunks; the separate envelope bounds reassembly.
+      if (this.drain?.idle) this.releaseCredit();
+      return;
+    }
     const message = new Uint8Array(this.incomingBytes);
     let offset = 0;
     for (const part of this.incoming) {
       message.set(part, offset);
       offset += part.length;
     }
-    this.socket.send(
-      text ? new TextDecoder("utf-8", { fatal: true }).decode(message) : message.buffer,
-    );
-    if (this.incomingBytes)
-      this.send({ v: 1, type: "credit", id: this.id, bytes: this.incomingBytes });
+    if (this.drain) {
+      if (text) new TextDecoder("utf-8", { fatal: true }).decode(message);
+      this.drain.send(message, text);
+    } else {
+      this.socket.send(
+        text ? new TextDecoder("utf-8", { fatal: true }).decode(message) : message.buffer,
+      );
+      if (this.incomingBytes)
+        this.send({ v: 1, type: "credit", id: this.id, bytes: this.incomingBytes });
+    }
     this.incoming = [];
     this.incomingBytes = 0;
     this.incomingText = undefined;
+  }
+  private get messageBytes() {
+    return this.limits.websocketMessageBytes ?? tunnelLimits.windowBytes;
+  }
+  private releaseCredit() {
+    if (!this.pendingCredit) return;
+    const bytes = this.pendingCredit;
+    this.pendingCredit = 0;
+    this.inputCredit += bytes;
+    this.send({ v: 1, type: "credit", id: this.id, bytes });
   }
   stop() {
     this.stopped = true;
     this.queued = [];
     this.incoming = [];
+    this.drain?.stop();
     this.queuedBytes = 0;
     try {
       this.socket.close(1000, "Operation ended");

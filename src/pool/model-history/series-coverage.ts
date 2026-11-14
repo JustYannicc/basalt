@@ -1,3 +1,4 @@
+import { historyImportCompletionVersion } from "./import-completion-schema.ts";
 import { digest } from "../backend-users.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import { timestamp } from "./record.ts";
@@ -52,6 +53,38 @@ export async function seriesCoverage(
       ).rows[0]?.timestamp_exact,
     );
   }
+  const ready =
+    !personal &&
+    (
+      await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name=$1", [
+        historyImportCompletionVersion,
+      ])
+    ).rows.length > 0;
+  const completions = ready
+    ? (
+        await db.query(
+          `SELECT source,frozen_from AS "frozenFrom",frozen_to AS "frozenTo",
+    upper_source_id::text AS "upperSourceId",manifest_digest AS "manifestDigest",map_digest AS "accountMappingDigest",
+    ids_digest AS "idsDigest",verified_rows::text AS "verifiedRows" FROM basalt_model_import_completion
+    WHERE pool=$1 AND source=ANY($2::text[])`,
+          [query.coverageValues[0], result.rows.map((row) => row.source)],
+        )
+      ).rows
+    : [];
+  const completionBySource = new Map(
+    completions.map((row) => [
+      String(row.source),
+      {
+        frozenFrom: String(row.frozenFrom),
+        frozenTo: String(row.frozenTo),
+        upperSourceId: String(row.upperSourceId),
+        manifestDigest: String(row.manifestDigest),
+        accountMappingDigest: String(row.accountMappingDigest),
+        idsDigest: String(row.idsDigest),
+        verifiedRows: String(row.verifiedRows),
+      },
+    ]),
+  );
   const rows = result.rows;
   const sum = (key: string) => {
     const total = rows.reduce((total, row) => total + requestCount(row[key]), 0);
@@ -84,7 +117,14 @@ export async function seriesCoverage(
     firstAt: nullableAt(row.first_at),
     lastAt: nullableAt(row.last_at),
     backfillComplete:
-      row.source === query.homeSource && cursor ? cursor.backfill_complete === true : null,
+      row.source === query.homeSource && cursor
+        ? cursor.backfill_complete === true
+        : row.source !== query.homeSource && row.source !== query.gatewaySource
+          ? completionBySource.has(String(row.source))
+          : null,
+    ...(completionBySource.has(String(row.source))
+      ? { completion: completionBySource.get(String(row.source))! }
+      : {}),
     sweep:
       row.source === query.homeSource && cursor
         ? { id: String(cursor.sweep_id), upper: String(cursor.sweep_upper) }

@@ -230,6 +230,33 @@
             "mode": "manual",
             "requires": "Retire after pinned Home publishes steady single-part PostgreSQL observations in one statement with fresh membership authority, post-lock database time and a concurrent-attempt snapshot guard; preserves cold, multipart, invalid, replay and stale-revision behavior; renews exact Home incarnations in one locked statement; and persists semantic node changes with bounded nonempty retention refresh and no empty periodic writes. Preserve observation, liveness, fencing and draining bounds without a schema or lease change."
           }
+        },
+        {
+          "identity": "cliproxy-home-quota-deadline",
+          "file": "0572-home-quota-deadline.patch",
+          "sha256": "bb2af25c1bb73037314823972d04f5a979d970d2045b7991df00f1eff6ec08c8",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only after the pinned selector preserves forecast-paced quota deadlines, retained smooth weighted credits, fallback and affinity safety, admission retry, bounded private decision evidence and current read-only snapshots. Prove staggered-reset availability and independent capacity-shortfall classification through the public pool API without exposing uninspectable account facts."
+          }
+        },
+        {
+          "identity": "home-summary-service-tier",
+          "file": "0594-home-summary-service-tier.patch",
+          "sha256": "e00ecfbd3ff8a2705adfbb78fd60595c5169bf0bf0d614b41d1444fc152b107a",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after the pinned Home narrow cursor and pending summary feeds preserve the stored service-tier identity, retain unknown auto values without guessing, and pass the known-tier, unknown-tier and metadata-only privacy regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-home-oauth-dispatch-expiry",
+          "file": "0600-home-oauth-dispatch-expiry.patch",
+          "sha256": "b808e231c4b2d455ced1c9a46dfacbe1f2d3df368ab448e79a37a30314962791",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only when pinned Home excludes expired OAuth credentials and its five-minute dispatch safety window before model-state, scheduler, full-credential and affinity admission. Prove no stale upstream dispatch, next-account fallback, clean temporary unavailability, same-UUID fresh replacement and quota-deadline compatibility through native public requests."
+          }
         }
       ]
     },
@@ -290,6 +317,33 @@
           "retirement": {
             "mode": "manual",
             "requires": "Retire after metadata-only Node usage publication preserves only allowlisted canonical API paths in its detached context, omits arbitrary paths and all other request metadata, and passes context, queue publication and fresh Home-capture regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-node-model-drain",
+          "file": "0574-node-model-drain.patch",
+          "sha256": "b4367d6f9bd3d9f28cc172a8996a1b2ad93e0cc26f01842a5df890bf09453cd1",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only after the pinned node preserves the opt-in basalt.model-drain.v1 sequence and exact-length read receipts, unbuffered private input handoff, bounded messages, raw Responses compatibility and no inference replay, with the native v2 slow-consumer and real node reader proofs."
+          }
+        },
+        {
+          "identity": "cliproxy-node-terminal-request-id",
+          "file": "0592-node-terminal-request-id.patch",
+          "sha256": "1212239730812b277f6cc5007024e9f2f24c68910eb6f0e92c84db735bfce42b",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire after the pinned Node propagates validated per-request terminal correlation identities through HTTP, multiplexed Responses and duplex successor usage, preserves independent trace and billing execution identities through metadata-only reporting, and passes the request, privacy and model-drain regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-node-model-lifetime",
+          "file": "0593-node-model-lifetime.patch",
+          "sha256": "a6ec0a5c13987b2c1ce65a62e39cf76986962f798b8924fc5d0fe77fd3129ef4",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Retire only when the pinned Node exposes a private single-use connection completion channel that binds the actual model socket, preserves unmarked raw frames and public subprotocols, closes the data socket if completion becomes uncertain, and passes normal, client, upstream, revocation, duplicate-claim and draining-retirement regressions without inference replay or a byte-lifetime cap."
           }
         }
       ]
