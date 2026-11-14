@@ -14,7 +14,8 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { capacityFixture, overviewFixture } from "./overview-fixture.mjs";
+import { capacityFixture } from "./overview-fixture.mjs";
+import { summaryReply } from "../../e2e/pool-overview-usage.mjs";
 import { handleSelfUsageImport } from "../../src/pool/model-history/self-import-http.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
 import { bundlePoolApp } from "../pool-app-bundle.ts";
@@ -81,13 +82,13 @@ export async function importAppFixture(connectionString) {
         response.end(
           '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/main.css"></head><body><script type="application/json" id="executor-context">{"version":"fixture"}</script><div id="root"></div><script type="module" src="/main.js"></script></body></html>',
         );
-      } else if (request.url === "/_executor/api/pool-usage/overview") {
+      } else if (request.url === "/_executor/api/pool-usage/summary") {
         const { input } = JSON.parse(await body());
         if (!manager) {
           response.writeHead(403).end();
           return;
         }
-        json(overviewFixture(input, usage));
+        json(summaryReply(input));
       } else if (request.url === "/_executor/api/pool-usage/personal-overview") {
         response.writeHead(503).end();
       } else if (
