@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api"
@@ -60,7 +61,9 @@ func (h *handler) systemOne(c *gin.Context) {
 		if httptransport.IsOutcomeUnknown(failed.Error) {
 			// Replay is already stopped; retain the native protocol at the public boundary.
 			c.Header("x-should-retry", "false")
-			c.JSON(http.StatusBadGateway, gin.H{"detail": "TypeSafe request outcome is unknown"})
+			doc := ojson.NewDoc([]byte(`{}`))
+			_ = doc.Set("detail", "TypeSafe request outcome is unknown")
+			c.Data(http.StatusBadGateway, "application/json", doc.Bytes())
 			return
 		}
 		if failed.DirectResponse {
