@@ -581,7 +581,9 @@ const program = Effect.gen(function* () {
         yield* page(() =>
           screen.getByRole("button", { name: /Details of .+ banked resets/u }).click(),
         );
-        yield* page(() => dialog.getByText("Synthetic Codex", { exact: true }).waitFor());
+        yield* page(() =>
+          dialog.getByRole("heading", { name: inPool.label, exact: true }).waitFor(),
+        );
         checked(
           `reset Details at ${width}px explains that nothing is spent`,
           yield* page(() =>
