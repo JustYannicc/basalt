@@ -3,8 +3,11 @@ import { test } from "node:test";
 import type { UsageSummaryBucket, UsageSummaryGroup } from "../usage-overview-contract.ts";
 import {
   breakdown,
+  cacheShare,
   delta,
   incident,
+  knownRuns,
+  sinceOption,
   summaryRange,
   total,
   zurichDay,
@@ -97,7 +100,7 @@ test("a client hang-up is never counted as a pool failure", () => {
 test("a range is whole Zurich days ending today, across a DST change", () => {
   // 2026-10-25 is the autumn change in Zurich.
   const now = Date.parse("2026-10-27T10:00:00Z");
-  const range = summaryRange(7, now);
+  const range = summaryRange({ kind: "days", days: 7 }, now);
   assert.equal(range.from, "2026-10-20T22:00:00.000Z");
   assert.equal(zurichDay(range.from), "2026-10-21");
   assert.equal(new Date(zurichMidnight("2026-10-26")).toISOString(), "2026-10-25T23:00:00.000Z");
@@ -131,4 +134,55 @@ test("a lab's cost comes from the official usage slices of that lab", () => {
       ["codex", 0.25, { amount: null, unpriced: 5 }],
     ],
   );
+});
+
+test("partly counted tokens keep their sum and say how many requests lack counts", () => {
+  const partly = bucket(10, "1");
+  const counted = partly.details!;
+  const missing = {
+    ...partly,
+    details: {
+      ...counted,
+      tokens: { ...counted.tokens, total: { sum: "60", known: 6, missing: 4 } },
+    },
+  };
+  assert.deepEqual(total([group("codex", [missing])], "tokens"), { value: 60, missing: 4 });
+  // A real zero stays a known zero.
+  const zero = { ...partly, details: { ...counted, tokens: tokens("0") } };
+  assert.deepEqual(total([group("codex", [zero])], "tokens"), { value: 0, missing: 0 });
+});
+
+test("cache share leaves out partly counted days and says so", () => {
+  const whole = bucket(10, "1");
+  const partly = {
+    ...whole,
+    details: {
+      ...whole.details!,
+      tokens: { ...whole.details!.tokens, total: { sum: "50", known: 5, missing: 5 } },
+    },
+  };
+  assert.deepEqual(cacheShare([group("codex", [whole])]), { share: 1, partial: false });
+  assert.deepEqual(cacheShare([group("codex", [whole, partly])]), { share: 1, partial: true });
+});
+
+test("an unknown day splits a sparkline instead of reading as zero", () => {
+  assert.deepEqual(
+    knownRuns([3, null, 0, 2]).map((run) => run.map((point) => point.value)),
+    [[3], [0, 2]],
+  );
+});
+
+test("a since-start range begins at the first retained day, capped at 400 days", () => {
+  const now = Date.parse("2026-11-14T03:00:00Z");
+  assert.equal(sinceOption(null, now), null);
+  assert.equal(sinceOption(undefined, now), null);
+  const recent = sinceOption("2026-05-03T09:15:00.000Z", now)!;
+  assert.equal(recent.bounds.from, "2026-05-02T22:00:00.000Z");
+  assert.equal(recent.bounds.bounded, false);
+  assert.equal(recent.bounds.days, 196);
+  const old = sinceOption("2024-01-02T00:00:00.000Z", now)!;
+  assert.equal(old.bounds.bounded, true);
+  assert.ok(now - Date.parse(old.bounds.from) <= 400 * 86_400_000);
+  assert.equal(zurichDay(old.bounds.from), "2025-10-11");
+  assert.equal(old.bounds.days, 400);
 });

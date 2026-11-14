@@ -53,11 +53,65 @@ export function zurichMidnight(day: string) {
   return guess - zurichOffset(guess - zurichOffset(guess));
 }
 
-/** Whole Zurich days ending with today, so each daily bucket is a full calendar day but today. */
-export function summaryRange(days: RangeDays, now: number) {
-  const today = zurichMidnight(zurichDay(now));
-  const first = zurichMidnight(zurichDay(today - (days - 1) * 86_400_000 + 12 * 3_600_000));
-  return { from: new Date(first).toISOString(), to: new Date(now).toISOString() };
+/** The longest span the summary and capacity reads accept, in elapsed days. */
+export const maxRangeDays = 400;
+const dayMs = 86_400_000;
+
+/** A fixed window, or everything since the pool's first retained request, bounded to 400 days. */
+export type RangeChoice =
+  | { readonly kind: "days"; readonly days: RangeDays }
+  | { readonly kind: "since"; readonly first: string };
+
+export const rangeKey = (choice: RangeChoice) =>
+  choice.kind === "days" ? String(choice.days) : `since ${choice.first}`;
+
+export interface SummaryBounds {
+  readonly from: string;
+  readonly to: string;
+  /** Whole days the capacity read covers for the same end. */
+  readonly days: number;
+  /** The since-start window hit the 400-day limit, so older retained requests are outside it. */
+  readonly bounded: boolean;
+}
+
+/**
+ * Whole Zurich days ending with today, so each daily bucket is a full calendar day but today. A
+ * since-start window begins at the Zurich midnight before the first retained request, never earlier
+ * than the first whole day inside the 400-day limit.
+ */
+export function summaryRange(choice: RangeChoice, now: number): SummaryBounds {
+  if (choice.kind === "days") {
+    const today = zurichMidnight(zurichDay(now));
+    const first = zurichMidnight(zurichDay(today - (choice.days - 1) * dayMs + 12 * 3_600_000));
+    return {
+      from: new Date(first).toISOString(),
+      to: new Date(now).toISOString(),
+      days: choice.days,
+      bounded: false,
+    };
+  }
+  const limit = now - maxRangeDays * dayMs;
+  let start = zurichMidnight(zurichDay(choice.first));
+  const bounded = start < limit;
+  if (bounded) {
+    start = zurichMidnight(zurichDay(limit));
+    if (start < limit) start = zurichMidnight(zurichDay(start + 36 * 3_600_000));
+  }
+  return {
+    from: new Date(start).toISOString(),
+    to: new Date(now).toISOString(),
+    days: Math.min(maxRangeDays, Math.max(1, Math.ceil((now - start) / dayMs))),
+    bounded,
+  };
+}
+
+/** The since-start option, only when the pool's first retained request is known. */
+export function sinceOption(retainedFirstAt: string | null | undefined, now: number) {
+  if (typeof retainedFirstAt !== "string") return null;
+  const first = Date.parse(retainedFirstAt);
+  if (!Number.isFinite(first) || first > now) return null;
+  const choice: RangeChoice = { kind: "since", first: retainedFirstAt };
+  return { choice, bounds: summaryRange(choice, now) };
 }
 
 export function bucketValue(bucket: UsageSummaryBucket, metric: Metric): number | null {
@@ -77,13 +131,18 @@ export function groupTotal(group: UsageSummaryGroup, metric: Metric): Total {
   for (const bucket of group.buckets) {
     const known = bucketValue(bucket, metric);
     if (known !== null) value = (value ?? 0) + known;
-    // A priced bucket can still leave some of its requests unpriced.
+    // A known sum can still leave some requests without the metric: unpriced requests, or rows
+    // whose source reported no token counts. Counts-only buckets lack it for every request.
     missing +=
-      metric === "cost" && bucket.details !== null
-        ? bucket.requests - bucket.details.apiEstimate.pricedRequests
-        : known === null
+      metric === "requests"
+        ? 0
+        : bucket.details === null
           ? bucket.requests
-          : 0;
+          : metric === "cost"
+            ? bucket.requests - bucket.details.apiEstimate.pricedRequests
+            : known === null
+              ? bucket.requests
+              : bucket.details.tokens.total.missing;
   }
   return { value, missing };
 }
@@ -117,18 +176,45 @@ export function pricing(groups: readonly UsageSummaryGroup[]) {
   return { priced, unpriced, countsOnly };
 }
 
-/** Cache reads as a share of all known tokens; null without both sums. */
-export function cacheShare(groups: readonly UsageSummaryGroup[]): number | null {
+/**
+ * Cache reads as a share of tokens, over buckets whose cache and total counts are both known.
+ * `partial` says some buckets were left out, so the share describes only the counted ones.
+ */
+export function cacheShare(groups: readonly UsageSummaryGroup[]) {
   let cache = 0;
   let all = 0;
+  let partial = false;
   for (const group of groups)
     for (const bucket of group.buckets) {
       const tokens = bucket.details?.tokens;
-      if (tokens?.total.sum == null || tokens.cacheRead.sum === null) continue;
+      if (
+        tokens === undefined ||
+        tokens.total.sum === null ||
+        tokens.cacheRead.sum === null ||
+        tokens.total.missing > 0 ||
+        tokens.cacheRead.missing > 0
+      ) {
+        if (bucket.requests > 0) partial = true;
+        continue;
+      }
       cache += Number(tokens.cacheRead.sum);
       all += Number(tokens.total.sum);
     }
-  return all > 0 ? cache / all : null;
+  return { share: all > 0 ? cache / all : null, partial };
+}
+
+/** Runs of consecutive known values; an unknown day breaks the line instead of reading as zero. */
+export function knownRuns(values: readonly (number | null)[]) {
+  const runs: { readonly index: number; readonly value: number }[][] = [];
+  let run: { index: number; value: number }[] = [];
+  values.forEach((value, index) => {
+    if (value === null) {
+      if (run.length > 0) runs.push(run);
+      run = [];
+    } else run.push({ index, value });
+  });
+  if (run.length > 0) runs.push(run);
+  return runs;
 }
 
 /** Change against the previous equal range; null when either side is unknown or the base is zero. */

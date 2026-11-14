@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-history-page",
   "file": "0577-pool-history-page.patch",
-  "content_sha256": "e0175fbb4d5dfdcb32e3f6d67bbf96c67942a67c3c67e65915e1dc2e9a4cbe36",
+  "content_sha256": "2b322eaf2510b8a50492126536fdd42fcd7c482e3af10c6ab4ecde5e3219ca48",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

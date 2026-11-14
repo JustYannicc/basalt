@@ -211,7 +211,14 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
   const traces = [];
   // Signed usage reads the model-history worker would answer. A journey that sets `respond`
   // supplies their synthetic data; every other journey keeps the production control's answers.
-  const usage = { respond: undefined, capacity: undefined, calls: [], requests: [] };
+  const usage = {
+    respond: undefined,
+    capacity: undefined,
+    history: undefined,
+    calls: [],
+    requests: [],
+    log: [],
+  };
   const usageRoutes = new Set([
     "/pool/v1/usage/summary",
     "/pool/v1/usage/series",
@@ -225,9 +232,9 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
       for await (const chunk of request) chunks.push(chunk);
       const body = Buffer.concat(chunks);
       // Method and path only, for the journey's request inventory; never bodies or credentials.
-      usage.requests.push(
-        `${request.method} ${new URL(request.url ?? "/", "http://127.0.0.1").pathname}`,
-      );
+      const route = `${request.method} ${new URL(request.url ?? "/", "http://127.0.0.1").pathname}`;
+      usage.requests.push(route);
+      usage.log.push({ at: Date.now(), route });
       const address = new URL(request.url ?? "/", "http://127.0.0.1");
       if (
         usage.capacity &&
@@ -237,6 +244,16 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
         response
           .writeHead(200, { "Content-Type": "application/json" })
           .end(JSON.stringify(await usage.capacity(address)));
+        return;
+      }
+      if (
+        usage.history &&
+        request.method === "GET" &&
+        address.pathname === "/pool/v1/usage/history"
+      ) {
+        response
+          .writeHead(200, { "Content-Type": "application/json" })
+          .end(JSON.stringify(await usage.history(address)));
         return;
       }
       if (usage.respond && request.method === "POST" && usageRoutes.has(request.url)) {

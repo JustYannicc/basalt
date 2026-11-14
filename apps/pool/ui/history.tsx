@@ -3,8 +3,15 @@ import type { Provider } from "../contract.ts";
 import type { PoolApi } from "./api.ts";
 import { providerName as displayProvider } from "./accounts.tsx";
 import { Button, Problem, Segmented, Spinner } from "./controls.tsx";
-import type { MemberDirectoryEntry } from "./series-model.ts";
 import { total, tokensShort } from "./series-model.ts";
+import {
+  hasNarrowing,
+  historyMembers,
+  matchesGroup,
+  matchesRecord,
+  parseHistoryFilters,
+  type HistoryFilters,
+} from "./history-filters.ts";
 import {
   historyDateBounds,
   type HistoryDateFilter,
@@ -37,18 +44,20 @@ function requestTime(value: string): string {
 export function History({
   series,
   publicHistory,
-  directory,
   providers,
 }: {
   series: PoolApi["series"];
   publicHistory?: PublicHistoryReader;
-  directory: readonly MemberDirectoryEntry[];
   providers: readonly Provider[];
 }) {
-  const [mode, setMode] = useState<Mode>("all");
-  const [draftFrom, setDraftFrom] = useState("");
-  const [draftTo, setDraftTo] = useState("");
-  const [filter, setFilter] = useState<HistoryDateFilter>({});
+  // A link from the overview opens History already narrowed; the address keeps it across reloads.
+  const [initial] = useState<HistoryFilters>(() => parseHistoryFilters(window.location.search));
+  const [narrow, setNarrow] = useState<HistoryFilters>(initial);
+  const dated = initial.dates.from !== undefined || initial.dates.to !== undefined;
+  const [mode, setMode] = useState<Mode>(dated ? "dates" : "all");
+  const [draftFrom, setDraftFrom] = useState(initial.dates.from ?? "");
+  const [draftTo, setDraftTo] = useState(initial.dates.to ?? "");
+  const [filter, setFilter] = useState<HistoryDateFilter>(initial.dates);
   const [filterError, setFilterError] = useState<string>();
   const {
     loaded,
@@ -88,7 +97,19 @@ export function History({
   };
 
   const name = (id: string) => displayProvider(providers, id);
-  const summary = loaded && !loaded.seriesUnavailable ? total(loaded.series.groups) : undefined;
+  const narrowed = hasNarrowing(narrow);
+  const groups = loaded ? loaded.series.groups.filter((group) => matchesGroup(narrow, group)) : [];
+  const records = loaded ? loaded.records.filter((record) => matchesRecord(narrow, record)) : [];
+  // Names come from the host's current members on the loaded read; others stay unnamed.
+  const directory = loaded ? historyMembers(loaded.series.directory, loaded.series.groups) : [];
+  const clearNarrowing = () => {
+    setNarrow({ dates: {} });
+    const url = new URL(window.location.href);
+    url.searchParams.delete("lab");
+    url.searchParams.delete("status");
+    window.history.replaceState(window.history.state, "", url);
+  };
+  const summary = loaded && !loaded.seriesUnavailable ? total(groups) : undefined;
   const importSources =
     loaded?.series.coverage?.sources.filter((source) => source.kind === "import") ?? [];
   const importFrom = importSources.reduce<string | null>(
@@ -105,7 +126,7 @@ export function History({
       source.lastAt === null ? date : date === null || source.lastAt > date ? source.lastAt : date,
     null,
   );
-  const pagesLoaded = loaded ? Math.ceil(loaded.records.length / 10) : 0;
+  const pagesLoaded = loaded ? Math.ceil(records.length / 10) : 0;
   const hasNext = loaded !== undefined && (page + 1 < pagesLoaded || loaded.next !== null);
   const currentRange = loaded
     ? filter.from || filter.to
@@ -172,6 +193,24 @@ export function History({
               </form>
             )}
           </div>
+          {narrowed && (
+            <div
+              role="status"
+              aria-label="History filters"
+              className="flex flex-wrap items-center gap-2 text-sm"
+            >
+              <span className="text-muted-foreground">Showing</span>
+              {narrow.failed && (
+                <span className="rounded-full border px-2 py-0.5">Failed requests</span>
+              )}
+              {narrow.lab && (
+                <span className="rounded-full border px-2 py-0.5">{name(narrow.lab)}</span>
+              )}
+              <Button size="sm" variant="ghost" onClick={clearNarrowing}>
+                Clear filters
+              </Button>
+            </div>
+          )}
           {filterError && (
             <p role="alert" className="text-sm text-destructive">
               {filterError}
@@ -257,7 +296,7 @@ export function History({
                           : "Token totals unavailable"}
                       </span>
                     </div>
-                    <HistoryChart groups={loaded.series.groups} />
+                    <HistoryChart groups={groups} />
                     {importSources.length > 0 && (
                       <p className="text-sm text-muted-foreground text-pretty">
                         <span className="font-medium text-foreground">
@@ -269,11 +308,7 @@ export function History({
                       </p>
                     )}
                   </section>
-                  <HistoryBreakdown
-                    groups={loaded.series.groups}
-                    directory={directory}
-                    providerName={name}
-                  />
+                  <HistoryBreakdown groups={groups} directory={directory} providerName={name} />
                 </>
               )}
               {pageError && (
@@ -287,11 +322,18 @@ export function History({
                   </Button>
                 </div>
               )}
+              {narrowed && (
+                <p role="status" className="pt-6 text-sm text-muted-foreground text-pretty">
+                  {narrow.failed
+                    ? `${records.length.toLocaleString()} failed of ${loaded.records.length.toLocaleString()} requests read so far${loaded.next ? "; load more pages to find older ones" : ""}. Totals above count every request${narrow.lab ? ` from ${name(narrow.lab)}` : ""}.`
+                    : `${records.length.toLocaleString()} of ${loaded.records.length.toLocaleString()} requests read so far match.`}
+                </p>
+              )}
               <HistoryRequests
-                records={loaded.records}
+                records={records}
                 directory={directory}
                 providerName={name}
-                totalRecords={summary?.requests ?? null}
+                totalRecords={narrow.failed ? null : (summary?.requests ?? null)}
                 partial={loaded.series.partial}
                 page={page}
                 hasNext={hasNext}

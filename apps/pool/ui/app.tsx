@@ -11,7 +11,7 @@ import { overviewAccounts } from "./overview-accounts.ts";
 import { PersonalOverview } from "./personal-overview.tsx";
 import { usePool } from "./pool-view.ts";
 import { useSummary } from "./summary-data.ts";
-import type { Breakdown, Metric, RangeDays } from "./summary-model.ts";
+import type { Breakdown, Metric, RangeChoice } from "./summary-model.ts";
 import { SummaryOverview } from "./summary-view.tsx";
 
 function useNow(every = 30_000) {
@@ -57,7 +57,6 @@ export function App({
         <History
           series={api.series}
           publicHistory={publicHistory}
-          directory={[]}
           providers={view?.providers ?? []}
         />
       </div>
@@ -79,10 +78,10 @@ function Overview({
   reload: () => Promise<unknown>;
 }) {
   const now = useNow();
-  const [days, setDays] = useState<RangeDays>(7);
+  const [range, setRange] = useState<RangeChoice>({ kind: "days", days: 7 });
   const [by, setBy] = useState<Breakdown>("provider");
   const [metric, setMetric] = useState<Metric>("cost");
-  const usage = useSummary(api, days, by);
+  const usage = useSummary(api, range, by);
   const providers = view?.providers ?? [];
   const empty = view !== undefined && overviewAccounts(view).length === 0;
   return (
@@ -116,7 +115,7 @@ function Overview({
           </p>
           <PersonalOverview
             data={usage.state?.personal}
-            days={days}
+            days={range.kind === "days" ? range.days : 7}
             providers={providers}
             onRetry={() => void usage.reload()}
           />
@@ -127,7 +126,8 @@ function Overview({
           state={usage.state}
           shownBy={usage.by}
           updating={usage.updating}
-          controls={{ days, by, metric, onDays: setDays, onBy: setBy, onMetric: setMetric }}
+          controls={{ range, by, metric, onRange: setRange, onBy: setBy, onMetric: setMetric }}
+          onHistory={(search) => void api.navigate({ page: "history", search })}
           view={view}
           providers={providers}
           now={now}

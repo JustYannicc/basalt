@@ -31,7 +31,10 @@ function days(from, to) {
 function bucket({ at, end, partial }, lab, scale, index) {
   const shape = labs[lab];
   const requests = Math.round((shape.requests + (index % 3) * 5) * scale);
-  const priced = Math.max(0, requests - shape.unpriced);
+  // One day has no current price for any lab; one Codex day lacks some token counts.
+  const unpricedDay = index === 2;
+  const priced = unpricedDay ? 0 : Math.max(0, requests - shape.unpriced);
+  const tokenGap = lab === "codex" && index === 1 ? 4 : 0;
   return {
     at: new Date(at).toISOString(),
     end: new Date(end).toISOString(),
@@ -46,11 +49,16 @@ function bucket({ at, end, partial }, lab, scale, index) {
         cacheRead: token(requests * 300),
         cacheWrite: token(0),
         reasoning: token(0),
-        total: token(requests * 1000),
+        total: {
+          sum: String((requests - tokenGap) * 1000),
+          known: requests - tokenGap,
+          missing: tokenGap,
+        },
       },
       apiEstimate: {
-        status: "available",
-        amount: money(priced * shape.perRequest),
+        status: unpricedDay ? "unavailable" : "available",
+        ...(unpricedDay ? { reason: "No current price for this model." } : {}),
+        amount: unpricedDay ? null : money(priced * shape.perRequest),
         currency: "USD",
         pricedRequests: priced,
         excluded: { unknownKind: 0, unknownKindValue: null, unpriced: requests - priced },
@@ -177,6 +185,16 @@ const coverage = (from, to) => ({
       firstAt: new Date(Date.parse(from) - 120 * day).toISOString(),
       lastAt: new Date(Date.parse(from) - 60 * day).toISOString(),
       backfillComplete: true,
+      // The certificate proves only its frozen interval, not the import's first record onward.
+      completion: {
+        frozenFrom: new Date(Date.parse(from) - 100 * day).toISOString(),
+        frozenTo: new Date(Date.parse(from) - 70 * day).toISOString(),
+        upperSourceId: "42",
+        manifestDigest: "synthetic",
+        accountMappingDigest: "synthetic",
+        idsDigest: "synthetic",
+        verifiedRows: "420",
+      },
       sweep: null,
     },
   ],
@@ -206,6 +224,9 @@ const coverage = (from, to) => ({
 });
 
 /** The worker's summary for one signed read, by its own clipped bounds and previous range. */
+/** The pool's first retained request, independent of any selected range. */
+export const retainedFirstAt = "2026-05-03T09:15:00.000Z";
+
 export function summaryReply(input, now = Date.now()) {
   const { from, to } = input;
   const span = Date.parse(to) - Date.parse(from);
@@ -233,6 +254,7 @@ export function summaryReply(input, now = Date.now()) {
     timezone: "Europe/Zurich",
     previous,
     readFrom: new Date(Date.parse(from) - 56 * day).toISOString(),
+    retainedFirstAt,
     asOf: to,
     coverage: coverage(from, to),
     historyCoverage: { from, to, knownDays: known.slice(1), gapDays: known.slice(0, 1) },
@@ -335,9 +357,27 @@ export const importedLabel = "Old laptop export";
  * Accounts by lab across two pages. The imported account continues on page two without its
  * display, so the page has to keep the label it got on page one.
  */
-export function seriesReply(payload, inPool) {
+export function seriesReply(payload, inPool, people) {
   const { from, to, after } = payload.input;
+  if (payload.input.by.includes("person")) return historySeriesReply(payload.input, people);
   const list = days(from, to);
+  // A long range keeps paging past the client's budget, so it has to say it stopped early.
+  if (Date.parse(to) - Date.parse(from) > 60 * day)
+    return {
+      from,
+      to,
+      bucket: "day",
+      timezone: "Europe/Zurich",
+      asOf: to,
+      coverage: coverage(from, to),
+      groups: [
+        {
+          key: { currency: "USD", provider: "codex", account: inPool },
+          buckets: list.slice(0, 1).map((entry) => seriesBucket(entry, 30, 0.05)),
+        },
+      ],
+      next: `page-${Number((after ?? "page-0").slice(5)) + 1}`,
+    };
   const base = {
     from,
     to,
@@ -424,5 +464,111 @@ export function capacityReply(url) {
     forecasts: [],
     refillEvents: [],
     estimate: { status: "learning", reason: "Synthetic history has no forecast yet." },
+  };
+}
+
+/**
+ * Retained request metadata, ascending by timestamp then id, ten to a page. A current member, a
+ * former member the host no longer names, and imported usage with no person.
+ */
+export function historyRecords(people, now = Date.now()) {
+  const records = [];
+  for (let index = 0; index < 24; index++) {
+    const at = now - (23 - index) * 9 * 3_600_000 - 60_000;
+    const imported = index % 6 === 5;
+    const provider = index % 2 === 0 ? "codex" : "claude";
+    const failed = index % 4 === 3;
+    records.push({
+      id: `rec-${String(index).padStart(3, "0")}`,
+      timestamp: new Date(at).toISOString(),
+      person: imported ? null : index % 3 === 2 ? people.former : people.member,
+      request_id: null,
+      provider,
+      model: provider === "codex" ? "codex-large" : "claude-large",
+      endpoint: null,
+      api_type: null,
+      service_tier: null,
+      input_tokens: "600",
+      output_tokens: "100",
+      cache_read_tokens: "300",
+      cache_write_tokens: "0",
+      reasoning_tokens: "0",
+      total_tokens: "1000",
+      token_quality: "complete",
+      latency_ms: "800",
+      failed,
+      status_code: failed ? 502 : 200,
+      cost: null,
+      currency: null,
+      cost_basis: "unpriced",
+      attribution: imported ? "import-owner" : "key-at-capture",
+    });
+  }
+  return records;
+}
+
+export function historyReply(url, people) {
+  const from = url.searchParams.get("from") ?? "1970-01-01T00:00:00.000Z";
+  const to = url.searchParams.get("to") ?? new Date().toISOString();
+  const after = url.searchParams.get("after");
+  const cursor = after === null ? null : JSON.parse(after);
+  const all = historyRecords(people).filter(
+    (record) => record.timestamp >= from && record.timestamp < to,
+  );
+  const start =
+    cursor === null
+      ? 0
+      : all.findIndex(
+          (record) =>
+            record.timestamp > cursor.timestamp ||
+            (record.timestamp === cursor.timestamp && record.id > cursor.id),
+        );
+  const page = start < 0 ? [] : all.slice(start, start + 10);
+  const last = page.at(-1);
+  return {
+    records: page,
+    next:
+      last !== undefined && all.indexOf(last) < all.length - 1
+        ? { timestamp: last.timestamp, id: last.id }
+        : null,
+  };
+}
+
+/** History's grouped totals: the same records by person, lab, model, source and attribution. */
+function historySeriesReply(input, people) {
+  const records = historyRecords(people).filter(
+    (record) => record.timestamp >= input.from && record.timestamp < input.to,
+  );
+  const groups = new Map();
+  for (const record of records) {
+    const key = {
+      currency: "USD",
+      person: record.person,
+      provider: record.provider,
+      model: record.model,
+      source: record.attribution === "import-owner" ? "import-synthetic" : "home",
+      attribution: record.attribution,
+    };
+    const id = JSON.stringify(key);
+    const dayStart = Math.floor(Date.parse(record.timestamp) / day) * day;
+    const entry = groups.get(id) ?? { key, days: new Map() };
+    entry.days.set(dayStart, (entry.days.get(dayStart) ?? 0) + 1);
+    groups.set(id, entry);
+  }
+  return {
+    from: input.from,
+    to: input.to,
+    bucket: "day",
+    asOf: input.to,
+    coverage: coverage(input.from, input.to),
+    groups: [...groups.values()].map(({ key, days: perDay }) => ({
+      key,
+      buckets: [...perDay]
+        .sort(([a], [b]) => a - b)
+        .map(([at, requests]) =>
+          seriesBucket({ at, end: at + day, partial: false }, requests, 0.05),
+        ),
+    })),
+    next: null,
   };
 }
