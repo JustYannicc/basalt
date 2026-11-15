@@ -320,6 +320,16 @@ const program = Effect.gen(function* () {
       Effect.retry({ schedule: Schedule.spaced("25 millis"), times: 600 }),
     );
 
+  // The first minute tick enqueues rollout work and advances heads even before those jobs run.
+  // Finish that startup maintenance before measuring reads for the controls below.
+  yield* Effect.promise(async () => {
+    const response = await fetch(
+      `${h.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
+    );
+    assert.equal(response.status, 200, "the initial maintenance tick succeeds");
+    await response.text();
+  });
+
   const before = usage.requests.length;
   yield* page(() =>
     owner

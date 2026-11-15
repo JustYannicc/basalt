@@ -4,7 +4,7 @@ Zendesk connections prefer the configured global client. Without it, a host-owne
 
 Webhook recovery proofs reconnect through an app connection, which also relinks the source. They finish that source registration before unlinking; otherwise stopped historical subscriptions can hide a new registration still being created. Test-only corrections apply after immutable carries, and source verification replays the same ordered corrections.
 
-Exact overview read counts start after initial team and member provisioning succeeds. The fixture runs queued setup through the normal dispatcher and waits for its real commits; a visible owner pool alone does not prove that other members have finished creating accounts and apps.
+Exact overview read counts start after initial team and member provisioning succeeds. The fixture runs queued setup through the normal dispatcher and waits for its real commits; a visible owner pool alone does not prove that other members have finished creating accounts and apps. The first regular maintenance tick also finishes before measurement: inserting its queued rollout jobs advances account and app heads before those jobs run.
 
 This directory holds the hand-written model. It shows Basalt's modules, outside-service calls, current runtime, planned v1 modules, and workflows.
 
