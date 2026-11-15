@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A saved account check loads the app's actual tool catalog, and agent catalog reads mark or clear the same check. Successful sign-in with failed discovery shows tools unavailable with its native reason; unsaved checks do not load tools. Repair advice remains specific to check failures, and generated guidance digests match the carried source."
+    }
+  }
+}

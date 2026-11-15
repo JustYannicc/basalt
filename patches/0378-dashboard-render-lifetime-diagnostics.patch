@@ -1,6 +1,161 @@
+diff --git a/apps/hosted/cloud/src/dashboard.ts b/apps/hosted/cloud/src/dashboard.ts
+index 91c3deb..9bc951b 100644
+--- a/apps/hosted/cloud/src/dashboard.ts
++++ b/apps/hosted/cloud/src/dashboard.ts
+@@ -5,6 +5,7 @@
+  */
+ import type { DocumentRead, DocumentRenderContext } from "./contracts/dashboard.ts";
+ import { Effect } from "effect";
++import { WorkerEnvironment } from "alchemy/Cloudflare";
+ import { Dashboard } from "./infrastructure/dashboard-worker.ts";
+ import { cloudSiteAfterMigrations } from "./infrastructure/site-release.ts";
+ import { cloudObservability } from "./infrastructure/telemetry.ts";
+@@ -24,47 +25,78 @@ type HeldRead = DocumentRead & { dup?: () => HeldRead; [Symbol.dispose]?: () =>
+  * Start returns once the headers are ready and keeps streaming, so reads continue after the
+  * call returns. The duplicated read lives until the body ends or the browser cancels it.
+  */
+-const render = async (request: Request, context: DocumentRenderContext, read: HeldRead) => {
+-  const held = read.dup?.() ?? read;
+-  const release = () => held[Symbol.dispose]?.();
+-  const origin = new URL(request.url).origin;
+-  const apiFetch: typeof globalThis.fetch = (input, init) => {
+-    const target =
+-      input instanceof Request
+-        ? new Request(input, init)
+-        : new Request(new URL(String(input), origin), init);
+-    return held(target.url, { method: target.method, headers: [...target.headers] });
+-  };
+-  const response = await server()
+-    .then((renderer) => renderer.fetch(request, { context: { ...context, apiFetch } }))
+-    .catch((cause: unknown) => {
++const render = async (
++  request: Request,
++  context: DocumentRenderContext,
++  read: HeldRead,
++  diagnostics: boolean,
++) => {
++  if (diagnostics) console.log({ name: "basalt.dashboard.main_render.begin" });
++  try {
++    const held = read.dup?.() ?? read;
++    const release = () => held[Symbol.dispose]?.();
++    const origin = new URL(request.url).origin;
++    const apiFetch: typeof globalThis.fetch = (input, init) => {
++      const target =
++        input instanceof Request
++          ? new Request(input, init)
++          : new Request(new URL(String(input), origin), init);
++      return held(target.url, { method: target.method, headers: [...target.headers] });
++    };
++    const response = await server()
++      .then((renderer) => renderer.fetch(request, { context: { ...context, apiFetch } }))
++      .catch((cause: unknown) => {
++        release();
++        throw cause;
++      });
++    if (diagnostics) console.log({ name: "basalt.dashboard.response_body.begin" });
++    if (response.body === null) {
++      if (diagnostics) console.log({ name: "basalt.dashboard.response_body.end" });
+       release();
+-      throw cause;
++      return response;
++    }
++    let bodyEnded = false;
++    let cancelling = false;
++    const endBody = () => {
++      if (bodyEnded) return;
++      bodyEnded = true;
++      if (diagnostics) console.log({ name: "basalt.dashboard.response_body.end" });
++    };
++    const reader = response.body.getReader();
++    const body = new ReadableStream<Uint8Array>({
++      pull: (controller) =>
++        reader.read().then(
++          (chunk) => {
++            if (!chunk.done) return controller.enqueue(chunk.value);
++            if (!cancelling) endBody();
++            release();
++            controller.close();
++          },
++          (cause: unknown) => {
++            if (!cancelling) endBody();
++            release();
++            controller.error(cause);
++          },
++        ),
++      cancel: (reason) => {
++        release();
++        if (diagnostics) console.log({ name: "basalt.dashboard.body_cancel.begin" });
++        cancelling = true;
++        const cancelled = reader.cancel(reason);
++        if (diagnostics) {
++          const end = () => {
++            console.log({ name: "basalt.dashboard.body_cancel.end" });
++            endBody();
++          };
++          void cancelled.then(end, end);
++        }
++        return cancelled;
++      },
+     });
+-  if (response.body === null) {
+-    release();
+-    return response;
++    return new Response(body, response);
++  } finally {
++    if (diagnostics) console.log({ name: "basalt.dashboard.main_render.end" });
+   }
+-  const reader = response.body.getReader();
+-  const body = new ReadableStream<Uint8Array>({
+-    pull: (controller) =>
+-      reader.read().then(
+-        (chunk) => {
+-          if (!chunk.done) return controller.enqueue(chunk.value);
+-          release();
+-          controller.close();
+-        },
+-        (cause: unknown) => {
+-          release();
+-          controller.error(cause);
+-        },
+-      ),
+-    cancel: (reason) => {
+-      release();
+-      return reader.cancel(reason);
+-    },
+-  });
+-  return new Response(body, response);
+ };
+ 
+ export default Dashboard.make(
+@@ -78,14 +110,17 @@ export default Dashboard.make(
+       ...(yield* cloudObservability),
+       workersDev: false,
+       build: workerBuild("dashboard"),
+-      env: { EXECUTOR_SITE_BUILD: site.hash },
++      env: { EXECUTOR_SITE_BUILD: site.hash, BASALT_DASHBOARD_RENDER_DIAGNOSTICS: "1" },
+       // No placement: a service binding runs this Worker beside its caller, the placed API Worker.
+       compatibility: { date: "2026-09-08", flags: ["nodejs_compat", "no_brotli_content_encoding"] },
+     };
+   }),
+-  Effect.succeed(
+-    Dashboard.of({
+-      render: (request, context, read) => Effect.promise(() => render(request, context, read)),
+-    }),
+-  ),
++  Effect.gen(function* () {
++    const env = yield* WorkerEnvironment;
++    const diagnostics = env.BASALT_DASHBOARD_RENDER_DIAGNOSTICS === "1";
++    return Dashboard.of({
++      render: (request, context, read) =>
++        Effect.promise(() => render(request, context, read, diagnostics)),
++    });
++  }),
+ );
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+index 086cb62..f6b9682 100644
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -2903,10 +2903,9 @@
+@@ -2918,10 +2918,9 @@ index 53bd66d331382b36ee33fc0488ce613579629fd9..92e0aa39bebb25d2dc1ec3e24033d99f
                               binding.namespaceId ??
                                   encodeURIComponent(`${binding.scriptName}-${binding.className}`);
  diff --git a/lib/Cloudflare/Workers/WorkerBridge.js b/lib/Cloudflare/Workers/WorkerBridge.js
@@ -12,7 +167,7 @@
   import { StackContext } from "../../StackContext.js";
   import { buildEventTelemetry } from "../../TelemetryRuntime.js";
   import { CloudflareEnvironment } from "../CloudflareEnvironmentService.js";
-@@ -2915,12 +2914,43 @@
+@@ -2930,12 +2929,43 @@ index 1d27a07a4da06307c0b8113999cf33585c0bd1d1..553a8c513fbcfa05a2e8f2e770c3e2af
   import { isScopeEjected } from "./HttpServer.js";
   import { ErrorTag, encodeRpcError, toRpcStream, } from "./Rpc.js";
   import { ExportedHandlerMethods, WorkerEnvironment, WorkerExecutionContext, deferredExecutionContext, fromExecutionContext, } from "./WorkerRuntime.js";
@@ -59,7 +214,7 @@
               .then((built) => {
               const [eff, services] = makeEffect(built);
  -            return eff.pipe(
-@@ -2928,7 +2958,7 @@
+@@ -2943,7 +2973,7 @@ index 1d27a07a4da06307c0b8113999cf33585c0bd1d1..553a8c513fbcfa05a2e8f2e770c3e2af
               // Per-event services take precedence over the captured services
               // and the built isolate context: the isolate context carries the
               // *deferred* WorkerExecutionContext (yieldable in the top-level
@@ -68,7 +223,7 @@
               // so buffered telemetry flushes when the scope closes into
               // `ctx.waitUntil` below — never on workerd's ephemeral
               // isolate scope.
-@@ -2942,17 +2972,29 @@
+@@ -2957,17 +2987,29 @@ index 1d27a07a4da06307c0b8113999cf33585c0bd1d1..553a8c513fbcfa05a2e8f2e770c3e2af
  +            .then((exit) => onExit(exit, scope)))
               .finally(() => isScopeEjected(scope)
               ? undefined
@@ -102,7 +257,7 @@
        * `Config` read in user init) resets the memo and heals on the next event.
        */
       shared = (pin) => {
-@@ -2967,6 +3009,32 @@
+@@ -2982,6 +3024,32 @@ index 1d27a07a4da06307c0b8113999cf33585c0bd1d1..553a8c513fbcfa05a2e8f2e770c3e2af
               built = undefined;
               throw error;
           }));
@@ -135,7 +290,7 @@
  diff --git a/lib/Cloudflare/Workers/cloudflare_workers.d.ts b/lib/Cloudflare/Workers/cloudflare_workers.d.ts
  index 9852684..6935af7 100644
  --- a/lib/Cloudflare/Workers/cloudflare_workers.d.ts
-@@ -3523,10 +3591,19 @@
+@@ -3556,10 +3624,19 @@ index 109a8af6b4ece7c5fe3279e7275bfecce12ed3fc..7b2d1dc594bb4a33940c3570fd9b0255
                     binding.namespaceId ??
                     encodeURIComponent(
  diff --git a/src/Cloudflare/Workers/WorkerBridge.ts b/src/Cloudflare/Workers/WorkerBridge.ts
@@ -157,7 +312,7 @@
   import { StackContext } from "../../StackContext.ts";
   import { buildEventTelemetry } from "../../TelemetryRuntime.ts";
   import { CloudflareEnvironment } from "../CloudflareEnvironmentService.ts";
-@@ -3535,64 +3612,366 @@
+@@ -3568,64 +3645,366 @@ index 362b4bd36d26880af3c96ab42e8831030552a97c..3a6b4b6e1e9f7f343224cd5637a54410
   import { isScopeEjected } from "./HttpServer.ts";
   import {
     ErrorTag,
@@ -237,10 +392,21 @@
 ++      ctx.waitUntil(observe(() => promise, phase));
       const scope = Scope.makeUnsafe();
  -    return build((promise) => ctx.waitUntil(promise as Promise<any>))
+-+    return platformSpan("alchemy.response", () =>
+-+      platformSpan("alchemy.runtime.wait", () => build((promise) => ctx.waitUntil(promise as Promise<any>)))
+-       .then(
+-         (built) => {
+-           const [eff, services] = makeEffect(built);
 +-      .then(
 +-        (built) => {
 +-          const [eff, services] = makeEffect(built);
-+-          return eff.pipe(
+ -          return eff.pipe(
+-+          return platformSpan("alchemy.handler", () => eff.pipe(
+-             // Per-event services take precedence over the captured services
+-             // and the built isolate context: the isolate context carries the
+-             // *deferred* WorkerExecutionContext (yieldable in the top-level
+-@@ -126,13 +127,13 @@ export const makeWorkerBridge = (
+-               ),
 +-            // Per-event services take precedence over the captured services
 +-            // and the built isolate context: the isolate context carries the
 +-            // *deferred* WorkerExecutionContext (yieldable in the top-level
@@ -253,18 +419,7 @@
 +-                Layer.succeed(
 +-                  WorkerExecutionContext,
 +-                  fromExecutionContext(ctx, env),
- +    return platformSpan("alchemy.response", () =>
--+      platformSpan("alchemy.runtime.wait", () => build((promise) => ctx.waitUntil(promise as Promise<any>)))
--       .then(
--         (built) => {
--           const [eff, services] = makeEffect(built);
---          return eff.pipe(
--+          return platformSpan("alchemy.handler", () => eff.pipe(
--             // Per-event services take precedence over the captured services
--             // and the built isolate context: the isolate context carries the
--             // *deferred* WorkerExecutionContext (yieldable in the top-level
--@@ -126,13 +127,13 @@ export const makeWorkerBridge = (
--               ),
+++    return platformSpan("alchemy.response", () =>
 ++      platformSpan("alchemy.runtime.wait", () => observe(() => build(pin), "runtimeWait"))
 ++        .then(
 ++          (built) => {
@@ -344,12 +499,25 @@
 +-            Effect.runPromiseExit,
  -          );
 -+          ));
+-         },
+-         // A failed isolate build reaches callers as a defect exit so the RPC
+-         // path can envelope-encode it like any other handler defect.
+-         (error) => Exit.die(error),
+-       )
 +-        },
 +-        // A failed isolate build reaches callers as a defect exit so the RPC
 +-        // path can envelope-encode it like any other handler defect.
 +-        (error) => Exit.die(error),
 +-      )
-+-      .then((exit) => onExit(exit, scope))
+ -      .then((exit) => onExit(exit, scope))
+-+      .then((exit) => onExit(exit, scope)))
+-       .finally(() =>
+-         isScopeEjected(scope)
+-           ? undefined
+-@@ -143,7 +144,7 @@ export const makeWorkerBridge = (
+-               // reaches the telemetry exporter's buffer before the scope's
+-               // flush finalizer runs.
+-               new Promise((resolve) => setTimeout(resolve, 0)).then(() =>
 +-      .finally(() =>
 +-        isScopeEjected(scope)
 +-          ? undefined
@@ -360,7 +528,9 @@
 +-              // reaches the telemetry exporter's buffer before the scope's
 +-              // flush finalizer runs.
 +-              new Promise((resolve) => setTimeout(resolve, 0)).then(() =>
-+-                Effect.runPromise(Scope.close(scope, Exit.void)),
+ -                Effect.runPromise(Scope.close(scope, Exit.void)),
+-+                platformSpan("alchemy.cleanup", () => Effect.runPromise(Scope.close(scope, Exit.void))),
+-               ),
 +-              ),
 +-            ),
 +-      );
@@ -375,23 +545,7 @@
 +               handleRpcExit,
 ++              prop === "render",
 +             );
-          },
--         // A failed isolate build reaches callers as a defect exit so the RPC
--         // path can envelope-encode it like any other handler defect.
--         (error) => Exit.die(error),
--       )
---      .then((exit) => onExit(exit, scope))
--+      .then((exit) => onExit(exit, scope)))
--       .finally(() =>
--         isScopeEjected(scope)
--           ? undefined
--@@ -143,7 +144,7 @@ export const makeWorkerBridge = (
--               // reaches the telemetry exporter's buffer before the scope's
--               // flush finalizer runs.
--               new Promise((resolve) => setTimeout(resolve, 0)).then(() =>
---                Effect.runPromise(Scope.close(scope, Exit.void)),
--+                platformSpan("alchemy.cleanup", () => Effect.runPromise(Scope.close(scope, Exit.void))),
--               ),
++         },
 +       });
 +@@ -222,9 +278,7 @@
 +   for (const method of ExportedHandlerMethods) {
@@ -566,154 +720,3 @@
  diff --git a/src/Cloudflare/Workers/cloudflare_workers.ts b/src/Cloudflare/Workers/cloudflare_workers.ts
  index 635467a..216c564 100644
  --- a/src/Cloudflare/Workers/cloudflare_workers.ts
---- a/apps/hosted/cloud/src/dashboard.ts
-+++ b/apps/hosted/cloud/src/dashboard.ts
-@@ -5,6 +5,7 @@
-  */
- import type { DocumentRead, DocumentRenderContext } from "./contracts/dashboard.ts";
- import { Effect } from "effect";
-+import { WorkerEnvironment } from "alchemy/Cloudflare";
- import { Dashboard } from "./infrastructure/dashboard-worker.ts";
- import { cloudSiteAfterMigrations } from "./infrastructure/site-release.ts";
- import { cloudObservability } from "./infrastructure/telemetry.ts";
-@@ -24,47 +25,78 @@
-  * Start returns once the headers are ready and keeps streaming, so reads continue after the
-  * call returns. The duplicated read lives until the body ends or the browser cancels it.
-  */
--const render = async (request: Request, context: DocumentRenderContext, read: HeldRead) => {
--  const held = read.dup?.() ?? read;
--  const release = () => held[Symbol.dispose]?.();
--  const origin = new URL(request.url).origin;
--  const apiFetch: typeof globalThis.fetch = (input, init) => {
--    const target =
--      input instanceof Request
--        ? new Request(input, init)
--        : new Request(new URL(String(input), origin), init);
--    return held(target.url, { method: target.method, headers: [...target.headers] });
--  };
--  const response = await server()
--    .then((renderer) => renderer.fetch(request, { context: { ...context, apiFetch } }))
--    .catch((cause: unknown) => {
-+const render = async (
-+  request: Request,
-+  context: DocumentRenderContext,
-+  read: HeldRead,
-+  diagnostics: boolean,
-+) => {
-+  if (diagnostics) console.log({ name: "basalt.dashboard.main_render.begin" });
-+  try {
-+    const held = read.dup?.() ?? read;
-+    const release = () => held[Symbol.dispose]?.();
-+    const origin = new URL(request.url).origin;
-+    const apiFetch: typeof globalThis.fetch = (input, init) => {
-+      const target =
-+        input instanceof Request
-+          ? new Request(input, init)
-+          : new Request(new URL(String(input), origin), init);
-+      return held(target.url, { method: target.method, headers: [...target.headers] });
-+    };
-+    const response = await server()
-+      .then((renderer) => renderer.fetch(request, { context: { ...context, apiFetch } }))
-+      .catch((cause: unknown) => {
-+        release();
-+        throw cause;
-+      });
-+    if (diagnostics) console.log({ name: "basalt.dashboard.response_body.begin" });
-+    if (response.body === null) {
-+      if (diagnostics) console.log({ name: "basalt.dashboard.response_body.end" });
-       release();
--      throw cause;
-+      return response;
-+    }
-+    let bodyEnded = false;
-+    let cancelling = false;
-+    const endBody = () => {
-+      if (bodyEnded) return;
-+      bodyEnded = true;
-+      if (diagnostics) console.log({ name: "basalt.dashboard.response_body.end" });
-+    };
-+    const reader = response.body.getReader();
-+    const body = new ReadableStream<Uint8Array>({
-+      pull: (controller) =>
-+        reader.read().then(
-+          (chunk) => {
-+            if (!chunk.done) return controller.enqueue(chunk.value);
-+            if (!cancelling) endBody();
-+            release();
-+            controller.close();
-+          },
-+          (cause: unknown) => {
-+            if (!cancelling) endBody();
-+            release();
-+            controller.error(cause);
-+          },
-+        ),
-+      cancel: (reason) => {
-+        release();
-+        if (diagnostics) console.log({ name: "basalt.dashboard.body_cancel.begin" });
-+        cancelling = true;
-+        const cancelled = reader.cancel(reason);
-+        if (diagnostics) {
-+          const end = () => {
-+            console.log({ name: "basalt.dashboard.body_cancel.end" });
-+            endBody();
-+          };
-+          void cancelled.then(end, end);
-+        }
-+        return cancelled;
-+      },
-     });
--  if (response.body === null) {
--    release();
--    return response;
-+    return new Response(body, response);
-+  } finally {
-+    if (diagnostics) console.log({ name: "basalt.dashboard.main_render.end" });
-   }
--  const reader = response.body.getReader();
--  const body = new ReadableStream<Uint8Array>({
--    pull: (controller) =>
--      reader.read().then(
--        (chunk) => {
--          if (!chunk.done) return controller.enqueue(chunk.value);
--          release();
--          controller.close();
--        },
--        (cause: unknown) => {
--          release();
--          controller.error(cause);
--        },
--      ),
--    cancel: (reason) => {
--      release();
--      return reader.cancel(reason);
--    },
--  });
--  return new Response(body, response);
- };
- 
- export default Dashboard.make(
-@@ -78,14 +110,17 @@
-       ...(yield* cloudObservability),
-       workersDev: false,
-       build: workerBuild("dashboard"),
--      env: { EXECUTOR_SITE_BUILD: site.hash },
-+      env: { EXECUTOR_SITE_BUILD: site.hash, BASALT_DASHBOARD_RENDER_DIAGNOSTICS: "1" },
-       // No placement: a service binding runs this Worker beside its caller, the placed API Worker.
-       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
-     };
-   }),
--  Effect.succeed(
--    Dashboard.of({
--      render: (request, context, read) => Effect.promise(() => render(request, context, read)),
--    }),
--  ),
-+  Effect.gen(function* () {
-+    const env = yield* WorkerEnvironment;
-+    const diagnostics = env.BASALT_DASHBOARD_RENDER_DIAGNOSTICS === "1";
-+    return Dashboard.of({
-+      render: (request, context, read) =>
-+        Effect.promise(() => render(request, context, read, diagnostics)),
-+    });
-+  }),
- );

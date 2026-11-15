@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "OpenAPI compilation skips and logs a static patch only when the provider's current document no longer contains the targeted path item or operation. Other missing targets and malformed patches still fail compilation. Published integration-guidance digests derive from the exact carried source and retain unrelated target-release entries."
+    }
+  }
+}

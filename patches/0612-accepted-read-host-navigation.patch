@@ -59,14 +59,15 @@ diff --git a/packages/apps/src/implementation/ui-client.ts b/packages/apps/src/i
 diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src/contracts/app-ui.ts
 --- a/apps/hosted/server/src/contracts/app-ui.ts
 +++ b/apps/hosted/server/src/contracts/app-ui.ts
-@@ -197,7 +197,12 @@
+@@ -201,7 +201,13 @@
        target: AppUiTarget,
        token: typeof AppSignInCode.Type,
      ) => Effect.Effect<
--      { readonly userId: string; readonly navigation: string },
+-      { readonly userId: string; readonly navigation: string; readonly impersonatedBy?: string },
 +      {
 +        readonly userId: string;
 +        readonly navigation: string;
++        readonly impersonatedBy?: string;
 +        readonly sessionId?: typeof Principal.Type.sessionId;
 +        readonly expiresAt?: Date;
 +      },
@@ -76,7 +77,7 @@ diff --git a/apps/hosted/server/src/contracts/app-ui.ts b/apps/hosted/server/src
 diff --git a/apps/hosted/server/src/implementation/app-sessions.ts b/apps/hosted/server/src/implementation/app-sessions.ts
 --- a/apps/hosted/server/src/implementation/app-sessions.ts
 +++ b/apps/hosted/server/src/implementation/app-sessions.ts
-@@ -83,7 +83,7 @@
+@@ -89,7 +89,7 @@
        ),
        Effect.asVoid,
      );
@@ -85,10 +86,10 @@ diff --git a/apps/hosted/server/src/implementation/app-sessions.ts b/apps/hosted
      Effect.gen(function* () {
        const row = yield* query(() =>
          consume
-@@ -96,10 +96,13 @@
+@@ -102,10 +102,13 @@
        );
        if (stored.expiresAt.getTime() <= (yield* Clock.currentTimeMillis))
-         return yield* new UiUnauthorized();
+         return yield* refuse("expired", new UiUnauthorized());
 -      return yield* Schema.decodeUnknownEffect(recordJson)(stored.value).pipe(
 +      const record = yield* Schema.decodeUnknownEffect(recordJson)(stored.value).pipe(
          Effect.mapError(unavailable),
@@ -100,7 +101,7 @@ diff --git a/apps/hosted/server/src/implementation/app-sessions.ts b/apps/hosted
    const parent = (id: typeof Principal.Type.sessionId, user: typeof Principal.Type.userId) =>
      Effect.gen(function* () {
        const row = yield* query(() =>
-@@ -252,13 +255,19 @@
+@@ -258,15 +261,22 @@
      current: (target, token) =>
        Effect.gen(function* () {
          const navigation = yield* digest(token);
@@ -108,18 +109,21 @@ diff --git a/apps/hosted/server/src/implementation/app-sessions.ts b/apps/hosted
 +        const stored = yield* readStored(key("session", navigation));
 +        const session = stored.record;
          if (!Schema.is(AppUiSession)(session) || !sameTarget(session.target, target))
-           return yield* new UiUnauthorized();
--        yield* parent(session.parent, session.user);
-+        const login = yield* parent(session.parent, session.user);
+           return yield* refuse("wrong_resource", new UiUnauthorized());
+         const login = yield* parent(session.parent, session.user);
          // The serving host checks current membership together with app/account
          // permissions. A second lookup here adds no authority to that decision.
--        return { userId: session.user, navigation };
-+        return {
++        const identity = {
 +          userId: session.user,
 +          navigation,
 +          sessionId: session.parent,
 +          expiresAt: new Date(Math.min(stored.expiresAt.getTime(), login.expiresAt.getTime())),
 +        };
+         return typeof login.impersonatedBy === "string"
+-          ? { userId: session.user, navigation, impersonatedBy: login.impersonatedBy }
+-          : { userId: session.user, navigation };
++          ? { ...identity, impersonatedBy: login.impersonatedBy }
++          : identity;
        }),
      navigation: (target, reference, principal) =>
        Effect.gen(function* () {
@@ -134,16 +138,16 @@ diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/serve
  import { visibleObservationHealth } from "./account-observation-policy.ts";
  import { visibleAccountStatuses } from "./account-identity.ts";
  import { CurrentAuthorization } from "../contracts/authorization.ts";
-@@ -276,7 +277,7 @@
-           Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
-         ),
+@@ -290,7 +291,7 @@
+         Effect.tapErrorTag("UiForbidden", () => recordAuthFailure("resource_denied")),
        );
+       yield* recordCaller(resolved.target.organization, identity.userId);
 -      return { ...resolved, access, app, navigation: identity.navigation };
 +      return { ...resolved, access, app, navigation: identity.navigation, changeSession: identity };
      });
    const authorize = Effect.flatMap(target, authorizeTarget);
    const authorizePoolSummary = Effect.gen(function* () {
-@@ -918,6 +919,7 @@
+@@ -953,6 +954,7 @@
    return {
      signIn: signInPage,
      frameResponse,

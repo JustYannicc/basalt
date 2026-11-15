@@ -201,6 +201,7 @@ test("a build for an app keeps the IDs of that app's active version", async () =
       activatedSequence: 1,
     },
     deployments: {
+      build: "bld_example",
       requirements: {
         accounts: {
           slack: { scope: "user", provider: "prv_stored", definition, cardinality: "one" },

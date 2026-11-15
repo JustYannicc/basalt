@@ -1,0 +1,7 @@
+model {
+  extend basalt.setupHost {
+    metadata {
+      constraint "The full-access Connect guide composes personal tools setup with pool selection and model-key issuance through the existing one-time credential path. Scoped connection guides keep their own built-in installation behavior. Computer rows, quick setup and desktop configuration retain the same selected pool and never substitute a stored personal token for OAuth sign-in."
+    }
+  }
+}

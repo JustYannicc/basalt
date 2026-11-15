@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Accounts collection reads batch SDK metadata and retained health within one request, preserve scoped authorization and redaction, and re-read authority on the next request. A public 35-account scenario bounds total SQL statements and verifies phase spans without increasing database sessions or concurrency."
+      constraint "Accounts collection reads batch SDK metadata and retained health within one request, preserve scoped authorization and redaction, and re-read authority on the next request. A public 35-account scenario bounds total SQL statements and verifies phase spans without increasing database sessions or concurrency. Provider canonicalization and field validation remain authoritative while sign-in state is projected from the same batched account read; display enrichment cannot alter saved provider identity."
     }
   }
 }

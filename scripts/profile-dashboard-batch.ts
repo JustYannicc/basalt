@@ -1,4 +1,5 @@
 import { patternForGroup } from "./ci/declarations.ts";
+import { disableDashboardBatchAuthentication } from "./dashboard-batch-switch.ts";
 import {
   appendFileSync,
   copyFileSync,
@@ -15,7 +16,6 @@ const root = resolve(import.meta.dirname, "..");
 const upstream = join(root, ".upstream");
 const runs = join(root, ".generated/e2e-evidence");
 const output = join(process.env.RUNNER_TEMP ?? tmpdir(), "dashboard-batch-profile");
-const patch = join(root, "patches/0035-dashboard-batch-authentication.patch");
 const scenario = "A dashboard batch checks its session and each membership once";
 
 interface Profile {
@@ -26,27 +26,6 @@ interface Profile {
   firstChecks: { sessions: number; organizations: number; memberships: number; removals: number };
   lastChecks: { sessions: number; organizations: number; memberships: number; removals: number };
 }
-
-const apply = (reverse: boolean) => {
-  const source = readFileSync(patch, "utf8");
-  const edge = "+  batchAuthentication.layer,\n );\n";
-  if (source.split(edge).length !== 2)
-    throw new Error("Expected one dashboard batch middleware switch anchor");
-  // Later middleware stays active in both samples; only batch authentication is switched.
-  const switchPatch = source.replace(edge, "+  batchAuthentication.layer,\n");
-  const result = spawnSync(
-    "git",
-    [
-      "apply",
-      "--recount",
-      "--unidiff-zero",
-      ...(reverse ? ["--reverse"] : []),
-      "--include=apps/hosted/server/src/implementation/*",
-    ],
-    { cwd: upstream, input: switchPatch, stdio: ["pipe", "inherit", "inherit"] },
-  );
-  if (result.status !== 0) throw new Error("Could not switch the dashboard batch implementation");
-};
 
 const directories = () => {
   try {
@@ -144,11 +123,13 @@ if (process.env.CI !== "true")
   throw new Error("Run this profile in CI with an isolated prepared upstream checkout");
 mkdirSync(output, { recursive: true });
 let before: Profile;
-apply(true);
+const restore = disableDashboardBatchAuthentication(
+  join(upstream, "apps/hosted/server/src/implementation/middleware.ts"),
+);
 try {
   before = measure("before");
 } finally {
-  apply(false);
+  restore();
 }
 const after = measure("after");
 const summary = {

@@ -22,4 +22,4 @@
 -        (select a.id from ${usable}) order by account for share`;
        const rows =
          yield* sql`with linked as (select a.*,l.requirement as linked_requirement,l.created_at as link_order,
-         app.active_deployment from ${usable})
+         l.active_deployment from ${usable})

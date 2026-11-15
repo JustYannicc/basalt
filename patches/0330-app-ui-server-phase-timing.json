@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-ui-server-phase-timing",
   "file": "0330-app-ui-server-phase-timing.patch",
-  "content_sha256": "cf0570513a4a0b9a81bf7139296de1acc4d43506ef57ea46e215094b4ba7d32c",
+  "content_sha256": "1283bce866e4ce427569a5e85704817297a324cc208bc51e7bf1ea99cea20736",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -1,0 +1,646 @@
+diff --git a/packages/sdk/src/implementation/basalt-framework-releases.ts b/packages/sdk/src/implementation/basalt-framework-releases.ts
+--- a/packages/sdk/src/implementation/basalt-framework-releases.ts
++++ b/packages/sdk/src/implementation/basalt-framework-releases.ts
+@@ -1,6 +1,7 @@
+-/** Exact reviewed publication bytes. New builds must match; they never grant themselves admission. */
++/** Historic qualifications remain available before a host build generates its cumulative registry. */
+ import type { FrameworkProvenance } from "../contracts/framework-provenance.ts";
+-const releases: readonly FrameworkProvenance[] = [
++import { generatedFrameworkReleases } from "./basalt-qualified-framework-releases.ts";
++const canonical: readonly FrameworkProvenance[] = [
+   {
+     version: "0.0.1-beta.104-basalt.13",
+     sha256: "4820bfe41e955ad2f684e82fc56083899603ad7e71125b05bf2a01e3959638b4",
+@@ -221,20 +222,15 @@
+       sha256: "dfc2ff7d8f6a447ef01ede1d30c4a61ff1ec9346e6c673cb94ffde57386f2b37",
+     },
+   },
+-  {
+-    version: "0.0.1-beta.104-basalt.16",
+-    sha256: "6f0fc08785d00bb8dcd987d33f7dfb0a295ae023e88ca9470337be09fe3d843f",
+-    protocol: 42,
+-    browserSha256: "17cd00ee1d61ef903df1df4b221e7ea6f5d83e2f2d04029a4df482b881077773",
+-    source: {
+-      origin: "basalt",
+-      revision: "source-sha256:01a96cda2eac4c882f4e2534653cbe6b05cc46bed24ebcfd8666d35bc3f7d174",
+-      sha256: "aedfd770acd0001f0bed7cb4a80b3694a905ff112db6acedef46d37a73b1873c",
+-    },
+-  },
+ ];
+-export const approvedFrameworkReleases = Object.freeze(
+-  releases.map((release) =>
++export const canonicalFrameworkReleases = Object.freeze(
++  canonical.map((release) =>
+     Object.freeze({ ...release, source: Object.freeze({ ...release.source }) }),
+   ),
+ );
++
++export const approvedFrameworkReleases = Object.freeze(
++  (generatedFrameworkReleases.length ? generatedFrameworkReleases : canonicalFrameworkReleases).map(
++    (release) => Object.freeze({ ...release, source: Object.freeze({ ...release.source }) }),
++  ),
++);
+diff --git a/packages/sdk/src/implementation/basalt-qualified-framework-releases.ts b/packages/sdk/src/implementation/basalt-qualified-framework-releases.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/basalt-qualified-framework-releases.ts
+@@ -0,0 +1,4 @@
++import type { FrameworkProvenance } from "../contracts/framework-provenance.ts";
++
++// The host build replaces this bootstrap with cumulative qualified history before bundling.
++export const generatedFrameworkReleases: readonly FrameworkProvenance[] = [];
+diff --git a/packages/sdk/src/implementation/basalt-framework-releases.ts b/packages/sdk/src/implementation/basalt-framework-releases.ts
+--- a/packages/sdk/src/implementation/basalt-framework-releases.ts
++++ b/packages/sdk/src/implementation/basalt-framework-releases.ts
+@@ -176,6 +176,17 @@
+       origin: "basalt",
+       revision: "8d7c36adacdc23b2d73c309040658e4fbf002dfd",
+       sha256: "1cfb8ee7a1e417dd893e4daa24b40626b26aa82d200347c12538dd1d5d212ead",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "bee28ec5f60b23512296bb204464557b46b5e3606bf9460a2a0c873af5548d64",
++    protocol: 43,
++    browserSha256: "c1fb042b7f8ce5e7b565ef8a850d042399b96dc8ea506f311b047e4b0583275f",
++    source: {
++      origin: "basalt",
++      revision: "release-log-bound-reproducible-build:b942ce4efc692ce2d834890c23d5ef23169d61bf:manual-release-43602038809:rebuild-43605896722",
++      sha256: "05c8d97c999ccccdd4ea741eb65d22501063ea2c36ec8cf330b30868b0c5f954",
+     },
+   },
+   {
+diff --git a/packages/sdk/src/implementation/basalt-framework-releases.ts b/packages/sdk/src/implementation/basalt-framework-releases.ts
+--- a/packages/sdk/src/implementation/basalt-framework-releases.ts
++++ b/packages/sdk/src/implementation/basalt-framework-releases.ts
+@@ -154,6 +154,17 @@
+       origin: "basalt",
+       revision: "91a301c35f835a21fdce5e1371ea00a16700c5c7",
+       sha256: "06fe1834e286ef68f9b960d238a9c4e3797b6ad3fe61a6856d58014d19527a1b",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "a875c05b7217090557fe2ce7d771aeefa0c8d37694daa8eca5db28c48a629d90",
++    protocol: 43,
++    browserSha256: "5102b8172aa54f148e56624b63c969685f7dff5bc1331a1a5a811f42075fd947",
++    source: {
++      origin: "basalt",
++      revision: "release-log-bound-reproducible-build:c9726f7ef3babb06fce07f3b642aafa14c6b7292:manual-release-43640279209:rebuild-43643430877",
++      sha256: "29622fdb47357d493d4068e02a9326cbbab273d5c796eee526156f8d777abbaa",
+     },
+   },
+   {
+diff --git a/packages/sdk/src/implementation/basalt-framework-releases.ts b/packages/sdk/src/implementation/basalt-framework-releases.ts
+--- a/packages/sdk/src/implementation/basalt-framework-releases.ts
++++ b/packages/sdk/src/implementation/basalt-framework-releases.ts
+@@ -1,258 +1,8 @@
+-/** Historic qualifications remain available before a host build generates its cumulative registry. */
+-import type { FrameworkProvenance } from "../contracts/framework-provenance.ts";
+ import { generatedFrameworkReleases } from "./basalt-qualified-framework-releases.ts";
+-const canonical: readonly FrameworkProvenance[] = [
+-  {
+-    version: "0.0.1-beta.104-basalt.13",
+-    sha256: "4820bfe41e955ad2f684e82fc56083899603ad7e71125b05bf2a01e3959638b4",
+-    protocol: 39,
+-    browserSha256: "bcac44f049ab9b8ce6f7ce5cdec89b637c0226fb1d176c6b080d9cde56dbe126",
+-    source: {
+-      origin: "basalt",
+-      revision: "92dacc187d657426a121441241189cc9734ea1f8",
+-      sha256: "5fc439a9ad05bd999e5df2e4ed4fe6f6cb05288920e8d6a646651c5d684c55f0",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.14",
+-    sha256: "4c5b9cfb8c3fa15ec82fb1d94e80dfee479a667e34ef2af0331792e413c729af",
+-    protocol: 40,
+-    browserSha256: "acda4b9f6d43cb9ffcdc6f025ad0ee26d030fcf90fbdafc7155a4a89ee6ea90b",
+-    source: {
+-      origin: "basalt",
+-      revision: "4c6814cb4293a15c0e2620eec38c364cfa216474",
+-      sha256: "cb0b0685e54de574e85b92a1a0e749126c06722f27ee12af797e768c0c0dc26b",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.14",
+-    sha256: "ba36743648b4e1f3928934c246143f1295a1a37eebe1b3abc88a8931d2f7c6f7",
+-    protocol: 40,
+-    browserSha256: "1f49172a819a0ad6a8ebd81093e4804938e9167b191fa0c14f0406b297ea1c59",
+-    source: {
+-      origin: "basalt",
+-      revision: "eca31c26f25e83460de2748407701ed95cd9c9ec",
+-      sha256: "f672c5ccbe8ee54ec45502ec89e0b9ef3604daaafd68e8f881f00b75f7ad0046",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.15",
+-    sha256: "31ae85978cbe3baf1d20364d9d16de56cb1350949bd9fe6d2f9426f8b7134a32",
+-    protocol: 41,
+-    browserSha256: "0d537085568e86d3ec2490230305f9178569dacce2513dc6c1f7dbb34850d55b",
+-    source: {
+-      origin: "basalt",
+-      revision: "76f8700ce90ef34e441929ec8130764e4bd8bfad",
+-      sha256: "1286ec5c9d9df3bab55a55eec485f493dfec0797eef9ad13283755219b29b181",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.15",
+-    sha256: "154c9712c3feee372602ae9bb62820ff06964746cbf0400a0904aac73d3faf9a",
+-    protocol: 41,
+-    browserSha256: "a3438163a6a05de5e153b6d91f3f6babf4aab7438c406cfbd5936f6723d206db",
+-    source: {
+-      origin: "basalt",
+-      revision: "76f8700ce90ef34e441929ec8130764e4bd8bfad",
+-      sha256: "9669a1ae7530bfa41112d78daade4b9094fc18ab5473430cc8f1967e8a7e2360",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.14",
+-    sha256: "cba38cad06f5c2a9f32ca53569ac6124c87bb3f76c727992583dcb853f025d68",
+-    protocol: 40,
+-    browserSha256: "5defdaf1151b1929f0c1c5a7a145eea6dbcac17b45ba117642835134eedc032d",
+-    source: {
+-      origin: "basalt",
+-      revision: "0ae1d1ebe0e4238b0ca3ae0f87480b2150a36944",
+-      sha256: "541b5515b493808112cdb111c240e4b276df3f9830b70f32a5a9cbcb1132cfab",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.1",
+-    sha256: "87d12be1b96ea9efa945e3ef603018ae60b53a53869f91166645cbe6e58ec4e7",
+-    protocol: 17,
+-    browserSha256: "6154d3bcdd7a1d3e46288b007982192a05c9d29abeaf43f91fe936ae45e96dd2",
+-    source: {
+-      origin: "basalt",
+-      revision: "fb6509e6afd2c77eaf39f7c4f7a5d70564c11d6a",
+-      sha256: "f11c562f1df2544e676df4c6608d818940abbc73b8219859fbf018b569efa344",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.1",
+-    sha256: "91a6d35471a5b7f0a252bb0341f4d1ee2ad24c005a60dfd522fafaa66a513fa4",
+-    protocol: 25,
+-    browserSha256: "5f8527275904ab4c35498750445c41edb108b489e29415048ca7e371f413d599",
+-    source: {
+-      origin: "basalt",
+-      revision: "f07c77611e8947c5e3ed4fceffa2a53e744b8100",
+-      sha256: "24abf5ac3be950c3a75e7b677d328436766ea3ecc8dc6e661a88e28ae4fab1e2",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.14",
+-    sha256: "db028220e3743e6a326710c07129c5a752a37633a3e6c6b35171351fac48a490",
+-    protocol: 40,
+-    browserSha256: "bf72022fc9152e96942ba826c770092b640bd08ded3c3e293e95c7cd51e86997",
+-    source: {
+-      origin: "basalt",
+-      revision: "2ddce25e66bb3b847add518889b8dfea3e5419a3",
+-      sha256: "56815c0e0259a5ff384100514be2e32259838c9ae4bd30be3b6011121e4893e1",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.14",
+-    sha256: "fae4930ce4f8c2f08a56312fa766a15b4ea551cdec75221b5def0faa1dbc2f20",
+-    protocol: 40,
+-    browserSha256: "20a5c250062811edbe0375cbbac4ec0816997971c8a986efcee544c916b90128",
+-    source: {
+-      origin: "basalt",
+-      revision: "436c186d1d2a416413bd033d4eb8a7312c460f6e",
+-      sha256: "002db6691d35875586adec35f30aa75028e28818a0c9b2d6af69a13928a8816e",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.15",
+-    sha256: "2373f7778c2e8caf4370cff3d859b6b9cada63a42e56dd474eb3be887282e16f",
+-    protocol: 41,
+-    browserSha256: "1e222738a8c3375c809812c444813e2956638cf4630e07798da032fa7918c6f4",
+-    source: {
+-      origin: "basalt",
+-      revision: "c57ae2873fd2a2691e05b59726670a44755f0e61",
+-      sha256: "4a122064f94bab3086a9b87e6f9ac2017d6cc809363f643e70219623613de2d6",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.15",
+-    sha256: "27db558cf5ea38e529df95ab9a3e0209fe4e033bce5cd262c5ae719966ad8e5b",
+-    protocol: 41,
+-    browserSha256: "22d0d73ef098e9fda0a040d0dafa5fce69a15db959021a97cce3cf84277a5859",
+-    source: {
+-      origin: "basalt",
+-      revision: "dda2efb923032a7a0765a07ea7e7c556c1481e4f",
+-      sha256: "edcaa295d91c8f8b09f5df082b6768cb4e8d514dca5bc2df7ec983e2ef6d610a",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.15",
+-    sha256: "3436acc2eeaf040d22881b9e5c6ce91745e8857d47b87620cd9dd6990eeb6638",
+-    protocol: 41,
+-    browserSha256: "023f9ad69290a2beb2547552363088e4f3e0de7a88702298de6761d33c4be060",
+-    source: {
+-      origin: "basalt",
+-      revision: "32bd301771919250d0e35a3d87b9172c00b109fb",
+-      sha256: "1fb4e5af027ceb57f38d4201f32d0b6e46b2b3ae1745d7414bcac1c6863223b6",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.15",
+-    sha256: "4ff73681b2d059e4c9b75a1dd547abcaa2e86bc0e2cba0a38d88eb81c4b84078",
+-    protocol: 41,
+-    browserSha256: "2a775924fa0ce20d294800d2d6c283d397317af6773e56e66cdd641d3f89299a",
+-    source: {
+-      origin: "basalt",
+-      revision: "91a301c35f835a21fdce5e1371ea00a16700c5c7",
+-      sha256: "06fe1834e286ef68f9b960d238a9c4e3797b6ad3fe61a6856d58014d19527a1b",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.15",
+-    sha256: "a875c05b7217090557fe2ce7d771aeefa0c8d37694daa8eca5db28c48a629d90",
+-    protocol: 43,
+-    browserSha256: "5102b8172aa54f148e56624b63c969685f7dff5bc1331a1a5a811f42075fd947",
+-    source: {
+-      origin: "basalt",
+-      revision: "release-log-bound-reproducible-build:c9726f7ef3babb06fce07f3b642aafa14c6b7292:manual-release-43640279209:rebuild-43643430877",
+-      sha256: "29622fdb47357d493d4068e02a9326cbbab273d5c796eee526156f8d777abbaa",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.15",
+-    sha256: "bda45ffbb73a921fb787fbf599ed876a94f2bc776ed0e6ac0b5b1e4832f5c131",
+-    protocol: 41,
+-    browserSha256: "2652065ec788cded71995d9f3edb1b56d7acd2aec4cd6ee9d5ef77c8ce3abde9",
+-    source: {
+-      origin: "basalt",
+-      revision: "f7859534494ec07bf8fdf48f45ed1c4d9b3b9f38",
+-      sha256: "450ae24a529e2d8b64c6764528b553f3ab1af4fd0ae89271afcd48c6256ed1e7",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.15",
+-    sha256: "be34a7e424e687d173e2351141fa97c29e2f42dd12d3167821152f36fc36020f",
+-    protocol: 41,
+-    browserSha256: "c82c15d064c949065039e4a40d2351c90919a58248546ba3a4c35bb3db7fd458",
+-    source: {
+-      origin: "basalt",
+-      revision: "8d7c36adacdc23b2d73c309040658e4fbf002dfd",
+-      sha256: "1cfb8ee7a1e417dd893e4daa24b40626b26aa82d200347c12538dd1d5d212ead",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.15",
+-    sha256: "bee28ec5f60b23512296bb204464557b46b5e3606bf9460a2a0c873af5548d64",
+-    protocol: 43,
+-    browserSha256: "c1fb042b7f8ce5e7b565ef8a850d042399b96dc8ea506f311b047e4b0583275f",
+-    source: {
+-      origin: "basalt",
+-      revision: "release-log-bound-reproducible-build:b942ce4efc692ce2d834890c23d5ef23169d61bf:manual-release-43602038809:rebuild-43605896722",
+-      sha256: "05c8d97c999ccccdd4ea741eb65d22501063ea2c36ec8cf330b30868b0c5f954",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.15",
+-    sha256: "cce58f59b59579a5652a4902594dd6a55ff8ba698aa1fe3b59b6206401655e11",
+-    protocol: 41,
+-    browserSha256: "e1c6b700e2273e3d892dc4291399b469401cd7fd553833f48a43d45741eda82e",
+-    source: {
+-      origin: "basalt",
+-      revision: "29fa965409c9473d7445bbf3815edfc9e0b6cbab",
+-      sha256: "d25dde47a83c0dcf35a42fe0bfb62db4eed0fd7fde759108bc857eb64f6a4244",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.15",
+-    sha256: "dc72952a4b34471c5d6f005e87d8f1835664ac2b8b2e0600494825bba9821a2f",
+-    protocol: 41,
+-    browserSha256: "11d4acf872aebb8fb077914483bdd22b53d1f4e553b7f45bc55bb53885c68cfc",
+-    source: {
+-      origin: "basalt",
+-      revision: "f48514954c3a3b37ec78b1cacb60eed4ddaf5ecd",
+-      sha256: "402557417a4907bd44ec0f5f9c4af2e60af95d6a53161984ba44b6eec45144bf",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.15",
+-    sha256: "ddd7b0ee30c7f23ce9cc6cd0aefdbda49084da0747b017d4f05cb9ff03ff923e",
+-    protocol: 41,
+-    browserSha256: "730895c58010496fb69c79b8cbeaae7ef0416b5edd8de53c1a19ac229dedc548",
+-    source: {
+-      origin: "basalt",
+-      revision: "92ca5d1e4cee115799dd59e284dc696618db51d9",
+-      sha256: "9dccb61b148fcf12397ccf0996eda0ea71eb5aa3799057d1b94cec7c7f5e28c9",
+-    },
+-  },
+-  {
+-    version: "0.0.1-beta.104-basalt.9",
+-    sha256: "84998d04f9009e167d8d8fb9164e391ecd57c7b1b2af8606af568a8036ec631f",
+-    protocol: 34,
+-    browserSha256: "f978611868873393485ec7bcfac3d8fd072754ac8d5b19cf05eaaf1446ffda2f",
+-    source: {
+-      origin: "basalt",
+-      revision: "3d4ff21277bc54670cc0f1bc0b878b32f5ee4e13",
+-      sha256: "dfc2ff7d8f6a447ef01ede1d30c4a61ff1ec9346e6c673cb94ffde57386f2b37",
+-    },
+-  },
+-];
+-export const canonicalFrameworkReleases = Object.freeze(
+-  canonical.map((release) =>
++export { canonicalFrameworkReleases } from "./basalt-canonical-framework-releases.ts";
++
++export const approvedFrameworkReleases = Object.freeze(
++  generatedFrameworkReleases.map((release) =>
+     Object.freeze({ ...release, source: Object.freeze({ ...release.source }) }),
+   ),
+ );
+-
+-export const approvedFrameworkReleases = Object.freeze(
+-  (generatedFrameworkReleases.length ? generatedFrameworkReleases : canonicalFrameworkReleases).map(
+-    (release) => Object.freeze({ ...release, source: Object.freeze({ ...release.source }) }),
+-  ),
+-);
+diff --git a/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts b/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts
+@@ -0,0 +1,252 @@
++import type { FrameworkProvenance } from "../contracts/framework-provenance.ts";
++const canonical: readonly FrameworkProvenance[] = [
++  {
++    version: "0.0.1-beta.104-basalt.13",
++    sha256: "4820bfe41e955ad2f684e82fc56083899603ad7e71125b05bf2a01e3959638b4",
++    protocol: 39,
++    browserSha256: "bcac44f049ab9b8ce6f7ce5cdec89b637c0226fb1d176c6b080d9cde56dbe126",
++    source: {
++      origin: "basalt",
++      revision: "92dacc187d657426a121441241189cc9734ea1f8",
++      sha256: "5fc439a9ad05bd999e5df2e4ed4fe6f6cb05288920e8d6a646651c5d684c55f0",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.14",
++    sha256: "4c5b9cfb8c3fa15ec82fb1d94e80dfee479a667e34ef2af0331792e413c729af",
++    protocol: 40,
++    browserSha256: "acda4b9f6d43cb9ffcdc6f025ad0ee26d030fcf90fbdafc7155a4a89ee6ea90b",
++    source: {
++      origin: "basalt",
++      revision: "4c6814cb4293a15c0e2620eec38c364cfa216474",
++      sha256: "cb0b0685e54de574e85b92a1a0e749126c06722f27ee12af797e768c0c0dc26b",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.14",
++    sha256: "ba36743648b4e1f3928934c246143f1295a1a37eebe1b3abc88a8931d2f7c6f7",
++    protocol: 40,
++    browserSha256: "1f49172a819a0ad6a8ebd81093e4804938e9167b191fa0c14f0406b297ea1c59",
++    source: {
++      origin: "basalt",
++      revision: "eca31c26f25e83460de2748407701ed95cd9c9ec",
++      sha256: "f672c5ccbe8ee54ec45502ec89e0b9ef3604daaafd68e8f881f00b75f7ad0046",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "31ae85978cbe3baf1d20364d9d16de56cb1350949bd9fe6d2f9426f8b7134a32",
++    protocol: 41,
++    browserSha256: "0d537085568e86d3ec2490230305f9178569dacce2513dc6c1f7dbb34850d55b",
++    source: {
++      origin: "basalt",
++      revision: "76f8700ce90ef34e441929ec8130764e4bd8bfad",
++      sha256: "1286ec5c9d9df3bab55a55eec485f493dfec0797eef9ad13283755219b29b181",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "154c9712c3feee372602ae9bb62820ff06964746cbf0400a0904aac73d3faf9a",
++    protocol: 41,
++    browserSha256: "a3438163a6a05de5e153b6d91f3f6babf4aab7438c406cfbd5936f6723d206db",
++    source: {
++      origin: "basalt",
++      revision: "76f8700ce90ef34e441929ec8130764e4bd8bfad",
++      sha256: "9669a1ae7530bfa41112d78daade4b9094fc18ab5473430cc8f1967e8a7e2360",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.14",
++    sha256: "cba38cad06f5c2a9f32ca53569ac6124c87bb3f76c727992583dcb853f025d68",
++    protocol: 40,
++    browserSha256: "5defdaf1151b1929f0c1c5a7a145eea6dbcac17b45ba117642835134eedc032d",
++    source: {
++      origin: "basalt",
++      revision: "0ae1d1ebe0e4238b0ca3ae0f87480b2150a36944",
++      sha256: "541b5515b493808112cdb111c240e4b276df3f9830b70f32a5a9cbcb1132cfab",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.1",
++    sha256: "87d12be1b96ea9efa945e3ef603018ae60b53a53869f91166645cbe6e58ec4e7",
++    protocol: 17,
++    browserSha256: "6154d3bcdd7a1d3e46288b007982192a05c9d29abeaf43f91fe936ae45e96dd2",
++    source: {
++      origin: "basalt",
++      revision: "fb6509e6afd2c77eaf39f7c4f7a5d70564c11d6a",
++      sha256: "f11c562f1df2544e676df4c6608d818940abbc73b8219859fbf018b569efa344",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.1",
++    sha256: "91a6d35471a5b7f0a252bb0341f4d1ee2ad24c005a60dfd522fafaa66a513fa4",
++    protocol: 25,
++    browserSha256: "5f8527275904ab4c35498750445c41edb108b489e29415048ca7e371f413d599",
++    source: {
++      origin: "basalt",
++      revision: "f07c77611e8947c5e3ed4fceffa2a53e744b8100",
++      sha256: "24abf5ac3be950c3a75e7b677d328436766ea3ecc8dc6e661a88e28ae4fab1e2",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.14",
++    sha256: "db028220e3743e6a326710c07129c5a752a37633a3e6c6b35171351fac48a490",
++    protocol: 40,
++    browserSha256: "bf72022fc9152e96942ba826c770092b640bd08ded3c3e293e95c7cd51e86997",
++    source: {
++      origin: "basalt",
++      revision: "2ddce25e66bb3b847add518889b8dfea3e5419a3",
++      sha256: "56815c0e0259a5ff384100514be2e32259838c9ae4bd30be3b6011121e4893e1",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.14",
++    sha256: "fae4930ce4f8c2f08a56312fa766a15b4ea551cdec75221b5def0faa1dbc2f20",
++    protocol: 40,
++    browserSha256: "20a5c250062811edbe0375cbbac4ec0816997971c8a986efcee544c916b90128",
++    source: {
++      origin: "basalt",
++      revision: "436c186d1d2a416413bd033d4eb8a7312c460f6e",
++      sha256: "002db6691d35875586adec35f30aa75028e28818a0c9b2d6af69a13928a8816e",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "2373f7778c2e8caf4370cff3d859b6b9cada63a42e56dd474eb3be887282e16f",
++    protocol: 41,
++    browserSha256: "1e222738a8c3375c809812c444813e2956638cf4630e07798da032fa7918c6f4",
++    source: {
++      origin: "basalt",
++      revision: "c57ae2873fd2a2691e05b59726670a44755f0e61",
++      sha256: "4a122064f94bab3086a9b87e6f9ac2017d6cc809363f643e70219623613de2d6",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "27db558cf5ea38e529df95ab9a3e0209fe4e033bce5cd262c5ae719966ad8e5b",
++    protocol: 41,
++    browserSha256: "22d0d73ef098e9fda0a040d0dafa5fce69a15db959021a97cce3cf84277a5859",
++    source: {
++      origin: "basalt",
++      revision: "dda2efb923032a7a0765a07ea7e7c556c1481e4f",
++      sha256: "edcaa295d91c8f8b09f5df082b6768cb4e8d514dca5bc2df7ec983e2ef6d610a",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "3436acc2eeaf040d22881b9e5c6ce91745e8857d47b87620cd9dd6990eeb6638",
++    protocol: 41,
++    browserSha256: "023f9ad69290a2beb2547552363088e4f3e0de7a88702298de6761d33c4be060",
++    source: {
++      origin: "basalt",
++      revision: "32bd301771919250d0e35a3d87b9172c00b109fb",
++      sha256: "1fb4e5af027ceb57f38d4201f32d0b6e46b2b3ae1745d7414bcac1c6863223b6",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "4ff73681b2d059e4c9b75a1dd547abcaa2e86bc0e2cba0a38d88eb81c4b84078",
++    protocol: 41,
++    browserSha256: "2a775924fa0ce20d294800d2d6c283d397317af6773e56e66cdd641d3f89299a",
++    source: {
++      origin: "basalt",
++      revision: "91a301c35f835a21fdce5e1371ea00a16700c5c7",
++      sha256: "06fe1834e286ef68f9b960d238a9c4e3797b6ad3fe61a6856d58014d19527a1b",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "a875c05b7217090557fe2ce7d771aeefa0c8d37694daa8eca5db28c48a629d90",
++    protocol: 43,
++    browserSha256: "5102b8172aa54f148e56624b63c969685f7dff5bc1331a1a5a811f42075fd947",
++    source: {
++      origin: "basalt",
++      revision:
++        "release-log-bound-reproducible-build:c9726f7ef3babb06fce07f3b642aafa14c6b7292:manual-release-43640279209:rebuild-43643430877",
++      sha256: "29622fdb47357d493d4068e02a9326cbbab273d5c796eee526156f8d777abbaa",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "bda45ffbb73a921fb787fbf599ed876a94f2bc776ed0e6ac0b5b1e4832f5c131",
++    protocol: 41,
++    browserSha256: "2652065ec788cded71995d9f3edb1b56d7acd2aec4cd6ee9d5ef77c8ce3abde9",
++    source: {
++      origin: "basalt",
++      revision: "f7859534494ec07bf8fdf48f45ed1c4d9b3b9f38",
++      sha256: "450ae24a529e2d8b64c6764528b553f3ab1af4fd0ae89271afcd48c6256ed1e7",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "be34a7e424e687d173e2351141fa97c29e2f42dd12d3167821152f36fc36020f",
++    protocol: 41,
++    browserSha256: "c82c15d064c949065039e4a40d2351c90919a58248546ba3a4c35bb3db7fd458",
++    source: {
++      origin: "basalt",
++      revision: "8d7c36adacdc23b2d73c309040658e4fbf002dfd",
++      sha256: "1cfb8ee7a1e417dd893e4daa24b40626b26aa82d200347c12538dd1d5d212ead",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "bee28ec5f60b23512296bb204464557b46b5e3606bf9460a2a0c873af5548d64",
++    protocol: 43,
++    browserSha256: "c1fb042b7f8ce5e7b565ef8a850d042399b96dc8ea506f311b047e4b0583275f",
++    source: {
++      origin: "basalt",
++      revision:
++        "release-log-bound-reproducible-build:b942ce4efc692ce2d834890c23d5ef23169d61bf:manual-release-43602038809:rebuild-43605896722",
++      sha256: "05c8d97c999ccccdd4ea741eb65d22501063ea2c36ec8cf330b30868b0c5f954",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "cce58f59b59579a5652a4902594dd6a55ff8ba698aa1fe3b59b6206401655e11",
++    protocol: 41,
++    browserSha256: "e1c6b700e2273e3d892dc4291399b469401cd7fd553833f48a43d45741eda82e",
++    source: {
++      origin: "basalt",
++      revision: "29fa965409c9473d7445bbf3815edfc9e0b6cbab",
++      sha256: "d25dde47a83c0dcf35a42fe0bfb62db4eed0fd7fde759108bc857eb64f6a4244",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "dc72952a4b34471c5d6f005e87d8f1835664ac2b8b2e0600494825bba9821a2f",
++    protocol: 41,
++    browserSha256: "11d4acf872aebb8fb077914483bdd22b53d1f4e553b7f45bc55bb53885c68cfc",
++    source: {
++      origin: "basalt",
++      revision: "f48514954c3a3b37ec78b1cacb60eed4ddaf5ecd",
++      sha256: "402557417a4907bd44ec0f5f9c4af2e60af95d6a53161984ba44b6eec45144bf",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.15",
++    sha256: "ddd7b0ee30c7f23ce9cc6cd0aefdbda49084da0747b017d4f05cb9ff03ff923e",
++    protocol: 41,
++    browserSha256: "730895c58010496fb69c79b8cbeaae7ef0416b5edd8de53c1a19ac229dedc548",
++    source: {
++      origin: "basalt",
++      revision: "92ca5d1e4cee115799dd59e284dc696618db51d9",
++      sha256: "9dccb61b148fcf12397ccf0996eda0ea71eb5aa3799057d1b94cec7c7f5e28c9",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.9",
++    sha256: "84998d04f9009e167d8d8fb9164e391ecd57c7b1b2af8606af568a8036ec631f",
++    protocol: 34,
++    browserSha256: "f978611868873393485ec7bcfac3d8fd072754ac8d5b19cf05eaaf1446ffda2f",
++    source: {
++      origin: "basalt",
++      revision: "3d4ff21277bc54670cc0f1bc0b878b32f5ee4e13",
++      sha256: "dfc2ff7d8f6a447ef01ede1d30c4a61ff1ec9346e6c673cb94ffde57386f2b37",
++    },
++  },
++];
++export const canonicalFrameworkReleases = Object.freeze(
++  canonical.map((release) =>
++    Object.freeze({ ...release, source: Object.freeze({ ...release.source }) }),
++  ),
++);
+diff --git a/packages/sdk/src/implementation/basalt-qualified-framework-releases.ts b/packages/sdk/src/implementation/basalt-qualified-framework-releases.ts
+--- a/packages/sdk/src/implementation/basalt-qualified-framework-releases.ts
++++ b/packages/sdk/src/implementation/basalt-qualified-framework-releases.ts
+@@ -1,4 +1,2 @@
+-import type { FrameworkProvenance } from "../contracts/framework-provenance.ts";
+-
+ // The host build replaces this bootstrap with cumulative qualified history before bundling.
+-export const generatedFrameworkReleases: readonly FrameworkProvenance[] = [];
++export { canonicalFrameworkReleases as generatedFrameworkReleases } from "./basalt-canonical-framework-releases.ts";
+diff --git a/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts b/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts
+--- a/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts
++++ b/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts
+@@ -242,6 +242,17 @@
+       origin: "basalt",
+       revision: "3d4ff21277bc54670cc0f1bc0b878b32f5ee4e13",
+       sha256: "dfc2ff7d8f6a447ef01ede1d30c4a61ff1ec9346e6c673cb94ffde57386f2b37",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.16",
++    sha256: "99bee31167bb2c94927cb35197f562ff22802ac2cfc840a1f30cdae9c7d73b54",
++    protocol: 44,
++    browserSha256: "0e558dfbcafff39202650ff50d6b9ad4b093a3dca15d9d565a3c95da8f8ed226",
++    source: {
++      origin: "basalt",
++      revision: "source-bound-rebuild:cdb580989b32eb50f625853188d51ce2559159d0:rebuild-43696970325",
++      sha256: "8524e622ce748e3262fc910a75ad3d842220d6cdee7e3e8eeff8bc841b890b88",
+     },
+   },
+ ];

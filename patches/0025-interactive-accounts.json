@@ -1,7 +1,7 @@
 {
   "identity": "basalt-interactive-accounts",
   "file": "0025-interactive-accounts.patch",
-  "content_sha256": "2e43f9e934032b139fb813aa9938a51907c0b62cf5c82e0f8aed1b1cf96f93ae",
+  "content_sha256": "ee4cae9db10503ce64209aef973ff86346e6116f5ffed329b9bdd50daeee67b3",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

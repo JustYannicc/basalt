@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Every compile request owns its cancellation and RPC handles until completion or disconnection. Dependency work cannot retain a cancelled admission ticket or close another request's bundler. The pinned esbuild-wasm dependency patch preserves this ownership without replacing the current OAuth-provider dependency overlays."
+    }
+  }
+}

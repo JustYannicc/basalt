@@ -1,6 +1,6 @@
 import { appendFileSync, chmodSync, linkSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { archiveTar, downloadVerified } from "./verified-download.mjs";
 
@@ -19,6 +19,17 @@ export function bunEntrypoints(root: string, platform = process.platform) {
   rmSync(bunx, { force: true });
   linkSync(bun, bunx);
   return { bun, bunx };
+}
+
+export function registerBun(root: string, bun: string, exportAs?: string, env = process.env) {
+  if (exportAs !== undefined) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(exportAs) || /^(?:PATH$|GITHUB_|RUNNER_)/i.test(exportAs))
+      throw new Error("Expected a non-reserved environment variable name for Bun export");
+    if (!env.GITHUB_ENV) throw new Error("Expected GITHUB_ENV for named Bun export");
+    const binary = resolve(bun);
+    if (/[\r\n]/.test(binary)) throw new Error("Bun executable path must be a single line");
+    appendFileSync(env.GITHUB_ENV, `${exportAs}=${binary}\n`);
+  } else if (env.GITHUB_PATH) appendFileSync(env.GITHUB_PATH, root + "\n");
 }
 
 function main(mode: string | undefined, version: string | undefined) {
@@ -51,7 +62,7 @@ function main(mode: string | undefined, version: string | undefined) {
     // bunx returns 1 for its usage page, including --help.
     if (![0, 1].includes(help.status ?? -1) || !(help.stdout + help.stderr).includes("Usage: bunx"))
       throw new Error("The installed bunx entry point did not print its usage");
-    if (process.env.GITHUB_PATH) appendFileSync(process.env.GITHUB_PATH, root + "\n");
+    registerBun(root, entrypoints.bun, process.env.BUN_EXPORT_AS || undefined);
     console.log(`Bun ${version} and bunx installed from the verified npm archive`);
   } else throw new Error("Expected identify or install");
 }

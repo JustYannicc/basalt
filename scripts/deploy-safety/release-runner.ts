@@ -23,6 +23,8 @@ import {
   requirePlanetScaleEnvironment,
 } from "./runtime.ts";
 import { poolImageReceipt } from "./pool-image.ts";
+import { executorMarkerPolicy, type ExecutorMarkerPrecondition } from "./executor-marker.ts";
+import { releaseFrameworkQualification } from "./framework-registry-release.ts";
 
 export type ReleaseMode = "automatic" | "manual";
 
@@ -214,6 +216,7 @@ export function assertReleaseMode(
 export function productionReleaseDependencies(
   sourceRoot = repositoryRoot,
   candidateCommit?: string,
+  executorMarker?: ExecutorMarkerPrecondition,
 ): ReleaseDependencies {
   const github = readLedgerEnvironment();
   const planetscale = new PlanetScaleSafety(requirePlanetScaleEnvironment());
@@ -222,6 +225,10 @@ export function productionReleaseDependencies(
     ...process.env,
     GITHUB_SHA: candidateCommit ?? process.env.GITHUB_SHA,
     BASALT_POOL_IMAGE_RECEIPT: receiptPath,
+    BASALT_EXECUTOR_MARKER_POLICY: executorMarkerPolicy(
+      candidateCommit ?? process.env.GITHUB_SHA ?? "",
+      executorMarker,
+    ),
   };
   return {
     dispose: () => rmSync(dirname(receiptPath), { recursive: true, force: true }),
@@ -235,14 +242,21 @@ export function productionReleaseDependencies(
         throw new SafetyGateError("PlanetScale rollback backup is not both complete and protected");
       return { name: backup.name, metadata };
     },
-    begin: (report, backup) => {
+    begin: async (report, backup) => {
       assertNoReleaseHold();
+      const qualification = await releaseFrameworkQualification(
+        sourceRoot,
+        report.candidate.gitCommit,
+        github.repository,
+        github.token,
+      );
       return beginReleaseDeployment(
         report,
         github,
         fetch,
         backup,
         rollForwardTo(report.candidate.gitCommit),
+        qualification,
       );
     },
     mark: (deploymentId, state) => finishDeployment(deploymentId, state, github),

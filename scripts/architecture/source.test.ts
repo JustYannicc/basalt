@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { moduleErrors, sourceDependencies, type Module } from "./source.ts";
+import { moduleErrors, sourceDependencies, values, type Module } from "./source.ts";
 const temporary: string[] = [];
 afterEach(() =>
   temporary.splice(0).forEach((path) => rmSync(path, { recursive: true, force: true })),
@@ -23,6 +23,39 @@ const module = (id: string, code: string, extra: Partial<Module> = {}): Module =
   bindings: [],
   libraries: [],
   ...extra,
+});
+
+test("extended metadata preserves every pipe-separated declaration", () => {
+  expect(values(["better-auth|alchemy", "ws|node:http"])).toEqual([
+    "better-auth",
+    "alchemy",
+    "ws",
+    "node:http",
+  ]);
+});
+
+test("a URL-shaped claim name does not declare an outside-service call", () => {
+  const root = fixture({
+    "src/claims.ts":
+      'export const claims = { "https://identity.invalid/auth": { id: "fixture" } };',
+  });
+  expect(sourceDependencies(root, [module("claims", "src/claims.ts")], [])).toEqual({
+    dependencies: [],
+    errors: [],
+  });
+});
+
+test("URL values and outbound requests derived from claim names still require declared hosts", () => {
+  const root = fixture({
+    "src/value.ts": 'export const claims = { audience: "https://identity.invalid/auth" };',
+    "src/outbound.ts":
+      'const claims = { "https://identity.invalid/auth": {} }; fetch(Object.keys(claims)[0]);',
+  });
+  const result = sourceDependencies(root, [module("claims", "src")], []);
+  expect(result.errors).toContain("src/value.ts:1: Unmodelled outside host: identity.invalid");
+  expect(result.errors).toContain(
+    "src/outbound.ts:1: Computed outbound fetch needs a statically known host or an explicit gateway adapter",
+  );
 });
 
 test("new package folders and deleted code are rejected", () => {

@@ -1,6 +1,6 @@
 diff --git a/apps/hosted/web/src/contracts/account-observations.ts b/apps/hosted/web/src/contracts/account-observations.ts
 new file mode 100644
-index 000000000..f343cd934
+index 0000000..f343cd9
 --- /dev/null
 +++ b/apps/hosted/web/src/contracts/account-observations.ts
 @@ -0,0 +1,81 @@
@@ -86,7 +86,7 @@ index 000000000..f343cd934
 +  readonly account: AccountId;
 +}) => savePolicy(new AccountKey(key));
 diff --git a/apps/hosted/web/src/contracts/accounts.ts b/apps/hosted/web/src/contracts/accounts.ts
-index b5847ea89..c9208552c 100644
+index 4be0995..a9954f1 100644
 --- a/apps/hosted/web/src/contracts/accounts.ts
 +++ b/apps/hosted/web/src/contracts/accounts.ts
 @@ -16,6 +16,7 @@ import type { AccountMetadataUpdate } from "@executor-js/ui/dashboard/account-de
@@ -107,7 +107,7 @@ index b5847ea89..c9208552c 100644
      ),
    );
 diff --git a/apps/hosted/web/src/implementation/components/sharing.tsx b/apps/hosted/web/src/implementation/components/sharing.tsx
-index 17b509609..606f78b79 100644
+index 17b5096..606f78b 100644
 --- a/apps/hosted/web/src/implementation/components/sharing.tsx
 +++ b/apps/hosted/web/src/implementation/components/sharing.tsx
 @@ -22,6 +22,7 @@ import type {
@@ -163,7 +163,7 @@ index 17b509609..606f78b79 100644
            <SelectItem value="everyone">Everyone in the organization</SelectItem>
          </SelectContent>
 diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps/hosted/web/src/implementation/pages/account-actions.tsx
-index 06d81b2ef..a94a6f2aa 100644
+index 06d81b2..a94a6f2 100644
 --- a/apps/hosted/web/src/implementation/pages/account-actions.tsx
 +++ b/apps/hosted/web/src/implementation/pages/account-actions.tsx
 @@ -1,4 +1,5 @@
@@ -182,7 +182,7 @@ index 06d81b2ef..a94a6f2aa 100644
              <DeleteDialogBody data={data} onPendingChange={setBusy} onClose={onClose} />
 diff --git a/apps/hosted/web/src/implementation/pages/account-observations-client.tsx b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
 new file mode 100644
-index 000000000..4ee1a6808
+index 0000000..4ee1a68
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/account-observations-client.tsx
 @@ -0,0 +1,215 @@
@@ -403,7 +403,7 @@ index 000000000..4ee1a6808
 +}
 diff --git a/apps/hosted/web/src/implementation/pages/account-observations.tsx b/apps/hosted/web/src/implementation/pages/account-observations.tsx
 new file mode 100644
-index 000000000..e722a3847
+index 0000000..e722a38
 --- /dev/null
 +++ b/apps/hosted/web/src/implementation/pages/account-observations.tsx
 @@ -0,0 +1,52 @@
@@ -460,7 +460,7 @@ index 000000000..e722a3847
 +  ) : null;
 +}
 diff --git a/apps/hosted/web/src/implementation/pages/accounts.tsx b/apps/hosted/web/src/implementation/pages/accounts.tsx
-index 39b330ef6..ff0955896 100644
+index 538b791..16a213e 100644
 --- a/apps/hosted/web/src/implementation/pages/accounts.tsx
 +++ b/apps/hosted/web/src/implementation/pages/accounts.tsx
 @@ -18,6 +18,7 @@ import {
@@ -470,16 +470,16 @@ index 39b330ef6..ff0955896 100644
 +import { HostedAccountObservations, HostedAccountPlan } from "./account-observations.tsx";
  import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
  
- /** The organization's account directory. */
-@@ -38,6 +39,7 @@ export function AccountsPage({
- }) {
+ /** Each account's access and the account list, keyed by the URL. */
+@@ -40,6 +41,7 @@ export function AccountsPage({
    const { organization, slug: organizationSlug } = useOrganizationRoute();
+   usePreload(...accountsPageReads(organization, {}));
    const directory = useQuery(resourceDirectoryAtom(organization));
 +  const inventory = useQuery(resourceInventoryAtom(organization));
    const [dialog, setDialog] = useState<{ account: AccountId; kind: AccountDialogKind }>();
    const role = useOrganizationDetails()?.role;
    const admin = role !== undefined && role !== "member";
-@@ -87,13 +89,53 @@ export function AccountsPage({
+@@ -89,13 +91,53 @@ export function AccountsPage({
              ? directory.data.value.accounts.find((item) => item.account.id === account.id)?.access
              : undefined;
            return (
@@ -539,7 +539,7 @@ index 39b330ef6..ff0955896 100644
        {dialog && (
          <HostedAccountDialog
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts.tsx b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
-index d3b505d58..a7fab6b09 100644
+index 537a0bc..eef4e0d 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts.tsx
 @@ -41,6 +41,7 @@ import {
@@ -573,7 +573,7 @@ index d3b505d58..a7fab6b09 100644
        {oldAccountNeedsSite ? (
 diff --git a/apps/local/web/src/contracts/account-observations.ts b/apps/local/web/src/contracts/account-observations.ts
 new file mode 100644
-index 000000000..6cc811efd
+index 0000000..6cc811e
 --- /dev/null
 +++ b/apps/local/web/src/contracts/account-observations.ts
 @@ -0,0 +1,39 @@
@@ -617,7 +617,7 @@ index 000000000..6cc811efd
 +  ),
 +);
 diff --git a/apps/local/web/src/contracts/accounts.ts b/apps/local/web/src/contracts/accounts.ts
-index 284573c22..126e8d855 100644
+index 284573c..126e8d8 100644
 --- a/apps/local/web/src/contracts/accounts.ts
 +++ b/apps/local/web/src/contracts/accounts.ts
 @@ -7,6 +7,7 @@ import { acknowledge, acknowledgedQuery, invalidate } from "@executor-js/ui/cont
@@ -639,7 +639,7 @@ index 284573c22..126e8d855 100644
      ),
 diff --git a/apps/local/web/src/implementation/pages/account-observations-client.tsx b/apps/local/web/src/implementation/pages/account-observations-client.tsx
 new file mode 100644
-index 000000000..b12eaeba3
+index 0000000..b12eaeb
 --- /dev/null
 +++ b/apps/local/web/src/implementation/pages/account-observations-client.tsx
 @@ -0,0 +1,61 @@
@@ -706,7 +706,7 @@ index 000000000..b12eaeba3
 +}
 diff --git a/apps/local/web/src/implementation/pages/account-observations.tsx b/apps/local/web/src/implementation/pages/account-observations.tsx
 new file mode 100644
-index 000000000..c4ed91ff5
+index 0000000..c4ed91f
 --- /dev/null
 +++ b/apps/local/web/src/implementation/pages/account-observations.tsx
 @@ -0,0 +1,39 @@
@@ -750,7 +750,7 @@ index 000000000..c4ed91ff5
 +  ) : null;
 +}
 diff --git a/apps/local/web/src/implementation/pages/accounts.tsx b/apps/local/web/src/implementation/pages/accounts.tsx
-index 1eaccb82b..414927133 100644
+index 1eaccb8..4149271 100644
 --- a/apps/local/web/src/implementation/pages/accounts.tsx
 +++ b/apps/local/web/src/implementation/pages/accounts.tsx
 @@ -11,6 +11,7 @@ import {
@@ -789,10 +789,10 @@ index 1eaccb82b..414927133 100644
        {dialog && (
          <LocalAccountDialog
 diff --git a/apps/local/web/src/implementation/pages/app-accounts.tsx b/apps/local/web/src/implementation/pages/app-accounts.tsx
-index 656b403b7..392d568c3 100644
+index fe59261..6158ee1 100644
 --- a/apps/local/web/src/implementation/pages/app-accounts.tsx
 +++ b/apps/local/web/src/implementation/pages/app-accounts.tsx
-@@ -17,6 +17,7 @@ import { Failure, LoadingRows } from "../components/common.tsx";
+@@ -18,6 +18,7 @@ import { Failure, LoadingRows } from "../components/common.tsx";
  import { AppAccountForm } from "./account-form.tsx";
  import { ReplaceCredentials } from "./account-credentials.tsx";
  import { LocalAccountDialog } from "./account-actions.tsx";
@@ -800,7 +800,7 @@ index 656b403b7..392d568c3 100644
  import { Button } from "@executor-js/ui/components/button";
  import { DropdownMenuItem } from "@executor-js/ui/components/dropdown-menu";
  import { QueryView } from "@executor-js/ui/dashboard/context";
-@@ -99,6 +100,7 @@ export function AppAccounts({
+@@ -104,6 +105,7 @@ export function AppAccounts({
    ): ScopeAccounts<DashboardError> => ({
      links,
      revalidate,
@@ -809,10 +809,10 @@ index 656b403b7..392d568c3 100644
        choices: (slot) => requirementChoicesAtom({ app: app.id, scope, requirement: slot }),
        link: (slot, account) => linkAccountAtom({ ...target(scope), requirement: slot, account }),
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 9fc16b08f..c1466fced 100644
+index 267a3b5..ddfef02 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -7833,6 +7833,17 @@ export const scenarios = plan({
+@@ -8995,6 +8995,17 @@ export const scenarios = plan({
        local: na("Local has no organization sharing policy."),
      },
    },
@@ -832,7 +832,7 @@ index 9fc16b08f..c1466fced 100644
      file: "account-observations.spec.ts",
 diff --git a/e2e/tests/account-observation-rows.spec.ts b/e2e/tests/account-observation-rows.spec.ts
 new file mode 100644
-index 000000000..e28b65a0e
+index 0000000..e28b65a
 --- /dev/null
 +++ b/e2e/tests/account-observation-rows.spec.ts
 @@ -0,0 +1,267 @@
@@ -1104,7 +1104,7 @@ index 000000000..e28b65a0e
 +  );
 +});
 diff --git a/e2e/tests/account-status.spec.ts b/e2e/tests/account-status.spec.ts
-index e62839350..e537ca812 100644
+index e628393..e537ca8 100644
 --- a/e2e/tests/account-status.spec.ts
 +++ b/e2e/tests/account-status.spec.ts
 @@ -185,7 +185,7 @@ layer(HostedLive, { excludeTestServices: true })("Account display status", (it)
@@ -1118,7 +1118,7 @@ index e62839350..e537ca812 100644
                .locator("[data-account-name]")
 diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/packages/ui/src/implementation/dashboard/account-health-line.tsx
 new file mode 100644
-index 000000000..29ade88ac
+index 0000000..29ade88
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-health-line.tsx
 @@ -0,0 +1,170 @@
@@ -1293,16 +1293,16 @@ index 000000000..29ade88ac
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/account-health.tsx b/packages/ui/src/implementation/dashboard/account-health.tsx
-index 1820b9279..f1eb02873 100644
+index a5a5899..7858ca7 100644
 --- a/packages/ui/src/implementation/dashboard/account-health.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-health.tsx
-@@ -20,11 +20,8 @@ type AccountInfo = NonNullable<AccountHealth["info"]>;
- /** What one app's latest check means for the reader; tone matches the other status pills. */
+@@ -24,11 +24,8 @@ type AccountInfo = NonNullable<AccountHealth["info"]>;
+  */
  export const describeAccountCheck = (status: AccountCheckStatus) =>
    Match.value(status).pipe(
 -    Match.when("healthy", () => ({ label: "Working", tone: "good" as const })),
 -    Match.when("credentials_rejected", () => ({
--      label: "Sign-in rejected",
+-      label: "Credentials not working",
 -      tone: "bad" as const,
 -    })),
 +    Match.when("healthy", () => ({ label: "Healthy", tone: "good" as const })),
@@ -1312,7 +1312,7 @@ index 1820b9279..f1eb02873 100644
        label: "Service unavailable",
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-details.tsx b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
 new file mode 100644
-index 000000000..e31097c36
+index 0000000..e31097c
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
 @@ -0,0 +1,211 @@
@@ -1529,7 +1529,7 @@ index 000000000..e31097c36
 +}
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
 new file mode 100644
-index 000000000..a0d65f64e
+index 0000000..a0d65f6
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-observation-format.ts
 @@ -0,0 +1,267 @@
@@ -1802,7 +1802,7 @@ index 000000000..a0d65f64e
 +    .sort((a, b) => Date.parse(b) - Date.parse(a));
 diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
 new file mode 100644
-index 000000000..080771381
+index 0000000..0807713
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-observation-readings.tsx
 @@ -0,0 +1,167 @@
@@ -1975,7 +1975,7 @@ index 000000000..080771381
 +}
 diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
 new file mode 100644
-index 000000000..4a9738f8a
+index 0000000..4a9738f
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
 @@ -0,0 +1,293 @@
@@ -2273,7 +2273,7 @@ index 000000000..4a9738f8a
 +  );
 +}
 diff --git a/packages/ui/src/implementation/dashboard/accounts.tsx b/packages/ui/src/implementation/dashboard/accounts.tsx
-index 3cba9a141..a44bf314e 100644
+index 3cba9a1..a44bf31 100644
 --- a/packages/ui/src/implementation/dashboard/accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/accounts.tsx
 @@ -7,7 +7,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -2323,10 +2323,10 @@ index 3cba9a141..a44bf314e 100644
              );
            })}
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index fec24b95f..0650c65b7 100644
+index 226bc3e..c947949 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -18,6 +18,7 @@ import type { RequirementChoice, RequirementLink } from "../../contracts/app-acc
+@@ -28,6 +28,7 @@ import type { RequirementChoice, RequirementLink } from "../../contracts/app-acc
  import {
    providerDisplayUrl,
    accountNeedsSignIn,
@@ -2334,16 +2334,16 @@ index fec24b95f..0650c65b7 100644
    type AccountDetail,
    type AccountSummary,
    type FailureProps,
-@@ -406,6 +407,8 @@ export interface ScopeAccounts<E> {
+@@ -463,6 +464,8 @@ export interface ScopeAccounts<E> {
      | undefined;
    /** Check one linked account again; its result reaches `links` through the host's queries. */
-   readonly revalidate?: ((account: AccountId) => Promise<unknown>) | undefined;
+   readonly revalidate?: Revalidate | undefined;
 +  /** A block under each account the caller can use, such as its reported usage. */
 +  readonly accountDetails?: ((account: AccountSummary) => ReactNode) | undefined;
  }
  
  /**
-@@ -748,6 +751,7 @@ function ReadOnlyChoices<E>({
+@@ -813,6 +816,7 @@ function ReadOnlyChoices<E>({
            </span>
          </div>
          <AccountStatus app={app} account={account} part="details" />
@@ -2351,7 +2351,7 @@ index fec24b95f..0650c65b7 100644
        </li>
      );
    });
-@@ -1091,6 +1095,7 @@ function ChoiceRow<E>({
+@@ -1156,6 +1160,7 @@ function ChoiceRow<E>({
          </span>
        </div>
        <AccountStatus app={app} account={account} part="details" />
@@ -2359,7 +2359,7 @@ index fec24b95f..0650c65b7 100644
        {error && (
          <div className="w-full min-w-0 text-xs">
            <Failure cause={error} />
-@@ -1180,7 +1185,10 @@ function RemoveAppBoundAccount({
+@@ -1245,7 +1250,10 @@ function RemoveAppBoundAccount({
    );
  }
  
@@ -2371,13 +2371,23 @@ index fec24b95f..0650c65b7 100644
  function AccountStatus({
    app,
    account,
-@@ -1203,7 +1211,12 @@ function AccountStatus({
+@@ -1269,12 +1277,17 @@ function AccountStatus({
    if (account.signIn?.state === "unavailable")
      return <span className="text-xs text-sign-in-warning">Unavailable</span>;
    return (
--    <AppCheck health={account.health?.apps.find((entry) => entry.app === app.id)} part={part} />
+-    <AppCheck
+-      health={account.health?.apps.find((entry) => entry.app === app.id)}
+-      part={part}
+-      checking={rechecks.running.has(account.id)}
+-      retry={rechecks.failed.has(account.id) ? () => rechecks.retry(account.id) : undefined}
+-    />
 +    <>
-+      <AppCheck health={account.health?.apps.find((entry) => entry.app === app.id)} part={part} />
++      <AppCheck
++        health={account.health?.apps.find((entry) => entry.app === app.id)}
++        part={part}
++        checking={rechecks.running.has(account.id)}
++        retry={rechecks.failed.has(account.id) ? () => rechecks.retry(account.id) : undefined}
++      />
 +      {part === "header" &&
 +        currentAccountCheck(account, app.id)?.status === "credentials_rejected" &&
 +        reconnect}

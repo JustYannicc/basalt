@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/compiler.ts b/apps/hosted/cloud/src/compiler.ts
-index d4923707e..73ea1e205 100644
+index 167cd43..b0b3433 100644
 --- a/apps/hosted/cloud/src/compiler.ts
 +++ b/apps/hosted/cloud/src/compiler.ts
 @@ -7,7 +7,7 @@ import {
@@ -132,7 +132,7 @@ index d4923707e..73ea1e205 100644
    }).pipe(Effect.provide(cloudTelemetry)),
  );
 diff --git a/apps/hosted/cloud/src/contracts/builds.ts b/apps/hosted/cloud/src/contracts/builds.ts
-index ab342bcf3..8ee2ee8d5 100644
+index ab342bc..8ee2ee8 100644
 --- a/apps/hosted/cloud/src/contracts/builds.ts
 +++ b/apps/hosted/cloud/src/contracts/builds.ts
 @@ -61,8 +61,23 @@ export const CloudCompileResult = Schema.Union([
@@ -160,7 +160,7 @@ index ab342bcf3..8ee2ee8d5 100644
      files: CodeFiles,
      publicPaths: ReadonlyArray<string>,
 diff --git a/apps/hosted/cloud/src/implementation/build-admission.ts b/apps/hosted/cloud/src/implementation/build-admission.ts
-index 26cf2b808..c559ff098 100644
+index 26cf2b8..c559ff0 100644
 --- a/apps/hosted/cloud/src/implementation/build-admission.ts
 +++ b/apps/hosted/cloud/src/implementation/build-admission.ts
 @@ -1,13 +1,14 @@
@@ -260,7 +260,7 @@ index 26cf2b808..c559ff098 100644
                held.delete(slot);
 diff --git a/apps/hosted/cloud/src/implementation/compiler-request-target.ts b/apps/hosted/cloud/src/implementation/compiler-request-target.ts
 new file mode 100644
-index 000000000..9dc810a88
+index 0000000..9dc810a
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/compiler-request-target.ts
 @@ -0,0 +1,43 @@
@@ -308,7 +308,7 @@ index 000000000..9dc810a88
 +  }
 +}
 diff --git a/apps/hosted/cloud/src/implementation/compiler-request.ts b/apps/hosted/cloud/src/implementation/compiler-request.ts
-index ad20c1e89..af1314e6b 100644
+index ad20c1e..af1314e 100644
 --- a/apps/hosted/cloud/src/implementation/compiler-request.ts
 +++ b/apps/hosted/cloud/src/implementation/compiler-request.ts
 @@ -1,6 +1,6 @@
@@ -362,7 +362,7 @@ index ad20c1e89..af1314e6b 100644
 +    }),
 +  );
 diff --git a/apps/hosted/cloud/src/infrastructure/runtime.ts b/apps/hosted/cloud/src/infrastructure/runtime.ts
-index d321a2643..621d7cba3 100644
+index 1afe9f1..bed4500 100644
 --- a/apps/hosted/cloud/src/infrastructure/runtime.ts
 +++ b/apps/hosted/cloud/src/infrastructure/runtime.ts
 @@ -20,6 +20,7 @@ import {
@@ -371,9 +371,9 @@ index d321a2643..621d7cba3 100644
  import { RuntimeContext } from "alchemy";
 +import { RpcCallError } from "alchemy/Rpc";
  import * as Cloudflare from "alchemy/Cloudflare";
- import { Context, Effect, FiberSet, Option, Schema } from "effect";
- import { CurrentOrganization, CurrentUserId } from "@executor-js/hosted-server";
-@@ -27,7 +28,7 @@ import { dataChanges } from "../implementation/data-changes.ts";
+ import { Effect, FiberSet, Schema } from "effect";
+ import { dataChanges } from "../implementation/data-changes.ts";
+@@ -27,7 +28,7 @@ import { runtimeActor } from "../implementation/runtime-actor.ts";
  import { cacheRuntimeBuild, cachedRuntimeBuilds } from "../implementation/runtime-build-cache.ts";
  import type { DurableObjectNamespace } from "@cloudflare/workers-types";
  import { CloudCompileResult } from "../contracts/builds.ts";
@@ -382,7 +382,7 @@ index d321a2643..621d7cba3 100644
  import { AppCompiler } from "./compiler.ts";
  import { AppData } from "./app-data-worker.ts";
  import type { AppDataSupervisor } from "./app-data.ts";
-@@ -149,7 +150,19 @@ export const cloudRuntime = Effect.fn(function* (
+@@ -138,7 +139,19 @@ export const cloudRuntime = Effect.fn(function* (
            Effect.gen(function* () {
              const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
              const result = yield* requestCompile(
@@ -404,10 +404,10 @@ index d321a2643..621d7cba3 100644
                Effect.catchTag("RpcCallError", (error) => {
                  const cause = error.cause;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 5ab2d9a28..c04a1138d 100644
+index 0f2db3f..c6846ab 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -279,6 +279,7 @@ export const scenarios = plan({
+@@ -285,6 +285,7 @@ export const scenarios = plan({
    },
    atlassianIdentityMigration: {
      fixtures: "actors",
@@ -417,7 +417,7 @@ index 5ab2d9a28..c04a1138d 100644
        "Atlassian identity recovery binds exact grants and preserves sites, credentials and links through signed operations",
 diff --git a/e2e/tests/provider-adoption-locks.spec.ts b/e2e/tests/provider-adoption-locks.spec.ts
 new file mode 100644
-index 000000000..df8283798
+index 0000000..df82837
 --- /dev/null
 +++ b/e2e/tests/provider-adoption-locks.spec.ts
 @@ -0,0 +1,20 @@
@@ -442,7 +442,7 @@ index 000000000..df8283798
 +  );
 +});
 diff --git a/e2e/tests/provider-adoption.spec.ts b/e2e/tests/provider-adoption.spec.ts
-index dc3664410..9fae5e314 100644
+index dc36644..9fae5e3 100644
 --- a/e2e/tests/provider-adoption.spec.ts
 +++ b/e2e/tests/provider-adoption.spec.ts
 @@ -5,11 +5,6 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
@@ -474,7 +474,7 @@ index dc3664410..9fae5e314 100644
      withHostedCase(context, proveConcurrentOrganizationPurge),
    );
 diff --git a/packages/sdk/src/contracts/workerd-modules.d.ts b/packages/sdk/src/contracts/workerd-modules.d.ts
-index eba884e54..979ad4534 100644
+index eba884e..979ad45 100644
 --- a/packages/sdk/src/contracts/workerd-modules.d.ts
 +++ b/packages/sdk/src/contracts/workerd-modules.d.ts
 @@ -1,5 +1,7 @@
@@ -486,7 +486,7 @@ index eba884e54..979ad4534 100644
      protected readonly ctx: import("@cloudflare/workers-types").ExecutionContext;
      protected readonly env: Env;
 diff --git a/patches/@cloudflare%2Fworker-bundler@0.2.4.patch b/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
-index 0cc983db2..42595dc19 100644
+index 0cc983d..42595dc 100644
 --- a/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
 +++ b/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
 @@ -500,52 +500,22 @@ index 5ed55da1726ab87d1c11932262f972cf39c3dd45..1f0d34b1860380058a4f43092355267a
