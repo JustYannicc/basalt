@@ -6,37 +6,46 @@ import { awaitManagementProvisioning } from "../../.upstream/apps/hosted/testing
 
 const deferred = <A>() => Promise.withResolvers<A>();
 
-for (const subject of ["organization", "user"] as const)
-  test(
-    `setup waits for ${subject} jobs after management links exist`,
-    { timeout: 10_000 },
-    async (context) => {
-      const sql = new PGlite();
-      const database = new Pool();
-      const releases: (Error | boolean | undefined)[] = [];
-      const client = Object.assign(new Client(), {
-        release: (error?: Error | boolean) => releases.push(error),
-      });
-      let reads = 0;
-      context.mock.method(database, "connect", async () => client);
-      context.mock.method(client, "query", async (text: string, values?: string[]) => {
-        if (text.startsWith("listen ") || text.startsWith("unlisten ")) return { rows: [] };
-        const result = await sql.query<{ ready: boolean }>(text, values);
-        reads++;
-        if (reads === 1) {
-          assert.deepEqual(
-            result.rows,
-            [{ ready: false }],
-            "links alone cannot establish readiness",
-          );
-          await sql.exec("update hosted_provisioning set status = 'succeeded' where id = 'held'");
-          // Completion during the snapshot read must wake the subscribed waiter too.
-          client.emit("notification", { channel: "e2e_management_provisioned", payload: "" });
-        }
-        return result;
-      });
-      try {
-        await sql.exec(`create table organization(id text, metadata jsonb);
+for (const settled of [false, true])
+  for (const subject of ["organization", "user"] as const)
+    test(
+      `setup ${settled ? "waits" : "does not wait"} for ${subject} jobs after management links exist`,
+      { timeout: 10_000 },
+      async (context) => {
+        const sql = new PGlite();
+        const database = new Pool();
+        const releases: (Error | boolean | undefined)[] = [];
+        const client = Object.assign(new Client(), {
+          release: (error?: Error | boolean) => releases.push(error),
+        });
+        let reads = 0;
+        context.mock.method(database, "connect", async () => client);
+        context.mock.method(
+          client,
+          "query",
+          async (text: string, values?: (string | boolean)[]) => {
+            if (text.startsWith("listen ") || text.startsWith("unlisten ")) return { rows: [] };
+            const result = await sql.query<{ ready: boolean }>(text, values);
+            reads++;
+            if (reads === 1) {
+              assert.deepEqual(
+                result.rows,
+                [{ ready: !settled }],
+                "only a settled setup waits beyond the committed management link",
+              );
+              if (settled) {
+                await sql.exec(
+                  "update hosted_provisioning set status = 'succeeded' where id = 'held'",
+                );
+                // Completion during the snapshot read must wake the subscribed waiter too.
+                client.emit("notification", { channel: "e2e_management_provisioned", payload: "" });
+              }
+            }
+            return result;
+          },
+        );
+        try {
+          await sql.exec(`create table organization(id text, metadata jsonb);
         create table executor_accounts(id text, owner text);
         create table hosted_app_account_links(account text, app text);
         create table hosted_provisioning(id text, organization_id text, user_id text, status text);
@@ -44,20 +53,34 @@ for (const subject of ["organization", "user"] as const)
         insert into executor_accounts values ('account', 'organization:team');
         insert into hosted_app_account_links values ('account', 'app');
         insert into hosted_provisioning values ('unrelated', 'other-team', 'other-person', 'running');`);
-        await sql.query("insert into hosted_provisioning values ('held', $1, $2, 'running')", [
-          subject === "organization" ? "team" : null,
-          subject === "user" ? "person" : null,
-        ]);
-        await awaitManagementProvisioning(database, "team", "person", new AbortController().signal);
-        assert.equal(reads, 2);
-        assert.deepEqual(releases, [false]);
-        assert.equal(client.listenerCount("notification"), 0);
-      } finally {
-        await database.end();
-        await sql.close();
-      }
-    },
-  );
+          await sql.query("insert into hosted_provisioning values ('held', $1, $2, 'running')", [
+            subject === "organization" ? "team" : null,
+            subject === "user" ? "person" : null,
+          ]);
+          if (settled)
+            await awaitManagementProvisioning(
+              database,
+              "team",
+              "person",
+              new AbortController().signal,
+              true,
+            );
+          else
+            await awaitManagementProvisioning(
+              database,
+              "team",
+              "person",
+              new AbortController().signal,
+            );
+          assert.equal(reads, settled ? 2 : 1);
+          assert.deepEqual(releases, [false]);
+          assert.equal(client.listenerCount("notification"), 0);
+        } finally {
+          await database.end();
+          await sql.close();
+        }
+      },
+    );
 
 for (const held of ["listen", "readiness", "unlisten"] as const)
   test(
