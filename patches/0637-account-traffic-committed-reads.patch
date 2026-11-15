@@ -141,6 +141,53 @@ diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/app
        ...pools.map((pool) => ({
          scope: `pool:${pool}`,
          keys: ["pool-readings", "pool-usage", "pool-samples", "pool-prices"].map((topic) => ({
+diff --git a/apps/hosted/web/src/contracts/accepted-read.ts b/apps/hosted/web/src/contracts/accepted-read.ts
+--- a/apps/hosted/web/src/contracts/accepted-read.ts
++++ b/apps/hosted/web/src/contracts/accepted-read.ts
+@@ -9,11 +9,20 @@
+   readonly hydrated?: true;
+ }
+ 
+-const Snapshot = Schema.Struct({ body: Schema.Unknown, receipt: ChangeReceipt });
++interface FailedRead {
++  readonly failure: "unconfirmed" | "revoked";
++  readonly hydrated?: true;
++}
++
++type DocumentRead<A, E> = AcceptedRead<A, E> | FailedRead;
++const Snapshot = Schema.Union([
++  Schema.Struct({ body: Schema.Unknown, receipt: ChangeReceipt }),
++  Schema.Struct({ failure: Schema.Literals(["unconfirmed", "revoked"]) }),
++]);
+ const decodeSnapshot = Schema.decodeUnknownSync(Snapshot);
+ 
+ export const acceptedRead = <A, E>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
+-  const cache = Atom.make<AcceptedRead<A, E> | undefined>(undefined).pipe(
++  const cache = Atom.make<DocumentRead<A, E> | undefined>(undefined).pipe(
+     Atom.setIdleTTL("30 minutes"),
+   );
+   // Reuse the endpoint's codec, but give the body no independently hydratable atom.
+@@ -23,13 +32,16 @@
+   const retained = Object.assign(cache, {
+     [Atom.SerializableTypeId]: {
+       key: `hosted:accepted:${codec.key}`,
+-      encode: (value: AcceptedRead<A, E> | undefined): unknown => {
+-        if (value === undefined || value.receipt.identity === undefined)
+-          throw new Error("No accepted document read");
++      encode: (value: DocumentRead<A, E> | undefined): unknown => {
++        if (value === undefined) throw new Error("No accepted document read");
++        // A failed fence carries its UI state, never the body it could not authorize.
++        if ("failure" in value) return { failure: value.failure };
++        if (value.receipt.identity === undefined) throw new Error("No accepted document read");
+         return { body: codec.encode(value.result), receipt: value.receipt };
+       },
+-      decode: (value: unknown): AcceptedRead<A, E> => {
++      decode: (value: unknown): DocumentRead<A, E> => {
+         const snapshot = decodeSnapshot(value);
++        if ("failure" in snapshot) return { failure: snapshot.failure, hydrated: true };
+         return { result: codec.decode(snapshot.body), receipt: snapshot.receipt, hydrated: true };
+       },
+     },
 diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src/contracts/app-accounts.ts
 --- a/apps/hosted/web/src/contracts/app-accounts.ts
 +++ b/apps/hosted/web/src/contracts/app-accounts.ts
@@ -294,7 +341,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
    <A, E extends HostedError>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
      type Value = AsyncResult.AsyncResult<A, E | OrganizationForbidden | ChangeRefreshFailed>;
      const { source, cache, document: carriesDocument } = acceptedRead(self);
-@@ -137,7 +148,7 @@
+@@ -137,26 +148,35 @@
            retained = new Map();
            retainedReads.set(registry, retained);
          }
@@ -303,7 +350,47 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
          let entries = retained.get(base);
          if (entries === undefined) {
            entries = new Map();
-@@ -213,7 +224,7 @@
+           retained.set(base, entries);
+         }
+         entries.set(cache, () => registry.set(cache, undefined));
+-        let held = get.once(cache);
++        const snapshot = get.once(cache);
++        const failed = snapshot !== undefined && "failure" in snapshot ? snapshot : undefined;
++        let held = snapshot !== undefined && "receipt" in snapshot ? snapshot : undefined;
+         if (held?.receipt.validUntil !== undefined && held.receipt.validUntil <= Date.now()) {
+           held = undefined;
+           get.set(cache, undefined);
+         }
+-        const document = held?.hydrated === true;
++        const document = held?.hydrated === true || failed?.hydrated === true;
+         if (document && held !== undefined) {
+           held = { result: held.result, receipt: held.receipt };
+           get.set(cache, held);
+         }
++        if (document && failed !== undefined) get.set(cache, { failure: failed.failure });
+         let shown: Value =
+           typeof window === "undefined" || document
+-            ? (held?.result ?? AsyncResult.initial(true))
++            ? failed !== undefined
++              ? AsyncResult.fail(
++                  failed.failure === "revoked"
++                    ? new OrganizationForbidden()
++                    : new ChangeRefreshFailed(),
++                )
++              : (held?.result ?? AsyncResult.initial(true))
+             : AsyncResult.initial(true);
+         let ended = false;
+         let subscribed = false;
+@@ -185,7 +205,7 @@
+         const revoked = () => {
+           ended = true;
+           held = undefined;
+-          get.set(cache, undefined);
++          get.set(cache, { failure: "revoked" });
+           resolveBody?.(AsyncResult.initial());
+           resolveBody = undefined;
+           publish(AsyncResult.fail(new OrganizationForbidden()));
+@@ -213,7 +233,7 @@
              } else {
                // The document uses its request-bound fetch; no browser stream or prior identity.
                for (let attempt = 0; attempt < 3; attempt++) {
@@ -312,7 +399,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
                  if (ended) return;
                  const result = await body();
                  if (ended) return;
-@@ -222,6 +233,7 @@
+@@ -222,6 +242,7 @@
                    organization,
                    before.sequence,
                    pools,
@@ -320,7 +407,15 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
                  );
                  if (ended) return;
                  if (before.receipt.identity !== after.receipt.identity) return revoked();
-@@ -246,7 +258,7 @@
+@@ -236,6 +257,7 @@
+             if (ended) return;
+             if (error instanceof OrganizationForbidden) return revoked();
+             if (error instanceof ChangeReadRetry && error.reason === "hidden") return;
++            if (held === undefined) get.set(cache, { failure: "unconfirmed" });
+             publish(
+               AsyncResult.fail(new ChangeRefreshFailed(), {
+                 previousSuccess: AsyncResult.isSuccess(shown) ? Option.some(shown) : Option.none(),
+@@ -246,7 +268,7 @@
          const watch =
            typeof window === "undefined"
              ? undefined
@@ -329,7 +424,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
                  topics: watched,
                  ...(held === undefined ? {} : { accepted: held.receipt }),
                  confirmed: () => {
-@@ -277,10 +289,15 @@
+@@ -277,10 +299,15 @@
   * retry becomes one fenced read, and an invalidation only clears what is shown.
   */
  export const changeProtected =
@@ -864,7 +959,22 @@ diff --git a/e2e/tests/navigation-intent.spec.ts b/e2e/tests/navigation-intent.s
  import { appsManifest } from "../support/apps-release.ts";
  
  /** Whether a request reads this app's record, batched with other reads or on its own. */
-@@ -36,6 +37,7 @@
+@@ -25,8 +26,12 @@
+ 
+ /** Whether a dashboard read batch also asks for this app's tool index. */
+ const readsTools = (request: Request, app: string) =>
+-  (request.postData() ?? "").includes(`"group":"tools","endpoint":"index"`) &&
+-  (request.postData() ?? "").includes(app);
++  (request.method() === "GET" &&
++    new RegExp(`^/api/organizations/[^/]+/apps/${app}/tools/index$`).test(
++      new URL(request.url()).pathname,
++    )) ||
++  ((request.postData() ?? "").includes(`"group":"tools","endpoint":"index"`) &&
++    (request.postData() ?? "").includes(app));
+ 
+ layer(HostedLive, { excludeTestServices: true })("Navigation intent", (it) => {
+   it.effect(scenarios.navigationIntentReads.title, (context) =>
+@@ -36,6 +41,7 @@
          const actors = yield* Actors;
          const api = yield* Api;
          const browser = yield* Browser;
@@ -872,7 +982,7 @@ diff --git a/e2e/tests/navigation-intent.spec.ts b/e2e/tests/navigation-intent.s
          const prefix = `/api/organizations/${actors.organization.id}`;
          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
            name: `Intent example ${randomUUID().slice(0, 8)}`,
-@@ -67,37 +69,46 @@
+@@ -67,37 +73,50 @@
          yield* browser.use("Open the app list", (page) => page.goto(appsPath));
          yield* browser.use("Wait for the app's link", (page) => link(page).waitFor());
          const reads: Request[] = [];
@@ -882,7 +992,12 @@ diff --git a/e2e/tests/navigation-intent.spec.ts b/e2e/tests/navigation-intent.s
              if (readsApp(request, app.id)) reads.push(request);
 +            if (readsTools(request, app.id)) toolReads.push(request);
            });
-           return Promise.resolve();
+-          return Promise.resolve();
++          // Observe each real response separately; an unrelated streamed sibling may stay open.
++          return page.route(
++            new RegExp(`/api/organizations/[^/]+/apps/${app.id}(?:/tools/index)?(?:\\?|$)`),
++            (route) => route.fallback(),
++          );
          });
 -        // Hovering shows intent: the app is read while the list is still open. The list already
 -        // names the app's version and accounts, so its tools are read in the same batch.
