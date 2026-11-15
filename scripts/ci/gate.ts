@@ -55,7 +55,7 @@ export function reuseGateErrors(
   if (Object.keys(needs).sort().join("\n") !== [...expected].sort().join("\n"))
     errors.push("Aggregate gate dependencies differ from the declared CI jobs");
   for (const job of expected) {
-    const result = job === "reuse" ? "success" : "skipped";
+    const result = ["reuse", "cpa-pipeline"].includes(job) ? "success" : "skipped";
     if (needs[job]?.result !== result)
       errors.push(`${job}: expected ${result}, got ${needs[job]?.result ?? "missing"}`);
   }

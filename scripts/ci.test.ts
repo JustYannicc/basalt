@@ -415,7 +415,7 @@ test("batch pushes compare with main even when a force push removes the previous
       ).env.BASE_SHA,
       "${{ needs.select.outputs.base_sha }}",
     );
-    assert.equal(workflow.jobs["cpa-pipeline"].needs, "select");
+    assert.deepEqual(workflow.jobs["cpa-pipeline"].needs, ["select", "reuse"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

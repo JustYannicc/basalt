@@ -110,20 +110,29 @@ test("missing, malformed and failed commit or workflow reads run the full Check"
   }
 });
 
-const skipped = () =>
+const reuseNeeds = () =>
   Object.fromEntries(
     ["reuse", ...fastJobs, ...heavyJobs, ...conditionalJobs].map((job) => [
       job,
-      { result: job === "reuse" ? "success" : "skipped" },
+      { result: ["reuse", "cpa-pipeline"].includes(job) ? "success" : "skipped" },
     ]),
   );
 
-test("the aggregate accepts only candidate-bound evidence and exactly skipped suite jobs", async () => {
+test("the aggregate accepts only candidate-bound evidence and the main history guard and skipped suite jobs", async () => {
   const decision = await decideReuse(context, api());
   assert.ok(decision.reused);
-  const errors = (evidence: unknown, needs = skipped(), event = "push", ref = "refs/heads/main") =>
-    reuseGateErrors(needs, evidence, context, event, ref);
+  const errors = (
+    evidence: unknown,
+    needs = reuseNeeds(),
+    event = "push",
+    ref = "refs/heads/main",
+  ) => reuseGateErrors(needs, evidence, context, event, ref);
   assert.deepEqual(errors(decision.evidence), []);
+  assert.ok(
+    errors(decision.evidence, { ...reuseNeeds(), "cpa-pipeline": { result: "skipped" } }).some(
+      (error) => error.startsWith("cpa-pipeline:"),
+    ),
+  );
   for (const evidence of [
     null,
     {},
@@ -134,11 +143,11 @@ test("the aggregate accepts only candidate-bound evidence and exactly skipped su
     { ...decision.evidence, headSha: undefined },
   ])
     assert.ok(errors(evidence).length);
-  for (const job of Object.keys(skipped())) {
-    assert.ok(errors(decision.evidence, { ...skipped(), [job]: { result: "failure" } }).length);
+  for (const job of Object.keys(reuseNeeds())) {
+    assert.ok(errors(decision.evidence, { ...reuseNeeds(), [job]: { result: "failure" } }).length);
   }
-  assert.ok(errors(decision.evidence, skipped(), "pull_request").length);
-  assert.ok(errors(decision.evidence, skipped(), "push", "refs/heads/batch/b90").length);
+  assert.ok(errors(decision.evidence, reuseNeeds(), "pull_request").length);
+  assert.ok(errors(decision.evidence, reuseNeeds(), "push", "refs/heads/batch/b90").length);
 });
 
 test("the real aggregate CLI retains reusable run outputs and refuses missing evidence", async () => {
@@ -166,7 +175,7 @@ test("the real aggregate CLI retains reusable run outputs and refuses missing ev
     GITHUB_EVENT_NAME: "push",
     GITHUB_REF: "refs/heads/main",
     CI_REUSED: "true",
-    CI_NEEDS: JSON.stringify(skipped()),
+    CI_NEEDS: JSON.stringify(reuseNeeds()),
     GITHUB_OUTPUT: output,
     GITHUB_STEP_SUMMARY: summary,
   };
@@ -208,6 +217,11 @@ test("workflow skips every suite job only through the verified reuse decision", 
     if (["reuse", "select", "check"].includes(name)) continue;
     assert.ok([job.needs].flat().includes("select"), `${name} must depend on selection`);
   }
+  assert.deepEqual(workflow.jobs["cpa-pipeline"].needs, ["select", "reuse"]);
+  assert.match(
+    workflow.jobs["cpa-pipeline"].if,
+    /always\(\).*needs.reuse.outputs.reused == 'true'/s,
+  );
   const gate = workflow.jobs.check.steps.find(
     (step: { run?: string }) => step.run === "node scripts/ci/gate.ts",
   );
