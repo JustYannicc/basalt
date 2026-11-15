@@ -623,3 +623,24 @@ diff --git a/packages/sdk/src/implementation/basalt-qualified-framework-releases
  // The host build replaces this bootstrap with cumulative qualified history before bundling.
 -export const generatedFrameworkReleases: readonly FrameworkProvenance[] = [];
 +export { canonicalFrameworkReleases as generatedFrameworkReleases } from "./basalt-canonical-framework-releases.ts";
+diff --git a/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts b/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts
+--- a/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts
++++ b/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts
+@@ -242,6 +242,17 @@
+       origin: "basalt",
+       revision: "3d4ff21277bc54670cc0f1bc0b878b32f5ee4e13",
+       sha256: "dfc2ff7d8f6a447ef01ede1d30c4a61ff1ec9346e6c673cb94ffde57386f2b37",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.16",
++    sha256: "99bee31167bb2c94927cb35197f562ff22802ac2cfc840a1f30cdae9c7d73b54",
++    protocol: 44,
++    browserSha256: "0e558dfbcafff39202650ff50d6b9ad4b093a3dca15d9d565a3c95da8f8ed226",
++    source: {
++      origin: "basalt",
++      revision: "source-bound-rebuild:cdb580989b32eb50f625853188d51ce2559159d0:rebuild-43696970325",
++      sha256: "8524e622ce748e3262fc910a75ad3d842220d6cdee7e3e8eeff8bc841b890b88",
+     },
+   },
+ ];
