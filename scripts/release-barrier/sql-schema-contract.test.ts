@@ -100,9 +100,61 @@ test("registered activation markers stay optional during prepare and valid after
   assert.equal(active.status, "ready");
   assert.deepEqual(active.pending, []);
   assert.deepEqual(active.unexpected, []);
+  const receipt = readySqlSchemas(candidate);
+  receipt.observations = receipt.observations.map((entry) =>
+    entry.namespace === "hosted" ? active : entry,
+  );
+  assert.doesNotThrow(() => assertSqlSchemas(receipt, candidate));
   assert.equal(observeSqlVersions(hosted, ["22_change_journal_activate"]).status, "pending");
   assert.equal(
     observeSqlVersions(hosted, ["21_change_journal_prepare", "23_unknown"]).status,
     "incompatible",
   );
+});
+
+test("final readiness allows only declared optional extras and still requires every preparation", () => {
+  const hosted: SqlSchemaExpectation = {
+    namespace: "hosted",
+    database: "tools",
+    journal: "private_hosted_migrations",
+    kind: "markers",
+    expected: ["20_existing", "21_change_journal_prepare"],
+    optional: ["22_change_journal_activate"],
+  };
+  for (const applied of [
+    ["20_existing", "21_change_journal_prepare"],
+    ["20_existing", "21_change_journal_prepare", "22_change_journal_activate"],
+  ]) {
+    const receipt = readySqlSchemas(candidate);
+    receipt.observations = receipt.observations.map((entry) =>
+      entry.namespace === "hosted" ? observeSqlVersions(hosted, applied) : entry,
+    );
+    assert.doesNotThrow(() => assertSqlSchemas(receipt, candidate));
+  }
+  for (const applied of [
+    ["20_existing", "22_change_journal_activate"],
+    ["21_change_journal_prepare", "22_change_journal_activate"],
+    ["20_existing", "21_change_journal_prepare", "23_unknown"],
+    ["20_existing", "21_change_journal_prepare", "22_incorrect_name"],
+    [
+      "20_existing",
+      "21_change_journal_prepare",
+      "22_change_journal_activate",
+      "22_change_journal_activate",
+    ],
+  ]) {
+    const receipt = readySqlSchemas(candidate);
+    receipt.observations = receipt.observations.map((entry) =>
+      entry.namespace === "hosted"
+        ? {
+            ...observeSqlVersions(hosted, applied),
+            applied,
+            status: "ready",
+            pending: [],
+            unexpected: [],
+          }
+        : entry,
+    );
+    assert.throws(() => assertSqlSchemas(receipt, candidate), /sql-schema-not-ready.*hosted/);
+  }
 });
