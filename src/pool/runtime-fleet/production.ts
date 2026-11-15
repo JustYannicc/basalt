@@ -41,7 +41,9 @@ export interface FleetNamespace extends FleetBinding {
 }
 interface Dependencies {
   ctx: ControllerState;
-  env: HandoffEnvironment;
+  env: HandoffEnvironment & {
+    POOL_PROVIDER_OBSERVATION_TOKEN?: { get(): Promise<string | null> };
+  };
   code: ControllerCode;
   handoff: RuntimeHandoff;
   namespaces(): readonly FleetNamespace[];

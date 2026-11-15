@@ -49,8 +49,20 @@ for (const fault of ["none", "secret", "provider", "identity", "transport"] as c
       return providerFetch(input, init);
     };
     if (fault === "secret") f.secretAvailable(false);
-    const state = structuredClone(f.state);
-    if (fault === "identity") state.applications.root.attributes.version++;
+    const root = f.state.applications.root;
+    const state = {
+      ...f.state,
+      applications: {
+        ...f.state.applications,
+        root: {
+          ...root,
+          attributes: {
+            ...root.attributes,
+            version: root.attributes.version + (fault === "identity" ? 1 : 0),
+          },
+        },
+      },
+    };
     const input = { state, code: runtimeFixtureCode, client: f.client, directory, encryptionKey };
     if (fault === "none") {
       const observed = await verifyBoundProviderObservation(input);
@@ -124,11 +136,23 @@ for (const fault of ["secret", "denied", "identity"] as const)
     const identity = f.old.identity();
     const started = f.old.calls.start;
     const destroyed = f.old.calls.destroy;
-    const state = structuredClone(f.state);
+    const root = f.state.applications.root;
+    const state = {
+      ...f.state,
+      applications: {
+        ...f.state.applications,
+        root: {
+          ...root,
+          attributes: {
+            ...root.attributes,
+            version: root.attributes.version + (fault === "identity" ? 1 : 0),
+          },
+        },
+      },
+    };
     const providerFetch = globalThis.fetch;
     if (fault === "secret") f.secretAvailable(false);
     if (fault === "denied") globalThis.fetch = async () => new Response(null, { status: 403 });
-    if (fault === "identity") state.applications.root.attributes.version++;
     await assert.rejects(
       verifyBoundProviderObservation({
         state,
