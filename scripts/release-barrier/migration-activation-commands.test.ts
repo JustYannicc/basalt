@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/index.js";
-import { runHistoryOperator } from "../pool-history-operator.ts";
+import { connectHistoryPlatform, runHistoryOperator } from "../pool-history-operator.ts";
+import { HistoryOperatorFailure } from "../pool-history-operator-failure.ts";
 import { historyMemoryOwnerFixture, homeMetadataFixture } from "../pool-tests/history-fixture.ts";
 import { migrateModelHistory, type HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import {
@@ -113,7 +114,13 @@ test("activation accepts the real prepared operator plan and reports exact dry-r
         );
         const publicFailure = JSON.stringify(error) + refusalTable(error);
         if (scenario.name === "connect")
-          assert.deepEqual(error.delta?.why, ["type=CloudflareError", "status=403", "codes=10000"]);
+          assert.deepEqual(error.delta?.why, [
+            "phase=proxy-open",
+            `runtime=${process.versions.bun ? "bun" : "node"}`,
+            "type=CloudflareError",
+            "status=403",
+            "codes=10000",
+          ]);
         assert.ok(publicFailure.includes(scenario.field));
         assert.ok(!publicFailure.includes(privateDiagnostic));
         return true;
@@ -123,5 +130,82 @@ test("activation accepts the real prepared operator plan and reports exact dry-r
     assert.equal((await modelHistorySchemaPlan(db, "journal-activation")).applied, false);
   } finally {
     await database.close();
+  }
+});
+
+test("a plain connection Error retains its safe nested Wrangler cause without private text", async () => {
+  const sentinel = "private-operator-message@fixture.invalid";
+  const cause = Object.assign(new Error(sentinel), {
+    name: "APIError",
+    status: 403,
+    code: 10000,
+    url: sentinel,
+    body: sentinel,
+  });
+  await assert.rejects(
+    historyPlan(
+      async () => {
+        throw new HistoryOperatorFailure(
+          "operator.connect",
+          undefined,
+          new Error(sentinel, { cause }),
+        );
+      },
+      "a".repeat(32),
+      "fixture-pool",
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof BarrierRefusal);
+      assert.equal(error.reason, "migration-activation-pool-plan");
+      assert.deepEqual(error.delta?.why, [
+        "phase=proxy-open",
+        `runtime=${process.versions.bun ? "bun" : "node"}`,
+        "type=Error",
+        "cause.1.type=APIError",
+        "cause.1.status=403",
+        "cause.1.codes=10000",
+      ]);
+      assert.ok(!(JSON.stringify(error) + refusalTable(error)).includes(sentinel));
+      return true;
+    },
+  );
+});
+
+test("module loading and remote proxy initialization have distinct closed failure stages", async () => {
+  const sentinel = "private-module-or-proxy-message@fixture.invalid";
+  for (const loading of [true, false]) {
+    await assert.rejects(
+      historyPlan(
+        (options, account) =>
+          runHistoryOperator(options, account, (path) =>
+            connectHistoryPlatform(path, () => {
+              if (loading) throw Object.assign(new Error(sentinel), { code: "MODULE_NOT_FOUND" });
+              return {
+                getPlatformProxy: async () => {
+                  throw new Error(sentinel, {
+                    cause: Object.assign(new Error(sentinel), { code: "ECONNRESET" }),
+                  });
+                },
+              };
+            }),
+          ),
+        "a".repeat(32),
+        "fixture-pool",
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof BarrierRefusal);
+        assert.deepEqual(error.delta?.changed, [
+          { path: loading ? "operator.load-wrangler" : "operator.connect", changed: true },
+        ]);
+        assert.ok(error.delta?.why?.includes(loading ? "phase=wrangler-load" : "phase=proxy-open"));
+        assert.ok(
+          error.delta?.why?.includes(
+            loading ? "nodeCode=MODULE_NOT_FOUND" : "cause.1.nodeCode=ECONNRESET",
+          ),
+        );
+        assert.ok(!(JSON.stringify(error) + refusalTable(error)).includes(sentinel));
+        return true;
+      },
+    );
   }
 });

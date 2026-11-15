@@ -65,6 +65,41 @@ export const knownTypes = new Set([
   "RangeError",
   "SyntaxError",
   "Error",
+  // Wrangler 4.153.0's UserError subclasses can inherit Error.name unchanged.
+  "UserError",
+  "FatalError",
+  "CommandLineArgsError",
+  "MissingConfigError",
+  "ParseError",
+  "APIError",
+  "RemoteSessionAuthenticationError",
+  "MiniflareCoreError",
+  "MiniflareError",
+  "AggregateError",
+]);
+
+const nodeCodes = new Set([
+  "MODULE_NOT_FOUND",
+  "ERR_MODULE_NOT_FOUND",
+  "ERR_REQUIRE_ESM",
+  "ERR_DLOPEN_FAILED",
+  "ERR_PACKAGE_PATH_NOT_EXPORTED",
+  "ENOENT",
+  "EACCES",
+  "EPERM",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "CERT_HAS_EXPIRED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
 ]);
 
 const httpReasons = new Set([
@@ -76,8 +111,15 @@ const httpReasons = new Set([
   "EmptyBodyError",
 ]);
 
-const field = (value: unknown, key: string): unknown =>
-  typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
+const field = (value: unknown, key: string): unknown => {
+  try {
+    return (typeof value === "object" || typeof value === "function") && value !== null
+      ? Reflect.get(value, key)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
 const integer = (value: unknown, minimum: number, maximum: number): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= minimum && value <= maximum;
 
@@ -86,15 +128,27 @@ export interface ProviderFailure {
   reason?: string;
   status?: number;
   codes?: number[];
+  nodeCode?: string;
   exitCode?: number | null;
   migration?: MigrationDiagnostic;
 }
 
 /** Provider messages, bodies, URLs and stacks can contain credentials. Copy only closed diagnostics. */
 export function safeProviderFailure(error: unknown): ProviderFailure {
-  const migration = migrationCommandFailure(error);
+  let migration;
+  try {
+    migration = migrationCommandFailure(error);
+  } catch {
+    // A hostile getter is not a diagnostic and must not replace the original refusal.
+  }
   if (migration) return migration;
-  const tag = field(error, "_tag") ?? field(error, "name");
+  const constructor = field(field(error, "constructor"), "name");
+  const name = field(error, "name");
+  const tag =
+    field(error, "_tag") ??
+    (name === "Error" && typeof constructor === "string" && knownTypes.has(constructor)
+      ? constructor
+      : name);
   const type = typeof tag === "string" && knownTypes.has(tag) ? tag : "unknown";
   const httpReason = type === "HttpClientError" ? field(error, "reason") : undefined;
   const reason = field(httpReason, "_tag");
@@ -103,6 +157,7 @@ export function safeProviderFailure(error: unknown): ProviderFailure {
     field(field(httpReason, "response"), "status") ??
     (type === "StateStoreError" ? field(field(error, "http"), "status") : undefined);
   const entries = field(error, "errors");
+  const nodeCode = field(error, "code");
   const codes = [
     ...new Set(
       [
@@ -110,13 +165,29 @@ export function safeProviderFailure(error: unknown): ProviderFailure {
         ...(Array.isArray(entries) ? entries.slice(0, 8).map((entry) => field(entry, "code")) : []),
       ].filter((code) => integer(code, 0, 2_147_483_647)),
     ),
-  ].sort((a, b) => a - b);
+  ]
+    .sort((a, b) => a - b)
+    .slice(0, 8);
   return {
     type,
     ...(typeof reason === "string" && httpReasons.has(reason) ? { reason } : {}),
     ...(integer(status, 100, 599) ? { status } : {}),
     ...(codes.length ? { codes } : {}),
+    ...(typeof nodeCode === "string" && nodeCodes.has(nodeCode) ? { nodeCode } : {}),
   };
+}
+
+/** Connection wrappers often retain the useful API or network failure only in cause. */
+export function safeProviderFailureChain(error: unknown): ProviderFailure[] {
+  const result: ProviderFailure[] = [];
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current !== undefined && current !== null && result.length < 4 && !seen.has(current)) {
+    seen.add(current);
+    result.push(safeProviderFailure(current));
+    current = field(current, "cause");
+  }
+  return result;
 }
 
 export class ReleaseOperationFailure extends BarrierRefusal {
