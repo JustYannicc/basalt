@@ -516,3 +516,61 @@ new file mode 100644
 +    after insert or update or delete on executor_account_tool_calls
 +    for each row execute function hosted_account_traffic_changed()`;
 +});
+diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/contributed-departure-observability.spec.ts
+--- a/e2e/tests/contributed-departure-observability.spec.ts
++++ b/e2e/tests/contributed-departure-observability.spec.ts
+@@ -143,6 +143,9 @@
+         const account = yield* f.connect(f.actors.member, "app", "shared", "Retained pool account");
+         // The previous host stored this job before migration 13 and could not retain its diagnostics.
+         yield* legacyStorage([
++          {
++            sql: "INSERT INTO private_hosted_migrations (migration_id, name) SELECT max(migration_id) + 1, 'fixture_future_account_change' FROM private_hosted_migrations",
++          },
+           ...beforeHostedModelBindings(),
+           { sql: "ALTER TABLE hosted_contributed_departure_jobs DROP COLUMN queued_at" },
+           { sql: "ALTER TABLE hosted_contributed_departure_jobs DROP COLUMN last_error" },
+@@ -182,13 +185,17 @@
+         yield* serverControl("restart");
+         expect(yield* read).toEqual(retained);
+         yield* evidence.json("retained-diagnostics-remain-unknown.json", retained);
+-        const [journal, repeated] = yield* legacyStorage([
++        const [journal, repeated, futureSteps] = yield* legacyStorage([
+           {
+             sql: "SELECT count(*)::integer AS count FROM private_hosted_migrations WHERE migration_id = 13",
+           },
+           journalQuery,
++          {
++            sql: "SELECT migration_id FROM private_hosted_migrations WHERE name = 'fixture_future_account_change'",
++          },
+         ]);
+         expect(journal).toEqual([{ count: 1 }]);
++        expect(futureSteps).toEqual([]);
+         expect(repeated).toEqual(upgraded);
+         yield* evidence.json("retained-diagnostics-and-recheck-migrations.json", {
+           upgraded,
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -1,8 +1,8 @@
+ /** Undo the hosted journal before reconstructing its dependency layout. */
+ const beforeHostedAccountChanges = () =>
+   [
+-    // A dropped SDK table also drops its migration-20 trigger. Rewind the whole step so startup
+-    // reinstalls every trigger after the older SDK layout has been reconstructed.
++    // A later journal row makes the migrator skip missing earlier steps. Rewind the recorded
++    // suffix with the account schema, including migrations introduced after this fixture.
+     { sql: "DROP FUNCTION IF EXISTS hosted_change_revision(text, text, text)" },
+     { sql: "DROP FUNCTION IF EXISTS hosted_project_changes(integer)" },
+     { sql: "DROP FUNCTION IF EXISTS hosted_account_changed() CASCADE" },
+@@ -14,7 +14,10 @@
+       sql: `DO $rollback$
+         BEGIN
+           IF to_regclass('private_hosted_migrations') IS NOT NULL THEN
+-            DELETE FROM private_hosted_migrations WHERE migration_id IN (20, 21, 22);
++            DELETE FROM private_hosted_migrations
++            WHERE migration_id >= (
++              SELECT migration_id FROM private_hosted_migrations WHERE name = 'account_changes'
++            );
+             IF EXISTS (SELECT 1 FROM private_hosted_migrations WHERE migration_id = 19)
+               AND to_regprocedure('hosted_record_change(text,text,text)') IS NOT NULL THEN
+               EXECUTE $migration19$
