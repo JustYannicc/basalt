@@ -696,3 +696,29 @@ diff --git a/e2e/tests/cloud-database-placement.spec.ts b/e2e/tests/cloud-databa
            }
  
            // A tool call's `BEGIN … COMMIT` batch (`PgConnection.pipelined`) runs inside a hold:
+diff --git a/e2e/tests/mcp-connections.spec.ts b/e2e/tests/mcp-connections.spec.ts
+--- a/e2e/tests/mcp-connections.spec.ts
++++ b/e2e/tests/mcp-connections.spec.ts
+@@ -661,13 +661,20 @@
+             .getByRole("img")
+             .waitFor({ state: "visible" }),
+         );
+-        // Radix paints the dialog before the effect that makes it the topmost layer and moves focus
+-        // into it. Escape pressed before that effect closes the setup dialog beneath it instead.
++        // Focus arrives before Radix's passive effect installs this layer's Escape handler.
++        // Finish entry motion before sending a document-level key to the nested dialog.
+         yield* browser.use("The full-size screenshot takes focus", (page) =>
+           page
+             .getByRole("dialog", { name: "Claude’s Add custom connector dialog" })
+             .and(page.locator(":focus-within"))
+             .waitFor(),
++        );
++        yield* browser.use("Wait for the screenshot entry animation", (page) =>
++          page
++            .getByRole("dialog", { name: "Claude’s Add custom connector dialog", exact: true })
++            .evaluate((element) =>
++              Promise.all(element.getAnimations().map((animation) => animation.finished)),
++            ),
+         );
+         yield* browser.use("Close the full-size screenshot", (page) =>
+           page.keyboard.press("Escape"),

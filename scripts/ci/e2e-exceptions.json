@@ -1979,39 +1979,39 @@
     }
   },
   {
-    "reason": "The candidate limits a browser-consented MCP connection to its configured app and read-only tool set, compares it with full access, observes policy edits on later calls, and revokes the connection grant. The call is always made through the same connection and owner; it does not assert a host-authenticated human caller at an authored app or a Workflow step. The connection OAuth grant is not the p42 credential-host or sealing-to-adapter contract, nor the physical migration bridge. Renew the existing exception.",
+    "reason": "The candidate limits a browser-consented MCP connection to its configured app and read-only tool set, compares it with full access, observes policy edits on later calls, and revokes the connection grant. The call is always made through the same connection and owner; it does not assert a host-authenticated human caller at an authored app or a Workflow step. The connection OAuth grant is not the p42 credential-host or sealing-to-adapter contract, nor the physical migration bridge. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "mcp-connections.spec.ts#scopedConnectionAccess": "c137486b05d2b509c994cbda899b15d61df7c4433ad4b648b2d470a37deed574"
+      "mcp-connections.spec.ts#scopedConnectionAccess": "bc32ddae754b09b78208440c7fa8258738155acbffc61c1cd88433897e4fda80"
     }
   },
   {
-    "reason": "The candidate selects a connection runsAs account, observes that account\u2019s key inside the app tool, refuses a per-call account override, and refuses a newly linked account outside the connection policy. This is connection/account-selection behavior; it does not assert the host-authenticated caller identity at the authored app or a Workflow step, and uses an in-app key value rather than sealing credentials to an outbound DNS host adapter. It is not physical bridge state. Renew the existing exception.",
+    "reason": "The candidate selects a connection runsAs account, observes that account\u2019s key inside the app tool, refuses a per-call account override, and refuses a newly linked account outside the connection policy. This is connection/account-selection behavior; it does not assert the host-authenticated caller identity at the authored app or a Workflow step, and uses an in-app key value rather than sealing credentials to an outbound DNS host adapter. It is not physical bridge state. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "mcp-connections.spec.ts#scopedConnectionAccounts": "a33902e6846717e79338f045b0b0e78ecd6cf85423f5264e06ab1530ff495c73"
+      "mcp-connections.spec.ts#scopedConnectionAccounts": "63b65f79b69176c80954a99efcb04f463c53124e6bb9de0addec2efca47903d8"
     }
   },
   {
-    "reason": "The candidate distinguishes an app-linked account from user-linked accounts, requires runsAs app rather than naming the app account directly, returns the app account\u2019s key through an app tool, and hides that account ID from tool descriptions, connection listings, and grant listings. This is app-account link policy, not the host-authenticated caller identity at the authored app or a Workflow step, nor outbound host credential sealing/conversion or physical bridge state. Renew the existing exception.",
+    "reason": "The candidate distinguishes an app-linked account from user-linked accounts, requires runsAs app rather than naming the app account directly, returns the app account\u2019s key through an app tool, and hides that account ID from tool descriptions, connection listings, and grant listings. This is app-account link policy, not the host-authenticated caller identity at the authored app or a Workflow step, nor outbound host credential sealing/conversion or physical bridge state. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "mcp-connections.spec.ts#scopedConnectionAppAccount": "6225592238d06a08a5bd29d09acc89b291f2537848d700785d7370c46855d85e"
+      "mcp-connections.spec.ts#scopedConnectionAppAccount": "387193e6c9fe14187fcd05c5f0b58e8296a6425b5aa60c3ef562bb5bb50cf0a6"
     }
   },
   {
-    "reason": "The candidate refuses connection consent and management by another organization member or a forged organization header, while the owning member can consent. This is organization/connection authorization, not host-authenticated caller identity at an authored app or Workflow step, p42 credential-host conversion, or the physical Cloud migration bridge. Renew the existing exception.",
+    "reason": "The candidate refuses connection consent and management by another organization member or a forged organization header, while the owning member can consent. This is organization/connection authorization, not host-authenticated caller identity at an authored app or Workflow step, p42 credential-host conversion, or the physical Cloud migration bridge. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "mcp-connections.spec.ts#scopedConnectionConsent": "a6922b58aef61a030b40ce1aff9edd8f24b445f3ef48e1a605b41053bece873f"
+      "mcp-connections.spec.ts#scopedConnectionConsent": "93c62362307d33ae426f12d13a8a8b2c3aea0abad460216332500711cf4d2786"
     }
   },
   {
-    "reason": "The candidate walks the Connections UI, assistant setup commands, creating a scoped connection, showing its MCP URL, and revoking it. These are dashboard/setup behaviors and do not assert the accepted physical bridge, host-authenticated caller at the app or each Workflow step, or p42 credential-host conversion. Renew the existing exception.",
+    "reason": "The candidate walks the Connections UI, assistant setup commands, creating a scoped connection, showing its MCP URL, and revoking it. These are dashboard/setup behaviors and do not assert the accepted physical bridge, host-authenticated caller at the app or each Workflow step, or p42 credential-host conversion. Renew the existing exception. The journey adds only a readiness wait for the nested screenshot entry animation before Escape. Its existing assertions, actions and plan remain intact, so retain this reviewed exception with its new fingerprint.",
     "entries": {
-      "mcp-connections.spec.ts#scopedConnectionDashboard": "e707157af6b1c2c54d1aa68c3a6b51fa37e0581333d272b93bbb1751140773a0"
+      "mcp-connections.spec.ts#scopedConnectionDashboard": "70ffe14314f4f7684385afda2ce375dd776f155139ef6c05b9eeff5bc4138b31"
     }
   },
   {
-    "reason": "The candidate holds a tool execution, changes the owner\u2019s linked account, then verifies the existing MCP connection still uses its configured account for the first call and refuses the replacement on the next call. This protects connection runsAs/link-swap policy, not the host-authenticated caller supplied to an authored app or Workflow step; the in-app token fixture does not exercise sealing-to-adapter conversion or credential host parsing. Renew the existing exception.",
+    "reason": "The candidate holds a tool execution, changes the owner\u2019s linked account, then verifies the existing MCP connection still uses its configured account for the first call and refuses the replacement on the next call. This protects connection runsAs/link-swap policy, not the host-authenticated caller supplied to an authored app or Workflow step; the in-app token fixture does not exercise sealing-to-adapter conversion or credential host parsing. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "mcp-connections.spec.ts#scopedConnectionLinkSwappedMidExecution": "91c9b99dd1aa9800050d602b7290954f5344e8620f5f50168d13888db0319077"
+      "mcp-connections.spec.ts#scopedConnectionLinkSwappedMidExecution": "c6d77d40fce32d5db2c841dd6a51abd611600683db798da50ddab82bde12295f"
     }
   },
   {
