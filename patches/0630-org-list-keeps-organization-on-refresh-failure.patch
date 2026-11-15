@@ -1,0 +1,67 @@
+diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/apps/hosted/web/src/implementation/components/organization.tsx
+--- a/apps/hosted/web/src/implementation/components/organization.tsx
++++ b/apps/hosted/web/src/implementation/components/organization.tsx
+@@ -451,10 +451,12 @@
+       document.removeEventListener("visibilitychange", remember);
+     };
+   }, [access, session]);
++  // A list refresh that fails to answer keeps the list it last read; a refused access still
++  // drops the details through `checked`.
+   const organization =
+-    AsyncResult.isSuccess(organizations) && target !== undefined
+-      ? organizations.value.find((item) => item.id === target)
+-      : undefined;
++    target === undefined
++      ? undefined
++      : Option.getOrUndefined(AsyncResult.value(organizations))?.find((item) => item.id === target);
+   const canonicalSlug = organization?.slug;
+   useEffect(() => {
+     if (rejectedResume) return;
+diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-intent-prefetch.spec.ts
+--- a/e2e/tests/settings-intent-prefetch.spec.ts
++++ b/e2e/tests/settings-intent-prefetch.spec.ts
+@@ -18,6 +18,7 @@
+ const membersPath = "/api/auth/organization/list-members";
+ const invitationsPath = "/api/auth/organization/list-invitations";
+ const sessionPath = /\/api\/auth\/get-session(?:\?|$)/;
++const organizationsPath = /\/api\/auth\/organization\/list(?:\?|$)/;
+ /** Cloud's settings page reads billing and removal after it renders; intent must not. */
+ const pageOnlyGroups = new Set(["billing", "organizationRemoval"]);
+ 
+@@ -278,6 +279,16 @@
+           yield* browser.use("Fail session refreshes until the link is followed", (page) =>
+             page.route(sessionPath, failSession),
+           );
++          // An organization list refresh that fails to answer must not hide the settings either.
++          let organizationListFailures = 0;
++          const failOrganizationList = (route: Route) => {
++            organizationListFailures++;
++            return route.abort("failed");
++          };
++          yield* browser.use(
++            "Fail organization list refreshes until the link is followed",
++            (page) => page.route(organizationsPath, failOrganizationList),
++          );
+           yield* refreshVisiblePage;
+           yield* browser.use("Focus the window after intent", (page) =>
+             page.evaluate(() => {
+@@ -315,12 +326,19 @@
+           membersFailed = yield* Deferred.make<void>();
+           const failing = yield* holdQuery([membersPath], "fail");
+           expect(sessionFailures, "A session refresh failed before the follow").toBeGreaterThan(0);
++          expect(
++            organizationListFailures,
++            "An organization list refresh failed before the follow",
++          ).toBeGreaterThan(0);
+           yield* browser.use("The failed session refresh is shown", (page) =>
+             page.getByText("Unable to refresh your session.", { exact: true }).waitFor(),
+           );
+           yield* followed("Follow the warmed Settings link", "intent");
+           yield* browser.use("Stop failing session refreshes", (page) =>
+             page.unroute(sessionPath, failSession),
++          );
++          yield* browser.use("Stop failing organization list refreshes", (page) =>
++            page.unroute(organizationsPath, failOrganizationList),
+           );
+           if (!administrator) {
+             expect(accessFailed, "The member's access refresh failed once").toBe(true);
