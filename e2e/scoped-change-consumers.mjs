@@ -269,8 +269,11 @@ const program = Effect.gen(function* () {
       (diagnostics.pageErrors ??= []).push(redactLogText(String(error)));
     });
     const currentReads = [];
+    const lastSuccessResponses = [];
     page.on("response", (response) => {
       const pathname = new URL(response.url()).pathname;
+      if (pathname.endsWith("/pool-usage/last-success") && response.status() === 200)
+        lastSuccessResponses.push(response);
       if (pathname.endsWith("/changes/current")) {
         currentReads.push(response);
         void response
@@ -464,6 +467,16 @@ const program = Effect.gen(function* () {
       "the Accounts page did not read pool usage",
     );
     yield* browserWork(resourceIdle);
+    yield* browserWork(async () => {
+      const response =
+        lastSuccessResponses[0] ??
+        (await page.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname.endsWith("/pool-usage/last-success") &&
+            response.status() === 200,
+        ));
+      await response.finished();
+    });
     const usageBefore = { series: seriesReads(), success: successReads() };
     assert.ok(usageBefore.series >= 2, "the real Accounts page loaded both pool usage ranges");
     assert.ok(usageBefore.success > 0, "the mapped Accounts page read last-success");
@@ -540,6 +553,16 @@ const program = Effect.gen(function* () {
       acceptedUsage,
     );
     progress.phase = "pool-account-routing";
+    yield* browserWork(async () => {
+      await page.goto(
+        `${browserOrigin}/org/${h.actors.organization.slug}/apps/${pool.id}?view=app`,
+      );
+      await page
+        .frameLocator('[data-app-frames] iframe:not([src*="/history"])')
+        .getByRole("heading", { name: "How much are we using?", exact: true })
+        .waitFor();
+    });
+
     yield* browserWork(() =>
       page.route(
         (url) => url.pathname.endsWith("/pool-credit-policy"),
