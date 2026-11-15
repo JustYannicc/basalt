@@ -27,7 +27,7 @@ test("raw rows single-flight within one query and remain isolated from consumers
       );
       assert.equal(reads, 1);
       assert.deepEqual(first, second);
-      first[0]!.label = "consumer changed its copy";
+      assert.equal(Reflect.set(first[0]!, "label", "consumer changed its copy"), true);
       assert.equal((yield* cachedFact(cache, db, "account", read))[0]!.label, "Retained");
       const other = database(yield* makeExecutorStorage({ provider: "postgresql" }));
       yield* cachedFact(cache, other, "account", read);
