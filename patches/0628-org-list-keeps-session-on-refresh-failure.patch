@@ -44,7 +44,7 @@ diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-int
            yield* refreshVisiblePage;
            yield* browser.use("Focus the window after intent", (page) =>
              page.evaluate(() => {
-@@ -304,7 +314,14 @@
+@@ -309,7 +319,14 @@
            // The stale answer is shown at once and read again behind it; a failed read keeps it.
            membersFailed = yield* Deferred.make<void>();
            const failing = yield* holdQuery([membersPath], "fail");
