@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 import { Effect, Redacted } from "effect";
 import { root, runtime, until } from "./recipes/harness.mjs";
 import { poolCloudHarness } from "./recipes/pool-cloud-harness.mjs";
+import { changeFeedRecoveryProof } from "./recipes/change-feed-recovery-proof.mjs";
 import { startScopedChangeFixture } from "./recipes/scoped-change-fixture.mjs";
 import { accountTrafficProof } from "./recipes/account-traffic-proof.mjs";
 import { accountTrafficPrivacyProof } from "./recipes/account-traffic-privacy-proof.mjs";
@@ -635,6 +636,16 @@ const program = Effect.gen(function* () {
     yield* browserWork(() => page.goto("about:blank"));
   }
   diagnostics.accounts = { proved: true, widths: [1280, 390] };
+  yield* changeFeedRecoveryProof({
+    h,
+    browser,
+    database,
+    label,
+    check,
+    diagnostics,
+    directory,
+    accountReads,
+  });
   if (!accountsOnly) {
     let model = "synthetic-model-before";
     const baseline = yield* browserWork(() => h.fixture.scoped.commitRequest(model));
