@@ -76,7 +76,7 @@ diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-int
            const browser = yield* Browser;
            const evidence = yield* Evidence;
            const organization = `/org/${actors.organization.slug}`;
-@@ -268,6 +274,17 @@
+@@ -268,6 +274,22 @@
                window.dispatchEvent(new Event("focus"));
              }),
            );
@@ -87,14 +87,19 @@ diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-int
 +            accessFailed = true;
 +            return route.abort("failed");
 +          };
-+          if (!administrator)
++          if (!administrator) {
 +            yield* browser.use("Fail the next access refresh once", (page) =>
 +              page.route(accessPath, failAccessOnce),
 +            );
++            // Request the access refresh now and let its batch send it, so the failure lands before
++            // the clock advance instead of whenever that advance happens to release the batch.
++            yield* refreshVisiblePage;
++            yield* browser.use("Send the access refresh", (page) => page.clock.runFor(5));
++          }
            // Past the reads' 30 second freshness, so following the link refreshes behind the rows.
            yield* browser.use("Let the answer go stale", (page) => page.clock.runFor(31_000));
            yield* settle("Flush fetch dispatch after the due timers");
-@@ -288,6 +305,12 @@
+@@ -288,6 +310,12 @@
            membersFailed = yield* Deferred.make<void>();
            const failing = yield* holdQuery([membersPath], "fail");
            yield* followed("Follow the warmed Settings link", "intent");
@@ -107,7 +112,7 @@ diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-int
            yield* failing.requested;
            yield* failing.release;
            yield* Deferred.await(membersFailed);
-@@ -352,6 +375,84 @@
+@@ -352,6 +380,84 @@
              membersImage,
            );
            yield* browser.checkpoint(`Settings members from the focus read at ${width}`);
