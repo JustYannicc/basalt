@@ -1,3 +1,9 @@
+import {
+  refuseRuntime,
+  runtimeRouteDiagnostic,
+  runtimeResponseDiagnostic,
+  stripRuntimeFailureHeaders,
+} from "./runtime-route-diagnostic.ts";
 import { isModelLifetimePath, stripModelLifetimeRequest } from "./model-lifetime-contract.ts";
 import { inheritModelLifetime, modelLifetimeFetch } from "./model-lifetime.worker.ts";
 import { modelKeyScope } from "./key-scope.ts";
@@ -143,7 +149,7 @@ export async function forwardPoolRequest(
       return new Response(null, { status: 204 });
     }
     guard = "runtime_port";
-    if (!port) throw new Error("Pool container port unavailable");
+    if (!port) refuseRuntime("port_lookup", new Error("Pool container port unavailable"));
     let boot: string | undefined;
     const beforeDispatch = () => {
       refusalModel?.discard();
@@ -184,6 +190,13 @@ export async function forwardPoolRequest(
       ? await deps.route(outbound, port, identity?.pool, legacy, beforeDispatch)
       : await legacy(outbound);
     guard = "upstream_response";
+    const runtimeRefusal = runtimeResponseDiagnostic(upstream);
+    if (runtimeRefusal)
+      console.error("POOL_RUNTIME_ROUTE_FAILURE", {
+        code: "runtime-refused",
+        status: upstream.status,
+        ...runtimeRefusal,
+      });
     logDispatchTiming(upstream.headers.get(dispatchTimingHeader));
     let response = await rewriteCapResponse(upstream, pathname);
     if (modelCall && request.method === "POST" && response.ok)
@@ -230,6 +243,7 @@ export async function forwardPoolRequest(
     headers.delete("X-Basalt-Request-Id");
     headers.delete("X-Basalt-Terminal-Protocol");
     headers.delete(dispatchTimingHeader);
+    stripRuntimeFailureHeaders(headers);
     if (modelCall) headers.set("X-Request-Id", requestId);
     const observedBoot = upstream.headers.get("X-Signalbox-Pool-Boot") ?? boot;
     if (observedBoot) headers.set("X-Signalbox-Pool-Boot", observedBoot);
@@ -254,6 +268,7 @@ export async function forwardPoolRequest(
     native?.release();
     modelLease?.release();
     const diagnostic: GatewayFailureDiagnostic = {
+      ...runtimeRouteDiagnostic(error),
       guard,
       refusalReason: error instanceof ProtectionRefusal ? error.reason : guard,
       cause:

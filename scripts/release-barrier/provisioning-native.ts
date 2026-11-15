@@ -12,7 +12,7 @@ export const runtimeNativeState = (manifest: RuntimeProvisioningManifest, namesp
     const row = yield* state.get({
       stack: manifest.stack,
       stage: manifest.stage,
-      fqn: "PoolRuntime",
+      fqn: manifest.declaration.fqn,
     });
     if (row?.status !== "created")
       throw provisioningRefusal(
@@ -24,8 +24,8 @@ export const runtimeNativeState = (manifest: RuntimeProvisioningManifest, namesp
     sameProvisioningValue(
       "native.identity",
       {
-        fqn: "PoolRuntime",
-        logicalId: "PoolRuntime",
+        fqn: manifest.declaration.fqn,
+        logicalId: manifest.declaration.fqn,
         resourceType: "Cloudflare.Container",
         instanceId: manifest.declaration.instanceId,
         removalPolicy: "retain",

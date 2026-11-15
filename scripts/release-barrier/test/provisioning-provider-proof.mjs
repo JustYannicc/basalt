@@ -16,6 +16,8 @@ import { provisioningJournal } from "../provisioning-journal.ts";
 import { provisioningManifestDigest } from "../provisioning-contract.ts";
 import { assertSupportedPlan } from "../plan-admission.ts";
 const tree = process.argv[2];
+const resource = process.argv[3] ?? "PoolRuntime";
+assert.ok(["PoolRuntime", "PoolRuntimeBlue", "PoolRuntimeGreen"].includes(resource));
 const load = (name) =>
   import(
     new URL(
@@ -64,10 +66,10 @@ const credentials = Effect.succeed({
 });
 const props = {
   name: "synthetic-runtime",
-  className: "PoolRuntime",
+  className: resource,
   image,
   instances: 0,
-  maxInstances: 1,
+  maxInstances: resource === "PoolRuntime" ? 1 : 4,
   instanceType: "basic",
   schedulingPolicy: "default",
   constraints: { jurisdiction: "eu", regions: ["EEUR", "WEUR"] },
@@ -75,9 +77,9 @@ const props = {
 };
 const binding = {
   action: "create",
-  sid: "PoolWorker:PoolRuntime",
+  sid: `PoolWorker:${resource}`,
   source: "PoolWorker",
-  target: "PoolRuntime",
+  target: resource,
   data: { durableObjects: { namespaceId: namespace } },
 };
 const manifest = {
@@ -90,12 +92,12 @@ const manifest = {
   declaration: {
     action: "create-container",
     type: "Cloudflare.Container",
-    fqn: "PoolRuntime",
+    fqn: resource,
     disposition: "provision-only",
     baseline: "absent",
     accountId: account,
     instanceId: instance,
-    namespace: { workerFqn: "PoolWorker", className: "PoolRuntime", binding: "PoolRuntime" },
+    namespace: { workerFqn: "PoolWorker", className: resource, binding: resource },
     props,
     publication: {
       inputHash: "d".repeat(16),
@@ -233,7 +235,7 @@ async function run(wire, options = {}) {
     synthetic: {
       production: {
         PoolContainer: structuredClone(legacy),
-        ...(options.prior ? { PoolRuntime: options.prior } : {}),
+        ...(options.prior ? { [resource]: options.prior } : {}),
       },
     },
   };
@@ -243,11 +245,11 @@ async function run(wire, options = {}) {
     const memory = yield* InMemoryService(stateRows);
     const plan = {
       resources: {
-        PoolRuntime: {
+        [resource]: {
           resource: {
             Type: "Cloudflare.Container",
-            LogicalId: "PoolRuntime",
-            FQN: "PoolRuntime",
+            LogicalId: resource,
+            FQN: resource,
             Props: options.props ?? props,
             Namespace: undefined,
             RemovalPolicy: "retain",
@@ -285,7 +287,7 @@ async function run(wire, options = {}) {
           ),
         );
       yield* Effect.promise(() =>
-        provisioningJournal(store, manifest.candidate, enable.manifest).once(
+        provisioningJournal(store, manifest.candidate, enable.manifest, resource).once(
           "application-create",
           "b".repeat(64),
           perform,
