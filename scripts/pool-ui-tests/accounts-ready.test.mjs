@@ -56,6 +56,7 @@ const artifacts = process.env.POOL_UI_ARTIFACTS;
 const failures = process.env.POOL_UI_FAILURE_DIR ?? artifacts;
 // Optional baseline: build that commit's app.tsx, accounts.tsx and api.ts into the fixture instead of the working tree.
 const sourceRef = process.env.POOL_UI_SOURCE_REF;
+const unknownLabRef = process.env.POOL_UI_UNKNOWN_LAB_REF;
 const weightPolicyRef = process.env.POOL_UI_WEIGHT_POLICY_REF;
 const planBaseline = process.env.POOL_UI_PLAN_BASELINE === "1";
 const samplerRef = process.env.POOL_UI_SAMPLER_REF;
@@ -73,7 +74,8 @@ const unknownReadingRef = process.env.POOL_UI_UNKNOWN_READING_REF;
 const resetsRef = process.env.POOL_UI_RESETS_REF;
 // Compare provider presentation against a frozen implementation with the same source replies.
 const nativeViewRef = process.env.POOL_UI_NATIVE_VIEW_REF;
-const baselineRef = sourceRef ?? peopleCopyRef ?? learningRef ?? resetsRef ?? nativeViewRef;
+const baselineRef =
+  sourceRef ?? unknownLabRef ?? peopleCopyRef ?? learningRef ?? resetsRef ?? nativeViewRef;
 const artifactLabel =
   process.env.POOL_UI_ARTIFACT_LABEL ??
   (baselineRef ? `before-${baselineRef.slice(0, 8)}` : "after");
@@ -354,6 +356,12 @@ test(
       mkdirSync(resolve(target, ".."), { recursive: true });
       writeFileSync(target, file.content);
     }
+    if (unknownLabRef)
+      for (const file of ["ui/summary-breakdown.tsx", "ui/summary-names.ts"])
+        writeFileSync(
+          join(app, file),
+          execFileSync("git", ["-C", root, "show", `${unknownLabRef}:apps/pool/${file}`]),
+        );
     if (sourceRef)
       for (const file of ["ui/app.tsx", "ui/accounts.tsx", "ui/api.ts"])
         writeFileSync(
@@ -460,6 +468,7 @@ test(
     // Reshapes the manager overview reply, e.g. into partial coverage of one snapshot.
     let overviewShape = (value) => value;
     let observeSummary = () => {};
+    let summaryShape = (value) => value;
     // When set, replaces the overview's people directory counts.
     let directoryResult;
     let usagePartial = false;
@@ -555,7 +564,9 @@ test(
         const input = JSON.parse(body).input;
         if (summary) {
           observeSummary(input);
-          response.end(JSON.stringify(summaryFixture(input, usageResult.value, usagePartial)));
+          response.end(
+            JSON.stringify(summaryShape(summaryFixture(input, usageResult.value, usagePartial))),
+          );
           return;
         }
         if (series) {
@@ -744,6 +755,7 @@ test(
         colorScheme = "light",
         overview = (value) => value,
         summaryRead = () => {},
+        summary = (value) => value,
         personal = false,
         partial = false,
         next = null,
@@ -754,6 +766,7 @@ test(
       usageResult = usage;
       overviewShape = overview;
       observeSummary = summaryRead;
+      summaryShape = summary;
       directoryResult = people;
       usagePartial = partial;
       seriesNext = next;
@@ -2979,6 +2992,62 @@ test(
             );
           },
           { viewport: { width, height: 860 }, usage: populatedUsage, capacityHeld: true },
+        );
+      });
+    for (const width of [1280, 390])
+      await t.test(`unknown labs explain refusals without another read at ${width}px`, async () => {
+        viewResult = { ok: true, value: { ...empty, providers, accounts: [] } };
+        const usage = {
+          ok: true,
+          value: {
+            ...emptyUsage.value,
+            total: { ...emptyUsage.value.total, requests: 153, cost: null, unpriced: 153 },
+            models: [{ provider: null, model: null, requests: 153 }],
+          },
+        };
+        await session(
+          async ({ page, frame, settled }) => {
+            release();
+            const breakdown = frame.locator('section[aria-labelledby="usage-breakdown-heading"]');
+            await breakdown.getByText("Unknown lab", { exact: true }).waitFor();
+            await breakdown.getByText("153 requests", { exact: true }).waitFor();
+            if (unknownLabRef) {
+              assert.match(await breakdown.innerText(), /share unknown/);
+              assert.doesNotMatch(await breakdown.innerText(), /failed before reaching/);
+            } else {
+              await breakdown
+                .getByText("153 failed before reaching a lab.", { exact: true })
+                .waitFor();
+              assert.match(await breakdown.innerText(), /Not attributed/);
+              assert.doesNotMatch(await breakdown.innerText(), /share unknown/);
+            }
+            assert.equal(
+              await frame
+                .locator("body")
+                .evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+              true,
+            );
+            await breakdown.scrollIntoViewIfNeeded();
+            await capture(page, `unknown-lab-${width}`);
+            await frame.getByRole("tab", { name: "Requests", exact: true }).click();
+            await settled();
+            assert.equal(summaryReads, 1, "explaining missing lab metadata requires no extra read");
+          },
+          {
+            viewport: { width, height: 860 },
+            usage,
+            summary: (value) => ({
+              ...value,
+              daily: value.daily.map((group) => ({
+                ...group,
+                buckets: group.buckets.map((bucket) => ({
+                  ...bucket,
+                  failed: 153,
+                  refusedBeforeLab: 153,
+                })),
+              })),
+            }),
+          },
         );
       });
     for (const width of [1280, 390])
