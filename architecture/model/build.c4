@@ -1,5 +1,6 @@
 // The lone-commit delivery deadline starts after embedded database readiness, with bounded fixture acquisition and teardown.
 // Native cache acceptance bounds each request independently; retained protocol adapters use distinct synthetic identities only inside the scoped proof registry.
+// Coverage follows the published-framework wrapper's executable child from its upstream directory, including imported helpers.
 model {
   extend basalt {
     build = module "Build" {
