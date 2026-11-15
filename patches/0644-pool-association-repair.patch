@@ -54,7 +54,7 @@ index edf1dfc7b..b42e5a0b9 100644
    [providerAppsOpenAIAnthropic.name]: providerAppsOpenAIAnthropic,
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/pool-association-repair-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/pool-association-repair-v1.ts
 new file mode 100644
-index 0000000..e9e60b2a3 100644
+index 0000000..ae24f7745 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/pool-association-repair-v1.ts
 @@ -0,0 +1,238 @@
@@ -63,13 +63,13 @@ index 0000000..e9e60b2a3 100644
 +import type { Json, ProductionMigration } from "../contracts.ts";
 +import { canonical, sha256 } from "../crypto.ts";
 +
-+const Id = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,256}$/));
++const Id = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,256}$/u));
 +const Request = Schema.Struct({
 +  organization: Id,
 +  slot: Id,
 +  app: Id,
 +  actualOwner: Schema.NullOr(
-+    Schema.String.check(Schema.isPattern(/^(organization|user):[A-Za-z0-9_-]{1,256}$/)),
++    Schema.String.check(Schema.isPattern(/^(organization|user):[A-Za-z0-9_-]{1,256}$/u)),
 +  ),
 +  operation: Schema.Literals(["clear", "repoint"]),
 +  replacement: Schema.optionalKey(Id),
