@@ -1,0 +1,7 @@
+model {
+  extend basalt.telemetry {
+    metadata {
+      constraint "Native Worker request logs remove query strings before formatting or export, so OAuth codes, unsubscribe tokens and app searches cannot enter platform logs. Native trace configuration remains independent of the producer redaction, and fixed deployment-role metadata cannot include request data."
+    }
+  }
+}

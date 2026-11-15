@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountForms {
+    metadata {
+      constraint "Workspace connection forms expose the existing personal OAuth-client choice beside configured clients and preserve the current client on reconnect. A rejected replacement leaves the saved grant usable. Service-name normalization changes labels only; the existing client selector owns manual entry and its reversible choices."
+    }
+  }
+}

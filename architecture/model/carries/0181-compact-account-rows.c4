@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "Compact account rows retain health ranking, saved identity, sign-in recovery and detail notes. Active or failed stale rechecks appear once in the Health column, with retry tied to that saved account; duplicate pending notes stay hidden. Provider marks keep their canonical source and compact size."
+    }
+  }
+}

@@ -1,7 +1,7 @@
 {
   "identity": "basalt-service-install-identity",
   "file": "0120-service-install-identity.patch",
-  "content_sha256": "fb175686365aee2a2308a1e556fa67e0b34c35e35a97253ab707129a97de920b",
+  "content_sha256": "f27b998ea4d2f4ae72645ae943fbf9231a60de2dade690d96eadcdcfdfa9eb08",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

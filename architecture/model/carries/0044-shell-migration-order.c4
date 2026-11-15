@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "Production dashboard and marketing shell asset hashes depend on successful database migration output. A failed migration cannot publish a shell naming the candidate's browser assets. Development retains the direct site-build hash without manufacturing a migration dependency."
+    }
+  }
+}

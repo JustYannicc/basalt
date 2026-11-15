@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-list-reads",
   "file": "0344-account-list-reads.patch",
-  "content_sha256": "bf0c706e5f81d15a0e041024ea53acaa698fe2e100793505b5466fd1ab8460e5",
+  "content_sha256": "4e7f6bbd0ad8bf2d0fe8febd2f4f49f1e382056b70f386d70ea4ecb1a1c023a1",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

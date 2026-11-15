@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-serving-catalog-client-effect",
+  "file": "0627-serving-catalog-client-effect.patch",
+  "content_sha256": "e9b7072eb049fc238a2204b2919c871d19fb260679470fb5172dd8607adfbf02",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

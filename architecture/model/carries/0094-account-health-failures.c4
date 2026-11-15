@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Failed app and driver checks retain only closed phase and error tags in health and matching telemetry. Public identity decodes only AccountInfo and keeps its original retrieval time through failure and restart. Recovery clears failure metadata; unsaved credential checks return diagnostics without saving credentials or check results."
+    }
+  }
+}

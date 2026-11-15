@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.appPages {
+    metadata {
+      constraint "App-page builds specialize the API-revision resolver only when the actual configured canonical API origin satisfies the same built-document predicate the runtime uses. Every other origin retains its exact origin-specific document and hash. App pages omit unused management route declarations through pure metadata initializers; the API retains those same groups and public routes. Shared tool schemas and runtime helpers remain live. The production upload stays below the existing budget without changing publication identities, framework admission, resources or storage."
+    }
+  }
+}

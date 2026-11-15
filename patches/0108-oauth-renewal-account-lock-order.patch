@@ -1,8 +1,8 @@
 diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
-index 4af45b6..5a5c320 100644
+index 50d4770..e1424db 100644
 --- a/e2e/ci-selection.ts
 +++ b/e2e/ci-selection.ts
-@@ -285,6 +285,14 @@ const notRunInCi: Partial<
+@@ -287,6 +287,14 @@ const notRunInCi: Partial<
      { readonly targets: ReadonlyArray<typeof Target.Type>; readonly reason: string }
    >
  > = {
@@ -59,7 +59,7 @@ index 0000000..1387a55
 +    };
 +  });
 diff --git a/e2e/support/oauth-setup-issuer.ts b/e2e/support/oauth-setup-issuer.ts
-index 6f6eb4d..f8e7cb7 100644
+index 799eb02..d76cdc4 100644
 --- a/e2e/support/oauth-setup-issuer.ts
 +++ b/e2e/support/oauth-setup-issuer.ts
 @@ -52,6 +52,7 @@ export const IssuerPort = Context.Reference<number>("e2e/IssuerPort", { defaultV
@@ -70,7 +70,7 @@ index 6f6eb4d..f8e7cb7 100644
    let registration = true;
    let postChallenge = false;
    let challenge = true;
-@@ -919,6 +920,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+@@ -930,6 +931,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
              client.secret !== null &&
              presented.secret === client.secret,
          });
@@ -78,7 +78,7 @@ index 6f6eb4d..f8e7cb7 100644
          return revocation === "failing"
            ? HttpServerResponse.empty({ status: 503 })
            : HttpServerResponse.empty({ status: 200 });
-@@ -1039,6 +1041,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
+@@ -1050,6 +1052,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
    yield* Deferred.succeed(address, origin);
    return {
      origin,
@@ -87,10 +87,10 @@ index 6f6eb4d..f8e7cb7 100644
        readonly requireUserAgent?: boolean;
        readonly registration?: boolean;
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index c89f8d3..d136722 100644
+index 1688167..5133a88 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -4930,6 +4930,26 @@ export const scenarios = plan({
+@@ -5706,6 +5706,26 @@ export const scenarios = plan({
        local: na("Hosted callback page and account dialogs."),
      },
    },
@@ -435,10 +435,10 @@ index ad88ca6..55f91ff 100644
            if (
              current.credentialGeneration !== account.credentialGeneration ||
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index c46519f..e4dec2e 100644
+index 73a7a4e..110736c 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
-@@ -2924,6 +2924,14 @@ export const makeOAuth = (
+@@ -3044,6 +3044,14 @@ export const makeOAuth = (
            const ready = `ready_${yield* nextId}`;
            const committed = yield* transaction(db, (tx) =>
              Effect.gen(function* () {

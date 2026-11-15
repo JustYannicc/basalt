@@ -2,9 +2,9 @@
   "package": "@executor.sh/notion",
   "publishedUrl": "https://catalog.executor.sh/apps/notion.json",
   "publishedSha256": "032f541c7d3f65eab78e8037accfe63eca5ebed6367f000b158236a3c18d5d42",
-  "carriedSha256": "1cc7aad58697657775c54e35a6f4602ef40e95d938651f11316c8dd2d66fc135",
-  "patchSha256": "6028efa56ca7f260eddbeae768911ffa67ffc6a7d3c84c5d5e66651ccf464e6f",
-  "appsVersion": "0.0.1-beta.104-basalt.15",
+  "carriedSha256": "55cbc28dbf58efdf917061dcc44758564b052ec7016d40831393c1178b824f03",
+  "patchSha256": "7da9ee9db20c07c120ae69def15fee79a9db9fad469b1a68832514979fc4e79a",
+  "appsVersion": "0.0.1-beta.104-basalt.16",
   "license": "Not declared in the published package",
   "contribution": {
     "state": "Account checks report the workspace name through REST or optional MCP get-self, else the signed-in person's email; publication not claimed"

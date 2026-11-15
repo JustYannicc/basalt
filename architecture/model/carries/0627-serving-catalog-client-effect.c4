@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "App pages and MCP resolve the configured catalog cache client effect before passing the client to catalog reads. The shared serving composition retains the cache's existing request-scoped memo and write finalizers; it never passes an unevaluated effect as an HTTP client or moves cache ownership to initialization. Unconfigured feeds retain the original egress client."
+    }
+  }
+}

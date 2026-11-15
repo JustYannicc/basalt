@@ -25,7 +25,7 @@
     ]
   },
   "inputs": [
-    ".upstream/patches/@better-auth%2Foauth-provider@1.7.5.patch",
+    ".upstream/patches/@better-auth%2Foauth-provider@1.7.16.patch",
     ".upstream/packages/mcp-auth/src/implementation/oauth.ts"
   ]
 }

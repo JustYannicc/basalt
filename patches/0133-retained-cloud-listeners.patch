@@ -35,10 +35,10 @@ index ef6900a..08c0461 100644
        ),
      ),
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 141f261..f344ca4 100644
+index 3ed51b7..a80999c 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
-@@ -225,7 +225,7 @@ export default Api.make(
+@@ -239,7 +239,7 @@ export default Api.make(
        dev: {
          host: "127.0.0.1",
          port: dev ? (yield* cloudDevelopment.pipe(Effect.orDie)).apiPort : 4411,
@@ -48,13 +48,27 @@ index 141f261..f344ca4 100644
        assets: {
          // Resolve the dev asset root once before Alchemy hands it to workerd.
 diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
-index 19fab24..eb84a07 100644
+index 32ec3b1..d50ce80 100644
 --- a/e2e/check-boundary.ts
 +++ b/e2e/check-boundary.ts
-@@ -73,6 +73,13 @@ const check = Effect.gen(function* () {
+@@ -74,6 +74,27 @@ const check = Effect.gen(function* () {
              allowed.has(specifier)
            )
              return;
++          // Listener announcements may contain terminal styling; no other utility imports pass.
++          if (
++            label === `support${path.sep}cloud-listener.ts` &&
++            specifier === "node:util" &&
++            ts.isImportDeclaration(node.parent) &&
++            node.parent.importClause?.name === undefined &&
++            node.parent.importClause?.namedBindings !== undefined &&
++            ts.isNamedImports(node.parent.importClause.namedBindings) &&
++            node.parent.importClause.namedBindings.elements.length === 1 &&
++            node.parent.importClause.namedBindings.elements[0]?.propertyName === undefined &&
++            node.parent.importClause.namedBindings.elements[0]?.name.text ===
++              "stripVTControlCharacters"
++          )
++            return;
 +          // The runner owns its canonical TCP listener through this external transport SDK.
 +          // Application implementations remain forbidden; only this listener adapter may import it.
 +          if (
@@ -95,7 +109,7 @@ index 8ba6aa2..d7b95c1 100644
                commit,
                observeUI: false,
 diff --git a/e2e/sdk/suite.ts b/e2e/sdk/suite.ts
-index b3f3e5c..8332e7c 100644
+index ead3486..59b37f0 100644
 --- a/e2e/sdk/suite.ts
 +++ b/e2e/sdk/suite.ts
 @@ -19,6 +19,7 @@ import { roleHost } from "../support/role-hosts.ts";
@@ -128,7 +142,7 @@ index b3f3e5c..8332e7c 100644
                    : Option.none<string>();
                const metadata: typeof RunMetadata.Type = {
                  target,
-@@ -285,6 +289,7 @@ export const runSuite = ({
+@@ -287,6 +291,7 @@ export const runSuite = ({
                          yield* startCloudEnvironment({
                            ...(registry === undefined ? {} : { npmRegistry: registry.url }),
                            directory: productionDirectory,
@@ -136,24 +150,24 @@ index b3f3e5c..8332e7c 100644
                            origin: proxyProduction.value,
                            appPort: yield* freePort,
                            databasePort: yield* freePort,
-@@ -300,6 +305,7 @@ export const runSuite = ({
-                     ? yield* startCloudEnvironment({
+@@ -303,6 +308,7 @@ export const runSuite = ({
                          ...(registry === undefined ? {} : { npmRegistry: registry.url }),
+                         ...(catalogs === undefined ? {} : { catalogs: catalogs.origin }),
                          directory,
 +                        listener: listener!,
                          origin,
                          appPort: yield* freePort,
                          databasePort: yield* freePort,
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index aa71727..3643ce7 100644
+index 8d05b02..30674a7 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
 @@ -1,3 +1,4 @@
 +import { cloudListener, cloudApiAddress, type CloudListener } from "./cloud-listener.ts";
  import {
    Clock,
-   Deferred,
-@@ -135,6 +136,7 @@ const collectorShards = 4;
+   Console,
+@@ -138,6 +139,7 @@ const collectorShards = 4;
  export const startCloudEnvironment = (input: {
    readonly directory: string;
    readonly origin: string;
@@ -161,7 +175,7 @@ index aa71727..3643ce7 100644
    readonly appPort: number;
    readonly databasePort: number;
    readonly commit: string;
-@@ -184,9 +186,12 @@ export const startCloudEnvironment = (input: {
+@@ -189,9 +191,12 @@ export const startCloudEnvironment = (input: {
      const poolBackend = process.env.BASALT_E2E_POOL_BACKEND === "1";
      if (input.manualCron && poolBackend)
        return yield* Effect.die(new Error("Manual cron requires the ordinary local Cloud stack."));
@@ -177,7 +191,7 @@ index aa71727..3643ce7 100644
      const stack = poolBackend ? yield* cloudNativeStack(cloud, directory) : undefined;
      const stage = `e2e-${randomBytes(8).toString("hex")}`;
      const container = `executor-${stage}`;
-@@ -321,6 +326,7 @@ export const startCloudEnvironment = (input: {
+@@ -370,6 +375,7 @@ export const startCloudEnvironment = (input: {
        // uses the supported source port configuration, without starting the dashboard dev process.
        CLOUD_DEV_DASHBOARD: poolBackend ? "source" : "built",
        CLOUD_DEV_API_PORT: String(apiPort),
@@ -185,7 +199,7 @@ index aa71727..3643ce7 100644
        ...(poolBackend
          ? { EXECUTOR_CATALOG_URL: `${browser}/native-provider-fixture/catalog/index.json` }
          : {}),
-@@ -481,6 +487,7 @@ export const startCloudEnvironment = (input: {
+@@ -541,6 +547,7 @@ export const startCloudEnvironment = (input: {
        return yield* new CloudStartFailed({ operation: "Build the actual Cloud Worker" });
      const ownerScope = yield* Effect.scope;
      const launch = Effect.gen(function* () {
@@ -193,7 +207,7 @@ index aa71727..3643ce7 100644
        const scope = yield* Scope.fork(ownerScope);
        return yield* Effect.gen(function* () {
          const server = yield* processes.spawn(
-@@ -518,9 +525,12 @@ export const startCloudEnvironment = (input: {
+@@ -578,9 +585,12 @@ export const startCloudEnvironment = (input: {
              ...cloudStartupSecrets(env, Redacted.value(fixture).services),
            ],
            (line) =>
@@ -211,16 +225,17 @@ index aa71727..3643ce7 100644
          // own deadline and the whole wait has one too.
 diff --git a/e2e/support/cloud-listener.ts b/e2e/support/cloud-listener.ts
 new file mode 100644
-index 0000000..761e0cf
+index 0000000..dd4d160
 --- /dev/null
 +++ b/e2e/support/cloud-listener.ts
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,24 @@
 +/** Own the canonical origin before fixtures start; Alchemy binds its private listener separately. */
 +import {
 +  WorkerProxy,
 +  WorkerProxyLive,
 +} from "@alchemy.run/cloudflare-runtime/core/proxy/WorkerProxy";
 +import { Effect } from "effect";
++import { stripVTControlCharacters } from "node:util";
 +
 +export const cloudListener = Effect.gen(function* () {
 +  const proxy = yield* WorkerProxy;
@@ -229,7 +244,7 @@ index 0000000..761e0cf
 +
 +/** Read only the API resource's successful listener announcement, never another Worker's URL. */
 +export const cloudApiAddress = (line: string) => {
-+  const plain = line.replace(/\u001b\[[0-9;]*m/g, "");
++  const plain = stripVTControlCharacters(line);
 +  const match =
 +    /\[Api\] Started in [^\n]* → (http:\/\/(?:localhost|127\.0\.0\.1):[0-9]+)\/?(?:\s|$)/u.exec(
 +      plain,

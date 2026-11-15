@@ -1,7 +1,7 @@
 {
   "identity": "basalt-one-section-per-service",
   "file": "0442-one-section-per-service.patch",
-  "content_sha256": "cb3830fa69dd06fdec1c22fcd0cef39dd39a984a669d75d457ee584ccba92c79",
+  "content_sha256": "5e2e64d5bed327d3aee5b5e7f74babe7228b715a037f76f7c3677baf0de5fb59",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

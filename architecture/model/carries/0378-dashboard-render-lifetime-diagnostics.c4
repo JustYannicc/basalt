@@ -1,1 +1,7 @@
-model { extend basalt.telemetry { metadata { constraint "Dashboard render diagnostics emit only fixed literal phase markers in the native invocation record. Observation never owns render promises, scopes or streams, never replaces registered waitUntil promises or cancellation results, and never adds keepalive. The explicit Dashboard-only flag enables render observation in production; other runtime services and methods remain outside its scope." } } }
+model {
+  extend basalt.telemetry {
+    metadata {
+      constraint "Dashboard render diagnostics emit only fixed literal phase markers in the native invocation record. Observation never owns render promises, scopes or streams, never replaces registered waitUntil promises or cancellation results, and never adds keepalive. The explicit Dashboard-only flag enables render observation in production; other runtime services and methods remain outside its scope. The Alchemy response span keeps its current callback and cancellation result, so adding a marker cannot take ownership of the response's completion."
+    }
+  }
+}

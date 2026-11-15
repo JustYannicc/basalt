@@ -144,3 +144,16 @@
 +
 +export const publishReadingChange = (app: string, revision = "1") =>
 +  publishChange(app, "pool-readings", revision);
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -467,7 +467,9 @@
+         : {}),
+       ...appListener.environment,
+       ...(input.npmRegistry === undefined ? {} : { EXECUTOR_NPM_REGISTRY: input.npmRegistry }),
+-      ...(input.catalogs === undefined
++      ...(input.catalogs === undefined ||
++      nativePoolBackend ||
++      process.env.BASALT_E2E_POOL_SETUP === "1"
+         ? {}
+         : { EXECUTOR_CATALOG_URL: `${input.catalogs}/catalog/index.json` }),
+       CLOUD_DEV_DATABASE_PORT: String(databasePort),

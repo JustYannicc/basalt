@@ -58,8 +58,8 @@ diff --git a/apps/hosted/web/src/contracts/obsidian-connection.ts b/apps/hosted/
 diff --git a/apps/hosted/web/src/implementation/pages/add-app.tsx b/apps/hosted/web/src/implementation/pages/add-app.tsx
 --- a/apps/hosted/web/src/implementation/pages/add-app.tsx
 +++ b/apps/hosted/web/src/implementation/pages/add-app.tsx
-@@ -8,7 +8,10 @@ import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
- import { useOrganizationRoute } from "../components/organization.tsx";
+@@ -6,7 +6,10 @@
+ import { MakeYourOwn, AddAppBack } from "../components/add-app.tsx";
  
  /** Catalog apps install into the same organization-owned app records. */
 -export function AddAppPage({ entry }: { readonly entry?: string | undefined } = {}) {
@@ -70,7 +70,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/add-app.tsx b/apps/hosted/
    const atoms = useDashboardAtoms();
    useAtomMount(atoms.catalog);
    const { slug: organizationSlug } = useOrganizationRoute();
-@@ -16,6 +19,7 @@ export function AddAppPage({ entry }: { readonly entry?: string | undefined } =
+@@ -14,6 +17,7 @@
    return (
      <Catalog
        entry={entry}
@@ -186,10 +186,11 @@ diff --git a/packages/ui/src/implementation/dashboard/catalog-add-another.tsx b/
  import { Cause, Exit, Option, Predicate } from "effect";
  import type { CatalogEntry } from "@executor-js/catalog/contracts";
  import type { AppSummary, FailureProps, InstallApp } from "../../contracts/dashboard.ts";
-@@ -20,6 +20,22 @@ const unconfirmedFailures = [
+@@ -19,6 +19,22 @@
+   "HttpClientError",
    "SchemaError",
  ] as const;
- 
++
 +/** The copies a new one starts apart from, by name while there are few: "Work or Reading". */
 +const others = (names: readonly string[] | undefined, plural: string) =>
 +  names === undefined || names.length === 0 || names.length > 3
@@ -205,11 +206,10 @@ diff --git a/packages/ui/src/implementation/dashboard/catalog-add-another.tsx b/
 +  target.entry.instanceNoun === undefined
 +    ? target.label
 +    : `${target.label} ${target.entry.instanceNoun.singular}`;
-+
+ 
  /** A version 4 UUID. `crypto.randomUUID` exists only in secure contexts; a self-host can be HTTP. */
  const newRequestId = () => {
-   const bytes = crypto.getRandomValues(new Uint8Array(16));
-@@ -57,6 +73,8 @@ export function AddAnotherDialog<IE>({
+@@ -57,6 +73,8 @@
      | {
          readonly entry: CatalogEntry;
          readonly label: string;
@@ -218,23 +218,16 @@ diff --git a/packages/ui/src/implementation/dashboard/catalog-add-another.tsx b/
          /** Focus goes back here when the dialog closes; the menu that opened it is gone. */
          readonly returnFocus: HTMLElement | null;
        }
-@@ -75,10 +93,12 @@ export function AddAnotherDialog<IE>({
-   // State updates land after the event; a second click in the same frame must not send twice.
-   const inFlight = useRef(false);
-   // The dialog keeps its content while it animates closed, after `target` is cleared.
--  const last = useRef(target);
--  if (target !== undefined) last.current = target;
--  const shown = target ?? last.current;
-+  const [last, setLast] = useState(target);
-+  if (target !== undefined && target !== last) setLast(target);
-+  const shown = target ?? last;
+@@ -79,6 +97,8 @@
+   if (target !== undefined && target !== retained) setRetained(target);
+   const shown = target ?? retained;
    const entry = shown?.entry;
 +  const noun = entry?.instanceNoun;
 +  const hintId = useId();
    const draft: Draft<IE> | undefined =
      entry &&
      (drafts.get(entry.id) ?? {
-@@ -146,10 +166,12 @@ export function AddAnotherDialog<IE>({
+@@ -146,10 +166,12 @@
            focus.focus({ preventScroll: true });
          }}
        >
@@ -249,7 +242,7 @@ diff --git a/packages/ui/src/implementation/dashboard/catalog-add-another.tsx b/
              : null}
          </DialogDescription>
          <form
-@@ -160,13 +182,14 @@ export function AddAnotherDialog<IE>({
+@@ -160,13 +182,14 @@
            }}
          >
            <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium">
@@ -265,7 +258,7 @@ diff --git a/packages/ui/src/implementation/dashboard/catalog-add-another.tsx b/
                onChange={(event) => {
                  if (entry === undefined || draft === undefined || draft.unconfirmed) return;
                  const name = event.target.value;
-@@ -180,6 +203,11 @@ export function AddAnotherDialog<IE>({
+@@ -180,6 +203,11 @@
                }}
              />
            </label>
@@ -277,7 +270,7 @@ diff --git a/packages/ui/src/implementation/dashboard/catalog-add-another.tsx b/
            {draft?.unconfirmed && (
              <p className="text-[13px] text-muted-foreground">
                {`Couldn't confirm whether ${draft.name} was added. Try again keeps the same name and request.`}
-@@ -191,7 +219,11 @@ export function AddAnotherDialog<IE>({
+@@ -191,7 +219,11 @@
                Cancel
              </Button>
              <Button type="submit" loading={sending} disabled={!draft?.name.trim()}>
@@ -322,7 +315,7 @@ diff --git a/packages/ui/src/implementation/dashboard/catalog-row-actions.tsx b/
 diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/src/implementation/dashboard/catalog.tsx
 --- a/packages/ui/src/implementation/dashboard/catalog.tsx
 +++ b/packages/ui/src/implementation/dashboard/catalog.tsx
-@@ -84,9 +84,12 @@ export function CatalogPage<E, IE>({
+@@ -86,9 +86,12 @@
    open,
    onInstalled,
    entry: initialEntry,
@@ -335,7 +328,7 @@ diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/
    /** The install command for one catalog entry; each row has its own. */
    readonly mutation: (entry: string) => MutationProps<InstallApp, AppSummary, IE>["mutation"];
    readonly InstallFailure: MutationProps<InstallApp, AppSummary, IE>["Failure"];
-@@ -105,10 +108,8 @@ export function CatalogPage<E, IE>({
+@@ -110,10 +113,8 @@
    const result = useAtomValue(query);
    const templates = AsyncResult.value(result);
    const all = Option.isSome(templates) ? templates.value : [];
@@ -348,7 +341,7 @@ diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/
    const runInstall = useCatalogInstall(mutation);
    // State updates land after the event; a second click in the same frame must not install twice.
    const running = useRef(new Set<string>());
-@@ -136,6 +137,7 @@ export function CatalogPage<E, IE>({
+@@ -141,6 +142,7 @@
    const [another, setAnother] = useState<{
      readonly entry: CatalogEntry;
      readonly label: string;
@@ -356,7 +349,7 @@ diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/
      readonly returnFocus: HTMLElement | null;
    }>();
    /**
-@@ -177,6 +179,21 @@ export function CatalogPage<E, IE>({
+@@ -182,6 +184,21 @@
          Number(!a.name.toLowerCase().includes(term)) - Number(!b.name.toLowerCase().includes(term)),
      );
    const entries = focused === undefined ? matches : [focused];
@@ -377,8 +370,8 @@ diff --git a/packages/ui/src/implementation/dashboard/catalog.tsx b/packages/ui/
 +  }
    const visible = useIncrementalList(entries.length, term, 50);
    return (
-     <div className="page w-full shrink-0 max-w-315 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
-@@ -244,19 +261,32 @@ export function CatalogPage<E, IE>({
+     <CatalogPageFrame
+@@ -244,19 +261,32 @@
                    <div className="catalog-row-title flex-1 flex flex-col gap-1.25 min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_span]:text-[12px] [&_span]:text-muted-foreground wrap-anywhere max-[740px]:col-[2]">
                      <div className="flex flex-wrap items-baseline gap-x-2">
                        <strong>{entryName(entry)}</strong>

@@ -1,7 +1,7 @@
 {
   "identity": "planetscale-full-grant-envelope",
   "file": "0443-planetscale-full-grant-envelope.patch",
-  "content_sha256": "8a336d0de7248dc4487948e89399d43184893d57f687c827a5b818c2894efd6a",
+  "content_sha256": "8acf17ce3b8e8f22c115858e12e6d7dea96d222ad9cb478048382d6d6bcc95a6",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
