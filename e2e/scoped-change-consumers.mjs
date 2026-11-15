@@ -169,7 +169,8 @@ const program = Effect.gen(function* () {
     );
     yield* browserWork(() => splitRoutedReads(context, browserOrigin));
     const page = yield* browserWork(() => context.newPage());
-    let reads = 0;
+    let reads = 0,
+      routingReads = 0;
     diagnostics.accountProgress = { width, phase: "initial", responses: [], heads: [] };
     const progress = diagnostics.accountProgress;
     const inFlight = new Set(),
@@ -186,7 +187,15 @@ const program = Effect.gen(function* () {
     page.on("request", (request) => {
       const count = accountReads(request);
       reads += count;
-      if (count || /\/pool-usage\/(?:series|last-success)$/.test(new URL(request.url()).pathname))
+      const routing =
+        request.method() === "GET" &&
+        new URL(request.url()).pathname.endsWith("/pool-credit-policy");
+      if (routing) routingReads++;
+      if (
+        routing ||
+        count ||
+        /\/pool-usage\/(?:series|last-success)$/.test(new URL(request.url()).pathname)
+      )
         inFlight.add(request);
     });
     page.on("requestfinished", finished);
@@ -399,6 +408,7 @@ const program = Effect.gen(function* () {
     yield* browserWork(resourceIdle);
     const usageBefore = { series: seriesReads(), success: successReads() };
     assert.ok(usageBefore.series >= 2, "the real Accounts page loaded both pool usage ranges");
+    assert.ok(usageBefore.success > 0, "the mapped Accounts page read last-success");
     diagnostics.hostUsage = { initial: usageBefore };
     progress.phase = "host-usage-idle";
     yield* browserWork(() => page.clock.runFor(31_000).then(flush));
@@ -441,13 +451,20 @@ const program = Effect.gen(function* () {
           response.status() === 200,
       )
       .then((response) => response.finished());
+    const successAnswered = page
+      .waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname.endsWith("/pool-usage/last-success") &&
+          response.status() === 200,
+      )
+      .then((response) => response.finished());
     yield* browserWork(() => h.fixture.scoped.commitRequest(`synthetic-account-${width}`));
-    yield* browserWork(() => usageAnswered);
+    yield* browserWork(() => Promise.all([usageAnswered, successAnswered]));
     yield* browserWork(() => page.clock.runFor(200).then(flush));
     check(
       `Accounts at ${width}: a relevant usage revision refreshes mapped last-success once`,
       successReads() - usageBefore.success,
-      usageBefore.success === 0 ? 0 : 1,
+      1,
     );
     assert.ok(
       seriesReads() > usageBefore.series && seriesReads() - usageBefore.series <= 3,
@@ -464,6 +481,74 @@ const program = Effect.gen(function* () {
       { series: seriesReads(), success: successReads() },
       acceptedUsage,
     );
+    progress.phase = "pool-account-routing";
+    yield* browserWork(() =>
+      page.route(
+        (url) => url.pathname.endsWith("/pool-credit-policy"),
+        (route) => route.fallback(),
+      ),
+    );
+    const routingAnswered = () =>
+      page
+        .waitForResponse((response) =>
+          new URL(response.url()).pathname.endsWith("/pool-credit-policy"),
+        )
+        .then(async (response) => {
+          await response.finished();
+          assert.equal(response.status(), 200, "the actual host routing read succeeds");
+        });
+    yield* browserWork(async () => {
+      const answered = routingAnswered();
+      await page.goto(
+        `${browserOrigin}/org/${h.actors.organization.slug}/apps/${pool.id}?view=accounts`,
+      );
+      await answered;
+      await page.getByText("Account selection", { exact: true }).waitFor();
+      await updating().waitFor({ state: "hidden" });
+      await resourceIdle();
+      await flush();
+    });
+    assert.ok(routingReads > 0, "the pool Accounts page read its routing policy");
+    const routingBefore = routingReads;
+    diagnostics.hostRouting = { initial: routingBefore, initialHeads: progress.heads.slice(-2) };
+    yield* browserWork(() => page.clock.runFor(31_000).then(flush));
+    diagnostics.hostRouting.idle = routingReads;
+    diagnostics.hostRouting.idleHeads = progress.heads.slice(-2);
+    check(
+      `Pool Accounts at ${width}: idle time makes no routing read`,
+      routingReads,
+      routingBefore,
+    );
+    yield* browserWork(() =>
+      h.fixture.scoped.commitRequest(`synthetic-routing-unrelated-${width}`),
+    );
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    check(
+      `Pool Accounts at ${width}: unrelated usage revision makes no routing read`,
+      routingReads,
+      routingBefore,
+    );
+    yield* browserWork(async () => {
+      const answered = routingAnswered();
+      await h.fixture.scoped.commitReading();
+      await answered;
+      await resourceIdle();
+      await flush();
+    });
+    check(
+      `Pool Accounts at ${width}: relevant reading revision refreshes routing once`,
+      routingReads - routingBefore,
+      1,
+    );
+    yield* browserWork(() => h.fixture.scoped.duplicate());
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    check(
+      `Pool Accounts at ${width}: duplicate reading revision makes no routing read`,
+      routingReads - routingBefore,
+      1,
+    );
+    diagnostics.hostRouting = { initial: routingBefore, relevant: routingReads };
+    yield* browserWork(() => shot("routing-after"));
     yield* browserWork(() => page.goto("about:blank"));
   }
   diagnostics.accounts = { proved: true, widths: [1280, 390] };
