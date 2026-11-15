@@ -33,11 +33,29 @@ function assertionEvidence(path: string) {
   } catch {
     return unavailable("malformed");
   }
-  if (!Array.isArray(input)) return unavailable("malformed");
+  const envelope =
+    input !== null &&
+    typeof input === "object" &&
+    "version" in input &&
+    input.version === 1 &&
+    "records" in input &&
+    Array.isArray(input.records)
+      ? input
+      : undefined;
+  const records = Array.isArray(input) ? input : envelope?.records;
+  if (!records) return unavailable("malformed");
+  if (
+    envelope &&
+    "input" in envelope &&
+    (envelope.input === "malformed" || envelope.input === "too-large")
+  )
+    return unavailable(envelope.input);
   return JSON.stringify({
     version: 1,
-    truncated: input.length > 8,
-    records: input.slice(0, 8).map((record) => connectorDiagnostic("assertion", record)),
+    truncated:
+      records.length > 8 ||
+      Boolean(envelope && "truncated" in envelope && envelope.truncated === true),
+    records: records.slice(0, 8).map((record) => connectorDiagnostic("assertion", record)),
   });
 }
 

@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { collectE2eEvidence } from "./collect-e2e-evidence.mjs";
 import { copyE2eEvidence } from "../e2e-evidence.ts";
+import { finalizeE2e } from "../e2e-finalize.ts";
 
 test("embedded assertion evidence retains only closed labels and safe integer counters", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "assertion-evidence-"));
@@ -50,6 +51,56 @@ test("embedded assertion evidence retains only closed labels and safe integer co
       },
       { stage: "assertion", outcome: "observed", phase: "unknown", kind: "unknown" },
     ],
+  });
+});
+
+test("finalized assertion evidence survives CI collection through the closed projector", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "assertion-finalize-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const run = join(root, ".upstream/.local/e2e/run-one");
+  const relative = "self-host/report/evidence/case/assertion-diagnostics.json";
+  await mkdir(dirname(join(run, relative)), { recursive: true });
+  await writeFile(join(run, ".basalt-run-owner.json"), JSON.stringify({ pid: process.pid }));
+  const secret = "private-finalize-sentinel";
+  const records = [
+    { assertion: "no-app-tab-or-frame", counters: { AppLinks: 1, iframes: 0 } },
+    { assertion: "no-app-prewarm", counters: { adminLocationReads: 2 } },
+  ].map((record) => ({
+    operation: "Manage-only admins get no App tab or prewarm",
+    phase: "embedded-manage-only-admin",
+    ...record,
+    actual: secret,
+  }));
+  await writeFile(join(run, relative), JSON.stringify(records));
+  finalizeE2e(root, run, "failed", {
+    ci: true,
+    retain: undefined,
+    artifacts: join(root, "artifacts"),
+  });
+  await assert.rejects(readFile(join(run, relative)), { code: "ENOENT" });
+  const exported = join(root, ".generated/e2e-evidence");
+  const first = JSON.parse(await readFile(join(exported, "run-one", relative), "utf8"));
+  // Even a modified export must go through the same closed projector again.
+  first.private = secret;
+  first.records[0].counters[secret] = 3;
+  first.truncated = true;
+  await writeFile(join(exported, "run-one", relative), JSON.stringify(first));
+  const output = join(root, "ci-evidence");
+  await collectE2eEvidence(exported, output, join(root, ".upstream/.local/e2e"));
+  const text = await readFile(join(output, "run-one", relative), "utf8");
+  assert.ok(!text.includes(secret));
+  assert.deepEqual(JSON.parse(text), {
+    version: 1,
+    truncated: true,
+    records: records.map(({ actual, ...record }) => ({
+      stage: "assertion",
+      outcome: "observed",
+      phase: record.phase,
+      kind: "assertion",
+      operation: record.operation,
+      assertion: record.assertion,
+      counters: record.counters,
+    })),
   });
 });
 
