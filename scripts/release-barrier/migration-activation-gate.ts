@@ -74,12 +74,18 @@ const ineligible = [
   "the release candidate is a release update; release it through Manual release with its pull request",
 ];
 
+function githubFailureStatus(error: unknown) {
+  return error instanceof Error
+    ? /^GitHub request for the main release candidate failed with HTTP (\d{3})$/u.exec(
+        error.message,
+      )?.[1]
+    : undefined;
+}
+
 /** Only the validator's own fixed sentences and a bare HTTP status reach the job output. */
 export function candidateEligibilityRefusal(error: unknown) {
   const message = error instanceof Error ? error.message : "";
-  const status = /^GitHub request for the main release candidate failed with HTTP (\d{3})$/u.exec(
-    message,
-  )?.[1];
+  const status = githubFailureStatus(error);
   const change = status
     ? { path: "github.status", old: 200, new: Number(status) }
     : ineligible.includes(message)
@@ -90,6 +96,18 @@ export function candidateEligibilityRefusal(error: unknown) {
         fqn: "candidate",
         type: "Git.Commit",
         changed: [change],
+      })
+    : undefined;
+}
+
+function clientCheckRefusal(error: unknown, client: string) {
+  const status = githubFailureStatus(error);
+  return status
+    ? new BarrierRefusal("migration-activation-client-check-unavailable", "tooling", {
+        fqn: "tooling",
+        type: "Git.Commit",
+        changed: [{ path: "github.status", old: 200, new: Number(status) }],
+        why: [`client=${client}`],
       })
     : undefined;
 }
@@ -149,7 +167,11 @@ export async function migrationActivationGate(source = process.env) {
     throw candidateEligibilityRefusal(error) ?? error;
   });
   await checkedActivationClient(input.mode, checkedOut, (commit) =>
-    passedMainPushCheck(environment.repository, environment.token, commit),
+    passedMainPushCheck(environment.repository, environment.token, commit).catch(
+      (error: unknown) => {
+        throw clientCheckRefusal(error, commit) ?? error;
+      },
+    ),
   );
   const deploymentId = exactMigrationRelease(
     input.candidate,

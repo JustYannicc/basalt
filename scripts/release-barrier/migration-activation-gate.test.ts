@@ -352,6 +352,69 @@ test("the gate step names both commits when its checkout is not the dispatched o
   );
 });
 
+for (const status of [403, 503]) {
+  test(`the actual activation gate reports a client Check HTTP ${status} in its refusal summary`, (context) => {
+    const scratch = mkdtempSync(join(tmpdir(), "basalt-client-check-refusal-"));
+    context.after(() => rmSync(scratch, { recursive: true, force: true }));
+    const root = fileURLToPath(new URL("../../", import.meta.url));
+    const client = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: root,
+      encoding: "utf8",
+    }).trim();
+    const candidate = environment.BASALT_RELEASE_CANDIDATE;
+    const summary = join(scratch, "summary.md");
+    const stub = join(scratch, "github.mjs");
+    writeFileSync(
+      stub,
+      `
+const client = ${JSON.stringify(client)}, candidate = ${JSON.stringify(candidate)};
+globalThis.fetch = async (input) => {
+  const url = new URL(String(input));
+  if (url.pathname.endsWith("/commits/main")) return Response.json({ sha: candidate });
+  if (url.pathname.endsWith("/actions/workflows/ci.yml/runs")) {
+    const commit = url.searchParams.get("head_sha");
+    if (commit === client)
+      return new Response("synthetic-private-github-detail", { status: ${status} });
+    return Response.json({ workflow_runs: [{
+      head_sha: commit, event: "push", path: ".github/workflows/ci.yml", conclusion: "success"
+    }] });
+  }
+  if (url.pathname.endsWith("/pulls")) return Response.json([]);
+  throw new Error("The failed client lookup must precede any deployment ledger read");
+};
+`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      ["--import", stub, fileURLToPath(new URL("./migration-activation-gate.ts", import.meta.url))],
+      {
+        cwd: scratch,
+        env: {
+          ...environment,
+          PATH: process.env.PATH,
+          MIGRATION_ACTIVATION_MODE: "b".repeat(64),
+          GITHUB_SHA: client,
+          GITHUB_TOKEN: "fixture",
+          GITHUB_STEP_SUMMARY: summary,
+        },
+        encoding: "utf8",
+      },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /migration-activation-client-check-unavailable/);
+    const detail = readFileSync(summary, "utf8");
+    const change = `| tooling | github.status | 200 → ${status} |`;
+    for (const output of [result.stderr, detail]) {
+      assert.ok(output.includes(change), output);
+      assert.ok(output.includes(client), "the refusal names the dispatched client commit");
+      assert.doesNotMatch(
+        output,
+        /migration-activation-gate-failed|synthetic-private-github-detail/,
+      );
+    }
+  });
+}
+
 test("a production release hold refuses every activation input before connecting", () => {
   for (const mode of ["plan", "inspect", "b".repeat(64)]) {
     assert.throws(
