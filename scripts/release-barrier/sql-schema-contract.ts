@@ -28,6 +28,8 @@ export interface SqlSchemaObservation {
   database: SqlDatabase;
   journal: string;
   expected: readonly string[];
+  /** Retain the source allowlist so final readiness can distinguish cutovers from unknown extras. */
+  optional?: readonly string[];
   applied: readonly string[] | null;
   pending: readonly string[] | null;
   unexpected: readonly string[] | null;
@@ -104,6 +106,7 @@ export function unreadableSqlSchema(
     database: expectation.database,
     journal: expectation.journal,
     expected: [...expectation.expected],
+    ...(expectation.optional === undefined ? {} : { optional: [...expectation.optional] }),
     applied: null,
     pending: null,
     unexpected: null,
@@ -155,6 +158,7 @@ export function observeSqlVersions(
     database: expectation.database,
     journal: expectation.journal,
     expected: [...expectation.expected],
+    ...(expectation.optional === undefined ? {} : { optional: [...expectation.optional] }),
     applied: [...applied],
     pending,
     unexpected,
@@ -184,7 +188,9 @@ export function assertSqlSchemas(receipt: SqlSchemaReceipt, candidate: string) {
       entry.unexpected === null ||
       entry.unexpected.length !== 0 ||
       entry.applied === null ||
-      entry.applied.length !== entry.expected.length ||
+      entry.applied.some(
+        (version) => !entry.expected.includes(version) && !entry.optional?.includes(version),
+      ) ||
       new Set(entry.applied).size !== entry.applied.length ||
       entry.expected.some((version) => !entry.applied!.includes(version)),
   );
