@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { heavyJobs } from "./areas.ts";
+import { checkedOutIdentity, retainReuseEvidence, validReuseEvidence } from "./reuse.ts";
 
 export const fastJobs = ["select", "fast", "cpa-pipeline", "client-connection"];
 export const conditionalJobs = ["baseline-probe", "workerd-assets"];
@@ -39,18 +40,62 @@ export function gateErrors(
   return errors;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  if (!["true", "false"].includes(process.env.CI_FULL_SUITE ?? ""))
+export function reuseGateErrors(
+  needs: Record<string, { result: string }>,
+  evidence: unknown,
+  identity: Parameters<typeof validReuseEvidence>[1],
+  event: string,
+  ref: string,
+) {
+  const expected = ["reuse", ...fastJobs, ...heavyJobs, ...conditionalJobs];
+  const errors: string[] = [];
+  if (event !== "push" || ref !== "refs/heads/main")
+    errors.push("Only main pushes can reuse Check");
+  if (!validReuseEvidence(evidence, identity)) errors.push("Invalid batch Check reuse evidence");
+  if (Object.keys(needs).sort().join("\n") !== [...expected].sort().join("\n"))
+    errors.push("Aggregate gate dependencies differ from the declared CI jobs");
+  for (const job of expected) {
+    const result = ["reuse", "cpa-pipeline"].includes(job) ? "success" : "skipped";
+    if (needs[job]?.result !== result)
+      errors.push(`${job}: expected ${result}, got ${needs[job]?.result ?? "missing"}`);
+  }
+  return errors;
+}
+
+export function runGateCli(env = process.env): void {
+  const needs = JSON.parse(env.CI_NEEDS ?? "null");
+  const { reuse, ...suite } = needs;
+  if (env.CI_REUSED === "true") {
+    const evidence: unknown = JSON.parse(env.CI_REUSE_EVIDENCE ?? "null");
+    const identity = checkedOutIdentity(env.GITHUB_REPOSITORY ?? "");
+    const errors = reuseGateErrors(
+      needs,
+      evidence,
+      identity,
+      env.GITHUB_EVENT_NAME ?? "",
+      env.GITHUB_REF ?? "",
+    );
+    if (identity.head !== env.GITHUB_SHA)
+      errors.push("Checkout differs from the triggering commit");
+    if (errors.length) throw new Error(errors.join("\n"));
+    if (validReuseEvidence(evidence, identity)) retainReuseEvidence(evidence, env);
+    return;
+  }
+  if (reuse?.result !== "success")
+    throw new Error(`reuse: expected success, got ${reuse?.result ?? "missing"}`);
+  if (!["true", "false"].includes(env.CI_FULL_SUITE ?? ""))
     throw new Error("Missing or invalid CI lane");
-  if (!["true", "false"].includes(process.env.CI_BASELINE_PROBE ?? ""))
+  if (!["true", "false"].includes(env.CI_BASELINE_PROBE ?? ""))
     throw new Error("Missing or invalid baseline probe selection");
   const errors = gateErrors(
-    JSON.parse(process.env.CI_NEEDS ?? "null"),
-    JSON.parse(process.env.CI_JOBS ?? "null"),
-    JSON.parse(process.env.CI_BOAT_JOBS ?? "null"),
-    process.env.CI_FULL_SUITE === "true",
-    process.env.CI_BASELINE_PROBE === "true",
+    suite,
+    JSON.parse(env.CI_JOBS ?? "null"),
+    JSON.parse(env.CI_BOAT_JOBS ?? "null"),
+    env.CI_FULL_SUITE === "true",
+    env.CI_BASELINE_PROBE === "true",
   );
   for (const error of errors) console.error(error);
   if (errors.length) process.exitCode = 1;
 }
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) runGateCli();
