@@ -1,4 +1,5 @@
-import { ChangeReadRetry, type ChangeWatch } from "apps/client";
+import { ChangeReadRetry, type ChangeWatch, type ChangeReceipt } from "apps/client";
+import { topics, capacityTopics, versionOf, withRequests } from "./summary-snapshot.ts";
 import { unconfirmed } from "./pool-view.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PoolCapacityHistory } from "../capacity-contract.ts";
@@ -16,16 +17,6 @@ import {
   type SummaryBounds,
 } from "./summary-model.ts";
 
-const topics = [
-  "accounts",
-  "apps",
-  "membership",
-  "session",
-  "pool-readings",
-  "pool-usage",
-  "pool-samples",
-  "pool-prices",
-];
 const unreachable = {
   ok: false,
   error: "backend_unavailable",
@@ -43,30 +34,6 @@ export interface SummaryState {
   readonly bounds?: SummaryBounds;
 }
 
-/** Hourly requests ride along with the summary; an hour Home fully captured but empty is a zero. */
-function withRequests(capacity: PoolCapacityHistory, summary: PoolUsageSummaryResult) {
-  const complete = new Set(summary.homeCapture.completeHours.map((at) => Date.parse(at)));
-  const captured = summary.homeCapture.capturedAt
-    ? Date.parse(summary.homeCapture.capturedAt)
-    : null;
-  const hourly = new Map(
-    summary.requestsByHour.map((point) => [`${point.provider} ${Date.parse(point.at)}`, point]),
-  );
-  return {
-    ...capacity,
-    points: capacity.points.map((point) => {
-      const read = hourly.get(`${point.provider} ${point.hour}`);
-      const whole = complete.has(point.hour);
-      return {
-        ...point,
-        requests: read?.requests ?? (whole ? 0 : null),
-        coverage: read?.coverage ?? (whole ? 1 : null),
-        sourceAt: read !== undefined || whole ? captured : null,
-      };
-    }),
-  };
-}
-
 /** Summary and capacity publish independently after their own accepted revision reads. */
 export function useSummary(api: PoolApi, range: RangeChoice, by: Breakdown) {
   const key = rangeKey(range);
@@ -78,6 +45,8 @@ export function useSummary(api: PoolApi, range: RangeChoice, by: Breakdown) {
   const [snapshot, setSnapshot] = useState<{ query: typeof query; value: SummaryState }>();
   const latest = useRef({ id: 0 });
   const watch = useRef<ChangeWatch | undefined>(undefined);
+  const capacityWatch = useRef<ChangeWatch | undefined>(undefined);
+  const capacityNeedsRead = useRef(false);
   const [reading, setReading] = useState<object>();
   const [failed, setFailed] = useState<{ query: typeof query; message: string }>();
   const kept = useRef<{
@@ -100,7 +69,8 @@ export function useSummary(api: PoolApi, range: RangeChoice, by: Breakdown) {
   const load = useCallback(
     async (fresh = true) => {
       const current = watch.current;
-      if (current === undefined) return;
+      const currentCapacity = capacityWatch.current;
+      if (current === undefined || currentCapacity === undefined) return;
       const pending = latest.current;
       const id = ++pending.id;
       const marker = {};
@@ -176,10 +146,14 @@ export function useSummary(api: PoolApi, range: RangeChoice, by: Breakdown) {
         else {
           const entry = { api, key, bounds, now, controller: new AbortController(), ...callbacks };
           capacityRead.current = entry;
-          void current
+          capacityNeedsRead.current = true;
+          void currentCapacity
             .read(
               () => api.capacity(bounds.days, now, entry.controller.signal),
-              (capacity, version) => entry.publish(capacity, version),
+              (capacity, _version, receipt) => {
+                capacityNeedsRead.current = false;
+                entry.publish(capacity, versionOf(receipt));
+              },
             )
             .catch((error: unknown) => entry.reject(error))
             .finally(() => {
@@ -192,7 +166,8 @@ export function useSummary(api: PoolApi, range: RangeChoice, by: Breakdown) {
       try {
         const summary = await current.read(
           () => api.summary({ from: bounds.from, to: bounds.to, by }),
-          (summary, version) => {
+          (summary, _version, receipt) => {
+            const version = versionOf(receipt);
             publish({ summary }, version);
             // A breakdown may reuse capacity only under the same accepted authority and heads.
             if (reuse && reuse.version !== version) {
@@ -204,7 +179,7 @@ export function useSummary(api: PoolApi, range: RangeChoice, by: Breakdown) {
         if (managersOnly(summary))
           await current.read(
             () => api.personalOverview(personalRange(choice.current, bounds, now)),
-            (personal, version) => publish({ personal }, version),
+            (personal, _version, receipt) => publish({ personal }, versionOf(receipt)),
           );
       } catch (error) {
         reject(error);
@@ -217,6 +192,95 @@ export function useSummary(api: PoolApi, range: RangeChoice, by: Breakdown) {
   useEffect(() => {
     const pending = latest.current;
     let initial = true;
+    let capacityPrimed = false;
+    const capacity = api.changes().watch({
+      topics: capacityTopics,
+      confirmed: () => {
+        // A data-free head check cannot settle a capacity read parked by hiding or failure.
+        if (capacityNeedsRead.current) capacity.request();
+      },
+      refresh: async () => {
+        // Usage changes refresh both parts through load. Capacity-only changes keep usage.
+        let receipt: ChangeReceipt | undefined;
+        await capacity.read(
+          async () => undefined,
+          (_value, _version, accepted) => {
+            receipt = accepted;
+          },
+        );
+        if (!capacityPrimed) {
+          capacityPrimed = true;
+          return;
+        }
+        const previous = kept.current;
+        if (
+          !previous ||
+          !receipt ||
+          versionOf(receipt) !== previous.version ||
+          capacityRead.current
+        )
+          return;
+        const id = pending.id;
+        const marker = {};
+        setReading(marker);
+        setFailed(undefined);
+        const entry = {
+          api,
+          key,
+          bounds: previous.bounds,
+          now: Date.parse(previous.bounds.to),
+          controller: new AbortController(),
+          publish: (value: NonNullable<SummaryState["capacity"]>, version: string) => {
+            if (id !== pending.id) return;
+            kept.current = { ...previous, capacity: value, version };
+            setSnapshot((snapshot) =>
+              snapshot?.query === query
+                ? {
+                    ...snapshot,
+                    value: {
+                      ...snapshot.value,
+                      capacity:
+                        value.ok && snapshot.value.summary?.ok
+                          ? {
+                              ok: true,
+                              value: withRequests(value.value, snapshot.value.summary.value),
+                            }
+                          : value,
+                      coherent: snapshot.value.coherent && version === previous.version,
+                    },
+                  }
+                : snapshot,
+            );
+          },
+          reject: (error: unknown) => {
+            if (id === pending.id && error instanceof ChangeReadRetry && error.reason !== "hidden")
+              setFailed({ query, message: unconfirmed });
+          },
+          finish: () => setReading((value) => (value === marker ? undefined : value)),
+        };
+        capacityRead.current = entry;
+        capacityNeedsRead.current = true;
+        try {
+          await capacity.read(
+            () => api.capacity(entry.bounds.days, entry.now, entry.controller.signal),
+            (value, _version, accepted) => {
+              capacityNeedsRead.current = false;
+              entry.publish(value, versionOf(accepted));
+            },
+          );
+        } catch (error) {
+          entry.reject(error);
+        } finally {
+          if (capacityRead.current === entry) capacityRead.current = undefined;
+          entry.finish();
+        }
+      },
+      revoked: () => {
+        kept.current = undefined;
+        setSnapshot(undefined);
+      },
+    });
+    capacityWatch.current = capacity;
     const current = api.changes().watch({
       topics,
       refresh: () => {
@@ -239,6 +303,8 @@ export function useSummary(api: PoolApi, range: RangeChoice, by: Breakdown) {
       capacityRead.current = undefined;
       watch.current = undefined;
       current.stop();
+      capacityWatch.current = undefined;
+      capacity.stop();
     };
   }, [api, load]);
   const state = snapshot?.query === query ? snapshot.value : undefined;

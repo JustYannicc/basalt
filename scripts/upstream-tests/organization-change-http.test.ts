@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { Clock, Effect, Layer, Queue, Stream } from "effect";
+import { Clock, Effect, Layer, Queue, Schema, Stream } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
 import { SqlClient, Statement } from "effect/sql";
 import { TestClock } from "effect/testing";
@@ -25,7 +25,10 @@ import {
   organizationChangeKeys,
   sessionChangeKeys,
 } from "../../.upstream/apps/hosted/server/src/implementation/organization-changes.ts";
-import { ScopedChanges } from "../../.upstream/apps/hosted/server/src/implementation/scoped-changes.ts";
+import {
+  ScopedChanges,
+  ChangeSnapshot,
+} from "../../.upstream/apps/hosted/server/src/implementation/scoped-changes.ts";
 import { migrateChangeRevisions } from "../../.upstream/apps/hosted/server/src/implementation/change-revision-schema.ts";
 import { migrateAccountChanges } from "../../.upstream/apps/hosted/server/src/implementation/account-change-schema.ts";
 import { makeChangeJournal } from "../../.upstream/apps/hosted/server/src/implementation/change-revisions.ts";
@@ -81,7 +84,7 @@ const fixture = <A>(context: TestContext, work: (f: Fixture) => Promise<A>) =>
         'create table member (id text primary key, "organizationId" text, "userId" text, role text)',
         "create table organization (id text primary key, metadata text)",
         "create table hosted_app_account_links (app text, account text)",
-        "create table hosted_app_access (id text, organization_id text, audience text)",
+        "create table hosted_app_access (id text, organization_id text, audience text, creator_id text, revision text)",
         "create table hosted_account_access (account_id text, organization_id text, audience text)",
         "create table hosted_account_observation_access (account_id text, organization_id text)",
         "create table hosted_account_rechecks (account_id text, organization_id text)",
@@ -104,6 +107,7 @@ const fixture = <A>(context: TestContext, work: (f: Fixture) => Promise<A>) =>
       yield* migrateChangeRevisions;
       yield* migrateAccountChanges;
       const state = {
+        expectedSubscriptions: 2,
         queries: [] as string[],
         subscriptions: [] as { scope: string; keys: readonly ChangeKey[] }[],
         authority: { session: 0, membership: 0 },
@@ -117,7 +121,8 @@ const fixture = <A>(context: TestContext, work: (f: Fixture) => Promise<A>) =>
           state.queries.push(query);
           if (query.includes("from hosted_change_heads")) {
             assert.equal(
-              state.subscriptions.length === 0 || state.subscriptions.length === 2,
+              state.subscriptions.length === 0 ||
+                state.subscriptions.length === state.expectedSubscriptions,
               true,
             );
             const before = state.beforeHead;
@@ -168,7 +173,12 @@ const fixture = <A>(context: TestContext, work: (f: Fixture) => Promise<A>) =>
         removeOrganization: () => Effect.die("unused fixture operation"),
       });
       const queues = new Map<string, Queue.Queue<RevisionEvent>>();
-      for (const scope of ["organization:team-a", "organization:team-b", "user:viewer-a"])
+      for (const scope of [
+        "organization:team-a",
+        "organization:team-b",
+        "user:viewer-a",
+        "pool:app_a",
+      ])
         queues.set(scope, yield* Queue.make<RevisionEvent>());
       const transport = ScopedChanges.of({
         subscribe: (scope, keys) =>
@@ -234,6 +244,7 @@ const fixture = <A>(context: TestContext, work: (f: Fixture) => Promise<A>) =>
 interface Fixture {
   sql: SqlClient.SqlClient;
   state: {
+    expectedSubscriptions: number;
     queries: string[];
     subscriptions: { scope: string; keys: readonly ChangeKey[] }[];
     authority: { session: number; membership: number };
@@ -433,4 +444,69 @@ test("a moved organization slug cannot authorize hints from the former scope", (
     } finally {
       await stream.cancel();
     }
+  }));
+
+test("selected pool heads are authorized, delivered and revoked with app access", (context) =>
+  fixture(context, async (f) => {
+    await Effect.runPromise(f.sql`insert into hosted_app_access (id,organization_id,audience,creator_id,revision)
+      values ('app_a','team-a','everyone','other','00000000-0000-4000-8000-000000000001')`);
+    const current = await f.request(`${path}/current?pool=app_a`);
+    assert.equal(current.status, 200);
+    const body = Schema.decodeUnknownSync(ChangeSnapshot)(await current.json());
+    assert.ok(
+      body.revisions.some((hint) => hint.topic === "pool-usage" && hint.resource === "app_a"),
+    );
+    const ordinary = Schema.decodeUnknownSync(ChangeSnapshot)(
+      await (await f.request(`${path}/current`)).json(),
+    );
+    assert.equal(
+      ordinary.revisions.some((hint) => hint.resource === "app_a"),
+      false,
+    );
+    f.state.expectedSubscriptions = 3;
+    const stream = frames(await f.request(`${path}?pool=app_a`));
+    try {
+      assert.match((await stream.next()) ?? "", /event: current/);
+      await Effect.runPromise(
+        f.sql`select hosted_queue_change('pool:app_a','pool-usage','app_a',8)`,
+      );
+      await f.deliver();
+      assert.match(
+        (await stream.next()) ?? "",
+        /"topic":"pool-usage","resource":"app_a","revision":"8"/,
+      );
+      await Effect.runPromise(
+        f.sql`update hosted_app_access set audience='private' where id='app_a'`,
+      );
+      await Effect.runPromise(
+        f.sql`select hosted_queue_change('pool:app_a','pool-usage','app_a',9)`,
+      );
+      await f.deliver();
+      assert.equal(
+        await stream.next(),
+        "event: revoked\ndata: {}\n\n",
+        "no private revision is delivered after revocation",
+      );
+      assert.equal(await stream.next(), undefined, "revocation ends the existing stream");
+      for (const url of [`${path}/current?pool=app_a`, `${path}?pool=app_a`]) {
+        const refused = await f.request(url);
+        assert.equal(refused.status, 403, "revoked members cannot open either pool-head path");
+        assert.equal(await refused.text(), "", "a refusal contains no pool heads");
+      }
+    } finally {
+      await stream.cancel();
+    }
+  }));
+
+test("never-granted members receive no selected pool heads on the read or stream path", (context) =>
+  fixture(context, async (f) => {
+    await Effect.runPromise(f.sql`insert into hosted_app_access (id,organization_id,audience,creator_id,revision)
+      values ('app_a','team-a','private','other','00000000-0000-4000-8000-000000000001')`);
+    await Effect.runPromise(f.sql`select hosted_queue_change('pool:app_a','pool-usage','app_a',7)`);
+    for (const url of [`${path}/current?pool=app_a`, `${path}?pool=app_a`]) {
+      const refused = await f.request(url);
+      assert.equal(refused.status, 403);
+      assert.equal(await refused.text(), "", "denied members receive no pool revisions");
+    }
+    assert.deepEqual(f.state.subscriptions, [], "denied streams never subscribe to a pool");
   }));

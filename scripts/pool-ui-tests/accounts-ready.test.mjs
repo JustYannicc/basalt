@@ -464,6 +464,7 @@ test(
         JSON.stringify(entry.fresh && freshResult !== undefined ? freshResult : viewResult),
       );
     let revision = 1;
+    const topicRevisions = new Map();
     const revisions = () =>
       [
         "accounts",
@@ -474,7 +475,11 @@ test(
         "pool-usage",
         "pool-samples",
         "pool-prices",
-      ].map((topic) => ({ topic, resource: "fixture", revision: String(revision) }));
+      ].map((topic) => ({
+        topic,
+        resource: "fixture",
+        revision: String(topicRevisions.get(topic) ?? revision),
+      }));
     const heads = () => ({ revisions: revisions(), identity: "fixture-viewer" });
     const child = createServer(async (request, response) => {
       if (request.url === "/_executor/api/changes/current") {
@@ -494,6 +499,17 @@ test(
         if (viewResult.ok && viewResult.value.reading?.source === "snapshot")
           pendingHandshakes.add(start);
         else start();
+      } else if (request.url?.startsWith("/_fixture/topic/")) {
+        const command = new URL(request.url, "http://fixture");
+        const topic = command.pathname.split("/").at(-1);
+        const next =
+          (topicRevisions.get(topic) ?? revision) + (command.searchParams.has("repeat") ? 0 : 1);
+        topicRevisions.set(topic, next);
+        for (const stream of streams)
+          stream.write(
+            `event: changed\ndata: ${JSON.stringify({ kind: "changed", hint: { topic, resource: "fixture", revision: String(next) } })}\n\n`,
+          );
+        response.writeHead(204).end();
       } else if (request.url === "/_fixture/change") {
         revision++;
         for (const stream of streams)
@@ -3384,6 +3400,56 @@ test(
         );
       },
     );
+    await t.test("capacity-only revisions make zero usage summary reads", async () => {
+      viewResult = { ok: true, value: empty };
+      await session(
+        async ({ page, frame, clock }) => {
+          answerFresh = true;
+          release();
+          await frame.waitForFunction(() =>
+            ["overviewUsage", "capacity"].every((name) =>
+              Reflect.get(window, "completedQueries").includes(name),
+            ),
+          );
+          const initial = summaryReads;
+          const capacityCount = await frame.evaluate(
+            () =>
+              Reflect.get(window, "completedQueries").filter((name) => name === "capacity").length,
+          );
+          await frame.evaluate(() => fetch("/_fixture/topic/pool-readings", { method: "POST" }));
+          await frame.waitForFunction(
+            (count) =>
+              Reflect.get(window, "completedQueries").filter((name) => name === "capacity").length >
+              count,
+            capacityCount,
+          );
+          await clock.runFor(200);
+          await frame.evaluate(() =>
+            fetch("/_fixture/sentinel").then((response) => response.arrayBuffer()),
+          );
+          assert.equal(summaryReads, initial, "a capacity revision cannot refetch usage");
+          await frame.evaluate(() => fetch("/_fixture/topic/pool-usage", { method: "POST" }));
+          await frame.waitForFunction(
+            (count) =>
+              Reflect.get(window, "completedQueries").filter((name) => name === "overviewUsage")
+                .length === count,
+            initial + 1,
+          );
+          assert.equal(summaryReads, initial + 1, "a relevant revision still refreshes once");
+          await frame.evaluate(() =>
+            fetch("/_fixture/topic/pool-usage?repeat", { method: "POST" }),
+          );
+          await clock.runFor(200);
+          await frame.evaluate(() =>
+            fetch("/_fixture/sentinel").then((response) => response.arrayBuffer()),
+          );
+          assert.equal(summaryReads, initial + 1, "a duplicate relevant revision reads no usage");
+        },
+        { clock: true, viewport: { width: 1280, height: 960 } },
+      );
+      topicRevisions.clear();
+    });
+
     for (const width of sourceRef ? [] : [1440, 390])
       await t.test(
         `hidden pool summary defers changed revisions and resumes once at ${width}px`,

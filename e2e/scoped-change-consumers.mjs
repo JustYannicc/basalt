@@ -140,6 +140,13 @@ const program = Effect.gen(function* () {
     (browser) => Effect.promise(() => browser.close()),
   );
 
+  yield* browserWork(() => h.fixture.scoped.initialize(pool.id, identity.user.id));
+  yield* browserWork(() => h.fixture.scoped.commitRequest("synthetic-account-baseline"));
+  const seriesReads = () =>
+    h.fixture.scoped.reads.filter((read) => read.kind === "poolUsageSeries").length;
+  const successReads = () =>
+    h.fixture.scoped.reads.filter((read) => read.kind === "lastSuccessAt").length;
+
   for (const width of [1280, 390]) {
     const context = yield* Effect.acquireRelease(
       Effect.promise(() =>
@@ -179,7 +186,8 @@ const program = Effect.gen(function* () {
     page.on("request", (request) => {
       const count = accountReads(request);
       reads += count;
-      if (count) inFlight.add(request);
+      if (count || /\/pool-usage\/(?:series|last-success)$/.test(new URL(request.url()).pathname))
+        inFlight.add(request);
     });
     page.on("requestfinished", finished);
     page.on("requestfailed", (request) => {
@@ -381,11 +389,79 @@ const program = Effect.gen(function* () {
       yield* head(),
       afterHead,
     );
+    // The actual pool journal feeds the host's usage cells, independently of account observations.
+    progress.phase = "await-initial-host-usage";
+    yield* until(
+      Effect.sync(seriesReads),
+      (count) => count > 0,
+      "the Accounts page did not read pool usage",
+    );
+    yield* browserWork(resourceIdle);
+    const usageBefore = { series: seriesReads(), success: successReads() };
+    assert.ok(usageBefore.series >= 2, "the real Accounts page loaded both pool usage ranges");
+    diagnostics.hostUsage = { initial: usageBefore };
+    progress.phase = "host-usage-idle";
+    yield* browserWork(() => page.clock.runFor(31_000).then(flush));
+    check(
+      `Accounts at ${width}: idle time beyond the former poll interval makes no usage read`,
+      { series: seriesReads(), success: successReads() },
+      usageBefore,
+    );
+    progress.phase = "host-usage-observation";
+    const observedBefore = yield* database.run({
+      sql: "select revision::text from hosted_change_heads where scope=$1 and topic='observations' and resource='*'",
+      params: [scope],
+    });
+    yield* h.request("POST", `${account}/observations/refresh`);
+    yield* until(
+      database.run({
+        sql: "select revision::text from hosted_change_heads where scope=$1 and topic='observations' and resource='*'",
+        params: [scope],
+      }),
+      (rows) => BigInt(rows[0]?.revision ?? "0") > BigInt(observedBefore[0]?.revision ?? "0"),
+      "the real observation refresh did not commit its revision",
+    );
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    check(
+      `Accounts at ${width}: an unrelated observation revision makes no usage read`,
+      { series: seriesReads(), success: successReads() },
+      usageBefore,
+    );
+    progress.phase = "host-usage-commit";
+    const usageAnswered = page
+      .waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname.endsWith("/pool-usage/series") &&
+          response.status() === 200,
+      )
+      .then((response) => response.finished());
+    yield* browserWork(() => h.fixture.scoped.commitRequest(`synthetic-account-${width}`));
+    yield* browserWork(() => usageAnswered);
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    check(
+      `Accounts at ${width}: a relevant usage revision refreshes last-success once`,
+      successReads() - usageBefore.success,
+      usageBefore.success === 0 ? 0 : 1,
+    );
+    assert.ok(
+      seriesReads() > usageBefore.series && seriesReads() - usageBefore.series <= 3,
+      "one usage revision refreshes each of the two traffic ranges and optional token window at most once",
+    );
+    yield* browserWork(resourceIdle);
+    const acceptedUsage = { series: seriesReads(), success: successReads() };
+    diagnostics.hostUsage = { initial: usageBefore, relevant: acceptedUsage };
+    progress.phase = "host-usage-duplicate";
+    yield* browserWork(() => h.fixture.scoped.duplicate());
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    check(
+      `Accounts at ${width}: duplicate usage delivery makes no usage read`,
+      { series: seriesReads(), success: successReads() },
+      acceptedUsage,
+    );
     yield* browserWork(() => page.goto("about:blank"));
   }
   diagnostics.accounts = { proved: true, widths: [1280, 390] };
   if (!accountsOnly) {
-    yield* browserWork(() => h.fixture.scoped.initialize(pool.id, identity.user.id));
     let model = "synthetic-model-before";
     const baseline = yield* browserWork(() => h.fixture.scoped.commitRequest(model));
     let requestCount = baseline.count;
