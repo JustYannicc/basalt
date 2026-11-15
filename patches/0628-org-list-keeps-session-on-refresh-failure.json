@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-org-list-keeps-session-on-refresh-failure",
+  "file": "0628-org-list-keeps-session-on-refresh-failure.patch",
+  "content_sha256": "8037f508988809c819a4463a9d18a0b6a3580cada57aa8c8adce625f400f5b89",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
