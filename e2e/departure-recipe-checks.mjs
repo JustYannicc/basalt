@@ -5,7 +5,10 @@ import { Effect } from "effect";
 import { recipeHarness, runtime, root, appsManifest, until } from "./recipes/harness.mjs";
 import { startRecipeUpstream } from "./recipes/upstream.mjs";
 import { scenarios } from "../.upstream/e2e/test-plan.ts";
-import { beforeHostedModelBindings } from "../.upstream/e2e/support/profile-removal-rollback.ts";
+import {
+  beforeHostedModelBindings,
+  rewindHostedMigrations,
+} from "../.upstream/e2e/support/profile-removal-rollback.ts";
 
 const directory = resolve(process.argv[2] ?? join(root, ".generated/departure-recipe-checks"));
 await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -71,7 +74,7 @@ export default defineApp({ app: { accounts: { shared: service.many().contributed
       ...beforeHostedModelBindings(),
       { sql: "ALTER TABLE hosted_contributed_departure_jobs DROP COLUMN queued_at" },
       { sql: "ALTER TABLE hosted_contributed_departure_jobs DROP COLUMN last_error" },
-      { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 13" },
+      rewindHostedMigrations("contributed_departure_observability"),
       {
         sql: "INSERT INTO hosted_contributed_departure_jobs (id, organization_id, user_id, status, attempts, updated_at) VALUES ($1, $3, $4, 'failed', 8, now() - interval '10 minutes'), ($2, $3, $4, 'running', 1, now() - interval '6 minutes')",
         params: [...jobs, h.actors.organization.id, "synthetic-departed-person"],

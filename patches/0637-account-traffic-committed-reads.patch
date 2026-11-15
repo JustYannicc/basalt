@@ -10,6 +10,39 @@ diff --git a/apps/hosted/server/src/contracts/account-traffic.ts b/apps/hosted/s
  /** The recent hours an account row shows as ticks, the current partial hour last. */
  export const trafficTickHours = 8;
  
+diff --git a/apps/hosted/server/src/implementation/account-traffic-change-schema.ts b/apps/hosted/server/src/implementation/account-traffic-change-schema.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-traffic-change-schema.ts
+@@ -0,0 +1,28 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** Counter writes publish only their account key; readers must authorize that key separately. */
++export const migrateAccountTrafficChanges = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create or replace function hosted_account_traffic_changed() returns trigger language plpgsql as $$
++    declare previous text; following text; account_id text; target_scope text;
++    begin
++      -- The SDK never reads hours beyond its 31-day retention window.
++      if TG_OP = 'DELETE' and OLD.hour < current_timestamp - interval '744 hours' then return OLD; end if;
++      if TG_OP <> 'INSERT' then previous := OLD.account; end if;
++      if TG_OP <> 'DELETE' then following := NEW.account; end if;
++      if TG_OP = 'UPDATE' and to_jsonb(OLD) = to_jsonb(NEW) then return NEW; end if;
++      for account_id in select distinct value from unnest(array[previous,following]) value
++        where value is not null loop
++        select owner into target_scope from executor_accounts where id=account_id;
++        if target_scope is not null then
++          perform hosted_queue_change(target_scope,'account-traffic',account_id);
++        end if;
++      end loop;
++      if TG_OP = 'DELETE' then return OLD; end if;
++      return NEW;
++    end $$`;
++  yield* sql`create or replace trigger hosted_account_traffic_changed
++    after insert or update or delete on executor_account_tool_calls
++    for each row execute function hosted_account_traffic_changed()`;
++});
 diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
 --- a/apps/hosted/server/src/implementation/migrations.ts
 +++ b/apps/hosted/server/src/implementation/migrations.ts
@@ -111,21 +144,25 @@ diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/app
 diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src/contracts/app-accounts.ts
 --- a/apps/hosted/web/src/contracts/app-accounts.ts
 +++ b/apps/hosted/web/src/contracts/app-accounts.ts
-@@ -4,7 +4,7 @@
+@@ -4,8 +4,8 @@
   * connecting reads the app's discovery again.
   */
  import { hydrated } from "@executor-js/ui/contracts/http";
 -import { accountPolling, unavailableAccountHealth } from "./account-polling.ts";
+-import { revalidated } from "@executor-js/ui/contracts/refresh";
 +import { changeProtected } from "./change-signal.ts";
- import { revalidated } from "@executor-js/ui/contracts/refresh";
++import { revalidated, refreshedOnFocus } from "@executor-js/ui/contracts/refresh";
  import { acknowledge } from "@executor-js/ui/contracts/mutations";
  import { Data, Effect } from "effect";
-@@ -55,22 +55,12 @@
+ import { Atom } from "effect/reactivity";
+@@ -54,23 +54,13 @@
+ );
  const userLinks = Atom.family((key: AppKey) =>
    HostedClient.query("appAccounts", "userList", hydrated({ params: key })).pipe(
-     revalidated,
+-    revalidated,
 -    protectedQuery,
 +    changeProtected(key.organization, ["accounts", "observations", "apps", "membership"]),
++    refreshedOnFocus,
    ),
  );
  const lists = { app: appLinks, user: userLinks };
@@ -159,8 +196,9 @@ diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contrac
 @@ -1,11 +1,10 @@
  import { interactiveConnectionActions } from "./interactive-accounts.ts";
  import { hydrated } from "@executor-js/ui/contracts/http";
- import { revalidated } from "@executor-js/ui/contracts/refresh";
+-import { revalidated } from "@executor-js/ui/contracts/refresh";
 -import { pollingQuery } from "@executor-js/ui/contracts/polling";
++import { revalidated, refreshedOnFocus } from "@executor-js/ui/contracts/refresh";
 +import { changeProtected } from "./change-signal.ts";
  import { refreshAppLinks } from "./app-accounts.ts";
  import { discoveryTarget, refreshAppDiscovery } from "./app-discovery.ts";
@@ -175,8 +213,8 @@ diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contrac
    (key: { readonly organization: OrganizationReference; readonly app: AppId }) =>
 -    HostedClient.query("apps", "get", hydrated({ params: key })).pipe(revalidated, protectedQuery),
 +    HostedClient.query("apps", "get", hydrated({ params: key })).pipe(
-+      revalidated,
 +      changeProtected(key.organization, ["apps", "membership"]),
++      refreshedOnFocus,
 +    ),
  );
  const versionsQuery = Atom.family((key: AppKey) =>
@@ -470,56 +508,180 @@ diff --git a/apps/hosted/web/src/contracts/connector-traffic.ts b/apps/hosted/we
 -export const toolCallTrafficAtom = (key: Key) => traffic(JSON.stringify(key));
 +export const toolCallTrafficAtom = (key: Key) =>
 +  traffic(JSON.stringify({ ...key, accounts: [...new Set(key.accounts)].sort() }));
-diff --git a/packages/sdk/src/implementation/account-traffic-store.ts b/packages/sdk/src/implementation/account-traffic-store.ts
---- a/packages/sdk/src/implementation/account-traffic-store.ts
-+++ b/packages/sdk/src/implementation/account-traffic-store.ts
-@@ -1,7 +1,7 @@
+diff --git a/apps/hosted/web/src/implementation/pages/app-window.tsx b/apps/hosted/web/src/implementation/pages/app-window.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-window.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-window.tsx
+@@ -8,6 +8,7 @@
+ import { liveAppAtom } from "../../contracts/apps.ts";
+ import { appAccessAtom } from "../../contracts/resource-access.ts";
+ import { useOrganizationRoute } from "../components/organization.tsx";
++import { useEvictAppFrame } from "../components/app-frames.tsx";
+ import { AppScreen, AppSkeleton } from "./app-screen.tsx";
+ 
  /**
-  * Per-account, per-UTC-hour counts of the tool calls each account served, so account lists can
-- * show requests, failures and the latest success. Derived data no reactive reader watches: the
-- * storage migration creates its table (`migrateAccountTraffic`), so the runtime only writes, and
-+ * show requests, failures and the latest success. The host may publish committed counter writes.
-+ * The storage migration creates its table (`migrateAccountTraffic`), so the runtime only writes, and
-  * every write is best-effort for its caller. A write that fails logs its SQLSTATE.
-  */
- import { Clock, Effect, Schema } from "effect";
-diff --git a/apps/hosted/server/src/implementation/account-traffic-change-schema.ts b/apps/hosted/server/src/implementation/account-traffic-change-schema.ts
-new file mode 100644
---- /dev/null
-+++ b/apps/hosted/server/src/implementation/account-traffic-change-schema.ts
-@@ -0,0 +1,28 @@
-+import { Effect } from "effect";
-+import { SqlClient } from "effect/sql";
-+
-+/** Counter writes publish only their account key; readers must authorize that key separately. */
-+export const migrateAccountTrafficChanges = Effect.gen(function* () {
-+  const sql = yield* SqlClient.SqlClient;
-+  yield* sql`create or replace function hosted_account_traffic_changed() returns trigger language plpgsql as $$
-+    declare previous text; following text; account_id text; target_scope text;
-+    begin
-+      -- The SDK never reads hours beyond its 31-day retention window.
-+      if TG_OP = 'DELETE' and OLD.hour < current_timestamp - interval '744 hours' then return OLD; end if;
-+      if TG_OP <> 'INSERT' then previous := OLD.account; end if;
-+      if TG_OP <> 'DELETE' then following := NEW.account; end if;
-+      if TG_OP = 'UPDATE' and to_jsonb(OLD) = to_jsonb(NEW) then return NEW; end if;
-+      for account_id in select distinct value from unnest(array[previous,following]) value
-+        where value is not null loop
-+        select owner into target_scope from executor_accounts where id=account_id;
-+        if target_scope is not null then
-+          perform hosted_queue_change(target_scope,'account-traffic',account_id);
-+        end if;
-+      end loop;
-+      if TG_OP = 'DELETE' then return OLD; end if;
-+      return NEW;
-+    end $$`;
-+  yield* sql`create or replace trigger hosted_account_traffic_changed
-+    after insert or update or delete on executor_account_tool_calls
-+    for each row execute function hosted_account_traffic_changed()`;
+@@ -23,6 +24,7 @@
+     app: AsyncResult.isFailure(query.result),
+     access: AsyncResult.isFailure(authority.result),
+   });
++  useEvictAppFrame(appId, screen === "absent");
+   return (
+     <main className="flex h-dvh flex-col bg-background">
+       {screen === "present" && app !== undefined ? (
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -1,8 +1,14 @@
++/** Rewind a named schema step and every later journal row before reconstructing older tables. */
++export const rewindHostedMigrations = (name: string) => ({
++  sql: "DELETE FROM private_hosted_migrations WHERE migration_id >= (SELECT migration_id FROM private_hosted_migrations WHERE name = $1) RETURNING migration_id",
++  params: [name],
 +});
++
+ /** Undo the hosted journal before reconstructing its dependency layout. */
+ const beforeHostedAccountChanges = () =>
+   [
+-    // A dropped SDK table also drops its migration-20 trigger. Rewind the whole step so startup
+-    // reinstalls every trigger after the older SDK layout has been reconstructed.
++    // A later journal row makes the migrator skip missing earlier steps. Rewind the recorded
++    // suffix with the account schema, including migrations introduced after this fixture.
+     { sql: "DROP FUNCTION IF EXISTS hosted_change_revision(text, text, text)" },
+     { sql: "DROP FUNCTION IF EXISTS hosted_project_changes(integer)" },
+     { sql: "DROP FUNCTION IF EXISTS hosted_account_changed() CASCADE" },
+@@ -10,11 +16,11 @@
+     { sql: "DROP FUNCTION IF EXISTS hosted_queue_change(text, text, text, bigint)" },
+     { sql: "DROP TABLE IF EXISTS hosted_change_dirty" },
+     { sql: "DROP TABLE IF EXISTS hosted_change_batches" },
++    rewindHostedMigrations("account_changes"),
+     {
+       sql: `DO $rollback$
+         BEGIN
+           IF to_regclass('private_hosted_migrations') IS NOT NULL THEN
+-            DELETE FROM private_hosted_migrations WHERE migration_id IN (20, 21, 22);
+             IF EXISTS (SELECT 1 FROM private_hosted_migrations WHERE migration_id = 19)
+               AND to_regprocedure('hosted_record_change(text,text,text)') IS NOT NULL THEN
+               EXECUTE $migration19$
+@@ -78,11 +84,11 @@
+     { sql: "DROP TRIGGER hosted_deployment_changed ON executor_apps" },
+     { sql: "DROP FUNCTION hosted_deployment_changed(), hosted_record_change(text, text, text)" },
+     { sql: "DROP TABLE hosted_change_pending, hosted_change_heads" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 19" },
++    rewindHostedMigrations("change_revisions"),
+     { sql: "DROP TABLE hosted_tool_availability" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 18" },
++    rewindHostedMigrations("tool_availability"),
+     { sql: "DROP TABLE hosted_account_rechecks, hosted_account_recheck_families" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 17" },
++    rewindHostedMigrations("account_rechecks"),
+   ] as const;
+ 
+ /** Remove policy state and its journal row before replaying an earlier hosted migration. */
+@@ -90,7 +96,7 @@
+   [
+     ...beforeHostedAccountRechecks(),
+     { sql: "DROP TABLE hosted_tool_policy_history, hosted_tool_policies" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 16" },
++    rewindHostedMigrations("tool_policies"),
+   ] as const;
+ 
+ /** Remove Routes' additive state before replaying an earlier hosted migration. */
+@@ -98,7 +104,7 @@
+   [
+     ...beforeHostedToolPolicies(),
+     { sql: "DROP TABLE basalt_hosted_routes_usage, basalt_hosted_routes_accounts" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 15" },
++    rewindHostedMigrations("hosted_routes"),
+   ] as const;
+ 
+ /** Roll back the model-binding objects and journal together before replaying earlier hosted steps. */
+@@ -106,7 +112,7 @@
+   [
+     ...beforeHostedRoutes(),
+     { sql: "DROP TABLE hosted_model_bindings" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 14" },
++    rewindHostedMigrations("model_bindings"),
+   ] as const;
+ 
+ /**
+@@ -132,7 +138,7 @@
+     { sql: "DROP VIEW hosted_contributions" },
+     { sql: "DROP TABLE hosted_contributed_departures, hosted_contributed_departure_jobs" },
+     { sql: "DROP TABLE hosted_account_observation_access" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id IN (10, 11, 12, 13)" },
++    rewindHostedMigrations("account_observations"),
+   ] as const;
+ 
+ /**
+diff --git a/e2e/tests/app-account-picker.spec.ts b/e2e/tests/app-account-picker.spec.ts
+--- a/e2e/tests/app-account-picker.spec.ts
++++ b/e2e/tests/app-account-picker.spec.ts
+@@ -428,6 +428,7 @@
+         yield* refresh.requested;
+         yield* refresh.release;
+         yield* failureShown("Refresh failure is reported", "Unable to complete this request");
++        yield* browser.checkpoint("Refresh failure is reported");
+         yield* shows("mailboxes", "A failed refresh keeps the accounts", allMailboxes);
+ 
+         const unlinked = yield* browser.use("Retry clearing the second mailbox", (page) =>
+diff --git a/e2e/tests/app-host-navigation.spec.ts b/e2e/tests/app-host-navigation.spec.ts
+--- a/e2e/tests/app-host-navigation.spec.ts
++++ b/e2e/tests/app-host-navigation.spec.ts
+@@ -500,29 +500,28 @@
+           ),
+         ).toBe(windowPath);
+ 
++        expect(
++          yield* browser.use("Scoped session refusals preserve the document and draft", (page) =>
++            kept(appFrame(page, origin)),
++          ),
++        ).toEqual({ ...sessionFirst, answer: "refused" });
++
+         // The parent login is revoked elsewhere: the browser still holds its cookie.
+         const login = yield* browser.use("Read the dashboard login", (page) =>
+           page.context().cookies(new URL(page.url()).origin),
+         );
+         const elsewhere = yield* api.session(Redacted.make(login));
+         expect((yield* api.request(elsewhere, "POST", "/api/auth/sign-out", {})).status).toBe(200);
+-        expect(yield* refusedHere("After revocation the page asks nothing")).toBe(windowPath);
+-        expect(
+-          yield* raw(
+-            "The host refuses a current-version request after revocation",
+-            request(version, { tab: "settings" }),
+-          ),
+-        ).toBe("refused");
++        // Revoking the parent session evicts its protected document immediately.
++        yield* browser.use("Parent revocation evicts the protected app", (page) =>
++          page.locator("iframe").waitFor({ state: "detached" }),
++        );
++        expect((yield* api.request(elsewhere, "POST", navigationPath, binding)).status).toBe(401);
+         expect(
+           yield* browser.use("Revocation navigated to no destination", (page) =>
+             Promise.resolve(new URL(page.url()).search),
+           ),
+         ).not.toBe("?view=settings");
+-        expect(
+-          yield* browser.use("The document outlived both refusals", (page) =>
+-            kept(appFrame(page, origin)),
+-          ),
+-        ).toEqual({ ...sessionFirst, answer: "refused" });
+       }),
+     ),
+   );
 diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/contributed-departure-observability.spec.ts
 --- a/e2e/tests/contributed-departure-observability.spec.ts
 +++ b/e2e/tests/contributed-departure-observability.spec.ts
-@@ -143,6 +143,9 @@
+@@ -9,7 +9,10 @@
+ import { Evidence } from "../support/evidence.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { RuntimeLive } from "../support/platform.ts";
+-import { beforeHostedModelBindings } from "../support/profile-removal-rollback.ts";
++import {
++  rewindHostedMigrations,
++  beforeHostedModelBindings,
++} from "../support/profile-removal-rollback.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -143,10 +146,13 @@
          const account = yield* f.connect(f.actors.member, "app", "shared", "Retained pool account");
          // The previous host stored this job before migration 13 and could not retain its diagnostics.
          yield* legacyStorage([
@@ -529,7 +691,12 @@ diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/c
            ...beforeHostedModelBindings(),
            { sql: "ALTER TABLE hosted_contributed_departure_jobs DROP COLUMN queued_at" },
            { sql: "ALTER TABLE hosted_contributed_departure_jobs DROP COLUMN last_error" },
-@@ -182,13 +185,17 @@
+-          { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 13" },
++          rewindHostedMigrations("contributed_departure_observability"),
+           {
+             sql: "INSERT INTO hosted_contributed_departure_jobs (id, organization_id, user_id, status, attempts, updated_at) VALUES ($1, $2, $3, 'failed', 8, now() - interval '10 minutes')",
+             params: [`${f.app.id}-retained`, f.actors.organization.id, f.ids.member],
+@@ -182,13 +188,17 @@
          yield* serverControl("restart");
          expect(yield* read).toEqual(retained);
          yield* evidence.json("retained-diagnostics-remain-unknown.json", retained);
@@ -548,29 +715,237 @@ diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/c
          expect(repeated).toEqual(upgraded);
          yield* evidence.json("retained-diagnostics-and-recheck-migrations.json", {
            upgraded,
-diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
---- a/e2e/support/profile-removal-rollback.ts
-+++ b/e2e/support/profile-removal-rollback.ts
-@@ -1,8 +1,8 @@
- /** Undo the hosted journal before reconstructing its dependency layout. */
- const beforeHostedAccountChanges = () =>
-   [
--    // A dropped SDK table also drops its migration-20 trigger. Rewind the whole step so startup
--    // reinstalls every trigger after the older SDK layout has been reconstructed.
-+    // A later journal row makes the migrator skip missing earlier steps. Rewind the recorded
-+    // suffix with the account schema, including migrations introduced after this fixture.
-     { sql: "DROP FUNCTION IF EXISTS hosted_change_revision(text, text, text)" },
-     { sql: "DROP FUNCTION IF EXISTS hosted_project_changes(integer)" },
-     { sql: "DROP FUNCTION IF EXISTS hosted_account_changed() CASCADE" },
-@@ -14,7 +14,10 @@
-       sql: `DO $rollback$
-         BEGIN
-           IF to_regclass('private_hosted_migrations') IS NOT NULL THEN
--            DELETE FROM private_hosted_migrations WHERE migration_id IN (20, 21, 22);
-+            DELETE FROM private_hosted_migrations
-+            WHERE migration_id >= (
-+              SELECT migration_id FROM private_hosted_migrations WHERE name = 'account_changes'
+diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-links.spec.ts
+--- a/e2e/tests/legacy-profile-links.spec.ts
++++ b/e2e/tests/legacy-profile-links.spec.ts
+@@ -6,7 +6,7 @@
+  * The fixture rebuilds the database as step 9 finds it inside the upgrade transaction. The
+  * product's migration ledger is per step: SDK schema versions in FumaDB's settings and hosted
+  * steps in `private_hosted_migrations`, which runs every step above its latest recorded one. The
+- * fixture removes steps 9 through 19 from the ledger and their objects, and writes the profiles an
++ * fixture rewinds later schema and journal rows together, and writes the profiles an
+  * older version left in `executor_installations`. SDK 4.0.13 and 4.0.14 stay applied because, in
+  * a real upgrade, they have already run when step 9 starts, and 4.0.13 keeps
+  * `executor_installations` unchanged for step 9. Step 9 reads only that table, apps, deployments,
+@@ -32,7 +32,10 @@
+ import { Evidence } from "../support/evidence.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { managementApp } from "../support/management-app.ts";
+-import { beforeHostedAccountObservations } from "../support/profile-removal-rollback.ts";
++import {
++  rewindHostedMigrations,
++  beforeHostedAccountObservations,
++} from "../support/profile-removal-rollback.ts";
+ import { serverControl } from "../support/server-control.ts";
+ 
+ const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
+@@ -47,29 +50,6 @@
+     })),
+   }),
+ }));`;
+-
+-/** The hosted steps a current database has recorded, in order. */
+-const ledger = [
+-  "baseline",
+-  "api_key_memberships",
+-  "upgrade_executor_apps",
+-  "data_steps",
+-  "upgrade_executor_apps",
+-  "upgrade_pinned_executor_apps",
+-  "require_connection_targets",
+-  "oauth_client_access",
+-  "app_account_links",
+-  "account_observations",
+-  "contributed_departures",
+-  "account_identity_index",
+-  "contributed_departure_observability",
+-  "model_bindings",
+-  "hosted_routes",
+-  "tool_policies",
+-  "account_rechecks",
+-  "tool_availability",
+-  "change_revisions",
+-].map((name, index) => ({ migration_id: index + 1, name }));
+ 
+ const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
+ const Tokens = Schema.Struct({ primary: Schema.String, extras: Schema.Array(Schema.String) });
+@@ -237,12 +217,20 @@
+         yield* evidence.json("fixture.json", fixture);
+ 
+         // The database as step 9 finds it: profiles, no links, ledger through step 8.
++        const [currentJournal] = yield* legacyStorage([
++          { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
++        ]);
++        const ledger = currentJournal ?? [];
++        const boundary = Number(
++          ledger.find((step) => step.name === "app_account_links")?.migration_id,
++        );
++        expect(Number.isInteger(boundary), "the current journal records app_account_links").toBe(
++          true,
++        );
+         yield* legacyStorage(beforeHostedAccountObservations());
+         const [recorded, rolledBack] = yield* legacyStorage([
+           { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
+-          {
+-            sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 9 RETURNING migration_id",
+-          },
++          rewindHostedMigrations("app_account_links"),
+           { sql: "DROP TABLE hosted_app_account_links" },
+           profile({
+             id: `ins_first_${suffix}`,
+@@ -338,7 +326,7 @@
+           }),
+         ]);
+         expect(recorded, "later steps are pending before rebuilding step 9").toEqual(
+-          ledger.slice(0, 9),
++          ledger.filter((step) => Number(step.migration_id) <= boundary),
+         );
+         expect(rolledBack, "step 9 is pending again").toEqual([{ migration_id: 9 }]);
+         yield* serverControl("start");
+diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
+--- a/e2e/tests/legacy-profile-schedules.spec.ts
++++ b/e2e/tests/legacy-profile-schedules.spec.ts
+@@ -28,6 +28,7 @@
+ import { Evidence } from "../support/evidence.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+ import {
++  rewindHostedMigrations,
+   beforeAppAccounts,
+   beforeHostedAccountObservations,
+   beforeProfileRemoval,
+@@ -314,7 +315,7 @@
+         { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
+         ...beforeAppAccounts(),
+         ...beforeHostedAccountObservations(),
+-        { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 9" },
++        rewindHostedMigrations("app_account_links"),
+         { sql: "DROP TABLE hosted_app_account_links" },
+         ...beforeProfileRemoval(),
+         ...profileAppCopiesPending("private_hosted"),
+diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+--- a/e2e/tests/legacy-targetless-connections.spec.ts
++++ b/e2e/tests/legacy-targetless-connections.spec.ts
+@@ -14,6 +14,7 @@
+ import { Resource } from "../support/contracts.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+ import {
++  rewindHostedMigrations,
+   beforeAppAccounts,
+   beforeHostedAccountObservations,
+   beforeProfileRemoval,
+@@ -262,16 +263,14 @@
+           // Step 9 runs again with steps 7 and 8; it creates the link table and converts profiles
+           // idempotently, and none are left to convert.
+           ...beforeHostedAccountObservations(),
+-          { sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 9` },
++          rewindHostedMigrations("app_account_links"),
+           // Before step 8 no client had an audience, whose rows name stored clients.
+           { sql: `DROP TABLE hosted_oauth_client_groups, hosted_oauth_client_access` },
+-          { sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 8` },
++          rewindHostedMigrations("oauth_client_access"),
+           ...legacyRows(connection, ids),
+           // Before step 7 the product's access rows could have no target either.
+           { sql: `ALTER TABLE hosted_connection_access ALTER COLUMN target DROP NOT NULL` },
+-          {
+-            sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 7`,
+-          },
++          rewindHostedMigrations("require_connection_targets"),
+           ...legacy.map((id) => ({
+             sql: `INSERT INTO hosted_connection_access (connection_id, organization_id, creator_id, destination, target)
+               SELECT $2, organization_id, creator_id, destination, NULL
+diff --git a/e2e/tests/navigation-intent.spec.ts b/e2e/tests/navigation-intent.spec.ts
+--- a/e2e/tests/navigation-intent.spec.ts
++++ b/e2e/tests/navigation-intent.spec.ts
+@@ -8,6 +8,7 @@
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { App } from "../support/contracts.ts";
+ import { scenarios } from "../test-plan.ts";
++import { Evidence } from "../support/evidence.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ 
+ /** Whether a request reads this app's record, batched with other reads or on its own. */
+@@ -36,6 +37,7 @@
+         const actors = yield* Actors;
+         const api = yield* Api;
+         const browser = yield* Browser;
++        const evidence = yield* Evidence;
+         const prefix = `/api/organizations/${actors.organization.id}`;
+         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+           name: `Intent example ${randomUUID().slice(0, 8)}`,
+@@ -67,37 +69,46 @@
+         yield* browser.use("Open the app list", (page) => page.goto(appsPath));
+         yield* browser.use("Wait for the app's link", (page) => link(page).waitFor());
+         const reads: Request[] = [];
++        const toolReads: Request[] = [];
+         yield* browser.use("Watch for reads of the app", (page) => {
+           page.on("request", (request) => {
+             if (readsApp(request, app.id)) reads.push(request);
++            if (readsTools(request, app.id)) toolReads.push(request);
+           });
+           return Promise.resolve();
+         });
+-        // Hovering shows intent: the app is read while the list is still open. The list already
+-        // names the app's version and accounts, so its tools are read in the same batch.
+-        const [hovered] = yield* browser.use("Hover the app's link", (page) =>
+-          Promise.all([
+-            page
+-              .waitForRequest((request) => readsApp(request, app.id))
+-              .then((read) => read.response().then(() => read)),
++        // The authoritative app body waits for heads; tools may finish in an earlier batch.
++        yield* browser.use("Hover reads the app and its tools before the click", (page) => {
++          const completed = (matches: (request: Request) => boolean) =>
++            page.waitForRequest(matches).then((read) =>
++              read.response().then((response) => {
++                expect(response?.ok()).toBe(true);
++                return response?.finished().then((error) => expect(error).toBe(null));
++              }),
 +            );
-             IF EXISTS (SELECT 1 FROM private_hosted_migrations WHERE migration_id = 19)
-               AND to_regprocedure('hosted_record_change(text,text,text)') IS NOT NULL THEN
-               EXECUTE $migration19$
++          return Promise.all([
++            completed((request) => readsApp(request, app.id)),
++            completed((request) => readsTools(request, app.id)),
+             link(page).hover(),
+-          ]),
+-        );
+-        expect(readsTools(hovered, app.id)).toBe(true);
++          ]);
++        });
+         expect(
+           yield* browser.use("Read the current path", (page) =>
+             Promise.resolve(new URL(page.url()).pathname),
+           ),
+         ).toBe(appsPath);
+         expect(reads).toHaveLength(1);
+-        // Opening the app renders it from that read instead of reading it again.
+-        yield* browser.use("Open the app", (page) => link(page).click());
+-        // The tools preview reads the app's tools after the page mounts, so any read of the app
+-        // the page started itself has been sent by the time it shows.
+-        yield* browser.use("Wait for the app's tools", (page) =>
+-          page.getByRole("main").getByText("A simple greeting").first().waitFor(),
+-        );
++        expect(toolReads).toHaveLength(1);
++        const clickToContentMs = yield* browser.use("Open the prefetched app", (page) => {
++          const started = performance.now();
++          return link(page)
++            .click()
++            .then(() => page.getByRole("main").getByText("A simple greeting").first().waitFor())
++            .then(() => performance.now() - started);
++        });
+         expect(reads).toHaveLength(1);
++        expect(toolReads).toHaveLength(1);
++        yield* evidence.json("navigation-intent-timing.json", { clickToContentMs });
+       }),
+     ),
+   );
+diff --git a/packages/sdk/src/implementation/account-traffic-store.ts b/packages/sdk/src/implementation/account-traffic-store.ts
+--- a/packages/sdk/src/implementation/account-traffic-store.ts
++++ b/packages/sdk/src/implementation/account-traffic-store.ts
+@@ -1,7 +1,7 @@
+ /**
+  * Per-account, per-UTC-hour counts of the tool calls each account served, so account lists can
+- * show requests, failures and the latest success. Derived data no reactive reader watches: the
+- * storage migration creates its table (`migrateAccountTraffic`), so the runtime only writes, and
++ * show requests, failures and the latest success. The host may publish committed counter writes.
++ * The storage migration creates its table (`migrateAccountTraffic`), so the runtime only writes, and
+  * every write is best-effort for its caller. A write that fails logs its SQLSTATE.
+  */
+ import { Clock, Effect, Schema } from "effect";
