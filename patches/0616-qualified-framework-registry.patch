@@ -644,3 +644,24 @@ diff --git a/packages/sdk/src/implementation/basalt-canonical-framework-releases
      },
    },
  ];
+diff --git a/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts b/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts
+--- a/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts
++++ b/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts
+@@ -253,6 +253,17 @@
+       origin: "basalt",
+       revision: "source-bound-rebuild:cdb580989b32eb50f625853188d51ce2559159d0:rebuild-43696970325",
+       sha256: "8524e622ce748e3262fc910a75ad3d842220d6cdee7e3e8eeff8bc841b890b88",
++    },
++  },
++  {
++    version: "0.0.1-beta.104-basalt.17",
++    sha256: "99bee31167bb2c94927cb35197f562ff22802ac2cfc840a1f30cdae9c7d73b54",
++    protocol: 44,
++    browserSha256: "494cee097c910784f83bb32405db621765d9c24e98b539e3117db5343ebbdd5c",
++    source: {
++      origin: "basalt",
++      revision: "source-bound-rebuild:a272266605624692b5432befc1014d9e0795bbea:rebuild-43764554197",
++      sha256: "7fc12839772e052f9d52b03db0635b48e4ebe122ead59638e74f0a0c3e196927",
+     },
+   },
+ ];
