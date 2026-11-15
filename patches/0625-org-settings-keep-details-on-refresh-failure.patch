@@ -1,3 +1,34 @@
+diff --git a/apps/hosted/web/src/contracts/organization.ts b/apps/hosted/web/src/contracts/organization.ts
+--- a/apps/hosted/web/src/contracts/organization.ts
++++ b/apps/hosted/web/src/contracts/organization.ts
+@@ -13,7 +13,7 @@
+ import { UploadedOrganizationIcon } from "@executor-js/hosted-server/organization-icon";
+ import { OrganizationAccess, OrganizationForbidden } from "@executor-js/hosted-server/organization";
+ import { OrganizationId } from "@executor-js/hosted-server/organization";
+-import { Effect, Option, Schema } from "effect";
++import { Effect, Option, Predicate, Schema } from "effect";
+ import { AsyncResult, Atom } from "effect/reactivity";
+ import {
+   authCallOptions,
+@@ -173,6 +173,18 @@
+           Effect.sync(() => {
+             get.set(organizationTargetAtom(organization), access.organization);
+             get.set(organizationPresentationAtom(access.organization), access);
++          }),
++        ),
++        // A refusal revokes the retained details, so a later failed refresh cannot show them again.
++        Effect.tapError((error) =>
++          Effect.sync(() => {
++            if (
++              !Predicate.isTagged(error, "OrganizationForbidden") &&
++              !Predicate.isTagged(error, "Unauthorized")
++            )
++              return;
++            const id = get.once(organizationTargetAtom(organization));
++            if (id !== undefined) get.set(organizationPresentationAtom(id), undefined);
+           }),
+         ),
+       );
 diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/apps/hosted/web/src/implementation/components/organization.tsx
 --- a/apps/hosted/web/src/implementation/components/organization.tsx
 +++ b/apps/hosted/web/src/implementation/components/organization.tsx
@@ -76,7 +107,7 @@ diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-int
            yield* failing.requested;
            yield* failing.release;
            yield* Deferred.await(membersFailed);
-@@ -352,6 +375,66 @@
+@@ -352,6 +375,84 @@
              membersImage,
            );
            yield* browser.checkpoint(`Settings members from the focus read at ${width}`);
@@ -138,6 +169,24 @@ diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-int
 +            ).toBe(0);
 +            yield* browser.use("Stop refusing access refreshes", (page) =>
 +              page.unroute(accessPath, refuseAccess),
++            );
++            // A failed refresh after the refusal must not bring the revoked details back.
++            accessFailed = false;
++            yield* browser.use("Fail the access refresh after the refusal once", (page) =>
++              page.route(accessPath, failAccessOnce),
++            );
++            yield* refreshVisiblePage;
++            yield* settle("The failed refresh after the refusal settles");
++            yield* browser.use("The settings stay withheld", (page) =>
++              page.getByText("Unable to load organization settings.", { exact: true }).waitFor(),
++            );
++            expect(accessFailed, "The access refresh after the refusal failed once").toBe(true);
++            expect(
++              yield* rowsShown("Members after the refusal and a failed refresh"),
++              "A failed refresh after a refusal shows no retained members",
++            ).toBe(0);
++            yield* browser.use("Stop failing access refreshes after the refusal", (page) =>
++              page.unroute(accessPath, failAccessOnce),
 +            );
 +          }
            if (phone) yield* checkSettingsTouchIntent(actors.organization.slug);
