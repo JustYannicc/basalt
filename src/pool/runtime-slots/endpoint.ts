@@ -96,20 +96,15 @@ export class RuntimeEndpoint {
     this.options = options;
   }
   recordFailure(operation: string, error: unknown) {
-    logRuntimeEndpointFailure(
-      error,
-      operation,
-      {
-        role: this.role,
-        instanceId: this.ctx.id.toString(),
-        applicationId:
-          this.role === "legacy"
-            ? this.env.POOL_CONTAINER_APPLICATION_ID
-            : this.env.POOL_RUNTIME_APPLICATION_ID,
-        ...this.code,
-      },
-      this.env,
-    );
+    logRuntimeEndpointFailure(error, operation, {
+      role: this.role,
+      instanceId: this.ctx.id.toString(),
+      applicationId:
+        this.role === "legacy"
+          ? this.env.POOL_CONTAINER_APPLICATION_ID
+          : this.env.POOL_RUNTIME_APPLICATION_ID,
+      ...this.code,
+    });
   }
   private serialize<T>(work: () => Promise<T>): Promise<T> {
     const pending = this.queue.then(work);

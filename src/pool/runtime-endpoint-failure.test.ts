@@ -84,23 +84,23 @@ for (const [error, reason] of [
     const [event, diagnostic] = log.mock.calls[0]!.arguments;
     assert.equal(event, "POOL_RUNTIME_ENDPOINT_FAILURE");
     assert.ok(diagnostic && typeof diagnostic === "object");
-    assert.deepEqual(diagnostic, {
-      hop: "endpoint_route",
-      operation: "start",
-      status: 409,
-      runtime: {
-        role: "runtime",
-        instanceId: target.instanceId,
-        applicationId: env.POOL_RUNTIME_APPLICATION_ID,
-        ...code,
+    assert.match(diagnostic.requestId, /^[a-f0-9-]{36}$/u);
+    assert.deepEqual(
+      { ...diagnostic, requestId: "checked" },
+      {
+        hop: "endpoint_route",
+        operation: "start",
+        status: 409,
+        runtime: {
+          role: "runtime",
+          instanceId: target.instanceId,
+          applicationId: env.POOL_RUNTIME_APPLICATION_ID,
+          ...code,
+        },
+        requestId: "checked",
+        causeClass: error.constructor.name,
       },
-      exception: {
-        class: error.constructor.name,
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-      },
-    });
+    );
     assert.deepEqual({ name: error.name, message: error.message, stack: error.stack }, before);
     assert.ok(!JSON.stringify(diagnostic).includes("PRIVATE_"));
   });
@@ -121,7 +121,8 @@ test("endpoint cause removes configured and labelled credentials before logging"
   const f = endpoint(error);
   await runtimeRequest(request(), f.value);
   const serialized = JSON.stringify(log.mock.calls[0]?.arguments);
-  assert.ok(serialized.includes("Storage refused"));
+  assert.ok(serialized.includes("Error"));
+  assert.ok(!serialized.includes("Storage refused"));
   for (const secret of [...secrets, "PRIVATE_REQUEST_BODY", "PRIVATE_HEADER", "PRIVATE_QUERY"])
     assert.ok(!serialized.includes(secret), "credential or request content leaked");
   assert.ok(
@@ -167,4 +168,32 @@ test("non-Error throws are identified without serializing their content", async 
   const serialized = JSON.stringify(log.mock.calls[0]!.arguments);
   assert.ok(serialized.includes("NonError"));
   assert.ok(!serialized.includes("PRIVATE_"));
+});
+
+test("awaited forwarding logs only a closed cause and correlation for arbitrary private exceptions", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const marker = "arbitrary-unlabelled-private-text";
+  const error = new TypeError(marker);
+  error.name = `${marker}-name`;
+  error.stack = `${marker}-stack`;
+  const f = endpoint(error);
+  const response = await runtimeRequest(
+    new Request("http://runtime/v1/models?token=PRIVATE_QUERY", {
+      headers: {
+        "X-Signalbox-Runtime-Identity": JSON.stringify({ ...target, bootId: "1".repeat(36) }),
+        "X-Signalbox-Runtime-Port": "8317",
+      },
+    }),
+    f.value,
+  );
+  assert.equal(response.status, 409);
+  assert.equal(f.reads(), 1);
+  assert.equal(log.mock.calls.length, 1);
+  const diagnostic = log.mock.calls[0]!.arguments[1];
+  assert.equal(diagnostic.operation, "forward");
+  assert.equal(diagnostic.causeClass, "TypeError");
+  assert.match(diagnostic.requestId, /^[a-f0-9-]{36}$/u);
+  assert.ok(!JSON.stringify([diagnostic, await response.json()]).includes(marker));
+  assert.ok(!JSON.stringify(diagnostic).includes("PRIVATE_"));
+  assert.equal(error.message, marker);
 });
