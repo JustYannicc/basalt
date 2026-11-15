@@ -1,0 +1,1688 @@
+diff --git a/apps/hosted/server/src/implementation/resource-policy.ts b/apps/hosted/server/src/implementation/resource-policy.ts
+--- a/apps/hosted/server/src/implementation/resource-policy.ts
++++ b/apps/hosted/server/src/implementation/resource-policy.ts
+@@ -1,3 +1,4 @@
++import { currentAccountFactReads } from "./account-fact-reads.ts";
+ /** One authoritative policy for hosted reads, management, credential use, and resumed work. */
+ import {
+   AccountId,
+@@ -45,6 +46,9 @@
+ const membership = (organization: OrganizationId, user: string | undefined, lock: boolean) =>
+   Effect.gen(function* () {
+     if (user === undefined) return yield* new OrganizationForbidden();
++    const facts = yield* currentAccountFactReads;
++    if (!lock && facts?.actor.organization === organization && facts.actor.user === user)
++      return { ...facts.actor };
+     const sql = yield* policyDatabase;
+     const rows = yield* sql`select id, role from member
+       where "organizationId" = ${organization} and "userId" = ${user}${lock ? sql` for share` : sql``}`;
+@@ -66,7 +70,12 @@
+   if (reads?.actor.organization === organization && reads.actor.user === user) return reads.actor;
+   return yield* resourceAuthority(organization, user);
+ });
+-export type ResourceAuthority = Effect.Success<ReturnType<typeof resourceAuthority>>;
++export interface ResourceAuthority {
++  readonly organization: OrganizationId;
++  readonly user: string;
++  readonly member: GroupMemberId;
++  readonly role: typeof OrganizationRole.Type;
++}
+ /**
+  * {@link currentResourceAuthority} read from the caller's membership row as it share-locks it until
+  * the transaction ends, so a role change or removal waits for a write that checked it. The role
+@@ -103,6 +112,24 @@
+         const access = reads.appAccesses.get(app);
+         return access === undefined ? [] : [access];
+       });
++    const facts = yield* currentAccountFactReads;
++    const policies =
++      facts?.actor.organization === actor.organization &&
++      facts.actor.user === actor.user &&
++      apps.every((id) => facts.apps.has(id))
++        ? [...new Set(apps)].flatMap((id) => {
++            const row = facts.appPolicies.get(id);
++            return row === undefined
++              ? []
++              : [{ ...row, granted: row.groups.some((group) => facts.groups.has(group)) }];
++          })
++        : yield* readApplicationPolicies(apps, actor);
++    return policies.map((found) => appAccessOf(found, actor));
++  });
++
++export const readApplicationPolicies = (apps: readonly AppId[], actor: ResourceAuthority) =>
++  Effect.gen(function* () {
++    if (apps.length === 0) return [];
+     const sql = yield* policyDatabase;
+     const rows = yield* sql`select p.id as app, p.creator_id as creator, p.audience, p.revision,
+     array(select g.group_id from hosted_app_groups g where g.app_id = p.id order by g.group_id) as groups,
+@@ -111,7 +138,7 @@
+     from hosted_app_access p
+     where ${sql.in("p.id", apps)} and p.organization_id = ${actor.organization}`;
+     const policies = yield* Schema.decodeUnknownEffect(Schema.Array(AppPolicy))(rows);
+-    return policies.map((found) => appAccessOf(found, actor));
++    return policies;
+   }).pipe(
+     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+   );
+@@ -148,6 +175,15 @@
+ ) =>
+   Effect.gen(function* () {
+     if (user === undefined) return yield* new OrganizationForbidden();
++    const facts = yield* currentAccountFactReads;
++    if (
++      facts?.actor.organization === organization &&
++      facts.actor.user === user &&
++      apps.every((id) => facts.apps.has(id))
++    ) {
++      const actor = { ...facts.actor };
++      return { actor, access: yield* applicationAccesses(apps, actor) };
++    }
+     const reads = yield* AccountListReads;
+     if (
+       reads !== undefined &&
+@@ -327,7 +363,7 @@
+     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+   );
+
+-const AccountPolicy = Schema.Struct({
++export const AccountPolicy = Schema.Struct({
+   account: AccountId,
+   creator: Schema.NullOr(Principal.fields.userId),
+   kind: Schema.Literals(["personal", "shared"]),
+@@ -377,6 +413,24 @@
+         const access = reads.accountAccesses.get(account);
+         return access === undefined ? [] : [access];
+       });
++    const facts = yield* currentAccountFactReads;
++    const policies =
++      facts?.actor.organization === actor.organization &&
++      facts.actor.user === actor.user &&
++      accounts.every((id) => facts.accounts.has(id))
++        ? [...new Set(accounts)].flatMap((id) => {
++            const row = facts.accountPolicies.get(id);
++            return row === undefined
++              ? []
++              : [{ ...row, granted: row.groups.some((group) => facts.groups.has(group)) }];
++          })
++        : yield* readAccountPolicies(accounts, actor);
++    return yield* Effect.forEach(policies, (found) => accountAccessOf(found, actor));
++  });
++
++export const readAccountPolicies = (accounts: readonly AccountId[], actor: ResourceAuthority) =>
++  Effect.gen(function* () {
++    if (accounts.length === 0) return [];
+     const sql = yield* policyDatabase;
+     const rows = yield* sql`select p.account_id as account, p.creator_id as creator, p.kind,
+     p.personal_user_id as "personalUser", p.audience, p.revision,
+@@ -386,7 +440,7 @@
+     from hosted_account_access p
+     where ${sql.in("p.account_id", accounts)} and p.organization_id = ${actor.organization}`;
+     const policies = yield* Schema.decodeUnknownEffect(Schema.Array(AccountPolicy))(rows);
+-    return yield* Effect.forEach(policies, (found) => accountAccessOf(found, actor));
++    return policies;
+   }).pipe(
+     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+   );
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -1,3 +1,4 @@
++import { currentAccountFactReads } from "./account-fact-reads.ts";
+ import {
+   accountSourceBindingChange,
+   authorizeAccountSourceCall,
+@@ -269,6 +270,9 @@
+       Effect.gen(function* () {
+         const organization = yield* organizationOf(owner);
+         const user = yield* CurrentUserId;
++        const facts = yield* currentAccountFactReads;
++        if (facts?.actor.organization === organization && facts.actor.user === user)
++          return { organization, owner, role: facts.actor.role };
+         const rows =
+           yield* sql`select role from member where "organizationId" = ${organization} and "userId" = ${user ?? ""}`;
+         const role = (yield* Schema.decodeUnknownEffect(
+@@ -325,7 +329,16 @@
+               );
+             return yield* Effect.gen(function* () {
+               const accountView = yield* authorizeAccountSourceCall(input).pipe(
+-                Effect.provideService(HostedExecutor, executor),
++                Effect.provideService(
++                  HostedExecutor,
++                  Effect.flatMap(currentAccountFactReads, (facts) =>
++                    facts !== undefined &&
++                    `organization:${facts.actor.organization}` === input.owner &&
++                    facts.actor.user === input.authorizer
++                      ? Effect.succeed(facts.executor)
++                      : executor,
++                  ),
++                ),
+                 Effect.provideService(Crypto.Crypto, crypto),
+               );
+               if (!accountView)
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -1,3 +1,4 @@
++import { withPoolAccountReadFacts } from "./pool-account-read-facts.ts";
+ import { withPoolViewCache } from "./pool-view-cache.ts";
+ import { poolAppUsageSummary, poolAppUsageSummaryPath } from "./pool-summary-app-ui.ts";
+ import { withAccountSourceCatalog } from "./account-source-options.ts";
+@@ -565,14 +566,31 @@
+       const dispatch = Effect.gen(function* () {
+         const { input } = yield* dataInput(payload, current, kind);
+         const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
+-        return yield* executor.appData[kind](input).pipe(
+-          withSelectedAccountInspection,
+-          kind === "query" ? withAccountSourceCatalog : (work) => work,
++        const invoke = (resolved: typeof input) =>
++          executor.appData[kind](resolved).pipe(
++            withSelectedAccountInspection,
++            kind === "query" ? withAccountSourceCatalog : (work) => work,
++          );
++        const read = invoke(input);
++        const fresh = dataInput(payload, current, kind).pipe(
++          Effect.flatMap(({ input }) => invoke(input)),
++        );
++        return yield* (
++          kind === "query"
++            ? withPoolAccountReadFacts(current.app, input.accounts, read, fresh)
++            : read
++        ).pipe(
+           Effect.provideService(CurrentOrganization, current.access),
+           Effect.provideService(CurrentAuthorization, fullAuthority),
+           Effect.provideService(CurrentUserId, current.access.userId),
+           Effect.provideService(CurrentUsage, { source: "app_ui" }),
+-          Effect.mapError(dataFailure),
++          Effect.mapError((error) =>
++            Schema.is(UiVersionChanged)(error) ||
++            Schema.is(UiForbidden)(error) ||
++            Schema.is(UiFailed)(error)
++              ? error
++              : dataFailure(error),
++          ),
+         );
+       });
+       return yield* kind === "query"
+diff --git a/apps/hosted/server/src/implementation/provider-account-policy.ts b/apps/hosted/server/src/implementation/provider-account-policy.ts
+--- a/apps/hosted/server/src/implementation/provider-account-policy.ts
++++ b/apps/hosted/server/src/implementation/provider-account-policy.ts
+@@ -1,3 +1,4 @@
++import { currentAccountFactReads } from "./account-fact-reads.ts";
+ import { AccountListReads } from "./account-list-reads.ts";
+ import {
+   AccountAcquisitionConfiguration,
+@@ -22,8 +23,11 @@
+   Effect.gen(function* () {
+     const reads = yield* AccountListReads;
+     if (reads !== undefined && reads.apps.has(app)) return reads.pools.has(app);
++    const { organization } = yield* CurrentOrganization;
++    const facts = yield* currentAccountFactReads;
++    if (facts?.actor.organization === organization && facts.apps.has(app))
++      return facts.pools.has(app);
+     const sql = yield* policyDatabase;
+-    const { organization } = yield* CurrentOrganization;
+     const rows = yield* sql`select a.id from organization o
+       join executor_apps a on a.owner = 'organization:' || o.id
+       where o.id = ${organization} and a.id = ${app}
+diff --git a/apps/hosted/server/src/implementation/account-source-options.ts b/apps/hosted/server/src/implementation/account-source-options.ts
+--- a/apps/hosted/server/src/implementation/account-source-options.ts
++++ b/apps/hosted/server/src/implementation/account-source-options.ts
+@@ -1,3 +1,4 @@
++import { currentAccountFactReads } from "./account-fact-reads.ts";
+ import {
+   AppId,
+   AccountId,
+@@ -58,12 +59,23 @@
+     if (Option.isNone(catalog)) return result;
+     const entries = yield* catalog.value.list.pipe(Effect.catch(() => Effect.succeed([])));
+     const sql = yield* policyDatabase;
+-    const held = yield* Schema.decodeUnknownEffect(Schema.Array(Held))(
+-      yield* sql`select app, requirement, account, subject
++    const facts = yield* currentAccountFactReads;
++    const bounded =
++      input.includeInvisible !== true &&
++      facts !== undefined &&
++      `organization:${facts.actor.organization}` === input.owner &&
++      facts.actor.user === input.subject &&
++      input.accounts.every((id) => facts.accounts.has(id));
++    const held = bounded
++      ? facts.links.filter(
++          (row) => input.accounts.includes(row.account) && row.app !== input.app.id,
++        )
++      : yield* Schema.decodeUnknownEffect(Schema.Array(Held))(
++          yield* sql`select app, requirement, account, subject
+     from hosted_app_account_links where ${sql.in("account", input.accounts)}
+       and app <> ${input.app.id} and ${input.includeInvisible === true ? sql`true` : sql`(subject is null or subject = ${input.subject ?? ""})`}
+     order by app, requirement, account`,
+-    );
++        );
+     const apps = yield* Effect.forEach([...new Set(held.map((row) => row.app))], (app) =>
+       input.executor.apps.get({ app, owner: input.owner }).pipe(
+         Effect.map((app) => [app]),
+@@ -71,7 +83,7 @@
+       ),
+     );
+     const candidates = new Map(apps.flat().map((app) => [app.id, app]));
+-    const installed = yield* recordedServiceInstalls(sql, apps.flat());
++    const installed = bounded ? facts.services : yield* recordedServiceInstalls(sql, apps.flat());
+     const accessible = new Map<AppId, boolean>();
+     for (const row of held) {
+       const app = candidates.get(row.app);
+diff --git a/apps/hosted/server/src/implementation/account-source-authority.ts b/apps/hosted/server/src/implementation/account-source-authority.ts
+--- a/apps/hosted/server/src/implementation/account-source-authority.ts
++++ b/apps/hosted/server/src/implementation/account-source-authority.ts
+@@ -1,3 +1,5 @@
++import { currentAccountFactReads } from "./account-fact-reads.ts";
++import { CurrentUserId } from "../contracts/auth.ts";
+ import {
+   AccountId,
+   StorageError,
+@@ -56,6 +58,20 @@
+ }) =>
+   Effect.gen(function* () {
+     const sql = yield* policyDatabase;
++    const facts = yield* currentAccountFactReads;
++    if (
++      facts !== undefined &&
++      facts.actor.user === input.subject &&
++      facts.accounts.has(input.account) &&
++      facts.apps.has(input.app)
++    )
++      return facts.links.some(
++        (row) =>
++          row.app === input.app &&
++          row.account === input.account &&
++          row.requirement === input.requirement &&
++          (input.scope === "app" ? row.subject === null : row.subject === input.subject),
++      );
+     const rows = yield* sql`select account from hosted_app_account_links
+       where app = ${input.app} and account = ${input.account} and requirement = ${input.requirement}
+         and ${input.scope === "app" ? sql`subject is null` : sql`subject = ${input.subject ?? ""}`}`;
+@@ -84,7 +100,22 @@
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const app = yield* executor.apps.get({ app: input.app, owner: input.owner });
+     const sql = yield* policyDatabase;
+-    const selected = yield* sql`select account, requirement from hosted_app_account_links
++    const facts = yield* currentAccountFactReads;
++    const user = yield* CurrentUserId;
++    const selected =
++      facts !== undefined &&
++      facts.actor.user === user &&
++      facts.actor.user === input.authorizer &&
++      `organization:${facts.actor.organization}` === input.owner &&
++      facts.apps.has(app.id) &&
++      ids.every((id) => facts.accounts.has(id))
++        ? facts.links.filter(
++            (row) =>
++              row.app === app.id &&
++              ids.includes(row.account) &&
++              (input.scope === "app" ? row.subject === null : row.subject === input.authorizer),
++          )
++        : yield* sql`select account, requirement from hosted_app_account_links
+       where app = ${app.id} and ${sql.in("account", ids)}
+         and ${input.scope === "app" ? sql`subject is null` : sql`subject = ${input.authorizer ?? ""}`}`;
+     const optionsByRequirement = new Map<
+diff --git a/apps/hosted/server/src/implementation/linked-account-apps.ts b/apps/hosted/server/src/implementation/linked-account-apps.ts
+--- a/apps/hosted/server/src/implementation/linked-account-apps.ts
++++ b/apps/hosted/server/src/implementation/linked-account-apps.ts
+@@ -1,3 +1,4 @@
++import { currentAccountFactReads } from "./account-fact-reads.ts";
+ import { permittedAppIds } from "@executor-js/authorization";
+ import { AppId, StorageError, type AccountId, type OwnerId } from "@executor-js/sdk/core";
+ import { Effect, Schema } from "effect";
+@@ -5,7 +6,7 @@
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
+-import { policyDatabase, visibleApps } from "./resource-policy.ts";
++import { policyDatabase, visibleApps, usableLinks, usableAppLinks } from "./resource-policy.ts";
+
+ /** The apps the caller can use and linked this account to, or that link it for everyone. */
+ export const linkedApps = (owner: OwnerId, account: AccountId) =>
+@@ -14,12 +15,20 @@
+     const policy = yield* CurrentAuthorization;
+     const sql = yield* policyDatabase;
+     const subject = yield* CurrentUserId;
+-    const rows = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ app: AppId })))(
+-      yield* sql`select distinct l.app from hosted_app_account_links l
++    const facts = yield* currentAccountFactReads;
++    const bounded =
++      facts !== undefined &&
++      `organization:${facts.actor.organization}` === owner &&
++      facts.actor.user === subject &&
++      facts.accounts.has(account);
++    const rows = bounded
++      ? facts.links.filter((row) => row.account === account)
++      : yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ app: AppId })))(
++          yield* sql`select distinct l.app from hosted_app_account_links l
+         join executor_apps a on a.id = l.app
+         where a.owner = ${owner} and l.account = ${account}
+           and (l.subject is null or l.subject = ${subject ?? ""})`,
+-    );
++        );
+     const candidates = permittedAppIds(
+       policy,
+       rows.map((row) => row.app),
+@@ -28,6 +37,14 @@
+       .list({ owner, ids: candidates })
+       .pipe(Effect.flatMap(visibleApps));
+     const ids = apps.map((app) => app.id);
++    if (bounded && policy.tools.kind === "all") {
++      const live = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ app: AppId })))(
++        yield* sql`select l.app from ${usableLinks(sql, { subject: subject!, apps: ids })} and l.account=${account}
++          union select l.app from ${yield* usableAppLinks(sql, ids)} and l.account=${account}`,
++      );
++      const linked = new Set(live.map((row) => row.app));
++      return apps.filter((app) => linked.has(app.id));
++    }
+     const linked = new Set(
+       [
+         ...(yield* callerLinkedAccounts(ids)),
+diff --git a/apps/hosted/server/src/implementation/account-observation-policy.ts b/apps/hosted/server/src/implementation/account-observation-policy.ts
+--- a/apps/hosted/server/src/implementation/account-observation-policy.ts
++++ b/apps/hosted/server/src/implementation/account-observation-policy.ts
+@@ -1,3 +1,4 @@
++import { currentAccountFactReads } from "./account-fact-reads.ts";
+ import { Effect, Schema } from "effect";
+ import { StorageError, StorageHost, AccountId, type AccountHealth } from "@executor-js/sdk/core";
+ import { AccountListReads } from "./account-list-reads.ts";
+@@ -28,6 +29,13 @@
+
+ const savedPolicy = (account: AccountId, actor: ResourceAuthority) =>
+   Effect.gen(function* () {
++    const facts = yield* currentAccountFactReads;
++    if (
++      facts?.actor.organization === actor.organization &&
++      facts.actor.user === actor.user &&
++      facts.accounts.has(account)
++    )
++      return facts.observations.get(account) ?? defaults;
+     const sql = yield* policyDatabase;
+     const records =
+       yield* sql`select read_audience, refresh_audience, revision from hosted_account_observation_access
+@@ -45,6 +53,9 @@
+     if (audience.kind === "owners") return false;
+     if (audience.kind === "everyone") return true;
+     if (audience.groups.length === 0) return false;
++    const facts = yield* currentAccountFactReads;
++    if (facts?.actor.organization === actor.organization && facts.actor.user === actor.user)
++      return audience.groups.some((group) => facts.groups.has(group));
+     const sql = yield* policyDatabase;
+     const rows =
+       yield* sql`select 1 from hosted_group_members m join hosted_groups g on g.id = m.group_id
+diff --git a/apps/hosted/server/src/implementation/account-identity.ts b/apps/hosted/server/src/implementation/account-identity.ts
+--- a/apps/hosted/server/src/implementation/account-identity.ts
++++ b/apps/hosted/server/src/implementation/account-identity.ts
+@@ -1,3 +1,4 @@
++import { currentAccountFactReads } from "./account-fact-reads.ts";
+ /** Redact at the host boundary, before a dashboard or an API caller receives account status. */
+ import {
+   AccountId,
+@@ -34,9 +35,17 @@
+ };
+
+ /** Use retained acquisition identity only to find copied labels, never to authorize identity. */
+-const acquisitionLabels = (accounts: readonly AccountId[]) =>
++export const acquisitionLabels = (accounts: readonly AccountId[]) =>
+   Effect.gen(function* () {
+     if (accounts.length === 0) return new Map<AccountId, Set<string>>();
++    const facts = yield* currentAccountFactReads;
++    if (facts !== undefined && accounts.every((id) => facts.accounts.has(id)))
++      return new Map(
++        accounts.flatMap((id) => {
++          const labels = facts.labels.get(id);
++          return labels === undefined ? [] : [[id, labels] as const];
++        }),
++      );
+     const reads = yield* AccountListReads;
+     if (
+       reads !== undefined &&
+@@ -104,6 +113,20 @@
+ /** Resolve the caller's own accounts once for a whole link list. */
+ export const heldAccounts = (accounts: readonly AccountId[]) =>
+   Effect.gen(function* () {
++    const facts = yield* currentAccountFactReads;
++    if (
++      facts !== undefined &&
++      facts.actor.user === (yield* CurrentUserId) &&
++      accounts.every((id) => facts.accounts.has(id))
++    )
++      return new Set(
++        accounts.filter((id) => {
++          const policy = facts.accountPolicies.get(id);
++          return (
++            policy !== undefined && (policy.personalUser ?? policy.creator) === facts.actor.user
++          );
++        }),
++      );
+     const reads = yield* AccountListReads;
+     if (
+       reads !== undefined &&
+@@ -140,6 +163,14 @@
+ const appScopeLinks = (accounts: readonly AccountId[]) =>
+   Effect.gen(function* () {
+     if (accounts.length === 0) return new Map<AccountId, AppId[]>();
++    const facts = yield* currentAccountFactReads;
++    if (facts !== undefined && accounts.every((id) => facts.accounts.has(id))) {
++      const links = new Map<AccountId, AppId[]>();
++      for (const row of facts.links)
++        if (row.subject === null && accounts.includes(row.account))
++          links.set(row.account, [...new Set([...(links.get(row.account) ?? []), row.app])]);
++      return links;
++    }
+     const reads = yield* AccountListReads;
+     if (
+       reads !== undefined &&
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -80,3 +80,5 @@
+
+ export * from "./contracts/selected-account-read.ts";
+ export { observationDeadline } from "./implementation/account-observation-state.ts";
++
++export { withSelectionReadFacts } from "./implementation/selection-read-facts.ts";
+diff --git a/packages/sdk/src/implementation/selection.ts b/packages/sdk/src/implementation/selection.ts
+--- a/packages/sdk/src/implementation/selection.ts
++++ b/packages/sdk/src/implementation/selection.ts
+@@ -1,3 +1,4 @@
++import { SelectionReadFacts, cachedFact } from "./selection-read-facts.ts";
+ /** Validate account selections against a version's requirements. */
+ import { Effect, Result, Schema } from "effect";
+ import {
+@@ -12,7 +13,7 @@
+ import { AccountNotFound } from "../contracts/account.ts";
+ import { StoredAccount, type StoredVersion } from "../contracts/storage.ts";
+ import { interactiveBinding } from "./interactive-state.ts";
+-import { acquisitionBinding, bindingMatchesAccount } from "./account-acquisition-bindings.ts";
++import { acquisitionBindings, bindingMatchesAccount } from "./account-acquisition-bindings.ts";
+ import type { Query } from "./database.ts";
+ import type { AccountTargetRead } from "./account-target-read.ts";
+
+@@ -24,8 +25,16 @@
+ ];
+
+ /** The stored rows of the named accounts, in one statement; none when it names none. */
++export const uncachedSelectionRows = (db: Query, ids: readonly AccountId[]) =>
++  db.readSelectionAccounts(ids);
+ export const readSelectionAccounts = (db: Query, ids: readonly AccountId[]) =>
+-  db.readSelectionAccounts(ids);
++  Effect.gen(function* () {
++    const facts = yield* SelectionReadFacts;
++    const read = uncachedSelectionRows(db, ids);
++    return yield* facts !== undefined && ids.every((id) => facts.accounts.has(id))
++      ? cachedFact(facts.accountRows, db, JSON.stringify(ids), read)
++      : read;
++  });
+
+ /** Rows {@link readSelectionAccounts} returned for these IDs, read before the selection was known. */
+ export interface SelectionAccountsRead {
+@@ -71,6 +80,21 @@
+       Effect.mapError(() => new StorageError()),
+     );
+     const byId = new Map(accounts.map((account) => [account.id, account]));
++    const acquisitions = yield* Effect.cached(
++      acquisitionBindings(
++        db,
++        accounts.filter((account) =>
++          Object.entries(selected).some(([slot, value]) => {
++            const required = requirements.accounts[slot];
++            return (
++              (typeof value === "string" ? [value] : value).includes(account.id) &&
++              required?.provider === account.provider &&
++              required.definition.auth[account.method]?.type === "interactive"
++            );
++          }),
++        ),
++      ),
++    );
+     const selections = yield* Effect.forEach(Object.entries(selected), ([slot, value]) =>
+       Effect.gen(function* () {
+         const required = Object.hasOwn(requirements.accounts, slot)
+@@ -94,10 +118,7 @@
+             if (account.provider !== required.provider)
+               return yield* Effect.fail(invalid("provider_mismatch"));
+             if (required.definition.auth[account.method]?.type === "interactive") {
+-              const reusable = yield* acquisitionBinding(db, {
+-                account: account.id,
+-                owner: account.owner,
+-              });
++              const reusable = (yield* acquisitions).get(account.id);
+               if (reusable !== undefined) {
+                 if (!bindingMatchesAccount(reusable, account)) return yield* invalid("app_bound");
+               } else {
+diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+--- a/packages/sdk/src/implementation/tools.ts
++++ b/packages/sdk/src/implementation/tools.ts
+@@ -1,3 +1,4 @@
++import { SelectionReadFacts, cachedFact } from "./selection-read-facts.ts";
+ import { AccountUnavailable } from "apps/contracts";
+ import { bindToolPolicy } from "./tool-policy.ts";
+ import type { ToolPolicyHook } from "../contracts/tool-policy.ts";
+@@ -133,13 +134,20 @@
+ import { ownsDatabase } from "../contracts/apps.ts";
+
+ /** The configured app with its active version, in one statement. */
+-const readApp = (db: Query, app: AppId) =>
++export const uncachedAppRow = (db: Query, app: AppId) =>
+   query(() =>
+     db.findFirst("apps", {
+       join: (b) => b.deployment(),
+       where: (b) => b("id", "=", app),
+     }),
+   );
++
++const readApp = (db: Query, app: AppId) =>
++  Effect.gen(function* () {
++    const facts = yield* SelectionReadFacts;
++    const read = uncachedAppRow(db, app);
++    return yield* facts?.apps.has(app) ? cachedFact(facts.appRows, db, app, read) : read;
++  });
+
+ /**
+  * The reads {@link snapshot} makes, made ahead and at once. The account read stands in only when it
+diff --git a/packages/sdk/src/implementation/apps.ts b/packages/sdk/src/implementation/apps.ts
+--- a/packages/sdk/src/implementation/apps.ts
++++ b/packages/sdk/src/implementation/apps.ts
+@@ -1,3 +1,4 @@
++import { SelectionReadFacts, cachedFact } from "./selection-read-facts.ts";
+ import { versionBuildFailed } from "./version-build-failure.ts";
+ import type { ResourceLifecycle } from "../contracts/executor.ts";
+ import { AppWorkflowsActive } from "../contracts/apps.ts";
+@@ -112,19 +113,44 @@
+     }),
+   ).pipe(Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)));
+
++export const uncachedStoredAppRow = (db: Query, input: Parameters<Executor["apps"]["get"]>[0]) =>
++  query(() =>
++    db.findFirst("apps", {
++      where: (b) =>
++        b.and(
++          b("id", "=", input.app),
++          input.owner === undefined ? true : b("owner", "=", input.owner),
++        ),
++    }),
++  );
++
++export const uncachedAppListRows = (
++  db: Query,
++  input: NonNullable<Parameters<Executor["apps"]["list"]>[0]>,
++) =>
++  query(() =>
++    db.findMany("apps", {
++      join: (b) => b.deployment({ select: ["requirements"] }),
++      where: (b) =>
++        b.and(
++          input.owner === undefined ? true : b("owner", "=", input.owner),
++          input.ids === undefined ? true : b("id", "in", input.ids),
++          input.name === undefined ? true : b("name", "=", input.name),
++          input.slug === undefined ? true : b("slug", "=", input.slug),
++        ),
++      orderBy: ["id", "asc"],
++    }),
++  );
++
+ /** Read a configured app, applying an optional owner constraint. */
+
+ export const storedApp = (db: Query, input: Parameters<Executor["apps"]["get"]>[0]) =>
+   Effect.gen(function* () {
+-    const row = yield* query(() =>
+-      db.findFirst("apps", {
+-        where: (b) =>
+-          b.and(
+-            b("id", "=", input.app),
+-            input.owner === undefined ? true : b("owner", "=", input.owner),
+-          ),
+-      }),
+-    );
++    const facts = yield* SelectionReadFacts;
++    const read = uncachedStoredAppRow(db, input);
++    const row = yield* facts?.apps.has(input.app)
++      ? cachedFact(facts.storedApps, db, JSON.stringify([input.app, input.owner]), read)
++      : read;
+     if (row === null) return yield* Effect.fail(new AppNotFound({ app: input.app }));
+     return yield* Schema.decodeUnknownEffect(StoredApp)(row).pipe(
+       Effect.mapError(() => new StorageError()),
+@@ -144,6 +170,23 @@
+     return yield* storedApp(db, input);
+   });
+
++export const uncachedVersionRow = (
++  db: Query,
++  app: Pick<StoredApp, "id" | "code">,
++  version: VersionId,
++  versionOwner?: OwnerId,
++) =>
++  query(() =>
++    db.findFirst("deployments", {
++      where: (b) =>
++        b.and(
++          b("id", "=", version),
++          b("code", "=", app.code),
++          versionOwner === undefined ? true : b("owner", "=", versionOwner),
++        ),
++    }),
++  );
++
+ /** Read a version from this app's lineage, including its retained source and requirements. */
+ export const storedVersion = (
+   db: Query,
+@@ -153,16 +196,16 @@
+ ) =>
+   Effect.gen(function* () {
+     if (version === null) return yield* new AppNotDeployed({ app: app.id });
+-    const row = yield* query(() =>
+-      db.findFirst("deployments", {
+-        where: (b) =>
+-          b.and(
+-            b("id", "=", version),
+-            b("code", "=", app.code),
+-            versionOwner === undefined ? true : b("owner", "=", versionOwner),
+-          ),
+-      }),
+-    );
++    const facts = yield* SelectionReadFacts;
++    const read = uncachedVersionRow(db, app, version, versionOwner);
++    const row = yield* facts?.apps.has(app.id)
++      ? cachedFact(
++          facts.versions,
++          db,
++          JSON.stringify([app.id, app.code, version, versionOwner]),
++          read,
++        )
++      : read;
+     if (row === null) return yield* Effect.fail(new VersionNotFound({ app: app.id, version }));
+     return yield* Schema.decodeUnknownEffect(StoredVersion)(row).pipe(
+       Effect.mapError(() => new StorageError()),
+@@ -826,19 +869,18 @@
+       }).pipe(Effect.withSpan("sdk.apps.get")),
+     list: (input: NonNullable<Parameters<Executor["apps"]["list"]>[0]> = {}) =>
+       Effect.gen(function* () {
+-        const rows = yield* query(() =>
+-          db.findMany("apps", {
+-            join: (b) => b.deployment({ select: ["requirements"] }),
+-            where: (b) =>
+-              b.and(
+-                input.owner === undefined ? true : b("owner", "=", input.owner),
+-                input.ids === undefined ? true : b("id", "in", input.ids),
+-                input.name === undefined ? true : b("name", "=", input.name),
+-                input.slug === undefined ? true : b("slug", "=", input.slug),
+-              ),
+-            orderBy: ["id", "asc"],
+-          }),
+-        );
++        const facts = yield* SelectionReadFacts;
++        const read = uncachedAppListRows(db, input);
++        const rows = yield* facts !== undefined &&
++        input.ids !== undefined &&
++        input.ids.every((id) => facts.apps.has(id))
++          ? cachedFact(
++              facts.appLists,
++              db,
++              JSON.stringify([input.owner, input.ids, input.name, input.slug]),
++              read,
++            )
++          : read;
+         return yield* Effect.forEach(rows, ({ deployment: version, ...app }) =>
+           projectedApp({ app, version }),
+         );
+diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
+--- a/packages/sdk/src/implementation/accounts.ts
++++ b/packages/sdk/src/implementation/accounts.ts
+@@ -1,3 +1,4 @@
++import { SelectionReadFacts, cachedFact } from "./selection-read-facts.ts";
+ import { AccountIdentityId } from "../contracts/account-identity.ts";
+ import { AccountWorkflowsActive } from "../contracts/account.ts";
+ import { AccountWebhooksActive } from "../contracts/account.ts";
+@@ -34,15 +35,22 @@
+     ).join(""),
+   );
+
++export const uncachedStoredAccountRow = (db: Query, account: AccountId, owner?: OwnerId) =>
++  query(() =>
++    db.findFirst("accounts", {
++      where: (b) =>
++        b.and(b("id", "=", account), owner === undefined ? true : b("owner", "=", owner)),
++    }),
++  );
++
+ /** Load private account data without exposing it through public account responses. */
+ export const storedAccount = (db: Query, account: AccountId, owner?: OwnerId) =>
+   Effect.gen(function* () {
+-    const row = yield* query(() =>
+-      db.findFirst("accounts", {
+-        where: (b) =>
+-          b.and(b("id", "=", account), owner === undefined ? true : b("owner", "=", owner)),
+-      }),
+-    );
++    const facts = yield* SelectionReadFacts;
++    const read = uncachedStoredAccountRow(db, account, owner);
++    const row = yield* facts?.accounts.has(account)
++      ? cachedFact(facts.storedAccounts, db, JSON.stringify([account, owner]), read)
++      : read;
+     if (row === null) return yield* Effect.fail(new AccountNotFound({ account }));
+     return yield* Schema.decodeUnknownEffect(StoredAccount)(row).pipe(
+       Effect.mapError(() => new StorageError()),
+diff --git a/packages/sdk/src/implementation/account-acquisition-bindings.ts b/packages/sdk/src/implementation/account-acquisition-bindings.ts
+--- a/packages/sdk/src/implementation/account-acquisition-bindings.ts
++++ b/packages/sdk/src/implementation/account-acquisition-bindings.ts
+@@ -1,3 +1,4 @@
++import { SelectionReadFacts, cachedFact } from "./selection-read-facts.ts";
+ import { Effect, Redacted, Schema } from "effect";
+ import {
+   AccountAcquisitionBinding,
+@@ -8,7 +9,7 @@
+ import { storedAccount } from "./accounts.ts";
+ import { query, type Query } from "./database.ts";
+
+-export const acquisitionRecord = (
++export const uncachedAcquisitionRecord = (
+   db: Query,
+   input: { readonly account: AccountId; readonly owner?: OwnerId },
+ ) =>
+@@ -21,6 +22,18 @@
+         ),
+     }),
+   );
++
++export const acquisitionRecord = (
++  db: Query,
++  input: { readonly account: AccountId; readonly owner?: OwnerId },
++) =>
++  Effect.gen(function* () {
++    const facts = yield* SelectionReadFacts;
++    const read = uncachedAcquisitionRecord(db, input);
++    return yield* facts?.accounts.has(input.account)
++      ? cachedFact(facts.acquisitionRecords, db, JSON.stringify([input.account, input.owner]), read)
++      : read;
++  });
+
+ export const decodeAcquisitionBinding = Schema.decodeUnknownEffect(AccountAcquisitionBinding);
+
+@@ -35,6 +48,32 @@
+       : yield* decodeAcquisitionBinding(row).pipe(Effect.mapError(() => new StorageError()));
+   });
+
++export const uncachedAcquisitionRows = (
++  db: Query,
++  accounts: readonly Pick<StoredAccount, "id" | "owner">[],
++) =>
++  query(() =>
++    db.findMany("accountAcquisitions", {
++      select: [
++        "account",
++        "owner",
++        "provider",
++        "method",
++        "driver",
++        "driverRevision",
++        "generation",
++        "revision",
++        "removal",
++      ],
++      where: (b) =>
++        b(
++          "account",
++          "in",
++          accounts.map((account) => account.id),
++        ),
++    }),
++  );
++
+ /**
+  * Listing reads metadata once and never decrypts a retained private reference. Retained bindings
+  * can outlive their registration, so an empty registry does not prove there are no saved bindings.
+@@ -45,27 +84,12 @@
+ ) =>
+   Effect.gen(function* () {
+     if (accounts.length === 0) return new Map<AccountId, AccountAcquisitionBinding>();
+-    const rows = yield* query(() =>
+-      db.findMany("accountAcquisitions", {
+-        select: [
+-          "account",
+-          "owner",
+-          "provider",
+-          "method",
+-          "driver",
+-          "driverRevision",
+-          "generation",
+-          "revision",
+-          "removal",
+-        ],
+-        where: (b) =>
+-          b(
+-            "account",
+-            "in",
+-            accounts.map((account) => account.id),
+-          ),
+-      }),
+-    );
++    const facts = yield* SelectionReadFacts;
++    const read = uncachedAcquisitionRows(db, accounts);
++    const rowKey = JSON.stringify(accounts.map(({ id, owner }) => [id, owner]));
++    const rows = yield* facts !== undefined && accounts.every((row) => facts.accounts.has(row.id))
++      ? cachedFact(facts.acquisitions, db, rowKey, read)
++      : read;
+     const bindings = yield* Schema.decodeUnknownEffect(Schema.Array(AccountAcquisitionBinding))(
+       rows,
+     ).pipe(Effect.mapError(() => new StorageError()));
+diff --git a/packages/sdk/src/implementation/app-connections.ts b/packages/sdk/src/implementation/app-connections.ts
+--- a/packages/sdk/src/implementation/app-connections.ts
++++ b/packages/sdk/src/implementation/app-connections.ts
+@@ -1,3 +1,4 @@
++import { SelectionReadFacts, cachedFact } from "./selection-read-facts.ts";
+ import { Hex } from "effect/encoding";
+ import type { AppCallHooks, AppConfirmationChange, AppCallsHost } from "../contracts/app-calls.ts";
+ import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
+@@ -17,6 +18,41 @@
+ import { storedApp, storedVersion, lockApp } from "./apps.ts";
+ import { query, transaction, type Query } from "./database.ts";
+
++export const uncachedConnectionRow = (
++  db: Query,
++  app: AppId,
++  dependency: string,
++  subject: string,
++  target?: AppId,
++) =>
++  query(() =>
++    db.findFirst("appConnections", {
++      where: (b) =>
++        b.and(
++          b("app", "=", app),
++          b("dependency", "=", dependency),
++          b("subject", "=", subject),
++          ...(target === undefined ? [] : [b("target", "=", target)]),
++        ),
++    }),
++  );
++
++export const uncachedConnectionRows = (
++  db: Query,
++  input: Parameters<AppConnections["list"]>[0],
++  actor: string,
++) =>
++  query(() =>
++    db.findMany("appConnections", {
++      where: (b) =>
++        b.and(
++          b("app", "=", input.app),
++          b("owner", "=", input.owner),
++          b.or(b("subject", "=", ""), b("subject", "=", actor)),
++        ),
++    }),
++  );
++
+ export const makeAppConnections = (
+   db: Query,
+   credentials: Credentials,
+@@ -33,17 +69,18 @@
+             .appConnectionAuthorizing({ ...input, managing })
+             .pipe(Effect.mapError(() => new AppConnectionRefused()));
+   const find = (app: AppId, dependency: string, subject: string, target?: AppId) =>
+-    query(() =>
+-      db.findFirst("appConnections", {
+-        where: (b) =>
+-          b.and(
+-            b("app", "=", app),
+-            b("dependency", "=", dependency),
+-            b("subject", "=", subject),
+-            ...(target === undefined ? [] : [b("target", "=", target)]),
+-          ),
+-      }),
+-    );
++    Effect.gen(function* () {
++      const facts = yield* SelectionReadFacts;
++      const read = uncachedConnectionRow(db, app, dependency, subject, target);
++      return yield* facts?.apps.has(app)
++        ? cachedFact(
++            facts.connections,
++            db,
++            JSON.stringify([app, dependency, subject, target]),
++            read,
++          )
++        : read;
++    });
+   type Row = NonNullable<Effect.Success<ReturnType<typeof find>>>;
+   const view = (row: Row) =>
+     AppConnection.make({
+@@ -188,16 +225,16 @@
+         yield* storedApp(db, input);
+         yield* authorize({ ...input, dependency: "", scope: "user" }, false);
+         const actor = yield* subject("user");
+-        const rows = yield* query(() =>
+-          db.findMany("appConnections", {
+-            where: (b) =>
+-              b.and(
+-                b("app", "=", input.app),
+-                b("owner", "=", input.owner),
+-                b.or(b("subject", "=", ""), b("subject", "=", actor)),
+-              ),
+-          }),
+-        );
++        const facts = yield* SelectionReadFacts;
++        const read = uncachedConnectionRows(db, input, actor);
++        const rows = yield* facts?.apps.has(input.app)
++          ? cachedFact(
++              facts.connectionLists,
++              db,
++              JSON.stringify([input.app, input.owner, actor]),
++              read,
++            )
++          : read;
+         return { connections: rows.map(view) };
+       }).pipe(Effect.catchTag("AppNotFound", () => new AppConnectionRefused())),
+     save: (input) => save(input),
+diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
+--- a/packages/sdk/src/implementation/database.ts
++++ b/packages/sdk/src/implementation/database.ts
+@@ -1,3 +1,4 @@
++import { SelectionReadFacts } from "./selection-read-facts.ts";
+ /** Native Effect database operations; SQL failures are projected to safe domain errors. */
+ import { Effect } from "effect";
+ import { StorageError } from "../contracts/shared.ts";
+@@ -21,7 +22,11 @@
+   Effect.suspend(work).pipe(Effect.mapError(() => new StorageError()));
+ /** Preserve native Effect failures and cancellation through the SQL transaction. */
+ export const transaction = <A, E, R>(db: Query, work: (tx: Query) => Effect.Effect<A, E, R>) =>
+-  db.transaction(Effect.suspend(() => work(db))).pipe(
+-    Effect.withSpan("storage.transaction"),
+-    Effect.catchTag("SqlError", () => new StorageError()),
+-  );
++  db
++    .transaction(
++      Effect.suspend(() => work(db)).pipe(Effect.provideService(SelectionReadFacts, undefined)),
++    )
++    .pipe(
++      Effect.withSpan("storage.transaction"),
++      Effect.catchTag("SqlError", () => new StorageError()),
++    );
+diff --git a/e2e/tests/pool-account-view-cloud-read.spec.ts b/e2e/tests/pool-account-view-cloud-read.spec.ts
+--- a/e2e/tests/pool-account-view-cloud-read.spec.ts
++++ b/e2e/tests/pool-account-view-cloud-read.spec.ts
+@@ -1,5 +1,7 @@
++import { appCallDelivery } from "../support/app-call-delivery.ts";
++import { sqlCriticalPath } from "../support/sql-critical-path.ts";
+ import { expect, layer } from "@effect/vitest";
+-import { Clock, Effect, FileSystem, Schema, Schedule } from "effect";
++import { Clock, Effect, Fiber, FileSystem, Schema, Schedule } from "effect";
+ import { randomUUID } from "node:crypto";
+ import { Browser } from "../support/browser.ts";
+ import { Evidence, Telemetry } from "../support/evidence.ts";
+@@ -21,7 +23,7 @@
+       nativeAccountId: Schema.String,
+       nativeView: Schema.Struct({
+         state: Schema.Literal("available"),
+-        account: Resource,
++        account: Schema.Struct({ ...Resource.fields, label: Schema.String }),
+         sourceApp: Schema.Struct({
+           id: Schema.String,
+           name: Schema.String,
+@@ -44,6 +46,8 @@
+       context,
+       Effect.gen(function* () {
+         const p = yield* nativeProviderLinkFixture;
++        const gate = yield* appCallDelivery;
++        yield* Effect.addFinalizer(() => gate.releaseAll);
+         const providerPath = `${p.prefix}/apps/${p.target}`;
+         const accounts = [p.account];
+         let consumer: string | undefined;
+@@ -129,16 +133,21 @@
+                 file.path === "index.ts"
+                   ? {
+                       path: file.path,
+-                      content: `import { defineApp, query, object, router } from "apps";
++                      content: `import { defineApp, query, object, router, boolean } from "apps";
+ import { providers } from "./providers.ts";
+ import { providerAccountView } from "./provider-account-view.ts";
+-const view = query({ input: object({}) }, ctx => providerAccountView(ctx, {
++const view = query({ input: object({ change: boolean().optional() }) }, async (ctx, input) => {
++  if (input.change) await ctx.fetch(${JSON.stringify(gate.origin + "/send")}, {
++    method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify({subject:"moving-head"}),
++  });
++  return providerAccountView(ctx, {
+   isOwner: true, providers: [{id:"codex",name:"OpenAI"}],
+   accounts: ctx.app.accounts.openai.map(account => ({
+     id:account.id,nativeAccountId:account.id,provider:"codex",label:"Fixture",plan:null,state:"active",message:null,
+     windows:[],observedAt:null,freshness:"never",readingFailed:false,nextReadAt:null,earliestResetAt:null,bankedResets:null,
+   })),
+-}));
++});
++});
+ export default defineApp({
+   dependencies:{accountView:{scope:"app",cardinality:"many",tools:{accountView:{kind:"query"}}}},
+   app:{accounts:{openai:providers.openai.many().contributed()}},
+@@ -284,7 +293,134 @@
+             lookups,
+             "One catalog lookup per view, without sharing it across views",
+           ).toHaveLength(1);
++          const work = Object.fromEntries(
++            [
++              "sql.execute",
++              "sql.wire",
++              "sdk.apps.get",
++              "sdk.apps.list",
++              "sdk.accounts.health",
++              "sdk.accounts.observations",
++              "runtime.app.remote.invoke",
++            ].map((operation) => [
++              operation,
++              spans.filter(({ span }) => span.operationName === operation).length,
++            ]),
++          );
++          const criticalPath = sqlCriticalPath(spans);
++          yield* evidence.json(`${name}-fresh-facts-work.json`, {
++            ...work,
++            criticalPath,
++            endToEndUpperBoundWith8msAddedToEachSql:
++              reply.milliseconds + criticalPath.sqlMillisAt8ms,
++          });
++          expect(
++            criticalPath.sequentialRoundTrips,
++            "Conservative upper bound on sequential SQL round trips",
++          ).toBeLessThanOrEqual(150);
++          expect(work["sdk.apps.get"]).toBeLessThanOrEqual(20);
++          expect(work["sdk.apps.list"]).toBeLessThanOrEqual(12);
++          expect(work["sdk.accounts.health"]).toBe(5);
++          expect(work["sdk.accounts.observations"]).toBe(5);
++          expect(
++            work["runtime.app.remote.invoke"],
++            "The pool and all five exact source queries still execute",
++          ).toBe(6);
+         }
++        // The gate holds authored code after the query loaded its raw facts, without holding a writer lock.
++        yield* gate.hold("moving-head");
++        const moving = yield* browser
++          .use("Render a view while its account head advances", (page) =>
++            page.evaluate(() => {
++              const context = JSON.parse(
++                document.getElementById("executor-context")?.textContent ?? "{}",
++              );
++              return fetch("/_executor/api/query", {
++                method: "POST",
++                headers: { "content-type": "application/json" },
++                body: JSON.stringify({
++                  version: context.version ?? context.deployment,
++                  name: "viewAgain",
++                  input: { change: true },
++                }),
++              }).then((response) =>
++                response.json().then((body) => ({ status: response.status, body })),
++              );
++            }),
++          )
++          .pipe(Effect.forkChild);
++        yield* Effect.raceFirst(
++          gate.arrived("moving-head"),
++          Fiber.join(moving).pipe(
++            Effect.flatMap((reply) =>
++              Effect.fail(
++                new Error(`View completed before the head-change barrier: ${reply.status}`),
++              ),
++            ),
++          ),
++        );
++        expect(
++          (yield* p.api.request(p.actors.owner, "PATCH", `${p.prefix}/accounts/${accounts[0]}`, {
++            label: "Renamed during the view",
++          })).status,
++        ).toBe(200);
++        const removed = accounts.at(-1)!;
++        expect(
++          (yield* p.api.request(
++            p.actors.owner,
++            "DELETE",
++            `${consumerPath}/accounts/app/openai/${removed}`,
++          )).status,
++        ).toBe(200);
++        yield* gate.release("moving-head");
++        const moved = yield* Fiber.join(moving);
++        yield* evidence.json("head-advanced-view.json", moved);
++        expect(moved.status, JSON.stringify(moved.body)).toBe(200);
++        const current = yield* Schema.decodeUnknownEffect(View)(moved.body);
++        expect(
++          current.accounts.find((account) => account.nativeAccountId === accounts[0])?.nativeView
++            .account.label,
++        ).toBe("Renamed during the view");
++        expect(current.accounts.map((account) => account.nativeAccountId).sort()).toEqual(
++          accounts.filter((account) => account !== removed).sort(),
++        );
++        const next = yield* browser.use(
++          "The next request retains no revoked account facts",
++          (page) =>
++            page.evaluate(() => {
++              const context = JSON.parse(
++                document.getElementById("executor-context")?.textContent ?? "{}",
++              );
++              return fetch("/_executor/api/query", {
++                method: "POST",
++                headers: { "content-type": "application/json" },
++                body: JSON.stringify({
++                  version: context.version ?? context.deployment,
++                  name: "viewAgain",
++                  input: {},
++                }),
++              }).then((response) =>
++                response.json().then((body) => ({ status: response.status, body })),
++              );
++            }),
++        );
++        expect(next.status, JSON.stringify(next.body)).toBe(200);
++        const after = yield* Schema.decodeUnknownEffect(View)(next.body);
++        expect(after.accounts.map((account) => account.nativeAccountId).sort()).toEqual(
++          accounts.filter((account) => account !== removed).sort(),
++        );
++        yield* evidence.json("next-request-after-unlink.json", next);
++        expect(
++          (yield* p.api.request(
++            p.actors.owner,
++            "PUT",
++            `${consumerPath}/accounts/app/openai/${removed}`,
++          )).status,
++        ).toBe(200);
++        expect(
++          yield* gate.count("moving-head"),
++          "Only one uncached retry within the original request",
++        ).toBe(2);
+       }),
+     ),
+   );
+diff --git a/apps/hosted/server/src/implementation/account-fact-reads.ts b/apps/hosted/server/src/implementation/account-fact-reads.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-fact-reads.ts
+@@ -0,0 +1,49 @@
++import { Context, Effect, Option, Schema } from "effect";
++import { AccountId, AppId, type App, type Executor } from "@executor-js/sdk/core";
++import type { ObservationPolicy } from "../contracts/account-observations.ts";
++import { GroupDatabase, type GroupId } from "../contracts/groups.ts";
++import type { AppServiceIdentity } from "../contracts/service-install.ts";
++import type { AppPolicy } from "./app-policy.ts";
++import type { AccountPolicy, ResourceAuthority } from "./resource-policy.ts";
++
++export const AccountFactLink = Schema.Struct({
++  app: AppId,
++  account: AccountId,
++  requirement: Schema.String,
++  subject: Schema.NullOr(Schema.String),
++});
++
++/** Raw facts belong to one fenced pool query. Every check still derives its own verdict. */
++export const AccountFactReads = Context.Reference<
++  | {
++      readonly token: symbol;
++      readonly actor: ResourceAuthority;
++      readonly accounts: ReadonlySet<AccountId>;
++      readonly apps: ReadonlyMap<AppId, App>;
++      readonly appPolicies: ReadonlyMap<AppId, Omit<typeof AppPolicy.Type, "granted">>;
++      readonly accountPolicies: ReadonlyMap<AccountId, Omit<typeof AccountPolicy.Type, "granted">>;
++      readonly groups: ReadonlySet<GroupId>;
++      readonly observations: ReadonlyMap<AccountId, ObservationPolicy>;
++      readonly labels: ReadonlyMap<AccountId, ReadonlySet<string>>;
++      readonly links: readonly (typeof AccountFactLink.Type)[];
++      readonly services: ReadonlyMap<AppId, AppServiceIdentity>;
++      readonly pools: ReadonlySet<AppId>;
++      readonly executor: Executor;
++    }
++  | undefined
++>("hosted/AccountFactReads", { defaultValue: () => undefined });
++
++/** A write's locked checks must never consult a query's speculative facts. */
++export const currentAccountFactReads = Effect.gen(function* () {
++  const facts = yield* AccountFactReads;
++  if (facts === undefined) return undefined;
++  const service = yield* Effect.serviceOption(GroupDatabase);
++  if (Option.isNone(service)) return undefined;
++  const sql = yield* service.value.pipe(Effect.option);
++  if (
++    Option.isNone(sql) ||
++    Option.isSome(yield* Effect.serviceOption(sql.value.transactionService))
++  )
++    return undefined;
++  return facts;
++});
+diff --git a/apps/hosted/server/src/implementation/pool-account-read-facts.ts b/apps/hosted/server/src/implementation/pool-account-read-facts.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-account-read-facts.ts
+@@ -0,0 +1,144 @@
++import {
++  AppId,
++  invocationEntries,
++  withSelectionReadFacts,
++  type App,
++  type AppAccounts,
++} from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { GroupId } from "../contracts/groups.ts";
++import { ObservationPolicy } from "../contracts/account-observations.ts";
++import { AccountId } from "@executor-js/sdk/core";
++import { acquisitionLabels } from "./account-identity.ts";
++import { CurrentUserId } from "../contracts/auth.ts";
++import { HostedExecutor } from "../contracts/executor.ts";
++import { CurrentOrganization } from "../contracts/organization.ts";
++import { recordedServiceInstalls } from "./service-install-records.ts";
++import { AccountFactLink, AccountFactReads } from "./account-fact-reads.ts";
++import { changeJournalPrepared } from "./change-projection.ts";
++import { RevisionHint } from "apps/ui/contracts";
++import { organizationChangeKeys } from "./organization-changes.ts";
++import { registeredPool } from "./provider-account-policy.ts";
++import {
++  policyDatabase,
++  resourceAuthority,
++  readApplicationPolicies,
++  readAccountPolicies,
++} from "./resource-policy.ts";
++import { poolFactExecutor } from "./pool-fact-executor.ts";
++
++/** A moving head discards the speculative answer, then runs once without shared facts. */
++export const readWithStableFacts = <A, E, R, F, E2, R2, E3, R3, E4 = never, R4 = never>(
++  head: Effect.Effect<string | undefined, E2, R2>,
++  facts: Effect.Effect<F, E3, R3>,
++  read: Effect.Effect<A, E, R>,
++  scoped: (facts: F, read: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
++  fresh?: Effect.Effect<A, E4, R4>,
++) =>
++  Effect.gen(function* () {
++    const before = yield* head.pipe(Effect.option);
++    if (before._tag === "None" || before.value === undefined) return yield* read;
++    const loaded = yield* facts.pipe(Effect.result);
++    if (loaded._tag === "Failure") return yield* fresh ?? read;
++    const result = yield* scoped(loaded.success, read).pipe(Effect.exit);
++    const after = yield* head.pipe(Effect.option);
++    if (after._tag === "None" || after.value !== before.value) return yield* fresh ?? read;
++    return yield* result;
++  });
++
++export const withPoolAccountReadFacts = <A, E, R, E2 = never, R2 = never>(
++  app: App,
++  accepted: AppAccounts,
++  read: Effect.Effect<A, E, R>,
++  fresh?: Effect.Effect<A, E2, R2>,
++) =>
++  Effect.gen(function* () {
++    if (app.requirements.dependencies?.accountView?.cardinality !== "many") return yield* read;
++    if (!(yield* registeredPool(app.id))) return yield* read;
++    const { organization, owner } = yield* CurrentOrganization;
++    const user = yield* CurrentUserId;
++    if (user === undefined) return yield* read;
++    const accounts = [...new Set(invocationEntries(accepted).flatMap(([, ids]) => ids))];
++    if (accounts.length === 0) return yield* read;
++    const sql = yield* policyDatabase;
++    const head = Effect.gen(function* () {
++      if (!(yield* changeJournalPrepared(sql))) return undefined;
++      const rows =
++        yield* sql`select topic, resource, hosted_change_revision(${owner}, topic, resource)::text as revision
++      from jsonb_to_recordset(${JSON.stringify(organizationChangeKeys)}::jsonb) as requested(topic text, resource text)
++      order by topic, resource`;
++      return JSON.stringify(yield* Schema.decodeUnknownEffect(Schema.Array(RevisionHint))(rows));
++    });
++    const facts = Effect.gen(function* () {
++      const executor = yield* Effect.flatten(HostedExecutor);
++      const actor = yield* resourceAuthority(organization, user);
++      const links = yield* Schema.decodeUnknownEffect(Schema.Array(AccountFactLink))(
++        yield* sql`select l.app, l.account, l.requirement, l.subject from hosted_app_account_links l
++        join executor_apps a on a.id = l.app and a.owner = ${owner}
++        where ${sql.in("l.account", accounts)} and (l.subject is null or l.subject = ${user})
++        order by l.app, l.requirement, l.account`,
++      );
++      const ids = [...new Set([app.id, ...links.map((link) => link.app)])];
++      const [apps, appPolicies, accountPolicies] = yield* Effect.all(
++        [
++          executor.apps.list({ owner, ids }),
++          readApplicationPolicies(ids, actor),
++          readAccountPolicies(accounts, actor),
++        ],
++        { concurrency: "unbounded" },
++      );
++      const metadata = new Map(apps.map((app) => [app.id, app]));
++      const services = yield* recordedServiceInstalls(sql, apps);
++      const registered = yield* Schema.decodeUnknownEffect(
++        Schema.Array(Schema.Struct({ app: AppId })),
++      )(
++        yield* sql`select a.id as app from organization o join executor_apps a on a.owner = 'organization:' || o.id
++        where o.id = ${organization} and ${sql.in("a.id", ids)} and exists (
++          select 1 from jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
++          where pool.value ->> 'app' = a.id)`,
++      );
++      const pools = new Set(registered.map((row) => row.app));
++      const groups = yield* Schema.decodeUnknownEffect(
++        Schema.Array(Schema.Struct({ group: GroupId })),
++      )(
++        yield* sql`select gm.group_id as "group" from hosted_group_members gm join hosted_groups g on g.id=gm.group_id
++        where gm.member_id=${actor.member} and g.organization_id=${organization}`,
++      );
++      const observations = yield* Schema.decodeUnknownEffect(
++        Schema.Array(Schema.Struct({ account: AccountId, ...ObservationPolicy.fields })),
++      )(
++        yield* sql`select account_id as account, read_audience as read, refresh_audience as refresh, revision
++        from hosted_account_observation_access where organization_id=${organization} and ${sql.in("account_id", accounts)}`,
++      );
++      const token = Symbol();
++      return {
++        token,
++        groups: new Set(groups.map((row) => row.group)),
++        observations: new Map(observations.map(({ account, ...policy }) => [account, policy])),
++        labels: yield* acquisitionLabels(accounts),
++        actor,
++        accounts: new Set(accounts),
++        apps: metadata,
++        links,
++        services,
++        pools,
++        appPolicies: new Map(appPolicies.map(({ granted: _granted, ...row }) => [row.app, row])),
++        accountPolicies: new Map(
++          accountPolicies.map(({ granted: _granted, ...row }) => [row.account, row]),
++        ),
++        executor: yield* poolFactExecutor(executor, owner, accounts, metadata, token),
++      };
++    });
++    return yield* readWithStableFacts(
++      head,
++      facts,
++      read,
++      (facts, work) =>
++        work.pipe(
++          withSelectionReadFacts([...facts.accounts], [...facts.apps.keys()]),
++          Effect.provideService(AccountFactReads, facts),
++          Effect.provideService(HostedExecutor, Effect.succeed(facts.executor)),
++        ),
++      fresh,
++    );
++  });
+diff --git a/apps/hosted/server/src/implementation/pool-fact-executor.ts b/apps/hosted/server/src/implementation/pool-fact-executor.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-fact-executor.ts
+@@ -0,0 +1,92 @@
++import { currentAccountFactReads } from "./account-fact-reads.ts";
++import { Cache, Effect } from "effect";
++import type { AccountId, App, AppId, Executor, OwnerId } from "@executor-js/sdk/core";
++
++const singleFlight = <I, A, E, R>(
++  read: (input: I) => Effect.Effect<A, E, R>,
++  key: (input: I) => string,
++) =>
++  Effect.gen(function* () {
++    const inputs = new Map<string, I>();
++    const cache = yield* Cache.make({
++      capacity: 128,
++      requireServicesAt: "lookup",
++      lookup: (id: string) => read(inputs.get(id)!),
++    });
++    return (input: I) =>
++      Effect.suspend(() => {
++        const id = key(input);
++        inputs.set(id, input);
++        return Cache.get(cache, id);
++      });
++  });
++
++/** Metadata and raw account readings only; all mutations and authorization stay on the SDK. */
++export const poolFactExecutor = (
++  executor: Executor,
++  owner: OwnerId,
++  accepted: readonly AccountId[],
++  apps: ReadonlyMap<AppId, App>,
++  token: symbol,
++) =>
++  Effect.gen(function* () {
++    const accounts = new Set(accepted);
++    const withinRead = <A, E, R>(cached: Effect.Effect<A, E, R>, fresh: Effect.Effect<A, E, R>) =>
++      Effect.flatMap(currentAccountFactReads, (facts) => (facts?.token === token ? cached : fresh));
++    const get = yield* singleFlight(executor.accounts.get, (input) =>
++      JSON.stringify([input.owner, input.account]),
++    );
++    const health = yield* singleFlight(executor.accounts.health, (input) =>
++      JSON.stringify([input.owner, input.account, input.apps]),
++    );
++    const observations = yield* singleFlight(executor.accounts.observations, (input) =>
++      JSON.stringify([input.owner, input.account, input.apps]),
++    );
++    return {
++      ...executor,
++      apps: {
++        ...executor.apps,
++        get: (input) =>
++          input.owner === owner && apps.has(input.app)
++            ? withinRead(
++                Effect.sync(() => structuredClone(apps.get(input.app)!)),
++                executor.apps.get(input),
++              )
++            : executor.apps.get(input),
++        list: (input) => {
++          const ids = input?.ids;
++          if (
++            input?.owner !== owner ||
++            ids === undefined ||
++            input.name !== undefined ||
++            input.slug !== undefined ||
++            !ids.every((id) => apps.has(id))
++          )
++            return executor.apps.list(input);
++          return withinRead(
++            Effect.sync(() =>
++              [...apps.values()]
++                .filter((app) => ids.includes(app.id))
++                .map((app) => structuredClone(app)),
++            ),
++            executor.apps.list(input),
++          );
++        },
++      },
++      accounts: {
++        ...executor.accounts,
++        get: (input) =>
++          input.owner === owner && accounts.has(input.account)
++            ? withinRead(get(input), executor.accounts.get(input))
++            : executor.accounts.get(input),
++        health: (input) =>
++          input.owner === owner && accounts.has(input.account)
++            ? withinRead(health(input), executor.accounts.health(input))
++            : executor.accounts.health(input),
++        observations: (input) =>
++          input.owner === owner && accounts.has(input.account)
++            ? withinRead(observations(input), executor.accounts.observations(input))
++            : executor.accounts.observations(input),
++      },
++    } satisfies Executor;
++  });
+diff --git a/packages/sdk/src/implementation/selection-read-facts.ts b/packages/sdk/src/implementation/selection-read-facts.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/sdk/src/implementation/selection-read-facts.ts
+@@ -0,0 +1,146 @@
++import { Context, Effect, Option } from "effect";
++import { SqlClient } from "effect/sql";
++import type { AccountId, AppId } from "../contracts/shared.ts";
++import type { uncachedConnectionRow, uncachedConnectionRows } from "./app-connections.ts";
++import type { Query } from "./database.ts";
++import type { uncachedAppRow } from "./tools.ts";
++import type { uncachedVersionRow, uncachedStoredAppRow, uncachedAppListRows } from "./apps.ts";
++import type { uncachedStoredAccountRow } from "./accounts.ts";
++import type {
++  uncachedAcquisitionRows,
++  uncachedAcquisitionRecord,
++} from "./account-acquisition-bindings.ts";
++import type { uncachedSelectionRows } from "./selection.ts";
++
++type Reads<A, E> = WeakMap<Query, Map<string, Effect.Effect<A, E>>>;
++const makeReads = <A, E>(): Reads<A, E> => new WeakMap<Query, Map<string, Effect.Effect<A, E>>>();
++/** Hosts may provide raw rows for one fenced read. Selections, grants and checks are never stored. */
++export const SelectionReadFacts = Context.Reference<
++  | {
++      readonly accounts: ReadonlySet<AccountId>;
++      readonly apps: ReadonlySet<AppId>;
++      readonly appRows: Reads<
++        Effect.Success<ReturnType<typeof uncachedAppRow>>,
++        Effect.Error<ReturnType<typeof uncachedAppRow>>
++      >;
++      readonly versions: Reads<
++        Effect.Success<ReturnType<typeof uncachedVersionRow>>,
++        Effect.Error<ReturnType<typeof uncachedVersionRow>>
++      >;
++      readonly storedApps: Reads<
++        Effect.Success<ReturnType<typeof uncachedStoredAppRow>>,
++        Effect.Error<ReturnType<typeof uncachedStoredAppRow>>
++      >;
++      readonly storedAccounts: Reads<
++        Effect.Success<ReturnType<typeof uncachedStoredAccountRow>>,
++        Effect.Error<ReturnType<typeof uncachedStoredAccountRow>>
++      >;
++      readonly acquisitions: Reads<
++        Effect.Success<ReturnType<typeof uncachedAcquisitionRows>>,
++        Effect.Error<ReturnType<typeof uncachedAcquisitionRows>>
++      >;
++      readonly connections: Reads<
++        Effect.Success<ReturnType<typeof uncachedConnectionRow>>,
++        Effect.Error<ReturnType<typeof uncachedConnectionRow>>
++      >;
++      readonly connectionLists: Reads<
++        Effect.Success<ReturnType<typeof uncachedConnectionRows>>,
++        Effect.Error<ReturnType<typeof uncachedConnectionRows>>
++      >;
++      readonly appLists: Reads<
++        Effect.Success<ReturnType<typeof uncachedAppListRows>>,
++        Effect.Error<ReturnType<typeof uncachedAppListRows>>
++      >;
++      readonly acquisitionRecords: Reads<
++        Effect.Success<ReturnType<typeof uncachedAcquisitionRecord>>,
++        Effect.Error<ReturnType<typeof uncachedAcquisitionRecord>>
++      >;
++      readonly accountRows: Reads<
++        Effect.Success<ReturnType<typeof uncachedSelectionRows>>,
++        Effect.Error<ReturnType<typeof uncachedSelectionRows>>
++      >;
++    }
++  | undefined
++>("executor/SelectionReadFacts", { defaultValue: () => undefined });
++
++export const cachedFact = <A, E>(
++  cache: Reads<A, E>,
++  db: Query,
++  key: string,
++  read: Effect.Effect<A, E>,
++) =>
++  Effect.gen(function* () {
++    const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
++    if (
++      Option.isSome(sql) &&
++      Option.isSome(yield* Effect.serviceOption(sql.value.transactionService))
++    )
++      return yield* read;
++    const rows = cache.get(db) ?? new Map<string, Effect.Effect<A, E>>();
++    cache.set(db, rows);
++    const previous = rows.get(key);
++    if (previous !== undefined)
++      return yield* previous.pipe(Effect.map((value) => structuredClone(value)));
++    if (rows.size >= 128) return yield* read;
++    return yield* Effect.cached(read).pipe(
++      Effect.flatMap((fresh) => {
++        const existing = rows.get(key);
++        if (existing !== undefined) return existing;
++        rows.set(key, fresh);
++        return fresh;
++      }),
++      Effect.map((value) => structuredClone(value)),
++    );
++  });
++
++export const withSelectionReadFacts =
++  (accounts: readonly AccountId[], apps: readonly AppId[]) =>
++  <A, E, R>(read: Effect.Effect<A, E, R>) =>
++    Effect.suspend(() =>
++      read.pipe(
++        Effect.provideService(SelectionReadFacts, {
++          accounts: new Set(accounts),
++          apps: new Set(apps),
++          appRows: makeReads<
++            Effect.Success<ReturnType<typeof uncachedAppRow>>,
++            Effect.Error<ReturnType<typeof uncachedAppRow>>
++          >(),
++          versions: makeReads<
++            Effect.Success<ReturnType<typeof uncachedVersionRow>>,
++            Effect.Error<ReturnType<typeof uncachedVersionRow>>
++          >(),
++          accountRows: makeReads<
++            Effect.Success<ReturnType<typeof uncachedSelectionRows>>,
++            Effect.Error<ReturnType<typeof uncachedSelectionRows>>
++          >(),
++          storedApps: makeReads<
++            Effect.Success<ReturnType<typeof uncachedStoredAppRow>>,
++            Effect.Error<ReturnType<typeof uncachedStoredAppRow>>
++          >(),
++          storedAccounts: makeReads<
++            Effect.Success<ReturnType<typeof uncachedStoredAccountRow>>,
++            Effect.Error<ReturnType<typeof uncachedStoredAccountRow>>
++          >(),
++          acquisitions: makeReads<
++            Effect.Success<ReturnType<typeof uncachedAcquisitionRows>>,
++            Effect.Error<ReturnType<typeof uncachedAcquisitionRows>>
++          >(),
++          connections: makeReads<
++            Effect.Success<ReturnType<typeof uncachedConnectionRow>>,
++            Effect.Error<ReturnType<typeof uncachedConnectionRow>>
++          >(),
++          connectionLists: makeReads<
++            Effect.Success<ReturnType<typeof uncachedConnectionRows>>,
++            Effect.Error<ReturnType<typeof uncachedConnectionRows>>
++          >(),
++          appLists: makeReads<
++            Effect.Success<ReturnType<typeof uncachedAppListRows>>,
++            Effect.Error<ReturnType<typeof uncachedAppListRows>>
++          >(),
++          acquisitionRecords: makeReads<
++            Effect.Success<ReturnType<typeof uncachedAcquisitionRecord>>,
++            Effect.Error<ReturnType<typeof uncachedAcquisitionRecord>>
++          >(),
++        }),
++      ),
++    );
+diff --git a/e2e/support/sql-critical-path.ts b/e2e/support/sql-critical-path.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/sql-critical-path.ts
+@@ -0,0 +1,43 @@
++interface WireSpan {
++  readonly operationName: string;
++  readonly startTime: string;
++  readonly durationMs: number;
++  readonly tags: Readonly<Record<string, unknown>>;
++}
++
++/**
++ * A causal chain cannot overlap its own wire waits. Its length is therefore bounded by the
++ * largest disjoint set of wire intervals. Independent requests that happened sequentially,
++ * including zero-duration waits rounded by the shared host clock, only increase this bound.
++ */
++export const sqlCriticalPath = (spans: readonly { readonly span: WireSpan }[]) => {
++  const wires = spans.filter(({ span }) => span.operationName === "sql.wire");
++  const intervals = wires
++    .map(({ span }) => {
++      const start = Date.parse(span.startTime);
++      if (
++        span.tags["db.wire.clock"] !== "date-now" ||
++        !Number.isFinite(start) ||
++        !Number.isFinite(span.durationMs) ||
++        span.durationMs < 0
++      )
++        throw new Error(
++          "SQL critical-path proof needs complete wire intervals on the shared host clock",
++        );
++      return { start, end: start + span.durationMs };
++    })
++    .sort((a, b) => a.end - b.end || a.start - b.start);
++  let end = -Infinity;
++  let sequentialRoundTrips = 0;
++  for (const interval of intervals) {
++    if (interval.start < end) continue;
++    sequentialRoundTrips++;
++    end = interval.end;
++  }
++  if (wires.length === 0) throw new Error("SQL critical-path proof contains no wire requests");
++  return {
++    wireRequests: wires.length,
++    sequentialRoundTrips,
++    sqlMillisAt8ms: sequentialRoundTrips * 8,
++  };
++};
