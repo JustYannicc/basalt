@@ -91,6 +91,15 @@ export class Proxy extends DurableObject {
         ).json();
         return { active: state.lifetimes, known: true };
       },
+      retirement: async (identity) => {
+        const retired = this.retired.includes(identity.bootId);
+        return {
+          identity,
+          retired,
+          running: !retired,
+          ...(!retired ? { retireNotStarted: true } : {}),
+        };
+      },
       retire: async (_target, identity) => {
         this.retired.push(identity.bootId);
       },

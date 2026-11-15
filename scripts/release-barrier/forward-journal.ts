@@ -27,10 +27,13 @@ export const journalKey = (stack: Pick<CompiledStack, "name" | "stage">) => ({
   stack: `${stack.name}-release-barrier`,
   stage: stack.stage,
 });
-export const containerKey = (stack: Pick<CompiledStack, "name" | "stage">) => ({
+export const containerKey = (
+  stack: Pick<CompiledStack, "name" | "stage">,
+  fqn = "PoolContainer",
+) => ({
   stack: stack.name,
   stage: stack.stage,
-  fqn: "PoolContainer",
+  fqn,
 });
 
 export const readForwardJournal = (stack: Pick<CompiledStack, "name" | "stage">, key: string) =>
@@ -119,7 +122,8 @@ export const beginForwardJournal = (
   Effect.gen(function* () {
     if (manifest.schemaVersion !== 2) return undefined;
     const state = yield* yield* State;
-    const saved = yield* state.get(containerKey(stack));
+    const resource = manifest.containers?.[0]?.id ?? "PoolContainer";
+    const saved = yield* state.get(containerKey(stack, resource));
     const publicManifest = {
       schemaVersion: 2,
       candidate: manifest.candidate,
@@ -155,10 +159,10 @@ export const beginForwardJournal = (
             if (
               request.stack === stack.name &&
               request.stage === stack.stage &&
-              request.fqn === "PoolContainer"
+              request.fqn === resource
             ) {
               if (!latest) throw new BarrierRefusal("forward-journal-missing-final");
-              const before = yield* state.get(containerKey(stack));
+              const before = yield* state.get(containerKey(stack, resource));
               const receipt = {
                 before: encodedRecordHash(before),
                 after: encodedRecordHash(request.value),

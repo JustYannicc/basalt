@@ -12,6 +12,7 @@ import {
 import { signEnvelope } from "../../src/pool/token.ts";
 import type { handoffRuntime } from "./runtime-handoff-fixture.ts";
 import type { RuntimeSqlite } from "./runtime-handoff-storage.ts";
+import { runtimeProviderFixture } from "./runtime-provider-fixture.ts";
 
 export const runtimeFixtureCode = {
   candidate: productionOpsRelease,
@@ -43,8 +44,10 @@ export async function runtimeGrant(
   runtime: Awaited<ReturnType<typeof handoffRuntime>>,
   controller: RuntimeSqlite,
   kind: "start" | "initial-start" | "unattested-active",
+  provider?: { accountId: string; namespaceId: string; applicationConfigDigest: string },
 ) {
   const now = Date.now();
+  const observation = provider ?? (await runtimeProviderFixture(runtime.target));
   const proof = decodeAdmissionProof({
     format: runtimeAttestationFormat,
     kind,
@@ -55,12 +58,12 @@ export async function runtimeGrant(
     configurationFingerprint: await runtime.digest(),
     selection: await selectionProof(controller),
     provider: {
-      accountId: "fixture-account",
-      namespaceId: `namespace-${runtime.target.applicationId}`,
+      accountId: observation.accountId,
+      namespaceId: observation.namespaceId,
+      applicationConfigDigest: observation.applicationConfigDigest,
       applicationId: runtime.target.applicationId,
       applicationVersion: runtime.target.applicationVersion,
       imageDigest: runtime.target.imageDigest,
-      applicationConfigDigest: "a".repeat(64),
       observationDigest: "b".repeat(64),
       observedAt: now,
       ...(kind === "unattested-active" ? { instanceId: runtime.target.instanceId } : {}),

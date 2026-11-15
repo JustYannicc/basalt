@@ -5,7 +5,7 @@ import {
 } from "../../src/pool/runtime-slots/handoff-command.ts";
 import type { PoolOperationsTarget } from "../pool-operations.ts";
 import { canonical, digest } from "./manifest.ts";
-import type { ProvisioningEnable } from "./provisioning-contract.ts";
+import { provisioningAuthority, type ProvisioningEnable } from "./provisioning-contract.ts";
 import {
   decodeProvisioningInput,
   provisioningRefusal,
@@ -84,8 +84,8 @@ function assertEnabled(
 ) {
   const manifest = runtimeFleetOperationDigest(operation);
   if (
-    !enable?.coordinatorGo ||
-    !enable.writerLease ||
+    !provisioningAuthority(enable, operation.candidate) ||
+    !enable?.writerLease ||
     enable.manifest !== manifest ||
     !Number.isSafeInteger(now) ||
     !Number.isSafeInteger(enable.expiresAt) ||

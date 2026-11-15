@@ -15,8 +15,18 @@ export function pinnedLegacyDeclaration(
   olds: ContainerApplication["Props"],
   image: string,
 ) {
+  return props.className === "PoolContainer" && pinnedRuntimeDeclaration(props, olds, image);
+}
+
+export function pinnedRuntimeDeclaration(
+  props: ContainerApplication["Props"],
+  olds: ContainerApplication["Props"],
+  image: string,
+) {
   return (
-    props.className === "PoolContainer" &&
+    ["PoolContainer", "PoolRuntime", "PoolRuntimeBlue", "PoolRuntimeGreen"].includes(
+      props.className ?? "",
+    ) &&
     "image" in props &&
     props.image === image &&
     /^registry\.cloudflare\.com\/[^/]+\/.+@sha256:[a-f0-9]{64}$/u.test(image) &&
@@ -30,8 +40,15 @@ export function preserveLegacyPublication(
   props: ContainerApplication["Props"],
   olds: ContainerApplication["Props"] | undefined,
 ) {
-  if (!olds || publication.id !== "PoolContainer" || !("image" in props)) return { publication };
-  if (!pinnedLegacyDeclaration(props, olds, publication.previous.configuration.image))
+  if (
+    !olds ||
+    !["PoolContainer", "PoolRuntime", "PoolRuntimeBlue", "PoolRuntimeGreen"].includes(
+      publication.id,
+    ) ||
+    !("image" in props)
+  )
+    return { publication };
+  if (!pinnedRuntimeDeclaration(props, olds, publication.previous.configuration.image))
     throw new BarrierRefusal("unsupported-container-declaration-change", publication.id, {
       fqn: publication.id,
       type: "Cloudflare.Container",

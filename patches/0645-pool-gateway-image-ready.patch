@@ -1,0 +1,12 @@
+diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
+--- a/e2e/support/cloud-pool-gateway.ts
++++ b/e2e/support/cloud-pool-gateway.ts
+@@ -218,7 +218,7 @@
+         "/pool/v1/release",
+         Effect.succeed(
+           HttpServerResponse.jsonUnsafe(
+-            { revision: releaseRevision, keyVersion },
++            { revision: releaseRevision, keyVersion, imageReady: true },
+             {
+               headers: { "Cache-Control": "no-store" },
+             },

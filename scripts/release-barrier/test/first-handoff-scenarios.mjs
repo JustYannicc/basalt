@@ -151,13 +151,15 @@ async function disabled() {
 async function lostWrite(options, finalAction, candidateStarts) {
   const f = await firstHandoffFlow(options);
   try {
-    await assert.rejects(f.activate());
+    if (options.lostStartAck) await f.activate();
+    else await assert.rejects(f.activate());
     const writes = f.events.filter((e) =>
       ["upload", "activate", "adopt", "stage", "promote", "drain"].includes(e.action),
     ).length;
-    assert.equal(f.events.at(-1).action, finalAction);
+    if (!options.lostStartAck) assert.equal(f.events.at(-1).action, finalAction);
     assert.equal(f.candidate.calls.start, candidateStarts);
-    await assert.rejects(f.activate());
+    if (options.lostStartAck) await f.activate();
+    else await assert.rejects(f.activate());
     assert.equal(
       f.events.filter((e) =>
         ["upload", "activate", "adopt", "stage", "promote", "drain"].includes(e.action),
@@ -165,7 +167,7 @@ async function lostWrite(options, finalAction, candidateStarts) {
       writes,
     );
     assert.equal(f.candidate.calls.start, candidateStarts);
-    assert.equal(f.old.calls.destroy, options.lostDrainAck ? 1 : 0);
+    assert.equal(f.old.calls.destroy, options.lostDrainAck || options.lostStartAck ? 1 : 0);
   } finally {
     await f.cleanup();
   }
