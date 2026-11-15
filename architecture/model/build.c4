@@ -1,6 +1,9 @@
 model {
   extend basalt {
     build = module "Build" {
+      // Proof source adapters choose system Git explicitly and preserve tagged failure channels.
+      // Git provider sign-in proofs select the account-only client audience and verify no shared registration while keeping the original scopes.
+      // Framework proofs bind temporary approvals to locked archives or an approved current build with a distinct synthetic adapter identity, then restore the product registry and assets.
       // Pool recipes serve signed revision assertions through the production change handler
       // before pool-token routes, reading committed heads from transactional fixture storage.
       // Pool container fixtures select a separately locked stable runtime binary before loading the emulator.

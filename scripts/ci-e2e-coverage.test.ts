@@ -222,6 +222,19 @@ test("a config must include the test in executable data rather than a comment", 
     );
     writeFileSync(config, 'export default { test: { include: ["e2e/tests/config.spec.ts"] } };');
     assert.deepEqual(coverageErrors(inventory(), []), []);
+    workflow.jobs.fast!.steps![0]!.run =
+      "node ../scripts/ci/with-published-frameworks.ts -- bunx vitest run --config e2e/guard.config.ts";
+    assert.deepEqual(
+      coverageErrors(inventory(), []),
+      [],
+      "the approved fixture wrapper executes the same config",
+    );
+    workflow.jobs.fast!.steps![0]!.run =
+      "node ../scripts/ci/unrelated.ts -- bunx vitest run --config e2e/guard.config.ts";
+    assert.ok(
+      coverageErrors(inventory(), []).some((error) => error.includes("config.spec.ts#Config case")),
+      "an arbitrary argv suffix is not execution evidence",
+    );
   }));
 
 test("a selector mentioned in another command cannot replace the runner's actual filter", () =>
@@ -239,6 +252,14 @@ test("a selector mentioned in another command cannot replace the runner's actual
     step.run =
       'bun run e2e:self-host --test-name "$(node scripts/ci/e2e-pattern.ts declared:self-host)"';
     assert.deepEqual(coverageErrors(inventory(), []), []);
+    step.run = "node ../scripts/ci/with-published-frameworks.ts -- " + step.run;
+    assert.deepEqual(
+      coverageErrors(inventory(), []),
+      [],
+      "the approved wrapper retains the actual scenario selector",
+    );
+    step.run = step.run.replace("with-published-frameworks", "unrelated");
+    assert.match(coverageErrors(inventory(), [])[0]!, /first.spec.ts#first/);
   }));
 
 test("reviewed exceptions bind source changes and expire as soon as their runner is wired", () =>

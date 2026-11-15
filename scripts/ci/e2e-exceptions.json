@@ -541,19 +541,19 @@
   {
     "reason": "The body proves CRLF, LF, and trailing breaks reach `/credential-checks` unchanged before save and the health check after save, while the accessibility tree hides the synthetic key. The plan schedules the shared credential form on self-host and Cloud. This is a new browser-form input/redaction edge; it does not exercise SDK29, Cloud bridge auth, schema migration, or a retained protocol. The selected `credentialHostsForm` already covers the credential UI\u2019s visibility and host contract, so keep this distinct form behavior as an explicit exception.",
     "entries": {
-      "account-secret-fields.spec.ts#accountSecretFieldsExact": "7606f4627df7bf794aa73ec16b1f5b8f42464239d770600a104ff4f70adffa39"
+      "account-secret-fields.spec.ts#accountSecretFieldsExact": "eb7c2baa4f8ae0f12d227b4c66f1c41d1f6b861698522de605c7a9b64b92ca93"
     }
   },
   {
     "reason": "The body covers paste/drop, undo, drag, Clear, and plain/password field presentation and checks exact form payloads. The plan schedules the shared browser form on self-host only, with Cloud/local excluded as shared-form coverage. This is UI editing behavior outside the accepted SDK, migration, frozen-protocol, and Cloud bridge changes; the selected `credentialHostsForm` covers the credential form\u2019s security contract, not this multiline interaction. Record the new identity as an exception.",
     "entries": {
-      "account-secret-fields.spec.ts#accountSecretFieldsSummary": "d01126c73b9f59c0138a9da9b2f0c8585c42e9186908a7e0f4b90949006f3eb5"
+      "account-secret-fields.spec.ts#accountSecretFieldsSummary": "3ab30b22ef37d6027bf557213ca38e48360470abfd65997b0ea75c0685ed6a10"
     }
   },
   {
     "reason": "The body sends a synthetic multiline signing secret through webhook setup and verifies the handler receives it exactly. The plan schedules self-host and Cloud but excludes local because setup uses the shared form. This tests browser/webhook setup fidelity, not OAuth SDK adaptation, Cloud bridge authorization, or migrated account retention; preserve it as an explicit new exception.",
     "entries": {
-      "account-secret-fields.spec.ts#webhookProviderSigningSecretExact": "516405376b68e1e35cebe98a7162fdb30ab6ea5c44f8ff3342e905d6f74287b4"
+      "account-secret-fields.spec.ts#webhookProviderSigningSecretExact": "49ce3070413168c092167f8725942518b7a6797d7911b93ab2f5df2c778d0459"
     }
   },
   {

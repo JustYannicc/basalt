@@ -1,0 +1,9 @@
+{
+  "identity": "explicit-activation-journal-recognition",
+  "file": "0634-explicit-activation-journal-recognition.patch",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false,
+  "content_sha256": "c6240ed26a9c544c9d1d9bcab57cb7e11b7150596a720d49a8841f6aa66d240b"
+}

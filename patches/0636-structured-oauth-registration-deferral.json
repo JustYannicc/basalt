@@ -1,0 +1,9 @@
+{
+  "identity": "structured-oauth-registration-deferral",
+  "file": "0636-structured-oauth-registration-deferral.patch",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "content_sha256": "58faf0fa861f9a0fffc6aa551f780859242913f3c0c4c3c1f538b0a7435c2d0d"
+}
