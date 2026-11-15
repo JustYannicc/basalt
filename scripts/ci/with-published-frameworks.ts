@@ -116,7 +116,6 @@ const run = async (executable: string, arguments_: string[]) => {
 };
 process.on("SIGTERM", interrupt);
 process.on("SIGINT", interrupt);
-let registryRestored = false;
 let assetsRestored = false;
 try {
   // The SDK registry is part of the dashboard and workerd host build inputs.
@@ -124,9 +123,14 @@ try {
   process.exitCode = prepared === 0 ? await run(command, args) : prepared;
 } finally {
   try {
-    const observed = readFileSync(registry, "utf8");
+    const observed = (() => {
+      try {
+        return readFileSync(registry, "utf8");
+      } catch {
+        return undefined;
+      }
+    })();
     writeFileSync(registry, original);
-    registryRestored = true;
     if (!interrupted) {
       const restored = await run("bun", ["run", "e2e:prepare"]);
       assetsRestored = restored === 0;
@@ -135,7 +139,7 @@ try {
     assert.equal(observed, injected, "The fixture registry changed outside its owner");
   } finally {
     // An interrupted build must never leave fixture approvals in reusable product assets.
-    if (registryRestored && !assetsRestored)
+    if (!assetsRestored)
       for (const output of [
         "apps/hosted/self-host/web/dist",
         "apps/local/web/dist",
