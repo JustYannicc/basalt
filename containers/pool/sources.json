@@ -93,7 +93,7 @@
           "sha256": "ea8e7bd4d1a7619358288dd764f8e861a17394d0a29d1c07138f4259c0b15201",
           "retirement": {
             "mode": "manual",
-            "requires": "remove when the pin moves to ≥ v1.1.8 and the upstream paid omitted-zero, free/unknown-profile, retained-window, supported-client and metadata-only collection regressions pass on the new pin."
+            "requires": "remove when the pin moves to \u2265 v1.1.8 and the upstream paid omitted-zero, free/unknown-profile, retained-window, supported-client and metadata-only collection regressions pass on the new pin."
           }
         },
         {
@@ -262,8 +262,8 @@
     },
     "node": {
       "repository": "router-for-me/CLIProxyAPI",
-      "commit": "f7ae8feeb3710319f524730849fbe32fde1751e4",
-      "sha256": "94f30de04e19df8db4868bfce7abfa0a4c7cac463ba51df405e9a2b9c71b68ed",
+      "commit": "e96d4c4818851cf0e96d27b2bc8b67379e449d9e",
+      "sha256": "21ab830fea73afd9a462ef85f4c71ca0e971c6db5cee49f52521de47add4449a",
       "patches": [
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
@@ -382,7 +382,9 @@
       "tag": "v1.0.5",
       "commit": "19d9868ffa24e94a2919ea1d1a761afa634de669",
       "sha256": "79b6ae8702b0ace76c10102d42a1401259e7dc772baacce2d47c90c33c6b25e7",
-      "auth_providers": ["gemini-cli"]
+      "auth_providers": [
+        "gemini-cli"
+      ]
     }
   }
 }
