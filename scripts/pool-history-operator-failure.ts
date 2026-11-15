@@ -13,6 +13,7 @@ export type HistoryOperatorField =
       | "catalog.relations"
       | "catalog.journalActivated"
       | "catalog.journalPrepared"
+      | "catalogDiff"
       | "catalogDiff.createTables"
       | "catalogDiff.conflicts"
       | "pendingMigrations"}`;

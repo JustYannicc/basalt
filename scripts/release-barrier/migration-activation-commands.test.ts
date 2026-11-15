@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/index.js";
 import { runHistoryOperator } from "../pool-history-operator.ts";
@@ -35,6 +36,9 @@ test("activation accepts the real prepared operator plan and reports exact dry-r
       { name: "schema", field: "report.schemaHash" },
       { name: "catalog", field: "report.catalogHash" },
       { name: "reader", field: "report.readersReadyRequired" },
+      { name: "catalog-shape", field: "report.catalog" },
+      { name: "diff-shape", field: "report.catalogDiff" },
+      { name: "relation-row", field: "report.catalog.relations" },
     ]) {
       const connect = async () => {
         if (scenario.name === "connect")
@@ -54,15 +58,23 @@ test("activation accepts the real prepared operator plan and reports exact dry-r
                   return new Response(privateDiagnostic, { status: 503 });
                 if (scenario.name === "decode") return new Response(privateDiagnostic);
                 const report = await modelHistorySchemaPlan(db, "journal-activation");
+                const catalog =
+                  scenario.name === "relation-row"
+                    ? { ...report.catalog, relations: [...report.catalog.relations, null] }
+                    : report.catalog;
                 return Response.json({
                   status: "dry-run",
                   ...report,
+                  catalog,
+                  catalogHash: createHash("sha256").update(JSON.stringify(catalog)).digest("hex"),
                   ...(scenario.name === "version" ? { version: privateDiagnostic } : {}),
                   ...(scenario.name === "schema" ? { schemaHash: "a".repeat(64) } : {}),
                   ...(scenario.name === "catalog" ? { catalogHash: "b".repeat(64) } : {}),
                   ...(scenario.name === "reader"
                     ? { readersReadyRequired: privateDiagnostic }
                     : {}),
+                  ...(scenario.name === "catalog-shape" ? { catalog: null } : {}),
+                  ...(scenario.name === "diff-shape" ? { catalogDiff: null } : {}),
                 });
               },
             },
@@ -72,7 +84,12 @@ test("activation accepts the real prepared operator plan and reports exact dry-r
       };
       const plan = () =>
         historyPlan(
-          (options, account) => runHistoryOperator(options, account, connect),
+          (options, account) =>
+            runHistoryOperator(
+              { ...options, readersReady: options.readersReady },
+              account,
+              connect,
+            ),
           "a".repeat(32),
           "fixture-pool",
         );

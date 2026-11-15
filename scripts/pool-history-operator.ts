@@ -5,7 +5,11 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { historyObject } from "../src/pool/model-history/record.ts";
-import { HistoryOperatorFailure, historyOperatorStep } from "./pool-history-operator-failure.ts";
+import {
+  HistoryOperatorFailure,
+  historyOperatorStep,
+  type HistoryOperatorField,
+} from "./pool-history-operator-failure.ts";
 import {
   historyJournalActivationPath,
   historyJournalActivationManifest,
@@ -102,6 +106,14 @@ function schemaPrefix(version: string) {
   };
 }
 
+function reportObject(value: unknown, field: HistoryOperatorField) {
+  try {
+    return historyObject(value);
+  } catch {
+    throw new HistoryOperatorFailure(field);
+  }
+}
+
 function schemaPreview(
   report: Record<string, unknown>,
   operation: "schema" | "journal-activation",
@@ -116,20 +128,21 @@ function schemaPreview(
   if (report.schemaHash !== createHash("sha256").update(JSON.stringify(manifest)).digest("hex"))
     throw new HistoryOperatorFailure("report.schemaHash");
   if (typeof report.applied !== "boolean") throw new HistoryOperatorFailure("report.applied");
-  const diff = historyObject(report.catalogDiff);
+  const diff = reportObject(report.catalogDiff, "report.catalogDiff");
   if (!Array.isArray(diff.createTables))
     throw new HistoryOperatorFailure("report.catalogDiff.createTables");
   if (!Array.isArray(diff.conflicts) || diff.conflicts.length)
     throw new HistoryOperatorFailure("report.catalogDiff.conflicts");
-  const catalog = historyObject(report.catalog);
+  const catalog = reportObject(report.catalog, "report.catalog");
   if (report.catalogHash !== createHash("sha256").update(JSON.stringify(catalog)).digest("hex"))
     throw new HistoryOperatorFailure("report.catalogHash");
   if (!Array.isArray(catalog.relations))
     throw new HistoryOperatorFailure("report.catalog.relations");
-  const ledgerExists = catalog.relations.some((row) => {
-    const relation = historyObject(row);
-    return relation.name === "basalt_model_history_migrations" && relation.kind === "r";
-  });
+  const ledgerExists = catalog.relations
+    .map((row) => reportObject(row, "report.catalog.relations"))
+    .some(
+      (relation) => relation.name === "basalt_model_history_migrations" && relation.kind === "r",
+    );
   // The Worker's ledger bootstrap runs outside the hashed versioned migrations.
   const ledgerDdl = ledgerExists
     ? []
