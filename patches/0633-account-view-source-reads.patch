@@ -151,9 +151,9 @@ diff --git a/e2e/tests/pool-account-view-cloud-read.spec.ts b/e2e/tests/pool-acc
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/pool-account-view-cloud-read.spec.ts
-@@ -0,0 +1,263 @@
+@@ -0,0 +1,291 @@
 +import { expect, layer } from "@effect/vitest";
-+import { Effect, FileSystem, Schema, Schedule } from "effect";
++import { Clock, Effect, FileSystem, Schema, Schedule } from "effect";
 +import { randomUUID } from "node:crypto";
 +import { Browser } from "../support/browser.ts";
 +import { Evidence, Telemetry } from "../support/evidence.ts";
@@ -347,6 +347,7 @@ new file mode 100644
 +        yield* openPrivateApp(yield* waitForAppUrl(p.actors.owner, `${consumerPath}/ui`));
 +        for (const name of ["view", "viewAgain"]) {
 +          const trace = randomUUID().replaceAll("-", "");
++          const start = yield* Clock.currentTimeMillis;
 +          const reply = yield* browser.use("Read five selected provider accounts", (page) =>
 +            page.evaluate(
 +              ({ trace, name }) => {
@@ -370,12 +371,27 @@ new file mode 100644
 +                    status: response.status,
 +                    body,
 +                    milliseconds: performance.now() - start,
++                    timing: response.headers.get("server-timing"),
 +                  })),
 +                );
 +              },
 +              { trace, name },
 +            ),
 +          );
++          const end = yield* Clock.currentTimeMillis;
++          expect(
++            yield* telemetry.export([
++              {
++                traceId: trace,
++                spanId: trace.slice(0, 16),
++                name: "POST /_executor/api/query",
++                kind: 3,
++                startTimeUnixNano: String(BigInt(start) * 1000000n),
++                endTimeUnixNano: String(BigInt(end) * 1000000n),
++                status: { code: reply.status >= 400 ? 2 : 1 },
++              },
++            ]),
++          ).toBe(200);
 +          yield* evidence.json(`${name}.json`, reply);
 +          expect(reply.status).toBe(200);
 +          const view = yield* Schema.decodeUnknownEffect(View)(reply.body);
@@ -393,15 +409,27 @@ new file mode 100644
 +          expect(view.providers[0]!.name).toBe(view.accounts[0]!.nativeView.sourceApp.name);
 +          expect(view.providers[0]!.icons).toEqual(view.accounts[0]!.nativeView.sourceApp.icons);
 +          const spans = yield* telemetry.query(trace).pipe(
-+            Effect.flatMap((result) =>
-+              result.data.filter(({ span }) => span.operationName === "runtime.app.rpc.release")
-+                .length === 6 &&
-+              result.data.some(({ span }) => span.operationName === "catalog.lookup")
++            Effect.flatMap((result) => {
++              const spans = result.data.map(({ span }) => span);
++              const ids = new Set(spans.map((span) => span.spanId));
++              const server = reply.timing?.match(/executor-span;desc="([a-f0-9]{16})"/)?.[1];
++              return server !== undefined &&
++                spans.some(
++                  (span) => span.spanId === server && span.operationName === "http.server POST",
++                ) &&
++                spans.filter((span) => span.operationName === "runtime.app.rpc.release").length ===
++                  6 &&
++                spans.some((span) => span.operationName === "catalog.lookup") &&
++                spans.every(
++                  (span) =>
++                    !span.operationName.startsWith("[missing parent") &&
++                    (span.parentSpanId === null || ids.has(span.parentSpanId)),
++                )
 +                ? Effect.succeed(result.data)
 +                : Effect.fail(
-+                    new Error("The five source queries have not exported their completion spans"),
-+                  ),
-+            ),
++                    new Error("The completed query trace is partial or has missing parents"),
++                  );
++            }),
 +            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
 +          );
 +          const lookups = spans.filter(({ span }) => span.operationName === "catalog.lookup");
