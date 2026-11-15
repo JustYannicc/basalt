@@ -27,6 +27,8 @@ export interface UsageSummaryBucket {
   readonly requests: number;
   readonly failed: number;
   readonly limited: number;
+  /** Recorded gateway refusals, independent of whether the requested model was known. */
+  readonly refusedBeforeLab?: number;
   /** Counts-only native accounts never acquire token or price details in a rollup. */
   readonly details: null | {
     readonly tokens: SeriesBucket["tokens"];

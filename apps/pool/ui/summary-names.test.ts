@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { summaryLabName } from "./summary-names.ts";
+import { summaryLabName, summaryLabExplanation } from "./summary-names.ts";
 
 const providers = [
   { id: "codex", name: "ChatGPT", site: "example.test" },
@@ -28,4 +28,32 @@ test("summary lab names use the pool view's exact name for every other provider"
 
 test("unattributed summary usage remains an unknown lab", () => {
   assert.equal(summaryLabName(providers, null), "Unknown lab");
+});
+
+test("unknown labs explain gateway refusals without attributing other missing or withheld requests", () => {
+  const groups = [
+    {
+      provider: null,
+      countsOnly: false,
+      buckets: [{ requests: 153, failed: 153, refusedBeforeLab: 153 }],
+    },
+    { provider: null, countsOnly: false, buckets: [{ requests: 2, failed: 1 }] },
+    { provider: null, countsOnly: true, buckets: [{ requests: 3, failed: 0 }] },
+    {
+      provider: "xai",
+      countsOnly: false,
+      buckets: [{ requests: 7, failed: 7, refusedBeforeLab: 7 }],
+    },
+  ];
+  assert.equal(
+    summaryLabExplanation(groups),
+    "153 failed before reaching a lab. 2 requests have no lab recorded; 1 failed. Lab details are withheld for 3 requests from accounts you can't inspect.",
+  );
+  assert.equal(summaryLabExplanation([groups[3]!]), null);
+  assert.equal(
+    summaryLabExplanation([
+      { provider: null, countsOnly: false, buckets: [{ requests: 1, failed: 0 }] },
+    ]),
+    "1 request has no lab recorded.",
+  );
 });

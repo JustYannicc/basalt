@@ -7,6 +7,7 @@ import type { Result } from "../index.ts";
 import type { PoolApi } from "./api.ts";
 import { LabMark } from "./lab.tsx";
 import { labIdentity } from "./lab-name.ts";
+import { summaryLabExplanation } from "./summary-names.ts";
 import { overviewAccounts } from "./overview-accounts.ts";
 import { readSeries, type SeriesRead } from "./series-model.ts";
 import { formatCount, formatMetric, formatShare, plural } from "./summary-format.ts";
@@ -266,6 +267,7 @@ export function SummaryBreakdown({
 }) {
   const groups = by === "model" ? (summary.models?.groups ?? []) : summary.daily;
   const rows = breakdown(groups, summary.usageSlices, by, metric);
+  const unknownLab = by === "provider" ? summaryLabExplanation(groups) : null;
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const accounts = useAccounts(api, summary, by === "provider" && open.size > 0);
   const pool = overviewAccounts(view);
@@ -323,7 +325,11 @@ export function SummaryBreakdown({
                         <Amount metric={metric} value={row.total} />
                       </span>
                       <span className="text-xs text-muted-foreground">
-                        {row.share === null ? "share unknown" : `${formatShare(row.share)} of all`}
+                        {row.share === null
+                          ? by === "provider" && row.key === null
+                            ? "Not attributed"
+                            : "share unknown"
+                          : `${formatShare(row.share)} of all`}
                         {metric !== "cost" && row.cost.amount !== null
                           ? ` · ${formatMetric("cost", row.cost.amount)}`
                           : ""}
@@ -352,6 +358,11 @@ export function SummaryBreakdown({
                     )}
                   </div>
                 </div>
+                {by === "provider" && row.key === null && unknownLab && (
+                  <p className="px-3 pb-3 text-xs text-muted-foreground text-pretty">
+                    {unknownLab}
+                  </p>
+                )}
                 {expanded && (
                   <div id={`accounts-${lab}`} className="bg-muted/40 pb-1">
                     <Drilldown
