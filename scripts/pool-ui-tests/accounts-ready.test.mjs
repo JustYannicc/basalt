@@ -5,6 +5,7 @@ import { quotaSamplingFixture } from "../../src/pool/quota-sampling.test-helpers
 import { overviewFixture, capacityFixture } from "./overview-fixture.mjs";
 import { seriesFixture, summaryFixture } from "./summary-fixture.mjs";
 import { bundlePoolApp } from "../pool-app-bundle.ts";
+import { labLogos } from "../../apps/pool/ui/lab-logos.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -87,6 +88,12 @@ if (failures)
     "POOL_UI_FAILURE_DIR must be an absolute directory outside the checkout",
   );
 let failureSaved = false;
+
+// The approved overview mock's logo for a lab, loaded on its white tile.
+const labLogo = (scope) =>
+  scope
+    .locator('[data-lab-mark="logo"] img')
+    .evaluate((image) => (image.complete && image.naturalWidth > 0 ? image.currentSrc : null));
 
 const minute = 60_000;
 const hour = 60 * minute;
@@ -936,7 +943,13 @@ test(
               await frame.locator("#capacity article").nth(1).waitFor();
               await settled();
               assert.equal(await frame.locator("#capacity article").count(), 2);
-              const claude = frame.getByRole("article", { name: "Claude", exact: true });
+              const claude = frame.getByRole("article", { name: "Anthropic", exact: true });
+              // Each lab carries its own mock logo: Claude's icon for Anthropic, ChatGPT's for OpenAI.
+              assert.equal(await labLogo(claude), labLogos.claude);
+              assert.equal(
+                await labLogo(frame.getByRole("article", { name: "OpenAI", exact: true })),
+                labLogos.codex,
+              );
               await claude.getByRole("radio", { name: "5-hour", exact: true }).click();
               await claude
                 .getByRole("radio", { name: "5-hour", exact: true, checked: true })
@@ -989,7 +1002,7 @@ test(
                 if (!resetsRef) {
                   const resets = frame.getByRole("list", { name: "Banked resets", exact: true });
                   await resets.getByText("Spend them from Accounts.", { exact: true }).waitFor();
-                  assert.match(await resets.innerText(), /ChatGPT banked:/);
+                  assert.match(await resets.innerText(), /OpenAI banked:/);
                 }
               }
               assert.ok(
@@ -1400,7 +1413,7 @@ test(
               await requests(1, false);
               release();
               await frame.locator("#capacity article").nth(1).waitFor();
-              for (const name of ["Claude", "Codex"]) {
+              for (const name of ["Anthropic", "OpenAI"]) {
                 const panel = frame.getByRole("article", { name, exact: true });
                 if (limitSupportRef) {
                   assert.equal(
@@ -1645,7 +1658,7 @@ test(
           await session(
             async ({ page, frame, settled }) => {
               release();
-              const chart = frame.getByRole("group", { name: /^Codex weekly capacity\./ });
+              const chart = frame.getByRole("group", { name: /^OpenAI weekly capacity\./ });
               await chart.waitFor();
               await settled();
               const tooltip = chart.getByRole("tooltip");
@@ -1664,7 +1677,7 @@ test(
               const box = await svg.boundingBox();
               assert.ok(box);
               const hourAt = (share) => ({ x: 40 + (box.width - 48) * share, y: box.height / 2 });
-              const outside = frame.getByRole("heading", { name: "Codex", exact: true });
+              const outside = frame.getByRole("heading", { name: "OpenAI", exact: true });
 
               // Mouse: hovering reads an hour, and leaving the plot closes it.
               await svg.hover({ position: hourAt(0.9) });
@@ -1840,7 +1853,7 @@ test(
               release();
               await frame.locator("#capacity article").waitFor();
               const capacity = frame.locator("#capacity");
-              await frame.getByRole("list", { name: "Codex plans", exact: true }).waitFor();
+              await frame.getByRole("list", { name: "OpenAI plans", exact: true }).waitFor();
               await capacity.scrollIntoViewIfNeeded();
               await settled();
               if (artifacts) {
@@ -1853,10 +1866,10 @@ test(
               assert.doesNotMatch(items, /no verified allowance multiple/);
               // Unknown sizing remains in the capacity detail without asking for attention.
               assert.match(
-                await frame.getByRole("list", { name: "Codex plans", exact: true }).innerText(),
+                await frame.getByRole("list", { name: "OpenAI plans", exact: true }).innerText(),
                 /Pro \(Max\)\s+×3\s+· unknown · sized as 1 account/,
               );
-              const chart = frame.getByRole("group", { name: /^Codex weekly capacity\./ });
+              const chart = frame.getByRole("group", { name: /^OpenAI weekly capacity\./ });
               await chart.focus();
               const tip = await chart.getByRole("tooltip").innerText();
               assert.match(tip, /Pro \(Max\) ×3\s+unknown · sized as 1 account/);
@@ -1960,7 +1973,7 @@ test(
         await session(
           async ({ page, frame, settled }) => {
             release();
-            const chart = frame.getByRole("group", { name: /^Codex weekly capacity\./ });
+            const chart = frame.getByRole("group", { name: /^OpenAI weekly capacity\./ });
             await chart.waitFor();
             await settled();
             const range = frame.getByRole("tablist", { name: "Range" });
@@ -2112,7 +2125,7 @@ test(
           await session(
             async ({ page, frame, settled }) => {
               release();
-              const lab = frame.getByRole("article", { name: "Grok", exact: true });
+              const lab = frame.getByRole("article", { name: "xAI", exact: true });
               await lab.waitFor({ timeout: 5_000 }).catch(() => {});
               await settled();
               await page.locator("iframe").evaluate(
@@ -2123,7 +2136,8 @@ test(
               );
               await settled();
               await capture(page, `grok-weekly-${width}`);
-              assert.equal(await lab.count(), 1, "The Grok lab has a capacity panel");
+              assert.equal(await lab.count(), 1, "The xAI lab has a capacity panel");
+              assert.equal(await labLogo(lab), labLogos.xai, "xAI shows Grok's logo");
               assert.doesNotMatch(await frame.locator("body").innerText(), /no readings yet/);
               // The grokchat product window shares the account's week; it is not a second account.
               const panel = await lab.innerText();
@@ -2131,7 +2145,7 @@ test(
               assert.match(panel, /1 account · in Grok Pro account/);
               assert.match(panel, /Nominal 1\b/);
               assert.doesNotMatch(panel, /2 accounts|Nominal 2/);
-              const chart = lab.getByRole("group", { name: /^Grok weekly\b[^.]* capacity\./ });
+              const chart = lab.getByRole("group", { name: /^xAI weekly\b[^.]* capacity\./ });
               const since = new Date(at).toISOString().replace("T", " ").slice(0, 16);
               assert.match(await chart.innerText(), new RegExp(`Readings since ${since} UTC`));
               await chart.focus();
@@ -2211,7 +2225,7 @@ test(
             await session(
               async ({ page, frame, settled }) => {
                 release();
-                const panel = frame.getByRole("article", { name: "Codex", exact: true });
+                const panel = frame.getByRole("article", { name: "OpenAI", exact: true });
                 await panel.getByRole("radio", { name: "5-hour", exact: true }).click();
                 await panel
                   .getByRole("radio", { name: "5-hour", exact: true, checked: true })
@@ -2336,7 +2350,7 @@ test(
                 text,
                 /Incomplete snapshot|Forecast and verdict withheld|Read incomplete/,
               );
-              for (const lab of ["Codex", "Claude"]) {
+              for (const lab of ["OpenAI", "Anthropic"]) {
                 const body = await frame
                   .getByRole("article", { name: lab, exact: true })
                   .innerText();
@@ -2451,9 +2465,9 @@ test(
         await session(
           async ({ page, frame, settled }) => {
             release();
-            await frame.getByRole("article", { name: "Codex", exact: true }).waitFor();
+            await frame.getByRole("article", { name: "OpenAI", exact: true }).waitFor();
             await settled();
-            const lab = frame.getByRole("article", { name: "Codex", exact: true });
+            const lab = frame.getByRole("article", { name: "OpenAI", exact: true });
             const short = lab.getByRole("radio", { name: "5-hour", exact: true });
             if (samplerRef) {
               assert.equal(await short.count(), 0, "The baseline lost its reported short window");
@@ -2489,7 +2503,8 @@ test(
         );
       });
 
-    // Usage rows keep their lab identity; capacity uses supplied provider icons with a label fallback.
+    // The approved overview mock is the contract: every section names the lab and shows one logo
+    // image, the provider app's own icon when supplied, else the mock's product logo.
     const mark = (fill) =>
       `data:image/svg+xml;base64,${Buffer.from(
         `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="${fill}"/></svg>`,
@@ -2498,7 +2513,7 @@ test(
     const darkMark = mark("#9be7c4");
     for (const width of [1280, 390])
       await t.test(
-        `overview lab identities and provider icons keep their roles at ${width}px`,
+        `overview lab marks match the approved mock in every section at ${width}px`,
         async () => {
           const f = quotaSamplingFixture(Date.now() - minute, samplerUsage);
           await f.usage.observe();
@@ -2629,6 +2644,7 @@ test(
               ...emptyUsage.value,
               total,
               models: [{ ...total, provider: "codex", model: "Synthetic model" }],
+              forecastProviders: ["codex"],
             },
           };
           const scenarios = [
@@ -2643,13 +2659,15 @@ test(
               src: darkMark,
             },
             { scheme: "light", icons: undefined, src: null },
+            // The mock's logos sit on a white tile in either scheme.
+            { scheme: "dark", icons: undefined, src: null },
           ];
           for (const scenario of scenarios) {
             viewResult = { ok: true, value: pool(scenario.icons) };
             await session(
               async ({ page, frame, settled }) => {
                 release();
-                const lab = frame.getByRole("article", { name: "Codex", exact: true });
+                const lab = frame.getByRole("article", { name: "OpenAI", exact: true });
                 await lab.waitFor();
                 await frame
                   .getByRole("heading", { name: "How much are we using?", exact: true })
@@ -2663,11 +2681,37 @@ test(
                 );
                 const labRow = breakdown
                   .locator("li")
-                  .filter({ has: frame.getByText("Codex", { exact: true }) });
+                  .filter({ has: frame.getByText("OpenAI", { exact: true }) });
                 await labRow.waitFor();
-                const mark = labRow.locator('[data-provider="openai"]');
-                assert.equal(await mark.count(), 1, "The lab row uses Codex's provider mark");
-                assert.equal(await mark.locator("img, picture").count(), 0);
+                // One identity per lab: the usage row and the capacity panel draw the same image.
+                const imageOf = (scope) =>
+                  scope.locator("[data-lab-mark] img").evaluate((image) => ({
+                    mark: image.closest("[data-lab-mark]").dataset.labMark,
+                    source: image.currentSrc,
+                    loaded: image.complete && image.naturalWidth > 0,
+                  }));
+                const rowImage = await imageOf(labRow);
+                assert.deepEqual(rowImage, await imageOf(lab), "By lab and capacity share a mark");
+                assert.equal(rowImage.loaded, true, "The lab row shows a logo image");
+                assert.equal(rowImage.mark, scenario.src === null ? "logo" : "icon");
+                const forecast = frame.locator('section[aria-labelledby="forecast-heading"] li');
+                assert.deepEqual(
+                  await imageOf(
+                    forecast.filter({ has: frame.getByText("OpenAI", { exact: true }) }),
+                  ),
+                  rowImage,
+                  "Where it's heading shares the lab's mark",
+                );
+                assert.equal(
+                  await forecast
+                    .filter({ has: frame.getByText("All labs", { exact: true }) })
+                    .getByText("Σ", { exact: true })
+                    .count(),
+                  1,
+                  "All labs carries the mock's sum tile",
+                );
+                assert.equal(await labRow.getByText("O", { exact: true }).count(), 0);
+                assert.equal(await labRow.getByText("OA", { exact: true }).count(), 0);
                 await settled();
                 if (nativeViewRef) {
                   assert.ok(
@@ -2682,20 +2726,26 @@ test(
                   await settled();
                   await capture(
                     page,
-                    `provider-app-reuse-${scenario.src === null ? "no-icon" : scenario.scheme}-${width}`,
+                    `provider-app-reuse-${scenario.src === null ? "no-icon-" : ""}${scenario.scheme}-${width}`,
                   );
                   return;
                 }
                 assert.equal(
-                  await lab.getByText("C", { exact: true }).count(),
-                  scenario.src === null ? 1 : 0,
-                  "A capacity lab uses its provider label only when no icon is supplied",
+                  await lab.getByText("O", { exact: true }).count(),
+                  0,
+                  "A capacity lab shows a logo image, never a letter, while one loads",
                 );
                 assert.equal(
                   await lab.locator("img, picture").count(),
-                  scenario.src === null ? 0 : 2,
+                  scenario.src === null ? 1 : 2,
                 );
-                if (scenario.src !== null) {
+                if (scenario.src === null) {
+                  assert.match(
+                    (await imageOf(lab)).source,
+                    /^data:image\/svg\+xml;base64,/,
+                    "Without a supplied icon the mock's ChatGPT logo stands for OpenAI",
+                  );
+                } else {
                   const icon = lab.locator('[data-lab-mark="icon"] img');
                   assert.deepEqual(
                     await icon.evaluate((image) => ({
@@ -2732,7 +2782,7 @@ test(
                 await settled();
                 await capture(
                   page,
-                  `provider-app-reuse-${scenario.src === null ? "no-icon" : scenario.scheme}-${width}`,
+                  `provider-app-reuse-${scenario.src === null ? "no-icon-" : ""}${scenario.scheme}-${width}`,
                 );
               },
               { viewport: { width, height: 1000 }, colorScheme: scenario.scheme, capacity, usage },
@@ -2818,7 +2868,7 @@ test(
             );
             assert.equal(await labBreakdown.getByText("codex", { exact: true }).count(), 0);
             assert.equal(await labBreakdown.getByText("Codex", { exact: true }).count(), 0);
-            assert.doesNotMatch(await labBreakdown.innerText(), /\b(?:codex|Codex)\b/);
+            assert.doesNotMatch(await labBreakdown.innerText(), /\b(?:codex|Codex|OpenAI)\b/);
             await by.getByRole("tab", { name: "Model", exact: true }).click();
             await by.getByRole("tab", { name: "Model", exact: true, selected: true }).waitFor();
             const breakdown = frame.locator('section[aria-labelledby="usage-breakdown-heading"]');
@@ -2834,7 +2884,10 @@ test(
               "The model view does not leak its provider ID",
             );
             assert.equal(await frame.getByText("Codex", { exact: true }).count(), 0);
-            assert.doesNotMatch(await frame.locator("body").innerText(), /\b(?:codex|Codex)\b/);
+            assert.doesNotMatch(
+              await frame.locator("body").innerText(),
+              /\b(?:codex|Codex|OpenAI)\b/,
+            );
             assert.equal(
               await frame.getByRole("list", { name: "Accounts needed", exact: true }).count(),
               0,
@@ -2882,12 +2935,15 @@ test(
               .waitFor();
             assert.equal(await frame.getByText("codex", { exact: true }).count(), 0);
             assert.equal(await frame.getByText("Codex", { exact: true }).count(), 0);
-            assert.doesNotMatch(await frame.locator("body").innerText(), /\b(?:codex|Codex)\b/);
+            assert.doesNotMatch(
+              await frame.locator("body").innerText(),
+              /\b(?:codex|Codex|OpenAI)\b/,
+            );
             assert.deepEqual(await accepted(), [], "Capacity alone does not report accounts ready");
             release();
-            const lab = frame.getByRole("article", { name: "Codex", exact: true });
+            const lab = frame.getByRole("article", { name: "OpenAI", exact: true });
             await lab.waitFor();
-            await frame.getByText("Codex", { exact: true }).first().waitFor();
+            await frame.getByText("OpenAI", { exact: true }).first().waitFor();
             await breakdown.getByRole("heading", { name: "By model", exact: true }).waitFor();
             assert.deepEqual(
               await breakdown.evaluate((section) => {
@@ -3184,7 +3240,10 @@ test(
               );
               assert.equal(await frame.getByText("codex", { exact: true }).count(), 0);
               assert.equal(await frame.getByText("Codex", { exact: true }).count(), 0);
-              assert.doesNotMatch(await frame.locator("body").innerText(), /\b(?:codex|Codex)\b/);
+              assert.doesNotMatch(
+                await frame.locator("body").innerText(),
+                /\b(?:codex|Codex|OpenAI)\b/,
+              );
               assert.deepEqual(await accepted(), []);
               const reads = await frame.evaluate(
                 () =>
@@ -3192,7 +3251,10 @@ test(
                     .length,
               );
               release();
-              await who.getByText(/Codex/).first().waitFor();
+              await who
+                .getByText(/OpenAI/)
+                .first()
+                .waitFor();
               await settled();
               assert.equal(
                 await frame.evaluate(
@@ -3573,7 +3635,10 @@ test(
             if (recovery) {
               await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
               assert.deepEqual(await marks(), []);
-              assert.doesNotMatch(await frame.locator("body").innerText(), /\b(?:codex|Codex)\b/);
+              assert.doesNotMatch(
+                await frame.locator("body").innerText(),
+                /\b(?:codex|Codex|OpenAI)\b/,
+              );
               assert.deepEqual(await accepted(), []);
               viewResult = { ok: true, value };
               if (recovery === "manual")
@@ -3686,7 +3751,7 @@ test(
               await breakdown.getByRole("heading", { name: "By lab", exact: true }).waitFor();
               const lab = breakdown
                 .locator("li")
-                .filter({ has: frame.getByText("Codex", { exact: true }) });
+                .filter({ has: frame.getByText("OpenAI", { exact: true }) });
               await lab.getByRole("button", { name: "Accounts ▸", exact: true }).waitFor();
               const before = await frame.evaluate(
                 () =>
@@ -3756,7 +3821,7 @@ test(
         models: [{ ...retainedTotal, provider: "codex", model: "Retained fixture model" }],
       },
     };
-    const saved = sourceRef ? "build-seat-1@example.com" : "Codex";
+    const saved = sourceRef ? "build-seat-1@example.com" : "OpenAI";
     const savedMarker = (frame) => {
       const exact = frame.getByText(saved, { exact: true });
       return sourceRef

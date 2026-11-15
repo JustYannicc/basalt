@@ -8,6 +8,7 @@ import type {
 } from "../overview-contract.ts";
 import { Button, Problem, Segmented, StateIcon } from "./controls.tsx";
 import { LabMark, labColor } from "./lab.tsx";
+import type { LabIdentity } from "./lab-name.ts";
 import { noRecordedUsage } from "./usage-outcome.ts";
 import { PriceNote } from "./price-note.tsx";
 import { priceSentence, samePrice, slicePrice } from "./price-text.ts";
@@ -164,7 +165,17 @@ function Stack({ row, max, name }: { row: Row; max: bigint; name: (id: string) =
   );
 }
 
-function Name({ row, by, name }: { row: Row; by: Grouping; name: (id: string) => string }) {
+function Name({
+  row,
+  by,
+  name,
+  lab,
+}: {
+  row: Row;
+  by: Grouping;
+  name: (id: string) => string;
+  lab: (id: string) => LabIdentity | undefined;
+}) {
   const meta = row.countsOnly
     ? "Counted, not split until account mapping lands"
     : by === "person" && row.empty
@@ -175,7 +186,7 @@ function Name({ row, by, name }: { row: Row; by: Grouping; name: (id: string) =>
   return (
     <span className="flex min-w-0 items-center gap-2">
       {by === "provider" && row.provider ? (
-        <LabMark provider={row.provider} name={row.label} small />
+        <LabMark provider={row.provider} identity={lab(row.provider)} size="small" />
       ) : by === "model" && !row.countsOnly ? (
         <span
           className="size-2 shrink-0 rounded-[2px]"
@@ -340,7 +351,7 @@ export function WhoUses({
   people,
   models,
   days,
-  name,
+  lab,
   onRetry,
   overview,
   personal,
@@ -349,12 +360,13 @@ export function WhoUses({
   people: Result<SeriesRead> | undefined;
   models: Result<SeriesRead> | undefined;
   days: number;
-  name: (id: string) => string;
+  lab: (id: string) => LabIdentity | undefined;
   onRetry: () => void;
   overview?: PoolOverviewResult;
   personal?: PoolPersonalOverviewResult;
   historyHref?: string;
 }) {
+  const name = (id: string) => lab(id)?.name ?? "…";
   const [by, setBy] = useState<Grouping>("person");
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const grouping = personal ? "person" : by;
@@ -507,11 +519,11 @@ export function WhoUses({
                                 strokeLinejoin="round"
                               />
                             </svg>
-                            <Name row={row} by={by} name={name} />
+                            <Name row={row} by={by} name={name} lab={lab} />
                           </button>
                         ) : (
                           <span className="block pl-[22px]">
-                            <Name row={row} by={by} name={name} />
+                            <Name row={row} by={by} name={name} lab={lab} />
                           </span>
                         )}
                       </th>
