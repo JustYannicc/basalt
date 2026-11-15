@@ -43,6 +43,7 @@ export function parseProductMigrationMarkers(
 ): string[] {
   const file = parse(source);
   const registries: ts.Expression[] = [];
+  const operatorKeys: string[] = [];
   const visit = (node: ts.Node) => {
     if (
       ts.isCallExpression(node) &&
@@ -52,7 +53,18 @@ export function parseProductMigrationMarkers(
       const name = node.arguments[0];
       if (!name || !ts.isStringLiteral(name)) refuse("unsupported product migration journal");
       if (name.text === journal) {
-        if (node.arguments.length !== 2) refuse(`expected two migration arguments for ${journal}`);
+        if (node.arguments.length !== 2 && node.arguments.length !== 3)
+          refuse(`expected two or three migration arguments for ${journal}`);
+        const operators = node.arguments[2];
+        if (operators) {
+          if (!ts.isArrayLiteralExpression(operators))
+            refuse(`expected literal operator migration list for ${journal}`);
+          for (const entry of operators.elements) {
+            if (!ts.isStringLiteral(entry) || !/^[1-9][0-9]*_[a-z0-9_]+$/.test(entry.text))
+              refuse(`invalid operator migration key for ${journal}`);
+            operatorKeys.push(entry.text);
+          }
+        }
         registries.push(node.arguments[1]!);
       }
     }
@@ -68,17 +80,20 @@ export function parseProductMigrationMarkers(
   }
   if (registries.length !== 1) refuse(`expected one migrateProductSteps call for ${journal}`);
   const ids = new Set<number>();
-  const markers = [...properties(registries[0]).keys()].map((key) => {
+  const marker = (key: string) => {
     const match = /^(\d+)_([a-zA-Z0-9_.-]+)$/.exec(key);
     if (!match) refuse(`invalid product migration key ${key}`);
     const id = Number(match[1]);
     if (!Number.isSafeInteger(id) || id < 1 || id > 2147483647 || ids.has(id))
       refuse(`invalid or duplicate product migration ID ${match[1]}`);
     ids.add(id);
-    const marker = `${id}_${match[2]}`;
-    if (marker.length > 160) refuse("product migration key too long");
-    return { id, marker };
-  });
+    const value = `${id}_${match[2]}`;
+    if (value.length > 160) refuse("product migration key too long");
+    return { id, marker: value };
+  };
+  const markers = [...properties(registries[0]).keys()].map(marker);
+  // Operator IDs share the journal but must never become required startup steps.
+  operatorKeys.forEach(marker);
   if (!markers.length) refuse(`empty product migration registry ${journal}`);
   return markers.sort((left, right) => left.id - right.id).map((entry) => entry.marker);
 }
