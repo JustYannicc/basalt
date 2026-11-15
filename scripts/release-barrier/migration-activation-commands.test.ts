@@ -177,7 +177,7 @@ test("module loading and remote proxy initialization have distinct closed failur
     await assert.rejects(
       historyPlan(
         (options, account) =>
-          runHistoryOperator(options, account, (path) =>
+          runHistoryOperator({ ...options, readersReady: options.readersReady }, account, (path) =>
             connectHistoryPlatform(path, () => {
               if (loading) throw Object.assign(new Error(sentinel), { code: "MODULE_NOT_FOUND" });
               return {
@@ -199,9 +199,7 @@ test("module loading and remote proxy initialization have distinct closed failur
         ]);
         assert.ok(error.delta?.why?.includes(loading ? "phase=wrangler-load" : "phase=proxy-open"));
         assert.ok(
-          error.delta?.why?.includes(
-            loading ? "nodeCode=MODULE_NOT_FOUND" : "cause.1.nodeCode=ECONNRESET",
-          ),
+          error.delta?.why?.includes(loading ? "code=MODULE_NOT_FOUND" : "cause.1.code=ECONNRESET"),
         );
         assert.ok(!(JSON.stringify(error) + refusalTable(error)).includes(sentinel));
         return true;

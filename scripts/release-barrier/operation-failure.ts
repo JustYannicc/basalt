@@ -78,7 +78,7 @@ export const knownTypes = new Set([
   "AggregateError",
 ]);
 
-const nodeCodes = new Set([
+const stringCodes = new Set([
   "MODULE_NOT_FOUND",
   "ERR_MODULE_NOT_FOUND",
   "ERR_REQUIRE_ESM",
@@ -100,6 +100,26 @@ const nodeCodes = new Set([
   "UND_ERR_CONNECT_TIMEOUT",
   "UND_ERR_HEADERS_TIMEOUT",
   "UND_ERR_SOCKET",
+  // Closed MiniflareCoreError codes in the pinned Wrangler dependency.
+  "ERR_RUNTIME_FAILURE",
+  "ERR_PLUGIN_LOADING_FAILED",
+  "ERR_ADDRESS_IN_USE",
+  "ERR_DISPOSED",
+  "ERR_MODULE_PARSE",
+  "ERR_MODULE_STRING_SCRIPT",
+  "ERR_MODULE_DYNAMIC_SPEC",
+  "ERR_MODULE_RULE",
+  "ERR_PERSIST_UNSUPPORTED",
+  "ERR_FUTURE_COMPATIBILITY_DATE",
+  "ERR_NO_WORKERS",
+  "ERR_VALIDATION",
+  "ERR_DUPLICATE_NAME",
+  "ERR_DIFFERENT_STORAGE_BACKEND",
+  "ERR_DIFFERENT_UNIQUE_KEYS",
+  "ERR_DIFFERENT_PREVENT_EVICTION",
+  "ERR_DIFFERENT_S3_CREDENTIALS",
+  "ERR_MISSING_INSPECTOR_PROXY_PORT",
+  "ERR_MISSING_EXPLORER_UI",
 ]);
 
 const httpReasons = new Set([
@@ -128,7 +148,7 @@ export interface ProviderFailure {
   reason?: string;
   status?: number;
   codes?: number[];
-  nodeCode?: string;
+  code?: string;
   exitCode?: number | null;
   migration?: MigrationDiagnostic;
 }
@@ -144,11 +164,12 @@ export function safeProviderFailure(error: unknown): ProviderFailure {
   if (migration) return migration;
   const constructor = field(field(error, "constructor"), "name");
   const name = field(error, "name");
+  // Miniflare decorates name with its code; the constructor still has a closed class name.
+  const fallback =
+    typeof constructor === "string" && knownTypes.has(constructor) ? constructor : name;
   const tag =
     field(error, "_tag") ??
-    (name === "Error" && typeof constructor === "string" && knownTypes.has(constructor)
-      ? constructor
-      : name);
+    (typeof name === "string" && name !== "Error" && knownTypes.has(name) ? name : fallback);
   const type = typeof tag === "string" && knownTypes.has(tag) ? tag : "unknown";
   const httpReason = type === "HttpClientError" ? field(error, "reason") : undefined;
   const reason = field(httpReason, "_tag");
@@ -157,15 +178,16 @@ export function safeProviderFailure(error: unknown): ProviderFailure {
     field(field(httpReason, "response"), "status") ??
     (type === "StateStoreError" ? field(field(error, "http"), "status") : undefined);
   const entries = field(error, "errors");
-  const nodeCode = field(error, "code");
-  const codes = [
-    ...new Set(
-      [
-        field(error, "code"),
-        ...(Array.isArray(entries) ? entries.slice(0, 8).map((entry) => field(entry, "code")) : []),
-      ].filter((code) => integer(code, 0, 2_147_483_647)),
-    ),
-  ]
+  const code = field(error, "code");
+  const values = [code];
+  try {
+    if (Array.isArray(entries))
+      for (let index = 0; index < 8; index++)
+        values.push(field(field(entries, String(index)), "code"));
+  } catch {
+    // A revoked provider array must not discard the outer status and code.
+  }
+  const codes = [...new Set(values.filter((value) => integer(value, 0, 2_147_483_647)))]
     .sort((a, b) => a - b)
     .slice(0, 8);
   return {
@@ -173,7 +195,7 @@ export function safeProviderFailure(error: unknown): ProviderFailure {
     ...(typeof reason === "string" && httpReasons.has(reason) ? { reason } : {}),
     ...(integer(status, 100, 599) ? { status } : {}),
     ...(codes.length ? { codes } : {}),
-    ...(typeof nodeCode === "string" && nodeCodes.has(nodeCode) ? { nodeCode } : {}),
+    ...(typeof code === "string" && stringCodes.has(code) ? { code } : {}),
   };
 }
 

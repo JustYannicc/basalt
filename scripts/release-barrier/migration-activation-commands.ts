@@ -76,7 +76,7 @@ export async function historyPlan(operator: HistoryOperator, accountId: string, 
                   ...(provider.reason ? [`${prefix}reason=${provider.reason}`] : []),
                   ...(provider.status === undefined ? [] : [`${prefix}status=${provider.status}`]),
                   ...(provider.codes?.length ? [`${prefix}codes=${provider.codes.join(",")}`] : []),
-                  ...(provider.nodeCode ? [`${prefix}nodeCode=${provider.nodeCode}`] : []),
+                  ...(provider.code ? [`${prefix}code=${provider.code}`] : []),
                 ];
               }),
             ],

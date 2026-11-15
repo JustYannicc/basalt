@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { MiniflareCoreError } from "../startup-profiler/node_modules/miniflare/dist/src/index.js";
 import { Cause, Effect, Exit } from "effect";
 import { BarrierRefusal } from "./manifest.ts";
 import {
@@ -88,8 +89,8 @@ test("Node codes and nested causes are allowlisted, depth bounded, cycle safe an
   root.cause = nested;
   nested.cause = root;
   assert.deepEqual(safeProviderFailureChain(root), [
-    { type: "Error", nodeCode: "MODULE_NOT_FOUND" },
-    { type: "Error", nodeCode: "ECONNRESET" },
+    { type: "Error", code: "MODULE_NOT_FOUND" },
+    { type: "Error", code: "ECONNRESET" },
   ]);
   const unknown = {
     name: sentinel,
@@ -113,4 +114,26 @@ test("Node codes and nested causes are allowlisted, depth bounded, cycle safe an
     },
   });
   assert.deepEqual(safeProviderFailureChain(hostile), [{ type: "unknown" }]);
+});
+
+test("real Miniflare decorated names retain a closed class and runtime code", () => {
+  const error = new MiniflareCoreError("ERR_RUNTIME_FAILURE", "private-miniflare-message");
+  assert.equal(error.name, "MiniflareCoreError [ERR_RUNTIME_FAILURE]");
+  assert.deepEqual(safeProviderFailure(error), {
+    type: "MiniflareCoreError",
+    code: "ERR_RUNTIME_FAILURE",
+  });
+});
+
+test("hostile provider error arrays cannot discard the original operator diagnostic", () => {
+  const { proxy, revoke } = Proxy.revocable([], {});
+  revoke();
+  const error = Object.assign(new Error("private-provider-message"), {
+    errors: proxy,
+    status: 403,
+    code: 10000,
+  });
+  assert.deepEqual(safeProviderFailureChain(error), [
+    { type: "Error", status: 403, codes: [10000] },
+  ]);
 });
