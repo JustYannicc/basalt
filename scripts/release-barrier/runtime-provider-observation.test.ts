@@ -13,10 +13,11 @@ import {
   observeBoundProvider,
 } from "../../src/pool/runtime-provider/observation.ts";
 import { runtimeApplicationPins } from "./runtime-release-state.ts";
+import { signPoolToken } from "../../src/pool/token.ts";
 
 const encryptionKey = "a".repeat(64);
 const Receipt = Schema.Struct({
-  status: Schema.Literal("observed", "refused"),
+  status: Schema.Literals(["observed", "refused"]),
   credentialBinding: Schema.Literal("POOL_PROVIDER_OBSERVATION_TOKEN"),
   target: ProviderObservationTarget,
 });
@@ -30,16 +31,24 @@ for (const fault of ["none", "secret", "provider", "identity", "transport"] as c
       await rm(directory, { recursive: true, force: true });
     });
     await f.settle();
-    const stored = structuredClone(f.old.storage.valuesMap);
+    const writes: string[] = [];
+    const previousCommit = f.old.storage.afterCommit;
+    f.old.storage.afterCommit = (keys) => {
+      previousCommit(keys);
+      writes.push(...keys);
+    };
     const calls = structuredClone(f.old.calls);
     const instances = f.instances.size;
-    const reads = f.providerReads.length;
+    let reads = 0;
+    const providerFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      reads++;
+      assert.equal(init?.method, "GET");
+      if (fault === "provider") return new Response(null, { status: 403 });
+      if (fault === "transport") throw new Error("private-provider-marker");
+      return providerFetch(input, init);
+    };
     if (fault === "secret") f.secretAvailable(false);
-    if (fault === "provider") f.providerAvailable(false);
-    if (fault === "transport")
-      f.onProviderRead(async () => {
-        throw new Error("private-provider-marker");
-      });
     const state = structuredClone(f.state);
     if (fault === "identity") state.applications.root.attributes.version++;
     const input = { state, code: runtimeFixtureCode, client: f.client, directory, encryptionKey };
@@ -58,7 +67,7 @@ for (const fault of ["none", "secret", "provider", "identity", "transport"] as c
     const summary = Schema.decodeUnknownSync(
       Schema.Struct({
         fingerprint: Schema.String,
-        status: Schema.Literal("observed", "refused"),
+        status: Schema.Literals(["observed", "refused"]),
       }),
     )(JSON.parse(publicText));
     const receipt = Schema.decodeUnknownSync(Receipt)(
@@ -80,11 +89,11 @@ for (const fault of ["none", "secret", "provider", "identity", "transport"] as c
       "private-provider-marker",
     ])
       assert.equal((publicText + sealedText).includes(marker), false);
-    assert.deepEqual(f.old.storage.valuesMap, stored);
+    assert.deepEqual(writes, []);
     assert.deepEqual(f.old.calls, calls);
     assert.equal(f.instances.size, instances);
     assert.deepEqual(f.commands, ["provider-observe"]);
-    assert.equal(f.providerReads.length - reads, fault === "secret" ? 0 : 1);
+    assert.equal(reads, fault === "secret" ? 0 : 1);
   });
 
 test("credential acceptance refuses a plaintext credential instead of bypassing the deployed binding", async (context) => {
@@ -98,3 +107,55 @@ test("credential acceptance refuses a plaintext credential instead of bypassing 
   await assert.rejects(observeBoundProvider("synthetic-provider-read", target));
   assert.equal(f.providerReads.length, reads);
 });
+
+for (const fault of ["secret", "denied", "identity"] as const)
+  test(`new Worker code keeps the unadopted old runtime serving after a ${fault} bound GET refusal`, async (context) => {
+    const f = await runtimeReleaseClientFixture(undefined, { adopt: false });
+    const directory = await mkdtemp(join(tmpdir(), "pool-observation-legacy-"));
+    context.after(async () => {
+      await f.cleanup();
+      await rm(directory, { recursive: true, force: true });
+    });
+    await f.settle();
+    // Persisted readiness from the pre-fleet legacy configuration, with no peer ordinal.
+    const legacyRevision = "d176b4471f1eca617e2dbe3c48e4cc5488052d6675edd36dbc1475c097693209";
+    await f.old.storage.put("revision", legacyRevision);
+    await f.old.storage.put("ready-revision", legacyRevision);
+    const identity = f.old.identity();
+    const started = f.old.calls.start;
+    const destroyed = f.old.calls.destroy;
+    const state = structuredClone(f.state);
+    const providerFetch = globalThis.fetch;
+    if (fault === "secret") f.secretAvailable(false);
+    if (fault === "denied") globalThis.fetch = async () => new Response(null, { status: 403 });
+    if (fault === "identity") state.applications.root.attributes.version++;
+    await assert.rejects(
+      verifyBoundProviderObservation({
+        state,
+        code: runtimeFixtureCode,
+        client: f.client,
+        directory,
+        encryptionKey,
+      }),
+      /runtime-provider-observation-refused/,
+    );
+    globalThis.fetch = providerFetch;
+    const token = await signPoolToken(f.old.env.POOL_APP_SIGNING_KEY!, f.claims);
+    for (let request = 0; request < 3; request++) {
+      const response = await f.publicModel(
+        new Request("https://pool.invalid/v1/models", {
+          headers: { authorization: `Bearer ${token}` },
+        }),
+        { pool: f.claims.pool, person: f.claims.owner },
+      );
+      assert.equal(response.status, 200, await response.clone().text());
+      assert.deepEqual(await response.json(), { data: [{ id: identity.bootId }] });
+    }
+    assert.deepEqual(f.old.identity(), identity);
+    assert.equal(f.old.calls.start, started);
+    assert.equal(f.old.calls.destroy, destroyed);
+    assert.equal(f.old.calls.model, 3);
+    assert.equal(f.instances.size, 0);
+    assert.deepEqual(f.commands, ["provider-observe"]);
+    assert.equal((await f.client.inspect()).selection, undefined);
+  });

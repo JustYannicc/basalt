@@ -36,7 +36,7 @@ interface Instance {
 
 /** Actual controller and private runtime classes, with only the platform, provider and Home ports doubled. */
 export async function fleetWorkerFixture(
-  options: { candidateColor?: Color; publicProbe?: boolean } = {},
+  options: { candidateColor?: Color; publicProbe?: boolean; adopt?: boolean } = {},
 ) {
   const original = await runtimeProofFixture();
   const raw = (["blue", "green"] as const).map((color) => ({
@@ -145,6 +145,7 @@ export async function fleetWorkerFixture(
   let f: Awaited<ReturnType<typeof handoffWorker>>;
   try {
     f = await handoffWorker({
+      adopt: options.adopt,
       candidateProvider: candidate,
       candidateTarget: {
         applicationId: candidate.applicationId,

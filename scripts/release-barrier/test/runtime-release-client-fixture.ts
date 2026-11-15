@@ -25,13 +25,16 @@ export async function runtimeReleaseClientFixture(
     | "candidate-probe-before"
     | "promote-before"
     | "promote-refuse",
+  options: { adopt?: boolean } = {},
 ) {
-  const f = await fleetWorkerFixture({ candidateColor: "green", publicProbe: true });
-  await f.bootstrap();
-  await f.send("fleet-configure", {
-    operationId: "enable",
-    configuration: { ...f.configuration, targetActive: 100 },
-  });
+  const f = await fleetWorkerFixture({ candidateColor: "green", publicProbe: true, ...options });
+  if (options.adopt !== false) {
+    await f.bootstrap();
+    await f.send("fleet-configure", {
+      operationId: "enable",
+      configuration: { ...f.configuration, targetActive: 100 },
+    });
+  }
   let root = f.worker,
     fail = fault;
   const commands: string[] = [];
