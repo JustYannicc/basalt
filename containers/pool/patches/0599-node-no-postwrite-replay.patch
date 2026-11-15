@@ -1871,8 +1871,8 @@ diff --git a/sdk/cliproxy/auth/conductor_cooldown.go b/sdk/cliproxy/auth/conduct
  )
  
  var quotaCooldownDisabled atomic.Bool
-@@ -2807,6 +2808,8 @@
- 		resultErr.HTTPStatus = statusCodeFromError(err)
+@@ -2994,6 +2995,8 @@
+ 		}
  	}
  	switch {
 +	case httptransport.IsOutcomeUnknown(err):

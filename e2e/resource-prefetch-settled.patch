@@ -1,0 +1,272 @@
+diff --git a/e2e/tests/resource-prefetch.spec.ts b/e2e/tests/resource-prefetch.spec.ts
+--- a/e2e/tests/resource-prefetch.spec.ts
++++ b/e2e/tests/resource-prefetch.spec.ts
+@@ -36,6 +36,12 @@
+         });
+         expect(response.status).toBe(200);
+         const app = yield* body(App, response);
++        const rename = (suffix: string) =>
++          api
++            .request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/name`, {
++              name: `${name} ${suffix}`,
++            })
++            .pipe(Effect.tap((result) => Effect.sync(() => expect(result.status).toBe(200))));
+         yield* Effect.addFinalizer(() =>
+           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(
+             Effect.tap((result) => Effect.sync(() => expect(result.status).toBe(200))),
+@@ -44,27 +50,49 @@
+         );
+         yield* browser.login(actors.owner);
+         yield* installBrowserClock;
+-        let completed = yield* Deferred.make<void>();
++        const generation = (request?: Request) => ({
++          request,
++          ended: Deferred.makeUnsafe<string>(),
++        });
++        let stream = generation();
++        const release = () =>
++          Effect.gen(function* () {
++            for (;;) {
++              const observed = stream;
++              const error = yield* Deferred.await(observed.ended);
++              if (observed !== stream) continue;
++              expect(error).toBe("net::ERR_ABORTED");
++              return observed;
++            }
++          }).pipe(Effect.timeout("10 seconds"));
+         const requests: string[] = [];
+         const resources = /^\/api\/organizations\/[^/]+\/resources$/;
+         const record = (request: Request) => {
+           const path = new URL(request.url()).pathname;
+           if (request.method() === "GET" && resources.test(path)) requests.push(path);
++          if (path === `${prefix}/changes`) {
++            const previous = stream;
++            stream = generation(request);
++            Deferred.doneUnsafe(previous.ended, Effect.succeed("replaced"));
++          }
+         };
+-        const finished = (request: Request) => {
+-          if (resources.test(new URL(request.url()).pathname))
+-            Deferred.doneUnsafe(completed, Effect.void);
++        const failed = (request: Request) => {
++          if (request === stream.request)
++            Deferred.doneUnsafe(
++              stream.ended,
++              Effect.succeed(request.failure()?.errorText ?? "unknown"),
++            );
+         };
+         yield* browser.use("Observe the ordinary resource read", (page) => {
+           page.on("request", record);
+-          page.on("requestfinished", finished);
++          page.on("requestfailed", failed);
+           return Promise.resolve();
+         });
+         yield* Effect.addFinalizer(() =>
+           browser
+             .use("Remove resource observers", (page) => {
+               page.off("request", record);
+-              page.off("requestfinished", finished);
++              page.off("requestfailed", failed);
+               return Promise.resolve();
+             })
+             .pipe(Effect.orDie),
+@@ -80,27 +108,45 @@
+         );
+         expect(requests).toEqual([`${prefix}/resources`]);
+         yield* held.release;
+-        yield* Deferred.await(completed);
++        yield* release();
++        const prefetched = requests.length;
+         yield* openInApp("Open the prefetched Apps list", `${organization}/apps`);
+         yield* browser.use("The prefetched directory supplies the app card", (page) =>
+           page.getByText(name, { exact: true }).first().waitFor(),
+         );
+-        expect(requests).toHaveLength(1);
++        expect(requests).toHaveLength(prefetched);
+         yield* evidence.json("resource-prefetch-navigation.json", { requests });
+-        // A new document has never visited Apps, so route-intent preloads cannot keep its poll alive.
+-        completed = yield* Deferred.make<void>();
++        // Old-document cancellation must not satisfy the new document's release.
++        stream = generation();
+         const unused = yield* holdQuery(resources, "continue");
+         yield* browser.use("Start an independent settings-only document", (page) =>
+           page.goto(`${organization}/organization`),
+         );
+         yield* unused.requested;
++        const afterBody = yield* holdQuery([`${prefix}/changes/current`], "continue");
+         yield* unused.release;
+-        yield* Deferred.await(completed);
+-        expect(requests).toHaveLength(2);
++        yield* afterBody.requested;
++        const retryBody = yield* holdQuery(resources, "continue");
++        // A committed change between heads must retry before the prefetch can release.
++        yield* rename("during first fence");
++        yield* afterBody.release;
++        yield* retryBody.requested;
++        yield* rename("during retry");
++        yield* retryBody.release;
++        const settledStream = yield* release();
++        const settled = requests.length;
+         yield* browser.use("Advance beyond two idle directory polls", (page) =>
+           page.context().clock.runFor(60_001),
+         );
+-        expect(requests).toHaveLength(2);
++        expect(stream).toBe(settledStream);
++        expect(requests).toHaveLength(settled);
++        yield* rename("after prefetch release");
++        yield* browser.use("Committed changes do not restart the released prefetch", (page) =>
++          page.context().clock.runFor(60_001),
++        );
++        expect(stream).toBe(settledStream);
++        expect(requests).toHaveLength(settled);
++        yield* evidence.json("resource-prefetch-release.json", { prefetched, settled, requests });
+         yield* openInApp(
+           "Enter an organization without access",
+           `/org/prefetch-missing-${randomUUID()}/organization`,
+@@ -111,7 +157,8 @@
+         yield* browser.use("A refused destination starts no directory poll", (page) =>
+           page.context().clock.runFor(60_001),
+         );
+-        expect(requests).toHaveLength(2);
++        expect(stream).toBe(settledStream);
++        expect(requests).toHaveLength(settled);
+       }),
+     ),
+   );
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -38,6 +38,7 @@
+   /** Opt in to writing legacy/upgrade-era rows into the stopped product's own database. */
+   legacyStorage: Schema.optional(Schema.Literal(true)),
+   managementApps: Schema.optional(Schema.Array(Schema.Literals(["owner", "admin", "member"]))),
++  settleProvisioning: Schema.optional(Schema.Literal(true)),
+   /** Labels of extra Testing SDK scenarios created during setup; each has its own closeable scope. */
+   sdkScenarios: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+   /** Operator settings the scenario's own product process starts with. */
+@@ -6298,6 +6299,8 @@
+   },
+   resourcePrefetch: {
+     fixtures: "actors",
++    managementApps: ["owner", "admin", "member"],
++    settleProvisioning: true,
+     file: "resource-prefetch.spec.ts",
+     title: "Organization entry prefetches resources without retaining a polling subscription",
+     targets: {
+diff --git a/apps/hosted/testing/management-provisioning.ts b/apps/hosted/testing/management-provisioning.ts
+--- a/apps/hosted/testing/management-provisioning.ts
++++ b/apps/hosted/testing/management-provisioning.ts
+@@ -15,16 +15,21 @@
+     create or replace trigger e2e_management_metadata after update of metadata on organization
+       for each statement execute function e2e_management_provisioned();
+     create or replace trigger e2e_management_links after insert or update or delete on hosted_app_account_links
++      for each statement execute function e2e_management_provisioned();
++    create or replace trigger e2e_management_jobs after insert or update or delete on hosted_provisioning
+       for each statement execute function e2e_management_provisioned()`);
+ 
+-/** The metadata and link must be visible in the same committed snapshot. */
++/** Provisioning status changes advance directory heads after the links already exist. */
+ const managementReadiness = `select coalesce(
+   (team.metadata::jsonb->'executorDefaults'->>'installed')::boolean, false)
+   and exists (select 1 from executor_accounts account join hosted_app_account_links link
+     on link.account = account.id
+     where account.id = team.metadata::jsonb->'executorKeyAccounts'->>$2
+       and account.owner = 'organization:' || team.id
+-      and link.app = team.metadata::jsonb->'executorDefaults'->>'app') as ready
++      and link.app = team.metadata::jsonb->'executorDefaults'->>'app')
++  and (not $3::boolean or not exists (select 1 from hosted_provisioning job
++    where (job.organization_id = $1 or job.user_id = $2)
++      and job.status <> 'succeeded')) as ready
+   from organization team where team.id = $1`;
+ 
+ export const awaitManagementProvisioning = async (
+@@ -32,6 +37,7 @@
+   organization: string,
+   user: string,
+   signal: AbortSignal,
++  settled = false,
+ ) => {
+   let client: PoolClient | undefined;
+   let released = false;
+@@ -86,7 +92,8 @@
+     for (;;) {
+       const observed = revision;
+       const [state] = Schema.decodeUnknownSync(Readiness)(
+-        (await until(() => acquired.query(managementReadiness, [organization, user]))).rows,
++        (await until(() => acquired.query(managementReadiness, [organization, user, settled])))
++          .rows,
+       );
+       if (state === undefined) throw new ManagementProvisioningFailed();
+       if (state.ready) break;
+diff --git a/e2e/support/lifecycle.ts b/e2e/support/lifecycle.ts
+--- a/e2e/support/lifecycle.ts
++++ b/e2e/support/lifecycle.ts
+@@ -118,9 +118,15 @@
+               yield* Effect.forEach(
+                 plan.managementApps,
+                 (role) =>
+-                  prepareManagementApp(actors[role], actors.organization.id, target, (record) => {
+-                    if (managementSetup.length < 24) managementSetup.push({ role, record });
+-                  }),
++                  prepareManagementApp(
++                    actors[role],
++                    actors.organization.id,
++                    target,
++                    (record) => {
++                      if (managementSetup.length < 24) managementSetup.push({ role, record });
++                    },
++                    plan.settleProvisioning === true,
++                  ),
+                 { concurrency: 3, discard: true },
+               ).pipe(Effect.provideContext(fixtures));
+             return { target, actors };
+diff --git a/e2e/support/management-app.ts b/e2e/support/management-app.ts
+--- a/e2e/support/management-app.ts
++++ b/e2e/support/management-app.ts
+@@ -26,6 +26,7 @@
+   organizationId: string,
+   target: typeof Target.Service,
+   report?: (record: ManagementSetupRecord) => void,
++  settled = false,
+ ) =>
+   Effect.gen(function* () {
+     const clients = yield* SessionClients;
+@@ -59,6 +60,7 @@
+       fixtureRequest(fixtures, "/management-provisioned", {
+         id: scenarioId,
+         user: session.user.id,
++        settled,
+       }).pipe(
+         Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ ready: Schema.Literal(true) }))),
+       ),
+diff --git a/apps/hosted/testing/scenario-server.ts b/apps/hosted/testing/scenario-server.ts
+--- a/apps/hosted/testing/scenario-server.ts
++++ b/apps/hosted/testing/scenario-server.ts
+@@ -210,9 +210,15 @@
+   });
+   const managementProvisioned = Effect.gen(function* () {
+     const request = yield* HttpServerRequest.HttpServerRequest;
+-    const { id, user } = yield* request.json.pipe(
++    const { id, user, settled } = yield* request.json.pipe(
+       Effect.flatMap(
+-        Schema.decodeUnknownEffect(Schema.Struct({ id: Id, user: Schema.NonEmptyString })),
++        Schema.decodeUnknownEffect(
++          Schema.Struct({
++            id: Id,
++            user: Schema.NonEmptyString,
++            settled: Schema.optionalKey(Schema.Boolean),
++          }),
++        ),
+       ),
+     );
+     const scenario = owned.get(id),
+@@ -221,7 +227,8 @@
+       return yield* new TestAccountFailed({ stage: "fixture" });
+     const organization = scenario.organization;
+     yield* Effect.tryPromise({
+-      try: (signal) => awaitManagementProvisioning(database, organization, user, signal),
++      try: (signal) =>
++        awaitManagementProvisioning(database, organization, user, signal, settled === true),
+       catch: () => new TestAccountFailed({ stage: "fixture" }),
+     });
+     return { ready: true };

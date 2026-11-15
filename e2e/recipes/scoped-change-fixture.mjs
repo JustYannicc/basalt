@@ -23,6 +23,9 @@ import { poolUsageSeries } from "../../src/pool/model-history/series.ts";
 import { historyCaller } from "../../src/pool/model-history/http.ts";
 import { readRequests } from "../../src/pool/model-history/store.ts";
 import { lastSuccessAt } from "../../src/pool/model-history/last-success.ts";
+import { HomeClient } from "../../src/pool/control.ts";
+import { handleCreditRouting } from "../../src/pool/credit-routing-http.ts";
+import { seriesAuthority } from "../../src/pool/model-history/series-input.ts";
 import { openEnvelope } from "../../src/pool/token.ts";
 import { CapacityHistory } from "../../src/pool/capacity/history.ts";
 import { capacityOverview } from "../../src/pool/capacity/overview.ts";
@@ -73,7 +76,8 @@ export async function startScopedChangeFixture(signingKey, options) {
     throw error;
   }
   let productOrigin, initialized;
-  let requestSequence = 0;
+  let requestSequence = 0,
+    readingSequence = 0;
   let delivered = [];
   const gates = new Map();
   const reads = [],
@@ -190,6 +194,27 @@ export async function startScopedChangeFixture(signingKey, options) {
       await holdResponse("history");
       return Response.json(result);
     }
+    if (url.pathname === "/pool/v1/accountRouting") {
+      reads.push({ kind: "accountRouting" });
+      return handleCreditRouting(request, {
+        signingKey,
+        home: new HomeClient(async (path) => {
+          if (path === "/v8/management/channel-groups") {
+            const result = await serial(() =>
+              db.query("SELECT id,channel_name FROM channel_group"),
+            );
+            return Response.json({ channel_groups: result.rows });
+          }
+          if (/^\/v8\/management\/channel-groups\/\d+\/usage-credit-routing$/.test(path))
+            return Response.json({
+              usageCreditPolicy: "last_resort",
+              accountSelectionPolicy: "reset_aware",
+              accounts: {},
+            });
+          throw new Error("Unsupported synthetic routing Home read");
+        }),
+      });
+    }
     const action = {
       "/pool/v1/usage/summary": "poolUsageSummary",
       "/pool/v1/usage/overview": "poolOverview",
@@ -208,8 +233,8 @@ export async function startScopedChangeFixture(signingKey, options) {
             : action === "poolPersonalOverview"
               ? poolPersonalOverview(db, value.input, [])
               : action === "lastSuccessAt"
-                ? lastSuccessAt(db, value.input, value.authority)
-                : poolUsageSeries(db, value.input, value.authority),
+                ? lastSuccessAt(db, value.input, seriesAuthority(value.authority))
+                : poolUsageSeries(db, value.input, seriesAuthority(value.authority)),
       );
       await holdResponse(action);
       return Response.json(result);
@@ -315,6 +340,18 @@ export async function startScopedChangeFixture(signingKey, options) {
             hash: initialized.hash,
             pool: initialized.pool,
           };
+        });
+      },
+      commitReading() {
+        return serial(async () => {
+          assert.ok(initialized, "initialize the actual app mapping first");
+          await db.query(
+            `INSERT INTO quota_snapshot(credential_id,usage_credits) VALUES($1,$2::jsonb)
+            ON CONFLICT(credential_id) DO UPDATE SET usage_credits=excluded.usage_credits`,
+            ["synthetic-scoped-change-codex", JSON.stringify({ observed: ++readingSequence })],
+          );
+          const changes = await drain();
+          assert.ok(changes.some(({ hint }) => hint.topic === "pool-readings"));
         });
       },
       duplicate() {

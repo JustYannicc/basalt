@@ -626,7 +626,7 @@ const program = Effect.gen(function* () {
     yield* page(() => screen.getByText("This pool endpoint does not exist.").count()),
     0,
   );
-  yield* page(() => screen.locator("#capacity").getByText("ChatGPT").first().waitFor());
+  yield* page(() => screen.locator("#capacity").getByText("OpenAI").first().waitFor());
   yield* page(() => screen.getByRole("list", { name: "Banked resets" }).waitFor());
   checked(
     "no reset can be spent from the overview",
@@ -681,9 +681,9 @@ const program = Effect.gen(function* () {
         const frame = await element.contentFrame();
         await frame.waitForFunction(() => innerWidth > 740);
       });
-      const article = screen.getByRole("article", { name: "ChatGPT", exact: true });
+      const article = screen.getByRole("article", { name: "OpenAI", exact: true });
       const control = article.getByRole("radiogroup", {
-        name: "ChatGPT limit window",
+        name: "OpenAI limit window",
         exact: true,
       });
       yield* page(() => settled(screen));
@@ -701,17 +701,13 @@ const program = Effect.gen(function* () {
         })),
       );
       diagnostics.desktopCapacity = geometry;
-      checked("ChatGPT window options share one row at 1280", geometry.optionRows, 1);
-      checked(
-        "ChatGPT desktop switch retains its approved 32 px height",
-        geometry.switchHeight,
-        32,
-      );
-      checked("ChatGPT header retains its approved desktop height", geometry.headerHeight, 129.5);
+      checked("OpenAI window options share one row at 1280", geometry.optionRows, 1);
+      checked("OpenAI desktop switch retains its approved 32 px height", geometry.switchHeight, 32);
+      checked("OpenAI header retains its approved desktop height", geometry.headerHeight, 129.5);
     }),
   );
   yield* section(
-    "Grok weekly units fit on a phone",
+    "xAI weekly units fit on a phone",
     Effect.gen(function* () {
       const control = screen.getByRole("radiogroup", { name: /^(?:grok|xai) limit window$/iu });
       yield* page(() => control.waitFor());
@@ -734,12 +730,12 @@ const program = Effect.gen(function* () {
         );
         diagnostics[`grok-390-${scheme}`] = bounds;
         checked(
-          `Grok window switch fits at 390 in ${scheme}`,
+          `xAI window switch fits at 390 in ${scheme}`,
           bounds.right <= bounds.pageWidth,
           true,
         );
         checked(
-          `Grok capacity keeps the page within 390 px in ${scheme}`,
+          `xAI capacity keeps the page within 390 px in ${scheme}`,
           yield* page(() =>
             screen
               .locator("body")
@@ -753,14 +749,14 @@ const program = Effect.gen(function* () {
           const option = control.getByRole("radio", { name: label, exact: true });
           yield* page(() => option.click());
           checked(
-            `Grok ${label} remains selectable at 390 in ${scheme}`,
+            `xAI ${label} remains selectable at 390 in ${scheme}`,
             yield* page(() => option.getAttribute("aria-checked")),
             "true",
           );
         }
       }
       checked(
-        "Grok window labels print each unit once",
+        "xAI window labels print each unit once",
         (yield* page(() => control.getByRole("radio").allTextContents())).sort(),
         ["Weekly · fixed · Grok Pro account", "Weekly · fixed · account-eq"],
       );

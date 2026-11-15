@@ -205,7 +205,23 @@ export function summaryFixture(input, usage, partial = false) {
       timezone: "Europe/Zurich",
       basis: "recorded-usage",
       warnings: [],
-      series: [],
+      // A test opts in to per-lab forecast rows. Like the producer, the all-labs series comes with
+      // them, and every forecast is still learning.
+      series: (usage.forecastProviders ? [null, ...usage.forecastProviders] : []).map((lab) => {
+        const learning = {
+          status: "unavailable",
+          reason: "insufficient-history",
+          comparableWeeks: 0,
+          calculatedAt: to,
+        };
+        return {
+          provider: lab,
+          requests: learning,
+          tokens: learning,
+          apiEstimate: learning,
+          excluded: { tokens: 0, apiEstimate: 0 },
+        };
+      }),
     },
     usageSlices: [
       {
