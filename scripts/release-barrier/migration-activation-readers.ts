@@ -4,7 +4,6 @@ import { Credentials, apiTokenCredentials } from "@distilled.cloud/cloudflare/Cr
 import { Cause, Config, Effect, Redacted, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { createHash } from "node:crypto";
-import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import { openDeploymentReadiness, withinDeadline } from "../database-budget-readiness.ts";
 import { readActivePlacements, readCurrentDeployment } from "./cloudflare.ts";
 import { readForwardPacket } from "./forward-model.ts";
@@ -128,6 +127,8 @@ export interface MigrationReaderOptions {
   apiToken: string;
   tools: SqlJournalSource;
   deploymentId: number;
+  /** The candidate's, because the deployed pool reports adoption of exactly this revision. */
+  poolWorkerRevision: string;
 }
 
 /** Completed receipts identify compatible code; fresh routing and singleton adoption prove it serves now. */
@@ -225,7 +226,7 @@ export const collectMigrationReaderEvidence = (options: MigrationReaderOptions) 
     if (!pool) throw new BarrierRefusal("migration-reader-pool-identity-missing", "PoolWorker");
     const target = {
       candidate: options.candidate,
-      workerInput: poolWorkerRevision,
+      workerInput: options.poolWorkerRevision,
       imageHash: pool.imageInput,
     };
     const key = yield* Config.Redacted("POOL_DEPLOYMENT_KEY");
@@ -272,7 +273,7 @@ export const collectMigrationReaderEvidence = (options: MigrationReaderOptions) 
       workers,
       poolAdoption: {
         candidate: options.candidate,
-        poolWorkerRevision,
+        poolWorkerRevision: options.poolWorkerRevision,
         imageInput: pool.imageInput,
       },
       apps,

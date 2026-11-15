@@ -4,6 +4,7 @@ import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { migrationActivationGate } from "./migration-activation-gate.ts";
 import { migrationActivationPorts } from "./migration-activation-runtime.ts";
+import { candidateSourceRoot } from "./migration-activation-source.ts";
 import { runMigrationActivation } from "./migration-activation.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { assertReleaseStateVersion } from "./release-state-version.ts";
@@ -20,6 +21,7 @@ try {
   const gate = await migrationActivationGate();
   if (process.env.ALCHEMY_STAGE !== "production")
     throw new BarrierRefusal("migration-activation-production-stage-required");
+  const sourceRoot = candidateSourceRoot(process.env);
   process.chdir(fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url)));
   const result = await Effect.runPromiseExit(
     Effect.promise(
@@ -35,6 +37,7 @@ try {
                 stack: compiled,
                 candidate: gate.candidate,
                 deploymentId: gate.deploymentId,
+                sourceRoot,
               });
               return yield* Effect.tryPromise({
                 try: () => runMigrationActivation({ ...gate, ports }),
@@ -51,7 +54,7 @@ try {
   const receipt = result.value;
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await writeFile(output, JSON.stringify(receipt, null, 2) + "\n", { mode: 0o600 });
-  const message = `Migration activation ${receipt.status} for ${receipt.candidate}. Plan digest: ${receipt.fingerprint}. Targets: hosted 22, model-history v10.`;
+  const message = `Migration activation ${receipt.status} for ${receipt.candidate}. Plan digest: ${receipt.fingerprint}. Targets: hosted 22, model-history v10. Client: main ${gate.tooling}.`;
   console.log(message);
   if (summary) await appendFile(summary, `${message}\n\n`);
   if (gate.mode !== "plan" && gate.mode !== "inspect" && receipt.status !== "complete") {
