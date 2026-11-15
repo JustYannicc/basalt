@@ -2,7 +2,7 @@ import type { Provider } from "../contract.ts";
 import type { Result } from "../index.ts";
 import type { PoolPersonalOverviewResult } from "../overview-contract.ts";
 import { seriesRead, type RangeDays } from "./overview-data.ts";
-import { labIdentity } from "./lab-name.ts";
+import { labIdentity, labName } from "./lab-name.ts";
 import { Money, WhoUses } from "./usage-groups.tsx";
 
 /** A member's own usage of a pool they were shared, never anyone else's. */
@@ -18,7 +18,7 @@ export function PersonalOverview({
   onRetry: () => void;
 }) {
   const lab = (id: string) => labIdentity(providers, id);
-  const name = (id: string) => lab(id)?.name ?? "…";
+  const name = (id: string) => labName(providers, id);
   if (!data?.ok)
     return (
       <section className="grid gap-4 pt-12">

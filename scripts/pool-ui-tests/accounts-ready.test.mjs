@@ -88,6 +88,14 @@ if (failures)
   );
 let failureSaved = false;
 
+// The approved overview mock's logo for a lab, loaded on its white tile: its data URI's type.
+const labLogo = (scope) =>
+  scope
+    .locator('[data-lab-mark="logo"] img')
+    .evaluate((image) =>
+      image.complete && image.naturalWidth > 0 ? image.currentSrc.split(";")[0] : null,
+    );
+
 const minute = 60_000;
 const hour = 60 * minute;
 const day = 24 * hour;
@@ -937,6 +945,12 @@ test(
               await settled();
               assert.equal(await frame.locator("#capacity article").count(), 2);
               const claude = frame.getByRole("article", { name: "Anthropic", exact: true });
+              // Each lab carries its own mock logo: Claude's icon for Anthropic, ChatGPT's for OpenAI.
+              assert.equal(await labLogo(claude), "data:image/jpeg");
+              assert.equal(
+                await labLogo(frame.getByRole("article", { name: "OpenAI", exact: true })),
+                "data:image/svg+xml",
+              );
               await claude.getByRole("radio", { name: "5-hour", exact: true }).click();
               await claude
                 .getByRole("radio", { name: "5-hour", exact: true, checked: true })
@@ -2124,6 +2138,7 @@ test(
               await settled();
               await capture(page, `grok-weekly-${width}`);
               assert.equal(await lab.count(), 1, "The xAI lab has a capacity panel");
+              assert.equal(await labLogo(lab), "data:image/png", "xAI shows Grok's logo");
               assert.doesNotMatch(await frame.locator("body").innerText(), /no readings yet/);
               // The grokchat product window shares the account's week; it is not a second account.
               const panel = await lab.innerText();

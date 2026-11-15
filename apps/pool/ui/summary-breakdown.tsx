@@ -299,8 +299,12 @@ export function SummaryBreakdown({
               <li key={row.key ?? "none"} className={index === 0 ? "" : "border-t"}>
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-3 max-[540px]:grid-cols-1">
                   <div className="flex min-w-0 items-center gap-2.5">
-                    {lab !== null && (
-                      <LabMark provider={lab} identity={labIdentity(view?.providers, lab)} />
+                    {by === "provider" && (
+                      // An unknown lab keeps the blank tile so its title lines up with the rest.
+                      <LabMark
+                        provider={lab ?? ""}
+                        identity={lab === null ? undefined : labIdentity(view?.providers, lab)}
+                      />
                     )}
                     <div className="grid min-w-0">
                       <span className="truncate text-sm font-medium">{title}</span>
