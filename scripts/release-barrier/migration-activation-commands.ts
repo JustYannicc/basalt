@@ -7,7 +7,7 @@ import { checkpointReaderContract } from "./migration-activation-contract.ts";
 import type { HistoryOperator } from "./migration-activation-source.ts";
 import { digest, BarrierRefusal } from "./manifest.ts";
 import { HistoryOperatorFailure } from "../pool-history-operator-failure.ts";
-import { safeProviderFailure } from "./operation-failure.ts";
+import { safeProviderFailureChain } from "./operation-failure.ts";
 
 const cloud = fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url));
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -54,7 +54,7 @@ export async function historyPlan(operator: HistoryOperator, accountId: string, 
       error instanceof HistoryOperatorFailure
         ? error
         : new HistoryOperatorFailure("operator.invoke", undefined, error);
-    const provider = failure.cause === undefined ? undefined : safeProviderFailure(failure.cause);
+    const providers = safeProviderFailureChain(failure.cause);
     throw new BarrierRefusal("migration-activation-pool-plan", "PoolWorker", {
       fqn: "PoolWorker",
       type: "PoolHistoryOperator",
@@ -63,13 +63,22 @@ export async function historyPlan(operator: HistoryOperator, accountId: string, 
           ? { path: failure.field, old: 200, new: failure.status }
           : { path: failure.field, changed: true },
       ],
-      ...(provider
+      ...(providers.length
         ? {
             why: [
-              `type=${provider.type}`,
-              ...(provider.reason ? [`reason=${provider.reason}`] : []),
-              ...(provider.status === undefined ? [] : [`status=${provider.status}`]),
-              ...(provider.codes?.length ? [`codes=${provider.codes.join(",")}`] : []),
+              ...(failure.field === "operator.load-wrangler" ? ["phase=wrangler-load"] : []),
+              ...(failure.field === "operator.connect" ? ["phase=proxy-open"] : []),
+              `runtime=${process.versions.bun ? "bun" : "node"}`,
+              ...providers.flatMap((provider, index) => {
+                const prefix = index === 0 ? "" : `cause.${index}.`;
+                return [
+                  `${prefix}type=${provider.type}`,
+                  ...(provider.reason ? [`${prefix}reason=${provider.reason}`] : []),
+                  ...(provider.status === undefined ? [] : [`${prefix}status=${provider.status}`]),
+                  ...(provider.codes?.length ? [`${prefix}codes=${provider.codes.join(",")}`] : []),
+                  ...(provider.code ? [`${prefix}code=${provider.code}`] : []),
+                ];
+              }),
             ],
           }
         : {}),

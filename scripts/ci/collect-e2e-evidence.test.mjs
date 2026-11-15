@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { collectE2eEvidence } from "./collect-e2e-evidence.mjs";
+import { copyE2eEvidence } from "../e2e-evidence.ts";
 
 test("retains reports and scenario logs without traversing runtime links or special files", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "ci-evidence-"));
@@ -140,4 +141,59 @@ test("fallback fills missing Cloud logs while keeping the completed exported rep
     await readFile(join(destination, "run/cloud/cloud.log"), "utf8"),
     "original-cloud-log",
   );
+});
+
+test("retains nested development server stderr without its runtime state", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "ci-development-logs-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const original = join(root, "original"),
+    exported = join(root, "exported"),
+    destination = join(root, "retained");
+  const scenario = "run/self-host/scenarios/failed";
+  const retained = [
+    `${scenario}/development-a/server.log`,
+    `${scenario}/development-a/development-b/server.log`,
+  ];
+  const excluded = [
+    `${scenario}/development-a/environment.json`,
+    `${scenario}/development-a/compiler-cache-host.log`,
+    `${scenario}/development-a/screenshot.png`,
+    `${scenario}/development-a/database/private.json`,
+    `${scenario}/development-a/diagnostics/server.log`,
+  ];
+  for (const file of [...retained, ...excluded]) {
+    await mkdir(dirname(join(original, file)), { recursive: true });
+    await writeFile(join(original, file), file);
+  }
+  const outside = join(root, "outside");
+  await mkdir(outside);
+  await writeFile(join(outside, "server.log"), "not a fixture log");
+  await symlink(outside, join(original, scenario, "development-linked"));
+  await mkdir(join(original, scenario, "development-linked-log"));
+  await symlink(
+    join(outside, "server.log"),
+    join(original, scenario, "development-linked-log/server.log"),
+  );
+  await mkdir(join(original, scenario, "development-pipe"));
+  execFileSync("mkfifo", [join(original, scenario, "development-pipe/server.log")]);
+
+  const summary = copyE2eEvidence(join(original, "run"), join(exported, "run"), { full: true });
+  assert.equal(summary.files, retained.length);
+  for (const file of retained) assert.equal(await readFile(join(exported, file), "utf8"), file);
+
+  const fallback = `${scenario}/development-fallback/server.log`;
+  await mkdir(dirname(join(original, fallback)), { recursive: true });
+  await writeFile(join(original, fallback), "stderr from the original run");
+  const merged = await collectE2eEvidence(exported, destination, original);
+  assert.equal(merged.files, retained.length + 1);
+  for (const file of retained) assert.equal(await readFile(join(destination, file), "utf8"), file);
+  assert.equal(await readFile(join(destination, fallback), "utf8"), "stderr from the original run");
+  assert.deepEqual((await readdir(join(destination, scenario))).sort(), [
+    "development-a",
+    "development-fallback",
+  ]);
+  assert.deepEqual((await readdir(join(destination, scenario, "development-a"))).sort(), [
+    "development-b",
+    "server.log",
+  ]);
 });
