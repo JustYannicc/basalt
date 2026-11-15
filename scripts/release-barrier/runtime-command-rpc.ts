@@ -5,6 +5,7 @@ import {
 } from "../../src/pool/runtime-slots/handoff-command.ts";
 import { signEnvelope } from "../../src/pool/token.ts";
 import { openPoolOperations, type PoolOperationsTarget } from "../pool-operations.ts";
+import { providerObservationFailureHeader } from "../../src/pool/runtime-provider/observation.ts";
 import { provisioningRefusal } from "./provisioning-refusal.ts";
 
 type Action<T> = T extends unknown ? Omit<T, "controllerCode" | "at" | "expiresAt"> : never;
@@ -39,12 +40,16 @@ export async function sendRuntimeCommand(
     );
     if (response.status !== 200) {
       await response.body?.cancel();
-      throw provisioningRefusal(
-        "runtime-handoff-response-refused",
-        "handoff.response.status",
-        200,
-        response.status,
-      );
+      const providerCause =
+        command.action === "provider-observe" && response.status === 409
+          ? response.headers.get(providerObservationFailureHeader)
+          : null;
+      const reason =
+        providerCause === "provider_observation_refused" ||
+        providerCause === "provider_fetch_failed"
+          ? `runtime-provider-observation-${providerCause}`
+          : "runtime-handoff-response-refused";
+      throw provisioningRefusal(reason, "handoff.response.status", 200, response.status);
     }
     return (await response.json()) as unknown;
   } finally {

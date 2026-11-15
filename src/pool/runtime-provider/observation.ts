@@ -2,6 +2,8 @@ import { Schema } from "effect";
 import { ProviderApplicationProof } from "../runtime-slots/admission-proof.ts";
 import { ProviderObservationRefused, RuntimeProviderReader } from "./read.ts";
 
+export const providerObservationFailureHeader = "X-Signalbox-Provider-Observation-Failure";
+
 export const ProviderObservationTarget = Schema.Struct({
   accountId: ProviderApplicationProof.fields.accountId,
   applicationId: ProviderApplicationProof.fields.applicationId,

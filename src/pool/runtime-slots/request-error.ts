@@ -5,6 +5,7 @@ import { ControlFailure } from "../json.ts";
 import { PoolRuntimeUnhealthy, PoolStartupDeadline } from "../lifecycle.ts";
 import { FleetRefused } from "../runtime-fleet/state.ts";
 import { ProviderObservationRefused } from "../runtime-provider/read.ts";
+import { providerObservationFailureHeader } from "../runtime-provider/observation.ts";
 import {
   runtimeFailureCode,
   runtimeFailureDiagnostic,
@@ -66,7 +67,13 @@ export function runtimeErrorResponse(error: unknown, boundary: "handoff" | "endp
           : runtimeFailureCode(runtimeFailureDiagnostic(refusal, "endpoint_route")),
         ...(provider ? { cause: error.code } : {}),
       },
-      { status: 409, headers: runtimeFailureHeaders(refusal, "endpoint_route") },
+      {
+        status: 409,
+        headers: {
+          ...runtimeFailureHeaders(refusal, "endpoint_route"),
+          ...(provider ? { [providerObservationFailureHeader]: error.code } : {}),
+        },
+      },
     );
   }
   const defect =

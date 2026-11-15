@@ -72,7 +72,12 @@ for (const fault of ["none", "secret", "provider", "identity", "transport"] as c
     } else {
       await assert.rejects(verifyBoundProviderObservation(input), (error: unknown) => {
         assert.ok(error instanceof BarrierRefusal);
-        assert.equal(error.reason, "runtime-handoff-response-refused");
+        assert.equal(
+          error.reason,
+          fault === "transport"
+            ? "runtime-provider-observation-provider_fetch_failed"
+            : "runtime-provider-observation-provider_observation_refused",
+        );
         assert.equal(error.delta?.changed[0]?.path, "handoff.response.status");
         return true;
       });
@@ -95,7 +100,10 @@ for (const fault of ["none", "secret", "provider", "identity", "transport"] as c
     );
     assert.equal(summary.status, fault === "none" ? "observed" : "refused");
     if (fault !== "none") {
-      assert.match(publicText, /runtime-handoff-response-refused/);
+      assert.match(
+        publicText,
+        /runtime-provider-observation-provider_(observation_refused|fetch_failed)/,
+      );
       assert.match(publicText, /handoff.response.status/);
     }
     assert.equal(receipt.status, summary.status);
@@ -219,7 +227,7 @@ for (const fault of ["secret", "denied", "identity"] as const)
         directory,
         encryptionKey,
       }),
-      /runtime-handoff-response-refused/,
+      /runtime-provider-observation-provider_observation_refused/,
     );
     globalThis.fetch = providerFetch;
     const token = await signPoolToken(f.old.env.POOL_APP_SIGNING_KEY!, f.claims);
