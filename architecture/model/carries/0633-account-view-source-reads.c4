@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Selected account views batch current native membership and provider-source eligibility by requirement within each authorization pass. Bounded AppPages queries reuse decoded public catalog metadata only until that query ends; writes and subscriptions keep their existing lifetimes. Linked-app reads first narrow candidates by account, owner and subject, then apply the existing live grant and policy checks. Every accepted account and the exact saved source app remain authorized, and native observations and source presentation keep their existing meaning. Work-count proofs wait for the completed request span and a trace with no missing parents."
+    }
+  }
+}
