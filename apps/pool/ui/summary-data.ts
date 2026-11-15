@@ -306,7 +306,7 @@ export function useSummary(api: PoolApi, range: RangeChoice, by: Breakdown) {
       capacityWatch.current = undefined;
       capacity.stop();
     };
-  }, [api, load]);
+  }, [api, load, key, query]);
   const state = snapshot?.query === query ? snapshot.value : undefined;
   const shown = state ?? snapshot?.value;
   return {

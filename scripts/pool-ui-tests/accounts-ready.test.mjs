@@ -3403,7 +3403,7 @@ test(
     await t.test("capacity-only revisions make zero usage summary reads", async () => {
       viewResult = { ok: true, value: empty };
       await session(
-        async ({ page, frame, clock }) => {
+        async ({ frame, clock }) => {
           answerFresh = true;
           release();
           await frame.waitForFunction(() =>
