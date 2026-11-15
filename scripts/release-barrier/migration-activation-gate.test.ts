@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { requiredSecrets } from "../environment.ts";
 import { test } from "node:test";
 import { exactMigrationRelease, migrationActivationInput } from "./migration-activation-gate.ts";
 
@@ -153,4 +157,97 @@ test("the activation workflow keeps the release lock and excludes all ordinary d
   );
   assert.equal(artifact.if, "always()");
   assert.match(artifact.with.path, /migration-activation\.json$/);
+});
+
+test("the activation workflow starts its candidate client with production deployment config", (context) => {
+  const require = createRequire(new URL("../architecture/package.json", import.meta.url));
+  const { parse } = require("yaml");
+  const workflow = parse(
+    readFileSync(new URL("../../.github/workflows/release-main.yml", import.meta.url), "utf8"),
+  );
+  const step = workflow.jobs["migration-activation"].steps.find((step: { run?: string }) =>
+    step.run?.includes("migration-activation-entry.ts"),
+  );
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const scratch = mkdtempSync(join(tmpdir(), "basalt-activation-config-"));
+  context.after(() => rmSync(scratch, { recursive: true, force: true }));
+  const bin = join(scratch, "bin");
+  mkdirSync(bin);
+  const output = join(scratch, "config.json");
+  const keys = [
+    "BETTER_AUTH_URL",
+    "ALCHEMY_STAGE",
+    "PLANETSCALE_DATABASE_NAME",
+    "PLANETSCALE_REGION",
+    "PLANETSCALE_CLUSTER_SIZE",
+    "CLOUD_SOURCE_NAMESPACE",
+    "GITHUB_CLIENT_ID",
+    "GITHUB_CLIENT_SECRET",
+    "TELEMETRY_RELAY_KEY",
+    "BASALT_RELEASE_CANDIDATE",
+    "BASALT_RELEASE_ATTEMPT",
+    "MIGRATION_ACTIVATION_MODE",
+    "BASALT_HOME_SCHEMA_RETRY_INTENT",
+  ];
+  const client = join(bin, "bun");
+  writeFileSync(
+    client,
+    `#!${process.execPath}
+const fs = require("node:fs");
+fs.writeFileSync(process.env.CONFIG_OUTPUT, JSON.stringify({
+  args: process.argv.slice(2),
+  env: Object.fromEntries(${JSON.stringify(keys)}.map(key => [key, process.env[key]])),
+}));
+process.exit(Number(process.env.CONFIG_CLIENT_EXIT || 0));
+`,
+  );
+  chmodSync(client, 0o700);
+  const source = {
+    ...Object.fromEntries(requiredSecrets.map((key) => [key, "fixture"])),
+    POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_DEPLOYMENT_KEY: "cd".repeat(32),
+    ALCHEMY_STAGE: "production",
+    BASALT_RELEASE_ATTEMPT: "stale-fixture-attempt",
+    BASALT_HOME_SCHEMA_RETRY_INTENT: "",
+    CONFIG_OUTPUT: output,
+    PATH: `${bin}${delimiter}${process.env.PATH}`,
+  };
+  const attempts = new Set<string>();
+  for (const mode of ["plan", "inspect", "f".repeat(64)]) {
+    const result = spawnSync("bash", ["-eo", "pipefail", "-c", step.run], {
+      cwd: root,
+      env: { ...source, MIGRATION_ACTIVATION_MODE: mode },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const captured = JSON.parse(readFileSync(output, "utf8"));
+    assert.deepEqual(captured.args, ["scripts/release-barrier/migration-activation-entry.ts"]);
+    assert.equal(captured.env.BETTER_AUTH_URL, "https://app.signalbox.run");
+    assert.equal(captured.env.ALCHEMY_STAGE, "production");
+    assert.equal(captured.env.PLANETSCALE_DATABASE_NAME, "basalt");
+    assert.equal(captured.env.PLANETSCALE_REGION, "eu-central");
+    assert.equal(captured.env.PLANETSCALE_CLUSTER_SIZE, "PS_5");
+    assert.equal(captured.env.CLOUD_SOURCE_NAMESPACE, "basalt-production-apps");
+    assert.equal(captured.env.GITHUB_CLIENT_ID, source.AUTH_GITHUB_CLIENT_ID);
+    assert.equal(captured.env.GITHUB_CLIENT_SECRET, source.AUTH_GITHUB_CLIENT_SECRET);
+    assert.match(captured.env.TELEMETRY_RELAY_KEY, /^[a-f0-9]{64}$/);
+    assert.equal(
+      captured.env.BASALT_RELEASE_CANDIDATE,
+      execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
+    );
+    assert.match(
+      captured.env.BASALT_RELEASE_ATTEMPT,
+      /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+    );
+    attempts.add(captured.env.BASALT_RELEASE_ATTEMPT);
+    assert.equal(captured.env.MIGRATION_ACTIVATION_MODE, mode);
+    assert.equal(captured.env.BASALT_HOME_SCHEMA_RETRY_INTENT, "");
+  }
+  assert.equal(attempts.size, 3);
+  const failed = spawnSync("bash", ["-eo", "pipefail", "-c", step.run], {
+    cwd: root,
+    env: { ...source, MIGRATION_ACTIVATION_MODE: "plan", CONFIG_CLIENT_EXIT: "17" },
+    encoding: "utf8",
+  });
+  assert.notEqual(failed.status, 0);
 });
