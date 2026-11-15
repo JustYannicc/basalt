@@ -7,6 +7,7 @@ import {
   runtimeFailureCode,
   runtimeResponseDiagnostic,
 } from "../runtime-route-diagnostic.ts";
+import { runtimeOperation } from "../runtime-endpoint-failure.ts";
 import { Schema } from "effect";
 import {
   SlotIdentity,
@@ -254,6 +255,7 @@ export async function runtimeRequest(
     } else return new Response(null, { status: 404 });
     return new Response(null, { status: 204 });
   } catch (error) {
+    endpoint.recordFailure(runtimeOperation(request), error);
     return Response.json(
       {
         error: "runtime-refused",

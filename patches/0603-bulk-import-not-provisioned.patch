@@ -1,0 +1,79 @@
+diff --git a/apps/hosted/server/src/contracts/pool-usage-import.ts b/apps/hosted/server/src/contracts/pool-usage-import.ts
+--- a/apps/hosted/server/src/contracts/pool-usage-import.ts
++++ b/apps/hosted/server/src/contracts/pool-usage-import.ts
+@@ -49,6 +49,12 @@
+   status: 409,
+   message: "Usage import was refused. Check the source and mapping, then run a new dry run.",
+   fields: {
+-    reason: Schema.Literals(["invalid_query", "identity_conflict", "unauthorized", "unavailable"]),
++    reason: Schema.Literals([
++      "invalid_query",
++      "identity_conflict",
++      "unauthorized",
++      "unavailable",
++      "not_provisioned",
++    ]),
+   },
+ });
+diff --git a/apps/hosted/server/src/implementation/pool-usage-bulk-import.ts b/apps/hosted/server/src/implementation/pool-usage-bulk-import.ts
+--- a/apps/hosted/server/src/implementation/pool-usage-bulk-import.ts
++++ b/apps/hosted/server/src/implementation/pool-usage-bulk-import.ts
+@@ -17,7 +17,12 @@
+ import { policyDatabase, requireAppAccessAs, resourceAuthority } from "./resource-policy.ts";
+ 
+ const Refusal = Schema.Struct({
+-  error: Schema.Literals(["invalid_query", "identity_conflict", "unauthorized"]),
++  error: Schema.Literals([
++    "invalid_query",
++    "identity_conflict",
++    "unauthorized",
++    "bulk_import_not_provisioned",
++  ]),
+ });
+ 
+ export const importPoolUsageBulk = (app: AppId, input: PoolUsageBulkImportInput) =>
+@@ -39,7 +44,11 @@
+     if (response.status !== 200) {
+       const refused = Schema.decodeUnknownOption(Refusal)(response.body);
+       return yield* new PoolUsageImportRejected({
+-        reason: Option.isSome(refused) ? refused.value.error : "unavailable",
++        reason: Option.isSome(refused)
++          ? refused.value.error === "bulk_import_not_provisioned"
++            ? "not_provisioned"
++            : refused.value.error
++          : "unavailable",
+       });
+     }
+     return yield* Schema.decodeUnknownEffect(PoolUsageBulkImportStatus)(response.body);
+diff --git a/e2e/tests/pool-owner-import.spec.ts b/e2e/tests/pool-owner-import.spec.ts
+--- a/e2e/tests/pool-owner-import.spec.ts
++++ b/e2e/tests/pool-owner-import.spec.ts
+@@ -312,6 +312,28 @@
+         });
+         expect(refused.status).toBe(409);
+         expect(refused.body).toMatchObject({ reason: "identity_conflict" });
++        yield* bulk.reply(503, {
++          error: "bulk_import_not_provisioned",
++          message: "Bulk import is not provisioned yet.",
++        });
++        const unprovisioned = yield* api.request(actors.owner, "POST", bulkPath, {
++          operation: "status",
++          job,
++        });
++        expect(unprovisioned.status).toBe(409);
++        expect(unprovisioned.body).toMatchObject({
++          _tag: "PoolUsageImportRejected",
++          reason: "not_provisioned",
++        });
++        for (const error of ["backend_unavailable", "unknown_backend_code"]) {
++          yield* bulk.reply(503, { error });
++          const unavailable = yield* api.request(actors.owner, "POST", bulkPath, {
++            operation: "status",
++            job,
++          });
++          expect(unavailable.status).toBe(409);
++          expect(unavailable.body).toMatchObject({ reason: "unavailable" });
++        }
+         yield* bulk.reply(200, { job, state: "staged" });
+         expect(
+           (yield* api.request(actors.owner, "POST", bulkPath, { operation: "status", job })).status,

@@ -149,7 +149,7 @@ test("SQL failures and scope refusals start no R2 work", async () => {
           yield* sql`insert into hosted_organization_removal values ('org_one')`;
         else
           yield* sql`insert into executor_deployments
-        select 'dpl_extra_' || n, 'code_one', 'organization:org_one', 'bld_extra_' || n from generate_series(1, 1000) as n`;
+        select 'dpl_extra_' || n, 'code_one', 'organization:org_one', 'bld_one' from generate_series(1, 1000) as n`;
         const exit = yield* runner
           .runProductionOperation(
             { ...settings, retainedFrameworkObjects: retainedFrameworkObjects(fixture.bucket) },

@@ -218,7 +218,7 @@ test("request estimates price only the cursor page, batch new targets and retain
     assert.ok(first.next);
     const imported = first.records.find((row) => row.model === "imported-model")!;
     assert.equal(imported.api_estimate?.amount, null);
-    assert.match(imported.api_estimate?.reason ?? "", /imported records/);
+    assert.match(imported.api_estimate?.reason ?? "", /token counts are missing/);
     assert.equal(imported.cost, "12.000000000000");
     assert.equal(imported.currency, "USD");
     const home = first.records.filter((row) => row.model !== "imported-model");
@@ -230,7 +230,7 @@ test("request estimates price only the cursor page, batch new targets and retain
         .flat()
         .map((target) => target.model)
         .sort(),
-      home.map((row) => row.model).sort(),
+      first.records.map((row) => row.model).sort(),
     );
     const next = await readPricedRequests(
       url.toString(),

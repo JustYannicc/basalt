@@ -1088,12 +1088,31 @@ for (const retire of [false, true])
           POOL_APP_SIGNING_KEY: key,
           POOL_IMAGE_HASH: "fixture",
           TOOLS_SERVICE: {
-            fetch: async (input: string) => {
+            fetch: async (input: string, init?: RequestInit) => {
               const path = new URL(input).pathname;
               if (path === "/api/internal/pool-organization")
                 return new Response(null, { status: 204 });
               if (path === "/api/internal/account-observations/refresh")
                 return new Response(null, { status: 204 });
+              if (path === "/api/internal/change-revisions") {
+                const request = new Request(input, init);
+                assert.equal(request.method, "POST");
+                const { envelope } = (await request.json()) as { envelope: string };
+                const publication = await openEnvelope(key, "sbcr1", envelope);
+                assert.ok(
+                  typeof publication === "object" &&
+                    publication !== null &&
+                    "at" in publication &&
+                    typeof publication.at === "number",
+                );
+                assert.ok(publication.at >= start && publication.at <= Date.now());
+                assert.partialDeepStrictEqual(publication, {
+                  action: "publish-changes",
+                  expiresAt: publication.at + 30_000,
+                  changes: [{ scope: "pool:a", hint: { topic: "pool-samples", resource: "a" } }],
+                });
+                return new Response(null, { status: 204 });
+              }
               assert.equal(path, "/api/internal/pool-membership");
               reads++;
               entered.resolve();
@@ -1478,18 +1497,20 @@ test("a deferred base controller receives no startup call from the signed adopti
       jurisdiction: () => ({ getByName: () => controller }),
     },
   };
-  const request = async () =>
-    new Request("https://private.invalid/deployment-readiness", {
+  const request = async () => {
+    const at = Date.now();
+    return new Request("https://private.invalid/deployment-readiness", {
       method: "POST",
       body: JSON.stringify({
         envelope: await signEnvelope(key, "sbpdr1", {
           ...target,
           phase: "adoption",
-          at: Date.now(),
-          expiresAt: Date.now() + 60_000,
+          at,
+          expiresAt: at + 60_000,
         }),
       }),
     });
+  };
   for (let attempt = 0; attempt < 2; attempt++) {
     const response = await PoolOperations.prototype.fetch.call({ env }, await request());
     assert.equal(response.status, 503);
@@ -1558,6 +1579,7 @@ test("five-second membership alarms run persisted reporting jobs only every five
         },
         handoff: { warm: async () => {} },
         control: { expire: async () => {} },
+        allowances: { refresh: async () => {} },
         prices: { run: async () => {} },
         overviewPrices: { refresh: async () => {} },
         usage: {

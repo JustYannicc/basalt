@@ -14,7 +14,8 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { capacityFixture, overviewFixture } from "./overview-fixture.mjs";
+import { capacityFixture } from "./overview-fixture.mjs";
+import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
 import { handleSelfUsageImport } from "../../src/pool/model-history/self-import-http.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
 import { bundlePoolApp } from "../pool-app-bundle.ts";
@@ -52,6 +53,20 @@ export async function importAppFixture(connectionString) {
     manager = true,
     hold,
     failReply = false;
+  const revisions = [
+    "accounts",
+    "apps",
+    "membership",
+    "session",
+    "pool-readings",
+    "pool-usage",
+    "pool-samples",
+    "pool-prices",
+  ].map((topic) => ({ topic, resource: "fixture", revision: "1" }));
+  const heads = () => ({
+    revisions,
+    identity: manager ? "fixture-manager" : "fixture-member",
+  });
   const server = createServer(async (request, response) => {
     try {
       const body = async () => {
@@ -63,7 +78,14 @@ export async function importAppFixture(connectionString) {
         response.setHeader("content-type", "application/json");
         response.end(JSON.stringify(value));
       };
-      if (request.url === "/main.js") {
+      if (request.url === "/_executor/api/changes/current") {
+        json(heads());
+      } else if (request.url === "/_executor/api/changes") {
+        response.setHeader("content-type", "text/event-stream");
+        response.write(
+          `event: current\ndata: ${JSON.stringify({ kind: "current", ...heads(), snapshotRequired: true })}\n\n`,
+        );
+      } else if (request.url === "/main.js") {
         response.setHeader("content-type", "text/javascript");
         response.end(javascript);
       } else if (request.url === "/main.css") {
@@ -81,13 +103,32 @@ export async function importAppFixture(connectionString) {
         response.end(
           '<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/main.css"></head><body><script type="application/json" id="executor-context">{"version":"fixture"}</script><div id="root"></div><script type="module" src="/main.js"></script></body></html>',
         );
-      } else if (request.url === "/_executor/api/pool-usage/overview") {
+      } else if (request.url === "/_executor/api/pool-usage/summary") {
         const { input } = JSON.parse(await body());
         if (!manager) {
           response.writeHead(403).end();
           return;
         }
-        json(overviewFixture(input, usage));
+        const { default: pg } = await import(
+          createRequire(join(root, "package.json")).resolve("pg")
+        );
+        const database = new pg.Client({ connectionString });
+        await database.connect();
+        try {
+          json(
+            await poolUsageSummary(
+              database,
+              {
+                ...input,
+                pool: "fixture-ui-pool",
+                authority: { canManage: true, mappingProven: false, accounts: [] },
+              },
+              async () => ({ prices: [], issues: [] }),
+            ),
+          );
+        } finally {
+          await database.end();
+        }
       } else if (request.url === "/_executor/api/pool-usage/personal-overview") {
         response.writeHead(503).end();
       } else if (
@@ -271,6 +312,7 @@ for(const [entry,target] of [['apps/pool/ui/main.tsx','browser'],['host.ts','nod
   const javascript = readFileSync(join(directory, "dist/main.js"));
   const { build } = require("esbuild");
   const styles = await build({
+    conditions: ["style"],
     entryPoints: [join(app, "ui/style.css")],
     write: false,
     bundle: true,

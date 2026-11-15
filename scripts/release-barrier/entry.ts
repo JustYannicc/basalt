@@ -1,4 +1,5 @@
 import { assertReleaseStateVersion } from "./release-state-version.ts";
+import { assertMigrationActivationSettled } from "./migration-activation-state.ts";
 import { homeSchemaRetryAuthorization } from "./home-schema-retry.ts";
 import { loadDeclaredChanges } from "./declared-file.ts";
 import { undoForwardAdoption } from "./forward-undo.ts";
@@ -8,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { State } from "alchemy/State/State";
 import { evalStack } from "alchemy/Stack";
-import { Context, Effect } from "effect";
+import { Config, Context, Effect, Redacted } from "effect";
 import { recoverStack } from "./recover-stack.ts";
 import { readRecoveryManifest } from "./recovery.ts";
 import { deployStack } from "./deploy-stack.ts";
@@ -100,6 +101,11 @@ process.exitCode = await releaseOutcome(evidence, process.env.GITHUB_STEP_SUMMAR
                     containerRecovery,
                   )
                 : Effect.gen(function* () {
+                    yield* assertMigrationActivationSettled(
+                      yield* Context.get(compiled.services, State),
+                      compiled,
+                      Redacted.value(yield* Config.Redacted("EXECUTOR_ENCRYPTION_KEY")),
+                    );
                     const declarations = yield* Effect.tryPromise({
                       try: () =>
                         loadDeclaredChanges(fileURLToPath(new URL("../../", import.meta.url))),

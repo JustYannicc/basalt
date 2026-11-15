@@ -7,7 +7,7 @@ import type { TunnelEnvironment } from "./access.ts";
 const tunnelUrl = "https://app.example.test/native/v1/tunnel";
 
 // The access lookup answers 401, so a request that reaches it has passed the handshake checks.
-async function handshake(origin?: string | string[]) {
+async function handshake(origin?: string | string[], protocol = tunnelProtocol) {
   let accessReads = 0;
   const env: TunnelEnvironment = {
     TOOLS_SERVICE: {
@@ -21,7 +21,7 @@ async function handshake(origin?: string | string[]) {
   };
   const headers = new Headers({
     upgrade: "websocket",
-    "sec-websocket-protocol": tunnelProtocol,
+    "sec-websocket-protocol": protocol,
     authorization: "Bearer synthetic-native-token",
   });
   for (const value of origin === undefined ? [] : [origin].flat()) headers.append("origin", value);
@@ -31,6 +31,12 @@ async function handshake(origin?: string | string[]) {
 
 test("a native client without an Origin reaches bearer access", async () => {
   assert.deepEqual(await handshake(), { status: 401, accessReads: 1 });
+});
+
+test("v2 uses the same bearer admission and unsupported protocols refuse before admission", async () => {
+  assert.deepEqual(await handshake(undefined, "basalt.tunnel.v2"), { status: 401, accessReads: 1 });
+  for (const protocol of ["basalt.tunnel.v3", "basalt.tunnel.v2, basalt.tunnel.v1"])
+    assert.deepEqual(await handshake(undefined, protocol), { status: 400, accessReads: 0 });
 });
 
 test("a React Native client sending this server's own Origin reaches bearer access", async () => {

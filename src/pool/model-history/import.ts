@@ -39,6 +39,21 @@ export async function parseUsageImport(
   raw: unknown,
   owner: { pool: string; person: string },
 ): Promise<ParsedImport> {
+  return parseImport(raw, owner, historyBatchSize);
+}
+
+export async function parseBulkUsageImport(
+  raw: unknown,
+  owner: { pool: string; person: string },
+): Promise<ParsedImport> {
+  return parseImport(raw, owner, 5000);
+}
+
+async function parseImport(
+  raw: unknown,
+  owner: { pool: string; person: string },
+  limit: number,
+): Promise<ParsedImport> {
   const input = historyObject(raw);
   const accountMappings = importAccountMappings(input.accountMappings);
   if (
@@ -97,14 +112,12 @@ export async function parseUsageImport(
   if (input.format === "cpa-v6") {
     selected = await legacySnapshot(JSON.parse(input.data), context, {
       offset,
-      limit: historyBatchSize,
+      limit,
       providers,
     });
   } else {
     const lines = input.data.split(/\r?\n/).filter((line) => line.trim());
-    const page = lines
-      .slice(offset, offset + historyBatchSize)
-      .map((line) => historyObject(JSON.parse(line)));
+    const page = lines.slice(offset, offset + limit).map((line) => historyObject(JSON.parse(line)));
     homeUsageIds = input.format === "home-v8-jsonl" ? page.map((row) => counter(row.usage_id)) : [];
     const parse = input.format === "cpamp-v1-jsonl" ? importedManagerRequest : importedHomeRequest;
     selected = {

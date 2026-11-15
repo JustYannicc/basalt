@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A session refresh that fails to answer keeps the last known signed-in user, so the organization list and the pages that need it keep their retained content. Only a confirmed signed-out session empties the organization list. The server authenticates every organization request regardless of what the browser retains."
+    }
+  }
+}

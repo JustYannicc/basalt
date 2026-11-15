@@ -11,17 +11,15 @@ diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
  		models = append(models, formatHomeCodexModelWithSettings(entry, cfg))
  	}
  
-@@ -915,6 +918,10 @@
+@@ -915,4 +918,8 @@
  }
  
  type homeModelEntry struct {
-+	nativeProtocol         string
-+	nativeEndpoints        []string
-+	description            string
-+	releaseDate            string
- 	id                     string
- 	created                int64
- 	ownedBy                string
++	nativeProtocol  string
++	nativeEndpoints []string
++	releaseDate     string
++
+ 	id                        string
 @@ -954,6 +961,11 @@
  		if entry.ownedBy != "" {
  			model["owned_by"] = entry.ownedBy
@@ -64,17 +62,14 @@ diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
  		out = append(out, formatHomeGeminiModel(entry))
  	}
  	return out
-@@ -1281,6 +1302,10 @@
+@@ -1281,3 +1301,7 @@
  			indexByID[id] = len(out)
  			out = append(out, homeModelEntry{
- 				id:                     id,
-+				nativeProtocol:         nativeProtocolFromHomeModel(model),
-+				nativeEndpoints:        nativeEndpointsFromHomeModel(model),
-+				description:            homeModelString(model, "description"),
-+				releaseDate:            homeModelString(model, "version"),
- 				created:                created,
- 				ownedBy:                ownedBy,
- 				displayName:            displayName,
++				nativeProtocol:  nativeProtocolFromHomeModel(model),
++				nativeEndpoints: nativeEndpointsFromHomeModel(model),
++				releaseDate:     homeModelString(model, "version"),
++
+ 				id:                        id,
 @@ -1367,3 +1392,27 @@
  	}
  	return 0

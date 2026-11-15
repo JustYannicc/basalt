@@ -11,6 +11,7 @@ export type {
   CapacityRawHistory,
 } from "../../../apps/pool/capacity-contract.ts";
 import { digest } from "../backend-users.ts";
+import { capacityAccountReference } from "./account-reference.ts";
 import { ChunkStorage, UsageQueue, type UsageStorage } from "../usage-storage.ts";
 import type { CapacityReading } from "./normalize.ts";
 
@@ -18,6 +19,10 @@ const hourMs = 3_600_000;
 const dayMs = 24 * hourMs;
 const weekHours = 7 * 24;
 const maxDemandSampleGap = 15 * 60_000;
+// Fixed-window deltas span the 30-minute collector cadence plus one sampler tick.
+const maxFixedSourceGap = 35 * 60_000;
+const fixedDemandWindow = (reading: CapacityReading) =>
+  reading.windowSeconds === 604_800 || reading.mode?.toLowerCase() === "fixed";
 const retainedHours = 400 * 24;
 const maxGroups = 64;
 const maxPlansPerGroup = 32;
@@ -47,6 +52,9 @@ const readingKey = (reading: CapacityReading) =>
     reading.unit.id,
     reading.account,
   ]);
+const accountWindowKey = (
+  value: Pick<CapacityAccountState, "account" | "provider" | "windowSeconds">,
+) => JSON.stringify([value.account, value.provider, value.windowSeconds]);
 const text = (value: unknown, max: number): value is string =>
   typeof value === "string" && value.length > 0 && value.length <= max;
 
@@ -76,6 +84,8 @@ export interface CapacityAccountState {
   readonly provider: string;
   readonly windowSeconds: number;
   readonly usable: boolean;
+  /** Successful active source inventory may retain a historical cursor past its reading TTL. */
+  readonly sourceContinuous?: boolean;
   readonly bankedAvailable: number | null;
   /** Redemption receipts only, already confirmed by the reset service. */
   readonly bankedUsed?: readonly { readonly id: string; readonly at: number }[];
@@ -180,6 +190,9 @@ interface RollingChainEntry {
   revision: string;
   complete: boolean;
 }
+interface StoredAccountState extends CapacityAccountState {
+  sourceSince?: number;
+}
 interface HistoryIndex {
   version: 1;
   days: string[];
@@ -187,10 +200,11 @@ interface HistoryIndex {
   fromHour: number;
   groups: Record<string, GroupCursor>;
   trackingSince?: number;
+  sourceSince?: number;
   previous?: CapacityReading[];
   previousExpected?: CapacityExpectedCohort[];
   latest?: CapacityReading[];
-  accountStates?: CapacityAccountState[];
+  accountStates?: StoredAccountState[];
   unclassifiedAccounts?: { account: string; provider: string }[];
   bankedReceipts?: Record<string, number>;
   demandFrom?: number;
@@ -321,7 +335,12 @@ function aggregate(readings: readonly CapacityReading[], at: number): CapacityAg
     knownWeightCount = 0;
   const weights = new Map<
     string,
-    { source: CapacityReading["source"]; revision: string; accountCount: number }
+    {
+      source: CapacityReading["source"];
+      revision: string;
+      accountCount: number;
+      allowance?: CapacityReading["allowance"];
+    }
   >();
   for (const reading of ordered) {
     remaining += reading.remaining;
@@ -329,10 +348,16 @@ function aggregate(readings: readonly CapacityReading[], at: number): CapacityAg
     observedFrom = Math.min(observedFrom, reading.observedAt);
     observedTo = Math.max(observedTo, reading.observedAt);
     if (reading.knownWeight) knownWeightCount++;
-    const key = JSON.stringify([reading.source, reading.revision]),
+    const key = JSON.stringify([reading.source, reading.revision, reading.allowance ?? null]),
       weight = weights.get(key);
     if (weight) weight.accountCount++;
-    else weights.set(key, { source: reading.source, revision: reading.revision, accountCount: 1 });
+    else
+      weights.set(key, {
+        source: reading.source,
+        revision: reading.revision,
+        accountCount: 1,
+        ...(reading.allowance ? { allowance: reading.allowance } : {}),
+      });
   }
   const provenance = [...weights.values()].sort(
     (a, b) => a.source.localeCompare(b.source) || a.revision.localeCompare(b.revision),
@@ -663,12 +688,15 @@ export class CapacityHistory {
           dayWrites.set(day, history);
         }
       }
-      const previous = index.previous ?? [];
+      const samplerInterrupted =
+        index.lastAt !== null && snapshot.at - index.lastAt > maxDemandSampleGap;
+      const sourceSince = samplerInterrupted ? snapshot.at : index.sourceSince;
+      const previous = !samplerInterrupted ? (index.previous ?? []) : [];
       const priorLatestByKey = new Map(
         (index.latest ?? previous).map((reading) => [readingKey(reading), reading]),
       );
       const latestByKey = new Map(priorLatestByKey);
-      const accountHash = async (account: string) => digest(`${pool}\u0000${account}`);
+      const accountHash = (account: string) => capacityAccountReference(pool, account);
       const hashedCurrent = await Promise.all(
         validCurrent.map(async (reading) => ({
           ...reading,
@@ -754,18 +782,40 @@ export class CapacityHistory {
           else if (rollingChain[group]?.[account]?.complete) accounts[account] = [];
           else delete accounts[account];
         }
-      const previousByKey = new Map(previous.map((reading) => [readingKey(reading), reading]));
       const hashedCurrentBySource = new Map(
         validCurrent.map((reading, index) => [readingKey(reading), hashedCurrent[index]!]),
       );
+      const priorStates = new Map(
+        (index.accountStates ?? []).map((state) => [accountWindowKey(state), state]),
+      );
       const nextAccountStates = snapshot.accountStates
         ? await Promise.all(
-            snapshot.accountStates.map(async (state) => ({
-              ...state,
-              account: await accountHash(state.account),
-            })),
+            snapshot.accountStates.map(async (state) => {
+              const account = await accountHash(state.account);
+              const old = priorStates.get(accountWindowKey({ ...state, account }));
+              const since =
+                state.sourceContinuous === false ||
+                (state.sourceContinuous === true && old?.sourceContinuous === undefined)
+                  ? snapshot.at
+                  : old?.sourceSince;
+              return { ...state, account, sourceSince: since };
+            }),
           )
         : (index.accountStates ?? []);
+      const currentStates = new Map(
+        nextAccountStates.map((state) => [accountWindowKey(state), state]),
+      );
+      const currentSources = new Set(hashedCurrent.map(accountWindowKey));
+      // A fresh-looking cached source cannot restart training after lost continuity.
+      const sourceEligible = (reading: CapacityReading) => {
+        const state = currentStates.get(accountWindowKey(reading));
+        return (
+          reading.observedAt >= Math.max(sourceSince ?? -Infinity, state?.sourceSince ?? -Infinity)
+        );
+      };
+      const previousByKey = new Map(
+        previous.filter(sourceEligible).map((reading) => [readingKey(reading), reading]),
+      );
       const unclassifiedAccounts = snapshot.unclassifiedAccounts
         ? await Promise.all(
             snapshot.unclassifiedAccounts.map(async (entry) => ({
@@ -875,6 +925,7 @@ export class CapacityHistory {
       const censoredGroups = new Set<string>();
       for (const reading of validCurrent) {
         const hashed = hashedCurrentBySource.get(readingKey(reading))!;
+        if (!sourceEligible(hashed)) continue;
         const old = previousByKey.get(readingKey(hashed));
         const group = cohortGroup(reading);
         if (reading.windowSeconds === 18_000 && reading.mode?.toLowerCase().includes("rolling")) {
@@ -1029,7 +1080,7 @@ export class CapacityHistory {
                 kind: "observed",
               });
             const elapsed = reading.observedAt - old.resetAt;
-            if (elapsed > 0 && reading.observedAt - old.observedAt <= 15 * 60_000) {
+            if (elapsed > 0 && reading.observedAt - old.observedAt <= maxFixedSourceGap) {
               const items = intervals.get(group) ?? [];
               items.push({
                 reading,
@@ -1046,7 +1097,11 @@ export class CapacityHistory {
           continue;
         }
         const elapsed = reading.observedAt - old.observedAt;
-        if (elapsed < 1_000 || elapsed > 15 * 60_000) continue;
+        if (
+          elapsed < 1_000 ||
+          elapsed > (fixedDemandWindow(reading) ? maxFixedSourceGap : maxDemandSampleGap)
+        )
+          continue;
         if (reading.remaining > old.remaining) {
           if (old.remaining <= 1e-9 || reading.remaining <= 1e-9) censoredGroups.add(group);
           continue;
@@ -1350,7 +1405,20 @@ export class CapacityHistory {
         fromHour: firstRetainedHour,
         groups,
         trackingSince: index.trackingSince ?? snapshot.at,
-        previous: hashedCurrent,
+        // This cursor only compares historical fixed-window sources. Expired readings
+        // never enter current capacity or rolling reconstruction through this path.
+        sourceSince,
+        previous: [
+          ...previous
+            .filter((reading) => fixedDemandWindow(reading) && sourceEligible(reading))
+            .filter(
+              (reading) =>
+                snapshot.at - reading.observedAt <= maxFixedSourceGap &&
+                !currentSources.has(accountWindowKey(reading)) &&
+                currentStates.get(accountWindowKey(reading))?.sourceContinuous === true,
+            ),
+          ...hashedCurrent.filter(sourceEligible),
+        ],
         previousExpected: [...expected.values()],
         latest: [...latestByKey.values()],
         accountStates: nextAccountStates,

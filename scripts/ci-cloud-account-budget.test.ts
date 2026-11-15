@@ -14,16 +14,72 @@ const workflow = parse(
 const transport = "host-managed-accounts-cloud";
 const actions = "host-managed-accounts-cloud-actions";
 const groups = {
-  "isolated-cold-listing-telemetry": { job: transport, count: 1 },
-  "the-private-oauth-transport-and-hosted-placement": { job: transport, count: 19 },
-  "account-policy-and-import": { job: actions, count: 12 },
-  "listed-account-actions": { job: actions, count: 12 },
+  "isolated-cold-listing-telemetry": { job: transport, scenarios: ["coldListingTelemetry"] },
+  "the-private-oauth-transport-and-hosted-placement": {
+    job: transport,
+    scenarios: [
+      "accountAppTabs",
+      "accountChoice",
+      "accountConnectionQuery",
+      "accountLinking",
+      "accountSetDeclarations",
+      "appAccountPicker",
+      "appWorkerCredentialRotation",
+      "cloudMcpObjectPool",
+      "cloudMcpSessionRouting",
+      "connectedAgents",
+      "groupedAccounts",
+      "hostedAppAccountsManagerBrowser",
+      "hostedAppAccountsMemberBrowser",
+      "hostedAppAccountWebhookRemoval",
+      "hostedAppSchedulesBrowser",
+      "importRuntimeEvidence",
+      "mcpOAuthWithoutResource",
+      "mcpProtocol",
+      "oauthErrorResponses",
+    ],
+  },
+  "account-policy-and-import": {
+    job: actions,
+    scenarios: [
+      "accountCacheScope",
+      "accountCheckFailureDetail",
+      "accountIdentityPolicy",
+      "appServiceSection",
+      "hostedAppLinkRoleLock",
+      "importDiagnostics",
+      "invitationRolePrivateAccounts",
+      "invitationRoles",
+      "mcpAccountChoice",
+      "mcpStaleRefresh",
+      "oauthClientAuthentication",
+      "resourceSharing",
+    ],
+  },
+  "listed-account-actions": {
+    job: actions,
+    scenarios: [
+      "dashboardReadBatches",
+      "listedAccountDelete",
+      "listedAccountDeleteMobile",
+      "listedAccountDemotion",
+      "listedAccountDemotionMobile",
+      "listedAccountEdit",
+      "listedAccountEditMobile",
+      "listedAccountReadonly",
+      "listedAccountReadonlyMobile",
+      "listedAppAccountEdit",
+      "listedAppAccountEditMobile",
+      "listedBindingRemove",
+      "listedBindingRemoveMobile",
+    ],
+  },
 };
 
-test("all 44 Cloud account scenarios keep one owner and their original isolated command", () => {
+test("all 45 Cloud account scenarios keep one owner and their original isolated command", () => {
   const declarations = readDeclarations();
   const all = new Set<string>();
-  for (const [name, { job, count }] of Object.entries(groups)) {
+  for (const [name, { job, scenarios }] of Object.entries(groups)) {
     const id = `${transport}:${name}`;
     assert.deepEqual(declarations.groups[id], {
       job,
@@ -37,7 +93,7 @@ test("all 44 Cloud account scenarios keep one owner and their original isolated 
         .filter(([, runs]) => runs.includes(id))
         .map(([key]) => key),
     );
-    assert.equal(selected.length, count, id);
+    assert.deepEqual(selected.sort(), [...scenarios].sort(), id);
     for (const key of selected) {
       assert.ok(!all.has(key), `Cloud scenario scheduled twice: ${key}`);
       all.add(key);
@@ -54,7 +110,7 @@ test("all 44 Cloud account scenarios keep one owner and their original isolated 
       },
     ]);
   }
-  assert.equal(all.size, 44);
+  assert.equal(all.size, 45);
 });
 
 test("both jobs prepare separately and retain evidence inside unchanged deadlines", () => {
@@ -81,6 +137,7 @@ test("source selection and the aggregate cannot skip either Cloud account job", 
     "cold-listing-telemetry.spec.ts",
     "cloud-mcp-session-routing.spec.ts",
     "account-identity-policy.spec.ts",
+    "dashboard-read-batches.spec.ts",
     "listed-account-actions.spec.ts",
   ]) {
     const plan = declarations.files[file]!;

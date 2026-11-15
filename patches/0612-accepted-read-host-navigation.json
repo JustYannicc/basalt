@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-accepted-read-host-navigation",
+  "file": "0612-accepted-read-host-navigation.patch",
+  "content_sha256": "45e30d680d27cf10d50b598c4c5143f41b6a00677e85e31734af3dfed504e447",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -113,6 +113,14 @@ const program = Effect.gen(function* () {
         from hosted_change_pending p where scope=$1 and topic='accounts' and resource='*'`,
       params: [scope],
     });
+  const maintenanceTick = () =>
+    Effect.promise(async () => {
+      const response = await fetch(
+        `${h.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
+      );
+      assert.equal(response.status, 200, "the controlled maintenance tick succeeds");
+      await response.text();
+    }).pipe(Effect.timeout("60 seconds"));
   // A pass can precede a provisioning tail. Each bounded retry drives the public delivery path.
   const barrier = () => {
     const progress = { attempts: 0, last: undefined };
@@ -134,11 +142,42 @@ const program = Effect.gen(function* () {
       }),
     );
   };
+  // A visible owner pool can precede the other member's initial account and app commits.
+  // Scheduled Basalt maintenance is unrelated to this one-time fixture setup milestone.
+  yield* until(
+    Effect.gen(function* () {
+      const rows = yield* database.run({
+        sql: `select kind, status from hosted_provisioning
+          where organization_id=$1 and kind in ('team', 'member') and id not like 'basalt-%'`,
+        params: [h.actors.organization.id],
+      });
+      diagnostics.initialProvisioning = rows;
+      return rows;
+    }),
+    (rows) =>
+      rows.some((row) => row.kind === "team") && rows.every((row) => row.status === "succeeded"),
+    "initial organization provisioning did not finish before measuring reads",
+  );
+  const beforeMaintenance = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+  // Initial provisioning does not include the first tick's account checks and rollout jobs.
+  yield* maintenanceTick();
   yield* barrier();
+  const afterMaintenance = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+  diagnostics.initialMaintenance = {
+    before: beforeMaintenance.revisions,
+    after: afterMaintenance.revisions,
+  };
   const browser = yield* Effect.acquireRelease(
     Effect.promise(() => chromium.launch({ headless: true })),
     (browser) => Effect.promise(() => browser.close()),
   );
+
+  yield* browserWork(() => h.fixture.scoped.initialize(pool.id, identity.user.id));
+  yield* browserWork(() => h.fixture.scoped.commitRequest("synthetic-account-baseline"));
+  const seriesReads = () =>
+    h.fixture.scoped.reads.filter((read) => read.kind === "poolUsageSeries").length;
+  const successReads = () =>
+    h.fixture.scoped.reads.filter((read) => read.kind === "lastSuccessAt").length;
 
   for (const width of [1280, 390]) {
     const context = yield* Effect.acquireRelease(
@@ -162,7 +201,8 @@ const program = Effect.gen(function* () {
     );
     yield* browserWork(() => splitRoutedReads(context, browserOrigin));
     const page = yield* browserWork(() => context.newPage());
-    let reads = 0;
+    let reads = 0,
+      routingReads = 0;
     diagnostics.accountProgress = { width, phase: "initial", responses: [], heads: [] };
     const progress = diagnostics.accountProgress;
     const inFlight = new Set(),
@@ -179,7 +219,16 @@ const program = Effect.gen(function* () {
     page.on("request", (request) => {
       const count = accountReads(request);
       reads += count;
-      if (count) inFlight.add(request);
+      const routing =
+        request.method() === "GET" &&
+        new URL(request.url()).pathname.endsWith("/pool-credit-policy");
+      if (routing) routingReads++;
+      if (
+        routing ||
+        count ||
+        /\/pool-usage\/(?:series|last-success)$/.test(new URL(request.url()).pathname)
+      )
+        inFlight.add(request);
     });
     page.on("requestfinished", finished);
     page.on("requestfailed", (request) => {
@@ -243,10 +292,11 @@ const program = Effect.gen(function* () {
       }),
     );
     const row = (name) => page.getByRole("button", { name: `Manage ${name}`, exact: true }).first();
-    const updating = page
-      .getByRole("status")
-      .filter({ hasText: /updating/i })
-      .first();
+    const updating = () =>
+      page
+        .getByRole("status")
+        .filter({ hasText: /updating/i })
+        .first();
     const flush = () =>
       Promise.all([
         page.evaluate(
@@ -280,7 +330,7 @@ const program = Effect.gen(function* () {
     );
     yield* browserWork(async () => {
       await resourceIdle();
-      await updating.waitFor({ state: "hidden" });
+      await updating().waitFor({ state: "hidden" });
       await flush();
       await resourceIdle();
       await shot("before");
@@ -314,7 +364,7 @@ const program = Effect.gen(function* () {
     checks.push(`Accounts at ${width}: real host write advanced SQL journal`);
     yield* browserWork(async () => {
       await row(label).waitFor();
-      await updating.waitFor();
+      await updating().waitFor();
       check(
         `Accounts at ${width}: held update retains the original row`,
         await row(label).isVisible(),
@@ -337,7 +387,7 @@ const program = Effect.gen(function* () {
     yield* browserWork(async () => {
       await row(nextLabel).waitFor();
       progress.phase = "await-updating-hidden";
-      await updating.waitFor({ state: "hidden" });
+      await updating().waitFor({ state: "hidden" });
       await resourceIdle();
       await flush();
       await shot("after");
@@ -380,11 +430,187 @@ const program = Effect.gen(function* () {
       yield* head(),
       afterHead,
     );
+    // The actual pool journal feeds the host's usage cells, independently of account observations.
+    progress.phase = "await-initial-host-usage";
+    yield* until(
+      Effect.sync(seriesReads),
+      (count) => count > 0,
+      "the Accounts page did not read pool usage",
+    );
+    yield* browserWork(resourceIdle);
+    const usageBefore = { series: seriesReads(), success: successReads() };
+    assert.ok(usageBefore.series >= 2, "the real Accounts page loaded both pool usage ranges");
+    assert.ok(usageBefore.success > 0, "the mapped Accounts page read last-success");
+    diagnostics.hostUsage = { initial: usageBefore };
+    progress.phase = "host-usage-idle";
+    yield* browserWork(() => page.clock.runFor(31_000).then(flush));
+    check(
+      `Accounts at ${width}: idle time beyond the former poll interval makes no usage read`,
+      { series: seriesReads(), success: successReads() },
+      usageBefore,
+    );
+    progress.phase = "host-usage-observation";
+    const observedBefore = yield* database.run({
+      sql: "select revision::text from hosted_change_heads where scope=$1 and topic='observations' and resource='*'",
+      params: [scope],
+    });
+    h.fixture.refreshReading("synthetic-scoped-change-codex");
+    // Make this synthetic report eligible; the real HTTP writer still owns the revision.
+    yield* database.run({
+      sql: "update executor_account_observations set next_allowed_at=to_timestamp(0) where account=$1",
+      params: [saved.account.id],
+    });
+    yield* h.request("POST", `${account}/observations/refresh`);
+    yield* until(
+      database.run({
+        sql: "select revision::text from hosted_change_heads where scope=$1 and topic='observations' and resource='*'",
+        params: [scope],
+      }),
+      (rows) => BigInt(rows[0]?.revision ?? "0") > BigInt(observedBefore[0]?.revision ?? "0"),
+      "the real observation refresh did not commit its revision",
+    );
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    check(
+      `Accounts at ${width}: an unrelated observation revision makes no usage read`,
+      { series: seriesReads(), success: successReads() },
+      usageBefore,
+    );
+    progress.phase = "host-usage-commit";
+    const usageAnswered = page
+      .waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname.endsWith("/pool-usage/series") &&
+          response.status() === 200,
+      )
+      .then((response) => response.finished());
+    const successAnswered = page
+      .waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname.endsWith("/pool-usage/last-success") &&
+          response.status() === 200,
+      )
+      .then((response) => response.finished());
+    yield* browserWork(() => h.fixture.scoped.commitRequest(`synthetic-account-${width}`));
+    yield* browserWork(() => Promise.all([usageAnswered, successAnswered]));
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    check(
+      `Accounts at ${width}: a relevant usage revision refreshes mapped last-success once`,
+      successReads() - usageBefore.success,
+      1,
+    );
+    assert.ok(
+      seriesReads() > usageBefore.series && seriesReads() - usageBefore.series <= 3,
+      "one usage revision refreshes each of the two traffic ranges and optional token window at most once",
+    );
+    yield* browserWork(resourceIdle);
+    const acceptedUsage = { series: seriesReads(), success: successReads() };
+    diagnostics.hostUsage = { initial: usageBefore, relevant: acceptedUsage };
+    progress.phase = "host-usage-duplicate";
+    yield* browserWork(() => h.fixture.scoped.duplicate());
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    check(
+      `Accounts at ${width}: duplicate usage delivery makes no usage read`,
+      { series: seriesReads(), success: successReads() },
+      acceptedUsage,
+    );
+    progress.phase = "pool-account-routing";
+    yield* browserWork(() =>
+      page.route(
+        (url) => url.pathname.endsWith("/pool-credit-policy"),
+        (route) => route.fallback(),
+      ),
+    );
+    const routingAnswered = () =>
+      page
+        .waitForResponse((response) =>
+          new URL(response.url()).pathname.endsWith("/pool-credit-policy"),
+        )
+        .then(async (response) => {
+          await response.finished();
+          assert.equal(response.status(), 200, "the actual host routing read succeeds");
+        });
+    yield* browserWork(async () => {
+      const answered = routingAnswered();
+      await page.goto(
+        `${browserOrigin}/org/${h.actors.organization.slug}/apps/${pool.id}?view=accounts`,
+      );
+      await answered;
+      await page.getByText("Account selection", { exact: true }).waitFor();
+      await updating().waitFor({ state: "hidden" });
+      await resourceIdle();
+      await flush();
+    });
+    assert.ok(routingReads > 0, "the pool Accounts page read its routing policy");
+    const routingBefore = routingReads;
+    diagnostics.hostRouting = { initial: routingBefore, initialHeads: progress.heads.slice(-2) };
+    yield* browserWork(() => page.clock.runFor(31_000).then(flush));
+    diagnostics.hostRouting.idle = routingReads;
+    diagnostics.hostRouting.idleHeads = progress.heads.slice(-2);
+    check(
+      `Pool Accounts at ${width}: idle time makes no routing read`,
+      routingReads,
+      routingBefore,
+    );
+    yield* browserWork(() =>
+      h.fixture.scoped.commitRequest(`synthetic-routing-unrelated-${width}`),
+    );
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    check(
+      `Pool Accounts at ${width}: unrelated usage revision makes no routing read`,
+      routingReads,
+      routingBefore,
+    );
+    yield* browserWork(async () => {
+      const answered = routingAnswered();
+      await h.fixture.scoped.commitReading();
+      await answered;
+      await resourceIdle();
+      await flush();
+    });
+    check(
+      `Pool Accounts at ${width}: relevant reading revision refreshes routing once`,
+      routingReads - routingBefore,
+      1,
+    );
+    if (width === 390) {
+      const before = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+      yield* maintenanceTick();
+      const after = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+      diagnostics.hostRouting.controlledTick = {
+        before: before.revisions,
+        after: after.revisions,
+      };
+    }
+    const duplicateHeads = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+    yield* browserWork(() => h.fixture.scoped.duplicate());
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    const afterDuplicate = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+    diagnostics.hostRouting.duplicateHeads = {
+      before: duplicateHeads.revisions,
+      after: afterDuplicate.revisions,
+    };
+    check(
+      `Pool Accounts at ${width}: duplicate delivery leaves the measured heads unchanged`,
+      afterDuplicate.revisions,
+      duplicateHeads.revisions,
+    );
+    check(
+      `Pool Accounts at ${width}: duplicate reading revision makes no routing read`,
+      routingReads - routingBefore,
+      1,
+    );
+    if (width === 390)
+      check(
+        "Pool Accounts at 390: settled maintenance tick leaves measured heads unchanged",
+        diagnostics.hostRouting.controlledTick.after,
+        diagnostics.hostRouting.controlledTick.before,
+      );
+    diagnostics.hostRouting.relevant = routingReads;
+    yield* browserWork(() => shot("routing-after"));
     yield* browserWork(() => page.goto("about:blank"));
   }
   diagnostics.accounts = { proved: true, widths: [1280, 390] };
   if (!accountsOnly) {
-    yield* browserWork(() => h.fixture.scoped.initialize(pool.id, identity.user.id));
     let model = "synthetic-model-before";
     const baseline = yield* browserWork(() => h.fixture.scoped.commitRequest(model));
     let requestCount = baseline.count;
@@ -415,21 +641,22 @@ const program = Effect.gen(function* () {
         (diagnostics.pageErrors ??= []).push(redactLogText(String(error)));
       });
       yield* browserWork(() => page.clock.install());
-      const frame = page.frameLocator(`iframe[title=${JSON.stringify(`${pool.name} app`)}]`);
+      let frame = page.frameLocator('[data-app-frames] iframe:not([src*="/history"])');
       const requestRow = (name) =>
         frame.getByRole("button", { name: new RegExp(`Show metadata for ${name} at`) }).first();
       const historyReads = () =>
         h.fixture.scoped.reads.filter((read) => read.kind === "history").length;
       const overviewReads = () =>
-        h.fixture.scoped.reads.filter((read) => read.kind === "poolOverview").length;
-      const updating = frame
-        .getByRole("status")
-        .filter({ hasText: /updating/i })
-        .first();
+        h.fixture.scoped.reads.filter((read) => read.kind === "poolUsageSummary").length;
+      const updating = () =>
+        frame
+          .getByRole("status")
+          .filter({ hasText: /updating/i })
+          .first();
       const requestTotal = (count) =>
-        frame.locator("#who > p").filter({
-          hasText: new RegExp(`\\b${count} ${count === 1 ? "request" : "requests"} in 7 days`),
-        });
+        frame
+          .getByRole("region", { name: "Requests", exact: true })
+          .getByText(count.toLocaleString(), { exact: true });
       const flush = () =>
         Promise.all([
           page.evaluate(
@@ -440,6 +667,45 @@ const program = Effect.gen(function* () {
         ]);
       const shot = async (phase) => {
         const name = `pool-${width}-${phase}.png`;
+        if (width === 390 && phase === "overview-before") {
+          const body = frame.locator("body");
+          const font = await body.evaluate((element) =>
+            element.style.getPropertyValue("--font-sans"),
+          );
+          try {
+            // System fallback fonts differ by platform; a wider face must keep every range usable.
+            await body.evaluate((element) =>
+              element.style.setProperty("--font-sans", "Verdana, sans-serif"),
+            );
+            await page.screenshot({
+              path: join(directory, "pool-390-fallback-font.png"),
+              fullPage: true,
+            });
+            assert.ok(
+              await body.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+              "Pool app at 390: fallback font has no horizontal overflow",
+            );
+            const ranges = frame.getByRole("tablist", { name: "Range", exact: true });
+            for (const tab of await ranges.getByRole("tab").all()) {
+              await tab.scrollIntoViewIfNeeded();
+              assert.ok(
+                await tab.evaluate((element) => {
+                  const rect = element.getBoundingClientRect();
+                  return rect.left >= -1 && rect.right <= innerWidth + 1;
+                }),
+                "Every range option remains reachable at 390 with the fallback font",
+              );
+            }
+            await ranges.evaluate((element) => {
+              element.scrollLeft = 0;
+            });
+          } finally {
+            await body.evaluate((element, value) => {
+              if (value) element.style.setProperty("--font-sans", value);
+              else element.style.removeProperty("--font-sans");
+            }, font);
+          }
+        }
         assert.ok(
           await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
           `Pool shell at ${width}: no horizontal overflow`,
@@ -461,10 +727,10 @@ const program = Effect.gen(function* () {
         await page.goto(
           `${browserOrigin}/org/${h.actors.organization.slug}/apps/${pool.id}?view=app`,
         );
-        await frame.getByRole("heading", { name: "Overview", exact: true }).waitFor();
-        await frame.locator('a[href="#usage-history"]').first().waitFor();
+        await frame.getByRole("heading", { name: "How much are we using?", exact: true }).waitFor();
+        await page.getByRole("link", { name: "History", exact: true }).waitFor();
         await requestTotal(requestCount).waitFor();
-        await updating.waitFor({ state: "hidden" });
+        await updating().waitFor({ state: "hidden" });
         await flush();
         await shot("overview-before");
       });
@@ -495,7 +761,7 @@ const program = Effect.gen(function* () {
       checks.push(`Pool Overview at ${width}: real SQL commit delivered through hosted native DO`);
       yield* browserWork(() => overviewHold.started);
       yield* browserWork(async () => {
-        await updating.waitFor();
+        await updating().waitFor();
         check(
           `Pool Overview at ${width}: held refresh retains accepted request total`,
           await requestTotal(requestCount).isVisible(),
@@ -509,7 +775,7 @@ const program = Effect.gen(function* () {
         await shot("overview-updating");
         overviewHold.release();
         await requestTotal(overviewCommit.count).waitFor();
-        await updating.waitFor({ state: "hidden" });
+        await updating().waitFor({ state: "hidden" });
         await flush();
         await shot("overview-after");
       });
@@ -536,9 +802,10 @@ const program = Effect.gen(function* () {
         0,
       );
       yield* browserWork(async () => {
-        await frame.locator('a[href="#usage-history"]').first().click();
+        await page.getByRole("link", { name: "History", exact: true }).click();
+        frame = page.frameLocator('[data-app-frames] iframe[src*="/history"]');
         await requestRow(model).waitFor();
-        await updating.waitFor({ state: "hidden" });
+        await updating().waitFor({ state: "hidden" });
         await flush();
         await shot("before");
       });
@@ -567,7 +834,7 @@ const program = Effect.gen(function* () {
       checks.push(`Pool history at ${width}: real SQL commit delivered through hosted native DO`);
       yield* browserWork(() => hold.started);
       yield* browserWork(async () => {
-        await updating.waitFor();
+        await updating().waitFor();
         check(
           `Pool history at ${width}: held refresh retains accepted requests`,
           await requestRow(model).isVisible(),
@@ -581,7 +848,7 @@ const program = Effect.gen(function* () {
         await shot("updating");
         hold.release();
         await requestRow(nextModel).waitFor();
-        await updating.waitFor({ state: "hidden" });
+        await updating().waitFor({ state: "hidden" });
         await flush();
         await shot("after");
       });

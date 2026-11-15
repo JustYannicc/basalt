@@ -3,11 +3,13 @@ import type { SentryEnv } from "../telemetry/sentry-target.ts";
 import { awaitProbe, type ProbeResult } from "./availability.ts";
 import { validProbeTarget } from "./availability-config.ts";
 import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
+import { notifyPercentageFailure } from "./reliability-notifications.ts";
 
 export async function runAvailabilityProbe(
   env: SentryEnv & { POOL_AVAILABILITY_TARGET?: string },
   probe: (pool: string) => Promise<ProbeResult>,
   reliability?: (pool: string) => Promise<PoolReliabilitySlo>,
+  release?: string,
 ): Promise<void> {
   if (env.POOL_AVAILABILITY_TARGET === undefined || env.POOL_AVAILABILITY_TARGET === "") return;
   const receipt = await startPoolMonitor(env);
@@ -27,8 +29,10 @@ export async function runAvailabilityProbe(
       ]);
       result = { ...availability, failures: [...availability.failures] };
       if (measured) result.reliability = measured;
-      if (measured?.state === "breached")
+      if (measured && notifyPercentageFailure(measured))
         result.failures.push({ guard: "request_reliability", reason: "below_target" });
+      if (measured?.current?.classification === "ready" && measured.current.real.failed)
+        result.failures.push({ guard: "request_reliability", reason: "failing_now" });
       if (measured === null || measured?.state === "unavailable")
         result.failures.push({ guard: "request_reliability", reason: "collection_unavailable" });
     }
@@ -36,6 +40,6 @@ export async function runAvailabilityProbe(
     result = { ok: false, failures: [{ guard: "runtime", reason: "unavailable" }] };
   }
   if (!result.ok) console.error("POOL_AVAILABILITY_FAILURE", result.failures);
-  if (!(await capturePoolMonitor(env, receipt, result)))
+  if (!(await capturePoolMonitor(env, receipt, { ...result, release })))
     throw new Error("Pool availability alert delivery failed");
 }

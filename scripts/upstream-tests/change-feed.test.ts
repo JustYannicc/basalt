@@ -374,7 +374,11 @@ test("a stream lost during a read is never accepted as live", async (t) => {
   await flush();
   release();
   await flush();
-  assert.equal(seen.dataReads, 3, "the read that began on the lost connection was redone");
+  assert.equal(
+    seen.dataReads,
+    2,
+    "stable authorized heads retain the completed body across transport loss",
+  );
   assert.equal(seen.applied.at(-1)?.accounts, "2");
   assert.equal(feed.status(), "paused", "data accepted without a stream is labelled, not live");
 });

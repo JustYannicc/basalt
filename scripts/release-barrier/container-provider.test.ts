@@ -47,7 +47,7 @@ for (const tree of ["src", "lib"])
   });
 
 for (const tree of ["src", "lib"])
-  test(`the real ${tree} fleet image is admitted only from the serving baseline`, () => {
+  test(`the real ${tree} composed model image is admitted only from the serving baseline`, () => {
     const output = execFileSync(
       "bun",
       [
@@ -55,7 +55,7 @@ for (const tree of ["src", "lib"])
         tree,
         fileURLToPath(new URL("../../containers/pool", import.meta.url)),
         fileURLToPath(new URL("../../", import.meta.url)),
-        "776158b6965a4dc3",
+        "8bbfbb3d5c4466ba",
       ],
       { encoding: "utf8", timeout: 30_000 },
     );

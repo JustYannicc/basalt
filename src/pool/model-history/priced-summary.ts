@@ -32,6 +32,7 @@ async function readPricedSummary(
     pool: input.pool,
     from: input.summary.from,
     to: input.summary.to,
+    includeImports: false,
     ...(!input.canManage ? { person: await digest(input.caller) } : {}),
   };
   const targets = await officialCostTargets(db, scope);

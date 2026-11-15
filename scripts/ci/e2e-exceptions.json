@@ -271,8 +271,6 @@
       "credential-placement.spec.ts#credentialManagedReconnect": "6d96d26144baa95fbe42d471527e278680193b1c61dd6a4bf9fef8fcf075fad9",
       "credential-placement.spec.ts#credentialManagedUnlisted": "f6643a240074de9d2660d4bfb9b476cb75615c85bf2b91db393cd2c3e52ea680",
       "dashboard-file-names.spec.ts#two Cloud dashboard builds that differ only in build id name every JS file alike": "34d2d6deb763991ef7ecd4784f93e76631c193447426438d9df0cf5862a76a4e",
-      "dashboard-read-batches.spec.ts#dashboardReadBatches": "de4afc06bc245010be33822ff6d71726d40e8e432c55d98a4d94b6105e3e6e33",
-      "dashboard-read-batches.spec.ts#dashboardBuildChange": "663cb78968832d905e418c7f75a7ba473813519cbbcb5ee51c6ba8e73cd338db",
       "dashboard-request-volume.spec.ts#dashboardRequestVolume": "191f164d0565490f46d813032e3f8218ff708f05b92019a4bf86655e72a26501",
       "deferred-server-paths.spec.ts#deferredServerPaths": "409f48af782730c4e599123cf7ff9a3dc0ea98e95cd8f8f6e368154d00e760cc",
       "deploy-setup.spec.ts#deploySetup": "a4d7646606a96cea64f8df092d89502c0fc5db86758cb2320126ce64675ae442",
@@ -831,6 +829,12 @@
     "reason": "catalogOfficialApps remains an inherited self-host scenario with no declared Basalt CI group. Reviewed for carry 0438: the existing catalog and install assertions stay intact; the added checks cover singular app text at 1280px and 390px, zero and multiple results, and horizontal overflow. The complete scenario passed locally on the composed batch. Keep this identity manual pending CI adoption; any prepared spec or target plan change requires renewed review.",
     "entries": {
       "catalog-official-apps.spec.ts#catalogOfficialApps": "c17487a082ef487deb15d21e214fd283f0e8c7832aefefda7023e09d617fe76a"
+    }
+  },
+  {
+    "reason": "The inherited dashboardBuildChange scenario remains outside Basalt CI. Its scenario body is byte-identical to the reviewed baseline; the shared spec now adds an aborted-read regression to the separately selected dashboardReadBatches case. This exception covers only the unchanged build-change case.",
+    "entries": {
+      "dashboard-read-batches.spec.ts#dashboardBuildChange": "dffaa80e28ac656ee16d126684de98779ff7efc6c8d6f0af7e2dc79897e0f155"
     }
   }
 ]

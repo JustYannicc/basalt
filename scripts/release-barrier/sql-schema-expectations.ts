@@ -181,13 +181,32 @@ export async function loadSqlSchemaExpectations(
       refuse("invalid history migration entry");
     return version(entry.name);
   });
+  const hostedVersions = parseProductMigrationMarkers(hosted, "private_hosted_migrations");
+  const hostedActivation =
+    hostedVersions.includes("21_change_journal_prepare") &&
+    /values\s*\(22,\s*'change_journal_activate'\)/u.test(hosted)
+      ? ["22_change_journal_activate"]
+      : [];
+  const declaredHistoryActivation: unknown =
+    "historyJournalActivationMigration" in history
+      ? history.historyJournalActivationMigration
+      : undefined;
+  const historyActivation =
+    historyVersions.includes("model_request_history_v9_change_journal_prepare") &&
+    declaredHistoryActivation !== null &&
+    typeof declaredHistoryActivation === "object" &&
+    "name" in declaredHistoryActivation &&
+    declaredHistoryActivation.name === "model_request_history_v10_change_journal_activate"
+      ? [declaredHistoryActivation.name]
+      : [];
   const expectations: SqlSchemaExpectation[] = [
     {
       namespace: "hosted",
       database: "tools",
       journal: "private_hosted_migrations",
       kind: "markers",
-      expected: parseProductMigrationMarkers(hosted, "private_hosted_migrations"),
+      expected: hostedVersions,
+      ...(hostedActivation.length ? { optional: hostedActivation } : {}),
     },
     {
       namespace: "cloud",
@@ -218,6 +237,7 @@ export async function loadSqlSchemaExpectations(
       journal: "basalt_model_history_migrations",
       kind: "markers",
       expected: historyVersions,
+      ...(historyActivation.length ? { optional: historyActivation } : {}),
     },
     {
       namespace: "home",

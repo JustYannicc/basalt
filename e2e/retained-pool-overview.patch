@@ -1,0 +1,94 @@
+--- a/e2e/tests/pool-legacy-handoff.spec.ts
++++ b/e2e/tests/pool-legacy-handoff.spec.ts
+@@ -1,6 +1,7 @@
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import { Actors } from "../support/actors.ts";
++import { routeFamilyMarks } from "../support/atlassian-family-fixture.ts";
+ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+@@ -37,6 +38,13 @@
+         const { pool, accounts, beforeLinks, control, beforeControl, database } =
+           legacyPoolHandoffFixture(context);
+         const appPath = `${prefix}/apps/${pool.id}`;
++        const handedOffNames = accounts.map((_, index) => `Retained subscription ${index + 1}`);
++        for (const [index, account] of accounts.entries())
++          expect(
++            (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${account.id}`, {
++              label: handedOffNames[index],
++            })).status,
++          ).toBe(200);
+         const links = () =>
+           api
+             .request(actors.owner, "GET", `${appPath}/accounts/app`)
+@@ -206,23 +214,60 @@
+         ).toBe(200);
+         const view = yield* body(View, yield* read());
+         yield* browser.login(actors.owner);
++        yield* browser.use("Keep account logos local", (page) => routeFamilyMarks(page.context()));
+         for (const width of [1280, 390]) {
+           const empty = view.value.accounts.length === 0;
+           yield* browser.use(`The retained pool overview at ${width}px`, (page) =>
+             page
+               .setViewportSize({ width, height: 900 })
+               .then(() => page.goto(`/org/${actors.organization.slug}/apps/${pool.id}?view=app`))
+-              .then(() =>
+-                page
+-                  .frameLocator(`iframe[title="${pool.name} app"]`)
+-                  .getByText(
+-                    empty ? "Pick your first account" : "How much are we using?",
+-                    { exact: false },
+-                  )
+-                  .waitFor(),
+-              ),
++              .then(() => {
++                const overview = page.frameLocator(`iframe[title="${pool.name} app"]`);
++                return empty
++                  ? overview.getByText("Pick your first account", { exact: true }).waitFor()
++                  : overview
++                      .getByRole("heading", { name: "How much are we using?", exact: true })
++                      .waitFor()
++                      .then(() =>
++                        overview
++                          .getByRole("region", { name: "By lab", exact: true })
++                          .getByText("No usage in this range.", { exact: true })
++                          .waitFor(),
++                      )
++                      .then(() =>
++                        overview
++                          .getByRole("region", { name: "Do we have enough accounts?", exact: true })
++                          .getByText(
++                            "No capacity readings in the last 7 days. Readings start once a connected subscription reports its limits.",
++                            { exact: true },
++                          )
++                          .waitFor(),
++                      );
++              }),
+           );
+           yield* browser.checkpoint(`legacy-pool-${empty ? "empty" : "four-accounts"}-${width}`);
++          yield* browser.use(`The four handed-off accounts at ${width}px`, (page) =>
++            page.goto(`/org/${actors.organization.slug}/apps/${pool.id}?view=accounts`).then(() => {
++              const linked = page.getByRole("region", { name: "App accounts", exact: true });
++              return Promise.all(
++                handedOffNames.map((name) =>
++                  linked
++                    .getByText(name, { exact: true })
++                    .waitFor()
++                    .then(() =>
++                      linked
++                        .getByRole("checkbox", {
++                          name: `Use ${name} for this app`,
++                          exact: true,
++                          checked: true,
++                        })
++                        .waitFor(),
++                    ),
++                ),
++              );
++            }),
++          );
++          yield* browser.checkpoint(`legacy-pool-four-accounts-visible-${width}`);
+         }
+         yield* browser.use("Stop overview polling before closing its backend", (page) =>
+           page.goto("about:blank"),

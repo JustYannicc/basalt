@@ -1,4 +1,4 @@
-import { endpoint, json, number, object, text, type Http } from "./http.ts";
+import { endpoint, json, number, object, text, type Http, type HttpReply } from "./http.ts";
 export interface Session {
   resource: string;
   clientId: string;
@@ -44,11 +44,20 @@ export function connectionUrl(input: string, allowLoopback = false) {
   const query = new URLSearchParams({ connection, elicitation_mode: "native" });
   return `${url.origin}/mcp?${query}`;
 }
+/** What this device says about itself when it asks to connect; Signalbox shows it as its claim. */
+export interface DeviceReport {
+  /** The device's own name, such as "MacBook Pro". It becomes the device's name in Signalbox. */
+  readonly device?: string | undefined;
+  /** The vault it connects, which names a vault app still named after the catalog. */
+  readonly vault?: string | undefined;
+}
+
 export async function beginConnection(
   http: Http,
   input: string,
   now = Date.now(),
   allowLoopback = false,
+  report: DeviceReport = {},
 ): Promise<Connecting> {
   const resource = connectionUrl(input, allowLoopback),
     url = new URL(resource);
@@ -93,7 +102,7 @@ export async function beginConnection(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      client_name: "Signalbox Obsidian Sync",
+      client_name: report.device ?? "Signalbox Obsidian Sync",
       token_endpoint_auth_method: "none",
       grant_types: [grant, "refresh_token"],
       response_types: [],
@@ -115,6 +124,9 @@ export async function beginConnection(
       scope: "mcp offline_access",
       code_challenge: challenge,
       code_challenge_method: "S256",
+      // Optional fields: servers that predate them ignore them.
+      ...(report.device === undefined ? {} : { device_name: report.device }),
+      ...(report.vault === undefined ? {} : { device_context: report.vault }),
     }),
   );
   if (reply.status !== 200) throw new Error("Signalbox could not start device authorization");
@@ -210,6 +222,15 @@ export async function refreshSession(
   return token(object(json(reply)), session, now);
 }
 
+/** The server answered a revocation with something other than success. */
+export class RevocationRefused extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super("Device access could not be revoked. Keep this device connected and try again.");
+    this.status = status;
+  }
+}
+
 export async function revokeSession(http: Http, session: Session): Promise<void> {
   if (!session.revocationEndpoint)
     throw new Error("This server requires removing this device in Signalbox Connections.");
@@ -224,9 +245,28 @@ export async function revokeSession(http: Http, session: Session): Promise<void>
       session.revocationEndpoint,
       form({ ...value, client_id: session.clientId }),
     );
-    if (reply.status !== 200)
-      throw new Error(
-        "Device access could not be revoked. Keep this device connected and try again.",
-      );
+    if (reply.status !== 200 && !alreadyInvalid(reply)) throw new RevocationRefused(reply.status);
+  }
+}
+
+/**
+ * RFC 7009 §2.2 answers 200 for a token the server no longer honours, but servers before that fix
+ * answered 400 invalid_request: for the access token the refresh revocation just invalidated, and
+ * for both tokens on a retry. Without this a device could never finish disconnecting from them.
+ * Only their token-lookup descriptions count: the same code also refuses malformed requests
+ * before the token is looked at, and those revoked nothing.
+ */
+const tokenGone = new Set(["token not found", "refresh token revoked", "Invalid access token"]);
+function alreadyInvalid(reply: HttpReply) {
+  if (reply.status !== 400) return false;
+  try {
+    const body = object(JSON.parse(reply.body));
+    return (
+      body.error === "invalid_request" &&
+      typeof body.error_description === "string" &&
+      tokenGone.has(body.error_description)
+    );
+  } catch {
+    return false;
   }
 }

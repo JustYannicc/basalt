@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "The node selects basalt.model-drain.v1 only on an explicitly negotiated private native v2 model socket. Input frames carry a strictly increasing sequence and at most 16 MiB. An exact sequence and length receipt is emitted only after the real node socket reader consumes the message. That receipt establishes transport read completion, never inference success or a protocol terminal. The private reader hands input through an unbuffered channel, retaining at most its current message while a consumer is blocked; the raw Responses reader keeps its existing channel and wire format. All model authentication, account and credit policy checks still execute. Private output and receipts have disjoint binary tags, so arbitrary provider output cannot forge a receipt. The Worker retains unacknowledged input plus one 64 KiB native credit window, rejects invalid receipts and never replays unknown inference. Publish the updated clients only after the compatible node image and Worker are adopted."
+    }
+  }
+}

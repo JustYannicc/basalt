@@ -76,7 +76,7 @@ function backend() {
     ["accounts", "1"],
     ["session", "1"],
   ]);
-  const state = { identity: "viewer-a", streamOpens: 0, currentReads: 0 };
+  const state = { identity: "viewer-a", streamOpens: 0, currentReads: 0, urls: [] as string[] };
   const streams: Array<{
     controller: ReadableStreamDefaultController<Uint8Array>;
     closed: boolean;
@@ -86,7 +86,9 @@ function backend() {
   const revisions = () =>
     [...heads].map(([topic, revision]) => ({ topic, resource: ORGANIZATION, revision }));
   const fetch = async (url: string, init?: RequestInit) => {
-    if (url === STREAM) {
+    state.urls.push(url);
+    const pathname = url.split("?")[0];
+    if (pathname === STREAM) {
       state.streamOpens++;
       let controller!: ReadableStreamDefaultController<Uint8Array>;
       const body = new ReadableStream<Uint8Array>({
@@ -103,7 +105,7 @@ function backend() {
       streams.push(entry);
       return new Response(body, { status: 200 });
     }
-    assert.equal(url, CURRENT);
+    assert.equal(pathname, CURRENT);
     state.currentReads++;
     await gate;
     return new Response(JSON.stringify({ revisions: revisions(), identity: state.identity }), {
@@ -221,8 +223,9 @@ function setup(t: TestContext) {
 test("an unconfirmed retained value is never shown, and a body waits for its after-read", async (t) => {
   const { server, flush, mount } = setup(t);
   const src = source("retained-old");
-  const atom = changeProtected(ORGANIZATION, ["accounts"])(src.atom);
   const registry = AtomRegistry.make();
+  registry.get(src.atom);
+  const atom = changeProtected(ORGANIZATION, ["accounts"])(src.atom);
   const view = mount(registry, atom);
   await flush();
   assert.equal(server.state.streamOpens, 1);
@@ -371,9 +374,11 @@ test("the source's own first load can never replace an accepted result", async (
   const { server, flush, mount } = setup(t);
   const src = source();
   const atom = changeProtected(ORGANIZATION, ["accounts"])(src.atom);
-  const view = mount(AtomRegistry.make(), atom);
-  await flush();
+  const registry = AtomRegistry.make();
+  registry.get(src.atom);
   const own = src.loads[0]!;
+  const view = mount(registry, atom);
+  await flush();
   server.handshake();
   await flush();
   const fenced = src.loads.at(-1)!;
@@ -432,4 +437,102 @@ test("remounting in the same registry after an identity swap never shows the old
   assert.equal(third.current().value, "fresh-b", "a new feed serves the new principal");
   assert.ok(!bodies(third.values).includes("fresh-a"));
   third.stop();
+});
+
+test("remounting confirms retained heads without fetching the body again", async (t) => {
+  const { server, flush, mount } = setup(t);
+  const src = source();
+  const atom = changeProtected(ORGANIZATION, ["accounts"])(src.atom);
+  const registry = AtomRegistry.make();
+  const first = mount(registry, atom);
+  await flush();
+  server.handshake();
+  await flush();
+  src.loads.at(-1)!.resolve("accepted");
+  await flush();
+  first.stop();
+  await flush();
+  t.mock.timers.tick(1_000);
+  await flush();
+  const count = src.loads.length;
+  const second = mount(registry, atom);
+  await flush();
+  assert.deepEqual(bodies(second.values), [], "a new connection must confirm authority first");
+  server.handshake();
+  await flush();
+  assert.equal(second.current().value, "accepted");
+  assert.equal(src.loads.length, count, "unchanged authorized heads reuse the accepted body");
+  second.stop();
+});
+
+test("a changed head during a short unmount cannot reaccept the old raw body", async (t) => {
+  const { server, flush, mount } = setup(t);
+  const src = source();
+  const atom = changeProtected(ORGANIZATION, ["accounts"])(src.atom);
+  const registry = AtomRegistry.make({ defaultIdleTTL: 400 });
+  const first = mount(registry, atom);
+  await flush();
+  server.handshake();
+  await flush();
+  src.loads.at(-1)!.resolve("revision-1");
+  await flush();
+  first.stop();
+  await flush();
+  server.commit("accounts", "2");
+  await flush();
+  const second = mount(registry, atom);
+  await flush();
+  assert.equal(
+    src.loads.length,
+    2,
+    "the changed revision owes a new body despite the registry TTL",
+  );
+  assert.equal(second.current().waiting, true);
+  src.loads.at(-1)!.resolve("revision-2");
+  await flush();
+  assert.equal(second.current().value, "revision-2");
+  assert.ok(
+    !second.values.some((value) => !value.waiting && bodies([value]).includes("revision-1")),
+    JSON.stringify(second.values),
+  );
+  second.stop();
+});
+
+test("pool-scoped protected reads ignore unrelated and duplicate revisions and coalesce updates", async (t) => {
+  const { server, flush, mount } = setup(t);
+  server.heads.set("pool-usage", "1");
+  server.heads.set("pool-readings", "1");
+  const src = source();
+  const atom = changeProtected(
+    ORGANIZATION,
+    ["membership", "pool-usage", "pool-prices"],
+    ["app_a"],
+  )(src.atom);
+  const view = mount(AtomRegistry.make(), atom);
+  await flush();
+  server.handshake();
+  await flush();
+  src.loads.at(-1)!.resolve("initial");
+  await flush();
+  assert.equal(view.current().value, "initial");
+  assert.ok(server.state.urls.every((url) => url.endsWith("?pool=app_a")));
+  server.commit("pool-readings", "2");
+  server.commit("pool-usage", "1");
+  await flush();
+  assert.equal(src.loads.length, 1, "unrelated and duplicate revisions read no body");
+  server.commit("pool-usage", "2");
+  await flush();
+  server.commit("pool-usage", "3");
+  server.commit("pool-usage", "3");
+  await flush();
+  src.loads.at(-1)!.resolve("outpaced");
+  await flush();
+  assert.equal(src.loads.length, 3, "the moving read retries the body once at the newest heads");
+  src.loads.at(-1)!.resolve("latest");
+  await flush();
+  assert.equal(view.current().value, "latest");
+  server.commit("pool-usage", "3");
+  await flush();
+  assert.equal(src.loads.length, 3);
+  view.stop();
 });

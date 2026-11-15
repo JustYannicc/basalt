@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Narrow Home usage summaries preserve the stored service-tier identity in cursor and pending feeds without exposing raw keys or diagnostic payloads. Unknown auto, absent or unspecified tier identities never qualify for account calibration; unrelated accounts do not invalidate a complete matching interval."
+    }
+  }
+}

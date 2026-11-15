@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-org-settings-keep-details-on-refresh-failure",
+  "file": "0625-org-settings-keep-details-on-refresh-failure.patch",
+  "content_sha256": "01b9f12ab04c7a49a2022577b11f13bfbdfa66e3ad5ba19630db12744a5acdd1",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

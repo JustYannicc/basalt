@@ -4,6 +4,10 @@ import { createRequire } from "node:module";
 import { Effect, Redacted } from "effect";
 import pg from "pg";
 import { accountChangeSetup } from "./account-change-fixture.ts";
+import {
+  prepareChangeJournal,
+  activateChangeJournal,
+} from "../../.upstream/apps/hosted/server/src/implementation/change-journal-schema.ts";
 
 const require = createRequire(
   new URL("../../.upstream/packages/fumadb-effect/package.json", import.meta.url),
@@ -18,6 +22,7 @@ export const owner = "organization:team-a";
 /** The production SDK schema and migrations, with three independent PostgreSQL sessions. */
 export async function postgresChanges(
   work: (clients: { a: pg.Client; b: pg.Client; observer: pg.Client }) => Promise<void>,
+  journal: "legacy" | "prepare" | "activate" = "legacy",
 ) {
   assert.ok(
     localPostgres,
@@ -38,6 +43,8 @@ export async function postgresChanges(
   try {
     await Effect.runPromise(
       accountChangeSetup.pipe(
+        Effect.andThen(journal === "legacy" ? Effect.void : prepareChangeJournal),
+        Effect.andThen(journal === "activate" ? activateChangeJournal : Effect.void),
         Effect.provide(
           PgClient.layer({
             url: Redacted.make(adminUrl!),

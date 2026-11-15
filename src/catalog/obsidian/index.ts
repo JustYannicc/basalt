@@ -10,6 +10,8 @@ export const obsidian: Addition = {
     description:
       "Read, search and edit an Obsidian vault in the cloud, even while its devices are off.",
     auth: [],
+    instanceNoun: { singular: "vault", plural: "vaults" },
+    instanceNameHint: "Use the vault's name in Obsidian. The app is named after it.",
     icons: obsidianIcons,
     source: "apps/obsidian.json",
   },

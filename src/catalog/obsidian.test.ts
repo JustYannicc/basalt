@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { Schema } from "effect";
+import { CatalogFeed } from "../../.upstream/packages/catalog/src/contracts/catalog.ts";
 import type { Feed } from "./feed.ts";
 import { handleCatalog } from "./worker.ts";
 import { obsidianSource } from "../../scripts/obsidian-source.ts";
@@ -17,6 +19,12 @@ test("the public catalog lists Obsidian with an installable source", async () =>
   assert.equal(entries.length, 1);
   assert.equal(entries[0]!.name, "Obsidian");
   assert.equal(entries[0]!.source, "apps/obsidian.json");
+  // Hosts read the feed through the catalog's own schema; it keeps what a vault is called.
+  const [listed] = Schema.decodeUnknownSync(CatalogFeed)(feed).apps.filter(
+    (entry) => entry.id === "obsidian",
+  );
+  assert.deepEqual(listed?.instanceNoun, { singular: "vault", plural: "vaults" });
+  assert.match(listed?.instanceNameHint ?? "", /^Use the vault's name in Obsidian\./);
 });
 
 test("Obsidian catalog installation receives every shipped app file without another publisher", async () => {

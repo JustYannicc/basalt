@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-ui-kit",
+  "file": "0585-app-ui-kit.patch",
+  "content_sha256": "9fd33ab4aac85e77073ad8992caae594cead8669c2e12eda91afb62fd1959b9b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

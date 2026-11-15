@@ -1,19 +1,8 @@
+import { planAllowanceWindows, type PlanAllowanceCatalog } from "apps";
 import type { Account } from "../contract.ts";
 
 export type LimitAccount = Pick<Account, "provider" | "plan" | "windows"> &
   Partial<Pick<Account, "freshness">>;
-
-const claudePlans = new Set(["pro", "max", "max 5x", "max 20x", "ultra"]);
-const codexPlans = new Set([
-  "plus",
-  "pro",
-  "pro 5x",
-  "pro 20x",
-  "pro (max)",
-  "pro (mid)",
-  "promax",
-  "prolite",
-]);
 
 /** Home readings expire after 30 minutes; a quota reset does not renew the measurement. */
 export function hasCurrentLimitReading(
@@ -37,20 +26,27 @@ export function hasCurrentLimitReading(
   );
 }
 
-/** Plan support is separate from a current allowance measurement. Unknown plans need evidence. */
-export function supportedLimitWindows(account: LimitAccount): readonly number[] {
-  const plan = account.plan?.trim().toLowerCase();
-  const known =
-    plan !== undefined &&
-    ((account.provider === "claude" && claudePlans.has(plan)) ||
-      (account.provider === "codex" && codexPlans.has(plan)));
-  return known
-    ? [604_800, 18_000]
-    : [
-        ...new Set(
-          account.windows
-            .map((window) => window.windowSeconds)
-            .filter((seconds): seconds is number => seconds === 18_000 || seconds === 604_800),
-        ),
-      ];
+const chartWindows = new Set([18_000, 604_800]);
+const noCatalog: PlanAllowanceCatalog = { entries: [] };
+
+/**
+ * Plan support is separate from a current allowance measurement. Windows the account actually
+ * reports always count, even where the catalog calls the plan unlimited; the catalog only adds
+ * windows it currently knows. Without a catalog only reported windows count.
+ */
+export function supportedLimitWindows(
+  account: LimitAccount,
+  catalog: PlanAllowanceCatalog = noCatalog,
+  now: number = Date.now(),
+): readonly number[] {
+  const reported = account.windows
+    .map((window) => window.windowSeconds)
+    .filter((seconds): seconds is number => seconds !== null && chartWindows.has(seconds));
+  return planAllowanceWindows(
+    catalog,
+    account.provider,
+    account.plan ?? null,
+    reported,
+    now,
+  ).filter((seconds) => chartWindows.has(seconds));
 }

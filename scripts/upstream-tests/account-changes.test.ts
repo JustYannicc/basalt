@@ -28,14 +28,25 @@ test("migration 20 preserves saved accounts and repeated setup; real account, bi
       assert.equal(yield* read(), "2");
       yield* sql`insert into hosted_app_account_links values ('app_a','acc_a',null,'models')`;
       assert.equal(yield* read(), "3");
+      const observationsBeforeClaim = yield* read("observations");
       yield* sql`insert into executor_account_observations
       (id,account,owner,source,generation,data,next_allowed_at)
-      values ('observation-a','acc_a','organization:team-a','quota',0,'{}',now())`;
-      assert.equal(yield* read(), "4");
+      values ('observation-a','acc_a','organization:team-a','quota',0,'{"version":1,"result":null,"lastAttempt":null}',now())`;
+      assert.equal(yield* read(), "3", "an unaccepted claim does not change accounts");
+      assert.equal(yield* read("observations"), observationsBeforeClaim);
       yield* sql`update executor_account_observations set lease='collecting',lease_until=now()+interval '1 minute'`;
-      assert.equal(yield* read(), "4", "collection leases do not invalidate a reading");
+      assert.equal(
+        yield* read("observations"),
+        observationsBeforeClaim,
+        "collection leases do not invalidate a reading",
+      );
       yield* sql`update executor_account_observations set data='{"remaining":2}',checked_at=now()`;
-      assert.equal(yield* read(), "5");
+      assert.equal(
+        yield* read("observations"),
+        String(BigInt(observationsBeforeClaim) + 1n),
+        "a settled reading publishes its own topic",
+      );
+      assert.equal(yield* read(), "3", "observation changes do not invalidate account inventory");
       const before = yield* read();
       yield* sql
         .withTransaction(
@@ -47,7 +58,34 @@ test("migration 20 preserves saved accounts and repeated setup; real account, bi
         .pipe(Effect.result);
       assert.equal(yield* read(), before);
       yield* sql`delete from executor_accounts where id='acc_a'`;
-      assert.equal(yield* read(), "6");
+      assert.equal(yield* read(), "4");
+    }),
+  ));
+
+test("provisioning stop and retry status commits publish revisions; bookkeeping does not", () =>
+  fixture(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const journal = makeChangeJournal(sql);
+      const heads = () => journal.current("organization:team-a", [key("apps"), key("accounts")]);
+      yield* sql`insert into hosted_provisioning values ('team-a','queued',0,now())`;
+      let revision = 1n;
+      for (const status of ["running", "failed", "queued", "running", "succeeded"]) {
+        yield* sql`update hosted_provisioning set attempts=attempts+1, updated_at=now()`;
+        assert.ok((yield* heads()).every((hint) => hint.revision === String(revision)));
+        yield* sql`update hosted_provisioning set status=${status}, updated_at=now()`;
+        revision++;
+        assert.ok((yield* heads()).every((hint) => hint.revision === String(revision)));
+        const delivered: string[] = [];
+        yield* journal.deliver((scope, hint) =>
+          Effect.sync(() => {
+            assert.equal(scope, "organization:team-a");
+            assert.equal(hint.revision, String(revision));
+            delivered.push(hint.topic);
+          }),
+        );
+        assert.deepEqual(delivered.sort(), ["accounts", "apps"]);
+      }
     }),
   ));
 

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.appCalls {
+    metadata {
+      constraint "Public account-source UI queries resolve exact selected account ids and observe their own SQL trace in a dedicated measurement file; public tool calls preserve native source and refusal checks. Established selections, including saved refusals, remain unchanged without write or advisory locks; unresolved selections retain locked authority checks."
+    }
+  }
+}

@@ -33,6 +33,24 @@
           "reason": "Uses hosted account HTTP endpoints."
         }
       }
+    },
+    "accountObservationLegacyDeclaration": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "legacy observation declarations publish supported results and keep unsupported probes private",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Reconstructs legacy deployment declarations in a stopped synthetic database."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted account HTTP endpoints."
+        }
+      }
     }
   },
   "runs": {
@@ -40,6 +58,9 @@
       "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
     ],
     "accountObservationProtocol18": [
+      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+    ],
+    "accountObservationLegacyDeclaration": [
       "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
     ]
   },

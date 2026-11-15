@@ -1,4 +1,5 @@
 import { refuseRuntime, type RuntimeRouteDiagnostic } from "../runtime-route-diagnostic.ts";
+import { modelLifetimeFetch } from "../model-lifetime.worker.ts";
 import { RuntimeProtection } from "../runtime-protection.ts";
 import { PoolRuntimeUnhealthy } from "../lifecycle.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
@@ -69,13 +70,17 @@ export class RuntimeSlotRouter {
       });
       step = "slot_pre_send";
       pending.lease.signal.throwIfAborted();
-      beforeDispatch();
-      step = "slot_port";
-      const upstream = await this.deps.driver.fetch(
-        identity,
-        new Request(request, { signal: pending.lease.signal }),
-        port,
-      );
+      const outbound = new Request(request, { signal: pending.lease.signal });
+      const forward = (request: Request) => this.deps.driver.fetch(identity, request, port);
+      const dispatch = (request: Request) => {
+        beforeDispatch();
+        step = "slot_port";
+        return forward(request);
+      };
+      const upstream =
+        port === 8317
+          ? await modelLifetimeFetch(outbound, forward, beforeDispatch)
+          : await dispatch(outbound);
       const headers = new Headers(upstream.headers);
       headers.set("X-Signalbox-Pool-Boot", identity.bootId);
       const tagged =

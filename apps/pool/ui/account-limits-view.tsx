@@ -151,6 +151,16 @@ function AccountDetails({
   );
 }
 
+/** Accounts whose native readings supply a model-limit Details entry. */
+export const modelLimitAccounts = (accounts: readonly Account[]) =>
+  accounts.flatMap((account) => {
+    const reading = latestReading(accountReadings(account));
+    const rows = reading ? modelRows(reading.observation) : [];
+    return reading && rows.some((row) => row.entry.scope?.kind === "model")
+      ? [{ account, reading, rows }]
+      : [];
+  });
+
 /**
  * Accounts that also limit one model on its own, with that limit beside the account limit it
  * counts toward. Never added into capacity: the model's use comes out of the same allowance.
@@ -166,13 +176,7 @@ export function ModelLimits({
   now: number;
   onOpen: (account: Account) => void;
 }) {
-  const listed = accounts.flatMap((account) => {
-    const reading = latestReading(accountReadings(account));
-    const rows = reading ? modelRows(reading.observation) : [];
-    return reading && rows.some((row) => row.entry.scope?.kind === "model")
-      ? [{ account, reading, rows }]
-      : [];
-  });
+  const listed = modelLimitAccounts(accounts);
   if (listed.length === 0) return null;
   return (
     <section aria-labelledby="model-limits-heading" className="grid gap-2 pt-6">

@@ -3,6 +3,7 @@ import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
 import { RuntimeRetirementMonitor, observeRuntimeRetirement } from "./retirement-observation.ts";
 import { RuntimeReadTrace, runtimeReadStep } from "../runtime-read-trace.ts";
 import { refuseRuntime } from "../runtime-route-diagnostic.ts";
+import { logRuntimeEndpointFailure } from "../runtime-endpoint-failure.ts";
 import {
   SlotIdentity,
   SlotRefused,
@@ -88,6 +89,22 @@ export class RuntimeEndpoint {
     });
     this.wrap = wrap;
     this.options = options;
+  }
+  recordFailure(operation: string, error: unknown) {
+    logRuntimeEndpointFailure(
+      error,
+      operation,
+      {
+        role: this.role,
+        instanceId: this.ctx.id.toString(),
+        applicationId:
+          this.role === "legacy"
+            ? this.env.POOL_CONTAINER_APPLICATION_ID
+            : this.env.POOL_RUNTIME_APPLICATION_ID,
+        ...this.code,
+      },
+      this.env,
+    );
   }
   private serialize<T>(work: () => Promise<T>): Promise<T> {
     const pending = this.queue.then(work);

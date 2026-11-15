@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 export const tunnelPath = "/native/v1/tunnel";
 export const tunnelProtocol = "basalt.tunnel.v1";
+export const tunnelMessageProtocol = "basalt.tunnel.v2";
 export const maximumModelSearchLength = 2048;
 
 /** Search is data on an allowed model path, never a second URL or routing instruction. */
@@ -47,6 +48,11 @@ export const tunnelLimits = {
   operations: 16,
   sessionMilliseconds: 10 * 60_000,
 } as const;
+export const tunnelMessageLimits = {
+  ...tunnelLimits,
+  websocketMessageBytes: 16 * 1024 * 1024,
+} as const;
+export type TunnelLimits = typeof tunnelLimits & { readonly websocketMessageBytes?: number };
 
 const Id = Schema.Int.check(Schema.makeFilter((id) => id > 0 && id <= 0x7fff_ffff));
 const Header = Schema.String.check(
@@ -175,6 +181,7 @@ export const TunnelServerFrame = Schema.Union([
       websocketRequestBytes: Schema.Int,
       operations: Schema.Int,
       sessionMilliseconds: Schema.Int,
+      websocketMessageBytes: Schema.optionalKey(Schema.Int),
     }),
   }),
   Schema.Struct({
