@@ -92,7 +92,7 @@ test("finalized assertion evidence survives CI collection through the closed pro
   assert.deepEqual(JSON.parse(text), {
     version: 1,
     truncated: true,
-    records: records.map(({ actual, ...record }) => ({
+    records: records.map(({ actual: _actual, ...record }) => ({
       stage: "assertion",
       outcome: "observed",
       phase: record.phase,
