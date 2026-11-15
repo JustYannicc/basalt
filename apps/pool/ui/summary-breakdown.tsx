@@ -1,10 +1,12 @@
-import { AccountHealth, AccountName, Badge, Button, ProviderMark, Spinner } from "apps/ui";
+import { AccountHealth, AccountName, Badge, Button, Spinner } from "apps/ui";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PoolView } from "../contract.ts";
 import type { PoolUsageSummaryResult } from "../usage-overview-contract.ts";
 import type { SeriesGroup } from "../usage-series-contract.ts";
 import type { Result } from "../index.ts";
 import type { PoolApi } from "./api.ts";
+import { LabMark } from "./lab.tsx";
+import { labIdentity } from "./lab-name.ts";
 import { overviewAccounts } from "./overview-accounts.ts";
 import { readSeries, type SeriesRead } from "./series-model.ts";
 import { formatCount, formatMetric, formatShare, plural } from "./summary-format.ts";
@@ -297,7 +299,9 @@ export function SummaryBreakdown({
               <li key={row.key ?? "none"} className={index === 0 ? "" : "border-t"}>
                 <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-3 max-[540px]:grid-cols-1">
                   <div className="flex min-w-0 items-center gap-2.5">
-                    {by === "provider" && <ProviderMark name={title} size="medium" />}
+                    {lab !== null && (
+                      <LabMark provider={lab} identity={labIdentity(view?.providers, lab)} />
+                    )}
                     <div className="grid min-w-0">
                       <span className="truncate text-sm font-medium">{title}</span>
                       <span className="text-xs text-muted-foreground">

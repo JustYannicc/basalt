@@ -2,12 +2,8 @@ import type { Provider } from "../contract.ts";
 import type { Result } from "../index.ts";
 import type { PoolPersonalOverviewResult } from "../overview-contract.ts";
 import { seriesRead, type RangeDays } from "./overview-data.ts";
+import { labIdentity } from "./lab-name.ts";
 import { Money, WhoUses } from "./usage-groups.tsx";
-
-// Names come from the pool view. Until it lands, a neutral mark holds their place: never a raw
-// ID, never a guess.
-const namer = (providers: readonly Provider[] | undefined) => (id: string) =>
-  providers?.find((provider) => provider.id === id)?.name ?? "…";
 
 /** A member's own usage of a pool they were shared, never anyone else's. */
 export function PersonalOverview({
@@ -21,7 +17,8 @@ export function PersonalOverview({
   providers: readonly Provider[] | undefined;
   onRetry: () => void;
 }) {
-  const name = namer(providers);
+  const lab = (id: string) => labIdentity(providers, id);
+  const name = (id: string) => lab(id)?.name ?? "…";
   if (!data?.ok)
     return (
       <section className="grid gap-4 pt-12">
@@ -59,7 +56,7 @@ export function PersonalOverview({
         people={read}
         models={read}
         days={days}
-        name={name}
+        lab={lab}
         onRetry={onRetry}
       />
       <Money overview={undefined} personal={data.value} people={read} days={days} name={name} />

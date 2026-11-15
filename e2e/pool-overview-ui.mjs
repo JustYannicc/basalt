@@ -626,7 +626,7 @@ const program = Effect.gen(function* () {
     yield* page(() => screen.getByText("This pool endpoint does not exist.").count()),
     0,
   );
-  yield* page(() => screen.locator("#capacity").getByText("ChatGPT").first().waitFor());
+  yield* page(() => screen.locator("#capacity").getByText("OpenAI").first().waitFor());
   yield* page(() => screen.getByRole("list", { name: "Banked resets" }).waitFor());
   checked(
     "no reset can be spent from the overview",
@@ -681,9 +681,9 @@ const program = Effect.gen(function* () {
         const frame = await element.contentFrame();
         await frame.waitForFunction(() => innerWidth > 740);
       });
-      const article = screen.getByRole("article", { name: "ChatGPT", exact: true });
+      const article = screen.getByRole("article", { name: "OpenAI", exact: true });
       const control = article.getByRole("radiogroup", {
-        name: "ChatGPT limit window",
+        name: "OpenAI limit window",
         exact: true,
       });
       yield* page(() => settled(screen));
