@@ -1,0 +1,512 @@
+diff --git a/apps/hosted/server/src/contracts/account-traffic.ts b/apps/hosted/server/src/contracts/account-traffic.ts
+--- a/apps/hosted/server/src/contracts/account-traffic.ts
++++ b/apps/hosted/server/src/contracts/account-traffic.ts
+@@ -10,6 +10,8 @@
+ 
+ /** The most accounts one read names; an Accounts list asks for its visible rows at once. */
+ export const maxTrafficAccounts = 200;
++/** A change frame holds 32 keys; the organization feed already carries five authority keys. */
++export const maxTrafficWatchAccounts = 27;
+ /** The recent hours an account row shows as ticks, the current partial hour last. */
+ export const trafficTickHours = 8;
+ 
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -25,6 +25,7 @@
+ import { migrateAccountObservations } from "./account-observation-schema.ts";
+ import { migrateChangeRevisions } from "./change-revision-schema.ts";
+ import { migrateAccountChanges } from "./account-change-schema.ts";
++import { migrateAccountTrafficChanges } from "./account-traffic-change-schema.ts";
+ import { prepareChangeJournal, activateChangeJournal } from "./change-journal-schema.ts";
+ 
+ /**
+@@ -181,6 +182,7 @@
+   "19_change_revisions": migrateChangeRevisions,
+   "20_account_changes": migrateAccountChanges,
+   "21_change_journal_prepare": prepareChangeJournal,
++  "23_account_traffic_changes": migrateAccountTrafficChanges,
+ });
+ 
+ /** Activation is deliberately absent from startup migrations; the operator owns the reader cutover. */
+diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/apps/hosted/server/src/implementation/organization-changes.ts
+--- a/apps/hosted/server/src/implementation/organization-changes.ts
++++ b/apps/hosted/server/src/implementation/organization-changes.ts
+@@ -1,5 +1,5 @@
+-import { AppId } from "@executor-js/sdk/core";
+-import { resourceAuthority, requireAppAccessAs } from "./resource-policy.ts";
++import { AccountId, AppId } from "@executor-js/sdk/core";
++import { accountAccesses, resourceAuthority, requireAppAccessAs } from "./resource-policy.ts";
+ import { Effect, Schema } from "effect";
+ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { Authentication, Unauthorized } from "../contracts/auth.ts";
+@@ -11,6 +11,7 @@
+   organizationOwner,
+ } from "../contracts/organization.ts";
+ import { OrganizationTombstones } from "../contracts/organization-removal.ts";
++import { maxTrafficWatchAccounts } from "../contracts/account-traffic.ts";
+ import { makeChangeJournal } from "./change-revisions.ts";
+ import {
+   changeHeaders,
+@@ -88,14 +89,25 @@
+     const pools = yield* Schema.decodeUnknownEffect(
+       Schema.Array(AppId).check(Schema.isMaxLength(100)),
+     )([...new Set(query.getAll("pool"))]);
+-    const authorizePools = Effect.gen(function* () {
+-      if (pools.length === 0) return;
++    const accounts = yield* Schema.decodeUnknownEffect(
++      Schema.Array(AccountId).check(
++        Schema.isMaxLength(Math.max(0, maxTrafficWatchAccounts - pools.length * 4)),
++      ),
++    )([...new Set(query.getAll("account"))]);
++    const authorizeResources = Effect.gen(function* () {
++      if (pools.length === 0 && accounts.length === 0) return;
+       const actor = yield* resourceAuthority(identity.organization, identity.user);
+       yield* Effect.forEach(pools, (app) => requireAppAccessAs(actor, app, "read"), {
+         discard: true,
+       });
++      const permitted = yield* accountAccesses(accounts, actor);
++      if (
++        permitted.length !== accounts.length ||
++        permitted.some((account) => !account.canUse && !account.canManage)
++      )
++        return yield* new OrganizationForbidden();
+     });
+-    yield* authorizePools;
++    yield* authorizeResources;
+     // Slugs can move; this stream keeps checking the canonical scope it subscribed to.
+     const authorize = Effect.gen(function* () {
+       const latest = yield* organizationChangeAuthority(headers, identity.organization);
+@@ -105,7 +117,7 @@
+         latest.session !== identity.session
+       )
+         return yield* new Unauthorized();
+-      yield* authorizePools;
++      yield* authorizeResources;
+       return latest;
+     });
+     const fingerprint = yield* changeIdentity([
+@@ -115,7 +127,20 @@
+     ]);
+     const sql = yield* Effect.flatten(GroupDatabase);
+     const sources = [
+-      ...organizationChangeSources(identity.organization, identity.user),
++      ...organizationChangeSources(identity.organization, identity.user).map((source) =>
++        source.scope !== organizationOwner(identity.organization)
++          ? source
++          : {
++              ...source,
++              keys: [
++                ...source.keys,
++                ...accounts.map((account) => ({
++                  topic: "account-traffic",
++                  resource: account,
++                })),
++              ],
++            },
++      ),
+       ...pools.map((pool) => ({
+         scope: `pool:${pool}`,
+         keys: ["pool-readings", "pool-usage", "pool-samples", "pool-prices"].map((topic) => ({
+diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src/contracts/app-accounts.ts
+--- a/apps/hosted/web/src/contracts/app-accounts.ts
++++ b/apps/hosted/web/src/contracts/app-accounts.ts
+@@ -4,7 +4,7 @@
+  * connecting reads the app's discovery again.
+  */
+ import { hydrated } from "@executor-js/ui/contracts/http";
+-import { accountPolling, unavailableAccountHealth } from "./account-polling.ts";
++import { changeProtected } from "./change-signal.ts";
+ import { revalidated } from "@executor-js/ui/contracts/refresh";
+ import { acknowledge } from "@executor-js/ui/contracts/mutations";
+ import { Data, Effect } from "effect";
+@@ -55,22 +55,12 @@
+ const userLinks = Atom.family((key: AppKey) =>
+   HostedClient.query("appAccounts", "userList", hydrated({ params: key })).pipe(
+     revalidated,
+-    protectedQuery,
++    changeProtected(key.organization, ["accounts", "observations", "apps", "membership"]),
+   ),
+ );
+ const lists = { app: appLinks, user: userLinks };
+ /** One account linked to one of the app's requirements, with its sign-in and checks. */
+ export type AppAccountLink = Atom.Success<ReturnType<typeof appLinks>>[number];
+-/**
+- * Open pages reconcile the caller's links changed in another tab or by losing access to an
+- * account. App links change only when someone who can edit the app changes them; the page reads
+- * them again on its normal refresh and after the caller's own changes, without polling.
+- */
+-const liveUserLinks = Atom.family((key: AppKey) =>
+-  accountPolling(userLinks(key), undefined, (links) =>
+-    links.some(({ health }) => unavailableAccountHealth(health)),
+-  ),
+-);
+ /**
+  * The accounts linked to the app's own requirements, oldest first per requirement. Anyone who can
+  * use the app reads them; only people who can edit it see the identity checks reported.
+@@ -93,7 +83,7 @@
+ 
+ /** The accounts the caller linked to the app's user requirements and can still use. */
+ export const userLinksAtom = (key: { organization: OrganizationReference; app: AppId }) =>
+-  liveUserLinks(new AppKey(key));
++  userLinks(new AppKey(key));
+ 
+ const appChoices = Atom.family((key: RequirementKey) =>
+   HostedClient.query(
+diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
+--- a/apps/hosted/web/src/contracts/apps.ts
++++ b/apps/hosted/web/src/contracts/apps.ts
+@@ -1,7 +1,7 @@
+ import { interactiveConnectionActions } from "./interactive-accounts.ts";
+ import { hydrated } from "@executor-js/ui/contracts/http";
+ import { revalidated } from "@executor-js/ui/contracts/refresh";
+-import { pollingQuery } from "@executor-js/ui/contracts/polling";
++import { changeProtected } from "./change-signal.ts";
+ import { refreshAppLinks } from "./app-accounts.ts";
+ import { discoveryTarget, refreshAppDiscovery } from "./app-discovery.ts";
+ import { refreshResourceDirectory } from "./resource-access.ts";
+@@ -88,7 +88,10 @@
+ 
+ const appQuery = Atom.family(
+   (key: { readonly organization: OrganizationReference; readonly app: AppId }) =>
+-    HostedClient.query("apps", "get", hydrated({ params: key })).pipe(revalidated, protectedQuery),
++    HostedClient.query("apps", "get", hydrated({ params: key })).pipe(
++      revalidated,
++      changeProtected(key.organization, ["apps", "membership"]),
++    ),
+ );
+ const versionsQuery = Atom.family((key: AppKey) =>
+   HostedClient.query("apps", "versions", hydrated({ params: key })).pipe(revalidated),
+@@ -616,10 +619,9 @@
+ 
+ export { appError } from "./errors.ts";
+ 
+-const liveApps = Atom.family((key: AppKey) => pollingQuery(appQuery(key)));
+ /** Open app pages follow activations from another tab or caller without evaluating app code. */
+ export const liveAppAtom = (key: ConstructorParameters<typeof AppKey>[0]) =>
+-  liveApps(new AppKey(key));
++  appQuery(new AppKey(key));
+ 
+ /** Structural keys keep each query stable across React renders. */
+ export const appAtom = (key: {
+diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/src/contracts/change-signal.ts
+--- a/apps/hosted/web/src/contracts/change-signal.ts
++++ b/apps/hosted/web/src/contracts/change-signal.ts
+@@ -26,9 +26,13 @@
+   organization: OrganizationReference,
+   pools: readonly string[] = [],
+   suffix = "",
++  accounts: readonly string[] = [],
+ ) => {
+   const target = registry.get(organizationTargetAtom(organization)) ?? organization;
+-  const query = new URLSearchParams([...new Set(pools)].sort().map((pool) => ["pool", pool]));
++  const query = new URLSearchParams([
++    ...[...new Set(pools)].sort().map((pool) => ["pool", pool]),
++    ...[...new Set(accounts)].sort().map((account) => ["account", account]),
++  ]);
+   return `/api/organizations/${encodeURIComponent(target)}/changes${suffix}${query.size ? `?${query}` : ""}`;
+ };
+ 
+@@ -42,8 +46,9 @@
+   registry: Registry,
+   organization: OrganizationReference,
+   pools: readonly string[],
++  accounts: readonly string[],
+ ) => {
+-  const base = changeBase(registry, organization, pools);
++  const base = changeBase(registry, organization, pools, "", accounts);
+   let scoped = feeds.get(registry);
+   if (scoped === undefined) {
+     scoped = new Map();
+@@ -54,7 +59,7 @@
+   existing?.close();
+   const feed = makeChangeFeed({
+     stream: base,
+-    current: changeBase(registry, organization, pools, "/current"),
++    current: changeBase(registry, organization, pools, "/current", accounts),
+   });
+   scoped.set(base, feed);
+   feed.onStatus(() => {
+@@ -83,8 +88,9 @@
+   organization: OrganizationReference,
+   after: number,
+   pools: readonly string[],
++  accounts: readonly string[],
+ ) => {
+-  const url = changeBase(registry, organization, pools, "/current");
++  const url = changeBase(registry, organization, pools, "/current", accounts);
+   let scoped = reads.get(registry);
+   if (scoped === undefined) {
+     scoped = new Map();
+@@ -119,7 +125,12 @@
+ 
+ /** One accepted body owns its fence through server rendering, hydration and warm navigation. */
+ const changeRetained =
+-  (organization: OrganizationReference, topics: readonly string[], pools: readonly string[] = []) =>
++  (
++    organization: OrganizationReference,
++    topics: readonly string[],
++    pools: readonly string[] = [],
++    accounts: readonly string[] = [],
++  ) =>
+   <A, E extends HostedError>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
+     type Value = AsyncResult.AsyncResult<A, E | OrganizationForbidden | ChangeRefreshFailed>;
+     const { source, cache, document: carriesDocument } = acceptedRead(self);
+@@ -137,7 +148,7 @@
+           retained = new Map();
+           retainedReads.set(registry, retained);
+         }
+-        const base = changeBase(registry, organization, pools);
++        const base = changeBase(registry, organization, pools, "", accounts);
+         let entries = retained.get(base);
+         if (entries === undefined) {
+           entries = new Map();
+@@ -213,7 +224,7 @@
+             } else {
+               // The document uses its request-bound fetch; no browser stream or prior identity.
+               for (let attempt = 0; attempt < 3; attempt++) {
+-                const before = await currentHeads(get.registry, organization, 0, pools);
++                const before = await currentHeads(get.registry, organization, 0, pools, accounts);
+                 if (ended) return;
+                 const result = await body();
+                 if (ended) return;
+@@ -222,6 +233,7 @@
+                   organization,
+                   before.sequence,
+                   pools,
++                  accounts,
+                 );
+                 if (ended) return;
+                 if (before.receipt.identity !== after.receipt.identity) return revoked();
+@@ -246,7 +258,7 @@
+         const watch =
+           typeof window === "undefined"
+             ? undefined
+-            : organizationFeed(get.registry, organization, pools).watch({
++            : organizationFeed(get.registry, organization, pools, accounts).watch({
+                 topics: watched,
+                 ...(held === undefined ? {} : { accepted: held.receipt }),
+                 confirmed: () => {
+@@ -277,10 +289,15 @@
+  * retry becomes one fenced read, and an invalidation only clears what is shown.
+  */
+ export const changeProtected =
+-  (organization: OrganizationReference, topics: readonly string[], pools: readonly string[] = []) =>
++  (
++    organization: OrganizationReference,
++    topics: readonly string[],
++    pools: readonly string[] = [],
++    accounts: readonly string[] = [],
++  ) =>
+   <A, E extends HostedError>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
+     type Value = AsyncResult.AsyncResult<A, E | OrganizationForbidden | ChangeRefreshFailed>;
+-    const { atom: fenced, requests } = changeRetained(organization, topics, pools)(self);
++    const { atom: fenced, requests } = changeRetained(organization, topics, pools, accounts)(self);
+     const query: Atom.Writable<Value, ((current: A) => A) | undefined> = Atom.writable(
+       (get): Value => {
+         const result = get(fenced);
+diff --git a/apps/hosted/web/src/contracts/connector-traffic.ts b/apps/hosted/web/src/contracts/connector-traffic.ts
+--- a/apps/hosted/web/src/contracts/connector-traffic.ts
++++ b/apps/hosted/web/src/contracts/connector-traffic.ts
+@@ -1,17 +1,20 @@
+ /**
+- * The tool calls each visible account served, read in one polled request per page. The host
++ * The tool calls each visible account served, following its authorized committed changes. The host
+  * leaves out accounts the caller may not inspect and accounts no call used, so either gets no
+  * numbers, never 0. A failed read gives nothing at all.
+  */
+ import { browserOnly } from "@executor-js/ui/contracts/http";
+-import { pollingQuery } from "@executor-js/ui/contracts/polling";
+ import type { TrafficTick } from "@executor-js/ui/dashboard/account-traffic";
+-import { Effect } from "effect";
+-import { Atom } from "effect/reactivity";
++import { Effect, Semaphore } from "effect";
++import { AsyncResult, Atom } from "effect/reactivity";
+ import type { AccountId } from "@executor-js/sdk";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+-import { maxTrafficAccounts, trafficTickHours } from "@executor-js/hosted-server/account-traffic";
++import {
++  maxTrafficWatchAccounts,
++  trafficTickHours,
++} from "@executor-js/hosted-server/account-traffic";
+ import { HostedClient } from "./api.ts";
++import { changeProtected } from "./change-signal.ts";
+ 
+ const hour = 3_600_000;
+ 
+@@ -31,52 +34,95 @@
+ const read = ({ organization, accounts }: Key) =>
+   Effect.gen(function* () {
+     const client = yield* HostedClient;
+-    const pages = yield* Effect.forEach(
+-      Array.from({ length: Math.ceil(accounts.length / maxTrafficAccounts) }, (_, index) =>
+-        accounts.slice(index * maxTrafficAccounts, (index + 1) * maxTrafficAccounts),
+-      ),
+-      (batch) =>
+-        client.accountTraffic.read({ params: { organization }, payload: { accounts: batch } }),
+-      { concurrency: 2 },
+-    );
++    const page = yield* client.accountTraffic.read({
++      params: { organization },
++      payload: { accounts },
++    });
++    // The server's hours, so a skewed browser clock never shifts the ticks.
++    const current = Math.floor(Date.parse(page.readAt) / hour) * hour;
+     return new Map(
+-      pages.flatMap((page) => {
+-        // The server's hours, so a skewed browser clock never shifts the ticks.
+-        const current = Math.floor(Date.parse(page.readAt) / hour) * hour;
+-        return page.accounts.map((entry) => {
+-          const traffic: ToolCallTraffic = {
+-            requests: entry.requests,
+-            failed: entry.failed,
+-            ticks: Array.from({ length: trafficTickHours }, (_, index): TrafficTick => {
+-              const start = current - (trafficTickHours - 1 - index) * hour;
+-              const bucket = entry.recent.find((recent) => Date.parse(recent.at) === start);
+-              return bucket === undefined || bucket.requests === 0
+-                ? "none"
+-                : bucket.failed > 0
+-                  ? "bad"
+-                  : "good";
+-            }),
+-            lastSuccessAt: entry.lastSuccessAt,
+-          };
+-          return [entry.account, traffic] as const;
+-        });
++      page.accounts.map((entry) => {
++        const traffic: ToolCallTraffic = {
++          requests: entry.requests,
++          failed: entry.failed,
++          ticks: Array.from({ length: trafficTickHours }, (_, index): TrafficTick => {
++            const start = current - (trafficTickHours - 1 - index) * hour;
++            const bucket = entry.recent.find((recent) => Date.parse(recent.at) === start);
++            return bucket === undefined || bucket.requests === 0
++              ? "none"
++              : bucket.failed > 0
++                ? "bad"
++                : "good";
++          }),
++          lastSuccessAt: entry.lastSuccessAt,
++        };
++        return [entry.account, traffic] as const;
+       }),
+     );
+   });
+ 
+-// String keys: the family reuses the atom, and its polling, while the visible accounts stay put.
+-const traffic = Atom.family((key: string) => {
++const requests = Semaphore.makeUnsafe(2);
++
++// String keys share reads only while the same accounts remain visible in this organization.
++const pageTraffic = Atom.family((key: string) => {
+   const parsed = JSON.parse(key) as Key;
+-  return pollingQuery(
+-    browserOnly(
+-      HostedClient.runtime.atom(
++  return browserOnly(
++    HostedClient.runtime
++      .atom(
+         parsed.accounts.length === 0
+           ? Effect.succeed(undefined)
+-          : read(parsed).pipe(Effect.catch(() => Effect.succeed(undefined))),
++          : read(parsed).pipe(
++              requests.withPermits(1),
++              Effect.catch(() => Effect.succeed(undefined)),
++            ),
++      )
++      .pipe(
++        changeProtected(
++          parsed.organization,
++          ["account-traffic", "membership"],
++          [],
++          parsed.accounts,
++        ),
+       ),
+-    ),
+   );
+ });
+ 
++const traffic = Atom.family((key: string) => {
++  const parsed = JSON.parse(key) as Key;
++  const pages = Array.from(
++    { length: Math.ceil(parsed.accounts.length / maxTrafficWatchAccounts) },
++    (_, index) =>
++      pageTraffic(
++        JSON.stringify({
++          organization: parsed.organization,
++          accounts: parsed.accounts.slice(
++            index * maxTrafficWatchAccounts,
++            (index + 1) * maxTrafficWatchAccounts,
++          ),
++        }),
++      ),
++  );
++  return Atom.readable(
++    (get) => {
++      const values: Map<AccountId, ToolCallTraffic>[] = [];
++      let waiting = false;
++      for (const page of pages) {
++        const result = get(page);
++        if (!AsyncResult.isSuccess(result) || result.value === undefined) return result;
++        values.push(result.value);
++        waiting ||= result.waiting;
++      }
++      return AsyncResult.success(
++        pages.length === 0 ? undefined : new Map(values.flatMap((page) => [...page])),
++        { waiting },
++      );
++    },
++    (refresh) => {
++      for (const page of pages) refresh(page);
++    },
++  ).pipe(Atom.setIdleTTL(0));
++});
++
+ /** Each visible account's counted tool calls; undefined while unread or when the read failed. */
+-export const toolCallTrafficAtom = (key: Key) => traffic(JSON.stringify(key));
++export const toolCallTrafficAtom = (key: Key) =>
++  traffic(JSON.stringify({ ...key, accounts: [...new Set(key.accounts)].sort() }));
+diff --git a/packages/sdk/src/implementation/account-traffic-store.ts b/packages/sdk/src/implementation/account-traffic-store.ts
+--- a/packages/sdk/src/implementation/account-traffic-store.ts
++++ b/packages/sdk/src/implementation/account-traffic-store.ts
+@@ -1,7 +1,7 @@
+ /**
+  * Per-account, per-UTC-hour counts of the tool calls each account served, so account lists can
+- * show requests, failures and the latest success. Derived data no reactive reader watches: the
+- * storage migration creates its table (`migrateAccountTraffic`), so the runtime only writes, and
++ * show requests, failures and the latest success. The host may publish committed counter writes.
++ * The storage migration creates its table (`migrateAccountTraffic`), so the runtime only writes, and
+  * every write is best-effort for its caller. A write that fails logs its SQLSTATE.
+  */
+ import { Clock, Effect, Schema } from "effect";
+diff --git a/apps/hosted/server/src/implementation/account-traffic-change-schema.ts b/apps/hosted/server/src/implementation/account-traffic-change-schema.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-traffic-change-schema.ts
+@@ -0,0 +1,26 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** Counter writes publish only their account key; readers must authorize that key separately. */
++export const migrateAccountTrafficChanges = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create or replace function hosted_account_traffic_changed() returns trigger language plpgsql as $$
++    declare previous text; following text; account_id text; target_scope text;
++    begin
++      if TG_OP <> 'INSERT' then previous := OLD.account; end if;
++      if TG_OP <> 'DELETE' then following := NEW.account; end if;
++      if TG_OP = 'UPDATE' and to_jsonb(OLD) = to_jsonb(NEW) then return NEW; end if;
++      for account_id in select distinct value from unnest(array[previous,following]) value
++        where value is not null loop
++        select owner into target_scope from executor_accounts where id=account_id;
++        if target_scope is not null then
++          perform hosted_queue_change(target_scope,'account-traffic',account_id);
++        end if;
++      end loop;
++      if TG_OP = 'DELETE' then return OLD; end if;
++      return NEW;
++    end $$`;
++  yield* sql`create or replace trigger hosted_account_traffic_changed
++    after insert or update or delete on executor_account_tool_calls
++    for each row execute function hosted_account_traffic_changed()`;
++});

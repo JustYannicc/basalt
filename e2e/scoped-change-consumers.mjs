@@ -9,6 +9,8 @@ import { Effect, Redacted } from "effect";
 import { root, runtime, until } from "./recipes/harness.mjs";
 import { poolCloudHarness } from "./recipes/pool-cloud-harness.mjs";
 import { startScopedChangeFixture } from "./recipes/scoped-change-fixture.mjs";
+import { accountTrafficProof } from "./recipes/account-traffic-proof.mjs";
+import { accountTrafficPrivacyProof } from "./recipes/account-traffic-privacy-proof.mjs";
 import { cloudLocks } from "../.upstream/e2e/support/cloud-locks.ts";
 import { Target } from "../.upstream/e2e/support/platform.ts";
 import { roleHost } from "../.upstream/e2e/support/role-hosts.ts";
@@ -22,6 +24,7 @@ import { redactLogText } from "../src/feedback/logs.ts";
 const { chromium } = createRequire(join(root, ".upstream/package.json"))("playwright");
 const args = process.argv.slice(2);
 const accountsOnly = args.includes("--accounts-only");
+const trafficOnly = args.includes("--traffic-only");
 const directory = resolve(
   args.find((arg) => !arg.startsWith("--")) ??
     join(root, ".generated/scoped-change-consumers", randomBytes(6).toString("hex")),
@@ -158,6 +161,28 @@ const program = Effect.gen(function* () {
 
   yield* browserWork(() => h.fixture.scoped.initialize(pool.id, identity.user.id));
   yield* browserWork(() => h.fixture.scoped.commitRequest("synthetic-account-baseline"));
+  if (trafficOnly) {
+    yield* accountTrafficProof({
+      h,
+      database,
+      browser,
+      pool,
+      saved,
+      check,
+      diagnostics,
+      directory,
+    });
+    yield* accountTrafficPrivacyProof({ h, browser, check, diagnostics, directory });
+    return {
+      complete: true,
+      accountsProved: true,
+      poolProved: false,
+      checks,
+      screenshots,
+      syntheticOnly: true,
+      diagnostics,
+    };
+  }
   const seriesReads = () =>
     h.fixture.scoped.reads.filter((read) => read.kind === "poolUsageSeries").length;
   const successReads = () =>
@@ -847,6 +872,8 @@ const program = Effect.gen(function* () {
     }
     diagnostics.pool = { proved: true, widths: [1280, 390], engine: h.fixture.scoped.engine };
   }
+  yield* accountTrafficProof({ h, database, browser, pool, saved, check, diagnostics, directory });
+  yield* accountTrafficPrivacyProof({ h, browser, check, diagnostics, directory });
   check("browser has no uncaught product error", (diagnostics.pageErrors ??= []), []);
   return {
     complete: !accountsOnly,
