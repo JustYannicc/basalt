@@ -12,6 +12,7 @@ export function e2eCorrections(root: string) {
     "atlassian-fixture-preparation",
     "sso-billing-settlement",
     "retained-pool-overview",
+    "topic-scoped-pool-fixtures",
   ]
     .map((name) => join(root, `e2e/${name}.patch`))
     .filter(existsSync);
