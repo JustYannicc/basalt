@@ -135,7 +135,7 @@ index a9df614..3615d6e 100644
      "packages/apps": {
        "name": "apps",
 -      "version": "0.0.1-beta.104-basalt.1",
-+      "version": "0.0.1-beta.104-basalt.16",
++      "version": "0.0.1-beta.104-basalt.17",
        "dependencies": {
          "@cfworker/json-schema": "4.1.1",
          "@csstools/css-tokenizer": "4.0.2",
@@ -147,7 +147,7 @@ index 59f10c4..b0e97a5 100644
  {
    "name": "apps",
 -  "version": "0.0.1-beta.104-basalt.14",
-+  "version": "0.0.1-beta.104-basalt.16",
++  "version": "0.0.1-beta.104-basalt.17",
    "private": true,
    "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
    "type": "module",
