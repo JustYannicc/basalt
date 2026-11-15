@@ -84,22 +84,41 @@ test("an authoritative refusal from the uncached read remains a failure", () =>
     }),
   ));
 
-test("authority expiring during the fill still fails closed without a retry", () =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      const cache = makePoolViewCache();
-      let expired = false;
-      let reads = 0;
-      const guard = Effect.sync(() => ({
-        revisions: [],
-        validUntil: expired ? 0 : Date.now() + 60_000,
-      }));
-      const read = Effect.sync(() => {
-        reads++;
-        expired = true;
-        return { windows: [1] };
-      });
-      assert.equal((yield* cache("caller", guard, read).pipe(Effect.result))._tag, "Failure");
-      assert.equal(reads, 1);
-    }),
-  ));
+for (const headChanges of [false, true]) {
+  test(`a quota deadline crossed during the fill ${headChanges ? "with" : "without"} a head change returns one fresh uncached read`, () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const cache = makePoolViewCache();
+        let expired = false;
+        let revision = "1";
+        let value = "before reset";
+        let reads = 0;
+        let guards = 0;
+        const guard = Effect.sync(() => {
+          guards++;
+          return {
+            revisions: [{ topic: "pool-readings", resource: "pool", revision }],
+            validUntil: expired ? 0 : Date.now() + 60_000,
+          };
+        });
+        const read = Effect.sync(() => {
+          reads++;
+          const snapshot = { value };
+          if (reads === 1) {
+            expired = true;
+            value = "after reset";
+            if (headChanges) revision = "2";
+          }
+          return snapshot;
+        });
+        assert.deepEqual(yield* cache("caller", guard, read), { value: "after reset" });
+        assert.equal(reads, 2);
+        assert.equal(guards, 2, "the expired display deadline triggers only one uncached retry");
+        expired = false;
+        assert.deepEqual(yield* cache("caller", guard, read), { value: "after reset" });
+        assert.equal(reads, 3, "the fallback did not populate the cache");
+        yield* cache("caller", guard, read);
+        assert.equal(reads, 3, "a later stable fill can be cached");
+      }),
+    ));
+}

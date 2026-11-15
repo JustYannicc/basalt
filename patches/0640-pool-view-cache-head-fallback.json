@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-view-cache-head-fallback",
   "file": "0640-pool-view-cache-head-fallback.patch",
-  "content_sha256": "41a8b747a442d756c268f6c546e40679a4dfc924ab1ab7ba90969ef6877ef31e",
+  "content_sha256": "388f9194e398c8b16d3f546154c0ac746588e9ae4710bb29737c16c02be7f435",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

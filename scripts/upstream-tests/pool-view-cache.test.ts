@@ -90,7 +90,7 @@ test("a write during a fill preserves an authoritative refusal instead of publis
     }),
   ));
 
-test("expired authority is refused even when the head did not change", () =>
+test("an expired pre-read snapshot is refused even when the head did not change", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       const cache = makePoolViewCache();
