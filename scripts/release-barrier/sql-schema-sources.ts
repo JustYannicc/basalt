@@ -68,29 +68,62 @@ function source(connectionString: string): SqlJournalSource {
   };
 }
 
+const commandEnv = (
+  state: StateService,
+  stack: Pick<CompiledStack, "name" | "stage">,
+  fqn: string,
+  inspectUpdate = false,
+) =>
+  Effect.gen(function* () {
+    const value = yield* state.get({ stack: stack.name, stage: stack.stage, fqn });
+    if (
+      !value ||
+      !("resourceType" in value) ||
+      value.resourceType !== "Command.Exec" ||
+      (value.status !== "created" &&
+        value.status !== "updated" &&
+        !(inspectUpdate && value.status === "updating"))
+    )
+      throw new BarrierRefusal("sql-schema-authority-unavailable", fqn);
+    const env: unknown = value.props?.env;
+    if (!env || typeof env !== "object" || Array.isArray(env))
+      throw new BarrierRefusal("sql-schema-authority-unavailable", fqn);
+    // A failed Command remains updating. Inspect only when both recorded authorities agree exactly.
+    if (value.status === "updating") {
+      const before: unknown = value.old.props.env;
+      if (
+        !before ||
+        typeof before !== "object" ||
+        !("DATABASE_URL" in before) ||
+        !("DATABASE_URL" in env) ||
+        secret(before.DATABASE_URL) !== secret(env.DATABASE_URL)
+      )
+        throw new BarrierRefusal("sql-schema-authority-unavailable", fqn);
+    }
+    return env;
+  });
+
+/** Inspection reads only the release's existing tools authority, without initializing State. */
+export const inspectionSqlSource = (state: StateService) =>
+  Effect.gen(function* () {
+    const tools = yield* commandEnv(
+      state,
+      { name: "basalt", stage: "production" },
+      "Migrations",
+      true,
+    );
+    if (!("DATABASE_URL" in tools)) throw new BarrierRefusal("sql-schema-authority-unavailable");
+    return source(secret(tools.DATABASE_URL));
+  });
+
 /** Consume only the existing migration Commands' in-process authority, never expose a new SQL endpoint. */
 export const deploymentSqlSources = (
   state: StateService,
   stack: Pick<CompiledStack, "name" | "stage">,
 ) =>
   Effect.gen(function* () {
-    const commandEnv = (fqn: string) =>
-      Effect.gen(function* () {
-        const value = yield* state.get({ stack: stack.name, stage: stack.stage, fqn });
-        if (
-          !value ||
-          !("resourceType" in value) ||
-          value.resourceType !== "Command.Exec" ||
-          (value.status !== "created" && value.status !== "updated")
-        )
-          throw new BarrierRefusal("sql-schema-authority-unavailable", fqn);
-        const env: unknown = value.props?.env;
-        if (!env || typeof env !== "object" || Array.isArray(env))
-          throw new BarrierRefusal("sql-schema-authority-unavailable", fqn);
-        return env;
-      });
-    const tools = yield* commandEnv("Migrations");
-    const pool = yield* commandEnv("PoolDatabase");
+    const tools = yield* commandEnv(state, stack, "Migrations");
+    const pool = yield* commandEnv(state, stack, "PoolDatabase");
     if (!("DATABASE_URL" in tools) || !("POOL_DATABASE_ADMIN_URL" in pool))
       throw new BarrierRefusal("sql-schema-authority-unavailable");
     const toolsUrl = secret(tools.DATABASE_URL);
