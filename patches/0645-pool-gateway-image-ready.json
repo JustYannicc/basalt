@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-gateway-image-ready",
+  "file": "0645-pool-gateway-image-ready.patch",
+  "content_sha256": "8850fdc42e152e8ffc97b44270698aa51f77a58b07a40272fdea25b3c9995d85",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
