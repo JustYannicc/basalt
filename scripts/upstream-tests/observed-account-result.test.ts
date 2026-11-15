@@ -122,3 +122,29 @@ test("a scheduled fence cannot finish a check with the previously settled result
     registry.dispose();
   }
 });
+
+test("a completed account wait releases its listener before the view closes", async () => {
+  const registry = AtomRegistry.make();
+  const query = Atom.make(AsyncResult.success("previous"));
+  const unmount = registry.mount(query);
+  try {
+    const completion = Effect.runPromise(settleObserved(registry, query));
+    registry.set(query, AsyncResult.success("accepted"));
+    await completion;
+    assert.equal(
+      registry.getNodes().get(query)?.listeners.size,
+      1,
+      "only the view remains subscribed",
+    );
+    unmount();
+    assert.equal(
+      registry.getNodes().get(query)?.listeners.size ?? 0,
+      0,
+      "closed view retains no listener",
+    );
+    await Effect.runPromise(settleObserved(registry, query));
+  } finally {
+    unmount();
+    registry.dispose();
+  }
+});

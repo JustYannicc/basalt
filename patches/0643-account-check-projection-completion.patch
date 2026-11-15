@@ -107,7 +107,7 @@ diff --git a/packages/ui/src/contracts/observed-result.ts b/packages/ui/src/cont
 new file mode 100644
 --- /dev/null
 +++ b/packages/ui/src/contracts/observed-result.ts
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,45 @@
 +/** Join a view's in-flight result without activating a closed view's retained query. */
 +import { Effect } from "effect";
 +import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
@@ -130,13 +130,26 @@ new file mode 100644
 +  if (!observed(registry.getNodes().get(key))) return Effect.void;
 +  const previous = registry.get(query);
 +  return Effect.callback<void, E>((resume) => {
++    let done = false;
++    let cancel = () => {};
++    const complete = (result: Effect.Effect<void, E>) => {
++      if (done) return;
++      done = true;
++      cancel();
++      resume(result);
++    };
 +    const changed = (result: AsyncResult.AsyncResult<A, E>) => {
 +      if (result === previous || result.waiting) return;
-+      if (AsyncResult.isFailure(result)) resume(Effect.failCause(result.cause));
-+      else if (AsyncResult.isSuccess(result)) resume(Effect.void);
++      if (AsyncResult.isFailure(result)) complete(Effect.failCause(result.cause));
++      else if (AsyncResult.isSuccess(result)) complete(Effect.void);
 +    };
-+    const cancel = registry.subscribe(query, changed);
++    cancel = registry.subscribe(query, changed);
++    if (done) cancel();
 +    changed(registry.get(query));
-+    return Effect.sync(cancel);
++    // Effect.callback runs its returned cleanup only on interruption.
++    return Effect.sync(() => {
++      done = true;
++      cancel();
++    });
 +  });
 +};

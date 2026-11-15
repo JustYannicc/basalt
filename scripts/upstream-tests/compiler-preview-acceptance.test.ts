@@ -117,61 +117,75 @@ test(
   },
   async (context) => {
     let runtime: InstanceType<typeof Miniflare> | undefined;
-    await context.test("initialize the native compiler Worker", { timeout: 6_000 }, async () => {
-      const wasm = new Map<string, Buffer>();
-      const bundle = await build({
-        stdin: {
-          contents: worker,
-          sourcefile: "compiler-preview.ts",
-          resolveDir: upstream,
-          loader: "ts",
-        },
-        absWorkingDir: upstream,
-        bundle: true,
-        write: false,
-        format: "esm",
-        platform: "browser",
-        conditions: ["workerd"],
-        external: ["cloudflare:*"],
-        logLevel: "silent",
-        plugins: [
-          {
-            name: "compiler-wasm",
-            setup(builder) {
-              builder.onResolve({ filter: /\.wasm$/ }, (args) => {
-                const path = args.path.startsWith(".")
-                  ? resolve(args.resolveDir, args.path)
-                  : createRequire(resolve(args.resolveDir, "wasm-resolution.mjs")).resolve(
-                      args.path,
-                    );
-                const name = `compiler-${wasm.size}.wasm`;
-                wasm.set(name, readFileSync(path));
-                return { path: `./${name}`, external: true };
-              });
-            },
+    let initialized = false;
+    await context.test(
+      "initialize the native compiler Worker",
+      { timeout: 6_000 },
+      async (setup) => {
+        const wasm = new Map<string, Buffer>();
+        const bundle = await build({
+          stdin: {
+            contents: worker,
+            sourcefile: "compiler-preview.ts",
+            resolveDir: upstream,
+            loader: "ts",
           },
-        ],
-      });
-      const framework = readFileSync(
-        resolve(upstream, ".local/basalt-framework/framework.json"),
-        "utf8",
+          absWorkingDir: upstream,
+          bundle: true,
+          write: false,
+          format: "esm",
+          platform: "browser",
+          conditions: ["workerd"],
+          external: ["cloudflare:*"],
+          logLevel: "silent",
+          plugins: [
+            {
+              name: "compiler-wasm",
+              setup(builder) {
+                builder.onResolve({ filter: /\.wasm$/ }, (args) => {
+                  const path = args.path.startsWith(".")
+                    ? resolve(args.resolveDir, args.path)
+                    : createRequire(resolve(args.resolveDir, "wasm-resolution.mjs")).resolve(
+                        args.path,
+                      );
+                  const name = `compiler-${wasm.size}.wasm`;
+                  wasm.set(name, readFileSync(path));
+                  return { path: `./${name}`, external: true };
+                });
+              },
+            },
+          ],
+        });
+        const framework = readFileSync(
+          resolve(upstream, ".local/basalt-framework/framework.json"),
+          "utf8",
+        );
+        setup.signal.throwIfAborted();
+        runtime = new Miniflare({
+          modules: [
+            { type: "ESModule", path: "compiler.mjs", contents: bundle.outputFiles[0]!.text },
+            ...Array.from(wasm, ([path, contents]) => ({
+              type: "CompiledWasm" as const,
+              path,
+              contents,
+            })),
+          ],
+          compatibilityDate: "2026-09-08",
+          compatibilityFlags: ["nodejs_compat", "no_brotli_content_encoding"],
+          cachePersist: false,
+          serviceBindings: { ASSETS: () => new WorkerResponse(framework) },
+        });
+        await runtime.ready;
+        initialized = true;
+      },
+    );
+    if (!initialized) {
+      await context.test("dispose an incomplete compiler Worker", { timeout: 6_000 }, async () =>
+        runtime?.dispose(),
       );
-      runtime = new Miniflare({
-        modules: [
-          { type: "ESModule", path: "compiler.mjs", contents: bundle.outputFiles[0]!.text },
-          ...Array.from(wasm, ([path, contents]) => ({
-            type: "CompiledWasm" as const,
-            path,
-            contents,
-          })),
-        ],
-        compatibilityDate: "2026-09-08",
-        compatibilityFlags: ["nodejs_compat", "no_brotli_content_encoding"],
-        cachePersist: false,
-        serviceBindings: { ASSETS: () => new WorkerResponse(framework) },
-      });
-    });
-    assert.ok(runtime, "Native compiler setup must finish within its deadline");
+      assert.fail("Native compiler setup must finish within its deadline");
+    }
+    assert.ok(runtime, "Native compiler setup must create its Worker");
     const compiler = runtime;
     const decode = Schema.decodeUnknownSync(
       Schema.Struct({
