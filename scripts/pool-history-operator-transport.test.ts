@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,43 +75,60 @@ process.on("message", (message) => {
   };
 }
 
-test(
-  "Bun's default history connection reaches the catalog through the Node bridge",
-  {
-    skip: !process.versions.bun,
-  },
-  async (context) => {
-    const directory = await mkdtemp(join(tmpdir(), "history-bun-proxy-"));
-    context.after(() => rm(directory, { recursive: true, force: true }));
-    const bridge = await fixture(directory);
-    const result = await runHistoryOperator(
+test("Bun's default history connection reaches the catalog through the Node bridge", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "history-bun-proxy-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  if (!process.versions.bun) {
+    const result = spawnSync(
+      "bun",
+      [
+        "test",
+        "--test-name-pattern",
+        "Bun's default history connection reaches the catalog through the Node bridge",
+        import.meta.filename,
+      ],
       {
-        worker,
-        plan: join(directory, "plan.json"),
-        operation: "journal-activation",
-        apply: false,
+        env: { PATH: process.env.PATH, HOME: directory, CI: "1", WRANGLER_SEND_METRICS: "false" },
+        encoding: "utf8",
       },
-      account,
-      undefined,
-      bridge.connect,
     );
-    assert.equal(result.schemaHash, report.schemaHash);
-    assert.deepEqual(JSON.parse(await readFile(bridge.observed, "utf8")), {
-      node: true,
-      method: "GET",
-      url: "http://pool-operations/model-history/journal-activation",
-      body: null,
-      wrangler: "4.153.0",
-    });
-    assert.equal(await readFile(bridge.closed, "utf8"), "closed");
-  },
-);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    return;
+  }
+  const bridge = await fixture(directory);
+  const result = await runHistoryOperator(
+    {
+      worker,
+      plan: join(directory, "plan.json"),
+      operation: "journal-activation",
+      apply: false,
+      readersReady: undefined,
+    },
+    account,
+    undefined,
+    bridge.connect,
+  );
+  assert.equal(result.schemaHash, report.schemaHash);
+  assert.deepEqual(JSON.parse(await readFile(bridge.observed, "utf8")), {
+    node: true,
+    method: "GET",
+    url: "http://pool-operations/model-history/journal-activation",
+    body: null,
+    wrangler: "4.153.0",
+  });
+  assert.equal(await readFile(bridge.closed, "utf8"), "closed");
+});
 
 test("Node transport preserves the activation report, saved plan and final fingerprint", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "history-transport-digest-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
   const bridge = await fixture(directory);
-  const options = { worker, operation: "journal-activation", apply: false } as const;
+  const options = {
+    worker,
+    operation: "journal-activation",
+    apply: false,
+    readersReady: undefined,
+  } as const;
   const directPath = join(directory, "direct.json");
   const nodePath = join(directory, "node.json");
   const direct = async () => ({
@@ -127,12 +145,12 @@ test("Node transport preserves the activation report, saved plan and final finge
     JSON.parse(await readFile(directPath, "utf8")),
   );
   const inProcess = await historyPlan(
-    (input, id) => runHistoryOperator(input, id, direct),
+    (input, id) => runHistoryOperator({ ...input, readersReady: input.readersReady }, id, direct),
     account,
     worker,
   );
   const overIpc = await historyPlan(
-    (input, id) => runHistoryOperator(input, id, remote),
+    (input, id) => runHistoryOperator({ ...input, readersReady: input.readersReady }, id, remote),
     account,
     worker,
   );
@@ -179,6 +197,7 @@ test("the Node history connection closes when the catalog is invalid", async (co
         plan: join(directory, "plan.json"),
         operation: "journal-activation",
         apply: false,
+        readersReady: undefined,
       },
       account,
       () => bridge.connect(account, worker),
