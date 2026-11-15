@@ -45,7 +45,12 @@ class UpdateTests(unittest.TestCase):
                 'assets': [{'name': f'CLIProxyAPI_{tag[1:]}_linux_{arch}_no-plugin.tar.gz', 'digest': 'sha256:' + 'a' * 64} for arch in ['amd64', 'aarch64']]}
 
     def sums(self):
-        return '\n'.join(f'github.com/router-for-me/CLIProxyAPI/v8 {self.next_tag()}{suffix} h1:' + 'a' * 43 + '=' for suffix in ['', '/go.mod'])
+        module = (ROOT / 'containers/pool/typesafe/go.mod').read_text().split('require', 1)[0]
+        module += f'require {update.MODULE} {self.next_tag()}\n'
+        sums = '\n'.join(f'github.com/router-for-me/CLIProxyAPI/v8 {self.next_tag()}{suffix} h1:' + 'a' * 43 + '=' for suffix in ['', '/go.mod'])
+        dependency = 'github.com/MoeForge/moego v0.1.0'
+        return {'go.mod': module + f'\nrequire {dependency} // indirect\n',
+                'go.sum': sums + '\n' + dependency + ' h1:' + 'b' * 43 + '=\n'}
 
     def test_complete_update_keeps_existing_carries(self):
         root = self.fixture()
@@ -58,6 +63,8 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(source['artifacts']['node']['commit'], 'b' * 40)
         self.assertIn(self.next_tag(), files['containers/pool/typesafe/go.mod'])
         self.assertIn(self.next_tag(), files['containers/pool/typesafe/go.sum'])
+        self.assertIn('github.com/MoeForge/moego v0.1.0', files['containers/pool/typesafe/go.mod'])
+        self.assertIn('github.com/MoeForge/moego v0.1.0 h1:', files['containers/pool/typesafe/go.sum'])
         self.assertEqual(source['artifacts']['node']['patches'], json.loads((ROOT / 'containers/pool/sources.json').read_text())['artifacts']['node']['patches'])
 
     def test_rejects_incomplete_assets_prerelease_and_tampered_carry(self):

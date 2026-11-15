@@ -5,6 +5,7 @@ import { Button as InlineButton } from "./controls.tsx";
 import type { PoolView, Provider } from "../contract.ts";
 import type { PoolUsageSummaryResult } from "../usage-overview-contract.ts";
 import type { PoolApi } from "./api.ts";
+import { labIdentity } from "./lab-name.ts";
 import { summaryLabName } from "./summary-names.ts";
 import { CapacitySection } from "./capacity-view.tsx";
 import { capacityInputs } from "./account-view.ts";
@@ -482,7 +483,12 @@ export function SummaryOverview({
             name={name}
             onHistory={onHistory}
           />
-          <SummaryForecasts summary={summary.value} metric={controls.metric} name={name} />
+          <SummaryForecasts
+            summary={summary.value}
+            metric={controls.metric}
+            name={name}
+            lab={(provider) => labIdentity(providers, provider)}
+          />
         </div>
       )}
       <CapacitySection

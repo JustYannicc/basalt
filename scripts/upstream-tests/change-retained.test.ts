@@ -76,7 +76,7 @@ function backend() {
     ["accounts", "1"],
     ["session", "1"],
   ]);
-  const state = { identity: "viewer-a", streamOpens: 0, currentReads: 0 };
+  const state = { identity: "viewer-a", streamOpens: 0, currentReads: 0, urls: [] as string[] };
   const streams: Array<{
     controller: ReadableStreamDefaultController<Uint8Array>;
     closed: boolean;
@@ -86,7 +86,9 @@ function backend() {
   const revisions = () =>
     [...heads].map(([topic, revision]) => ({ topic, resource: ORGANIZATION, revision }));
   const fetch = async (url: string, init?: RequestInit) => {
-    if (url === STREAM) {
+    state.urls.push(url);
+    const pathname = url.split("?")[0];
+    if (pathname === STREAM) {
       state.streamOpens++;
       let controller!: ReadableStreamDefaultController<Uint8Array>;
       const body = new ReadableStream<Uint8Array>({
@@ -103,7 +105,7 @@ function backend() {
       streams.push(entry);
       return new Response(body, { status: 200 });
     }
-    assert.equal(url, CURRENT);
+    assert.equal(pathname, CURRENT);
     state.currentReads++;
     await gate;
     return new Response(JSON.stringify({ revisions: revisions(), identity: state.identity }), {
@@ -494,4 +496,43 @@ test("a changed head during a short unmount cannot reaccept the old raw body", a
     JSON.stringify(second.values),
   );
   second.stop();
+});
+
+test("pool-scoped protected reads ignore unrelated and duplicate revisions and coalesce updates", async (t) => {
+  const { server, flush, mount } = setup(t);
+  server.heads.set("pool-usage", "1");
+  server.heads.set("pool-readings", "1");
+  const src = source();
+  const atom = changeProtected(
+    ORGANIZATION,
+    ["membership", "pool-usage", "pool-prices"],
+    ["app_a"],
+  )(src.atom);
+  const view = mount(AtomRegistry.make(), atom);
+  await flush();
+  server.handshake();
+  await flush();
+  src.loads.at(-1)!.resolve("initial");
+  await flush();
+  assert.equal(view.current().value, "initial");
+  assert.ok(server.state.urls.every((url) => url.endsWith("?pool=app_a")));
+  server.commit("pool-readings", "2");
+  server.commit("pool-usage", "1");
+  await flush();
+  assert.equal(src.loads.length, 1, "unrelated and duplicate revisions read no body");
+  server.commit("pool-usage", "2");
+  await flush();
+  server.commit("pool-usage", "3");
+  server.commit("pool-usage", "3");
+  await flush();
+  src.loads.at(-1)!.resolve("outpaced");
+  await flush();
+  assert.equal(src.loads.length, 3, "the moving read retries the body once at the newest heads");
+  src.loads.at(-1)!.resolve("latest");
+  await flush();
+  assert.equal(view.current().value, "latest");
+  server.commit("pool-usage", "3");
+  await flush();
+  assert.equal(src.loads.length, 3);
+  view.stop();
 });

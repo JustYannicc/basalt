@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Host usage series, last-success, member usage and credit-routing reads follow their dependent committed topics instead of polling. Selected pool heads share the organization feed only after current membership and app read access authorize each bounded, canonical pool selector; every current read and stream authority check repeats that authorization, and ordinary organization feeds expose no pool heads. Scope selectors and retained receipts remain bound to their organization and principal. Pool overview usage and capacity have separate topic watches: readings and samples refresh capacity without rereading usage; common authority, usage and price heads still fence combined results. Duplicate revisions perform no data read, changes during one read coalesce at the newest accepted heads, and hidden or revoked views cannot publish protected data."
+    }
+  }
+}

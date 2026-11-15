@@ -2,7 +2,6 @@ import { useState, type ReactNode } from "react";
 import type { PoolCapacityHistory } from "../capacity-contract.ts";
 import type { Account, Provider } from "../contract.ts";
 import type { Result } from "../index.ts";
-import { providerName } from "./accounts.tsx";
 import { capacityWindowOptions } from "./capacity-window-options.ts";
 import { CapacityChart } from "./capacity-chart.tsx";
 import {
@@ -27,6 +26,7 @@ import {
 } from "./capacity-model.ts";
 import { Button, Problem, Segmented, StateIcon } from "./controls.tsx";
 import { LabMark, labColor } from "./lab.tsx";
+import { labIdentity, type LabIdentity } from "./lab-name.ts";
 
 export type Tone = "ok" | "warn" | "bad" | "learn" | "info";
 export const toneText: Record<Tone, string> = {
@@ -138,8 +138,7 @@ export function CapacitySection({
               key={lab.provider}
               lab={lab}
               history={result.value}
-              name={providerName(providers, lab.provider)}
-              icons={providers.find((provider) => provider.id === lab.provider)?.icons}
+              identity={labIdentity(providers, lab.provider)}
               days={days}
               coherent={coherent}
               first={index === 0}
@@ -156,8 +155,7 @@ export function CapacitySection({
 function Panel({
   lab,
   history,
-  name,
-  icons,
+  identity,
   days,
   coherent,
   first,
@@ -166,14 +164,14 @@ function Panel({
 }: {
   lab: CapacityLab;
   history: PoolCapacityHistory;
-  name: string;
-  icons: Provider["icons"];
+  identity: LabIdentity | undefined;
   days: number;
   coherent: boolean;
   first: boolean;
   chosen?: string;
   onChoose: (key: string) => void;
 }) {
+  const name = identity?.name ?? "…";
   // An incomplete read keeps its measured readings, so the window choice still uses them.
   const press = pressing(lab, history.to, { withheld: !coherent });
   const line =
@@ -223,7 +221,7 @@ function Panel({
       className={first ? "pt-1 pb-6" : "border-t border-border pt-5 pb-6"}
     >
       <div className="grid grid-cols-[auto_minmax(min-content,1fr)_auto] items-start gap-x-3 gap-y-1 max-[540px]:grid-cols-[auto_1fr]">
-        <LabMark provider={lab.provider} name={name} icons={icons} />
+        <LabMark provider={lab.provider} identity={identity} size="large" />
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <h3 id={`lab-${lab.provider}`} className="text-[15px] font-semibold tracking-[-0.015em]">
             {name}
