@@ -69,7 +69,7 @@ diff --git a/apps/hosted/server/src/implementation/account-source-options.ts b/a
 +    const list = yield* Effect.cached(catalog.value.list);
 +    return yield* work.pipe(Effect.provideService(HostedCatalog, { ...catalog.value, list }));
 +  });
- 
+
  /** Candidates are actual account holders with trusted provider installation identity. */
  export const accountSourceOptions = (input: {
 diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts

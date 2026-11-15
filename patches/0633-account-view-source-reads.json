@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-view-source-reads",
   "file": "0633-account-view-source-reads.patch",
-  "content_sha256": "30976222d27c6f35b4325dc0f38863730c976f366d62ac7f761b384f3610bd93",
+  "content_sha256": "5bc7af71482d3895448eeec5e2ffc9aff3a31f70ec27faa159d62e3a8e4ad34b",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
