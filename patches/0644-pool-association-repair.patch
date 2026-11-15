@@ -54,10 +54,10 @@ index edf1dfc7b..b42e5a0b9 100644
    [providerAppsOpenAIAnthropic.name]: providerAppsOpenAIAnthropic,
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/pool-association-repair-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/pool-association-repair-v1.ts
 new file mode 100644
-index 0000000..ae24f7745 100644
+index 0000000..176c88b8b 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/pool-association-repair-v1.ts
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,262 @@
 +import { Data, Effect, Schema } from "effect";
 +import { SqlClient } from "effect/sql";
 +import type { Json, ProductionMigration } from "../contracts.ts";
@@ -136,7 +136,6 @@ index 0000000..ae24f7745 100644
 +    if (actualOwner !== input.actualOwner) return yield* refuse("app-owner-drift");
 +    if (actualOwner === `organization:${input.organization}`)
 +      return yield* refuse("association-already-valid");
-+    let after: Record<string, Json> | null = null;
 +    const dependencies: Json[] = [app ?? null];
 +    if (input.operation === "repoint") {
 +      // A foreign app is never moved, and app-scoped credentials cannot be inherited by another app.
@@ -164,13 +163,36 @@ index 0000000..ae24f7745 100644
 +        then o.metadata::jsonb -> 'basaltPools' else '{}'::jsonb end) p
 +      where p.value ->> 'app' = ${input.replacement}`;
 +      if (references.length !== 0) return yield* refuse("replacement-already-registered");
-+      after = { ...before, app: input.replacement! };
 +      dependencies.push(replacement, access, version);
 +    }
-+    const nextPools = { ...pools };
-+    if (after === null) delete nextPools[input.slot];
-+    else nextPools[input.slot] = after;
-+    const nextMetadata = JSON.stringify({ ...metadata, basaltPools: nextPools });
++    const sql = yield* SqlClient.SqlClient;
++    // PostgreSQL preserves numbers and unrelated fields that JavaScript JSON parsing can round.
++    const changed =
++      input.operation === "clear"
++        ? sql`metadata::jsonb #- array['basaltPools', ${input.slot}]`
++        : sql`jsonb_set(metadata::jsonb, array['basaltPools', ${input.slot}, 'app'],
++          to_jsonb(${input.replacement!}::text), false)`;
++    const proposed = yield* sql`with proposed as (
++      select metadata::jsonb as original, ${changed} as next from organization
++      where id = ${input.organization})
++      select next::text as metadata,
++        (original #> array['basaltPools', ${input.slot}])::text as before,
++        (next #> array['basaltPools', ${input.slot}])::text as after from proposed`.pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(
++          Schema.Array(
++            Schema.Struct({
++              metadata: Schema.String,
++              before: Schema.String,
++              after: Schema.NullOr(Schema.String),
++            }),
++          ),
++        ),
++      ),
++    );
++    const next = proposed[0];
++    if (proposed.length !== 1 || next === undefined) return yield* refuse("organization-missing");
++    const nextMetadata = next.metadata;
 +    const nextRow = { ...row, metadata: nextMetadata };
 +    return {
 +      changes: [
@@ -189,8 +211,9 @@ index 0000000..ae24f7745 100644
 +        operation: input.operation,
 +        actualOwner: input.actualOwner,
 +        replacement: input.replacement ?? null,
-+        before,
-+        after,
++        before: next.before,
++        after: next.after,
++        recordedVersion: typeof before.version === "string" ? before.version : null,
 +        nextMetadata,
 +        dependenciesSha256: sha256(canonical(dependencies)),
 +      },
@@ -203,8 +226,9 @@ index 0000000..ae24f7745 100644
 +  operation: Schema.Literals(["clear", "repoint"]),
 +  actualOwner: Schema.NullOr(Schema.String),
 +  replacement: Schema.NullOr(Id),
-+  before: Schema.Record(Schema.String, Schema.Json),
-+  after: Schema.NullOr(Schema.Record(Schema.String, Schema.Json)),
++  before: Schema.String,
++  after: Schema.NullOr(Schema.String),
++  recordedVersion: Schema.NullOr(Schema.String),
 +  nextMetadata: Schema.String,
 +  dependenciesSha256: Schema.String,
 +});
@@ -262,8 +286,8 @@ index 0000000..ae24f7745 100644
 +        dependencies.push(
 +          (yield* read("executor_apps", input.replacement)) ?? null,
 +          (yield* read("hosted_app_access", input.replacement)) ?? null,
-+          typeof expected.before.version === "string"
-+            ? ((yield* read("executor_deployments", expected.before.version)) ?? null)
++          expected.recordedVersion !== null
++            ? ((yield* read("executor_deployments", expected.recordedVersion)) ?? null)
 +            : null,
 +        );
 +      }

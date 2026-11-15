@@ -279,3 +279,32 @@ test("closed repair refusals survive the runtime and operator boundary", async (
     undefined,
   );
 });
+
+test("repair preserves exact large numbers outside the selected pointer", async () => {
+  await fixture(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`update organization set metadata = jsonb_set(metadata::jsonb,
+        '{unrelatedLarge}', '9007199254740993123456789'::jsonb)::text where id = 'org_fixture'`;
+      const input = operation({
+        slot: "user_fixture",
+        app: "app_missing",
+        actualOwner: null,
+        operation: "clear",
+      });
+      const dry = yield* runProductionOperation(settings, input);
+      assert.ok(dry.action === "dry-run");
+      yield* runProductionOperation(settings, {
+        ...input,
+        action: "apply",
+        artifact: dry.artifact,
+        backupSha256: dry.backupSha256,
+        planSha256: dry.artifact.sha256,
+        go: `GO ${dry.artifact.sha256}`,
+      });
+      const rows =
+        yield* sql`select metadata::jsonb ->> 'unrelatedLarge' as exact from organization where id = 'org_fixture'`;
+      assert.equal(rows[0].exact, "9007199254740993123456789");
+    }),
+  );
+});

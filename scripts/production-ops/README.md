@@ -234,7 +234,7 @@ After the operation is deployed, select `pool-association-repair-v1` with
 
 `actualOwner` must match the app's current owner exactly, or be `null` when the
 app is absent globally. A valid organization-owned association refuses. The
-encrypted plan shows the slot before and after, the full organization row
+encrypted plan shows the slot before and after as exact JSON text, the full organization row
 hashes and dependency hash. Review it and use the standard saved-plan apply
 with an explicit GO for those IDs and checksum. Apply refuses any changed row
 or dependency and records one transaction receipt. Replay verifies without
