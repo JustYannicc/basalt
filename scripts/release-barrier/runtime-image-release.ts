@@ -59,7 +59,7 @@ export const releaseRuntimeImage = <A, StackError>(
       Effect.gen(function* () {
         yield* assertReleaseStateVersion(compiled);
         yield* assertMigrationActivationSettled(
-          Context.get(compiled.services, State),
+          yield* Context.get(compiled.services, State),
           compiled,
           options.encryptionKey,
         );
