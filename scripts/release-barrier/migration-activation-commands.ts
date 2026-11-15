@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { checkpointReaderContract } from "./migration-activation-contract.ts";
 import type { HistoryOperator } from "./migration-activation-source.ts";
 import { digest, BarrierRefusal } from "./manifest.ts";
+import { HistoryOperatorFailure } from "../pool-history-operator-failure.ts";
+import { safeProviderFailure } from "./operation-failure.ts";
 
 const cloud = fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url));
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -20,22 +22,24 @@ export async function historyPlan(operator: HistoryOperator, accountId: string, 
       { worker, plan: join(directory, "plan.json"), operation: "journal-activation", apply: false },
       accountId,
     );
-    if (
-      !record(report) ||
-      !record(report.catalog) ||
-      report.status !== "dry-run" ||
-      report.writes !== false ||
-      report.automaticBackfill !== false ||
-      report.version !== "model_request_history_v10_change_journal_activate" ||
-      report.readersReadyRequired !== checkpointReaderContract ||
-      !hash(report.schemaHash) ||
-      !hash(report.catalogHash) ||
-      digest(JSON.stringify(report.catalog)) !== report.catalogHash ||
-      typeof report.applied !== "boolean" ||
-      report.catalog.journalActivated !== report.applied ||
-      typeof report.catalog.journalPrepared !== "boolean"
-    )
-      throw new Error();
+    if (!record(report)) throw new HistoryOperatorFailure("operator.response.json");
+    if (!record(report.catalog)) throw new HistoryOperatorFailure("report.catalog");
+    if (report.status !== "dry-run") throw new HistoryOperatorFailure("report.status");
+    if (report.writes !== false) throw new HistoryOperatorFailure("report.writes");
+    if (report.automaticBackfill !== false)
+      throw new HistoryOperatorFailure("report.automaticBackfill");
+    if (report.version !== "model_request_history_v10_change_journal_activate")
+      throw new HistoryOperatorFailure("report.version");
+    if (report.readersReadyRequired !== checkpointReaderContract)
+      throw new HistoryOperatorFailure("report.readersReadyRequired");
+    if (!hash(report.schemaHash)) throw new HistoryOperatorFailure("report.schemaHash");
+    if (!hash(report.catalogHash) || digest(JSON.stringify(report.catalog)) !== report.catalogHash)
+      throw new HistoryOperatorFailure("report.catalogHash");
+    if (typeof report.applied !== "boolean") throw new HistoryOperatorFailure("report.applied");
+    if (report.catalog.journalActivated !== report.applied)
+      throw new HistoryOperatorFailure("report.catalog.journalActivated");
+    if (typeof report.catalog.journalPrepared !== "boolean")
+      throw new HistoryOperatorFailure("report.catalog.journalPrepared");
     // Only these two observations vary under ordinary traffic; all apply preview fields stay bound.
     const { history: _history, ledgerRows: _ledgerRows, ...material } = report;
     return {
@@ -45,8 +49,31 @@ export async function historyPlan(operator: HistoryOperator, accountId: string, 
       schemaHash: report.schemaHash,
       catalogHash: report.catalogHash,
     };
-  } catch {
-    throw new BarrierRefusal("migration-activation-pool-plan", "PoolWorker");
+  } catch (error) {
+    const failure =
+      error instanceof HistoryOperatorFailure
+        ? error
+        : new HistoryOperatorFailure("operator.invoke", undefined, error);
+    const provider = failure.cause === undefined ? undefined : safeProviderFailure(failure.cause);
+    throw new BarrierRefusal("migration-activation-pool-plan", "PoolWorker", {
+      fqn: "PoolWorker",
+      type: "PoolHistoryOperator",
+      changed: [
+        failure.field === "operator.response.status" && failure.status !== undefined
+          ? { path: failure.field, old: 200, new: failure.status }
+          : { path: failure.field, changed: true },
+      ],
+      ...(provider
+        ? {
+            why: [
+              `type=${provider.type}`,
+              ...(provider.reason ? [`reason=${provider.reason}`] : []),
+              ...(provider.status === undefined ? [] : [`status=${provider.status}`]),
+              ...(provider.codes?.length ? [`codes=${provider.codes.join(",")}`] : []),
+            ],
+          }
+        : {}),
+    });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
