@@ -683,7 +683,7 @@ jobs:
       - name: Set up the Zoho connection proof's browser
         uses: ./.github/actions/setup-browser
       - name: Verify private Zoho MCP OAuth, tool approvals and masked URL entry
-        run: bun e2e/zoho-people-mcp.mjs .generated/zoho-people-mcp/ci
+        run: node scripts/ci/with-published-frameworks.ts -- bun ../e2e/zoho-people-mcp.mjs ../.generated/zoho-people-mcp/ci
       - name: Collect sanitized connector diagnostics
         if: always()
         run: node scripts/ci/collect-connector-evidence.mjs catalog-compat "$RUNNER_TEMP/connector-evidence.json"

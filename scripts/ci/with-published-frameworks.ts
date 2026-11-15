@@ -68,21 +68,22 @@ assert.ok(
   ),
   "The protocol adapter fixture must start from an approved current framework",
 );
-fixtures.push({
-  ...localIdentity,
-  version: "synthetic-e2e-protocol26",
-  protocol: 26,
-  browserSha256: (
-    await Effect.runPromise(
-      frameworkIdentity({ version: localRuntime.version, modules: localRuntime.browser }),
-    )
-  ).sha256,
-  source: {
-    origin: "basalt",
-    revision: "synthetic-e2e:current-framework:protocol26-adapter",
-    sha256: createHash("sha256").update(localArchive).digest("hex"),
-  },
-});
+for (const protocol of [26, 35])
+  fixtures.push({
+    ...localIdentity,
+    version: `synthetic-e2e-protocol${protocol}`,
+    protocol,
+    browserSha256: (
+      await Effect.runPromise(
+        frameworkIdentity({ version: localRuntime.version, modules: localRuntime.browser }),
+      )
+    ).sha256,
+    source: {
+      origin: "basalt",
+      revision: `synthetic-e2e:current-framework:protocol${protocol}-adapter`,
+      sha256: createHash("sha256").update(localArchive).digest("hex"),
+    },
+  });
 
 // Published npm fixtures are test inputs, never additions to the product's approved releases.
 const registry = join(

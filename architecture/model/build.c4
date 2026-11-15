@@ -1,3 +1,4 @@
+// Native cache acceptance bounds each request independently; retained protocol adapters use distinct synthetic identities only inside the scoped proof registry.
 model {
   extend basalt {
     build = module "Build" {

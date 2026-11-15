@@ -377,7 +377,7 @@ diff --git a/e2e/support/app-package.ts b/e2e/support/app-package.ts
 +      JSON.stringify({
 +        ...runtime,
 +        protocol,
-+        ...(protocol === 26 ? { version: "synthetic-e2e-protocol26" } : {}),
++        ...([26, 35].includes(protocol) ? { version: `synthetic-e2e-protocol${protocol}` } : {}),
 +      }),
 +    );
      const { base, archives } = yield* loopbackArchives;
@@ -722,3 +722,58 @@ diff --git a/e2e/tests/mcp-connections.spec.ts b/e2e/tests/mcp-connections.spec.
          );
          yield* browser.use("Close the full-size screenshot", (page) =>
            page.keyboard.press("Escape"),
+diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
+--- a/e2e/tests/account-health.spec.ts
++++ b/e2e/tests/account-health.spec.ts
+@@ -525,7 +525,7 @@
+         expect(entry(yield* read(), identity)?.check).toMatchObject({ current: false });
+         yield* refreshVisiblePage;
+         const row = (page: Page) =>
+-          page.locator(".accounts-section li").filter({ hasText: "Default" });
++          page.locator(".accounts-section li").filter({ hasText: "Synthetic Person" });
+         yield* browser.use("The open page checks the outdated result again", (page) =>
+           row(page).locator('[data-check-status="checking"]').waitFor(),
+         );
+@@ -536,7 +536,7 @@
+             Reflect.set(window, "checkStates", states);
+             new MutationObserver(() => {
+               const pill = [...document.querySelectorAll(".accounts-section li")]
+-                .find((item) => item.textContent?.includes("Default"))
++                .find((item) => item.textContent?.includes("Synthetic Person"))
+                 ?.querySelector<HTMLElement>("[data-check-status]");
+               states.push(`${pill?.dataset.checkStatus}:${pill?.dataset.checkCurrent}`);
+             }).observe(document.body, {
+diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
+--- a/e2e/tests/product-brand.spec.ts
++++ b/e2e/tests/product-brand.spec.ts
+@@ -242,6 +242,12 @@
+         yield* browser.use("Open assistant setup", (page) =>
+           page.goto(`${origin}/org/${actors.organization.slug}/connect`),
+         );
++        yield* browser.use("Open the full-access assistant guides", (page) =>
++          page
++            .getByRole("listitem", { name: "Full access" })
++            .getByRole("button", { name: "Connect", exact: true })
++            .click(),
++        );
+         yield* browser.use("The Claude guide names the configured product", (page) =>
+           page
+             .getByRole("heading", { name: `Add ${productBrand.name} to Claude`, exact: true })
+@@ -251,7 +257,7 @@
+           new RegExp(` · ${productBrand.name}$`),
+         );
+         const claude = yield* browser.use("Read the Claude guide", (page) =>
+-          page.locator("main").innerText(),
++          page.getByRole("dialog", { name: "Connect Full access" }).innerText(),
+         );
+         expect(claude).toContain(`Name it ${productBrand.name}`);
+         expect(claude).not.toMatch(executorName);
+@@ -268,7 +274,7 @@
+           page.getByText("Show manual steps", { exact: true }).click(),
+         );
+         const claudeCode = yield* browser.use("Read the Claude Code guide", (page) =>
+-          page.locator("main").innerText(),
++          page.getByRole("dialog", { name: "Connect Full access" }).innerText(),
+         );
+         expect(claudeCode).toContain(`claude mcp add --transport http ${productBrand.server} `);
+         expect(claudeCode).not.toMatch(executorName);
