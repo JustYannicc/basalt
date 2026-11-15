@@ -3,7 +3,7 @@ import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { readDeploymentLedger, readLedgerEnvironment } from "../deploy-safety/github-ledger.ts";
 import { assertNoReleaseHold } from "../deploy-safety/runtime.ts";
-import { validateMainCandidate } from "../release-merge/main-candidate.ts";
+import { passedMainPushCheck, validateMainCandidate } from "../release-merge/main-candidate.ts";
 import { BarrierRefusal } from "./refusal.ts";
 import { reportRefusal } from "./refusal-report.ts";
 
@@ -105,6 +105,26 @@ export function trustedActivationTooling(source: Record<string, string | undefin
   return head;
 }
 
+/**
+ * Plan and inspect only read, so any dispatched main commit may run them. The digest mutates
+ * production, so its client must also have passed main's own push Check; one that is still
+ * running, failed or never ran refuses.
+ */
+export async function checkedActivationClient(
+  mode: string,
+  client: string,
+  passed: (commit: string) => Promise<boolean>,
+) {
+  if (mode === "plan" || mode === "inspect") return;
+  if (!(await passed(client)))
+    throw new BarrierRefusal("migration-activation-client-check-required", "tooling", {
+      fqn: "tooling",
+      type: "Git.Commit",
+      changed: [{ path: "pushCheck", old: "success", new: "not successful" }],
+      why: [`client=${client}`, "activate once main's push Check has passed on this commit"],
+    });
+}
+
 /** The trusted workflow validates the requested SHA exactly, without the normal newest chooser. */
 export async function migrationActivationGate(source = process.env) {
   const input = migrationActivationInput(source);
@@ -128,6 +148,9 @@ export async function migrationActivationGate(source = process.env) {
   ).catch((error: unknown) => {
     throw candidateEligibilityRefusal(error) ?? error;
   });
+  await checkedActivationClient(input.mode, checkedOut, (commit) =>
+    passedMainPushCheck(environment.repository, environment.token, commit),
+  );
   const deploymentId = exactMigrationRelease(
     input.candidate,
     await readDeploymentLedger(environment),

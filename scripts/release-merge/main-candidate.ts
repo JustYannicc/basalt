@@ -163,6 +163,18 @@ export async function validateMainCandidate(
   return { head };
 }
 
+/** Whether the push Check completed successfully on exactly this main commit. */
+export async function passedMainPushCheck(
+  repository: string,
+  token: string,
+  commit: string,
+  fetcher: MainCandidateFetch = fetch,
+): Promise<boolean> {
+  return new MainHistory(repository, token, fetcher).passedPushCheck(
+    fullSha(commit, "main commit"),
+  );
+}
+
 /**
  * The newest main commit after `candidate` that contains it, passed its push Check and isn't a
  * release update, or undefined when none does. A release dispatched for `candidate` can replace a

@@ -6,11 +6,12 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { requiredSecrets } from "../environment.ts";
-import { validateMainCandidate } from "../release-merge/main-candidate.ts";
+import { passedMainPushCheck, validateMainCandidate } from "../release-merge/main-candidate.ts";
 import { test } from "node:test";
 import { BarrierRefusal } from "./refusal.ts";
 import {
   candidateEligibilityRefusal,
+  checkedActivationClient,
   exactMigrationRelease,
   migrationActivationInput,
   trustedActivationTooling,
@@ -133,6 +134,74 @@ test("the client that touches production is the dispatched main commit", () => {
         return true;
       },
     );
+});
+
+test("only a client whose main push Check passed may send an activation", async () => {
+  const client = "c".repeat(40);
+  const digest = "b".repeat(64);
+  const run = (run: Record<string, unknown>) => ({
+    head_sha: client,
+    event: "push",
+    path: ".github/workflows/ci.yml",
+    ...run,
+  });
+  // GitHub's answer for this commit's completed push Checks on main, as the real reader asks.
+  const checks = (runs: readonly unknown[]) => {
+    const urls: string[] = [];
+    return {
+      urls,
+      passed: (commit: string) =>
+        passedMainPushCheck("synthetic/basalt", "fixture", commit, async (url) => {
+          urls.push(url);
+          return Response.json({ workflow_runs: runs });
+        }),
+    };
+  };
+  for (const [state, runs] of [
+    ["still running, so nothing completed", []],
+    ["failed", [run({ conclusion: "failure" })]],
+    ["cancelled", [run({ conclusion: "cancelled" })]],
+    ["passed on another commit", [run({ conclusion: "success", head_sha: "d".repeat(40) })]],
+    ["passed as a pull request Check", [run({ conclusion: "success", event: "pull_request" })]],
+    [
+      "passed in another workflow",
+      [run({ conclusion: "success", path: ".github/workflows/x.yml" })],
+    ],
+  ] as const) {
+    const github = checks(runs);
+    await assert.rejects(
+      checkedActivationClient(digest, client, github.passed),
+      (error: unknown) => {
+        assert.ok(error instanceof BarrierRefusal, state);
+        assert.equal(error.reason, "migration-activation-client-check-required");
+        assert.deepEqual(error.delta?.changed, [
+          { path: "pushCheck", old: "success", new: "not successful" },
+        ]);
+        assert.ok(error.delta?.why?.includes(`client=${client}`));
+        return true;
+      },
+      state,
+    );
+    const query = new URL(github.urls[0]!).searchParams;
+    assert.deepEqual(
+      [query.get("head_sha"), query.get("event"), query.get("branch"), query.get("status")],
+      [client, "push", "main", "completed"],
+    );
+    // Reading never needs a green client, and never asks.
+    const reading = checks(runs);
+    for (const mode of ["plan", "inspect"])
+      await checkedActivationClient(mode, client, reading.passed);
+    assert.deepEqual(reading.urls, []);
+  }
+  const green = checks([run({ conclusion: "failure" }), run({ conclusion: "success" })]);
+  await checkedActivationClient(digest, client, green.passed);
+  assert.equal(green.urls.length, 1);
+  await assert.rejects(
+    checkedActivationClient(digest, client, async () => {
+      throw new Error("GitHub unavailable");
+    }),
+    /GitHub unavailable/,
+  );
 });
 
 test("an ineligible candidate is refused by name; other gate errors keep their text private", async () => {
