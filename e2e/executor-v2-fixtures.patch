@@ -499,18 +499,25 @@ diff --git a/scripts/compiler-cache-proof/runtime.ts b/scripts/compiler-cache-pr
 diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/database-pool-fixture.ts
 --- a/apps/hosted/testing/database-pool-fixture.ts
 +++ b/apps/hosted/testing/database-pool-fixture.ts
-@@ -606,7 +606,7 @@
+@@ -606,23 +606,31 @@
                // so draining it takes the 5 s bound. The gate opens once the sibling has given up.
                return yield* PgPool.grouped(
                  Effect.gen(function* () {
 -                  const { awaited, abandoned } = yield* Effect.scoped(
++                  const origin = Date.now();
 +                  const { awaited, abandoned, abandonedAt } = yield* Effect.scoped(
                      Effect.gen(function* () {
                        yield* holdLock(gateKey);
                        const awaited = yield* shared
-@@ -615,7 +615,8 @@
+                         .use((connection) =>
+                           connection.query("SELECT pg_advisory_xact_lock($1)", [gateKey], false),
                          )
-                         .pipe(Effect.exit, Effect.forkChild);
+-                        .pipe(Effect.exit, Effect.forkChild);
++                        .pipe(
++                          Effect.exit,
++                          Effect.map((exit) => ({ exit, finishedAt: Date.now() })),
++                          Effect.forkChild,
++                        );
                        yield* waitingOnLock;
 -                      return { awaited, abandoned: yield* lockWait(shared, 50) };
 +                      const abandoned = yield* lockWait(shared, 50);
@@ -518,11 +525,13 @@ diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/
                      }),
                    );
                    const opened = Date.now();
-@@ -623,6 +624,7 @@
+-                  const exit = yield* Fiber.join(awaited);
++                  const { exit, finishedAt } = yield* Fiber.join(awaited);
                    return {
                      awaited: outcome(exit),
                      awaitedReturned: since(opened),
-+                    abandonedReturned: abandonedAt - opened,
++                    awaitedFinished: finishedAt - origin,
++                    abandonedReturned: abandonedAt - origin,
                      gaveUp: Exit.isSuccess(abandoned) && abandoned.value._tag === "None",
                    };
                  }),
@@ -665,3 +674,25 @@ diff --git a/e2e/tests/catalog-oauth-deferrals.spec.ts b/e2e/tests/catalog-oauth
          );
          yield* browser.use("Manual client entry remains available", (page) =>
            page.getByRole("dialog").getByLabel("Client ID", { exact: true }).waitFor(),
+diff --git a/e2e/tests/cloud-database-placement.spec.ts b/e2e/tests/cloud-database-placement.spec.ts
+--- a/e2e/tests/cloud-database-placement.spec.ts
++++ b/e2e/tests/cloud-database-placement.spec.ts
+@@ -1420,13 +1420,16 @@
+             const awaitedReturned = yield* Schema.decodeUnknownEffect(Schema.Number)(
+               sibling.awaitedReturned,
+             );
++            const awaitedFinished = yield* Schema.decodeUnknownEffect(Schema.Number)(
++              sibling.awaitedFinished,
++            );
+             expect(sibling.gaveUp, "The sibling gave up on its lock wait").toBe(true);
+             expect(sibling.awaited).toBe("ok");
+-            expect(sibling.awaitedReturned, "The finished statement returned").toBeLessThan(1_000);
++            expect(awaitedReturned, "The finished statement returned").toBeLessThan(1_000);
+             expect(
+               sibling.abandonedReturned,
+               "The sibling gave up while the awaited statement was running",
+-            ).toBeLessThan(awaitedReturned);
++            ).toBeLessThan(awaitedFinished);
+           }
+ 
+           // A tool call's `BEGIN … COMMIT` batch (`PgConnection.pipelined`) runs inside a hold:
