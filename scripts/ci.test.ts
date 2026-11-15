@@ -209,8 +209,8 @@ test("every workflow job has a gate dependency and declared selection policy", (
   );
   const jobs = workflow.jobs;
   const expected = [...fastJobs, ...heavyJobs, ...conditionalJobs];
-  assert.deepEqual(Object.keys(jobs).sort(), [...expected, "check"].sort());
-  assert.deepEqual([...jobs.check.needs].sort(), [...expected].sort());
+  assert.deepEqual(Object.keys(jobs).sort(), ["reuse", ...expected, "check"].sort());
+  assert.deepEqual([...jobs.check.needs].sort(), ["reuse", ...expected].sort());
   for (const job of heavyJobs) {
     assert.deepEqual(
       jobs[job].needs,
@@ -222,7 +222,7 @@ test("every workflow job has a gate dependency and declared selection policy", (
   assert.equal(jobs.check.if, "always()");
   assert.equal(
     jobs.check.name,
-    "${{ needs.select.outputs.full_suite == 'true' && 'check' || 'check (fast-only)' }}",
+    "${{ (needs.reuse.outputs.reused == 'true' || needs.select.outputs.full_suite == 'true') && 'check' || 'check (fast-only)' }}",
   );
   assert.deepEqual(workflow.on.push.branches, ["main", "batch/**"]);
   assert.equal(
