@@ -5,6 +5,7 @@ import { quotaSamplingFixture } from "../../src/pool/quota-sampling.test-helpers
 import { overviewFixture, capacityFixture } from "./overview-fixture.mjs";
 import { seriesFixture, summaryFixture } from "./summary-fixture.mjs";
 import { bundlePoolApp } from "../pool-app-bundle.ts";
+import { labLogos } from "../../apps/pool/ui/lab-logos.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -88,13 +89,11 @@ if (failures)
   );
 let failureSaved = false;
 
-// The approved overview mock's logo for a lab, loaded on its white tile: its data URI's type.
+// The approved overview mock's logo for a lab, loaded on its white tile.
 const labLogo = (scope) =>
   scope
     .locator('[data-lab-mark="logo"] img')
-    .evaluate((image) =>
-      image.complete && image.naturalWidth > 0 ? image.currentSrc.split(";")[0] : null,
-    );
+    .evaluate((image) => (image.complete && image.naturalWidth > 0 ? image.currentSrc : null));
 
 const minute = 60_000;
 const hour = 60 * minute;
@@ -946,10 +945,10 @@ test(
               assert.equal(await frame.locator("#capacity article").count(), 2);
               const claude = frame.getByRole("article", { name: "Anthropic", exact: true });
               // Each lab carries its own mock logo: Claude's icon for Anthropic, ChatGPT's for OpenAI.
-              assert.equal(await labLogo(claude), "data:image/jpeg");
+              assert.equal(await labLogo(claude), labLogos.claude);
               assert.equal(
                 await labLogo(frame.getByRole("article", { name: "OpenAI", exact: true })),
-                "data:image/svg+xml",
+                labLogos.codex,
               );
               await claude.getByRole("radio", { name: "5-hour", exact: true }).click();
               await claude
@@ -2138,7 +2137,7 @@ test(
               await settled();
               await capture(page, `grok-weekly-${width}`);
               assert.equal(await lab.count(), 1, "The xAI lab has a capacity panel");
-              assert.equal(await labLogo(lab), "data:image/png", "xAI shows Grok's logo");
+              assert.equal(await labLogo(lab), labLogos.xai, "xAI shows Grok's logo");
               assert.doesNotMatch(await frame.locator("body").innerText(), /no readings yet/);
               // The grokchat product window shares the account's week; it is not a second account.
               const panel = await lab.innerText();
@@ -2645,6 +2644,7 @@ test(
               ...emptyUsage.value,
               total,
               models: [{ ...total, provider: "codex", model: "Synthetic model" }],
+              forecastProviders: ["codex"],
             },
           };
           const scenarios = [
@@ -2694,6 +2694,22 @@ test(
                 assert.deepEqual(rowImage, await imageOf(lab), "By lab and capacity share a mark");
                 assert.equal(rowImage.loaded, true, "The lab row shows a logo image");
                 assert.equal(rowImage.mark, scenario.src === null ? "logo" : "icon");
+                const forecast = frame.locator('section[aria-labelledby="forecast-heading"] li');
+                assert.deepEqual(
+                  await imageOf(
+                    forecast.filter({ has: frame.getByText("OpenAI", { exact: true }) }),
+                  ),
+                  rowImage,
+                  "Where it's heading shares the lab's mark",
+                );
+                assert.equal(
+                  await forecast
+                    .filter({ has: frame.getByText("All labs", { exact: true }) })
+                    .getByText("Σ", { exact: true })
+                    .count(),
+                  1,
+                  "All labs carries the mock's sum tile",
+                );
                 assert.equal(await labRow.getByText("O", { exact: true }).count(), 0);
                 assert.equal(await labRow.getByText("OA", { exact: true }).count(), 0);
                 await settled();

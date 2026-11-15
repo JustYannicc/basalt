@@ -12,7 +12,7 @@ import {
 } from "./summary-format.ts";
 import { forecastFor, heat, heatHours, type Metric } from "./summary-model.ts";
 import { forecastUnavailableText } from "./summary-forecast-status.ts";
-import { LabMark } from "./lab.tsx";
+import { LabMark, labMarkSizes } from "./lab.tsx";
 import type { LabIdentity } from "./lab-name.ts";
 
 // Every number here is the producer's: median, range, confidence and misses. A null bound is shown
@@ -269,7 +269,7 @@ export function SummaryForecasts({
           mark={
             <span
               aria-hidden="true"
-              className="grid size-[22px] shrink-0 place-items-center rounded-md bg-foreground/10 text-xs font-semibold"
+              className={`grid shrink-0 place-items-center bg-foreground/10 text-xs font-semibold ${labMarkSizes.forecast}`}
             >
               Σ
             </span>
@@ -281,7 +281,7 @@ export function SummaryForecasts({
         {labs.map((provider) => (
           <ForecastRow
             key={provider}
-            mark={<LabMark provider={provider} identity={lab(provider)} />}
+            mark={<LabMark provider={provider} identity={lab(provider)} size="forecast" />}
             title={name(provider)}
             forecast={forecastFor(summary.forecasts, provider, metric)}
             metric={metric}

@@ -16,9 +16,11 @@ const colors: Record<string, string> = {
 export const labColor = (provider: string | null) =>
   (provider && colors[provider]) || "color-mix(in srgb, var(--foreground) 55%, transparent)";
 
-const sizes = {
+// The approved mock's tiles: usage rows, By lab, Where it's heading, capacity.
+export const labMarkSizes = {
   small: "size-[18px] rounded-[5px]",
   medium: "size-[22px] rounded-md",
+  forecast: "size-[26px] rounded-md",
   large: "size-[30px] rounded-md",
 };
 
@@ -34,13 +36,13 @@ export function LabMark({
 }: {
   provider: string;
   identity: LabIdentity | undefined;
-  size?: keyof typeof sizes;
+  size?: keyof typeof labMarkSizes;
 }) {
   const own = iconSources(identity?.icons);
   const ownKey = own && `${own.light} ${own.dark}`;
   const logo = labLogos[provider];
   const [broken, setBroken] = useState<readonly string[]>([]);
-  const tile = `shrink-0 overflow-hidden ${sizes[size]}`;
+  const tile = `shrink-0 overflow-hidden ${labMarkSizes[size]}`;
   if (identity === undefined)
     return (
       <span aria-hidden="true" data-lab-mark="pending" className={`block bg-accent ${tile}`} />
