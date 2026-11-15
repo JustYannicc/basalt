@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { PGlite } from "../.upstream/node_modules/@electric-sql/pglite/dist/index.js";
 import { historyOperatorOptions, runHistoryOperator } from "./pool-history-operator.ts";
+import { HistoryOperatorFailure } from "./pool-history-operator-failure.ts";
 import {
   handleModelHistoryOperation,
   historyJournalActivationManifest,
@@ -163,7 +164,16 @@ test("activation plans select only v10 despite higher unrelated markers and pres
         runHistoryOperator(applying, account, async () => {
           throw new Error("must reject before connecting");
         }),
-        /reader contract changed|statements changed/,
+        (error: unknown) => {
+          if ("pendingDdl" in change) {
+            assert.ok(error instanceof Error);
+            assert.match(error.message, /statements changed/);
+          } else {
+            assert.ok(error instanceof HistoryOperatorFailure);
+            assert.equal(error.field, `report.${Object.keys(change)[0]}`);
+          }
+          return true;
+        },
       );
     }
     await writeFile(path, JSON.stringify(saved));
