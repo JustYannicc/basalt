@@ -6,9 +6,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import { Effect, Redacted } from "effect";
+import { Effect, Redacted, Schedule } from "effect";
 import { root, runtime, until } from "./recipes/harness.mjs";
 import { poolCloudHarness } from "./recipes/pool-cloud-harness.mjs";
+import { cloudLocks } from "../.upstream/e2e/support/cloud-locks.ts";
+import { Target } from "../.upstream/e2e/support/platform.ts";
 import {
   capacityReply,
   historyReply,
@@ -158,8 +160,14 @@ const program = Effect.gen(function* () {
     former: createHash("sha256").update("former-member").digest("hex"),
   };
   const usage = h.fixture.usage;
+  const summaryReads = [];
+  diagnostics.summaryReads = summaryReads;
   usage.respond = (route, payload) => {
-    if (route === "/pool/v1/usage/summary") return summaryReply(payload.input ?? payload);
+    if (route === "/pool/v1/usage/summary") {
+      const input = payload.input ?? payload;
+      summaryReads.push({ at: Date.now(), from: input.from, to: input.to, by: input.by });
+      return summaryReply(input);
+    }
     if (route === "/pool/v1/usage/series") return seriesReply(payload, inPool?.id ?? null, people);
     if (route === "/pool/v1/usage/personal-overview") return personalReply(payload);
     // Anything else, including the legacy overview, is counted and then refused.
@@ -280,6 +288,37 @@ const program = Effect.gen(function* () {
       yield* page(() => owner.emulateMedia({ colorScheme: "light" }));
       yield* page(() => owner.setViewportSize({ width: 1280, height: 900 }));
     });
+
+  // A visible owner pool can precede another member's account and app commits.
+  // Run initial setup through the dispatcher before exact read-count measurements.
+  const database = yield* cloudLocks.pipe(
+    Effect.provideService(Target, { directory: h.runtimeDirectory }),
+  );
+  yield* database.run({
+    sql: `update hosted_provisioning set available_at = now()
+      where organization_id = $1 and kind in ('team', 'member')
+      and id not like 'basalt-%' and status = 'queued'`,
+    params: [h.actors.organization.id],
+  });
+  yield* h.request("POST", "/api/onboarding/prepare", {});
+  yield* database
+    .run({
+      sql: `select id, kind, status from hosted_provisioning where organization_id = $1
+      and kind in ('team', 'member') and id not like 'basalt-%' order by id`,
+      params: [h.actors.organization.id],
+    })
+    .pipe(
+      Effect.flatMap((rows) => {
+        diagnostics.initialProvisioning = rows;
+        const blocked = rows.filter((row) => row.status !== "succeeded");
+        return rows.some((row) => row.kind === "team") && blocked.length === 0
+          ? Effect.void
+          : Effect.fail(
+              `Initial provisioning is unfinished for ${h.actors.organization.id}: ${JSON.stringify(blocked)}`,
+            );
+      }),
+      Effect.retry({ schedule: Schedule.spaced("25 millis"), times: 600 }),
+    );
 
   const before = usage.requests.length;
   yield* page(() =>
@@ -1121,6 +1160,7 @@ const program = Effect.gen(function* () {
       by: call.payload?.input?.by ?? call.payload?.by ?? null,
     })),
     capacityAsks,
+    summaryReads,
     capacityLayout: {
       desktop: diagnostics.desktopCapacity,
       phone: [diagnostics["grok-390-light"], diagnostics["grok-390-dark"]],
@@ -1145,5 +1185,6 @@ try {
     JSON.stringify({ phase, checks, reds, message: String(error), diagnostics }, null, 2) + "\n",
     { mode: 0o600 },
   );
+  console.error("Pool overview summary reads:", JSON.stringify(diagnostics.summaryReads ?? []));
   throw error;
 }

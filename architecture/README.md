@@ -4,6 +4,8 @@ Zendesk connections prefer the configured global client. Without it, a host-owne
 
 Webhook recovery proofs reconnect through an app connection, which also relinks the source. They finish that source registration before unlinking; otherwise stopped historical subscriptions can hide a new registration still being created. Test-only corrections apply after immutable carries, and source verification replays the same ordered corrections.
 
+Exact overview read counts start after initial team and member provisioning succeeds. The fixture runs queued setup through the normal dispatcher and waits for its real commits; a visible owner pool alone does not prove that other members have finished creating accounts and apps.
+
 This directory holds the hand-written model. It shows Basalt's modules, outside-service calls, current runtime, planned v1 modules, and workflows.
 
 The connector acceptance runner persists its active phase before each step and its latest successful assertion count. CI retains that checkpoint and a bounded child-output tail containing only closed phases, error categories and repository-relative source positions. Raw child output and session files remain private, including after a forced stop.
