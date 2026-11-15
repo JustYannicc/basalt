@@ -15,7 +15,10 @@ runs:
       id: packages
       shell: bash
       working-directory: .upstream
-      run: node ../scripts/ci-browser-packages.ts
+      run: |
+        # Some hosted images omit indexes for otherwise supported Ubuntu packages.
+        sudo apt-get -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=0 -o APT::Update::Error-Mode=any update
+        node ../scripts/ci-browser-packages.ts
     - uses: actions/cache/restore@v4
       id: debs
       with:
