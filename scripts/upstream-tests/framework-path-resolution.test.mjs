@@ -49,7 +49,7 @@ for (const [name, manifest, files, expected] of [
     },
     "effect",
   ],
-] as const)
+])
   test(`stable framework paths preserve ${name}`, async () => {
     const directory = await mkdtemp(join(tmpdir(), "framework-resolution-"));
     try {
