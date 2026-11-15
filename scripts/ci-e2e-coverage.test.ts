@@ -186,6 +186,7 @@ test("the published-framework wrapper covers root scripts from its upstream work
       "node scripts/ci/unrelated.ts -- bun ../e2e/wrapped.mjs",
       "node scripts/ci/with-published-frameworks.ts bun ../e2e/wrapped.mjs",
       "node scripts/ci/with-published-frameworks.ts -- bun --check ../e2e/wrapped.mjs",
+      "node ../scripts/ci/with-published-frameworks.ts -- bun ../e2e/wrapped.mjs",
     ]) {
       workflow.jobs.recipe = { steps: [{ run }] };
       assert.equal(coverageErrors(inventory(), []).length, 2, run);

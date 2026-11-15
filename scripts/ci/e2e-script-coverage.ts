@@ -131,11 +131,9 @@ export function scriptCoverage(root: string, workflow: Workflow) {
     }
     const paths = executedPaths(command).map((argument) => ({ argument, cwd }));
     if (
-      paths.some(({ argument }) =>
-        [
-          "scripts/ci/with-published-frameworks.ts",
-          "../scripts/ci/with-published-frameworks.ts",
-        ].includes(argument),
+      paths.some(
+        ({ argument }) =>
+          resolve(root, cwd, argument) === resolve(root, "scripts/ci/with-published-frameworks.ts"),
       )
     ) {
       const [runner, ...argv] = delegatedCommand(command);
