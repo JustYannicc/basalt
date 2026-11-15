@@ -70,7 +70,7 @@ export const proveIndependentAuthCommit = (options: BetterAuthOptions) =>
     assert.deepEqual(yield* objects, first);
     assert.deepEqual(
       yield* sql`select migration_id from private_hosted_migrations order by migration_id`,
-      Array.from({ length: 18 }, (_, index) => ({ migration_id: index + 1 })),
+      Array.from({ length: 21 }, (_, index) => ({ migration_id: index + 1 })),
     );
   });
 

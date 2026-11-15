@@ -17,6 +17,7 @@ import { SafetyGateError, stableStringify, type PinSummary } from "./contracts.t
 import { PlanetScaleSafety } from "./planetscale-safety.ts";
 import { assertNoReleaseHold, requirePlanetScaleEnvironment } from "./runtime.ts";
 import { executorMarkerPrecondition, type ExecutorMarkerPrecondition } from "./executor-marker.ts";
+import type { Fetcher } from "./http.ts";
 
 export type ReleasePlan = {
   report: ClassificationReport;
@@ -135,10 +136,19 @@ export async function latestProductionBase(): Promise<{
   };
 }
 
-export async function classifyCurrentRelease(candidateRef = currentCommit()): Promise<ReleasePlan> {
+export async function classifyCurrentRelease(
+  candidateRef = currentCommit(),
+  options: { fetcher?: Fetcher; repositoryRoot?: string } = {},
+): Promise<ReleasePlan> {
   assertNoReleaseHold();
+  const fetcher = options.fetcher ?? fetch;
+  const repositoryRoot = options.repositoryRoot ?? trustedRepositoryRoot;
   const ledgerEnvironment = readLedgerEnvironment();
-  const ledger = await readDeploymentLedger(ledgerEnvironment, fetch, rollForwardTo(candidateRef));
+  const ledger = await readDeploymentLedger(
+    ledgerEnvironment,
+    fetcher,
+    rollForwardTo(candidateRef, repositoryRoot),
+  );
   let baseCommit: string;
   if (ledger.state === "ready") baseCommit = ledger.gitCommit;
   else if (ledger.state === "unresolved" && ledger.lastSuccessful)
@@ -154,8 +164,8 @@ export async function classifyCurrentRelease(candidateRef = currentCommit()): Pr
     );
   }
 
-  const api = new GitHubApi(ledgerEnvironment.token);
-  const report = await classifyRefs(trustedRepositoryRoot, baseCommit, candidateRef, api);
+  const api = new GitHubApi(ledgerEnvironment.token, fetcher);
+  const report = await classifyRefs(repositoryRoot, baseCommit, candidateRef, api);
   if (report.base.gitCommit !== baseCommit || report.candidate.gitCommit !== candidateRef)
     throw new SafetyGateError("Release classifier did not return the requested exact commits");
   return {
