@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { readDeploymentLedger, readLedgerEnvironment } from "../deploy-safety/github-ledger.ts";
 import { assertNoReleaseHold } from "../deploy-safety/runtime.ts";
 import { validateMainCandidate } from "../release-merge/main-candidate.ts";
-import { BarrierRefusal } from "./manifest.ts";
+import { BarrierRefusal } from "./refusal.ts";
 
 export function migrationActivationInput(source: Record<string, string | undefined>) {
   try {

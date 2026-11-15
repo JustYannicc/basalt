@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -13,6 +14,28 @@ const environment = {
   GITHUB_REPOSITORY: "synthetic/basalt",
   GITHUB_WORKFLOW_REF: "synthetic/basalt/.github/workflows/release-main.yml@refs/heads/main",
 };
+
+test("the trusted activation gate imports before package dependencies are installed", () => {
+  const gate = new URL("./migration-activation-gate.ts", import.meta.url).href;
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `import { isBuiltin, registerHooks } from "node:module";
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (!isBuiltin(specifier) && !/^(?:\\.|\\/|file:)/u.test(specifier))
+      throw new Error("Activation gate requires an uninstalled package: " + specifier);
+    return nextResolve(specifier, context);
+  }
+});
+await import(${JSON.stringify(gate)});`,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
 
 test("a successful containing release cannot substitute for the exact recorded candidate", () => {
   const candidate = environment.BASALT_RELEASE_CANDIDATE;
