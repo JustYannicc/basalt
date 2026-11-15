@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { releaseWorkers, type BarrierReceipt } from "./barrier.ts";
 import { readySqlSchemas } from "./sql-schema-fixture.ts";
-import type { SqlSchemaReceipt } from "./sql-schema-contract.ts";
+import { observeSqlVersions, type SqlSchemaReceipt } from "./sql-schema-contract.ts";
 import { containerRelease } from "./test/container-fixture.ts";
 
 const candidate = "d".repeat(40);
@@ -200,4 +200,29 @@ test("a changed-image release refuses a schema proof from another Home image bef
   assert.deepEqual(f.receipts.at(-1)!.activated, []);
   assert.equal(f.receipts.at(-1)!.sqlSchemas!.homeImageDigest, wrong.homeImageDigest);
   assert.ok(!f.events.some((event) => event.startsWith("container:")));
+});
+
+test("a later release retains completed optional activation 22 and passes the final barrier", async () => {
+  const schemas = readySqlSchemas(candidate);
+  schemas.observations = schemas.observations.map((entry) =>
+    entry.namespace === "hosted"
+      ? observeSqlVersions(
+          {
+            ...entry,
+            kind: "markers",
+            expected: ["21_change_journal_prepare"],
+            optional: ["22_change_journal_activate"],
+          },
+          ["21_change_journal_prepare", "22_change_journal_activate"],
+        )
+      : entry,
+  );
+  const f = fixture(schemas);
+  await releaseWorkers(manifest, f.options);
+  assert.deepEqual(f.activated, ["Api"]);
+  const retained = f.receipts.find((receipt) => receipt.sqlSchemas !== undefined)!.sqlSchemas!;
+  const hosted = retained.observations.find((entry) => entry.namespace === "hosted")!;
+  assert.deepEqual(hosted.expected, ["21_change_journal_prepare"]);
+  assert.deepEqual(hosted.optional, ["22_change_journal_activate"]);
+  assert.deepEqual(hosted.applied, ["21_change_journal_prepare", "22_change_journal_activate"]);
 });

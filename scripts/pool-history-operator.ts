@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { nodePoolOperations } from "./pool-operations-node.ts";
 import { historyObject } from "../src/pool/model-history/record.ts";
 import {
   HistoryOperatorFailure,
@@ -226,6 +227,7 @@ export async function runHistoryOperator(
   options: ReturnType<typeof historyOperatorOptions>,
   accountId: string,
   connect?: (path: string) => Promise<Platform>,
+  bridge = nodePoolOperations,
 ) {
   if (
     options.operation === "journal-activation" &&
@@ -280,7 +282,10 @@ export async function runHistoryOperator(
       }),
       { mode: 0o600 },
     );
-    const open = connect ?? connectHistoryPlatform;
+    // Wrangler's remote binding dispatcher requires Node even when the activation client uses Bun.
+    const open =
+      connect ??
+      (process.versions.bun ? () => bridge(accountId, options.worker) : connectHistoryPlatform);
     platform = await historyOperatorStep("operator.connect", () => open(configPath));
     if (approvedSchemaState) {
       const response = await platform.env.POOL_OPERATIONS.fetch(
