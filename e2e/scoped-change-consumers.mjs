@@ -134,6 +134,22 @@ const program = Effect.gen(function* () {
       }),
     );
   };
+  // A visible owner pool can precede the other member's initial account and app commits.
+  // Scheduled Basalt maintenance is unrelated to this one-time fixture setup milestone.
+  yield* until(
+    Effect.gen(function* () {
+      const rows = yield* database.run({
+        sql: `select kind, status from hosted_provisioning
+          where organization_id=$1 and kind in ('team', 'member') and id not like 'basalt-%'`,
+        params: [h.actors.organization.id],
+      });
+      diagnostics.initialProvisioning = rows;
+      return rows;
+    }),
+    (rows) =>
+      rows.some((row) => row.kind === "team") && rows.every((row) => row.status === "succeeded"),
+    "initial organization provisioning did not finish before measuring reads",
+  );
   yield* barrier();
   const browser = yield* Effect.acquireRelease(
     Effect.promise(() => chromium.launch({ headless: true })),
@@ -540,14 +556,25 @@ const program = Effect.gen(function* () {
       routingReads - routingBefore,
       1,
     );
+    const duplicateHeads = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
     yield* browserWork(() => h.fixture.scoped.duplicate());
     yield* browserWork(() => page.clock.runFor(200).then(flush));
+    const afterDuplicate = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+    diagnostics.hostRouting.duplicateHeads = {
+      before: duplicateHeads.revisions,
+      after: afterDuplicate.revisions,
+    };
+    check(
+      `Pool Accounts at ${width}: duplicate delivery leaves the measured heads unchanged`,
+      afterDuplicate.revisions,
+      duplicateHeads.revisions,
+    );
     check(
       `Pool Accounts at ${width}: duplicate reading revision makes no routing read`,
       routingReads - routingBefore,
       1,
     );
-    diagnostics.hostRouting = { initial: routingBefore, relevant: routingReads };
+    diagnostics.hostRouting.relevant = routingReads;
     yield* browserWork(() => shot("routing-after"));
     yield* browserWork(() => page.goto("about:blank"));
   }
