@@ -1,4 +1,8 @@
 import {
+  observeBoundProvider,
+  type ProviderObservationTarget,
+} from "../runtime-provider/observation.ts";
+import {
   SlotRefused,
   SlotSelection,
   sameTarget,
@@ -247,6 +251,9 @@ export class PoolRuntimeFleet {
         if (this.deps.schedule) this.deps.ctx.waitUntil(this.deps.schedule(at));
       },
     }));
+  }
+  observeProvider(target: ProviderObservationTarget, signal?: AbortSignal) {
+    return observeBoundProvider(this.deps.env.POOL_PROVIDER_OBSERVATION_TOKEN, target, signal);
   }
   async configure(operationId: string, input: FleetConfiguration) {
     const record = await this.configuration.configure(operationId, input);

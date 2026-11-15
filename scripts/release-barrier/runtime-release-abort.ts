@@ -21,6 +21,8 @@ export async function runRuntimeAbort(input: {
     throw new BarrierRefusal("runtime-abort-startup-not-pending", "PoolWorker");
   if (mode !== "plan" && mode !== "inspect" && !/^[a-f0-9]{64}$/u.test(mode))
     throw new BarrierRefusal("runtime-abort-plan-digest-required", "PoolWorker");
+  if (mode === "inspect" && !record.abort)
+    return { candidate: record.candidate, status: "not-sent", sent: false, fingerprint: undefined };
   const operationId = `abort-${record.candidate}-${digest(canonical(startup)).slice(0, 16)}`;
   let receipt = record.abort;
   let fingerprint = record.abortPlanDigest;

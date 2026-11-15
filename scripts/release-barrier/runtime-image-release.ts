@@ -1,3 +1,4 @@
+import { verifyBoundProviderObservation } from "./runtime-provider-observation.ts";
 import { assertMigrationActivationSettled } from "./migration-activation-state.ts";
 import { evalStack, type CompiledStack, type StackEffect } from "alchemy/Stack";
 import type { Stage } from "alchemy/Stage";
@@ -192,6 +193,15 @@ export const releaseRuntimeImage = <A, StackError>(
         }),
       );
     let client = yield* codePhase("controller");
+    yield* Effect.promise(() =>
+      verifyBoundProviderObservation({
+        state: record.baseline,
+        code,
+        client,
+        directory: options.directory,
+        encryptionKey: options.encryptionKey,
+      }),
+    );
     yield* Effect.promise(() => client.adopt());
 
     for (const color of ["blue", "green"] as const) {

@@ -1,3 +1,7 @@
+import {
+  type ProviderObservationTarget,
+  type observeBoundProvider,
+} from "../runtime-provider/observation.ts";
 import { runtimeInput } from "./input.ts";
 import { Schema } from "effect";
 import { runtimeErrorResponse } from "./request-error.ts";
@@ -18,6 +22,10 @@ import type { ImageUpdateIntent, RuntimeImageUpdate } from "../runtime-fleet/ima
 import type { RuntimeCandidateProbe } from "./candidate-probe.ts";
 
 export interface HandoffFleet {
+  observeProvider?(
+    target: ProviderObservationTarget,
+    signal?: AbortSignal,
+  ): ReturnType<typeof observeBoundProvider>;
   primaryTarget?(
     operationId: string,
     applicationId: string,
@@ -72,6 +80,10 @@ export async function handleRuntimeHandoff(
       await fleet?.assertPrimaryChange?.(value.action);
     let result: unknown;
     switch (value.action) {
+      case "provider-observe":
+        if (!fleet?.observeProvider) throw new Error("Provider observation unavailable");
+        result = await fleet.observeProvider(value.target, request.signal);
+        break;
       case "candidate-target":
         if (!fleet?.primaryTarget) throw new Error("Runtime fleet unavailable");
         result = await fleet.primaryTarget(value.operationId, value.applicationId);

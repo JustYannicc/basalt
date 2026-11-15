@@ -11,6 +11,7 @@ import { deploymentReadinessPrefix } from "../deployment-readiness.ts";
 import { FleetConfiguration } from "../runtime-fleet/configuration.ts";
 import { ImageUpdateIntent } from "../runtime-fleet/image-update.ts";
 import { StartupAbortIntent } from "./startup-abort-contract.ts";
+import { ProviderObservationTarget } from "../runtime-provider/observation.ts";
 
 export const runtimeHandoffPath = "/runtime-handoff";
 export const runtimeHandoffCommandPrefix = deploymentReadinessPrefix;
@@ -52,6 +53,11 @@ export const RuntimeFleetCommand = RuntimeFleetOperationPayload.mapMembers(
 export type RuntimeFleetCommand = typeof RuntimeFleetCommand.Type;
 
 export const RuntimeHandoffCommand = Schema.Union([
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literal("provider-observe"),
+    target: ProviderObservationTarget,
+  }),
   ...RuntimeFleetCommand.members,
   Schema.Struct({ ...fields, action: Schema.Literal("startup-abort"), intent: StartupAbortIntent }),
   Schema.Struct({

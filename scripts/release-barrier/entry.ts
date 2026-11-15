@@ -113,7 +113,7 @@ process.exitCode = await releaseOutcome(evidence, process.env.GITHUB_STEP_SUMMAR
                         const { appendFile } = await import("node:fs/promises");
                         await appendFile(
                           process.env.GITHUB_STEP_SUMMARY,
-                          `Runtime startup abort ${receipt.status}. Plan digest: ${receipt.fingerprint}.\n`,
+                          `Runtime startup abort ${receipt.status}.${receipt.fingerprint ? ` Plan digest: ${receipt.fingerprint}.` : ""}\n`,
                         );
                       }
                     });

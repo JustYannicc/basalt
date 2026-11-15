@@ -42,6 +42,11 @@ for (const lost of ["none", "before", "after"] as const)
       writes++;
       record = structuredClone(next);
     };
+    const notSent = await runRuntimeAbort({ record, client, save, mode: "inspect" });
+    assert.equal(notSent.status, "not-sent");
+    assert.equal(notSent.sent, false);
+    assert.equal(writes, 0);
+    assert.equal(sends, 0);
     const plan = await runRuntimeAbort({ record, client, save, mode: "plan" });
     assert.equal(writes, 0);
     assert.equal(sends, 0);

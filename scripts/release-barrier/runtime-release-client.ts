@@ -1,3 +1,7 @@
+import {
+  BoundProviderObservation,
+  type ProviderObservationTarget,
+} from "../../src/pool/runtime-provider/observation.ts";
 import { Effect, Schema } from "effect";
 import {
   ControllerCode,
@@ -191,6 +195,8 @@ export const runtimeReleaseClient = (input: {
       };
     };
     return {
+      observeProvider: async (target: ProviderObservationTarget) =>
+        result(BoundProviderObservation, await call({ action: "provider-observe", target })),
       call,
       inspect,
       manifest,

@@ -101,7 +101,7 @@ export const poolWorker = Effect.gen(function* () {
       ...(recoveryTarget ? { POOL_AUTOMATIC_RECOVERY_TARGET: recoveryTarget } : {}),
     },
   });
-  if (fleet) yield* bindPoolObservationSecret(worker);
+  if (fleet || imageRelease) yield* bindPoolObservationSecret(worker);
   yield* verifyRuntimeDatabaseBudget("PoolBackendBudget", {
     adminUrl: database.adminUrl,
     runtimeLogin: database.runtimeRole,
