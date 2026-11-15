@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "An organization access refresh that fails to answer keeps the last verified organization details, so pages that need them stay on their retained content. Only a refusal (forbidden or unauthorized) drops those details at once. The server checks current access on every request regardless of what the browser retains."
+    }
+  }
+}
