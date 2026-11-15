@@ -65,6 +65,61 @@ export const knownTypes = new Set([
   "RangeError",
   "SyntaxError",
   "Error",
+  // Wrangler 4.153.0's UserError subclasses can inherit Error.name unchanged.
+  "UserError",
+  "FatalError",
+  "CommandLineArgsError",
+  "MissingConfigError",
+  "ParseError",
+  "APIError",
+  "RemoteSessionAuthenticationError",
+  "MiniflareCoreError",
+  "MiniflareError",
+  "AggregateError",
+]);
+
+const stringCodes = new Set([
+  "MODULE_NOT_FOUND",
+  "ERR_MODULE_NOT_FOUND",
+  "ERR_REQUIRE_ESM",
+  "ERR_DLOPEN_FAILED",
+  "ERR_PACKAGE_PATH_NOT_EXPORTED",
+  "ENOENT",
+  "EACCES",
+  "EPERM",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "CERT_HAS_EXPIRED",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+  // Closed MiniflareCoreError codes in the pinned Wrangler dependency.
+  "ERR_RUNTIME_FAILURE",
+  "ERR_PLUGIN_LOADING_FAILED",
+  "ERR_ADDRESS_IN_USE",
+  "ERR_DISPOSED",
+  "ERR_MODULE_PARSE",
+  "ERR_MODULE_STRING_SCRIPT",
+  "ERR_MODULE_DYNAMIC_SPEC",
+  "ERR_MODULE_RULE",
+  "ERR_PERSIST_UNSUPPORTED",
+  "ERR_FUTURE_COMPATIBILITY_DATE",
+  "ERR_NO_WORKERS",
+  "ERR_VALIDATION",
+  "ERR_DUPLICATE_NAME",
+  "ERR_DIFFERENT_STORAGE_BACKEND",
+  "ERR_DIFFERENT_UNIQUE_KEYS",
+  "ERR_DIFFERENT_PREVENT_EVICTION",
+  "ERR_DIFFERENT_S3_CREDENTIALS",
+  "ERR_MISSING_INSPECTOR_PROXY_PORT",
+  "ERR_MISSING_EXPLORER_UI",
 ]);
 
 const httpReasons = new Set([
@@ -76,8 +131,15 @@ const httpReasons = new Set([
   "EmptyBodyError",
 ]);
 
-const field = (value: unknown, key: string): unknown =>
-  typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
+const field = (value: unknown, key: string): unknown => {
+  try {
+    return (typeof value === "object" || typeof value === "function") && value !== null
+      ? Reflect.get(value, key)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
 const integer = (value: unknown, minimum: number, maximum: number): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= minimum && value <= maximum;
 
@@ -86,15 +148,28 @@ export interface ProviderFailure {
   reason?: string;
   status?: number;
   codes?: number[];
+  code?: string;
   exitCode?: number | null;
   migration?: MigrationDiagnostic;
 }
 
 /** Provider messages, bodies, URLs and stacks can contain credentials. Copy only closed diagnostics. */
 export function safeProviderFailure(error: unknown): ProviderFailure {
-  const migration = migrationCommandFailure(error);
+  let migration;
+  try {
+    migration = migrationCommandFailure(error);
+  } catch {
+    // A hostile getter is not a diagnostic and must not replace the original refusal.
+  }
   if (migration) return migration;
-  const tag = field(error, "_tag") ?? field(error, "name");
+  const constructor = field(field(error, "constructor"), "name");
+  const name = field(error, "name");
+  // Miniflare decorates name with its code; the constructor still has a closed class name.
+  const fallback =
+    typeof constructor === "string" && knownTypes.has(constructor) ? constructor : name;
+  const tag =
+    field(error, "_tag") ??
+    (typeof name === "string" && name !== "Error" && knownTypes.has(name) ? name : fallback);
   const type = typeof tag === "string" && knownTypes.has(tag) ? tag : "unknown";
   const httpReason = type === "HttpClientError" ? field(error, "reason") : undefined;
   const reason = field(httpReason, "_tag");
@@ -103,20 +178,38 @@ export function safeProviderFailure(error: unknown): ProviderFailure {
     field(field(httpReason, "response"), "status") ??
     (type === "StateStoreError" ? field(field(error, "http"), "status") : undefined);
   const entries = field(error, "errors");
-  const codes = [
-    ...new Set(
-      [
-        field(error, "code"),
-        ...(Array.isArray(entries) ? entries.slice(0, 8).map((entry) => field(entry, "code")) : []),
-      ].filter((code) => integer(code, 0, 2_147_483_647)),
-    ),
-  ].sort((a, b) => a - b);
+  const code = field(error, "code");
+  const values = [code];
+  try {
+    if (Array.isArray(entries))
+      for (let index = 0; index < 8; index++)
+        values.push(field(field(entries, String(index)), "code"));
+  } catch {
+    // A revoked provider array must not discard the outer status and code.
+  }
+  const codes = [...new Set(values.filter((value) => integer(value, 0, 2_147_483_647)))]
+    .sort((a, b) => a - b)
+    .slice(0, 8);
   return {
     type,
     ...(typeof reason === "string" && httpReasons.has(reason) ? { reason } : {}),
     ...(integer(status, 100, 599) ? { status } : {}),
     ...(codes.length ? { codes } : {}),
+    ...(typeof code === "string" && stringCodes.has(code) ? { code } : {}),
   };
+}
+
+/** Connection wrappers often retain the useful API or network failure only in cause. */
+export function safeProviderFailureChain(error: unknown): ProviderFailure[] {
+  const result: ProviderFailure[] = [];
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current !== undefined && current !== null && result.length < 4 && !seen.has(current)) {
+    seen.add(current);
+    result.push(safeProviderFailure(current));
+    current = field(current, "cause");
+  }
+  return result;
 }
 
 export class ReleaseOperationFailure extends BarrierRefusal {
