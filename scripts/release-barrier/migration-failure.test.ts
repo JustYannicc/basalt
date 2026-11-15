@@ -12,6 +12,79 @@ import { failureCodec } from "./failure-codec.ts";
 import { Schema } from "effect";
 import { safeProviderFailure } from "./operation-failure.ts";
 
+test("non-SQL migration causes survive the barrier, journal codec and public summary without driver text", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "migration-cause-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const evidence = releaseEvidence(root, "a".repeat(40));
+  const proof = fixture({
+    namespace: "eu",
+    evidence,
+    migrationError: new CommandError({
+      command: "node src/migrate.ts",
+      reason: new UnexpectedExit({
+        exitCode: 1,
+        stderr: [
+          'Cloud migration failed at "migrate the executor tables" (attempt 1 of 2): product migration failed: StorageMigrationFailed > MigrationError > TypeError',
+          'TypeError: password=SYNTHETIC_SECRET relation="SYNTHETIC_TABLE"',
+        ].join("\n"),
+      }),
+    }),
+  });
+  const exit = await Effect.runPromiseExit(proof.effect);
+  assert.ok(Exit.isFailure(exit));
+  const failure = await evidence.failure(Cause.squash(exit.cause));
+  const diagnostic = {
+    phase: "migrate the executor tables",
+    causeTags: ["StorageMigrationFailed", "MigrationError", "TypeError"],
+    message: "Migration failed: StorageMigrationFailed > MigrationError > TypeError",
+  };
+  assert.deepEqual(failure.provider?.migration, diagnostic);
+  assert.deepEqual(proof.receipts.at(-1)?.failure?.provider?.migration, diagnostic);
+  assert.deepEqual(Schema.decodeUnknownSync(failureCodec)(failure).provider?.migration, diagnostic);
+  const lines: string[] = [];
+  const summary = join(root, "summary.md");
+  await reportRefusal(failure, summary, (line) => lines.push(line));
+  for (const output of [JSON.stringify(failure), await readFile(summary, "utf8"), ...lines]) {
+    assert.match(output, /StorageMigrationFailed > MigrationError > TypeError/u);
+    assert.doesNotMatch(output, /SYNTHETIC_SECRET|SYNTHETIC_TABLE|password|details unavailable/u);
+  }
+  assert.deepEqual(proof.receipts.at(-1)?.activated, []);
+  assert.ok(!proof.events.some((event) => event.startsWith("activate:")));
+});
+
+test("migration cause tags are closed, bounded and reset by a later attempt", () => {
+  const diagnose = (stderr: string) =>
+    safeProviderFailure(
+      new CommandError({
+        command: "node src/migrate.ts",
+        reason: new UnexpectedExit({ exitCode: 1, stderr }),
+      }),
+    ).migration;
+  const producer = (description: string) =>
+    `Cloud migration failed at "migrate the executor tables" (attempt 1 of 2): ${description}`;
+  const mixed = diagnose(
+    producer("product migration failed: SqlError > SYNTHETIC_SECRET > TypeError (SQLSTATE 53300)"),
+  );
+  assert.deepEqual(mixed?.causeTags, ["SqlError", "UnknownError", "TypeError"]);
+  assert.equal(mixed?.sqlState, "53300");
+  assert.match(mixed!.message, /SQLSTATE 53300/u);
+  assert.match(mixed!.message, /SqlError > UnknownError > TypeError/u);
+  assert.doesNotMatch(JSON.stringify(mixed), /SYNTHETIC_SECRET/u);
+  const long = diagnose(
+    producer(`product migration failed: ${Array(20).fill("TypeError").join(" > ")}`),
+  );
+  assert.equal(long?.causeTags?.length, 8);
+  assert.ok(long!.message.length <= 240);
+  const later = diagnose(
+    `${producer("TypeError")}\nMigration step (attempt 2): open the database sessions`,
+  );
+  assert.deepEqual(later, {
+    phase: "open the database sessions",
+    message: "Migration failed: details unavailable",
+  });
+  assert.equal(diagnose("driver: TypeError password=SYNTHETIC_SECRET")?.causeTags, undefined);
+});
+
 test("migration command failures retain the registry key and safe cause through receipt and summary", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "migration-failure-"));
   context.after(() => rm(root, { recursive: true, force: true }));
@@ -40,7 +113,8 @@ test("migration command failures retain the registry key and safe cause through 
     registry: "hosted",
     migration: "19_change_revisions",
     sqlState: "55P03",
-    message: "Migration failed: lock timeout; SQLSTATE 55P03",
+    causeTags: ["SqlError"],
+    message: "Migration failed: lock timeout; SQLSTATE 55P03; cause=SqlError",
   };
   assert.deepEqual(failure.provider, {
     type: "CommandError",
@@ -100,7 +174,8 @@ for (const [name, stderr, expected] of [
       registry: "hosted",
       migration: "19_change_revisions",
       sqlState: "42P07",
-      message: "Migration failed: database error; SQLSTATE 42P07",
+      causeTags: ["SqlError"],
+      message: "Migration failed: database error; SQLSTATE 42P07; cause=SqlError",
     },
   ],
 ] as const)
