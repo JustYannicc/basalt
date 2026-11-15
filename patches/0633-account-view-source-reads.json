@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-view-source-reads",
+  "file": "0633-account-view-source-reads.patch",
+  "content_sha256": "029e08f25085574f862bd3ac7c455a999a58c240c7914d38ce0f202b4b6f98b4",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

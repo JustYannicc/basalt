@@ -1,0 +1,35 @@
+{
+  "scenarios": {
+    "poolAccountViewCloudRead": {
+      "fixtures": "actors",
+      "deferOnboarding": true,
+      "title": "Cloud pool account view reads five exact sources with one catalog lookup per query",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The source binding scenario covers self-host authorization."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host organization account sources."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolAccountViewCloudRead": [
+      "production-ops:native-provider-links-through-the-cloud-hosted-api"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/account-source-authority.ts",
+    ".upstream/apps/hosted/server/src/implementation/account-source-options.ts",
+    ".upstream/apps/hosted/server/src/implementation/app-ui.ts",
+    ".upstream/apps/hosted/server/src/implementation/linked-account-apps.ts",
+    "apps/pool/provider-account-view.ts"
+  ]
+}

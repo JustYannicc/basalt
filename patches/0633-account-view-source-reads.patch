@@ -1,0 +1,445 @@
+diff --git a/apps/hosted/server/src/implementation/account-source-authority.ts b/apps/hosted/server/src/implementation/account-source-authority.ts
+--- a/apps/hosted/server/src/implementation/account-source-authority.ts
++++ b/apps/hosted/server/src/implementation/account-source-authority.ts
+@@ -83,6 +83,14 @@
+     if (!ids.includes(requested.account)) return yield* new StorageError();
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const app = yield* executor.apps.get({ app: input.app, owner: input.owner });
++    const sql = yield* policyDatabase;
++    const selected = yield* sql`select account, requirement from hosted_app_account_links
++      where app = ${app.id} and ${sql.in("account", ids)}
++        and ${input.scope === "app" ? sql`subject is null` : sql`subject = ${input.authorizer ?? ""}`}`;
++    const optionsByRequirement = new Map<
++      string,
++      Effect.Success<ReturnType<typeof accountSourceOptions>>
++    >();
+     for (const id of ids) {
+       let permitted = false;
+       for (const selection of call.selections) {
+@@ -100,23 +108,21 @@
+         if (slot?.scope !== input.scope || (input.scope === "app" && slot.contributed !== true))
+           continue;
+         if (
+-          !(yield* selectedSourceAccount({
+-            app: app.id,
+-            requirement: selection.requirement,
+-            account: id,
+-            scope: input.scope,
+-            subject: input.authorizer,
+-          }))
++          !selected.some((row) => row.account === id && row.requirement === selection.requirement)
+         )
+           continue;
+-        const options = yield* accountSourceOptions({
+-          executor,
+-          owner: input.owner,
+-          app,
+-          requirement: selection.requirement,
+-          accounts: [id],
+-          subject: input.authorizer,
+-        });
++        let options = optionsByRequirement.get(selection.requirement);
++        if (options === undefined) {
++          options = yield* accountSourceOptions({
++            executor,
++            owner: input.owner,
++            app,
++            requirement: selection.requirement,
++            accounts: ids,
++            subject: input.authorizer,
++          });
++          optionsByRequirement.set(selection.requirement, options);
++        }
+         if (
+           (options.get(id) ?? []).some(
+             ({ source }) =>
+diff --git a/apps/hosted/server/src/implementation/account-source-options.ts b/apps/hosted/server/src/implementation/account-source-options.ts
+--- a/apps/hosted/server/src/implementation/account-source-options.ts
++++ b/apps/hosted/server/src/implementation/account-source-options.ts
+@@ -24,6 +24,15 @@
+   account: AccountId,
+   subject: Schema.NullOr(Schema.String),
+ });
++
++/** Share public catalog metadata only for one bounded query; policy and links stay live. */
++export const withAccountSourceCatalog = <A, E, R>(work: Effect.Effect<A, E, R>) =>
++  Effect.gen(function* () {
++    const catalog = yield* Effect.serviceOption(HostedCatalog);
++    if (Option.isNone(catalog)) return yield* work;
++    const list = yield* Effect.cached(catalog.value.list);
++    return yield* work.pipe(Effect.provideService(HostedCatalog, { ...catalog.value, list }));
++  });
+
+ /** Candidates are actual account holders with trusted provider installation identity. */
+ export const accountSourceOptions = (input: {
+diff --git a/apps/hosted/server/src/implementation/app-ui.ts b/apps/hosted/server/src/implementation/app-ui.ts
+--- a/apps/hosted/server/src/implementation/app-ui.ts
++++ b/apps/hosted/server/src/implementation/app-ui.ts
+@@ -1,5 +1,6 @@
+ import { withPoolViewCache } from "./pool-view-cache.ts";
+ import { poolAppUsageSummary, poolAppUsageSummaryPath } from "./pool-summary-app-ui.ts";
++import { withAccountSourceCatalog } from "./account-source-options.ts";
+ import { withSelectedAccountInspection } from "./selected-account-read.ts";
+ import { SelectedAccountInspection } from "@executor-js/sdk/core";
+ import {
+@@ -566,6 +567,7 @@
+         const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
+         return yield* executor.appData[kind](input).pipe(
+           withSelectedAccountInspection,
++          kind === "query" ? withAccountSourceCatalog : (work) => work,
+           Effect.provideService(CurrentOrganization, current.access),
+           Effect.provideService(CurrentAuthorization, fullAuthority),
+           Effect.provideService(CurrentUserId, current.access.userId),
+diff --git a/apps/hosted/server/src/implementation/linked-account-apps.ts b/apps/hosted/server/src/implementation/linked-account-apps.ts
+--- a/apps/hosted/server/src/implementation/linked-account-apps.ts
++++ b/apps/hosted/server/src/implementation/linked-account-apps.ts
+@@ -1,6 +1,7 @@
+ import { permittedAppIds } from "@executor-js/authorization";
+-import type { AccountId, OwnerId } from "@executor-js/sdk/core";
+-import { Effect } from "effect";
++import { AppId, StorageError, type AccountId, type OwnerId } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import { CurrentUserId } from "../contracts/auth.ts";
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
+@@ -11,8 +12,20 @@
+   Effect.gen(function* () {
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const policy = yield* CurrentAuthorization;
++    const sql = yield* policyDatabase;
++    const subject = yield* CurrentUserId;
++    const rows = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ app: AppId })))(
++      yield* sql`select distinct l.app from hosted_app_account_links l
++        join executor_apps a on a.id = l.app
++        where a.owner = ${owner} and l.account = ${account}
++          and (l.subject is null or l.subject = ${subject ?? ""})`,
++    );
++    const candidates = permittedAppIds(
++      policy,
++      rows.map((row) => row.app),
++    );
+     const apps = yield* executor.apps
+-      .list({ owner, ids: permittedAppIds(policy) })
++      .list({ owner, ids: candidates })
+       .pipe(Effect.flatMap(visibleApps));
+     const ids = apps.map((app) => app.id);
+     const linked = new Set(
+@@ -24,4 +37,6 @@
+         .map((entry) => entry.app),
+     );
+     return apps.filter((app) => linked.has(app.id));
+-  });
++  }).pipe(
++    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
++  );
+diff --git a/e2e/ci-selection.ts b/e2e/ci-selection.ts
+--- a/e2e/ci-selection.ts
++++ b/e2e/ci-selection.ts
+@@ -300,6 +300,10 @@
+   oauthDiscardedRefreshReconnect: {
+     targets: ["cloud"],
+     reason: "The Basalt host-managed-accounts job runs the disposable discarded-token proof.",
++  },
++  poolAccountViewCloudRead: {
++    targets: ["cloud"],
++    reason: "The Basalt production-ops job runs the five-account Cloud query proof.",
+   },
+   nativeProviderCloudLinks: {
+     targets: ["cloud"],
+diff --git a/e2e/tests/pool-account-view-cloud-read.spec.ts b/e2e/tests/pool-account-view-cloud-read.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/pool-account-view-cloud-read.spec.ts
+@@ -0,0 +1,291 @@
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, FileSystem, Schema, Schedule } from "effect";
++import { randomUUID } from "node:crypto";
++import { Browser } from "../support/browser.ts";
++import { Evidence, Telemetry } from "../support/evidence.ts";
++import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
++import { writeRows } from "../support/cloud-rows.ts";
++import { body } from "../support/api.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Resource } from "../support/contracts.ts";
++import { nativeProviderLinkFixture } from "../support/native-provider-link-fixture.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Source = Schema.Struct({
++  files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
++});
++const Icon = Schema.Struct({ src: Schema.String });
++const View = Schema.Struct({
++  accounts: Schema.Array(
++    Schema.Struct({
++      nativeAccountId: Schema.String,
++      nativeView: Schema.Struct({
++        state: Schema.Literal("available"),
++        account: Resource,
++        sourceApp: Schema.Struct({
++          id: Schema.String,
++          name: Schema.String,
++          icons: Schema.Array(Icon),
++        }),
++        canInspect: Schema.Literal(true),
++        observations: Schema.Struct({
++          account: Schema.String,
++          reports: Schema.Array(Schema.Unknown),
++        }),
++      }),
++    }),
++  ),
++  providers: Schema.Array(Schema.Struct({ name: Schema.String, icons: Schema.Array(Icon) })),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Cloud pool account view", (it) => {
++  it.effect(scenarios.poolAccountViewCloudRead.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const p = yield* nativeProviderLinkFixture;
++        const providerPath = `${p.prefix}/apps/${p.target}`;
++        const accounts = [p.account];
++        let consumer: string | undefined;
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            for (const account of accounts) {
++              if (consumer !== undefined)
++                expect(
++                  (yield* p.api.request(
++                    p.actors.owner,
++                    "DELETE",
++                    `${p.prefix}/apps/${consumer}/accounts/app/openai/${account}`,
++                  )).status,
++                ).toBe(200);
++              expect(
++                (yield* p.api.request(
++                  p.actors.owner,
++                  "DELETE",
++                  `${providerPath}/accounts/app/openai/${account}`,
++                )).status,
++              ).toBe(200);
++              if (account !== p.account)
++                expect(
++                  (yield* p.api.request(
++                    p.actors.owner,
++                    "DELETE",
++                    `${p.prefix}/accounts/${account}`,
++                  )).status,
++                ).toBe(200);
++            }
++            if (consumer !== undefined)
++              expect(
++                (yield* p.api.request(p.actors.owner, "DELETE", `${p.prefix}/apps/${consumer}`))
++                  .status,
++              ).toBe(200);
++          }).pipe(Effect.orDie),
++        );
++        expect(
++          (yield* p.api.request(
++            p.actors.owner,
++            "PUT",
++            `${providerPath}/accounts/app/openai/${p.account}`,
++          )).status,
++        ).toBe(200);
++        for (let index = 1; index < 5; index++) {
++          const connection = yield* body(
++            Resource,
++            yield* p.api.request(
++              p.actors.owner,
++              "POST",
++              `${providerPath}/accounts/app/openai/connections`,
++              { destination: { kind: "personal" } },
++            ),
++          );
++          const path = `${p.prefix}/connections/${connection.id}/interactive`;
++          expect(
++            (yield* p.api.request(p.actors.owner, "POST", `${path}/start`, { method: "codex" }))
++              .status,
++          ).toBe(200);
++          const connected = yield* body(
++            Schema.Struct({ account: Resource }),
++            yield* p.api.request(p.actors.owner, "GET", `${path}/status`),
++          );
++          accounts.push(connected.account.id);
++        }
++        const source = yield* body(
++          Source,
++          yield* p.api.request(
++            p.actors.owner,
++            "GET",
++            "/native-provider-fixture/catalog/apps/provider-openai.json",
++          ),
++        );
++        const fs = yield* FileSystem.FileSystem;
++        // Deploy the shipped presentation function, so the proof includes both native and source reads.
++        const presentation = yield* fs.readFileString("../apps/pool/provider-account-view.ts");
++        const deployed = yield* body(
++          Resource,
++          yield* p.api.request(p.actors.owner, "POST", `${p.prefix}/apps/deploy`, {
++            name: "Five selected provider accounts",
++            files: [
++              ...source.files.map((file) =>
++                file.path === "index.ts"
++                  ? {
++                      path: file.path,
++                      content: `import { defineApp, query, object, router } from "apps";
++import { providers } from "./providers.ts";
++import { providerAccountView } from "./provider-account-view.ts";
++const view = query({ input: object({}) }, ctx => providerAccountView(ctx, {
++  isOwner: true, providers: [{id:"codex",name:"OpenAI"}],
++  accounts: ctx.app.accounts.openai.map(account => ({
++    id:account.id,nativeAccountId:account.id,provider:"codex",label:"Fixture",plan:null,state:"active",message:null,
++    windows:[],observedAt:null,freshness:"never",readingFailed:false,nextReadAt:null,earliestResetAt:null,bankedResets:null,
++  })),
++}));
++export default defineApp({
++  dependencies:{accountView:{scope:"app",cardinality:"many",tools:{accountView:{kind:"query"}}}},
++  app:{accounts:{openai:providers.openai.many().contributed()}},
++}, {tools:router({view,viewAgain:view})});`,
++                    }
++                  : file,
++              ),
++              { path: "provider-account-view.ts", content: presentation },
++              {
++                path: "ui/index.html",
++                content:
++                  "<!doctype html><html><head><title>Five selected provider accounts</title></head><body><h1>Five selected provider accounts</h1></body></html>",
++              },
++            ],
++          }),
++        );
++        consumer = deployed.id;
++        const consumerPath = `${p.prefix}/apps/${consumer}`;
++        const viewer = yield* body(
++          Schema.Struct({ userId: Schema.String }),
++          yield* p.api.request(p.actors.owner, "GET", "/api/viewer"),
++        );
++        // Only fixture registration is seeded; acquisition, links and reads use the real public APIs.
++        yield* writeRows("sso-database.json", [
++          {
++            sql: "update organization set metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{basaltPools}', coalesce(metadata::jsonb -> 'basaltPools', '{}'::jsonb) || $1::jsonb)::text where id = $2",
++            params: [
++              JSON.stringify({
++                [consumer]: {
++                  app: consumer,
++                  owner: viewer.userId,
++                  membership: "executor-links-v1",
++                  authorization: "executor-app-v1",
++                },
++              }),
++              p.actors.organization.id,
++            ],
++          },
++        ]);
++        for (const account of accounts)
++          expect(
++            (yield* p.api.request(
++              p.actors.owner,
++              "PUT",
++              `${consumerPath}/accounts/app/openai/${account}`,
++            )).status,
++          ).toBe(200);
++        const browser = yield* Browser;
++        const evidence = yield* Evidence;
++        const telemetry = yield* Telemetry;
++        yield* browser.login(p.actors.owner);
++        yield* openPrivateApp(yield* waitForAppUrl(p.actors.owner, `${consumerPath}/ui`));
++        for (const name of ["view", "viewAgain"]) {
++          const trace = randomUUID().replaceAll("-", "");
++          const start = yield* Clock.currentTimeMillis;
++          const reply = yield* browser.use("Read five selected provider accounts", (page) =>
++            page.evaluate(
++              ({ trace, name }) => {
++                const context = JSON.parse(
++                  document.getElementById("executor-context")?.textContent ?? "{}",
++                );
++                const start = performance.now();
++                return fetch("/_executor/api/query", {
++                  method: "POST",
++                  headers: {
++                    "content-type": "application/json",
++                    traceparent: `00-${trace}-${trace.slice(0, 16)}-01`,
++                  },
++                  body: JSON.stringify({
++                    version: context.version ?? context.deployment,
++                    name,
++                    input: {},
++                  }),
++                }).then((response) =>
++                  response.json().then((body) => ({
++                    status: response.status,
++                    body,
++                    milliseconds: performance.now() - start,
++                    timing: response.headers.get("server-timing"),
++                  })),
++                );
++              },
++              { trace, name },
++            ),
++          );
++          const end = yield* Clock.currentTimeMillis;
++          expect(
++            yield* telemetry.export([
++              {
++                traceId: trace,
++                spanId: trace.slice(0, 16),
++                name: "POST /_executor/api/query",
++                kind: 3,
++                startTimeUnixNano: String(BigInt(start) * 1000000n),
++                endTimeUnixNano: String(BigInt(end) * 1000000n),
++                status: { code: reply.status >= 400 ? 2 : 1 },
++              },
++            ]),
++          ).toBe(200);
++          yield* evidence.json(`${name}.json`, reply);
++          expect(reply.status).toBe(200);
++          const view = yield* Schema.decodeUnknownEffect(View)(reply.body);
++          expect(view.accounts.map((account) => account.nativeAccountId).sort()).toEqual(
++            [...accounts].sort(),
++          );
++          for (const account of view.accounts) {
++            expect(account.nativeView.account.id).toBe(account.nativeAccountId);
++            expect(account.nativeView.sourceApp.id).toBe(p.target);
++            expect(account.nativeView.sourceApp.icons.length).toBeGreaterThan(0);
++            expect(account.nativeView.observations.account).toBe(account.nativeAccountId);
++            expect(account.nativeView.observations.reports).toEqual([]);
++          }
++          expect(view.providers).toHaveLength(1);
++          expect(view.providers[0]!.name).toBe(view.accounts[0]!.nativeView.sourceApp.name);
++          expect(view.providers[0]!.icons).toEqual(view.accounts[0]!.nativeView.sourceApp.icons);
++          const spans = yield* telemetry.query(trace).pipe(
++            Effect.flatMap((result) => {
++              const spans = result.data.map(({ span }) => span);
++              const ids = new Set(spans.map((span) => span.spanId));
++              const server = reply.timing?.match(/executor-span;desc="([a-f0-9]{16})"/)?.[1];
++              return server !== undefined &&
++                spans.some(
++                  (span) => span.spanId === server && span.operationName === "http.server POST",
++                ) &&
++                spans.filter((span) => span.operationName === "runtime.app.rpc.release").length ===
++                  6 &&
++                spans.some((span) => span.operationName === "catalog.lookup") &&
++                spans.every(
++                  (span) =>
++                    !span.operationName.startsWith("[missing parent") &&
++                    (span.parentSpanId === null || ids.has(span.parentSpanId)),
++                )
++                ? Effect.succeed(result.data)
++                : Effect.fail(
++                    new Error("The completed query trace is partial or has missing parents"),
++                  );
++            }),
++            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
++          );
++          const lookups = spans.filter(({ span }) => span.operationName === "catalog.lookup");
++          yield* evidence.json(`${name}-catalog-work.json`, { lookups: lookups.length, spans });
++          expect(
++            lookups,
++            "One catalog lookup per view, without sharing it across views",
++          ).toHaveLength(1);
++        }
++      }),
++    ),
++  );
++});
