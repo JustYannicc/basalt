@@ -72,10 +72,10 @@ test(
             assert.equal(response.status, 200);
             assert.deepEqual(await response.json(), { caps: true });
           } else {
-            assert.equal(response.status, 200);
+            assert.equal(response.status, 409);
             assert.deepEqual(await response.json(), {
-              refused: true,
-              diagnostic: { runtimeStep: "endpoint_health", runtimeReason: "aborted" },
+              error: "runtime-refused",
+              reason: "runtime_endpoint_health_aborted",
             });
           }
           const eventsResponse = await mf.dispatchFetch(
@@ -123,14 +123,14 @@ test(
           try {
             const started = performance.now();
             const response = await mf.dispatchFetch(`http://fixture/probe?fault=${fault}`);
-            assert.equal(response.status, 200);
+            assert.equal(response.status, 409);
             assert.ok(
               performance.now() - started < 2_500,
               "Health read waited past its lease window",
             );
             assert.deepEqual(await response.json(), {
-              refused: true,
-              diagnostic: { runtimeStep: "endpoint_health", runtimeReason: "timeout" },
+              error: "runtime-refused",
+              reason: "runtime_endpoint_health_timeout",
             });
             const eventsResponse = await mf.dispatchFetch(
               `http://fixture/read-events?fault=${fault}`,

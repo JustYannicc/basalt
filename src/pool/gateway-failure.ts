@@ -47,8 +47,9 @@ export function gatewayUnavailable(
   started: number,
   defer: (work: Promise<unknown>) => void,
   diagnostic: GatewayFailureDiagnostic,
-  requestId = diagnostic.runtimeEndpointRequestId ?? crypto.randomUUID(),
+  fallbackRequestId = crypto.randomUUID(),
 ): Response {
+  const requestId = diagnostic.runtimeEndpointRequestId ?? fallbackRequestId;
   const pathname = new URL(request.url).pathname;
   console.error("POOL_GATEWAY_FAILURE", {
     code: "pool_protection_unavailable",
@@ -111,7 +112,7 @@ export function gatewayOutcomeUnknown(
   request: Request,
   defer: (work: Promise<unknown>) => void,
   diagnostic: GatewayFailureDiagnostic,
-  requestId = diagnostic.runtimeEndpointRequestId ?? crypto.randomUUID(),
+  requestId = crypto.randomUUID(),
 ): Response {
   console.error("POOL_GATEWAY_FAILURE", {
     code: "upstream_outcome_unknown",

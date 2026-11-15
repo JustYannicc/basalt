@@ -2,7 +2,7 @@ import { Schema } from "effect";
 import { PoolSigningFailure } from "../token.ts";
 import { PoolDependencyFailure } from "../dependency-failure.ts";
 import { ControlFailure } from "../json.ts";
-import { PoolRuntimeUnhealthy } from "../lifecycle.ts";
+import { PoolRuntimeUnhealthy, PoolStartupDeadline } from "../lifecycle.ts";
 import { FleetRefused } from "../runtime-fleet/state.ts";
 import { ProviderObservationRefused } from "../runtime-provider/read.ts";
 import {
@@ -51,6 +51,7 @@ export function runtimeErrorResponse(error: unknown, boundary: "handoff" | "endp
     refusal instanceof SlotRefused ||
     error instanceof FleetRefused ||
     error instanceof PoolRuntimeUnhealthy ||
+    error instanceof PoolStartupDeadline ||
     error instanceof PoolDependencyFailure ||
     error instanceof ControlFailure ||
     (error instanceof DOMException &&
