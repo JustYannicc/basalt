@@ -139,6 +139,7 @@ export function CapacitySection({
               lab={lab}
               history={result.value}
               name={providerName(providers, lab.provider)}
+              icons={providers.find((provider) => provider.id === lab.provider)?.icons}
               days={days}
               coherent={coherent}
               first={index === 0}
@@ -156,6 +157,7 @@ function Panel({
   lab,
   history,
   name,
+  icons,
   days,
   coherent,
   first,
@@ -165,6 +167,7 @@ function Panel({
   lab: CapacityLab;
   history: PoolCapacityHistory;
   name: string;
+  icons: Provider["icons"];
   days: number;
   coherent: boolean;
   first: boolean;
@@ -220,7 +223,7 @@ function Panel({
       className={first ? "pt-1 pb-6" : "border-t border-border pt-5 pb-6"}
     >
       <div className="grid grid-cols-[auto_minmax(min-content,1fr)_auto] items-start gap-x-3 gap-y-1 max-[540px]:grid-cols-[auto_1fr]">
-        <LabMark provider={lab.provider} name={name} />
+        <LabMark provider={lab.provider} name={name} icons={icons} />
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <h3 id={`lab-${lab.provider}`} className="text-[15px] font-semibold tracking-[-0.015em]">
             {name}

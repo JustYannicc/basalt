@@ -19,6 +19,7 @@ import {
 import { reference, timestamp } from "../../src/pool/model-history/record.ts";
 import { historyMemoryOwnerFixture } from "./history-fixture.ts";
 import { readPoolReliabilitySlo } from "../../src/pool/model-history/reliability-slo.ts";
+import { summaryIncidents } from "../../src/pool/model-history/summary-incidents.ts";
 import { handleTrafficOperation } from "../../src/pool/model-history/traffic.ts";
 import {
   recordTerminalFinish,
@@ -100,6 +101,59 @@ async function fixture(work: (db: HistoryDatabase) => Promise<void>) {
     await database.close();
   }
 }
+
+test("summary preserves an old daily failure beside an idle hour in one history statement", async () => {
+  await fixture(async (db) => {
+    const to = "2026-11-12T12:00:00Z";
+    for (let index = 0; index < 9; index++)
+      await insertHomeAttempt(db, {
+        requestId: randomUUID(),
+        keyId: 1,
+        at: "2026-11-12T01:00:00Z",
+        failed: index === 0,
+        status: index === 0 ? 400 : 200,
+      });
+    let reads = 0;
+    const counted: HistoryDatabase = {
+      query: (text, values) => {
+        if (text.includes("FROM basalt_model_requests r")) reads++;
+        return db.query(text, values);
+      },
+    };
+    await db.query("BEGIN");
+    const result = await summaryIncidents(counted, "fixture", to, true, true);
+    await db.query("COMMIT");
+    assert.equal(reads, 1);
+    assert.equal(result.incidents.requests, 0);
+    assert.equal(result.incidents.failed, 0);
+    assert.equal(result.reliability?.hour.real.successRate, null);
+    assert.equal(result.reliability?.day.real.requests, 9);
+    assert.equal(result.reliability?.day.real.failed, 1);
+    assert.equal(result.reliability?.day.real.successRate, 800 / 9);
+    assert.equal(result.reliability?.day.proof.requests, 0);
+  });
+});
+
+test("summary keeps raw cancellation counts while preserving its current incident filter", async () => {
+  await fixture(async (db) => {
+    await insertHomeAttempt(db, {
+      requestId: randomUUID(),
+      keyId: 1,
+      at: "2026-11-12T11:59:00Z",
+      failed: true,
+      status: 499,
+    });
+    await db.query("BEGIN");
+    const result = await summaryIncidents(db, "fixture", "2026-11-12T12:00:00Z", true, true);
+    await db.query("COMMIT");
+    assert.equal(result.incidents.requests, 0);
+    assert.equal(result.incidents.failed, 0);
+    assert.equal(result.reliability?.hour.real.requests, 1);
+    assert.equal(result.reliability?.hour.real.failed, 1);
+    assert.equal(result.reliability?.day.real.requests, 1);
+    assert.equal(result.reliability?.day.real.failed, 1);
+  });
+});
 
 test("one SLO read aggregates its overlapping windows in one history statement", async () => {
   await fixture(async (db) => {

@@ -133,6 +133,7 @@ test("account and pool jobs retain their owned scenarios, commands and execution
       cwd: ".upstream",
       minutes: null,
       scenarios: [
+        "dashboardReadBatches",
         "listedAccountDelete",
         "listedAccountDeleteMobile",
         "listedAccountDemotion",
@@ -201,7 +202,7 @@ test("account and pool jobs retain their owned scenarios, commands and execution
     accounts.steps.filter(
       (step: { run?: string }) =>
         step.run ===
-        "node --test scripts/pool-ui-tests/accounts-ready.test.mjs scripts/pool-ui-tests/history-coverage.test.mjs scripts/pool-ui-tests/history-activity.test.mjs",
+        "node --test scripts/pool-ui-tests/accounts-ready.test.mjs scripts/pool-ui-tests/history-coverage.test.mjs scripts/pool-ui-tests/history-activity.test.mjs scripts/pool-ui-tests/history-backend.test.mjs",
     ).length,
     1,
   );

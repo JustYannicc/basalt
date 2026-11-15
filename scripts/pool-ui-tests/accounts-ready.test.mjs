@@ -2489,7 +2489,7 @@ test(
         );
       });
 
-    // Overview badges use provider labels; supplied native readings still control inspection.
+    // Usage rows keep their lab identity; capacity uses supplied provider icons with a label fallback.
     const mark = (fill) =>
       `data:image/svg+xml;base64,${Buffer.from(
         `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="${fill}"/></svg>`,
@@ -2498,7 +2498,7 @@ test(
     const darkMark = mark("#9be7c4");
     for (const width of [1280, 390])
       await t.test(
-        `overview letter badges are independent of provider icons at ${width}px`,
+        `overview lab identities and provider icons keep their roles at ${width}px`,
         async () => {
           const f = quotaSamplingFixture(Date.now() - minute, samplerUsage);
           await f.usage.observe();
@@ -2688,10 +2688,24 @@ test(
                 }
                 assert.equal(
                   await lab.getByText("C", { exact: true }).count(),
-                  1,
-                  "Each lab entry shows the provider label's initial regardless of icons",
+                  scenario.src === null ? 1 : 0,
+                  "A capacity lab uses its provider label only when no icon is supplied",
                 );
-                assert.equal(await lab.locator("img, picture").count(), 0);
+                assert.equal(
+                  await lab.locator("img, picture").count(),
+                  scenario.src === null ? 0 : 2,
+                );
+                if (scenario.src !== null) {
+                  const icon = lab.locator('[data-lab-mark="icon"] img');
+                  assert.deepEqual(
+                    await icon.evaluate((image) => ({
+                      source: image.currentSrc,
+                      loaded: image.complete && image.naturalWidth > 0,
+                    })),
+                    { source: scenario.src, loaded: true },
+                    "The supplied provider icon loads in the current colour scheme",
+                  );
+                }
                 const resets = frame.getByRole("list", { name: "Banked resets", exact: true });
                 const resetText = await resets.innerText();
                 assert.match(resetText, /2 weekly resets/);

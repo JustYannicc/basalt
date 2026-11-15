@@ -399,7 +399,16 @@ jobs:
         run: npm run prepare:upstream
       - name: Plan, activate once, or inspect the prepared journals
         working-directory: ${{ runner.temp }}/candidate
-        run: bun scripts/release-barrier/migration-activation-entry.ts
+        run: |
+          node --input-type=module -e '
+          import { randomUUID } from "node:crypto";
+          import { deployEnvironment } from "./scripts/environment.ts";
+          import { run } from "./scripts/process.ts";
+          run("bun", ["scripts/release-barrier/migration-activation-entry.ts"], undefined, {
+            ...deployEnvironment(),
+            BASALT_RELEASE_ATTEMPT: randomUUID(),
+          });
+          '
         env:
           BASALT_RELEASE_CANDIDATE: ${{ steps.candidate.outputs.head }}
           MIGRATION_ACTIVATION_MODE: ${{ inputs.migration_activation }}

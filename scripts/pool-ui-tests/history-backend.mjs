@@ -11,19 +11,41 @@ export async function historyBackend({ initialRequests = 1, pageSize = Infinity 
   const times = [...initial];
   const requests = [];
   const streams = new Set();
-  const waiting = new Set();
+  const waiting = new Map();
   const notify = () => {
-    for (const listener of waiting) listener();
+    for (const listener of waiting.keys()) listener();
   };
-  const waitFor = (predicate) =>
-    new Promise((resolve) => {
+  const waitFor = (predicate, { name = "history fixture state", timeout = 10_000 } = {}) =>
+    new Promise((resolve, reject) => {
+      const finish = (error) => {
+        clearTimeout(timer);
+        waiting.delete(check);
+        if (error) reject(error);
+        else resolve();
+      };
+      const timer = setTimeout(() => {
+        const state = requests
+          .map(
+            ({ phase, aborted, response }) =>
+              `phase=${phase} aborted=${aborted} ended=${response.writableEnded} destroyed=${response.destroyed}`,
+          )
+          .join("; ");
+        finish(
+          new Error(
+            `Timed out waiting for ${name} after ${timeout}ms; held=${held ?? "none"}; ${state || "no requests"}`,
+          ),
+        );
+      }, timeout);
       const check = () => {
-        if (predicate()) {
-          waiting.delete(check);
-          resolve();
+        try {
+          if (predicate()) finish();
+        } catch (error) {
+          finish(error);
         }
       };
-      waiting.add(check);
+      waiting.set(check, () =>
+        finish(new Error(`History fixture closed while waiting for ${name}`)),
+      );
       check();
     });
   let held;
@@ -173,6 +195,7 @@ export async function historyBackend({ initialRequests = 1, pageSize = Infinity 
     },
     origin,
     async close() {
+      for (const cancel of waiting.values()) cancel();
       for (const stream of streams) stream.end();
       transport.closeAllConnections();
       await new Promise((resolve) => transport.close(resolve));
