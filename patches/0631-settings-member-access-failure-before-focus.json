@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-settings-member-access-failure-before-focus",
+  "file": "0631-settings-member-access-failure-before-focus.patch",
+  "content_sha256": "40ce425ec2d6e31ea05b73c5bd2ed08daaccaecaedf78a63234684c318ba3e2a",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

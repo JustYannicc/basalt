@@ -1,0 +1,41 @@
+diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-intent-prefetch.spec.ts
+--- a/e2e/tests/settings-intent-prefetch.spec.ts
++++ b/e2e/tests/settings-intent-prefetch.spec.ts
+@@ -295,12 +295,6 @@
+             "Fail organization list refreshes until the link is followed",
+             (page) => page.route(organizationsPath, failOrganizationList),
+           );
+-          yield* refreshVisiblePage;
+-          yield* browser.use("Focus the window after intent", (page) =>
+-            page.evaluate(() => {
+-              window.dispatchEvent(new Event("focus"));
+-            }),
+-          );
+           // A member's access refresh that fails to answer must not hide the retained settings.
+           let accessFailed = false;
+           const failAccessOnce = (route: Route) => {
+@@ -308,12 +302,21 @@
+             accessFailed = true;
+             return route.abort("failed");
+           };
+-          if (!administrator) {
++          // Installed before the visibility refresh below, so the first access read after intent
++          // fails whenever its batch is sent.
++          if (!administrator)
+             yield* browser.use("Fail the next access refresh once", (page) =>
+               page.route(accessPath, failAccessOnce),
+             );
+-            // Request the access refresh now and let its batch send it, so the failure lands before
+-            // the clock advance instead of whenever that advance happens to release the batch.
++          yield* refreshVisiblePage;
++          yield* browser.use("Focus the window after intent", (page) =>
++            page.evaluate(() => {
++              window.dispatchEvent(new Event("focus"));
++            }),
++          );
++          // That refresh may have read no access; then request one, so the failure still lands
++          // before the clock advance. A read still waiting is joined, not repeated.
++          if (!administrator && !accessFailed) {
+             yield* refreshVisiblePage;
+             yield* browser.use("Send the access refresh", (page) => page.clock.runFor(5));
+           }

@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The member Settings intent proof installs its one-shot access failure before the idle visibility refresh, so the first access read after intent fails whenever its batch is sent. It requests one more refresh only when that refresh read no access, and a read still waiting is joined, so exactly one access read fails before the clock advance. The access-failure assertion, the retained-settings checks and every deadline remain unchanged."
+    }
+  }
+}
