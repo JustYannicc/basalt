@@ -93,15 +93,20 @@ export async function sourceContract(candidate: string, root: string) {
   const cloud = join(root, ".upstream/apps/hosted/cloud");
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  const committed = (path: string) => {
+  const blob = (path: string) => {
     try {
-      return git("show", `${candidate}:${path}`);
+      return execFileSync("git", ["show", `${candidate}:${path}`], {
+        cwd: root,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
     } catch {
       return refuse(path, "committed", "missing");
     }
   };
+  const committed = (path: string) => blob(path).toString("utf8");
   const prepared = (path: string) =>
     readFile(join(root, path), "utf8").catch(() => refuse(path, "prepared", "missing"));
+  let step = "checkout";
   try {
     let head = "unavailable";
     try {
@@ -119,27 +124,42 @@ export async function sourceContract(candidate: string, root: string) {
       "src/pool/model-history",
       "patches",
     ).trim();
-    if (edited) refuse(edited.split("\n")[0]!, "released", "modified");
+    if (edited)
+      throw new BarrierRefusal("migration-activation-source-capability", "candidate", {
+        fqn: "candidate",
+        type: "MigrationSource",
+        changed: edited.split("\n").map((path) => ({ path, old: "released", new: "modified" })),
+      });
+    step = "patches";
     const carries = git("ls-tree", "-r", "--name-only", candidate, "patches")
       .trim()
       .split("\n")
       .filter((path) => /^patches\/0560-.*\.(?:patch|json)$/u.test(path));
     if (!carries.some((path) => path.endsWith(".patch")))
       refuse("patches/0560-*.patch", "committed", "missing");
+    step = "pool-migration-sources";
+    const drift = [];
     for (const path of poolMigrationSources) {
-      const released = digest(committed(path));
+      // Raw bytes on both sides, so no decoding can make two different files look equal.
+      const released = digest(blob(path));
       const own = digest(await readFile(join(client, path)));
-      if (released !== own)
-        throw new BarrierRefusal("migration-activation-tooling-definition-drift", path, {
-          fqn: path,
-          type: "MigrationSource",
-          changed: [{ path: "sha256", old: released, new: own }],
-          why: [
-            "main's copy of this pool migration source differs from production's",
-            "release main, or restore the file on main while a pending activation blocks releases",
-          ],
-        });
+      if (released !== own) drift.push({ path, old: released, new: own });
     }
+    if (drift.length)
+      throw new BarrierRefusal(
+        "migration-activation-tooling-definition-drift",
+        drift.map((change) => change.path).join(","),
+        {
+          fqn: "main",
+          type: "MigrationSource",
+          changed: drift,
+          why: [
+            "main's copy of each listed pool migration source differs from production's",
+            "release main, or restore every listed file on main while a pending activation blocks releases",
+          ],
+        },
+      );
+    step = "prepared-sources";
     // The operator entry stays the candidate's bytes so the digest formula never moves; the
     // operator that runs is this client's, held to production by the deployed Worker's own report.
     const fingerprints: [string, string][] = [operatorPath, schemaPath, ...carries].map((path) => [
@@ -163,6 +183,7 @@ export async function sourceContract(candidate: string, root: string) {
     )?.[1];
     if (!poolWorkerRevision)
       return refuse(hostedPath + "pool-worker-revision.ts", "64-hex revision", "unreadable");
+    step = "pool-migrations";
     const poolPrepared = Schema.decodeUnknownSync(migrations)(historySchemaMigrations);
     const active = Schema.decodeUnknownSync(
       Schema.Struct({ name: Schema.String, statements: Schema.Array(Schema.String) }),
@@ -208,6 +229,6 @@ export async function sourceContract(candidate: string, root: string) {
     };
   } catch (error) {
     if (error instanceof BarrierRefusal) throw error;
-    return refuse("checkout", "readable", "unreadable");
+    return refuse(step, "readable", "unreadable");
   }
 }

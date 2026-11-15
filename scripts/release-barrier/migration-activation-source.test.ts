@@ -33,7 +33,7 @@ const marker = "\n// present only in the candidate\n";
 const own = (path: string) => readFileSync(join(client, path), "utf8");
 
 /** A released checkout: the client's pool migration sources, everything else its own. */
-function candidateTree(context: TestContext, drifted?: string) {
+function candidateTree(context: TestContext, drifted: readonly string[] = []) {
   const root = mkdtempSync(join(tmpdir(), "basalt-activation-candidate-"));
   context.after(() => rmSync(root, { recursive: true, force: true }));
   const write = (path: string, content: string) => {
@@ -45,7 +45,10 @@ function candidateTree(context: TestContext, drifted?: string) {
     "patches/0560-fixture.patch": `candidate carry${marker}`,
     "patches/0560-fixture.json": `{"candidate":true}\n`,
     ...Object.fromEntries(
-      poolMigrationSources.map((path) => [path, own(path) + (path === drifted ? marker : "")]),
+      poolMigrationSources.map((path) => [
+        path,
+        own(path) + (drifted.includes(path) ? marker : ""),
+      ]),
     ),
   };
   for (const [path, content] of Object.entries(files)) write(path, content);
@@ -135,13 +138,23 @@ test("main's client binds a plan to the candidate's sources, never its own", asy
 });
 
 test("main's client refuses to describe production with pool migrations the candidate does not have", async (context) => {
-  for (const path of ["src/pool/model-history/change-schema.ts", "brand.ts"]) {
-    const tree = candidateTree(context, path);
+  // Every differing file is named at once, so one restore on main is enough to get out.
+  for (const drifted of [
+    ["src/pool/model-history/change-schema.ts"],
+    ["brand.ts", "src/pool/model-history/schema.ts"],
+  ]) {
+    const tree = candidateTree(context, drifted);
     await assert.rejects(
       sourceContract(tree.candidate, tree.root),
-      refusal("migration-activation-tooling-definition-drift", path, [
-        { path: "sha256", old: digest(tree.files[path]!), new: digest(own(path)) },
-      ]),
+      refusal(
+        "migration-activation-tooling-definition-drift",
+        drifted.join(","),
+        drifted.map((path) => ({
+          path,
+          old: digest(tree.files[path]!),
+          new: digest(own(path)),
+        })),
+      ),
     );
   }
 });
@@ -153,8 +166,10 @@ test("the guarded pool migration sources are exactly what the client's import re
     if (seen.has(file)) continue;
     seen.add(file);
     for (const [, specifier] of readFileSync(file, "utf8").matchAll(
-      /(?:\bfrom|\bimport)\s*\(?\s*["'](\.{1,2}\/[^"']+)["']/gu,
+      /(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/gu,
     )) {
+      // A package or alias import would feed the migrations from a file this walk cannot follow.
+      assert.match(specifier!, /^\.{1,2}\//u, `${relative(client, file)} imports ${specifier}`);
       const target = resolve(dirname(file), specifier!);
       assert.ok(existsSync(target), `${relative(client, file)} imports ${specifier}`);
       pending.push(target);
@@ -197,9 +212,13 @@ test("a source root that is not the exact prepared candidate refuses, naming wha
     unavailable(cli, "--activate-change-journal", "missing"),
   );
   appendFileSync(join(tree.root, "patches/0560-fixture.patch"), "edited after release\n");
+  appendFileSync(join(tree.root, "scripts/pool-history-operator.ts"), "// edited after release\n");
   await assert.rejects(
     sourceContract(tree.candidate, tree.root),
-    unavailable("patches/0560-fixture.patch", "released", "modified"),
+    refusal("migration-activation-source-capability", "candidate", [
+      { path: "patches/0560-fixture.patch", old: "released", new: "modified" },
+      { path: "scripts/pool-history-operator.ts", old: "released", new: "modified" },
+    ]),
   );
 });
 

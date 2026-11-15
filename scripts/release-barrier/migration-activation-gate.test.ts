@@ -6,9 +6,11 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { requiredSecrets } from "../environment.ts";
+import { validateMainCandidate } from "../release-merge/main-candidate.ts";
 import { test } from "node:test";
 import { BarrierRefusal } from "./refusal.ts";
 import {
+  candidateEligibilityRefusal,
   exactMigrationRelease,
   migrationActivationInput,
   trustedActivationTooling,
@@ -131,6 +133,58 @@ test("the client that touches production is the dispatched main commit", () => {
         return true;
       },
     );
+});
+
+test("an ineligible candidate is refused by name; other gate errors keep their text private", async () => {
+  // The real validator's sentence, so rewording it there cannot silently drop the reason here.
+  const candidate = environment.BASALT_RELEASE_CANDIDATE;
+  const unchecked = await validateMainCandidate(
+    "synthetic/basalt",
+    "fixture",
+    candidate,
+    candidate,
+    async (url) =>
+      Response.json(url.endsWith("/commits/main") ? { sha: candidate } : { workflow_runs: [] }),
+  ).catch((error: unknown) => candidateEligibilityRefusal(error));
+  assert.ok(unchecked instanceof BarrierRefusal);
+  assert.deepEqual(unchecked.delta?.changed, [
+    {
+      path: "eligibility",
+      old: "eligible",
+      new: "the main release candidate has no successful push Check",
+    },
+  ]);
+  for (const [message, change] of [
+    [
+      "the main release candidate has no successful push Check",
+      {
+        path: "eligibility",
+        old: "eligible",
+        new: "the main release candidate has no successful push Check",
+      },
+    ],
+    [
+      "main does not contain the release candidate",
+      { path: "eligibility", old: "eligible", new: "main does not contain the release candidate" },
+    ],
+    [
+      "GitHub request for the main release candidate failed with HTTP 403",
+      { path: "github.status", old: 200, new: 403 },
+    ],
+  ] as const) {
+    const refusal = candidateEligibilityRefusal(new Error(message));
+    assert.equal(refusal?.reason, "migration-activation-candidate-ineligible");
+    assert.deepEqual(refusal?.delta?.changed, [change]);
+  }
+  for (const error of [
+    new Error(
+      "GitHub request for the main release candidate failed with HTTP 403 for a private path",
+    ),
+    new Error("fetch failed: private transport text"),
+    "the main release candidate has no successful push Check",
+    undefined,
+  ])
+    assert.equal(candidateEligibilityRefusal(error), undefined);
 });
 
 test("the gate step names both commits when its checkout is not the dispatched one", (context) => {

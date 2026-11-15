@@ -68,6 +68,32 @@ export function exactMigrationRelease(
   return deploymentId;
 }
 
+const ineligible = [
+  "main does not contain the release candidate",
+  "the main release candidate has no successful push Check",
+  "the release candidate is a release update; release it through Manual release with its pull request",
+];
+
+/** Only the validator's own fixed sentences and a bare HTTP status reach the job output. */
+export function candidateEligibilityRefusal(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+  const status = /^GitHub request for the main release candidate failed with HTTP (\d{3})$/u.exec(
+    message,
+  )?.[1];
+  const change = status
+    ? { path: "github.status", old: 200, new: Number(status) }
+    : ineligible.includes(message)
+      ? { path: "eligibility", old: "eligible", new: message }
+      : undefined;
+  return change
+    ? new BarrierRefusal("migration-activation-candidate-ineligible", "candidate", {
+        fqn: "candidate",
+        type: "Git.Commit",
+        changed: [change],
+      })
+    : undefined;
+}
+
 /** The client that touches production is the dispatched main commit, never another checkout. */
 export function trustedActivationTooling(source: Record<string, string | undefined>, head: string) {
   if (!/^[a-f0-9]{40}$/u.test(head) || head !== source.GITHUB_SHA)
@@ -99,7 +125,9 @@ export async function migrationActivationGate(source = process.env) {
     environment.token,
     checkedOut,
     input.candidate,
-  );
+  ).catch((error: unknown) => {
+    throw candidateEligibilityRefusal(error) ?? error;
+  });
   const deploymentId = exactMigrationRelease(
     input.candidate,
     await readDeploymentLedger(environment),
