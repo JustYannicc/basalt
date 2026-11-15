@@ -25,6 +25,7 @@ function backend() {
     validUntil: undefined as number | undefined,
     streamOpens: 0,
     currentReads: 0,
+    moving: false,
   };
   const streams: Array<{
     controller: ReadableStreamDefaultController<Uint8Array>;
@@ -52,6 +53,7 @@ function backend() {
     }
     assert.equal(url, CURRENT);
     state.currentReads++;
+    if (state.moving) heads.set("accounts", String(Number(heads.get("accounts")) + 1));
     return new Response(
       JSON.stringify({
         revisions: revisions(),
@@ -74,6 +76,7 @@ function backend() {
     fetch,
     streamOpen: () => streams.at(-1)?.closed === false,
     send,
+    heartbeat: () => open().controller.enqueue(encoder.encode(": heartbeat\n\n")),
     handshake: (extras: { readonly validUntil?: number } = {}) =>
       send("current", {
         kind: "current",
@@ -100,6 +103,7 @@ function backend() {
 
 function setup(t: TestContext, topics: readonly string[] = ["accounts", "session"]) {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: START });
+  const timers = t.mock.method(globalThis, "setTimeout");
   const server = backend();
   const originalFetch = globalThis.fetch;
   const globals = globalThis as { window?: unknown };
@@ -166,7 +170,7 @@ function setup(t: TestContext, topics: readonly string[] = ["accounts", "session
     globalThis.fetch = originalFetch;
     globals.window = originalWindow;
   });
-  return { server, feed, watch, page, seen, hold };
+  return { server, feed, watch, page, seen, hold, timers };
 }
 
 test("nothing reads before the handshake; a committed revision reads once and repeats read nothing", async (t) => {
@@ -489,4 +493,197 @@ test("a progressive publisher never receives a body after access ends", async (t
   release();
   await read;
   assert.deepEqual(published, []);
+});
+
+test("a heartbeat reconfirms a moving-head failure after heads settle, then healthy heartbeats read nothing", async (t) => {
+  const { server, seen } = setup(t);
+  await flush();
+  server.state.moving = true;
+  server.handshake();
+  await flush();
+  assert.equal(seen.rejected.length, 1);
+  assert.equal(seen.applied.length, 0, "no body from the three moving attempts was accepted");
+  assert.equal(seen.dataReads, 3);
+  server.state.moving = false;
+  t.mock.timers.tick(500);
+  server.heartbeat();
+  await flush();
+  assert.equal(seen.applied.length, 1, "settled content recovers without a manual request");
+  assert.equal(seen.applied[0]?.accounts, server.heads.get("accounts"));
+  assert.equal(seen.dataReads, 4, "one fenced reconfirm reads the stable body once");
+  const accepted = { ...server.state };
+  for (let beat = 0; beat < 4; beat++) {
+    t.mock.timers.tick(15_000);
+    server.heartbeat();
+    await flush();
+  }
+  assert.equal(seen.dataReads, 4, "healthy heartbeats add no body read");
+  assert.equal(
+    server.state.currentReads,
+    accepted.currentReads,
+    "healthy heartbeats add no head read",
+  );
+  assert.equal(server.state.streamOpens, 1, "reconfirmation retains the existing stream");
+});
+
+test("only failed reads schedule three reconfirms; never-settling heads stay fail-closed and manual retry recovers", async (t) => {
+  const { server, seen, watch, timers } = setup(t);
+  await flush();
+  server.state.moving = true;
+  server.handshake();
+  await flush();
+  assert.equal(seen.rejected.length, 1);
+  assert.deepEqual(
+    timers.mock.calls
+      .filter((call) => [1000, 3000, 9000].includes(call.arguments[1]))
+      .map((call) => call.arguments[1]),
+    [1000],
+  );
+  for (const delay of [1000, 3000, 9000]) {
+    const before = seen.refreshes;
+    t.mock.timers.tick(delay - 1);
+    await flush();
+    assert.equal(seen.refreshes, before, "no read before the failed-state backoff ends");
+    t.mock.timers.tick(1);
+    await flush();
+    assert.equal(seen.refreshes, before + 1);
+  }
+  assert.equal(seen.refreshes, 4, "initial refresh plus exactly three automatic reconfirms");
+  assert.equal(seen.applied.length, 0, "never-settling heads stay fail-closed");
+  assert.equal(seen.rejected.length, 4);
+  assert.deepEqual(
+    timers.mock.calls
+      .filter((call) => [1000, 3000, 9000].includes(call.arguments[1]))
+      .map((call) => call.arguments[1]),
+    [1000, 3000, 9000],
+  );
+  t.mock.timers.tick(15000);
+  server.heartbeat();
+  server.handshake();
+  await flush();
+  assert.equal(seen.refreshes, 4, "heartbeat and handshake cannot evade the automatic cap");
+  server.state.moving = false;
+  watch.request();
+  await flush();
+  assert.equal(
+    seen.applied.length,
+    1,
+    "manual retry remains available after automatic recovery is exhausted",
+  );
+  assert.equal(seen.applied[0]?.accounts, server.heads.get("accounts"));
+});
+
+test("failed-state recovery accepts settled heads after one second without another signal", async (t) => {
+  const { server, seen, timers } = setup(t);
+  await flush();
+  server.state.moving = true;
+  server.handshake();
+  await flush();
+  assert.equal(seen.rejected.length, 1);
+  server.state.moving = false;
+  t.mock.timers.tick(1000);
+  await flush();
+  assert.equal(seen.applied.length, 1);
+  assert.equal(seen.refreshes, 2);
+  const before = {
+    heads: server.state.currentReads,
+    bodies: seen.dataReads,
+    timers: timers.mock.callCount(),
+  };
+  t.mock.timers.tick(13000);
+  await flush();
+  assert.deepEqual(
+    { heads: server.state.currentReads, bodies: seen.dataReads, timers: timers.mock.callCount() },
+    before,
+    "a healthy idle window schedules zero timers and reads nothing",
+  );
+});
+
+for (const signal of ["heartbeat", "handshake", "change", "manual"]) {
+  test(`a ${signal} cancels the pending failure timer before its recovery read`, async (t) => {
+    const { server, seen, watch, timers } = setup(t);
+    await flush();
+    server.state.moving = true;
+    server.handshake();
+    await flush();
+    server.state.moving = false;
+    if (signal === "heartbeat") server.heartbeat();
+    else if (signal === "handshake") server.handshake();
+    else if (signal === "change")
+      server.commit("accounts", String(Number(server.heads.get("accounts")) + 1));
+    else watch.request();
+    await flush();
+    assert.equal(seen.applied.length, 1);
+    const before = seen.refreshes;
+    const scheduled = timers.mock.callCount();
+    t.mock.timers.tick(13000);
+    await flush();
+    assert.equal(seen.refreshes, before, "the cancelled timer causes no duplicate read");
+    assert.equal(
+      timers.mock.callCount(),
+      scheduled,
+      "success schedules no replacement recovery timer",
+    );
+  });
+}
+
+test("hidden and unmounted watches cancel pending failure recovery", async (t) => {
+  const { server, seen, page, watch } = setup(t);
+  await flush();
+  server.state.moving = true;
+  server.handshake();
+  await flush();
+  page.show(false);
+  const hidden = seen.refreshes;
+  t.mock.timers.tick(1000);
+  await flush();
+  assert.equal(seen.refreshes, hidden);
+  page.show(true);
+  await flush();
+  server.handshake();
+  await flush();
+  assert.equal(seen.rejected.length, 2);
+  watch.stop();
+  const stopped = seen.refreshes;
+  t.mock.timers.tick(13000);
+  await flush();
+  assert.equal(seen.refreshes, stopped);
+});
+
+test("a failed watch's heartbeat reconfirm still rejects a changed principal before reading or publishing a body", async (t) => {
+  const { server, seen, feed } = setup(t);
+  await flush();
+  server.state.moving = true;
+  server.handshake();
+  await flush();
+  assert.equal(seen.rejected.length, 1);
+  server.state.moving = false;
+  server.state.identity = "viewer-b";
+  t.mock.timers.tick(500);
+  server.heartbeat();
+  await flush();
+  assert.equal(feed.status(), "revoked");
+  assert.equal(seen.revoked, 1);
+  assert.equal(seen.dataReads, 3, "a different principal receives no body from the old watch");
+  assert.deepEqual(seen.applied, []);
+});
+
+test("a delayed failure reconfirm rejects a changed principal and cancels further retries", async (t) => {
+  const { server, seen, feed, timers } = setup(t);
+  await flush();
+  server.state.moving = true;
+  server.handshake();
+  await flush();
+  server.state.moving = false;
+  server.state.identity = "viewer-b";
+  t.mock.timers.tick(1000);
+  await flush();
+  assert.equal(feed.status(), "revoked");
+  assert.equal(seen.revoked, 1);
+  assert.equal(seen.dataReads, 3);
+  assert.deepEqual(seen.applied, []);
+  const scheduled = timers.mock.callCount();
+  t.mock.timers.tick(13000);
+  await flush();
+  assert.equal(timers.mock.callCount(), scheduled, "ended access schedules no recovery timer");
 });

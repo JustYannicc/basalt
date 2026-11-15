@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-change-feed-stable-recovery",
+  "file": "0639-change-feed-stable-recovery.patch",
+  "content_sha256": "826c39b95b49223194a0ac0e46ef03e219a6dbe73921b5921e21d789a5cdf67d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
