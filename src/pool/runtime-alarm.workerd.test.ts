@@ -19,6 +19,7 @@ test(
       write: false,
       format: "esm",
       platform: "neutral",
+      mainFields: ["module", "main"],
       conditions: ["workerd", "module", "import"],
       target: "es2023",
       external: ["node:*", "cloudflare:workers"],
