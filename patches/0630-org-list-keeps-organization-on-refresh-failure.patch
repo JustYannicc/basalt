@@ -45,7 +45,7 @@ diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-int
            yield* refreshVisiblePage;
            yield* browser.use("Focus the window after intent", (page) =>
              page.evaluate(() => {
-@@ -315,12 +326,19 @@
+@@ -320,12 +331,19 @@
            membersFailed = yield* Deferred.make<void>();
            const failing = yield* holdQuery([membersPath], "fail");
            expect(sessionFailures, "A session refresh failed before the follow").toBeGreaterThan(0);
