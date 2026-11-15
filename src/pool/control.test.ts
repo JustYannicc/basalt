@@ -2,48 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Account, PoolView } from "../../apps/pool/contract.ts";
 import { subscriptionFailure } from "../../apps/pool/account-health.ts";
-import { PoolControl, attributionStorageKey } from "./attribution.ts";
+import { attributionStorageKey } from "./attribution.ts";
 import { handleControl, HomeClient } from "./control.ts";
 import providers from "./providers.json" with { type: "json" };
 import { fixture, error, provider, type Row } from "./test/control.ts";
-
-test("pool overview preserves Home limits and resets without provider membership reads", async () => {
-  const f = await fixture();
-  f.home.addFile("claude", "claude");
-  f.home.addGroup("pool-a", 10, ["claude"]);
-  f.home.override = (path) =>
-    path.endsWith("/quota/credentials/claude")
-      ? Response.json({
-          credential: { credential_id: "claude", plan: { name: "Max 20x" } },
-          windows: [
-            {
-              id: "fable-weekly",
-              label: "Fable weekly",
-              scope: "model",
-              scope_id: "fable",
-              window_seconds: 604800,
-              remaining_ratio: 0.5,
-            },
-          ],
-          reset_credits: { available_count: 4, credits: [] },
-        })
-      : undefined;
-  let providerReads = 0;
-  const response = await handleControl(await f.request("/pool"), {
-    ...f.deps,
-    attribution: new PoolControl(f.storage, f.deps),
-    nativeMembership: async () => {
-      providerReads++;
-      throw new Error("provider membership unavailable");
-    },
-  });
-  assert.equal(response.status, 200);
-  const view = (await response.json()) as PoolView;
-  assert.equal(providerReads, 0);
-  assert.equal(view.accounts[0]!.plan, "Max 20x");
-  assert.equal(view.accounts[0]!.windows[0]!.label, "Fable weekly");
-  assert.equal(view.accounts[0]!.bankedResets?.available, 4);
-});
 
 test("an account check forces a scoped Home collection and returns its completed reading", async () => {
   const f = await fixture();

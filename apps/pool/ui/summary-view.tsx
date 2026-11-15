@@ -1,4 +1,7 @@
+import { useState } from "react";
+import { AccountLimitsDialog, ModelLimits, modelLimitAccounts } from "./account-limits-view.tsx";
 import { Button, Tabs, TabsList, TabsTrigger } from "apps/ui";
+import { Button as InlineButton } from "./controls.tsx";
 import type { PoolView, Provider } from "../contract.ts";
 import type { PoolUsageSummaryResult } from "../usage-overview-contract.ts";
 import type { PoolApi } from "./api.ts";
@@ -13,6 +16,7 @@ import { SummaryBreakdown } from "./summary-breakdown.tsx";
 import { SummaryChart } from "./summary-chart.tsx";
 import type { SummaryState } from "./summary-data.ts";
 import { SummaryForecasts } from "./summary-forecast.tsx";
+import { SummaryReliability } from "./summary-reliability.tsx";
 import {
   formatCount,
   formatDay,
@@ -422,6 +426,13 @@ export function SummaryOverview({
   /** Opens the host's History page with these filters. */
   onHistory: (search: Record<string, string>) => void;
 }) {
+  const [details, setDetails] = useState<{ title: string; ids: readonly string[] }>();
+  const detailAccounts = overviewAccounts(view).filter((account) =>
+    details?.ids.includes(account.id),
+  );
+  const modelDetails = new Set(
+    modelLimitAccounts(overviewAccounts(view)).map(({ account }) => account.id),
+  );
   const summary = state?.summary;
   const name = (provider: string | null) => summaryLabName(providers, provider);
   // Banked resets are counted per lab and kind, never as one pooled number. Spending stays in Accounts.
@@ -431,7 +442,7 @@ export function SummaryOverview({
           { ...view, accounts: view.accounts.filter((account) => account.provider === lab) },
           now,
         );
-        return line ? [{ lab, text: line.text }] : [];
+        return line ? [{ lab, ...line }] : [];
       })
     : [];
   return (
@@ -458,6 +469,7 @@ export function SummaryOverview({
       ) : (
         <div data-summary-as-of={summary.value.asOf ?? ""}>
           <Incident summary={summary.value} onHistory={onHistory} />
+          <SummaryReliability summary={summary.value} />
           <Coverage summary={summary.value} />
           <Kpis summary={summary.value} metric={controls.metric} />
           <SummaryChart summary={summary.value} by={shownBy} metric={controls.metric} name={name} />
@@ -482,12 +494,46 @@ export function SummaryOverview({
         coherent={view !== undefined && state?.coherent === true}
         onRetry={onRetry}
       />
+      <ModelLimits
+        accounts={overviewAccounts(view)}
+        providers={providers}
+        now={now}
+        onOpen={(account) => setDetails({ title: "Account limits", ids: [account.id] })}
+      />
+      <AccountLimitsDialog
+        title={details?.title ?? "Account limits"}
+        accounts={detailAccounts}
+        providers={providers}
+        now={now}
+        onClose={() => setDetails(undefined)}
+      />
       {resets.length > 0 && (
         <ul aria-label="Banked resets" className="grid gap-1 pt-3 text-sm text-muted-foreground">
           {resets.map((reset) => (
             <li key={reset.lab} className="text-pretty">
-              <span className="font-medium text-foreground">{name(reset.lab)}</span> banked:{" "}
-              {reset.text}
+              {reset.accounts.every((account) => modelDetails.has(account.id)) ? (
+                <span>
+                  <span className="font-medium text-foreground">{name(reset.lab)}</span> banked:{" "}
+                  {reset.text}
+                </span>
+              ) : (
+                <InlineButton
+                  variant="link"
+                  size="inline"
+                  aria-label={`Details of ${name(reset.lab)} banked resets`}
+                  onClick={() =>
+                    setDetails({
+                      title: "Banked resets",
+                      ids: reset.accounts.map((account) => account.id),
+                    })
+                  }
+                >
+                  <span className="text-left font-normal whitespace-normal text-muted-foreground">
+                    <span className="font-medium text-foreground">{name(reset.lab)}</span> banked:{" "}
+                    {reset.text}
+                  </span>
+                </InlineButton>
+              )}
             </li>
           ))}
           <li className="text-xs">Spend them from Accounts.</li>

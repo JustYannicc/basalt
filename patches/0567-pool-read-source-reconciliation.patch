@@ -1,0 +1,128 @@
+diff --git a/apps/hosted/server/src/implementation/account-source-connections.ts b/apps/hosted/server/src/implementation/account-source-connections.ts
+--- a/apps/hosted/server/src/implementation/account-source-connections.ts
++++ b/apps/hosted/server/src/implementation/account-source-connections.ts
+@@ -44,10 +44,22 @@
+   readonly subject: string | undefined;
+   readonly scope: AccountScope;
+ };
+-const sameSelection = (selection: AppConnectionSelection, input: SelectedSourceInput) =>
++type SourceSelection = Pick<SelectedSourceInput, "scope" | "requirement" | "account">;
++const sameSelection = (selection: AppConnectionSelection, input: SourceSelection) =>
+   selection.scope === input.scope &&
+   selection.requirement === input.requirement &&
+   selection.account === input.account;
++
++/** A saved refusal stays managed until an explicit native selection replaces it. */
++export const hasAccountSourceSelection = (
++  bindings: Effect.Success<ReturnType<AppCallsHost["bindings"]["list"]>>,
++  input: SourceSelection,
++) =>
++  bindings.some(
++    (binding) =>
++      binding.connection.dependency === dependency &&
++      binding.selections?.some((entry) => sameSelection(entry, input)),
++  );
+ 
+ /** Read setup provenance after the native reader checked the original viewer and selected row. */
+ export const selectedAccountSource = (input: SelectedSourceInput) =>
+@@ -135,15 +147,7 @@
+       app: input.app,
+       owner: input.owner,
+     });
+-    if (
+-      input.source === undefined &&
+-      bindings.some(
+-        (binding) =>
+-          binding.connection.dependency === dependency &&
+-          binding.selections?.some((entry) => sameSelection(entry, input)),
+-      )
+-    )
+-      return;
++    if (input.source === undefined && hasAccountSourceSelection(bindings, input)) return;
+     const options =
+       (yield* accountSourceOptions({ ...input, app, accounts: [input.account] })).get(
+         input.account,
+diff --git a/apps/hosted/server/src/implementation/app-accounts.ts b/apps/hosted/server/src/implementation/app-accounts.ts
+--- a/apps/hosted/server/src/implementation/app-accounts.ts
++++ b/apps/hosted/server/src/implementation/app-accounts.ts
+@@ -1,4 +1,5 @@
+-import { bindAccountSource } from "./account-source-connections.ts";
++import { bindAccountSource, hasAccountSourceSelection } from "./account-source-connections.ts";
++import { registeredPool } from "./provider-account-policy.ts";
+ import { AccountListReads } from "./account-list-reads.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { HostedRoutesConfiguration } from "../contracts/hosted-routes.ts";
+@@ -18,6 +19,7 @@
+  */
+ import {
+   AccountAcquisitionConfiguration,
++  AppCallsHost,
+   AccountRequirement,
+   AuthMethodInvalid,
+   planAccountConsumerMethod,
+@@ -305,29 +307,44 @@
+       return;
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const sql = yield* policyDatabase;
++    if (!(yield* registeredPool(app.id))) return;
+     const reads = yield* appAccountReads(sql, { app: app.id, subject });
+-    for (const scope of ["app", "user"] as const) {
+-      for (const link of reads[scope]) {
++    const links = (["app", "user"] as const).flatMap((scope) =>
++      reads[scope].flatMap((link) => {
+         const slot = app.requirements.accounts[link.requirement];
+-        if (slot?.scope !== scope || (scope === "app" && slot.contributed !== true)) continue;
+-        const change = () =>
+-          bindAccountSource({
+-            executor,
+-            owner: app.owner,
+-            app: app.id,
+-            requirement: link.requirement,
+-            scope,
+-            account: link.id,
+-            subject,
+-          });
+-        if (scope === "app")
+-          yield* lockedChange(
+-            executor,
+-            { app: app.id, access: "contribute", requirement: link.requirement },
+-            change,
+-          );
+-        else yield* lockedChange(executor, { app: app.id, access: "use" }, change);
+-      }
++        return slot?.scope === scope && (scope !== "app" || slot.contributed === true)
++          ? [{ scope, link }]
++          : [];
++      }),
++    );
++    if (links.length === 0) return;
++    const bindings = yield* executor[AppCallsHost].bindings.list({ app: app.id, owner: app.owner });
++    for (const { scope, link } of links) {
++      if (
++        hasAccountSourceSelection(bindings, {
++          scope,
++          requirement: link.requirement,
++          account: link.id,
++        })
++      )
++        continue;
++      const change = () =>
++        bindAccountSource({
++          executor,
++          owner: app.owner,
++          app: app.id,
++          requirement: link.requirement,
++          scope,
++          account: link.id,
++          subject,
++        });
++      if (scope === "app")
++        yield* lockedChange(
++          executor,
++          { app: app.id, access: "contribute", requirement: link.requirement },
++          change,
++        );
++      else yield* lockedChange(executor, { app: app.id, access: "use" }, change);
+     }
+   }).pipe(Effect.mapError(() => new StorageError()));
+ 

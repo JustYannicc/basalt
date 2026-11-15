@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-source-read-lock-proof",
+  "file": "0622-source-read-lock-proof.patch",
+  "content_sha256": "adf9662d943bfbe8d9b4a58b8db7969e3bf9f6eba8939db89aad6bb4b8dbb371",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

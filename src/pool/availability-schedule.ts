@@ -3,6 +3,7 @@ import type { SentryEnv } from "../telemetry/sentry-target.ts";
 import { awaitProbe, type ProbeResult } from "./availability.ts";
 import { validProbeTarget } from "./availability-config.ts";
 import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
+import { notifyPercentageFailure } from "./reliability-notifications.ts";
 
 export async function runAvailabilityProbe(
   env: SentryEnv & { POOL_AVAILABILITY_TARGET?: string },
@@ -28,7 +29,7 @@ export async function runAvailabilityProbe(
       ]);
       result = { ...availability, failures: [...availability.failures] };
       if (measured) result.reliability = measured;
-      if (measured?.state === "breached")
+      if (measured && notifyPercentageFailure(measured))
         result.failures.push({ guard: "request_reliability", reason: "below_target" });
       if (measured?.current?.classification === "ready" && measured.current.real.failed)
         result.failures.push({ guard: "request_reliability", reason: "failing_now" });

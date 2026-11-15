@@ -634,9 +634,53 @@ const program = Effect.gen(function* () {
     0,
   );
   yield* section(
+    "banked-reset details without model limits",
+    Effect.gen(function* () {
+      checked(
+        "reset-only accounts need no model-limit section",
+        yield* page(() =>
+          screen.getByRole("region", { name: "Model limits", exact: true }).count(),
+        ),
+        0,
+      );
+      for (const width of [1280, 390]) {
+        yield* page(() => owner.setViewportSize({ width, height: 900 }));
+        const dialog = screen.getByRole("dialog", { name: "Banked resets", exact: true });
+        yield* page(() =>
+          screen.getByRole("button", { name: /Details of .+ banked resets/u }).click(),
+        );
+        yield* page(() =>
+          dialog.getByRole("heading", { name: inPool.label, exact: true }).waitFor(),
+        );
+        checked(
+          `reset Details at ${width}px explains that nothing is spent`,
+          yield* page(() =>
+            dialog.innerText().then((text) => text.includes("Nothing is spent from here")),
+          ),
+          true,
+        );
+        checked(
+          `reset Details at ${width}px stays within the viewport`,
+          yield* page(() =>
+            owner.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+          ),
+          true,
+        );
+        yield* page(() => dialog.getByRole("button", { name: "Close", exact: true }).click());
+      }
+      yield* page(() => owner.setViewportSize({ width: 1280, height: 900 }));
+    }),
+  );
+  yield* section(
     "short desktop window choices keep the approved header height",
     Effect.gen(function* () {
       yield* page(() => owner.setViewportSize({ width: 1280, height: 900 }));
+      // The host resizes before its embedded document receives the new viewport.
+      yield* page(async () => {
+        const element = await owner.locator(screenFrame).elementHandle();
+        const frame = await element.contentFrame();
+        await frame.waitForFunction(() => innerWidth > 740);
+      });
       const article = screen.getByRole("article", { name: "ChatGPT", exact: true });
       const control = article.getByRole("radiogroup", {
         name: "ChatGPT limit window",
@@ -653,6 +697,7 @@ const program = Effect.gen(function* () {
           ).size,
           switchHeight: element.getBoundingClientRect().height,
           headerHeight: element.closest("article").firstElementChild.getBoundingClientRect().height,
+          viewportWidth: innerWidth,
         })),
       );
       diagnostics.desktopCapacity = geometry;
