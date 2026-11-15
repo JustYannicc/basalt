@@ -204,6 +204,8 @@ process.exit(Number(process.env.CONFIG_CLIENT_EXIT || 0));
   chmodSync(client, 0o700);
   const source = {
     ...Object.fromEntries(requiredSecrets.map((key) => [key, "fixture"])),
+    AUTH_GITHUB_CLIENT_ID: "fixture-github-client-id",
+    AUTH_GITHUB_CLIENT_SECRET: "fixture-github-client-secret",
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
     POOL_DEPLOYMENT_KEY: "cd".repeat(32),
     ALCHEMY_STAGE: "production",
