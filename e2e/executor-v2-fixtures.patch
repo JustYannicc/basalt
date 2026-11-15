@@ -485,3 +485,240 @@ diff --git a/e2e/support/management-app.ts b/e2e/support/management-app.ts
        }).pipe(
          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ ready: Schema.Literal(true) }))),
        ),
+diff --git a/scripts/compiler-cache-proof/runtime.ts b/scripts/compiler-cache-proof/runtime.ts
+--- a/scripts/compiler-cache-proof/runtime.ts
++++ b/scripts/compiler-cache-proof/runtime.ts
+@@ -22,6 +22,7 @@
+   )(packageFiles["package.json"]);
+   const configuration = {
+     ALCHEMY_STAGE: "production",
++    EXECUTOR_BUILD_VERSION: "0".repeat(40),
+     EXECUTOR_COMPILER_CACHE_RELEASE: "a".repeat(40),
+     EXECUTOR_APPS_FRAMEWORK: framework,
+     EXECUTOR_COMPILER_CACHE_FRAMEWORK: framework,
+diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/database-pool-fixture.ts
+--- a/apps/hosted/testing/database-pool-fixture.ts
++++ b/apps/hosted/testing/database-pool-fixture.ts
+@@ -606,23 +606,31 @@
+               // so draining it takes the 5 s bound. The gate opens once the sibling has given up.
+               return yield* PgPool.grouped(
+                 Effect.gen(function* () {
+-                  const { awaited, abandoned } = yield* Effect.scoped(
++                  const origin = Date.now();
++                  const { awaited, abandoned, abandonedAt } = yield* Effect.scoped(
+                     Effect.gen(function* () {
+                       yield* holdLock(gateKey);
+                       const awaited = yield* shared
+                         .use((connection) =>
+                           connection.query("SELECT pg_advisory_xact_lock($1)", [gateKey], false),
+                         )
+-                        .pipe(Effect.exit, Effect.forkChild);
++                        .pipe(
++                          Effect.exit,
++                          Effect.map((exit) => ({ exit, finishedAt: Date.now() })),
++                          Effect.forkChild,
++                        );
+                       yield* waitingOnLock;
+-                      return { awaited, abandoned: yield* lockWait(shared, 50) };
++                      const abandoned = yield* lockWait(shared, 50);
++                      return { awaited, abandoned, abandonedAt: Date.now() };
+                     }),
+                   );
+                   const opened = Date.now();
+-                  const exit = yield* Fiber.join(awaited);
++                  const { exit, finishedAt } = yield* Fiber.join(awaited);
+                   return {
+                     awaited: outcome(exit),
+                     awaitedReturned: since(opened),
++                    awaitedFinished: finishedAt - origin,
++                    abandonedReturned: abandonedAt - origin,
+                     gaveUp: Exit.isSuccess(abandoned) && abandoned.value._tag === "None",
+                   };
+                 }),
+diff --git a/e2e/tests/credential-placement.spec.ts b/e2e/tests/credential-placement.spec.ts
+--- a/e2e/tests/credential-placement.spec.ts
++++ b/e2e/tests/credential-placement.spec.ts
+@@ -1158,7 +1158,12 @@
+           expect(product.started.status, key).toBe(200);
+           const url = new URL((yield* body(Redirect, product.started)).authorizationUrl);
+           expect(url.searchParams.get("client_id"), key).toBe(clientId);
+-          expect(url.searchParams.get("scope")?.split(" "), key).toEqual(requested);
++          expect(url.searchParams.get("scope")?.split(" "), key).toEqual([
++            ...requested,
++            "openid",
++            "email",
++          ]);
++          expect(url.searchParams.get("include_granted_scopes"), key).toBe("true");
+         }
+         expect(defaults.started.status, JSON.stringify(defaults.started.body)).toBe(200);
+         const defaultsUrl = new URL((yield* body(Redirect, defaults.started)).authorizationUrl);
+diff --git a/e2e/tests/app-management-contracts.spec.ts b/e2e/tests/app-management-contracts.spec.ts
+--- a/e2e/tests/app-management-contracts.spec.ts
++++ b/e2e/tests/app-management-contracts.spec.ts
+@@ -209,7 +209,7 @@
+       .response;
+     expect(unrootedFailure).toMatchObject({ code: "RequestInvalid", status: 400 });
+     expect(unrootedFailure.message).toContain(
+-      "Executor rejected this request's body because it does not match the operation's schema: $.files: expected a root index.ts.",
++      "Rejected this request's body because it does not match the operation's schema: $.files: expected a root index.ts.",
+     );
+     // A local CLI agent's guess at the format of `links`, a JSON array of account links.
+     if (organization === undefined) {
+diff --git a/e2e/tests/first-entry-behavior.spec.ts b/e2e/tests/first-entry-behavior.spec.ts
+--- a/e2e/tests/first-entry-behavior.spec.ts
++++ b/e2e/tests/first-entry-behavior.spec.ts
+@@ -85,7 +85,7 @@
+             page.goto(`${organization}/connect`),
+           );
+           yield* browser.use("Wait for the neutral page", (page) =>
+-            page.getByRole("heading", { name: "Connect your agent", exact: true }).waitFor(),
++            page.getByRole("heading", { name: "Connections", exact: true }).waitFor(),
+           );
+           yield* Effect.scoped(
+             Effect.gen(function* () {
+diff --git a/e2e/tests/hitl-intent-scope.spec.ts b/e2e/tests/hitl-intent-scope.spec.ts
+--- a/e2e/tests/hitl-intent-scope.spec.ts
++++ b/e2e/tests/hitl-intent-scope.spec.ts
+@@ -543,7 +543,7 @@
+           ).toBeGreaterThan(0);
+           yield* openInApp("Leave the denied queue in the same document", `/org/${a.slug}/connect`);
+           yield* browser.use("The denied queue unmounts", (page) =>
+-            page.getByRole("heading", { name: "Connect your agent", exact: true }).waitFor(),
++            page.getByRole("heading", { name: "Connections", exact: true }).waitFor(),
+           );
+           const authority = yield* holdQuery(directoryPath, "continue", { allRequests: true });
+           // A shared stream may remain active; a real access change makes a new read owed.
+diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-account.spec.ts
+--- a/e2e/tests/executor-key-account.spec.ts
++++ b/e2e/tests/executor-key-account.spec.ts
+@@ -81,10 +81,7 @@
+             page.goto(`/org/${actors.organization.slug}/connect`),
+           );
+           yield* browser.use("Start a scoped connection", (page) =>
+-            page
+-              .getByRole("button", { name: "Create a scoped connection", exact: true })
+-              .or(page.getByRole("button", { name: "New scoped connection", exact: true }))
+-              .click(),
++            page.getByRole("link", { name: "New connection", exact: true }).click(),
+           );
+           yield* browser.use("Find Executor in the picker", (page) =>
+             page.getByRole("searchbox", { name: "Search apps" }).fill("Executor"),
+diff --git a/e2e/support/data-query-batch.ts b/e2e/support/data-query-batch.ts
+--- a/e2e/support/data-query-batch.ts
++++ b/e2e/support/data-query-batch.ts
+@@ -123,13 +123,22 @@
+     yield* evidence.json(`data-query-${label}.json`, { request: made.request, sql, delivered });
+     expect(pipelines, "General data dispatch uses ordinary SDK reads").toHaveLength(0);
+     const reads = sql.filter((span) => span.operation === "sql.execute");
++    const snapshots = reads.filter(
++      ({ text }) =>
++        text.includes("executor_apps") &&
++        text.includes("executor_deployments") &&
++        text.includes('"deployment:build"'),
++    );
+     expect(
+-      reads.filter(
+-        ({ text }) =>
+-          text.includes("executor_apps") &&
+-          text.includes("executor_deployments") &&
+-          text.includes('"deployment:build"'),
+-      ),
++      snapshots,
++      "The product access read and SDK dispatch each own one snapshot",
++    ).toHaveLength(2);
++    expect(
++      snapshots.filter(({ under }) => under.some(({ name }) => name === "sdk.apps.get")),
++      "The product authorizes its app before dispatch",
++    ).toHaveLength(1);
++    expect(
++      snapshots.filter(({ under }) => under.some(({ name }) => name === "sdk.data.query")),
+       "The SDK reads the app and its active version once",
+     ).toHaveLength(1);
+     expect(
+diff --git a/e2e/tests/catalog-oauth-deferrals.spec.ts b/e2e/tests/catalog-oauth-deferrals.spec.ts
+--- a/e2e/tests/catalog-oauth-deferrals.spec.ts
++++ b/e2e/tests/catalog-oauth-deferrals.spec.ts
+@@ -70,10 +70,7 @@
+         );
+         yield* open;
+         yield* browser.use("Wait for resolved client setup", (page) =>
+-          page
+-            .getByRole("dialog")
+-            .getByRole("button", { name: "Register OAuth client", exact: true })
+-            .waitFor(),
++          page.getByRole("dialog").getByLabel("Client ID", { exact: true }).waitFor(),
+         );
+         yield* browser.use("Wait for dialog motion to settle", (page) =>
+           page.waitForFunction(() =>
+@@ -92,14 +89,17 @@
+             page.getByRole("dialog").innerText(),
+           ),
+         ).not.toContain(officialApps.tracker.oauthDeferrals[0].message);
+-        yield* browser.use("Open Advanced client choices", (page) =>
+-          page.getByRole("dialog").locator("summary").filter({ hasText: "Advanced" }).click(),
++        yield* browser.use("Choose the personal developer app audience", (page) =>
++          page
++            .getByRole("dialog")
++            .getByRole("combobox", { name: "Who can use this client", exact: true })
++            .click(),
+         );
+         yield* browser.use("Keep the personal developer app choice", (page) =>
+-          page
+-            .getByRole("dialog")
+-            .getByRole("checkbox", { name: "Use your own Synthetic Tracker app for this account" })
+-            .click(),
++          page.getByRole("option", { name: "Only this account", exact: true }).click(),
++        );
++        yield* browser.use("The audience menu has closed", (page) =>
++          page.getByRole("listbox", { includeHidden: true }).waitFor({ state: "detached" }),
+         );
+         yield* browser.use("Manual client entry remains available", (page) =>
+           page.getByRole("dialog").getByLabel("Client ID", { exact: true }).waitFor(),
+diff --git a/e2e/tests/cloud-database-placement.spec.ts b/e2e/tests/cloud-database-placement.spec.ts
+--- a/e2e/tests/cloud-database-placement.spec.ts
++++ b/e2e/tests/cloud-database-placement.spec.ts
+@@ -1420,13 +1420,16 @@
+             const awaitedReturned = yield* Schema.decodeUnknownEffect(Schema.Number)(
+               sibling.awaitedReturned,
+             );
++            const awaitedFinished = yield* Schema.decodeUnknownEffect(Schema.Number)(
++              sibling.awaitedFinished,
++            );
+             expect(sibling.gaveUp, "The sibling gave up on its lock wait").toBe(true);
+             expect(sibling.awaited).toBe("ok");
+-            expect(sibling.awaitedReturned, "The finished statement returned").toBeLessThan(1_000);
++            expect(awaitedReturned, "The finished statement returned").toBeLessThan(1_000);
+             expect(
+               sibling.abandonedReturned,
+               "The sibling gave up while the awaited statement was running",
+-            ).toBeLessThan(awaitedReturned);
++            ).toBeLessThan(awaitedFinished);
+           }
+ 
+           // A tool call's `BEGIN … COMMIT` batch (`PgConnection.pipelined`) runs inside a hold:
+diff --git a/e2e/tests/mcp-connections.spec.ts b/e2e/tests/mcp-connections.spec.ts
+--- a/e2e/tests/mcp-connections.spec.ts
++++ b/e2e/tests/mcp-connections.spec.ts
+@@ -661,13 +661,20 @@
+             .getByRole("img")
+             .waitFor({ state: "visible" }),
+         );
+-        // Radix paints the dialog before the effect that makes it the topmost layer and moves focus
+-        // into it. Escape pressed before that effect closes the setup dialog beneath it instead.
++        // Focus arrives before Radix's passive effect installs this layer's Escape handler.
++        // Finish entry motion before sending a document-level key to the nested dialog.
+         yield* browser.use("The full-size screenshot takes focus", (page) =>
+           page
+             .getByRole("dialog", { name: "Claude’s Add custom connector dialog" })
+             .and(page.locator(":focus-within"))
+             .waitFor(),
++        );
++        yield* browser.use("Wait for the screenshot entry animation", (page) =>
++          page
++            .getByRole("dialog", { name: "Claude’s Add custom connector dialog", exact: true })
++            .evaluate((element) =>
++              Promise.all(element.getAnimations().map((animation) => animation.finished)),
++            ),
+         );
+         yield* browser.use("Close the full-size screenshot", (page) =>
+           page.keyboard.press("Escape"),

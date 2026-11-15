@@ -719,9 +719,9 @@
     }
   },
   {
-    "reason": "The new case removes and restores source files, refuses file/folder path conflicts, invalid Unicode paths, and stored text entries, and bounds removal summaries for large and escaped path sets. Although its fixture uses the current release, the assertions are file-save behavior; they do not prove SDK29/Cloud SQL migration, lineage, rollback, p39/p40-to-p42 host grammar, or caller provenance. The separate hosted release/compile case already exercises the exact .16 package.",
+    "reason": "The new case removes and restores source files, refuses file/folder path conflicts, invalid Unicode paths, and stored text entries, and bounds removal summaries for large and escaped path sets. Although its fixture uses the current release, the assertions are file-save behavior; they do not prove SDK29/Cloud SQL migration, lineage, rollback, p39/p40-to-p42 host grammar, or caller provenance. The separate hosted release/compile case already exercises the exact .16 package. The selected local deploy scenario only updates request-rejection wording; this hosted save case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "app-management-contracts.spec.ts#appManagementSavesHosted": "060650acc82639c0dad85d6a81db6b1a527416ae8c542381976d144c5e8bd6d9"
+      "app-management-contracts.spec.ts#appManagementSavesHosted": "c5940f9eda0b61c83cdba6f1e97f0330ea166a223ba06fa1a6db139b835f15fc"
     }
   },
   {
@@ -808,51 +808,51 @@
     }
   },
   {
-    "reason": "The candidate invokes Cloud cron for the provisioning job and proves the dispatch reaches the API Worker's placed fetch handler, with no database connection opened outside that handler. The cutover changes Cloud job outcome reporting, which is already directly selected by the two cloudJobOutcomes cases; it does not change provisioning job placement or this cron entry path. Renew the existing exception.",
+    "reason": "The candidate invokes Cloud cron for the provisioning job and proves the dispatch reaches the API Worker's placed fetch handler, with no database connection opened outside that handler. The cutover changes Cloud job outcome reporting, which is already directly selected by the two cloudJobOutcomes cases; it does not change provisioning job placement or this cron entry path. Renew the existing exception. The CI-selected pool scenario now measures abandonment and query completion from one origin; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "cloud-database-placement.spec.ts#cloudCronJobsPlaced": "de095983bb37195a9fe1c6298205d55a634ec8e1ba4926bc0bad58f8c7c80e7a"
+      "cloud-database-placement.spec.ts#cloudCronJobsPlaced": "729152940cbf03a7dd869af0cfe61d45259e8277ce2ecb1f81332ddae8ddf4e5"
     }
   },
   {
-    "reason": "The candidate interrupts a tool call while its token recheck waits on a database lock, then verifies the next call succeeds in under five seconds while the lock is still held and the abandoned statement is cancelled. This is MCP request cancellation and statement lifetime, not the migration commit/rollback or changed caller-dispatch path. Renew the existing exception.",
+    "reason": "The candidate interrupts a tool call while its token recheck waits on a database lock, then verifies the next call succeeds in under five seconds while the lock is still held and the abandoned statement is cancelled. This is MCP request cancellation and statement lifetime, not the migration commit/rollback or changed caller-dispatch path. Renew the existing exception. The CI-selected pool scenario now measures abandonment and query completion from one origin; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "cloud-database-placement.spec.ts#cloudMcpAbandonedStatement": "c095e75bef91da55427a96be9933aa505d9aa3b12f10f1a319ce6018d41aecfd"
+      "cloud-database-placement.spec.ts#cloudMcpAbandonedStatement": "e8b400c6f51979f4044e2a8adf20311ae8dc2f9f285044011a9d32ecc2505cfc"
     }
   },
   {
-    "reason": "The candidate holds a lock on one app's database row while a concurrent MCP execute searches three apps; it expects the slow app listing to wait at least three seconds while the other two return in under two seconds. This covers runtime app-discovery listing and lock isolation, not preservation of physical SQL objects or the accepted SDK caller-dispatch migration. Renew the existing exception.",
+    "reason": "The candidate holds a lock on one app's database row while a concurrent MCP execute searches three apps; it expects the slow app listing to wait at least three seconds while the other two return in under two seconds. This covers runtime app-discovery listing and lock isolation, not preservation of physical SQL objects or the accepted SDK caller-dispatch migration. Renew the existing exception. The CI-selected pool scenario now measures abandonment and query completion from one origin; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "cloud-database-placement.spec.ts#cloudMcpDiscoveryListings": "55a16ff9285e7423631626c46ef9afe85084de128426ebe22a405ca870136af0"
+      "cloud-database-placement.spec.ts#cloudMcpDiscoveryListings": "6645336c4ed81d397af731757062a06e488856381466d9f498714ca0575802fe"
     }
   },
   {
-    "reason": "The candidate stalls an MCP session object's next PostgreSQL connection, then verifies attempt 1 times out with the fixed driver error and attempt 2 succeeds; the refreshed assertions pin failure tags and span status. The accepted cutover does not change this Cloud MCP connection retry policy, and a retry in another object is not evidence for migration rollback. Renew the existing exception.",
+    "reason": "The candidate stalls an MCP session object's next PostgreSQL connection, then verifies attempt 1 times out with the fixed driver error and attempt 2 succeeds; the refreshed assertions pin failure tags and span status. The accepted cutover does not change this Cloud MCP connection retry policy, and a retry in another object is not evidence for migration rollback. Renew the existing exception. The CI-selected pool scenario now measures abandonment and query completion from one origin; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "cloud-database-placement.spec.ts#cloudMcpObjectConnectRetry": "710e7af7c90116ff92da9c81874c32f52fd25962263a8f824bd2214e0b3faebb"
+      "cloud-database-placement.spec.ts#cloudMcpObjectConnectRetry": "daa23033b90c031e01ec2efe9aed902fa6862664796903e003e0c79f2baaf060"
     }
   },
   {
-    "reason": "The candidate verifies MCP session object calls reuse a small connection set in one activity window, recover after a dropped connection, retain connections through a 45-second pause, and close them after 120 seconds; its refreshed assertion requires the route to be Hyperdrive. The accepted auth migration's independent Postgres session does not change MCP object connection retention or its Hyperdrive route. Renew the existing exception.",
+    "reason": "The candidate verifies MCP session object calls reuse a small connection set in one activity window, recover after a dropped connection, retain connections through a 45-second pause, and close them after 120 seconds; its refreshed assertion requires the route to be Hyperdrive. The accepted auth migration's independent Postgres session does not change MCP object connection retention or its Hyperdrive route. Renew the existing exception. The CI-selected pool scenario now measures abandonment and query completion from one origin; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "cloud-database-placement.spec.ts#cloudMcpObjectConnections": "f955a48ff32cf4b799e7d0b6991f7f29f78e8898528c76c6db36e4d528454166"
+      "cloud-database-placement.spec.ts#cloudMcpObjectConnections": "e344c75f55066d6019df40f67541c53fbfdf39089f21f413f1e243e3e4fd48a4"
     }
   },
   {
-    "reason": "The candidate holds a lock during one call's API-key recheck, verifies the queued app reads share that connection, then runs 24 tool calls and three resumed approvals concurrently with distinct results and a bounded connection count. This is MCP session transaction grouping and concurrency, not the accepted physical SQL migration or p39/p40-to-p42 caller-dispatch contract. Renew the existing exception.",
+    "reason": "The candidate holds a lock during one call's API-key recheck, verifies the queued app reads share that connection, then runs 24 tool calls and three resumed approvals concurrently with distinct results and a bounded connection count. This is MCP session transaction grouping and concurrency, not the accepted physical SQL migration or p39/p40-to-p42 caller-dispatch contract. Renew the existing exception. The CI-selected pool scenario now measures abandonment and query completion from one origin; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "cloud-database-placement.spec.ts#cloudMcpParallelCalls": "cf4a4f034ece575d433ccfafe722bc9f8cf61d565a82e4c36f69679939835447"
+      "cloud-database-placement.spec.ts#cloudMcpParallelCalls": "63547996da536aa8efe7cb1d841c7202c5ca27e31114502e7a1d523903a5cc56"
     }
   },
   {
-    "reason": "The candidate runs a scheduled app and verifies the coordinator closes all of its PostgreSQL connections after the pass so the Durable Object can hibernate. That is a scheduler connection-lifetime/performance invariant. The accepted cutover changes Workflow adapter provenance/caller dispatch and auth/product migration handling, not this coordinator connection cleanup path; this schedule lifecycle case is also outside that adapter contract. Renew the existing exception.",
+    "reason": "The candidate runs a scheduled app and verifies the coordinator closes all of its PostgreSQL connections after the pass so the Durable Object can hibernate. That is a scheduler connection-lifetime/performance invariant. The accepted cutover changes Workflow adapter provenance/caller dispatch and auth/product migration handling, not this coordinator connection cleanup path; this schedule lifecycle case is also outside that adapter contract. Renew the existing exception. The CI-selected pool scenario now measures abandonment and query completion from one origin; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "cloud-database-placement.spec.ts#cloudScheduleConnectionsClose": "40cc389558db8c8fc1334026e24fab9c8454fd47ea4cf6e3b1aabed8c5b51bef"
+      "cloud-database-placement.spec.ts#cloudScheduleConnectionsClose": "5c5bbb63767116489ce5b5390703c3300a1bac5a5fa7e4cb43684d57f1f1b917"
     }
   },
   {
-    "reason": "The candidate creates an automatic Cloud schedule and exercises its Cron wake, coordinator retirement, scheduled-run dispatch as cloud, and minute heartbeat without Cron. The accepted Workflow-adapter scope is provenance/caller dispatch surviving the p39/p40-to-p42 changes; this case covers the independent scheduler's placement and lifecycle, without asserting that adapter contract. The physical SQL migration and independent Better Auth commit/rollback are separate proof paths. Renew the existing exception.",
+    "reason": "The candidate creates an automatic Cloud schedule and exercises its Cron wake, coordinator retirement, scheduled-run dispatch as cloud, and minute heartbeat without Cron. The accepted Workflow-adapter scope is provenance/caller dispatch surviving the p39/p40-to-p42 changes; this case covers the independent scheduler's placement and lifecycle, without asserting that adapter contract. The physical SQL migration and independent Better Auth commit/rollback are separate proof paths. Renew the existing exception. The CI-selected pool scenario now measures abandonment and query completion from one origin; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "cloud-database-placement.spec.ts#cloudScheduleCoordinatorPlaced": "4dd6c8f4dcfc6f7c80b1a3f61723c4db6ef6a4c6e74d06be8c291a07225d46f3"
+      "cloud-database-placement.spec.ts#cloudScheduleCoordinatorPlaced": "7611d1bb4f65965c6e440e2a0e1ff870d7f36816aaa0bc5c1994f46f6ea872dc"
     }
   },
   {
@@ -1210,39 +1210,39 @@
     }
   },
   {
-    "reason": "The body refuses operator OAuth authorization/token endpoints supplied by an app and sends revocation only to the operator endpoint. These are OAuth endpoint trust rules, not credential DNS host grammar or Cloud auth-table migration; the accepted scope explicitly separates OAuth return/endpoint behavior from host grammar.",
+    "reason": "The body refuses operator OAuth authorization/token endpoints supplied by an app and sends revocation only to the operator endpoint. These are OAuth endpoint trust rules, not credential DNS host grammar or Cloud auth-table migration; the accepted scope explicitly separates OAuth return/endpoint behavior from host grammar. The selected Google-client scenario only updates its exact scope expectation; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "credential-placement.spec.ts#credentialManagedEndpoints": "ff58b7c438b9c94ed02e16f5631b713f63d1c4ae1ca2532155b3fcac45515d76"
+      "credential-placement.spec.ts#credentialManagedEndpoints": "f479bf31694c6ba3f3c2a4f460281f3e2e8ca81398c9551775b5385292ffd9f7"
     }
   },
   {
-    "reason": "The body checks managed OAuth grant scope/refresh behavior when app hosts widen or disappear, placements change, and a beta.59/protocol-11 build is used. The diff adds scope-implication and refusal-copy cases. These are generic OAuth grant lifecycle behaviors, not p39/p40-versus-p42 host metadata or auth migration/lineage.",
+    "reason": "The body checks managed OAuth grant scope/refresh behavior when app hosts widen or disappear, placements change, and a beta.59/protocol-11 build is used. The diff adds scope-implication and refusal-copy cases. These are generic OAuth grant lifecycle behaviors, not p39/p40-versus-p42 host metadata or auth migration/lineage. The selected Google-client scenario only updates its exact scope expectation; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "credential-placement.spec.ts#credentialManagedKept": "598bbcb0c6a2551c7d3dd6f396e7c894aae7e87a83dcba6d54fa5fd08b8ee92e"
+      "credential-placement.spec.ts#credentialManagedKept": "c098b26b7ee2d51bb40dd4a529d5f0f9dac662e2c6cf41c196ca7d7429929c7d"
     }
   },
   {
-    "reason": "The body selects a first-party OAuth client from issuer and allowed-scope metadata, rejects a different issuer or broader scopes, and checks a beta.59/protocol-11 build. The candidate diff expands Google/admin scope behavior; beta.59/protocol 11 is not the frozen p39/p40 path, and this does not migrate grants or test .16/p42 credential DNS grammar.",
+    "reason": "The body selects a first-party OAuth client from issuer and allowed-scope metadata, rejects a different issuer or broader scopes, and checks a beta.59/protocol-11 build. The candidate diff expands Google/admin scope behavior; beta.59/protocol 11 is not the frozen p39/p40 path, and this does not migrate grants or test .16/p42 credential DNS grammar. The selected Google-client scenario only updates its exact scope expectation; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "credential-placement.spec.ts#credentialManagedOffered": "0f938425c73723bef2a8b1d32f9bc56e929a48052336fd2a3676de74a6533e0e"
+      "credential-placement.spec.ts#credentialManagedOffered": "24fd1d9a422ca1d77e519f7f6e27c2ba0d135c1405d621e9b77e7f628e8a3d19"
     }
   },
   {
-    "reason": "The body interleaves grant refresh with reconnect and verifies account checks, reads, and retries resolve the newly managed credential. The candidate diff adds a kept-listing precondition and original redirect_uri assertions on refresh. This is generic OAuth refresh/reconnect behavior, not the Cloud auth bridge migration or p42 caller/host contract.",
+    "reason": "The body interleaves grant refresh with reconnect and verifies account checks, reads, and retries resolve the newly managed credential. The candidate diff adds a kept-listing precondition and original redirect_uri assertions on refresh. This is generic OAuth refresh/reconnect behavior, not the Cloud auth bridge migration or p42 caller/host contract. The selected Google-client scenario only updates its exact scope expectation; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "credential-placement.spec.ts#credentialManagedReconnect": "0ce33777d2848291e18a3b0f4b01b48156d7f0c6752b163ce4bb27cbe2d59f0f"
+      "credential-placement.spec.ts#credentialManagedReconnect": "41d219a7548c1f07b6e51b9f4e116a028b546dc465c96a09235a55dd6b22645b"
     }
   },
   {
-    "reason": "Reviewed client settings with one missing credential refuse startup and redact both values; this startup configuration contract is outside the accepted cutover invariants, so renew its explicit exception.",
+    "reason": "Reviewed client settings with one missing credential refuse startup and redact both values; this startup configuration contract is outside the accepted cutover invariants, so renew its explicit exception. The selected Google-client scenario only updates its exact scope expectation; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "credential-placement.spec.ts#credentialManagedSettingsInvalid": "07ff5cb540e91e1b1c497f5ce4dee5c4b2392cef69f6ad05587660f66db1f36c"
+      "credential-placement.spec.ts#credentialManagedSettingsInvalid": "22fd5db41836e4b7f49be583972bd6456859e130e64642dc3365018ad1a7a29c"
     }
   },
   {
-    "reason": "This is a Slack-specific nested authed_user token/resource and unlisted-client renewal flow; the Cloud bridge and generic operator placement paths are covered elsewhere, while this vendor permutation is outside the accepted cutover set.",
+    "reason": "This is a Slack-specific nested authed_user token/resource and unlisted-client renewal flow; the Cloud bridge and generic operator placement paths are covered elsewhere, while this vendor permutation is outside the accepted cutover set. The selected Google-client scenario only updates its exact scope expectation; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "credential-placement.spec.ts#credentialManagedUnlisted": "e037ac6c3224b81c1c50f9c4f8de8a08eae263943b8d65a44db2ac18c60c139b"
+      "credential-placement.spec.ts#credentialManagedUnlisted": "f20c67ddfddac3e5b01b7327adec042a9ed8d7cada37aef90a06c75fca816f77"
     }
   },
   {
@@ -1979,39 +1979,39 @@
     }
   },
   {
-    "reason": "The candidate limits a browser-consented MCP connection to its configured app and read-only tool set, compares it with full access, observes policy edits on later calls, and revokes the connection grant. The call is always made through the same connection and owner; it does not assert a host-authenticated human caller at an authored app or a Workflow step. The connection OAuth grant is not the p42 credential-host or sealing-to-adapter contract, nor the physical migration bridge. Renew the existing exception.",
+    "reason": "The candidate limits a browser-consented MCP connection to its configured app and read-only tool set, compares it with full access, observes policy edits on later calls, and revokes the connection grant. The call is always made through the same connection and owner; it does not assert a host-authenticated human caller at an authored app or a Workflow step. The connection OAuth grant is not the p42 credential-host or sealing-to-adapter contract, nor the physical migration bridge. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "mcp-connections.spec.ts#scopedConnectionAccess": "c137486b05d2b509c994cbda899b15d61df7c4433ad4b648b2d470a37deed574"
+      "mcp-connections.spec.ts#scopedConnectionAccess": "bc32ddae754b09b78208440c7fa8258738155acbffc61c1cd88433897e4fda80"
     }
   },
   {
-    "reason": "The candidate selects a connection runsAs account, observes that account\u2019s key inside the app tool, refuses a per-call account override, and refuses a newly linked account outside the connection policy. This is connection/account-selection behavior; it does not assert the host-authenticated caller identity at the authored app or a Workflow step, and uses an in-app key value rather than sealing credentials to an outbound DNS host adapter. It is not physical bridge state. Renew the existing exception.",
+    "reason": "The candidate selects a connection runsAs account, observes that account\u2019s key inside the app tool, refuses a per-call account override, and refuses a newly linked account outside the connection policy. This is connection/account-selection behavior; it does not assert the host-authenticated caller identity at the authored app or a Workflow step, and uses an in-app key value rather than sealing credentials to an outbound DNS host adapter. It is not physical bridge state. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "mcp-connections.spec.ts#scopedConnectionAccounts": "a33902e6846717e79338f045b0b0e78ecd6cf85423f5264e06ab1530ff495c73"
+      "mcp-connections.spec.ts#scopedConnectionAccounts": "63b65f79b69176c80954a99efcb04f463c53124e6bb9de0addec2efca47903d8"
     }
   },
   {
-    "reason": "The candidate distinguishes an app-linked account from user-linked accounts, requires runsAs app rather than naming the app account directly, returns the app account\u2019s key through an app tool, and hides that account ID from tool descriptions, connection listings, and grant listings. This is app-account link policy, not the host-authenticated caller identity at the authored app or a Workflow step, nor outbound host credential sealing/conversion or physical bridge state. Renew the existing exception.",
+    "reason": "The candidate distinguishes an app-linked account from user-linked accounts, requires runsAs app rather than naming the app account directly, returns the app account\u2019s key through an app tool, and hides that account ID from tool descriptions, connection listings, and grant listings. This is app-account link policy, not the host-authenticated caller identity at the authored app or a Workflow step, nor outbound host credential sealing/conversion or physical bridge state. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "mcp-connections.spec.ts#scopedConnectionAppAccount": "6225592238d06a08a5bd29d09acc89b291f2537848d700785d7370c46855d85e"
+      "mcp-connections.spec.ts#scopedConnectionAppAccount": "387193e6c9fe14187fcd05c5f0b58e8296a6425b5aa60c3ef562bb5bb50cf0a6"
     }
   },
   {
-    "reason": "The candidate refuses connection consent and management by another organization member or a forged organization header, while the owning member can consent. This is organization/connection authorization, not host-authenticated caller identity at an authored app or Workflow step, p42 credential-host conversion, or the physical Cloud migration bridge. Renew the existing exception.",
+    "reason": "The candidate refuses connection consent and management by another organization member or a forged organization header, while the owning member can consent. This is organization/connection authorization, not host-authenticated caller identity at an authored app or Workflow step, p42 credential-host conversion, or the physical Cloud migration bridge. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "mcp-connections.spec.ts#scopedConnectionConsent": "a6922b58aef61a030b40ce1aff9edd8f24b445f3ef48e1a605b41053bece873f"
+      "mcp-connections.spec.ts#scopedConnectionConsent": "93c62362307d33ae426f12d13a8a8b2c3aea0abad460216332500711cf4d2786"
     }
   },
   {
-    "reason": "The candidate walks the Connections UI, assistant setup commands, creating a scoped connection, showing its MCP URL, and revoking it. These are dashboard/setup behaviors and do not assert the accepted physical bridge, host-authenticated caller at the app or each Workflow step, or p42 credential-host conversion. Renew the existing exception.",
+    "reason": "The candidate walks the Connections UI, assistant setup commands, creating a scoped connection, showing its MCP URL, and revoking it. These are dashboard/setup behaviors and do not assert the accepted physical bridge, host-authenticated caller at the app or each Workflow step, or p42 credential-host conversion. Renew the existing exception. The journey adds only a readiness wait for the nested screenshot entry animation before Escape. Its existing assertions, actions and plan remain intact, so retain this reviewed exception with its new fingerprint.",
     "entries": {
-      "mcp-connections.spec.ts#scopedConnectionDashboard": "e707157af6b1c2c54d1aa68c3a6b51fa37e0581333d272b93bbb1751140773a0"
+      "mcp-connections.spec.ts#scopedConnectionDashboard": "70ffe14314f4f7684385afda2ce375dd776f155139ef6c05b9eeff5bc4138b31"
     }
   },
   {
-    "reason": "The candidate holds a tool execution, changes the owner\u2019s linked account, then verifies the existing MCP connection still uses its configured account for the first call and refuses the replacement on the next call. This protects connection runsAs/link-swap policy, not the host-authenticated caller supplied to an authored app or Workflow step; the in-app token fixture does not exercise sealing-to-adapter conversion or credential host parsing. Renew the existing exception.",
+    "reason": "The candidate holds a tool execution, changes the owner\u2019s linked account, then verifies the existing MCP connection still uses its configured account for the first call and refuses the replacement on the next call. This protects connection runsAs/link-swap policy, not the host-authenticated caller supplied to an authored app or Workflow step; the in-app token fixture does not exercise sealing-to-adapter conversion or credential host parsing. Renew the existing exception. The adjacent dashboard journey only adds a nested screenshot readiness wait; this excluded case, its helpers and plan are unchanged. Retain its reviewed exception with the new file fingerprint.",
     "entries": {
-      "mcp-connections.spec.ts#scopedConnectionLinkSwappedMidExecution": "91c9b99dd1aa9800050d602b7290954f5344e8620f5f50168d13888db0319077"
+      "mcp-connections.spec.ts#scopedConnectionLinkSwappedMidExecution": "c6d77d40fce32d5db2c841dd6a51abd611600683db798da50ddab82bde12295f"
     }
   },
   {
