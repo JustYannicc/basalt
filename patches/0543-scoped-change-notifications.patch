@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/app-data.ts b/apps/hosted/cloud/src/app-data.ts
-index 570e36b9d0c91bad90fb1566ee9a3d07e8b5ee12..839ebf3d7b12a44f0cd3bdffb6fade24a2055402 100644
+index 877c133..09bfee3 100644
 --- a/apps/hosted/cloud/src/app-data.ts
 +++ b/apps/hosted/cloud/src/app-data.ts
 @@ -9,6 +9,7 @@ import { EvaluatedSupervisor } from "@executor-js/app-data/evaluated";
@@ -49,15 +49,28 @@ index 570e36b9d0c91bad90fb1566ee9a3d07e8b5ee12..839ebf3d7b12a44f0cd3bdffb6fade24
            // upgrade already accepts the socket; send the initial revision without accepting twice.
            yield* supervisor.initial(socket.ws).pipe(Effect.orDie);
            return response;
+diff --git a/apps/hosted/cloud/src/contracts/job-outcome.ts b/apps/hosted/cloud/src/contracts/job-outcome.ts
+index 48f0f29..1f43673 100644
+--- a/apps/hosted/cloud/src/contracts/job-outcome.ts
++++ b/apps/hosted/cloud/src/contracts/job-outcome.ts
+@@ -11,6 +11,7 @@ import { Cause, Effect, Predicate, Schema } from "effect";
+  */
+ const JobErrorTag = Schema.Literals([
+   "BillingUnavailable",
++  "ChangeDispatchFailed",
+   "DataStepUnavailable",
+   "EmailDeliveryFailed",
+   "GrantExpiryUnavailable",
 diff --git a/apps/hosted/cloud/src/implementation/data-changes.ts b/apps/hosted/cloud/src/implementation/data-changes.ts
-index b5a10d20895ddba52db1f7e179d19ad263174ca3..afb9e6a1df1a7d383f754cff7c0ca0ef7bb25327 100644
+index c4d85af..448d984 100644
 --- a/apps/hosted/cloud/src/implementation/data-changes.ts
 +++ b/apps/hosted/cloud/src/implementation/data-changes.ts
-@@ -3,10 +3,17 @@ import type { DurableObjectNamespace, MessageEvent } from "@cloudflare/workers-t
+@@ -3,11 +3,18 @@ import type { DurableObjectNamespace, MessageEvent } from "@cloudflare/workers-t
  import { Cause, Effect, Queue, Schema, Stream } from "effect";
  import { RuntimeProtocolFailed } from "@executor-js/sdk/core";
  import { traceHeaders } from "@executor-js/telemetry";
 +import { RevisionEvent, type ChangeKey } from "@executor-js/app-data";
+ import { runtimeActor } from "./runtime-actor.ts";
  
  /** Notify after registration, conflate bursts, and close with the subscriber's scope. */
 -export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">, app: string) =>
@@ -72,8 +85,8 @@ index b5a10d20895ddba52db1f7e179d19ad263174ca3..afb9e6a1df1a7d383f754cff7c0ca0ef
 +  Stream.callback<A, RuntimeProtocolFailed>(
      (queue) =>
        Effect.gen(function* () {
-         const socket = yield* Effect.acquireRelease(
-@@ -15,8 +22,8 @@ export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">
+         const actor = yield* runtimeActor;
+@@ -17,8 +24,8 @@ export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">
              return yield* Effect.tryPromise({
                try: async () => {
                  const response = await namespace
@@ -84,7 +97,18 @@ index b5a10d20895ddba52db1f7e179d19ad263174ca3..afb9e6a1df1a7d383f754cff7c0ca0ef
                      headers: { ...headers, Upgrade: "websocket" },
                    });
                  if (response.status !== 101 || response.webSocket === null)
-@@ -30,10 +37,8 @@ export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">
+@@ -30,17 +37,18 @@ export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">
+           }).pipe(
+             Effect.withSpan("runtime.cloud.changes.connect", {
+               kind: "client",
+-              attributes: { ...actor, "executor.app.id": app },
++              attributes: {
++                ...actor,
++                ...(scoped ? { "executor.change.scope": owner } : { "executor.app.id": owner }),
++              },
+             }),
+           ),
+           (socket) => Effect.sync(() => socket.close(1000, "Subscription ended")),
          );
          const changed = (event: MessageEvent) => {
            try {
@@ -97,7 +121,7 @@ index b5a10d20895ddba52db1f7e179d19ad263174ca3..afb9e6a1df1a7d383f754cff7c0ca0ef
            } catch {
              Queue.failCauseUnsafe(queue, Cause.fail(new RuntimeProtocolFailed()));
            }
-@@ -53,5 +58,31 @@ export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">
+@@ -60,5 +68,31 @@ export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">
          );
          socket.accept();
        }),
@@ -131,7 +155,7 @@ index b5a10d20895ddba52db1f7e179d19ad263174ca3..afb9e6a1df1a7d383f754cff7c0ca0ef
 +    true,
    );
 diff --git a/apps/hosted/cloud/src/infrastructure/app-data.ts b/apps/hosted/cloud/src/infrastructure/app-data.ts
-index 8549917386e8399903b665d25d09d6442a42e8b7..1bd9b1390c3195c91170f5e7c20c16af6a128bea 100644
+index 8549917..1bd9b13 100644
 --- a/apps/hosted/cloud/src/infrastructure/app-data.ts
 +++ b/apps/hosted/cloud/src/infrastructure/app-data.ts
 @@ -4,9 +4,12 @@ import type { Effect } from "effect";
@@ -148,10 +172,10 @@ index 8549917386e8399903b665d25d09d6442a42e8b7..1bd9b1390c3195c91170f5e7c20c16af
     * A cache command. `trace` is the caller's trace ID and `invocation` its runner invocation's
     * opaque ID, compared with the call that woke the supervisor; the reply also says how the
 diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
-index 2544bf242ff978efe61739ec1bc211c8b630cf74..b36437b907c29e4dd18a1a712f73c5797c519861 100644
+index 7e4cd86..2900839 100644
 --- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
 +++ b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
-@@ -19,6 +19,7 @@ export const BackgroundJob = Schema.Literals([
+@@ -20,6 +20,7 @@ export const BackgroundJob = Schema.Literals([
    "organization-removal",
    "provisioning",
    "contributed-departures",
@@ -161,7 +185,7 @@ index 2544bf242ff978efe61739ec1bc211c8b630cf74..b36437b907c29e4dd18a1a712f73c579
    "schedule-wake",
 diff --git a/apps/hosted/cloud/src/infrastructure/change-revisions.ts b/apps/hosted/cloud/src/infrastructure/change-revisions.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..dd421e73a70a1185cef38a37e2429ed377a2f045
+index 0000000..dd421e7
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/change-revisions.ts
 @@ -0,0 +1,40 @@
@@ -206,7 +230,7 @@ index 0000000000000000000000000000000000000000..dd421e73a70a1185cef38a37e2429ed3
 +  };
 +});
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index d5d2d8f474072b9d1f122f346f3a966697b3886e..ec2dd213c1eb10b7c4551702751c6c6643a0b792 100644
+index 8ab50f1..d9c2837 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -1,10 +1,11 @@
@@ -222,9 +246,9 @@ index d5d2d8f474072b9d1f122f346f3a966697b3886e..ec2dd213c1eb10b7c4551702751c6c66
  import {
    observationPublishPath,
    publishAccountObservations,
-@@ -351,10 +352,21 @@ export default Api.make(
-       Effect.scoped,
-       Effect.catch(() => Effect.logWarning("Contributed departure outbox unavailable")),
+@@ -374,10 +375,21 @@ export default Api.make(
+       Effect.as(jobCompleted),
+       handledJob(Effect.logWarning("Contributed departure outbox unavailable")),
      );
 -    const startJobs = Effect.all([dispatchWith(installTeam), contributedDepartures], {
 -      concurrency: 2,
@@ -233,10 +257,10 @@ index d5d2d8f474072b9d1f122f346f3a966697b3886e..ec2dd213c1eb10b7c4551702751c6c66
 +    const changeRevisions = yield* cloudChangeRevisions;
 +    const deliverChanges = changeRevisions.deliver.pipe(
 +      Effect.provide(executor),
++      reportErrors,
 +      Effect.scoped,
-+      Effect.catch(() =>
-+        Effect.logWarning("Change revision outbox unavailable; retained for retry"),
-+      ),
++      Effect.as(jobCompleted),
++      handledJob(Effect.logWarning("Change revision outbox unavailable; retained for retry")),
 +    );
 +    const startJobs = Effect.all(
 +      [dispatchWith(installTeam), contributedDepartures, deliverChanges],
@@ -248,7 +272,7 @@ index d5d2d8f474072b9d1f122f346f3a966697b3886e..ec2dd213c1eb10b7c4551702751c6c66
      const cleanup = yield* EventCleanup;
      // The event scope closes through waitUntil after a complete response is sent, so it waits
      // for the jobs and exports their telemetry. A streamed body closes that scope at EOF instead;
-@@ -488,6 +500,7 @@ export default Api.make(
+@@ -523,6 +535,7 @@ export default Api.make(
        "organization-removal",
        "provisioning",
        "contributed-departures",
@@ -256,15 +280,15 @@ index d5d2d8f474072b9d1f122f346f3a966697b3886e..ec2dd213c1eb10b7c4551702751c6c66
        "data-steps",
        "repository-recovery",
        "schedule-wake",
-@@ -528,6 +541,7 @@ export default Api.make(
+@@ -563,6 +576,7 @@ export default Api.make(
        "organization-removal": organizationRemovals,
        provisioning: dispatch,
        "contributed-departures": contributedDepartures,
 +      "change-revisions": deliverChanges,
        "data-steps": dataSteps,
        "repository-recovery": repositoryRecovery,
-       "schedule-wake": schedules.wake,
-@@ -672,6 +686,11 @@ export default Api.make(
+       "schedule-wake": schedules.wake.pipe(Effect.as(jobCompleted)),
+@@ -710,6 +724,11 @@ export default Api.make(
      );
      const productionOps = yield* cloudProductionOps;
      const routes = Layer.mergeAll(
@@ -278,7 +302,7 @@ index d5d2d8f474072b9d1f122f346f3a966697b3886e..ec2dd213c1eb10b7c4551702751c6c66
        ),
 diff --git a/apps/hosted/server/src/implementation/authorized-change-stream.ts b/apps/hosted/server/src/implementation/authorized-change-stream.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..d2b04edc9248854372e4fd656fec047eec9432ca
+index 0000000..d2b04ed
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/authorized-change-stream.ts
 @@ -0,0 +1,46 @@
@@ -330,7 +354,7 @@ index 0000000000000000000000000000000000000000..d2b04edc9248854372e4fd656fec047e
 +  );
 diff --git a/apps/hosted/server/src/implementation/change-revision-http.ts b/apps/hosted/server/src/implementation/change-revision-http.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..27907e4cd743389230125fac79ebd0f268fdc91b
+index 0000000..27907e4
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/change-revision-http.ts
 @@ -0,0 +1,107 @@
@@ -443,7 +467,7 @@ index 0000000000000000000000000000000000000000..27907e4cd743389230125fac79ebd0f2
 +  );
 diff --git a/apps/hosted/server/src/implementation/change-revision-schema.ts b/apps/hosted/server/src/implementation/change-revision-schema.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..bdc6b28486cde8a9e41b425042276a96b40c927e
+index 0000000..bdc6b28
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/change-revision-schema.ts
 @@ -0,0 +1,58 @@
@@ -507,7 +531,7 @@ index 0000000000000000000000000000000000000000..bdc6b28486cde8a9e41b425042276a96
 +});
 diff --git a/apps/hosted/server/src/implementation/change-revisions.ts b/apps/hosted/server/src/implementation/change-revisions.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..ea55c1c07b03f4f7efa203638eac10d8c17b4d5a
+index 0000000..ea55c1c
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/change-revisions.ts
 @@ -0,0 +1,49 @@
@@ -561,10 +585,10 @@ index 0000000000000000000000000000000000000000..ea55c1c07b03f4f7efa203638eac10d8
 +    }),
 +});
 diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
-index a97f73d236b463271660a68cb69f7075c2edc0c8..a72c616d343e8d8d402bf3ede0d92d3c341544d3 100644
+index 6e34f5f..701682e 100644
 --- a/apps/hosted/server/src/implementation/migrations.ts
 +++ b/apps/hosted/server/src/implementation/migrations.ts
-@@ -23,6 +23,7 @@ import { migrateContributedDepartureObservability } from "./contributed-departur
+@@ -25,6 +25,7 @@ import { migrateContributedDepartureObservability } from "./contributed-departur
  import { migrateContributedDepartures } from "./contributed-departure-schema.ts";
  import { migrateAccountRechecks } from "./account-recheck-schema.ts";
  import { migrateAccountObservations } from "./account-observation-schema.ts";
@@ -572,7 +596,7 @@ index a97f73d236b463271660a68cb69f7075c2edc0c8..a72c616d343e8d8d402bf3ede0d92d3c
  
  /**
   * Migration failures stop startup; callers must not log the driver's secret-bearing cause. The
-@@ -153,6 +154,7 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
+@@ -160,6 +161,7 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
      yield* migrateToolAvailability;
      yield* queueExecutorAppUpgrades;
    }),
@@ -581,10 +605,10 @@ index a97f73d236b463271660a68cb69f7075c2edc0c8..a72c616d343e8d8d402bf3ede0d92d3c
  
  /**
 diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
-index 6b693d10fca11066c98cb2a20c9dcde76bcd72fa..2aec4993ba4b68825307bd4637593b76c7a2cc56 100644
+index 0a0f278..969f962 100644
 --- a/apps/hosted/server/src/index.ts
 +++ b/apps/hosted/server/src/index.ts
-@@ -118,3 +118,8 @@ export * from "./contracts/schedules.ts";
+@@ -141,3 +141,8 @@ export * from "./contracts/schedules.ts";
  export { makeScheduledAuthority } from "./implementation/schedules.ts";
  
  export { runAccountRechecks } from "./implementation/account-rechecks.ts";
@@ -593,8 +617,48 @@ index 6b693d10fca11066c98cb2a20c9dcde76bcd72fa..2aec4993ba4b68825307bd4637593b76
 +  makeChangeRevisionHandler,
 +  changeRevisionsPath,
 +} from "./implementation/change-revision-http.ts";
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index 2475481..7db694c 100644
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -24,6 +24,10 @@ export const beforeAccountIdentities = () =>
+ /** Remove the latest hosted objects and journal together so earlier migrations can replay. */
+ export const beforeHostedAccountRechecks = () =>
+   [
++    { sql: "DROP TRIGGER hosted_deployment_changed ON executor_apps" },
++    { sql: "DROP FUNCTION hosted_deployment_changed(), hosted_record_change(text, text, text)" },
++    { sql: "DROP TABLE hosted_change_pending, hosted_change_heads" },
++    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 19" },
+     { sql: "DROP TABLE hosted_tool_availability" },
+     { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 18" },
+     { sql: "DROP TABLE hosted_account_rechecks, hosted_account_recheck_families" },
+diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-links.spec.ts
+index ef6cca7..5c15fd0 100644
+--- a/e2e/tests/legacy-profile-links.spec.ts
++++ b/e2e/tests/legacy-profile-links.spec.ts
+@@ -6,7 +6,7 @@
+  * The fixture rebuilds the database as step 9 finds it inside the upgrade transaction. The
+  * product's migration ledger is per step: SDK schema versions in FumaDB's settings and hosted
+  * steps in `private_hosted_migrations`, which runs every step above its latest recorded one. The
+- * fixture removes steps 9 through 14 from the ledger and their objects, and writes the profiles an
++ * fixture removes steps 9 through 19 from the ledger and their objects, and writes the profiles an
+  * older version left in `executor_installations`. SDK 4.0.13 and 4.0.14 stay applied because, in
+  * a real upgrade, they have already run when step 9 starts, and 4.0.13 keeps
+  * `executor_installations` unchanged for step 9. Step 9 reads only that table, apps, deployments,
+@@ -64,6 +64,11 @@ const ledger = [
+   "account_identity_index",
+   "contributed_departure_observability",
+   "model_bindings",
++  "hosted_routes",
++  "tool_policies",
++  "account_rechecks",
++  "tool_availability",
++  "change_revisions",
+ ].map((name, index) => ({ migration_id: index + 1, name }));
+ 
+ const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
 diff --git a/packages/app-data/src/cloudflare.ts b/packages/app-data/src/cloudflare.ts
-index 4e721f5b20d4d858ff207eedb0f29dde0656512f..49b6057b53b83097fca457e2c7b09988fb9ef54b 100644
+index de6371b..683a722 100644
 --- a/packages/app-data/src/cloudflare.ts
 +++ b/packages/app-data/src/cloudflare.ts
 @@ -1,5 +1,9 @@
@@ -609,7 +673,7 @@ index 4e721f5b20d4d858ff207eedb0f29dde0656512f..49b6057b53b83097fca457e2c7b09988
    Fetcher,
 diff --git a/packages/app-data/src/contracts/change-revisions.ts b/packages/app-data/src/contracts/change-revisions.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..fdc4545ed67f5b43d1799bb5eed612a88cb46e2f
+index 0000000..fdc4545
 --- /dev/null
 +++ b/packages/app-data/src/contracts/change-revisions.ts
 @@ -0,0 +1,34 @@
@@ -649,7 +713,7 @@ index 0000000000000000000000000000000000000000..fdc4545ed67f5b43d1799bb5eed612a8
 +export type RevisionEvent = typeof RevisionEvent.Type;
 diff --git a/packages/app-data/src/implementation/change-notifications.ts b/packages/app-data/src/implementation/change-notifications.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..89de56a97dce9ddcf6a9863bb0344a8d4bd64023
+index 0000000..89de56a
 --- /dev/null
 +++ b/packages/app-data/src/implementation/change-notifications.ts
 @@ -0,0 +1,93 @@
@@ -747,7 +811,7 @@ index 0000000000000000000000000000000000000000..89de56a97dce9ddcf6a9863bb0344a8d
 +  };
 +};
 diff --git a/packages/app-data/src/index.ts b/packages/app-data/src/index.ts
-index d9151d19199a36975ffc1e313a17898d6ec883d3..995cccd83c607eca02a70e3e43c929ec451fb2a7 100644
+index d9151d1..995cccd 100644
 --- a/packages/app-data/src/index.ts
 +++ b/packages/app-data/src/index.ts
 @@ -1,2 +1,3 @@
@@ -755,7 +819,7 @@ index d9151d19199a36975ffc1e313a17898d6ec883d3..995cccd83c607eca02a70e3e43c929ec
  export * from "./contracts/database.ts";
 +export * from "./contracts/change-revisions.ts";
 diff --git a/packages/apps/src/client.ts b/packages/apps/src/client.ts
-index 50494cccba780a20630f5d0d85710444e6781d9f..9aedb7ca4445f0bd779a523a030f2a4af171f632 100644
+index 50494cc..9aedb7c 100644
 --- a/packages/apps/src/client.ts
 +++ b/packages/apps/src/client.ts
 @@ -7,6 +7,7 @@ export {
@@ -767,7 +831,7 @@ index 50494cccba780a20630f5d0d85710444e6781d9f..9aedb7ca4445f0bd779a523a030f2a4a
  export type {
    AppMutation,
 diff --git a/packages/apps/src/contracts/ui.ts b/packages/apps/src/contracts/ui.ts
-index 824d4b7970471c5a9865480207acc71ae0d87746..1e8eb60757b83d958bca064cada8938ebce2e665 100644
+index 824d4b7..1e8eb60 100644
 --- a/packages/apps/src/contracts/ui.ts
 +++ b/packages/apps/src/contracts/ui.ts
 @@ -1,5 +1,12 @@
@@ -785,7 +849,7 @@ index 824d4b7970471c5a9865480207acc71ae0d87746..1e8eb60757b83d958bca064cada8938e
  import { JsonValue } from "./schema.ts";
 diff --git a/packages/apps/src/implementation/revision-fence.ts b/packages/apps/src/implementation/revision-fence.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..ce6f0b5378e7f4dbaef159b144ada5d81a845718
+index 0000000..ce6f0b5
 --- /dev/null
 +++ b/packages/apps/src/implementation/revision-fence.ts
 @@ -0,0 +1,52 @@
@@ -841,41 +905,3 @@ index 0000000000000000000000000000000000000000..ce6f0b5378e7f4dbaef159b144ada5d8
 +    },
 +  };
 +};
-diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
---- a/e2e/support/profile-removal-rollback.ts
-+++ b/e2e/support/profile-removal-rollback.ts
-@@ -24,6 +24,10 @@
- /** Remove the latest hosted objects and journal together so earlier migrations can replay. */
- export const beforeHostedAccountRechecks = () =>
-   [
-+    { sql: "DROP TRIGGER hosted_deployment_changed ON executor_apps" },
-+    { sql: "DROP FUNCTION hosted_deployment_changed(), hosted_record_change(text, text, text)" },
-+    { sql: "DROP TABLE hosted_change_pending, hosted_change_heads" },
-+    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 19" },
-     { sql: "DROP TABLE hosted_tool_availability" },
-     { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 18" },
-     { sql: "DROP TABLE hosted_account_rechecks, hosted_account_recheck_families" },
-diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-links.spec.ts
---- a/e2e/tests/legacy-profile-links.spec.ts
-+++ b/e2e/tests/legacy-profile-links.spec.ts
-@@ -6,7 +6,7 @@
-  * The fixture rebuilds the database as step 9 finds it inside the upgrade transaction. The
-  * product's migration ledger is per step: SDK schema versions in FumaDB's settings and hosted
-  * steps in `private_hosted_migrations`, which runs every step above its latest recorded one. The
-- * fixture removes steps 9 through 14 from the ledger and their objects, and writes the profiles an
-+ * fixture removes steps 9 through 19 from the ledger and their objects, and writes the profiles an
-  * older version left in `executor_installations`. SDK 4.0.13 and 4.0.14 stay applied because, in
-  * a real upgrade, they have already run when step 9 starts, and 4.0.13 keeps
-  * `executor_installations` unchanged for step 9. Step 9 reads only that table, apps, deployments,
-@@ -64,6 +64,11 @@
-   "account_identity_index",
-   "contributed_departure_observability",
-   "model_bindings",
-+  "hosted_routes",
-+  "tool_policies",
-+  "account_rechecks",
-+  "tool_availability",
-+  "change_revisions",
- ].map((name, index) => ({ migration_id: index + 1, name }));
- 
- const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });

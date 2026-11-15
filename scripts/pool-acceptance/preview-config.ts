@@ -2,12 +2,15 @@ import { lstat, readFile } from "node:fs/promises";
 import { brand } from "../../brand.ts";
 import { AcceptanceFailure, isObject } from "./types.ts";
 
-export interface PreviewBaseConfig {
+export interface PreviewStageConfig {
   origin: string;
   email: string;
   password: string;
   organizationId: string;
   poolAppId: string;
+}
+
+export interface PreviewBaseConfig extends PreviewStageConfig {
   codexAuthFile: string;
   models: { claude: string; codex: string };
 }
@@ -72,7 +75,9 @@ function trustedStage(env: NodeJS.ProcessEnv): {
   return { pullRequest, stage, hostname: `app.pr-${pullRequest}.${domain}` };
 }
 
-async function previewBaseConfig(env: NodeJS.ProcessEnv): Promise<PreviewBaseConfig> {
+export async function previewStageConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<PreviewStageConfig> {
   const input = required(env, "POOL_ACCEPTANCE_ORIGIN");
   let origin: URL;
   try {
@@ -117,7 +122,17 @@ async function previewBaseConfig(env: NodeJS.ProcessEnv): Promise<PreviewBaseCon
       throw new AcceptanceFailure("Preview manifest does not match the trusted seeded stage");
     }
   }
-  // The trusted workflow supplies the PR/stage/domain. Check them before opening credentials.
+  return {
+    origin: origin.origin,
+    email: required(env, "PREVIEW_SMOKE_EMAIL"),
+    password: required(env, "PREVIEW_SMOKE_PASSWORD"),
+    organizationId,
+    poolAppId,
+  };
+}
+
+async function previewBaseConfig(env: NodeJS.ProcessEnv): Promise<PreviewBaseConfig> {
+  const stage = await previewStageConfig(env);
   const codexAuthFile = required(env, "PREVIEW_CODEX_CLI_AUTH_FILE");
   const nativeAuth = await privateJson(codexAuthFile);
   const tokens = nativeAuth.tokens;
@@ -131,11 +146,7 @@ async function previewBaseConfig(env: NodeJS.ProcessEnv): Promise<PreviewBaseCon
     throw new AcceptanceFailure("Preview requires a dedicated native Codex ChatGPT login file");
   }
   return {
-    origin: origin.origin,
-    email: required(env, "PREVIEW_SMOKE_EMAIL"),
-    password: required(env, "PREVIEW_SMOKE_PASSWORD"),
-    organizationId,
-    poolAppId,
+    ...stage,
     codexAuthFile,
     models: {
       claude: required(env, "PREVIEW_CLAUDE_MODEL"),

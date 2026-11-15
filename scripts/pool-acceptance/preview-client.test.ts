@@ -600,3 +600,48 @@ test("revocation does not accept a successful model request", async () => {
     /Revoked model credential returned HTTP 200/,
   );
 });
+
+test("tool-only preview evidence preserves the model requirement on the original combined proof", async () => {
+  let now = 0;
+  const client = new PreviewClient(config, {
+    now: () => now,
+    delay: async (ms) => {
+      now += ms;
+    },
+    computerWaitMs: 10,
+    computerPollMs: 5,
+    fetch: async (input) => {
+      const url = new URL(input.toString());
+      if (url.pathname === "/api/auth/sign-in/email") {
+        const response = Response.json({ user: { id: "owner-1" } });
+        response.headers.set(
+          "set-cookie",
+          "executor-hosted.session_token=fixture; Path=/; HttpOnly",
+        );
+        return response;
+      }
+      if (url.pathname.endsWith("/data/query"))
+        return operation({ href: contextHref("fixture"), computers: [], undoPrompt: "undo" });
+      if (url.pathname === "/setup/v1/computers")
+        return Response.json({
+          computers: [
+            {
+              id: "computer-1",
+              state: "active",
+              firstModelRequestAt: null,
+              firstToolCallAt: "2026-10-24T08:12:14.000Z",
+            },
+          ],
+        });
+      throw new Error("Unexpected fixture path");
+    },
+  });
+  await client.signIn();
+  assert.deepEqual(await client.waitForToolCall("computer-1"), {
+    firstToolCallAt: "2026-10-24T08:12:14.000Z",
+  });
+  await assert.rejects(
+    client.waitForComputer("computer-1"),
+    /model and tool evidence remained incomplete/,
+  );
+});

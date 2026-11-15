@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "E2E fixtures may use the Effect Node HTTP client as a transport adapter without importing application implementations. The shared boundary keeps the terminal-control utility confined to the canonical listener adapter."
+    }
+  }
+}

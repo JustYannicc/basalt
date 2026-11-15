@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Migration failures expose only bounded phase and tag fields, validated SQLSTATE and version values, with a fixed fallback for hostile error getters. Failed upgrades restore the actual original storage marker. Current-layout errors derive their target from the active schema registry rather than an older prefix's version literal."
+    }
+  }
+}

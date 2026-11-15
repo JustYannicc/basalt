@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.ownerApprovalPolicies {
+    metadata {
+      constraint "Stored app, tool and account rules evaluate specificity and decoded-input constraints under their author's current authority. Workflow identity comes from stored runtime context, never app input. A matched ask is terminal and general approval still passes the durable receipt gate; policy and encrypted-confirmation changes append immutable history in the same transaction."
+    }
+  }
+}

@@ -11,6 +11,10 @@ import { handleCatalog } from "./worker.ts";
 import { notionSource } from "./notion.ts";
 import { catalog } from "./settings.ts";
 
+const servedSource: typeof notionSource = JSON.parse(
+  onServedFramework(JSON.stringify(notionSource)),
+);
+
 test("Notion GET and HEAD serve the local override without its publisher", async () => {
   const responses = [];
   for (const method of ["GET", "HEAD"]) {
@@ -23,8 +27,8 @@ test("Notion GET and HEAD serve the local override without its publisher", async
     assert.equal(response.status, 200);
     responses.push(response);
   }
-  assert.equal(onServedFramework(JSON.stringify(notionSource)), JSON.stringify(notionSource));
-  assert.equal(await responses[0].text(), JSON.stringify(notionSource));
+  assert.equal(onServedFramework(JSON.stringify(servedSource)), JSON.stringify(servedSource));
+  assert.equal(await responses[0].text(), JSON.stringify(servedSource));
   assert.equal(await responses[1].text(), "");
   assert.deepEqual([...responses[0].headers], [...responses[1].headers]);
 });
@@ -46,7 +50,11 @@ test("Notion preserves the published package except its account check and host f
       const publishedManifest = JSON.parse(file.content);
       const manifest = JSON.parse(carried.content);
       assert.equal(manifest.dependencies.apps, provenance.appsVersion);
-      assert.equal(manifest.dependencies.apps, catalog.framework);
+      assert.equal(
+        JSON.parse(servedSource.files.find((candidate) => candidate.path === file.path)!.content)
+          .dependencies.apps,
+        catalog.framework,
+      );
       assert.deepEqual(
         {
           ...manifest,

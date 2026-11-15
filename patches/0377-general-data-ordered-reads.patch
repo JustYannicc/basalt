@@ -1,7 +1,20 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+index 897bfd9..f8e4435 100644
+--- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
++++ b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+@@ -49,7 +49,6 @@ export const cloudInvocationDatabase = Layer.effect(
+             url,
+             route: connection.route,
+             maxConnections: invocationConnectionLimit,
+-            statementGroups: true,
+           }),
+         );
+         return Context.add(sql, ConnectionReservations, {
 diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hosted/cloud/src/infrastructure/product-services.ts
+index 362c97e..4c2df0a 100644
 --- a/apps/hosted/cloud/src/infrastructure/product-services.ts
 +++ b/apps/hosted/cloud/src/infrastructure/product-services.ts
-@@ -5,7 +5,6 @@
+@@ -5,7 +5,6 @@ import { HostedRoutesConfiguration } from "@executor-js/hosted-server/hosted-rou
  /** The executor and the services every cloud Worker shares, including app pages. */
  import {
    HostedExecutor,
@@ -9,7 +22,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hos
    withDeploySetupWake,
    withExecutorAnalytics,
  } from "@executor-js/hosted-server";
-@@ -28,8 +27,6 @@
+@@ -28,8 +27,6 @@ import { RuntimeContext } from "alchemy";
  import type * as Cloudflare from "alchemy/Cloudflare";
  import { Config, Context, Effect, Layer, Option } from "effect";
  import { SqlClient } from "effect/sql";
@@ -18,7 +31,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hos
  import { cloudBuildAsset, loadCloudBuildRecord } from "../implementation/build-storage.ts";
  import { cachedBuildAssets } from "../implementation/asset-cache.ts";
  import { cloudBlobs } from "./blobs.ts";
-@@ -79,14 +76,6 @@
+@@ -79,14 +76,6 @@ export const cloudProductServices = Effect.fn(function* (
    const services = Layer.mergeAll(
      wire,
      Layer.succeed(HostedRoutesConfiguration, routes.configuration),
@@ -33,21 +46,11 @@ diff --git a/apps/hosted/cloud/src/infrastructure/product-services.ts b/apps/hos
      Layer.succeed(AccountAcquisitionConfiguration, acquisition),
      Layer.succeed(AccessLifecycle, accessLifecycle),
      Layer.succeed(
-diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
---- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
-+++ b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
-@@ -47,7 +47,6 @@
-           cloudDatabasePool({
-             url,
-             maxConnections: invocationConnectionLimit,
--            statementGroups: true,
-           }),
-         );
-         return Context.add(sql, ConnectionReservations, {
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+index a58b57a..33bc709 100644
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
-@@ -25,7 +25,6 @@
+@@ -25,7 +25,6 @@ import {
  } from "@executor-js/sdk/core";
  import {
    HostedExecutor,
@@ -55,7 +58,7 @@ diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/app
    ScheduledAuthority,
    makeScheduledAuthority,
    OrganizationIcons,
-@@ -63,7 +62,6 @@
+@@ -66,7 +65,6 @@ import {
  import { HostManagedAccountRecords } from "@executor-js/hosted-server/host-managed-accounts";
  import { poolAccessRecords } from "@executor-js/hosted-server/pool-access-provenance";
  import { SqlClient } from "effect/sql";
@@ -63,7 +66,7 @@ diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/app
  import { productBrandConfig } from "@executor-js/utils/product-brand";
  
  /** Native resources supplied at the self-host composition boundary. */
-@@ -243,10 +241,6 @@
+@@ -251,10 +249,6 @@ export const selfHostExecutorServices = <E, R>(
              ? { key: modelSigningKey.value, origin: modelOrigin }
              : undefined,
          ),
@@ -75,16 +78,23 @@ diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/app
          Layer.succeed(SelfHostAuth, auth),
          Layer.succeed(ScheduledAuthority, scheduleAuthority),
 diff --git a/e2e/support/data-query-batch.ts b/e2e/support/data-query-batch.ts
+index 0bf3be3..6bd3eb1 100644
 --- a/e2e/support/data-query-batch.ts
 +++ b/e2e/support/data-query-batch.ts
-@@ -57,4 +57,4 @@
+@@ -55,8 +55,8 @@ export const tracedDataQuery = (
+     return { response, request };
+   });
  
 -/** Assert the batch only after the completed request and SDK span have actually been delivered. */
 -export const assertDataQueryBatch = (
 +/** Assert the ordered reads only after the completed request and SDK span have actually been delivered. */
 +export const assertDataQueryReads = (
    query: QueryTrace,
-@@ -123,20 +123,3 @@
+   made: Effect.Success<ReturnType<typeof tracedDataQuery>>,
+   label: string,
+@@ -121,24 +121,7 @@ export const assertDataQueryBatch = (
+     });
+     const pipelines = sql.filter((span) => span.operation === "sql.pipeline");
      yield* evidence.json(`data-query-${label}.json`, { request: made.request, sql, delivered });
 -    // The unoptimized route emits zero pipelines. This is the required RED assertion.
 -    expect(
@@ -106,17 +116,29 @@ diff --git a/e2e/support/data-query-batch.ts b/e2e/support/data-query-batch.ts
 -    // SQL spans open while leaves queue, before the pipeline span opens. They are siblings.
 +    expect(pipelines, "General data dispatch uses ordinary SDK reads").toHaveLength(0);
      const reads = sql.filter((span) => span.operation === "sql.execute");
-@@ -149,3 +132,3 @@
+     expect(
+       reads.filter(
+@@ -147,7 +130,7 @@ export const assertDataQueryBatch = (
+           text.includes("executor_deployments") &&
+           text.includes('"deployment:build"'),
        ),
 -      "The batched snapshot reads the app and its active version once",
 +      "The SDK reads the app and its active version once",
      ).toHaveLength(1);
-@@ -160,3 +143,3 @@
+     expect(
+       // Joined target reads select account rows without creating an ORM span.
+@@ -163,7 +146,7 @@ export const assertDataQueryBatch = (
+         ({ text, under }) =>
+           text.includes('as "appLinks"') &&
            text.includes("as access") &&
 -          under.some(({ name }) => name === "sdk.accounts.recheck"),
 +          under.some(({ name }) => name === "sdk.data.query"),
        ),
-@@ -170,4 +153,4 @@
+       "The lifecycle recheck completes before data dispatch",
+     ).toHaveLength(1);
+@@ -173,6 +156,6 @@ export const assertDataQueryBatch = (
+           span.operation === "sql.execute" &&
+           span.under.some(({ name }) => name === "sdk.data.query"),
        ),
 -      "The SDK consumes the prefetched reads instead of reading again",
 -    ).toHaveLength(0);
@@ -124,6 +146,7 @@ diff --git a/e2e/support/data-query-batch.ts b/e2e/support/data-query-batch.ts
 +    ).not.toHaveLength(0);
    });
 diff --git a/e2e/tests/data-query-batch.spec.ts b/e2e/tests/data-query-batch.spec.ts
+index 7b49f5d..61655b9 100644
 --- a/e2e/tests/data-query-batch.spec.ts
 +++ b/e2e/tests/data-query-batch.spec.ts
 @@ -1,4 +1,4 @@
@@ -132,7 +155,7 @@ diff --git a/e2e/tests/data-query-batch.spec.ts b/e2e/tests/data-query-batch.spe
  import { expect, layer } from "@effect/vitest";
  import { Effect, Schema } from "effect";
  import { linkAccount, linkedAccountIds, unlinkAccount } from "../support/app-accounts.ts";
-@@ -6,7 +6,7 @@
+@@ -6,7 +6,7 @@ import { body } from "../support/api.ts";
  import { appLinksFixture } from "../support/app-links.ts";
  import { HostedLive, withHostedCase } from "../support/case.ts";
  import {
@@ -141,7 +164,7 @@ diff --git a/e2e/tests/data-query-batch.spec.ts b/e2e/tests/data-query-batch.spe
    tracedDataQuery,
    withDataQueryTelemetry,
  } from "../support/data-query-batch.ts";
-@@ -24,7 +24,7 @@
+@@ -24,7 +24,7 @@ const read = query({ input: object({ request: string() }) }, async (ctx: QueryCo
  }));
  export default defineApp(requirements, async () => ({ tools: router({ read }) }));`;
  
@@ -150,7 +173,7 @@ diff --git a/e2e/tests/data-query-batch.spec.ts b/e2e/tests/data-query-batch.spe
    it.effect(scenarios.dataQueryBatch.title, (context) =>
      withHostedCase(
        context,
-@@ -51,7 +51,7 @@
+@@ -51,7 +51,7 @@ layer(HostedLive, { excludeTestServices: true })("Data query batch", (it) => {
              team: { id: team, token: "synthetic-team" },
              personal: { id: personal, token: "synthetic-personal" },
            });
@@ -159,7 +182,7 @@ diff --git a/e2e/tests/data-query-batch.spec.ts b/e2e/tests/data-query-batch.spe
          }),
        ),
      ),
-@@ -114,9 +114,9 @@
+@@ -113,9 +113,9 @@ layer(HostedLive, { excludeTestServices: true })("Data query batch", (it) => {
            // The result checks run before collector waits, so one missing trace cannot hide a wrong selection.
            yield* Effect.all(
              [

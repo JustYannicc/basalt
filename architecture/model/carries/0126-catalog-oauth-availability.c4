@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountForms {
+    metadata {
+      constraint "Unavailable hosted OAuth clients defer to the existing configured, registered or personal-client choices without dropping the selected client's edit state. Manual setup guidance appears only when no usable automatic, current or registered client is offered. A missing hosted credential pair cannot silently choose another authorization client."
+    }
+  }
+}

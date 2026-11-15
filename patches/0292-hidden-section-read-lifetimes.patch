@@ -1,13 +1,14 @@
 diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
+index 3759458..bdfc6d7 100644
 --- a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
 +++ b/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSlug.tsx
 @@ -1,4 +1,4 @@
--import { createFileRoute, Outlet, useLocation } from "@tanstack/react-router";
-+import { createFileRoute, Outlet, useChildMatches, useLocation } from "@tanstack/react-router";
+-import { createFileRoute, Outlet, redirect, useLocation } from "@tanstack/react-router";
++import { createFileRoute, Outlet, redirect, useChildMatches, useLocation } from "@tanstack/react-router";
  import { DashboardEntryPending } from "@executor-js/hosted-web/entry";
  import { CloudPagePending } from "../components/page-pending.tsx";
  import { ErrorTrackingProvider } from "@executor-js/ui/dashboard/error-tracking";
-@@ -30,7 +30,7 @@
+@@ -48,7 +48,7 @@ function OrganizationLayout() {
            support={<CloudSupport />}
          >
            <OrganizationContent pending={<CloudPagePending />}>
@@ -16,7 +17,7 @@ diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSl
              <NameAccountDialog />
            </OrganizationContent>
          </DashboardShell>
-@@ -51,3 +51,13 @@
+@@ -69,3 +69,13 @@ function OrganizationPending() {
      </DashboardEntryPending>
    );
  }
@@ -31,6 +32,7 @@ diff --git a/apps/hosted/cloud/web/src/implementation/routes/org.$organizationSl
 +  return <Outlet key={page} />;
 +}
 diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx
+index 4e5fbde..8c8a98b 100644
 --- a/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx
 +++ b/apps/hosted/self-host/web/src/implementation/routes/org.$organizationSlug.tsx
 @@ -1,4 +1,4 @@
@@ -39,7 +41,7 @@ diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizati
  import { DashboardEntryPending } from "@executor-js/hosted-web/entry";
  import { PagePending } from "@executor-js/hosted-web/page-pending";
  import { DashboardShell } from "@executor-js/hosted-web/shell";
-@@ -18,7 +18,7 @@
+@@ -18,7 +18,7 @@ function OrganizationLayout() {
      <OrganizationBoundary slug={organizationSlug}>
        <DashboardShell allowCreateOrganization={false} navigation={<Navigation />}>
          <OrganizationContent pending={<PagePending />}>
@@ -48,7 +50,7 @@ diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizati
            <NameAccountDialog />
          </OrganizationContent>
        </DashboardShell>
-@@ -34,3 +34,13 @@
+@@ -34,3 +34,13 @@ function OrganizationPending() {
      </DashboardEntryPending>
    );
  }
@@ -63,14 +65,13 @@ diff --git a/apps/hosted/self-host/web/src/implementation/routes/org.$organizati
 +  return <Outlet key={page} />;
 +}
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 62a39cf..e0414e1 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -6013,6 +6013,26 @@
-       "self-host": scheduled,
-       cloud: scheduled,
+@@ -7070,6 +7070,26 @@ export const scenarios = plan({
        local: na("Personal tokens are hosted only."),
-+    },
-+  },
+     },
+   },
 +  hiddenSectionDesktop: {
 +    fixtures: "actors",
 +    file: "hidden-section-reads.spec.ts",
@@ -89,13 +90,16 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +      "self-host": scheduled,
 +      cloud: scheduled,
 +      local: na("Local does not share the hosted section router."),
-     },
-   },
++    },
++  },
    dashboardClientLoading: {
+     fixtures: "actors",
+     file: "dashboard-client-loading.spec.ts",
 diff --git a/e2e/tests/dashboard-client-loading.spec.ts b/e2e/tests/dashboard-client-loading.spec.ts
+index 8128080..c958ff3 100644
 --- a/e2e/tests/dashboard-client-loading.spec.ts
 +++ b/e2e/tests/dashboard-client-loading.spec.ts
-@@ -7,6 +7,7 @@
+@@ -7,6 +7,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
  import { openInApp } from "../support/in-app-navigation.ts";
  import { holdQuery } from "../support/query-transition.ts";
  import { scenarios } from "../test-plan.ts";
@@ -103,7 +107,7 @@ diff --git a/e2e/tests/dashboard-client-loading.spec.ts b/e2e/tests/dashboard-cl
  
  layer(HostedLive, { excludeTestServices: true })("Dashboard client loading", (it) => {
    it.effect(scenarios.dashboardClientLoading.title, (context) =>
-@@ -17,6 +18,22 @@
+@@ -17,6 +18,22 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard client loading", (it
            browser = yield* Browser,
            evidence = yield* Evidence;
          yield* browser.login(actors.owner);
@@ -126,7 +130,7 @@ diff --git a/e2e/tests/dashboard-client-loading.spec.ts b/e2e/tests/dashboard-cl
          for (const viewport of [
            { name: "Desktop", width: 1280, height: 800 },
            { name: "Mobile", width: 390, height: 844 },
-@@ -124,6 +141,74 @@
+@@ -124,6 +141,74 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard client loading", (it
                  "Accounts keeps its page frame while its client module is held",
                ).toBe(1);
                expect(before[3]).not.toBeNull();
@@ -201,7 +205,7 @@ diff --git a/e2e/tests/dashboard-client-loading.spec.ts b/e2e/tests/dashboard-cl
                yield* chunk.release;
                yield* browser.use("The account directory replaces the loading rows", (page) =>
                  page
-@@ -173,6 +258,10 @@
+@@ -173,6 +258,10 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard client loading", (it
                );
              }),
            );
@@ -214,6 +218,7 @@ diff --git a/e2e/tests/dashboard-client-loading.spec.ts b/e2e/tests/dashboard-cl
    );
 diff --git a/e2e/tests/hidden-section-reads.spec.ts b/e2e/tests/hidden-section-reads.spec.ts
 new file mode 100644
+index 0000000..6da608e
 --- /dev/null
 +++ b/e2e/tests/hidden-section-reads.spec.ts
 @@ -0,0 +1,166 @@
@@ -384,6 +389,7 @@ new file mode 100644
 +  }
 +});
 diff --git a/packages/ui/src/contracts/refresh.ts b/packages/ui/src/contracts/refresh.ts
+index 76e2064..b4c35cf 100644
 --- a/packages/ui/src/contracts/refresh.ts
 +++ b/packages/ui/src/contracts/refresh.ts
 @@ -1,6 +1,6 @@
@@ -395,7 +401,7 @@ diff --git a/packages/ui/src/contracts/refresh.ts b/packages/ui/src/contracts/re
  
  /**
   * Counts returns to a visible page. A server render has no window, so its value never changes
-@@ -21,22 +21,60 @@
+@@ -21,22 +21,60 @@ const pageFocus = Atom.readable((get) => {
  const retention: Duration.Input = "30 minutes";
  /** Older retained values are shown while they are read again in the background. */
  const freshness: Duration.Input = "30 seconds";

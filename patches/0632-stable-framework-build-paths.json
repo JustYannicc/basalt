@@ -1,0 +1,9 @@
+{
+  "identity": "stable-framework-build-paths",
+  "file": "0632-stable-framework-build-paths.patch",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "content_sha256": "39307501aa2016c312eeff1913cef703e9cfe53f590fe2ba007ad4cc28c5fe9f"
+}

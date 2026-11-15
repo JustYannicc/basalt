@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Workflow questions and responses live in encrypted workflow storage and resume the same authorized run. Released protocols retain their original step schemas. Additive workflow-input tables and indexes extend the complete earlier account-acquisition layout and retain queue-read indexes; current-layout failures report the registry's latest supported version."
+    }
+  }
+}

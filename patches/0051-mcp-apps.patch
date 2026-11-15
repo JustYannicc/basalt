@@ -1,7 +1,8 @@
 diff --git a/apps/hosted/cloud/scripts/build-site.ts b/apps/hosted/cloud/scripts/build-site.ts
+index e1239a1..a91704a 100644
 --- a/apps/hosted/cloud/scripts/build-site.ts
 +++ b/apps/hosted/cloud/scripts/build-site.ts
-@@ -2,6 +2,7 @@
+@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
  import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
  import { createHash } from "node:crypto";
  import { Effect, FileSystem, Path, Schema } from "effect";
@@ -9,7 +10,7 @@ diff --git a/apps/hosted/cloud/scripts/build-site.ts b/apps/hosted/cloud/scripts
  import { siteRedirects } from "../src/implementation/site-redirects.ts";
  import {
    RetainedAssetList,
-@@ -89,6 +90,11 @@
+@@ -89,6 +90,11 @@ const siteBuild = Effect.gen(function* () {
    };
    // The hash-named pool seed is public source, separate from dashboard document routes.
    for (const asset of poolAssets) addAsset(asset, path.join("_basalt", asset.relative));
@@ -22,20 +23,22 @@ diff --git a/apps/hosted/cloud/scripts/build-site.ts b/apps/hosted/cloud/scripts
    for (const asset of dashboardAssets) addAsset(asset);
    for (const asset of docsAssets) addAsset(asset, path.join(docsPrefix, asset.relative));
 diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
+index ab0ad51..9adb19b 100644
 --- a/apps/hosted/cloud/src/app-ui.ts
 +++ b/apps/hosted/cloud/src/app-ui.ts
-@@ -1,3 +1,10 @@
+@@ -1,4 +1,10 @@
+-import { recordUnclassifiedRefusals, requestServices } from "@executor-js/hosted-server";
 +import {
 +  McpAppAssets,
 +  appSandboxAddress,
 +  appSandboxLabel,
 +  appSandboxResponse,
 +} from "@executor-js/mcp";
-+import { HostedExecutor } from "@executor-js/hosted-server";
- import { requestServices } from "@executor-js/hosted-server";
++import { HostedExecutor, recordUnclassifiedRefusals, requestServices } from "@executor-js/hosted-server";
  import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
  /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
-@@ -13,7 +20,13 @@
+ import {
+@@ -13,7 +19,13 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
  import * as Cloudflare from "alchemy/Cloudflare";
  import { Cause, Config, Effect, Layer, Option, Predicate } from "effect";
  import { HttpApiBuilder } from "effect/http-api";
@@ -48,9 +51,9 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
 +  HttpServerResponse,
 +} from "effect/http";
  import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
- import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
- // Failures are logged as telemetry records them: tags and fixed sentences, never values.
-@@ -34,6 +47,8 @@
+ import {
+   toRequestHttpEffect,
+@@ -39,6 +51,8 @@ import {
    telemetryBindings,
  } from "./infrastructure/telemetry.ts";
  
@@ -59,7 +62,7 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
  import { workerBuild } from "./infrastructure/worker-build.ts";
  import { productBrandBindings } from "./infrastructure/product-brand.ts";
  
-@@ -92,6 +107,7 @@
+@@ -97,6 +111,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
    Effect.gen(function* () {
      if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
      const { dev } = yield* AlchemyContext;
@@ -67,7 +70,7 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
      const base = yield* cloudAppUiBase.pipe(Effect.orDie);
      const placementRegion = yield* Config.NonEmptyString("CLOUD_PLACEMENT_REGION").pipe(
        Config.option,
-@@ -101,6 +117,13 @@
+@@ -106,6 +121,13 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
      return {
        main: import.meta.url,
        build: workerBuild("app-pages"),
@@ -81,7 +84,7 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
        ...(yield* cloudObservability),
        env: {
          ...(yield* postHogBindings).env,
-@@ -171,8 +194,19 @@
+@@ -176,8 +198,19 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
        Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),
      );
      const lifetime = yield* previewLifetime;
@@ -104,6 +107,7 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
          Effect.catchIf(
 diff --git a/apps/hosted/cloud/src/infrastructure/mcp-app-assets.ts b/apps/hosted/cloud/src/infrastructure/mcp-app-assets.ts
 new file mode 100644
+index 0000000..4dc8e3a
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/mcp-app-assets.ts
 @@ -0,0 +1,36 @@
@@ -144,6 +148,7 @@ new file mode 100644
 +    })) satisfies McpAppAssetSource;
 +});
 diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session.ts b/apps/hosted/cloud/src/infrastructure/mcp-session.ts
+index a6f15c3..4a19d48 100644
 --- a/apps/hosted/cloud/src/infrastructure/mcp-session.ts
 +++ b/apps/hosted/cloud/src/infrastructure/mcp-session.ts
 @@ -1,5 +1,6 @@
@@ -153,7 +158,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session.ts b/apps/hosted/c
    CallStateCache,
    type CallState,
    ConcurrentStatements,
-@@ -15,7 +16,9 @@
+@@ -15,7 +16,9 @@ import {
    mcpSessionKey,
  } from "@executor-js/hosted-server";
  import { PgPool } from "@effect/sql-pg";
@@ -161,10 +166,10 @@ diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session.ts b/apps/hosted/c
 +import { cloudMcpAppAssets } from "./mcp-app-assets.ts";
 +import { cloudAppUiBase } from "../contracts/app-ui.ts";
 +import { McpAppAssets, appSandboxAddress, runningPrograms } from "@executor-js/mcp";
+ import type { RuntimeContext } from "alchemy";
  import * as Cloudflare from "alchemy/Cloudflare";
  import * as PgConnection from "@effect/sql-pg/PgConnection";
- import { Effect, Option, type Layer, type Scope } from "effect";
-@@ -56,6 +59,8 @@
+@@ -68,6 +71,8 @@ export const makeMcpSession = Effect.fn(function* ({
    keys,
    idFromName,
  }: McpSessionServices) {
@@ -172,16 +177,16 @@ diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session.ts b/apps/hosted/c
 +  const sandbox = appSandboxAddress(yield* cloudAppUiBase.pipe(Effect.orDie));
    const reportErrors = yield* cloudSentry;
    const analytics = yield* cloudAnalytics;
-   const objectDatabase = yield* cloudObjectDatabase;
-@@ -80,6 +85,7 @@
-     // Protocol sessions are kept in the object's storage, so they outlive its eviction.
-     const handler = yield* makeHostedMcp(undefined, undefined, mcpSessionStore(state.storage)).pipe(
+   // One object per grant: through Hyperdrive, so active sessions share its PgBouncer clients.
+@@ -101,6 +106,7 @@ export const makeMcpSession = Effect.fn(function* ({
+       mcpInteractionStore(faults.kv, () => clock.currentTimeMillisUnsafe()),
+     ).pipe(
        Effect.provideService(CurrentProductBrand, brand),
 +      Effect.provideService(McpAppAssets, readAppAsset),
        Effect.provide(HttpServer.layerServices),
      );
-     const objectId = state.id.toString();
-@@ -120,6 +126,7 @@
+     /** While the object holds a program, an alarm is due within `holdMillis`. */
+@@ -152,6 +158,7 @@ export const makeMcpSession = Effect.fn(function* ({
          access,
          dispatchHostedMcp(access, address, handler.http).pipe(
            Effect.provideService(CurrentUserId, access.userId),
@@ -190,28 +195,30 @@ diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session.ts b/apps/hosted/c
            // share a write on a connection of their own.
            Effect.provideService(ConcurrentStatements, { group: PgPool.grouped }),
 diff --git a/apps/hosted/cloud/src/infrastructure/schedules.ts b/apps/hosted/cloud/src/infrastructure/schedules.ts
+index cdbfea3..ee0a73c 100644
 --- a/apps/hosted/cloud/src/infrastructure/schedules.ts
 +++ b/apps/hosted/cloud/src/infrastructure/schedules.ts
-@@ -6,7 +6,7 @@
+@@ -6,7 +6,7 @@ import { cloudAnalytics, recordBackgroundUsage } from "../implementation/product
  import { ScheduleObservation } from "@executor-js/sdk/scheduling";
  import { previewLifetime } from "./test-stage-expiry.ts";
  import { EventCleanup } from "./event-cleanup.ts";
 -import { WebhookSourceHost } from "@executor-js/sdk/core";
 +import { AppViewsHost, WebhookSourceHost } from "@executor-js/sdk/core";
- import { scheduleRecoveryMilliseconds } from "../contracts/schedules.ts";
- /** Native alarms wake one coordinator; authoritative schedule/run state remains in Postgres. */
- import * as Cloudflare from "alchemy/Cloudflare";
-@@ -203,6 +203,9 @@
-                 execute: (operation) =>
+ import {
+   cloudScheduleConcurrency,
+   heldAlarmMilliseconds,
+@@ -230,6 +230,9 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
                    pool.withPermitsIfAvailable(1)(operation).pipe(Effect.asVoid),
                }),
-+            );
+             );
 +            yield* executor[AppViewsHost].cleanup.pipe(
 +              Effect.catch(() => Effect.logError("App view cleanup failed")),
-             );
++            );
              // Each emit attempts its deliveries at once; this retries the ones still due.
              yield* executor.events.deliver({ maxDeliveries: 64 }).pipe(
+               Effect.withSpan("events.dispatch"),
 diff --git a/apps/hosted/cloud/src/infrastructure/site.ts b/apps/hosted/cloud/src/infrastructure/site.ts
+index f98574a..f467ca3 100644
 --- a/apps/hosted/cloud/src/infrastructure/site.ts
 +++ b/apps/hosted/cloud/src/infrastructure/site.ts
 @@ -1,4 +1,5 @@
@@ -220,7 +227,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/site.ts b/apps/hosted/cloud/sr
  import * as Command from "alchemy/Command";
  import { AlchemyContext } from "alchemy/AlchemyContext";
  import { Stage } from "alchemy/Stage";
-@@ -27,6 +28,7 @@
+@@ -27,6 +28,7 @@ export const cloudSite = Effect.gen(function* () {
      env: {
        // Generated assets are outside tracked source; the version invalidates Command.Build's input hash.
        BASALT_POOL_APP_VERSION: poolAppVersion,
@@ -229,9 +236,10 @@ diff --git a/apps/hosted/cloud/src/infrastructure/site.ts b/apps/hosted/cloud/sr
        ...sentry.build,
        ...environment,
 diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-server.ts
+index f7fab69..11aba1b 100644
 --- a/apps/hosted/cloud/src/mcp-server.ts
 +++ b/apps/hosted/cloud/src/mcp-server.ts
-@@ -22,6 +22,7 @@
+@@ -23,6 +23,7 @@ import {
    telemetryBindings,
  } from "./infrastructure/telemetry.ts";
  import { workerBuild } from "./infrastructure/worker-build.ts";
@@ -239,7 +247,7 @@ diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-ser
  import { productBrandBindings } from "./infrastructure/product-brand.ts";
  
  /** The executor and MCP identity are built once per isolate and shared by its objects. */
-@@ -44,8 +45,16 @@
+@@ -45,8 +46,16 @@ const mcpSession = Effect.gen(function* () {
  export default McpServer.make(
    Effect.gen(function* () {
      if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
@@ -253,10 +261,11 @@ diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-ser
 +        htmlHandling: "none" as const,
 +        notFoundHandling: "none" as const,
 +      },
-       build: workerBuild("mcp-server"),
+       // Only `alchemy dev` bundles the local test hooks; deployed builds cannot contain them.
+       build: workerBuild("mcp-server", { localTestHooks: (yield* AlchemyContext).dev }),
        ...(yield* cloudObservability),
-       workersDev: false,
 diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
+index 423556b..d55b5ad 100644
 --- a/apps/hosted/self-host/src/implementation/routes.ts
 +++ b/apps/hosted/self-host/src/implementation/routes.ts
 @@ -1,3 +1,11 @@
@@ -271,7 +280,7 @@ diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/se
  import { localSourceFormatter } from "@executor-js/app-management/source-format";
  import { publishedSkillRoutes } from "@executor-js/app-templates/executor";
  import {
-@@ -17,6 +25,7 @@
+@@ -17,6 +25,7 @@ import { hostedAppGitAccess } from "@executor-js/hosted-server/app-management";
  import {
    browserTelemetry,
    requestServices,
@@ -279,7 +288,7 @@ diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/se
    HostedExecutor,
    ScheduledAuthority,
    ScheduleWakeup,
-@@ -79,6 +88,11 @@
+@@ -79,6 +88,11 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
          : effect.pipe(Effect.provideService(ProductAnalytics, analytics.product));
      const scheduler = yield* Effect.gen(function* () {
        const executor = yield* Effect.flatten(HostedExecutor);
@@ -291,7 +300,7 @@ diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/se
        const authorize = yield* ScheduledAuthority;
        const concurrency = yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
          Config.withDefault(defaultScheduleWorkerOptions.concurrency),
-@@ -110,9 +124,11 @@
+@@ -110,9 +124,11 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
        origin: auth.origin,
        oauthRedirectUri: Option.getOrUndefined((yield* authSettings).oauthRedirectUri),
      });
@@ -304,7 +313,7 @@ diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/se
        yield* appUiAddressScheme,
        yield* appUiEmbedded,
      );
-@@ -235,11 +251,20 @@
+@@ -235,11 +251,20 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
        withHostPipeline(
          Effect.gen(function* () {
            const request = yield* HttpServerRequest.HttpServerRequest;
@@ -327,9 +336,10 @@ diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/se
      );
      return routes;
 diff --git a/apps/hosted/self-host/src/mcp.ts b/apps/hosted/self-host/src/mcp.ts
+index 8053e56..4eda04d 100644
 --- a/apps/hosted/self-host/src/mcp.ts
 +++ b/apps/hosted/self-host/src/mcp.ts
-@@ -11,7 +11,8 @@
+@@ -11,7 +11,8 @@ import {
    makeHostedMcp,
    mcpSessionKey,
  } from "@executor-js/hosted-server";
@@ -339,7 +349,7 @@ diff --git a/apps/hosted/self-host/src/mcp.ts b/apps/hosted/self-host/src/mcp.ts
  import { PgliteClient } from "@effect/sql-pglite";
  import { Config, Effect, RcMap, Schema } from "effect";
  import { HttpServerResponse } from "effect/http";
-@@ -31,7 +32,10 @@
+@@ -31,7 +32,10 @@ export const selfHostMcp = Effect.gen(function* () {
      // Each session keeps what its callers' last tool calls read (CallStateCache).
      lookup: (_key: string) =>
        Effect.map(
@@ -352,9 +362,10 @@ diff --git a/apps/hosted/self-host/src/mcp.ts b/apps/hosted/self-host/src/mcp.ts
            ...handler,
            calls: new Map<string, CallState>(),
 diff --git a/apps/hosted/server/src/contracts/mcp.ts b/apps/hosted/server/src/contracts/mcp.ts
+index b66d7ae..f932fcf 100644
 --- a/apps/hosted/server/src/contracts/mcp.ts
 +++ b/apps/hosted/server/src/contracts/mcp.ts
-@@ -8,6 +8,7 @@
+@@ -8,6 +8,7 @@ import type {
  } from "@executor-js/mcp-auth/connections";
  import type { ConnectedAgent, ConnectedAgentNotFound } from "@executor-js/mcp-auth/agents";
  import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
@@ -362,7 +373,7 @@ diff --git a/apps/hosted/server/src/contracts/mcp.ts b/apps/hosted/server/src/co
  import { Context, Schema } from "effect";
  import type { Effect } from "effect";
  import { OrganizationAccess, type OrganizationReference } from "./organization.ts";
-@@ -26,6 +27,10 @@
+@@ -26,6 +27,10 @@ export type McpAccess = typeof McpAccess.Type;
   * The grant an MCP request authenticated with. Event subscriptions belong to it, so revoking the
   * grant stops them. Unset outside MCP requests.
   */
@@ -374,18 +385,19 @@ diff --git a/apps/hosted/server/src/contracts/mcp.ts b/apps/hosted/server/src/co
    defaultValue: () => undefined,
  });
 diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/server/src/implementation/mcp-http.ts
+index f8dccd8..0aa52f6 100644
 --- a/apps/hosted/server/src/implementation/mcp-http.ts
 +++ b/apps/hosted/server/src/implementation/mcp-http.ts
-@@ -16,6 +16,8 @@
+@@ -17,6 +17,8 @@ import {
  } from "@executor-js/mcp-auth";
  import {
    defaultMcpLimits,
 +  makeMcpAppViews,
 +  deferredMcpAppViews,
    makeMcp,
+   McpRequestAttributes,
    refusedMcpRequest,
-   type McpBackend,
-@@ -35,6 +37,7 @@
+@@ -37,6 +39,7 @@ import {
  import { HttpServerRequest, HttpServerResponse } from "effect/http";
  import {
    CurrentMcpGrant,
@@ -393,7 +405,7 @@ diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/ser
    McpAuthentication,
    McpUnauthorized,
    type McpAccess,
-@@ -107,6 +110,13 @@
+@@ -109,6 +112,13 @@ const RequestApprovalUrl = Context.Reference<
    ((address: import("@executor-js/mcp/browser").BrowserApprovalAddress) => string) | undefined
  >("hosted/McpApprovalUrl", { defaultValue: () => undefined });
  const requestBackend: McpBackend<RequestError> = {
@@ -407,7 +419,7 @@ diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/ser
    listSkills: (input, options) =>
      Effect.flatMap(RequestBackend, (backend) => backend.listSkills(input, options)),
    readSkill: (input) => Effect.flatMap(RequestBackend, (backend) => backend.readSkill(input)),
-@@ -185,6 +195,7 @@
+@@ -189,6 +199,7 @@ export const dispatchHostedMcp = <E, R>(
    Effect.gen(function* () {
      const authentication = yield* McpAuthentication;
      const request = yield* HttpServerRequest.HttpServerRequest;
@@ -415,7 +427,7 @@ diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/ser
      const scoped = (fresh: McpAccess) =>
        Effect.gen(function* () {
          // A grant serves only the MCP URL it was issued for, and says why it cannot serve this one.
-@@ -364,8 +375,25 @@
+@@ -374,8 +385,25 @@ export const dispatchHostedMcp = <E, R>(
            Effect.provideService(InvocationPrefetch, read.invocation),
          );
        });
@@ -441,7 +453,7 @@ diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/ser
        listSkills: (input, options) =>
          current.pipe(Effect.flatMap((fresh) => fresh.listSkills(input, options))),
        readSkill: (input) => current.pipe(Effect.flatMap((fresh) => fresh.readSkill(input))),
-@@ -418,6 +446,9 @@
+@@ -428,6 +456,9 @@ export const dispatchHostedMcp = <E, R>(
          current.pipe(Effect.flatMap((fresh) => fresh.subscribeEvent(input))),
      };
      return yield* handler.pipe(
@@ -452,14 +464,15 @@ diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/ser
        Effect.provideService(RequestApprovalUrl, (address) => {
          const url = new URL(`/mcp/approve/${address.requestId}`, authentication.origin);
 diff --git a/apps/local/server/src/implementation/mcp.ts b/apps/local/server/src/implementation/mcp.ts
+index 3dbd52a..03414fb 100644
 --- a/apps/local/server/src/implementation/mcp.ts
 +++ b/apps/local/server/src/implementation/mcp.ts
-@@ -9,11 +9,21 @@
+@@ -9,11 +9,21 @@ import {
    untargetedLinkRefusal,
    type Grant,
  } from "@executor-js/mcp-auth";
 +import { embeddedMcpAppAssets } from "@executor-js/mcp/embedded-app-assets";
- import { localRequest } from "./auth.ts";
+ import { localBearer, localRequest } from "./auth.ts";
  import type { ServerConfig } from "../contracts/config.ts";
  import { LocalMcpUnauthorized, type LocalMcpOAuth } from "./mcp-oauth.ts";
  /** Local access and documentation I/O for the shared MCP implementation. */
@@ -477,7 +490,7 @@ diff --git a/apps/local/server/src/implementation/mcp.ts b/apps/local/server/src
  import { annotateSkillRead, executorIntro } from "@executor-js/app-templates/executor";
  import {
    ElicitationFailed,
-@@ -168,6 +178,13 @@
+@@ -168,6 +178,13 @@ export const localMcp = (
            }),
        },
        backend: {
@@ -491,7 +504,7 @@ diff --git a/apps/local/server/src/implementation/mcp.ts b/apps/local/server/src
          listSkills: (input, options) =>
            Effect.flatMap(RequestBackend, (b) => b.listSkills(input, options)),
          readSkill: (input) => Effect.flatMap(RequestBackend, (b) => b.readSkill(input)),
-@@ -196,7 +213,7 @@
+@@ -196,7 +213,7 @@ export const localMcp = (
        instructions: executorIntro,
        limits,
        annotateSkillRead,
@@ -500,7 +513,7 @@ diff --git a/apps/local/server/src/implementation/mcp.ts b/apps/local/server/src
      const http = Effect.gen(function* () {
        const request = yield* localRequest(config.port, config.browserOrigin);
        const address = requestedMcpAddress(new URL(request.url, oauth.origin));
-@@ -217,7 +234,22 @@
+@@ -216,7 +233,22 @@ export const localMcp = (
          return grant;
        });
        const grant = yield* current;
@@ -525,9 +538,10 @@ diff --git a/apps/local/server/src/implementation/mcp.ts b/apps/local/server/src
          Effect.provideService(RequestBackend, backend),
          Effect.provideService(Caller, grant.id),
 diff --git a/apps/local/server/src/implementation/server.ts b/apps/local/server/src/implementation/server.ts
+index ed50f6a..183519a 100644
 --- a/apps/local/server/src/implementation/server.ts
 +++ b/apps/local/server/src/implementation/server.ts
-@@ -79,6 +79,14 @@
+@@ -81,6 +81,14 @@ import { accountConnectHandlers, connectForApp } from "./account-connections.ts"
  import { localOwner, localOwners } from "./owners.ts";
  import { appUi } from "./app-ui.ts";
  import { appAuthentication, appRequest } from "./app-auth.ts";
@@ -542,19 +556,19 @@ diff --git a/apps/local/server/src/implementation/server.ts b/apps/local/server/
  import { appFromHost } from "../contracts/app-ui.ts";
  import { AppUiApi } from "apps/ui/contracts";
  import { appSignInCallbackPath } from "apps/ui/auth";
-@@ -243,6 +251,11 @@
-       );
+@@ -251,6 +259,11 @@ export const localApi = (
        const scheduleConcurrency = yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
          Config.withDefault(defaultScheduleWorkerOptions.concurrency),
-+      );
+       );
 +      yield* executor[AppViewsHost].cleanup.pipe(
 +        Effect.catch(() => Effect.logError("App view cleanup failed")),
 +        Effect.repeat(Schedule.spaced("1 minute")),
 +        Effect.forkScoped,
-       );
++      );
        const scheduler = startScheduleWorker(executor, () => Effect.void, {
          ...defaultScheduleWorkerOptions,
-@@ -549,6 +562,11 @@
+         runner: "local",
+@@ -554,6 +567,11 @@ export const localApi = (
          withHostPipeline(
            Effect.gen(function* () {
              const request = yield* HttpServerRequest.HttpServerRequest;
@@ -567,6 +581,7 @@ diff --git a/apps/local/server/src/implementation/server.ts b/apps/local/server/
                ? productHandler
                : appHandler.pipe(requestTiming);
 diff --git a/bun.lock b/bun.lock
+index c389e08..df4f704 100644
 --- a/bun.lock
 +++ b/bun.lock
 @@ -608,6 +608,7 @@
@@ -577,27 +592,7 @@ diff --git a/bun.lock b/bun.lock
          "@opencode-ai/codemode": "0.0.0-dev-19272",
          "acorn": "8.15.0",
          "apps": "workspace:*",
-@@ -889,8 +890,6 @@
- 
-     "@astrojs/astro2tsx": ["@astrojs/astro2tsx@0.1.0", "", { "dependencies": { "@emnapi/core": "1.11.3", "@napi-rs/wasm-runtime": "1.2.4" } }, "sha512-tgprkax8mcF+BiHJQBdoQ+REqtvvnLlYzV0yCeLMdcv3pJIutdlinWNHUzN1jMOT5VRlYTtMmDdaoPrtd3cBAQ=="],
- 
--    "@astrojs/check": ["@astrojs/check@0.9.10", "", { "dependencies": { "@astrojs/language-server": "^2.16.7", "chokidar": "^4.0.3", "kleur": "^4.1.5", "yargs": "^18.0.0" }, "peerDependencies": { "typescript": "^5.0.0 || ^6.0.0" }, "bin": { "astro-check": "./bin/astro-check.js" } }, "sha512-zgx/UQMozdjOa3bOxjgeCFdtpE3c9rRX6xHwa+2QXvy8z8Akifu2AtubHyv/zzC2znO8dl8fFWL4K+Ba9kS8HQ=="],
--
-     "@astrojs/compiler-binding": ["@astrojs/compiler-binding@0.4.1", "", { "optionalDependencies": { "@astrojs/compiler-binding-android-arm64": "0.4.1", "@astrojs/compiler-binding-darwin-arm64": "0.4.1", "@astrojs/compiler-binding-darwin-x64": "0.4.1", "@astrojs/compiler-binding-linux-arm64-gnu": "0.4.1", "@astrojs/compiler-binding-linux-arm64-musl": "0.4.1", "@astrojs/compiler-binding-linux-x64-gnu": "0.4.1", "@astrojs/compiler-binding-linux-x64-musl": "0.4.1", "@astrojs/compiler-binding-wasm32-wasi": "0.4.1", "@astrojs/compiler-binding-win32-arm64-msvc": "0.4.1", "@astrojs/compiler-binding-win32-x64-msvc": "0.4.1" } }, "sha512-ZYVDW1P58OXyxqZbOMp+/2U9KA7y2esIx9r4pWdpZ/l6fCZhaw4ul+D7EgpRVxYLkyTWqzANbTTUFGPFP8zDHA=="],
- 
-     "@astrojs/compiler-binding-android-arm64": ["@astrojs/compiler-binding-android-arm64@0.4.1", "", { "os": "android", "cpu": "arm64" }, "sha512-Wtx2DZORuNTLASLLZ8hlrjFaJe1LUloatcCn9EPq7knBhRpjMGXeJANIJMeBZG4igvz7x+3nyAJM2iwCSW9xog=="],
-@@ -1283,10 +1282,6 @@
- 
-     "@electric-sql/pglite": ["@electric-sql/pglite@0.5.8", "", {}, "sha512-n9tsbUOhwx2epK1V0ZG9Ar4SHWUju04dhmzZXiSBXwBoleOvIfals33NAaWgagQVAL4Rbvx/Ptsu3P+pA09f6Q=="],
- 
--    "@electric-sql/pglite-socket": ["@electric-sql/pglite-socket@0.0.20", "", { "peerDependencies": { "@electric-sql/pglite": "0.3.15" }, "bin": { "pglite-server": "dist/scripts/server.js" } }, "sha512-J5nLGsicnD9wJHnno9r+DGxfcZWh+YJMCe0q/aCgtG6XOm9Z7fKeite8IZSNXgZeGltSigM9U/vAWZQWdgcSFg=="],
--
--    "@electric-sql/pglite-tools": ["@electric-sql/pglite-tools@0.2.20", "", { "peerDependencies": { "@electric-sql/pglite": "0.3.15" } }, "sha512-BK50ZnYa3IG7ztXhtgYf0Q7zijV32Iw1cYS8C+ThdQlwx12V5VZ9KRJ42y82Hyb4PkTxZQklVQA9JHyUlex33A=="],
--
-     "@electron-internal/extract-zip": ["@electron-internal/extract-zip@1.0.5", "", {}, "sha512-+bqFCP98pLI0Tt0XQo1TmlXtwjWchISndDOxCkEcIuUgXWpBnLyRI+2DU+mesvnMMX6L1XDqYNA0lXNDHd/yiA=="],
- 
-     "@electron/asar": ["@electron/asar@3.4.1", "", { "dependencies": { "commander": "^5.0.0", "glob": "^7.1.6", "minimatch": "^3.0.4" }, "bin": { "asar": "bin/asar.js" } }, "sha512-i4/rNPRS84t0vSRa2HorerGRXWyF4vThfHesw0dmcWHp+cspK743UanA0suA5Q5y8kzY2y6YKrvbIUn69BCAiA=="],
-@@ -1721,6 +1716,8 @@
+@@ -1715,6 +1716,8 @@
  
      "@milkdown/utils": ["@milkdown/utils@7.22.2", "", { "dependencies": { "@milkdown/core": "7.22.2", "@milkdown/ctx": "7.22.2", "@milkdown/exception": "7.22.2", "@milkdown/prose": "7.22.2", "@milkdown/transformer": "7.22.2", "nanoid": "^6.0.0" } }, "sha512-lRKIaX+kFZycqHxc2xtIwgPdp5BWlSKJKCljZ8Uiih98uaNWQvFlpfzc5Bp4+XJS6BEq2K3ZVILUKa5eWJofWw=="],
  
@@ -606,152 +601,9 @@ diff --git a/bun.lock b/bun.lock
      "@modelcontextprotocol/sdk": ["@modelcontextprotocol/sdk@1.32.1", "", { "dependencies": { "@hono/node-server": "^1.19.9 || ^2.0.5", "ajv": "^8.17.1", "ajv-formats": "^3.0.1", "content-type": "^1.0.5", "cors": "^2.8.5", "cross-spawn": "^7.0.5", "eventsource": "^3.0.2", "eventsource-parser": "^3.0.0", "express": "^5.2.1", "express-rate-limit": "^8.2.1", "hono": "^4.11.4", "jose": "^6.1.3", "json-schema-typed": "^8.0.2", "pkce-challenge": "^5.0.0", "raw-body": "^3.0.0", "zod": "^3.25 || ^4.0", "zod-to-json-schema": "^3.25.1" }, "peerDependencies": { "@cfworker/json-schema": "^4.1.1" }, "optionalPeers": ["@cfworker/json-schema"] }, "sha512-2DdE+SJDtzLEEWzY1ZjY7Q+VcPhcV1KisD3zI4u0XZyktsjHum1mwbMI+JaulUBi2OZk+KJAi2uPXzxichPkdw=="],
  
      "@mrleebo/prisma-ast": ["@mrleebo/prisma-ast@0.13.1", "", { "dependencies": { "chevrotain": "^10.5.0", "lilconfig": "^2.1.0" } }, "sha512-XyroGQXcHrZdvmrGJvsA9KNeOOgGMg1Vg9OlheUsBOSKznLMDl+YChxbkboRHvtFYJEMRYmlV3uoo/njCw05iw=="],
-@@ -5083,10 +5080,6 @@
- 
-     "@astrojs/astro2tsx/@emnapi/core": ["@emnapi/core@1.11.3", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.3", "tslib": "^2.4.0" } }, "sha512-zLpS5asjEb7lq8jYLq37N6XKaE41DIexlY1rF/z4/tIl3wo13Sqm28fRyfIsKZD+NZ8mM5RoKkpW/rBcuoSZSg=="],
- 
--    "@astrojs/check/chokidar": ["chokidar@4.0.3", "", { "dependencies": { "readdirp": "^4.0.1" } }, "sha512-Qgzu8kfBvo+cA4962jnP1KkS6Dop5NS6g7R5LFYJr4b8Ub94PPQXUksCw9PvXoeXPRRddRNC5C1JQUR2SMGtnA=="],
--
--    "@astrojs/check/yargs": ["yargs@18.1.0", "", { "dependencies": { "cliui": "^9.0.1", "escalade": "^3.1.1", "get-caller-file": "^2.0.5", "string-width": "^8.2.1", "y18n": "^5.0.5", "yargs-parser": "^22.0.0" } }, "sha512-2rAgRKu54VsHkqI0/tYkmluGXHD4KW7yZoycuqDQ15QOTnc2VVfy0nN/1eMhnQLO00A+dwtK20xuCnc1YGeUyg=="],
--
-     "@astrojs/internal-helpers/js-yaml": ["js-yaml@4.3.2", "", { "dependencies": { "argparse": "^2.0.1" }, "bin": { "js-yaml": "bin/js-yaml.js" } }, "sha512-SFNOvSJ+Dgf/9An904Yx+CgSlIPCkIpao4qo51lpee25TIRejdH3rhR4EZMGoNx3/TP3O+wzWuiTFl4sqbltzA=="],
- 
-     "@astrojs/internal-helpers/shiki": ["shiki@4.4.3", "", { "dependencies": { "@shikijs/core": "4.4.3", "@shikijs/engine-javascript": "4.4.3", "@shikijs/engine-oniguruma": "4.4.3", "@shikijs/langs": "4.4.3", "@shikijs/themes": "4.4.3", "@shikijs/types": "4.4.3", "@shikijs/vscode-textmate": "^10.0.2", "@types/hast": "^3.0.5" } }, "sha512-Mb/GvXPHBAXdgGIcnfU5L3ldpn1XcxrGkPHwqgRx17/I2XRfqlFKk2vGkHWINn1kdXvzJZeuO3is6I9KLPFm0g=="],
-@@ -5219,6 +5212,10 @@
- 
-     "@prisma/dev/@electric-sql/pglite": ["@electric-sql/pglite@0.3.15", "", {}, "sha512-Cj++n1Mekf9ETfdc16TlDi+cDDQF0W7EcbyRHYOAeZdsAe8M/FJg18itDTSwyHfar2WIezawM9o0EKaRGVKygQ=="],
- 
-+    "@prisma/dev/@electric-sql/pglite-socket": ["@electric-sql/pglite-socket@0.0.20", "", { "peerDependencies": { "@electric-sql/pglite": "0.3.15" }, "bin": { "pglite-server": "dist/scripts/server.js" } }, "sha512-J5nLGsicnD9wJHnno9r+DGxfcZWh+YJMCe0q/aCgtG6XOm9Z7fKeite8IZSNXgZeGltSigM9U/vAWZQWdgcSFg=="],
-+
-+    "@prisma/dev/@electric-sql/pglite-tools": ["@electric-sql/pglite-tools@0.2.20", "", { "peerDependencies": { "@electric-sql/pglite": "0.3.15" } }, "sha512-BK50ZnYa3IG7ztXhtgYf0Q7zijV32Iw1cYS8C+ThdQlwx12V5VZ9KRJ42y82Hyb4PkTxZQklVQA9JHyUlex33A=="],
-+
-     "@prisma/dev/@hono/node-server": ["@hono/node-server@1.19.9", "", { "peerDependencies": { "hono": "^4" } }, "sha512-vHL6w3ecZsky+8P5MD+eFfaGTyCeOHUIFYMGpQGbrBTSmNNoxv0if69rEZ5giu36weC5saFuznL411gRX7bJDw=="],
- 
-     "@prisma/dev/hono": ["hono@4.11.4", "", {}, "sha512-U7tt8JsyrxSRKspfhtLET79pU8K+tInj5QZXs1jSugO1Vq5dFj3kmZsRldo29mTBfcjDRVRXrEZ6LS63Cog9ZA=="],
-@@ -5401,6 +5398,8 @@
- 
-     "better-call/rou3": ["rou3@0.9.2", "", {}, "sha512-3SOzvaAg8rkHrXtRjpCvCvbyO5to9oOO27Z/XqHEYXfMRVSw/qMIVdmaOk9W2lcRLtR6dlqTjo9hDeJk70QBYQ=="],
- 
-+    "blume/@astrojs/check": ["@astrojs/check@0.9.10", "", { "dependencies": { "@astrojs/language-server": "^2.16.7", "chokidar": "^4.0.3", "kleur": "^4.1.5", "yargs": "^18.0.0" }, "peerDependencies": { "typescript": "^5.0.0 || ^6.0.0" }, "bin": { "astro-check": "./bin/astro-check.js" } }, "sha512-zgx/UQMozdjOa3bOxjgeCFdtpE3c9rRX6xHwa+2QXvy8z8Akifu2AtubHyv/zzC2znO8dl8fFWL4K+Ba9kS8HQ=="],
-+
-     "blume/es-module-lexer": ["es-module-lexer@3.0.2", "", {}, "sha512-BuIB67FngDSyQ/dpQNOZybwdEBDUGJQvOqwWr4ha/ufYiqzuEwPkKO2zLhRAgay28tStRIHUeWmszZAJo3GCOg=="],
- 
-     "blume/graphql": ["graphql@17.0.2", "", {}, "sha512-FRWbddMxfkjiB7z+aQDWIR+E34xo9I8c9mtK2RPv8PmMzKRvrdsreHL/Ui/TmwHJfhHChEtsFPyMHKI+xuarQQ=="],
-@@ -5409,6 +5408,8 @@
- 
-     "blume/shiki": ["shiki@4.4.3", "", { "dependencies": { "@shikijs/core": "4.4.3", "@shikijs/engine-javascript": "4.4.3", "@shikijs/engine-oniguruma": "4.4.3", "@shikijs/langs": "4.4.3", "@shikijs/themes": "4.4.3", "@shikijs/types": "4.4.3", "@shikijs/vscode-textmate": "^10.0.2", "@types/hast": "^3.0.5" } }, "sha512-Mb/GvXPHBAXdgGIcnfU5L3ldpn1XcxrGkPHwqgRx17/I2XRfqlFKk2vGkHWINn1kdXvzJZeuO3is6I9KLPFm0g=="],
- 
-+    "blume/twoslash": ["twoslash@0.3.9", "", { "dependencies": { "@typescript/vfs": "^1.6.4", "twoslash-protocol": "0.3.9" }, "peerDependencies": { "typescript": "^5.5.0 || ^6.0.0" } }, "sha512-rDclk+OtzuTX+tnea7DYLCkqGQ3eP0IyfD+kzUJ7t46X/NzlaxwrhecmEBNuSCuEn3V+n1PhcjUUQQ7gUJzX5Q=="],
-+
-     "blume/typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
- 
-     "blume/undici": ["undici@8.10.2", "", {}, "sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ=="],
-@@ -5601,6 +5602,10 @@
- 
-     "vite-plus/@oxlint/plugins": ["@oxlint/plugins@1.79.0", "", {}, "sha512-S0uyoxakDINJ4DPgqxGlEEvrdSMeQb7Z2lKVjxoY2gwsbZbfg2Xr8Klfeo5ZeraHmmdBCELFUHkSe6KEmBpMvg=="],
- 
-+    "vite-plus/@vitest/browser": ["@vitest/browser@4.1.11", "", { "dependencies": { "@blazediff/core": "1.9.1", "@vitest/mocker": "4.1.11", "@vitest/utils": "4.1.11", "magic-string": "^0.30.21", "pngjs": "^7.0.0", "sirv": "^3.0.2", "tinyrainbow": "^3.1.0", "ws": "^8.19.0" }, "peerDependencies": { "vitest": "4.1.11" } }, "sha512-bwMovvAeuTFOK5kIFevw4VEf+1gVEICv4SYK4k3knJOxl6b1zEWud8mYKD73e1B0odAn174h1MofURy2TPWf3w=="],
-+
-+    "vite-plus/@vitest/browser-preview": ["@vitest/browser-preview@4.1.11", "", { "dependencies": { "@testing-library/dom": "^10.4.1", "@testing-library/user-event": "^14.6.1", "@vitest/browser": "4.1.11" }, "peerDependencies": { "vitest": "4.1.11" } }, "sha512-iPKSE6Ibayey6HFgK1V1/aHgyhx7HSRk1YMi+lnBZGmlIiNV5Uc7xRkD9Su8RDylTxDECK23t7kTHdRKoqSYDQ=="],
-+
-     "vite-plus/@vitest/mocker": ["@vitest/mocker@4.1.11", "", { "dependencies": { "@vitest/spy": "4.1.11", "estree-walker": "^3.0.3", "magic-string": "^0.30.21" }, "peerDependencies": { "msw": "^2.4.9", "vite": "^6.0.0 || ^7.0.0 || ^8.0.0" }, "optionalPeers": ["msw", "vite"] }, "sha512-2XJVD55d1o5AZous5CCGKS74g/riOj9odEt2bQpCVZeblHyHdnMeFl4jl0XjU21stf4mbjUkew2eXQZt65g5CQ=="],
- 
-     "vite-plus/@vitest/utils": ["@vitest/utils@4.1.11", "", { "dependencies": { "@vitest/pretty-format": "4.1.11", "convert-source-map": "^2.0.0", "tinyrainbow": "^3.1.0" } }, "sha512-zTCVGpyFsGWBhllOyKlTw/vnr6D9qxsfSDyfbyZmTyjHw5N/VuvzHpHoQjm2ZJzn4RJgx5w4r7V0er69CmLgPQ=="],
-@@ -5637,10 +5642,6 @@
- 
-     "@astrojs/astro2tsx/@emnapi/core/@emnapi/wasi-threads": ["@emnapi/wasi-threads@1.2.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-ELEBe8PsLvvJ6QMr0zLt8ffvOHW/dc1m3CEzNMg7aJUv3bMaoDtw2TXyDAwkYBuroxxuHEwhRTLJSe5sya547g=="],
- 
--    "@astrojs/check/chokidar/readdirp": ["readdirp@4.1.2", "", {}, "sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg=="],
--
--    "@astrojs/check/yargs/cliui": ["cliui@9.0.1", "", { "dependencies": { "string-width": "^7.2.0", "strip-ansi": "^7.1.0", "wrap-ansi": "^9.0.0" } }, "sha512-k7ndgKhwoQveBL+/1tqGJYNz097I7WOvwbmmU2AR5+magtbjPWQTS1C5vzGkBC8Ym8UWRzfKUzUUqFLypY4Q+w=="],
--
-     "@astrojs/internal-helpers/shiki/@shikijs/core": ["@shikijs/core@4.4.3", "", { "dependencies": { "@shikijs/primitive": "4.4.3", "@shikijs/types": "4.4.3", "@shikijs/vscode-textmate": "^10.0.2", "@types/hast": "^3.0.5", "hast-util-to-html": "^9.0.5" } }, "sha512-QCR4q2ZO/ILJEuwiBMel4wdcTDb1JGwfjKTxPDF6x8ixOaluPrVqIn06C99AcRPhmYlBR56d/Fb+GN58GzExpg=="],
- 
-     "@astrojs/internal-helpers/shiki/@shikijs/engine-javascript": ["@shikijs/engine-javascript@4.4.3", "", { "dependencies": { "@shikijs/types": "4.4.3", "@shikijs/vscode-textmate": "^10.0.2", "oniguruma-to-es": "^4.3.6" } }, "sha512-FbOjFJp9VLdo1Wevs10BBtVxiTWwNLqZh5Gkhjgda/ioL15YOgeSl9n+6XMa3qRlPQzfhFNe641SrynFHYG0nQ=="],
-@@ -5809,6 +5810,10 @@
- 
-     "axios/https-proxy-agent/agent-base": ["agent-base@6.0.2", "", { "dependencies": { "debug": "4" } }, "sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ=="],
- 
-+    "blume/@astrojs/check/chokidar": ["chokidar@4.0.3", "", { "dependencies": { "readdirp": "^4.0.1" } }, "sha512-Qgzu8kfBvo+cA4962jnP1KkS6Dop5NS6g7R5LFYJr4b8Ub94PPQXUksCw9PvXoeXPRRddRNC5C1JQUR2SMGtnA=="],
-+
-+    "blume/@astrojs/check/yargs": ["yargs@18.1.0", "", { "dependencies": { "cliui": "^9.0.1", "escalade": "^3.1.1", "get-caller-file": "^2.0.5", "string-width": "^8.2.1", "y18n": "^5.0.5", "yargs-parser": "^22.0.0" } }, "sha512-2rAgRKu54VsHkqI0/tYkmluGXHD4KW7yZoycuqDQ15QOTnc2VVfy0nN/1eMhnQLO00A+dwtK20xuCnc1YGeUyg=="],
-+
-     "blume/shiki/@shikijs/core": ["@shikijs/core@4.4.3", "", { "dependencies": { "@shikijs/primitive": "4.4.3", "@shikijs/types": "4.4.3", "@shikijs/vscode-textmate": "^10.0.2", "@types/hast": "^3.0.5", "hast-util-to-html": "^9.0.5" } }, "sha512-QCR4q2ZO/ILJEuwiBMel4wdcTDb1JGwfjKTxPDF6x8ixOaluPrVqIn06C99AcRPhmYlBR56d/Fb+GN58GzExpg=="],
- 
-     "blume/shiki/@shikijs/engine-javascript": ["@shikijs/engine-javascript@4.4.3", "", { "dependencies": { "@shikijs/types": "4.4.3", "@shikijs/vscode-textmate": "^10.0.2", "oniguruma-to-es": "^4.3.6" } }, "sha512-FbOjFJp9VLdo1Wevs10BBtVxiTWwNLqZh5Gkhjgda/ioL15YOgeSl9n+6XMa3qRlPQzfhFNe641SrynFHYG0nQ=="],
-@@ -5969,6 +5974,8 @@
- 
-     "unzipper/fs-extra/universalify": ["universalify@2.0.1", "", {}, "sha512-gptHNQghINnc/vTGIk0SOFGFNXw7JVrlRUtConJRlvaw6DuX0wO5Jeko9sWrMBhh+PsYAZ7oXAiOnf/UKogyiw=="],
- 
-+    "vite-plus/@vitest/browser/ws": ["ws@8.21.3", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw=="],
-+
-     "vite-plus/@vitest/mocker/vite": ["vite@7.3.6", "", { "dependencies": { "esbuild": "^0.27.0 || ^0.28.0", "fdir": "^6.5.0", "picomatch": "^4.0.3", "postcss": "^8.5.6", "rollup": "^4.43.0", "tinyglobby": "^0.2.15" }, "optionalDependencies": { "fsevents": "~2.3.3" }, "peerDependencies": { "@types/node": "^20.19.0 || >=22.12.0", "jiti": ">=1.21.0", "less": "^4.0.0", "lightningcss": "^1.21.0", "sass": "^1.70.0", "sass-embedded": "^1.70.0", "stylus": ">=0.54.8", "sugarss": "^5.0.0", "terser": "^5.16.0", "tsx": "^4.8.1", "yaml": "^2.4.2" }, "optionalPeers": ["@types/node", "jiti", "less", "lightningcss", "sass", "sass-embedded", "stylus", "sugarss", "terser", "tsx", "yaml"], "bin": { "vite": "bin/vite.js" } }, "sha512-4XP60spRGjSZFf1qYH+dJIkK2znL3zQfl9KkOV9MkkRR/3Dls0dxaBsQPTloEc5BLXWPL9vsOxopxyKoMmDueg=="],
- 
-     "vite-plus/vitest/tinybench": ["tinybench@2.9.0", "", {}, "sha512-0+DUvqWMValLmha6lr4kD8iAMK1HzV0/aKnCtWb9v9641TnP/MFb7Pc2bxoxQjTXAErryXVgUOfv2YqNllqGeg=="],
-@@ -5979,12 +5986,6 @@
- 
-     "vscode-languageserver/vscode-languageserver-protocol/vscode-jsonrpc": ["vscode-jsonrpc@8.2.0", "", {}, "sha512-C+r0eKJUIfiDIfwJhria30+TYWPtuHJXHtI7J0YlOmKAo7ogxP20T0zxB7HZQIFhIyvoBPwWskjxrvAtfjyZfA=="],
- 
--    "@astrojs/check/yargs/cliui/string-width": ["string-width@7.2.0", "", { "dependencies": { "emoji-regex": "^10.3.0", "get-east-asian-width": "^1.0.0", "strip-ansi": "^7.1.0" } }, "sha512-tsaTIkKW9b4N+AEj+SVA+WhJzV7/zMhcSu78mLKWSk7cXMOSHsBKFWUs0fWwq8QyK3MgJBQRX6Gbi4kYbdvGkQ=="],
--
--    "@astrojs/check/yargs/cliui/strip-ansi": ["strip-ansi@7.2.0", "", { "dependencies": { "ansi-regex": "^6.2.2" } }, "sha512-yDPMNjp4WyfYBkHnjIRLfca1i6KMyGCtsVgoKe/z1+6vukgaENdgGBZt+ZmKPc4gavvEZ5OgHfHdrazhgNyG7w=="],
--
--    "@astrojs/check/yargs/cliui/wrap-ansi": ["wrap-ansi@9.0.2", "", { "dependencies": { "ansi-styles": "^6.2.1", "string-width": "^7.0.0", "strip-ansi": "^7.1.0" } }, "sha512-42AtmgqjV+X1VpdOfyTGOYRi0/zsoLqtXQckTmqTeybT+BDIbM/Guxo7x3pE2vtpr1ok6xRqM9OpBe+Jyoqyww=="],
--
-     "@astrojs/react/vite/rolldown/@rolldown/binding-android-arm-eabi": ["@rolldown/binding-android-arm-eabi@1.2.9", "", { "os": "android", "cpu": "arm" }, "sha512-tNISae1QEf/vkb3xkRcjV5SEdzPE97We5IVaa2Z8jSszQPZ8U60B/YCYpw4QI7VidYsBtKavczXf+DyDs9WGxw=="],
- 
-     "@astrojs/react/vite/rolldown/@rolldown/binding-android-arm64": ["@rolldown/binding-android-arm64@1.2.9", "", { "os": "android", "cpu": "arm64" }, "sha512-YC8YsI30o606GTZi0VyzYlsDKFP8W61i/QzayHDkLbNEz/IShqAmTa+hsJRj13xTHA0H+6fk4b2UmGn+Q/cMlg=="],
-@@ -6123,6 +6124,10 @@
- 
-     "astro/vite/rolldown/@rolldown/binding-win32-x64-msvc": ["@rolldown/binding-win32-x64-msvc@1.2.9", "", { "os": "win32", "cpu": "x64" }, "sha512-Ip2mXoU0hM0boq3Rf+ekuT653OROSo6aSYcPT1VHE4q52KvyxgFkQgrgb/IEsxOuvQ2fZZbs8khJAyCEPM24/g=="],
- 
-+    "blume/@astrojs/check/chokidar/readdirp": ["readdirp@4.1.2", "", {}, "sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg=="],
-+
-+    "blume/@astrojs/check/yargs/cliui": ["cliui@9.0.1", "", { "dependencies": { "string-width": "^7.2.0", "strip-ansi": "^7.1.0", "wrap-ansi": "^9.0.0" } }, "sha512-k7ndgKhwoQveBL+/1tqGJYNz097I7WOvwbmmU2AR5+magtbjPWQTS1C5vzGkBC8Ym8UWRzfKUzUUqFLypY4Q+w=="],
-+
-     "css-select/domutils/dom-serializer/entities": ["entities@4.5.0", "", {}, "sha512-V0hjH4dGPh9Ao5p0MoRY6BVqtwCjhz6vI5LT8AJ55H+4g9/4vbHx1I54fS0XuclLhDHArPQCiMjDxjaL8fPxhw=="],
- 
-     "dir-compare/minimatch/brace-expansion/balanced-match": ["balanced-match@1.0.2", "", {}, "sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw=="],
-@@ -6171,12 +6176,6 @@
- 
-     "vitest/vite/rolldown/@rolldown/binding-win32-x64-msvc": ["@rolldown/binding-win32-x64-msvc@1.2.9", "", { "os": "win32", "cpu": "x64" }, "sha512-Ip2mXoU0hM0boq3Rf+ekuT653OROSo6aSYcPT1VHE4q52KvyxgFkQgrgb/IEsxOuvQ2fZZbs8khJAyCEPM24/g=="],
- 
--    "@astrojs/check/yargs/cliui/string-width/emoji-regex": ["emoji-regex@10.6.0", "", {}, "sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A=="],
--
--    "@astrojs/check/yargs/cliui/strip-ansi/ansi-regex": ["ansi-regex@6.3.0", "", {}, "sha512-WpDfL7NO6j7tH88IDBNVdUJxDh9nmCteAVW9dsep846XdwF4naCBK+/tGLX3KJgcpgMRXCFlTM2hKGoK9FsdrQ=="],
--
--    "@astrojs/check/yargs/cliui/wrap-ansi/ansi-styles": ["ansi-styles@6.2.3", "", {}, "sha512-4Dj6M28JB+oAH8kFkTLUo+a2jwOFkuqb3yucU0CANcRRUbxS0cP0nZYCGjcc3BNXwRIsUVmDGgzawme7zvJHvg=="],
--
-     "@manypkg/find-root/find-up/locate-path/p-locate/p-limit": ["p-limit@2.3.0", "", { "dependencies": { "p-try": "^2.0.0" } }, "sha512-//88mFWSJx8lxCzwdAABTJL2MyWB12+eIY7MDL2SqLmAkeKU9qxRvWuSyTjm3FUmpBEMuFfckAIqEaVGUDxb6w=="],
- 
-     "@puppeteer/browsers/yargs/cliui/string-width/emoji-regex": ["emoji-regex@10.6.0", "", {}, "sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A=="],
-@@ -6185,6 +6184,12 @@
- 
-     "@puppeteer/browsers/yargs/cliui/wrap-ansi/ansi-styles": ["ansi-styles@6.2.3", "", {}, "sha512-4Dj6M28JB+oAH8kFkTLUo+a2jwOFkuqb3yucU0CANcRRUbxS0cP0nZYCGjcc3BNXwRIsUVmDGgzawme7zvJHvg=="],
- 
-+    "blume/@astrojs/check/yargs/cliui/string-width": ["string-width@7.2.0", "", { "dependencies": { "emoji-regex": "^10.3.0", "get-east-asian-width": "^1.0.0", "strip-ansi": "^7.1.0" } }, "sha512-tsaTIkKW9b4N+AEj+SVA+WhJzV7/zMhcSu78mLKWSk7cXMOSHsBKFWUs0fWwq8QyK3MgJBQRX6Gbi4kYbdvGkQ=="],
-+
-+    "blume/@astrojs/check/yargs/cliui/strip-ansi": ["strip-ansi@7.2.0", "", { "dependencies": { "ansi-regex": "^6.2.2" } }, "sha512-yDPMNjp4WyfYBkHnjIRLfca1i6KMyGCtsVgoKe/z1+6vukgaENdgGBZt+ZmKPc4gavvEZ5OgHfHdrazhgNyG7w=="],
-+
-+    "blume/@astrojs/check/yargs/cliui/wrap-ansi": ["wrap-ansi@9.0.2", "", { "dependencies": { "ansi-styles": "^6.2.1", "string-width": "^7.0.0", "strip-ansi": "^7.1.0" } }, "sha512-42AtmgqjV+X1VpdOfyTGOYRi0/zsoLqtXQckTmqTeybT+BDIbM/Guxo7x3pE2vtpr1ok6xRqM9OpBe+Jyoqyww=="],
-+
-     "miniflare/sharp/@img/sharp-freebsd-wasm32/@img/sharp-wasm32/@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
- 
-     "miniflare/sharp/@img/sharp-webcontainers-wasm32/@img/sharp-wasm32/@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
-@@ -6192,5 +6197,11 @@
-     "node-html-parser/css-select/domutils/dom-serializer/entities": ["entities@4.5.0", "", {}, "sha512-V0hjH4dGPh9Ao5p0MoRY6BVqtwCjhz6vI5LT8AJ55H+4g9/4vbHx1I54fS0XuclLhDHArPQCiMjDxjaL8fPxhw=="],
- 
-     "rimraf/glob/minimatch/brace-expansion/balanced-match": ["balanced-match@1.0.2", "", {}, "sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw=="],
-+
-+    "blume/@astrojs/check/yargs/cliui/string-width/emoji-regex": ["emoji-regex@10.6.0", "", {}, "sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A=="],
-+
-+    "blume/@astrojs/check/yargs/cliui/strip-ansi/ansi-regex": ["ansi-regex@6.3.0", "", {}, "sha512-WpDfL7NO6j7tH88IDBNVdUJxDh9nmCteAVW9dsep846XdwF4naCBK+/tGLX3KJgcpgMRXCFlTM2hKGoK9FsdrQ=="],
-+
-+    "blume/@astrojs/check/yargs/cliui/wrap-ansi/ansi-styles": ["ansi-styles@6.2.3", "", {}, "sha512-4Dj6M28JB+oAH8kFkTLUo+a2jwOFkuqb3yucU0CANcRRUbxS0cP0nZYCGjcc3BNXwRIsUVmDGgzawme7zvJHvg=="],
-   }
- }
 diff --git a/e2e/support/mcp-app-browser.ts b/e2e/support/mcp-app-browser.ts
 new file mode 100644
+index 0000000..cd2f753
 --- /dev/null
 +++ b/e2e/support/mcp-app-browser.ts
 @@ -0,0 +1,294 @@
@@ -1051,6 +903,7 @@ new file mode 100644
 +  });
 diff --git a/e2e/support/mcp-app-fixture.ts b/e2e/support/mcp-app-fixture.ts
 new file mode 100644
+index 0000000..ca5a33e
 --- /dev/null
 +++ b/e2e/support/mcp-app-fixture.ts
 @@ -0,0 +1,47 @@
@@ -1103,6 +956,7 @@ new file mode 100644
 +  );
 diff --git a/e2e/support/mcp-app-host.ts b/e2e/support/mcp-app-host.ts
 new file mode 100644
+index 0000000..6ab708e
 --- /dev/null
 +++ b/e2e/support/mcp-app-host.ts
 @@ -0,0 +1,100 @@
@@ -1208,6 +1062,7 @@ new file mode 100644
 +</script></body></html>`;
 diff --git a/e2e/support/mcp-app-upstream.ts b/e2e/support/mcp-app-upstream.ts
 new file mode 100644
+index 0000000..166ee91
 --- /dev/null
 +++ b/e2e/support/mcp-app-upstream.ts
 @@ -0,0 +1,157 @@
@@ -1369,9 +1224,10 @@ new file mode 100644
 +  },
 +];
 diff --git a/e2e/support/mcp-client.ts b/e2e/support/mcp-client.ts
+index 9bad49b..3218cdf 100644
 --- a/e2e/support/mcp-client.ts
 +++ b/e2e/support/mcp-client.ts
-@@ -19,11 +19,13 @@
+@@ -19,11 +19,13 @@ const make = Effect.gen(function* () {
        options: {
          /** X-Executor-Organization, read for every request so a client can follow a renamed slug. */
          readonly organization?: string | (() => string);
@@ -1385,7 +1241,7 @@ diff --git a/e2e/support/mcp-client.ts b/e2e/support/mcp-client.ts
          /** Another origin that serves the product's MCP endpoint, such as a Cloud role host. */
          readonly origin?: string;
        } = {},
-@@ -35,7 +37,20 @@
+@@ -35,7 +37,20 @@ const make = Effect.gen(function* () {
              () =>
                new Client(
                  { name: "executor-e2e", version: "1" },
@@ -1407,7 +1263,7 @@ diff --git a/e2e/support/mcp-client.ts b/e2e/support/mcp-client.ts
                ),
            ),
            (client) => driver("close MCP client", () => client.close()).pipe(Effect.orDie),
-@@ -48,7 +63,13 @@
+@@ -48,7 +63,13 @@ const make = Effect.gen(function* () {
              prompts.push(request.params.message);
              // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- the MCP SDK request handler returns a Promise
              return Effect.runPromise(
@@ -1423,9 +1279,10 @@ diff --git a/e2e/support/mcp-client.ts b/e2e/support/mcp-client.ts
            });
          // Record methods, revisions and timing only. OAuth headers and tool arguments are excluded.
 diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index 52b3c6c..d7b3996 100644
 --- a/e2e/support/profile-removal-rollback.ts
 +++ b/e2e/support/profile-removal-rollback.ts
-@@ -47,14 +47,16 @@
+@@ -47,14 +47,16 @@ export const profileAppCopiesPending = (
  ];
  
  /**
@@ -1445,9 +1302,10 @@ diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-remov
    { sql: "DROP INDEX executor_schedules_app" },
    { sql: "DROP INDEX executor_workflow_runs_scope_key" },
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 353e2d2..c905796 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -808,6 +808,50 @@
+@@ -950,6 +950,50 @@ export const scenarios = plan({
        local: na("Local has a separate analytics boundary"),
      },
    },
@@ -1498,7 +1356,7 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
    mcpDirectCalls: {
      fixtures: "actors",
      file: "mcp-direct-calls.spec.ts",
-@@ -3046,7 +3090,8 @@
+@@ -3627,7 +3671,8 @@ export const scenarios = plan({
    catalogOAuthClients: {
      fixtures: "actors",
      file: "catalog-oauth-clients.spec.ts",
@@ -1509,9 +1367,10 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
        "self-host": scheduled,
        cloud: na("Restarts a runner-owned product with optional client credentials."),
 diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status-storage.spec.ts
+index b824af7..1ca4e83 100644
 --- a/e2e/tests/account-status-storage.spec.ts
 +++ b/e2e/tests/account-status-storage.spec.ts
-@@ -24,7 +24,7 @@
+@@ -24,7 +24,7 @@ layer(HostedLive, { excludeTestServices: true })("Status persistence", (it) => {
              params: [fixture.account],
            },
          ]);
@@ -1521,21 +1380,23 @@ diff --git a/e2e/tests/account-status-storage.spec.ts b/e2e/tests/account-status
          expect(records).toEqual([
            {
 diff --git a/e2e/tests/app-accounts-upgrade.spec.ts b/e2e/tests/app-accounts-upgrade.spec.ts
+index ef649ca..434c397 100644
 --- a/e2e/tests/app-accounts-upgrade.spec.ts
 +++ b/e2e/tests/app-accounts-upgrade.spec.ts
-@@ -281,7 +281,7 @@
+@@ -281,7 +281,7 @@ const upgradeFlow = <E, R>(
        before: { schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore },
        after: { version, step, scopes, nullable, schedulesAfter, sourcesAfter, linksAfter },
      });
--    expect(version).toEqual([{ value: "4.0.15" }]);
+-    expect(version).toEqual([{ value: "4.0.16" }]);
 +    expect(version).toEqual([{ value: "4.0.17" }]);
      expect(step).toEqual([{ name: "app_account_links" }]);
      // The member's user link as it was, and the app link without a subject.
      expect(linksAfter).toEqual([
 diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
+index 2ca7e6e..9080f87 100644
 --- a/e2e/tests/app-package.spec.ts
 +++ b/e2e/tests/app-package.spec.ts
-@@ -147,7 +147,7 @@
+@@ -147,7 +147,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
          expect(rejected.body).toMatchObject({
            _tag: "VersionBuildFailed",
            reason:
@@ -1545,31 +1406,34 @@ diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
          expect((yield* call("queries.version")).body).toEqual(Published);
          expect(
 diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
+index ec29a03..8f0e461 100644
 --- a/e2e/tests/legacy-profile-schedules.spec.ts
 +++ b/e2e/tests/legacy-profile-schedules.spec.ts
-@@ -628,7 +628,7 @@
+@@ -628,7 +628,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
            { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
          ]);
          expect(ledger).toEqual([{ name: "app_account_links" }]);
--        expect(version).toEqual([{ value: "4.0.15" }]);
+-        expect(version).toEqual([{ value: "4.0.16" }]);
 +        expect(version).toEqual([{ value: "4.0.17" }]);
          expect(plans).toEqual(
            [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
          );
 diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+index 4ee05fa..cd00dea 100644
 --- a/e2e/tests/legacy-targetless-connections.spec.ts
 +++ b/e2e/tests/legacy-targetless-connections.spec.ts
-@@ -132,7 +132,7 @@
+@@ -132,7 +132,7 @@ const expectUpgraded = (
    ids: Ids,
  ) => {
    expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
--  expect(version).toEqual([{ value: "4.0.15" }]);
+-  expect(version).toEqual([{ value: "4.0.16" }]);
 +  expect(version).toEqual([{ value: "4.0.17" }]);
    // Only the connection with a target is left, and only the sign-in no connection pointed at.
    expect(connections).toEqual([{ id: template, target: "object" }]);
    expect(attempts).toEqual([{ id: ids.unrelatedAttempt }]);
 diff --git a/e2e/tests/local-mcp-apps.spec.ts b/e2e/tests/local-mcp-apps.spec.ts
 new file mode 100644
+index 0000000..4f4edac
 --- /dev/null
 +++ b/e2e/tests/local-mcp-apps.spec.ts
 @@ -0,0 +1,165 @@
@@ -1739,9 +1603,10 @@ new file mode 100644
 +  );
 +});
 diff --git a/e2e/tests/local-mcp-connections.spec.ts b/e2e/tests/local-mcp-connections.spec.ts
+index dffb168..330caa3 100644
 --- a/e2e/tests/local-mcp-connections.spec.ts
 +++ b/e2e/tests/local-mcp-connections.spec.ts
-@@ -514,11 +514,14 @@
+@@ -515,11 +515,14 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
            client.listTools(),
          );
          expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
@@ -1756,7 +1621,7 @@ diff --git a/e2e/tests/local-mcp-connections.spec.ts b/e2e/tests/local-mcp-conne
            "skills",
          ]);
          // The default is the plain URL's model mode only, not every approval mode.
-@@ -558,11 +561,14 @@
+@@ -559,11 +562,14 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
                client.listTools(),
              );
              expect(relisted.tools.map((tool) => tool.name).sort()).toEqual([
@@ -1773,6 +1638,7 @@ diff --git a/e2e/tests/local-mcp-connections.spec.ts b/e2e/tests/local-mcp-conne
            }),
 diff --git a/e2e/tests/mcp-apps-source.spec.ts b/e2e/tests/mcp-apps-source.spec.ts
 new file mode 100644
+index 0000000..c944ccc
 --- /dev/null
 +++ b/e2e/tests/mcp-apps-source.spec.ts
 @@ -0,0 +1,279 @@
@@ -2057,6 +1923,7 @@ new file mode 100644
 +});
 diff --git a/e2e/tests/mcp-apps-ui.spec.ts b/e2e/tests/mcp-apps-ui.spec.ts
 new file mode 100644
+index 0000000..e930b89
 --- /dev/null
 +++ b/e2e/tests/mcp-apps-ui.spec.ts
 @@ -0,0 +1,117 @@
@@ -2179,6 +2046,7 @@ new file mode 100644
 +});
 diff --git a/e2e/tests/mcp-apps.spec.ts b/e2e/tests/mcp-apps.spec.ts
 new file mode 100644
+index 0000000..a01293e
 --- /dev/null
 +++ b/e2e/tests/mcp-apps.spec.ts
 @@ -0,0 +1,283 @@
@@ -2466,9 +2334,10 @@ new file mode 100644
 +  );
 +});
 diff --git a/e2e/tests/mcp-direct-calls.spec.ts b/e2e/tests/mcp-direct-calls.spec.ts
+index 2e90c68..efc60ba 100644
 --- a/e2e/tests/mcp-direct-calls.spec.ts
 +++ b/e2e/tests/mcp-direct-calls.spec.ts
-@@ -104,11 +104,14 @@
+@@ -106,11 +106,14 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
  
          const listed = yield* client.use("List the MCP tools", (client) => client.listTools());
          expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
@@ -2484,9 +2353,10 @@ diff --git a/e2e/tests/mcp-direct-calls.spec.ts b/e2e/tests/mcp-direct-calls.spe
          ]);
  
 diff --git a/e2e/tests/mcp-server.spec.ts b/e2e/tests/mcp-server.spec.ts
+index 097d05a..ad8503d 100644
 --- a/e2e/tests/mcp-server.spec.ts
 +++ b/e2e/tests/mcp-server.spec.ts
-@@ -83,11 +83,14 @@
+@@ -83,11 +83,14 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
            client.listTools(),
          );
          expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
@@ -2501,7 +2371,7 @@ diff --git a/e2e/tests/mcp-server.spec.ts b/e2e/tests/mcp-server.spec.ts
            "skills",
          ]);
          yield* evidence.json(
-@@ -199,11 +202,14 @@
+@@ -199,11 +202,14 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
            client.listTools(),
          );
          expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
@@ -2516,7 +2386,7 @@ diff --git a/e2e/tests/mcp-server.spec.ts b/e2e/tests/mcp-server.spec.ts
            "skills",
          ]);
          // The default is the plain URL's model mode only, not every approval mode.
-@@ -248,11 +254,14 @@
+@@ -248,11 +254,14 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
                client.listTools(),
              );
              expect(relisted.tools.map((tool) => tool.name).sort()).toEqual([
@@ -2532,58 +2402,20 @@ diff --git a/e2e/tests/mcp-server.spec.ts b/e2e/tests/mcp-server.spec.ts
              ]);
            }),
 diff --git a/e2e/tests/oauth-client-issuer-migration.spec.ts b/e2e/tests/oauth-client-issuer-migration.spec.ts
+index b290a7e..042f930 100644
 --- a/e2e/tests/oauth-client-issuer-migration.spec.ts
 +++ b/e2e/tests/oauth-client-issuer-migration.spec.ts
-@@ -361,7 +361,7 @@
+@@ -361,7 +361,7 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration",
            },
          ]);
          yield* serverControl("start");
--        expect(version).toEqual([{ value: "4.0.15" }]);
+-        expect(version).toEqual([{ value: "4.0.16" }]);
 +        expect(version).toEqual([{ value: "4.0.17" }]);
          expect(credentials).toEqual([
            { client: ids.a },
            { client: ids.a },
-diff --git a/e2e/tests/storage-migration-diagnostics.spec.ts b/e2e/tests/storage-migration-diagnostics.spec.ts
---- a/e2e/tests/storage-migration-diagnostics.spec.ts
-+++ b/e2e/tests/storage-migration-diagnostics.spec.ts
-@@ -1,5 +1,5 @@
- import { expect, layer } from "@effect/vitest";
--import { Effect, FileSystem } from "effect";
-+import { Effect, FileSystem, Schema } from "effect";
- import { TestLive, withCase } from "../support/case.ts";
- import { legacyStorage } from "../support/legacy-storage.ts";
- import { Target } from "../support/platform.ts";
-@@ -13,15 +13,24 @@
-       Effect.gen(function* () {
-         const target = yield* Target;
-         const fs = yield* FileSystem.FileSystem;
-+        const [current] = yield* legacyStorage([
-+          { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
-+        ]);
-+        const originalVersion = yield* Schema.decodeUnknownEffect(Schema.NonEmptyString)(
-+          current?.[0]?.value,
-+        );
-+        yield* Effect.addFinalizer(() =>
-+          legacyStorage([
-+            {
-+              sql: "UPDATE private_executor_settings SET value = $1 WHERE key = 'version'",
-+              params: [originalVersion],
-+            },
-+          ]).pipe(Effect.andThen(serverControl("start")), Effect.orDie),
-+        );
-         // An interrupted upgrade can leave the column present while its journal needs repair.
-         yield* legacyStorage([
-           { sql: "UPDATE private_executor_settings SET value = '4.0.1' WHERE key = 'version'" },
-         ]);
--        yield* Effect.addFinalizer(() =>
--          legacyStorage([
--            { sql: "UPDATE private_executor_settings SET value = '4.0.16' WHERE key = 'version'" },
--          ]).pipe(Effect.andThen(serverControl("start")), Effect.orDie),
--        );
-         yield* serverControl("start", 500);
-         const log = yield* fs.readFileString(`${target.directory}/server.log`);
-         expect(log).toContain("StorageMigrationFailed");
 diff --git a/package.json b/package.json
+index 81cdab0..c29d280 100644
 --- a/package.json
 +++ b/package.json
 @@ -62,7 +62,7 @@
@@ -2604,7 +2436,7 @@ diff --git a/package.json b/package.json
      "edge:contract": "node apps/hosted/cloud/scripts/edge-contract.ts",
      "e2e:prepare": "node scripts/e2e-prepare.ts",
      "e2e:runtime": "node scripts/build-test-runtime.ts",
-@@ -127,7 +127,8 @@
+@@ -130,7 +130,8 @@
      "versions:check": "node scripts/check-exact-versions.ts",
      "release:cli": "node scripts/releases/package.ts",
      "release:wrapper": "node scripts/releases/wrapper.ts",
@@ -2616,6 +2448,7 @@ diff --git a/package.json b/package.json
      "@alchemy.run/cloudflare-runtime": "2.0.0-beta.80",
 diff --git a/packages/apps/protocols/18.json b/packages/apps/protocols/18.json
 new file mode 100644
+index 0000000..bdb3bc0
 --- /dev/null
 +++ b/packages/apps/protocols/18.json
 @@ -0,0 +1,7535 @@
@@ -10155,9 +9988,10 @@ new file mode 100644
 +  }
 +}
 diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/host.ts
+index 5014b3b..25b4053 100644
 --- a/packages/apps/src/contracts/host.ts
 +++ b/packages/apps/src/contracts/host.ts
-@@ -90,9 +90,11 @@
+@@ -90,9 +90,11 @@ export { protocol12 } from "./protocols/12.ts";
  export { protocol13 } from "./protocols/13.ts";
  export { protocol14 } from "./protocols/14.ts";
  export { protocol15 } from "./protocols/15.ts";
@@ -10170,20 +10004,20 @@ diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/h
    AccountCheckCommand,
    CredentialHost,
    MigrateCommand,
-@@ -199,6 +201,12 @@
-   user: Schema.optionalKey(HostAccountSlots),
+@@ -200,6 +202,12 @@ export const HostAccounts = Schema.Struct({
  });
  export type HostAccounts = typeof HostAccounts.Type;
-+
+ 
 +/** Source identity uses stable account generations instead of per-invocation sealed handle bytes. */
 +export const McpAppSourceAccounts = Context.Reference<Redacted.Redacted<HostAccounts> | undefined>(
 +  "apps/McpAppSourceAccounts",
 +  { defaultValue: () => undefined },
 +);
- 
++
  /** Each requirement's accounts across both scopes; requirement names are unique across them. */
  export const scopedSlots = <Slot>(accounts: {
-@@ -321,6 +329,10 @@
+   readonly app: Readonly<Record<string, Slot>>;
+@@ -321,6 +329,10 @@ export const HostAccountCheckError = Schema.Union([
  /** Queries, mutations and agent calls use the same operation failures. */
  export const HostDataError = HostCallError;
  
@@ -10194,7 +10028,7 @@ diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/h
  /** Invocation-owned outcome sink. Framework adapters report semantic failures
   * independently of successful JSON transport; customer output is never inspected. */
  export const ToolResultObservation = Context.Reference<{ readonly failed: () => void }>(
-@@ -368,3 +380,6 @@
+@@ -368,3 +380,6 @@ export {
  } from "./router.ts";
  
  export * from "./schedules.ts";
@@ -10203,6 +10037,7 @@ diff --git a/packages/apps/src/contracts/host.ts b/packages/apps/src/contracts/h
 +export { McpToolResult } from "./mcp.ts";
 diff --git a/packages/apps/src/contracts/mcp-apps.ts b/packages/apps/src/contracts/mcp-apps.ts
 new file mode 100644
+index 0000000..4067469
 --- /dev/null
 +++ b/packages/apps/src/contracts/mcp-apps.ts
 @@ -0,0 +1,77 @@
@@ -10284,9 +10119,10 @@ new file mode 100644
 +  return ui === undefined ? {} : { ui };
 +};
 diff --git a/packages/apps/src/contracts/mcp.ts b/packages/apps/src/contracts/mcp.ts
+index b520105..4ee9238 100644
 --- a/packages/apps/src/contracts/mcp.ts
 +++ b/packages/apps/src/contracts/mcp.ts
-@@ -32,6 +32,7 @@
+@@ -32,6 +32,7 @@ export const mcpSdkTimerCeilingMs = 2_147_483_647;
  /** Server and headers for this selected account. Headers are a credential snapshot. */
  export const McpToolsOptions = Schema.Struct({
    url: HttpUrl,
@@ -10294,7 +10130,7 @@ diff --git a/packages/apps/src/contracts/mcp.ts b/packages/apps/src/contracts/mc
    accountId: Schema.optional(AccountId),
    headers: Schema.optional(Schema.Record(Schema.String, Schema.String)),
    signal: Schema.optional(Schema.instanceOf(AbortSignal)),
-@@ -77,6 +78,7 @@
+@@ -77,6 +78,7 @@ export const mcpHealthReserveMs = 2 * defaultMcpClientLimits.cleanupTimeoutMs +
  /** One parsed server and credential snapshot; never shared across account evaluations. */
  export interface McpConnection {
    readonly url: URL;
@@ -10302,7 +10138,7 @@ diff --git a/packages/apps/src/contracts/mcp.ts b/packages/apps/src/contracts/mc
    readonly headers: Redacted.Redacted<Readonly<Record<string, string>>>;
    readonly timeoutMs: number;
  }
-@@ -125,6 +127,7 @@
+@@ -125,6 +127,7 @@ export type McpServerHeader = typeof McpServerHeader.Type;
  
  /** Direct callers can omit interaction capabilities. A server that asks for input then fails explicitly. */
  export interface McpToolContext {
@@ -10311,9 +10147,10 @@ diff --git a/packages/apps/src/contracts/mcp.ts b/packages/apps/src/contracts/mc
  }
  
 diff --git a/packages/apps/src/contracts/operations.ts b/packages/apps/src/contracts/operations.ts
+index f2ceedf..29d5d01 100644
 --- a/packages/apps/src/contracts/operations.ts
 +++ b/packages/apps/src/contracts/operations.ts
-@@ -11,6 +11,7 @@
+@@ -11,6 +11,7 @@ import type { JsonObject } from "./schema.ts";
   * absent when the invocation has no caller.
   */
  export type OperationContext = EvaluationContext<ScopedSlots> & {
@@ -10322,6 +10159,7 @@ diff --git a/packages/apps/src/contracts/operations.ts b/packages/apps/src/contr
  };
  /** The host validates input, checks approval, then owns the transaction and output validation. */
 diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
+index 97feddf..3172054 100644
 --- a/packages/apps/src/contracts/protocol-version.ts
 +++ b/packages/apps/src/contracts/protocol-version.ts
 @@ -3,4 +3,4 @@
@@ -10332,6 +10170,7 @@ diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src
 +export const frameworkProtocol = 18;
 diff --git a/packages/apps/src/contracts/protocols/17.ts b/packages/apps/src/contracts/protocols/17.ts
 new file mode 100644
+index 0000000..e763586
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/17.ts
 @@ -0,0 +1,650 @@
@@ -10986,6 +10825,7 @@ new file mode 100644
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
+index 8e4a647..d3ecc50 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
 @@ -13,6 +13,7 @@
@@ -10996,7 +10836,7 @@ diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/sr
  import { ConnectCommand } from "../connect.ts";
  import { ProviderSite } from "@executor-js/utils/account-site";
  import { CacheCommand, CacheReply } from "@executor-js/app-cache/contracts";
-@@ -198,6 +199,7 @@
+@@ -206,6 +207,7 @@ export const DeclaredRequirements = Schema.Struct({
         * as an excess field.
         */
        sharedDefinitions: Schema.optionalKey(Schema.Literal(true)),
@@ -11004,7 +10844,7 @@ diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/sr
      }),
    ),
    /**
-@@ -284,6 +286,7 @@
+@@ -296,6 +298,7 @@ export const HostedTool = Schema.Struct({
    outputSchema: Schema.optionalKey(JsonObject),
    annotations: Schema.optionalKey(ToolAnnotations),
    _meta: Schema.optionalKey(JsonObject),
@@ -11012,7 +10852,7 @@ diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/sr
  });
  /** Parsed live tool description. */
  export type HostedTool = typeof HostedTool.Type;
-@@ -424,6 +427,7 @@
+@@ -436,6 +439,7 @@ export const HostRequest = Schema.Union([
    Schema.Struct({ operation: Schema.Literal("requirements") }),
    Schema.Struct({
      operation: Schema.Literal("inspect"),
@@ -11020,7 +10860,7 @@ diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/sr
      /** Omit schemas. Only builds that declare the toolIndex capability accept this. */
      detail: Schema.optionalKey(Schema.Literal("summary")),
      /** Describe only these tools. Only builds that declare the toolIndex capability accept this. */
-@@ -463,6 +467,25 @@
+@@ -475,6 +479,25 @@ export const HostRequest = Schema.Union([
       */
      kind: Schema.optionalKey(ToolKind),
      input: JsonValue,
@@ -11046,7 +10886,7 @@ diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/sr
    }),
    AccountCheckCommand,
    MigrateCommand,
-@@ -565,6 +588,7 @@
+@@ -577,6 +600,7 @@ export const HostResponse = Schema.Union([
      ok: Schema.Literal(true),
      value: JsonValue,
      toolError: Schema.optionalKey(Schema.Literal(true)),
@@ -11055,9 +10895,10 @@ diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/sr
      events: Schema.optionalKey(EmittedEvents),
    }),
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
+index 5d643cc..b3e8d54 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
-@@ -22,6 +22,8 @@
+@@ -22,6 +22,8 @@ import { protocol15 } from "./15.ts";
  
  import { protocol16 } from "./16.ts";
  
@@ -11066,13 +10907,14 @@ diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/s
  export const releasedProtocols = [
    protocol1,
    protocol2,
-@@ -39,4 +41,5 @@
+@@ -39,4 +41,5 @@ export const releasedProtocols = [
    protocol14,
    protocol15,
    protocol16,
 +  protocol17,
  ] as const;
 diff --git a/packages/apps/src/contracts/router.ts b/packages/apps/src/contracts/router.ts
+index 486206b..5ed4694 100644
 --- a/packages/apps/src/contracts/router.ts
 +++ b/packages/apps/src/contracts/router.ts
 @@ -1,6 +1,7 @@
@@ -11083,7 +10925,7 @@ diff --git a/packages/apps/src/contracts/router.ts b/packages/apps/src/contracts
  import type { AppOperation } from "./operations.ts";
  
  /** Object keys that JavaScript gives special meaning, so no router may use them. */
-@@ -41,6 +42,7 @@
+@@ -41,6 +42,7 @@ export type RouterMeta = typeof RouterMeta.Type;
  /** A statically declared router. Children are operations or further routers. */
  export interface AppRouter {
    readonly kind: "router";
@@ -11091,7 +10933,7 @@ diff --git a/packages/apps/src/contracts/router.ts b/packages/apps/src/contracts
    readonly meta?: RouterMeta;
    readonly children: Readonly<Record<string, AppNode>>;
  }
-@@ -52,6 +54,7 @@
+@@ -53,6 +55,7 @@ export interface AppRouter {
   */
  export interface DynamicRouter {
    readonly kind: "dynamic";
@@ -11100,9 +10942,10 @@ diff --git a/packages/apps/src/contracts/router.ts b/packages/apps/src/contracts
    readonly meta?: () => Effect.Effect<RouterMeta, unknown>;
    readonly list: () => Effect.Effect<readonly HostedTool[], unknown>;
 diff --git a/packages/apps/src/implementation/account-router.ts b/packages/apps/src/implementation/account-router.ts
+index 799422a..382e201 100644
 --- a/packages/apps/src/implementation/account-router.ts
 +++ b/packages/apps/src/implementation/account-router.ts
-@@ -4,9 +4,10 @@
+@@ -4,9 +4,10 @@ import { Effect, Result, Schema } from "effect";
  import { HostedTool, HostedToolSummary } from "../contracts/host.ts";
  import type { AppOperation } from "../contracts/operations.ts";
  import type { AppNode, AppRouter, DynamicRouter } from "../contracts/router.ts";
@@ -11115,9 +10958,9 @@ diff --git a/packages/apps/src/implementation/account-router.ts b/packages/apps/
  import {
    combineJsonSchemas,
    importedJsonSchema,
-@@ -181,6 +182,17 @@
-     ...(first.title === undefined ? {} : { title: first.title }),
+@@ -204,6 +205,17 @@ const mergeSummary = (
      readOnly: variants.every(([, tool]) => tool.readOnly === true),
+     ...(variants.every(([, tool]) => tool.kindConfirmed === true) ? { kindConfirmed: true } : {}),
      ...sameAcross("annotations", variants),
 +    ...(variants.every(([, tool]) => tool.ui === undefined)
 +      ? {}
@@ -11133,11 +10976,10 @@ diff --git a/packages/apps/src/implementation/account-router.ts b/packages/apps/
    });
  };
  
-@@ -202,6 +214,52 @@
-       : {}),
-     ...sameAcross("_meta", variants),
-   });
-+
+@@ -258,6 +270,52 @@ const eachAccount = <A>(
+ /** The first account's failure. A source no account could read fails with it, as one account would. */
+ const firstFailure = (failed: ReadonlyMap<string, unknown>) => [...failed.values()][0];
+ 
 +const accountMcpApps = (
 +  sources: ReadonlyMap<string, AppRouter | DynamicRouter>,
 +): { readonly mcpApps?: McpAppSource } =>
@@ -11183,18 +11025,19 @@ diff --git a/packages/apps/src/implementation/account-router.ts b/packages/apps/
 +        },
 +      }
 +    : {};
- 
++
  /** One dynamic router over every account's source; each tool's variants are merged by name. */
  const combineDynamic = (sources: ReadonlyMap<string, DynamicRouter>): DynamicRouter => {
-@@ -227,6 +285,7 @@
+   const first = [...sources.values()][0];
+@@ -288,6 +346,7 @@ const combineDynamic = (sources: ReadonlyMap<string, DynamicRouter>): DynamicRou
      });
    return {
      kind: "dynamic",
 +    ...accountMcpApps(sources),
-     // Accounts share one source, so the first account describes the router.
-     ...(first?.meta === undefined ? {} : { meta: first.meta }),
-     ...(first?.overrides === undefined ? {} : { overrides: first.overrides }),
-@@ -290,6 +349,7 @@
+     // Accounts share one source, so the first account that can describe it describes the router.
+     ...(first?.meta === undefined
+       ? {}
+@@ -366,6 +425,7 @@ const combineNode = (variants: ReadonlyMap<string, AppNode>): AppNode => {
        const keys = new Set([...routers.values()].flatMap((router) => Object.keys(router.children)));
        return {
          kind: "router",
@@ -11203,9 +11046,10 @@ diff --git a/packages/apps/src/implementation/account-router.ts b/packages/apps/
          children: Object.fromEntries(
            [...keys].map((key) => {
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
+index 1c5e9fe..1db1287 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
-@@ -72,6 +72,15 @@
+@@ -72,6 +72,15 @@ import { timedInvocation, workflowControlSpan } from "./invocation-timing.ts";
  import { inputInvalid } from "./input-problems.ts";
  import { ApprovalDecision } from "../contracts/approval.ts";
  import { jsonSchemaDocument } from "./schema.ts";
@@ -11221,7 +11065,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
  import { locate } from "./router.ts";
  import { readCatalog, routerSkills } from "./router-catalog.ts";
  import { shareCatalog } from "../contracts/shared-catalog.ts";
-@@ -248,6 +257,7 @@
+@@ -248,6 +257,7 @@ function requirements(
          skillSources: true,
          scheduledTools: true,
          sharedDefinitions: true,
@@ -11229,7 +11073,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
        },
        ...(sql ? { sql: true } : {}),
        ...(events === undefined || Object.keys(events).length === 0
-@@ -900,6 +910,37 @@
+@@ -900,6 +910,37 @@ function dispatch(
            native.accounts,
          );
        }
@@ -11267,7 +11111,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
        const toolName = request.operation === "call" ? request.tool : request.name;
        const location = locate(definition.tools, toolName);
        const tool =
-@@ -914,6 +955,15 @@
+@@ -914,6 +955,15 @@ function dispatch(
          return yield* request.operation === "call"
            ? new HostToolNotFound()
            : new HostOperationNotFound();
@@ -11283,7 +11127,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
        const requested =
          request.operation === "call"
            ? request.kind
-@@ -998,6 +1048,7 @@
+@@ -998,6 +1048,7 @@ function dispatch(
                {
                  ...bound,
                  fetch,
@@ -11291,7 +11135,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
                  workflows: kind === "mutate" ? workflowControls : workflowReads,
                  sql: kind === "mutate" ? session.writer : session.reader,
                  ...(kind === "mutate" ? { events: emitter() } : {}),
-@@ -1057,10 +1108,24 @@
+@@ -1057,10 +1108,24 @@ function dispatch(
                    () => Schema.decodeUnknownEffect(outputSchema)(output),
                    new HostOutputInvalid(),
                  );
@@ -11317,7 +11161,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
          });
        return yield* withinDeadline(execute());
      }),
-@@ -1181,8 +1246,22 @@
+@@ -1181,8 +1246,22 @@ export const createAppHandler =
          ...(command.operation === "call" ? { "executor.tool.name": command.tool } : {}),
        });
        let toolError = false;
@@ -11340,7 +11184,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
          Effect.provideService(ToolResultObservation, {
            failed: () => {
              toolError = true;
-@@ -1219,6 +1298,7 @@
+@@ -1219,6 +1298,7 @@ export const createAppHandler =
          ok: true,
          value,
          ...(toolError ? { toolError: true } : {}),
@@ -11350,6 +11194,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
      }).pipe(
 diff --git a/packages/apps/src/implementation/mcp-app-selection.ts b/packages/apps/src/implementation/mcp-app-selection.ts
 new file mode 100644
+index 0000000..e2c9c9e
 --- /dev/null
 +++ b/packages/apps/src/implementation/mcp-app-selection.ts
 @@ -0,0 +1,52 @@
@@ -11407,6 +11252,7 @@ new file mode 100644
 +  });
 diff --git a/packages/apps/src/implementation/mcp-app-source.ts b/packages/apps/src/implementation/mcp-app-source.ts
 new file mode 100644
+index 0000000..2446eeb
 --- /dev/null
 +++ b/packages/apps/src/implementation/mcp-app-source.ts
 @@ -0,0 +1,53 @@
@@ -11464,6 +11310,7 @@ new file mode 100644
 +    };
 +  });
 diff --git a/packages/apps/src/implementation/mcp-catalog.ts b/packages/apps/src/implementation/mcp-catalog.ts
+index e256e68..9b62f44 100644
 --- a/packages/apps/src/implementation/mcp-catalog.ts
 +++ b/packages/apps/src/implementation/mcp-catalog.ts
 @@ -1,4 +1,5 @@
@@ -11472,7 +11319,7 @@ diff --git a/packages/apps/src/implementation/mcp-catalog.ts b/packages/apps/src
  import { cacheKey } from "@executor-js/app-cache";
  import { Effect, Schema } from "effect";
  import type { DynamicRouter, RouterMeta } from "../contracts/router.ts";
-@@ -12,6 +13,7 @@
+@@ -12,6 +13,7 @@ import {
  } from "./catalog-cache.ts";
  import { fromPromise, method } from "./authoring.ts";
  import { mcpClientEffect } from "./mcp.ts";
@@ -11480,7 +11327,7 @@ diff --git a/packages/apps/src/implementation/mcp-catalog.ts b/packages/apps/src
  import { adaptMcpTool } from "./mcp-tools.ts";
  import { protocolOperations, type OperationKinds } from "./protocol-operations.ts";
  import { nativeOperation } from "./operations.ts";
-@@ -28,7 +30,7 @@
+@@ -28,7 +30,7 @@ export type McpCatalogOptions = Omit<McpToolsOptions, "accountId" | "headers"> &
  
  /** Browsing metadata; schemas are read per tool. */
  const McpToolSummary = McpToolMetadata.mapFields(
@@ -11489,7 +11336,7 @@ diff --git a/packages/apps/src/implementation/mcp-catalog.ts b/packages/apps/src
  );
  type McpToolSummary = typeof McpToolSummary.Type;
  
-@@ -44,11 +46,12 @@
+@@ -44,11 +46,12 @@ const serverMeta = (server: McpServerHeader): RouterMeta => {
  };
  
  /** Construction opens no transport unless explicit revalidation is requested. */
@@ -11503,7 +11350,7 @@ diff --git a/packages/apps/src/implementation/mcp-catalog.ts b/packages/apps/src
        accountId: options.account?.id,
        headers: options.headers,
        signal: options.signal,
-@@ -56,19 +59,19 @@
+@@ -56,19 +59,19 @@ export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
      }).pipe(Effect.mapError(invalid));
      // The account's scope separates credentials, so the server alone identifies its catalog.
      const cache = yield* catalogScope(options, options.headers, invalid);
@@ -11527,15 +11374,15 @@ diff --git a/packages/apps/src/implementation/mcp-catalog.ts b/packages/apps/src
        },
        load: (context) =>
          (context === undefined
-@@ -106,6 +109,7 @@
-       readOnly: kindOf(tool) === "query",
+@@ -113,6 +116,7 @@ export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
+       ...confirmed(tool),
        ...(tool.title === undefined ? {} : { title: tool.title }),
        annotations: annotationsOf(tool),
 +      ...mcpAppUiFields(tool._meta),
      });
      /** The operation a call runs; descriptions are rendered from it, so they cannot differ. */
      const operation = (tool: McpToolMetadata) =>
-@@ -129,6 +133,21 @@
+@@ -141,6 +145,21 @@ export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
        );
      const router: DynamicRouter = {
        kind: "dynamic",
@@ -11557,13 +11404,13 @@ diff --git a/packages/apps/src/implementation/mcp-catalog.ts b/packages/apps/src
        meta: () =>
          catalog.header().pipe(
            Effect.flatMap((header) =>
-@@ -161,5 +180,47 @@
+@@ -173,5 +192,47 @@ export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
              ),
            ),
      };
 -    return routerDeclaration(router);
 +    return router;
-   });
++  });
 +
 +/** Authored Promise factories create the router; the native host selects its profile on use. */
 +export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
@@ -11605,11 +11452,12 @@ diff --git a/packages/apps/src/implementation/mcp-catalog.ts b/packages/apps/src
 +          ),
 +      },
 +    });
-+  });
+   });
 diff --git a/packages/apps/src/implementation/mcp-client.ts b/packages/apps/src/implementation/mcp-client.ts
+index 79625d6..89a9bee 100644
 --- a/packages/apps/src/implementation/mcp-client.ts
 +++ b/packages/apps/src/implementation/mcp-client.ts
-@@ -10,6 +10,8 @@
+@@ -10,6 +10,8 @@ import type {
  import {
    ErrorCode,
    ListToolsResultSchema,
@@ -11618,7 +11466,7 @@ diff --git a/packages/apps/src/implementation/mcp-client.ts b/packages/apps/src/
    McpError as ProtocolError,
  } from "@modelcontextprotocol/sdk/types.js";
  import { Effect, Exit, Option, Schema } from "effect";
-@@ -23,6 +25,7 @@
+@@ -23,6 +25,7 @@ import {
  import type { UpstreamError } from "../contracts/failure.ts";
  import { RouterIcon } from "../contracts/router.ts";
  import type { JsonObject } from "../effect.ts";
@@ -11626,7 +11474,7 @@ diff --git a/packages/apps/src/implementation/mcp-client.ts b/packages/apps/src/
  import { mcpCall } from "./mcp-call.ts";
  import { jsonSchemaDecoder } from "./schema.ts";
  import { bodyUpstreamError } from "./upstream-error.ts";
-@@ -178,7 +181,68 @@
+@@ -178,7 +181,68 @@ export function mcpClient(
        owned("upstream", "provider.mcp.call", { attributes: { "mcp.tool.name": name } }),
      );
  
@@ -11697,6 +11545,7 @@ diff --git a/packages/apps/src/implementation/mcp-client.ts b/packages/apps/src/
  
  /** Transport-independent operations consumed by the app tool adapter. */
 diff --git a/packages/apps/src/implementation/mcp-tools.ts b/packages/apps/src/implementation/mcp-tools.ts
+index 174633f..73bcc66 100644
 --- a/packages/apps/src/implementation/mcp-tools.ts
 +++ b/packages/apps/src/implementation/mcp-tools.ts
 @@ -1,5 +1,6 @@
@@ -11706,7 +11555,7 @@ diff --git a/packages/apps/src/implementation/mcp-tools.ts b/packages/apps/src/i
  import { ToolResultObservation } from "../contracts/host.ts";
  /** Adapt any MCP transport into ordinary tools with shared validation behavior. */
  import { Effect, Schema } from "effect";
-@@ -109,6 +110,9 @@
+@@ -109,6 +110,9 @@ export const adaptMcpTool = (client: McpClient, tool: McpToolMetadata) =>
          : { readOnly: tool.annotations.readOnlyHint }),
        run: (context, input) =>
          Effect.gen(function* () {
@@ -11717,9 +11566,10 @@ diff --git a/packages/apps/src/implementation/mcp-tools.ts b/packages/apps/src/i
              Effect.flatMap(Schema.decodeUnknownEffect(JsonObject)),
              Effect.mapError(() => new McpError({ phase: "call", reason: "invalid_input" })),
 diff --git a/packages/apps/src/implementation/mcp.ts b/packages/apps/src/implementation/mcp.ts
+index b94284c..f00cdc1 100644
 --- a/packages/apps/src/implementation/mcp.ts
 +++ b/packages/apps/src/implementation/mcp.ts
-@@ -303,7 +303,18 @@
+@@ -303,7 +303,18 @@ function withClient<A, E>(
                { name: "executor-apps", version: "0.1.0" },
                {
                  jsonSchemaValidator: mcpJsonSchemaValidator,
@@ -11739,7 +11589,7 @@ diff --git a/packages/apps/src/implementation/mcp.ts b/packages/apps/src/impleme
                },
              );
              if (changed !== undefined) {
-@@ -414,6 +425,7 @@
+@@ -414,6 +425,7 @@ export const mcpClientEffect = (input: McpToolsOptions, changed?: Effect.Effect<
        return yield* new McpError({ phase: "connect", reason: "invalid_input" });
      const connection: McpConnection = {
        url,
@@ -11748,6 +11598,7 @@ diff --git a/packages/apps/src/implementation/mcp.ts b/packages/apps/src/impleme
        timeoutMs: options.timeoutMs ?? defaultMcpClientLimits.timeoutMs,
      };
 diff --git a/packages/apps/src/implementation/router-catalog.ts b/packages/apps/src/implementation/router-catalog.ts
+index 006ef48..bf64b11 100644
 --- a/packages/apps/src/implementation/router-catalog.ts
 +++ b/packages/apps/src/implementation/router-catalog.ts
 @@ -2,6 +2,7 @@
@@ -11758,18 +11609,19 @@ diff --git a/packages/apps/src/implementation/router-catalog.ts b/packages/apps/
  import { Cause, Effect, Option, Result, Schema } from "effect";
  import {
    HostDeclarationInvalid,
-@@ -132,6 +133,7 @@
-     ...(operation.title === undefined ? {} : { title: operation.title }),
-     readOnly,
+@@ -135,6 +136,7 @@ const summaryFields = (
+     // A declared operation's kind is the app's own, or its protocol's, such as an HTTP method.
+     kindConfirmed: true,
      annotations: { ...operation.annotations, readOnlyHint: readOnly },
 +    ...mcpAppUiFields(operation._meta),
    };
  };
  
 diff --git a/packages/apps/src/implementation/router.ts b/packages/apps/src/implementation/router.ts
+index 2b8259e..f7f69f4 100644
 --- a/packages/apps/src/implementation/router.ts
 +++ b/packages/apps/src/implementation/router.ts
-@@ -11,6 +11,8 @@
+@@ -11,6 +11,8 @@ import {
    type DynamicRouter,
    type RouterIcon,
  } from "../contracts/router.ts";
@@ -11778,7 +11630,7 @@ diff --git a/packages/apps/src/implementation/router.ts b/packages/apps/src/impl
  import { fromPromise } from "./authoring.ts";
  import type { Approval } from "../approval.ts";
  import {
-@@ -33,6 +35,7 @@
+@@ -33,6 +35,7 @@ export type {
  
  /** Author metadata for a router. Instructions become a skill named after the router's path. */
  export interface RouterOptions {
@@ -11786,7 +11638,7 @@ diff --git a/packages/apps/src/implementation/router.ts b/packages/apps/src/impl
    readonly title?: string;
    readonly description?: string;
    readonly instructions?: string;
-@@ -58,7 +61,7 @@
+@@ -58,7 +61,7 @@ const nativeNode = (value: unknown): AppNode | undefined =>
  const metaOf = (options: RouterOptions | undefined): RouterMeta | undefined => {
    if (options === undefined) return undefined;
    const defined = Object.fromEntries(
@@ -11795,7 +11647,7 @@ diff --git a/packages/apps/src/implementation/router.ts b/packages/apps/src/impl
    );
    return Object.keys(defined).length === 0
      ? undefined
-@@ -90,12 +93,30 @@
+@@ -90,12 +93,30 @@ export function router(
    options?: RouterOptions,
  ): RouterDeclaration {
    const meta = metaOf(options);
@@ -11828,7 +11680,7 @@ diff --git a/packages/apps/src/implementation/router.ts b/packages/apps/src/impl
      );
    const nodes: Record<string, AppNode> = {};
    for (const [key, value] of Object.entries(children)) {
-@@ -107,7 +128,7 @@
+@@ -107,7 +128,7 @@ export function router(
        throw new Error(`Router key "${key}" must be a query, mutation or router`);
      nodes[key] = node;
    }
@@ -11837,7 +11689,7 @@ diff --git a/packages/apps/src/implementation/router.ts b/packages/apps/src/impl
  }
  
  const withMeta = (meta: RouterMeta | undefined) => (meta === undefined ? {} : { meta });
-@@ -317,6 +338,38 @@
+@@ -318,6 +339,38 @@ export const renameTools = <Query, Mutation>(
    }: T) => tool;
    return routerDeclaration({
      ...native,
@@ -11877,6 +11729,7 @@ diff --git a/packages/apps/src/implementation/router.ts b/packages/apps/src/impl
      ...(native.summaries === undefined
        ? {}
 diff --git a/packages/mcp/package.json b/packages/mcp/package.json
+index e2a25ad..9c79a5b 100644
 --- a/packages/mcp/package.json
 +++ b/packages/mcp/package.json
 @@ -5,11 +5,14 @@
@@ -11897,6 +11750,7 @@ diff --git a/packages/mcp/package.json b/packages/mcp/package.json
      "apps": "workspace:*",
 diff --git a/packages/mcp/src/contracts/app-assets.ts b/packages/mcp/src/contracts/app-assets.ts
 new file mode 100644
+index 0000000..1b1945c
 --- /dev/null
 +++ b/packages/mcp/src/contracts/app-assets.ts
 @@ -0,0 +1,8 @@
@@ -11910,6 +11764,7 @@ new file mode 100644
 +});
 diff --git a/packages/mcp/src/contracts/app-bridge.ts b/packages/mcp/src/contracts/app-bridge.ts
 new file mode 100644
+index 0000000..6c9a31c
 --- /dev/null
 +++ b/packages/mcp/src/contracts/app-bridge.ts
 @@ -0,0 +1,34 @@
@@ -11949,6 +11804,7 @@ new file mode 100644
 +};
 diff --git a/packages/mcp/src/contracts/app-sandbox.ts b/packages/mcp/src/contracts/app-sandbox.ts
 new file mode 100644
+index 0000000..ad4626d
 --- /dev/null
 +++ b/packages/mcp/src/contracts/app-sandbox.ts
 @@ -0,0 +1,49 @@
@@ -12003,6 +11859,7 @@ new file mode 100644
 +};
 diff --git a/packages/mcp/src/contracts/app-views.ts b/packages/mcp/src/contracts/app-views.ts
 new file mode 100644
+index 0000000..5923c84
 --- /dev/null
 +++ b/packages/mcp/src/contracts/app-views.ts
 @@ -0,0 +1,63 @@
@@ -12070,9 +11927,10 @@ new file mode 100644
 +  ) => Effect.Effect<ToolResumeResult, E | Error>;
 +}
 diff --git a/packages/mcp/src/contracts/backend.ts b/packages/mcp/src/contracts/backend.ts
+index b80a5a5..66ae131 100644
 --- a/packages/mcp/src/contracts/backend.ts
 +++ b/packages/mcp/src/contracts/backend.ts
-@@ -48,6 +48,7 @@
+@@ -48,6 +48,7 @@ export type McpEventError =
   * messages, fields and causes remain private.
   */
  export interface McpBackend<E extends Error> {
@@ -12081,6 +11939,7 @@ diff --git a/packages/mcp/src/contracts/backend.ts b/packages/mcp/src/contracts/
    readonly listSkills: (
      input: Parameters<Executor["skills"]["list"]>[0],
 diff --git a/packages/mcp/src/contracts/execute.ts b/packages/mcp/src/contracts/execute.ts
+index 2e4c424..af195c4 100644
 --- a/packages/mcp/src/contracts/execute.ts
 +++ b/packages/mcp/src/contracts/execute.ts
 @@ -1,4 +1,5 @@
@@ -12089,7 +11948,7 @@ diff --git a/packages/mcp/src/contracts/execute.ts b/packages/mcp/src/contracts/
  import { CodeMode } from "@opencode-ai/codemode";
  import { Schema } from "effect";
  import { HttpServerRequest } from "effect/http";
-@@ -256,6 +257,8 @@
+@@ -292,6 +293,8 @@ export const McpErrorResponse = Schema.Struct({
  export type McpErrorResponse = typeof McpErrorResponse.Type;
  /** Program result plus apps that could not expose a live catalog during this execution. */
  export const ExecuteResult = Schema.Struct({
@@ -12100,6 +11959,7 @@ diff --git a/packages/mcp/src/contracts/execute.ts b/packages/mcp/src/contracts/
      Schema.Struct({
 diff --git a/packages/mcp/src/implementation/app-asset-paths.ts b/packages/mcp/src/implementation/app-asset-paths.ts
 new file mode 100644
+index 0000000..babb8d0
 --- /dev/null
 +++ b/packages/mcp/src/implementation/app-asset-paths.ts
 @@ -0,0 +1,7 @@
@@ -12112,6 +11972,7 @@ new file mode 100644
 +} as const;
 diff --git a/packages/mcp/src/implementation/app-assets.ts b/packages/mcp/src/implementation/app-assets.ts
 new file mode 100644
+index 0000000..e28a2e7
 --- /dev/null
 +++ b/packages/mcp/src/implementation/app-assets.ts
 @@ -0,0 +1,5 @@
@@ -12122,6 +11983,7 @@ new file mode 100644
 +};
 diff --git a/packages/mcp/src/implementation/app-capability.ts b/packages/mcp/src/implementation/app-capability.ts
 new file mode 100644
+index 0000000..8684c9c
 --- /dev/null
 +++ b/packages/mcp/src/implementation/app-capability.ts
 @@ -0,0 +1,33 @@
@@ -12160,6 +12022,7 @@ new file mode 100644
 +    work.pipe(Effect.provideServiceEffect(McpAppUiProfile, availableMcpAppProfile(backend)));
 diff --git a/packages/mcp/src/implementation/app-sandbox.ts b/packages/mcp/src/implementation/app-sandbox.ts
 new file mode 100644
+index 0000000..abe1e10
 --- /dev/null
 +++ b/packages/mcp/src/implementation/app-sandbox.ts
 @@ -0,0 +1,70 @@
@@ -12235,6 +12098,7 @@ new file mode 100644
 +</style></head><body><script type="module">${renderer.replaceAll("</script", "<\\/script")}</script></body></html>`;
 diff --git a/packages/mcp/src/implementation/app-tools.ts b/packages/mcp/src/implementation/app-tools.ts
 new file mode 100644
+index 0000000..d1f0b46
 --- /dev/null
 +++ b/packages/mcp/src/implementation/app-tools.ts
 @@ -0,0 +1,303 @@
@@ -12265,7 +12129,7 @@ new file mode 100644
 +        : "unavailable";
 +  const text =
 +    action && error instanceof Error && reason === "action-failed"
-+      ? diagnosticSummary(error)
++      ? diagnosticSummary(error, { operation: "call", reference: undefined })
 +      : reason === "expired"
 +        ? "This app view has expired. The original text result remains available."
 +        : reason === "denied"
@@ -12543,6 +12407,7 @@ new file mode 100644
 +  );
 diff --git a/packages/mcp/src/implementation/app-views-backend.ts b/packages/mcp/src/implementation/app-views-backend.ts
 new file mode 100644
+index 0000000..427b623
 --- /dev/null
 +++ b/packages/mcp/src/implementation/app-views-backend.ts
 @@ -0,0 +1,192 @@
@@ -12740,6 +12605,7 @@ new file mode 100644
 +};
 diff --git a/packages/mcp/src/implementation/deferred-app-views.ts b/packages/mcp/src/implementation/deferred-app-views.ts
 new file mode 100644
+index 0000000..db75666
 --- /dev/null
 +++ b/packages/mcp/src/implementation/deferred-app-views.ts
 @@ -0,0 +1,21 @@
@@ -12766,6 +12632,7 @@ new file mode 100644
 +});
 diff --git a/packages/mcp/src/implementation/embedded-app-assets.ts b/packages/mcp/src/implementation/embedded-app-assets.ts
 new file mode 100644
+index 0000000..6b5ea2b
 --- /dev/null
 +++ b/packages/mcp/src/implementation/embedded-app-assets.ts
 @@ -0,0 +1,6 @@
@@ -12776,9 +12643,10 @@ new file mode 100644
 +
 +export const embeddedMcpAppAssets: McpAppAssetSource = (asset) => Effect.succeed(appAssets[asset]);
 diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/implementation/execute.ts
+index dc3ac39..ccdad1c 100644
 --- a/packages/mcp/src/implementation/execute.ts
 +++ b/packages/mcp/src/implementation/execute.ts
-@@ -238,7 +238,11 @@
+@@ -242,7 +242,11 @@ function listTools<E extends Error>(
        page = yield* list(version, page.next);
        tools.push(...page.items);
      }
@@ -12791,7 +12659,7 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
    });
  }
  
-@@ -1371,9 +1375,12 @@
+@@ -1429,9 +1433,12 @@ type Namespaces = Map<string, typeof UnavailableApp.Type | "available">;
  
  /** What one execution has done so far, so a result assembled by its driver stays accurate. */
  export type ExecutionProgress = {
@@ -12803,17 +12671,17 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
 +    readonly expression?: string;
      outcome: McpToolCall["outcome"] | "running";
      durationMs?: number;
-   }>;
-@@ -1389,6 +1396,8 @@
-   readonly failures: Array<Error>;
+     /** The call returned a result that says the tool failed (`toolError`), so it did not succeed. */
+@@ -1455,6 +1462,8 @@ export type ExecutionProgress = {
+   reference: string | undefined;
  };
- export const executionProgress = (): ExecutionProgress => ({
+ export const executionProgress = (reference: string | undefined): ExecutionProgress => ({
 +  views: [],
 +  viewErrors: [],
    calls: [],
    callFibers: new Map(),
    phase: "discovery",
-@@ -1632,7 +1641,11 @@
+@@ -1706,7 +1715,11 @@ function runProgram(
          // Both hooks run on the fiber that makes the call.
          onToolCallStart: ({ index, name }) =>
            Effect.map(Effect.fiberId, (fiber) => {
@@ -12826,7 +12694,7 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
              progress.callFibers.set(fiber, index);
            }),
          onToolCallEnd: ({ index, outcome, durationMs }) =>
-@@ -1789,7 +1802,7 @@
+@@ -1868,7 +1881,7 @@ export function callTools(input: typeof CallInput.Type): Program {
              const name = CodeMode.toolExpression(entry.path);
              const fiber = yield* Effect.fiberId;
              const started = yield* Clock.currentTimeMillis;
@@ -12836,6 +12704,7 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
              const finish = (outcome: "success" | "failure") =>
                Effect.gen(function* () {
 diff --git a/packages/mcp/src/implementation/executions.ts b/packages/mcp/src/implementation/executions.ts
+index 9c49910..ab7c611 100644
 --- a/packages/mcp/src/implementation/executions.ts
 +++ b/packages/mcp/src/implementation/executions.ts
 @@ -1,3 +1,5 @@
@@ -12844,7 +12713,7 @@ diff --git a/packages/mcp/src/implementation/executions.ts b/packages/mcp/src/im
  import type { ExecutionRejected } from "../contracts/execute.ts";
  /** Execution-owned tool invocations and pending interactions. Delivery never owns the continuation. */
  import type { CodeMode } from "@opencode-ai/codemode";
-@@ -140,6 +142,7 @@
+@@ -144,6 +146,7 @@ type Run = {
    readonly id: string;
    readonly transport: PendingTransport;
    readonly approval: ApprovalMode;
@@ -12852,7 +12721,7 @@ diff --git a/packages/mcp/src/implementation/executions.ts b/packages/mcp/src/im
    readonly scheduling: ReturnType<typeof programScheduler>;
    readonly caller: string;
    readonly scope: Scope.Closeable;
-@@ -208,6 +211,7 @@
+@@ -249,6 +252,7 @@ export const makeExecutions = (
        status: "completed",
        execution: { ok: false, error: { kind, message }, toolCalls: reportedCalls(run.progress) },
        unavailableApps: run.progress.unavailableApps,
@@ -12860,7 +12729,7 @@ diff --git a/packages/mcp/src/implementation/executions.ts b/packages/mcp/src/im
      });
      /** The program did not deliver its own timeout result; report what the driver recorded. */
      const timedOut = (run: Run) =>
-@@ -380,6 +384,7 @@
+@@ -413,6 +417,7 @@ export const makeExecutions = (
          const operation: Operation = { waiting: new Set() };
          run.operations.add(operation);
          yield* Effect.scoped(work(backend, operation)).pipe(
@@ -12868,7 +12737,7 @@ diff --git a/packages/mcp/src/implementation/executions.ts b/packages/mcp/src/im
            Effect.ensuring(
              Effect.sync(() => run.operations.delete(operation)).pipe(Effect.andThen(wake(run))),
            ),
-@@ -397,17 +402,65 @@
+@@ -424,17 +429,65 @@ export const makeExecutions = (
       * Accept a policy approval at once, for a run whose MCP client already confirmed the call. The
       * approved call runs as a resumed one does, so its failures reach the caller the same way.
       */
@@ -12934,7 +12803,7 @@ diff --git a/packages/mcp/src/implementation/executions.ts b/packages/mcp/src/im
              elicitation: elicitation(
                run,
                operation,
-@@ -534,6 +587,7 @@
+@@ -544,6 +597,7 @@ export const makeExecutions = (
                (backend, operation) =>
                  backend
                    .callTool(input, {
@@ -12942,16 +12811,16 @@ diff --git a/packages/mcp/src/implementation/executions.ts b/packages/mcp/src/im
                      elicitation: elicitation(run, operation, interactionTool(input)),
                    })
                    .pipe(
-@@ -547,7 +601,7 @@
+@@ -557,7 +611,7 @@ export const makeExecutions = (
                        result.status === "completed"
                          ? Effect.succeed(result)
                          : run.approval === "client"
 -                          ? approveNow(run, backend, operation, result)
 +                          ? approveNow(run, backend, operation, result, call)
-                           : offer(run, backend, result),
+                           : Effect.succeed(offer(run, result)),
                      ),
                    ),
-@@ -618,7 +672,9 @@
+@@ -630,7 +684,9 @@ export const makeExecutions = (
                    : launch(run, backend, handle).pipe(Effect.as(undefined)),
                ),
                Match.when({ kind: "done" }, ({ result }) =>
@@ -12962,7 +12831,7 @@ diff --git a/packages/mcp/src/implementation/executions.ts b/packages/mcp/src/im
                ),
                Match.when({ kind: "wake" }, () => Effect.succeed(undefined)),
                Match.exhaustive,
-@@ -751,6 +807,7 @@
+@@ -765,6 +821,7 @@ export const makeExecutions = (
              id: crypto.randomUUID(),
              transport,
              approval,
@@ -12970,7 +12839,7 @@ diff --git a/packages/mcp/src/implementation/executions.ts b/packages/mcp/src/im
              caller,
              scheduling: programScheduler(scheduler),
              scope: yield* Scope.make(),
-@@ -826,6 +883,7 @@
+@@ -840,6 +897,7 @@ export const makeExecutions = (
              return unavailable(caller, input.requestId);
            const response = yield* pending.respond(input.response);
            const run = pending.run;
@@ -12978,7 +12847,7 @@ diff --git a/packages/mcp/src/implementation/executions.ts b/packages/mcp/src/im
            yield* Effect.annotateCurrentSpan("executor.execution.id", run.id);
            if (pending.request.expiresAt <= (yield* Clock.currentTimeMillis)) {
              forget(pending, "expired");
-@@ -848,6 +906,7 @@
+@@ -862,6 +920,7 @@ export const makeExecutions = (
                launch(run, backend, (active, operation) =>
                  active
                    .resumeInvocation(pending.request, response, {
@@ -12987,6 +12856,7 @@ diff --git a/packages/mcp/src/implementation/executions.ts b/packages/mcp/src/im
                        run,
                        operation,
 diff --git a/packages/mcp/src/implementation/server.ts b/packages/mcp/src/implementation/server.ts
+index 9e81047..4866658 100644
 --- a/packages/mcp/src/implementation/server.ts
 +++ b/packages/mcp/src/implementation/server.ts
 @@ -1,3 +1,4 @@
@@ -12994,42 +12864,42 @@ diff --git a/packages/mcp/src/implementation/server.ts b/packages/mcp/src/implem
  /** One execution manager with model, native and browser delivery adapters. */
  import {
    Cause,
-@@ -29,6 +30,8 @@
- import { callTools, describeCatalog, executeProgram, searchCatalog } from "./execute.ts";
- import { skills } from "./skills.ts";
+@@ -30,6 +31,8 @@ import { callTools, describeCatalog, executeProgram, searchCatalog } from "./exe
+ import { decodeSkillsInput, skills } from "./skills.ts";
  import { eventsHandler } from "./events.ts";
+ import { withOperationSpan } from "./telemetry.ts";
 +import { appTools } from "./app-tools.ts";
 +import { McpAppAssets } from "../contracts/app-assets.ts";
  
  // Observe the final protocol value after timeout, admission and resume handling.
  const observeExecution =
-@@ -150,6 +153,7 @@
+@@ -151,6 +154,7 @@ const withLink = (
  /** Build protocol state and its browser accessors together. Hosts authorize browser calls separately from MCP. */
  export const makeMcp = (options: McpOptions) =>
    Effect.gen(function* () {
 +    const readAppAsset = yield* McpAppAssets;
-     const executions = yield* makeExecutions(options.limits, options.beforeExecute);
-     const handler = (mode: ElicitationMode) =>
-       Effect.gen(function* () {
-@@ -188,9 +192,15 @@
+     const executions = yield* makeExecutions(
+       options.limits,
+       options.beforeExecute,
+@@ -197,9 +201,15 @@ export const makeMcp = (options: McpOptions) =>
            );
          // Search and describe read the catalog directly; call runs as an execution so it can pause.
-         const search = (input: Parameters<typeof searchCatalog>[2]) =>
--          searchCatalog(options.backend, options.limits, input).pipe(Effect.withSpan("mcp.search"));
-+          searchCatalog(options.backend, options.limits, input).pipe(
+         const search = (input: Parameters<typeof searchCatalog>[1]) =>
+-          searchCatalog(options.backend, input).pipe(withOperationSpan("mcp.search"));
++          searchCatalog(options.backend, input).pipe(
 +            withMcpAppProfile(options.backend),
-+            Effect.withSpan("mcp.search"),
++            withOperationSpan("mcp.search"),
 +          );
          const describe = (input: Parameters<typeof describeCatalog>[1]) =>
--          describeCatalog(options.backend, input).pipe(Effect.withSpan("mcp.describe"));
+-          describeCatalog(options.backend, input).pipe(withOperationSpan("mcp.describe"));
 +          describeCatalog(options.backend, input).pipe(
 +            withMcpAppProfile(options.backend),
-+            Effect.withSpan("mcp.describe"),
++            withOperationSpan("mcp.describe"),
 +          );
          const toolkit =
            mode === "native"
              ? McpServer.toolkit(NativeMcpToolkit).pipe(
-@@ -309,6 +319,7 @@
+@@ -318,6 +328,7 @@ export const makeMcp = (options: McpOptions) =>
                  );
          return yield* Layer.mergeAll(
            toolkit,
@@ -13038,9 +12908,10 @@ diff --git a/packages/mcp/src/implementation/server.ts b/packages/mcp/src/implem
          ).pipe(
            Layer.provide(
 diff --git a/packages/mcp/src/index.ts b/packages/mcp/src/index.ts
+index c9a0724..3c3987c 100644
 --- a/packages/mcp/src/index.ts
 +++ b/packages/mcp/src/index.ts
-@@ -13,3 +13,14 @@
+@@ -14,3 +14,14 @@ export * from "./contracts/browser.ts";
  export * from "./contracts/browser-tools.ts";
  
  export * from "./contracts/targets.ts";
@@ -13057,6 +12928,7 @@ diff --git a/packages/mcp/src/index.ts b/packages/mcp/src/index.ts
 +export type { AppSandboxAddress } from "./contracts/app-sandbox.ts";
 diff --git a/packages/mcp/src/ui/app-capabilities.ts b/packages/mcp/src/ui/app-capabilities.ts
 new file mode 100644
+index 0000000..d61103d
 --- /dev/null
 +++ b/packages/mcp/src/ui/app-capabilities.ts
 @@ -0,0 +1,39 @@
@@ -13101,6 +12973,7 @@ new file mode 100644
 +};
 diff --git a/packages/mcp/src/ui/renderer.ts b/packages/mcp/src/ui/renderer.ts
 new file mode 100644
+index 0000000..520d73e
 --- /dev/null
 +++ b/packages/mcp/src/ui/renderer.ts
 @@ -0,0 +1,346 @@
@@ -13452,6 +13325,7 @@ new file mode 100644
 +mount();
 diff --git a/packages/mcp/src/ui/sandbox.ts b/packages/mcp/src/ui/sandbox.ts
 new file mode 100644
+index 0000000..eb58e4b
 --- /dev/null
 +++ b/packages/mcp/src/ui/sandbox.ts
 @@ -0,0 +1,66 @@
@@ -13523,6 +13397,7 @@ new file mode 100644
 +mount();
 diff --git a/packages/sdk/src/contracts/app-views.ts b/packages/sdk/src/contracts/app-views.ts
 new file mode 100644
+index 0000000..560ef2a
 --- /dev/null
 +++ b/packages/sdk/src/contracts/app-views.ts
 @@ -0,0 +1,96 @@
@@ -13623,9 +13498,10 @@ new file mode 100644
 +  ) => Effect.Effect<Json, AppViewUnavailable>;
 +}
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
+index 00f0c5a..357c4aa 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
-@@ -8,6 +8,7 @@
+@@ -8,6 +8,7 @@ import type { WebhookSetupApi } from "./webhook-setup.ts";
  import type { ExecutorApi } from "./http.ts";
  import type { LegacyVersionEndpoints } from "./apps.ts";
  import { StorageHost, type Credentials } from "./storage.ts";
@@ -13633,7 +13509,7 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
  import { PrefetchHost } from "./tools.ts";
  import { SavedOAuthClientsHost } from "./oauth-clients.ts";
  import { OwnerMovesHost } from "./owner.ts";
-@@ -480,6 +481,8 @@
+@@ -498,6 +499,8 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
    readonly [StorageHost]: StorageHost;
    readonly [InteractiveHost]: import("./interactive-accounts.ts").InteractiveHost;
    readonly [PrefetchHost]: PrefetchHost;
@@ -13642,7 +13518,7 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
    readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
    readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
    /** Host-only: the v1 importer's grant import (`notes/v1-import.md`). */
-@@ -508,6 +511,8 @@
+@@ -526,6 +529,8 @@ export type PromiseExecutor = Promisify<
      | typeof InteractiveHost
      | typeof StorageHost
      | typeof PrefetchHost
@@ -13652,9 +13528,10 @@ diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts
      | typeof OwnerMovesHost
      | typeof OAuthGrantImport
 diff --git a/packages/sdk/src/contracts/runtime.ts b/packages/sdk/src/contracts/runtime.ts
+index d2cb1ff..ecc9198 100644
 --- a/packages/sdk/src/contracts/runtime.ts
 +++ b/packages/sdk/src/contracts/runtime.ts
-@@ -474,12 +474,24 @@
+@@ -512,6 +512,16 @@ export interface Runtime<Requirements = never> {
        readonly command: WorkflowCommand;
      } & HostContext,
    ) => Effect.Effect<Json, RuntimeLoadError | typeof HostCallError.Type, Requirements>;
@@ -13671,7 +13548,8 @@ diff --git a/packages/sdk/src/contracts/runtime.ts b/packages/sdk/src/contracts/
    readonly call: (
      input: {
        readonly app: string;
-       readonly build: BuildId;
+@@ -520,6 +530,8 @@ export interface Runtime<Requirements = never> {
+       readonly hostApi: HostApiCheck | undefined;
        readonly database: boolean;
        readonly tool: string;
 +      readonly audience?: "app";
@@ -13680,9 +13558,10 @@ diff --git a/packages/sdk/src/contracts/runtime.ts b/packages/sdk/src/contracts/
        readonly kind?: "query" | "mutation";
        readonly input: Json;
 diff --git a/packages/sdk/src/contracts/storage.ts b/packages/sdk/src/contracts/storage.ts
+index 0784f53..ddbc3c8 100644
 --- a/packages/sdk/src/contracts/storage.ts
 +++ b/packages/sdk/src/contracts/storage.ts
-@@ -144,6 +144,7 @@
+@@ -144,6 +144,7 @@ export interface Credentials {
        | ApprovalRequestId
        | WebhookId
        | WorkflowRunId
@@ -13690,7 +13569,7 @@ diff --git a/packages/sdk/src/contracts/storage.ts b/packages/sdk/src/contracts/
        | import("./events.ts").EventSubscriptionId
        | import("./events.ts").StoredEventId,
      fields: Redacted.Redacted<JsonObject>,
-@@ -157,6 +158,7 @@
+@@ -157,6 +158,7 @@ export interface Credentials {
        | ApprovalRequestId
        | WebhookId
        | WorkflowRunId
@@ -13699,9 +13578,10 @@ diff --git a/packages/sdk/src/contracts/storage.ts b/packages/sdk/src/contracts/
        | import("./events.ts").StoredEventId,
      bytes: Redacted.Redacted<Uint8Array>,
 diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/tools.ts
+index 124d55e..0bc19a3 100644
 --- a/packages/sdk/src/contracts/tools.ts
 +++ b/packages/sdk/src/contracts/tools.ts
-@@ -78,6 +78,10 @@
+@@ -89,6 +89,10 @@ export type ToolApprovalIssuer = typeof ToolApprovalIssuer.Type;
   * issuer. Only `issuer` enters approval storage.
   */
  export interface ToolInvocationOptions {
@@ -13712,7 +13592,7 @@ diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/to
    readonly elicitation?: ElicitationHandler;
    readonly issuer?: ToolApprovalIssuer;
  }
-@@ -1609,6 +1613,7 @@
+@@ -1943,6 +1947,7 @@ const InvocationSlots = Schema.Record(
  );
  /** Reviewed call with decoded arguments, exact code version and account identities. */
  export const ToolInvocationFields = Schema.Struct({
@@ -13721,22 +13601,23 @@ diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/to
    owner: OwnerId,
    version: VersionId,
 diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index 34a0e08..44656d6 100644
 --- a/packages/sdk/src/core.ts
 +++ b/packages/sdk/src/core.ts
-@@ -50,3 +50,5 @@
+@@ -60,3 +60,5 @@ export { decodeWorkflowFailure, workflowFailureMessage } from "./contracts/workf
  
  export { AppRepositoryRecovery } from "./implementation/initial-source.ts";
  export { asciiJson } from "./implementation/ascii-json.ts";
 +
 +export * from "./contracts/app-views.ts";
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
+index 8ba30ef..65a57ef 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
-@@ -58,6 +58,20 @@
-    */
-   readonly sealedCredentials: boolean;
+@@ -67,6 +67,20 @@ export interface AppProtocol {
+   readonly accounts: (accounts: ResolvedAccounts) => ResolvedAccounts;
  }
-+
+ 
 +/** Protocol 18 adds source-bound MCP Apps resources and callbacks. */
 +const protocol18: AppProtocol = {
 +  version: 18,
@@ -13750,10 +13631,11 @@ diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src
 +  concurrentData: true,
 +  sealedCredentials: true,
 +};
- 
++
  /** Protocol 17 adds display status and app-owned account checks. */
  const protocol17: AppProtocol = {
-@@ -449,11 +463,18 @@
+   version: 17,
+@@ -488,12 +502,19 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
      protocol15,
      protocol16,
      protocol17,
@@ -13763,16 +13645,17 @@ diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src
  
  /** Protocols this host builds and runs. */
  export const supportedProtocols: readonly number[] = [...protocols.keys()];
-+
+ 
 +const withoutUiProfile = (command: HostRequest): HostRequest => {
 +  if (command.operation !== "call" && command.operation !== "inspect") return command;
 +  const { uiProfile: _profile, ...legacy } = command;
 +  return legacy;
 +};
- 
++
  /** Select the adapter for a framework or retained build, before compiling or loading any code. */
  export const appProtocol = (
-@@ -464,7 +485,22 @@
+   version: number,
+@@ -503,7 +524,22 @@ export const appProtocol = (
      ? Effect.fail(
          new RuntimeProtocolUnsupported({ protocol: version, supported: supportedProtocols }),
        )
@@ -13796,7 +13679,7 @@ diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src
  };
  
  /** Compatibility messages converted by the per-site account adapters above. */
-@@ -492,3 +528,36 @@
+@@ -531,3 +567,36 @@ export const accountSiteAdaptations = [
    { message: "accounts", protocols: [13, 14], adapter: "withoutSiteAccounts" },
    { message: "invocation", protocols: [14], adapter: "protocol14.invocation" },
  ];
@@ -13834,6 +13717,7 @@ diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src
 +  },
 +];
 diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/implementation/app-runtime.ts
+index 93c16bc..56093ec 100644
 --- a/packages/sdk/src/implementation/app-runtime.ts
 +++ b/packages/sdk/src/implementation/app-runtime.ts
 @@ -1,3 +1,4 @@
@@ -13841,15 +13725,15 @@ diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/i
  /**
   * The product side of app execution, shared by every host. It turns runtime operations into app
   * invocations for the runner, gives each invocation a build loader over the host's build store,
-@@ -26,6 +27,7 @@
+@@ -26,6 +27,7 @@ import {
    SkillCatalogResponse,
    skillsCommand,
    ToolResultObservation,
 +  McpAppViewSink,
    type HostContext,
    type HostRequest,
-   scopedSlots,
-@@ -167,7 +169,10 @@
+   type WebhookCommand,
+@@ -185,7 +187,10 @@ export const appRuntime = (host: AppRuntimeHost) =>
              app: input.app,
              build,
              database: input.database,
@@ -13861,7 +13745,7 @@ diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/i
              accounts: Redacted.value(input.accounts),
              ...(input.caller === undefined ? {} : { caller: input.caller }),
              // Workers RPC structured-clones its arguments; Effect headers carry a prototype it rejects.
-@@ -296,6 +301,7 @@
+@@ -315,6 +320,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
              });
            }
            const value = yield* Schema.decodeUnknownEffect(output)(reply.value);
@@ -13869,13 +13753,13 @@ diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/i
            // Only a successful invocation's events are kept; its writes have committed.
            if (reply.events !== undefined && reply.events.length > 0)
              yield* (yield* AppEventSink).emitted({
-@@ -386,11 +392,17 @@
+@@ -418,11 +424,17 @@ export const appRuntime = (host: AppRuntimeHost) =>
            Json,
            HostDataError,
-         ).pipe(Effect.withSpan(span("mutate"))),
+         ).pipe(traced("mutate", app(input))),
 +      mcpApp: (input) =>
 +        dispatch({ ...input, database: false }, input.command, Json, HostCallError).pipe(
-+          Effect.withSpan(span("mcpApp")),
++          traced("mcpApp", app(input)),
 +        ),
        call: (input) =>
          dispatch(
@@ -13889,6 +13773,7 @@ diff --git a/packages/sdk/src/implementation/app-runtime.ts b/packages/sdk/src/i
              input: input.input,
 diff --git a/packages/sdk/src/implementation/app-view-storage.ts b/packages/sdk/src/implementation/app-view-storage.ts
 new file mode 100644
+index 0000000..0dadb7f
 --- /dev/null
 +++ b/packages/sdk/src/implementation/app-view-storage.ts
 @@ -0,0 +1,70 @@
@@ -13964,6 +13849,7 @@ new file mode 100644
 +};
 diff --git a/packages/sdk/src/implementation/app-views.ts b/packages/sdk/src/implementation/app-views.ts
 new file mode 100644
+index 0000000..b9678bc
 --- /dev/null
 +++ b/packages/sdk/src/implementation/app-views.ts
 @@ -0,0 +1,168 @@
@@ -14136,9 +14022,10 @@ new file mode 100644
 +  };
 +};
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index 4de033f..3abe478 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -6,6 +6,8 @@
+@@ -6,6 +6,8 @@ import { makeWebhookSources } from "./webhook-sources.ts";
  import { WorkflowHost } from "../contracts/workflow-runtime.ts";
  import { RepositoryHost } from "../contracts/source.ts";
  import { StorageHost } from "../contracts/storage.ts";
@@ -14147,7 +14034,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
  import { PrefetchHost } from "../contracts/tools.ts";
  import { OAuthGrantImport } from "../contracts/oauth.ts";
  import { gitSourceStorage } from "./git-sources.ts";
-@@ -272,6 +274,8 @@
+@@ -290,6 +292,8 @@ export const createExecutor = (
          write: options.database.reactivity.write,
        },
        [PrefetchHost]: { invocation: tools.prefetchInvocation },
@@ -14157,9 +14044,10 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
          ...(options.oauth?.savedClientCallbacks ?? []),
          ...(options.oauth?.previousRedirectUris ?? []),
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
+index ff21cce..f9476bc 100644
 --- a/packages/sdk/src/implementation/database.ts
 +++ b/packages/sdk/src/implementation/database.ts
-@@ -6,7 +6,7 @@
+@@ -8,7 +8,7 @@ import type { ExecutorDatabase } from "./storage.ts";
  /** Bound query handle sharing the host connection and reactive transaction context. */
  export type Query = ReturnType<typeof database>;
  /** Select the latest migrated storage schema. */
@@ -14167,8 +14055,9 @@ diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/impl
 +export const database = (storage: ExecutorDatabase) => storage.orm("4.0.17");
  /**
   * Run a lazy native query without leaking SQL or driver details. The query's own
-  * FumaDB span covers the same interval, so this boundary adds no span of its own.
+  * `sql.execute` spans cover the same interval, so this boundary adds no span of its own.
 diff --git a/packages/sdk/src/implementation/declarations.ts b/packages/sdk/src/implementation/declarations.ts
+index f30120c..0fbb8e5 100644
 --- a/packages/sdk/src/implementation/declarations.ts
 +++ b/packages/sdk/src/implementation/declarations.ts
 @@ -1,5 +1,6 @@
@@ -14177,8 +14066,8 @@ diff --git a/packages/sdk/src/implementation/declarations.ts b/packages/sdk/src/
 +import { McpAppUiProfile } from "apps/contracts";
  import { Hex } from "effect/encoding";
  import {
-   declarationFreshness,
-@@ -96,6 +97,8 @@
+   changeCheckMillis,
+@@ -130,6 +131,8 @@ export const makeDeclarations = (options: {
      );
    const key = (command: string, state: InvocationSnapshot) =>
      Effect.gen(function* () {
@@ -14187,7 +14076,7 @@ diff --git a/packages/sdk/src/implementation/declarations.ts b/packages/sdk/src/
        const selections = state.selections.map(({ slot, accounts }) => [
          slot,
          accounts.map((account) => [
-@@ -108,7 +111,7 @@
+@@ -142,7 +145,7 @@ export const makeDeclarations = (options: {
        return yield* digest(
          new TextEncoder().encode(
            JSON.stringify([
@@ -14197,9 +14086,10 @@ diff --git a/packages/sdk/src/implementation/declarations.ts b/packages/sdk/src/
              state.app.id,
              state.version.id,
 diff --git a/packages/sdk/src/implementation/runtime.ts b/packages/sdk/src/implementation/runtime.ts
+index 7d69cbe..3687e59 100644
 --- a/packages/sdk/src/implementation/runtime.ts
 +++ b/packages/sdk/src/implementation/runtime.ts
-@@ -236,6 +236,7 @@
+@@ -237,6 +237,7 @@ export const toEffectRuntime = (
      workflow: (input) => runtime.workflow(input).pipe(provide),
      webhook: (input) => runtime.webhook(input).pipe(provide),
      call: (input) => runtime.call(input).pipe(provide),
@@ -14208,9 +14098,10 @@ diff --git a/packages/sdk/src/implementation/runtime.ts b/packages/sdk/src/imple
      checkAccount: (input) => runtime.checkAccount(input).pipe(provide),
      migrate: (input) => runtime.migrate(input).pipe(provide),
 diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
+index bd69cd3..753b10c 100644
 --- a/packages/sdk/src/implementation/storage-migrations.ts
 +++ b/packages/sdk/src/implementation/storage-migrations.ts
-@@ -16,6 +16,7 @@
+@@ -16,6 +16,7 @@ import {
    version4014Tables,
    version4015Tables,
    version4016Tables,
@@ -14218,7 +14109,7 @@ diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sd
    appScheduleIndex,
    scopedRunKeyIndex,
    version402Tables,
-@@ -59,8 +60,14 @@
+@@ -60,8 +61,14 @@ const [, , , schedulesDue, scheduledRunsPending, scheduledRunsOwner] = storageIn
  /** 4.0.9 tool search indexes that 4.0.13 kept; the per-profile listing index serves only older servers. */
  const [toolSearchListing, toolSearchTerms, , toolSearchDefinitionsListing] = toolSearchIndexes;
  
@@ -14233,7 +14124,7 @@ diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sd
    scopedRunKeyIndex,
    webhooksContextKey,
    schedulesCopy,
-@@ -658,6 +665,25 @@
+@@ -663,6 +670,25 @@ export const storageSchemas = [
        }),
      },
    }),
@@ -14260,9 +14151,10 @@ diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sd
  
  /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
 diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/src/implementation/storage-schema.ts
+index 634b5fd..1e0e773 100644
 --- a/packages/sdk/src/implementation/storage-schema.ts
 +++ b/packages/sdk/src/implementation/storage-schema.ts
-@@ -852,6 +852,18 @@
+@@ -852,6 +852,18 @@ const sitedAccounts = table("executor_accounts", {
  /** Tables of the 4.0.16 layout. Existing accounts have no selected site. */
  export const version4016Tables = { ...version4015Tables, accounts: sitedAccounts };
  
@@ -14282,17 +14174,18 @@ diff --git a/packages/sdk/src/implementation/storage-schema.ts b/packages/sdk/sr
   * Start keys are unique per app, actor and scope from 4.0.14, so a run started without a caller
   * and one started with a caller never share a key. It replaces `executor_workflow_runs_context_key`.
 diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
+index 2dfa597..a3720e6 100644
 --- a/packages/sdk/src/implementation/storage.ts
 +++ b/packages/sdk/src/implementation/storage.ts
-@@ -13,6 +13,7 @@
+@@ -13,6 +13,7 @@ import {
    trailingStorageIndexVersions,
  } from "./storage-migrations.ts";
  import { storageMigrationFailed } from "./storage-migration-error.ts";
 +import { makeAppViewStorage } from "./app-view-storage.ts";
  import { makeToolSearchStore } from "./tool-search-store.ts";
  
- /** Capture caller-owned SQL. Migrations accept only fresh or supported version 4 databases. */
-@@ -21,7 +22,7 @@
+ /** The version a new database is created at, reported when creating it fails. */
+@@ -24,7 +25,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
      const sql = yield* SqlClient.SqlClient;
      const reactivity = yield* makeReactiveStore({ namespace: "executor" });
      const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
@@ -14301,16 +14194,7 @@ diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/imple
      const checkMigration = Effect.gen(function* () {
        const migrator = yield* client.createMigrator;
        const version = yield* migrator.version;
-@@ -46,7 +47,7 @@
-             yield* Effect.forEach(currentIndexes, (statement) => sql.unsafe(statement).unprepared, {
-               discard: true,
-             });
--          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.16")));
-+          }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, "4.0.17")));
-           return;
-         }
-         // Execute every registered upgrade in order. A direct diff to latest can skip
-@@ -76,10 +77,11 @@
+@@ -79,10 +80,11 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
        Effect.mapError(() => new StorageError()),
      );
      return {
@@ -14324,9 +14208,10 @@ diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/imple
        migrateTables,
        migrate,
 diff --git a/packages/sdk/src/implementation/tool-search.ts b/packages/sdk/src/implementation/tool-search.ts
+index 30ecdfd..fdef0c0 100644
 --- a/packages/sdk/src/implementation/tool-search.ts
 +++ b/packages/sdk/src/implementation/tool-search.ts
-@@ -131,6 +131,7 @@
+@@ -131,6 +131,7 @@ export const makeToolSearch = (options: {
        });
        const derived: Array<SearchToolRow> = [];
        for (const [index, tool] of listing.items.entries()) {
@@ -14335,6 +14220,7 @@ diff --git a/packages/sdk/src/implementation/tool-search.ts b/packages/sdk/src/i
          const positions = new Set<number>();
          /** A stored schema with its definitions' positions replaced by their digests. */
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index f04e297..1c3f332 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
 @@ -1,3 +1,5 @@
@@ -14343,7 +14229,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
  import { ProviderError } from "apps/contracts";
  import { appProviderFailure } from "./provider-error.ts";
  import { invocationAccount } from "./provider.ts";
-@@ -82,6 +84,7 @@
+@@ -89,6 +91,7 @@ import {
    ToolPolicyFailed,
    ToolElicitationFailed,
    ToolInvocation,
@@ -14351,7 +14237,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
    ToolInputs,
    type ToolInvocationOptions,
    type ToolListOptions,
-@@ -1378,6 +1381,57 @@
+@@ -1530,6 +1533,57 @@ export const makeTools = (
            name: ToolName.make(tool.name),
          };
        }).pipe(Effect.withSpan("sdk.tools.get")),
@@ -14409,7 +14295,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
      call: (input: Parameters<Executor["tools"]["call"]>[0], options?: ToolInvocationOptions) =>
        Effect.gen(function* () {
          if (yield* storage.reactivity.inTransaction) return yield* new RequestInvalid();
-@@ -1396,6 +1450,20 @@
+@@ -1548,6 +1602,20 @@ export const makeTools = (
            const state = yield* snapshot(db, parsed, ahead?.reads);
            return { ahead, state };
          }).pipe(Effect.withSpan("sdk.invocation.snapshot"));
@@ -14430,7 +14316,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
          // Grant rows read in the batch, for accounts this state holds, stand in for each grant's
          // first read; other accounts read theirs in the resolve loop.
          const held = new Set(selectionAccountIds(state.accounts));
-@@ -1429,9 +1497,11 @@
+@@ -1583,9 +1651,11 @@ export const makeTools = (
          return yield* Effect.gen(function* () {
            const kind = yield* kindOf(state, context, parsed.tool, named);
            let toolError = false;
@@ -14442,7 +14328,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
                return runtime.call({
                  app: state.app.id,
                  ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
-@@ -1439,11 +1509,18 @@
+@@ -1594,11 +1664,18 @@ export const makeTools = (
                  database: ownsDatabase(state.version.requirements),
                  ...context,
                  tool: parsed.tool,
@@ -14461,7 +14347,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
                Effect.provideService(ToolResultObservation, {
                  failed: () => {
                    toolError = true;
-@@ -1460,6 +1537,24 @@
+@@ -1615,6 +1692,24 @@ export const makeTools = (
            )
              yield* Effect.annotateCurrentSpan("executor.tool.name", parsed.tool);
            if (Result.isSuccess(result)) {
@@ -14486,7 +14372,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
              if (toolError)
                yield* Effect.annotateCurrentSpan({
                  "executor.outcome": "failed",
-@@ -1476,7 +1571,10 @@
+@@ -1631,7 +1726,10 @@ export const makeTools = (
              // The request saves the caller's kind, so its pending response and its resumption
              // treat a call that named none as one that may write.
              return yield* approvals.save(
@@ -14498,7 +14384,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
                args,
                options?.issuer,
              );
-@@ -1539,7 +1637,13 @@
+@@ -1701,7 +1799,13 @@ export const makeTools = (
                    Effect.withSpan("sdk.invocation.snapshot"),
                    Effect.flatMap((state) =>
                      invocation(state, saved.tool, saved.kind, saved.input).pipe(
@@ -14513,7 +14399,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
                      ),
                    ),
                    Effect.result,
-@@ -1569,6 +1673,19 @@
+@@ -1731,6 +1835,19 @@ export const makeTools = (
                    } satisfies ToolResumeResult;
                  }
                  const { state } = checked.success;
@@ -14533,7 +14419,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
                  return yield* Effect.gen(function* () {
                    yield* Effect.annotateCurrentSpan({
                      "executor.app.id": saved.app,
-@@ -1587,9 +1704,11 @@
+@@ -1752,9 +1869,11 @@ export const makeTools = (
                    return yield* Effect.gen(function* () {
                      const kind = yield* kindOf(state, context, saved.tool, saved.kind);
                      let toolError = false;
@@ -14545,7 +14431,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
                          return runtime.call({
                            app: saved.app,
                            ...(workflows === undefined
-@@ -1599,6 +1718,8 @@
+@@ -1765,6 +1884,8 @@ export const makeTools = (
                            database: ownsDatabase(state.version.requirements),
                            ...context,
                            tool: saved.tool,
@@ -14554,7 +14440,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
                            ...(kind === undefined ? {} : { kind }),
                            input: originalInput,
                            approval: { tool: saved.tool, input: saved.input },
-@@ -1607,6 +1728,11 @@
+@@ -1773,6 +1894,11 @@ export const makeTools = (
                              : { elicitation: options.elicitation }),
                          });
                        }).pipe(
@@ -14566,9 +14452,9 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
                          Effect.provideService(ToolResultObservation, {
                            failed: () => {
                              toolError = true;
-@@ -1631,6 +1757,21 @@
-                         )(result.failure),
+@@ -1799,6 +1925,21 @@ export const makeTools = (
                        );
+                     }
                      const value = result.success;
 +                    if (
 +                      appView !== undefined &&
@@ -14588,8 +14474,22 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
                      if (toolError)
                        yield* Effect.annotateCurrentSpan({
                          "executor.outcome": "failed",
+diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
+index fbb182d..591f09e 100644
+--- a/playground/sdk/storage.ts
++++ b/playground/sdk/storage.ts
+@@ -10,7 +10,7 @@ export const storageWalkthrough = () =>
+       Effect.gen(function* () {
+         const storage = yield* makeExecutorStorage({ provider: "postgresql" });
+         yield* storage.migrate;
+-        const orm = storage.orm("4.0.16");
++        const orm = storage.orm("4.0.17");
+         const createdAt = new Date("2026-01-01T00:00:00.000Z");
+         const version = yield* Schema.decodeUnknownEffect(StoredVersion)({
+           id: "dpl_example",
 diff --git a/scripts/build-mcp-apps.ts b/scripts/build-mcp-apps.ts
 new file mode 100644
+index 0000000..1f7c6fc
 --- /dev/null
 +++ b/scripts/build-mcp-apps.ts
 @@ -0,0 +1,46 @@
@@ -14640,9 +14540,10 @@ new file mode 100644
 +      script(entry),
 +    );
 diff --git a/scripts/check-app-protocols.ts b/scripts/check-app-protocols.ts
+index ba20ce4..4e3699a 100644
 --- a/scripts/check-app-protocols.ts
 +++ b/scripts/check-app-protocols.ts
-@@ -37,6 +37,7 @@
+@@ -37,6 +37,7 @@ import { releasedProtocols } from "../packages/apps/src/contracts/protocols/rele
  import {
    accountSiteAdaptations,
    interactiveProtocolAdditions,
@@ -14650,7 +14551,7 @@ diff --git a/scripts/check-app-protocols.ts b/scripts/check-app-protocols.ts
    interactiveProtocolAdaptations,
    supportedProtocols,
  } from "../packages/sdk/src/implementation/app-protocols.ts";
-@@ -586,7 +587,11 @@
+@@ -586,7 +587,11 @@ const recordedGates: Gates = existsSync(gatesFile)
  const gates: Gates = {
    ...recordedGates,
    adapted: [...recordedGates.adapted, ...accountSiteAdaptations, ...interactiveProtocolAdaptations],
@@ -14663,15 +14564,3 @@ diff --git a/scripts/check-app-protocols.ts b/scripts/check-app-protocols.ts
  };
  
  /**
-diff --git a/playground/sdk/storage.ts b/playground/sdk/storage.ts
---- a/playground/sdk/storage.ts
-+++ b/playground/sdk/storage.ts
-@@ -10,7 +10,7 @@
-       Effect.gen(function* () {
-         const storage = yield* makeExecutorStorage({ provider: "postgresql" });
-         yield* storage.migrate;
--        const orm = storage.orm("4.0.16");
-+        const orm = storage.orm("4.0.17");
-         const createdAt = new Date("2026-01-01T00:00:00.000Z");
-         const version = yield* Schema.decodeUnknownEffect(StoredVersion)({
-           id: "dpl_example",

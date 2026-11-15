@@ -89,7 +89,7 @@ test("hosted directory and inventory keep complete display data without repeated
       yield* sql`insert into member values ('member-reader', ${organization}, ${user}, 'member')`;
       for (const id of [app, hidden]) {
         yield* sql`insert into executor_deployments (id,code,owner,build,requirements,created_at,source_commit,file_count)
-        values (${`dpl_${id}`},${`code_${id}`},${owner},'build_fixture',${JSON.stringify(requirements)},now(),null,1)`;
+        values (${`dpl_${id}`},${`code_${id}`},${owner},'bld_fixture',${JSON.stringify(requirements)},now(),null,1)`;
         yield* sql`insert into executor_apps (id,code,repository,owner,name,slug,active_deployment,copied_from,created_at)
         values (${id},${`code_${id}`},null,${owner},${id},${id.replaceAll("_", "-")},${`dpl_${id}`},null,now())`;
         yield* sql`insert into hosted_app_access values (${id},${organization},'other',${id === hidden ? "private" : "everyone"},'revision-one')`;
@@ -193,7 +193,7 @@ test("hosted directory and inventory keep complete display data without repeated
         },
       };
       yield* sql`insert into executor_deployments (id,code,owner,build,requirements,created_at,source_commit,file_count)
-      values ('dpl_changed',${`code_${app}`},${owner},'build_changed',${JSON.stringify(changed)},now(),null,1)`;
+      values ('dpl_changed',${`code_${app}`},${owner},'bld_changed',${JSON.stringify(changed)},now(),null,1)`;
       yield* sql`update executor_apps set active_deployment='dpl_changed',name='Renamed app',slug='renamed-app' where id=${app}`;
       const updated = yield* run(resourceDirectory());
       assert.equal(updated.apps[0]?.app.name, "Renamed app");
@@ -229,7 +229,7 @@ test("SDK display hydration batches cold versions and reuses them across request
     Effect.gen(function* () {
       for (const id of [app, hidden]) {
         yield* sql`insert into executor_deployments (id,code,owner,build,requirements,created_at,source_commit,file_count)
-        values (${`dpl_${id}`},${`code_${id}`},${owner},'build_fixture',${JSON.stringify(requirements)},now(),null,1)`;
+        values (${`dpl_${id}`},${`code_${id}`},${owner},'bld_fixture',${JSON.stringify(requirements)},now(),null,1)`;
         yield* sql`insert into executor_apps (id,code,repository,owner,name,slug,active_deployment,copied_from,created_at)
         values (${id},${`code_${id}`},null,${owner},${id},${id.replaceAll("_", "-")},${`dpl_${id}`},null,now())`;
       }

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Only the six source-controlled retained app/build identities may serve without approved framework provenance. Five require their exact version, protocol and recomputed server hash; the pool build pins its first observed tuple in its existing app supervisor using an atomic durable transaction. Stored pins and every later call must match. A separate unverified marker binds app, build and bytes across cache reads, remote runners, data facets and workflows; it never supplies reviewed provenance or grants admission to compilation, retention, redeploy or unbound declaration. Marker identity and recomputed bytes are validated before a durable pin can commit, and each call checks its tuple policy once. Refusals precede authored side effects. App details derive the status from the active app/build and clear it when activation changes. Host pin refusals cross RPC as typed schema data. The list cannot be edited at runtime, existing source stays intact and no database migration is needed."
+    }
+  }
+}

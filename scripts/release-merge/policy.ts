@@ -1,3 +1,4 @@
+import { validateScopedPreviewReceipt } from "../release-preview/scoped-receipt.ts";
 import {
   readReleasePins,
   sameJson,
@@ -83,27 +84,36 @@ export function validatePullRequestIdentity(
   options: { allowStaleBase?: boolean } = {},
 ): string[] {
   const reasons: string[] = [];
-  if (!Number.isSafeInteger(pr.number) || pr.number < 1) reasons.push("invalid pull request number");
+  if (!Number.isSafeInteger(pr.number) || pr.number < 1)
+    reasons.push("invalid pull request number");
   if (pr.state !== "open") reasons.push("pull request is not open");
   if (pr.head.repo?.full_name !== repository || pr.base.repo?.full_name !== repository)
     reasons.push("pull request is not from the current repository");
   if (pr.base.ref !== RELEASE_MERGE_POLICY.baseBranch) reasons.push("base branch is not main");
   if (!SHA.test(pr.base.sha)) reasons.push("pull request base SHA is invalid");
-  else if (pr.base.sha !== currentMainSha && options.allowStaleBase !== true) reasons.push("pull request base is stale");
-  if (!pr.head.ref.startsWith(RELEASE_MERGE_POLICY.updaterBranchPrefix)) reasons.push("head branch is not an updater branch");
-  if (!pr.labels.some(({ name }) => name === RELEASE_MERGE_POLICY.releaseLabel)) reasons.push("release-update label is missing");
+  else if (pr.base.sha !== currentMainSha && options.allowStaleBase !== true)
+    reasons.push("pull request base is stale");
+  if (!pr.head.ref.startsWith(RELEASE_MERGE_POLICY.updaterBranchPrefix))
+    reasons.push("head branch is not an updater branch");
+  if (!pr.labels.some(({ name }) => name === RELEASE_MERGE_POLICY.releaseLabel))
+    reasons.push("release-update label is missing");
   if (!SHA.test(pr.head.sha)) reasons.push("head SHA is invalid");
   if (!SHA.test(currentMainSha)) reasons.push("main SHA is invalid");
-  if (expectedHeadSha !== undefined && pr.head.sha !== expectedHeadSha) reasons.push("pull request head changed");
+  if (expectedHeadSha !== undefined && pr.head.sha !== expectedHeadSha)
+    reasons.push("pull request head changed");
   return reasons;
 }
 
-export function validateChangedFiles(files: ChangedFile[], contents: FileContents): CandidatePolicyResult {
+export function validateChangedFiles(
+  files: ChangedFile[],
+  contents: FileContents,
+): CandidatePolicyResult {
   const reasons: string[] = [];
   const names = files.map(({ filename }) => filename);
   if (files.length === 0) reasons.push("pull request has no changed files");
   if (new Set(names).size !== names.length) reasons.push("changed-file list contains duplicates");
-  if (names.some((name) => !safeRepoPath(name))) reasons.push("changed-file list contains an unsafe path");
+  if (names.some((name) => !safeRepoPath(name)))
+    reasons.push("changed-file list contains an unsafe path");
 
   const byName = new Map(files.map((file) => [file.filename, file]));
   const patchRemovals: string[] = [];
@@ -142,21 +152,29 @@ export function validateChangedFiles(files: ChangedFile[], contents: FileContent
         reasons.push("provider table is invalid JSON or has invalid rows");
       continue;
     }
-    if (filename === RELEASE_MERGE_POLICY.patchManifestPath || /^patches\/.*\.json$/.test(filename)) continue;
+    if (filename === RELEASE_MERGE_POLICY.patchManifestPath || /^patches\/.*\.json$/.test(filename))
+      continue;
     if (filename === RELEASE_MERGE_POLICY.generatedArchitecturePath) {
-      if (file.status !== "modified") reasons.push("generated architecture file must be modified in place");
+      if (file.status !== "modified")
+        reasons.push("generated architecture file must be modified in place");
       continue;
     }
     const patch = PATCH_FILE.exec(filename);
     if (patch) {
-      if (file.status !== "removed" || file.additions !== 0 || file.deletions <= 0 || file.changes !== file.deletions)
+      if (
+        file.status !== "removed" ||
+        file.additions !== 0 ||
+        file.deletions <= 0 ||
+        file.changes !== file.deletions
+      )
         reasons.push(`${filename}: carried patches may only be removed`);
       else patchRemovals.push(patch[1]!);
       continue;
     }
     const receipt = RELEASE_RECEIPT.exec(filename);
     if (receipt) {
-      if (file.status !== "added" && file.status !== "modified") reasons.push(`${filename}: release receipt may only be added or modified`);
+      if (file.status !== "added" && file.status !== "modified")
+        reasons.push(`${filename}: release receipt may only be added or modified`);
       receiptFiles.push({ source: receipt[1] as "tools" | "home" | "node", path: filename });
       continue;
     }
@@ -164,14 +182,22 @@ export function validateChangedFiles(files: ChangedFile[], contents: FileContent
   }
 
   if (receiptFiles.length !== 1) reasons.push("exactly one source receipt is required");
-  if (new Set(patchRemovals).size !== patchRemovals.length) reasons.push("patch removal list contains duplicates");
-  if (!sameStringSet(patchRemovals, manifestRemoved.map(({ file }) => file)))
+  if (new Set(patchRemovals).size !== patchRemovals.length)
+    reasons.push("patch removal list contains duplicates");
+  if (
+    !sameStringSet(
+      patchRemovals,
+      manifestRemoved.map(({ file }) => file),
+    )
+  )
     reasons.push("patch file and tracking manifest removals differ");
   for (const patch of manifestRemoved) {
     const content = contents[`patches/${patch.file}`]?.base;
     if (content === undefined) reasons.push(`patches/${patch.file}: base patch content is missing`);
     else if (sha256PatchContent(content) !== patch.content_sha256)
-      reasons.push(`patches/${patch.file}: base patch content digest does not match its registry identity`);
+      reasons.push(
+        `patches/${patch.file}: base patch content digest does not match its registry identity`,
+      );
   }
 
   let source: "tools" | "home" | "node" | undefined;
@@ -186,41 +212,83 @@ export function validateChangedFiles(files: ChangedFile[], contents: FileContent
       source = receipt.source;
       releaseKey = decoded.receipt.releaseKey;
       receiptRemoved = decoded.receipt.removedPatches;
-      const basePins = readReleasePins(contents[RELEASE_MERGE_POLICY.upstreamPinsPath]?.base, contents[RELEASE_MERGE_POLICY.poolPinsPath]?.base);
-      const candidatePins = readReleasePins(contents[RELEASE_MERGE_POLICY.upstreamPinsPath]?.candidate, contents[RELEASE_MERGE_POLICY.poolPinsPath]?.candidate);
+      const basePins = readReleasePins(
+        contents[RELEASE_MERGE_POLICY.upstreamPinsPath]?.base,
+        contents[RELEASE_MERGE_POLICY.poolPinsPath]?.base,
+      );
+      const candidatePins = readReleasePins(
+        contents[RELEASE_MERGE_POLICY.upstreamPinsPath]?.candidate,
+        contents[RELEASE_MERGE_POLICY.poolPinsPath]?.candidate,
+      );
       if (!basePins || !candidatePins) reasons.push("release pin snapshots are missing or invalid");
-      else if (!sameJson(decoded.receipt.basePins, basePins) || !sameJson(decoded.receipt.candidatePins, candidatePins))
+      else if (
+        !sameJson(decoded.receipt.basePins, basePins) ||
+        !sameJson(decoded.receipt.candidatePins, candidatePins)
+      )
         reasons.push("release receipt pins do not match the changed source files");
-      if (!samePatchRemovalReceipts(
-        decoded.receipt.removedPatches,
-        manifestRemoved.map(({ identity, content_sha256 }) => ({ identity, content_sha256 })),
-      )) reasons.push("release receipt patch identities do not match removed registry records");
-      if (receipt.source === "tools" && (!toolsChanged && patchRemovals.length === 0 || homeChanged || nodeChanged))
+      if (
+        !samePatchRemovalReceipts(
+          decoded.receipt.removedPatches,
+          manifestRemoved.map(({ identity, content_sha256 }) => ({ identity, content_sha256 })),
+        )
+      )
+        reasons.push("release receipt patch identities do not match removed registry records");
+      if (
+        receipt.source === "tools" &&
+        ((!toolsChanged && patchRemovals.length === 0) || homeChanged || nodeChanged)
+      )
         reasons.push("tools receipt must describe a tools pin change or patch removal only");
-      if (receipt.source === "home" && (!homeChanged || toolsChanged || nodeChanged || patchRemovals.length > 0))
+      if (
+        receipt.source === "home" &&
+        (!homeChanged || toolsChanged || nodeChanged || patchRemovals.length > 0)
+      )
         reasons.push("home receipt must describe a home pin change only");
-      if (receipt.source === "node" && (!nodeChanged || toolsChanged || homeChanged || patchRemovals.length > 0))
+      if (
+        receipt.source === "node" &&
+        (!nodeChanged || toolsChanged || homeChanged || patchRemovals.length > 0)
+      )
         reasons.push("node receipt must describe a node pin change only");
     }
   } else if (receipt) reasons.push(`${receipt.path}: receipt content is missing`);
 
-  if (changedUpstream && source !== "tools") reasons.push("upstream pin changes require a tools receipt");
-  if (changedPool && source !== "home" && source !== "node") reasons.push("pool pin changes require a home or node receipt");
+  if (changedUpstream && source !== "tools")
+    reasons.push("upstream pin changes require a tools receipt");
+  if (changedPool && source !== "home" && source !== "node")
+    reasons.push("pool pin changes require a home or node receipt");
   if (byName.has(RELEASE_MERGE_POLICY.providerTablePath) && (!homeChanged || source !== "home"))
     reasons.push("provider table changes require a home pin update");
-  if ((homeChanged && source !== "home") || (nodeChanged && source !== "node") || (toolsChanged && source !== "tools"))
+  if (
+    (homeChanged && source !== "home") ||
+    (nodeChanged && source !== "node") ||
+    (toolsChanged && source !== "tools")
+  )
     reasons.push("changed pins do not match the source receipt");
-  if (patchRemovals.length > 0 && source !== "tools") reasons.push("carried patch removals require a tools receipt");
-  if (receiptRemoved && !samePatchRemovalReceipts(
-    receiptRemoved,
-    manifestRemoved.map(({ identity, content_sha256 }) => ({ identity, content_sha256 })),
-  )) reasons.push("release receipt patch identities are inconsistent");
+  if (patchRemovals.length > 0 && source !== "tools")
+    reasons.push("carried patch removals require a tools receipt");
+  if (
+    receiptRemoved &&
+    !samePatchRemovalReceipts(
+      receiptRemoved,
+      manifestRemoved.map(({ identity, content_sha256 }) => ({ identity, content_sha256 })),
+    )
+  )
+    reasons.push("release receipt patch identities are inconsistent");
   if (receipt && receipt.source === "tools" && !changedUpstream && patchRemovals.length === 0)
     reasons.push("tools receipt has no pin or patch change");
-  if (receipt && releaseKey && receipt.path !== `${RELEASE_MERGE_POLICY.releaseReceiptPrefix}${source}.json`)
+  if (
+    receipt &&
+    releaseKey &&
+    receipt.path !== `${RELEASE_MERGE_POLICY.releaseReceiptPrefix}${source}.json`
+  )
     reasons.push("release receipt path does not match its source");
 
-  return { allowed: reasons.length === 0, reasons, ...(source ? { source } : {}), ...(releaseKey ? { releaseKey } : {}), ...(receiptRemoved ? { removedPatches: receiptRemoved } : {}) };
+  return {
+    allowed: reasons.length === 0,
+    reasons,
+    ...(source ? { source } : {}),
+    ...(releaseKey ? { releaseKey } : {}),
+    ...(receiptRemoved ? { removedPatches: receiptRemoved } : {}),
+  };
 }
 
 export function validatePreviewReceipt(
@@ -228,12 +296,16 @@ export function validatePreviewReceipt(
   expected: { pullRequest: number; head: string; base: string },
 ): string[] {
   if (!isRecord(value)) return ["preview receipt is not an object"];
-  if (!hasExactKeys(value, ["version", "pullRequest", "head", "base", "smoke", "teardown"])) return ["preview receipt has unexpected fields"];
+  if (value.version === 2) return validateScopedPreviewReceipt(value, expected);
+  if (!hasExactKeys(value, ["version", "pullRequest", "head", "base", "smoke", "teardown"]))
+    return ["preview receipt has unexpected fields"];
   const reasons: string[] = [];
   if (value.version !== 1) reasons.push("preview receipt version is unsupported");
-  if (value.pullRequest !== expected.pullRequest) reasons.push("preview receipt pull request does not match");
+  if (value.pullRequest !== expected.pullRequest)
+    reasons.push("preview receipt pull request does not match");
   if (value.head !== expected.head) reasons.push("preview receipt head does not match");
-  if (value.base !== expected.base) reasons.push("preview receipt base does not match current main");
+  if (value.base !== expected.base)
+    reasons.push("preview receipt base does not match current main");
   if (value.smoke !== true) reasons.push("preview native smoke is missing");
   if (value.teardown !== true) reasons.push("preview teardown proof is missing");
   return reasons;
@@ -241,33 +313,69 @@ export function validatePreviewReceipt(
 
 export function validateCheckRunReceipt(
   value: unknown,
-  expected: { repository: string; pullRequest: number; runId: number; runAttempt: number; head: string; base: string },
+  expected: {
+    repository: string;
+    pullRequest: number;
+    runId: number;
+    runAttempt: number;
+    head: string;
+    base: string;
+  },
 ): string[] {
   if (!isRecord(value)) return ["Check receipt is not an object"];
-  if (!hasExactKeys(value, ["version", "repository", "pullRequest", "runId", "runAttempt", "head", "base", "mergeCommit", "parents"]))
+  if (
+    !hasExactKeys(value, [
+      "version",
+      "repository",
+      "pullRequest",
+      "runId",
+      "runAttempt",
+      "head",
+      "base",
+      "mergeCommit",
+      "parents",
+    ])
+  )
     return ["Check receipt has unexpected fields"];
 
   const reasons: string[] = [];
   if (value.version !== 1) reasons.push("Check receipt version is unsupported");
-  if (value.repository !== expected.repository) reasons.push("Check receipt repository does not match");
-  if (value.pullRequest !== expected.pullRequest) reasons.push("Check receipt pull request does not match");
+  if (value.repository !== expected.repository)
+    reasons.push("Check receipt repository does not match");
+  if (value.pullRequest !== expected.pullRequest)
+    reasons.push("Check receipt pull request does not match");
   if (value.runId !== expected.runId) reasons.push("Check receipt workflow run does not match");
-  if (value.runAttempt !== expected.runAttempt) reasons.push("Check receipt workflow attempt does not match");
+  if (value.runAttempt !== expected.runAttempt)
+    reasons.push("Check receipt workflow attempt does not match");
   if (value.head !== expected.head) reasons.push("Check receipt head does not match");
   if (value.base !== expected.base) reasons.push("Check receipt base does not match current main");
-  if (typeof value.mergeCommit !== "string" || !SHA.test(value.mergeCommit)) reasons.push("Check receipt merge commit is invalid");
-  else if (value.mergeCommit === expected.base || value.mergeCommit === expected.head) reasons.push("Check receipt merge commit is not a distinct merge result");
-  if (!Array.isArray(value.parents) || value.parents.length !== 2 || value.parents.some((parent) => typeof parent !== "string" || !SHA.test(parent)))
+  if (typeof value.mergeCommit !== "string" || !SHA.test(value.mergeCommit))
+    reasons.push("Check receipt merge commit is invalid");
+  else if (value.mergeCommit === expected.base || value.mergeCommit === expected.head)
+    reasons.push("Check receipt merge commit is not a distinct merge result");
+  if (
+    !Array.isArray(value.parents) ||
+    value.parents.length !== 2 ||
+    value.parents.some((parent) => typeof parent !== "string" || !SHA.test(parent))
+  )
     reasons.push("Check receipt merge parents are invalid");
   else {
-    if (value.parents[0] !== expected.base) reasons.push("Check receipt merge result used a different base parent");
-    if (value.parents[1] !== expected.head) reasons.push("Check receipt merge result used a different head parent");
+    if (value.parents[0] !== expected.base)
+      reasons.push("Check receipt merge result used a different base parent");
+    if (value.parents[1] !== expected.head)
+      reasons.push("Check receipt merge result used a different head parent");
   }
   return reasons;
 }
 
 function safeRepoPath(path: string): boolean {
-  return path.length > 0 && !path.startsWith("/") && !path.includes("\\") && !path.includes("\0") && path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+  return (
+    path.length > 0 &&
+    !path.startsWith("/") &&
+    !path.includes("\\") &&
+    !path.includes("\0") &&
+    path.split("/").every((part) => part !== "" && part !== "." && part !== "..")
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -281,5 +389,8 @@ function hasExactKeys(value: Record<string, unknown>, keys: string[]): boolean {
 function sameStringSet(left: string[], right: string[]): boolean {
   const sortedLeft = [...left].sort();
   const sortedRight = [...right].sort();
-  return sortedLeft.length === sortedRight.length && sortedLeft.every((value, index) => value === sortedRight[index]);
+  return (
+    sortedLeft.length === sortedRight.length &&
+    sortedLeft.every((value, index) => value === sortedRight[index])
+  );
 }

@@ -1,7 +1,7 @@
 model {
   extend basalt.modelGateway {
     metadata {
-      constraint "Every pool-token request checks current organization existence and removal tombstones through signed host authority before any endpoint read or write. Erasing and deleted organizations return 403 immediately; lookup failures refuse access, and successful checks are never cached. The disposable Cloud regression provisions the stable NOLOGIN history owner with schema USAGE and CREATE, matching production migration ownership."
+      constraint "Every pool-token request checks current organization existence and removal tombstones through signed host authority before any endpoint read or write. Erasing and deleted organizations return 403 immediately; lookup failures refuse access, and successful checks are never cached. The disposable Cloud regression provisions the stable NOLOGIN history owner with schema USAGE and CREATE, matching production migration ownership. The organization lookup is a private host-to-host envelope check for the verified pool and organization; a retained token cannot select a different lookup scope."
     }
   }
 }

@@ -158,7 +158,7 @@
     {
       "entry": "alphavantage",
       "package": "@executor.sh/alphavantage",
-      "sourceSha256": "3cb667487e00f4d01eb97bb09ccba6faecd2cc9a56c49e49ca86c9216d764713",
+      "sourceSha256": "d0637945751636febc65d975a001cc4363aae3b06c916a598799df665a30f1da",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -355,7 +355,7 @@
     {
       "entry": "aws",
       "package": "aws",
-      "sourceSha256": "c482dca440cdf87dd8029cfb2d2703b22a58ecdf0976a3b4f87e89963a1aae9a",
+      "sourceSha256": "d309ce056b8e3a63bac33cd91a65f88483214fc051ca521b76375fc02b662ea8",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -878,7 +878,7 @@
     {
       "entry": "clerk",
       "package": "@executor.sh/clerk",
-      "sourceSha256": "7143621f19213261d548215cca008c03b7aaaa45c664c329a167f93709ce90b2",
+      "sourceSha256": "99b61be886139859710d9e3f1890be4760b2a6071c73ea6b780928f0cf7fbf51",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -981,7 +981,7 @@
           "metadataSha256": "d3d40fdfe4c2c544a49020b7469907eeb3c861276248be4dfec3f2dff86013ff"
         }
       },
-      "sourceSha256": "e8608e001491d8765449f0696ab1e5ddc5ce2f8daa225295e4e40370f309055f"
+      "sourceSha256": "e75baf3eae21dbf746d2824e06b659700610b6da8ce58fa1904d8961ed7171db"
     },
     {
       "entry": "cloudinary",
@@ -1063,7 +1063,7 @@
           "message": "Shared sign-in for Atlassian is not configured on this host. You can connect with your own OAuth app."
         }
       },
-      "sourceSha256": "52f328bcbb147c649245777eebe57db2bdce62439dc0e970bdc9831dbc5632b2"
+      "sourceSha256": "92b6b1d7905a6ac4f770335bad4138ab5154cfb2fd02422bec6ba712765f0ff0"
     },
     {
       "entry": "connecteam",
@@ -1496,7 +1496,7 @@
     {
       "entry": "elevenlabs",
       "package": "@executor.sh/elevenlabs",
-      "sourceSha256": "9ca9143a378bae20e9f58f0450220dc905ab7c8999c83ac6670319702bd0f3a1",
+      "sourceSha256": "bd825989a939e972180908813f810db765f9a5118a273bed996e5e11909eaff3",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -1897,7 +1897,7 @@
     {
       "entry": "github",
       "package": "@executor.sh/github",
-      "sourceSha256": "ade512f81e9f2958c2474bcb5104a011b7d5a1fef454f5700cc0aa4b793c5064",
+      "sourceSha256": "6fef76644f687db653a6ae358aad5f06d9b7cbac7be23cb71d72c1eff9c5dfe2",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -1909,7 +1909,7 @@
     {
       "entry": "gitlab",
       "package": "@executor.sh/gitlab",
-      "sourceSha256": "f8e8428fe813ee91ae8cb11f09950646d7daa67b57a24f34a9e95ba2a5307c4c",
+      "sourceSha256": "e7f6095f729f5688f358b6275ce2b61fa275f27b4e7afe1b93d6f7cec65c2186",
       "methods": {
         "mcp": {
           "kind": "deferred",
@@ -1955,7 +1955,7 @@
     {
       "entry": "gmail",
       "package": "@executor.sh/gmail",
-      "sourceSha256": "2d18af49ae1734d173fd9fb51e42876eea462794db6639440b0b45f5e75ec490",
+      "sourceSha256": "c53537f8079503d318a1dac5028615a75e20408a4b73f66b82cd6163c1e174a1",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -1987,7 +1987,7 @@
     {
       "entry": "google",
       "package": "@executor.sh/google",
-      "sourceSha256": "9879f647c472a5a1dd447db1763e070957be856dec30c28d5f482ba6295105b0",
+      "sourceSha256": "7bea4e368b9f7c068d4c16e31a69f077c93d676cd99b0af715271dd06df65386",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -1999,7 +1999,7 @@
     {
       "entry": "google-admin",
       "package": "@executor.sh/google-admin",
-      "sourceSha256": "148acbfa260b80462cdf11e79d807b1d225461234fd30d156028318c710ecbd0",
+      "sourceSha256": "4df867b0a2cbf14d35c7624f6cb0a8782f60b0a8418ac39e8bc4ca8f52a3bee8",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2051,7 +2051,7 @@
     {
       "entry": "google-calendar",
       "package": "@executor.sh/google-calendar",
-      "sourceSha256": "8c639a69f196ccebd7fb60858b0acc691f7fdf0b008f0840a88bef2f33e2b310",
+      "sourceSha256": "a90004cb95bbad6a6d55ad7adcbd316f77fcb7a95ca5b92eb3d9b21703bb745a",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2093,7 +2093,7 @@
     {
       "entry": "google-contacts",
       "package": "@executor.sh/google-contacts",
-      "sourceSha256": "2a7a5a357e1cd95503d8d466b7e4f465e1bddf7f31693fa4e06cde5d90202fd7",
+      "sourceSha256": "246a701f0f62e309017778a3fe5fd8249f474220fab36267b50fa124d6fef7d3",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2115,7 +2115,7 @@
     {
       "entry": "google-docs",
       "package": "@executor.sh/google-docs",
-      "sourceSha256": "8e5b69ede5c5edbd38fb989ef722a42acbac7117ef0280a1a328a96893c5e889",
+      "sourceSha256": "e866b4da751fff65126706d07d2e356d3b0c52982cd35f2f90c53c8e0cd79ccd",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2127,7 +2127,7 @@
     {
       "entry": "google-drive",
       "package": "@executor.sh/google-drive",
-      "sourceSha256": "03e9b4177756c49438b63553b9c04d1b96786aac63af6236ccbd6ddd39fed65c",
+      "sourceSha256": "49f757aff0b8f279d1b8352fe174c1339e60a0aed3307bfd7bec8790f4069bf1",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2139,7 +2139,7 @@
     {
       "entry": "google-forms",
       "package": "@executor.sh/google-forms",
-      "sourceSha256": "d2258bf481e7a7d3054614817f895d91036476bbb4cb8435ddad4cac7a770839",
+      "sourceSha256": "24ccffbd70c0c7e6dc4919505edd38549b66a43f4e670f9236d42456200f8518",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2151,7 +2151,7 @@
     {
       "entry": "google-meet",
       "package": "@executor.sh/google-meet",
-      "sourceSha256": "cf47c42928922bad897b5da87a9ea941a11180e7bab49beaa51c305a85878789",
+      "sourceSha256": "8c9a8e9069423ad16056f5c899febbf32ff5a351265fca510d6c7658762543ac",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2163,7 +2163,7 @@
     {
       "entry": "google-photos",
       "package": "@executor.sh/google-photos",
-      "sourceSha256": "33470e2182fc6accc1d5378f4a81e94030ac51219d1e3553fbd24fe7df594a49",
+      "sourceSha256": "bc1f95e5e610ff7f6c515ec6ee72785c1d6737028c18d15c34e2fa284cabb6d2",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2185,7 +2185,7 @@
     {
       "entry": "google-sheets",
       "package": "@executor.sh/google-sheets",
-      "sourceSha256": "6797fcf479f434c0fbe3114768ce057efb35c907e9e8ad82073923c9eda37e47",
+      "sourceSha256": "d12b0130f61e4fc2cc9a8e486441251e088a5ed37dbedfac257ef9148429e694",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2197,7 +2197,7 @@
     {
       "entry": "google-slides",
       "package": "@executor.sh/google-slides",
-      "sourceSha256": "dc9a72f624287c1bf3ca558e655a4d34890ed5d66a6308f76f02048d07d78ecd",
+      "sourceSha256": "dc87dabe233f3779cac746c70c6bda16d51ab9d1786958abff0f14916719fdc1",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2209,7 +2209,7 @@
     {
       "entry": "google-tasks",
       "package": "@executor.sh/google-tasks",
-      "sourceSha256": "4a5e6eaccfd518aa8dfaa5c60952410220b6d8b4e5dc7e8b4ae508985f8a3b4a",
+      "sourceSha256": "53594d9ab1c86eb3c5b8480898cfd09c4590efc361b746841edec1ddfeaca29b",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -2572,7 +2572,7 @@
           "message": "Shared sign-in for Atlassian is not configured on this host. You can connect with your own OAuth app."
         }
       },
-      "sourceSha256": "d7f3d3df2209d53fb0323816d4f669706ceee57723d600325e41371a54ce8967"
+      "sourceSha256": "ac34c853fc20c426c0f5c65c536459ccb2671d43643c27ac46853ad8b37e6d75"
     },
     {
       "entry": "jobadder",
@@ -3057,7 +3057,7 @@
     {
       "entry": "miro",
       "package": "@executor.sh/miro",
-      "sourceSha256": "3911838ba0df4426bae89609ba19bd218e689d638e7386a3584ac4943a941eb9",
+      "sourceSha256": "de37a63708612dfd8512cb515651b7f67cc2dd52c323c09d805a35da99f3d4f0",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -3259,7 +3259,7 @@
     {
       "entry": "notion",
       "package": "@executor.sh/notion",
-      "sourceSha256": "d94120acf483046aa26ae0babda755525c4d5ec8369b7f4657443036a724400c",
+      "sourceSha256": "81d2e1b3f3a4fc5b4fcb50b15839faaf2fd97ee78fad39bb1a1bff34f5391ba1",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -4203,7 +4203,7 @@
           "metadataSha256": "48af54e2e9736b4e947a3250093ec3c1fef2924aa7a38949047e9fc898fc0033"
         }
       },
-      "sourceSha256": "703bf51e36e7467fada342cffe3501e739725a2a0f737caec9825d68b42d57af"
+      "sourceSha256": "2dfc5319c4cfb8d16216dd600677b0592ae116de9c8bfb274c8483d6373bc168"
     },
     {
       "entry": "servicem8",
@@ -4288,7 +4288,7 @@
     {
       "entry": "slack",
       "package": "@executor.sh/slack",
-      "sourceSha256": "16393a52b0cefd689a63353f75e834d3aa1bcd628ac6cc46ac50c11bac5a1212",
+      "sourceSha256": "7b8eb5a4bb548c6e4f6067983d25336269bf155a177a1da6d874628ca1cdae57",
       "methods": {
         "user": {
           "kind": "hosted",
@@ -4644,7 +4644,7 @@
     {
       "entry": "todoist",
       "package": "@executor.sh/todoist",
-      "sourceSha256": "b3869ee2c0863358701b8b0383f625a32b1c332cc46f6be6f28663fb77c28ee4",
+      "sourceSha256": "e65da7836578bb2d73bb559d569bb36ad75eaf9373cfeda493acd0b7d618e250",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -4690,7 +4690,7 @@
     {
       "entry": "trello",
       "package": "@executor.sh/trello",
-      "sourceSha256": "ed9e4815b9d47f2e92e8b76a047775182d3293bef3cca9eef91313f702998e05",
+      "sourceSha256": "4d9fd79e1c8049e371c365ed1a000d8e0b023666ac893a4a9e9860d8f0ef3ab8",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -4846,7 +4846,7 @@
     {
       "entry": "vercel",
       "package": "@executor.sh/vercel",
-      "sourceSha256": "58a2f9019108168e0d7274b83d7637302c584d19857f1b5914aae0fdbfc8f0f5",
+      "sourceSha256": "bfeed24ddc7db295bce347adb526ab6f792126a6e0272f9a6d6e541149c599ee",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -5107,7 +5107,7 @@
     {
       "entry": "workos",
       "package": "@executor.sh/workos",
-      "sourceSha256": "7a30de349927aa02fddb0393aeb015be49a9848bce204e4b15a0ae2726100439",
+      "sourceSha256": "a04577a55bb772853effd33382aa6527de765f48c96a34ca6057d5f5fbb216b5",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -5244,7 +5244,7 @@
     {
       "entry": "zoho",
       "package": "@executor.sh/zoho",
-      "sourceSha256": "12e0a711e56e720a475b84b87a554c0ab9bdb9ba4f472cb699eb3ee5105c03e3",
+      "sourceSha256": "81cc5380f9ef90fa56d09c841f307246bc5086af7927551ed8434f7a0785f0fa",
       "methods": {
         "oauthUs": {
           "kind": "hosted",
@@ -5291,7 +5291,7 @@
     {
       "entry": "zoho-people",
       "package": "@signalbox/zoho-people",
-      "sourceSha256": "bb1fda37bfd50f554ceac93a1c92eb85f8b438d156e17398002baeafd068058b",
+      "sourceSha256": "d7f583408978e7c79021d9ac5bb8c9e101507a3a9b96c3b4773046ce2418c478",
       "methods": {
         "oauthEu": {
           "kind": "hosted",
@@ -5592,7 +5592,7 @@
           "message": "Shared sign-in for PlanetScale is not configured on this host. You can connect with your own OAuth app or a service token."
         }
       },
-      "sourceSha256": "9a7bbc8e615b072e61659f1e010faea2ce191992a87c20bf6b6b1da8ba769ae0"
+      "sourceSha256": "9cfc1e24221b7273e6d303edefde7fab6aec6ac0c915ed9e66afe8768f75a04a"
     }
   ]
 }
