@@ -1,0 +1,16 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "config": [
+    {
+      "job": "upstream-contracts",
+      "config": "prepare-cache.config.ts"
+    }
+  ],
+  "inputs": [
+    ".upstream/scripts/e2e-prepare.ts",
+    ".upstream/scripts/e2e-collector-bun.ts",
+    ".upstream/e2e/support/prepare-cache.ts",
+    ".upstream/packages/telemetry/scripts/build-motel.ts"
+  ]
+}

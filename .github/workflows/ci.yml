@@ -2763,7 +2763,8 @@ jobs:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
       - name: Verify the upstream E2E preparation cache contract
-        run: bun run --cwd .upstream e2e:prepare-cache
+        working-directory: .upstream
+        run: bunx vitest run --config e2e/prepare-cache.config.ts
       - run: npm run check:upstream
         env:
           MIGRATION_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres

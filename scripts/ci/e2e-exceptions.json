@@ -407,11 +407,6 @@
       "posthog-experiment-lifecycle.spec.ts#deploys create a draft, launch, pause, resume and end it, and refuse to go back": "7e62e7795f24ac7b16fab013fa72625ed358d9ef1a158cefe2a470b4b040605e",
       "posthog-experiment-lifecycle.spec.ts#a first deploy declared running creates and launches the experiment": "7e62e7795f24ac7b16fab013fa72625ed358d9ef1a158cefe2a470b4b040605e",
       "posthog-experiment-lifecycle.spec.ts#a deploy refuses a draft it cannot launch from, and an experiment it does not own": "7e62e7795f24ac7b16fab013fa72625ed358d9ef1a158cefe2a470b4b040605e",
-      "prepare-cache.spec.ts#a second run restores every step without building": "1f588ff36594cad0e644df9c2336ffba8af32d5a5eaf708e0501b5c328fcefa6",
-      "prepare-cache.spec.ts#a change rebuilds the steps whose packages depend on it, and only those": "1f588ff36594cad0e644df9c2336ffba8af32d5a5eaf708e0501b5c328fcefa6",
-      "prepare-cache.spec.ts#reverting a change restores the earlier outputs": "1f588ff36594cad0e644df9c2336ffba8af32d5a5eaf708e0501b5c328fcefa6",
-      "prepare-cache.spec.ts#CI and --no-cache build every step and leave the cache alone": "1f588ff36594cad0e644df9c2336ffba8af32d5a5eaf708e0501b5c328fcefa6",
-      "prepare-cache.spec.ts#a failing step stops the run and stores nothing for it": "1f588ff36594cad0e644df9c2336ffba8af32d5a5eaf708e0501b5c328fcefa6",
       "provider-icons.spec.ts#providerIcons": "2bf5adbb2f904eeaad1216b560a1c12c3f245fc23fe4eb7224f7e4c2909d6780",
       "provider-photo.spec.ts#providerPhoto": "a109b4f3735cf569009ed6d8c0d2f965521fcfa617dfba21c3aa32f20c4c88da",
       "publishing-dialog.spec.ts#publishingDialog": "8082cca11ce2d9f16df099f2cedb0fb776f7918e46628c49b833772de61795de",
@@ -1259,19 +1254,13 @@
   {
     "reason": "The candidate leaves a self-host dashboard tab open, changes the server build version, makes the stale page issue unsupported endpoint names, and verifies it explains the refusal and offers Reload; after reload the new build reads normally. This is stale dashboard/client update UX with a synthetic endpoint mismatch, not exact compatibility with a retained p39/p40 framework artifact or .16/p42 host/runtime protocol, and it does not inspect migrated SQL state. The existing test identity has a prior fingerprint, so renew its exception.",
     "entries": {
-      "dashboard-read-batches.spec.ts#dashboardBuildChange": "350397b7ed62f5b0a8a8413d69ac6a8af4c53eccd19a88023b280d9302890d32"
-    }
-  },
-  {
-    "reason": "The candidate compares direct and batched dashboard API reads, refuses forged session/method data, disallowed write/unknown reads and cross-site requests, preserves per-read completion order, and checks incomplete replies fail the outstanding reads. This is generic dashboard transport and same-origin access behavior, not physical migration state or admitted framework/runtime caller and host compatibility. The existing test identity has a prior fingerprint, so renew its exception.",
-    "entries": {
-      "dashboard-read-batches.spec.ts#dashboardReadBatches": "b2ed6849b2807eb036a657f8125033fbea032a6abfbd34f8be632c490e124cc9"
+      "dashboard-read-batches.spec.ts#dashboardBuildChange": "185ece66f6e58c736b6fbe80ac7b395c1087d960123ae1c0828a82022098a285"
     }
   },
   {
     "reason": "The candidate sends viewer, missing-app, and deliberately failing app-tool-index reads in one batch, then checks each dashboard.batch.read span records its endpoint and returned status; a 502 marks the span failed while endpoint refusals do not. This is generic read telemetry/status reporting, not the physical Cloud bridge state or the specified framework/runner caller and host contract. The identity is new, so add an exception.",
     "entries": {
-      "dashboard-read-batches.spec.ts#dashboardReadStatus": "496036ea68727388d21d86735fcd3dbfb9822b8b2d3279b82809b31d5e643341"
+      "dashboard-read-batches.spec.ts#dashboardReadStatus": "5eff0435fbf456c9a75c1f5ba9290579adb65fe5811a13a7a8c30eacf2895f14"
     }
   },
   {
@@ -2725,12 +2714,6 @@
     "reason": "The new body faults the first read after a workflow-start save, returns the saved run identity without a retry offer, and verifies keyed replay does not duplicate it. It tests workflow storage uncertainty, not Cloud auth transaction rollback or runner caller/provenance; no p39/p40-versus-p42 metadata is asserted.",
     "entries": {
       "workflow-controls.spec.ts#workflowStartReadBack": "573d877311cabcf927435a417cd28c8a3b11ba9e946aef1094ac7ee1f0622436"
-    }
-  },
-  {
-    "reason": "The inherited dashboardBuildChange scenario remains outside Basalt CI. Its scenario body is byte-identical to the reviewed baseline; the shared spec now adds an aborted-read regression to the separately selected dashboardReadBatches case. This exception covers only the unchanged build-change case.",
-    "entries": {
-      "dashboard-read-batches.spec.ts#dashboardBuildChange": "dffaa80e28ac656ee16d126684de98779ff7efc6c8d6f0af7e2dc79897e0f155"
     }
   }
 ]

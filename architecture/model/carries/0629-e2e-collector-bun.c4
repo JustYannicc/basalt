@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "E2E preparation invokes the telemetry collector directly with its explicitly supplied Bun 1.4.4 executable and includes that executable's measured version in the telemetry cache key. Missing or wrong executables refuse before any build or cache restore. Framework, dependency preparation and all other E2E steps retain the primary Bun 1.4.2. Every CI job that prepares E2E assets exports a separately checksum-pinned collector executable without changing PATH or the FULL dependency generation."
+      constraint "E2E preparation invokes the telemetry collector directly with its explicitly supplied Bun 1.4.4 executable and includes that executable's measured version in the telemetry cache key. Missing or wrong executables refuse before any build or cache restore. The preparation cache proof runs through an explicit CI config declaration with no inherited omission exception. Framework, dependency preparation and all other E2E steps retain the primary Bun 1.4.2. Every CI job that prepares E2E assets exports a separately checksum-pinned collector executable without changing PATH or the FULL dependency generation."
     }
   }
 }
