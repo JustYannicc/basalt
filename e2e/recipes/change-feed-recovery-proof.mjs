@@ -50,11 +50,14 @@ export const changeFeedRecoveryProof = ({
                       fullPage: true,
                     })
                     .catch(() => {});
-                await writes;
-                const video = page?.video();
-                await context.close();
-                if (video)
-                  await copyFile(await video.path(), join(directory, `recovery-${mode}.webm`));
+                try {
+                  await writes;
+                } finally {
+                  const video = page?.video();
+                  await context.close();
+                  if (video)
+                    await copyFile(await video.path(), join(directory, `recovery-${mode}.webm`));
+                }
               }),
           );
           const cookies = Redacted.value(yield* h.actors.owner.cookies);
@@ -80,9 +83,9 @@ export const changeFeedRecoveryProof = ({
             ),
           );
           yield* Effect.promise(() =>
-            page.route(/\/changes\/current(?:\?|$)/, async (route) => {
+            page.route(/\/changes\/current(?:\?|$)/, async (changeHeadRoute) => {
               try {
-                const response = await route.fetch();
+                const response = await changeHeadRoute.fetch();
                 assert.equal(
                   response.status(),
                   200,
@@ -110,10 +113,10 @@ export const changeFeedRecoveryProof = ({
                     committed: rows[0].revision,
                   });
                 }
-                await route.fulfill({ response });
+                await changeHeadRoute.fulfill({ response });
               } catch (error) {
                 if (!closing && !page.isClosed()) progress.errors.push(String(error));
-                await route.abort().catch(() => {});
+                await changeHeadRoute.abort().catch(() => {});
               }
             }),
           );

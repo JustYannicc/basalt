@@ -112,26 +112,32 @@ diff --git a/packages/apps/src/browser/change-feed.ts b/packages/apps/src/browse
    };
    const disconnect = () => {
      stream?.abort();
-@@ -324,7 +366,9 @@
+@@ -324,7 +366,11 @@
      if (streamUntil !== undefined) for (const watch of watches) expireBy(watch, streamUntil);
      setStatus("live");
      for (const watch of watches) {
 -      if (behind(watch)) mark(watch);
 +      cancelReconfirm(watch);
-+      if (watch.failed === "moving") reconfirm(watch);
-+      else if (behind(watch)) mark(watch);
++      if (watch.failed === "moving") {
++        if (!watch.reading) watch.reconfirmations = 0;
++        reconfirm(watch);
++      } else if (behind(watch)) mark(watch);
        else watch.options.confirmed?.();
      }
    };
-@@ -336,6 +380,7 @@
-     const held = known.get(key);
-     if (held === undefined || newerRevision(hint.revision, held)) known.set(key, hint.revision);
+@@ -338,7 +384,10 @@
      for (const watch of watches) {
-+      cancelReconfirm(watch);
        if (!interested(watch, key)) continue;
        const seen = watch.heads.get(key);
-       if (seen === undefined || newerRevision(hint.revision, seen)) mark(watch);
-@@ -407,6 +452,10 @@
+-      if (seen === undefined || newerRevision(hint.revision, seen)) mark(watch);
++      if (seen === undefined || newerRevision(hint.revision, seen)) {
++        cancelReconfirm(watch);
++        mark(watch);
++      }
+     }
+   };
+ 
+@@ -407,6 +456,10 @@
            if (Option.isNone(extras)) return resync();
            handshake(event.value.revisions, extras.value);
          },
@@ -142,15 +148,18 @@ diff --git a/packages/apps/src/browser/change-feed.ts b/packages/apps/src/browse
        );
        if (stream === owner) lost();
      } catch {
-@@ -488,6 +537,7 @@
+@@ -488,6 +541,10 @@
    };
  
    const onActive = (active: boolean) => {
-+    for (const watch of watches) cancelReconfirm(watch);
++    for (const watch of watches) {
++      cancelReconfirm(watch);
++      if (active && watch.failed === "moving" && !watch.reading) watch.reconfirmations = 0;
++    }
      if (!active) {
        // Hidden pages hold nothing open; showing it again handshakes and compares heads.
        disconnect();
-@@ -515,7 +565,9 @@
+@@ -515,7 +572,9 @@
          deadline: undefined,
          dirty: true,
          reading: false,
@@ -161,7 +170,7 @@ diff --git a/packages/apps/src/browser/change-feed.ts b/packages/apps/src/browse
          requested: false,
        };
        if (
-@@ -567,7 +619,9 @@
+@@ -567,7 +626,9 @@
                )
                  continue;
                record(watch, after);
@@ -172,7 +181,7 @@ diff --git a/packages/apps/src/browser/change-feed.ts b/packages/apps/src/browse
                // Data accepted with no stream is shown, but never as live.
                if (connection === undefined) setStatus("paused");
                publish?.(value, headVersion(watch, after), after);
-@@ -575,21 +629,25 @@
+@@ -575,21 +636,25 @@
              }
            } catch (error) {
              if (!(error instanceof ChangeReadRetry)) {
@@ -200,7 +209,7 @@ diff --git a/packages/apps/src/browser/change-feed.ts b/packages/apps/src/browse
            clearTimeout(watch.deadline);
            watches.delete(watch);
            if (watches.size > 0) return;
-@@ -624,6 +682,7 @@
+@@ -624,6 +689,7 @@
        window.removeEventListener("online", online);
        for (const watch of watches) {
          watch.abort.abort();

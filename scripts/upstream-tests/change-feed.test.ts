@@ -535,7 +535,7 @@ test("only failed reads schedule three reconfirms; never-settling heads stay fai
   assert.equal(seen.rejected.length, 1);
   assert.deepEqual(
     timers.mock.calls
-      .filter((call) => [1000, 3000, 9000].includes(call.arguments[1]))
+      .filter((call) => [1000, 3000, 9000].includes(call.arguments[1] ?? 0))
       .map((call) => call.arguments[1]),
     [1000],
   );
@@ -553,15 +553,14 @@ test("only failed reads schedule three reconfirms; never-settling heads stay fai
   assert.equal(seen.rejected.length, 4);
   assert.deepEqual(
     timers.mock.calls
-      .filter((call) => [1000, 3000, 9000].includes(call.arguments[1]))
+      .filter((call) => [1000, 3000, 9000].includes(call.arguments[1] ?? 0))
       .map((call) => call.arguments[1]),
     [1000, 3000, 9000],
   );
   t.mock.timers.tick(15000);
   server.heartbeat();
-  server.handshake();
   await flush();
-  assert.equal(seen.refreshes, 4, "heartbeat and handshake cannot evade the automatic cap");
+  assert.equal(seen.refreshes, 4, "a heartbeat cannot evade the automatic cap");
   server.state.moving = false;
   watch.request();
   await flush();
@@ -687,3 +686,85 @@ test("a delayed failure reconfirm rejects a changed principal and cancels furthe
   await flush();
   assert.equal(timers.mock.callCount(), scheduled, "ended access schedules no recovery timer");
 });
+
+for (const hint of ["foreign", "old", "acknowledged"]) {
+  test(`a ${hint} hint that does not refresh this watch preserves its pending recovery`, async (t) => {
+    const { server, seen, feed } = setup(t);
+    await flush();
+    if (hint === "old") {
+      server.handshake();
+      await flush();
+    }
+    const accepted = seen.applied.length;
+    server.state.moving = true;
+    if (hint === "old") server.commit("accounts", "2");
+    else server.handshake();
+    await flush();
+    assert.equal(seen.rejected.length, 1);
+    server.state.moving = false;
+    t.mock.timers.tick(500);
+    await flush();
+    const before = seen.refreshes;
+    if (hint === "foreign") server.commit("pool-usage", "2");
+    else if (hint === "old") server.hint("accounts", "1");
+    else {
+      server.commit("pool-usage", "2", false);
+      feed.acknowledge([{ topic: "pool-usage", resource: "pool-a", revision: "2" }]);
+    }
+    await flush();
+    assert.equal(seen.refreshes, before, "the ignored hint starts no unrelated read");
+    t.mock.timers.tick(500);
+    await flush();
+    assert.equal(seen.refreshes, before + 1, "the original one-second recovery still runs");
+    assert.equal(
+      seen.applied.length,
+      accepted + 1,
+      "settled content is accepted inside the original budget",
+    );
+    assert.equal(seen.applied.at(-1)?.accounts, server.heads.get("accounts"));
+  });
+}
+
+for (const repeated of [false, true]) {
+  test(`a foreground handshake resets an exhausted budget${repeated ? " without duplicate in-flight cycles" : ""}`, async (t) => {
+    const { server, seen, page, hold, timers } = setup(t);
+    await flush();
+    server.state.moving = true;
+    server.handshake();
+    await flush();
+    for (const delay of [1000, 3000, 9000]) {
+      t.mock.timers.tick(delay);
+      await flush();
+    }
+    assert.equal(seen.refreshes, 4);
+    assert.equal(seen.applied.length, 0);
+    server.state.moving = false;
+    const release = repeated ? hold() : () => {};
+    page.show(false);
+    page.show(true);
+    await flush();
+    server.handshake();
+    await flush();
+    assert.equal(seen.refreshes, 5, "a new foreground handshake starts one fresh bounded cycle");
+    if (repeated)
+      for (let index = 0; index < 3; index++) {
+        page.show(false);
+        page.show(true);
+        await flush();
+        server.handshake();
+        await flush();
+        assert.equal(seen.refreshes, 5, "an in-flight recovery is not duplicated");
+      }
+    release();
+    await flush();
+    assert.equal(seen.applied.length, 1, "stable heads recover on return to the tab");
+    const before = { reads: seen.refreshes, timers: timers.mock.callCount() };
+    t.mock.timers.tick(13000);
+    await flush();
+    assert.deepEqual(
+      { reads: seen.refreshes, timers: timers.mock.callCount() },
+      before,
+      "the now-healthy cycle schedules zero timers and performs no reads",
+    );
+  });
+}
