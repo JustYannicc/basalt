@@ -1,5 +1,14 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, relative } from "node:path";
+import { connectorDiagnostic } from "./ci/connector-diagnostics.mjs";
 
 const diagnosticFiles = new Set([
   "environment.json",
@@ -13,6 +22,42 @@ const diagnosticFiles = new Set([
   "physical-provisioning-completed.json",
   "sso-idp.log",
 ]);
+
+/** Assertion captures share the connector scrubber; arbitrary values never enter retained reports. */
+function assertionEvidence(path: string) {
+  const unavailable = (input: string) => JSON.stringify({ version: 1, input, records: [] });
+  if (lstatSync(path).size > 32 * 1024) return unavailable("too-large");
+  let input: unknown;
+  try {
+    input = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return unavailable("malformed");
+  }
+  const envelope =
+    input !== null &&
+    typeof input === "object" &&
+    "version" in input &&
+    input.version === 1 &&
+    "records" in input &&
+    Array.isArray(input.records)
+      ? input
+      : undefined;
+  const records = Array.isArray(input) ? input : envelope?.records;
+  if (!Array.isArray(records)) return unavailable("malformed");
+  if (
+    envelope &&
+    "input" in envelope &&
+    (envelope.input === "malformed" || envelope.input === "too-large")
+  )
+    return unavailable(envelope.input);
+  return JSON.stringify({
+    version: 1,
+    truncated:
+      records.length > 8 ||
+      Boolean(envelope && "truncated" in envelope && envelope.truncated === true),
+    records: records.slice(0, 8).map((record) => connectorDiagnostic("assertion", record)),
+  });
+}
 
 /** Copy selected regular evidence only; runtime package links and database state are never evidence. */
 export function copyE2eEvidence(
@@ -55,7 +100,9 @@ export function copyE2eEvidence(
           continue;
         }
         mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
-        copyFileSync(path, output);
+        if (inReport && entry.name === "assertion-diagnostics.json")
+          writeFileSync(output, assertionEvidence(path), { mode: 0o600 });
+        else copyFileSync(path, output);
         files++;
         bytes += lstatSync(path).size;
       }

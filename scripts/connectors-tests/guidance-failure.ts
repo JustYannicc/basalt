@@ -15,6 +15,27 @@ const names = new Set([
 ]);
 const markers = new Set(["missing-executable", "sandbox", "missing-library", "timeout", "other"]);
 
+export const zohoMcpPhases = Object.freeze([
+  "zoho-mcp-runtime",
+  "zoho-mcp-runtime-restart",
+  "zoho-mcp-browser-launch",
+  "zoho-mcp-browser-context",
+  "zoho-mcp-open-app",
+  "zoho-mcp-connect-dialog",
+  "zoho-mcp-method",
+  "zoho-mcp-endpoint-entry",
+  "zoho-mcp-endpoint-validation",
+  "zoho-mcp-endpoint-save",
+  "zoho-mcp-oauth-ready",
+  "zoho-mcp-oauth-consent",
+  "zoho-mcp-oauth-callback",
+  "zoho-mcp-connected",
+  "zoho-mcp-browser-assertions",
+  "zoho-mcp-browser-cleanup",
+  "zoho-mcp-privacy",
+  "zoho-mcp-report",
+]);
+
 /** Ignore arbitrary error names and markers at the reporting boundary. */
 export function parseClosedErrorClass(text: string) {
   const match = / error=([A-Za-z]+) marker=([a-z-]+)$/.exec(text);
@@ -31,6 +52,7 @@ export function describeGuidanceFailure(error: unknown, phase: string) {
     "tenant-public-client",
     "global-client-preference",
     "company-guidance",
+    ...zohoMcpPhases,
   ].includes(phase)
     ? phase
     : "initialization";
@@ -50,7 +72,7 @@ export function describeGuidanceFailure(error: unknown, phase: string) {
                 ? "timeout"
                 : "runtime";
   const frame =
-    /scripts\/connectors-tests\/(zendesk-(?:tenant-runtime|tenant-public|operator-choices|company-guidance)\.mjs):([1-9]\d{0,5}):\d+\b/.exec(
+    /(?:scripts\/connectors-tests\/|e2e\/)((?:zendesk-(?:tenant-runtime|tenant-public|operator-choices|company-guidance)|zoho-people-mcp(?:-ui)?)\.mjs):([1-9]\d{0,5}):\d+\b/.exec(
       detail,
     );
   const location = frame === null ? "unknown" : `${frame[1]}:${frame[2]}`;
