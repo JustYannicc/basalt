@@ -7,6 +7,52 @@ import test from "node:test";
 import { collectE2eEvidence } from "./collect-e2e-evidence.mjs";
 import { copyE2eEvidence } from "../e2e-evidence.ts";
 
+test("embedded assertion evidence retains only closed labels and safe integer counters", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "assertion-evidence-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = join(root, "source");
+  const report = join(source, "self-host/report/evidence/case");
+  await mkdir(report, { recursive: true });
+  const secret = "private-endpoint-sentinel";
+  await writeFile(
+    join(report, "assertion-diagnostics.json"),
+    JSON.stringify([
+      {
+        operation: "Manage-only admins get no App tab or prewarm",
+        phase: "embedded-manage-only-admin",
+        assertion: "no-app-tab-or-frame",
+        counters: { AppLinks: 1, iframes: 0, adminLocationReads: 2, [secret]: 4 },
+        actual: secret,
+        message: secret,
+      },
+      { operation: secret, phase: secret, assertion: secret, counters: { AppLinks: secret } },
+    ]),
+  );
+  const output = join(root, "output");
+  copyE2eEvidence(source, output);
+  const text = await readFile(
+    join(output, "self-host/report/evidence/case/assertion-diagnostics.json"),
+    "utf8",
+  );
+  assert.ok(!text.includes(secret));
+  assert.deepEqual(JSON.parse(text), {
+    version: 1,
+    truncated: false,
+    records: [
+      {
+        stage: "assertion",
+        outcome: "observed",
+        phase: "embedded-manage-only-admin",
+        kind: "assertion",
+        operation: "Manage-only admins get no App tab or prewarm",
+        assertion: "no-app-tab-or-frame",
+        counters: { AppLinks: 1, iframes: 0, adminLocationReads: 2 },
+      },
+      { stage: "assertion", outcome: "observed", phase: "unknown", kind: "unknown" },
+    ],
+  });
+});
+
 test("retains reports and scenario logs without traversing runtime links or special files", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "ci-evidence-"));
   t.after(() => rm(root, { recursive: true, force: true }));

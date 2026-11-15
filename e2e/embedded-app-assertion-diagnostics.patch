@@ -1,0 +1,90 @@
+diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
+--- a/e2e/tests/embedded-app-ui.spec.ts
++++ b/e2e/tests/embedded-app-ui.spec.ts
+@@ -6,6 +6,7 @@
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { App } from "../support/contracts.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+@@ -728,34 +729,51 @@
+         );
+         expect(adminAccess.body).toMatchObject({ canManage: true, canUse: false });
+         yield* browser.login(actors.admin);
+-        let adminLocationReads = 0;
+-        yield* browser.use("Manage-only admins get no App tab or prewarm", (page) => {
+-          const count = (request: Request) => {
+-            adminLocationReads += locationReads(first.app.id, request);
+-          };
+-          page.on("request", count);
+-          return page
+-            .goto(`${detail}?view=app`)
+-            .then(() =>
+-              page
+-                .getByText("This app is not shared with you. You can manage its settings.")
+-                .waitFor(),
+-            )
+-            .then(() =>
+-              Promise.all([
++        let observedAdminLocationReads = 0;
++        const { counts, adminLocationReads } = yield* browser.use(
++          "Manage-only admins get no App tab or prewarm",
++          (page) => {
++            const count = (request: Request) => {
++              observedAdminLocationReads += locationReads(first.app.id, request);
++            };
++            page.on("request", count);
++            return page
++              .goto(`${detail}?view=app`)
++              .then(() =>
+                 page
+-                  .getByRole("navigation", { name: "App navigation" })
+-                  .getByRole("link", { name: "App", exact: true })
+-                  .count(),
+-                page.locator("iframe").count(),
+-              ]),
+-            )
+-            .then((counts) => {
+-              expect(counts).toEqual([0, 0]);
+-              expect(adminLocationReads).toBe(0);
+-            })
+-            .finally(() => page.off("request", count));
+-        });
++                  .getByText("This app is not shared with you. You can manage its settings.")
++                  .waitFor(),
++              )
++              .then(() =>
++                Promise.all([
++                  page
++                    .getByRole("navigation", { name: "App navigation" })
++                    .getByRole("link", { name: "App", exact: true })
++                    .count(),
++                  page.locator("iframe").count(),
++                ]),
++              )
++              .then((counts) => ({ counts, adminLocationReads: observedAdminLocationReads }))
++              .finally(() => page.off("request", count));
++          },
++        );
++        const evidence = yield* Evidence;
++        yield* evidence.json("assertion-diagnostics.json", [
++          {
++            operation: "Manage-only admins get no App tab or prewarm",
++            phase: "embedded-manage-only-admin",
++            assertion: "no-app-tab-or-frame",
++            counters: { AppLinks: counts[0], iframes: counts[1], adminLocationReads },
++          },
++          {
++            operation: "Manage-only admins get no App tab or prewarm",
++            phase: "embedded-manage-only-admin",
++            assertion: "no-app-prewarm",
++            counters: { AppLinks: counts[0], iframes: counts[1], adminLocationReads },
++          },
++        ]);
++        expect(counts).toEqual([0, 0]);
++        expect(adminLocationReads).toBe(0);
+       }),
+     ),
+   );
