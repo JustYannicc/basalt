@@ -52,9 +52,14 @@ async function activeFleet(advance: () => void) {
     for (let index = 0; index < 4; index++)
       requests.push(f.model(new Request(`https://pool.invalid/v1/models?id=pressure-${index}`)));
     await arrived.promise;
+    const firstReady = f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
     const ready = f.resourcesWhen(
       (rows) => rows.length === 2 && rows.every((row) => row.phase === "ready"),
     );
+    advance();
+    await f.upkeep();
+    await firstReady;
+    // Growth may finish after the first alarm has consumed its deadline. Drive its next due tick.
     advance();
     await f.upkeep();
     await ready;
@@ -157,7 +162,9 @@ test(
     let upstream: WebSocket | undefined,
       client: WebSocket | undefined,
       dispatches = 0;
+    const sockets = new ModelLifetimeFixture();
     context.after(async () => {
+      sockets.close();
       try {
         client?.close();
         upstream?.close();
@@ -167,8 +174,7 @@ test(
       await f.cleanup();
       restore();
     });
-    const sockets = new ModelLifetimeFixture();
-    context.after(() => sockets.close());
+
     f.onModel(async (_instance, request) =>
       sockets.fetch(request, (server) => {
         dispatches++;
