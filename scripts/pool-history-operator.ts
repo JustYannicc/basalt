@@ -6,6 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { historyObject } from "../src/pool/model-history/record.ts";
 import {
+  HistoryOperatorFailure,
+  historyOperatorStep,
+  type HistoryOperatorField,
+} from "./pool-history-operator-failure.ts";
+import {
   historyJournalActivationPath,
   historyJournalActivationManifest,
   historyJournalReaderVersion,
@@ -75,13 +80,13 @@ function hashes(value: Record<string, unknown>) {
   if (
     ![...historySchemaMigrations, historyJournalActivationMigration].some(
       (migration) => migration.name === String(value.version),
-    ) ||
-    typeof value.schemaHash !== "string" ||
-    !/^[a-f0-9]{64}$/.test(value.schemaHash) ||
-    typeof value.catalogHash !== "string" ||
-    !/^[a-f0-9]{64}$/.test(value.catalogHash)
+    )
   )
-    throw new Error("Invalid history schema plan");
+    throw new HistoryOperatorFailure("report.version");
+  if (typeof value.schemaHash !== "string" || !/^[a-f0-9]{64}$/.test(value.schemaHash))
+    throw new HistoryOperatorFailure("report.schemaHash");
+  if (typeof value.catalogHash !== "string" || !/^[a-f0-9]{64}$/.test(value.catalogHash))
+    throw new HistoryOperatorFailure("report.catalogHash");
   return { schemaHash: value.schemaHash, catalogHash: value.catalogHash };
 }
 
@@ -92,7 +97,7 @@ function schemaPrefix(version: string) {
       manifest: historyJournalActivationManifest,
     };
   const end = historySchemaMigrations.findIndex((migration) => migration.name === version);
-  if (end < 0) throw new Error("Invalid history schema plan");
+  if (end < 0) throw new HistoryOperatorFailure("report.version");
   const migrations = historySchemaMigrations.slice(0, end + 1);
   return {
     migrations,
@@ -101,34 +106,43 @@ function schemaPrefix(version: string) {
   };
 }
 
+function reportObject(value: unknown, field: HistoryOperatorField) {
+  try {
+    return historyObject(value);
+  } catch {
+    throw new HistoryOperatorFailure(field);
+  }
+}
+
 function schemaPreview(
   report: Record<string, unknown>,
   operation: "schema" | "journal-activation",
 ) {
   const activation = operation === "journal-activation";
-  if (
-    activation !== (report.version === historyJournalActivationMigration.name) ||
-    (activation && report.readersReadyRequired !== historyJournalReaderVersion)
-  )
-    throw new Error("History schema operation or reader contract changed");
+  if (activation !== (report.version === historyJournalActivationMigration.name))
+    throw new HistoryOperatorFailure("report.version");
+  if (activation && report.readersReadyRequired !== historyJournalReaderVersion)
+    throw new HistoryOperatorFailure("report.readersReadyRequired");
   hashes(report);
   const { manifest, migrations } = schemaPrefix(String(report.version));
-  if (
-    report.schemaHash !== createHash("sha256").update(JSON.stringify(manifest)).digest("hex") ||
-    typeof report.applied !== "boolean"
-  )
-    throw new Error("Unknown history schema statements");
-  const diff = historyObject(report.catalogDiff);
-  if (!Array.isArray(diff.createTables) || !Array.isArray(diff.conflicts) || diff.conflicts.length)
-    throw new Error("History schema catalog conflicts");
-  const catalog = historyObject(report.catalog);
+  if (report.schemaHash !== createHash("sha256").update(JSON.stringify(manifest)).digest("hex"))
+    throw new HistoryOperatorFailure("report.schemaHash");
+  if (typeof report.applied !== "boolean") throw new HistoryOperatorFailure("report.applied");
+  const diff = reportObject(report.catalogDiff, "report.catalogDiff");
+  if (!Array.isArray(diff.createTables))
+    throw new HistoryOperatorFailure("report.catalogDiff.createTables");
+  if (!Array.isArray(diff.conflicts) || diff.conflicts.length)
+    throw new HistoryOperatorFailure("report.catalogDiff.conflicts");
+  const catalog = reportObject(report.catalog, "report.catalog");
   if (report.catalogHash !== createHash("sha256").update(JSON.stringify(catalog)).digest("hex"))
-    throw new Error("History schema catalog hash changed");
-  if (!Array.isArray(catalog.relations)) throw new Error("Invalid history schema catalog");
-  const ledgerExists = catalog.relations.some((row) => {
-    const relation = historyObject(row);
-    return relation.name === "basalt_model_history_migrations" && relation.kind === "r";
-  });
+    throw new HistoryOperatorFailure("report.catalogHash");
+  if (!Array.isArray(catalog.relations))
+    throw new HistoryOperatorFailure("report.catalog.relations");
+  const ledgerExists = catalog.relations
+    .map((row) => reportObject(row, "report.catalog.relations"))
+    .some(
+      (relation) => relation.name === "basalt_model_history_migrations" && relation.kind === "r",
+    );
   // The Worker's ledger bootstrap runs outside the hashed versioned migrations.
   const ledgerDdl = ledgerExists
     ? []
@@ -165,10 +179,10 @@ function pendingMigrations(
     names.some((name) => !migrations.some((migration) => migration.name === name)) ||
     report.applied !== (names.length === 0)
   )
-    throw new Error("Invalid pending history migrations");
+    throw new HistoryOperatorFailure("report.pendingMigrations");
   const pending = migrations.filter((migration) => names.includes(migration.name));
   if (JSON.stringify(names) !== JSON.stringify(pending.map((migration) => migration.name)))
-    throw new Error("Invalid pending history migrations");
+    throw new HistoryOperatorFailure("report.pendingMigrations");
   return pending;
 }
 
@@ -255,7 +269,7 @@ export async function runHistoryOperator(
         )("wrangler");
         return getPlatformProxy({ configPath, persist: false, remoteBindings: true });
       });
-    platform = await open(configPath);
+    platform = await historyOperatorStep("operator.connect", () => open(configPath));
     if (approvedSchemaState) {
       const response = await platform.env.POOL_OPERATIONS.fetch(
         new Request(
@@ -293,21 +307,25 @@ export async function runHistoryOperator(
           : approval
             ? historySchemaApplyPath
             : historySchemaCatalogPath;
-    const response = await platform.env.POOL_OPERATIONS.fetch(
-      new Request(
-        `http://pool-operations${path}`,
-        approval
-          ? {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ ...approval, go: true }),
-            }
-          : {},
+    const operations = platform.env.POOL_OPERATIONS;
+    const response = await historyOperatorStep("operator.request", () =>
+      operations.fetch(
+        new Request(
+          `http://pool-operations${path}`,
+          approval
+            ? {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ ...approval, go: true }),
+              }
+            : {},
+        ),
       ),
     );
-    if (!response.ok)
-      throw new Error("History operator failed; inspect the private receipt before another apply");
-    let report = historyObject(await response.json());
+    if (!response.ok) throw new HistoryOperatorFailure("operator.response.status", response.status);
+    let report = await historyOperatorStep("operator.response.json", async () =>
+      historyObject(await response.json()),
+    );
     if (approval) {
       if (
         report.status !== "complete" ||
@@ -322,12 +340,10 @@ export async function runHistoryOperator(
       await writeFile(receipt, JSON.stringify(report), { mode: 0o600 });
     } else {
       approvalFor(options.operation, report);
-      if (
-        report.status !== "dry-run" ||
-        report.writes !== false ||
-        (options.operation !== "backfill" && report.automaticBackfill !== false)
-      )
-        throw new Error("Invalid history schema dry run");
+      if (report.status !== "dry-run") throw new HistoryOperatorFailure("report.status");
+      if (report.writes !== false) throw new HistoryOperatorFailure("report.writes");
+      if (options.operation !== "backfill" && report.automaticBackfill !== false)
+        throw new HistoryOperatorFailure("report.automaticBackfill");
       if (options.operation !== "backfill")
         report = { ...report, ...schemaPreview(report, options.operation) };
       await writeFile(
