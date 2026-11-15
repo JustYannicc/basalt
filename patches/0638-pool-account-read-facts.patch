@@ -367,7 +367,7 @@ diff --git a/apps/hosted/server/src/implementation/linked-account-apps.ts b/apps
        .list({ owner, ids: candidates })
        .pipe(Effect.flatMap(visibleApps));
      const ids = apps.map((app) => app.id);
-+    if (bounded) {
++    if (bounded && policy.tools.kind === "all") {
 +      const live = yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ app: AppId })))(
 +        yield* sql`select l.app from ${usableLinks(sql, { subject: subject!, apps: ids })} and l.account=${account}
 +          union select l.app from ${yield* usableAppLinks(sql, ids)} and l.account=${account}`,
@@ -1245,7 +1245,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-account-read-facts.ts b/
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-account-read-facts.ts
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,144 @@
 +import {
 +  AppId,
 +  invocationEntries,
@@ -1286,8 +1286,9 @@ new file mode 100644
 +  Effect.gen(function* () {
 +    const before = yield* head.pipe(Effect.option);
 +    if (before._tag === "None" || before.value === undefined) return yield* read;
-+    const loaded = yield* facts;
-+    const result = yield* scoped(loaded, read).pipe(Effect.exit);
++    const loaded = yield* facts.pipe(Effect.result);
++    if (loaded._tag === "Failure") return yield* fresh ?? read;
++    const result = yield* scoped(loaded.success, read).pipe(Effect.exit);
 +    const after = yield* head.pipe(Effect.option);
 +    if (after._tag === "None" || after.value !== before.value) return yield* fresh ?? read;
 +    return yield* result;
@@ -1322,7 +1323,8 @@ new file mode 100644
 +      const links = yield* Schema.decodeUnknownEffect(Schema.Array(AccountFactLink))(
 +        yield* sql`select l.app, l.account, l.requirement, l.subject from hosted_app_account_links l
 +        join executor_apps a on a.id = l.app and a.owner = ${owner}
-+        where ${sql.in("l.account", accounts)} and (l.subject is null or l.subject = ${user})`,
++        where ${sql.in("l.account", accounts)} and (l.subject is null or l.subject = ${user})
++        order by l.app, l.requirement, l.account`,
 +      );
 +      const ids = [...new Set([app.id, ...links.map((link) => link.app)])];
 +      const [apps, appPolicies, accountPolicies] = yield* Effect.all(

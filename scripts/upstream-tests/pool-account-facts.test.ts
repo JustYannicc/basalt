@@ -124,3 +124,22 @@ test("an unchanged head preserves a real read failure", () =>
       if (result._tag === "Failure") assert.equal(result.failure, "denied");
     }),
   ));
+
+test("a failed raw-fact load resolves one fresh uncached answer", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      let freshReads = 0;
+      const result = yield* readWithStableFacts(
+        Effect.succeed("same"),
+        Effect.fail("temporary metadata failure"),
+        Effect.fail("old links must not be reused"),
+        (_facts, read) => read,
+        Effect.sync(() => {
+          freshReads++;
+          return "current links";
+        }),
+      );
+      assert.equal(result, "current links");
+      assert.equal(freshReads, 1);
+    }),
+  ));
