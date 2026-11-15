@@ -43,6 +43,9 @@ export function summaryGroups(
       requests: bucket.requests,
       failed: bucket.failed,
       limited: requestCount(row.limited),
+      ...(row.counts_only !== true && bucket.unassignedFailures > 0
+        ? { refusedBeforeLab: bucket.unassignedFailures }
+        : {}),
       details:
         "tokens" in bucket && estimate
           ? {

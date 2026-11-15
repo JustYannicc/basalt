@@ -30,6 +30,7 @@ import { terminalResponse, type TerminalFinish } from "./terminal-response.worke
 import { digest } from "./backend-users.ts";
 import { endpointMetadata } from "./model-history/record.ts";
 import { terminalSocket } from "./terminal-socket.worker.ts";
+import { captureRefusalModel } from "./refusal-model.ts";
 
 interface Dependencies {
   terminal?: TerminalRecorder;
@@ -77,6 +78,10 @@ export async function forwardPoolRequest(
     pathname === "/v1/responses" &&
     request.headers.get("Upgrade")?.toLowerCase() === "websocket";
   const observing = !!deps.terminal || deps.env.POOL_MODEL_HISTORY_ENABLED === "true";
+  const refusalModel =
+    deps.env.POOL_MODEL_HISTORY_ENABLED === "true" && (modelCall || socketCall)
+      ? captureRefusalModel(request)
+      : undefined;
   let terminal: TerminalFinish | undefined;
   let native: Awaited<ReturnType<Computers["nativeModel"]>> | undefined;
   let identity: RefusalIdentity | undefined;
@@ -141,6 +146,7 @@ export async function forwardPoolRequest(
     if (!port) throw new Error("Pool container port unavailable");
     let boot: string | undefined;
     const beforeDispatch = () => {
+      refusalModel?.discard();
       guard = "upstream_dispatch";
       dispatched = true;
       if (modelCall && !terminal) terminal = observe(requestId);
@@ -286,6 +292,7 @@ export async function forwardPoolRequest(
         (work) => deps.defer(work),
         diagnostic,
         requestId,
+        refusalModel?.read(),
       );
     // Startup and port errors are fixed runtime messages without request data or credentials.
     console.error(
@@ -296,5 +303,7 @@ export async function forwardPoolRequest(
       status: 503,
       headers: { "Retry-After": "5", "Cache-Control": "no-store" },
     });
+  } finally {
+    refusalModel?.discard();
   }
 }

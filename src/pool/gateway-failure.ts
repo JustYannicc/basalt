@@ -47,6 +47,7 @@ export function gatewayUnavailable(
   defer: (work: Promise<unknown>) => void,
   diagnostic: GatewayFailureDiagnostic,
   requestId = crypto.randomUUID(),
+  requestedModel?: Promise<string | null>,
 ): Response {
   const pathname = new URL(request.url).pathname;
   console.error("POOL_GATEWAY_FAILURE", {
@@ -65,6 +66,7 @@ export function gatewayUnavailable(
           if (scope?.pools.length === 1)
             caller = { pool: scope.pools[0]!, person: scope.person, keyId: scope.keyId };
         }
+        const model = await requestedModel;
         if (caller)
           await withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) =>
             recordGatewayRefusal(db, {
@@ -73,6 +75,7 @@ export function gatewayUnavailable(
               at: new Date().toISOString(),
               pathname,
               latencyMs: performance.now() - started,
+              requestedModel: model,
             }),
           );
       })().catch(() => console.error("POOL_MODEL_HISTORY_FAILURE count=1")),
