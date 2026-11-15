@@ -1,7 +1,7 @@
 {
   "identity": "executor-legacy-pool-membership-handoff",
   "file": "0398-legacy-pool-membership-handoff.patch",
-  "content_sha256": "6ee24f5d58f98b64116478ad0ff327ba6bcd85baec5a85d2baa230c5e85dd51c",
+  "content_sha256": "91de1f797f833755ffed524b567ce72d4d16e69bfa0745b00145dcab6ebdb2d9",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

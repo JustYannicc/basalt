@@ -265,10 +265,10 @@ index 2a5616c..cabfe09 100644
            return yield* new AccountDeviceOffline({ account: binding.account, ...binding.target });
          if (status !== "online")
 diff --git a/packages/sdk/src/implementation/accounts.ts b/packages/sdk/src/implementation/accounts.ts
-index 05ffe34..22df41a 100644
+index 0a5fedc..578a61b 100644
 --- a/packages/sdk/src/implementation/accounts.ts
 +++ b/packages/sdk/src/implementation/accounts.ts
-@@ -324,8 +324,11 @@ export const makeAccounts = (
+@@ -380,8 +380,11 @@ export const makeAccounts = (
        // Saved choices keep the ID as an unresolved reference. An app must never silently switch accounts or run a partial collection.
        return { account: input.account };
      }).pipe(Effect.withSpan("sdk.accounts.remove")),
@@ -281,7 +281,7 @@ index 05ffe34..22df41a 100644
        const rows = yield* query(() =>
          db.findMany("accounts", {
            select: [
-@@ -343,6 +346,7 @@ export const makeAccounts = (
+@@ -399,6 +402,7 @@ export const makeAccounts = (
              b.and(
                b("owner", "=", input.owner),
                input.provider === undefined ? true : b("provider", "=", input.provider),
@@ -290,10 +290,10 @@ index 05ffe34..22df41a 100644
            orderBy: ["id", "asc"],
          }),
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index 011ff9a..ef168d9 100644
+index f22a7a1..a678420 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
-@@ -544,6 +544,18 @@ export const createExecutor = (
+@@ -554,6 +554,18 @@ export const createExecutor = (
              ),
            ),
          );
@@ -312,7 +312,7 @@ index 011ff9a..ef168d9 100644
      return {
        [WebhookSourceHost]: { tick: webhookSources.tick },
        workflowInputs: workflows.inputs,
-@@ -620,7 +632,11 @@ export const createExecutor = (
+@@ -639,7 +651,11 @@ export const createExecutor = (
        [AccountReadHost]: makeAccountRead(
          db,
          credentials,
@@ -325,7 +325,7 @@ index 011ff9a..ef168d9 100644
          options.machineAccounts,
        ),
        [AppSourceHost]: { dispatch: tools.mcpAppSource },
-@@ -643,18 +659,7 @@ export const createExecutor = (
+@@ -662,18 +678,7 @@ export const createExecutor = (
              const execution = yield* accountTargets.execution(account);
              return { ...account, ...(execution === undefined ? {} : { execution }) };
            }),

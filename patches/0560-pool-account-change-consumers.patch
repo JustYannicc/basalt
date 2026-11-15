@@ -77,7 +77,6 @@ index dd421e73a70a1185cef38a37e2429ed377a2f045..261ebcc96cf3425c68c78250911db9d0
        scopedDataChanges(
          Schema.decodeUnknownSync(NativeNamespace)(environment.AppDataSupervisor),
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index ec2dd213c1eb10b7c4551702751c6c6643a0b792..47a9f2e1108d2bfd5ac42aa577b59b55e530d478 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
 @@ -1,5 +1,13 @@
@@ -94,15 +93,15 @@ index ec2dd213c1eb10b7c4551702751c6c6643a0b792..47a9f2e1108d2bfd5ac42aa577b59b55
  import {
    workflowStatusFaultBindings,
    localWorkflowStatusFaults,
-@@ -353,6 +361,7 @@ export default Api.make(
-       Effect.catch(() => Effect.logWarning("Contributed departure outbox unavailable")),
+@@ -376,6 +384,7 @@
+       handledJob(Effect.logWarning("Contributed departure outbox unavailable")),
      );
      const changeRevisions = yield* cloudChangeRevisions;
 +    const organizationChanges = makeOrganizationChanges();
      const deliverChanges = changeRevisions.deliver.pipe(
        Effect.provide(executor),
-       Effect.scoped,
-@@ -686,6 +695,19 @@ export default Api.make(
+       reportErrors,
+@@ -724,6 +733,19 @@
      );
      const productionOps = yield* cloudProductionOps;
      const routes = Layer.mergeAll(
@@ -528,25 +527,64 @@ index 0000000..2dd7454
 +    end $$`;
 +});
 diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
-index a72c616d343e8d8d402bf3ede0d92d3c341544d3..285b9979c88a7eefb0146d3b233c0adefa41bd5c 100644
 --- a/apps/hosted/server/src/implementation/migrations.ts
 +++ b/apps/hosted/server/src/implementation/migrations.ts
-@@ -24,6 +24,7 @@ import { migrateContributedDepartures } from "./contributed-departure-schema.ts"
+@@ -26,6 +26,8 @@
  import { migrateAccountRechecks } from "./account-recheck-schema.ts";
  import { migrateAccountObservations } from "./account-observation-schema.ts";
  import { migrateChangeRevisions } from "./change-revision-schema.ts";
 +import { migrateAccountChanges } from "./account-change-schema.ts";
++import { prepareChangeJournal, activateChangeJournal } from "./change-journal-schema.ts";
  
  /**
   * Migration failures stop startup; callers must not log the driver's secret-bearing cause. The
-@@ -155,6 +156,7 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
+@@ -40,9 +42,12 @@
+     sqlState: Schema.optionalKey(Schema.String),
+     migrationVersion: Schema.optionalKey(Schema.String),
+     lineageIssues: Schema.optionalKey(Schema.Array(Schema.String)),
++    preparationRequired: Schema.optionalKey(Schema.Literal("21_change_journal_prepare")),
+   },
+ ) {
+   override get message() {
++    if (this.preparationRequired)
++      return "Cannot activate change journal 22: private_hosted_migrations is missing 21_change_journal_prepare";
+     const tags = this.causeTags?.join(" > ") ?? "unknown cause";
+     return `${this.stage} migration failed${this.migrationVersion ? ` at executor version ${this.migrationVersion}` : ""}: ${tags}${this.sqlState ? ` (SQLSTATE ${this.sqlState})` : ""}${this.lineageIssues?.length ? `; ${this.lineageIssues.join("; ")}` : ""}`;
+   }
+@@ -162,7 +167,33 @@
      yield* queueExecutorAppUpgrades;
    }),
    "19_change_revisions": migrateChangeRevisions,
 +  "20_account_changes": migrateAccountChanges,
++  "21_change_journal_prepare": prepareChangeJournal,
  });
++
++/** Activation is deliberately absent from startup migrations; the operator owns the reader cutover. */
++export const activateHostedChangeJournal = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql.withTransaction(
++    Effect.gen(function* () {
++      yield* sql`set local lock_timeout = '5s'`;
++      yield* sql`set local statement_timeout = '60s'`;
++      yield* sql`select pg_advisory_xact_lock(641028113)`;
++      const prepared = yield* sql`select 1 from private_hosted_migrations where migration_id=21`;
++      if (prepared.length !== 1)
++        return yield* new HostedMigrationFailed({
++          stage: "product",
++          preparationRequired: "21_change_journal_prepare",
++        });
++      const applied = yield* sql`select 1 from private_hosted_migrations where migration_id=22`;
++      if (applied.length !== 0) return;
++      yield* activateChangeJournal;
++      // Activation may follow a later preparation release, so test this exact ID, not the latest ID.
++      yield* sql`insert into private_hosted_migrations(migration_id,name)
++      values(22,'change_journal_activate')`;
++    }),
++  );
++}).pipe(Effect.mapError(migrationFailed("product")));
  
  /**
+  * Explicit, serialized migration job. Better Auth owns its tables; FumaDB owns executor_*.
 diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/apps/hosted/server/src/implementation/organization-changes.ts
 new file mode 100644
 index 0000000..07218aa
@@ -2582,13 +2620,12 @@ index 03c3f7e409e2258cd4dfb9209734415f2c8bbe73..58d4e97aeb7fdcdb05e1436d500c7c95
 +  });
  };
 diff --git a/packages/sdk/src/implementation/workerd-apps.ts b/packages/sdk/src/implementation/workerd-apps.ts
-index 77d9a31c2dd6c0e680a6a23b011e07ffe8f0b3d8..7c8be4df191f45a28980630a9a3e548a7f488df4 100644
 --- a/packages/sdk/src/implementation/workerd-apps.ts
 +++ b/packages/sdk/src/implementation/workerd-apps.ts
-@@ -44,11 +44,16 @@ import {
- } from "@executor-js/app-data/evaluated";
- 
- import { RuntimeBuildFailed, RuntimeProtocolFailed } from "../contracts/runtime.ts";
+@@ -48,11 +48,16 @@
+   RuntimeProtocolFailed,
+   FrameworkProvenanceRefused,
+ } from "../contracts/runtime.ts";
 +import { RevisionEvent, RevisionHint, type ChangeKey } from "@executor-js/app-data";
  import type { Executor } from "../contracts/executor.ts";
  import type { DurableDeclarations } from "../contracts/declarations.ts";
@@ -2603,15 +2640,15 @@ index 77d9a31c2dd6c0e680a6a23b011e07ffe8f0b3d8..7c8be4df191f45a28980630a9a3e548a
  import { workerdHostModules } from "./workerd-bundle.ts";
  import { appWorkerIdleSeconds, appWorkerLimit } from "./app-worker-residency.ts";
  
-@@ -171,6 +176,7 @@ export const workerdApps = (options: {
+@@ -175,6 +180,7 @@
      readonly runtime: ReturnType<typeof runtimeAdapter>;
      readonly workflows: WorkflowRuntime;
      readonly declarations: DurableDeclarations;
 +    readonly committedChanges: WorkerdTransport["committedChanges"];
    },
-   RuntimeBuildFailed | WorkerdMigrationRequired | WorkflowFailure,
+   RuntimeBuildFailed | FrameworkProvenanceRefused | WorkerdMigrationRequired | WorkflowFailure,
    Scope.Scope
-@@ -300,20 +306,18 @@ export const workerdApps = (options: {
+@@ -304,20 +310,18 @@
            return yield* work(peer, lifetime.signal);
          }),
        );
@@ -2637,13 +2674,13 @@ index 77d9a31c2dd6c0e680a6a23b011e07ffe8f0b3d8..7c8be4df191f45a28980630a9a3e548a
                } catch {
                  Queue.failCauseUnsafe(queue, Cause.fail(protocolFailure()));
                }
-@@ -334,8 +338,40 @@ export const workerdApps = (options: {
+@@ -338,8 +342,40 @@
                }),
              );
            }),
 -        { bufferSize: 1, strategy: "sliding" },
 +        scoped ? { bufferSize: 64, strategy: "dropping" } : { bufferSize: 1, strategy: "sliding" },
-+      );
+       );
 +    const changes = (app: string) =>
 +      notifications(
 +        `/changes?app=${encodeURIComponent(app)}`,
@@ -2658,7 +2695,7 @@ index 77d9a31c2dd6c0e680a6a23b011e07ffe8f0b3d8..7c8be4df191f45a28980630a9a3e548a
 +        `/hosted-changes?scope=${encodeURIComponent(scope)}&keys=${encodeURIComponent(JSON.stringify(keys))}`,
 +        Schema.decodeUnknownSync(Schema.fromJsonString(RevisionEvent)),
 +        true,
-       );
++      );
 +    const publish = (scope: string, hint: RevisionHint) =>
 +      Effect.scoped(
 +        Effect.gen(function* () {
@@ -2679,7 +2716,7 @@ index 77d9a31c2dd6c0e680a6a23b011e07ffe8f0b3d8..7c8be4df191f45a28980630a9a3e548a
      // workerd closes an idle keep-alive connection after 5 seconds, and reconciliation polls
      // every 5 seconds. A pooled socket can then close while a request is written to it, and
      // the fetch fails with a transport error. Each workflow request uses its own connection.
-@@ -379,7 +415,13 @@ export const workerdApps = (options: {
+@@ -383,7 +419,13 @@
            );
          }),
        ).pipe(Effect.mapError(protocolFailure));
@@ -2732,10 +2769,9 @@ index 57f522cd808ac7a7a90cddc23d991d527b70c622..18e4fcc63c557572eb0aa14b72eaefbd
        workflows: {
          start: (run: WorkflowRunId) => transport.backend("start", run).pipe(Effect.asVoid),
 diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src/implementation/workerd-entry.ts
-index 292785bf48e8f4c76cdb55793c4ff3386c2564f1..93c10b315eedb8fa76b444536590ac62df6091f7 100644
 --- a/packages/sdk/src/implementation/workerd-entry.ts
 +++ b/packages/sdk/src/implementation/workerd-entry.ts
-@@ -34,9 +34,11 @@ import {
+@@ -34,9 +34,11 @@
  } from "apps/contracts";
  import {
    makeFacetSupervisor,
@@ -2746,8 +2782,8 @@ index 292785bf48e8f4c76cdb55793c4ff3386c2564f1..93c10b315eedb8fa76b444536590ac62
 +import { RevisionHint, RevisionKeys } from "@executor-js/app-data";
  import { EvaluatedCommandJson, EvaluatedReplyJson } from "@executor-js/app-data/evaluated";
  import { makeAppRunner } from "./app-runner.ts";
- import { credentialFetch, credentialKey } from "./credential-handles.ts";
-@@ -74,6 +76,7 @@ declare const WebSocketPair: { new (): { 0: NativeWebSocket; 1: NativeWebSocket
+ import { runnerReply } from "./remote-app-runner.ts";
+@@ -77,6 +79,7 @@
  
  type Callback = (input: unknown) => Promise<unknown>;
  interface DataEntrypoint {
@@ -2755,7 +2791,7 @@ index 292785bf48e8f4c76cdb55793c4ff3386c2564f1..93c10b315eedb8fa76b444536590ac62
    cache(namespace: string, command: unknown): Promise<unknown>;
    evaluated(command: unknown): Promise<unknown>;
    invoke(
-@@ -379,8 +382,10 @@ class AppApi extends RpcTarget {
+@@ -392,8 +395,10 @@
  /** Native app data stays in isolated facets and retains its database across code updates. */
  export class AppDataSupervisor extends DurableObject<Environment> {
    readonly #supervisor: Promise<Effect.Success<ReturnType<typeof makeFacetSupervisor>>>;
@@ -2766,7 +2802,7 @@ index 292785bf48e8f4c76cdb55793c4ff3386c2564f1..93c10b315eedb8fa76b444536590ac62
      this.#supervisor = Effect.runPromise(
        makeFacetSupervisor(
          ctx,
-@@ -425,10 +430,23 @@ export class AppDataSupervisor extends DurableObject<Environment> {
+@@ -438,10 +443,23 @@
    async alarm() {
      return Effect.runPromise((await this.#supervisor).recover);
    }
@@ -2792,7 +2828,7 @@ index 292785bf48e8f4c76cdb55793c4ff3386c2564f1..93c10b315eedb8fa76b444536590ac62
      const responseOptions: ResponseInit & { readonly webSocket: NativeWebSocket } = {
        status: 101,
        webSocket: pair[0],
-@@ -640,6 +658,22 @@ export default {
+@@ -654,6 +672,22 @@
        return newWorkersRpcResponse(request, new AppApi(env, context), rpcOptions);
      if (url.pathname === "/changes")
        return env.DATA.getByName(url.searchParams.get("app") ?? "").fetch(request);
@@ -3610,14 +3646,15 @@ index e599ad1..f792d7a 100644
 diff --git a/e2e/tests/account-health.spec.ts b/e2e/tests/account-health.spec.ts
 --- a/e2e/tests/account-health.spec.ts
 +++ b/e2e/tests/account-health.spec.ts
-@@ -1,5 +1,5 @@
+@@ -1,6 +1,6 @@
  import { expect, layer } from "@effect/vitest";
+ import type { Page } from "playwright";
 -import { Effect, Schema } from "effect";
 +import { Effect, Fiber, Schema } from "effect";
  import { Actors } from "../support/actors.ts";
  import { Api, body } from "../support/api.ts";
  import { Browser } from "../support/browser.ts";
-@@ -427,10 +427,16 @@
+@@ -428,10 +428,16 @@
                    .isVisible(),
                );
              const loading = yield* providerVisible();
@@ -4118,71 +4155,6 @@ diff --git a/apps/hosted/server/src/implementation/change-revisions.ts b/apps/ho
        }
      }).pipe(Effect.interruptible, Effect.timeout("10 seconds")),
  });
-diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
---- a/apps/hosted/server/src/implementation/migrations.ts
-+++ b/apps/hosted/server/src/implementation/migrations.ts
-@@ -25,6 +25,7 @@
- import { migrateAccountObservations } from "./account-observation-schema.ts";
- import { migrateChangeRevisions } from "./change-revision-schema.ts";
- import { migrateAccountChanges } from "./account-change-schema.ts";
-+import { prepareChangeJournal, activateChangeJournal } from "./change-journal-schema.ts";
- 
- /**
-  * Migration failures stop startup; callers must not log the driver's secret-bearing cause. The
-@@ -38,9 +39,12 @@
-     causeTags: Schema.optionalKey(Schema.Array(Schema.String)),
-     sqlState: Schema.optionalKey(Schema.String),
-     migrationVersion: Schema.optionalKey(Schema.String),
-+    preparationRequired: Schema.optionalKey(Schema.Literal("21_change_journal_prepare")),
-   },
- ) {
-   override get message() {
-+    if (this.preparationRequired)
-+      return "Cannot activate change journal 22: private_hosted_migrations is missing 21_change_journal_prepare";
-     const tags = this.causeTags?.join(" > ") ?? "unknown cause";
-     return `${this.stage} migration failed${this.migrationVersion ? ` at executor version ${this.migrationVersion}` : ""}: ${tags}${this.sqlState ? ` (SQLSTATE ${this.sqlState})` : ""}`;
-   }
-@@ -50,6 +54,7 @@
- export const migrationFailed =
-   (stage: HostedMigrationFailed["stage"]) =>
-   (cause: unknown): HostedMigrationFailed => {
-+    if (cause instanceof HostedMigrationFailed) return cause;
-     if (cause instanceof StorageMigrationFailed)
-       return new HostedMigrationFailed({
-         stage,
-@@ -157,7 +162,32 @@
-   }),
-   "19_change_revisions": migrateChangeRevisions,
-   "20_account_changes": migrateAccountChanges,
-+  "21_change_journal_prepare": prepareChangeJournal,
- });
-+
-+/** Activation is deliberately absent from startup migrations; the operator owns the reader cutover. */
-+export const activateHostedChangeJournal = Effect.gen(function* () {
-+  const sql = yield* SqlClient.SqlClient;
-+  yield* sql.withTransaction(
-+    Effect.gen(function* () {
-+      yield* sql`set local lock_timeout = '5s'`;
-+      yield* sql`set local statement_timeout = '60s'`;
-+      yield* sql`select pg_advisory_xact_lock(641028113)`;
-+      const prepared = yield* sql`select 1 from private_hosted_migrations where migration_id=21`;
-+      if (prepared.length !== 1)
-+        return yield* new HostedMigrationFailed({
-+          stage: "product",
-+          preparationRequired: "21_change_journal_prepare",
-+        });
-+      const applied = yield* sql`select 1 from private_hosted_migrations where migration_id=22`;
-+      if (applied.length !== 0) return;
-+      yield* activateChangeJournal;
-+      // Activation may follow a later preparation release, so test this exact ID, not the latest ID.
-+      yield* sql`insert into private_hosted_migrations(migration_id,name)
-+      values(22,'change_journal_activate')`;
-+    }),
-+  );
-+}).pipe(Effect.mapError(migrationFailed("product")));
- 
- /**
-  * Explicit, serialized migration job. Better Auth owns its tables; FumaDB owns executor_*.
 diff --git a/apps/hosted/server/src/implementation/change-journal-schema.ts b/apps/hosted/server/src/implementation/change-journal-schema.ts
 new file mode 100644
 --- /dev/null
@@ -4682,3 +4654,14 @@ new file mode 100644
 +);
 +await appendFile(receipt, JSON.stringify(evidence) + "\n", { mode: 0o600 });
 +console.log(JSON.stringify(evidence));
+diff --git a/apps/hosted/cloud/src/contracts/job-outcome.ts b/apps/hosted/cloud/src/contracts/job-outcome.ts
+--- a/apps/hosted/cloud/src/contracts/job-outcome.ts
++++ b/apps/hosted/cloud/src/contracts/job-outcome.ts
+@@ -12,6 +12,7 @@
+ const JobErrorTag = Schema.Literals([
+   "BillingUnavailable",
+   "ChangeDispatchFailed",
++  "ChangeProjectionInTransaction",
+   "DataStepUnavailable",
+   "EmailDeliveryFailed",
+   "GrantExpiryUnavailable",

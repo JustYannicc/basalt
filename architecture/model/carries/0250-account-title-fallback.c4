@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.accountPresentation {
     metadata {
-      constraint "An account title uses a meaningful saved label or the provider identity fallback and never exposes an opaque account reference as its display name."
+      constraint "An account title uses a meaningful saved label or the provider identity fallback and never exposes an opaque account reference as its display name. Product-name and app-name normalization compose with that fallback without changing the account selected by scoped connection reads."
     }
   }
 }

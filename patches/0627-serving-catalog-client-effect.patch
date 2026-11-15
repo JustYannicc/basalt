@@ -1,0 +1,12 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/serving-product.ts b/apps/hosted/cloud/src/infrastructure/serving-product.ts
+--- a/apps/hosted/cloud/src/infrastructure/serving-product.ts
++++ b/apps/hosted/cloud/src/infrastructure/serving-product.ts
+@@ -43,7 +43,7 @@
+     const catalog = catalogReadLive(
+       feedUrl === undefined
+         ? egress
+-        : { ...egress, client: cachedFeedClient(origin, feedUrl, egress.client) },
++        : { ...egress, client: yield* cachedFeedClient(origin, feedUrl, egress.client) },
+       feedUrl,
+     );
+     return Layer.mergeAll(services, catalog);

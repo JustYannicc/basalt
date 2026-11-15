@@ -1,5 +1,6 @@
 diff --git a/e2e/support/app-call-delivery.ts b/e2e/support/app-call-delivery.ts
 new file mode 100644
+index 0000000..767a7b3
 --- /dev/null
 +++ b/e2e/support/app-call-delivery.ts
 @@ -0,0 +1,101 @@
@@ -106,6 +107,7 @@ new file mode 100644
 +});
 diff --git a/e2e/support/app-call-effects-sdk-source.ts b/e2e/support/app-call-effects-sdk-source.ts
 new file mode 100644
+index 0000000..29ae889
 --- /dev/null
 +++ b/e2e/support/app-call-effects-sdk-source.ts
 @@ -0,0 +1,143 @@
@@ -253,9 +255,10 @@ new file mode 100644
 +})).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer,FetchHttpClient.layer))));
 +`;
 diff --git a/e2e/support/self-email-sdk-source.ts b/e2e/support/self-email-sdk-source.ts
+index df91d49..e4ea221 100644
 --- a/e2e/support/self-email-sdk-source.ts
 +++ b/e2e/support/self-email-sdk-source.ts
-@@ -48,7 +48,7 @@
+@@ -48,7 +48,7 @@ Runtime.runMain(Effect.scoped(Effect.gen(function* () {
    yield* Deferred.succeed(ready,executor);
    const setup = Effect.gen(function* () {
      const target = (yield* executor.apps.deploy({owner,name:"Synthetic personal mail",files:[
@@ -265,14 +268,13 @@ diff --git a/e2e/support/self-email-sdk-source.ts b/e2e/support/self-email-sdk-s
      const provider = target.requirements.accounts.mail;
      if (provider === undefined) return yield* Effect.die("Missing synthetic mail provider");
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 5d13145..0f2db3f 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8785,6 +8785,16 @@
-       "self-host": scheduled,
-       cloud: managedCloud,
+@@ -9938,6 +9938,16 @@ export const scenarios = plan({
        local: na("The hosted Human in the loop page owns policy drafts."),
-+    },
-+  },
+     },
+   },
 +  appCallEffects: {
 +    file: "app-call-effects.spec.ts",
 +    title:
@@ -281,11 +283,14 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 +      "self-host": scheduled,
 +      local: na("Uses the public SDK native workerd host with retained PostgreSQL storage."),
 +      cloud: na("Uses a runner-owned SDK host and a synthetic external delivery boundary."),
-     },
-   },
++    },
++  },
    appCallWorkflow: {
+     file: "app-call-receipts.spec.ts",
+     title:
 diff --git a/e2e/tests/app-call-effects.spec.ts b/e2e/tests/app-call-effects.spec.ts
 new file mode 100644
+index 0000000..752a6b7
 --- /dev/null
 +++ b/e2e/tests/app-call-effects.spec.ts
 @@ -0,0 +1,207 @@
@@ -497,6 +502,7 @@ new file mode 100644
 +  );
 +});
 diff --git a/packages/apps/package.json b/packages/apps/package.json
+index 8d8db7e..bb3ffc1 100644
 --- a/packages/apps/package.json
 +++ b/packages/apps/package.json
 @@ -1,6 +1,6 @@
@@ -509,6 +515,7 @@ diff --git a/packages/apps/package.json b/packages/apps/package.json
    "type": "module",
 diff --git a/packages/apps/protocols/34.json b/packages/apps/protocols/34.json
 new file mode 100644
+index 0000000..5522b06
 --- /dev/null
 +++ b/packages/apps/protocols/34.json
 @@ -0,0 +1,75 @@
@@ -588,9 +595,10 @@ new file mode 100644
 +  "shared": {}
 +}
 diff --git a/packages/apps/src/contracts/app-calls.ts b/packages/apps/src/contracts/app-calls.ts
+index 3a53867..3c7d7b7 100644
 --- a/packages/apps/src/contracts/app-calls.ts
 +++ b/packages/apps/src/contracts/app-calls.ts
-@@ -83,6 +83,11 @@
+@@ -83,6 +83,11 @@ export const AppToolPolicyCommand = Schema.Struct({
  export const AppToolPolicyReply = Schema.Struct({
    decision: Schema.Literals(["approved", "denied", "user-approval", "failed"]),
  });
@@ -604,6 +612,7 @@ diff --git a/packages/apps/src/contracts/app-calls.ts b/packages/apps/src/contra
 -) => Effect.Effect<typeof AppToolPolicyReply.Type, AppCallFailed>;
 +) => Effect.Effect<typeof AppToolPolicyReplayReply.Type, AppCallFailed>;
 diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src/contracts/protocol-version.ts
+index 8cc97df..72571ec 100644
 --- a/packages/apps/src/contracts/protocol-version.ts
 +++ b/packages/apps/src/contracts/protocol-version.ts
 @@ -3,4 +3,4 @@
@@ -614,6 +623,7 @@ diff --git a/packages/apps/src/contracts/protocol-version.ts b/packages/apps/src
 +export const frameworkProtocol = 34;
 diff --git a/packages/apps/src/contracts/protocols/33.ts b/packages/apps/src/contracts/protocols/33.ts
 new file mode 100644
+index 0000000..60856c2
 --- /dev/null
 +++ b/packages/apps/src/contracts/protocols/33.ts
 @@ -0,0 +1,707 @@
@@ -1325,9 +1335,10 @@ new file mode 100644
 +  readonly schemas: Partial<Record<MessageName, Schema.Top>>;
 +};
 diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/src/contracts/protocols/current.ts
+index 3011e47..9c48cb1 100644
 --- a/packages/apps/src/contracts/protocols/current.ts
 +++ b/packages/apps/src/contracts/protocols/current.ts
-@@ -3,7 +3,7 @@
+@@ -3,7 +3,7 @@ import {
    AppCallReply,
    DeclaredAppDependencies,
    AppToolPolicyCommand,
@@ -1337,6 +1348,7 @@ diff --git a/packages/apps/src/contracts/protocols/current.ts b/packages/apps/sr
  import { DeclaredModels, ModelCommand, ModelReply } from "../models.ts";
  import { AccountObservationResult } from "../account-observation.ts";
 diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/src/contracts/protocols/released.ts
+index d09d516..6e61b49 100644
 --- a/packages/apps/src/contracts/protocols/released.ts
 +++ b/packages/apps/src/contracts/protocols/released.ts
 @@ -1,3 +1,4 @@
@@ -1344,16 +1356,17 @@ diff --git a/packages/apps/src/contracts/protocols/released.ts b/packages/apps/s
  import { current as protocol31 } from "./31.ts";
  import { protocol30 } from "./30.ts";
  /**
-@@ -68,4 +69,5 @@
+@@ -68,4 +69,5 @@ export const releasedProtocols = [
    protocol27,
    protocol30,
    protocol31,
 +  protocol33,
  ] as const;
 diff --git a/packages/apps/src/contracts/workflows.ts b/packages/apps/src/contracts/workflows.ts
+index 18520f5..9b9ef42 100644
 --- a/packages/apps/src/contracts/workflows.ts
 +++ b/packages/apps/src/contracts/workflows.ts
-@@ -268,7 +268,7 @@
+@@ -268,7 +268,7 @@ export interface WorkflowExecution {
    readonly runId: WorkflowRunId;
    readonly name?: string;
    readonly appCall?: (
@@ -1363,9 +1376,10 @@ diff --git a/packages/apps/src/contracts/workflows.ts b/packages/apps/src/contra
    ) => Effect.Effect<JsonValue, import("./app-calls.ts").AppCallFailed>;
  
 diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implementation/host.ts
+index 3a6f0ae..bcff18c 100644
 --- a/packages/apps/src/implementation/host.ts
 +++ b/packages/apps/src/implementation/host.ts
-@@ -833,6 +833,7 @@
+@@ -833,6 +833,7 @@ function dispatch(
                    }),
                  new WorkflowFailure({ reason: "credentials", retryable: false }),
                );
@@ -1373,7 +1387,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
                return {
                  context: {
                    ...accounts,
-@@ -853,7 +854,8 @@
+@@ -853,7 +854,8 @@ function dispatch(
                      native.dependencies,
                      execution.appCall === undefined
                        ? undefined
@@ -1383,7 +1397,7 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
                      signal,
                    ),
                  },
-@@ -1063,17 +1065,21 @@
+@@ -1063,17 +1065,21 @@ function dispatch(
                    input: decoded,
                    decision,
                  });
@@ -1409,9 +1423,10 @@ diff --git a/packages/apps/src/implementation/host.ts b/packages/apps/src/implem
          yield* Match.value(protectedDecision).pipe(
            Match.when("approved", () => Effect.void),
 diff --git a/packages/apps/src/implementation/workflow-rpc.ts b/packages/apps/src/implementation/workflow-rpc.ts
+index cf5fded..6c4e12e 100644
 --- a/packages/apps/src/implementation/workflow-rpc.ts
 +++ b/packages/apps/src/implementation/workflow-rpc.ts
-@@ -3,7 +3,7 @@
+@@ -3,7 +3,7 @@ import {
    AppCallReply,
    AppCallFailed,
    AppToolPolicyCommand,
@@ -1421,9 +1436,10 @@ diff --git a/packages/apps/src/implementation/workflow-rpc.ts b/packages/apps/sr
  import { WorkflowInput } from "../contracts/workflow-input.ts";
  /** RPC adapters expose only parsed values and safe failures to isolated app code. */
 diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/tools.ts
+index 0bc19a3..35c0610 100644
 --- a/packages/sdk/src/contracts/tools.ts
 +++ b/packages/sdk/src/contracts/tools.ts
-@@ -84,6 +84,8 @@
+@@ -95,6 +95,8 @@ export interface ToolInvocationOptions {
    readonly observeAppView?: (view: import("./app-views.ts").ObservedAppView) => Effect.Effect<void>;
    readonly elicitation?: ElicitationHandler;
    readonly issuer?: ToolApprovalIssuer;
@@ -1433,9 +1449,10 @@ diff --git a/packages/sdk/src/contracts/tools.ts b/packages/sdk/src/contracts/to
  /** How an in-process caller with its own wait bound reads a tool listing. Not an HTTP input. */
  export interface ToolListOptions extends CatalogReadOptions {
 diff --git a/packages/sdk/src/contracts/workerd-host.ts b/packages/sdk/src/contracts/workerd-host.ts
+index 3095752..652c6de 100644
 --- a/packages/sdk/src/contracts/workerd-host.ts
 +++ b/packages/sdk/src/contracts/workerd-host.ts
-@@ -123,6 +123,7 @@
+@@ -126,6 +126,7 @@ export const WorkflowHostCommand = Schema.Union([
      operation: Schema.Literal("app-call"),
      run: WorkflowRunId,
      runtimeStep: Schema.Struct({ step: Schema.NonEmptyString, stepId: Schema.NonEmptyString }),
@@ -1444,19 +1461,21 @@ diff --git a/packages/sdk/src/contracts/workerd-host.ts b/packages/sdk/src/contr
    }),
    Schema.Struct({ operation: Schema.Literal("control"), run: WorkflowRunId, command: Schema.Json }),
 diff --git a/packages/sdk/src/contracts/workflow-runtime.ts b/packages/sdk/src/contracts/workflow-runtime.ts
+index 7cb4a75..52b1e50 100644
 --- a/packages/sdk/src/contracts/workflow-runtime.ts
 +++ b/packages/sdk/src/contracts/workflow-runtime.ts
-@@ -57,6 +57,8 @@
+@@ -60,6 +60,8 @@ export interface WorkflowHost {
    readonly seed: (run: WorkflowRunId) => Effect.Effect<WorkflowSeed, WorkflowFailure>;
    readonly context: (
      run: WorkflowRunId,
 +    /** Active native-engine step. The host supplies this, never an authored app command. */
 +    step?: { readonly step: string; readonly stepId: string; readonly call: number },
-   ) => Effect.Effect<HostContext & { readonly database: boolean }, WorkflowFailure>;
-   readonly invoke: (
-     run: WorkflowRunId,
+   ) => Effect.Effect<
+     HostContext & { readonly hostApi: HostApiCheck | undefined; readonly database: boolean },
+     WorkflowFailure
 diff --git a/packages/sdk/src/implementation/app-call-context.ts b/packages/sdk/src/implementation/app-call-context.ts
 new file mode 100644
+index 0000000..c81d3a9
 --- /dev/null
 +++ b/packages/sdk/src/implementation/app-call-context.ts
 @@ -0,0 +1,26 @@
@@ -1488,6 +1507,7 @@ new file mode 100644
 +  );
 diff --git a/packages/sdk/src/implementation/app-call-effects.ts b/packages/sdk/src/implementation/app-call-effects.ts
 new file mode 100644
+index 0000000..6da4818
 --- /dev/null
 +++ b/packages/sdk/src/implementation/app-call-effects.ts
 @@ -0,0 +1,113 @@
@@ -1606,6 +1626,7 @@ new file mode 100644
 +};
 diff --git a/packages/sdk/src/implementation/app-call-protection.ts b/packages/sdk/src/implementation/app-call-protection.ts
 new file mode 100644
+index 0000000..2b767f7
 --- /dev/null
 +++ b/packages/sdk/src/implementation/app-call-protection.ts
 @@ -0,0 +1,161 @@
@@ -1771,6 +1792,7 @@ new file mode 100644
 +      );
 +};
 diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/implementation/app-calls.ts
+index 6b0e5ff..6fda6ef 100644
 --- a/packages/sdk/src/implementation/app-calls.ts
 +++ b/packages/sdk/src/implementation/app-calls.ts
 @@ -1,53 +1,23 @@
@@ -1836,7 +1858,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
    readonly connections: ReturnType<typeof makeAppConnections>;
    readonly tools: () => Pick<Executor["tools"], "call">;
    readonly hooks?: ResourceLifecycle;
-@@ -59,6 +29,7 @@
+@@ -59,6 +29,7 @@ export const makeAppCalls = (options: {
        readonly build: string;
        readonly caller?: string;
        readonly workflow?: AppCallWorkflowIdentity;
@@ -1844,7 +1866,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
      },
      raw: AppCallCommand,
    ) =>
-@@ -68,8 +39,7 @@
+@@ -68,8 +39,7 @@ export const makeAppCalls = (options: {
        }).pipe(
          Effect.mapError(() => new AppCallFailed({ retryable: false, reason: "invalid_input" })),
        );
@@ -1854,7 +1876,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
          return yield* new AppCallFailed({ retryable: false, reason: "effects_unavailable" });
        const depth = yield* AppCallDepth;
        if (depth >= 8)
-@@ -112,6 +82,16 @@
+@@ -112,6 +82,16 @@ export const makeAppCalls = (options: {
        // A removed target or a target from another owner cannot be replaced by a similar app.
        const target = yield* storedApp(options.db, { app: row.target, owner: app.owner });
        const targetVersion = yield* storedVersion(options.db, target);
@@ -1871,7 +1893,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
        const readVersions = appCallAccountVersions(options.db, target.id, accepted.accounts).pipe(
          Effect.provideService(
            CurrentActor,
-@@ -133,16 +113,19 @@
+@@ -133,16 +113,19 @@ export const makeAppCalls = (options: {
                },
                readVersions,
              );
@@ -1900,7 +1922,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
          .pipe(
            Effect.flatMap((result) =>
              result.status === "completed" && result.toolError !== true
-@@ -159,8 +142,10 @@
+@@ -159,8 +142,10 @@ export const makeAppCalls = (options: {
              row.authorizer === "local" ? undefined : row.authorizer,
            ),
            Effect.provideService(AppCallDepth, depth + 1),
@@ -1911,7 +1933,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
              source: {
                app: app.id,
                version: version.id,
-@@ -182,6 +167,7 @@
+@@ -182,6 +167,7 @@ export const makeAppCalls = (options: {
              },
            }),
          );
@@ -1919,7 +1941,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
        if (options.hooks === undefined) return yield* execute;
        if (options.hooks.appCallAs === undefined)
          return yield* new AppCallFailed({ retryable: false, reason: "denied" });
-@@ -215,100 +201,39 @@
+@@ -215,100 +201,39 @@ export const makeAppCalls = (options: {
      readonly app: string;
      readonly build: string;
      readonly caller?: string;
@@ -2050,6 +2072,7 @@ diff --git a/packages/sdk/src/implementation/app-calls.ts b/packages/sdk/src/imp
    return { dispatchAppCall, forInvocation, toolPolicy };
  };
 diff --git a/packages/sdk/src/implementation/app-confirmations.ts b/packages/sdk/src/implementation/app-confirmations.ts
+index 18de65a..3d67fda 100644
 --- a/packages/sdk/src/implementation/app-confirmations.ts
 +++ b/packages/sdk/src/implementation/app-confirmations.ts
 @@ -1,3 +1,4 @@
@@ -2057,7 +2080,7 @@ diff --git a/packages/sdk/src/implementation/app-confirmations.ts b/packages/sdk
  import { appCallAccountVersions } from "./app-call-accounts.ts";
  import { Effect, Schema } from "effect";
  import { AppCallFailed, AppDependency } from "apps/contracts";
-@@ -64,11 +65,13 @@
+@@ -64,11 +65,13 @@ export const makeAppConfirmations =
          });
        }
        if (candidates.length === 0) return;
@@ -2077,9 +2100,10 @@ diff --git a/packages/sdk/src/implementation/app-confirmations.ts b/packages/sdk
          return yield* new AppCallFailed({ reason: "denied", retryable: false });
        const ids = new Set<string>();
 diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src/implementation/app-protocols.ts
+index 9e485f8..301522c 100644
 --- a/packages/sdk/src/implementation/app-protocols.ts
 +++ b/packages/sdk/src/implementation/app-protocols.ts
-@@ -310,6 +310,7 @@
+@@ -348,6 +348,7 @@ const protocol27: AppProtocol = { ...protocol26, version: 27, nodeEntry: nodeApp
  const protocol30: AppProtocol = { ...protocol27, version: 30, nodeEntry: nodeAppEntry(30) };
  const protocol31: AppProtocol = { ...protocol30, version: 31, nodeEntry: nodeAppEntry(31) };
  const protocol33: AppProtocol = { ...protocol31, version: 33, nodeEntry: nodeAppEntry(33) };
@@ -2087,7 +2111,7 @@ diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src
  
  /**
   * Bundles of protocol 12 and earlier read one flat record of requirements and accounts. They
-@@ -536,6 +537,7 @@
+@@ -575,6 +576,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
      protocol30,
      protocol31,
      protocol33,
@@ -2096,6 +2120,7 @@ diff --git a/packages/sdk/src/implementation/app-protocols.ts b/packages/sdk/src
  );
  
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index b3f3acf..445ae27 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -1,6 +1,10 @@
@@ -2110,7 +2135,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
  import { makeAppCallReceipts } from "./app-call-receipts.ts";
  import { AppCallsHost } from "../contracts/app-calls.ts";
  import { makeAppConnections } from "./app-connections.ts";
-@@ -180,6 +184,14 @@
+@@ -195,6 +199,14 @@ export const createExecutor = (
      const appCallReceipts = makeAppCallReceipts(db, credentials, crypto);
      const appCalls = makeAppCalls({
        db,
@@ -2125,7 +2150,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
        connections: appConnectionStore,
        tools: () => tools,
        ...(options.appCalls === undefined ? {} : { policy: options.appCalls }),
-@@ -189,6 +201,8 @@
+@@ -204,6 +216,8 @@ export const createExecutor = (
        readonly app: string;
        readonly build: string;
        readonly caller?: string;
@@ -2134,7 +2159,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
        readonly workflowControls?: import("apps/contracts").WorkflowHostControls;
      }) =>
        Effect.gen(function* () {
-@@ -220,17 +234,29 @@
+@@ -235,17 +249,29 @@ export const createExecutor = (
              ...input,
              durableStep: input.replay !== undefined,
            });
@@ -2167,7 +2192,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
          }).pipe(Effect.provideService(AppEventSink, sink)),
        workflow: (input) =>
          Effect.gen(function* () {
-@@ -248,7 +274,11 @@
+@@ -263,7 +289,11 @@ export const createExecutor = (
                      ...execution,
                      name: seed.name,
                      appCall: (
@@ -2180,7 +2205,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
                        command: import("apps/contracts").AppCallCommand,
                      ) =>
                        appCalls.dispatchAppCall(
-@@ -256,6 +286,10 @@
+@@ -271,6 +301,10 @@ export const createExecutor = (
                            app: input.app,
                            build: input.build,
                            ...(input.caller === undefined ? {} : { caller: input.caller }),
@@ -2191,7 +2216,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
                            workflow: {
                              run: seed.runId,
                              name: seed.name,
-@@ -485,7 +519,7 @@
+@@ -503,7 +537,7 @@ export const createExecutor = (
        workflowInputs: workflows.inputs,
        [WorkflowHost]: {
          ...workflows.host,
@@ -2200,7 +2225,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
            Effect.gen(function* () {
              const context = yield* workflows.host.context(run);
              const seed = yield* workflows.host.seed(run);
-@@ -498,7 +532,27 @@
+@@ -516,7 +550,27 @@ export const createExecutor = (
              return {
                ...context,
                models,
@@ -2230,6 +2255,7 @@ diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implem
            }),
        },
 diff --git a/packages/sdk/src/implementation/tool-policy.ts b/packages/sdk/src/implementation/tool-policy.ts
+index 71515b5..0f16d97 100644
 --- a/packages/sdk/src/implementation/tool-policy.ts
 +++ b/packages/sdk/src/implementation/tool-policy.ts
 @@ -1,4 +1,4 @@
@@ -2238,7 +2264,7 @@ diff --git a/packages/sdk/src/implementation/tool-policy.ts b/packages/sdk/src/i
  import { Effect, Schema } from "effect";
  import { AppCallFailed, type AppToolPolicyHost, type WorkflowHostControls } from "apps/contracts";
  import type { ToolPolicyHook } from "../contracts/tool-policy.ts";
-@@ -23,35 +23,37 @@
+@@ -23,35 +23,37 @@ export const bindToolPolicy = (
    [StandingPolicy]: (command) =>
      Effect.gen(function* () {
        const workflow = yield* AppCallWorkflow;
@@ -2305,9 +2331,10 @@ diff --git a/packages/sdk/src/implementation/tool-policy.ts b/packages/sdk/src/i
          Effect.mapError(() => new AppCallFailed({ reason: "denied", retryable: false })),
        );
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
+index 8ed3979..4b305c4 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
-@@ -1657,6 +1657,8 @@
+@@ -1812,6 +1812,8 @@ export const makeTools = (
            }
            // The app reports the decoded input it asks approval for; its prompt is not used.
            if (Schema.is(HostToolApprovalRequired)(result.failure)) {
@@ -2317,6 +2344,7 @@ diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/impleme
              // treat a call that named none as one that may write.
              return yield* approvals.save(
 diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/sdk/src/implementation/worker-workflow-rpc.ts
+index ab8e7a2..761bc73 100644
 --- a/packages/sdk/src/implementation/worker-workflow-rpc.ts
 +++ b/packages/sdk/src/implementation/worker-workflow-rpc.ts
 @@ -1,10 +1,10 @@
@@ -2331,8 +2359,8 @@ diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/s
 +  AppToolPolicyReplayReply as AppToolPolicyReply,
  } from "apps/contracts";
  /** Invocation-owned RPC capabilities preserve the Effect context across Dynamic Worker calls. */
- import { Cause, Effect, Redacted, Schema } from "effect";
-@@ -42,7 +42,10 @@
+ import { Cause, Effect, Redacted, Schema, SchemaIssue } from "effect";
+@@ -44,7 +44,10 @@ export const invocationWorkflow = (
  ): Effect.Effect<WorkflowRpc> =>
    Effect.gen(function* () {
      const services = yield* Effect.context<never>();
@@ -2344,7 +2372,7 @@ diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/s
      return (input, callback) => {
        const scoped = Schema.decodeUnknownOption(WorkflowRpcCommand)(input, {
          onExcessProperty: "error",
-@@ -53,7 +56,10 @@
+@@ -55,7 +58,10 @@ export const invocationWorkflow = (
          return Effect.runPromiseWith(services)(
            (step === undefined || execution.appCall === undefined
              ? Effect.fail(new AppCallFailed({ reason: "denied", retryable: false }))
@@ -2356,7 +2384,7 @@ diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/s
            ).pipe(
              Effect.matchCause({
                onSuccess: (value) => ({ ok: true as const, value }),
-@@ -107,7 +113,7 @@
+@@ -109,7 +115,7 @@ export const invocationWorkflow = (
                        if (scope !== undefined) {
                          if (activeSteps.has(scope.stepId))
                            return yield* new WorkflowFailure({ reason: "input", retryable: false });
@@ -2365,7 +2393,7 @@ diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/s
                        }
                      }),
                      () =>
-@@ -125,8 +131,7 @@
+@@ -127,8 +133,7 @@ export const invocationWorkflow = (
                        ),
                      () =>
                        Effect.sync(() => {
@@ -2375,7 +2403,7 @@ diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/s
                        }),
                    ),
                  );
-@@ -181,7 +186,7 @@
+@@ -210,7 +215,7 @@ export const invocationWorkflowControls = (controls: WorkflowHostControls, signa
        if (policy._tag === "Some")
          return Effect.runPromiseWith(services)(
            (controls.appToolPolicy === undefined
@@ -2385,6 +2413,7 @@ diff --git a/packages/sdk/src/implementation/worker-workflow-rpc.ts b/packages/s
            ).pipe(
              Effect.catchCause(() => Effect.succeed({ decision: "failed" as const })),
 diff --git a/packages/sdk/src/implementation/workerd-client.ts b/packages/sdk/src/implementation/workerd-client.ts
+index a3c90fd..d01a878 100644
 --- a/packages/sdk/src/implementation/workerd-client.ts
 +++ b/packages/sdk/src/implementation/workerd-client.ts
 @@ -1,4 +1,4 @@
@@ -2393,7 +2422,7 @@ diff --git a/packages/sdk/src/implementation/workerd-client.ts b/packages/sdk/sr
  import { AppCallReply, AppCallFailed } from "apps/contracts";
  import { ModelRequestFailed, ModelReply } from "apps/contracts";
  import { WorkflowInput } from "apps/contracts";
-@@ -162,14 +162,10 @@
+@@ -163,14 +163,10 @@ export const workerdHostHandler = (options: {
              return Redacted.value(context.accounts);
            }
            case "app-call": {
@@ -2413,6 +2442,7 @@ diff --git a/packages/sdk/src/implementation/workerd-client.ts b/packages/sdk/sr
              return yield* (
                call === undefined
 diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src/implementation/workerd-entry.ts
+index c7d975c..4f4c2de 100644
 --- a/packages/sdk/src/implementation/workerd-entry.ts
 +++ b/packages/sdk/src/implementation/workerd-entry.ts
 @@ -1,4 +1,4 @@
@@ -2421,7 +2451,7 @@ diff --git a/packages/sdk/src/implementation/workerd-entry.ts b/packages/sdk/src
  import { AppCallReply, AppCallFailed } from "apps/contracts";
  import { ModelCommand } from "apps/contracts";
  import { WorkflowInput } from "apps/contracts";
-@@ -467,6 +467,7 @@
+@@ -478,6 +478,7 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string
                  operation: "app-call",
                  run: seed.runId,
                  runtimeStep,

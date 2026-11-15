@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountForms {
+    metadata {
+      constraint "Each declared connection method has its own visible label in the shared selector and credential form. Selecting a client keeps the current client-entry flow; method labels cannot restore obsolete manual-client controls or change the provider and method saved on the account."
+    }
+  }
+}

@@ -59,7 +59,7 @@ export const visibilityFixture = (verified: boolean, label = "Default 2", editor
       "create table hosted_group_members (group_id text, member_id text)",
       "create table hosted_app_access (id text primary key, organization_id text, creator_id text, audience text, revision text)",
       "create table hosted_app_groups (app_id text, group_id text)",
-      "create table hosted_app_account_links (app text, account text, subject text, requirement text, created_at timestamptz)",
+      "create table hosted_app_account_links (app text, account text, subject text, requirement text, created_at timestamptz, linked_by text)",
       "create table executor_apps (id text primary key, owner text, active_deployment text)",
       "create table executor_deployments (id text primary key, requirements jsonb)",
       "create table executor_accounts (id text primary key, owner text, provider text, label text, description text)",

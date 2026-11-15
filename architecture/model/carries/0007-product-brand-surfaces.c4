@@ -1,0 +1,7 @@
+model {
+  extend basalt.brandConfig {
+    metadata {
+      constraint "Built-in app labels, connection forms, recovery messages and agent guidance read the configured product name while provider identifiers, account bindings and tool names remain stable. Schema rejection and runtime failure messages retain their bounded provenance and never repeat submitted values."
+    }
+  }
+}

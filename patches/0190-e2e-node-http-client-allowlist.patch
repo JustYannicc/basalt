@@ -1,8 +1,8 @@
 diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
-index 4953b319..81aa1a06 100644
+index 458555a..ddb424b 100644
 --- a/e2e/check-boundary.ts
 +++ b/e2e/check-boundary.ts
-@@ -26,6 +26,7 @@ const allowed = new Set([
+@@ -27,6 +27,7 @@ const allowed = new Set([
    "@effect/platform-node/NodeRuntime",
    "@effect/platform-node/NodeServices",
    "@effect/platform-node/NodeHttpServer",

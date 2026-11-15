@@ -44,6 +44,7 @@ test("self-host activation requires an earlier committed prepare and never skips
       assert.ok(Result.isFailure(missing));
       assert.match(missing.failure.message, /missing 21_change_journal_prepare/);
       const preparation = migrateProductSteps("private_hosted_migrations", {
+        "20_account_changes": Effect.die("committed account migration must not run again"),
         "21_change_journal_prepare": prepareChangeJournal,
       });
       yield* preparation;
@@ -68,6 +69,9 @@ test("self-host activation requires an earlier committed prepare and never skips
         [{ revision: "1" }],
       );
       yield* migrateProductSteps("private_hosted_migrations", {
+        "20_account_changes": Effect.die("committed account migration must not run again"),
+        "21_change_journal_prepare": Effect.die("committed preparation must not run again"),
+        "22_change_journal_activate": Effect.die("committed activation must not run again"),
         "23_later_preparation": Effect.void,
       });
       assert.deepEqual(

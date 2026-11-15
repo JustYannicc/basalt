@@ -80,6 +80,7 @@ export async function loadHostedPages(exports, extra = {}) {
         'export { resetFixtureAtoms } from "fixture-atoms";',
         'export { RegistryProvider } from "@effect/atom-react";',
         'export { productBrandAtom } from "@executor-js/ui/contracts/product-brand";',
+        'export { resourceOriginsAtom } from "../../contracts/mcp.ts";',
         'export { Atom, AsyncResult } from "effect/reactivity";',
         'export { Cause } from "effect";',
         'export { act, createElement } from "react";',
@@ -111,7 +112,7 @@ export async function loadHostedPages(exports, extra = {}) {
             namespace: "fixture",
           }));
           builder.onResolve({ filter: /(?:\.tsx?|^@tanstack\/react-router)$/ }, (args) => {
-            if (!args.importer.startsWith(pages)) return undefined;
+            if (!args.importer.startsWith(join(web, "src/implementation"))) return undefined;
             const target = args.path.startsWith(".") ? join(args.resolveDir, args.path) : args.path;
             const name = Object.keys(modules).find((suffix) => target.endsWith(suffix));
             return name ? { path: name, namespace: "fixture" } : undefined;
@@ -131,7 +132,7 @@ export async function loadHostedPages(exports, extra = {}) {
   const { GlobalRegistrator } = await import(
     pathToFileURL(require.resolve("@happy-dom/global-registrator")).href
   );
-  GlobalRegistrator.register();
+  GlobalRegistrator.register({ url: "https://dashboard.fixture.invalid/" });
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   // React's development act() queues each task on a new MessageChannel; close it after delivery
   // so no Node port stays open.
@@ -171,7 +172,18 @@ export async function loadHostedPages(exports, extra = {}) {
       root.render(
         ui.createElement(
           ui.RegistryProvider,
-          brand === undefined ? null : { initialValues: [[ui.productBrandAtom, brand]] },
+          {
+            initialValues: [
+              [
+                ui.resourceOriginsAtom,
+                {
+                  mcp: ["https://dashboard.fixture.invalid"],
+                  api: ["https://dashboard.fixture.invalid"],
+                },
+              ],
+              ...(brand === undefined ? [] : [[ui.productBrandAtom, brand]]),
+            ],
+          },
           ui.createElement(
             ui.DashboardProvider,
             {

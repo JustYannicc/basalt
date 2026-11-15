@@ -1,0 +1,7 @@
+model {
+  extend basalt.catalog.providerApps {
+    metadata {
+      constraint "Provider-management apps connect reusable saved model accounts; pools only select them and link to authorized provider destinations. Host connection policy controls creation, import and reconnect choices, including unavailable methods. Initial method selection and active check and retry state survive shared requirement rendering without changing saved provider identity."
+    }
+  }
+}

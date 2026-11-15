@@ -1,7 +1,8 @@
 diff --git a/e2e/tests/provider-errors.spec.ts b/e2e/tests/provider-errors.spec.ts
+index 931b738..659c956 100644
 --- a/e2e/tests/provider-errors.spec.ts
 +++ b/e2e/tests/provider-errors.spec.ts
-@@ -197,6 +197,33 @@
+@@ -218,6 +218,33 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
          'invalid_token: "Token [redacted] belongs to another organization"',
        );
      };
@@ -35,7 +36,7 @@ diff --git a/e2e/tests/provider-errors.spec.ts b/e2e/tests/provider-errors.spec.
      // Listing evaluates the app; an MCP server's own session setup is named more precisely.
      const listing = kind === "mcp" ? "connect" : "discover";
      if (kind !== "openapi") {
-@@ -280,14 +307,32 @@
+@@ -301,14 +328,32 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
          expect((yield* body(Resource, saved)).id).toBe(affected);
          yield* assertCatalog(yield* catalog(), false);
          yield* assertCatalog(yield* index(), false);
@@ -69,16 +70,15 @@ diff --git a/e2e/tests/provider-errors.spec.ts b/e2e/tests/provider-errors.spec.
 +      if (kind === "mcp" || kind === "graphql") expect(setup.body).toEqual([]);
      }
      yield* upstream.configure({ status: 401, phase: "call" });
-     expect((yield* catalog()).status).toBe(200);
-@@ -368,8 +413,38 @@
+     const recovered = yield* catalog();
+@@ -394,8 +439,38 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
        ["RATE_LIMITED", "rate_limited"],
      ] as const) {
        yield* upstream.configure({ status: 200, code });
 -      yield* assertFailure(yield* catalog(), reason, 200);
--    }
 +      yield* assertGraphqlCatalog(yield* catalog(), reason, 200);
 +      yield* assertGraphqlCatalog(yield* index(), reason, 200);
-+    }
+     }
 +    // The remaining checks exercise app-wide recovery. Fail outside accountRouter here;
 +    // its isolated discovery failures must not prevent unrelated webhook setup.
 +    const recoverySource = yield* body(

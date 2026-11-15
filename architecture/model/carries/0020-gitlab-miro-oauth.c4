@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Configured site-aware OAuth clients keep their reviewed scopes, client authentication and exact token placement. Authorization-code grants retain the callback that issued them through validate-before-write import and encrypted persistence, so refresh and revocation use the original client and redirect rather than current defaults."
+    }
+  }
+}

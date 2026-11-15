@@ -1,7 +1,7 @@
 {
   "identity": "basalt-native-cloud-worker-residency",
   "file": "0465-native-cloud-worker-residency.patch",
-  "content_sha256": "387dcbebd689200d545d334844687ed1ea20845173047e9c1e1b92a307f3ec7d",
+  "content_sha256": "c9c8065c7b91e96b7d27dfe505af343b69be1c7c6b08bccb7699c9bcb6e0712d",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

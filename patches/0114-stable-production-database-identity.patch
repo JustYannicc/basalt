@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/implementation/migrations.ts b/apps/hosted/cloud/src/implementation/migrations.ts
-index b34c9ab41e9663c409a9890f9c26803ab2052ca5..b13ee894fdce4da354e713e97d17b7d5fd4b5058 100644
+index 17241eb..7ad7824 100644
 --- a/apps/hosted/cloud/src/implementation/migrations.ts
 +++ b/apps/hosted/cloud/src/implementation/migrations.ts
 @@ -13,7 +13,10 @@ import { Effect } from "effect";
@@ -14,7 +14,7 @@ index b34c9ab41e9663c409a9890f9c26803ab2052ca5..b13ee894fdce4da354e713e97d17b7d5
  import {
    blockerReport,
    guardMigration,
-@@ -213,6 +216,7 @@ const migrateCloudDatabaseOnce = Effect.scoped(
+@@ -307,6 +310,7 @@ const migrateCloudDatabaseOnce = Effect.scoped(
          "6_setup_assignments": migrateSetupAssignments,
          "7_v1_import_orgs": migrateV1ImportOrgs,
          "8_production_ops_receipts": migrateProductionOps,
@@ -23,13 +23,13 @@ index b34c9ab41e9663c409a9890f9c26803ab2052ca5..b13ee894fdce4da354e713e97d17b7d5
      });
      yield* Effect.gen(function* () {
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
-index 90ccb340c2c74da0d7aac54e91c69cecacb43825..b61b879a21042fb707bd051d1edf34038c459906 100644
+index 90ccb34..b61b879 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/contracts.ts
 @@ -58,4 +58,9 @@ export class OrganizationRemoving extends Data.TaggedError("OrganizationRemoving
-
+ 
  export class ProductionOperationBusy extends Data.TaggedError("ProductionOperationBusy") {}
-
+ 
 +export class ProductionOperationRefused extends Data.TaggedError("ProductionOperationRefused")<{
 +  readonly message: string;
 +  readonly reason?: "stale_plan";
@@ -38,7 +38,7 @@ index 90ccb340c2c74da0d7aac54e91c69cecacb43825..b61b879a21042fb707bd051d1edf3403
  export const productionOpsPath = "/api/internal/production-ops";
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts b/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..df5b4087b3c407c31bca76a14bcf7942e91e3cd5
+index 0000000..df5b408
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/database-identity.ts
 @@ -0,0 +1,85 @@
@@ -128,7 +128,7 @@ index 0000000000000000000000000000000000000000..df5b4087b3c407c31bca76a14bcf7942
 +    };
 +  });
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
-index 11e55693c4e1d67d111c0fc13d4e3c4bdf61cb70..2ded48433b2e52c7a841d643d5d35ae63e15f2bd 100644
+index 11e5569..2ded484 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
 @@ -1,5 +1,7 @@
@@ -136,7 +136,7 @@ index 11e55693c4e1d67d111c0fc13d4e3c4bdf61cb70..2ded48433b2e52c7a841d643d5d35ae6
  import { SqlError } from "effect/sql";
 +import { ProviderAppsRefused } from "./migrations/provider-apps-schema.ts";
 +import { ProductionOperationRefused } from "./contracts.ts";
-
+ 
  const SqlStateClass = Schema.Literals([
    "08",
 @@ -44,9 +46,21 @@ const SqlStateClass = Schema.Literals([
@@ -164,7 +164,7 @@ index 11e55693c4e1d67d111c0fc13d4e3c4bdf61cb70..2ded48433b2e52c7a841d643d5d35ae6
  type Phase = FailureReceipt["phase"];
 @@ -60,29 +74,73 @@ class DiagnosticFailure extends Error {
  }
-
+ 
  /** No message, query, row, response or credential enters this projection. */
 -export function diagnostic(cause: Cause.Cause<unknown>, phase: Phase): FailureReceipt {
 -  const error = Cause.findErrorOption(cause);
@@ -254,9 +254,9 @@ index 11e55693c4e1d67d111c0fc13d4e3c4bdf61cb70..2ded48433b2e52c7a841d643d5d35ae6
 +    causeKind,
    };
  }
-
+ 
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
-index 1934a17db56d3d2f2a1226b54df027648427929e..d2a7091759655817726c5c9254ba0f9b79cef57d 100644
+index 1934a17..d2a7091 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/http.ts
 @@ -1,17 +1,17 @@
@@ -350,7 +350,7 @@ index 1934a17db56d3d2f2a1226b54df027648427929e..d2a7091759655817726c5c9254ba0f9b
        atPhase("sql"),
      );
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts
-index aa6393d992b75435192331b1b28e36683f1e94f9..962b1e9d2efe3f5bc18b7a2d48e37961f76f7dc7 100644
+index aa6393d..962b1e9 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/provider-apps-schema.ts
 @@ -32,7 +32,7 @@ export const Rows = Schema.Array(Schema.Struct({ row: Schema.Record(Schema.Strin
@@ -363,7 +363,7 @@ index aa6393d992b75435192331b1b28e36683f1e94f9..962b1e9d2efe3f5bc18b7a2d48e37961
  }> {}
  export const failure = (message: string) => new ProviderAppsRefused({ message });
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
-index 0c239cc9fb659e2e0aeb79dbca7daee2ee3ec363..1bfaefc2ac74d97c36bec45ff764c9b860b11577 100644
+index 0c239cc..1bfaefc 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/runner.ts
 @@ -12,6 +12,8 @@ import { inventory } from "./inventory.ts";
@@ -372,7 +372,7 @@ index 0c239cc9fb659e2e0aeb79dbca7daee2ee3ec363..1bfaefc2ac74d97c36bec45ff764c9b8
  import { atPhase } from "./diagnostics.ts";
 +import { databaseIdentity, type DatabaseOrigin } from "./database-identity.ts";
 +import { ProductionOperationRefused } from "./contracts.ts";
-
+ 
  export const Operation = Schema.Struct({
    action: Schema.Literals(["inventory", "backup", "prepare", "dry-run", "apply"]),
 @@ -52,12 +54,16 @@ const Plan = Schema.Struct({
@@ -384,7 +384,7 @@ index 0c239cc9fb659e2e0aeb79dbca7daee2ee3ec363..1bfaefc2ac74d97c36bec45ff764c9b8
    readonly encryptionKey: string;
    readonly preparations: Readonly<Record<string, ProductionPreparation>>;
  }
-
+ 
 -const fail = (reason: string) => Effect.fail(new Error(reason));
 +const fail = (message: string) => Effect.fail(new ProductionOperationRefused({ message }));
 +const stalePlan = () =>
@@ -392,12 +392,12 @@ index 0c239cc9fb659e2e0aeb79dbca7daee2ee3ec363..1bfaefc2ac74d97c36bec45ff764c9b8
 +    new ProductionOperationRefused({ message: "The reviewed plan is stale", reason: "stale_plan" }),
 +  );
  const checksum = /^[a-f0-9]{64}$/;
-
+ 
  function validPlan(module: ProductionMigration, plan: MigrationPlan): boolean {
 @@ -104,19 +110,6 @@ const readOnly = <A, E>(work: Effect.Effect<A, E, SqlClient.SqlClient>) =>
      );
    });
-
+ 
 -const databaseName = Effect.gen(function* () {
 -  const sql = yield* SqlClient.SqlClient;
 -  const rows = yield* sql`select current_database() as name`.pipe(
@@ -464,7 +464,7 @@ index 0c239cc9fb659e2e0aeb79dbca7daee2ee3ec363..1bfaefc2ac74d97c36bec45ff764c9b8
            return yield* fail("Database identity changed");
          const prior =
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts b/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts
-index 10951210c3218fa640b85ca6b8f6073f095fd2de..eadeb7d6cceca31422ec24b00249e88c26328685 100644
+index 1095121..eadeb7d 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/schema.ts
 @@ -17,3 +17,16 @@ export const migrateProductionOps = Effect.gen(function* () {
@@ -485,10 +485,10 @@ index 10951210c3218fa640b85ca6b8f6073f095fd2de..eadeb7d6cceca31422ec24b00249e88c
 +    on conflict do nothing`;
 +});
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
-index 8b6d195dd89a62dfe01095821c987c71cad2eadf..aa71727c09924a52a7b8d6491c2ee6447b780c97 100644
+index ed4e7b2..2573dbd 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -34,6 +34,8 @@ import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
+@@ -36,6 +36,8 @@ import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
  import { roleHost } from "./role-hosts.ts";
  import { freePort } from "./ports.ts";
  import { cloudRuntimeControl } from "./cloud-runtime-control.ts";
@@ -497,7 +497,7 @@ index 8b6d195dd89a62dfe01095821c987c71cad2eadf..aa71727c09924a52a7b8d6491c2ee644
  import { cloudPoolGateway } from "./cloud-pool-gateway.ts";
  import { cloudNativeStack } from "./cloud-native-stack.ts";
  import {
-@@ -177,6 +179,8 @@ export const startCloudEnvironment = (input: {
+@@ -181,6 +183,8 @@ export const startCloudEnvironment = (input: {
      const cloud = path.resolve("apps/hosted/cloud");
      const browser = input.browserOrigin === "app" ? roleHost(input.origin, "app") : input.origin;
      const directory = path.resolve(input.directory);
@@ -506,7 +506,7 @@ index 8b6d195dd89a62dfe01095821c987c71cad2eadf..aa71727c09924a52a7b8d6491c2ee644
      const poolBackend = process.env.BASALT_E2E_POOL_BACKEND === "1";
      if (input.manualCron && poolBackend)
        return yield* Effect.die(new Error("Manual cron requires the ordinary local Cloud stack."));
-@@ -228,7 +232,7 @@ export const startCloudEnvironment = (input: {
+@@ -235,7 +239,7 @@ export const startCloudEnvironment = (input: {
      yield* fs.writeFileString(
        ssoDatabase,
        JSON.stringify({
@@ -515,7 +515,7 @@ index 8b6d195dd89a62dfe01095821c987c71cad2eadf..aa71727c09924a52a7b8d6491c2ee644
        }),
        { mode: 0o600 },
      );
-@@ -240,7 +244,7 @@ export const startCloudEnvironment = (input: {
+@@ -247,7 +251,7 @@ export const startCloudEnvironment = (input: {
      yield* fs.writeFileString(
        v1Database,
        JSON.stringify({
@@ -524,9 +524,9 @@ index 8b6d195dd89a62dfe01095821c987c71cad2eadf..aa71727c09924a52a7b8d6491c2ee644
        }),
        { mode: 0o600 },
      );
-@@ -260,6 +264,9 @@ export const startCloudEnvironment = (input: {
+@@ -274,6 +278,9 @@ export const startCloudEnvironment = (input: {
      });
-     yield* Effect.addFinalizer(() => fs.remove(v1Forward).pipe(Effect.orDie));
+     yield* Effect.addFinalizer(() => fs.remove(v1Handoff).pipe(Effect.orDie));
      const env = {
 +      BASALT_E2E_DATABASE_ORIGIN: "original",
 +      BASALT_E2E_DATABASE_TARGET_PORT: String(input.databasePort),
@@ -534,7 +534,7 @@ index 8b6d195dd89a62dfe01095821c987c71cad2eadf..aa71727c09924a52a7b8d6491c2ee644
        PATH: [path.join(cloud, "node_modules/.bin"), process.env.PATH ?? ""].join(
          process.platform === "win32" ? ";" : ":",
        ),
-@@ -327,10 +334,10 @@ export const startCloudEnvironment = (input: {
+@@ -344,10 +351,10 @@ export const startCloudEnvironment = (input: {
        EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON: "* * * * *",
        // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
        V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
@@ -545,9 +545,9 @@ index 8b6d195dd89a62dfe01095821c987c71cad2eadf..aa71727c09924a52a7b8d6491c2ee644
 -      V1_IMPORT_WRITER_DATABASE_URL: `postgresql://${v1DatabaseWriter}:${v1WriterPassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
 +      V1_IMPORT_WRITER_DATABASE_URL: `postgresql://${v1DatabaseWriter}:${v1WriterPassword}@127.0.0.1:${databaseBackendPort}/executor_v1?sslmode=disable`,
        V1_MCP_FORWARD_SECRET: v1ForwardSecret,
+       V1_SESSION_HANDOFF_SECRET: v1HandoffSecret,
        // Serve the role hosts as production does, at `app.`, `mcp.` and `api.` of the origin's host.
-       EXECUTOR_ROLE_HOSTS_DOMAIN: new URL(input.origin).hostname,
-@@ -442,12 +449,16 @@ export const startCloudEnvironment = (input: {
+@@ -460,12 +467,16 @@ export const startCloudEnvironment = (input: {
        process.env.BASALT_E2E_PRODUCTION_OPS === "1" ? yield* freePort : undefined;
      yield* startCloudPostgres({
        container,
@@ -565,7 +565,7 @@ index 8b6d195dd89a62dfe01095821c987c71cad2eadf..aa71727c09924a52a7b8d6491c2ee644
      yield* createV1Database({
        container,
        dockerEnv,
-@@ -559,28 +570,104 @@ export const startCloudEnvironment = (input: {
+@@ -577,28 +588,104 @@ export const startCloudEnvironment = (input: {
      yield* fixtureRequest(fixtures, "/configure", {
        origin: input.origin,
        stage: "local",
@@ -677,13 +677,13 @@ index 8b6d195dd89a62dfe01095821c987c71cad2eadf..aa71727c09924a52a7b8d6491c2ee644
      const controls =
        alternatePort === undefined ? fixtures : yield* cloudRuntimeControl(fixtures, reconfigure);
 diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-control.ts
-index a47083feebd5812477aa5dc9640e21856744d024..ea91f4c90fa7d7eeb1fc4f3fd76352988c74a5c5 100644
+index a47083f..ea91f4c 100644
 --- a/e2e/support/cloud-runtime-control.ts
 +++ b/e2e/support/cloud-runtime-control.ts
 @@ -12,12 +12,25 @@ import {
  import { createServer } from "node:http";
  import type { FixtureControl } from "../sdk/contracts.ts";
-
+ 
 -const Change = Schema.Struct({ binding: Schema.Literals(["original", "alternate"]) });
 +const Change = Schema.Struct({
 +  binding: Schema.Literals([
@@ -699,7 +699,7 @@ index a47083feebd5812477aa5dc9640e21856744d024..ea91f4c90fa7d7eeb1fc4f3fd7635298
 +    "release",
 +  ]),
 +});
-
+ 
  /** Preserve the existing fixture capability while adding one fixed local runtime operation. */
  export const cloudRuntimeControl = <A, E>(
    fixtures: typeof FixtureControl.Type,
@@ -710,7 +710,7 @@ index a47083feebd5812477aa5dc9640e21856744d024..ea91f4c90fa7d7eeb1fc4f3fd7635298
      const http = yield* HttpClient.HttpClient;
 diff --git a/e2e/support/production-ops-credentials-proof.ts b/e2e/support/production-ops-credentials-proof.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..e21185715fac18b3bdcf754de4bba753b1b47752
+index 0000000..e211857
 --- /dev/null
 +++ b/e2e/support/production-ops-credentials-proof.ts
 @@ -0,0 +1,92 @@
@@ -808,7 +808,7 @@ index 0000000000000000000000000000000000000000..e21185715fac18b3bdcf754de4bba753
 +});
 diff --git a/e2e/support/production-ops-database-fixture.ts b/e2e/support/production-ops-database-fixture.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..37caf7edde62ba31e9e58d9f40b2e5a45f43fc87
+index 0000000..37caf7e
 --- /dev/null
 +++ b/e2e/support/production-ops-database-fixture.ts
 @@ -0,0 +1,189 @@
@@ -1003,7 +1003,7 @@ index 0000000000000000000000000000000000000000..37caf7edde62ba31e9e58d9f40b2e5a4
 +  });
 diff --git a/e2e/support/production-ops-database-proxy.ts b/e2e/support/production-ops-database-proxy.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..bd038ab0d193e8a921d544cbf1a46fbf52229df8
+index 0000000..bd038ab
 --- /dev/null
 +++ b/e2e/support/production-ops-database-proxy.ts
 @@ -0,0 +1,64 @@
@@ -1073,7 +1073,7 @@ index 0000000000000000000000000000000000000000..bd038ab0d193e8a921d544cbf1a46fbf
 +  });
 diff --git a/e2e/support/production-ops-migration-proof.ts b/e2e/support/production-ops-migration-proof.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..23664d29651d9a047621ae03be5327c378a1d202
+index 0000000..23664d2
 --- /dev/null
 +++ b/e2e/support/production-ops-migration-proof.ts
 @@ -0,0 +1,57 @@
@@ -1135,7 +1135,7 @@ index 0000000000000000000000000000000000000000..23664d29651d9a047621ae03be5327c3
 +  return { ...rows, ...client, operation, apply, dryRun };
 +});
 diff --git a/e2e/support/provider-adoption-locks.ts b/e2e/support/provider-adoption-locks.ts
-index 3cd75c8a4f95d67907aace645ffd6db4de1dbaa6..e5585692b355153e2c6deb959cdb36cad0d46971 100644
+index 3cd75c8..e558569 100644
 --- a/e2e/support/provider-adoption-locks.ts
 +++ b/e2e/support/provider-adoption-locks.ts
 @@ -14,6 +14,7 @@ const Failure = Schema.Struct({
@@ -1164,10 +1164,10 @@ index 3cd75c8a4f95d67907aace645ffd6db4de1dbaa6..e5585692b355153e2c6deb959cdb36ca
    expect(
      yield* p.database.run({
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 0068b086a0a6217596b76ab7d22caa32e4c9b3e2..54eea625a692b423f4882141f0ae75a5e6c24471 100644
+index 989c6a4..0e79e3b 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -2405,6 +2405,28 @@ export const scenarios = plan({
+@@ -3012,6 +3012,28 @@ export const scenarios = plan({
        local: na("Local does not host production operations."),
      },
    },
@@ -1196,7 +1196,7 @@ index 0068b086a0a6217596b76ab7d22caa32e4c9b3e2..54eea625a692b423f4882141f0ae75a5
    cloudProductionOpsStableKeys: {
      fixtures: "actors",
      deferOnboarding: true,
-@@ -2416,6 +2438,75 @@ export const scenarios = plan({
+@@ -3023,6 +3045,75 @@ export const scenarios = plan({
        local: na("Local does not host production operations."),
      },
    },
@@ -1274,7 +1274,7 @@ index 0068b086a0a6217596b76ab7d22caa32e4c9b3e2..54eea625a692b423f4882141f0ae75a5
      deferOnboarding: true,
 diff --git a/e2e/tests/production-ops-database.spec.ts b/e2e/tests/production-ops-database.spec.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..6d2d3797e357ae6aa763ddeaaaa0263c1accbe09
+index 0000000..6d2d379
 --- /dev/null
 +++ b/e2e/tests/production-ops-database.spec.ts
 @@ -0,0 +1,196 @@
@@ -1475,7 +1475,7 @@ index 0000000000000000000000000000000000000000..6d2d3797e357ae6aa763ddeaaaa0263c
 +  );
 +});
 diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
-index d9937f85b3c35931f6b770ba66320b13bb366ec9..fa7c609baef5bf27d4c6b7213191f51101f2c930 100644
+index d9937f8..fa7c609 100644
 --- a/e2e/tests/production-ops-migrations.spec.ts
 +++ b/e2e/tests/production-ops-migrations.spec.ts
 @@ -2,82 +2,75 @@ import { expect, layer } from "@effect/vitest";
@@ -1495,7 +1495,7 @@ index d9937f85b3c35931f6b770ba66320b13bb366ec9..fa7c609baef5bf27d4c6b7213191f511
 +} from "../support/production-ops-migration-proof.ts";
 +import { productionOpsCredentialsProof } from "../support/production-ops-credentials-proof.ts";
  import { scenarios } from "../test-plan.ts";
-
+ 
 -const DryRun = Schema.Struct({
 -  action: Schema.Literal("dry-run"),
 -  artifact: Artifact,
@@ -1540,7 +1540,7 @@ index d9937f85b3c35931f6b770ba66320b13bb366ec9..fa7c609baef5bf27d4c6b7213191f511
 +      }),
 +    ),
 +  );
-
+ 
 -const proof = Effect.gen(function* () {
 -  const rows = yield* productionOpsInventoryRows;
 -  const client = yield* productionOpsClient;
@@ -1584,7 +1584,7 @@ index d9937f85b3c35931f6b770ba66320b13bb366ec9..fa7c609baef5bf27d4c6b7213191f511
 +  it.effect(scenarios.cloudProductionOpsCredentials.title, (context) =>
 +    withHostedCase(context, productionOpsCredentialsProof),
 +  );
-
+ 
 -layer(HostedLive, { excludeTestServices: true })("Production migration scope", (it) => {
    it.effect(scenarios.cloudProductionOpsStableKeys.title, (context) =>
      withHostedCase(
@@ -1619,7 +1619,7 @@ index d9937f85b3c35931f6b770ba66320b13bb366ec9..fa7c609baef5bf27d4c6b7213191f511
 @@ -152,11 +145,60 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
      ),
    );
-
+ 
 +  for (const [scenario, binding] of [
 +    [scenarios.cloudProductionOpsHostIdentity, "host"],
 +    [scenarios.cloudProductionOpsDatabaseIdentity, "database"],
@@ -1679,7 +1679,7 @@ index d9937f85b3c35931f6b770ba66320b13bb366ec9..fa7c609baef5bf27d4c6b7213191f511
          yield* Effect.addFinalizer(() =>
            p.database
 diff --git a/e2e/tests/production-ops.spec.ts b/e2e/tests/production-ops.spec.ts
-index 622a54d5d6e96d44daf1bc868db2125a932fa24e..136d2bcda6fcdfb3c056d730b842eaff9e747eb2 100644
+index 622a54d..136d2bc 100644
 --- a/e2e/tests/production-ops.spec.ts
 +++ b/e2e/tests/production-ops.spec.ts
 @@ -50,6 +50,7 @@ layer(HostedLive, { excludeTestServices: true })("Production operations", (it) =

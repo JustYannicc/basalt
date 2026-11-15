@@ -1,0 +1,25 @@
+{
+  "scenarios": {
+    "toolCallReadAhead": {
+      "fixtures": "actors",
+      "title": "an MCP tool call sends its independent reads together and uses none of them before its checks pass",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The statement hold is mounted by the self-host test entry point."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no hosted organization policies."
+        }
+      }
+    }
+  },
+  "runs": {
+    "toolCallReadAhead": ["declared:self-host"]
+  },
+  "inputs": [".upstream/packages/apps/**", ".upstream/packages/sdk/**"]
+}

@@ -1,0 +1,7 @@
+model {
+  extend basalt.productionOps {
+    metadata {
+      constraint "The native-pool inventory is read-only and scoped to one explicit organization. It reports the retained ownership, audience and account-link evidence needed for a later reviewed handoff without marking pools native, rotating keys or changing saved selections. Inventory proof remains separate from job-outcome and production-apply scenarios."
+    }
+  }
+}

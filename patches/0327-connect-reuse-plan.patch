@@ -105,7 +105,7 @@ index 9fa99c1..ed12b83 100644
 +  .add(userPlanOAuth)
    .middleware(RequireOrganization);
 diff --git a/apps/hosted/server/src/implementation/accounts.ts b/apps/hosted/server/src/implementation/accounts.ts
-index b078dd8..65b6821 100644
+index f53ee6c..d15911e 100644
 --- a/apps/hosted/server/src/implementation/accounts.ts
 +++ b/apps/hosted/server/src/implementation/accounts.ts
 @@ -1,3 +1,4 @@
@@ -113,7 +113,7 @@ index b078dd8..65b6821 100644
  import { requireProviderConnectionTarget } from "./provider-account-policy.ts";
  import { accountRecheckStatus } from "./account-rechecks.ts";
  import { visibleObservationHealth } from "./account-observation-policy.ts";
-@@ -248,6 +249,64 @@ export const updateAccount = (metadata: {
+@@ -256,6 +257,64 @@ export const updateAccount = (metadata: {
      const executor = yield* Effect.flatten(HostedExecutor);
      return yield* executor.accounts.update({ ...metadata, owner, account });
    });
@@ -178,7 +178,7 @@ index b078dd8..65b6821 100644
  /**
   * Create a sign-in request for an app requirement in the scope the route names. Completing it
   * links the new account to the requirement: for the caller for a user requirement, for everyone for
-@@ -267,18 +326,7 @@ export const connectAccount = (
+@@ -275,18 +334,7 @@ export const connectAccount = (
  ) =>
    Effect.gen(function* () {
      const executor = yield* Effect.flatten(HostedExecutor);
@@ -250,10 +250,10 @@ index 3d4532d..efe93d4 100644
    }),
  );
 diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-index 4127ee4..c44bc31 100644
+index 1dac652..3b88380 100644
 --- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
 +++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
-@@ -574,6 +574,13 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
+@@ -575,6 +575,13 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
          accountIdentityPlacements(sql)([account]).pipe(
            Effect.map((placements) => placements.get(account.id) ?? null),
          ),
@@ -302,10 +302,10 @@ index 911be2f..881c21b 100644
      ),
      reuse: HostedClient.runtime.fn(
 diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-index b58a50a..bac5004 100644
+index 1053513..9abc7f3 100644
 --- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
-@@ -774,10 +774,14 @@ function AppConnectionFields({
+@@ -776,10 +776,14 @@ function AppConnectionFields({
        site={pending?.target.site ?? account?.site}
        app={checks ? app : undefined}
        {...(account ? { account } : {})}
@@ -324,10 +324,10 @@ index b58a50a..bac5004 100644
            : undefined
        }
 diff --git a/apps/local/server/src/contracts/dashboard.ts b/apps/local/server/src/contracts/dashboard.ts
-index 9f5d665..9ba83bb 100644
+index 7b6d01a..ca6c887 100644
 --- a/apps/local/server/src/contracts/dashboard.ts
 +++ b/apps/local/server/src/contracts/dashboard.ts
-@@ -32,6 +32,7 @@ import {
+@@ -37,6 +37,7 @@ import {
    AccountConnection,
    AccountConnectionId,
    PlanConnectionOAuth,
@@ -335,7 +335,7 @@ index 9f5d665..9ba83bb 100644
    OAuthConnectionPlan,
    StartConnectionOAuth,
    ReuseConnectionOAuth,
-@@ -283,6 +284,11 @@ export const AppAccountTarget = Schema.Struct({
+@@ -288,6 +289,11 @@ export const AppAccountTarget = Schema.Struct({
    account: Schema.optional(AccountId),
    site: Schema.optional(Schema.NonEmptyString),
  });
@@ -347,7 +347,7 @@ index 9f5d665..9ba83bb 100644
  const appConnectionErrors = [
    AccountProvisioned,
    InteractiveRetirementBusy,
-@@ -642,6 +648,29 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
+@@ -647,6 +653,29 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
          error: [...appConnectionErrors, OAuthSetupFailed],
        }),
      )
@@ -445,7 +445,7 @@ index 3a29d73..08ce538 100644
        authorize(input).pipe(
          Effect.andThen(executor.accountConnections.reuseOAuth({ ...input, owner: localOwner })),
 diff --git a/apps/local/server/src/implementation/dashboard.ts b/apps/local/server/src/implementation/dashboard.ts
-index 6540807..637278a 100644
+index 0c905ea..a8ae2a9 100644
 --- a/apps/local/server/src/implementation/dashboard.ts
 +++ b/apps/local/server/src/implementation/dashboard.ts
 @@ -568,6 +568,7 @@ export const dashboard = (
@@ -482,10 +482,10 @@ index 457ef79..95a1362 100644
      ),
      reuse: DashboardClient.runtime.fn(
 diff --git a/apps/local/web/src/implementation/pages/account-form.tsx b/apps/local/web/src/implementation/pages/account-form.tsx
-index 27c6a0b..ca12ed8 100644
+index 8889b76..efe10d2 100644
 --- a/apps/local/web/src/implementation/pages/account-form.tsx
 +++ b/apps/local/web/src/implementation/pages/account-form.tsx
-@@ -187,6 +187,7 @@ function BoundAppAccountForm({
+@@ -190,6 +190,7 @@ function BoundAppAccountForm({
            requirement={requirement}
            initialAccount={initialAccount}
            atoms={atoms}
@@ -529,10 +529,10 @@ index c98596c..cf3f85b 100644
            : oauthSetupAtom({ provider: props.provider.id, method: props.method })
        }
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 0a5f7eb..e43d5f0 100644
+index 249a701..92b7a04 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -6112,6 +6112,16 @@ export const scenarios = plan({
+@@ -6843,6 +6843,16 @@ export const scenarios = plan({
        local: na("Hosted organization policy and setup UI."),
      },
    },
@@ -1079,7 +1079,7 @@ index cb4cefd..1822543 100644
        HttpApiEndpoint.post("reuseOAuth", "/v1/account-connections/oauth/reuse", {
          payload: ReuseConnectionOAuth,
 diff --git a/packages/sdk/src/contracts/executor.ts b/packages/sdk/src/contracts/executor.ts
-index ac73f6d..6fad4ec 100644
+index a99481f..03da4d9 100644
 --- a/packages/sdk/src/contracts/executor.ts
 +++ b/packages/sdk/src/contracts/executor.ts
 @@ -165,6 +165,13 @@ export interface ResourceLifecycle {
@@ -1097,7 +1097,7 @@ index ac73f6d..6fad4ec 100644
    readonly connectionIdentityPlacement?: (connection: {
      readonly id: AccountConnectionId;
 diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
-index d377672..9a92b5c 100644
+index 2dc9b46..aa5dc00 100644
 --- a/packages/sdk/src/implementation/create.ts
 +++ b/packages/sdk/src/implementation/create.ts
 @@ -20,8 +20,8 @@ import { prepareInteractiveCleanup } from "./interactive-cleanup.ts";
@@ -1111,7 +1111,7 @@ index d377672..9a92b5c 100644
  
  import { WebhookSourceHost } from "../contracts/webhooks.ts";
  import { makeWebhookSources } from "./webhook-sources.ts";
-@@ -702,6 +702,11 @@ export const createExecutor = (
+@@ -720,6 +720,11 @@ export const createExecutor = (
              Effect.map(({ plan }) => plan),
              Effect.provideService(AccountAcquisitionConfiguration, acquisition),
            ),
@@ -1379,13 +1379,13 @@ index 15a0957..069b63c 100644
 +    return yield* evaluatePlan(db, credentials, options, lifecycle, entries, input.sourceAccount);
 +  }).pipe(Effect.withSpan("sdk.connections.planTargetOAuth"));
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index 5e0bf00..b3de52c 100644
+index 51dbd74..663ab13 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
-@@ -769,7 +769,12 @@ export const makeOAuth = (
+@@ -861,7 +861,12 @@ export const makeOAuth = (
          : undefined;
        if (declared === undefined || declared.type !== "oauth2")
-         return yield* new AuthMethodInvalid({ provider: input.provider, method: input.method });
+         return yield* new AuthMethodInvalid({ provider: provider.id, method: input.method });
 -      const method = oauthMethodAtSite(declared, definition.site, input.site);
 +      // A provider whose site starts at its default origin reads that site's setup before any
 +      // connection names it, so a new account's form needs no connection to show it.
@@ -1396,7 +1396,7 @@ index 5e0bf00..b3de52c 100644
        const callback =
          method.grant === "client_credentials"
            ? undefined
-@@ -825,7 +830,7 @@ export const makeOAuth = (
+@@ -917,7 +922,7 @@ export const makeOAuth = (
              });
        // Stored clients belong to the server the sign-in discovered, not to the provider.
        const issuer = oauthClientIssuer(discovered.server);

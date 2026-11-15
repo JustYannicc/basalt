@@ -159,4 +159,4 @@ diff --git a/e2e/tests/dashboard-read-batches.spec.ts b/e2e/tests/dashboard-read
 +            .pipe(Effect.orDie),
          );
          yield* browser.use("Open a page that does not read the app", (page) =>
-           page.goto(`/org/${actors.organization.slug}/connect`),
+           page.goto(`/org/${actors.organization.slug}/organization`),

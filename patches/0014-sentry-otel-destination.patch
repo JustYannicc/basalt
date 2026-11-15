@@ -1,4 +1,5 @@
 diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/hosted/cloud/src/implementation/error-reporting.ts
+index 4f5e3f3..12aa378 100644
 --- a/apps/hosted/cloud/src/implementation/error-reporting.ts
 +++ b/apps/hosted/cloud/src/implementation/error-reporting.ts
 @@ -1,6 +1,6 @@
@@ -9,7 +10,7 @@ diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/host
  import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
  import { Cause, Context, Effect, ErrorReporter, Option, Schema, SchemaAST, Tracer } from "effect";
  import { CurrentUserId, CurrentOrganization } from "@executor-js/hosted-server";
-@@ -41,7 +41,52 @@
+@@ -41,7 +41,52 @@ const Settings = Schema.Struct({
    dsn: Schema.String,
    environment: Schema.String,
    release: Schema.String,
@@ -62,7 +63,7 @@ diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/host
  /** The reporting boundary never replaces the failure of a product operation. */
  export class SentryTransportFailed extends Schema.TaggedError<SentryTransportFailed>()(
    "SentryTransportFailed",
-@@ -69,12 +114,14 @@
+@@ -69,12 +114,14 @@ export const withCloudSentry = <A, E, R>(
      const config = yield* Schema.decodeUnknownEffect(Settings)(value).pipe(Effect.orDie);
      const client = yield* Effect.acquireRelease(
        Effect.sync(() => {
@@ -78,10 +79,10 @@ diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/host
              createTransport(options, async (request) => {
                const response = await fetch(options.url, {
 diff --git a/apps/hosted/cloud/src/infrastructure/sentry.ts b/apps/hosted/cloud/src/infrastructure/sentry.ts
-index ee5a60c..c6b141b 100644
+index ee5a60c..f6db430 100644
 --- a/apps/hosted/cloud/src/infrastructure/sentry.ts
 +++ b/apps/hosted/cloud/src/infrastructure/sentry.ts
-@@ -3,11 +3,73 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
+@@ -3,11 +3,88 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
  import * as Output from "alchemy/Output";
  import * as Command from "alchemy/Command";
  import { Stage } from "alchemy/Stage";
@@ -108,16 +109,25 @@ index ee5a60c..c6b141b 100644
 +/** The operator DSN must be HTTPS on one Sentry EU ingest host and one numeric project. */
 +export function parseDirectSentryDsn(value: unknown): DirectSentryDsn | undefined {
 +  if (typeof value !== "string" || value === "" || value.trim() === "") return undefined;
-+  const match = /^https:\/\/([A-Za-z0-9_-]+)@([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.ingest\.de\.sentry\.io)\/(\d+)$/i.exec(value);
++  const match =
++    /^https:\/\/([A-Za-z0-9_-]+)@([A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.ingest\.de\.sentry\.io)\/(\d+)$/i.exec(
++      value,
++    );
 +  if (!match) return undefined;
 +  try {
 +    const url = new URL(value);
 +    const [, publicKey, host, projectId] = match;
 +    if (
-+      url.protocol !== "https:" || url.username !== publicKey || url.password !== "" ||
-+      url.port !== "" || url.search !== "" || url.hash !== "" ||
-+      url.hostname.toLowerCase() !== host!.toLowerCase() || url.pathname !== `/${projectId}`
-+    ) return undefined;
++      url.protocol !== "https:" ||
++      url.username !== publicKey ||
++      url.password !== "" ||
++      url.port !== "" ||
++      url.search !== "" ||
++      url.hash !== "" ||
++      url.hostname.toLowerCase() !== host!.toLowerCase() ||
++      url.pathname !== `/${projectId}`
++    )
++      return undefined;
 +    return { dsn: value, publicKey: publicKey!, host: host!.toLowerCase(), projectId: projectId! };
 +  } catch {
 +    return undefined;
@@ -138,9 +148,15 @@ index ee5a60c..c6b141b 100644
 +  try {
 +    const url = new URL(value);
 +    if (
-+      url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.port !== "" ||
-+      url.search !== "" || url.hash !== "" || url.hostname.toLowerCase() !== dsn.host
-+    ) return undefined;
++      url.protocol !== "https:" ||
++      url.username !== "" ||
++      url.password !== "" ||
++      url.port !== "" ||
++      url.search !== "" ||
++      url.hash !== "" ||
++      url.hostname.toLowerCase() !== dsn.host
++    )
++      return undefined;
 +    return { url: url.href, authHeader: `sentry sentry_key=${dsn.publicKey}` };
 +  } catch {
 +    return undefined;
@@ -156,7 +172,7 @@ index ee5a60c..c6b141b 100644
  /** Disabled stages do not read Sentry state or require management credentials. */
  export const sentryBindings = Effect.gen(function* () {
    const dev = (yield* AlchemyContext).dev;
-@@ -38,13 +100,23 @@ export const sentryBindings = Effect.gen(function* () {
+@@ -38,13 +115,28 @@ export const sentryBindings = Effect.gen(function* () {
        errorTunnel: Output.asOutput<string | null>("/api/fedcba9876543210/submit"),
      };
    }
@@ -171,7 +187,12 @@ index ee5a60c..c6b141b 100644
      return {
 -      env: { EXECUTOR_SENTRY: Output.asOutput(null) },
 +      env: {
-+        EXECUTOR_SENTRY: Output.asOutput({ dsn: parsed.dsn, environment, release, strictPrivacy: true }),
++        EXECUTOR_SENTRY: Output.asOutput({
++          dsn: parsed.dsn,
++          environment,
++          release,
++          strictPrivacy: true,
++        }),
 +      },
 +      // The direct public key is server-only here. Browser reporting requires the managed tunnel.
        build: {},
@@ -183,7 +204,7 @@ index ee5a60c..c6b141b 100644
    const environment = yield* Stage;
    const release = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
    const output = yield* Output.stackRef<SentryOutput>("executor-next-sentry");
-@@ -102,11 +174,10 @@ export const uploadCloudSourceMaps = (
+@@ -102,11 +194,10 @@ export const uploadCloudSourceMaps = (
    bundle: Output.Output<unknown>,
  ) =>
    Effect.gen(function* () {
@@ -200,7 +221,7 @@ index ee5a60c..c6b141b 100644
      yield* Config.Redacted("SENTRY_AUTH_TOKEN");
      yield* Command.Exec(sourceMapUploads[worker], {
 diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/cloud/src/infrastructure/telemetry.ts
-index 13f6224..eedea4a 100644
+index 06b9253..d7f4b07 100644
 --- a/apps/hosted/cloud/src/infrastructure/telemetry.ts
 +++ b/apps/hosted/cloud/src/infrastructure/telemetry.ts
 @@ -15,9 +15,23 @@ import { testStage } from "./stage.ts";
@@ -227,9 +248,9 @@ index 13f6224..eedea4a 100644
  /**
   * Configured stages own their datasets and never adopt the original Executor's telemetry.
   * Test stages share one retained set and are told apart by the environment field, so a
-@@ -120,6 +134,12 @@ export const telemetryResources = Effect.gen(function* () {
- export const cloudObservability = Effect.gen(function* () {
-   if ((yield* AlchemyContext).dev) return {};
+@@ -155,6 +169,12 @@ export const cloudObservability = Effect.gen(function* () {
+   };
+   if (!(yield* telemetryExport)) return { observability: native };
    const stage = yield* Stage;
 +  const direct = yield* directSentryOtlp;
 +  if (direct.configured) {
@@ -240,15 +261,13 @@ index 13f6224..eedea4a 100644
    const resources = yield* telemetryResources;
    if (Option.isNone(resources)) return {};
    const { names, traces, ingest } = resources.value;
-@@ -155,6 +175,25 @@ export const telemetryBindings = Effect.gen(function* () {
+@@ -196,6 +216,23 @@ export const telemetryBindings = Effect.gen(function* () {
      const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(TelemetryConfig))(config);
      return { [binding]: Output.asOutput(Redacted.make(encoded)) };
    }
 +  const direct = yield* directSentryOtlp;
 +  if (direct.configured) {
 +    if (!direct.target) return { [binding]: Output.asOutput(Redacted.make("null")) };
-+    const version = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
-+    const environment = yield* Stage;
 +    return {
 +      [binding]: Output.asOutput(Redacted.make(JSON.stringify({
 +        service: "executor-cloud",

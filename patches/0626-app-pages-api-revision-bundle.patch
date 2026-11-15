@@ -1,0 +1,207 @@
+diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
+--- a/apps/hosted/cloud/src/app-ui.ts
++++ b/apps/hosted/cloud/src/app-ui.ts
+@@ -47,7 +47,7 @@
+ import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
+ import { cloudServingProduct } from "./infrastructure/serving-product.ts";
+ import { sentryBindings } from "./infrastructure/sentry.ts";
+-import { cloudHosts } from "./infrastructure/stage.ts";
++import { cloudHosts, cloudResourceOrigins } from "./infrastructure/stage.ts";
+ import { appDataSupervisors } from "./infrastructure/app-data.ts";
+ import { cloudChangeRevisions } from "./infrastructure/change-revisions.ts";
+ import { ScopedChanges } from "@executor-js/hosted-server";
+@@ -128,7 +128,9 @@
+       return yield* Effect.die(new Error("App UI requires EXECUTOR_APP_UI_BASE_URL"));
+     return {
+       main: import.meta.url,
+-      build: workerBuild("app-pages"),
++      build: workerBuild("app-pages", {
++        apiRevisionOrigin: (yield* cloudResourceOrigins.pipe(Effect.orDie)).api[0],
++      }),
+       assets: {
+         directory: site.outdir,
+         hash: site.hash.output,
+diff --git a/apps/hosted/cloud/src/infrastructure/api-revision-built.ts b/apps/hosted/cloud/src/infrastructure/api-revision-built.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/api-revision-built.ts
+@@ -0,0 +1,5 @@
++import { Effect } from "effect";
++import api from "../../.generated/executor-api-revision.json" with { type: "json" };
++
++/** The bundler selects this only after the configured origin matches the built document. */
++export const cloudApiRevision = (_origin: string | undefined) => Effect.succeed(api.revision);
+diff --git a/apps/hosted/cloud/src/infrastructure/api-revision.ts b/apps/hosted/cloud/src/infrastructure/api-revision.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/api-revision.ts
+@@ -0,0 +1,16 @@
++import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
++import { hostedApiRevision } from "@executor-js/hosted-server";
++import { Effect } from "effect";
++import { servesBuiltApiDocument } from "../contracts/browser.ts";
++import api from "../../.generated/executor-api-revision.json" with { type: "json" };
++
++/** Origins with different session cookies retain their exact served document's hash. */
++export const cloudApiRevision = (origin: string | undefined) =>
++  origin === undefined || servesBuiltApiDocument(origin)
++    ? Effect.succeed(api.revision)
++    : Effect.promise(() => import("../contracts/api.ts")).pipe(
++        Effect.flatMap(({ executorCloudApiDocument }) =>
++          hostedApiRevision(JSON.stringify(executorCloudApiDocument(origin))),
++        ),
++        Effect.provide(BrowserCrypto.layer),
++      );
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -5,9 +5,8 @@
+ /** Cloud composition: Postgres is authoritative; no organization data is stored in a DO. */
+ import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+ import { makeRegistryRuntimeStorage } from "@executor-js/app-registry";
+-import { firstPartyOAuthClients, hostedApi, hostedApiRevision } from "@executor-js/hosted-server";
+-import { servesBuiltApiDocument } from "../contracts/browser.ts";
+-import api from "../../.generated/executor-api-revision.json" with { type: "json" };
++import { firstPartyOAuthClients, hostedApi } from "@executor-js/hosted-server";
++import { cloudApiRevision } from "./api-revision.ts";
+ import { AccessLifecycle } from "@executor-js/hosted-server/access-lifecycle";
+ import { poolAccessLifecycle } from "@executor-js/hosted-server/pool-access-hook";
+ import { poolAccountRegistry } from "@executor-js/hosted-server/pool-account-registry";
+@@ -99,18 +98,7 @@
+   // origin keeps delivering, so existing subscriptions keep the URL they stored.
+   const resourceOrigins = yield* cloudResourceOrigins.pipe(Effect.orDie);
+   const webhookOrigin = resourceOrigins.api[0];
+-  // Deployed stages serve the document the build hashed. A development or loopback origin names
+-  // its own session cookie in the document, so that document is generated and hashed here.
+-  const apiOrigin = resourceOrigins.api[0];
+-  const apiRevision =
+-    apiOrigin === undefined || servesBuiltApiDocument(apiOrigin)
+-      ? api.revision
+-      : yield* Effect.promise(() => import("../contracts/api.ts")).pipe(
+-          Effect.flatMap(({ executorCloudApiDocument }) =>
+-            hostedApiRevision(JSON.stringify(executorCloudApiDocument(apiOrigin))),
+-          ),
+-          Effect.provide(BrowserCrypto.layer),
+-        );
++  const apiRevision = yield* cloudApiRevision(resourceOrigins.api[0]);
+   const accountSignIns = yield* cloudAccountSignIns.pipe(Effect.orDie);
+   const egress = yield* cloudEgress;
+   // Deployed stages bind this to their own document; see `clientMetadataBinding`.
+diff --git a/apps/hosted/cloud/src/infrastructure/worker-build.ts b/apps/hosted/cloud/src/infrastructure/worker-build.ts
+--- a/apps/hosted/cloud/src/infrastructure/worker-build.ts
++++ b/apps/hosted/cloud/src/infrastructure/worker-build.ts
+@@ -4,6 +4,7 @@
+ import type { WorkerProps } from "alchemy/Cloudflare";
+ import { Effect, FileSystem, Path } from "effect";
+ import { fileURLToPath } from "node:url";
++import { servesBuiltApiDocument } from "../contracts/browser.ts";
+ import {
+   attributeChunk,
+   packageBytes,
+@@ -189,7 +190,7 @@
+  */
+ export const workerBuild = (
+   worker: WorkerName,
+-  options: { readonly localTestHooks?: boolean } = {},
++  options: { readonly localTestHooks?: boolean; readonly apiRevisionOrigin?: string } = {},
+ ): NonNullable<WorkerProps["build"]> =>
+   worker === "compiler"
+     ? { output: { plugins: [uploadedModules(worker)] } }
+@@ -198,6 +199,15 @@
+           resolve: {
+             alias: {
+               ...(options.localTestHooks === true ? localTestHooks() : {}),
++              ...(options.apiRevisionOrigin !== undefined &&
++              servesBuiltApiDocument(options.apiRevisionOrigin)
++                ? {
++                    [new URL("./api-revision.ts", import.meta.url).pathname]: new URL(
++                      "./api-revision-built.ts",
++                      import.meta.url,
++                    ).pathname,
++                  }
++                : {}),
+               // App pages use workerd's parser and only the platform services they consume.
+               ...(worker === "app-pages"
+                 ? {
+diff --git a/apps/hosted/server/src/implementation/model-bindings.ts b/apps/hosted/server/src/implementation/model-bindings.ts
+--- a/apps/hosted/server/src/implementation/model-bindings.ts
++++ b/apps/hosted/server/src/implementation/model-bindings.ts
+@@ -182,11 +182,14 @@
+       }),
+     );
+   }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
+-export const hostedModelHandlers = HttpApiBuilder.group(HostedApi, "models", (handlers) =>
+-  handlers
+-    .handle("list", ({ params }) => listModelBindings(params.app))
+-    .handle("bind", ({ params, payload }) => bindModel(params.app, params.requirement, payload))
+-    .handle("unbind", ({ params, query }) =>
+-      unbindModel(params.app, params.requirement, query.scope),
+-    ),
++export const hostedModelHandlers = /* @__PURE__ */ HttpApiBuilder.group(
++  HostedApi,
++  "models",
++  (handlers) =>
++    handlers
++      .handle("list", ({ params }) => listModelBindings(params.app))
++      .handle("bind", ({ params, payload }) => bindModel(params.app, params.requirement, payload))
++      .handle("unbind", ({ params, query }) =>
++        unbindModel(params.app, params.requirement, query.scope),
++      ),
+ );
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -271,26 +271,31 @@
+     }),
+   );
+ 
+-export const hostedPoolUsageHandlers = HttpApiBuilder.group(HostedApi, "poolUsage", (handlers) =>
+-  handlers
+-    .handle("importBulk", ({ params, payload }) => importPoolUsageBulk(params.app, payload))
+-    .handle("importMapped", ({ params, payload }) => importPoolUsage(params.app, payload))
+-    .handle("accountRouting", ({ params }) => poolAccountRouting(params.app))
+-    .handle("routingDecisions", ({ params }) => poolRoutingDecisions(params.app))
+-    .handle("setCreditPolicy", ({ params, payload }) =>
+-      setPoolCreditPolicy(params.app, payload.usageCreditPolicy),
+-    )
+-    .handle("setSelectionPolicy", ({ params, payload }) =>
+-      setPoolSelectionPolicy(params.app, payload.accountSelectionPolicy),
+-    )
+-    .handle("poolUsageSummary", ({ params, payload }) => poolUsageOverviewRead(params.app, payload))
+-    .handle("poolUsageSeries", ({ params, payload }) => poolUsageSeries(params.app, payload))
+-    .handle("setUsageAccountLabel", ({ params, payload }) =>
+-      setUsageAccountLabel(params.app, payload),
+-    )
+-    .handle("lastSuccessAt", ({ params, payload }) => lastSuccessAt(params.app, payload))
+-    .handle("get", ({ params, query }) => poolUsage(params.app, query.after))
+-    .handle("setCap", ({ params, payload }) =>
+-      setPoolCap(params.app, params.member, payload.weekly),
+-    ),
++export const hostedPoolUsageHandlers = /* @__PURE__ */ HttpApiBuilder.group(
++  HostedApi,
++  "poolUsage",
++  (handlers) =>
++    handlers
++      .handle("importBulk", ({ params, payload }) => importPoolUsageBulk(params.app, payload))
++      .handle("importMapped", ({ params, payload }) => importPoolUsage(params.app, payload))
++      .handle("accountRouting", ({ params }) => poolAccountRouting(params.app))
++      .handle("routingDecisions", ({ params }) => poolRoutingDecisions(params.app))
++      .handle("setCreditPolicy", ({ params, payload }) =>
++        setPoolCreditPolicy(params.app, payload.usageCreditPolicy),
++      )
++      .handle("setSelectionPolicy", ({ params, payload }) =>
++        setPoolSelectionPolicy(params.app, payload.accountSelectionPolicy),
++      )
++      .handle("poolUsageSummary", ({ params, payload }) =>
++        poolUsageOverviewRead(params.app, payload),
++      )
++      .handle("poolUsageSeries", ({ params, payload }) => poolUsageSeries(params.app, payload))
++      .handle("setUsageAccountLabel", ({ params, payload }) =>
++        setUsageAccountLabel(params.app, payload),
++      )
++      .handle("lastSuccessAt", ({ params, payload }) => lastSuccessAt(params.app, payload))
++      .handle("get", ({ params, query }) => poolUsage(params.app, query.after))
++      .handle("setCap", ({ params, payload }) =>
++        setPoolCap(params.app, params.member, payload.weekly),
++      ),
+ );

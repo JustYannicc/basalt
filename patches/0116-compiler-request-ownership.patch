@@ -1,4 +1,5 @@
 diff --git a/apps/hosted/cloud/src/implementation/build-admission.ts b/apps/hosted/cloud/src/implementation/build-admission.ts
+index 57265da..7f23be2 100644
 --- a/apps/hosted/cloud/src/implementation/build-admission.ts
 +++ b/apps/hosted/cloud/src/implementation/build-admission.ts
 @@ -1,65 +1,67 @@
@@ -20,15 +21,13 @@ diff --git a/apps/hosted/cloud/src/implementation/build-admission.ts b/apps/host
   */
 +import { RuntimeBuildFailed } from "@executor-js/sdk/core";
  import { Duration, Effect } from "effect";
--
-+
+ 
  interface Slot {
 -  readonly released: Promise<void>;
    readonly expires: number;
  }
-+
+ 
 +const check = { min: 10, max: 200 };
--
 +
  export const makeBuildAdmission = (slots: number, lease: Duration.Input) => {
    const leaseMillis = Duration.toMillis(lease);
@@ -119,31 +118,31 @@ diff --git a/apps/hosted/cloud/src/implementation/build-admission.ts b/apps/host
      );
  };
 diff --git a/bun.lock b/bun.lock
-index dfe9d5ef..4529c1e5 100644
+index 6ae8407..34f47ae 100644
 --- a/bun.lock
 +++ b/bun.lock
-@@ -863,6 +863,7 @@
+@@ -864,6 +864,7 @@
      "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
      "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
      "@effect/sql-pg@4.0.1": "patches/@effect%2Fsql-pg@4.0.1.patch",
 +    "esbuild-wasm@0.28.1": "patches/esbuild-wasm@0.28.1.patch",
-     "@better-auth/oauth-provider@1.7.5": "patches/@better-auth%2Foauth-provider@1.7.5.patch",
      "@effect/platform-node-shared@4.0.1": "patches/@effect%2Fplatform-node-shared@4.0.1.patch",
      "effect@4.0.1": "patches/effect@4.0.1.patch",
+     "@better-auth/sso@1.7.16": "patches/@better-auth%2Fsso@1.7.16.patch",
 diff --git a/package.json b/package.json
-index 3fe21ca0..4ea4aa7e 100644
+index c29d280..15306d5 100644
 --- a/package.json
 +++ b/package.json
-@@ -174,6 +174,7 @@
+@@ -177,6 +177,7 @@
      "@cfworker/json-schema@4.1.1": "patches/@cfworker%2Fjson-schema@4.1.1.patch",
-     "@better-auth/oauth-provider@1.7.5": "patches/@better-auth%2Foauth-provider@1.7.5.patch",
+     "@better-auth/oauth-provider@1.7.16": "patches/@better-auth%2Foauth-provider@1.7.16.patch",
      "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
 +    "esbuild-wasm@0.28.1": "patches/esbuild-wasm@0.28.1.patch",
      "miniflare@4.20260730.0": "patches/miniflare@4.20260730.0.patch",
      "tailwindcss-iso@1.0.7": "patches/tailwindcss-iso@1.0.7.patch",
-     "@better-auth/sso@1.7.5": "patches/@better-auth%2Fsso@1.7.5.patch",
+     "@better-auth/sso@1.7.16": "patches/@better-auth%2Fsso@1.7.16.patch",
 diff --git a/packages/sdk/src/implementation/worker-build.ts b/packages/sdk/src/implementation/worker-build.ts
-index a4915b9e..7e798055 100644
+index a4915b9..7e79805 100644
 --- a/packages/sdk/src/implementation/worker-build.ts
 +++ b/packages/sdk/src/implementation/worker-build.ts
 @@ -183,8 +183,9 @@ export const compileWorkerApp = (
@@ -158,7 +157,7 @@ index a4915b9e..7e798055 100644
            installDependencies: false,
            server: entry,
 diff --git a/patches/@cloudflare%2Fworker-bundler@0.2.4.patch b/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
-index e192b4ab..0cc983db 100644
+index e192b4a..0cc983d 100644
 --- a/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
 +++ b/patches/@cloudflare%2Fworker-bundler@0.2.4.patch
 @@ -21,19 +21,30 @@ index fa559109c179700e47dd94029abea7d76a00fb50..aa562a81a15e168b321e063ce668d85f
@@ -467,7 +466,7 @@ index e192b4ab..0cc983db 100644
 ++}
 diff --git a/patches/esbuild-wasm@0.28.1.patch b/patches/esbuild-wasm@0.28.1.patch
 new file mode 100644
-index 00000000..48e73fbc
+index 0000000..48e73fb
 --- /dev/null
 +++ b/patches/esbuild-wasm@0.28.1.patch
 @@ -0,0 +1,43 @@
@@ -515,7 +514,7 @@ index 00000000..48e73fbc
 ++  stop: typeof stop;
 ++};
 diff --git a/patches/worker-bundler-imports.md b/patches/worker-bundler-imports.md
-index a277ecf5..404a8688 100644
+index a277ecf..404a868 100644
 --- a/patches/worker-bundler-imports.md
 +++ b/patches/worker-bundler-imports.md
 @@ -40,8 +40,11 @@ admitted builds. The patch reduces what a build holds:
@@ -529,6 +528,6 @@ index a277ecf5..404a8688 100644
 +  runs at a time while two admitted builds can prepare dependencies. Waiters
 +  use their own timers, and an expired lease stops only its owning service.
 +  Cancellation releases the caller's session without touching its successor.
-
+ 
  Outside the patch, UI chunks built only from installed packages ship without
  source maps (`worker-browser-build.ts`), and the API retries a compile once after
