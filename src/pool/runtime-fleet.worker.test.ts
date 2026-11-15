@@ -99,9 +99,13 @@ test(
       requests.set(id, f.model(new Request(`https://pool.invalid/v1/models?id=${id}`)));
     for (let index = 0; index < 4; index++) dispatch(`old-${index}`);
     await waitFor(4);
+    const firstReady = f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
     const ready = f.resourcesWhen(
       (rows) => rows.length === 2 && rows.every((row) => row.phase === "ready"),
     );
+    now += 101;
+    await f.upkeep();
+    await firstReady;
     now += 101;
     await f.upkeep();
     const blue = await ready;

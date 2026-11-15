@@ -58,9 +58,13 @@ test(
       responses.push(
         await f.model(new Request(`https://pool.invalid/v1/models?id=legacy-${index}`)),
       );
+    const firstReady = f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
     const ready = f.resourcesWhen(
       (rows) => rows.length === 2 && rows.every((row) => row.phase === "ready"),
     );
+    now += 101;
+    await f.upkeep();
+    await firstReady;
     now += 101;
     await f.upkeep();
     const rows = await ready;
