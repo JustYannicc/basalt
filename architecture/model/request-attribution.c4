@@ -1,0 +1,12 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Pre-dispatch refusals retain a requested model from bounded JSON or the model route without retaining request content or inventing consumed tokens or charges. The request branch is discarded before dispatch. Only an unambiguous model in the shipped vendor catalog supplies its lab; unknown aliases remain unknown. Historical null identities are never backfilled by inference."
+    }
+  }
+  extend basalt.pool {
+    metadata {
+      constraint "Unknown-lab usage distinguishes recorded gateway refusals from missing lab metadata and details withheld by account inspection policy. Failure explanations use the existing signed aggregate snapshot and require no additional usage read."
+    }
+  }
+}
