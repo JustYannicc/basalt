@@ -3,7 +3,7 @@ import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/imple
 import { DurableObject } from "cloudflare:workers";
 import { RuntimeEndpoint, type EndpointEnvironment } from "./runtime-slots/endpoint.ts";
 import { runtimeRequest } from "./runtime-slots/transport.ts";
-import { nativeResponse } from "./native-response.worker.ts";
+import { nativeResponse, nativeControlPair } from "./native-response.worker.ts";
 import { RuntimeHomePeerTransport } from "./home-peer.worker.ts";
 import type { HomePeerSource } from "./runtime-slots/peer-access.ts";
 import type { SlotTarget } from "./runtime-slots/contract.ts";
@@ -27,7 +27,10 @@ export class PoolRuntime extends DurableObject<EndpointEnvironment> {
         workerInput: poolWorkerRevision,
       },
       nativeResponse,
-      { beforeStart: (witness) => this.peers.configure({ kind: "runtime", witness }) },
+      {
+        controlPair: nativeControlPair,
+        beforeStart: (witness) => this.peers.configure({ kind: "runtime", witness }),
+      },
     );
     ctx.waitUntil(this.peers.restore().catch(() => {}));
   }

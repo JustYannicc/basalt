@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The unpublished carry remains an overlay requiring manual retirement until a complete upstream pull request is recorded. Searches without matching target labels select own-word candidates through the stored GIN expression before materialization. Label matches retain full-corpus ranking. Every candidate intersects the complete permitted corpus; BM25 statistics and alternative-target merging retain nonmatching permitted rows. Ranking and hydration remain one statement with fresh listing, account-target, scope and tool filters."
+    }
+  }
+}

@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { MiniflareCoreError } from "../startup-profiler/node_modules/miniflare/dist/src/index.js";
 import { Cause, Effect, Exit } from "effect";
 import { BarrierRefusal } from "./manifest.ts";
-import { operationFailure, safeProviderFailure, withOperation } from "./operation-failure.ts";
+import {
+  operationFailure,
+  safeProviderFailure,
+  safeProviderFailureChain,
+  withOperation,
+} from "./operation-failure.ts";
 
 for (const error of [
   { _tag: "private-token", status: "503", code: "credential", message: "secret" },
@@ -53,4 +59,81 @@ test("pure interruption remains interruption", async () => {
   );
   assert.ok(Exit.isFailure(exit));
   assert.ok(Cause.hasInterruptsOnly(exit.cause));
+});
+
+test("Wrangler subclasses with inherited Error.name retain only closed types and codes", () => {
+  class UserError extends Error {}
+  class RemoteSessionAuthenticationError extends Error {}
+  for (const Failure of [UserError, RemoteSessionAuthenticationError]) {
+    const error = new Failure("private-message");
+    assert.equal(error.name, "Error");
+    assert.deepEqual(safeProviderFailure(error), { type: Failure.name });
+  }
+  assert.deepEqual(
+    safeProviderFailure(
+      Object.assign(new Error("private"), { name: "APIError", status: 403, code: 10000 }),
+    ),
+    { type: "APIError", status: 403, codes: [10000] },
+  );
+});
+
+test("Node codes and nested causes are allowlisted, depth bounded, cycle safe and message free", () => {
+  const sentinel = "private-sentinel@fixture.invalid";
+  const root = Object.assign(new Error(sentinel), { code: "MODULE_NOT_FOUND" });
+  const nested = Object.assign(new Error(sentinel), {
+    code: "ECONNRESET",
+    url: sentinel,
+    stack: sentinel,
+    body: sentinel,
+  });
+  root.cause = nested;
+  nested.cause = root;
+  assert.deepEqual(safeProviderFailureChain(root), [
+    { type: "Error", code: "MODULE_NOT_FOUND" },
+    { type: "Error", code: "ECONNRESET" },
+  ]);
+  const unknown = {
+    name: sentinel,
+    _tag: sentinel,
+    code: sentinel,
+    status: 503,
+    message: sentinel,
+    cause: { name: "Error", code: sentinel },
+  };
+  assert.deepEqual(safeProviderFailureChain(unknown), [
+    { type: "unknown", status: 503 },
+    { type: "Error" },
+  ]);
+  assert.ok(!JSON.stringify(safeProviderFailureChain(unknown)).includes(sentinel));
+  let deep: Error = new Error(sentinel);
+  for (let index = 0; index < 20; index++) deep = new Error(sentinel, { cause: deep });
+  assert.equal(safeProviderFailureChain(deep).length, 4);
+  const hostile = Object.defineProperty({}, "_tag", {
+    get() {
+      throw new Error(sentinel);
+    },
+  });
+  assert.deepEqual(safeProviderFailureChain(hostile), [{ type: "unknown" }]);
+});
+
+test("real Miniflare decorated names retain a closed class and runtime code", () => {
+  const error = new MiniflareCoreError("ERR_RUNTIME_FAILURE", "private-miniflare-message");
+  assert.equal(error.name, "MiniflareCoreError [ERR_RUNTIME_FAILURE]");
+  assert.deepEqual(safeProviderFailure(error), {
+    type: "MiniflareCoreError",
+    code: "ERR_RUNTIME_FAILURE",
+  });
+});
+
+test("hostile provider error arrays cannot discard the original operator diagnostic", () => {
+  const { proxy, revoke } = Proxy.revocable([], {});
+  revoke();
+  const error = Object.assign(new Error("private-provider-message"), {
+    errors: proxy,
+    status: 403,
+    code: 10000,
+  });
+  assert.deepEqual(safeProviderFailureChain(error), [
+    { type: "Error", status: 403, codes: [10000] },
+  ]);
 });

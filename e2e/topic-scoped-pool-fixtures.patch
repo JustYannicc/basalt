@@ -1,0 +1,146 @@
+--- a/e2e/support/pool-usage-ui-fixture.ts
++++ b/e2e/support/pool-usage-ui-fixture.ts
+@@ -59,6 +59,11 @@
+         from generate_series(1, 101) n`,
+       params: [seedPrefix, actors.organization.id],
+     },
++    {
++      // Pagination-only historical members must not start unrelated account provisioning.
++      sql: "update hosted_provisioning set status = 'succeeded' where organization_id = $1 and status = 'queued' and kind in ('member', 'billing')",
++      params: [actors.organization.id],
++    },
+   ];
+   return { api, actors, backend, prefix, read, deploy, owner, admin, person, retained, paging };
+ });
+--- a/e2e/tests/account-traffic.spec.ts
++++ b/e2e/tests/account-traffic.spec.ts
+@@ -15,6 +15,7 @@
+ import { poolUsageSeriesBackend } from "../support/pool-usage-series-backend.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { scenarios } from "../test-plan.ts";
++import { publishUsageChange } from "../support/pool-usage-change.ts";
+ 
+ const cells = (page: Page, label: string) => {
+   const row = accountRow(page, label);
+@@ -343,8 +344,9 @@
+         expect(phone[2], "the count reads 41 req on a phone").toBe(true);
+ 
+         // Once the pool can't map any request, no row has numbers: the column and the ticks go,
+-        // rather than leaving a column of blank cells. The next 30-second poll reads it.
++        // rather than leaving a column of blank cells. Its committed revision refreshes the view.
+         yield* pool.respond(answer(ids, false, anchor));
++        yield* publishUsageChange(app);
+         const hidden = yield* browser.use("Wait for the Requests column to go", (page) =>
+           page
+             .setViewportSize({ width: 1280, height: 900 })
+--- a/e2e/tests/app-account-traffic.spec.ts
++++ b/e2e/tests/app-account-traffic.spec.ts
+@@ -13,6 +13,7 @@
+ import { poolUsageSeriesBackend } from "../support/pool-usage-series-backend.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { scenarios } from "../test-plan.ts";
++import { publishUsageChange } from "../support/pool-usage-change.ts";
+ import { type AccountsTabSection, rowMenuName } from "../support/account-choices.ts";
+ 
+ /** The tab's row for the account saved as `label`, found by its ⋯ menu, in one section. */
+@@ -279,11 +280,12 @@
+         expect(connectorCells).toEqual([0, 0, 0]);
+ 
+         // Once the pool can't map any request, the open tab drops the Requests cells and the
+-        // ticks, and Health is the app's check again. The next 30-second poll reads it.
++        // ticks, and Health is the app's check again. Its committed revision refreshes the view.
+         yield* browser.use("Open the pool's tab again", (page) =>
+           page.goto(poolTab).then(() => ready(page)),
+         );
+         yield* pool.respond(answer(ids, false, anchor));
++        yield* publishUsageChange(app);
+         const hidden = yield* browser.use("Wait for the tab's Requests cells to go", (page) =>
+           page
+             .locator("[data-account-requests-cell]")
+--- a/e2e/tests/pool-account-selection.spec.ts
++++ b/e2e/tests/pool-account-selection.spec.ts
+@@ -11,6 +11,7 @@
+ import { serverControl } from "../support/server-control.ts";
+ import { providerImportJourney } from "../support/provider-import-journey.ts";
+ import { scenarios } from "../test-plan.ts";
++import { publishReadingChange } from "../support/pool-usage-change.ts";
+ import type { Page, Route } from "playwright";
+ import { Browser } from "../support/browser.ts";
+ import { Evidence } from "../support/evidence.ts";
+@@ -424,6 +425,7 @@
+           );
+         const resetShown = [["true", "false", resetNote, "true"], false, false, "false"];
+         expect(yield* elsewhere("reset_aware")).toBe(200);
++        yield* publishReadingChange(app);
+         yield* capture("account-selection-before-external-read");
+         expect(
+           yield* returnTo("Return to the tab after another device chose reset", resetNote),
+--- a/e2e/tests/pool-usage-navigation.spec.ts
++++ b/e2e/tests/pool-usage-navigation.spec.ts
+@@ -14,6 +14,7 @@
+ } from "../support/query-transition.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { scenarios } from "../test-plan.ts";
++import { publishUsageChange } from "../support/pool-usage-change.ts";
+ 
+ const Resource = Schema.Struct({ id: Schema.String });
+ const Access = Schema.Struct({
+@@ -397,7 +398,7 @@
+           Effect.gen(function* () {
+             const held = yield* holdQuery(paths(first.id), "continue");
+             const before = yield* usageCalls();
+-            yield* advanceToReconciliation;
++            yield* publishUsageChange(first.id);
+             yield* held.requested;
+             yield* browser.use("Visible polling keeps usage on screen while updating", (page) =>
+               section(page).getByRole("status").filter({ hasText: "updating" }).waitFor(),
+@@ -450,6 +451,7 @@
+                   .pipe(Effect.orDie),
+             );
+             const before = yield* usageCalls();
++            yield* publishUsageChange(first.id, "2");
+             yield* advanceToReconciliation;
+             yield* advanceToReconciliation;
+             expect(hiddenReads).toBe(0);
+--- /dev/null
++++ b/e2e/support/pool-usage-change.ts
+@@ -0,0 +1,39 @@
++/** Deliver the loopback pool's committed usage change through the real signed host ingress. */
++import { Effect } from "effect";
++import { createHmac } from "node:crypto";
++import { Api } from "./api.ts";
++import { Actors } from "./actors.ts";
++
++const publishChange = (app: string, topic: "pool-usage" | "pool-readings", revision: string) =>
++  Effect.gen(function* () {
++    const api = yield* Api;
++    const actors = yield* Actors;
++    const at = Date.now();
++    const payload = Buffer.from(
++      JSON.stringify({
++        action: "publish-changes",
++        at,
++        expiresAt: at + 30_000,
++        changes: [
++          {
++            scope: `pool:${app}`,
++            hint: { topic, resource: app, revision },
++          },
++        ],
++      }),
++    ).toString("base64url");
++    const signature = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++      .update(`sbcr1.${payload}`)
++      .digest("base64url");
++    const response = yield* api.request(actors.owner, "POST", "/api/internal/change-revisions", {
++      envelope: `sbcr1.${payload}.${signature}`,
++    });
++    if (response.status !== 204)
++      return yield* Effect.die(`Pool fixture change returned ${response.status}`);
++  });
++
++export const publishUsageChange = (app: string, revision = "1") =>
++  publishChange(app, "pool-usage", revision);
++
++export const publishReadingChange = (app: string, revision = "1") =>
++  publishChange(app, "pool-readings", revision);

@@ -1,0 +1,46 @@
+{
+  "scenarios": {
+    "appUiKit": {
+      "fixtures": "actors",
+      "appOrigin": true,
+      "title": "an app page renders the dashboard's controls, provider marks and account health from apps/ui with its tokens, keyboard and phone behaviour",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Self-host runs the same workerd compiler and served framework package that Cloud builds app pages with."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted deploys and app authentication; local shares the workerd compiler."
+        }
+      }
+    }
+  },
+  "runs": {
+    "appUiKit": [
+      "declared:self-host"
+    ]
+  },
+  "inputs": [
+    "patches/0585-app-ui-kit.patch",
+    "framework-release.ts",
+    ".upstream/packages/apps/src/ui.tsx",
+    ".upstream/packages/apps/src/ui.css",
+    ".upstream/packages/apps/scripts/build.mjs",
+    ".upstream/packages/sdk/src/implementation/ui-build.ts",
+    ".upstream/packages/sdk/src/implementation/worker-browser-build.ts",
+    ".upstream/packages/ui/src/implementation/styles/app.css",
+    ".upstream/packages/ui/src/implementation/styles/tokens.css",
+    ".upstream/packages/ui/src/implementation/styles/brand.css",
+    ".upstream/packages/ui/src/implementation/components/button.tsx",
+    ".upstream/packages/ui/src/implementation/components/tabs.tsx",
+    ".upstream/packages/ui/src/implementation/components/dialog.tsx",
+    ".upstream/packages/ui/src/implementation/components/badge.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/provider-mark.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-name.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/account-check-state.tsx"
+  ]
+}

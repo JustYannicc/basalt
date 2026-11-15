@@ -2,9 +2,10 @@ import { useState, type ReactNode } from "react";
 import type { PoolCapacityHistory } from "../capacity-contract.ts";
 import type { Account, Provider } from "../contract.ts";
 import type { Result } from "../index.ts";
-import { providerName } from "./accounts.tsx";
+import { capacityWindowOptions } from "./capacity-window-options.ts";
 import { CapacityChart } from "./capacity-chart.tsx";
 import {
+  allowanceRows,
   amount,
   candidateName,
   capacityLabs,
@@ -18,12 +19,14 @@ import {
   pressing,
   verdict,
   whenLabel,
+  type AllowanceRow,
   type CapacityLab,
   type CapacityLine,
   type LineFacts,
 } from "./capacity-model.ts";
 import { Button, Problem, Segmented, StateIcon } from "./controls.tsx";
-import { LabMark, labColor, labProvider } from "./lab.tsx";
+import { LabMark, labColor } from "./lab.tsx";
+import { labIdentity, type LabIdentity } from "./lab-name.ts";
 
 export type Tone = "ok" | "warn" | "bad" | "learn" | "info";
 export const toneText: Record<Tone, string> = {
@@ -135,8 +138,7 @@ export function CapacitySection({
               key={lab.provider}
               lab={lab}
               history={result.value}
-              name={providerName(providers, lab.provider)}
-              provider={labProvider(providers)(lab.provider)}
+              identity={labIdentity(providers, lab.provider)}
               days={days}
               coherent={coherent}
               first={index === 0}
@@ -153,8 +155,7 @@ export function CapacitySection({
 function Panel({
   lab,
   history,
-  name,
-  provider,
+  identity,
   days,
   coherent,
   first,
@@ -163,14 +164,14 @@ function Panel({
 }: {
   lab: CapacityLab;
   history: PoolCapacityHistory;
-  name: string;
-  provider: Provider | undefined;
+  identity: LabIdentity | undefined;
   days: number;
   coherent: boolean;
   first: boolean;
   chosen?: string;
   onChoose: (key: string) => void;
 }) {
+  const name = identity?.name ?? "…";
   // An incomplete read keeps its measured readings, so the window choice still uses them.
   const press = pressing(lab, history.to, { withheld: !coherent });
   const line =
@@ -213,35 +214,14 @@ function Panel({
   const windowLines = lab.lines.filter(
     (entry) => entry.windowSeconds === 604_800 || entry.windowSeconds === 18_000,
   );
-  const optionLabels = new Map<string, string>();
-  for (const entry of windowLines) {
-    const label = entry.windowSeconds === 18_000 ? "5-hour" : "Weekly";
-    const sameWindow = windowLines.filter((other) => other.windowSeconds === entry.windowSeconds);
-    optionLabels.set(
-      entry.key,
-      entry.mode
-        ? sameWindow.length > 1
-          ? `${entry.label} · ${entry.unit.label}`
-          : entry.label
-        : sameWindow.length > 1
-          ? `${label} · ${entry.unit.label}`
-          : label,
-    );
-  }
-  for (const entry of windowLines) {
-    const label = optionLabels.get(entry.key)!;
-    if (
-      windowLines.some((other) => other.key !== entry.key && optionLabels.get(other.key) === label)
-    )
-      optionLabels.set(entry.key, `${label} (${entry.unit.id})`);
-  }
+  const options = capacityWindowOptions(windowLines);
   return (
     <article
       aria-labelledby={`lab-${lab.provider}`}
       className={first ? "pt-1 pb-6" : "border-t border-border pt-5 pb-6"}
     >
-      <div className="grid grid-cols-[auto_1fr_auto] items-start gap-x-3 gap-y-1 max-[540px]:grid-cols-[auto_1fr]">
-        <LabMark provider={provider} />
+      <div className="grid grid-cols-[auto_minmax(min-content,1fr)_auto] items-start gap-x-3 gap-y-1 max-[540px]:grid-cols-[auto_1fr]">
+        <LabMark provider={lab.provider} identity={identity} size="large" />
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <h3 id={`lab-${lab.provider}`} className="text-[15px] font-semibold tracking-[-0.015em]">
             {name}
@@ -250,17 +230,14 @@ function Panel({
             {accountLabel} · in {line.unit.label}
           </span>
         </div>
-        <div className="justify-self-end max-[540px]:col-span-full max-[540px]:justify-self-start">
+        <div className="min-w-0 max-w-full justify-self-end max-[540px]:col-span-full max-[540px]:w-full max-[540px]:justify-self-start">
           {windowLines.length > 1 && (
-            <div className="grid justify-items-end gap-1 max-[540px]:justify-items-start">
+            <div className="grid min-w-0 max-w-full justify-items-end gap-1 max-[540px]:justify-items-start">
               <Segmented
+                wrap
                 label={`${name} limit window`}
                 value={line.key}
-                options={lab.lines
-                  .filter(
-                    (entry) => entry.windowSeconds === 604_800 || entry.windowSeconds === 18_000,
-                  )
-                  .map((entry) => ({ id: entry.key, label: optionLabels.get(entry.key)! }))}
+                options={options}
                 onChange={onChoose}
               />
               {press.text && line.key === press.key && (
@@ -292,14 +269,10 @@ function Panel({
             {chips.map((chip) => (
               <li
                 key={chip.key}
-                className={`inline-flex min-h-[22px] max-w-full flex-wrap items-center gap-1 rounded-sm border px-[7px] text-xs break-words [overflow-wrap:anywhere] ${chip.flagged ? "border-dashed border-warning/45" : "border-border"}`}
+                className="inline-flex min-h-[22px] max-w-full flex-wrap items-center gap-1 rounded-sm border border-border px-[7px] text-xs break-words [overflow-wrap:anywhere]"
               >
                 {chip.plan} <span className="text-muted-foreground">×{chip.accounts}</span>
-                {chip.note && (
-                  <span className={chip.flagged ? "text-warning" : "text-muted-foreground"}>
-                    · {chip.note}
-                  </span>
-                )}
+                {chip.note && <span className="text-muted-foreground">· {chip.note}</span>}
               </li>
             ))}
           </ul>
@@ -334,6 +307,7 @@ function Panel({
               from={history.from}
               to={history.to}
               forecast={coherent ? <ForecastCaption line={displayLine} /> : null}
+              allowances={allowanceRows(facts.latest, history.to)}
             />
           </div>
         </>
@@ -542,16 +516,64 @@ function Legend({ color, facts, line }: { color: string; facts: LineFacts; line:
   );
 }
 
+function AllowanceSources({ rows }: { rows: readonly AllowanceRow[] }) {
+  return (
+    <section aria-label="Allowance sources" className="mt-4 grid gap-2 text-[13px]">
+      <h4 className="m-0 text-xs font-medium text-muted-foreground">
+        Allowance sources at the latest reading
+      </h4>
+      <ul className="m-0 grid list-none gap-2.5 p-0">
+        {rows.map((row) => (
+          <li key={row.key} className="grid gap-0.5 break-words [overflow-wrap:anywhere]">
+            <span>
+              {row.plan} <span className="text-muted-foreground">×{row.accounts}</span> ·{" "}
+              {row.basis}
+            </span>
+            {[row.detail, row.checked, row.expires, row.retrieved].some(Boolean) && (
+              <span className="text-xs text-muted-foreground">
+                {[row.detail, row.checked, row.expires, row.retrieved].filter(Boolean).join(" · ")}
+              </span>
+            )}
+            {row.sources.length > 0 && (
+              <span className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                {row.sources.map((source) =>
+                  source.href ? (
+                    <a
+                      key={source.label}
+                      href={source.href}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex min-h-6 items-center underline underline-offset-2 hover:text-foreground"
+                    >
+                      {source.label}
+                    </a>
+                  ) : (
+                    <span key={source.label} className="inline-flex min-h-6 items-center">
+                      {source.label}
+                    </span>
+                  ),
+                )}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function Daily({
   line,
   from,
   to,
   forecast,
+  allowances,
 }: {
   line: CapacityLine;
   from: number;
   to: number;
   forecast: ReactNode;
+  allowances: readonly AllowanceRow[];
 }) {
   const [open, setOpen] = useState(false);
   const end = Math.max(to, ...(line.forecast?.points.map((point) => point.at + 3_600_000) ?? []));
@@ -576,7 +598,9 @@ function Daily({
             strokeLinejoin="round"
           />
         </svg>
-        Forecast details and daily table
+        {allowances.length > 0
+          ? "Forecast, daily table and allowance sources"
+          : "Forecast details and daily table"}
       </summary>
       {open && forecast}
       {open && (
@@ -666,6 +690,7 @@ function Daily({
           </table>
         </div>
       )}
+      {open && allowances.length > 0 && <AllowanceSources rows={allowances} />}
       {open && refills.length > 0 && (
         <ul className="mt-3 pl-4 text-xs text-muted-foreground" aria-label="Refill events">
           {refills.map((event, index) => (

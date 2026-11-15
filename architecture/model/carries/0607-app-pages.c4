@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.appPages {
+    metadata {
+      constraint "Host protocol 42 adds optional declared pages to an app's requirements; protocol 41 is frozen and released, and earlier builds declare none, so their tabs are unchanged. A page key is lowercase words joined by hyphens under the separate `page` URL parameter, never a host view; a label has at most 40 characters and at most eight pages are declared. A path is a normalized absolute path on the app's own origin with an optional query and fragment, never another origin, a `.` or `..` segment, a backslash, a control character or a host path under /_executor/, and an invalid page fails the build when the module loads. The SDK records pages with the version's requirements and the app record carries the active version's pages; no storage or migration changes. The dashboard shows declared pages after App only while the screen tab is present, selects one only when the active version declares it and otherwise opens the screen, and gives each page its own document in the one frame owner while the screen's document keeps running without a box. A `{ page }` navigation from an app document is accepted only when that document's version equals the app's active version, which declares the key as its own property, and it passes the same server-verified scoped-session, origin and deadline checks as every other destination."
+    }
+  }
+}

@@ -1,9 +1,12 @@
 import { Schema } from "effect";
+import { isModelLifetimePath } from "../model-lifetime-contract.ts";
+import { RuntimeModelLifetimes, type RuntimeControlPair } from "./model-lifetime.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
 import { RuntimeRetirementMonitor, observeRuntimeRetirement } from "./retirement-observation.ts";
 import { RuntimeReadTrace, runtimeReadStep } from "../runtime-read-trace.ts";
 import { refuseRuntime } from "../runtime-route-diagnostic.ts";
+import { logRuntimeEndpointFailure } from "../runtime-endpoint-failure.ts";
 import {
   SlotIdentity,
   SlotRefused,
@@ -47,6 +50,7 @@ export interface EndpointEnvironment extends RuntimeEnvironment {
   POOL_CONTAINER_APPLICATION_ID?: string;
 }
 export interface EndpointOptions {
+  controlPair?: RuntimeControlPair;
   beforeStart?(witness: StartupWitness): Promise<void>;
   beforeBootstrap?(identity: SlotIdentity): Promise<void>;
 }
@@ -67,6 +71,7 @@ export class RuntimeEndpoint {
   private options: EndpointOptions;
   private maintenance: RuntimeMaintenance;
   private startupStop: RuntimeStartupStop;
+  private modelLifetimes: RuntimeModelLifetimes;
   constructor(
     ctx: ControllerState,
     env: EndpointEnvironment,
@@ -76,6 +81,7 @@ export class RuntimeEndpoint {
     options: EndpointOptions = {},
   ) {
     this.ctx = ctx;
+    this.modelLifetimes = new RuntimeModelLifetimes(options.controlPair);
     this.retirementMonitor = new RuntimeRetirementMonitor(ctx.container!);
     this.env = env;
     this.role = role;
@@ -95,6 +101,22 @@ export class RuntimeEndpoint {
     });
     this.wrap = wrap;
     this.options = options;
+  }
+  recordFailure(operation: string, error: unknown) {
+    logRuntimeEndpointFailure(
+      error,
+      operation,
+      {
+        role: this.role,
+        instanceId: this.ctx.id.toString(),
+        applicationId:
+          this.role === "legacy"
+            ? this.env.POOL_CONTAINER_APPLICATION_ID
+            : this.env.POOL_RUNTIME_APPLICATION_ID,
+        ...this.code,
+      },
+      this.env,
+    );
   }
   private serialize<T>(work: () => Promise<T>): Promise<T> {
     const pending = this.queue.then(work);
@@ -349,6 +371,14 @@ export class RuntimeEndpoint {
       if (!readOnly && port !== 8318) await this.channel.keepAlive();
       return this.channel.fetch(configuration, request, port, trace);
     }
+    const socketData = this.modelLifetimes.data(identity, request, async () => {
+      const { configuration } = await this.store.read(identity);
+      await this.health(identity, request.signal);
+      await this.channel.keepAlive();
+      request.signal.throwIfAborted();
+      return this.channel.fetch(configuration, request, port);
+    });
+    if (socketData) return socketData;
     const { configuration, done } = await this.serialize(async () => {
       this.bound(identity);
       const { record, configuration } = await this.store.read(identity);
@@ -364,7 +394,10 @@ export class RuntimeEndpoint {
       await this.health(identity, request.signal);
       await this.channel.keepAlive();
       request.signal.throwIfAborted();
-      return this.wrap(await this.channel.fetch(configuration, request, port), {
+      const response = await this.channel.fetch(configuration, request, port);
+      if (isModelLifetimePath(new URL(request.url).pathname))
+        return this.modelLifetimes.control(identity, request, response, release);
+      return this.wrap(response, {
         signal: request.signal,
         release,
         onClose: () => {},

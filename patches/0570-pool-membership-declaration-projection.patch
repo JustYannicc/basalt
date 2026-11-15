@@ -1,0 +1,156 @@
+diff --git a/apps/hosted/server/src/implementation/app-link-policy.ts b/apps/hosted/server/src/implementation/app-link-policy.ts
+--- a/apps/hosted/server/src/implementation/app-link-policy.ts
++++ b/apps/hosted/server/src/implementation/app-link-policy.ts
+@@ -4,7 +4,7 @@
+ import { hasContributedAccountSchema } from "./app-link-schema.ts";
+ 
+ /** Current app links, with contribution policy required only by opted-in deployments. */
+-export const usableAppLinks = (sql: SqlClient.SqlClient, apps: readonly AppId[]) =>
++const readUsableAppLinks = (sql: SqlClient.SqlClient, apps: readonly AppId[], projected: boolean) =>
+   Effect.gen(function* () {
+     // Full hosts register their migrated schema before serving. Unknown embeddings keep the
+     // legacy opt-in read because SQL resolves optional functions even for an ordinary app.
+@@ -15,7 +15,9 @@
+       cross join lateral jsonb_each(coalesce(d.requirements::jsonb -> 'accounts', '{}'::jsonb)) requirement
+       where ${sql.in("app.id", apps)} and requirement.value ->> 'contributed' = 'true'
+       limit 1`).length > 0;
+-    const ordinary = sql`coalesce(contribution_deployment.requirements::jsonb -> 'accounts' -> l.requirement ->> 'contributed', 'false') <> 'true'`;
++    const ordinary = projected
++      ? sql`coalesce(declaration.contributed, 'false') <> 'true'`
++      : sql`coalesce(contribution_deployment.requirements::jsonb -> 'accounts' -> l.requirement ->> 'contributed', 'false') <> 'true'`;
+     // SQL resolves columns, functions and tables before evaluating OR. Ordinary SDK hosts must
+     // not need the hosted contribution schema. Recheck opt-in in the final read so a concurrent
+     // deployment cannot turn that smaller query into an unchecked contribution read.
+@@ -25,14 +27,25 @@
+             and not exists (select 1 from hosted_contributed_departures revoked
+               where revoked.app = l.app and revoked.requirement = l.requirement
+                 and revoked.account = l.account and revoked.linked_at = l.created_at)))`;
++    const declarations = projected
++      ? sql`left join hosted_app_requirement_declarations declaration
++          on declaration.app=l.app and declaration.requirement=l.requirement and declaration.method=a.method`
++      : sql`left join executor_deployments contribution_deployment on contribution_deployment.id = app.active_deployment`;
+     return sql`hosted_app_account_links l
+       join executor_apps app on app.id = l.app
+       join executor_accounts a on a.id = l.account and a.owner = app.owner
+       join hosted_account_access p on p.account_id = a.id
+         and a.owner = 'organization:' || p.organization_id
+-      left join executor_deployments contribution_deployment on contribution_deployment.id = app.active_deployment
++      ${declarations}
+       where l.subject is null and ${sql.in("l.app", apps)} and ${policy}
+         and (p.kind <> 'personal' or exists(select 1 from member owner_member
+           where owner_member."organizationId" = p.organization_id
+             and owner_member."userId" = p.personal_user_id))`;
+   }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
++
++export const usableAppLinks = (sql: SqlClient.SqlClient, apps: readonly AppId[]) =>
++  readUsableAppLinks(sql, apps, false);
++
++/** Native membership supplies statement-local requirement fields; link authority stays identical. */
++export const usableProjectedAppLinks = (sql: SqlClient.SqlClient, apps: readonly AppId[]) =>
++  readUsableAppLinks(sql, apps, true);
+diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
+--- a/apps/hosted/server/src/implementation/pool-membership.ts
++++ b/apps/hosted/server/src/implementation/pool-membership.ts
+@@ -13,11 +13,12 @@
+ import { SqlClient } from "effect/sql";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { withOrganizationAccessLock } from "./organization-access-lock.ts";
+-import { policyDatabase, usableAppLinks } from "./resource-policy.ts";
++import { policyDatabase } from "./resource-policy.ts";
+ import { openEnvelope } from "./pool-token.ts";
+ import { preparePoolMembershipMirrors } from "./pool-membership-mirrors.ts";
+ import { reconcilePoolMembership } from "./pool-membership-reconcile.ts";
+ import { poolMembershipReferences } from "./pool-membership-reference-cache.ts";
++import { readNativePoolAccountRows } from "./pool-membership-rows.ts";
+ 
+ const NativePoolAccountFields = {
+   account: AccountId,
+@@ -107,29 +108,7 @@
+       ]);
+       yield* sql`select account from executor_account_acquisitions
+         where ${sql.in("account", accountIds)} order by account for share`;
+-      const usable = yield* usableAppLinks(sql, [pool]);
+-      const rows =
+-        yield* sql`with linked as (select a.*,l.requirement as linked_requirement,l.created_at as link_order,
+-        app.active_deployment from ${usable})
+-        select a.id as account,a.owner,a.linked_requirement as requirement,a.provider,a.method,
+-          a.credential_generation as generation,
+-          r.driver,r.driver_revision as "driverRevision",r.revision as "bindingRevision",
+-          d.requirements::jsonb -> 'accounts' -> a.linked_requirement ->> 'scope' as "requirementScope",
+-          d.requirements::jsonb -> 'accounts' -> a.linked_requirement ->> 'provider' as "requirementProvider",
+-          coalesce(d.requirements::jsonb -> 'accounts' -> a.linked_requirement -> 'definition' -> 'auth' -> a.method
+-              @> '{"type":"secrets","provisioned":true}'::jsonb,false) as "requirementProvisioned",
+-          coalesce(r.mirror_ready,false) as "mirrorReady",
+-          encode(sha256(coalesce(r.mirror_reference,a.encrypted_credentials)),'hex') as "referenceDigest",
+-          coalesce(d.requirements::jsonb -> 'accounts' -> a.linked_requirement ->> 'scope' = 'app'
+-            and d.requirements::jsonb -> 'accounts' -> a.linked_requirement ->> 'provider' = a.provider
+-            and d.requirements::jsonb -> 'accounts' -> a.linked_requirement -> 'definition' -> 'auth' -> a.method ->> 'type' = 'secrets'
+-            and coalesce(d.requirements::jsonb -> 'accounts' -> a.linked_requirement -> 'definition' -> 'auth' -> a.method ->> 'provisioned','false') <> 'true'
+-            and (r.account is null or r.driver='basalt-home' and r.mirror_reference is not null and not r.mirror_ready),false) as "mirrorNeeded"
+-        from linked a left join executor_account_acquisitions r on r.account=a.id
+-        left join executor_deployments d on d.id=a.active_deployment
+-        where r.removal is null and (r.account is null or r.owner=a.owner and r.provider=a.provider
+-          and r.method=a.method and r.generation=a.credential_generation)
+-        order by a.linked_requirement,a.link_order,a.id`;
++      const rows = yield* readNativePoolAccountRows(sql, organization, pool);
+       const linked = yield* Schema.decodeUnknownEffect(Schema.Array(NativePoolAccountRow))(rows);
+       const scope = poolMembershipReferences.scope(
+         executor,
+diff --git a/apps/hosted/server/src/implementation/pool-membership-rows.ts b/apps/hosted/server/src/implementation/pool-membership-rows.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-membership-rows.ts
+@@ -0,0 +1,53 @@
++import type { AppId } from "@executor-js/sdk/core";
++import { Effect } from "effect";
++import type { SqlClient } from "effect/sql";
++import { usableProjectedAppLinks } from "./app-link-policy.ts";
++
++/** Called after account and binding locks, so declaration and policy changes share a fresh snapshot. */
++export const readNativePoolAccountRows = (
++  sql: SqlClient.SqlClient,
++  organization: string,
++  pool: AppId,
++) =>
++  Effect.gen(function* () {
++    const usable = yield* usableProjectedAppLinks(sql, [pool]);
++    return yield* sql`with active_declarations as materialized (
++      select app.id as app,d.requirements::jsonb -> 'accounts' as accounts
++      from executor_apps app left join executor_deployments d on d.id=app.active_deployment
++      where app.id=${pool} and app.owner=${`organization:${organization}`}
++    ), requirement_keys as materialized (
++      select distinct l.app,l.requirement,a.method from hosted_app_account_links l
++      join executor_apps app on app.id=l.app
++      join executor_accounts a on a.id=l.account and a.owner=app.owner
++      where l.app=${pool} and l.subject is null and app.owner=${`organization:${organization}`}
++    ), hosted_app_requirement_declarations as materialized (
++      select k.app,k.requirement,k.method,
++        slot.value ->> 'scope' as scope,slot.value ->> 'provider' as provider,
++        slot.value ->> 'contributed' as contributed,
++        coalesce(auth.value @> '{"type":"secrets","provisioned":true}'::jsonb,false) as provisioned,
++        auth.value ->> 'type' as auth_type,
++        coalesce(auth.value ->> 'provisioned','false') <> 'true' as unprovisioned
++      from requirement_keys k left join active_declarations d on d.app=k.app
++      cross join lateral (select d.accounts -> k.requirement as value) slot
++      cross join lateral (select slot.value -> 'definition' -> 'auth' -> k.method as value) auth
++    ), linked as (
++      select a.*,l.requirement as linked_requirement,l.created_at as link_order,
++        declaration.scope as requirement_scope,declaration.provider as requirement_provider,
++        declaration.provisioned as requirement_provisioned,
++        declaration.auth_type as requirement_auth_type,
++        declaration.unprovisioned as requirement_unprovisioned from ${usable}
++    ) select a.id as account,a.owner,a.linked_requirement as requirement,a.provider,a.method,
++      a.credential_generation as generation,
++      r.driver,r.driver_revision as "driverRevision",r.revision as "bindingRevision",
++      a.requirement_scope as "requirementScope",a.requirement_provider as "requirementProvider",
++      coalesce(a.requirement_provisioned,false) as "requirementProvisioned",
++      coalesce(r.mirror_ready,false) as "mirrorReady",
++      encode(sha256(coalesce(r.mirror_reference,a.encrypted_credentials)),'hex') as "referenceDigest",
++      coalesce(a.requirement_scope = 'app' and a.requirement_provider = a.provider
++        and a.requirement_auth_type = 'secrets' and coalesce(a.requirement_unprovisioned,true)
++        and (r.account is null or r.driver='basalt-home' and r.mirror_reference is not null and not r.mirror_ready),false) as "mirrorNeeded"
++      from linked a left join executor_account_acquisitions r on r.account=a.id
++      where r.removal is null and (r.account is null or r.owner=a.owner and r.provider=a.provider
++        and r.method=a.method and r.generation=a.credential_generation)
++      order by a.linked_requirement,a.link_order,a.id`;
++  });

@@ -3,7 +3,9 @@ import { PoolHome, HomeClient, accountsView } from "../../src/pool/control.ts";
 import { PoolViewSnapshots } from "../../src/pool/view-snapshot.ts";
 import { quotaSamplingFixture } from "../../src/pool/quota-sampling.test-helpers.ts";
 import { overviewFixture, capacityFixture } from "./overview-fixture.mjs";
+import { seriesFixture, summaryFixture } from "./summary-fixture.mjs";
 import { bundlePoolApp } from "../pool-app-bundle.ts";
+import { labLogos } from "../../apps/pool/ui/lab-logos.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -71,8 +73,6 @@ const unknownReadingRef = process.env.POOL_UI_UNKNOWN_READING_REF;
 const resetsRef = process.env.POOL_UI_RESETS_REF;
 // Compare provider presentation against a frozen implementation with the same source replies.
 const nativeViewRef = process.env.POOL_UI_NATIVE_VIEW_REF;
-const historicalOverview = Boolean(planBaseline || peopleCopyRef || learningRef);
-const requestWindow = historicalOverview ? "in" : "· last";
 const baselineRef = sourceRef ?? peopleCopyRef ?? learningRef ?? resetsRef ?? nativeViewRef;
 const artifactLabel =
   process.env.POOL_UI_ARTIFACT_LABEL ??
@@ -88,6 +88,12 @@ if (failures)
     "POOL_UI_FAILURE_DIR must be an absolute directory outside the checkout",
   );
 let failureSaved = false;
+
+// The approved overview mock's logo for a lab, loaded on its white tile.
+const labLogo = (scope) =>
+  scope
+    .locator('[data-lab-mark="logo"] img')
+    .evaluate((image) => (image.complete && image.naturalWidth > 0 ? image.currentSrc : null));
 
 const minute = 60_000;
 const hour = 60 * minute;
@@ -188,11 +194,13 @@ function instrument() {
       const operation = text === null ? null : JSON.parse(text);
       name =
         operation?.name ??
-        (String(input).endsWith("/pool-usage/overview")
+        (String(input).endsWith("/pool-usage/summary")
           ? "overviewUsage"
           : String(input).endsWith("/pool-usage/personal-overview")
             ? "personalOverview"
-            : undefined);
+            : String(input).endsWith("/pool-usage/series")
+              ? "accountSeries"
+              : undefined);
       if (name) queries.push(name);
       if (operation?.name === "view" && operation.input?.fresh === true) followUps.push(shown);
       if (operation?.name === "computerContext")
@@ -221,13 +229,13 @@ test(
     let heldPersonal = [];
     let views = [];
     let contextReads = 0;
+    let summaryReads = 0;
     const streams = new Set();
     const pendingHandshakes = new Set();
     let browserServer;
     let browser;
     let exited;
     let evidenceVideo;
-    let costReasonsVideo;
     let progressiveVideo;
     t.after(async () => {
       const problems = [];
@@ -252,10 +260,6 @@ test(
           progressiveVideo.saveAs(
             join(artifacts, `${artifactLabel}-usage-before-capacity-390.webm`),
           ),
-        );
-      if (artifacts && costReasonsVideo)
-        await step(() =>
-          costReasonsVideo.saveAs(join(artifacts, `${artifactLabel}-cost-reasons-390.webm`)),
         );
       await step(() => browser?.close());
       await step(() => browserServer?.close());
@@ -315,7 +319,7 @@ test(
         const data = event.data;
         if (data.version !== 2 || typeof data.snapshot !== 'boolean' || Object.keys(data).length !== 3) { window.rejected++; return; }
         window.readiness.push({ data, at: performance.now() });
-      if (data.snapshot) void fetch("/_fixture/ready");
+        if (data.snapshot) void fetch("/_fixture/ready");
       });
     </script><iframe src="${childOrigin}"></iframe>`);
     });
@@ -455,6 +459,7 @@ test(
     let usageResult = emptyUsage;
     // Reshapes the manager overview reply, e.g. into partial coverage of one snapshot.
     let overviewShape = (value) => value;
+    let observeSummary = () => {};
     // When set, replaces the overview's people directory counts.
     let directoryResult;
     let usagePartial = false;
@@ -466,6 +471,7 @@ test(
         JSON.stringify(entry.fresh && freshResult !== undefined ? freshResult : viewResult),
       );
     let revision = 1;
+    const topicRevisions = new Map();
     const revisions = () =>
       [
         "accounts",
@@ -476,7 +482,11 @@ test(
         "pool-usage",
         "pool-samples",
         "pool-prices",
-      ].map((topic) => ({ topic, resource: "fixture", revision: String(revision) }));
+      ].map((topic) => ({
+        topic,
+        resource: "fixture",
+        revision: String(topicRevisions.get(topic) ?? revision),
+      }));
     const heads = () => ({ revisions: revisions(), identity: "fixture-viewer" });
     const child = createServer(async (request, response) => {
       if (request.url === "/_executor/api/changes/current") {
@@ -496,6 +506,17 @@ test(
         if (viewResult.ok && viewResult.value.reading?.source === "snapshot")
           pendingHandshakes.add(start);
         else start();
+      } else if (request.url?.startsWith("/_fixture/topic/")) {
+        const command = new URL(request.url, "http://fixture");
+        const topic = command.pathname.split("/").at(-1);
+        const next =
+          (topicRevisions.get(topic) ?? revision) + (command.searchParams.has("repeat") ? 0 : 1);
+        topicRevisions.set(topic, next);
+        for (const stream of streams)
+          stream.write(
+            `event: changed\ndata: ${JSON.stringify({ kind: "changed", hint: { topic, resource: "fixture", revision: String(next) } })}\n\n`,
+          );
+        response.writeHead(204).end();
       } else if (request.url === "/_fixture/change") {
         revision++;
         for (const stream of streams)
@@ -510,15 +531,20 @@ test(
         response.end(stylesheet);
       } else if (
         [
+          "/_executor/api/pool-usage/summary",
           "/_executor/api/pool-usage/overview",
           "/_executor/api/pool-usage/personal-overview",
+          "/_executor/api/pool-usage/series",
         ].includes(request.url)
       ) {
         let body = "";
         for await (const chunk of request) body += chunk;
         response.setHeader("content-type", "application/json");
+        const summary = request.url.endsWith("/summary");
+        if (summary) summaryReads++;
         const personal = request.url.endsWith("personal-overview");
-        if (!personal && member) {
+        const series = request.url.endsWith("/series");
+        if ((summary || request.url.endsWith("/overview")) && member) {
           response.writeHead(403).end();
           return;
         }
@@ -526,7 +552,17 @@ test(
           response.writeHead(503).end();
           return;
         }
-        const value = overviewFixture(JSON.parse(body).input, usageResult.value);
+        const input = JSON.parse(body).input;
+        if (summary) {
+          observeSummary(input);
+          response.end(JSON.stringify(summaryFixture(input, usageResult.value, usagePartial)));
+          return;
+        }
+        if (series) {
+          response.end(JSON.stringify(seriesFixture(input, usageResult.value, seriesNext)));
+          return;
+        }
+        const value = overviewFixture(input, usageResult.value);
         if (directoryResult) value.directory = directoryResult;
         value.partial = usagePartial;
         value.people.next = seriesNext;
@@ -663,6 +699,7 @@ test(
             : kind === "capacity"
               ? heldCapacity.length
               : pending(fresh);
+
         const timer = setTimeout(() => {
           arrived = () => {};
           reject(
@@ -699,12 +736,14 @@ test(
       work,
       {
         clock = false,
+        fixedDate,
         viewport = { width: 1100, height: 860 },
         usage = emptyUsage,
         capacityHeld = false,
         capacity = capacityFixture,
         colorScheme = "light",
         overview = (value) => value,
+        summaryRead = () => {},
         personal = false,
         partial = false,
         next = null,
@@ -714,6 +753,7 @@ test(
     ) => {
       usageResult = usage;
       overviewShape = overview;
+      observeSummary = summaryRead;
       directoryResult = people;
       usagePartial = partial;
       seriesNext = next;
@@ -726,6 +766,7 @@ test(
       held = [];
       views = [];
       contextReads = 0;
+      summaryReads = 0;
       freshResult = undefined;
       answerFresh = false;
       automaticFresh = false;
@@ -739,6 +780,7 @@ test(
       });
       try {
         if (clock) await context.clock.install();
+        if (fixedDate !== undefined) await context.clock.setFixedTime(new Date(fixedDate));
         await context.route("**/*", (route) => {
           const origin = new URL(route.request().url()).origin;
           return origin === parentOrigin || origin === childOrigin
@@ -752,6 +794,7 @@ test(
         await requests(2, false); // Development StrictMode replays the real mount effect.
         if (!(viewResult.ok && viewResult.value.reading?.source === "snapshot"))
           await requests(1, true);
+        if (capacityHeld) await requests(1, undefined, "capacity");
         const frame = page.frames().find((frame) => frame.url() === `${childOrigin}/`);
         assert.ok(frame);
         const accepted = () => page.evaluate(() => Reflect.get(window, "readiness"));
@@ -806,10 +849,19 @@ test(
         await context.close();
       }
     };
+    const legacyOverview = (frame, input) =>
+      frame.evaluate(async (input) => {
+        const response = await fetch("/_executor/api/pool-usage/overview", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ version: "fixture", input }),
+        });
+        return { status: response.status, value: await response.json() };
+      }, input);
 
     for (const width of [1280, 390])
       await t.test(
-        `subscription overview ignores app keys and uses singular copy at ${width}px`,
+        `manager summary uses the approved range and lab controls at ${width}px`,
         async () => {
           const now = Date.now();
           const iso = new Date(now).toISOString();
@@ -899,16 +951,21 @@ test(
             async ({ page, frame, settled }) => {
               release();
               await frame
-                .getByText(
-                  `${subscriptionsBaseline ? 5 : 4} subscription accounts across ${subscriptionsBaseline ? 3 : 2} labs · 1 person`,
-                  { exact: true },
-                )
+                .getByRole("heading", { name: "How much are we using?", exact: true })
                 .waitFor();
-              await frame.getByRole("heading", { name: "Needs attention", exact: true }).waitFor();
+              await frame
+                .getByRole("heading", { name: "Do we have enough accounts?", exact: true })
+                .waitFor();
               await frame.locator("#capacity article").nth(1).waitFor();
               await settled();
               assert.equal(await frame.locator("#capacity article").count(), 2);
-              const claude = frame.getByRole("article", { name: "Claude", exact: true });
+              const claude = frame.getByRole("article", { name: "Anthropic", exact: true });
+              // Each lab carries its own mock logo: Claude's icon for Anthropic, ChatGPT's for OpenAI.
+              assert.equal(await labLogo(claude), labLogos.claude);
+              assert.equal(
+                await labLogo(frame.getByRole("article", { name: "OpenAI", exact: true })),
+                labLogos.codex,
+              );
               await claude.getByRole("radio", { name: "5-hour", exact: true }).click();
               await claude
                 .getByRole("radio", { name: "5-hour", exact: true, checked: true })
@@ -917,52 +974,56 @@ test(
               await claude
                 .getByRole("radio", { name: "Weekly", exact: true, checked: true })
                 .waitFor();
-              // The live case: one person with pool access. The total decides the noun.
-              const overviewNoun = historicalOverview ? "people" : "person";
-              const tableNoun = peopleCopyRef ? "people" : "person";
-              if (!subscriptionsBaseline) {
-                await frame.getByText(`1 of 1 ${overviewNoun} active`).waitFor();
-                await frame.getByText(`1 of 1 ${tableNoun} with pool access`).waitFor();
+              const range = frame.getByRole("tablist", { name: "Range", exact: true });
+              const show = frame.getByRole("tablist", { name: "Show", exact: true });
+              const by = frame.getByRole("tablist", { name: "By", exact: true });
+              assert.deepEqual(
+                await Promise.all([
+                  range.getByRole("tab", { name: "7 days", selected: true }).count(),
+                  range.getByRole("tab", { name: "30 days" }).count(),
+                  range.getByRole("tab", { name: "90 days" }).count(),
+                  show.getByRole("tab", { name: "Est. cost", selected: true }).count(),
+                  by.getByRole("tab", { name: "Lab", selected: true }).count(),
+                ]),
+                [1, 1, 1, 1, 1],
+                "The manager gets fixed ranges, estimated cost, and lab breakdown controls",
+              );
+              await frame.getByRole("heading", { name: "By lab", exact: true }).waitFor();
+              await frame.getByText("No usage in this range.", { exact: true }).waitFor();
+              for (const label of ["Est. cost", "Requests", "Tokens"])
+                await frame
+                  .getByRole("region", { name: label, exact: true })
+                  .getByText("—", { exact: true })
+                  .waitFor();
+              if (width === 1280) {
+                const legacy = await legacyOverview(frame, {
+                  from: "2026-10-01T00:00:00Z",
+                  to: "2026-11-01T00:00:00Z",
+                  days: 30,
+                });
+                assert.equal(legacy.status, 200);
+                assert.equal(legacy.value.directory.activeCount, 1);
+                assert.equal(legacy.value.directory.totalCount, 1);
               }
               const text = await frame.locator("body").innerText();
-              if (!subscriptionsBaseline) {
-                assert.match(
-                  text,
-                  new RegExp(
-                    `(?<!\\d)1 of 1 ${overviewNoun} active · 0 requests ${requestWindow} \\d+ days`,
-                  ),
-                );
-                assert.match(
-                  text,
-                  new RegExp(
-                    `(?<!\\d)1 of 1 ${tableNoun} with pool access made a request in these \\d+ days\\.`,
-                  ),
-                );
-                if (!historicalOverview) assert.doesNotMatch(text, /1 of 1 people/);
-              }
-              for (const title of [
-                "Do we have enough accounts?",
-                "Who uses what",
-                "API cost and subscription value",
-                "Needs attention",
-              ])
-                assert.ok(text.includes(title), `Approved r2 section: ${title}`);
-              assert.doesNotMatch(text, /This read is incomplete|Read incomplete/);
+              assert.doesNotMatch(
+                text,
+                /Part of this range couldn't be read|Who uses what|API cost and subscription value/,
+              );
               if (!subscriptionsBaseline) {
                 assert.doesNotMatch(text, /1 accounts|1 banked resets/);
-                if (freshnessRef) assert.match(text, /4 accounts have stale or missing readings/);
-                else assert.doesNotMatch(text, /stale or missing readings/);
+                assert.match(text, /Usage read (?:just now|.* ago)/);
+                if (freshnessRef) assert.match(text, /Showing a saved view/);
+                else assert.doesNotMatch(text, /accounts have stale or missing readings/);
                 if (!resetsRef) {
-                  const reset = frame.getByRole("button", {
-                    name: "1 reset with unknown scope available",
-                    exact: true,
-                  });
-                  assert.equal(await reset.count(), 1);
+                  const resets = frame.getByRole("list", { name: "Banked resets", exact: true });
+                  await resets.getByText("Spend them from Accounts.", { exact: true }).waitFor();
+                  assert.match(await resets.innerText(), /OpenAI banked:/);
                 }
               }
               assert.ok(
                 await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-                "Overview fits at phone and desktop widths",
+                "Summary fits at phone and desktop widths",
               );
               await page.locator("iframe").evaluate(
                 (iframe, height) => {
@@ -1008,28 +1069,33 @@ test(
               },
             },
           );
-          // Plural: nobody active out of three people with pool access.
+          // The directory is retained on the compatibility endpoint; the summary names usage.
           if (!subscriptionsBaseline)
             await session(
               async ({ page, frame, settled }) => {
                 release();
-                await frame.getByText("0 of 3 people active").waitFor();
-                await frame.getByText("0 of 3 people with pool access").waitFor();
-                const text = await frame.locator("body").innerText();
-                assert.match(
-                  text,
-                  new RegExp(
-                    `(?<!\\d)0 of 3 people active · 0 requests ${requestWindow} \\d+ days`,
-                  ),
-                );
-                assert.match(
-                  text,
-                  /(?<!\d)0 of 3 people with pool access made a request in these \d+ days\./,
-                );
-                assert.doesNotMatch(text, /of 3 person/);
+                await frame
+                  .getByRole("heading", { name: "How much are we using?", exact: true })
+                  .waitFor();
+                await frame.getByRole("heading", { name: "By lab", exact: true }).waitFor();
+                await frame.getByText("No usage in this range.", { exact: true }).waitFor();
+                await frame.locator("body").innerText();
+                for (const label of ["Est. cost", "Requests", "Tokens"])
+                  await frame
+                    .getByRole("region", { name: label, exact: true })
+                    .getByText("—", { exact: true })
+                    .waitFor();
+                const legacy = await legacyOverview(frame, {
+                  from: "2026-10-01T00:00:00Z",
+                  to: "2026-11-01T00:00:00Z",
+                  days: 30,
+                });
+                assert.equal(legacy.status, 200);
+                assert.equal(legacy.value.directory.activeCount, 0);
+                assert.equal(legacy.value.directory.totalCount, 3);
                 assert.ok(
                   await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-                  "People copy fits at phone and desktop widths",
+                  "Summary controls fit at phone and desktop widths",
                 );
                 await page.locator("iframe").evaluate(
                   (iframe, height) => {
@@ -1038,7 +1104,7 @@ test(
                   await frame.evaluate(() => document.documentElement.scrollHeight),
                 );
                 await settled();
-                await capture(page, `people-plural-overview-${width}`);
+                await capture(page, `empty-summary-${width}`);
               },
               {
                 viewport: { width, height: 1000 },
@@ -1113,41 +1179,12 @@ test(
     // The parent's acceptance dates while they are ahead; later runs keep the same shape.
     const ahead = (now, fixed, fallback) =>
       Date.parse(fixed) > now + 2 * day ? fixed : new Date(now + fallback).toISOString();
-    // The same text the shared Details renderer writes for an instant, in the frame's own format.
-    const shownMoment = (frame, value) =>
-      frame.evaluate((value) => {
-        const { locale, timeZone } = new Intl.DateTimeFormat().resolvedOptions();
-        const at = (when, options) =>
-          new Date(when).toLocaleString(locale, { timeZone, ...options });
-        const now = Date.now();
-        const time = { hour: "numeric", minute: "2-digit" };
-        const sameDay = at(value, { dateStyle: "short" }) === at(now, { dateStyle: "short" });
-        const sameYear = at(value, { year: "numeric" }) === at(now, { year: "numeric" });
-        return at(
-          value,
-          sameDay
-            ? time
-            : {
-                weekday: "short",
-                day: "numeric",
-                month: "short",
-                ...(sameYear ? {} : { year: "numeric" }),
-                ...time,
-              },
-        );
-      }, value);
-    const rowName = (text) => text.split(/[\t\n]/u)[0]?.trim();
-    const fitsWithin = (frame, dialog) =>
-      Promise.all([
-        frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-        dialog
-          ? dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)
-          : Promise.resolve(true),
-      ]).then((checks) => checks.every(Boolean));
+    const fitsWithin = (frame) =>
+      frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth);
 
     for (const width of [1280, 390])
       await t.test(
-        `scoped banked resets open read-only Details beside each model's own limit at ${width}px`,
+        `scoped resets stay distinct and model limits stay out of pooled capacity at ${width}px`,
         async () => {
           const now = Date.now();
           const weeklyExpiry = ahead(now, "2026-12-10T22:00:00Z", 28 * day);
@@ -1216,6 +1253,13 @@ test(
           const value = await scopedView(files, quota, now);
           const seeded = value.accounts.find((account) => account.id === "claude-model");
           assert.deepEqual(
+            seeded?.windows
+              ?.filter((window) => window.scope?.kind === "model")
+              .map((window) => [window.label, window.remainingRatio]),
+            [["Fable weekly", 0.4]],
+            "The source keeps the model's separate weekly limit",
+          );
+          assert.deepEqual(
             seeded?.bankedResets?.groups?.map((group) => [group.label, group.available]),
             [
               ["Weekly resets", 1],
@@ -1224,12 +1268,37 @@ test(
             ],
             "the expired grant is dropped by the pool's own normalization",
           );
+          assert.equal(
+            Date.parse(
+              seeded?.bankedResets?.groups?.find((group) => group.label === "Weekly resets")
+                ?.expiresAt ?? "",
+            ),
+            Date.parse(weeklyExpiry),
+          );
+          assert.equal(
+            Date.parse(
+              seeded?.bankedResets?.groups?.find((group) => group.label === "Fable resets")
+                ?.expiresAt ?? "",
+            ),
+            Date.parse(fableExpiry),
+          );
+          assert.equal(
+            seeded?.bankedResets?.groups?.find(
+              (group) => group.label === "Resets with unknown scope",
+            )?.expiresAt,
+            null,
+          );
           viewResult = { ok: true, value };
           const startWrites = writes.length;
           await session(
             async ({ page, frame, settled }) => {
               release();
-              await frame.getByRole("heading", { name: "Needs attention", exact: true }).waitFor();
+              await frame
+                .getByRole("heading", { name: "How much are we using?", exact: true })
+                .waitFor();
+              await frame
+                .getByRole("heading", { name: "Do we have enough accounts?", exact: true })
+                .waitFor();
               await settled();
               const text = await frame.locator("body").innerText();
               if (resetsRef) {
@@ -1243,96 +1312,20 @@ test(
                 await capture(page, `scoped-resets-overview-${width}`);
                 return;
               }
-              // One short line, kinds apart, no combined total and no expired grant.
-              const summary = frame.getByRole("button", {
-                name: "1 weekly reset · 3 Fable resets · 1 reset with unknown scope available",
-                exact: true,
-              });
-              await summary.waitFor();
+              // The manager summary lists reset kinds separately; spending stays on Accounts.
+              const summary = frame.getByRole("list", { name: "Banked resets", exact: true });
+              const resetText = await summary.innerText();
+              assert.match(
+                resetText,
+                /1 weekly reset · 3 Fable resets · 1 reset with unknown scope available/,
+              );
+              await summary.getByText("Spend them from Accounts.", { exact: true }).waitFor();
+              assert.equal(await summary.getByRole("button").count(), 0);
               assert.doesNotMatch(text, /\b[4-7] (banked )?resets? available/);
               assert.doesNotMatch(text, /Expired/);
-              // Capacity gets no extra weekly line from a model's own limit.
+              // The model window stays distinct in source data and never becomes pooled capacity.
               assert.equal(await frame.getByRole("radio", { name: /Fable/ }).count(), 0);
-              // The overview row puts the model's weekly beside the account's weekly.
-              const limits = frame.getByRole("region", { name: "Model limits" });
-              const limitRow = limits.getByRole("button");
-              assert.equal(await limitRow.count(), 1, "only the account with a model limit");
-              const limitText = await limitRow.innerText();
-              assert.match(limitText, /model-seat@example\.com/);
-              assert.ok(
-                limitText.indexOf("Weekly 80% remaining") >= 0 &&
-                  limitText.indexOf("Weekly 80% remaining") <
-                    limitText.indexOf("Fable weekly 40% remaining"),
-                limitText,
-              );
               assert.ok(await fitsWithin(frame), `Overview fits at ${width}px`);
-
-              await summary.click();
-              const dialog = frame.getByRole("dialog", { name: "Banked resets" });
-              await dialog.waitFor();
-              // Read-only: the dialog's only control closes it.
-              assert.deepEqual(await dialog.getByRole("button").allInnerTexts(), ["Close"]);
-              await dialog.getByRole("heading", { name: "model-seat@example.com" }).waitFor();
-              assert.match(await dialog.innerText(), /claude · read/i);
-              const rows = await dialog.locator("tbody tr").allInnerTexts();
-              const names = rows.map(rowName);
-              assert.deepEqual(names, [
-                "Plan",
-                "5h",
-                "Weekly",
-                "Fable weekly",
-                "Weekly resets",
-                "Fable resets",
-                "Resets with unknown scope",
-              ]);
-              const row = (name) => rows[names.indexOf(name)];
-              assert.match(
-                row("Fable weekly"),
-                /This model's own limit\. Its use also counts toward the weekly limit\./,
-              );
-              assert.match(row("Fable weekly"), /40% remaining/);
-              assert.match(row("Fable resets"), /\b3 resets\b/);
-              assert.match(
-                row("Fable resets"),
-                /Refills the Fable weekly limit and gives back only the weekly use spent on Fable, not the whole week\. Also refills the 5-hour limit\./,
-              );
-              assert.ok(
-                row("Fable resets").includes(`Expires ${await shownMoment(frame, fableExpiry)}`),
-                row("Fable resets"),
-              );
-              assert.match(row("Weekly resets"), /\b1 reset\b/);
-              assert.match(row("Weekly resets"), /Refills the account's whole weekly limit\./);
-              assert.ok(
-                row("Weekly resets").includes(`Expires ${await shownMoment(frame, weeklyExpiry)}`),
-                row("Weekly resets"),
-              );
-              assert.match(
-                row("Resets with unknown scope"),
-                /The source didn't say which limit this refills\./,
-              );
-              // A missing expiry is unknown, never a promise that the reset lasts.
-              assert.match(row("Resets with unknown scope"), /Expiry not reported/);
-              assert.doesNotMatch(rows.join("\n"), /\b2 resets\b|Expired|Does not expire/);
-              assert.ok(await fitsWithin(frame, dialog), `Reset Details fit at ${width}px`);
-              await capture(page, `scoped-resets-details-${width}`);
-              await dialog.getByRole("button", { name: "Close", exact: true }).click();
-              await dialog.waitFor({ state: "hidden" });
-
-              // The model-limit row opens the same Details for that one account.
-              await limitRow.click();
-              const accountDialog = frame.getByRole("dialog", { name: "Account limits" });
-              await accountDialog.waitFor();
-              assert.deepEqual(
-                (await accountDialog.locator("tbody tr").allInnerTexts()).map(rowName),
-                names,
-              );
-              assert.ok(
-                await fitsWithin(frame, accountDialog),
-                `Account Details fit at ${width}px`,
-              );
-              await capture(page, `model-limits-details-${width}`);
-              await accountDialog.getByRole("button", { name: "Close", exact: true }).click();
-              await accountDialog.waitFor({ state: "hidden" });
 
               await page.locator("iframe").evaluate(
                 (iframe, height) => {
@@ -1383,43 +1376,21 @@ test(
         await session(
           async ({ page, frame, settled }) => {
             release();
-            const summary = frame.getByRole("button", {
-              name: "32 weekly resets · 32 Fable resets available",
-              exact: true,
-            });
-            await summary.waitFor();
+            const summary = frame.getByRole("list", { name: "Banked resets", exact: true });
+            await summary.getByText(/32 weekly resets · 32 Fable resets available/).waitFor();
+            await summary.getByText("Spend them from Accounts.", { exact: true }).waitFor();
             await settled();
-            assert.ok(await fitsWithin(frame), "Overview with 64 limits fits at 390px");
-            await summary.click();
-            const dialog = frame.getByRole("dialog", { name: "Banked resets" });
-            await dialog.waitFor();
-            const rows = dialog.locator("tbody tr");
-            assert.equal(await rows.count(), 1 + 64 + 64, "plan, every window and every group");
-            assert.ok(
-              await dialog.evaluate((element) => element.scrollHeight > element.clientHeight),
-              "the dialog scrolls instead of growing past the screen",
-            );
-            const last = rows.last();
-            await last.scrollIntoViewIfNeeded();
-            assert.ok(
-              await last.evaluate((element) => {
-                const box = element.getBoundingClientRect();
-                const frame = element.closest("dialog").getBoundingClientRect();
-                return box.top >= frame.top && box.bottom <= frame.bottom + 1;
-              }),
-              "the last row is reachable inside the dialog",
-            );
-            assert.equal(rowName(await last.innerText()), "Fable resets");
-            assert.ok(await fitsWithin(frame, dialog), "The longest Details fit at 390px");
-            await capture(page, "long-reset-details-390");
-            await dialog.getByRole("button", { name: "Close", exact: true }).click();
+            assert.ok(await fitsWithin(frame), "The 64 reset groups stay within the 390px page");
+            assert.equal(await summary.getByRole("button").count(), 0);
+            await capture(page, "long-reset-summary-390");
           },
           { viewport: { width: 390, height: 844 } },
         );
         assert.deepEqual(writes.slice(startWrites), [], "nothing was spent or changed");
       });
 
-    let policyWeight = capacityWeight;
+    let policyWeight = (provider, plan, seconds) =>
+      capacityWeight(provider, plan, seconds, { now: Date.parse("2026-11-13T12:00:00Z") });
     if (weightPolicyRef) {
       const path = join(directory, "baseline-weights.ts");
       writeFileSync(
@@ -1449,7 +1420,7 @@ test(
           });
           view.value.accounts = view.value.accounts.map((account) => ({
             ...account,
-            plan: account.provider === "claude" ? "Max 20x" : "Pro 20x",
+            plan: account.provider === "claude" ? "Max 20x" : "Plus",
             windows: account.windows.filter((window) => window.windowSeconds === 604_800),
           }));
           viewResult = view;
@@ -1458,7 +1429,7 @@ test(
               await requests(1, false);
               release();
               await frame.locator("#capacity article").nth(1).waitFor();
-              for (const name of ["Claude", "Codex"]) {
+              for (const name of ["Anthropic", "OpenAI"]) {
                 const panel = frame.getByRole("article", { name, exact: true });
                 if (limitSupportRef) {
                   assert.equal(
@@ -1515,6 +1486,26 @@ test(
               capacity: (input) => {
                 const result = capacityFixture(input);
                 result.value.readAt = input.to;
+                // These synthetic support facts isolate missing readings from vendor plan changes.
+                result.value.allowanceCatalog = {
+                  entries: [
+                    ["anthropic", "max_20x"],
+                    ["openai", "plus"],
+                  ].map(([vendor, plan]) => ({
+                    vendor,
+                    plan,
+                    windowSeconds: 18_000,
+                    full: 1,
+                    unit: { id: "fixture-unit", label: "fixture account" },
+                    kind: "dataset",
+                    verification: "reported",
+                    revision: "fixture-support",
+                    sources: ["https://example.test/allowances.json"],
+                    checkedAt: input.to,
+                    fetchedAt: input.to,
+                    expiresAt: input.to + 86_400_000,
+                  })),
+                };
                 result.value.points = ["claude", "codex"].map((provider) => {
                   const count = provider === "claude" ? 1 : 2;
                   const reading = {
@@ -1574,7 +1565,7 @@ test(
             async ({ page, frame, settled }) => {
               release();
               await frame
-                .getByText("3 subscription accounts across 1 lab", { exact: true })
+                .getByRole("heading", { name: "How much are we using?", exact: true })
                 .waitFor();
               await frame.locator("#capacity article").waitFor();
               await settled();
@@ -1585,8 +1576,8 @@ test(
               else {
                 assert.doesNotMatch(body, /plan isn't recognised|plan unknown|flagged 1x/);
                 if (retained) {
-                  assert.match(body, /Claude: no verified allowance multiple for Max 20x/);
-                  assert.match(body, /unverified · 1x/);
+                  assert.doesNotMatch(body, /no verified allowance multiple/);
+                  assert.match(body, /unknown · sized as 1 account/);
                   assert.doesNotMatch(body, /conservative/i);
                 } else {
                   assert.match(
@@ -1683,7 +1674,7 @@ test(
           await session(
             async ({ page, frame, settled }) => {
               release();
-              const chart = frame.getByRole("group", { name: /^Codex weekly capacity\./ });
+              const chart = frame.getByRole("group", { name: /^OpenAI weekly capacity\./ });
               await chart.waitFor();
               await settled();
               const tooltip = chart.getByRole("tooltip");
@@ -1702,7 +1693,7 @@ test(
               const box = await svg.boundingBox();
               assert.ok(box);
               const hourAt = (share) => ({ x: 40 + (box.width - 48) * share, y: box.height / 2 });
-              const outside = frame.getByRole("heading", { name: "Codex", exact: true });
+              const outside = frame.getByRole("heading", { name: "OpenAI", exact: true });
 
               // Mouse: hovering reads an hour, and leaving the plot closes it.
               await svg.hover({ position: hourAt(0.9) });
@@ -1853,7 +1844,7 @@ test(
 
     for (const width of [1280, 390])
       await t.test(
-        `a plan without a verified allowance multiple says so at ${width}px`,
+        `an unknown plan keeps its sizing details without an attention item at ${width}px`,
         async () => {
           const value = poolView(Date.now(), {
             source: "live",
@@ -1877,34 +1868,31 @@ test(
             async ({ frame, settled }) => {
               release();
               await frame.locator("#capacity article").waitFor();
-              const attention = frame.locator("#attention");
-              await attention.getByText(/^Codex: /).waitFor();
-              await attention.scrollIntoViewIfNeeded();
+              const capacity = frame.locator("#capacity");
+              await frame.getByRole("list", { name: "OpenAI plans", exact: true }).waitFor();
+              await capacity.scrollIntoViewIfNeeded();
               await settled();
               if (artifacts) {
                 mkdirSync(artifacts, { recursive: true });
-                await attention.screenshot({
-                  path: join(artifacts, `${artifactLabel}-unverified-plan-attention-${width}.png`),
+                await capacity.screenshot({
+                  path: join(artifacts, `${artifactLabel}-unverified-plan-capacity-${width}.png`),
                 });
               }
-              const items = await attention.innerText();
-              assert.match(items, /Codex: no verified allowance multiple for Pro \(Max\)/);
-              assert.ok(
-                items.includes(
-                  "Remaining percentages are measured. Totals use an unverified 1x allowance; account sizing is unavailable.",
-                ),
-                items,
-              );
-              // The chip and the chart's details say the same: the 1x is unverified, not a bound.
+              const items = await frame.locator("body").innerText();
+              assert.doesNotMatch(items, /no verified allowance multiple/);
+              // Unknown sizing remains in the capacity detail without asking for attention.
               assert.match(
-                await frame.getByRole("list", { name: "Codex plans", exact: true }).innerText(),
-                /Pro \(Max\)\s+×3\s+· unverified · 1x/,
+                await frame.getByRole("list", { name: "OpenAI plans", exact: true }).innerText(),
+                /Pro \(Max\)\s+×3\s+· unknown · sized as 1 account/,
               );
-              const chart = frame.getByRole("group", { name: /^Codex weekly capacity\./ });
+              const chart = frame.getByRole("group", { name: /^OpenAI weekly capacity\./ });
               await chart.focus();
               const tip = await chart.getByRole("tooltip").innerText();
-              assert.match(tip, /Pro \(Max\) ×3\s+unverified · 1x/);
-              assert.match(tip, /3 accounts · 3 at an unverified 1x/);
+              assert.match(tip, /Pro \(Max\) ×3\s+unknown · sized as 1 account/);
+              assert.match(
+                tip,
+                /3 accounts · 3 with an unknown allowance, sized as 1 account each/,
+              );
               await chart.scrollIntoViewIfNeeded();
               await capture(frame.page(), `unverified-plan-tooltip-${width}`);
               const body = await frame.locator("body").innerText();
@@ -1950,9 +1938,35 @@ test(
         },
       );
 
-    for (const width of [1280, 390])
-      await t.test(`the 90-day range requests 90 days at ${width}px`, async () => {
-        const value = poolView(Date.now(), {
+    const rangeCases = [
+      {
+        width: 1280,
+        title: "the 90-day range requests 90 days at 1280px",
+        fixedDate: "2026-11-14T11:30:00.000Z",
+        sevenDayFrom: "2026-11-07T23:00:00.000Z",
+        ninetyDayFrom: "2026-08-16T22:00:00.000Z",
+        screenshot: "range-90-days-1280",
+      },
+      {
+        width: 390,
+        title: "the 90-day range requests 90 days at 390px",
+        fixedDate: "2026-11-14T11:30:00.000Z",
+        sevenDayFrom: "2026-11-07T23:00:00.000Z",
+        ninetyDayFrom: "2026-08-16T22:00:00.000Z",
+        screenshot: "range-90-days-390",
+      },
+      {
+        width: 1280,
+        title: "the 90-day range uses Zurich calendar dates across the DST transition",
+        fixedDate: "2026-10-27T10:00:00.000Z",
+        sevenDayFrom: "2026-10-20T22:00:00.000Z",
+        ninetyDayFrom: "2026-07-29T22:00:00.000Z",
+        screenshot: "range-90-days-dst-1280",
+      },
+    ];
+    for (const { width, title, fixedDate, sevenDayFrom, ninetyDayFrom, screenshot } of rangeCases)
+      await t.test(title, async () => {
+        const value = poolView(Date.parse(fixedDate), {
           source: "live",
           observedAgo: 0,
           savedAgo: 0,
@@ -1970,61 +1984,64 @@ test(
         value.providers = providers;
         viewResult = { ok: true, value };
         let firstReading = null;
-        const capacityDays = [];
-        const usageSpans = [];
+        const capacityReads = [];
+        const summaryReads = [];
         await session(
           async ({ page, frame, settled }) => {
             release();
-            const chart = frame.getByRole("group", { name: /^Codex weekly capacity\./ });
+            const chart = frame.getByRole("group", { name: /^OpenAI weekly capacity\./ });
             await chart.waitFor();
             await settled();
-            const range = frame.getByRole("radiogroup", { name: "Range" });
-            await range.getByRole("radio", { name: "7 days", checked: true }).waitFor();
-            assert.ok(capacityDays.length > 0 && usageSpans.length > 0);
+            const range = frame.getByRole("tablist", { name: "Range" });
+            await range.getByRole("tab", { name: "7 days", selected: true }).waitFor();
+            assert.ok(capacityReads.length > 0 && summaryReads.length > 0);
             assert.deepEqual(
-              [...new Set(capacityDays)],
+              [...new Set(capacityReads.map((read) => read.days))],
               [7],
               "Initial capacity reads explicitly ask for 7",
             );
-            for (const span of usageSpans)
-              assert.ok(span >= 7 * day && span < 7 * day + hour, `Usage spans ${span} ms`);
+            for (const read of capacityReads)
+              assert.equal(read.to, Date.parse(fixedDate), "Initial capacity keeps the anchor");
+            for (const input of summaryReads) {
+              assert.equal(input.from, sevenDayFrom, "Initial usage starts at the 7-date boundary");
+              assert.equal(input.to, fixedDate, "Initial usage keeps the exact anchor");
+              assert.equal(input.by, "provider");
+            }
+            const initialCapacityCount = capacityReads.length;
+            const initialSummaryCount = summaryReads.length;
             assert.doesNotMatch(
               await chart.innerText(),
               /Readings since/,
               "Seven days fully covered by readings show no coverage start",
             );
-            const sentDays = [];
-            page.on("request", (request) => {
-              const path = new URL(request.url()).pathname;
-              const body = request.postData();
-              if (!body) return;
-              if (path === "/_executor/api/query") {
-                const { name, input } = JSON.parse(body);
-                if (name === "capacity") sentDays.push({ read: "capacity", input });
-              } else if (path === "/_executor/api/pool-usage/overview")
-                sentDays.push({ read: "overview", input: JSON.parse(body).input });
-            });
             assert.deepEqual(
-              (await range.getByRole("radio").allInnerTexts()).map((label) => label.trim()),
+              (await range.getByRole("tab").allInnerTexts()).map((label) => label.trim()),
               ["7 days", "30 days", "90 days"],
             );
-            await range.getByRole("radio", { name: "90 days", exact: true }).click();
-            await range.getByRole("radio", { name: "90 days", checked: true }).waitFor();
+            await range.getByRole("tab", { name: "90 days", exact: true }).click();
+            await range.getByRole("tab", { name: "90 days", selected: true }).waitFor();
             await frame
               .locator("#capacity")
               .getByText(/last 90 days/)
               .first()
               .waitFor();
             await settled();
-            const capacity = sentDays.filter((entry) => entry.read === "capacity");
-            const overview = sentDays.filter((entry) => entry.read === "overview");
+            const capacity = capacityReads.slice(initialCapacityCount);
+            const summary = summaryReads.slice(initialSummaryCount);
             assert.ok(capacity.length > 0, "Choosing 90 days reads capacity again");
-            assert.ok(overview.length > 0, "Choosing 90 days reads usage again");
-            for (const entry of capacity) assert.equal(entry.input.days, 90);
-            for (const entry of overview) {
-              assert.equal(entry.input.days, 90);
-              const span = Date.parse(entry.input.to) - Date.parse(entry.input.from);
-              assert.ok(span >= 90 * day && span < 90 * day + hour, `Usage spans ${span} ms`);
+            assert.ok(summary.length > 0, "Choosing 90 days reads usage again");
+            for (const read of capacity) {
+              assert.equal(read.days, 90);
+              assert.equal(read.to, Date.parse(fixedDate), "90-day capacity keeps the anchor");
+            }
+            for (const input of summary) {
+              assert.equal(
+                input.from,
+                ninetyDayFrom,
+                "90-day usage starts at the 90-date boundary",
+              );
+              assert.equal(input.to, fixedDate, "90-day usage keeps the exact anchor");
+              assert.equal(input.by, "provider");
             }
             // Fourteen days of readings in a 90-day range: the chart names where they start.
             assert.ok(firstReading !== null);
@@ -2045,17 +2062,15 @@ test(
               await frame.evaluate(() => document.documentElement.scrollHeight),
             );
             await settled();
-            await capture(page, `range-90-days-${width}`);
+            await capture(page, screenshot);
           },
           {
             viewport: { width, height: 1000 },
+            fixedDate,
             // Two weeks of hourly readings, so the chart draws its axis across the whole range.
-            overview: (value) => {
-              usageSpans.push(Date.parse(value.to) - Date.parse(value.from));
-              return value;
-            },
+            summaryRead: (input) => summaryReads.push(input),
             capacity: (input) => {
-              capacityDays.push(input.days);
+              capacityReads.push({ days: input.days, to: input.to });
               const result = capacityFixture(input);
               const last = Math.floor(input.to / hour) * hour;
               const points = Array.from({ length: 14 * 24 }, (_, index) => {
@@ -2126,7 +2141,7 @@ test(
           await session(
             async ({ page, frame, settled }) => {
               release();
-              const lab = frame.getByRole("article", { name: "Grok", exact: true });
+              const lab = frame.getByRole("article", { name: "xAI", exact: true });
               await lab.waitFor({ timeout: 5_000 }).catch(() => {});
               await settled();
               await page.locator("iframe").evaluate(
@@ -2137,23 +2152,23 @@ test(
               );
               await settled();
               await capture(page, `grok-weekly-${width}`);
-              assert.equal(await lab.count(), 1, "The Grok lab has a capacity panel");
-              const enough = frame.getByRole("link", { name: /Enough accounts\?/ });
-              assert.match(await enough.innerText(), /Grok: learning/);
+              assert.equal(await lab.count(), 1, "The xAI lab has a capacity panel");
+              assert.equal(await labLogo(lab), labLogos.xai, "xAI shows Grok's logo");
               assert.doesNotMatch(await frame.locator("body").innerText(), /no readings yet/);
               // The grokchat product window shares the account's week; it is not a second account.
               const panel = await lab.innerText();
-              assert.match(panel, /1 account · in account-eq/);
+              assert.match(panel, /Learning · /);
+              assert.match(panel, /1 account · in Grok Pro account/);
               assert.match(panel, /Nominal 1\b/);
               assert.doesNotMatch(panel, /2 accounts|Nominal 2/);
-              const chart = lab.getByRole("group", { name: /^Grok weekly\b[^.]* capacity\./ });
+              const chart = lab.getByRole("group", { name: /^xAI weekly\b[^.]* capacity\./ });
               const since = new Date(at).toISOString().replace("T", " ").slice(0, 16);
               assert.match(await chart.innerText(), new RegExp(`Readings since ${since} UTC`));
               await chart.focus();
               const tip = await chart.getByRole("tooltip").innerText();
               assert.match(tip, /Weekly/);
               // Chart amounts keep one decimal, so the measured 0.98 reads as 1 of 1.
-              assert.match(tip, /\b1 of 1 account-eq left/);
+              assert.match(tip, /\b1 of 1 Grok Pro account left/);
               assert.match(tip, /Grok Pro ×1/);
               assert.match(tip, /Total\s+1 \/ 1/);
               assert.match(tip, /^1 account\b/m);
@@ -2226,7 +2241,7 @@ test(
             await session(
               async ({ page, frame, settled }) => {
                 release();
-                const panel = frame.getByRole("article", { name: "Codex", exact: true });
+                const panel = frame.getByRole("article", { name: "OpenAI", exact: true });
                 await panel.getByRole("radio", { name: "5-hour", exact: true }).click();
                 await panel
                   .getByRole("radio", { name: "5-hour", exact: true, checked: true })
@@ -2319,39 +2334,26 @@ test(
             async ({ page, frame, settled }) => {
               release();
               await frame
-                .getByText("3 subscription accounts across 2 labs", { exact: true })
+                .getByRole("heading", { name: "How much are we using?", exact: true })
                 .waitFor();
-              await frame.getByRole("heading", { name: "Needs attention", exact: true }).waitFor();
+              await frame.getByRole("heading", { name: "By lab", exact: true }).waitFor();
+              await frame
+                .getByText(/Part of this range couldn't be read; totals cover what was\./)
+                .waitFor();
               await frame.locator("#capacity article").nth(1).waitFor();
               await settled();
               assert.equal(await frame.locator("#capacity article").count(), 2);
+              const cost = frame.getByRole("region", { name: "Est. cost", exact: true });
+              const requests = frame.getByRole("region", { name: "Requests", exact: true });
+              const tokens = frame.getByRole("region", { name: "Tokens", exact: true });
+              await cost.getByText("$0.04", { exact: true }).waitFor();
+              await requests.getByText("3", { exact: true }).waitFor();
+              await tokens.getByText("384", { exact: true }).waitFor();
               const text = await frame.locator("body").innerText();
-              for (const title of [
-                "Do we have enough accounts?",
-                "Who uses what",
-                "API cost and subscription value",
-                "Needs attention",
-              ])
-                assert.ok(text.includes(title), `Approved r2 section: ${title}`);
-              // Coverage remains visible without claiming another page exists.
-              assert.match(
-                await frame
-                  .getByRole("status")
-                  .filter({
-                    hasText: learningRef
-                      ? "This read is incomplete."
-                      : "Usage for this range is incomplete.",
-                  })
-                  .innerText(),
-                /partial|incomplete/i,
-              );
               assert.equal(
-                await frame
-                  .locator("#who")
-                  .getByText(/Showing the first 10 pages/)
-                  .count(),
+                await frame.getByText(/Accounts are partial:/).count(),
                 0,
-                "Partial coverage without a next cursor has no pagination note",
+                "Collapsed account details make no claim that account paging was truncated",
               );
               // No projection or run-out date exists, so none may be drawn or promised.
               assert.doesNotMatch(text, /Projected ·|runs short|runs out|out ~/i);
@@ -2360,55 +2362,27 @@ test(
                 .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label")));
               assert.equal(charts.length, 2);
               for (const label of charts) assert.doesNotMatch(label, /seasonal forecast/);
-              const enough = await frame
-                .getByRole("link", { name: /Enough accounts\?/ })
-                .innerText();
-              if (learningRef) {
-                // The historical guard treated partial coverage as a different snapshot.
-                assert.match(text, /This read is incomplete/);
-                assert.match(enough, /Read incomplete/);
-                for (const lab of ["Codex", "Claude"]) {
-                  const body = await frame
-                    .getByRole("article", { name: lab, exact: true })
-                    .innerText();
-                  assert.match(body, /Incomplete snapshot/);
-                  assert.match(body, /Forecast and verdict withheld/);
-                }
-              } else {
-                for (const withheld of [
-                  "Incomplete snapshot",
-                  "Forecast and verdict withheld",
-                  "This read is incomplete",
-                  "Read incomplete",
-                ])
-                  assert.ok(!text.includes(withheld), `No withheld state: ${withheld}`);
-                assert.equal(
-                  await frame
-                    .getByRole("status")
-                    .filter({ hasText: "Usage for this range is incomplete." })
-                    .isVisible(),
-                  true,
-                  "Partial usage keeps its own warning",
+              assert.doesNotMatch(
+                text,
+                /Incomplete snapshot|Forecast and verdict withheld|Read incomplete/,
+              );
+              for (const lab of ["OpenAI", "Anthropic"]) {
+                const body = await frame
+                  .getByRole("article", { name: lab, exact: true })
+                  .innerText();
+                assert.match(body, /Learning · /);
+                assert.ok(
+                  body.includes(
+                    "The forecast starts after 2 completed weeks; advice starts after 4.",
+                  ),
+                  `${lab} names the 2-week forecast and 4-week advice thresholds`,
                 );
-                assert.match(enough, /Too early to say/);
-                for (const lab of ["Codex", "Claude"]) {
-                  const body = await frame
-                    .getByRole("article", { name: lab, exact: true })
-                    .innerText();
-                  assert.match(body, /Learning · /);
-                  assert.ok(
-                    body.includes(
-                      "The forecast starts after 2 completed weeks; advice starts after 4.",
-                    ),
-                    `${lab} names the 2-week forecast and 4-week advice thresholds`,
-                  );
-                  assert.match(body, /0 completed weeks\. No projection or account count yet\./);
-                }
-                for (const label of charts) assert.match(label, /forecast learning/);
+                assert.match(body, /0 completed weeks\. No projection or account count yet\./);
               }
+              for (const label of charts) assert.match(label, /forecast learning/);
               assert.ok(
                 await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-                "Overview fits at phone and desktop widths",
+                "Summary and capacity fit at phone and desktop widths",
               );
               await page.locator("iframe").evaluate(
                 (iframe, height) => {
@@ -2423,7 +2397,7 @@ test(
               viewport: { width, height: 1000 },
               usage,
               // Same range, same capture, no further page: only coverage is partial.
-              overview: (value) => ({ ...value, partial: true }),
+              partial: true,
               capacity: (input) => {
                 const result = capacityFixture(input);
                 const at = input.to;
@@ -2507,9 +2481,9 @@ test(
         await session(
           async ({ page, frame, settled }) => {
             release();
-            await frame.getByRole("article", { name: "Codex", exact: true }).waitFor();
+            await frame.getByRole("article", { name: "OpenAI", exact: true }).waitFor();
             await settled();
-            const lab = frame.getByRole("article", { name: "Codex", exact: true });
+            const lab = frame.getByRole("article", { name: "OpenAI", exact: true });
             const short = lab.getByRole("radio", { name: "5-hour", exact: true });
             if (samplerRef) {
               assert.equal(await short.count(), 0, "The baseline lost its reported short window");
@@ -2545,7 +2519,8 @@ test(
         );
       });
 
-    // Overview marks reuse provider icons and keep a label badge when no icon is available.
+    // The approved overview mock is the contract: every section names the lab and shows one logo
+    // image, the provider app's own icon when supplied, else the mock's product logo.
     const mark = (fill) =>
       `data:image/svg+xml;base64,${Buffer.from(
         `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="${fill}"/></svg>`,
@@ -2554,7 +2529,7 @@ test(
     const darkMark = mark("#9be7c4");
     for (const width of [1280, 390])
       await t.test(
-        `overview reuses provider icons and keeps fallback badges at ${width}px`,
+        `overview lab marks match the approved mock in every section at ${width}px`,
         async () => {
           const f = quotaSamplingFixture(Date.now() - minute, samplerUsage);
           await f.usage.observe();
@@ -2685,6 +2660,7 @@ test(
               ...emptyUsage.value,
               total,
               models: [{ ...total, provider: "codex", model: "Synthetic model" }],
+              forecastProviders: ["codex"],
             },
           };
           const scenarios = [
@@ -2699,26 +2675,59 @@ test(
               src: darkMark,
             },
             { scheme: "light", icons: undefined, src: null },
+            // The mock's logos sit on a white tile in either scheme.
+            { scheme: "dark", icons: undefined, src: null },
           ];
           for (const scenario of scenarios) {
             viewResult = { ok: true, value: pool(scenario.icons) };
             await session(
               async ({ page, frame, settled }) => {
                 release();
-                const lab = frame.getByRole("article", { name: "Codex", exact: true });
+                const lab = frame.getByRole("article", { name: "OpenAI", exact: true });
                 await lab.waitFor();
                 await frame
-                  .getByRole("heading", { name: "Needs attention", exact: true })
+                  .getByRole("heading", { name: "How much are we using?", exact: true })
                   .waitFor();
-                await frame
-                  .getByText("4 subscription accounts across 1 lab", { exact: false })
-                  .waitFor();
-                const glance = frame.getByRole("navigation", { name: "At a glance" });
-                await glance.getByText(/^Codex:/).waitFor();
-                // All three overview entries use the same provider label.
-                const who = frame.locator("#who");
-                await frame.getByRole("radio", { name: "Labs", exact: true }).click();
-                await who.getByText("Codex", { exact: true }).first().waitFor();
+                await frame.getByRole("heading", { name: "By lab", exact: true }).waitFor();
+                const by = frame.getByRole("tablist", { name: "By", exact: true });
+                assert.equal(await by.getByRole("tab", { name: "Lab", selected: true }).count(), 1);
+                assert.equal(await by.getByRole("tab", { name: "Model" }).count(), 1);
+                const breakdown = frame.locator(
+                  'section[aria-labelledby="usage-breakdown-heading"]',
+                );
+                const labRow = breakdown
+                  .locator("li")
+                  .filter({ has: frame.getByText("OpenAI", { exact: true }) });
+                await labRow.waitFor();
+                // One identity per lab: the usage row and the capacity panel draw the same image.
+                const imageOf = (scope) =>
+                  scope.locator("[data-lab-mark] img").evaluate((image) => ({
+                    mark: image.closest("[data-lab-mark]").dataset.labMark,
+                    source: image.currentSrc,
+                    loaded: image.complete && image.naturalWidth > 0,
+                  }));
+                const rowImage = await imageOf(labRow);
+                assert.deepEqual(rowImage, await imageOf(lab), "By lab and capacity share a mark");
+                assert.equal(rowImage.loaded, true, "The lab row shows a logo image");
+                assert.equal(rowImage.mark, scenario.src === null ? "logo" : "icon");
+                const forecast = frame.locator('section[aria-labelledby="forecast-heading"] li');
+                assert.deepEqual(
+                  await imageOf(
+                    forecast.filter({ has: frame.getByText("OpenAI", { exact: true }) }),
+                  ),
+                  rowImage,
+                  "Where it's heading shares the lab's mark",
+                );
+                assert.equal(
+                  await forecast
+                    .filter({ has: frame.getByText("All labs", { exact: true }) })
+                    .getByText("Σ", { exact: true })
+                    .count(),
+                  1,
+                  "All labs carries the mock's sum tile",
+                );
+                assert.equal(await labRow.getByText("O", { exact: true }).count(), 0);
+                assert.equal(await labRow.getByText("OA", { exact: true }).count(), 0);
                 await settled();
                 if (nativeViewRef) {
                   assert.ok(
@@ -2733,93 +2742,53 @@ test(
                   await settled();
                   await capture(
                     page,
-                    `provider-app-reuse-${scenario.src === null ? "no-icon" : scenario.scheme}-${width}`,
+                    `provider-app-reuse-${scenario.src === null ? "no-icon-" : ""}${scenario.scheme}-${width}`,
                   );
                   return;
                 }
-                for (const scope of [lab, glance, who]) {
-                  if (scenario.src === null) {
-                    assert.equal(await scope.getByText("C", { exact: true }).count(), 1);
-                    assert.equal(await scope.locator("picture").count(), 0);
-                  } else {
-                    assert.equal(await scope.locator('[data-lab-mark="icon"]').count(), 1);
-                    assert.equal(
-                      await scope.locator("img").evaluate((image) => image.currentSrc),
-                      scenario.src,
-                    );
-                  }
+                assert.equal(
+                  await lab.getByText("O", { exact: true }).count(),
+                  0,
+                  "A capacity lab shows a logo image, never a letter, while one loads",
+                );
+                assert.equal(
+                  await lab.locator("img, picture").count(),
+                  scenario.src === null ? 1 : 2,
+                );
+                if (scenario.src === null) {
+                  assert.match(
+                    (await imageOf(lab)).source,
+                    /^data:image\/svg\+xml;base64,/,
+                    "Without a supplied icon the mock's ChatGPT logo stands for OpenAI",
+                  );
+                } else {
+                  const icon = lab.locator('[data-lab-mark="icon"] img');
+                  assert.deepEqual(
+                    await icon.evaluate((image) => ({
+                      source: image.currentSrc,
+                      loaded: image.complete && image.naturalWidth > 0,
+                    })),
+                    { source: scenario.src, loaded: true },
+                    "The supplied provider icon loads in the current colour scheme",
+                  );
                 }
-                const text = await frame.locator("body").innerText();
-                // Membership and routing are the pool's: all four accounts count, whatever inspection.
-                assert.match(text, /4 subscription accounts across 1 lab/);
-                // Native facts replace the pool's copy; withheld accounts add nothing.
-                assert.match(text, /(?<!\d)1 account failed its latest usage check/);
-                // Kinds apart: the source's weekly and model resets, the ambiguous account's own one.
-                const resets = frame.getByRole("button", {
-                  name: "2 weekly resets · 1 Synthetic model reset · 1 reset with unknown scope available",
-                  exact: true,
-                });
-                await resets.waitFor();
-                assert.match(text, /(?<!\d)1 account needs you/);
-                assert.doesNotMatch(text, /stale or missing readings/);
-                assert.doesNotMatch(text, /accounts failed their latest usage check/);
+                const resets = frame.getByRole("list", { name: "Banked resets", exact: true });
+                const resetText = await resets.innerText();
+                assert.match(resetText, /2 weekly resets/);
+                assert.match(resetText, /Synthetic model reset/);
+                assert.match(resetText, /reset with unknown scope/);
+                assert.doesNotMatch(resetText, /5 resets|7 resets|11 resets/);
+                await resets.getByText("Spend them from Accounts.", { exact: true }).waitFor();
+                const accounts = labRow.getByRole("button", { name: "Accounts ▸", exact: true });
+                assert.equal(await accounts.getAttribute("aria-expanded"), "false");
+                await accounts.click();
+                await labRow.getByText("No account recorded", { exact: true }).waitFor();
+                assert.equal(await labRow.getByText("Unattributed", { exact: true }).count(), 1);
+                await frame.locator("body").innerText();
                 assert.ok(
                   await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
-                  "Overview fits at phone and desktop widths",
+                  "The summary and expanded account row fit at phone and desktop widths",
                 );
-                // Ambiguity keeps its old model limit; the resolved source replaces its copy.
-                const limitRows = frame
-                  .getByRole("region", { name: "Model limits" })
-                  .getByRole("button");
-                assert.equal(await limitRows.count(), 2);
-                const fallbackText = await limitRows
-                  .filter({ hasText: "ambiguous@pool.example" })
-                  .innerText();
-                assert.match(fallbackText, /Weekly 20% remaining/);
-                assert.doesNotMatch(fallbackText, /Synthetic model weekly/);
-                const limitText = await limitRows
-                  .filter({ hasText: "native@pool.example" })
-                  .innerText();
-                assert.match(limitText, /native@pool\.example/);
-                assert.match(limitText, /Synthetic model weekly 98% remaining/);
-                if (scenario.src !== null) {
-                  // Details are the source's report through the shared table, failed refresh kept.
-                  await resets.click();
-                  const dialog = frame.getByRole("dialog", { name: "Banked resets" });
-                  await dialog.waitFor();
-                  const details = await dialog.innerText();
-                  assert.doesNotMatch(details, /denied@pool\.example|hidden@pool\.example/);
-                  assert.doesNotMatch(details, /\b(5|7|11) resets\b/);
-                  const native = dialog.locator("section", {
-                    has: frame.getByRole("heading", { name: "native@pool.example" }),
-                  });
-                  assert.match(
-                    await native.innerText(),
-                    /Latest check failed .*the source was rate limited\. Showing the last reading\./,
-                  );
-                  const rows = await native.locator("tbody tr").allInnerTexts();
-                  const names = rows.map(rowName);
-                  assert.deepEqual(names, [
-                    "Plan",
-                    "Weekly",
-                    "Synthetic model weekly",
-                    "Weekly resets",
-                    "Synthetic model resets",
-                  ]);
-                  const row = (name) => rows[names.indexOf(name)];
-                  assert.match(row("Plan"), /Pro/);
-                  assert.match(row("Synthetic model weekly"), /98% remaining/);
-                  assert.match(
-                    row("Synthetic model weekly"),
-                    /This model's own limit\. Its use also counts toward the weekly limit\./,
-                  );
-                  assert.match(row("Weekly resets"), /\b2 resets\b/);
-                  assert.match(row("Synthetic model resets"), /\b1 reset\b/);
-                  assert.ok(await fitsWithin(frame, dialog), `Native Details fit at ${width}px`);
-                  await capture(page, `provider-app-details-${scenario.scheme}-${width}`);
-                  await dialog.getByRole("button", { name: "Close", exact: true }).click();
-                  await dialog.waitFor({ state: "hidden" });
-                }
                 await page.locator("iframe").evaluate(
                   (iframe, height) => {
                     iframe.style.height = `${height}px`;
@@ -2829,7 +2798,7 @@ test(
                 await settled();
                 await capture(
                   page,
-                  `provider-app-reuse-${scenario.src === null ? "no-icon" : scenario.scheme}-${width}`,
+                  `provider-app-reuse-${scenario.src === null ? "no-icon-" : ""}${scenario.scheme}-${width}`,
                 );
               },
               { viewport: { width, height: 1000 }, colorScheme: scenario.scheme, capacity, usage },
@@ -2892,60 +2861,53 @@ test(
             );
             await settled();
             await capture(page, `usage-awaits-provider-names-${width}`);
-            const who = frame.locator("#who");
-            const money = frame.locator("#cost");
-            await requests(1, undefined, "capacity");
             assert.ok(heldCapacity.length > 0, "Every capacity response stays held");
+            const cost = frame.getByRole("region", { name: "Est. cost", exact: true });
+            const requests = frame.getByRole("region", { name: "Requests", exact: true });
+            const tokens = frame.getByRole("region", { name: "Tokens", exact: true });
             assert.deepEqual(
               await Promise.all([
-                frame.getByRole("heading", { name: "Who uses what", exact: true }).isVisible(),
-                money.getByText("API cost", { exact: true }).isVisible(),
-                money
-                  .getByText(/^\$0\.02/)
-                  .first()
+                frame
+                  .getByRole("heading", { name: "How much are we using?", exact: true })
                   .isVisible(),
-                who
-                  .getByText(/128 tokens/)
-                  .first()
-                  .isVisible(),
-                who
-                  .getByText(/1 requests?/)
-                  .first()
-                  .isVisible(),
+                cost.getByText("$0.02", { exact: true }).isVisible(),
+                requests.getByText("1", { exact: true }).isVisible(),
+                tokens.getByText("128", { exact: true }).isVisible(),
+                frame.getByRole("heading", { name: "By lab", exact: true }).isVisible(),
               ]),
               [true, true, true, true, true],
               "The completed usage response must be visible while every capacity response is held",
             );
-            await frame.getByRole("radio", { name: "Models", exact: true }).click();
-            await frame
-              .getByRole("radio", { name: "Models", exact: true, checked: true })
-              .waitFor();
-            await who.getByText("Synthetic model", { exact: true }).waitFor();
-            assert.equal(await who.getByText("Synthetic model", { exact: true }).isVisible(), true);
-            if (width === 390) {
-              // Phones keep the mock's columns; the range total above the table carries tokens.
-              assert.match(await who.innerText(), /128 tokens · 1 request in 7 days/);
-            } else {
-              assert.equal(
-                await who.locator('table [title="128 tokens"]').first().isVisible(),
-                true,
-              );
-            }
+            const by = frame.getByRole("tablist", { name: "By", exact: true });
+            const labBreakdown = frame.locator(
+              'section[aria-labelledby="usage-breakdown-heading"]',
+            );
+            assert.equal(await labBreakdown.getByText("codex", { exact: true }).count(), 0);
+            assert.equal(await labBreakdown.getByText("Codex", { exact: true }).count(), 0);
+            assert.doesNotMatch(await labBreakdown.innerText(), /\b(?:codex|Codex|OpenAI)\b/);
+            await by.getByRole("tab", { name: "Model", exact: true }).click();
+            await by.getByRole("tab", { name: "Model", exact: true, selected: true }).waitFor();
+            const breakdown = frame.locator('section[aria-labelledby="usage-breakdown-heading"]');
+            await breakdown.getByRole("heading", { name: "By model", exact: true }).waitFor();
+            await breakdown.getByText("Synthetic model", { exact: true }).waitFor();
             assert.equal(
-              await frame.getByText("codex", { exact: true }).count(),
-              0,
-              "Provider IDs must not flash before the pool view supplies their names",
+              await breakdown.getByText("Synthetic model", { exact: true }).isVisible(),
+              true,
             );
             assert.equal(
-              await frame.getByText("Codex", { exact: true }).count(),
+              await labBreakdown.getByText("codex", { exact: true }).count(),
               0,
-              "Usage must not guess provider names before capacity supplies them",
+              "The model view does not leak its provider ID",
             );
-            assert.doesNotMatch(await frame.locator("body").innerText(), /\b(?:codex|Codex)\b/);
+            assert.equal(await frame.getByText("Codex", { exact: true }).count(), 0);
+            assert.doesNotMatch(
+              await frame.locator("body").innerText(),
+              /\b(?:codex|Codex|OpenAI)\b/,
+            );
             assert.equal(
               await frame.getByRole("list", { name: "Accounts needed", exact: true }).count(),
               0,
-              "Account advice waits for provider names instead of naming raw IDs",
+              "The summary does not invent account advice from lab totals",
             );
             assert.deepEqual(await accepted(), [], "Usage does not claim accounts are ready");
             const usageReads = await frame.evaluate(
@@ -2984,37 +2946,28 @@ test(
                   .length >= 1,
             );
             await settled();
-            assert.match(
-              await frame.getByRole("link", { name: /Enough accounts\?/ }).innerText(),
-              /Reading/,
-              "Capacity advice waits for provider names even after capacity answers",
+            await frame
+              .getByRole("heading", { name: "Do we have enough accounts?", exact: true })
+              .waitFor();
+            assert.equal(await frame.getByText("codex", { exact: true }).count(), 0);
+            assert.equal(await frame.getByText("Codex", { exact: true }).count(), 0);
+            assert.doesNotMatch(
+              await frame.locator("body").innerText(),
+              /\b(?:codex|Codex|OpenAI)\b/,
             );
             assert.deepEqual(await accepted(), [], "Capacity alone does not report accounts ready");
             release();
-            await frame.getByText("1 subscription account across 1 lab", { exact: true }).waitFor();
-            await frame.getByRole("radio", { name: "Models", exact: true }).click();
-            await frame
-              .getByRole("radio", { name: "Models", exact: true, checked: true })
-              .waitFor();
-            await frame.getByText("Synthetic model", { exact: true }).waitFor();
-            await frame.getByText("Codex", { exact: true }).first().waitFor();
-            await frame
-              .getByRole("link", { name: /Enough accounts\?/ })
-              .getByText(/^Codex:/)
-              .waitFor();
+            const lab = frame.getByRole("article", { name: "OpenAI", exact: true });
+            await lab.waitFor();
+            await frame.getByText("OpenAI", { exact: true }).first().waitFor();
+            await breakdown.getByRole("heading", { name: "By model", exact: true }).waitFor();
             assert.deepEqual(
-              await who.evaluate((section) => {
-                const table = section.querySelector("table").getBoundingClientRect();
-                return [table.right <= section.getBoundingClientRect().right + 0.5];
+              await breakdown.evaluate((section) => {
+                const row = section.querySelector("li").getBoundingClientRect();
+                return [row.right <= section.getBoundingClientRect().right + 0.5];
               }),
               [true],
-              `The usage table stays inside the content column at ${width}px`,
-            );
-            assert.deepEqual(
-              await who
-                .locator("thead th")
-                .evaluateAll((cells) => cells.map((cell) => cell.textContent.trim())),
-              ["Model", "Tokens by lab", "Requests", "Tokens", "Subscription value", "API cost"],
+              `The model breakdown stays inside the content column at ${width}px`,
             );
             await capture(page, `usage-ready-${width}`);
             await settled();
@@ -3136,81 +3089,50 @@ test(
           return value;
         };
         await session(
-          async ({ page, frame, settled }) => {
+          async ({ frame, settled }) => {
             release();
-            await frame.getByRole("radio", { name: "Models", exact: true }).click();
-            const who = frame.locator("#who");
-            const row = (name) =>
-              who.locator("tbody tr").filter({ has: frame.getByText(name, { exact: true }) });
-            await row("synthetic-priced").waitFor();
-            await row("Model not recorded").waitFor();
-            await who.locator("table").scrollIntoViewIfNeeded();
-            await settled();
-            await capture(page, `cost-reasons-${width}`);
-            if (artifacts && width === 390) costReasonsVideo = page.video();
-            for (const [name, reason] of [
-              ["Model not recorded", noModel],
-              ["synthetic-unlisted", noPrice],
-              ["synthetic-tokenless", noTokens],
-            ]) {
-              const cells = await row(name).getByText(reason, { exact: true }).all();
-              // Phones see the API reason stacked in the visible column; wide screens see both columns.
-              const shown = await Promise.all(cells.map((cell) => cell.isVisible()));
-              assert.ok(
-                shown.includes(true),
-                `${name} shows "${reason}" as text, not only a tooltip, at ${width}px`,
-              );
-              assert.doesNotMatch(
-                await row(name).innerText(),
-                /\$0\.00|unavailable/i,
-                `${name} never reads as zero or a blanket unavailable label`,
-              );
-            }
-            const priced = await row("synthetic-priced").innerText();
-            assert.match(priced, /\$1\.20/, "Subscription value stays visible");
-            assert.match(priced, /\$3\.40/, `API cost stays readable at ${width}px`);
-            assert.doesNotMatch(
-              await row("synthetic-tokenless").innerText(),
-              /No public price|Model not recorded/,
-              "A missing-token row keeps its own reason",
+            await frame
+              .getByRole("heading", { name: "How much are we using?", exact: true })
+              .waitFor();
+            await frame.getByRole("heading", { name: "By lab", exact: true }).waitFor();
+            const expected = [
+              ["Est. cost", "$3.40"],
+              ["Requests", "4"],
+              ["Tokens", "512"],
+            ];
+            for (const [label, value] of expected)
+              await frame
+                .getByRole("region", { name: label, exact: true })
+                .getByText(value, { exact: true })
+                .waitFor();
+            const breakdown = frame.locator('section[aria-labelledby="usage-breakdown-heading"]');
+            await breakdown.getByText("Unknown lab", { exact: true }).waitFor();
+            const legacy = await legacyOverview(frame, {
+              from: "2026-10-01T00:00:00Z",
+              to: "2026-11-01T00:00:00Z",
+              days: 30,
+            });
+            assert.equal(legacy.status, 200);
+            assert.equal(legacy.value.metrics.apiBilled.amount, "3.40");
+            assert.equal(legacy.value.metrics.subscriptionValue.amount, "1.20");
+            const legacySlices = legacy.value.metrics.usageSlices;
+            assert.equal(legacySlices.find((slice) => slice.model === null)?.apiReason, noModel);
+            assert.equal(
+              legacySlices.find((slice) => slice.model === "synthetic-unlisted")?.apiReason,
+              noPrice,
+            );
+            assert.equal(
+              legacySlices.find((slice) => slice.model === "synthetic-tokenless")?.apiReason,
+              noTokens,
             );
             assert.equal(
               await frame
                 .locator("body")
                 .evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
               true,
-              "Real-length catalog hashes and row reasons fit the viewport",
+              `Summary values fit at ${width}px`,
             );
-            const costs = frame.locator("section").filter({
-              has: frame.getByRole("heading", {
-                name: "API cost and subscription value",
-                exact: true,
-              }),
-            });
-            const lab = costs
-              .locator("tbody tr")
-              .filter({ has: frame.getByRole("rowheader", { name: "Codex", exact: true }) });
-            const apiCell = lab.locator("td").first();
-            const lastReason = apiCell.getByText("No public price for synthetic-unlisted-three", {
-              exact: true,
-            });
-            assert.equal(await lastReason.isVisible(), false);
-            await apiCell.getByRole("button", { name: "+1 more", exact: true }).click();
-            assert.equal(
-              await lastReason.isVisible(),
-              true,
-              "A non-expandable lab row exposes all reasons by touch",
-            );
-            await apiCell.getByRole("button", { name: "Show less", exact: true }).click();
-            assert.equal(await lastReason.isVisible(), false, "The reason disclosure closes again");
-            assert.deepEqual(
-              await who.evaluate((section) => {
-                const table = section.querySelector("table").getBoundingClientRect();
-                return table.right <= section.getBoundingClientRect().right + 0.5;
-              }),
-              true,
-              `The usage table stays inside the content column at ${width}px`,
-            );
+            await settled();
           },
           { viewport: { width, height: 860 }, usage, overview },
         );
@@ -3228,17 +3150,13 @@ test(
                     .length >= 1,
               );
               await settled();
-              const who = frame.locator("#who");
-              await requests(1, undefined, "capacity");
+              const failure = frame.getByText("Usage could not be read. Try again.", {
+                exact: true,
+              });
               assert.ok(heldCapacity.length > 0);
+              assert.equal(await failure.isVisible(), true);
               assert.equal(
-                await who
-                  .getByText("Overview could not be read. Reload and try again.", { exact: true })
-                  .isVisible(),
-                true,
-              );
-              assert.equal(
-                await who.getByRole("button", { name: "Try again", exact: true }).isEnabled(),
+                await frame.getByRole("button", { name: "Try again", exact: true }).isEnabled(),
                 true,
               );
               const before = await frame.evaluate(
@@ -3246,16 +3164,9 @@ test(
                   Reflect.get(window, "queries").filter((name) => name === "overviewUsage").length,
               );
               usageResult = emptyUsage;
-              await who.getByRole("button", { name: "Try again", exact: true }).click();
-              await who
-                .getByText("No requests through this pool in the last 7 days.", { exact: true })
-                .waitFor();
-              assert.equal(
-                await who
-                  .getByText("Overview could not be read. Reload and try again.", { exact: true })
-                  .count(),
-                0,
-              );
+              await frame.getByRole("button", { name: "Try again", exact: true }).click();
+              await frame.getByText("No usage in this range.", { exact: true }).waitFor();
+              assert.equal(await failure.count(), 0);
               assert.equal(
                 await frame.getByRole("list", { name: "Accounts needed", exact: true }).count(),
                 0,
@@ -3345,7 +3256,10 @@ test(
               );
               assert.equal(await frame.getByText("codex", { exact: true }).count(), 0);
               assert.equal(await frame.getByText("Codex", { exact: true }).count(), 0);
-              assert.doesNotMatch(await frame.locator("body").innerText(), /\b(?:codex|Codex)\b/);
+              assert.doesNotMatch(
+                await frame.locator("body").innerText(),
+                /\b(?:codex|Codex|OpenAI)\b/,
+              );
               assert.deepEqual(await accepted(), []);
               const reads = await frame.evaluate(
                 () =>
@@ -3353,7 +3267,10 @@ test(
                     .length,
               );
               release();
-              await who.getByText(/Codex/).first().waitFor();
+              await who
+                .getByText(/OpenAI/)
+                .first()
+                .waitFor();
               await settled();
               assert.equal(
                 await frame.evaluate(
@@ -3459,59 +3376,72 @@ test(
         };
         await session(
           async ({ frame, settled }) => {
-            const who = frame.locator("#who");
-            await who
-              .getByText(/128 tokens/)
-              .first()
+            await frame
+              .getByRole("region", { name: "Tokens", exact: true })
+              .getByText("128", { exact: true })
               .waitFor();
-            const enough = frame.getByRole("link", { name: /Enough accounts\?/ });
-            assert.match(await enough.textContent(), /Reading/);
-            await frame.getByRole("radio", { name: "30 days", exact: true }).click();
-            await who.getByText(/1 request in 30 days/).waitFor();
+            const range = frame.getByRole("tablist", { name: "Range", exact: true });
+            const capacity = frame.locator("#capacity");
+            await range.getByRole("tab", { name: "30 days", exact: true }).click();
+            await range
+              .getByRole("tab", { name: "30 days", exact: true, selected: true })
+              .waitFor();
+            await frame
+              .getByRole("region", { name: "Requests", exact: true })
+              .getByText("1", { exact: true })
+              .waitFor();
             const old = heldCapacity.filter((entry) => entry.input.days === 7);
             assert.ok(old.length > 0, "The previous range has real capacity reads in flight");
             heldCapacity = heldCapacity.filter((entry) => entry.input.days !== 7);
             for (const entry of old)
               entry.response.end(JSON.stringify(capacityFixture(entry.input)));
             await settled();
-            assert.match(
-              await enough.textContent(),
-              /Reading/,
-              "Old-range capacity never completes the new overview",
+            assert.equal(
+              await capacity.getByText(/Incomplete snapshot/).count(),
+              0,
+              "A stale 7-day result does not surface as 30-day capacity",
+            );
+            assert.equal(
+              await capacity.locator("article").count(),
+              0,
+              "A stale result does not add capacity rows to the new range",
             );
             release();
             await frame.getByText("Pick your first account", { exact: true }).waitFor();
             // The pool has no accounts, so any reading it still has is not current capacity.
-            await enough.getByText("No accounts yet", { exact: true }).waitFor();
             assert.equal(
               await frame.locator("#capacity article").count(),
               0,
               "A lab with no current account shows no capacity panel",
             );
             assert.match(
-              await frame.locator("#capacity").innerText(),
+              await capacity.innerText(),
               /No accounts in this pool, so there is no capacity to show/,
             );
             assert.equal(
-              await frame.getByText(/This read is incomplete/).count(),
+              await frame.getByText(/Part of this range couldn't be read/).count(),
               0,
               "Only a same-range pair can claim coherence",
             );
-            // Ordinary view polls must answer: held polls would exhaust the browser's HTTP slots.
+            // View refreshes answer while usage and capacity exercise their independent reads.
             answerFresh = true;
             usageResult = failed;
             holdCapacity = true;
             await frame.evaluate(() => fetch("/_fixture/change", { method: "POST" }));
-            await who
-              .getByText("Overview could not be read. Reload and try again.", { exact: true })
-              .waitFor();
+            await frame.getByText("Usage could not be read. Try again.", { exact: true }).waitFor();
             assert.ok(
               heldCapacity.length > 0,
               "A new usage error cannot wait for refreshed capacity",
             );
             usageResult = usage;
-            await who.getByRole("button", { name: "Try again", exact: true }).click();
-            await who.getByText(/1 request in 30 days/).waitFor();
+            await frame.getByRole("button", { name: "Try again", exact: true }).click();
+            await range
+              .getByRole("tab", { name: "30 days", exact: true, selected: true })
+              .waitFor();
+            await frame
+              .getByRole("region", { name: "Requests", exact: true })
+              .getByText("1", { exact: true })
+              .waitFor();
             member = true;
             holdPersonal = true;
             await frame.evaluate(() => fetch("/_fixture/change", { method: "POST" }));
@@ -3527,36 +3457,110 @@ test(
               "Personal usage stays held after the manager endpoint denies access",
             );
             assert.equal(
-              await frame.getByRole("navigation", { name: "At a glance", exact: true }).count(),
+              await frame
+                .getByRole("heading", { name: "How much are we using?", exact: true })
+                .count(),
               0,
-              "The old manager snapshot disappears as soon as authorization changes",
+              "The manager summary disappears as soon as authorization changes",
             );
             holdPersonal = false;
             for (const entry of heldPersonal.splice(0)) entry.response.end(entry.reply);
-            await who
+            await frame
               .getByText(
                 "Your requests through this pool in the last 30 days. Nobody else's show here.",
                 { exact: true },
               )
               .waitFor();
           },
-          { viewport: { width: 390, height: 860 }, usage, capacityHeld: true, clock: true },
+          { viewport: { width: 390, height: 860 }, usage, capacityHeld: true },
         );
       },
     );
+    await t.test("capacity-only revisions make zero usage summary reads", async () => {
+      viewResult = { ok: true, value: empty };
+      await session(
+        async ({ frame, clock }) => {
+          answerFresh = true;
+          release();
+          await frame.waitForFunction(() =>
+            ["overviewUsage", "capacity"].every((name) =>
+              Reflect.get(window, "completedQueries").includes(name),
+            ),
+          );
+          const initial = summaryReads;
+          const capacityCount = await frame.evaluate(
+            () =>
+              Reflect.get(window, "completedQueries").filter((name) => name === "capacity").length,
+          );
+          await frame.evaluate(() => fetch("/_fixture/topic/pool-readings", { method: "POST" }));
+          await frame.waitForFunction(
+            (count) =>
+              Reflect.get(window, "completedQueries").filter((name) => name === "capacity").length >
+              count,
+            capacityCount,
+          );
+          await clock.runFor(200);
+          await frame.evaluate(() =>
+            fetch("/_fixture/sentinel").then((response) => response.arrayBuffer()),
+          );
+          assert.equal(summaryReads, initial, "a capacity revision cannot refetch usage");
+          await frame.evaluate(() => fetch("/_fixture/topic/pool-usage", { method: "POST" }));
+          await frame.waitForFunction(
+            (count) =>
+              Reflect.get(window, "completedQueries").filter((name) => name === "overviewUsage")
+                .length === count,
+            initial + 1,
+          );
+          assert.equal(summaryReads, initial + 1, "a relevant revision still refreshes once");
+          await frame.evaluate(() =>
+            fetch("/_fixture/topic/pool-usage?repeat", { method: "POST" }),
+          );
+          await clock.runFor(200);
+          await frame.evaluate(() =>
+            fetch("/_fixture/sentinel").then((response) => response.arrayBuffer()),
+          );
+          assert.equal(summaryReads, initial + 1, "a duplicate relevant revision reads no usage");
+        },
+        { clock: true, viewport: { width: 1280, height: 960 } },
+      );
+      topicRevisions.clear();
+    });
+
     for (const width of sourceRef ? [] : [1440, 390])
       await t.test(
-        `hidden pool links stop refreshing and resume once overdue at ${width}px`,
+        `hidden pool summary defers changed revisions and resumes once at ${width}px`,
         async () => {
           viewResult = { ok: true, value: empty };
           await session(
             async ({ page, frame, clock }) => {
               answerFresh = true;
               release();
-              const share = frame.getByRole("link", { name: "Share", exact: true });
-              await share.waitFor();
-              const initial = contextReads;
-              assert.equal(initial, 2, "StrictMode's initial context reads have completed");
+              const summaryCounts = async () =>
+                frame.evaluate(() => ({
+                  sent: Reflect.get(window, "queries").filter((name) => name === "overviewUsage")
+                    .length,
+                  completed: Reflect.get(window, "completedQueries").filter(
+                    (name) => name === "overviewUsage",
+                  ).length,
+                }));
+              const completedSummaries = async (expected) => {
+                await frame.waitForFunction(
+                  (count) =>
+                    Reflect.get(window, "completedQueries").filter(
+                      (name) => name === "overviewUsage",
+                    ).length === count,
+                  expected,
+                );
+                assert.deepEqual(await summaryCounts(), { sent: expected, completed: expected });
+                assert.equal(
+                  summaryReads,
+                  expected,
+                  "The summary route received every completed read",
+                );
+              };
+              await completedSummaries(1);
+              const initial = summaryReads;
+              assert.equal(initial, 1, "The initial accepted summary read has completed");
               const quiet = async (expected, message) => {
                 await page.evaluate(
                   () =>
@@ -3567,12 +3571,12 @@ test(
                 await frame.evaluate(() =>
                   fetch("/_fixture/sentinel").then((response) => response.arrayBuffer()),
                 );
-                assert.equal(
-                  await frame.evaluate(() => Reflect.get(window, "contextSends")),
-                  expected,
+                assert.deepEqual(
+                  await summaryCounts(),
+                  { sent: expected, completed: expected },
                   message,
                 );
-                assert.equal(contextReads, expected, message);
+                assert.equal(summaryReads, expected, message);
               };
               const host = async (active) => {
                 await frame.evaluate(() => {
@@ -3603,17 +3607,11 @@ test(
                 );
               };
               await host(false);
+              await frame.evaluate(() => fetch("/_fixture/change", { method: "POST" }));
               await clock.runFor(9 * minute);
-              await quiet(initial, "A retained hidden pool makes no context reads");
+              await quiet(initial, "A retained hidden pool makes no summary reads");
               await host(true);
-              await share
-                .and(frame.locator(`[href="${parentOrigin}/share/context-${initial + 1}"]`))
-                .waitFor();
-              assert.equal(
-                contextReads,
-                initial + 1,
-                "An overdue return renews its link exactly once",
-              );
+              await completedSummaries(initial + 1);
               await frame.evaluate(() => {
                 Object.defineProperty(document, "visibilityState", {
                   configurable: true,
@@ -3621,8 +3619,9 @@ test(
                 });
                 document.dispatchEvent(new Event("visibilitychange"));
               });
+              await frame.evaluate(() => fetch("/_fixture/change", { method: "POST" }));
               await clock.runFor(9 * minute);
-              await quiet(initial + 1, "A hidden browser tab makes no context reads");
+              await quiet(initial + 1, "A hidden browser tab makes no summary reads");
               await frame.evaluate(() => {
                 Object.defineProperty(document, "visibilityState", {
                   configurable: true,
@@ -3630,18 +3629,11 @@ test(
                 });
                 document.dispatchEvent(new Event("visibilitychange"));
               });
-              await share
-                .and(frame.locator(`[href="${parentOrigin}/share/context-${initial + 2}"]`))
-                .waitFor();
-              assert.equal(
-                contextReads,
-                initial + 2,
-                "A visible tab renews its overdue link exactly once",
-              );
+              await completedSummaries(initial + 2);
               await host(false);
               await clock.runFor(minute);
               await host(true);
-              await quiet(initial + 2, "A short hidden interval keeps the current link");
+              await quiet(initial + 2, "An unchanged revision keeps the current summary read");
             },
             { clock: true, viewport: { width, height: 960 } },
           );
@@ -3705,13 +3697,14 @@ test(
               frame.evaluate(() => fetch("/_fixture/change", { method: "POST" }));
             assert.deepEqual(await accepted(), []);
             release();
-            const visible = populated
-              ? "1 subscription account across 1 lab"
-              : "Pick your first account";
+            const visible = populated ? "Do we have enough accounts?" : "Pick your first account";
             if (recovery) {
               await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
               assert.deepEqual(await marks(), []);
-              assert.doesNotMatch(await frame.locator("body").innerText(), /\b(?:codex|Codex)\b/);
+              assert.doesNotMatch(
+                await frame.locator("body").innerText(),
+                /\b(?:codex|Codex|OpenAI)\b/,
+              );
               assert.deepEqual(await accepted(), []);
               viewResult = { ok: true, value };
               if (recovery === "manual")
@@ -3732,8 +3725,9 @@ test(
             }
             await frame.getByText(visible, { exact: true }).waitFor();
             assert.equal(
-              await frame.getByRole("link", { name: "Accounts", exact: true }).getAttribute("href"),
-              `${parentOrigin}/org/fixture/apps/pool?view=accounts`,
+              await frame.getByRole("button", { name: "Pick accounts", exact: true }).count(),
+              populated ? 0 : 1,
+              "Only an empty owner pool offers the current Pick accounts action",
             );
             assert.equal(
               await frame.getByRole("list", { name: "Accounts", exact: true }).count(),
@@ -3797,22 +3791,59 @@ test(
     await t.test(
       "incomplete coverage only names truncated pages when a next cursor remains",
       async () => {
+        const total = { ...emptyUsage.value.total, requests: 1 };
         const usage = {
           ok: true,
           value: {
             ...emptyUsage.value,
-            total: { ...emptyUsage.value.total, requests: 1 },
-            models: [{ provider: "codex", model: "Synthetic model" }],
+            total,
+            models: [{ ...total, provider: "codex", model: "Synthetic model" }],
           },
         };
         for (const next of [null, "synthetic-next-page"]) {
           viewResult = { ok: true, value: { ...empty, providers, isOwner: true } };
           await session(
             async ({ frame }) => {
-              const who = frame.locator("#who");
-              await who.getByText(/1 request in 7 days/).waitFor();
-              const note = who.getByText(/Showing the first 10 pages/);
-              assert.equal(await note.count(), next === null ? 0 : 1);
+              release();
+              const legacy = await legacyOverview(frame, {
+                from: "2026-10-01T00:00:00Z",
+                to: "2026-11-01T00:00:00Z",
+                days: 30,
+              });
+              assert.equal(legacy.status, 200);
+              assert.equal(legacy.value.people.next, next);
+              assert.equal(legacy.value.models.next, next);
+              const breakdown = frame.locator('section[aria-labelledby="usage-breakdown-heading"]');
+              await breakdown.getByRole("heading", { name: "By lab", exact: true }).waitFor();
+              const lab = breakdown
+                .locator("li")
+                .filter({ has: frame.getByText("OpenAI", { exact: true }) });
+              await lab.getByRole("button", { name: "Accounts ▸", exact: true }).waitFor();
+              const before = await frame.evaluate(
+                () =>
+                  Reflect.get(window, "queries").filter((name) => name === "accountSeries").length,
+              );
+              await lab.getByRole("button", { name: "Accounts ▸", exact: true }).click();
+              if (next === null) {
+                await lab.getByText("No account recorded", { exact: true }).waitFor();
+                assert.equal(await lab.getByText(/Accounts are partial:/).count(), 0);
+              } else {
+                await lab
+                  .getByText(
+                    "Accounts are partial: more than 20 pages for this range. Choose a shorter range for every account.",
+                    { exact: true },
+                  )
+                  .waitFor();
+              }
+              assert.equal(
+                await frame.evaluate(
+                  () =>
+                    Reflect.get(window, "queries").filter((name) => name === "accountSeries")
+                      .length,
+                ),
+                before + (next === null ? 1 : 20),
+                "Account pages are read only after the lab expands",
+              );
             },
             { usage, partial: true, next },
           );
@@ -3842,12 +3873,34 @@ test(
           [0.88, 0.63],
         ],
       });
-    const saved = sourceRef ? "build-seat-1@example.com" : "3 subscription accounts across 2 labs";
+    const retainedTotal = {
+      ...emptyUsage.value.total,
+      requests: 1,
+      cost: 0.02,
+      tokens: { ...emptyUsage.value.total.tokens, input: 100, output: 28, total: 128 },
+    };
+    const retainedUsage = {
+      ok: true,
+      value: {
+        ...emptyUsage.value,
+        total: retainedTotal,
+        models: [{ ...retainedTotal, provider: "codex", model: "Retained fixture model" }],
+      },
+    };
+    const saved = sourceRef ? "build-seat-1@example.com" : "OpenAI";
+    const savedMarker = (frame) => {
+      const exact = frame.getByText(saved, { exact: true });
+      return sourceRef
+        ? exact
+        : frame
+            .locator('section[aria-labelledby="usage-breakdown-heading"]')
+            .locator("li")
+            .filter({ has: exact })
+            .getByText(saved, { exact: true });
+    };
     /** The retained view is on screen, measured once as a snapshot, and exactly one fresh read followed its commit. */
     const retainedCommitted = async ({ page, frame, accepted, marks, committedAtReady }, name) => {
       release(false);
-      await frame.getByText(saved, { exact: true }).waitFor();
-      await capture(page, name);
       await page.waitForFunction(
         () => Reflect.get(window, "readiness").length + Reflect.get(window, "rejected") > 0,
       );
@@ -3856,11 +3909,15 @@ test(
         [{ ...ready, snapshot: true }],
       );
       assert.deepEqual(await marks(), [{ source: "snapshot" }]);
-      assert.ok((await committedAtReady())?.includes(saved));
+      const committed = await committedAtReady();
+      assert.ok(committed?.includes("Usage read 18m ago"));
+      assert.ok(committed?.includes("Showing a saved view from 6m ago"));
+      await savedMarker(frame).waitFor();
+      await capture(page, name);
       await frame.waitForFunction(() => Reflect.get(window, "followUps").length === 1);
       const [shown] = await frame.evaluate(() => Reflect.get(window, "followUps"));
       assert.ok(
-        shown.includes(saved),
+        shown.includes("Usage read 18m ago"),
         "The fresh follow-up left before the retained view committed",
       );
       assert.ok(shown.includes("Saved view, updating…"));
@@ -3874,20 +3931,23 @@ test(
       "a retained view commits first, then one fresh follow-up replaces it",
       async () => {
         viewResult = retained();
-        await session(async (probe) => {
-          const { page, frame, settled } = probe;
-          await retainedCommitted(probe, "snapshot-updating");
-          await requests(1, true);
-          await frame.getByText("Saved view, updating…", { exact: true }).waitFor();
-          freshResult = live();
-          release(true);
-          await frame.getByText("Usage read just now", { exact: true }).waitFor();
-          assert.equal(await frame.getByText("Saved view", { exact: false }).count(), 0);
-          await capture(page, "live");
-          await settled();
-          assert.deepEqual(sent(), { retained: 2, fresh: 1 });
-          await once(probe);
-        });
+        await session(
+          async (probe) => {
+            const { page, frame, settled } = probe;
+            await retainedCommitted(probe, "snapshot-updating");
+            await requests(1, true);
+            await frame.getByText("Saved view, updating…", { exact: true }).waitFor();
+            freshResult = live();
+            release(true);
+            await frame.getByText("Usage read just now", { exact: true }).waitFor();
+            assert.equal(await frame.getByText("Saved view", { exact: false }).count(), 0);
+            await capture(page, "live");
+            await settled();
+            assert.deepEqual(sent(), { retained: 2, fresh: 1 });
+            await once(probe);
+          },
+          { usage: retainedUsage },
+        );
       },
     );
 
@@ -3896,16 +3956,19 @@ test(
       { skip: Boolean(sourceRef) },
       async () => {
         viewResult = retained();
-        await session(async (probe) => {
-          const { frame, settled } = probe;
-          freshResult = live();
-          answerFresh = true;
-          await retainedCommitted(probe, "snapshot-immediate");
-          await frame.getByText("Usage read just now", { exact: true }).waitFor();
-          await settled();
-          assert.deepEqual(sent(), { retained: 2, fresh: 1 });
-          await once(probe);
-        });
+        await session(
+          async (probe) => {
+            const { frame, settled } = probe;
+            freshResult = live();
+            answerFresh = true;
+            await retainedCommitted(probe, "snapshot-immediate");
+            await frame.getByText("Usage read just now", { exact: true }).waitFor();
+            await settled();
+            assert.deepEqual(sent(), { retained: 2, fresh: 1 });
+            await once(probe);
+          },
+          { usage: retainedUsage },
+        );
       },
     );
 
@@ -3914,38 +3977,41 @@ test(
       { skip: Boolean(sourceRef) },
       async () => {
         viewResult = retained();
-        await session(async (probe) => {
-          const { page, frame, settled } = probe;
-          await retainedCommitted(probe, "snapshot-before-failure");
-          await requests(1, true);
-          freshResult = {
-            ...viewResult,
-            value: {
-              ...viewResult.value,
-              reading: { ...viewResult.value.reading, revalidationFailed: true },
-            },
-          };
-          release(true);
-          await frame.getByText(/^Couldn't update; showing a saved view from 6m ago$/).waitFor();
-          await frame.getByText(saved, { exact: true }).waitFor();
-          await capture(page, "revalidation-failed");
-          await settled();
-          // A failed revalidation is an answer, not a reason to ask again.
-          assert.deepEqual(sent(), { retained: 2, fresh: 1 });
-          await frame
-            .getByText(/^Couldn't update; showing a saved view from 6m ago$/)
-            .locator("..")
-            .getByRole("button", { name: "Try again", exact: true })
-            .click();
-          await requests(1, true);
-          assert.deepEqual(sent(), { retained: 2, fresh: 2 });
-          freshResult = live();
-          release(true);
-          await frame.getByText("Usage read just now", { exact: true }).waitFor();
-          await settled();
-          assert.deepEqual(sent(), { retained: 2, fresh: 2 });
-          await once(probe);
-        });
+        await session(
+          async (probe) => {
+            const { page, frame, settled } = probe;
+            await retainedCommitted(probe, "snapshot-before-failure");
+            await requests(1, true);
+            freshResult = {
+              ...viewResult,
+              value: {
+                ...viewResult.value,
+                reading: { ...viewResult.value.reading, revalidationFailed: true },
+              },
+            };
+            release(true);
+            await frame.getByText(/^Couldn't update; showing a saved view from 6m ago$/).waitFor();
+            await savedMarker(frame).waitFor();
+            await capture(page, "revalidation-failed");
+            await settled();
+            // A failed revalidation is an answer, not a reason to ask again.
+            assert.deepEqual(sent(), { retained: 2, fresh: 1 });
+            await frame
+              .getByText(/^Couldn't update; showing a saved view from 6m ago$/)
+              .locator("..")
+              .getByRole("button", { name: "Try again", exact: true })
+              .click();
+            await requests(1, true);
+            assert.deepEqual(sent(), { retained: 2, fresh: 2 });
+            freshResult = live();
+            release(true);
+            await frame.getByText("Usage read just now", { exact: true }).waitFor();
+            await settled();
+            assert.deepEqual(sent(), { retained: 2, fresh: 2 });
+            await once(probe);
+          },
+          { usage: retainedUsage },
+        );
       },
     );
 
@@ -3954,32 +4020,38 @@ test(
       { skip: Boolean(sourceRef) },
       async () => {
         viewResult = retained();
-        await session(async (probe) => {
-          const { page, frame, settled } = probe;
-          await retainedCommitted(probe, "snapshot-before-unreachable");
-          await requests(1, true);
-          freshResult = failed;
-          release(true);
-          await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
-          await frame.getByText(saved, { exact: true }).waitFor();
-          await frame.getByText(/^Showing a saved view from 6m ago$/).waitFor();
-          await capture(page, "follow-up-unreachable");
-          await settled();
-          assert.deepEqual(sent(), { retained: 2, fresh: 1 });
-          await frame
-            .getByRole("alert")
-            .filter({ hasText: "Synthetic pool failure" })
-            .locator("..")
-            .getByRole("button", { name: "Try again", exact: true })
-            .click();
-          await requests(1, true);
-          freshResult = live();
-          release(true);
-          await frame.getByText("Usage read just now", { exact: true }).waitFor();
-          assert.equal(await frame.getByText("Synthetic pool failure", { exact: true }).count(), 0);
-          assert.deepEqual(sent(), { retained: 2, fresh: 2 });
-          await once(probe);
-        });
+        await session(
+          async (probe) => {
+            const { page, frame, settled } = probe;
+            await retainedCommitted(probe, "snapshot-before-unreachable");
+            await requests(1, true);
+            freshResult = failed;
+            release(true);
+            await frame.getByText("Synthetic pool failure", { exact: true }).waitFor();
+            await savedMarker(frame).waitFor();
+            await frame.getByText(/^Showing a saved view from 6m ago$/).waitFor();
+            await capture(page, "follow-up-unreachable");
+            await settled();
+            assert.deepEqual(sent(), { retained: 2, fresh: 1 });
+            await frame
+              .getByRole("alert")
+              .filter({ hasText: "Synthetic pool failure" })
+              .locator("..")
+              .getByRole("button", { name: "Try again", exact: true })
+              .click();
+            await requests(1, true);
+            freshResult = live();
+            release(true);
+            await frame.getByText("Usage read just now", { exact: true }).waitFor();
+            assert.equal(
+              await frame.getByText("Synthetic pool failure", { exact: true }).count(),
+              0,
+            );
+            assert.deepEqual(sent(), { retained: 2, fresh: 2 });
+            await once(probe);
+          },
+          { usage: retainedUsage },
+        );
       },
     );
 
@@ -4030,6 +4102,7 @@ async function compileStyles(app, javascript) {
     write: false,
     bundle: true,
     outfile: "main.css",
+    conditions: ["style"],
     alias: { tailwindcss: join(root, ".upstream/packages/ui/node_modules/tailwindcss/index.css") },
   });
   const { compile } = createRequire(join(root, ".upstream/packages/sdk/package.json"))(

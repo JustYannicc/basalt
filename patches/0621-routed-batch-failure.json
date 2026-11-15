@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-routed-batch-failure",
+  "file": "0621-routed-batch-failure.patch",
+  "content_sha256": "ceb0bd1da89bf59a25e431913befc5e812e20a9f35620bb5d4ae54b34ed229c4",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -1,3 +1,4 @@
+import { retainedReasonCodes } from "./retained-reasons.ts";
 import {
   removalDiagnostic,
   type RemovalDiagnostic,
@@ -175,6 +176,7 @@ export interface FailureReceipt {
   readonly homeCode?: RemovalDiagnostic["homeCode"];
   readonly source?: SourceRefusal;
   readonly retainedRead?: RetainedReadDiagnostic;
+  readonly reasonCode?: (typeof retainedReasonCodes)[number];
 }
 
 export class OperationFailure extends Error {
@@ -192,6 +194,7 @@ export function failureReceipt(value: unknown): FailureReceipt | undefined {
   const category = categories.find((entry) => entry === row.category);
   const phase = phases.find((entry) => entry === row.phase);
   if (row.format !== "basalt-production-ops-failure-v1" || !category || !phase) return;
+  const reasonCode = retainedReasonCodes.find((code) => code === row.reasonCode);
   const reason =
     row.reason === "operation_busy" && row.retryable === true
       ? { reason: "operation_busy" as const, retryable: true }
@@ -213,6 +216,7 @@ export function failureReceipt(value: unknown): FailureReceipt | undefined {
     ...(category === "sql" && sqlStateClass ? { sqlStateClass } : {}),
     ...(causeKind === undefined ? {} : { causeKind }),
     ...reason,
+    ...(reasonCode === undefined ? {} : { reasonCode }),
     ...removal,
     ...(source === undefined ? {} : { source }),
     ...(retainedRead === undefined ? {} : { retainedRead }),

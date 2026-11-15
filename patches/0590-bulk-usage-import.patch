@@ -1,0 +1,665 @@
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index ec2dd21..6df288a 100644
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -71,6 +71,10 @@ import {
+   poolOrganizationReadPath,
+   readPoolOrganization,
+ } from "@executor-js/hosted-server/pool-organization";
++import {
++  poolUsageImportAdmissionPath,
++  readPoolUsageImportAdmission,
++} from "@executor-js/hosted-server";
+ import { Billing } from "./contracts/billing.ts";
+ import { BillingMeter } from "./contracts/billing-meter.ts";
+ import { billingBindings } from "./infrastructure/billing.ts";
+@@ -709,6 +713,9 @@ export default Api.make(
+       HttpRouter.add("POST", poolOrganizationReadPath, readPoolOrganization).pipe(
+         HttpRouter.provideRequest(executor),
+       ),
++      HttpRouter.add("POST", poolUsageImportAdmissionPath, readPoolUsageImportAdmission).pipe(
++        HttpRouter.provideRequest(executor),
++      ),
+       HttpRouter.add("POST", "/api/internal/app-domains/resume", appDomains.control("resume")),
+       HttpRouter.add("POST", "/api/internal/app-domains/drain", appDomains.control("drain")),
+       HttpRouter.add("POST", "/api/internal/v1-import/start", v1Import.start),
+diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
+index adb1d5f..6614328 100644
+--- a/apps/hosted/self-host/src/implementation/routes.ts
++++ b/apps/hosted/self-host/src/implementation/routes.ts
+@@ -48,6 +48,8 @@ import {
+   mcpAuthorizationServer,
+   apiChallenge,
+   apiProtectedResource,
++  poolUsageImportAdmissionPath,
++  readPoolUsageImportAdmission,
+   lazyHostedApiDocument,
+   ProductAnalytics,
+ } from "@executor-js/hosted-server";
+@@ -196,6 +198,9 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
+       HttpRouter.add("POST", observationPublishPath, publishAccountObservations).pipe(
+         HttpRouter.provideRequest(executorServices),
+       ),
++      HttpRouter.add("POST", poolUsageImportAdmissionPath, readPoolUsageImportAdmission).pipe(
++        HttpRouter.provideRequest(executorServices),
++      ),
+       publishedSkillRoutes(Effect.succeed(skills)),
+       authoring,
+       api,
+diff --git a/apps/hosted/server/src/contracts/pool-usage-bulk-import.ts b/apps/hosted/server/src/contracts/pool-usage-bulk-import.ts
+new file mode 100644
+index 0000000..55260b7
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/pool-usage-bulk-import.ts
+@@ -0,0 +1,81 @@
++import { Schema } from "effect";
++
++const count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
++const hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
++const label = Schema.NonEmptyString.check(Schema.isMaxLength(256));
++const job = { job: hash };
++const chunkBytes = 8 * 1024 * 1024;
++
++export const PoolUsageBulkImportInput = Schema.Union([
++  Schema.Struct({
++    operation: Schema.Literal("begin"),
++    manifest: Schema.Struct({
++      version: Schema.Literal(1),
++      source: Schema.String.check(
++        Schema.isPattern(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u),
++      ),
++      sourceHash: hash,
++      approvedManifestSha256: hash,
++      accountMappingDigest: hash,
++      totalRows: count,
++      chunks: Schema.Array(
++        Schema.Struct({
++          sha256: hash,
++          idsSha256: hash,
++          rows: count.check(Schema.isLessThanOrEqualTo(5000)),
++          bytes: count.check(Schema.isLessThanOrEqualTo(chunkBytes)),
++        }),
++      ),
++    }),
++    accountMappings: Schema.Array(
++      Schema.Struct({
++        sourceAccountRef: hash,
++        targetAccountId: label,
++        provider: label,
++      }),
++    ).check(Schema.isMaxLength(500)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("upload"),
++    ...job,
++    chunk: count,
++    data: Schema.String.check(Schema.isMaxLength(chunkBytes)),
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("approve"),
++    ...job,
++    manifestDigest: hash,
++    accountMappingDigest: hash,
++  }),
++  Schema.Struct({
++    operation: Schema.Literal("guard"),
++    ...job,
++    observation: Schema.Struct({
++      observedAt: count,
++      expiresAt: count,
++      ready: Schema.Boolean,
++      cpu: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
++      poolErrors: count,
++      queryErrors: count,
++    }),
++  }),
++  Schema.Struct({ operation: Schema.Literal("status"), ...job }),
++  Schema.Struct({ operation: Schema.Literal("pause"), ...job }),
++  Schema.Struct({ operation: Schema.Literal("resume"), ...job }),
++]);
++export type PoolUsageBulkImportInput = typeof PoolUsageBulkImportInput.Type;
++
++export const PoolUsageBulkImportStatus = Schema.Struct({
++  job: hash,
++  state: Schema.String,
++  manifestDigest: hash,
++  accountMappingDigest: hash,
++  totalRows: count,
++  totalChunks: count,
++  uploadedChunks: count,
++  committedChunks: count,
++  inserted: count,
++  existing: count,
++  reason: Schema.NullOr(Schema.String),
++});
++export type PoolUsageBulkImportStatus = typeof PoolUsageBulkImportStatus.Type;
+diff --git a/apps/hosted/server/src/contracts/pool-usage.ts b/apps/hosted/server/src/contracts/pool-usage.ts
+index 2d1168c..80df8cb 100644
+--- a/apps/hosted/server/src/contracts/pool-usage.ts
++++ b/apps/hosted/server/src/contracts/pool-usage.ts
+@@ -10,6 +10,7 @@ import {
+   PoolUsageImportResult,
+   PoolUsageImportRejected,
+ } from "./pool-usage-import.ts";
++import { PoolUsageBulkImportInput, PoolUsageBulkImportStatus } from "./pool-usage-bulk-import.ts";
+ import { RequiredAction } from "./authorization.ts";
+ import {
+   LastSuccessAt,
+@@ -136,6 +137,26 @@ export const PoolAccountRouting = Schema.Struct({
+ const params = { organization: OrganizationReference, app: AppId };
+ export const HostedPoolUsage = /* @__PURE__ */ (() =>
+   HttpApiGroup.make("poolUsage")
++    .add(
++      HttpApiEndpoint.post(
++        "importBulk",
++        "/api/organizations/:organization/apps/:app/pool-usage/import/bulk",
++        {
++          params,
++          payload: PoolUsageBulkImportInput,
++          success: PoolUsageBulkImportStatus,
++          error: [
++            OrganizationForbidden,
++            StorageError,
++            PoolUsageUnavailable,
++            PoolUsageImportRejected,
++          ],
++        },
++      )
++        .annotate(RequiredAction, "manage")
++        .annotate(BrowserSessionOnly, true)
++        .middleware(RequireUser),
++    )
+     .add(
+       HttpApiEndpoint.post(
+         "importMapped",
+diff --git a/apps/hosted/server/src/implementation/pool-backend.ts b/apps/hosted/server/src/implementation/pool-backend.ts
+index 1dd0d83..95fe200 100644
+--- a/apps/hosted/server/src/implementation/pool-backend.ts
++++ b/apps/hosted/server/src/implementation/pool-backend.ts
+@@ -30,6 +30,7 @@ const backend = Effect.gen(function* () {
+ type PoolCommand =
+   | "routingDecisions"
+   | "importUsage"
++  | "importUsageBulk"
+   | "accountRouting"
+   | "setCreditPolicy"
+   | "setSelectionPolicy"
+@@ -56,15 +57,17 @@ export const sendPoolCommandResponse = (action: PoolCommand, payload: Record<str
+     const path =
+       action === "importUsage"
+         ? "/pool/v1/usage/import/owner"
+-        : action === "poolUsageSeries"
+-          ? "/pool/v1/usage/series"
+-          : action === "lastSuccessAt"
+-            ? "/pool/v1/usage/last-success"
+-            : action === "poolOverview"
+-              ? "/pool/v1/usage/overview"
+-              : action === "poolPersonalOverview"
+-                ? "/pool/v1/usage/personal-overview"
+-                : `/pool/v1/${action}`;
++        : action === "importUsageBulk"
++          ? "/pool/v1/usage/import/bulk"
++          : action === "poolUsageSeries"
++            ? "/pool/v1/usage/series"
++            : action === "lastSuccessAt"
++              ? "/pool/v1/usage/last-success"
++              : action === "poolOverview"
++                ? "/pool/v1/usage/overview"
++                : action === "poolPersonalOverview"
++                  ? "/pool/v1/usage/personal-overview"
++                  : `/pool/v1/${action}`;
+     const response = yield* client.post(new URL(path, origin).href, {
+       body: HttpBody.jsonUnsafe({ envelope }),
+     });
+diff --git a/apps/hosted/server/src/implementation/pool-usage-bulk-import.ts b/apps/hosted/server/src/implementation/pool-usage-bulk-import.ts
+new file mode 100644
+index 0000000..e6605d3
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-usage-bulk-import.ts
+@@ -0,0 +1,109 @@
++import { AppId, StorageError } from "@executor-js/sdk/core";
++import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { HttpServerRequest, HttpServerResponse } from "effect/http";
++import { SqlClient } from "effect/sql";
++import { Principal } from "../contracts/auth.ts";
++import { OrganizationForbidden, OrganizationId } from "../contracts/organization.ts";
++import { OrganizationTombstones } from "../contracts/organization-removal.ts";
++import {
++  PoolUsageBulkImportStatus,
++  type PoolUsageBulkImportInput,
++} from "../contracts/pool-usage-bulk-import.ts";
++import { PoolUsageImportRejected } from "../contracts/pool-usage-import.ts";
++import { PoolUsageUnavailable } from "../contracts/pool-usage.ts";
++import { lockOrganizationReadAccess } from "./organization-access-lock.ts";
++import { readPool, sendPoolCommandResponse } from "./pool-backend.ts";
++import { openEnvelope } from "./pool-token.ts";
++import { policyDatabase, requireAppAccessAs, resourceAuthority } from "./resource-policy.ts";
++
++const Refusal = Schema.Struct({
++  error: Schema.Literals(["invalid_query", "identity_conflict", "unauthorized"]),
++});
++
++export const importPoolUsageBulk = (app: AppId, input: PoolUsageBulkImportInput) =>
++  Effect.gen(function* () {
++    // Release the policy transaction before the backend can call admission on the same host.
++    const pool = yield* readPool(app, (current) =>
++      current.user !== current.owner
++        ? Effect.fail(new OrganizationForbidden())
++        : Effect.succeed(current),
++    );
++    if (pool === null) return yield* new OrganizationForbidden();
++    const response = yield* sendPoolCommandResponse("importUsageBulk", {
++      pool: pool.pool,
++      organization: pool.organization,
++      owner: pool.owner,
++      user: pool.user,
++      input,
++    });
++    if (response.status !== 200) {
++      const refused = Schema.decodeUnknownOption(Refusal)(response.body);
++      return yield* new PoolUsageImportRejected({
++        reason: Option.isSome(refused) ? refused.value.error : "unavailable",
++      });
++    }
++    return yield* Schema.decodeUnknownEffect(PoolUsageBulkImportStatus)(response.body);
++  }).pipe(
++    Effect.catchTags({
++      SqlError: () => new StorageError(),
++      SchemaError: () => new PoolUsageUnavailable(),
++    }),
++  );
++
++export const poolUsageImportAdmissionPath = "/api/internal/pool-usage-import-admission";
++const Admission = Schema.Struct({
++  action: Schema.Literal("usageImportAdmission"),
++  pool: AppId,
++  organization: OrganizationId,
++  owner: Principal.fields.userId,
++  job: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
++  at: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
++  expiresAt: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
++});
++const Owner = Schema.Struct({ owner: Principal.fields.userId });
++const admissionResponse = (status: 204 | 403 | 503) =>
++  HttpServerResponse.empty({ status, headers: { "cache-control": "no-store" } });
++
++/** Each chunk asks again; a signed request never replaces current product authority. */
++export const readPoolUsageImportAdmission = Effect.gen(function* () {
++  const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
++  if (Option.isNone(key)) return admissionResponse(503);
++  const body = yield* HttpServerRequest.schemaBodyJson(
++    Schema.Struct({ envelope: Schema.NonEmptyString }),
++  ).pipe(Effect.option);
++  if (Option.isNone(body)) return admissionResponse(403);
++  const raw = yield* Effect.tryPromise(() =>
++    openEnvelope(Redacted.value(key.value), "sbq1", body.value.envelope),
++  );
++  const decoded = Schema.decodeUnknownOption(Admission)(raw);
++  if (Option.isNone(decoded)) return admissionResponse(403);
++  const value = decoded.value;
++  const now = yield* Clock.currentTimeMillis;
++  if (value.at > now || value.expiresAt <= now || value.expiresAt - value.at > 30_000)
++    return admissionResponse(403);
++  const removed = yield* OrganizationTombstones;
++  if (yield* removed(value.organization)) return admissionResponse(403);
++  const sql = yield* policyDatabase;
++  const allowed = yield* sql.withTransaction(
++    Effect.gen(function* () {
++      yield* lockOrganizationReadAccess(value.organization).pipe(
++        Effect.provideService(SqlClient.SqlClient, sql),
++      );
++      const actor = yield* resourceAuthority(value.organization, value.owner);
++      yield* requireAppAccessAs(actor, value.pool, "manage");
++      const rows = yield* sql`select coalesce(entry.value ->> 'owner', entry.key) as owner
++          from organization o
++          cross join lateral jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) entry
++          join executor_apps app on app.id = entry.value ->> 'app' and app.owner = 'organization:' || o.id
++          where o.id = ${value.organization} and app.id = ${value.pool}`;
++      const found = yield* Schema.decodeUnknownEffect(Schema.Array(Owner))(rows);
++      return found.length === 1 && found[0]?.owner === value.owner;
++    }),
++  );
++  const checkedAt = yield* Clock.currentTimeMillis;
++  return admissionResponse(allowed && value.expiresAt > checkedAt ? 204 : 403);
++}).pipe(
++  Effect.timeout("5 seconds"),
++  Effect.catchTag("OrganizationForbidden", () => Effect.succeed(admissionResponse(403))),
++  Effect.catch(() => Effect.succeed(admissionResponse(503))),
++);
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+index f6cca00..95f8725 100644
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -6,6 +6,7 @@ import {
+   setPoolSelectionPolicy,
+ } from "./pool-credit-routing.ts";
+ import { importPoolUsage } from "./pool-usage-import.ts";
++import { importPoolUsageBulk } from "./pool-usage-bulk-import.ts";
+ import { AppId, StorageError, StorageHost } from "@executor-js/sdk/core";
+ import { Effect, Schema } from "effect";
+ import { HttpApiBuilder } from "effect/http-api";
+@@ -245,6 +246,7 @@ export const poolPersonalUsageOverview = (app: AppId, input: PoolOverviewInput)
+ 
+ export const hostedPoolUsageHandlers = HttpApiBuilder.group(HostedApi, "poolUsage", (handlers) =>
+   handlers
++    .handle("importBulk", ({ params, payload }) => importPoolUsageBulk(params.app, payload))
+     .handle("importMapped", ({ params, payload }) => importPoolUsage(params.app, payload))
+     .handle("accountRouting", ({ params }) => poolAccountRouting(params.app))
+     .handle("routingDecisions", ({ params }) => poolRoutingDecisions(params.app))
+diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
+index 2aec499..b2f4ffe 100644
+--- a/apps/hosted/server/src/index.ts
++++ b/apps/hosted/server/src/index.ts
+@@ -119,6 +119,10 @@ export { makeScheduledAuthority } from "./implementation/schedules.ts";
+ 
+ export { runAccountRechecks } from "./implementation/account-rechecks.ts";
+ export { makeChangeJournal } from "./implementation/change-revisions.ts";
++export {
++  poolUsageImportAdmissionPath,
++  readPoolUsageImportAdmission,
++} from "./implementation/pool-usage-bulk-import.ts";
+ export {
+   makeChangeRevisionHandler,
+   changeRevisionsPath,
+diff --git a/e2e/tests/pool-owner-import.spec.ts b/e2e/tests/pool-owner-import.spec.ts
+index a981edb..1b28248 100644
+--- a/e2e/tests/pool-owner-import.spec.ts
++++ b/e2e/tests/pool-owner-import.spec.ts
+@@ -1,6 +1,9 @@
+-import { createHash } from "node:crypto";
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { createHash, createHmac, timingSafeEqual } from "node:crypto";
++import { createServer } from "node:http";
+ import { expect, layer } from "@effect/vitest";
+-import { Effect, Schema } from "effect";
++import { Clock, Effect, Layer, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
+ import { App } from "../support/contracts.ts";
+@@ -21,6 +24,82 @@ const Result = Schema.Struct({
+   accountMappingDigest: Schema.String,
+   approval: Schema.NullOr(Schema.String),
+ });
++const BulkStatus = Schema.Struct({
++  job: Schema.String,
++  state: Schema.String,
++  manifestDigest: Schema.String,
++  accountMappingDigest: Schema.String,
++  totalRows: Schema.Number,
++  totalChunks: Schema.Number,
++  uploadedChunks: Schema.Number,
++  committedChunks: Schema.Number,
++  inserted: Schema.Number,
++  existing: Schema.Number,
++  reason: Schema.NullOr(Schema.String),
++});
++const BulkAssertion = Schema.Struct({
++  action: Schema.Literal("importUsageBulk"),
++  pool: Schema.String,
++  organization: Schema.String,
++  owner: Schema.String,
++  user: Schema.String,
++  expiresAt: Schema.Number,
++  input: Schema.Unknown,
++});
++
++// This peer checks the hosted transport. Real import storage is verified by the pool's own suite.
++const bulkImportBackend = (owner: string, status: typeof BulkStatus.Type) =>
++  Effect.gen(function* () {
++    const calls = yield* Ref.make<readonly (typeof BulkAssertion.Type)[]>([]);
++    const reply = yield* Ref.make<{ status: number; body: unknown }>({
++      status: 200,
++      body: { ...status, internalOnly: "transport-fixture-marker" },
++    });
++    const handler = Effect.gen(function* () {
++      const request = yield* HttpServerRequest.HttpServerRequest;
++      const body = yield* request.json.pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))),
++      );
++      const [prefix, encoded, signature, extra] = body.envelope.split(".");
++      if (prefix !== "sbs1" || !encoded || !signature || extra !== undefined)
++        return HttpServerResponse.empty({ status: 401 });
++      const actual = Buffer.from(signature, "base64url"),
++        expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++          .update(`${prefix}.${encoded}`)
++          .digest();
++      if (actual.length !== expected.length || !timingSafeEqual(actual, expected))
++        return HttpServerResponse.empty({ status: 401 });
++      const assertion = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(BulkAssertion))(
++        Buffer.from(encoded, "base64url").toString(),
++      );
++      const now = yield* Clock.currentTimeMillis;
++      if (
++        assertion.owner !== owner ||
++        assertion.user !== owner ||
++        assertion.expiresAt <= now ||
++        assertion.expiresAt > now + 30_000
++      )
++        return HttpServerResponse.empty({ status: 401 });
++      yield* Ref.update(calls, (saved) => [...saved, assertion]);
++      const response = yield* Ref.get(reply);
++      return HttpServerResponse.jsonUnsafe(response.body, { status: response.status });
++    });
++    const services = yield* Layer.build(
++      HttpRouter.serve(HttpRouter.add("POST", "/pool/v1/usage/import/bulk", handler), {
++        disableLogger: true,
++        disableListenLog: true,
++      }).pipe(
++        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++      ),
++    );
++    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++    if (!("port" in server.address)) return yield* Effect.die("Bulk import peer requires TCP");
++    return {
++      origin: `http://127.0.0.1:${server.address.port}`,
++      calls: Ref.get(calls),
++      reply: (status: number, body: unknown) => Ref.set(reply, { status, body }),
++    };
++  });
+ 
+ layer(RuntimeLive, { excludeTestServices: true })("Pool owner import", (it) => {
+   it.effect(scenarios.poolOwnerImport.title, (context) =>
+@@ -119,6 +198,202 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool owner import", (it) => {
+           expect(result.inserted).toBe(expected);
+         }
+         expect((yield* backend.retained).size).toBe(1);
++
++        const digest = (value: string) => createHash("sha256").update(value).digest("hex");
++        const manifest = {
++          version: 1,
++          source: input.source,
++          sourceHash: digest(input.data),
++          approvedManifestSha256: "c".repeat(64),
++          accountMappingDigest: dry.accountMappingDigest,
++          totalRows: 1,
++          chunks: [
++            {
++              sha256: digest(input.data),
++              idsSha256: digest(JSON.stringify(dry.ids)),
++              rows: 1,
++              bytes: Buffer.byteLength(input.data),
++            },
++          ],
++        };
++        const job = digest(
++          JSON.stringify({
++            pool: app.id,
++            organization: actors.organization.id,
++            owner: viewer.userId,
++            manifest,
++            accountMappings: input.accountMappings,
++          }),
++        );
++        const status = {
++          job,
++          state: "staged",
++          manifestDigest: digest(JSON.stringify(manifest)),
++          accountMappingDigest: dry.accountMappingDigest,
++          totalRows: 1,
++          totalChunks: 1,
++          uploadedChunks: 0,
++          committedChunks: 0,
++          inserted: 0,
++          existing: 0,
++          reason: null,
++        };
++        const bulk = yield* bulkImportBackend(viewer.userId, status);
++        yield* serverControl("stop");
++        yield* serverControl("environment", 200, { BASALT_POOL_ORIGIN: bulk.origin });
++        yield* serverControl("start");
++        const bulkPath = `${path}/bulk`;
++        const now = yield* Clock.currentTimeMillis;
++        const operations = [
++          { operation: "begin", manifest, accountMappings: input.accountMappings },
++          { operation: "status", job },
++          { operation: "upload", job, chunk: 0, data: input.data },
++          {
++            operation: "approve",
++            job,
++            manifestDigest: status.manifestDigest,
++            accountMappingDigest: status.accountMappingDigest,
++          },
++          {
++            operation: "guard",
++            job,
++            observation: {
++              observedAt: now,
++              expiresAt: now + 30_000,
++              ready: true,
++              cpu: 0.1,
++              poolErrors: 0,
++              queryErrors: 0,
++            },
++          },
++          { operation: "pause", job },
++          { operation: "resume", job },
++        ];
++        const begun = yield* api.request(actors.owner, "POST", bulkPath, operations[0]);
++        expect(begun.status).toBe(200);
++        expect(yield* body(BulkStatus, begun)).toEqual(status);
++        expect(begun.body).toEqual(status);
++        for (const operation of operations) {
++          expect((yield* api.request(actors.member, "POST", bulkPath, operation)).status).toBe(403);
++          expect((yield* api.request(actors.admin, "POST", bulkPath, operation)).status).toBe(403);
++          expect(
++            (yield* api.request(actors.owner, "POST", bulkPath, operation, {
++              authorization: "Bearer refused-grant",
++            })).status,
++          ).toBe(401);
++        }
++        expect((yield* bulk.calls).length).toBe(1);
++        for (const operation of operations.slice(1)) {
++          const result = yield* api.request(actors.owner, "POST", bulkPath, operation);
++          expect(result.status).toBe(200);
++          expect(yield* body(BulkStatus, result)).toEqual(status);
++          expect(result.body).toEqual(status);
++        }
++        const forwarded = yield* bulk.calls;
++        expect(forwarded.map((call) => call.input)).toEqual(operations);
++        for (const call of forwarded) {
++          expect(call.pool).toBe(app.id);
++          expect(call.organization).toBe(actors.organization.id);
++          expect(call.owner).toBe(viewer.userId);
++          expect(call.user).toBe(viewer.userId);
++        }
++        for (const invalid of [
++          { operation: "unknown", job },
++          { operation: "status", job: "bad-hash" },
++          { operation: "upload", job, chunk: -1, data: input.data },
++          { operation: "approve", job, manifestDigest: status.manifestDigest },
++        ])
++          expect((yield* api.request(actors.owner, "POST", bulkPath, invalid)).status).toBe(400);
++        expect((yield* bulk.calls).length).toBe(operations.length);
++        yield* bulk.reply(409, { error: "identity_conflict" });
++        const refused = yield* api.request(actors.owner, "POST", bulkPath, {
++          operation: "status",
++          job,
++        });
++        expect(refused.status).toBe(409);
++        expect(refused.body).toMatchObject({ reason: "identity_conflict" });
++        yield* bulk.reply(200, { job, state: "staged" });
++        expect(
++          (yield* api.request(actors.owner, "POST", bulkPath, { operation: "status", job })).status,
++        ).toBe(503);
++
++        const readViewer = (actor: typeof actors.owner) =>
++          api
++            .request(actor, "GET", "/api/viewer")
++            .pipe(
++              Effect.flatMap((response) =>
++                body(Schema.Struct({ userId: Schema.String }), response),
++              ),
++            );
++        const [member, admin] = yield* Effect.all(
++          [readViewer(actors.member), readViewer(actors.admin)],
++          { concurrency: 2 },
++        );
++        const callback = yield* api.session();
++        const admissionPath = "/api/internal/pool-usage-import-admission";
++        const signedAdmission = (assertion: Record<string, unknown>) => {
++          const payload = `sbq1.${Buffer.from(JSON.stringify(assertion)).toString("base64url")}`;
++          const signature = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++            .update(payload)
++            .digest("base64url");
++          return { envelope: `${payload}.${signature}` };
++        };
++        const admissionAt = yield* Clock.currentTimeMillis;
++        const admission = {
++          action: "usageImportAdmission",
++          pool: app.id,
++          organization: actors.organization.id,
++          owner: viewer.userId,
++          job,
++          at: admissionAt,
++          expiresAt: admissionAt + 25_000,
++        };
++        for (const invalid of [
++          admission,
++          { envelope: "sbq1.malformed.invalid" },
++          signedAdmission({ ...admission, job: "bad-hash" }),
++          signedAdmission({ ...admission, at: admissionAt - 30_000, expiresAt: admissionAt - 1 }),
++          signedAdmission({ ...admission, owner: member.userId }),
++          signedAdmission({ ...admission, owner: admin.userId }),
++          signedAdmission({ ...admission, pool: "00000000-0000-4000-8000-000000000000" }),
++          signedAdmission({
++            ...admission,
++            organization: "00000000-0000-4000-8000-000000000000",
++          }),
++        ])
++          expect((yield* api.request(callback, "POST", admissionPath, invalid)).status).toBe(403);
++        const ownerAdmission = signedAdmission(admission);
++        expect((yield* api.request(callback, "POST", admissionPath, ownerAdmission)).status).toBe(
++          204,
++        );
++
++        yield* serverControl("stop");
++        const changed = yield* legacyStorage([
++          {
++            sql: `update organization set metadata=jsonb_set(metadata::jsonb,array['basaltPools',$1,'owner'],to_jsonb($2::text))::text where id=$3 returning metadata::jsonb #>> array['basaltPools',$1,'owner'] as owner`,
++            params: [viewer.userId, admin.userId, actors.organization.id],
++          },
++        ]);
++        expect(changed).toEqual([[{ owner: admin.userId }]]);
++        yield* serverControl("start");
++        expect((yield* api.request(callback, "POST", admissionPath, ownerAdmission)).status).toBe(
++          403,
++        );
++        // A fresh signature rules out expiry as the reason the former owner is refused.
++        const changedAt = yield* Clock.currentTimeMillis;
++        const currentAdmission = { ...admission, at: changedAt, expiresAt: changedAt + 25_000 };
++        expect(
++          (yield* api.request(callback, "POST", admissionPath, signedAdmission(currentAdmission)))
++            .status,
++        ).toBe(403);
++        expect(
++          (yield* api.request(
++            callback,
++            "POST",
++            admissionPath,
++            signedAdmission({ ...currentAdmission, owner: admin.userId }),
++          )).status,
++        ).toBe(204);
+       }),
+     ),
+   );

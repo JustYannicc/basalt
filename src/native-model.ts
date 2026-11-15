@@ -8,6 +8,7 @@ import {
 export { nativeAuthenticationHeader } from "./pool/native-contract.ts";
 import { hostAssertionTtlMs, signEnvelope } from "./pool/token.ts";
 import { object, text } from "./pool/json.ts";
+import { modelDrainProtocol } from "./pool/model-drain-contract.ts";
 
 interface Environment {
   TOOLS_SERVICE: { fetch(request: Request): Promise<Response> };
@@ -21,7 +22,11 @@ const refused = (status: number) =>
   );
 
 /** Authenticate against the tools authority before asserting a device's identity to the pool. */
-export async function nativeModelRequest(request: Request, env: Environment): Promise<Response> {
+export async function nativeModelRequest(
+  request: Request,
+  env: Environment,
+  drain = false,
+): Promise<Response> {
   try {
     const authorization = request.headers.get("authorization");
     if (!authorization?.match(/^Bearer [^\s]+$/iu)) return refused(401);
@@ -51,6 +56,7 @@ export async function nativeModelRequest(request: Request, env: Environment): Pr
       method: request.method,
       path: url.pathname + url.search,
       expiresAt: Date.now() + hostAssertionTtlMs,
+      ...(drain ? { modelDrain: modelDrainProtocol } : {}),
     });
     const headers = new Headers(request.headers);
     for (const name of [

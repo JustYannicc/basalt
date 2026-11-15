@@ -1,0 +1,72 @@
+diff --git a/packages/sdk/src/implementation/tool-search-store.ts b/packages/sdk/src/implementation/tool-search-store.ts
+--- a/packages/sdk/src/implementation/tool-search-store.ts
++++ b/packages/sdk/src/implementation/tool-search-store.ts
+@@ -338,6 +338,35 @@
+           return { total: 0, missing: [], items: [], definitions: [] } satisfies RankedPage;
+         const { values, permitted } = targets(input.targets);
+         const terms = input.terms.join(" ");
++        const words = new Set(terms.split(" "));
++        const labelled = input.targets.some((target) =>
++          target.labels
++            .join(" ")
++            .split(" ")
++            .some((word) => words.has(word)),
++        );
++        // A matching target label admits its whole permitted listing. Keep that broad path;
++        // otherwise the stored expression index can select own-word matches before parsing.
++        const hits = labelled
++          ? sql`hits as materialized (
++              select scope.ordinal, scope.id, scope.name, scope.signature, scope.length, w.term,
++                count(*)::float8 as tf
++              from scope, unnest(scope.own || scope.labels) as w(term)
++              where (scope.own && string_to_array(${terms}::text, ' ')
++                  or scope.labels && string_to_array(${terms}::text, ' '))
++                and w.term in (select term from q)
++              group by scope.ordinal, scope.id, scope.name, scope.signature, scope.length, w.term)`
++          : sql`matches as materialized (
++              select scope.ordinal, scope.id, scope.name, scope.signature, scope.length,
++                string_to_array(s.terms, ' ') as own
++              from executor_tool_search s join scope using (id)
++              where string_to_array(s.terms, ' ') && string_to_array(${terms}::text, ' ')),
++            hits as materialized (
++              select matches.ordinal, matches.id, matches.name, matches.signature, matches.length, w.term,
++                count(*)::float8 as tf
++              from matches, unnest(matches.own) as w(term)
++              where w.term in (select term from q)
++              group by matches.ordinal, matches.id, matches.name, matches.signature, matches.length, w.term)`;
+         const scored =
+           input.terms.length === 0
+             ? sql`scored as (select ordinal, id, name, signature, 0::float8 as score from scope)`
+@@ -347,14 +376,7 @@
+               stats as materialized (
+                 select count(*)::float8 as n, coalesce(nullif(avg(length), 0), 1)::float8 as avgdl
+                 from scope),
+-              hits as materialized (
+-                select scope.ordinal, scope.id, scope.name, scope.signature, scope.length, w.term,
+-                  count(*)::float8 as tf
+-                from scope, unnest(scope.own || scope.labels) as w(term)
+-                where (scope.own && string_to_array(${terms}::text, ' ')
+-                    or scope.labels && string_to_array(${terms}::text, ' '))
+-                  and w.term in (select term from q)
+-                group by scope.ordinal, scope.id, scope.name, scope.signature, scope.length, w.term),
++              ${hits},
+               df as materialized (select term, count(*)::float8 as df from hits group by term),
+               scored as (
+                 select hits.ordinal, hits.id, hits.name, hits.signature,
+@@ -370,8 +392,14 @@
+             join executor_tool_search_listings l
+               on l.listing = t.listing and l.app = t.app and l.target = t.target),
+           scope as materialized (
+-            select t.ordinal, t.app, s.id, s.name, s.signature, string_to_array(s.terms, ' ') as own,
+-              string_to_array(t.labels, ' ') as labels, s.length + t.length as length
++            select t.ordinal, t.app, s.id, s.name, s.signature,
++              ${
++                labelled
++                  ? sql`string_to_array(s.terms, ' ') as own,
++                string_to_array(t.labels, ' ') as labels,`
++                  : sql``
++              }
++              s.length + t.length as length
+             from t
+             join present using (ordinal)
+             join executor_tool_search s on s.listing = t.listing

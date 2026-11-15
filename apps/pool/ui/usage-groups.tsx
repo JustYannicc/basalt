@@ -1,5 +1,4 @@
 import { Fragment, useState } from "react";
-import type { Provider } from "../contract.ts";
 import type { Result } from "../index.ts";
 import type {
   PoolOverviewResult,
@@ -9,6 +8,7 @@ import type {
 } from "../overview-contract.ts";
 import { Button, Problem, Segmented, StateIcon } from "./controls.tsx";
 import { LabMark, labColor } from "./lab.tsx";
+import type { LabIdentity } from "./lab-name.ts";
 import { noRecordedUsage } from "./usage-outcome.ts";
 import { PriceNote } from "./price-note.tsx";
 import { priceSentence, samePrice, slicePrice } from "./price-text.ts";
@@ -174,7 +174,7 @@ function Name({
   row: Row;
   by: Grouping;
   name: (id: string) => string;
-  lab?: ((id: string) => Provider | undefined) | undefined;
+  lab: (id: string) => LabIdentity | undefined;
 }) {
   const meta = row.countsOnly
     ? "Counted, not split until account mapping lands"
@@ -186,7 +186,7 @@ function Name({
   return (
     <span className="flex min-w-0 items-center gap-2">
       {by === "provider" && row.provider ? (
-        <LabMark provider={lab?.(row.provider)} small />
+        <LabMark provider={row.provider} identity={lab(row.provider)} size="small" />
       ) : by === "model" && !row.countsOnly ? (
         <span
           className="size-2 shrink-0 rounded-[2px]"
@@ -351,7 +351,6 @@ export function WhoUses({
   people,
   models,
   days,
-  name,
   lab,
   onRetry,
   overview,
@@ -361,14 +360,13 @@ export function WhoUses({
   people: Result<SeriesRead> | undefined;
   models: Result<SeriesRead> | undefined;
   days: number;
-  name: (id: string) => string;
-  /** The provider entry for a lab id, whose app icons mark Labs rows. */
-  lab?: (id: string) => Provider | undefined;
+  lab: (id: string) => LabIdentity | undefined;
   onRetry: () => void;
   overview?: PoolOverviewResult;
   personal?: PoolPersonalOverviewResult;
   historyHref?: string;
 }) {
+  const name = (id: string) => lab(id)?.name ?? "…";
   const [by, setBy] = useState<Grouping>("person");
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const grouping = personal ? "person" : by;

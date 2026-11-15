@@ -28,6 +28,8 @@ export function quotaSamplingFixture(
     windows?: Json[];
   } = {},
 ) {
+  let now = at;
+  let selected = true;
   const provider = options.provider ?? "codex";
   const iso = new Date(at).toISOString();
   const window = (id: string, seconds: number, remaining: number, scope = "account") => ({
@@ -72,9 +74,9 @@ export function quotaSamplingFixture(
         });
       if (route === "/channel-group-details")
         return Response.json({
-          channel_group_details: [
-            { id: 1, channel_group_id: 1, auth_id: credential.credential_id },
-          ],
+          channel_group_details: selected
+            ? [{ id: 1, channel_group_id: 1, auth_id: credential.credential_id }]
+            : [],
         });
       if (route === "/capabilities") return Response.json({});
       if (route === "/usage/records") return Response.json({ items: [], total: 0 });
@@ -83,7 +85,7 @@ export function quotaSamplingFixture(
       if (route === `/quota/credentials/${credential.credential_id}`) return Response.json(detail);
       throw new Error(`Unexpected synthetic Home request: ${route}`);
     },
-    () => at,
+    () => now,
   );
   const storage = new Memory();
   const usage = new Usage({
@@ -92,7 +94,7 @@ export function quotaSamplingFixture(
     signingKey: "ab".repeat(32),
     audience: async () => [],
     permissions: async () => ({ canUse: true, canManage: true }),
-    now: () => new Date(at),
+    now: () => new Date(now),
   });
   const history = new CapacityHistory(storage);
   const view = {
@@ -108,6 +110,13 @@ export function quotaSamplingFixture(
   };
   return {
     usage,
+    select: (value: boolean) => {
+      selected = value;
+    },
+    sampleAt: async (sampleAt: number) => {
+      now = sampleAt;
+      await usage.observe();
+    },
     history,
     calls,
     credential,

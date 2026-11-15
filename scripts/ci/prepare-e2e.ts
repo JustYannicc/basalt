@@ -6,10 +6,13 @@ import { run } from "../process.ts";
 export function e2eCorrections(root: string) {
   return [
     "hitl-inventory-lifetime",
+    "resource-prefetch-settled",
     "listed-account-bindings-readiness",
     "webhook-removal-recovery",
     "atlassian-fixture-preparation",
     "sso-billing-settlement",
+    "retained-pool-overview",
+    "topic-scoped-pool-fixtures",
   ]
     .map((name) => join(root, `e2e/${name}.patch`))
     .filter(existsSync);

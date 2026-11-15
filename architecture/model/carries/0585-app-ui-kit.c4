@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.appUiKit {
+    metadata {
+      constraint "The browser-only `apps/ui` entry and `apps/ui.css` stylesheet ship inside the served framework package and its runtime browser snapshot, with React and React DOM left to the app's own declared dependencies. Kit components are the dashboard's implementations, split into modules that import no dashboard context, host data or SDK code; the dashboard renders through the same modules. Public kit types reference only React and framework contracts. The app compiler admits `apps/ui` as a browser import and resolves only `apps/ui.css` from the selected framework package for page CSS; Tailwind then generates the kit's utilities from the page's retained code, so tokens, focus rings, touch targets, dark mode and reduced motion match the dashboard. The stylesheet carries no `@source` directive or build-machine path. Selected-account health follows the Accounts list's order: the account's own check first, then the worst app check with current results before outdated ones; the kit computes no other health or plan state. Server snapshots, host protocol 41 and the framework version are unchanged."
+    }
+  }
+}

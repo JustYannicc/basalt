@@ -74,7 +74,7 @@ const {
     alarm(): Promise<void>;
     runtimeHandoff(request: Request): Promise<Response>;
     deploymentReady(): Promise<{ bootId: string; instanceId: string }>;
-    availabilityProbe(pool: string): Promise<ProbeResult>;
+    availabilityProbe(pool: string, includeRuntime?: boolean): Promise<ProbeResult>;
     automaticRecoveryObservation(pool: string): Promise<unknown>;
     forward(request: Request, identity: { pool: string; person: string }): Promise<Response>;
   };

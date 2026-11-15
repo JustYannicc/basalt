@@ -1,3 +1,4 @@
+import { assertMigrationActivationSettled } from "./migration-activation-state.ts";
 import { evalStack, type CompiledStack, type StackEffect } from "alchemy/Stack";
 import type { Stage } from "alchemy/Stage";
 import type { AlchemyContext } from "alchemy/AlchemyContext";
@@ -57,6 +58,11 @@ export const releaseRuntimeImage = <A, StackError>(
     const initial = yield* evaluate({ images: {} }, (compiled) =>
       Effect.gen(function* () {
         yield* assertReleaseStateVersion(compiled);
+        yield* assertMigrationActivationSettled(
+          Context.get(compiled.services, State),
+          compiled,
+          options.encryptionKey,
+        );
         const journal = yield* runtimeReleaseJournal(
           compiled,
           options.writer,

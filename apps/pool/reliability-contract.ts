@@ -1,3 +1,5 @@
+export const reliabilityNotificationMinimumRequests = 100;
+
 export interface ReliabilityCounts {
   readonly requests: number;
   readonly failed: number;
@@ -27,7 +29,11 @@ export interface PoolReliabilitySlo {
     | "history_inactive"
     | "capture_stale"
     | "capture_lagging"
-    | "classification_pending";
+    | "classification_pending"
+    | "terminal_collection_unavailable"
+    | "terminal_collection_pending";
+  /** The latest five minutes, for an immediate failure signal alongside the hourly SLO. */
+  readonly current?: PoolReliability;
   readonly hour: PoolReliability;
   readonly day: PoolReliability;
 }

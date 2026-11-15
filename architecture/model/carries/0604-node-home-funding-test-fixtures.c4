@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Synthetic Home dispatchers in retained-account and Responses WebSocket tests implement approved funding validation, so the original assertions reach their intended behavior. The Node CI selector includes all five corrected tests and preserves its previous selection. Production funding validation and refusal controls remain unchanged."
+    }
+  }
+}

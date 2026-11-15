@@ -1,0 +1,67 @@
+diff --git a/sdk/cliproxy/auth/home_force_mapping_test.go b/sdk/cliproxy/auth/home_force_mapping_test.go
+--- a/sdk/cliproxy/auth/home_force_mapping_test.go
++++ b/sdk/cliproxy/auth/home_force_mapping_test.go
+@@ -141,6 +141,10 @@
+ }
+ 
+ func (*accountedAliasTargetDispatcher) AbortAmbiguousDispatch() {}
++
++func (*accountedAliasTargetDispatcher) ValidateUsageCreditTurn(context.Context, string, http.Header, string) error {
++	return nil
++}
+ 
+ func TestHomeAuthSelectionRouteRetainsRequestedResponseAliasAcrossWebsocketReuse(t *testing.T) {
+ 	registry := executionregistry.New()
+@@ -201,6 +205,10 @@
+ }
+ 
+ func (*authSelectionAliasDispatcher) AbortAmbiguousDispatch() {}
++
++func (*authSelectionAliasDispatcher) ValidateUsageCreditTurn(context.Context, string, http.Header, string) error {
++	return nil
++}
+ 
+ func (d *authSelectionAliasDispatcher) Models() []string {
+ 	d.mu.Lock()
+diff --git a/sdk/api/handlers/openai/openai_responses_interrupt_test.go b/sdk/api/handlers/openai/openai_responses_interrupt_test.go
+--- a/sdk/api/handlers/openai/openai_responses_interrupt_test.go
++++ b/sdk/api/handlers/openai/openai_responses_interrupt_test.go
+@@ -192,6 +192,10 @@
+ 
+ func (homeInterruptDispatcher) AbortAmbiguousDispatch() {}
+ 
++func (homeInterruptDispatcher) ValidateUsageCreditTurn(context.Context, string, http.Header, string) error {
++	return nil
++}
++
+ // homeInterruptExecutor records whether an interrupt was accepted for a Home
+ // session credential that is not present in the global auth map.
+ type homeInterruptExecutor struct {
+diff --git a/sdk/api/handlers/openai/openai_responses_websocket_loss_test.go b/sdk/api/handlers/openai/openai_responses_websocket_loss_test.go
+--- a/sdk/api/handlers/openai/openai_responses_websocket_loss_test.go
++++ b/sdk/api/handlers/openai/openai_responses_websocket_loss_test.go
+@@ -1355,6 +1355,10 @@
+ func (*authHeaderCheckingHomeDispatcher) HeartbeatOK() bool       { return true }
+ func (*authHeaderCheckingHomeDispatcher) AbortAmbiguousDispatch() {}
+ 
++func (*authHeaderCheckingHomeDispatcher) ValidateUsageCreditTurn(context.Context, string, http.Header, string) error {
++	return nil
++}
++
+ func (d *authHeaderCheckingHomeDispatcher) RPopAuth(ctx context.Context, model string, sessionID string, headers http.Header, count int) ([]byte, error) {
+ 	return d.RPopAuthWithConstraints(ctx, model, sessionID, headers, count, nil, "")
+ }
+diff --git a/sdk/api/handlers/openai/openai_responses_websocket_test.go b/sdk/api/handlers/openai/openai_responses_websocket_test.go
+--- a/sdk/api/handlers/openai/openai_responses_websocket_test.go
++++ b/sdk/api/handlers/openai/openai_responses_websocket_test.go
+@@ -5724,6 +5724,10 @@
+ 
+ func (*homeHTTPResponsesWebsocketDispatcher) AbortAmbiguousDispatch() {}
+ 
++func (*homeHTTPResponsesWebsocketDispatcher) ValidateUsageCreditTurn(context.Context, string, http.Header, string) error {
++	return nil
++}
++
+ func TestResponsesWebsocketUsesObservedCompactionResponseForHomeRuntimeAuth(t *testing.T) {
+ 	gin.SetMode(gin.TestMode)
+ 

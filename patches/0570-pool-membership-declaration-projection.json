@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-membership-declaration-projection",
+  "file": "0570-pool-membership-declaration-projection.patch",
+  "content_sha256": "bfaceb8ded26b45a2a2755496bbbface691e9917e161d58ba6a572ab8c57547d",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

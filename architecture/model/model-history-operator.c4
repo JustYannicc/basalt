@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolDatabase {
+    metadata {
+      constraint "Private schema apply failures retain only validated SQLSTATE or connection codes, closed failure kinds and narrowly validated denied-resource identifiers. Driver messages, parameters, credentials and nested causes never enter diagnostics. Input validation, authorization and the empty public failure response stay unchanged."
+    }
+  }
+}

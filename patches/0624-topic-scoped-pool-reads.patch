@@ -1,0 +1,352 @@
+diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/apps/hosted/server/src/implementation/organization-changes.ts
+--- a/apps/hosted/server/src/implementation/organization-changes.ts
++++ b/apps/hosted/server/src/implementation/organization-changes.ts
+@@ -1,3 +1,5 @@
++import { AppId } from "@executor-js/sdk/core";
++import { resourceAuthority, requireAppAccessAs } from "./resource-policy.ts";
+ import { Effect, Schema } from "effect";
+ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { Authentication, Unauthorized } from "../contracts/auth.ts";
+@@ -69,7 +71,9 @@
+       ? 401
+       : Schema.is(OrganizationForbidden)(error)
+         ? 403
+-        : 503,
++        : Schema.isSchemaError(error)
++          ? 400
++          : 503,
+     headers: changeHeaders,
+   });
+ 
+@@ -79,23 +83,47 @@
+     const request = yield* HttpServerRequest.HttpServerRequest;
+     const headers = new Headers(request.headers);
+     const identity = yield* organizationChangeAuthority(headers, organization);
++    // Pool heads are opt-in and each selected app is authorized on every authority check.
++    const query = new URL(request.url, "http://localhost").searchParams;
++    const pools = yield* Schema.decodeUnknownEffect(
++      Schema.Array(AppId).check(Schema.isMaxLength(100)),
++    )([...new Set(query.getAll("pool"))]);
++    const authorizePools = Effect.gen(function* () {
++      if (pools.length === 0) return;
++      const actor = yield* resourceAuthority(identity.organization, identity.user);
++      yield* Effect.forEach(pools, (app) => requireAppAccessAs(actor, app, "read"), {
++        discard: true,
++      });
++    });
++    yield* authorizePools;
+     // Slugs can move; this stream keeps checking the canonical scope it subscribed to.
+-    const authorize = organizationChangeAuthority(headers, identity.organization).pipe(
+-      Effect.flatMap((latest) =>
++    const authorize = Effect.gen(function* () {
++      const latest = yield* organizationChangeAuthority(headers, identity.organization);
++      if (
+         latest.organization !== identity.organization ||
+         latest.user !== identity.user ||
+         latest.session !== identity.session
+-          ? Effect.fail(new Unauthorized())
+-          : Effect.succeed(latest),
+-      ),
+-    );
++      )
++        return yield* new Unauthorized();
++      yield* authorizePools;
++      return latest;
++    });
+     const fingerprint = yield* changeIdentity([
+       identity.organization,
+       identity.user,
+       identity.session,
+     ]);
+     const sql = yield* Effect.flatten(GroupDatabase);
+-    const sources = organizationChangeSources(identity.organization, identity.user);
++    const sources = [
++      ...organizationChangeSources(identity.organization, identity.user),
++      ...pools.map((pool) => ({
++        scope: `pool:${pool}`,
++        keys: ["pool-readings", "pool-usage", "pool-samples", "pool-prices"].map((topic) => ({
++          topic,
++          resource: pool,
++        })),
++      })),
++    ];
+     const current = Effect.gen(function* () {
+       const revisions = (yield* Effect.forEach(sources, (source) =>
+         makeChangeJournal(sql).current(source.scope, source.keys),
+diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/src/contracts/change-signal.ts
+--- a/apps/hosted/web/src/contracts/change-signal.ts
++++ b/apps/hosted/web/src/contracts/change-signal.ts
+@@ -21,9 +21,15 @@
+ /** Feeds are shared only within one registry, so another registry never sees its heads. */
+ const feeds = new WeakMap<Registry, Map<string, ChangeFeed>>();
+ const retainedReads = new WeakMap<Registry, Map<string, Map<object, () => void>>>();
+-const changeBase = (registry: Registry, organization: OrganizationReference) => {
++const changeBase = (
++  registry: Registry,
++  organization: OrganizationReference,
++  pools: readonly string[] = [],
++  suffix = "",
++) => {
+   const target = registry.get(organizationTargetAtom(organization)) ?? organization;
+-  return `/api/organizations/${encodeURIComponent(target)}/changes`;
++  const query = new URLSearchParams([...new Set(pools)].sort().map((pool) => ["pool", pool]));
++  return `/api/organizations/${encodeURIComponent(target)}/changes${suffix}${query.size ? `?${query}` : ""}`;
+ };
+ 
+ /**
+@@ -32,8 +38,12 @@
+  * replaced the next time a read opens one; the new feed binds the new identity and starts with
+  * no accepted heads.
+  */
+-const organizationFeed = (registry: Registry, organization: OrganizationReference) => {
+-  const base = changeBase(registry, organization);
++const organizationFeed = (
++  registry: Registry,
++  organization: OrganizationReference,
++  pools: readonly string[],
++) => {
++  const base = changeBase(registry, organization, pools);
+   let scoped = feeds.get(registry);
+   if (scoped === undefined) {
+     scoped = new Map();
+@@ -42,7 +52,10 @@
+   const existing = scoped.get(base);
+   if (existing !== undefined && existing.status() !== "revoked") return existing;
+   existing?.close();
+-  const feed = makeChangeFeed({ stream: base, current: `${base}/current` });
++  const feed = makeChangeFeed({
++    stream: base,
++    current: changeBase(registry, organization, pools, "/current"),
++  });
+   scoped.set(base, feed);
+   feed.onStatus(() => {
+     if (feed.status() !== "revoked") return;
+@@ -65,9 +78,13 @@
+   Map<string, { sequence: number; pending?: Promise<Heads> | undefined }>
+ >();
+ /** Readers join an in-flight head read only when it started after their body finished. */
+-const currentHeads = (registry: Registry, organization: OrganizationReference, after: number) => {
+-  const target = registry.get(organizationTargetAtom(organization)) ?? organization;
+-  const url = `/api/organizations/${encodeURIComponent(target)}/changes/current`;
++const currentHeads = (
++  registry: Registry,
++  organization: OrganizationReference,
++  after: number,
++  pools: readonly string[],
++) => {
++  const url = changeBase(registry, organization, pools, "/current");
+   let scoped = reads.get(registry);
+   if (scoped === undefined) {
+     scoped = new Map();
+@@ -102,7 +119,7 @@
+ 
+ /** One accepted body owns its fence through server rendering, hydration and warm navigation. */
+ const changeRetained =
+-  (organization: OrganizationReference, topics: readonly string[]) =>
++  (organization: OrganizationReference, topics: readonly string[], pools: readonly string[] = []) =>
+   <A, E extends HostedError>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
+     type Value = AsyncResult.AsyncResult<A, E | OrganizationForbidden | ChangeRefreshFailed>;
+     const { source, cache, document: carriesDocument } = acceptedRead(self);
+@@ -120,7 +137,7 @@
+           retained = new Map();
+           retainedReads.set(registry, retained);
+         }
+-        const base = changeBase(registry, organization);
++        const base = changeBase(registry, organization, pools);
+         let entries = retained.get(base);
+         if (entries === undefined) {
+           entries = new Map();
+@@ -196,11 +213,16 @@
+             } else {
+               // The document uses its request-bound fetch; no browser stream or prior identity.
+               for (let attempt = 0; attempt < 3; attempt++) {
+-                const before = await currentHeads(get.registry, organization, 0);
++                const before = await currentHeads(get.registry, organization, 0, pools);
+                 if (ended) return;
+                 const result = await body();
+                 if (ended) return;
+-                const after = await currentHeads(get.registry, organization, before.sequence);
++                const after = await currentHeads(
++                  get.registry,
++                  organization,
++                  before.sequence,
++                  pools,
++                );
+                 if (ended) return;
+                 if (before.receipt.identity !== after.receipt.identity) return revoked();
+                 if (headVersion(before.receipt, watched) !== headVersion(after.receipt, watched))
+@@ -224,7 +246,7 @@
+         const watch =
+           typeof window === "undefined"
+             ? undefined
+-            : organizationFeed(get.registry, organization).watch({
++            : organizationFeed(get.registry, organization, pools).watch({
+                 topics: watched,
+                 ...(held === undefined ? {} : { accepted: held.receipt }),
+                 confirmed: () => {
+@@ -255,10 +277,10 @@
+  * retry becomes one fenced read, and an invalidation only clears what is shown.
+  */
+ export const changeProtected =
+-  (organization: OrganizationReference, topics: readonly string[]) =>
++  (organization: OrganizationReference, topics: readonly string[], pools: readonly string[] = []) =>
+   <A, E extends HostedError>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
+     type Value = AsyncResult.AsyncResult<A, E | OrganizationForbidden | ChangeRefreshFailed>;
+-    const { atom: fenced, requests } = changeRetained(organization, topics)(self);
++    const { atom: fenced, requests } = changeRetained(organization, topics, pools)(self);
+     const query: Atom.Writable<Value, ((current: A) => A) | undefined> = Atom.writable(
+       (get): Value => {
+         const result = get(fenced);
+diff --git a/apps/hosted/web/src/contracts/pool-credit-routing.ts b/apps/hosted/web/src/contracts/pool-credit-routing.ts
+--- a/apps/hosted/web/src/contracts/pool-credit-routing.ts
++++ b/apps/hosted/web/src/contracts/pool-credit-routing.ts
+@@ -1,14 +1,12 @@
+ /** A pool's Subscription credits policy and what it does with each account, read through the host. */
+ import { hydrated } from "@executor-js/ui/contracts/http";
+-import { revalidated } from "@executor-js/ui/contracts/refresh";
+-import { pollingQuery } from "@executor-js/ui/contracts/polling";
+-import { Data, Effect, Option } from "effect";
+-import { AsyncResult, Atom } from "effect/reactivity";
++import { changeProtected } from "./change-signal.ts";
++import { Data, Effect } from "effect";
++import { Atom } from "effect/reactivity";
+ import type { AppId } from "@executor-js/sdk";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+ import type { AccountSelectionPolicy, UsageCreditPolicy } from "apps/contracts";
+ import { HostedClient } from "./api.ts";
+-import { protectedQuery } from "./protected-query.ts";
+ 
+ class PoolKey extends Data.Class<{
+   readonly organization: OrganizationReference;
+@@ -20,22 +18,15 @@
+     "poolUsage",
+     "accountRouting",
+     hydrated({ params: { organization: key.organization, app: key.app } }),
+-  ).pipe(revalidated, protectedQuery),
+-);
+-const polled = Atom.family((key: PoolKey) => pollingQuery(source(key)));
+-const routing = Atom.family((key: PoolKey) =>
+-  Atom.readable(
+-    (get) => {
+-      const result = get(source(key));
+-      // Routing follows fresh readings, so a pool keeps polling while visible; any other app's
+-      // null answer is read once.
+-      const current = AsyncResult.value(result);
+-      if (Option.isSome(current) && current.value !== null) get(polled(key));
+-      return result;
+-    },
+-    (refresh) => refresh(source(key)),
++  ).pipe(
++    changeProtected(
++      key.organization,
++      ["accounts", "apps", "membership", "pool-readings", "pool-samples"],
++      [key.app],
++    ),
+   ),
+ );
++const routing = Atom.family((key: PoolKey) => source(key));
+ /** The pool's policy, whether the caller may change it, and each account's routing; null off pools. */
+ export const poolAccountRoutingAtom = (key: {
+   readonly organization: OrganizationReference;
+diff --git a/apps/hosted/web/src/contracts/pool-usage-series.ts b/apps/hosted/web/src/contracts/pool-usage-series.ts
+--- a/apps/hosted/web/src/contracts/pool-usage-series.ts
++++ b/apps/hosted/web/src/contracts/pool-usage-series.ts
+@@ -5,7 +5,7 @@
+  * gets numbers; other accounts' counts, unmapped requests and failed reads give nothing, never 0.
+  */
+ import { browserOnly } from "@executor-js/ui/contracts/http";
+-import { pollingQuery } from "@executor-js/ui/contracts/polling";
++import { changeProtected } from "./change-signal.ts";
+ import { windowStart, type TrafficTick } from "@executor-js/ui/dashboard/account-traffic";
+ import { Clock, Effect } from "effect";
+ import { AsyncResult, Atom } from "effect/reactivity";
+@@ -187,10 +187,14 @@
+   readonly pools: readonly { readonly pool: AppId; readonly accounts: readonly AccountId[] }[];
+ }
+ 
+-// String keys: the family reuses the atom, and its polling, while the visible accounts stay put.
++// String keys: the family reuses the atom, and its revision watch, while the visible accounts stay put.
+ const traffic = Atom.family((key: string) => {
+   const { organization, pools } = JSON.parse(key) as TrafficKey;
+-  return pollingQuery(
++  return changeProtected(
++    organization,
++    ["accounts", "apps", "membership", "pool-usage", "pool-prices"],
++    pools.map(({ pool }) => pool),
++  )(
+     browserOnly(
+       HostedClient.runtime.atom(
+         Effect.forEach(
+@@ -209,7 +213,7 @@
+     ),
+   );
+ });
+-/** Each pool's counts for its visible accounts, polled while the page is visible. */
++/** Each pool's counts for its visible accounts, refreshed on relevant committed changes while visible. */
+ export const accountTrafficAtom = (key: TrafficKey) => traffic(JSON.stringify(key));
+ 
+ /** Tokens counted in one window, keyed `pool|account|start`. */
+@@ -250,7 +254,11 @@
+ 
+ const tokens = Atom.family((key: string) => {
+   const { organization, reads } = JSON.parse(key) as TokensKey;
+-  return pollingQuery(
++  return changeProtected(
++    organization,
++    ["accounts", "apps", "membership", "pool-usage", "pool-prices"],
++    reads.map(({ pool }) => pool),
++  )(
+     browserOnly(
+       HostedClient.runtime.atom(
+         Effect.gen(function* () {
+diff --git a/apps/hosted/web/src/contracts/pool-usage.ts b/apps/hosted/web/src/contracts/pool-usage.ts
+--- a/apps/hosted/web/src/contracts/pool-usage.ts
++++ b/apps/hosted/web/src/contracts/pool-usage.ts
+@@ -1,14 +1,12 @@
+ /** A pool's per-person usage and weekly caps, read through the host and never by running the pool. */
+ import { hydrated } from "@executor-js/ui/contracts/http";
+-import { revalidated } from "@executor-js/ui/contracts/refresh";
+-import { pollingQuery } from "@executor-js/ui/contracts/polling";
+-import { Data, Effect, Option } from "effect";
+-import { AsyncResult, Atom } from "effect/reactivity";
++import { changeProtected } from "./change-signal.ts";
++import { Data, Effect } from "effect";
++import { Atom } from "effect/reactivity";
+ import type { AppId } from "@executor-js/sdk";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+ import type { PoolUsagePage } from "@executor-js/hosted-server/pool-usage";
+ import { HostedClient } from "./api.ts";
+-import { protectedQuery } from "./protected-query.ts";
+ 
+ export type { PoolUsagePage } from "@executor-js/hosted-server/pool-usage";
+ export type PoolUsageMember = PoolUsagePage["members"][number];
+@@ -34,22 +32,15 @@
+       params: { organization: key.organization, app: key.app },
+       query: { after: key.after },
+     }),
+-  ).pipe(revalidated, protectedQuery),
+-);
+-const polled = Atom.family((key: PageKey) => pollingQuery(source(key)));
+-const page = Atom.family((key: PageKey) =>
+-  Atom.readable(
+-    (get) => {
+-      const result = get(source(key));
+-      // Only a pool reconciles while the page is visible, including while a refresh fails; an
+-      // ordinary app's null answer is read once.
+-      const current = AsyncResult.value(result);
+-      if (Option.isSome(current) && current.value !== null) get(polled(key));
+-      return result;
+-    },
+-    (refresh) => refresh(source(key)),
++  ).pipe(
++    changeProtected(
++      key.organization,
++      ["accounts", "apps", "membership", "pool-usage", "pool-prices"],
++      [key.app],
++    ),
+   ),
+ );
++const page = Atom.family((key: PageKey) => source(key));
+ /** One page of a pool's people, or null when the app is not a pool. Managers only. */
+ export const poolUsagePageAtom = (key: {
+   readonly organization: OrganizationReference;

@@ -92,6 +92,70 @@ Reconcile the IDs, then restart with the same approved source and a new receipts
 path: retained identical rows insert zero, and changed content fails. Replaying
 pages does not change previous attribution or spend caps.
 
+## Bulk import from an accepted manifest
+
+For a large verified export, `scripts/import-cpamp-bulk.ts` reuses the original
+metadata, exact-ID manifest, source UUID and account map. Run its `prepare`
+command with those files, the accepted manifest's SHA-256, the same destination
+and owner, and a new private `--descriptor` path. `--help` lists the exact
+arguments. Preparation checks every original 200-row page hash and ID before
+writing a small descriptor. It neither contacts the source nor copies the export.
+Keep the accepted files unchanged for upload, apply and recovery.
+
+Run `upload` with the descriptor, private owner session and a new `--receipts`
+path. It rechecks the inputs and stages immutable chunks in EU object storage,
+with at most 5,000 rows and 8 MiB per chunk. Upload does not approve or insert
+history. Review the descriptor's `manifestDigest` and canonical
+`accountMappingDigest` acknowledgement. Production apply still needs the
+coordinator's GO for that exact descriptor digest; approval of the original
+manifest alone does not start the bulk job.
+
+Run `apply` with the same descriptor and owner session, a new receipts path,
+`--approve` set to the exact `manifestDigest`, and `--guard-file` pointing to
+fresh observations from the external guardian. The guard JSON requires
+`observedAt`, `expiresAt` and `cpuAt` in Unix milliseconds, `ready`, `cpu`,
+`releaseReadComplete`, `releaseWindowActive`, `poolErrors` and `queryErrors`. Observations expire within ninety seconds. Never refresh
+the timestamps yourself or replace missing error counts with zero. The guardian
+continues to enforce its CPU/error pause and recovery policy. Missing, stale or
+unsafe observations pause the job, including when the operator client stops.
+
+The EU job starts SQL batches at 500 rows and adjusts toward 500 milliseconds of
+database work, bounded between 100 and 5,000 rows. A persisted cooldown separates
+batches. CPU at least 70 percent pauses work until below 60 percent. Two minutes
+at least 90 percent or any database error stops the job for operator attention.
+Release and backup windows pause work. Status retains batch size, observed rate
+and the throttle reason; a stopped job requires explicit owner resume.
+
+Serving telemetry is optional until a verified source is configured. Status says
+not available when none exists. A configured source is binding, with a frozen
+pre-import, non-release five-minute baseline per route and stream mode. P99 needs
+at least 20 successful completions, with 100 preferred. Thresholds are the greater
+of 1.25 times baseline p99 and baseline p99 plus 100 milliseconds, or baseline
+failure rate plus one percentage point. Two regressed fresh checks at least sixty
+seconds apart pause work. Any new 5xx against a zero-5xx baseline pauses immediately.
+Failed retrieval or observations/computations older than 120 seconds also pause.
+These tolerances are engineering policy, not measured safe constants. Model
+completion timing and separately labeled serving-dependency timing stay distinct;
+control/session durations never substitute for model completions. No probe traffic
+is needed or generated. Counts, windows, thresholds and unavailable state persist.
+
+The EU job processes one bounded SQL batch per alarm. Every new chunk rechecks the
+current owner's authority and the mapped targets' enabled, selected,
+same-provider state. Its transaction saves the exact artifact subrange receipt with the request
+rows. Replaying an identical subrange returns that receipt's original counts;
+changed input or retained contents refuses. Existing imported rows and live
+capture keep the same event identities, so overlap does not add duplicate usage.
+
+Use `status` or `watch` to inspect progress, `pause` to stop new chunks, and
+`resume` with the same descriptor, approval digest and a fresh guard after
+recovery. A chunk already admitted may finish. A lost HTTP response stops the
+client without automatic mutation retry. Inspect the private receipts, request
+`status` with a new receipts path, and reconcile before explicitly resuming.
+An interrupted upload can be rerun explicitly with the same immutable descriptor.
+After completion, reconcile retained counts and token sums against the accepted
+source ranges and verify the selected team's history. Local timing does not
+establish production throughput.
+
 Imported history is attributed to the import operation, not to an original person
 or app. Foreign account hashes identify current native accounts only through the
 explicit operator map. Mapped history contributes to the current account's
@@ -101,3 +165,34 @@ provider invoice or canonical token-breakdown proof exists in this source, so
 these rows remain unpriced with legacy token quality. After apply, reconcile
 counts and token sums by day and model against the verified source ranges, and
 verify the history on the selected team's live interface.
+
+
+After exact reconciliation, use the private completion operator to record the
+accepted source range. Its selection names the pool, source UUID, canonical
+`frozenFrom` and `frozenTo`, `afterSourceId` and `upperSourceId`, accepted manifest
+and account-map digests, exact ID-set digest, and cumulative `verifiedRows`.
+The first completion starts after source ID `0`; a top-up names the preceding
+checkpoint's upper ID and cannot shrink its range or rewind its source watermark.
+The ID-set digest hashes sorted IDs within each two-character hexadecimal prefix,
+then hashes the sorted `prefix:hash` lines. Both levels join with a newline and
+omit a trailing newline. The operator checks the accepted manifest against that
+same digest before contacting the database. It also checks source-file and page
+hashes, resolved IDs, timestamps and the actual upper source ID. For a top-up,
+repeat the `--file` and `--manifest` pair for every accepted segment in source
+order, including the preceding completed range. The new checkpoint records the
+latest accepted segment manifest and the cumulative verified ID set.
+
+Run `node scripts/pool-import-completion.ts --worker <script> --account-id
+<account> --selection <private-selection.json> --file <frozen-metadata> --manifest <accepted-manifest>
+--plan <new-private-plan.json>` for a read-only plan. After reviewing its exact
+reconciliation and preceding checkpoint, repeat with `--apply --go`. The private
+operations binding supplies authority; the public Worker cannot finalize history.
+A started receipt prevents repeating an uncertain dispatch. Inspect the saved
+plan and receipt, then read a fresh plan instead of retrying a lost response.
+
+Completion records only the explicitly verified frozen range. The pool series
+API reports an incomplete import as `backfillComplete: false` and includes its
+completion range and source watermark after finalization. Consumers must use that
+range rather than treating it as proof of later or earlier history. Home capture
+keeps its separate cursor. Schema v8 adds one small table without a backfill or
+an index on request history.

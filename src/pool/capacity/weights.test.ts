@@ -1,6 +1,45 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { capacityWeight, capacityWeightRevision } from "./weights.ts";
+import { capacityWeight as resolveWeight, capacityWeightRevision } from "./weights.ts";
+
+const clock = Date.parse("2026-11-13T12:00:00Z");
+const capacityWeight = (
+  provider: string,
+  plan: string | null,
+  seconds: number,
+  options: Parameters<typeof resolveWeight>[3] = {},
+) => resolveWeight(provider, plan, seconds, { now: clock, ...options });
+
+test("a refreshed catalog changes a plan's allowance without changing code", () => {
+  const now = Date.parse("2026-11-13T12:00:00Z");
+  const entry = {
+    vendor: "openai",
+    plan: "promax",
+    windowSeconds: 604_800,
+    full: 37,
+    unit: { id: "chatgpt-plus-equivalent", label: "Plus-eq" },
+    kind: "dataset" as const,
+    verification: "reported" as const,
+    sources: ["https://example.test/allowances.json"],
+    checkedAt: now - 86_400_000,
+    fetchedAt: now,
+    expiresAt: now + 86_400_000,
+    revision: "synthetic-37",
+  };
+  const first = capacityWeight("codex", "promax", 604_800, {
+    now,
+    catalog: { entries: [entry] },
+  });
+  assert.equal(first.multiplier, 37);
+  assert.equal(first.known, true);
+  assert.equal(first.allowance?.checkedAt, entry.checkedAt);
+  const updated = capacityWeight("openai", "Pro (Max)", 604_800, {
+    now,
+    catalog: { entries: [{ ...entry, full: 43, revision: "synthetic-43" }] },
+  });
+  assert.equal(updated.multiplier, 43);
+  assert.equal(updated.revision, "synthetic-43");
+});
 
 test("Claude applies the pool plan policy alongside published window multipliers", () => {
   // Pinned Home internal/quota/providers.go maps default_claude_max_20x to this exact name.
@@ -24,32 +63,26 @@ test("Claude applies the pool plan policy alongside published window multipliers
   assert.equal(capacityWeight("claude", "Max 20x", 86_400).known, false);
 });
 
-test("reference units stay fixed across pool composition and unknown tiers stay flagged", () => {
+test("known reference units and unknown tiers never acquire a shared guessed unit", () => {
   assert.equal(capacityWeight("codex", "Plus", 604_800).known, true);
   assert.equal(capacityWeight("claude", "Pro", 604_800).known, true);
-  for (const tier of ["Pro", "Pro 5x", "Pro 20x", "Pro 500", null]) {
+  for (const tier of ["Unknown new tier", null]) {
     const value = capacityWeight("codex", tier, 604_800);
     assert.equal(value.known, false);
     assert.equal(value.multiplier, 1);
-    assert.equal(value.unit.id, "chatgpt-plus-equivalent");
+    assert.notEqual(value.unit.id, "chatgpt-plus-equivalent");
   }
+  assert.notEqual(
+    capacityWeight("codex", "Unknown new tier", 604_800).unit.id,
+    capacityWeight("codex", null, 604_800).unit.id,
+  );
 });
 
-test("only changed Claude weekly tiers acquire a new policy revision", () => {
-  for (const provider of ["claude", "anthropic", "codex", "openai", "other"])
-    for (const plan of ["Max 5x", "Max 20x", "Ultra", "Pro", "Plus", "Unknown", null])
-      for (const seconds of [18_000, 604_800, 86_400]) {
-        const changed =
-          ["claude", "anthropic"].includes(provider) &&
-          seconds === 604_800 &&
-          ["Max 5x", "Max 20x", "Ultra"].includes(plan ?? "");
-        assert.equal(
-          capacityWeight(provider, plan, seconds).revision,
-          changed ? (plan === "Max 20x" ? "2026-11-09-max20x-20" : "2026-11-09") : "2026-10-30",
-          `${provider}/${plan}/${seconds}`,
-        );
-      }
-  assert.equal(capacityWeight("claude", "Ultra", 604_800).multiplier, 10);
+test("expired seed facts become unknown independently of background refresh", () => {
+  const weight = capacityWeight("codex", "Pro (Max)", 604_800, { now: clock + 30 * 86_400_000 });
+  assert.equal(weight.known, false);
+  assert.equal(weight.multiplier, 1);
+  assert.match(weight.unit.id, /promax/);
 });
 
 test("Max 20x counts as twenty weekly units under the pool's plan policy", () => {

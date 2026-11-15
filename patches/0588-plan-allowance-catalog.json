@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-plan-allowance-catalog",
+  "file": "0588-plan-allowance-catalog.patch",
+  "content_sha256": "d3fdb44b279dc2098036bf420c9f29ce6f57dbc4e14e42e8746f5953aa2f1c70",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

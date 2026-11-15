@@ -36,9 +36,11 @@ import type { HomePeerSource } from "../../src/pool/runtime-slots/peer-access.ts
 const responseModule = "../../src/pool/native-response.worker.ts";
 const {
   nativeResponse,
-}: { nativeResponse(response: Response, lease: NativeStreamLease): Response } = await import(
-  responseModule
-);
+  nativeControlPair,
+}: {
+  nativeControlPair: NonNullable<EndpointOptions["controlPair"]>;
+  nativeResponse(response: Response, lease: NativeStreamLease): Response;
+} = await import(responseModule);
 
 export function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -270,7 +272,7 @@ export async function handoffRuntime(
     options.role ?? "runtime",
     runtimeFixtureCode,
     nativeResponse,
-    options.endpoint,
+    { controlPair: nativeControlPair, ...options.endpoint },
   );
   return {
     ctx,

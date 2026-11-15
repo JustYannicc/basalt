@@ -68,18 +68,15 @@ test("an older server without the estimate reads Not reported, not $0.00 or cred
   assert.match(requestEstimateBasis(shown) ?? "", /doesn't report/);
 });
 
-test("an unavailable estimate says why and shows no amount", () => {
+test("a request the server couldn't price reads Unpriced and keeps its specific reason", () => {
+  const reason = "Model not recorded; cost cannot be estimated.";
   const shown = requestEstimate({
     ...record,
-    api_estimate: metric({ status: "unavailable", amount: null, reason: "No public rate." }),
+    model: null,
+    api_estimate: metric({ status: "unavailable", amount: null, price: null, reason }),
   });
-  assert.deepEqual(shown, {
-    text: "Unavailable",
-    priced: false,
-    price: null,
-    reason: "No public rate.",
-  });
-  assert.equal(requestEstimateBasis(shown), "No public rate.");
+  assert.deepEqual(shown, { text: "Unpriced", priced: false, price: null, reason });
+  assert.equal(requestEstimateBasis(shown), reason);
   const unexplained = requestEstimate({
     ...record,
     api_estimate: metric({ status: "unavailable", amount: null }),

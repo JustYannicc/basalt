@@ -220,6 +220,19 @@ try {
       assert.equal(runs.length, 1, "One isolated Cloud run must own this case's evidence");
       const directory = `${evidenceRoot}/${runs[0]}/cloud`;
       const metadata = JSON.parse(await readFile(`${directory}/environment.json`, "utf8"));
+      const journal = (await readFile(`${directory}/change-journal.ndjson`, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      assert.deepEqual(
+        journal,
+        [
+          { mode: "prepared", readerReady: true, markers: [21], queueOnly: false },
+          { mode: "active", readerReady: true, markers: [21, 22], queueOnly: true },
+        ],
+        "Operator acceptance requires the registered activation after the actual queue-aware reader proof",
+      );
+
       assert.equal(
         metadata.prebuiltFramework,
         true,

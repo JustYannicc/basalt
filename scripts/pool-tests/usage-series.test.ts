@@ -163,7 +163,8 @@ test("the configured host mapping gate controls native accounts; foreign referen
       { ...input, by: ["account"], sources: [await digest("fixture-import")] },
       native.authority,
     );
-    assert.equal(foreign.groups[0]!.key.account, "unmapped");
+    assert.match(foreign.groups[0]!.key.account!, /^imported:[a-f0-9]{64}$/);
+    assert.deepEqual(foreign.groups[0]!.accountDisplay, { kind: "imported-only", label: null });
   });
 });
 

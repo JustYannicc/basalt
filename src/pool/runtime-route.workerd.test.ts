@@ -45,6 +45,7 @@ test(
         durableObjects: {
           Root: { className: "Root", useSQLite: true },
           Extra: { className: "Extra", useSQLite: true },
+          NODE: { className: "ModelLifetimeNode", useSQLite: true },
         },
         bindings: {
           POOL_DATABASE_URL: "postgresql://synthetic@database.invalid/pool",
@@ -205,12 +206,60 @@ test(
           assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Reason"), null);
           const text = await response.text();
           assert.equal(text.includes("synthetic-private-exception-body"), false);
-          assert.partialDeepStrictEqual(JSON.parse(text), {
-            error: { code: "upstream_outcome_unknown", retryable: false },
-          });
+          const value = JSON.parse(text);
+          assert.equal(value.error.code, "upstream_outcome_unknown");
+          assert.equal(value.error.retryable, false);
+          assert.equal(response.headers.get("x-should-retry"), "false");
+          assert.ok(response.headers.get("X-Request-Id"));
           const calls = await mf.dispatchFetch(`http://fixture/calls?fault=${fault}`);
           assert.equal((await calls.json()).calls, count);
         });
+      await context.test(
+        "native socket lifetime crosses the runtime endpoint and holds drain until completion",
+        async () => {
+          const response = await mf.dispatchFetch("http://fixture/v1/responses?fault=lifetime", {
+            headers: { Upgrade: "websocket", "Sec-WebSocket-Protocol": "raw.fixture" },
+          });
+          assert.equal(response.status, 101);
+          const client = response.webSocket!;
+          client.accept();
+          try {
+            const activity = await mf.dispatchFetch("http://fixture/read-state?fault=lifetime");
+            assert.equal((await activity.json()).active, 1);
+            const payload = new Uint8Array([0, 255, 127, 0, 42]);
+            const message = new Promise<ArrayBuffer>((resolve) =>
+              client.addEventListener(
+                "message",
+                (event: { data: ArrayBuffer }) => resolve(event.data),
+                { once: true },
+              ),
+            );
+            client.send(payload);
+            assert.deepEqual(new Uint8Array(await message), payload);
+            const duplicate = await mf.dispatchFetch(
+              "http://fixture/duplicate-data?fault=lifetime",
+            );
+            assert.equal(duplicate.status, 409);
+            assert.deepEqual(await duplicate.json(), {
+              error: "runtime-refused",
+              reason: "runtime_endpoint_route_slot_uncertain",
+            });
+            const drain = await mf.dispatchFetch("http://fixture/begin-drain?fault=lifetime");
+            assert.deepEqual(await drain.json(), { active: 1, known: true });
+            const drained = mf.dispatchFetch("http://fixture/drained?fault=lifetime");
+            client.close(1000, "Complete");
+            const final = await (await drained).json();
+            assert.equal(final.active, 0);
+            assert.equal(final.phase, "draining");
+            const node = await (await mf.dispatchFetch("http://fixture/node-state")).json();
+            assert.equal(node.dispatches, 1);
+          } finally {
+            try {
+              client.close();
+            } catch {}
+          }
+        },
+      );
       await context.test("healthy ready extra remains routable", async () => {
         const response = await mf.dispatchFetch("http://fixture/v1/messages?fault=healthy", {
           method: "POST",

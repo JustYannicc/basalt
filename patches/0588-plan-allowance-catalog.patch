@@ -1,0 +1,269 @@
+diff --git a/packages/apps/src/contracts/account-plan-catalog.ts b/packages/apps/src/contracts/account-plan-catalog.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/src/contracts/account-plan-catalog.ts
+@@ -0,0 +1,87 @@
++/** Vendor identity is independent of sign-in method, display spelling and changing allowance values. */
++export interface VendorPlan {
++  readonly vendor: string;
++  readonly id: string;
++  readonly name: string;
++  readonly recognized: boolean;
++}
++
++const families = new Map([
++  ["codex", "openai"],
++  ["claude", "anthropic"],
++  ["grok", "xai"],
++]);
++const plans: readonly [string, string, string, readonly string[]][] = [
++  ["openai", "free", "Free", []],
++  ["openai", "go", "Go", []],
++  ["openai", "plus", "Plus", []],
++  ["openai", "pro", "Pro (More)", ["pro 200", "pro 20x"]],
++  ["openai", "prolite", "Pro", ["pro 100", "pro 5x", "pro-lite", "pro_lite", "pro lite"]],
++  ["openai", "promax", "Pro (Max)", ["pro 500", "pro max", "pro_max"]],
++  ["openai", "team", "Team", []],
++  ["openai", "self_serve_business_prolite", "Self Serve Business ProLite", []],
++  ["openai", "self_serve_business_usage_based", "Self Serve Business Usage Based", []],
++  ["openai", "business", "Business", []],
++  ["openai", "ent26", "Enterprise", ["enterprise", "hc"]],
++  ["openai", "enterprise_cbp_automation", "Enterprise (Automation)", []],
++  ["openai", "enterprise_cbp_usage_based", "Enterprise CBP Usage Based", []],
++  ["openai", "edu", "Edu", ["education"]],
++  ["openai", "edu_plus", "Edu Plus", []],
++  ["openai", "edu_pro", "Edu Pro", []],
++  ["openai", "sci", "Academic Researchers", []],
++  ["openai", "sci_plus", "Academic Researchers Plus", []],
++  ["openai", "unknown", "Unknown", []],
++  ["anthropic", "pro", "Pro", ["claude pro"]],
++  ["anthropic", "max_5x", "Max 5x", ["max 5x", "default_claude_max_5x"]],
++  ["anthropic", "max_20x", "Max 20x", ["max 20x", "default_claude_max_20x"]],
++  ["anthropic", "ultra", "Ultra", ["claude ultra"]],
++  ["anthropic", "free", "Free", []],
++  ["anthropic", "team", "Team", []],
++  ["anthropic", "enterprise", "Enterprise", []],
++  ["xai", "grok_pro", "Grok Pro", ["grokpro", "grok pro"]],
++  ["xai", "supergrok", "SuperGrok", []],
++  ["xai", "supergrok_plus", "SuperGrok Plus", ["supergrokplus", "supergrok plus"]],
++  ["xai", "supergrok_pro", "SuperGrok Pro", ["supergrokpro", "supergrok pro"]],
++  ["xai", "supergrok_heavy", "SuperGrok Heavy", ["supergrokheavy", "supergrok heavy"]],
++  ["xai", "x_premium_plus", "X Premium+", ["xpremiumplus", "x premium+"]],
++  ["xai", "x_subscription_plus", "X Subscription Plus", ["x subscription plus"]],
++  ["xai", "x_subscription_premium", "X Subscription Premium", ["x subscription premium"]],
++  ["xai", "x_subscription_super", "X Subscription Super", ["x subscription super"]],
++  ["xai", "x_subscription_ultra", "X Subscription Ultra", ["x subscription ultra"]],
++];
++const catalog = new Map(
++  plans.flatMap(([vendor, id, name, aliases]) =>
++    [id, name, ...aliases].map(
++      (alias) =>
++        [
++          JSON.stringify([vendor, alias.toLowerCase()]),
++          { vendor, id, name, recognized: true },
++        ] as const,
++    ),
++  ),
++);
++// A raw OpenAI "pro" is Pro 200. Its Pro 100 display label is deliberately ambiguous.
++catalog.set(JSON.stringify(["openai", "pro"]), {
++  vendor: "openai",
++  id: "pro",
++  name: "Pro (More)",
++  recognized: true,
++});
++
++/** Vendor identity is independent of the sign-in method and of changing quota values. */
++export function vendorPlan(provider: string | undefined, label: string | null): VendorPlan {
++  const family = provider?.trim().toLowerCase() ?? "";
++  const vendor = families.get(family) ?? family;
++  const value = label?.trim() ?? "";
++  const key = value.toLowerCase();
++  const found = catalog.get(JSON.stringify([vendor, key]));
++  if (found) return found;
++  return {
++    vendor,
++    id: key || "unknown",
++    name:
++      value.replace(/[_-]+/gu, " ").replace(/\b[a-z]/gu, (letter) => letter.toUpperCase()) ||
++      "Unknown",
++    recognized: false,
++  };
++}
+diff --git a/packages/apps/src/contracts/account-plan-allowance.ts b/packages/apps/src/contracts/account-plan-allowance.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/apps/src/contracts/account-plan-allowance.ts
+@@ -0,0 +1,164 @@
++import { vendorPlan } from "./account-plan-catalog.ts";
++export { vendorPlan, type VendorPlan } from "./account-plan-catalog.ts";
++
++/** Account evidence precedes maintained datasets, vendor facts and explicit pool policy. */
++export type AllowanceSource =
++  | "account-absolute"
++  | "account-calibration"
++  | "dataset"
++  | "vendor"
++  | "policy"
++  | "reference"
++  | "unknown";
++/** Distinguishes vendor verification, reported figures, workload estimates and unknown sizing. */
++export type AllowanceVerification =
++  | "verified"
++  | "reported"
++  | "estimated"
++  | "policy"
++  | "reference"
++  | "unknown";
++/** Source check time and expiry remain distinct from retrieval time so fetching cannot renew old facts. */
++export interface AllowanceProvenance {
++  readonly kind: AllowanceSource;
++  readonly verification: AllowanceVerification;
++  readonly sources: readonly string[];
++  readonly checkedAt: number | null;
++  readonly fetchedAt: number | null;
++  readonly expiresAt: number | null;
++  readonly detail?: string;
++}
++/** One vendor plan and quota window, sized only in its declared comparable unit. */
++export interface PlanAllowance extends AllowanceProvenance {
++  readonly vendor: string;
++  readonly plan: string;
++  readonly windowSeconds: number;
++  readonly full: number | null;
++  readonly unit: { readonly id: string; readonly label: string };
++  readonly revision: string;
++  readonly sourceId?: string;
++  readonly unlimited?: boolean;
++  readonly contradicted?: boolean;
++}
++/** Expiring source facts supplied by the host; consumers resolve freshness at their own read time. */
++export interface PlanAllowanceCatalog {
++  readonly entries: readonly PlanAllowance[];
++}
++/** A current allowance, or a separate one-account unit when evidence is absent or contradicted. */
++export interface ResolvedPlanAllowance extends PlanAllowance {
++  readonly full: number;
++  readonly known: boolean;
++}
++const priority: Record<AllowanceSource, number> = {
++  "account-absolute": 0,
++  "account-calibration": 1,
++  dataset: 2,
++  vendor: 3,
++  policy: 4,
++  reference: 5,
++  unknown: 6,
++};
++const current = (entry: PlanAllowance, now: number) =>
++  entry.checkedAt !== null &&
++  Number.isFinite(entry.checkedAt) &&
++  entry.checkedAt <= now &&
++  entry.expiresAt !== null &&
++  Number.isFinite(entry.expiresAt) &&
++  entry.expiresAt > now;
++
++/** Source timestamps expire values on every read, independently of refresh scheduling. */
++export function planAllowance(
++  catalog: PlanAllowanceCatalog,
++  provider: string,
++  label: string | null,
++  windowSeconds: number,
++  now: number,
++): ResolvedPlanAllowance {
++  const plan = vendorPlan(provider, label);
++  const candidates = catalog.entries
++    .filter(
++      (entry) =>
++        entry.vendor === plan.vendor &&
++        entry.plan === plan.id &&
++        entry.windowSeconds === windowSeconds,
++    )
++    .sort((a, b) => priority[a.kind] - priority[b.kind] || (b.checkedAt ?? 0) - (a.checkedAt ?? 0));
++  const blocked = candidates.some((entry) => entry.contradicted && current(entry, now));
++  const found = candidates.find(
++    (entry) =>
++      current(entry, now) &&
++      !entry.contradicted &&
++      entry.verification !== "unknown" &&
++      (entry.unlimited || (entry.full !== null && Number.isFinite(entry.full) && entry.full > 0)) &&
++      (!blocked || entry.kind === "account-absolute" || entry.kind === "account-calibration"),
++  );
++  if (found && !found.unlimited) return { ...found, full: found.full!, known: true };
++  const previous = found ?? candidates[0];
++  const reference =
++    plan.vendor === "xai" &&
++    plan.recognized &&
++    !plan.id.startsWith("x_subscription_") &&
++    !blocked &&
++    !found?.unlimited;
++  return {
++    vendor: plan.vendor,
++    plan: plan.id,
++    windowSeconds,
++    full: 1,
++    unit: { id: JSON.stringify(["account", plan.vendor, plan.id]), label: `${plan.name} account` },
++    kind: reference ? "reference" : "unknown",
++    verification: reference ? "reference" : "unknown",
++    sources: previous?.sources ?? [],
++    checkedAt: previous?.checkedAt ?? null,
++    fetchedAt: previous?.fetchedAt ?? null,
++    expiresAt: previous?.expiresAt ?? null,
++    detail: blocked
++      ? "Sources disagree; sized as one account"
++      : found?.unlimited
++        ? "No recurring cap is published for this window; a temporary reported cap is sized as one account"
++        : "Unknown allowance; sized as one account",
++    revision: "account-unit-v1",
++    known: reference,
++  };
++}
++
++/** Reported windows survive temporary limits; only current catalog facts add unobserved windows. */
++export function planAllowanceWindows(
++  catalog: PlanAllowanceCatalog,
++  provider: string,
++  label: string | null,
++  reported: readonly number[],
++  now: number,
++): readonly number[] {
++  const plan = vendorPlan(provider, label);
++  return [
++    ...new Set([
++      ...reported,
++      ...catalog.entries
++        .filter(
++          (entry) =>
++            entry.vendor === plan.vendor &&
++            entry.plan === plan.id &&
++            current(entry, now) &&
++            !entry.unlimited &&
++            !entry.contradicted &&
++            entry.verification !== "unknown",
++        )
++        .map((entry) => entry.windowSeconds)
++        .filter((seconds) => planAllowance(catalog, provider, label, seconds, now).known),
++    ]),
++  ];
++}
++
++/** Retain evidence and age on a stored capacity reading without copying its plan or quantity. */
++export function allowanceProvenance(value: AllowanceProvenance): AllowanceProvenance {
++  return {
++    kind: value.kind,
++    verification: value.verification,
++    sources: value.sources,
++    checkedAt: value.checkedAt,
++    fetchedAt: value.fetchedAt,
++    expiresAt: value.expiresAt,
++    ...(value.detail === undefined ? {} : { detail: value.detail }),
++  };
++}
+diff --git a/packages/apps/src/contracts/account-observation.ts b/packages/apps/src/contracts/account-observation.ts
+--- a/packages/apps/src/contracts/account-observation.ts
++++ b/packages/apps/src/contracts/account-observation.ts
+@@ -1,3 +1,4 @@
++export * from "./account-plan-allowance.ts";
+ export { accountPlanName } from "./account-plan-name.ts";
+ import { Schema } from "effect";
+ import { AccountOffering } from "./account-family.ts";

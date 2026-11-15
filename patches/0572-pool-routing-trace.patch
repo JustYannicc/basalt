@@ -1,0 +1,545 @@
+diff --git a/apps/hosted/server/src/contracts/pool-usage.ts b/apps/hosted/server/src/contracts/pool-usage.ts
+--- a/apps/hosted/server/src/contracts/pool-usage.ts
++++ b/apps/hosted/server/src/contracts/pool-usage.ts
+@@ -23,6 +23,8 @@
+   RequireOrganization,
+ } from "./organization.ts";
+ 
++import { PoolRoutingDecisions } from "./pool-routing.ts";
++
+ const nonnegative = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
+ export const WeeklyPoolCap = Schema.Finite.check(
+   Schema.isGreaterThan(0),
+@@ -166,6 +168,17 @@
+       ).annotate(RequiredAction, "read"),
+     )
+     .add(
++      HttpApiEndpoint.get(
++        "routingDecisions",
++        "/api/organizations/:organization/apps/:app/pool-routing-decisions",
++        {
++          params,
++          success: Schema.NullOr(PoolRoutingDecisions),
++          error: [OrganizationForbidden, StorageError, PoolCreditPolicyUnavailable],
++        },
++      ).annotate(RequiredAction, "manage"),
++    )
++    .add(
+       HttpApiEndpoint.patch(
+         "setCreditPolicy",
+         "/api/organizations/:organization/apps/:app/pool-credit-policy",
+diff --git a/apps/hosted/server/src/contracts/pool-routing.ts b/apps/hosted/server/src/contracts/pool-routing.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/contracts/pool-routing.ts
+@@ -0,0 +1,229 @@
++import { Schema } from "effect";
++import { AccountId } from "@executor-js/sdk/core";
++
++const text = Schema.NonEmptyString.check(Schema.isMaxLength(256));
++const at = Schema.String.check(Schema.isMaxLength(35));
++const amount = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
++const ratio = Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }));
++const maybeAt = Schema.NullOr(at);
++const strategies = Schema.Literals([
++  "quota-deadline",
++  "round-robin",
++  "fill-first",
++  "weighted-round-robin",
++]);
++const reasons = Schema.Array(
++  Schema.Literals([
++    "quota-calibration-missing",
++    "plan-weight-unknown",
++    "quota-reading-stale",
++    "reset-unknown",
++    "rolling-window-history-missing",
++    "history-gap",
++    "demand-censored",
++    "sticky-demand-uncertain",
++    "forecast-expired",
++  ]),
++);
++const evidence = Schema.Struct({
++  source: Schema.Literals(["history-forecast", "observed-quota-burn", "none"]),
++  revision: Schema.NullOr(text),
++  status: Schema.Literals([
++    "calibrated",
++    "observed",
++    "uncalibrated",
++    "stale",
++    "insufficient-history",
++  ]),
++  confidence: Schema.NullOr(Schema.Literals(["low", "medium", "high"])),
++  calculatedAt: at,
++  validUntil: maybeAt,
++  historyFrom: maybeAt,
++  historyThrough: maybeAt,
++  coverageRatio: Schema.NullOr(ratio),
++  heldOutPeriods: amount,
++  backtestRelativeError: Schema.NullOr(amount),
++  unit: Schema.NullOr(Schema.Struct({ id: text, label: text, calibrationRevision: text })),
++  reasons,
++});
++const candidate = Schema.Union([
++  Schema.Struct({ account: Schema.Null, display: Schema.Literal("withheld") }),
++  Schema.Struct({
++    account: AccountId,
++    display: Schema.Literal("inspectable"),
++    eligible: Schema.Boolean,
++    funding: Schema.Literals(["plan", "credits", "unknown", "blocked"]),
++    reason: Schema.Literals([
++      "target-share",
++      "balanced-fallback",
++      "affinity",
++      "parent-affinity",
++      "pinned",
++      "credits-last-resort",
++      "quota-exhausted",
++      "cooldown",
++      "concurrency-full",
++      "model-incompatible",
++      "disabled",
++      "no-target-spill",
++      "unavailable",
++      "existing-affinity",
++      "pinned-account",
++    ]),
++    quota: Schema.NullOr(
++      Schema.Struct({
++        remainingRatio: ratio,
++        window: Schema.Literals(["weekly", "five-hour"]),
++        resetAt: at,
++        observedAt: at,
++        staleAt: at,
++      }),
++    ),
++    fiveHour: Schema.NullOr(
++      Schema.Struct({
++        remainingRatio: ratio,
++        resetAt: maybeAt,
++        mode: Schema.Literals(["fixed", "rolling", "unknown"]),
++      }),
++    ),
++    targetBurnRate: Schema.NullOr(amount),
++    weight: Schema.NullOr(ratio),
++    projectedEmptyAt: maybeAt,
++    emptyProjection: Schema.Literals(["estimated", "not-before-reset", "unavailable"]),
++  }),
++]);
++const decision = Schema.Struct({
++  id: text,
++  at,
++  model: text,
++  configuredStrategy: strategies,
++  effectiveStrategy: strategies,
++  mode: Schema.Literals([
++    "forecast-paced",
++    "observed-paced",
++    "deadline-rate",
++    "balanced-fallback",
++    "configured-strategy",
++    "affinity",
++    "pinned",
++    "refused",
++  ]),
++  reason: Schema.Literals([
++    "deadline-budget",
++    "observed-burn-target",
++    "uncalibrated-demand",
++    "forecast-expired",
++    "unknown-rank",
++    "invalid-rank",
++    "expired-rank",
++    "credits-only",
++    "existing-affinity",
++    "parent-affinity",
++    "pinned-account",
++    "configured-strategy",
++    "no-eligible-account",
++    "mixed-provider-cohort",
++  ]),
++  forecast: Schema.NullOr(evidence),
++  targetThrough: maybeAt,
++  candidates: Schema.Array(candidate).check(Schema.isMaxLength(500)),
++  chosenAccount: Schema.NullOr(AccountId),
++  outcome: Schema.Literals(["admitted", "refused"]),
++  attempts: Schema.Array(
++    Schema.Struct({
++      account: Schema.NullOr(AccountId),
++      outcome: Schema.Literals(["admitted", "concurrency-full", "unavailable"]),
++    }),
++  ).check(Schema.isMaxLength(500)),
++  usageRecord: Schema.NullOr(text),
++});
++const attention = Schema.Struct({
++  evaluatedAt: at,
++  notice: Schema.Literals(["none", "needs-more-accounts", "routing-waste"]),
++  inboxNudge: Schema.Literals(["none", "eligible"]),
++  episode: Schema.NullOr(text),
++  firstShortfallAt: maybeAt,
++  reason: Schema.Literals([
++    "no-median-shortfall",
++    "outside-horizon",
++    "low-confidence",
++    "stale-evidence",
++    "incomplete-evidence",
++    "awaiting-confirmation",
++    "notice-only",
++    "within-three-days",
++  ]),
++  policy: Schema.Struct({
++    minimumConfidence: Schema.Literal("medium"),
++    minimumCoverageRatio: Schema.Literal(0.9),
++    minimumHeldOutPeriods: Schema.Literal(2),
++    noticeHorizonDays: Schema.Literal(7),
++    inboxHorizonDays: Schema.Literal(3),
++    confirmationMinutes: Schema.Literal(5),
++  }),
++});
++const capacity = Schema.Struct({
++  provider: text,
++  modelFamily: Schema.NullOr(text),
++  from: at,
++  through: at,
++  status: Schema.Literals(["enough", "routing-waste", "needs-more-accounts", "uncertain"]),
++  evidence,
++  attention,
++  scenarios: Schema.Array(
++    Schema.Struct({
++      demand: Schema.Literals(["median", "upper-80"]),
++      configuredUnserved: amount,
++      feasibleUnserved: amount,
++      expiringUnused: amount,
++      firstShortfallAt: maybeAt,
++      bottleneck: Schema.Literals(["weekly", "five-hour", "concurrency", "sticky", "none"]),
++    }),
++  ),
++  recommendation: Schema.NullOr(
++    Schema.Struct({
++      plan: text,
++      additionalAccounts: Schema.Struct({ median: amount, upper80: amount }),
++      basis: Schema.Literal("simulated-refill-schedule"),
++      assumedNewAccountStart: at,
++      constraints: Schema.Array(text),
++    }),
++  ),
++});
++
++const current = Schema.Struct({
++  provider: text,
++  modelFamily: Schema.NullOr(text),
++  scope: Schema.Literals(["account-windows", "model"]),
++  computedAt: at,
++  validUntil: at,
++  status: Schema.Literals(["available", "unavailable"]),
++  configuredStrategy: strategies,
++  effectiveStrategy: strategies,
++  mode: decision.fields.mode,
++  reason: decision.fields.reason,
++  forecast: Schema.NullOr(evidence),
++  targetThrough: maybeAt,
++  candidates: Schema.Array(candidate).check(Schema.isMaxLength(500)),
++});
++
++export const PoolRoutingDecisions = Schema.Struct({
++  settings: Schema.Struct({
++    strategy: strategies,
++    revision: Schema.String.check(Schema.isMaxLength(512)),
++    changedAt: at,
++    canChange: Schema.Boolean,
++    choices: Schema.Array(Schema.Struct({ strategy: strategies, label: text, description: text })),
++  }),
++  current: Schema.Array(current).check(Schema.isMaxLength(12)),
++  decisions: Schema.Array(decision).check(Schema.isMaxLength(20)),
++  next: Schema.NullOr(text),
++  retention: Schema.Struct({
++    from: at,
++    through: at,
++    truncated: Schema.Boolean,
++    persistence: Schema.Literal("runtime"),
++  }),
++  capacity: Schema.Array(capacity),
++});
++export type PoolRoutingDecisions = typeof PoolRoutingDecisions.Type;
+diff --git a/apps/hosted/server/src/implementation/pool-credit-routing.ts b/apps/hosted/server/src/implementation/pool-credit-routing.ts
+--- a/apps/hosted/server/src/implementation/pool-credit-routing.ts
++++ b/apps/hosted/server/src/implementation/pool-credit-routing.ts
+@@ -2,9 +2,10 @@
+ import type { AccountSelectionPolicy, UsageCreditPolicy } from "apps/contracts";
+ import { Effect, Schema } from "effect";
+ import { PoolAccountRouting, PoolCreditPolicyUnavailable } from "../contracts/pool-usage.ts";
++import { PoolRoutingDecisions } from "../contracts/pool-routing.ts";
+ import { OrganizationForbidden } from "../contracts/organization.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+-import { sendPoolCommand, withPool } from "./pool-backend.ts";
++import { sendPoolCommand, withPool, readPool } from "./pool-backend.ts";
+ import { creditRoutingAccounts } from "./pool-usage-series-accounts.ts";
+ 
+ export const poolAccountRouting = (app: AppId) =>
+@@ -27,6 +28,33 @@
+         );
+       }),
+     "use",
++  ).pipe(
++    tracked,
++    Effect.catchTags({
++      SqlError: () => new PoolCreditPolicyUnavailable(),
++      SchemaError: () => new PoolCreditPolicyUnavailable(),
++      PoolUsageUnavailable: () => new PoolCreditPolicyUnavailable(),
++    }),
++  );
++
++export const poolRoutingDecisions = (app: AppId) =>
++  readPool(app, (pool) =>
++    Effect.gen(function* () {
++      if (pool.owner !== pool.user) return yield* new OrganizationForbidden();
++      const accounts = yield* creditRoutingAccounts(pool);
++      return yield* sendPoolCommand(
++        "routingDecisions",
++        {
++          pool: pool.pool,
++          organization: pool.organization,
++          user: pool.user,
++          owner: pool.owner,
++          canEdit: true,
++          accounts,
++        },
++        PoolRoutingDecisions,
++      );
++    }),
+   ).pipe(
+     tracked,
+     Effect.catchTags({
+diff --git a/apps/hosted/server/src/implementation/pool-backend.ts b/apps/hosted/server/src/implementation/pool-backend.ts
+--- a/apps/hosted/server/src/implementation/pool-backend.ts
++++ b/apps/hosted/server/src/implementation/pool-backend.ts
+@@ -28,6 +28,7 @@
+ }).pipe(Effect.catch(() => new PoolUsageUnavailable()));
+ 
+ type PoolCommand =
++  | "routingDecisions"
+   | "importUsage"
+   | "accountRouting"
+   | "setCreditPolicy"
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -1,6 +1,7 @@
+ import { readPool, sendPoolCommand, withPool } from "./pool-backend.ts";
+ import {
+   poolAccountRouting,
++  poolRoutingDecisions,
+   setPoolCreditPolicy,
+   setPoolSelectionPolicy,
+ } from "./pool-credit-routing.ts";
+@@ -246,6 +247,7 @@
+   handlers
+     .handle("importMapped", ({ params, payload }) => importPoolUsage(params.app, payload))
+     .handle("accountRouting", ({ params }) => poolAccountRouting(params.app))
++    .handle("routingDecisions", ({ params }) => poolRoutingDecisions(params.app))
+     .handle("setCreditPolicy", ({ params, payload }) =>
+       setPoolCreditPolicy(params.app, payload.usageCreditPolicy),
+     )
+diff --git a/e2e/tests/pool-routing-trace.spec.ts b/e2e/tests/pool-routing-trace.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/pool-routing-trace.spec.ts
+@@ -0,0 +1,91 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { RuntimeLive } from "../support/platform.ts";
++import { poolRoutingBackend } from "../support/pool-routing-backend.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++layer(RuntimeLive, { excludeTestServices: true })("Pool routing trace", (it) => {
++  it.effect(scenarios.poolRoutingTrace.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const prefix = `/api/organizations/${actors.organization.id}`;
++        const viewer = yield* body(
++          Schema.Struct({ userId: Schema.String }),
++          yield* api.request(actors.owner, "GET", "/api/viewer"),
++        );
++        const backend = yield* poolRoutingBackend(viewer.userId);
++        const app = yield* body(
++          App,
++          yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++            name: "Routing trace fixture",
++            files: [
++              appsManifest,
++              {
++                path: "index.ts",
++                content: `import {defineApp} from "apps"; export default defineApp({},{});`,
++              },
++            ],
++          }),
++        );
++        const saved = (value: object) => ({
++          sql: `update organization set metadata=jsonb_set(coalesce(metadata::jsonb,'{}'::jsonb),'{basaltPools}',$1::jsonb)::text where id=$2`,
++          params: [JSON.stringify(value), actors.organization.id],
++        });
++        yield* Effect.addFinalizer(() =>
++          Effect.gen(function* () {
++            yield* serverControl("stop");
++            yield* legacyStorage([saved({})]);
++            yield* serverControl("start");
++            yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`);
++          }).pipe(Effect.orDie),
++        );
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          saved({
++            [viewer.userId]: {
++              app: app.id,
++              version: "retained-version",
++              authorization: "executor-app-v1",
++              membership: "executor-links-v1",
++            },
++          }),
++        ]);
++        yield* serverControl("environment", 200, {
++          POOL_APP_SIGNING_KEY: "ab".repeat(32),
++          BASALT_POOL_ORIGIN: backend.origin,
++        });
++        yield* serverControl("start");
++        const path = `${prefix}/apps/${app.id}/pool-routing-decisions`;
++        for (const actor of [actors.member, actors.admin]) {
++          expect((yield* api.request(actor, "GET", path)).status).toBe(403);
++        }
++        expect(yield* backend.calls).toHaveLength(0);
++        const response = yield* api.request(actors.owner, "GET", path);
++        expect(response.status, JSON.stringify(response.body)).toBe(200);
++        expect(response.body).toMatchObject({
++          current: [
++            {
++              scope: "account-windows",
++              mode: "balanced-fallback",
++              candidates: [{ account: null, display: "withheld" }],
++            },
++          ],
++          decisions: [],
++          capacity: [],
++        });
++        expect(JSON.stringify(response.body)).not.toContain("must-be-dropped");
++        expect(yield* backend.calls).toHaveLength(1);
++      }),
++    ),
++  );
++});
+diff --git a/e2e/support/pool-routing-backend.ts b/e2e/support/pool-routing-backend.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/pool-routing-backend.ts
+@@ -0,0 +1,101 @@
++import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
++import { Clock, Effect, Layer, Ref, Schema } from "effect";
++import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
++import { createHmac, timingSafeEqual } from "node:crypto";
++import { createServer } from "node:http";
++
++const Assertion = Schema.Struct({
++  action: Schema.Literal("routingDecisions"),
++  pool: Schema.String,
++  organization: Schema.String,
++  owner: Schema.String,
++  user: Schema.String,
++  expiresAt: Schema.Number,
++  canEdit: Schema.Boolean,
++  accounts: Schema.Array(
++    Schema.Struct({ account: Schema.String, home: Schema.Array(Schema.String) }),
++  ),
++});
++
++/** Only the external pool is synthetic. Hosted authorization and schema decoding remain real. */
++export const poolRoutingBackend = (owner: string) =>
++  Effect.gen(function* () {
++    const calls = yield* Ref.make<readonly (typeof Assertion.Type)[]>([]);
++    const handler = Effect.gen(function* () {
++      const request = yield* HttpServerRequest.HttpServerRequest;
++      const body = yield* request.json.pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ envelope: Schema.String }))),
++      );
++      const [prefix, encoded, signature, extra] = body.envelope.split(".");
++      if (prefix !== "sbs1" || !encoded || !signature || extra !== undefined)
++        return HttpServerResponse.empty({ status: 401 });
++      const actual = Buffer.from(signature, "base64url"),
++        expected = createHmac("sha256", Buffer.from("ab".repeat(32), "hex"))
++          .update(`${prefix}.${encoded}`)
++          .digest();
++      if (actual.length !== expected.length || !timingSafeEqual(actual, expected))
++        return HttpServerResponse.empty({ status: 401 });
++      const assertion = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Assertion))(
++        Buffer.from(encoded, "base64url").toString(),
++      );
++      const now = yield* Clock.currentTimeMillis;
++      if (
++        assertion.owner !== owner ||
++        assertion.user !== owner ||
++        !assertion.canEdit ||
++        assertion.expiresAt <= now ||
++        assertion.expiresAt > now + 30_000
++      )
++        return HttpServerResponse.empty({ status: 401 });
++      yield* Ref.update(calls, (items) => [...items, assertion]);
++      const at = new Date(now).toISOString();
++      return HttpServerResponse.jsonUnsafe({
++        settings: {
++          strategy: "quota-deadline",
++          revision: "fixture",
++          changedAt: at,
++          canChange: true,
++          choices: [
++            {
++              strategy: "quota-deadline",
++              label: "Use quota before it resets",
++              description: "Pace quota toward resets.",
++            },
++          ],
++        },
++        decisions: [],
++        current: [
++          {
++            provider: "claude",
++            modelFamily: null,
++            scope: "account-windows",
++            computedAt: at,
++            validUntil: new Date(now + 60_000).toISOString(),
++            status: "available",
++            configuredStrategy: "quota-deadline",
++            effectiveStrategy: "round-robin",
++            mode: "balanced-fallback",
++            reason: "unknown-rank",
++            forecast: null,
++            targetThrough: null,
++            candidates: [{ account: null, display: "withheld" }],
++          },
++        ],
++        capacity: [],
++        next: null,
++        retention: { from: at, through: at, persistence: "runtime", truncated: false },
++        privateExtension: "must-be-dropped",
++      });
++    });
++    const services = yield* Layer.build(
++      HttpRouter.serve(HttpRouter.add("POST", "/pool/v1/routingDecisions", handler), {
++        disableLogger: true,
++        disableListenLog: true,
++      }).pipe(
++        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
++      ),
++    );
++    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
++    if (!("port" in server.address)) return yield* Effect.die("Routing fixture requires TCP");
++    return { origin: `http://127.0.0.1:${server.address.port}`, calls: Ref.get(calls) };
++  });

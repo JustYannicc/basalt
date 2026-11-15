@@ -1,4 +1,13 @@
+import { bindModelLifetime } from "./model-lifetime.worker.ts";
 import type { NativeStreamLease } from "./native-streams.ts";
+
+export function nativeControlPair(headers: Headers) {
+  const pair = new WebSocketPair();
+  return {
+    server: pair[1],
+    response: new Response(null, { status: 101, headers, webSocket: pair[0] }),
+  };
+}
 
 /** This private socket carries only lifetime: closing it releases the registry lease. */
 export function nativeSession(lease: NativeStreamLease): Response {
@@ -19,73 +28,18 @@ export function nativeSession(lease: NativeStreamLease): Response {
   return new Response(null, { status: 101, webSocket: pair[0] });
 }
 
-/** Cloudflare's upgraded sockets need a relay so persisted revocation can close both ends. */
+/** Data stays natively coupled; the private completion channel owns revocation and release. */
 export function nativeResponse(response: Response, lease: NativeStreamLease): Response {
   if (response.status === 101 && response.webSocket) {
-    const upstream = response.webSocket;
-    const pair = new WebSocketPair();
-    const client = pair[0],
-      server = pair[1];
-    let ended = false,
-      failing = false;
-    upstream.accept();
-    server.accept();
-    const finish = (failed: boolean, release: boolean) => {
-      if (ended) return;
-      ended = true;
-      try {
-        upstream.close(failed ? 1011 : 1000, "Connection ended");
-      } catch {}
-      try {
-        server.close(failed ? 1011 : 1000, "Connection ended");
-      } catch {}
-      if (release) lease.release();
-    };
-    const close = () => {
-      if (!failing) finish(false, true);
-    };
-    const fail = (error: unknown) => {
-      if (ended || failing) return;
-      failing = true;
-      try {
-        void Promise.resolve(lease.failed?.(error)).then(
-          () => finish(true, true),
-          () => finish(true, false),
-        );
-      } catch {
-        finish(true, false);
-      }
-    };
-    lease.onClose(close);
-    upstream.addEventListener("message", (event) => {
-      if (ended || failing) return;
-      try {
-        server.send(event.data);
-      } catch {
-        close();
-      }
-    });
-    server.addEventListener("message", (event) => {
-      if (ended || failing) return;
-      try {
-        upstream.send(event.data);
-      } catch (error) {
-        fail(error);
-      }
-    });
-    for (const socket of [upstream, server]) {
-      socket.addEventListener("close", (event) => {
-        if (socket === upstream && (event.code === 1006 || event.code === 1011)) fail(event);
-        else close();
-      });
-      socket.addEventListener("error", (error) => {
-        if (socket === upstream) fail(error);
-        else close();
-      });
-    }
-    lease.signal.addEventListener("abort", close, { once: true });
-    if (lease.signal.aborted) close();
-    return new Response(null, { status: 101, headers: response.headers, webSocket: client });
+    if (bindModelLifetime(response, lease)) return response;
+    lease.release();
+    try {
+      response.webSocket.accept();
+    } catch {}
+    try {
+      response.webSocket.close(1000, "Lifetime unavailable");
+    } catch {}
+    throw new Error("Model socket lifetime is unavailable");
   }
   if (!response.body) {
     lease.release();

@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { migrateModelHistory } from "../../src/pool/model-history/schema.ts";
 import { historySchemaFixture, homeMetadataFixture } from "../pool-tests/history-fixture.ts";
 import { chromium, importAppFixture, root } from "./import-app-fixture.mjs";
+import "./import-access.test.mjs";
 
 const { default: pg } = await import(createRequire(join(root, "package.json")).resolve("pg"));
 const admin = process.env.POOL_TEST_ADMIN_URL;

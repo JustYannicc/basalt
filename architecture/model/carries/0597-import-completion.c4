@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Imported history completion is an explicit durable checkpoint scoped to the pool and source, separate from Home capture. Only the private reviewed operations boundary may finalize it after the retained row count, exact accepted ID set and frozen range reconcile. A dry-run digest binds that evidence and the preceding checkpoint; drift refuses. Idempotent finalization keeps the receipt unchanged. Contiguous source-ID top-ups expand the accepted range and advance the same checkpoint monotonically. Additive self-creating model-history v8 adds only the checkpoint table, with no historical rewrite or large-table index and no dependency on v7. Named migration markers prevent a later v7 from being skipped. Pool series preserves the checkpoint through its typed host contract; incomplete imports report false and completed imports expose their verified range, source watermark and proof digests. Neither request timestamps nor the Home cursor imply import completion."
+    }
+  }
+}

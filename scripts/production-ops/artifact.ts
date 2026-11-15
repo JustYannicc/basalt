@@ -1,22 +1,12 @@
-import {
-  constants,
-  createDecipheriv,
-  createHash,
-  generateKeyPairSync,
-  privateDecrypt,
-} from "node:crypto";
+import { constants, createDecipheriv, generateKeyPairSync, privateDecrypt } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const canonical = (value: unknown): string =>
-  JSON.stringify(value, (_key, entry: unknown) => {
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return entry;
-    return Object.fromEntries(
-      Object.entries(entry).sort(([left], [right]) => left.localeCompare(right, "en")),
-    );
-  });
-export const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+import { canonical, hash } from "./encoding.ts";
+import { mergeInventoryPages } from "./inventory-merge.ts";
+export { canonical, hash } from "./encoding.ts";
+
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -32,6 +22,23 @@ export function createRecipient(path: string): string {
 
 /** Only a private local file receives the decrypted inventory or recovery snapshot. */
 export function decryptArtifact(artifact: unknown, key: string, target: string): string {
+  if (record(artifact) && artifact.format === "basalt-production-inventory-pages-v1") {
+    if (
+      !Array.isArray(artifact.pages) ||
+      artifact.pages.length < 1 ||
+      artifact.pages.length > 2000 ||
+      artifact.sha256 !== hash(canonical(artifact.pages))
+    )
+      throw new Error("Invalid paged artifact");
+    const pages = artifact.pages.map(
+      (page: unknown) => JSON.parse(decryptArtifact(page, key, target)) as unknown,
+    );
+    const digests = artifact.pages.map((page: unknown) => {
+      if (!record(page) || typeof page.sha256 !== "string") throw new Error("Invalid page digest");
+      return page.sha256;
+    });
+    return canonical(mergeInventoryPages(pages, digests)) + "\n";
+  }
   if (!record(artifact) || typeof artifact.sha256 !== "string" || !record(artifact.recipient))
     throw new Error("Invalid artifact");
   const copy = artifact.recipient;

@@ -193,7 +193,7 @@ export class BoundSlotDriver implements SlotDriver {
     else headers.delete("X-Signalbox-Runtime-Read-Only");
     const response = await this.endpoint(identity).fetch(new Request(request, { headers }));
     const defect = remoteRuntimeDefect(response);
-    if ((response.status === 409 && runtimeResponseDiagnostic(response)) || defect) {
+    if ((!readOnly && response.status === 409 && runtimeResponseDiagnostic(response)) || defect) {
       void response.body?.cancel().catch(() => {});
       throw retainRuntimeFailure(response, defect ?? new SlotRefused("uncertain"));
     }

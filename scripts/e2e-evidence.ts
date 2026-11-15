@@ -3,6 +3,7 @@ import { dirname, join, relative } from "node:path";
 
 const diagnosticFiles = new Set([
   "environment.json",
+  "change-journal.ndjson",
   "runtime-preboot.json",
   "runtime-launches.ndjson",
   "runtime-switches.ndjson",
@@ -21,27 +22,31 @@ export function copyE2eEvidence(
 ) {
   let files = 0;
   let bytes = 0;
-  const visit = (directory: string, inReport = false) => {
+  const visit = (directory: string, inReport = false, serverLogOnly = false) => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name),
         rel = relative(source, path);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
-        if (entry.name === "scenarios" && !inReport) {
+        if (!inReport && entry.name.startsWith("development")) visit(path, false, true);
+        else if (!serverLogOnly && entry.name === "scenarios" && !inReport) {
           for (const scenario of readdirSync(path, { withFileTypes: true }))
             if (scenario.isDirectory()) visit(join(path, scenario.name));
         } else if (
-          inReport ||
-          ["cloud", "local", "self-host", "report", "diagnostics"].includes(entry.name)
+          !serverLogOnly &&
+          (inReport ||
+            ["cloud", "local", "self-host", "report", "diagnostics"].includes(entry.name))
         )
           visit(path, inReport || entry.name === "report");
       } else if (
         entry.isFile() &&
-        (inReport ||
-          diagnosticFiles.has(entry.name) ||
-          /^(?:evidence|results|result|run|trace-ids|retention)\.json$/.test(entry.name) ||
-          /^(?:server|cloud[^/]*|[a-z-]*postgres)\.log$/.test(entry.name) ||
-          (options.full && /\.(?:png|webm|mp4|zip)$/.test(entry.name)))
+        (serverLogOnly
+          ? entry.name === "server.log"
+          : inReport ||
+            diagnosticFiles.has(entry.name) ||
+            /^(?:evidence|results|result|run|trace-ids|retention)\.json$/.test(entry.name) ||
+            /^(?:server|cloud[^/]*|[a-z-]*postgres)\.log$/.test(entry.name) ||
+            (options.full && /\.(?:png|webm|mp4|zip)$/.test(entry.name)))
       ) {
         const output = join(destination, rel);
         if (options.skipExisting && existsSync(output)) {

@@ -27,7 +27,7 @@ export function requestEstimate(record: PublicHistoryRecord): RequestEstimate {
   const metric = record.api_estimate;
   if (!metric) return shown("Not reported", "This server doesn't report per-request estimates.");
   if (metric.status === "unavailable")
-    return shown("Unavailable", metric.reason ?? "No reason was recorded.");
+    return shown("Unpriced", metric.reason ?? "No reason was recorded.");
   const price = metric.price ? provenance(metric.price) : null;
   if (metric.amount === null) return shown("Unpriced", metric.reason ?? null, price);
   const amount = decimal(metric.amount);
