@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.appCalls {
+    metadata {
+      constraint "A pool overview fill whose post-read heads change, display deadline expires or heads cannot be read discards that result and runs one uncached read within the same request. The fallback is never stored or retried by the overview cache, and its normal request and source authority checks retain their final decision. Initial guard errors and expired pre-read snapshots still fail closed. All authoritative checks remain unchanged. A stable fill remains reusable under equal heads and its existing presentation deadlines. No storage migration or protocol change."
+    }
+  }
+}
