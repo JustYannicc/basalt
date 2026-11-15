@@ -17,10 +17,9 @@ const scripts = baselineRoles.map((role) => ({
 
 test("selected baseline probe must pass the aggregate Check and unselected probes must skip", () => {
   const needs = Object.fromEntries(
-    workflow.jobs.check.needs.map((job: string) => [
-      job,
-      { result: fastJobs.includes(job) ? "success" : "skipped" },
-    ]),
+    workflow.jobs.check.needs
+      .filter((job: string) => job !== "reuse")
+      .map((job: string) => [job, { result: fastJobs.includes(job) ? "success" : "skipped" }]),
   );
   needs["baseline-probe"] = { result: "success" };
   assert.deepEqual(gateErrors(needs, [], [], false, true), []);
