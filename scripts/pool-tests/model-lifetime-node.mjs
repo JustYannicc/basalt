@@ -41,7 +41,12 @@ export class ModelLifetimeNode extends DurableObject {
         return new Response(null, { status: 403 });
       const pair = new WebSocketPair();
       pair[1].accept();
-      const entry = { control: pair[1], data: undefined };
+      const entry = {
+        control: pair[1],
+        data: undefined,
+        boot:
+          request.headers.get("X-Fixture-Lifetime-Boot") ?? request.headers.get("X-Fixture-Boot"),
+      };
       this.entries.set(id, entry);
       const stop = () => {
         entry.data?.close(1011, "Control ended");
@@ -60,7 +65,9 @@ export class ModelLifetimeNode extends DurableObject {
     if (path === "/node-state")
       return Response.json({
         dispatches: this.dispatches,
-        lifetimes: this.entries.size,
+        lifetimes: [...this.entries.values()].filter(
+          (entry) => !url.searchParams.has("boot") || entry.boot === url.searchParams.get("boot"),
+        ).length,
         closed: this.closed,
         closedBoots: this.closedBoots,
         messages: this.messages,

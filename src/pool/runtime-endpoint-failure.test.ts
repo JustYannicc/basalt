@@ -1,3 +1,4 @@
+import { SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { RuntimeEndpoint } from "./runtime-slots/endpoint.ts";
@@ -26,27 +27,31 @@ const target = {
 };
 function endpoint(error: unknown) {
   let reads = 0;
+  const storage = Object.assign(new SlotMemory(), {
+    getAlarm: async () => null,
+    setAlarm: async () => {},
+  });
+  storage.get = async <T>(): Promise<T | undefined> => {
+    reads++;
+    throw error;
+  };
   const ctx = {
     id: { toString: () => target.instanceId },
-    storage: {
-      get: async <T>(): Promise<T | undefined> => {
-        reads++;
-        throw error;
-      },
-      put: async () => {},
-      getAlarm: async () => null,
-      setAlarm: async () => {},
-    },
+    storage,
     waitUntil: () => {},
     container: {
       running: false,
       start: () => {},
       destroy: async () => {},
+      monitor: async () => {},
       setInactivityTimeout: async () => {},
       getTcpPort: () => ({ fetch: async () => new Response() }),
     },
   };
-  return { value: new RuntimeEndpoint(ctx, env, "runtime", code), reads: () => reads };
+  return {
+    value: new RuntimeEndpoint(ctx, env, "runtime", code, (response) => response),
+    reads: () => reads,
+  };
 }
 function request(body = JSON.stringify({ target, privateBody: "PRIVATE_REQUEST_BODY" })) {
   return new Request("http://runtime/start?token=PRIVATE_QUERY", {
@@ -56,20 +61,24 @@ function request(body = JSON.stringify({ target, privateBody: "PRIVATE_REQUEST_B
   });
 }
 
-for (const error of [
-  new TypeError("Connection lost in runtime storage"),
-  new PoolStartupDeadline(),
-  new PoolRuntimeUnhealthy(),
-  new SlotRefused("identity"),
-])
+for (const [error, reason] of [
+  [new TypeError("Connection lost in runtime storage"), "transport"],
+  [new PoolStartupDeadline(), "transport"],
+  [new PoolRuntimeUnhealthy(), "unhealthy"],
+  [new SlotRefused("identity"), "slot_identity"],
+] as const)
   test(`endpoint refusal records its actual cause without changing the public response: ${error.constructor.name}`, async (context) => {
     const log = context.mock.method(console, "error", () => {});
     const f = endpoint(error);
     const before = { name: error.name, message: error.message, stack: error.stack };
     const response = await runtimeRequest(request(), f.value);
     assert.equal(response.status, 409);
-    assert.deepEqual([...response.headers], [["content-type", "application/json"]]);
-    assert.deepEqual(await response.json(), { error: "runtime-refused" });
+    assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Step"), "endpoint_route");
+    assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Reason"), reason);
+    assert.deepEqual(await response.json(), {
+      error: "runtime-refused",
+      reason: `runtime_endpoint_route_${reason}`,
+    });
     assert.equal(f.reads(), 1);
     assert.equal(log.mock.calls.length, 1, "the dropped cause must be recorded");
     const [event, diagnostic] = log.mock.calls[0]!.arguments;

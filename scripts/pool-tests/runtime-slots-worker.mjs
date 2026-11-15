@@ -78,6 +78,14 @@ export class Controller extends DurableObject {
         if (prior && prior.revision > policy.revision) throw new Error("stale policy");
         await ctx.storage.put(`fixture-native-policy:${identity.slotId}`, policy);
       },
+      drain: async (identity) => {
+        const state = await (
+          await env.NODE.getByName("fixture").fetch(
+            "https://node/node-state?boot=" + encodeURIComponent(identity.bootId),
+          )
+        ).json();
+        return { active: state.lifetimes, known: true };
+      },
       retire: async () => {
         external();
         this.calls.retire++;

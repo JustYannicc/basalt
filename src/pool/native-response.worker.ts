@@ -1,6 +1,14 @@
 import { bindModelLifetime } from "./model-lifetime.worker.ts";
 import type { NativeStreamLease } from "./native-streams.ts";
 
+export function nativeControlPair(headers: Headers) {
+  const pair = new WebSocketPair();
+  return {
+    server: pair[1],
+    response: new Response(null, { status: 101, headers, webSocket: pair[0] }),
+  };
+}
+
 /** This private socket carries only lifetime: closing it releases the registry lease. */
 export function nativeSession(lease: NativeStreamLease): Response {
   const pair = new WebSocketPair();

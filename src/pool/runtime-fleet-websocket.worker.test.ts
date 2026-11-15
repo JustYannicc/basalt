@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Schema } from "effect";
-import { ErrorEvent, WebSocket, WebSocketPair } from "miniflare";
+import { WebSocket } from "miniflare";
+import { ModelLifetimeFixture } from "../../scripts/pool-tests/model-lifetime-fixture.ts";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
 import { deferred } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
 import { installWorkerSockets, upgraded } from "../../scripts/pool-tests/native-sockets.ts";
@@ -83,7 +84,7 @@ function nextMessage(socket: WebSocket) {
   return event.promise;
 }
 
-for (const failure of ["upstream", "client", "send"] as const) {
+for (const failure of ["control", "client", "invalid-control"] as const) {
   test(
     `an upgraded ${failure} failure preserves the runtime fault boundary across every relay`,
     { timeout: 20_000 },
@@ -106,18 +107,19 @@ for (const failure of ["upstream", "client", "send"] as const) {
         await f.cleanup();
         restore();
       });
-      let upstream: WebSocket | undefined,
-        runtime: string | undefined,
+      const socketsByRuntime = new Map<string, ModelLifetimeFixture>();
+      context.after(() => {
+        for (const socket of socketsByRuntime.values()) socket.close();
+      });
+      let runtime: string | undefined,
         dispatches = 0;
-      f.onModel(async (instance) => {
+      f.onModel(async (instance, request) => {
         runtime = instance.target.instanceId;
-        dispatches++;
-        const pair = new WebSocketPair();
-        pair[1].accept();
-        upstream = pair[0];
-        sockets.push(...Object.values(pair));
-        const init = { status: 101, webSocket: pair[0] };
-        return new Response(null, init);
+        let fixture = socketsByRuntime.get(runtime);
+        if (!fixture) socketsByRuntime.set(runtime, (fixture = new ModelLifetimeFixture()));
+        return fixture.fetch(request, () => {
+          dispatches++;
+        });
       });
       const response = await f.model(
         new Request("https://pool.invalid/v1/responses", { headers: { Upgrade: "websocket" } }),
@@ -125,14 +127,8 @@ for (const failure of ["upstream", "client", "send"] as const) {
       assert.equal(response.status, 101);
       const client = upgraded(response);
       sockets.push(client);
-      if (failure === "upstream") upstream!.dispatchEvent(new ErrorEvent("error"));
-      else if (failure === "client") client.close(1011, "Client transport closed");
-      else {
-        context.mock.method(upstream!, "send", () => {
-          throw new Error("Synthetic upstream send failure");
-        });
-        client.send("response request frame");
-      }
+      if (failure === "client") client.close(1011, "Client transport closed");
+      else socketsByRuntime.get(runtime!)!.breakControl(failure === "invalid-control");
       const rows = await f.resourcesWhen(
         (values) => values.find((row) => row.target.instanceId === runtime)?.active === 0,
       );
@@ -171,16 +167,15 @@ test(
       await f.cleanup();
       restore();
     });
-    f.onModel(async (_instance, request) => {
-      assert.equal(request.headers.get("Upgrade"), "websocket");
-      dispatches++;
-      const pair = new WebSocketPair();
-      upstream = pair[1];
-      upstream.accept();
-      upstream.addEventListener("message", (message) => upstream!.send(`echo:${message.data}`));
-      const init = { status: 101, webSocket: pair[0] };
-      return new Response(null, init);
-    });
+    const sockets = new ModelLifetimeFixture();
+    context.after(() => sockets.close());
+    f.onModel(async (_instance, request) =>
+      sockets.fetch(request, (server) => {
+        dispatches++;
+        upstream = server;
+        upstream.addEventListener("message", (message) => upstream!.send(`echo:${message.data}`));
+      }),
+    );
     const response = await f.model(
       new Request("https://pool.invalid/v1/responses", { headers: { Upgrade: "websocket" } }),
     );
@@ -226,7 +221,7 @@ test(
     const drained = f.resourcesWhen(
       (rows) => rows.find((row) => row.target.instanceId === previous.instanceId)?.active === 0,
     );
-    upstream!.close(1000, "Protocol terminal");
+    sockets.complete(upstream!);
     await drained;
     await runtime.fixture.settle();
     await f.upkeep();
@@ -262,14 +257,14 @@ test(
       restore();
     });
     let dispatches = 0;
-    f.onModel(async () => {
-      dispatches++;
-      const pair = new WebSocketPair();
-      pair[1].accept();
-      servers.push(pair[1]);
-      const init = { status: 101, webSocket: pair[0] };
-      return new Response(null, init);
-    });
+    const sockets = new ModelLifetimeFixture();
+    context.after(() => sockets.close());
+    f.onModel(async (_instance, request) =>
+      sockets.fetch(request, (server) => {
+        dispatches++;
+        servers.push(server);
+      }),
+    );
     for (let index = 0; index < 2; index++) {
       const response = await f.model(
         new Request("https://pool.invalid/v1/responses", { headers: { Upgrade: "websocket" } }),

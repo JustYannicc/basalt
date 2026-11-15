@@ -349,3 +349,36 @@ test("the rebased fleet publication requires the serving b79 image and rejects e
     false,
   );
 });
+
+test("the composed fleet image requires the current serving image and exact native schema", async () => {
+  const admit = await homeSchemaAdmission(fileURLToPath(new URL("../../", import.meta.url)));
+  const native = {
+    ...info,
+    required_indexes: [
+      "idx_billing_charge_usage_cover_v1",
+      "idx_billing_charge_overview_time_v1",
+      "idx_usage_billing_complete_v2",
+      "idx_usage_summary_cursor_v1",
+      "idx_usage_key_success_time_v1",
+      "idx_billing_charge_key_usage_v1",
+    ],
+  };
+  const current = {
+    ...identity,
+    baselineInputHash: "36a7ce7f37bea4a5",
+    sourceInputHash: "bfe87b85718d9cc4",
+  };
+  for (const applied_version of [15, 16])
+    assert.equal(admit(current, native, { ...before, applied_version }), true);
+  for (const baselineInputHash of ["8bbfbb3d5c4466ba", "776158b6965a4dc3", "f".repeat(16)])
+    assert.equal(admit({ ...current, baselineInputHash }, native, before), false);
+  for (const sourceInputHash of ["36a7ce7f37bea4a5", "25f1b8918cedcf21", "f".repeat(16)])
+    assert.equal(admit({ ...current, sourceInputHash }, native, before), false);
+  for (const applied_version of [null, 14, 17])
+    assert.equal(admit(current, native, { ...before, applied_version }), false);
+  assert.equal(admit(current, { ...native, target_version: 17 }, before), false);
+  assert.equal(
+    admit(current, { ...native, required_indexes: native.required_indexes.slice(1) }, before),
+    false,
+  );
+});

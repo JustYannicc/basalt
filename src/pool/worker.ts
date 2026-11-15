@@ -49,7 +49,7 @@ import { requireActivePoolOrganization } from "./organization-access.ts";
 import { failureResponse, unavailable } from "./json.ts";
 import { isPublicModelPath, PoolLifecycle, poolPort } from "./lifecycle.ts";
 import { nativeControlPath, nativeModelHeader, nativeSessionPath } from "./native-contract.ts";
-import { nativeResponse, nativeSession } from "./native-response.worker.ts";
+import { nativeResponse, nativeSession, nativeControlPair } from "./native-response.worker.ts";
 import { hasActiveHomeApiKey, homeApiKeyCandidates, type HomeApiKeyLookup } from "./model-auth.ts";
 import { PriceUpkeep } from "./prices.ts";
 import { OverviewPrices } from "./overview-prices.ts";
@@ -193,6 +193,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       {
         wrap: nativeResponse,
         endpoint: {
+          controlPair: nativeControlPair,
           beforeBootstrap: (identity) => this.peers.configure({ kind: "legacy", identity }),
         },
         ...(env.PoolRuntime || env.PoolRuntimeBlue

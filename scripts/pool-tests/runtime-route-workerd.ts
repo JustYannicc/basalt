@@ -1,6 +1,7 @@
 // Only platform ports and configured membership are synthetic; routing, endpoint checks and native DO fetch are real.
 export const runtimeRouteWorkerd = `
 import { DurableObject } from 'cloudflare:workers';
+export { ModelLifetimeNode } from './scripts/pool-tests/model-lifetime-node.mjs';
 import { forwardPoolRequest } from './src/pool/forward.worker.ts';
 import { RuntimeFleet } from './src/pool/runtime-fleet/controller.ts';
 import { RuntimeFleetState } from './src/pool/runtime-fleet/state.ts';
@@ -14,7 +15,7 @@ import { RuntimeWitnessStore } from './src/pool/runtime-slots/witness-store.ts';
 import { runtimeConfiguration, configurationDigest } from './src/pool/runtime-slots/configuration.ts';
 import { NativeStreams } from './src/pool/native-streams.ts';
 import { RuntimeProtection } from './src/pool/runtime-protection.ts';
-import { nativeResponse } from './src/pool/native-response.worker.ts';
+import { nativeResponse, nativeControlPair } from './src/pool/native-response.worker.ts';
 const marker='synthetic-private-exception-body';
 const readEvents=[];
 const info=console.info;
@@ -68,6 +69,15 @@ export class Extra extends DurableObject {
   if(new URL(request.url).pathname==='/release-health'){this.releaseHealth?.();return new Response(null,{status:204});}
   if(new URL(request.url).pathname==='/health-cleaned'){await this.healthCleaned;return Response.json({cancelled:this.healthCancelled??0,aborted:this.healthSignal?.aborted??false});}
   if(new URL(request.url).pathname==='/read-state')return Response.json(await new RuntimeActivity(this.ctx.storage).inspect(this.readIdentity));
+  if(new URL(request.url).pathname==='/duplicate-data'){
+   const headers=new Headers(this.socketRequest.headers);headers.set('X-Signalbox-Runtime-Identity',JSON.stringify(this.readIdentity));headers.set('X-Signalbox-Runtime-Port','8317');
+   return runtimeRequest(new Request(this.socketRequest,{headers}),this.inner);
+  }
+  if(new URL(request.url).pathname==='/begin-drain')return Response.json(await this.inner.drain(this.readIdentity,request.signal));
+  if(new URL(request.url).pathname==='/drained'){
+   if((await new RuntimeActivity(this.ctx.storage).inspect(this.readIdentity))?.active!==0)await new Promise(resolve=>{this.notifyDrained=resolve});
+   return Response.json(await new RuntimeActivity(this.ctx.storage).inspect(this.readIdentity));
+  }
   if(new URL(request.url).pathname==='/clear-read-events'){readEvents.length=0;return new Response(null,{status:204});}
   if(new URL(request.url).pathname==='/read-events')return Response.json(readEvents);
   if(!this.inner){
@@ -86,7 +96,8 @@ export class Extra extends DurableObject {
    await store.create(proof,configuration,identity);
    const {record}=await store.read(input);await store.put(input,{...record,witness});
    this.readIdentity=identity;
-   if(fault?.startsWith('read-')){const activity=new RuntimeActivity(this.ctx.storage);await activity.initialize(identity,true);await activity.acquire(identity);await activity.drain(identity);}
+   const activity=new RuntimeActivity(this.ctx.storage);await activity.initialize(identity,true);
+   if(fault?.startsWith('read-')){await activity.acquire(identity);await activity.drain(identity);}
    Object.defineProperty(this.ctx,'container',{value:{running:true,async setInactivityTimeout(){if(fault?.startsWith('read-'))throw Error('Read must not warm compute');},
     start(){throw Error('No starts')},async destroy(){throw Error('No destroys')},getTcpPort:port=>{
      if(port===8318){
@@ -114,16 +125,25 @@ export class Extra extends DurableObject {
      if(port===8329)return {fetch:async()=>{if(fault==='read-port-headers')await stall(1_200);return Response.json({caps:true});}};
      if(port!==8317)throw Error('Wrong model port');
      if(fault==='model-port-lookup')throw Error(marker);
-     return {fetch:async()=>{this.calls=(this.calls??0)+1;if(fault==='model-port-dispatch')throw Error(marker);return Response.json({ok:true});}};
+     return {fetch:async request=>{
+      if(request.headers.get('Upgrade')?.toLowerCase()==='websocket'){
+       if(new URL(request.url).pathname==='/v1/responses')this.socketRequest=request.clone();
+       return this.env.NODE.getByName('fixture').fetch(request);
+      }
+      this.calls=(this.calls??0)+1;if(fault==='model-port-dispatch')throw Error(marker);return Response.json({ok:true});}};
     }},configurable:true});
-   this.inner=new RuntimeEndpoint(this.ctx,this.env,'runtime',code,nativeResponse);
+   const storage={get:key=>this.ctx.storage.get(key),put:(key,value)=>this.ctx.storage.put(key,value),
+    transaction:async work=>{const result=await this.ctx.storage.transaction(work);if((await activity.inspect(identity))?.active===0)this.notifyDrained?.();return result;}};
+   this.inner=new RuntimeEndpoint({id:this.ctx.id,container:this.ctx.container,storage,waitUntil:work=>this.ctx.waitUntil(work)},this.env,'runtime',code,nativeResponse,{controlPair:nativeControlPair});
   }
   if(!fault?.startsWith('read-'))return runtimeRequest(request,this.inner);
   const abort=new AbortController();const timer=setTimeout(()=>abort.abort(),fault.startsWith('read-timeout-')?12000:50);
   try{return await runtimeRequest(new Request(request,{signal:abort.signal}),this.inner);}finally{clearTimeout(timer);}
  }
 }
-export default {fetch(request,env){const fault=new URL(request.url).searchParams.get('fault')??'healthy';
- if(['/calls','/read-events','/clear-read-events','/read-state','/release-health','/health-cleaned'].includes(new URL(request.url).pathname))return env.Extra.get(env.Extra.idFromName(fault)).fetch(request);
+export default {fetch(request,env){
+ if(new URL(request.url).pathname.startsWith('/node-'))return env.NODE.getByName('fixture').fetch(request);
+ const fault=new URL(request.url).searchParams.get('fault')??'healthy';
+ if(['/calls','/read-events','/clear-read-events','/read-state','/duplicate-data','/begin-drain','/drained','/release-health','/health-cleaned'].includes(new URL(request.url).pathname))return env.Extra.get(env.Extra.idFromName(fault)).fetch(request);
  return env.Root.get(env.Root.idFromName(fault)).fetch(request);}};
 `;
