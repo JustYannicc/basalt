@@ -1,11 +1,23 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { Effect, Queue } from "effect";
+import { after, before, test } from "node:test";
+import { Effect, Exit, Layer, Queue, Scope } from "effect";
 import { SqlClient } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
 import { migrateChangeRevisions } from "../../.upstream/apps/hosted/server/src/implementation/change-revision-schema.ts";
 import { migrateDeferredChanges } from "../../.upstream/apps/hosted/server/src/implementation/deferred-change-schema.ts";
 import { committedChangeDelivery } from "../../.upstream/apps/hosted/self-host/src/implementation/committed-change-delivery.ts";
+
+// Embedded database startup is fixture setup; the unchanged five-second test bounds delivery.
+const scope = Scope.makeUnsafe();
+const initialize = () => Effect.runPromise(Layer.buildWithScope(pgliteLayer(), scope));
+let services: Awaited<ReturnType<typeof initialize>>;
+before(
+  async () => {
+    services = await initialize();
+  },
+  { timeout: 10_000 },
+);
+after(() => Effect.runPromise(Scope.close(scope, Exit.void)), { timeout: 5_000 });
 
 // Each delivery must arrive before the test makes another write that could hide a missed wake-up.
 test(
@@ -38,7 +50,7 @@ test(
             revision,
           });
         }
-      }).pipe(Effect.scoped, Effect.provide(pgliteLayer())),
+      }).pipe(Effect.scoped, Effect.provide(services)),
       { signal: t.signal },
     ),
 );

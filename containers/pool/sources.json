@@ -262,8 +262,8 @@
     },
     "node": {
       "repository": "router-for-me/CLIProxyAPI",
-      "commit": "e96d4c4818851cf0e96d27b2bc8b67379e449d9e",
-      "sha256": "21ab830fea73afd9a462ef85f4c71ca0e971c6db5cee49f52521de47add4449a",
+      "commit": "43806c865da7d47f9252316e95e315ad9f885b84",
+      "sha256": "54196b15f8de4c9e32133b7100709738adec33191dde597f08bf48f7dc053acb",
       "patches": [
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
@@ -366,8 +366,8 @@
         },
         {
           "identity": "cliproxy-node-generation-submission",
-          "file": "0611-node-generation-submission.patch",
-          "sha256": "10d0e78169a3fdd262e77742963b830c49fc3b60c2424d4a3692079938c309b0",
+          "file": "0642-node-generation-submission.patch",
+          "sha256": "47255fb46bab0d51825001f5b5f79d136e924fe28b9937740d93f0471423656f",
           "retirement": {
             "mode": "manual",
             "requires": "Retire after the pinned upstream release guards only generation sends, treats every local failure after accepted HTTP responses or ambiguous WebSocket frame writes as terminal unknown, and positively validates provider refusal payloads before allowing failover. Pass actual provider and native public error projections, two-credential HTTP and WebSocket disconnect and partial-write proofs, nil-connection pre-write recovery, plugin and token-count auxiliary controls, and retained Home funding fixtures without weakening assertions. Preserve no automatic replay across models, credentials or retry rounds, native error envelopes and correlation identities. Generic credential, refresh and auxiliary HTTP calls remain untracked. Re-apply on each source update until the upstream release supplies the same behavior."
@@ -382,7 +382,9 @@
       "tag": "v1.0.5",
       "commit": "19d9868ffa24e94a2919ea1d1a761afa634de669",
       "sha256": "79b6ae8702b0ace76c10102d42a1401259e7dc772baacce2d47c90c33c6b25e7",
-      "auth_providers": ["gemini-cli"]
+      "auth_providers": [
+        "gemini-cli"
+      ]
     }
   }
 }

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { Clock, Deferred, Effect, Fiber, type Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { SqlClient } from "effect/sql";
+import { StorageError } from "@executor-js/sdk/core";
 import { makePoolViewCache } from "../../.upstream/apps/hosted/server/src/implementation/pool-view-cache.ts";
 import { makeChangeJournal } from "../../.upstream/apps/hosted/server/src/implementation/change-revisions.ts";
 import { fixture, key } from "./account-change-fixture.ts";
@@ -62,7 +63,7 @@ test("a failed guard drops cached data and never falls back to it", () =>
     }),
   ));
 
-test("a write during a fill rejects the result instead of publishing the old allowance", () =>
+test("a write during a fill preserves an authoritative refusal instead of publishing the old allowance", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       const cache = makePoolViewCache();
@@ -72,7 +73,9 @@ test("a write during a fill rejects the result instead of publishing the old all
       const guard = Effect.sync(() => ({
         revisions: [{ topic: "accounts", resource: "*", revision }],
       }));
+      let reads = 0;
       const read = Effect.gen(function* () {
+        if (++reads > 1) return yield* new StorageError();
         yield* Deferred.succeed(started, undefined);
         yield* Deferred.await(release);
         return { windows: [1] };
@@ -83,10 +86,11 @@ test("a write during a fill rejects the result instead of publishing the old all
       yield* Deferred.succeed(release, undefined);
       const result = yield* Fiber.join(fiber);
       assert.equal(result._tag, "Failure");
+      assert.equal(reads, 2, "the fallback read retains the authority fence");
     }),
   ));
 
-test("expired authority is refused even when the head did not change", () =>
+test("an expired pre-read snapshot is refused even when the head did not change", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       const cache = makePoolViewCache();

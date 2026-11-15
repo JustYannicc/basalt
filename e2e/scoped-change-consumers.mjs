@@ -8,7 +8,10 @@ import { join, resolve } from "node:path";
 import { Effect, Redacted } from "effect";
 import { root, runtime, until } from "./recipes/harness.mjs";
 import { poolCloudHarness } from "./recipes/pool-cloud-harness.mjs";
+import { changeFeedRecoveryProof } from "./recipes/change-feed-recovery-proof.mjs";
 import { startScopedChangeFixture } from "./recipes/scoped-change-fixture.mjs";
+import { accountTrafficProof } from "./recipes/account-traffic-proof.mjs";
+import { accountTrafficPrivacyProof } from "./recipes/account-traffic-privacy-proof.mjs";
 import { cloudLocks } from "../.upstream/e2e/support/cloud-locks.ts";
 import { Target } from "../.upstream/e2e/support/platform.ts";
 import { roleHost } from "../.upstream/e2e/support/role-hosts.ts";
@@ -22,6 +25,7 @@ import { redactLogText } from "../src/feedback/logs.ts";
 const { chromium } = createRequire(join(root, ".upstream/package.json"))("playwright");
 const args = process.argv.slice(2);
 const accountsOnly = args.includes("--accounts-only");
+const trafficOnly = args.includes("--traffic-only");
 const directory = resolve(
   args.find((arg) => !arg.startsWith("--")) ??
     join(root, ".generated/scoped-change-consumers", randomBytes(6).toString("hex")),
@@ -174,6 +178,28 @@ const program = Effect.gen(function* () {
 
   yield* browserWork(() => h.fixture.scoped.initialize(pool.id, identity.user.id));
   yield* browserWork(() => h.fixture.scoped.commitRequest("synthetic-account-baseline"));
+  if (trafficOnly) {
+    yield* accountTrafficProof({
+      h,
+      database,
+      browser,
+      pool,
+      saved,
+      check,
+      diagnostics,
+      directory,
+    });
+    yield* accountTrafficPrivacyProof({ h, browser, check, diagnostics, directory });
+    return {
+      complete: true,
+      accountsProved: true,
+      poolProved: false,
+      checks,
+      screenshots,
+      syntheticOnly: true,
+      diagnostics,
+    };
+  }
   const seriesReads = () =>
     h.fixture.scoped.reads.filter((read) => read.kind === "poolUsageSeries").length;
   const successReads = () =>
@@ -243,8 +269,11 @@ const program = Effect.gen(function* () {
       (diagnostics.pageErrors ??= []).push(redactLogText(String(error)));
     });
     const currentReads = [];
+    const lastSuccessResponses = [];
     page.on("response", (response) => {
       const pathname = new URL(response.url()).pathname;
+      if (pathname.endsWith("/pool-usage/last-success") && response.status() === 200)
+        lastSuccessResponses.push(response);
       if (pathname.endsWith("/changes/current")) {
         currentReads.push(response);
         void response
@@ -438,6 +467,16 @@ const program = Effect.gen(function* () {
       "the Accounts page did not read pool usage",
     );
     yield* browserWork(resourceIdle);
+    yield* browserWork(async () => {
+      const response =
+        lastSuccessResponses[0] ??
+        (await page.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname.endsWith("/pool-usage/last-success") &&
+            response.status() === 200,
+        ));
+      await response.finished();
+    });
     const usageBefore = { series: seriesReads(), success: successReads() };
     assert.ok(usageBefore.series >= 2, "the real Accounts page loaded both pool usage ranges");
     assert.ok(usageBefore.success > 0, "the mapped Accounts page read last-success");
@@ -514,6 +553,16 @@ const program = Effect.gen(function* () {
       acceptedUsage,
     );
     progress.phase = "pool-account-routing";
+    yield* browserWork(async () => {
+      await page.goto(
+        `${browserOrigin}/org/${h.actors.organization.slug}/apps/${pool.id}?view=app`,
+      );
+      await page
+        .frameLocator('[data-app-frames] iframe:not([src*="/history"])')
+        .getByRole("heading", { name: "How much are we using?", exact: true })
+        .waitFor();
+    });
+
     yield* browserWork(() =>
       page.route(
         (url) => url.pathname.endsWith("/pool-credit-policy"),
@@ -610,6 +659,16 @@ const program = Effect.gen(function* () {
     yield* browserWork(() => page.goto("about:blank"));
   }
   diagnostics.accounts = { proved: true, widths: [1280, 390] };
+  yield* changeFeedRecoveryProof({
+    h,
+    browser,
+    database,
+    label,
+    check,
+    diagnostics,
+    directory,
+    accountReads,
+  });
   if (!accountsOnly) {
     let model = "synthetic-model-before";
     const baseline = yield* browserWork(() => h.fixture.scoped.commitRequest(model));
@@ -878,6 +937,8 @@ const program = Effect.gen(function* () {
     }
     diagnostics.pool = { proved: true, widths: [1280, 390], engine: h.fixture.scoped.engine };
   }
+  yield* accountTrafficProof({ h, database, browser, pool, saved, check, diagnostics, directory });
+  yield* accountTrafficPrivacyProof({ h, browser, check, diagnostics, directory });
   check("browser has no uncaught product error", (diagnostics.pageErrors ??= []), []);
   return {
     complete: !accountsOnly,

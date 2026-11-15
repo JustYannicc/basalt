@@ -55,7 +55,7 @@ for (const tree of ["src", "lib"])
         tree,
         fileURLToPath(new URL("../../containers/pool", import.meta.url)),
         fileURLToPath(new URL("../../", import.meta.url)),
-        "8bbfbb3d5c4466ba",
+        "36a7ce7f37bea4a5",
       ],
       { encoding: "utf8", timeout: 30_000 },
     );

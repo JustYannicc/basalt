@@ -1,0 +1,17 @@
+export const poolAssociationRepairReasons = [
+  "replacement-selection",
+  "organization-missing",
+  "metadata-invalid",
+  "pool-map-invalid",
+  "slot-app-mismatch",
+  "app-owner-drift",
+  "association-already-valid",
+  "old-app-still-exists",
+  "repoint-credential-proof-unavailable",
+  "replacement-ownership-mismatch",
+  "replacement-version-mismatch",
+  "replacement-lineage-mismatch",
+  "replacement-already-registered",
+  "plan-drift",
+  "organization-write-count",
+] as const;

@@ -498,7 +498,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /funding-denial and missing-validator controls/);
       } else if (patch.identity === "cliproxy-node-generation-submission") {
         assert.equal(name, "node");
-        assert.equal(patch.file, "0611-node-generation-submission.patch");
+        assert.equal(patch.file, "0642-node-generation-submission.patch");
         assert.match(patch.retirement.requires, /guards only generation sends/);
         assert.match(
           patch.retirement.requires,
