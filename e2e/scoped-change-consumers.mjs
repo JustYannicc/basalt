@@ -140,6 +140,13 @@ const program = Effect.gen(function* () {
     (browser) => Effect.promise(() => browser.close()),
   );
 
+  yield* browserWork(() => h.fixture.scoped.initialize(pool.id, identity.user.id));
+  yield* browserWork(() => h.fixture.scoped.commitRequest("synthetic-account-baseline"));
+  const seriesReads = () =>
+    h.fixture.scoped.reads.filter((read) => read.kind === "poolUsageSeries").length;
+  const successReads = () =>
+    h.fixture.scoped.reads.filter((read) => read.kind === "lastSuccessAt").length;
+
   for (const width of [1280, 390]) {
     const context = yield* Effect.acquireRelease(
       Effect.promise(() =>
@@ -162,7 +169,8 @@ const program = Effect.gen(function* () {
     );
     yield* browserWork(() => splitRoutedReads(context, browserOrigin));
     const page = yield* browserWork(() => context.newPage());
-    let reads = 0;
+    let reads = 0,
+      routingReads = 0;
     diagnostics.accountProgress = { width, phase: "initial", responses: [], heads: [] };
     const progress = diagnostics.accountProgress;
     const inFlight = new Set(),
@@ -179,7 +187,16 @@ const program = Effect.gen(function* () {
     page.on("request", (request) => {
       const count = accountReads(request);
       reads += count;
-      if (count) inFlight.add(request);
+      const routing =
+        request.method() === "GET" &&
+        new URL(request.url()).pathname.endsWith("/pool-credit-policy");
+      if (routing) routingReads++;
+      if (
+        routing ||
+        count ||
+        /\/pool-usage\/(?:series|last-success)$/.test(new URL(request.url()).pathname)
+      )
+        inFlight.add(request);
     });
     page.on("requestfinished", finished);
     page.on("requestfailed", (request) => {
@@ -381,11 +398,161 @@ const program = Effect.gen(function* () {
       yield* head(),
       afterHead,
     );
+    // The actual pool journal feeds the host's usage cells, independently of account observations.
+    progress.phase = "await-initial-host-usage";
+    yield* until(
+      Effect.sync(seriesReads),
+      (count) => count > 0,
+      "the Accounts page did not read pool usage",
+    );
+    yield* browserWork(resourceIdle);
+    const usageBefore = { series: seriesReads(), success: successReads() };
+    assert.ok(usageBefore.series >= 2, "the real Accounts page loaded both pool usage ranges");
+    assert.ok(usageBefore.success > 0, "the mapped Accounts page read last-success");
+    diagnostics.hostUsage = { initial: usageBefore };
+    progress.phase = "host-usage-idle";
+    yield* browserWork(() => page.clock.runFor(31_000).then(flush));
+    check(
+      `Accounts at ${width}: idle time beyond the former poll interval makes no usage read`,
+      { series: seriesReads(), success: successReads() },
+      usageBefore,
+    );
+    progress.phase = "host-usage-observation";
+    const observedBefore = yield* database.run({
+      sql: "select revision::text from hosted_change_heads where scope=$1 and topic='observations' and resource='*'",
+      params: [scope],
+    });
+    h.fixture.refreshReading("synthetic-scoped-change-codex");
+    // Make this synthetic report eligible; the real HTTP writer still owns the revision.
+    yield* database.run({
+      sql: "update executor_account_observations set next_allowed_at=to_timestamp(0) where account=$1",
+      params: [saved.account.id],
+    });
+    yield* h.request("POST", `${account}/observations/refresh`);
+    yield* until(
+      database.run({
+        sql: "select revision::text from hosted_change_heads where scope=$1 and topic='observations' and resource='*'",
+        params: [scope],
+      }),
+      (rows) => BigInt(rows[0]?.revision ?? "0") > BigInt(observedBefore[0]?.revision ?? "0"),
+      "the real observation refresh did not commit its revision",
+    );
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    check(
+      `Accounts at ${width}: an unrelated observation revision makes no usage read`,
+      { series: seriesReads(), success: successReads() },
+      usageBefore,
+    );
+    progress.phase = "host-usage-commit";
+    const usageAnswered = page
+      .waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname.endsWith("/pool-usage/series") &&
+          response.status() === 200,
+      )
+      .then((response) => response.finished());
+    const successAnswered = page
+      .waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname.endsWith("/pool-usage/last-success") &&
+          response.status() === 200,
+      )
+      .then((response) => response.finished());
+    yield* browserWork(() => h.fixture.scoped.commitRequest(`synthetic-account-${width}`));
+    yield* browserWork(() => Promise.all([usageAnswered, successAnswered]));
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    check(
+      `Accounts at ${width}: a relevant usage revision refreshes mapped last-success once`,
+      successReads() - usageBefore.success,
+      1,
+    );
+    assert.ok(
+      seriesReads() > usageBefore.series && seriesReads() - usageBefore.series <= 3,
+      "one usage revision refreshes each of the two traffic ranges and optional token window at most once",
+    );
+    yield* browserWork(resourceIdle);
+    const acceptedUsage = { series: seriesReads(), success: successReads() };
+    diagnostics.hostUsage = { initial: usageBefore, relevant: acceptedUsage };
+    progress.phase = "host-usage-duplicate";
+    yield* browserWork(() => h.fixture.scoped.duplicate());
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    check(
+      `Accounts at ${width}: duplicate usage delivery makes no usage read`,
+      { series: seriesReads(), success: successReads() },
+      acceptedUsage,
+    );
+    progress.phase = "pool-account-routing";
+    yield* browserWork(() =>
+      page.route(
+        (url) => url.pathname.endsWith("/pool-credit-policy"),
+        (route) => route.fallback(),
+      ),
+    );
+    const routingAnswered = () =>
+      page
+        .waitForResponse((response) =>
+          new URL(response.url()).pathname.endsWith("/pool-credit-policy"),
+        )
+        .then(async (response) => {
+          await response.finished();
+          assert.equal(response.status(), 200, "the actual host routing read succeeds");
+        });
+    yield* browserWork(async () => {
+      const answered = routingAnswered();
+      await page.goto(
+        `${browserOrigin}/org/${h.actors.organization.slug}/apps/${pool.id}?view=accounts`,
+      );
+      await answered;
+      await page.getByText("Account selection", { exact: true }).waitFor();
+      await updating().waitFor({ state: "hidden" });
+      await resourceIdle();
+      await flush();
+    });
+    assert.ok(routingReads > 0, "the pool Accounts page read its routing policy");
+    const routingBefore = routingReads;
+    diagnostics.hostRouting = { initial: routingBefore, initialHeads: progress.heads.slice(-2) };
+    yield* browserWork(() => page.clock.runFor(31_000).then(flush));
+    diagnostics.hostRouting.idle = routingReads;
+    diagnostics.hostRouting.idleHeads = progress.heads.slice(-2);
+    check(
+      `Pool Accounts at ${width}: idle time makes no routing read`,
+      routingReads,
+      routingBefore,
+    );
+    yield* browserWork(() =>
+      h.fixture.scoped.commitRequest(`synthetic-routing-unrelated-${width}`),
+    );
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    check(
+      `Pool Accounts at ${width}: unrelated usage revision makes no routing read`,
+      routingReads,
+      routingBefore,
+    );
+    yield* browserWork(async () => {
+      const answered = routingAnswered();
+      await h.fixture.scoped.commitReading();
+      await answered;
+      await resourceIdle();
+      await flush();
+    });
+    check(
+      `Pool Accounts at ${width}: relevant reading revision refreshes routing once`,
+      routingReads - routingBefore,
+      1,
+    );
+    yield* browserWork(() => h.fixture.scoped.duplicate());
+    yield* browserWork(() => page.clock.runFor(200).then(flush));
+    check(
+      `Pool Accounts at ${width}: duplicate reading revision makes no routing read`,
+      routingReads - routingBefore,
+      1,
+    );
+    diagnostics.hostRouting = { initial: routingBefore, relevant: routingReads };
+    yield* browserWork(() => shot("routing-after"));
     yield* browserWork(() => page.goto("about:blank"));
   }
   diagnostics.accounts = { proved: true, widths: [1280, 390] };
   if (!accountsOnly) {
-    yield* browserWork(() => h.fixture.scoped.initialize(pool.id, identity.user.id));
     let model = "synthetic-model-before";
     const baseline = yield* browserWork(() => h.fixture.scoped.commitRequest(model));
     let requestCount = baseline.count;
