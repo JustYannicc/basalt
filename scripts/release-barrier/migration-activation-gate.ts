@@ -5,6 +5,7 @@ import { readDeploymentLedger, readLedgerEnvironment } from "../deploy-safety/gi
 import { assertNoReleaseHold } from "../deploy-safety/runtime.ts";
 import { validateMainCandidate } from "../release-merge/main-candidate.ts";
 import { BarrierRefusal } from "./refusal.ts";
+import { reportRefusal } from "./refusal-report.ts";
 
 export function migrationActivationInput(source: Record<string, string | undefined>) {
   try {
@@ -112,9 +113,17 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (process.env.GITHUB_OUTPUT)
       appendFileSync(process.env.GITHUB_OUTPUT, `head=${gate.candidate}\n`);
   } catch (error) {
-    process.stderr.write(
-      `${error instanceof BarrierRefusal ? error.message : "migration-activation-gate-failed"}\n`,
-    );
+    // Before the client exists, this step is the only place its refusal can name what changed.
+    if (error instanceof BarrierRefusal)
+      await reportRefusal(
+        {
+          reason: error.reason,
+          ...(error.worker ? { worker: error.worker } : {}),
+          ...(error.delta ? { delta: error.delta } : {}),
+        },
+        process.env.GITHUB_STEP_SUMMARY,
+      );
+    else process.stderr.write("migration-activation-gate-failed\n");
     process.exitCode = 1;
   }
 }

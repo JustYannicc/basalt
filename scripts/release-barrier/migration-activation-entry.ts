@@ -1,10 +1,10 @@
 import { evalStack } from "alchemy/Stack";
 import { Cause, Effect, Exit } from "effect";
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
-import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { migrationActivationGate } from "./migration-activation-gate.ts";
 import { migrationActivationPorts } from "./migration-activation-runtime.ts";
+import { candidateSourceRoot } from "./migration-activation-source.ts";
 import { runMigrationActivation } from "./migration-activation.ts";
 import { BarrierRefusal } from "./manifest.ts";
 import { assertReleaseStateVersion } from "./release-state-version.ts";
@@ -21,10 +21,7 @@ try {
   const gate = await migrationActivationGate();
   if (process.env.ALCHEMY_STAGE !== "production")
     throw new BarrierRefusal("migration-activation-production-stage-required");
-  // No fallback to this checkout: main's own sources are not what production runs.
-  const sourceRoot = process.env.BASALT_ACTIVATION_SOURCE_ROOT ?? "";
-  if (!isAbsolute(sourceRoot))
-    throw new BarrierRefusal("migration-activation-source-root-required", "candidate");
+  const sourceRoot = candidateSourceRoot(process.env);
   process.chdir(fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url)));
   const result = await Effect.runPromiseExit(
     Effect.promise(

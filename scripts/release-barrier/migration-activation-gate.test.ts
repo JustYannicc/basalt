@@ -133,6 +133,39 @@ test("the client that touches production is the dispatched main commit", () => {
     );
 });
 
+test("the gate step names both commits when its checkout is not the dispatched one", (context) => {
+  const scratch = mkdtempSync(join(tmpdir(), "basalt-activation-gate-"));
+  context.after(() => rmSync(scratch, { recursive: true, force: true }));
+  const summary = join(scratch, "summary.md");
+  const dispatched = "c".repeat(40);
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  const result = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL("./migration-activation-gate.ts", import.meta.url))],
+    {
+      // Another directory: the client's commit is its own checkout's, not the working directory's.
+      cwd: scratch,
+      env: {
+        ...environment,
+        PATH: process.env.PATH,
+        GITHUB_SHA: dispatched,
+        GITHUB_TOKEN: "fixture",
+        GITHUB_STEP_SUMMARY: summary,
+      },
+      encoding: "utf8",
+    },
+  );
+  assert.equal(result.status, 1);
+  const change = `| tooling | HEAD | "${dispatched}" → "${head}" |`;
+  assert.ok(readFileSync(summary, "utf8").includes(change));
+  assert.ok(result.stderr.includes(change), result.stderr);
+  assert.match(
+    result.stderr,
+    /^::error title=Release barrier refused::Release barrier refused: migration-activation-trusted-tooling-required%0A/m,
+  );
+});
+
 test("a production release hold refuses every activation input before connecting", () => {
   for (const mode of ["plan", "inspect", "b".repeat(64)]) {
     assert.throws(
