@@ -32,6 +32,25 @@ type Platform = {
   dispose(): Promise<void>;
 };
 
+type Wrangler = {
+  getPlatformProxy(options: {
+    configPath: string;
+    persist: false;
+    remoteBindings: true;
+  }): Promise<Platform>;
+};
+
+export async function connectHistoryPlatform(
+  configPath: string,
+  load: () => Wrangler = () =>
+    createRequire(new URL("./startup-profiler/package.json", import.meta.url))("wrangler"),
+) {
+  const wrangler = await historyOperatorStep("operator.load-wrangler", async () => load());
+  return historyOperatorStep("operator.connect", () =>
+    wrangler.getPlatformProxy({ configPath, persist: false, remoteBindings: true }),
+  );
+}
+
 export function historyOperatorOptions(args: string[]) {
   const { values } = parseArgs({
     args,
@@ -261,14 +280,7 @@ export async function runHistoryOperator(
       }),
       { mode: 0o600 },
     );
-    const open: (configPath: string) => Promise<Platform> =
-      connect ??
-      (async (configPath: string) => {
-        const { getPlatformProxy } = createRequire(
-          new URL("./startup-profiler/package.json", import.meta.url),
-        )("wrangler");
-        return getPlatformProxy({ configPath, persist: false, remoteBindings: true });
-      });
+    const open = connect ?? connectHistoryPlatform;
     platform = await historyOperatorStep("operator.connect", () => open(configPath));
     if (approvedSchemaState) {
       const response = await platform.env.POOL_OPERATIONS.fetch(

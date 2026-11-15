@@ -116,6 +116,14 @@ const program = Effect.gen(function* () {
         from hosted_change_pending p where scope=$1 and topic='accounts' and resource='*'`,
       params: [scope],
     });
+  const maintenanceTick = () =>
+    Effect.promise(async () => {
+      const response = await fetch(
+        `${h.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
+      );
+      assert.equal(response.status, 200, "the controlled maintenance tick succeeds");
+      await response.text();
+    }).pipe(Effect.timeout("60 seconds"));
   // A pass can precede a provisioning tail. Each bounded retry drives the public delivery path.
   const barrier = () => {
     const progress = { attempts: 0, last: undefined };
@@ -153,7 +161,15 @@ const program = Effect.gen(function* () {
       rows.some((row) => row.kind === "team") && rows.every((row) => row.status === "succeeded"),
     "initial organization provisioning did not finish before measuring reads",
   );
+  const beforeMaintenance = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+  // Initial provisioning does not include the first tick's account checks and rollout jobs.
+  yield* maintenanceTick();
   yield* barrier();
+  const afterMaintenance = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+  diagnostics.initialMaintenance = {
+    before: beforeMaintenance.revisions,
+    after: afterMaintenance.revisions,
+  };
   const browser = yield* Effect.acquireRelease(
     Effect.promise(() => chromium.launch({ headless: true })),
     (browser) => Effect.promise(() => browser.close()),
@@ -581,6 +597,15 @@ const program = Effect.gen(function* () {
       routingReads - routingBefore,
       1,
     );
+    if (width === 390) {
+      const before = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+      yield* maintenanceTick();
+      const after = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+      diagnostics.hostRouting.controlledTick = {
+        before: before.revisions,
+        after: after.revisions,
+      };
+    }
     const duplicateHeads = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
     yield* browserWork(() => h.fixture.scoped.duplicate());
     yield* browserWork(() => page.clock.runFor(200).then(flush));
@@ -599,6 +624,12 @@ const program = Effect.gen(function* () {
       routingReads - routingBefore,
       1,
     );
+    if (width === 390)
+      check(
+        "Pool Accounts at 390: settled maintenance tick leaves measured heads unchanged",
+        diagnostics.hostRouting.controlledTick.after,
+        diagnostics.hostRouting.controlledTick.before,
+      );
     diagnostics.hostRouting.relevant = routingReads;
     yield* browserWork(() => shot("routing-after"));
     yield* browserWork(() => page.goto("about:blank"));

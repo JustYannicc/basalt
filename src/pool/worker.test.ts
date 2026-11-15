@@ -1495,18 +1495,20 @@ test("a deferred base controller receives no startup call from the signed adopti
       jurisdiction: () => ({ getByName: () => controller }),
     },
   };
-  const request = async () =>
-    new Request("https://private.invalid/deployment-readiness", {
+  const request = async () => {
+    const at = Date.now();
+    return new Request("https://private.invalid/deployment-readiness", {
       method: "POST",
       body: JSON.stringify({
         envelope: await signEnvelope(key, "sbpdr1", {
           ...target,
           phase: "adoption",
-          at: Date.now(),
-          expiresAt: Date.now() + 60_000,
+          at,
+          expiresAt: at + 60_000,
         }),
       }),
     });
+  };
   for (let attempt = 0; attempt < 2; attempt++) {
     const response = await PoolOperations.prototype.fetch.call({ env }, await request());
     assert.equal(response.status, 503);
