@@ -11,7 +11,7 @@ test("the 8.0.73 node publication requires its reviewed source pair and unchange
     imageDigest: `sha256:${"a".repeat(64)}`,
     imageConfigDigest: `sha256:${"b".repeat(64)}`,
     baselineImageDigest: `sha256:${"c".repeat(64)}`,
-    baselineInputHash: "8bbfbb3d5c4466ba",
+    baselineInputHash: "36a7ce7f37bea4a5",
     sourceInputHash: "526fa60bed0df442",
   };
   const info = {
@@ -39,7 +39,7 @@ test("the 8.0.73 node publication requires its reviewed source pair and unchange
   for (const applied_version of [15, 16])
     assert.equal(admit(identity, info, { ...before, applied_version }), true);
   for (const change of [
-    { baselineInputHash: "36a7ce7f37bea4a5" },
+    { baselineInputHash: "8bbfbb3d5c4466ba" },
     { baselineInputHash: "f".repeat(16) },
     { sourceInputHash: "8bbfbb3d5c4466ba" },
     { sourceInputHash: "f".repeat(16) },
