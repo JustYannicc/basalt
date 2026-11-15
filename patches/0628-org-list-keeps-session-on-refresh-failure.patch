@@ -1,0 +1,57 @@
+diff --git a/apps/hosted/web/src/contracts/organization.ts b/apps/hosted/web/src/contracts/organization.ts
+--- a/apps/hosted/web/src/contracts/organization.ts
++++ b/apps/hosted/web/src/contracts/organization.ts
+@@ -98,8 +98,10 @@
+  * The signed-in user. A session revalidation that confirms the same person leaves it unchanged, so
+  * it does not read the organizations again.
+  */
+-const signedInUser = Atom.map(sessionAtom, (session) =>
+-  AsyncResult.isSuccess(session) && session.value !== null ? session.value.user.id : null,
++// A failed refresh keeps its last session: only a confirmed signed-out session empties the list.
++const signedInUser = Atom.map(
++  sessionAtom,
++  (session) => Option.getOrNull(AsyncResult.value(session))?.user.id ?? null,
+ );
+ /**
+  * Refresh when the signed-in user changes, including switching users in this browser. Membership
+diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-intent-prefetch.spec.ts
+--- a/e2e/tests/settings-intent-prefetch.spec.ts
++++ b/e2e/tests/settings-intent-prefetch.spec.ts
+@@ -17,6 +17,7 @@
+ type SettingsRead = "members" | "invitations" | "billing";
+ const membersPath = "/api/auth/organization/list-members";
+ const invitationsPath = "/api/auth/organization/list-invitations";
++const sessionPath = /\/api\/auth\/get-session(?:\?|$)/;
+ /** Cloud's settings page reads billing and removal after it renders; intent must not. */
+ const pageOnlyGroups = new Set(["billing", "organizationRemoval"]);
+ 
+@@ -268,6 +269,15 @@
+           // Unfollowed intent: nothing reads again on focus, visibility or timers.
+           if (!phone) yield* browser.use("Move the pointer away", (page) => page.mouse.move(0, 0));
+           const beforeIdle = reads.length;
++          // A session refresh that fails to answer must not hide the organization's settings.
++          let sessionFailures = 0;
++          const failSession = (route: Route) => {
++            sessionFailures++;
++            return route.abort("failed");
++          };
++          yield* browser.use("Fail session refreshes until the link is followed", (page) =>
++            page.route(sessionPath, failSession),
++          );
+           yield* refreshVisiblePage;
+           yield* browser.use("Focus the window after intent", (page) =>
+             page.evaluate(() => {
+@@ -305,6 +315,13 @@
+           membersFailed = yield* Deferred.make<void>();
+           const failing = yield* holdQuery([membersPath], "fail");
+           yield* followed("Follow the warmed Settings link", "intent");
++          expect(sessionFailures, "A session refresh failed before the follow").toBeGreaterThan(0);
++          yield* browser.use("The failed session refresh is shown", (page) =>
++            page.getByText("Unable to refresh your session.", { exact: true }).waitFor(),
++          );
++          yield* browser.use("Stop failing session refreshes", (page) =>
++            page.unroute(sessionPath, failSession),
++          );
+           if (!administrator) {
+             expect(accessFailed, "The member's access refresh failed once").toBe(true);
+             yield* browser.use("Stop failing access refreshes", (page) =>
