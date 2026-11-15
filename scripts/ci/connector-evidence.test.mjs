@@ -183,6 +183,37 @@ test("unknown phase, kind, source and extra data cannot enter the projected reco
   });
 });
 
+test("Zoho browser failures retain their phase and original error class without endpoint data", async (t) => {
+  const root = await fixture(t);
+  const run = join(root, ".generated/zoho-people-mcp/ci");
+  const error = new Error(`locator.click: Timeout 30000ms exceeded ${credential} ${tenant}`);
+  error.name = "TimeoutError";
+  error.stack += "\n    at e2e/zoho-people-mcp-ui.mjs:131:20";
+  const failure = describeGuidanceFailure(error, "zoho-mcp-endpoint-save");
+  await put(join(run, "failure.txt"), `${failure.publicLine}\n${failure.privateDetail}`);
+  await put(
+    join(run, "partial-results.json"),
+    JSON.stringify(Array.from({ length: 50 }, () => ({ name: tenant, actual: credential }))),
+  );
+  const summary = await collectConnectorEvidence(root, "catalog-compat");
+  const records = summary.runs[0].records;
+  assert.equal(records.find((record) => record.stage === "partial-report").checks, 50);
+  assert.deepEqual(
+    records.find((record) => record.stage === "failure"),
+    {
+      stage: "failure",
+      outcome: "failed",
+      phase: "zoho-mcp-endpoint-save",
+      kind: "timeout",
+      errorName: "TimeoutError",
+      marker: "timeout",
+      location: "zoho-people-mcp-ui.mjs:131",
+    },
+  );
+  assert.ok(!JSON.stringify(summary).includes(credential));
+  assert.ok(!JSON.stringify(summary).includes(tenant));
+});
+
 test("an unconfirmed report stays observed while tenant startup failures retain their phase", () => {
   assert.equal(connectorDiagnostic("report", { checks: [] }).outcome, "observed");
   assert.deepEqual(

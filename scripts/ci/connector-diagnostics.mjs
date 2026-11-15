@@ -1,4 +1,4 @@
-import { parseClosedErrorClass } from "../connectors-tests/guidance-failure.ts";
+import { parseClosedErrorClass, zohoMcpPhases } from "../connectors-tests/guidance-failure.ts";
 import { compilerDiagnostic } from "../catalog-compat/build-failure.mjs";
 
 const phases = new Set([
@@ -31,6 +31,7 @@ const phases = new Set([
   "global-client-preference",
   "tenant-public-client",
   "company-guidance",
+  ...zohoMcpPhases,
 ]);
 const kinds = new Set([
   "assertion",
@@ -66,6 +67,8 @@ const sources = new Set([
   "catalog-compat.mjs",
   "elevenlabs-discovery.mjs",
   "zoho-people.mjs",
+  "zoho-people-mcp.mjs",
+  "zoho-people-mcp-ui.mjs",
 ]);
 const count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000;
 const packageId = /^[a-z0-9][a-z0-9._-]{0,63}$/;
