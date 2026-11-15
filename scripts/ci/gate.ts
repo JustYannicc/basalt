@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { heavyJobs } from "./areas.ts";
 
-export const fastJobs = ["select", "fast", "cpa-pipeline", "client-connection"];
+export const fastJobs = ["select", "fast", "cpa-pipeline", "client-connection", "browser-install"];
 export const conditionalJobs = ["baseline-probe", "workerd-assets"];
 
 export function gateErrors(

@@ -2160,6 +2160,22 @@ jobs:
           path: .generated/ci-image/results.json
           include-hidden-files: true
           if-no-files-found: warn
+  browser-install:
+    needs: select
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-browser
+        with:
+          prepare-upstream: "true"
+
   fast:
     needs: select
     runs-on: ubuntu-latest
@@ -2547,6 +2563,7 @@ jobs:
       [
         select,
         fast,
+        browser-install,
         cpa-pipeline,
         baseline-probe,
         workerd-assets,
