@@ -357,6 +357,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: bun install --cwd clients --frozen-lockfile
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
@@ -396,6 +401,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
       - uses: ./.github/actions/setup-browser
@@ -425,6 +435,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
       - uses: ./.github/actions/setup-browser
@@ -454,6 +469,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
       - uses: ./.github/actions/setup-browser
@@ -483,6 +503,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
       - uses: ./.github/actions/setup-browser
@@ -539,6 +564,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
       - name: Verify Vercel sign-in, retained tokens and both tool transports
@@ -566,6 +596,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
       - name: Verify ElevenLabs client metadata sign-in, retained tokens and audio approval
@@ -593,6 +628,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
       - name: Verify one Neon API key serves the REST API and the MCP server
@@ -622,6 +662,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
       - name: Verify Slack health and retained accounts through the real server
@@ -652,6 +697,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
       - name: Build every catalog package as served, on the framework Basalt ships
@@ -687,6 +737,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated self-host test assets
         working-directory: .upstream
@@ -740,6 +795,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated self-host test assets
         working-directory: .upstream
@@ -777,6 +837,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated self-host test assets
         working-directory: .upstream
@@ -823,6 +888,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated local test assets
         working-directory: .upstream
@@ -864,6 +934,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated Cloud test assets
         working-directory: .upstream
@@ -909,6 +984,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated Cloud test assets
         working-directory: .upstream
@@ -951,6 +1031,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated Cloud test assets
         working-directory: .upstream
@@ -971,7 +1056,7 @@ jobs:
         run: bunx vitest run --config e2e/account-mirrors.config.ts
       - name: Verify immutable account declarations across runtime protocols
         working-directory: .upstream
-        run: bunx vitest run --config e2e/account-definition.config.ts
+        run: node ../scripts/ci/with-published-frameworks.ts -- bunx vitest run --config e2e/account-definition.config.ts
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -999,6 +1084,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - name: Prepare the pinned Google recovery runtime
         timeout-minutes: 5
         uses: ./.github/actions/setup-browser
@@ -1056,6 +1146,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - name: Prepare the pinned Google recovery runtime
         timeout-minutes: 5
         uses: ./.github/actions/setup-browser
@@ -1117,6 +1212,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated OAuth test assets
         working-directory: .upstream
@@ -1167,6 +1267,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated recovery test assets
         working-directory: .upstream
@@ -1212,6 +1317,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated SSO test assets
         working-directory: .upstream
@@ -1248,6 +1358,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated production operation test assets
         working-directory: .upstream
@@ -1301,6 +1416,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated signed migration test assets
         working-directory: .upstream
@@ -1348,6 +1468,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated signed migration test assets
         working-directory: .upstream
@@ -1403,6 +1528,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated signed migration test assets
         working-directory: .upstream
@@ -1451,6 +1581,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated compiler test assets
         working-directory: .upstream
@@ -1494,6 +1629,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated test assets
         working-directory: .upstream
@@ -1535,6 +1675,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated test assets
         working-directory: .upstream
@@ -1570,6 +1715,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated test assets
         working-directory: .upstream
@@ -1608,6 +1758,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated test assets
         working-directory: .upstream
@@ -1648,6 +1803,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated self-host test assets
         working-directory: .upstream
@@ -1693,6 +1853,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated recipe test assets
         working-directory: .upstream
@@ -1730,6 +1895,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated reporting test assets
         working-directory: .upstream
@@ -1739,7 +1909,7 @@ jobs:
       - name: Verify reporting, retained data and registration isolation
         working-directory: .upstream
         run: >-
-          bun run e2e:self-host --test-name
+          node ../scripts/ci/with-published-frameworks.ts -- bun run e2e:self-host --test-name
           "$(node ../scripts/ci/e2e-pattern.ts personal-data-reporting:reporting-retained-data-and-registration-isolation)"
           --workers 2
       - name: Verify Cloud scheduling and organization isolation
@@ -1774,6 +1944,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated Cloud test assets
         working-directory: .upstream
@@ -1847,6 +2022,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated self-host test assets
         working-directory: .upstream
@@ -1910,6 +2090,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Prepare the pinned synthetic runtime
         working-directory: .upstream
@@ -1964,6 +2149,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Prepare the pinned synthetic runtime
         working-directory: .upstream
@@ -1998,6 +2188,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Check the packaged app renderer
         working-directory: .upstream
@@ -2009,7 +2204,7 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify captured views, source bindings and the packaged renderer
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts mcp-apps:captured-views-source-bindings-and-the-packaged-renderer)" --workers 1
+        run: node ../scripts/ci/with-published-frameworks.ts -- bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts mcp-apps:captured-views-source-bindings-and-the-packaged-renderer)" --workers 1
       - name: Verify encrypted retention, concurrent limits and restart
         working-directory: .upstream
         run: bun run e2e:local --test-name "$(node ../scripts/ci/e2e-pattern.ts mcp-apps:encrypted-retention-concurrent-limits-and-restart)" --workers 1
@@ -2042,6 +2237,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build isolated test assets
         working-directory: .upstream
@@ -2079,6 +2279,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build isolated test assets
         working-directory: .upstream
@@ -2116,6 +2321,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build isolated test assets
         working-directory: .upstream
@@ -2168,6 +2378,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build isolated test assets
         working-directory: .upstream
@@ -2388,6 +2603,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Prove committed change locks and account source read contention on PostgreSQL
         env:
@@ -2510,6 +2730,11 @@ jobs:
     needs: select
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-build')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: read
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -2583,6 +2808,9 @@ jobs:
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
+      - name: Verify the upstream E2E preparation cache contract
+        working-directory: .upstream
+        run: bunx vitest run --config e2e/prepare-cache.config.ts
       - run: npm run check:upstream
         env:
           MIGRATION_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
@@ -2713,6 +2941,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated account test assets
         working-directory: .upstream
@@ -2754,6 +2987,11 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.4
+          export-as: EXECUTOR_MOTEL_BUN
       - run: npm run prepare:upstream
       - name: Build the isolated account test assets
         working-directory: .upstream

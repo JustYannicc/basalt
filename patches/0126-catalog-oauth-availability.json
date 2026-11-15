@@ -1,7 +1,7 @@
 {
   "identity": "basalt-catalog-oauth-availability",
   "file": "0126-catalog-oauth-availability.patch",
-  "content_sha256": "a4a04c6293d83c63afaf65600a9039f40dd6c114093c36cb726e64aee7eb1ce2",
+  "content_sha256": "8e7801256912fd5c88ade8d25ffc14f659170d353787b96cfa586280b9759c05",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

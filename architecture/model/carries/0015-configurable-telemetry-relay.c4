@@ -1,0 +1,7 @@
+model {
+  extend basalt.telemetry {
+    metadata {
+      constraint "Optional authenticated telemetry relay settings route scrubbed product events and diagnostics through the configured host without making analytics a startup dependency. Batched feature-flag evaluation returns an empty result map when analytics is unconfigured."
+    }
+  }
+}

@@ -42,10 +42,10 @@ index d502eda..69fd682 100644
        },
        appsManifest,
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 24aa102..4768cc8 100644
+index 5d6ad45..ec107e2 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -1183,6 +1183,17 @@ export const scenarios = plan({
+@@ -1470,6 +1470,17 @@ export const scenarios = plan({
        local: na("Hosted version API scenario"),
      },
    },
@@ -117,10 +117,10 @@ index c4cca5a..87f958f 100644
      withHostedCase(
        context,
 diff --git a/packages/app-templates/executor/skills/app-authoring/integrations.md b/packages/app-templates/executor/skills/app-authoring/integrations.md
-index 9f47005..a6d3a55 100644
+index d6a3907..5c4f09b 100644
 --- a/packages/app-templates/executor/skills/app-authoring/integrations.md
 +++ b/packages/app-templates/executor/skills/app-authoring/integrations.md
-@@ -285,7 +285,11 @@ settings the definition cannot be trusted to decide:
+@@ -293,7 +293,11 @@ settings the definition cannot be trusted to decide:
    Pointer through objects only: every segment before the last must name an
    existing object, so a pointer cannot index into an array. Replace the whole
    array at its key instead. `add` creates or overwrites a key; `remove` and
@@ -134,20 +134,20 @@ index 9f47005..a6d3a55 100644
    paths omit leading segments. It goes between the server and every path; each
    `{name}` becomes a required path parameter of every tool.
 diff --git a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
-index a19f470..0979945 100644
+index 0f2b84b..d0cdb57 100644
 --- a/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
 +++ b/packages/app-templates/src/implementation/executor-skill-digests.gen.ts
 @@ -6,7 +6,7 @@ export const executorSkillDigests: Readonly<Record<string, string>> = {
-   "app-authoring/accounts.md": "432a174d046d503b5280c2bce3208047bd2d2dcb637e2f31d5f5d2827c234a91",
-   "app-authoring/deploy.md": "dab905832c653eb6a22d6bfd64e4ec3b8cb994288972f61f29fe23c945d75822",
+   "app-authoring/accounts.md": "7d304cf09d9b717206e7526b361885933a58eba3a3919322ded22564d4db7b00",
+   "app-authoring/deploy.md": "2df76fb22f6b0b04032c28c3b589199ca1aea91fd36548944ce797d32f8154af",
    "app-authoring/events.md": "8f7465e35c6c94b06978b89680181df60c741225de3ba8158f22f76ee7e91a5a",
--  "app-authoring/integrations.md": "cb0ac98ad26d840e7ec18e79756a9592acfc65045aa67caf28b18c102ca01690",
-+  "app-authoring/integrations.md": "c349fe81ad1c5c0d2f7fd9f7c77afdeb5297b65adb769135d313e4370864b9ea",
+-  "app-authoring/integrations.md": "8cebbe564eb0ed589be0894ccd3765941f3d80f0aea2db434fd9c99ce21135da",
++  "app-authoring/integrations.md": "b6686d96ac6225b86983b112deac510ddd2aa25e174a9f4c07ed59e99f199ab3",
    "app-authoring/starter.md": "382bd769d7b10e9c09eaa2367755f23153a31a484aaca9c449ab4aac7d61e224",
    "app-authoring/storage.md": "d2c2288c8a6dafa0a88f09e7e91409d9afc08158205ea6d25064d0dee67a33df",
    "app-authoring/tools.md": "460eed5aaf4f84071945f891b955765a39d5372773cb6fff4f4e5d0d99e68a14",
 diff --git a/packages/apps/src/implementation/openapi-source.ts b/packages/apps/src/implementation/openapi-source.ts
-index 82b6ded..dc42041 100644
+index 442adf7..30283f9 100644
 --- a/packages/apps/src/implementation/openapi-source.ts
 +++ b/packages/apps/src/implementation/openapi-source.ts
 @@ -346,40 +346,89 @@ export interface OpenapiSourceOptions extends Omit<

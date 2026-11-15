@@ -1,6 +1,6 @@
 diff --git a/e2e/support/app-account-sections.ts b/e2e/support/app-account-sections.ts
 new file mode 100644
-index 00000000..72c79690
+index 0000000..72c7969
 --- /dev/null
 +++ b/e2e/support/app-account-sections.ts
 @@ -0,0 +1,47 @@
@@ -52,10 +52,10 @@ index 00000000..72c79690
 +      }),
 +    );
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 6e23132a..d35c4e31 100644
+index a23ae88..a389b77 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -8937,6 +8937,47 @@ export const scenarios = plan({
+@@ -9864,6 +9864,47 @@ export const scenarios = plan({
        cloud: scheduled,
      },
    },
@@ -104,7 +104,7 @@ index 6e23132a..d35c4e31 100644
      fixtures: "actors",
      file: "app-accounts-tab.spec.ts",
 diff --git a/e2e/tests/app-account-picker.spec.ts b/e2e/tests/app-account-picker.spec.ts
-index 0c8aa472..f9d1c755 100644
+index 6d345da..fe662ff 100644
 --- a/e2e/tests/app-account-picker.spec.ts
 +++ b/e2e/tests/app-account-picker.spec.ts
 @@ -97,14 +97,16 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
@@ -143,7 +143,7 @@ index 0c8aa472..f9d1c755 100644
                readonly selector: string;
 diff --git a/e2e/tests/app-account-sections.spec.ts b/e2e/tests/app-account-sections.spec.ts
 new file mode 100644
-index 00000000..58644cc2
+index 0000000..58644cc
 --- /dev/null
 +++ b/e2e/tests/app-account-sections.spec.ts
 @@ -0,0 +1,200 @@
@@ -348,7 +348,7 @@ index 00000000..58644cc2
 +  );
 +});
 diff --git a/e2e/tests/contributed-app-accounts.spec.ts b/e2e/tests/contributed-app-accounts.spec.ts
-index 13c08c4e..623bd8a8 100644
+index 13c08c4..623bd8a 100644
 --- a/e2e/tests/contributed-app-accounts.spec.ts
 +++ b/e2e/tests/contributed-app-accounts.spec.ts
 @@ -14,13 +14,17 @@ import { choiceName, rowMenuName } from "../support/account-choices.ts";
@@ -374,7 +374,7 @@ index 13c08c4e..623bd8a8 100644
  layer(HostedLive, { excludeTestServices: true })("Contributed Accounts tab", (it) => {
 diff --git a/e2e/tests/local-app-account-sections.spec.ts b/e2e/tests/local-app-account-sections.spec.ts
 new file mode 100644
-index 00000000..b9bcb7ff
+index 0000000..b9bcb7f
 --- /dev/null
 +++ b/e2e/tests/local-app-account-sections.spec.ts
 @@ -0,0 +1,127 @@
@@ -506,7 +506,7 @@ index 00000000..b9bcb7ff
 +  );
 +});
 diff --git a/e2e/tests/provisioned-link-boundary.spec.ts b/e2e/tests/provisioned-link-boundary.spec.ts
-index f549762a..ea4e9858 100644
+index f549762..ea4e985 100644
 --- a/e2e/tests/provisioned-link-boundary.spec.ts
 +++ b/e2e/tests/provisioned-link-boundary.spec.ts
 @@ -129,8 +129,9 @@ layer(HostedLive, { excludeTestServices: true })("Provisioned link boundary", (i
@@ -521,7 +521,7 @@ index f549762a..ea4e9858 100644
                .click(),
            ]).then(([response]) => response.status()),
 diff --git a/packages/ui/src/implementation/components/dialog.tsx b/packages/ui/src/implementation/components/dialog.tsx
-index 7519ddc9..a8ccdc57 100644
+index 81c7585..a4c33a3 100644
 --- a/packages/ui/src/implementation/components/dialog.tsx
 +++ b/packages/ui/src/implementation/components/dialog.tsx
 @@ -61,10 +61,56 @@ const focusFirstField = (event: Event) => {
@@ -618,7 +618,7 @@ index 7519ddc9..a8ccdc57 100644
 +          if (returnFocus(opener.current)) event.preventDefault();
          }}
          className={cn(
-           "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
+           "fixed top-[50%] left-[50%] z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg duration-200 overflow-y-auto outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
 @@ -104,6 +154,7 @@ function DialogContent({
          )}
          {...props}
@@ -628,10 +628,10 @@ index 7519ddc9..a8ccdc57 100644
          {showCloseButton && (
            <DialogPrimitive.Close asChild>
 diff --git a/packages/ui/src/implementation/dashboard/app-accounts.tsx b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-index 64279f6c..e20b0637 100644
+index e7e1e50..082aa19 100644
 --- a/packages/ui/src/implementation/dashboard/app-accounts.tsx
 +++ b/packages/ui/src/implementation/dashboard/app-accounts.tsx
-@@ -83,6 +83,7 @@ import {
+@@ -88,6 +88,7 @@ import {
  } from "../components/dialog.tsx";
  import { cn } from "../lib/utils.ts";
  import { methodLabels } from "./method-labels.ts";
@@ -639,15 +639,15 @@ index 64279f6c..e20b0637 100644
  import { useProductBrand } from "../hooks/product-brand.ts";
  import { useToast } from "../components/toast.tsx";
  import { ProviderDestination } from "./provider-accounts.tsx";
-@@ -749,6 +750,7 @@ function LinkScope<E>({
+@@ -805,6 +806,7 @@ function LinkScope<E>({
        !accounts.some((account) => account.provider === requirement.provider),
    );
    const open = shown.filter((entry) => !closed.includes(entry));
 +  const titles = requirementTitles(shown);
    const readOnly = open.every(([, requirement]) => editingFor(data, requirement) === undefined);
    return (
-     <RowSection.Provider value={title}>
-@@ -771,6 +773,7 @@ function LinkScope<E>({
+     <Checking.Provider value={checking}>
+@@ -828,6 +830,7 @@ function LinkScope<E>({
                {...props}
                slot={slot}
                requirement={requirement}
@@ -655,7 +655,7 @@ index 64279f6c..e20b0637 100644
                linked={data.links.flatMap((link) =>
                  link.requirement === slot ? [link.account] : [],
                )}
-@@ -778,7 +781,12 @@ function LinkScope<E>({
+@@ -835,7 +838,12 @@ function LinkScope<E>({
              />
            ))}
            {closed.length > 0 && (
@@ -669,7 +669,7 @@ index 64279f6c..e20b0637 100644
            )}
          </div>
        </section>
-@@ -790,10 +798,12 @@ function LinkScope<E>({
+@@ -848,10 +856,12 @@ function LinkScope<E>({
  function UnavailableRequirements({
    app,
    requirements,
@@ -682,7 +682,7 @@ index 64279f6c..e20b0637 100644
    readonly methods: RequirementMethods | undefined;
  }) {
    return (
-@@ -815,7 +825,7 @@ function UnavailableRequirements({
+@@ -873,7 +883,7 @@ function UnavailableRequirements({
              className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 px-3.5 py-3 text-[13px] [&_.provider-icon]:row-span-2 [&_.provider-icon]:size-7"
            >
              <AppProviderIcon app={app} provider={requirement.definition} />
@@ -691,7 +691,7 @@ index 64279f6c..e20b0637 100644
              <ul className="grid gap-0.75 text-xs text-muted-foreground">
                {methodStates(methods, slot, requirement).map((state) => (
                  <li key={state.name}>
-@@ -848,12 +858,15 @@ const requirementNote = (requirement: AccountRequirement, linked: number) =>
+@@ -906,12 +916,15 @@ const requirementNote = (requirement: AccountRequirement, linked: number) =>
  function RequirementView<E>({
    slot,
    requirement,
@@ -707,7 +707,7 @@ index 64279f6c..e20b0637 100644
    /** The requirement's linked accounts, oldest first. */
    readonly linked: readonly AccountSummary[];
    /** Why this requirement is read-only when others in its scope are not. */
-@@ -862,7 +875,6 @@ function RequirementView<E>({
+@@ -920,7 +933,6 @@ function RequirementView<E>({
    const { data } = props;
    const edit = editingFor(data, requirement);
    const managed = provisionedOnly(requirement);
@@ -715,7 +715,7 @@ index 64279f6c..e20b0637 100644
    const native = props.methods?.native(slot);
    const kept = retained(connectionOf(props.connections, slot), data, requirement);
    const states = methodStates(props.methods, slot, requirement);
-@@ -881,15 +893,15 @@ function RequirementView<E>({
+@@ -939,15 +951,15 @@ function RequirementView<E>({
            .join(" · ") || undefined;
    return (
      <section
@@ -734,7 +734,7 @@ index 64279f6c..e20b0637 100644
                {kept && (
                  <span className="shrink-0 rounded-sm border px-1.5 py-px text-[10px] font-normal text-foreground">
                    Retained
-@@ -942,6 +954,7 @@ function RequirementView<E>({
+@@ -1000,6 +1012,7 @@ function RequirementView<E>({
              }
              slot={slot}
              requirement={requirement}
@@ -742,7 +742,7 @@ index 64279f6c..e20b0637 100644
              linked={linked}
            />
          ) : (
-@@ -950,6 +963,7 @@ function RequirementView<E>({
+@@ -1008,6 +1021,7 @@ function RequirementView<E>({
              edit={edit}
              slot={slot}
              requirement={requirement}
@@ -750,7 +750,7 @@ index 64279f6c..e20b0637 100644
              linked={linked}
            />
          )}
-@@ -1034,11 +1048,13 @@ function ReadOnlyChoices<E>({
+@@ -1092,11 +1106,13 @@ function ReadOnlyChoices<E>({
    showProvisionedProblems,
    slot,
    requirement,
@@ -764,7 +764,7 @@ index 64279f6c..e20b0637 100644
    readonly linked: readonly AccountSummary[];
  }) {
    const section = useContext(RowSection);
-@@ -1134,9 +1150,7 @@ function ReadOnlyChoices<E>({
+@@ -1192,9 +1208,7 @@ function ReadOnlyChoices<E>({
    });
    const list = (
      <ul
@@ -775,7 +775,7 @@ index 64279f6c..e20b0637 100644
        className={cn(accountRowsContainer, "divide-y divide-border/50 text-[13px]")}
      >
        {rows}
-@@ -1146,7 +1160,7 @@ function ReadOnlyChoices<E>({
+@@ -1204,7 +1218,7 @@ function ReadOnlyChoices<E>({
      <RadioGroup.Root
        value={linked.at(-1)?.id ?? ""}
        disabled
@@ -784,7 +784,7 @@ index 64279f6c..e20b0637 100644
      >
        {list}
      </RadioGroup.Root>
-@@ -1195,6 +1209,7 @@ function EditableChoices<E>({
+@@ -1253,6 +1267,7 @@ function EditableChoices<E>({
    showProvisionedProblems,
    slot,
    requirement,
@@ -792,7 +792,7 @@ index 64279f6c..e20b0637 100644
    linked,
    data,
    edit,
-@@ -1206,6 +1221,7 @@ function EditableChoices<E>({
+@@ -1264,6 +1279,7 @@ function EditableChoices<E>({
    readonly edit: LinkEditing<E>;
    readonly slot: string;
    readonly requirement: AccountRequirement;
@@ -800,7 +800,7 @@ index 64279f6c..e20b0637 100644
    readonly linked: readonly AccountSummary[];
  }) {
    const brand = useProductBrand();
-@@ -1315,9 +1331,7 @@ function EditableChoices<E>({
+@@ -1373,9 +1389,7 @@ function EditableChoices<E>({
      : [];
    const list = (
      <ul
@@ -811,7 +811,7 @@ index 64279f6c..e20b0637 100644
        className={cn(accountRowsContainer, "divide-y divide-border/50 text-[13px]")}
      >
        {rows}
-@@ -1337,7 +1351,7 @@ function EditableChoices<E>({
+@@ -1395,7 +1409,7 @@ function EditableChoices<E>({
          (plain ? (
            <RadioGroup.Root
              value={choices.find((choice) => choice.linked)?.account.id ?? ""}
@@ -822,7 +822,7 @@ index 64279f6c..e20b0637 100644
            </RadioGroup.Root>
 diff --git a/packages/ui/src/implementation/dashboard/requirement-titles.ts b/packages/ui/src/implementation/dashboard/requirement-titles.ts
 new file mode 100644
-index 00000000..7b7eb611
+index 0000000..7b7eb61
 --- /dev/null
 +++ b/packages/ui/src/implementation/dashboard/requirement-titles.ts
 @@ -0,0 +1,52 @@
@@ -879,7 +879,7 @@ index 00000000..7b7eb611
 +  );
 +};
 diff --git a/packages/ui/src/implementation/styles/dashboard.css b/packages/ui/src/implementation/styles/dashboard.css
-index 96b21553..58edff1f 100644
+index 96b2155..58edff1 100644
 --- a/packages/ui/src/implementation/styles/dashboard.css
 +++ b/packages/ui/src/implementation/styles/dashboard.css
 @@ -3,7 +3,10 @@

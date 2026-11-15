@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.contributionApi {
+    metadata {
+      constraint "Native link and access writes obtain a signed dirty acknowledgement before their transaction commits, making pool use unavailable before new authority becomes visible. The private membership reader rechecks current locked selections and returns only explicitly enabled host references. It exposes no credentials or inferred binding, and failed writes recover through committed membership reads."
+    }
+  }
+}

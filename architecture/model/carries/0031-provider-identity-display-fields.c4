@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Provider identity excludes secrets-method labels and schema title and description annotations without dropping validation keywords or fields named title or description. Deployments keep compatible active provider IDs and each app displays its own version's wording. Published skill digests match the exact merged UTF-8 guidance bytes."
+    }
+  }
+}

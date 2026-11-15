@@ -1,7 +1,8 @@
 diff --git a/apps/docs/content/api-keys.md b/apps/docs/content/api-keys.md
+index 4f52d7b..2943b09 100644
 --- a/apps/docs/content/api-keys.md
 +++ b/apps/docs/content/api-keys.md
-@@ -7,9 +7,9 @@
+@@ -7,9 +7,9 @@ description: "Create a personal access token for a script or agent. Tokens use y
  
  Executor API keys are personal access tokens (PATs). A token authenticates as you
  and uses your current permissions in the organization targeted by each request.
@@ -14,11 +15,10 @@ diff --git a/apps/docs/content/api-keys.md b/apps/docs/content/api-keys.md
  
  Tokens belong to your account, not to an organization. They live under
  **Account settings → Tokens** (`/account/tokens`), reached from your avatar menu,
-@@ -47,6 +47,19 @@
- For `GET /api/context`, pass `?organization=<organization-id-or-slug>` instead. A token
+@@ -48,6 +48,19 @@ For `GET /api/context`, pass `?organization=<organization-id-or-slug>` instead.
  limited to one organization can omit it.
  Invalid, expired, or revoked tokens return `401`. Insufficient access returns `403`.
-+
+ 
 +## Tools-only clients
 +
 +A signed-in browser can create a tools-only key through
@@ -31,14 +31,16 @@ diff --git a/apps/docs/content/api-keys.md b/apps/docs/content/api-keys.md
 +
 +This limits the key's API authority. Connected tools still use the accounts and
 +permissions you granted them; review those before giving a client tool access.
- 
++
  ## Expiry and revocation
  
+ Signing out does not revoke tokens. Removing an organization membership stops
 diff --git a/apps/hosted/cloud/src/implementation/v1-mcp-forward.ts b/apps/hosted/cloud/src/implementation/v1-mcp-forward.ts
+index 1eed791..2b36b4e 100644
 --- a/apps/hosted/cloud/src/implementation/v1-mcp-forward.ts
 +++ b/apps/hosted/cloud/src/implementation/v1-mcp-forward.ts
-@@ -24,7 +24,7 @@
-   organizationOwner,
+@@ -27,7 +27,7 @@ import {
+   type AuthFailureReason,
    type OrganizationReference,
  } from "@executor-js/hosted-server";
 -import { ApprovalMode, GrantId, type GrantPolicy } from "@executor-js/mcp-auth";
@@ -46,7 +48,7 @@ diff --git a/apps/hosted/cloud/src/implementation/v1-mcp-forward.ts b/apps/hoste
  import {
    ConnectionId,
    ConnectionPolicy,
-@@ -214,6 +214,7 @@
+@@ -225,6 +225,7 @@ const grantedAccess = <E>(
      return McpAccess.make({
        userId: input.user,
        clientId: v1ForwardClient,
@@ -55,9 +57,10 @@ diff --git a/apps/hosted/cloud/src/implementation/v1-mcp-forward.ts b/apps/hoste
          id: grantId({ user: input.user, organization, mode: input.mode, connection }),
          policy,
 diff --git a/apps/hosted/server/src/contracts/api-keys.ts b/apps/hosted/server/src/contracts/api-keys.ts
+index b68afbe..fc42f8a 100644
 --- a/apps/hosted/server/src/contracts/api-keys.ts
 +++ b/apps/hosted/server/src/contracts/api-keys.ts
-@@ -2,11 +2,16 @@
+@@ -2,11 +2,16 @@ import { Schema } from "effect";
  import { OrganizationId } from "./organization.ts";
  /** Public identifier, never the bearer credential. */
  export const ApiKeyId = Schema.NonEmptyString.pipe(Schema.brand("ApiKeyId"));
@@ -75,7 +78,7 @@ diff --git a/apps/hosted/server/src/contracts/api-keys.ts b/apps/hosted/server/s
  export type ApiKeyMetadata = typeof ApiKeyMetadata.Type;
  /** Native Better Auth key metadata; secret hashes are excluded. */
  export const ApiKeySummary = Schema.Struct({
-@@ -24,7 +29,12 @@
+@@ -24,7 +29,12 @@ export type ApiKeySummary = typeof ApiKeySummary.Type;
  export const CreateApiKey = Schema.Struct({
    name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80), Schema.isPattern(/\S/u)),
    expiresIn: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))),
@@ -90,9 +93,10 @@ diff --git a/apps/hosted/server/src/contracts/api-keys.ts b/apps/hosted/server/s
  /** Only the native creation response contains the secret. */
  export const CreatedApiKey = Schema.Struct({
 diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/server/src/contracts/app-accounts.ts
+index 1a4f5fc..701dcf3 100644
 --- a/apps/hosted/server/src/contracts/app-accounts.ts
 +++ b/apps/hosted/server/src/contracts/app-accounts.ts
-@@ -213,7 +213,7 @@
+@@ -213,7 +213,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
        success: AppAccountLink,
        error: errors,
      })
@@ -101,7 +105,7 @@ diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/serv
        .annotate(
          OpenApi.Description,
          forEveryone
-@@ -225,7 +225,7 @@
+@@ -225,7 +225,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
        success: Schema.Struct({ requirement: Schema.NonEmptyString, account: AccountId }),
        error: errors,
      })
@@ -111,9 +115,10 @@ diff --git a/apps/hosted/server/src/contracts/app-accounts.ts b/apps/hosted/serv
          OpenApi.Description,
          forEveryone
 diff --git a/apps/hosted/server/src/contracts/mcp.ts b/apps/hosted/server/src/contracts/mcp.ts
+index f932fcf..d155033 100644
 --- a/apps/hosted/server/src/contracts/mcp.ts
 +++ b/apps/hosted/server/src/contracts/mcp.ts
-@@ -9,6 +9,7 @@
+@@ -9,6 +9,7 @@ import type {
  import type { ConnectedAgent, ConnectedAgentNotFound } from "@executor-js/mcp-auth/agents";
  import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
  import type { AppSandboxAddress } from "@executor-js/mcp";
@@ -121,7 +126,7 @@ diff --git a/apps/hosted/server/src/contracts/mcp.ts b/apps/hosted/server/src/co
  import { Context, Schema } from "effect";
  import type { Effect } from "effect";
  import { OrganizationAccess, type OrganizationReference } from "./organization.ts";
-@@ -20,6 +21,7 @@
+@@ -20,6 +21,7 @@ export const McpAccess = Schema.Struct({
    clientId: Schema.NonEmptyString,
    access: OrganizationAccess,
    grant: Grant,
@@ -130,9 +135,10 @@ diff --git a/apps/hosted/server/src/contracts/mcp.ts b/apps/hosted/server/src/co
  export type McpAccess = typeof McpAccess.Type;
  
 diff --git a/apps/hosted/server/src/implementation/api-keys.ts b/apps/hosted/server/src/implementation/api-keys.ts
+index fb72a5d..b74d7ae 100644
 --- a/apps/hosted/server/src/implementation/api-keys.ts
 +++ b/apps/hosted/server/src/implementation/api-keys.ts
-@@ -3,11 +3,11 @@
+@@ -3,11 +3,11 @@ import { generateRandomString } from "better-auth/crypto";
  import { SqlClient } from "effect/sql";
  import { StorageError } from "@executor-js/sdk/core";
  import type { GenericEndpointContext } from "@better-auth/core";
@@ -146,7 +152,7 @@ diff --git a/apps/hosted/server/src/implementation/api-keys.ts b/apps/hosted/ser
  import { OrganizationId } from "../contracts/organization.ts";
  import { productBrandConfig } from "@executor-js/utils/product-brand";
  
-@@ -26,6 +26,13 @@
+@@ -26,6 +26,13 @@ export const apiKeys = apiKey({
  
  /** Stored metadata; keys created before pinning existed carry none. */
  const KeyMetadata = Schema.NullOr(ApiKeyMetadata);
@@ -160,7 +166,7 @@ diff --git a/apps/hosted/server/src/implementation/api-keys.ts b/apps/hosted/ser
  /** Pin a key to one organization; the auto-minted Executor app key always uses this. */
  export const pinnedKeyMetadata = (organization: OrganizationId) => ({ organization });
  
-@@ -56,18 +63,25 @@
+@@ -56,18 +63,25 @@ export const apiKeyManagement = createAuthMiddleware(async (ctx) => {
            message: "You are not a member of that organization.",
          });
      }
@@ -188,7 +194,7 @@ diff --git a/apps/hosted/server/src/implementation/api-keys.ts b/apps/hosted/ser
  ) =>
    Effect.gen(function* () {
      const user = yield* authCall(() =>
-@@ -85,10 +99,12 @@
+@@ -85,10 +99,12 @@ const identity = (
      const metadata = yield* Schema.decodeUnknownEffect(KeyMetadata)(key.metadata).pipe(
        Effect.mapError(() => new APIError("UNAUTHORIZED")),
      );
@@ -203,6 +209,7 @@ diff --git a/apps/hosted/server/src/implementation/api-keys.ts b/apps/hosted/ser
      };
    });
 diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hosted/server/src/implementation/bearer-access.ts
+index 8978c68..14ed300 100644
 --- a/apps/hosted/server/src/implementation/bearer-access.ts
 +++ b/apps/hosted/server/src/implementation/bearer-access.ts
 @@ -15,7 +15,7 @@
@@ -214,24 +221,24 @@ diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hoste
  import {
    GrantId,
    GrantPolicy,
-@@ -38,7 +38,7 @@
- import { McpAccess, McpForbidden, McpForbiddenReason, McpUnauthorized } from "../contracts/mcp.ts";
- import { AuthenticationUnavailable, Unauthorized } from "../contracts/auth.ts";
+@@ -39,7 +39,7 @@ import { McpAccess, McpForbidden, McpForbiddenReason, McpUnauthorized } from "..
+ import { AuthFailureReason, AuthenticationUnavailable, Unauthorized } from "../contracts/auth.ts";
+ import { recordAuthFailure, recordCaller, recordCredential } from "./auth-telemetry.ts";
  import { OrganizationForbidden } from "../contracts/organization.ts";
 -import { isApiKey } from "./api-keys.ts";
 +import { apiKeyAuthorization, apiKeyScopeMatches, isApiKey } from "./api-keys.ts";
  import { patGrantId, type HostedOAuthOrigins } from "./mcp-oauth.ts";
  
  /**
-@@ -511,6 +511,7 @@
+@@ -557,6 +557,7 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
      const metadata = yield* Schema.decodeUnknownEffect(KeyMetadata)(jsonText(row.metadata)).pipe(
-       Effect.mapError(() => unauthorized),
+       Effect.mapError(() => unauthorized("unknown")),
      );
-+    if (!apiKeyScopeMatches(token, metadata?.scope)) return yield* unauthorized;
++    if (!apiKeyScopeMatches(token, metadata?.scope)) return yield* unauthorized("wrong_resource");
      const pinned = metadata?.organization;
-     // The named organization, else the one the key is pinned to.
-     const organization =
-@@ -534,6 +535,7 @@
+     // A pinned key's organization is its own while its user is still a member there, so a refusal
+     // from here on names that one and the key's user, never another organization the request
+@@ -588,6 +589,7 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
      return {
        userId: row.userId,
        id,
@@ -239,7 +246,7 @@ diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hoste
        access: { organization, owner: organizationOwner(organization), role },
        organizationSlug: membership?.slug ?? null,
      };
-@@ -554,6 +556,7 @@
+@@ -608,6 +610,7 @@ export const mcpBearerAccess = (
          userId: grant.userId,
          clientId: grant.clientId,
          grant: grant.grant,
@@ -247,7 +254,7 @@ diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hoste
          access: grant.access,
        });
      }
-@@ -562,6 +565,7 @@
+@@ -616,6 +619,7 @@ export const mcpBearerAccess = (
      return McpAccess.make({
        userId: key.userId,
        clientId: `pat:${key.id}`,
@@ -255,7 +262,7 @@ diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hoste
        grant: {
          id: patGrantId({ token: key.id, organization: key.access.organization, mode }),
          policy: { kind: "all" },
-@@ -592,7 +596,7 @@
+@@ -647,7 +651,7 @@ export const apiBearerAccess = (origins: HostedOAuthOrigins, request: BearerRequ
            Effect.map((key) => ({
              userId: key.userId,
              key: { id: key.id },
@@ -265,6 +272,7 @@ diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hoste
              organizationSlug: key.organizationSlug,
            })),
 diff --git a/apps/hosted/server/src/implementation/mcp-approvals.ts b/apps/hosted/server/src/implementation/mcp-approvals.ts
+index 24f85b9..ec7449c 100644
 --- a/apps/hosted/server/src/implementation/mcp-approvals.ts
 +++ b/apps/hosted/server/src/implementation/mcp-approvals.ts
 @@ -1,5 +1,4 @@
@@ -273,7 +281,7 @@ diff --git a/apps/hosted/server/src/implementation/mcp-approvals.ts b/apps/hoste
  import { checkInvocationAccounts } from "./access.ts";
  import { invocationAccounts } from "@executor-js/sdk/core";
  import { CurrentUserId } from "../contracts/auth.ts";
-@@ -89,7 +88,7 @@
+@@ -89,7 +88,7 @@ export const hostedMcpApproval = (
      if (view.status === "pending") {
        const backend = yield* hostedMcpBackend.pipe(
          Effect.provideService(CurrentOrganization, access.access),
@@ -283,6 +291,7 @@ diff --git a/apps/hosted/server/src/implementation/mcp-approvals.ts b/apps/hoste
        );
        const restricted = restrictMcpBackend<Error, never>(backend, Effect.succeed(access.grant));
 diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/server/src/implementation/mcp-http.ts
+index 0aa52f6..e673b9d 100644
 --- a/apps/hosted/server/src/implementation/mcp-http.ts
 +++ b/apps/hosted/server/src/implementation/mcp-http.ts
 @@ -1,7 +1,6 @@
@@ -291,9 +300,9 @@ diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/ser
  import { requiresToolMetadata } from "@executor-js/authorization";
 -import { grantAuthorization } from "@executor-js/mcp-auth";
  import { GroupDatabase } from "../contracts/groups.ts";
- import { CurrentUserId } from "../contracts/auth.ts";
- import {
-@@ -203,7 +202,7 @@
+ import { CurrentUserId, callerSpanAttributes } from "../contracts/auth.ts";
+ import { recordAuthFailure } from "./auth-telemetry.ts";
+@@ -207,7 +206,7 @@ export const dispatchHostedMcp = <E, R>(
          if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
          const backend = yield* hostedMcpBackend.pipe(
            Effect.provideService(CurrentOrganization, fresh.access),
@@ -302,7 +311,7 @@ diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/ser
            Effect.provideService(CurrentUserId, fresh.userId),
            Effect.provideService(CurrentMcpGrant, fresh.grant.id),
          );
-@@ -324,10 +323,7 @@
+@@ -334,10 +333,7 @@ export const dispatchHostedMcp = <E, R>(
            !fold.result.value.access.canUse
              ? Effect.succeed(undefined)
              : callerAccounts(read.app.success, fold.result.value.accounts).pipe(
@@ -314,7 +323,7 @@ diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/ser
                  Effect.provideService(CurrentUserId, access.userId),
                  Effect.provideContext(services),
                  Effect.option,
-@@ -417,7 +413,7 @@
+@@ -427,7 +423,7 @@ export const dispatchHostedMcp = <E, R>(
            // there again.
            if (
              (yield* ConcurrentStatements) === undefined ||
@@ -324,15 +333,16 @@ diff --git a/apps/hosted/server/src/implementation/mcp-http.ts b/apps/hosted/ser
              return yield* current.pipe(Effect.flatMap((fresh) => fresh.callTool(input, options)));
            const batch = yield* StatementBatch;
 diff --git a/apps/hosted/server/src/implementation/mcp-oauth.ts b/apps/hosted/server/src/implementation/mcp-oauth.ts
+index c3b300c..2a10ee6 100644
 --- a/apps/hosted/server/src/implementation/mcp-oauth.ts
 +++ b/apps/hosted/server/src/implementation/mcp-oauth.ts
 @@ -1,6 +1,12 @@
  import { ApiKeyId } from "../contracts/api-keys.ts";
  import { browserPersonalTokenAccess, apiKeyAccess, requirePinnedOrganization } from "./api-keys.ts";
--import { ApprovalMode, type ConnectionId, GrantId, mcpOAuthResources } from "@executor-js/mcp-auth";
+-import { ApprovalMode, ConnectionId, GrantId, mcpOAuthResources } from "@executor-js/mcp-auth";
 +import {
 +  ApprovalMode,
-+  type ConnectionId,
++  ConnectionId,
 +  GrantId,
 +  grantAuthorization,
 +  mcpOAuthResources,
@@ -340,7 +350,7 @@ diff --git a/apps/hosted/server/src/implementation/mcp-oauth.ts b/apps/hosted/se
  
  /** Hosted membership composes with the shared OAuth grant lifecycle. */
  import type { BetterAuthPlugin, GenericEndpointContext } from "@better-auth/core";
-@@ -161,6 +167,7 @@
+@@ -161,6 +167,7 @@ const projectPatAccess = (
      return McpAccess.make({
        userId: identity.userId,
        clientId: `pat:${identity.key.id}`,
@@ -348,7 +358,7 @@ diff --git a/apps/hosted/server/src/implementation/mcp-oauth.ts b/apps/hosted/se
        grant: {
          id: patGrantId({ token: identity.key.id, organization, mode }),
          policy: { kind: "all" },
-@@ -199,6 +206,7 @@
+@@ -199,6 +206,7 @@ export const mcpOAuthPlugins = (options: HostedOAuthOptions) => {
          userId: grant.userId,
          clientId: grant.clientId,
          grant: grant.grant,
@@ -357,9 +367,10 @@ diff --git a/apps/hosted/server/src/implementation/mcp-oauth.ts b/apps/hosted/se
        });
      });
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 10e14ac..35594ea 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -6793,6 +6793,37 @@
+@@ -7767,6 +7767,37 @@ export const scenarios = plan({
        local: na("Local pairs a device instead of signing a user in."),
      },
    },
@@ -399,6 +410,7 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
      file: "named-api-keys.spec.ts",
 diff --git a/e2e/tests/tools-only-account-links.spec.ts b/e2e/tests/tools-only-account-links.spec.ts
 new file mode 100644
+index 0000000..6e223e4
 --- /dev/null
 +++ b/e2e/tests/tools-only-account-links.spec.ts
 @@ -0,0 +1,94 @@
@@ -498,6 +510,7 @@ new file mode 100644
 +});
 diff --git a/e2e/tests/tools-only-api-keys.spec.ts b/e2e/tests/tools-only-api-keys.spec.ts
 new file mode 100644
+index 0000000..2bcc41d
 --- /dev/null
 +++ b/e2e/tests/tools-only-api-keys.spec.ts
 @@ -0,0 +1,216 @@

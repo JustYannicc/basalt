@@ -6,6 +6,56 @@ import { awaitManagementProvisioning } from "../../.upstream/apps/hosted/testing
 
 const deferred = <A>() => Promise.withResolvers<A>();
 
+test("pool readiness waits for its committed deployment, account and link, without unrelated jobs", async (context) => {
+  const sql = new PGlite();
+  const database = new Pool();
+  const releases: (Error | boolean | undefined)[] = [];
+  const client = Object.assign(new Client(), {
+    release: (error?: Error | boolean) => releases.push(error),
+  });
+  let reads = 0;
+  context.mock.method(database, "connect", async () => client);
+  context.mock.method(client, "query", async (text: string, values?: (string | boolean)[]) => {
+    if (text.startsWith("listen ") || text.startsWith("unlisten ")) return { rows: [] };
+    const result = await sql.query<{ ready: boolean }>(text, values);
+    reads++;
+    if (reads === 1) {
+      assert.deepEqual(result.rows, [{ ready: false }]);
+      await sql.exec(`insert into executor_accounts values ('pool-account', 'organization:team');
+        insert into hosted_app_account_links values ('pool-account', 'pool');
+        update organization set metadata = metadata || '{"basaltPools":{"person":{"app":"pool","version":"version","account":"pool-account"}}}'::jsonb;`);
+      client.emit("notification", { channel: "e2e_management_provisioned", payload: "" });
+    }
+    return result;
+  });
+  try {
+    await sql.exec(`create table organization(id text, metadata jsonb);
+      create table executor_accounts(id text, owner text);
+      create table executor_apps(id text, owner text, active_deployment text);
+      create table hosted_app_account_links(account text, app text);
+      create table hosted_provisioning(id text, organization_id text, user_id text, status text);
+      insert into organization values ('team', '{"executorDefaults":{"installed":true,"app":"app"},"executorKeyAccounts":{"person":"account"}}');
+      insert into executor_accounts values ('account', 'organization:team');
+      insert into executor_apps values ('pool', 'organization:team', 'version');
+      insert into hosted_app_account_links values ('account', 'app');
+      insert into hosted_provisioning values ('unrelated', 'team', null, 'running');`);
+    await awaitManagementProvisioning(
+      database,
+      "team",
+      "person",
+      new AbortController().signal,
+      false,
+      true,
+    );
+    assert.equal(reads, 2);
+    assert.deepEqual(releases, [false]);
+    assert.equal(client.listenerCount("notification"), 0);
+  } finally {
+    await database.end();
+    await sql.close();
+  }
+});
+
 for (const settled of [false, true])
   for (const subject of ["organization", "user"] as const)
     test(
@@ -47,6 +97,7 @@ for (const settled of [false, true])
         try {
           await sql.exec(`create table organization(id text, metadata jsonb);
         create table executor_accounts(id text, owner text);
+        create table executor_apps(id text, owner text, active_deployment text);
         create table hosted_app_account_links(account text, app text);
         create table hosted_provisioning(id text, organization_id text, user_id text, status text);
         insert into organization values ('team', '{"executorDefaults":{"installed":true,"app":"app"},"executorKeyAccounts":{"person":"account"}}');

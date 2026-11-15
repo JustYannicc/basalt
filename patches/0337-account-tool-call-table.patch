@@ -1,8 +1,8 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
-index f068a96..c09c2e8 100644
+index 0b0684d..1e1b122 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
 +++ b/apps/hosted/cloud/src/infrastructure/production-ops/inventory.ts
-@@ -71,6 +71,13 @@ export const inventoryQueries = {
+@@ -72,6 +72,13 @@ export const inventoryQueries = {
      min(c.created_at)::text as first_created_at, max(c.created_at)::text as last_created_at
      from executor_account_connections c where c.owner = 'organization:' || $1
      group by 1, 2, 3, 4 order by 3, 4, 1, 2 limit 2001`,
@@ -17,10 +17,10 @@ index f068a96..c09c2e8 100644
  
  export const inventory = (selection: string, organization: string) =>
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index dc53fe9..772b84a 100644
+index fe44aff..8e92988 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -9866,7 +9866,7 @@ export const scenarios = plan({
+@@ -11106,7 +11106,7 @@ export const scenarios = plan({
        "tool calls count toward the account they used on the Accounts list and its app's tab, and a member reads no counts for an account they cannot inspect",
      targets: {
        "self-host": scheduled,
@@ -164,7 +164,7 @@ index 24ab26d..1f2736a 100644
    };
  };
 diff --git a/packages/sdk/src/implementation/storage-migrations.ts b/packages/sdk/src/implementation/storage-migrations.ts
-index bb6a55a..359c4fb 100644
+index 6ec9a58..0eb6357 100644
 --- a/packages/sdk/src/implementation/storage-migrations.ts
 +++ b/packages/sdk/src/implementation/storage-migrations.ts
 @@ -6,6 +6,7 @@ import { accountObservations } from "./account-observation-schema.ts";
@@ -175,7 +175,7 @@ index bb6a55a..359c4fb 100644
  import { generateMigrationFromSchema } from "fumadb-effect/migration";
  import { schema, type AnySchema, type CustomMigrationFn } from "fumadb-effect/schema";
  import {
-@@ -831,3 +832,19 @@ export const executorDatabase = fumadb({
+@@ -836,3 +837,19 @@ export const executorDatabase = fumadb({
    namespace: "executor",
    schemas: storageSchemas,
  });
@@ -196,7 +196,7 @@ index bb6a55a..359c4fb 100644
 +  )`;
 +});
 diff --git a/packages/sdk/src/implementation/storage.ts b/packages/sdk/src/implementation/storage.ts
-index deb0856..030613b 100644
+index 80219e5..1ca4fb9 100644
 --- a/packages/sdk/src/implementation/storage.ts
 +++ b/packages/sdk/src/implementation/storage.ts
 @@ -8,6 +8,7 @@ import { makeExecutorRuntimeStorage } from "./storage-runtime.ts";
@@ -207,7 +207,7 @@ index deb0856..030613b 100644
    storageSchemas,
    trailingStorageIndexVersions,
  } from "./storage-migrations.ts";
-@@ -29,7 +30,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+@@ -32,7 +33,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
        Effect.provideService(SqlClient.SqlClient, sql),
        Effect.mapError((cause) => storageMigrationFailed(cause)),
      );
@@ -216,7 +216,7 @@ index deb0856..030613b 100644
        Effect.gen(function* () {
          yield* checkMigration;
          const migrator = yield* client.createMigrator;
-@@ -56,7 +57,12 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
+@@ -59,7 +60,12 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
              yield* (yield* migrator.up()).execute;
            }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, entry.version)));
          }
@@ -231,18 +231,18 @@ index deb0856..030613b 100644
          Effect.provideService(SqlClient.SqlClient, sql),
          Effect.mapError((cause) => storageMigrationFailed(cause)),
 diff --git a/packages/sdk/src/implementation/tools.ts b/packages/sdk/src/implementation/tools.ts
-index 41f8a6c..716cca4 100644
+index ad1f048..c5320e0 100644
 --- a/packages/sdk/src/implementation/tools.ts
 +++ b/packages/sdk/src/implementation/tools.ts
-@@ -54,6 +54,7 @@ import {
-   type ResourceLifecycle,
- } from "../contracts/executor.ts";
- import { AppCodeEntered, type Runtime } from "../contracts/runtime.ts";
+@@ -60,6 +60,7 @@ import {
+   type CallFailureSource,
+   type Runtime,
+ } from "../contracts/runtime.ts";
 +import { accountTrafficNotCounted } from "./account-traffic-store.ts";
  import {
    Cursor,
    ToolName,
-@@ -814,7 +815,8 @@ export const makeTools = (
+@@ -910,7 +911,8 @@ export const makeTools = (
     * ran for it. A completed call succeeded unless its result was a tool error. It failed when the
     * app's code failed or its service refused the account. A refusal of the caller's own request,
     * such as invalid input, a blocked tool or approval, and an interruption count nothing.
@@ -252,7 +252,7 @@ index 41f8a6c..716cca4 100644
     */
    const countCall =
      (state: InvocationSnapshot, entered: () => boolean) =>
-@@ -843,7 +845,14 @@ export const makeTools = (
+@@ -939,7 +941,14 @@ export const makeTools = (
            ),
            Effect.interruptible,
            Effect.timeout("2 seconds"),

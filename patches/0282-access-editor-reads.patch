@@ -1,19 +1,56 @@
+diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+index db7a1bb..68e42a2 100644
+--- a/apps/hosted/web/src/implementation/pages/account-actions.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-actions.tsx
+@@ -1,4 +1,4 @@
+-import { AccountAccessSettings } from "./resource-settings.tsx";
++import { AccountAccessSettings, ReadAccountSharingEarly } from "./resource-settings.tsx";
+ import { AccountUsageSettings } from "./account-observations.tsx";
+ import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
+ import type { AccountDetail, AccountSummary } from "@executor-js/ui/contracts/dashboard";
+@@ -90,6 +90,8 @@ export function HostedAccountDialog({
+       busy={busy}
+       onClose={onClose}
+     >
++      {/* Manage access reads the account, then its access, before its form reads the groups. */}
++      {dialog === "access" && <ReadAccountSharingEarly account={id} />}
+       <QueryView
+         pending={<DetailSkeleton label="Loading account" />}
+         query={accountAtom({ organization, account: id })}
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+index becf70d..6321144 100644
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -13,7 +13,7 @@ import {
+   requirementAccounts,
+   type RequirementLink,
+ } from "@executor-js/ui/contracts/app-accounts";
+-import { AppAccessSettings } from "./resource-settings.tsx";
++import { AppAccessSettings, ReadAppSharingEarly } from "./resource-settings.tsx";
+ import { PoolUsageSection } from "./pool-usage.tsx";
+ import { appAccessAtom, listedAppAtom } from "../../contracts/resource-access.ts";
+ import {
+@@ -305,6 +305,8 @@ export function AppDetailPage({
+         )
+       }
+     >
++      {/* Settings waits for the app and its access before its sharing form reads the groups. */}
++      {view === "settings" && <ReadAppSharingEarly />}
+       <div className={selectedView === "app" ? "flex min-h-0 flex-1" : "hidden"}>
+         {screenApp !== undefined ? (
+           <AppScreen app={screenApp} active={selectedView === "app"} />
 diff --git a/apps/hosted/web/src/implementation/pages/resource-settings.tsx b/apps/hosted/web/src/implementation/pages/resource-settings.tsx
+index 25452d1..e097098 100644
 --- a/apps/hosted/web/src/implementation/pages/resource-settings.tsx
 +++ b/apps/hosted/web/src/implementation/pages/resource-settings.tsx
-@@ -1,9 +1,9 @@
+@@ -1,5 +1,5 @@
  /** Hosted access settings use the same persisted policy enforced by execution. */
 -import { useAtomSet, useAtomValue } from "@effect/atom-react";
 +import { useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
  import { AsyncResult } from "effect/reactivity";
  import { Option } from "effect";
  import type { AppId, AccountId } from "@executor-js/sdk";
--import { QueryView } from "@executor-js/ui/dashboard/context";
-+import { QueryView, usePreload } from "@executor-js/ui/dashboard/context";
- import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
- import {
-   appAccessAtom,
-@@ -16,6 +16,28 @@
+@@ -16,6 +16,28 @@ import { groupsAtom } from "../../contracts/groups.ts";
  import { HostedFailure } from "../components/dashboard-bindings.tsx";
  import { useOrganizationRoute } from "../components/organization.tsx";
  import { SharingEditor } from "../components/sharing.tsx";
@@ -42,47 +79,9 @@ diff --git a/apps/hosted/web/src/implementation/pages/resource-settings.tsx b/ap
  /** These controls change app and account access; linked accounts are separate. */
  export function AppAccessSettings({ app }: { readonly app: AppId }) {
    const { organization } = useOrganizationRoute();
-diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
---- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
-+++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
-@@ -13,7 +13,7 @@
-   requirementAccounts,
-   type RequirementLink,
- } from "@executor-js/ui/contracts/app-accounts";
--import { AppAccessSettings } from "./resource-settings.tsx";
-+import { AppAccessSettings, ReadAppSharingEarly } from "./resource-settings.tsx";
- import { PoolUsageSection } from "./pool-usage.tsx";
- import { appAccessAtom, listedAppAtom } from "../../contracts/resource-access.ts";
- import {
-@@ -305,6 +305,8 @@
-         )
-       }
-     >
-+      {/* Settings waits for the app and its access before its sharing form reads the groups. */}
-+      {view === "settings" && <ReadAppSharingEarly />}
-       <div className={selectedView === "app" ? "flex min-h-0 flex-1" : "hidden"}>
-         {screenApp !== undefined ? (
-           <AppScreen app={screenApp} active={selectedView === "app"} />
-diff --git a/apps/hosted/web/src/implementation/pages/account-actions.tsx b/apps/hosted/web/src/implementation/pages/account-actions.tsx
---- a/apps/hosted/web/src/implementation/pages/account-actions.tsx
-+++ b/apps/hosted/web/src/implementation/pages/account-actions.tsx
-@@ -1,4 +1,4 @@
--import { AccountAccessSettings } from "./resource-settings.tsx";
-+import { AccountAccessSettings, ReadAccountSharingEarly } from "./resource-settings.tsx";
- import { AccountUsageSettings } from "./account-observations.tsx";
- import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
- import type { AccountDetail, AccountSummary } from "@executor-js/ui/contracts/dashboard";
-@@ -90,6 +90,8 @@
-       busy={busy}
-       onClose={onClose}
-     >
-+      {/* Manage access reads the account, then its access, before its form reads the groups. */}
-+      {dialog === "access" && <ReadAccountSharingEarly account={id} />}
-       <QueryView
-         pending={<DetailSkeleton label="Loading account" />}
-         query={accountAtom({ organization, account: id })}
 diff --git a/e2e/support/read-dispatch.ts b/e2e/support/read-dispatch.ts
 new file mode 100644
+index 0000000..f743fe0
 --- /dev/null
 +++ b/e2e/support/read-dispatch.ts
 @@ -0,0 +1,79 @@
@@ -165,8 +164,60 @@ new file mode 100644
 +      ),
 +    };
 +  });
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+index 94d1b8b..5dc45bf 100644
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -3131,6 +3131,46 @@ export const scenarios = plan({
+       local: na("Local has no organization sharing policy."),
+     },
+   },
++  appSettingsGroupsRead: {
++    fixtures: "actors",
++    file: "access-editor-reads.spec.ts",
++    title: "App Settings asks for groups without waiting for the app's access",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local has no organization sharing policy."),
++    },
++  },
++  appSettingsGroupsReadMobile: {
++    fixtures: "actors",
++    file: "access-editor-reads.spec.ts",
++    title: "Mobile App Settings asks for groups without waiting for the app's access",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local has no organization sharing policy."),
++    },
++  },
++  manageAccessGroupsRead: {
++    fixtures: "actors",
++    file: "access-editor-reads.spec.ts",
++    title: "Manage access asks for groups without waiting for the account or its access",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local has no organization sharing policy."),
++    },
++  },
++  manageAccessGroupsReadMobile: {
++    fixtures: "actors",
++    file: "access-editor-reads.spec.ts",
++    title: "Mobile Manage access asks for groups without waiting for the account or its access",
++    targets: {
++      "self-host": scheduled,
++      cloud: scheduled,
++      local: na("Local has no organization sharing policy."),
++    },
++  },
+   resourceAccess: {
+     fixtures: "actors",
+     file: "resource-access.spec.ts",
 diff --git a/e2e/tests/access-editor-reads.spec.ts b/e2e/tests/access-editor-reads.spec.ts
 new file mode 100644
+index 0000000..c14e767
 --- /dev/null
 +++ b/e2e/tests/access-editor-reads.spec.ts
 @@ -0,0 +1,263 @@
@@ -433,53 +484,3 @@ new file mode 100644
 +      ),
 +    );
 +});
-diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
---- a/e2e/test-plan.ts
-+++ b/e2e/test-plan.ts
-@@ -2421,6 +2421,46 @@
-     fixtures: "actors",
-     file: "resource-sharing.spec.ts",
-     title: "Group sharing forms retain drafts and recover stale edits on desktop and mobile",
-+    targets: {
-+      "self-host": scheduled,
-+      cloud: scheduled,
-+      local: na("Local has no organization sharing policy."),
-+    },
-+  },
-+  appSettingsGroupsRead: {
-+    fixtures: "actors",
-+    file: "access-editor-reads.spec.ts",
-+    title: "App Settings asks for groups without waiting for the app's access",
-+    targets: {
-+      "self-host": scheduled,
-+      cloud: scheduled,
-+      local: na("Local has no organization sharing policy."),
-+    },
-+  },
-+  appSettingsGroupsReadMobile: {
-+    fixtures: "actors",
-+    file: "access-editor-reads.spec.ts",
-+    title: "Mobile App Settings asks for groups without waiting for the app's access",
-+    targets: {
-+      "self-host": scheduled,
-+      cloud: scheduled,
-+      local: na("Local has no organization sharing policy."),
-+    },
-+  },
-+  manageAccessGroupsRead: {
-+    fixtures: "actors",
-+    file: "access-editor-reads.spec.ts",
-+    title: "Manage access asks for groups without waiting for the account or its access",
-+    targets: {
-+      "self-host": scheduled,
-+      cloud: scheduled,
-+      local: na("Local has no organization sharing policy."),
-+    },
-+  },
-+  manageAccessGroupsReadMobile: {
-+    fixtures: "actors",
-+    file: "access-editor-reads.spec.ts",
-+    title: "Mobile Manage access asks for groups without waiting for the account or its access",
-     targets: {
-       "self-host": scheduled,
-       cloud: scheduled,

@@ -133,7 +133,12 @@ test("Miro carry preserves the full OpenAPI package and aligns the app scopes wi
     carried.files.find((file: { path: string }) => file.path === "package.json")!.content,
   );
   assert.equal(manifest.dependencies.apps, provenance.appsVersion);
-  assert.equal(manifest.dependencies.apps, catalog.framework);
+  const served: typeof carried = JSON.parse(onServedFramework(JSON.stringify(carried)));
+  assert.equal(
+    JSON.parse(served.files.find((file: { path: string }) => file.path === "package.json")!.content)
+      .dependencies.apps,
+    catalog.framework,
+  );
   assert.deepEqual(
     published.files.map((file: { path: string }) => file.path),
     carried.files.map((file: { path: string }) => file.path),

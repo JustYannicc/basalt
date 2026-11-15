@@ -1,0 +1,724 @@
+diff --git a/e2e/support/account-acquisition-sdk.ts b/e2e/support/account-acquisition-sdk.ts
+--- a/e2e/support/account-acquisition-sdk.ts
++++ b/e2e/support/account-acquisition-sdk.ts
+@@ -10,9 +10,9 @@
+ const Checks = Schema.Struct({ count: Schema.Number });
+ const program = `import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+-import { nativeRepositories } from "@executor-js/app-source/node";
++import { nativeRepositories, systemGit } from "@executor-js/app-source/node";
+ import {
+-  createExecutor, makeExecutorStorage, executorHandlers, ExecutorApi, OwnerId, StorageError,
++  createExecutor, makeExecutorStorage, executorHandlers, requestRejections, ExecutorApi, OwnerId, StorageError,
+   type Executor, type ExecutorOptions, type ResourceLifecycle,
+ } from "@executor-js/sdk/core";
+ import { accountAcquisitionDriver } from "@executor-js/sdk";
+@@ -71,7 +71,7 @@
+     accountRetiring: () => Ref.update(retireChecks, (n) => n + 1).pipe(Effect.andThen(Effect.fail(new StorageError()))),
+   };
+   const options: ExecutorOptions = {
+-    database: storage, secret, blobs, git: nativeRepositories(path.join(directory, "repositories")),
++    database: storage, secret, blobs, git: nativeRepositories(path.join(directory, "repositories"), systemGit),
+     runtime: host.runtime, workflows: host.workflows, registry: memoryRegistry(), hooks,
+   };
+   const initial = yield* createExecutor(options).pipe(Effect.provide(NodeCrypto.layer));
+@@ -102,7 +102,7 @@
+     acquisition: { registrations: [{ provider, method: "paste", current: true, driver, fetch: globalThis.fetch }] },
+   }).pipe(Effect.provide(NodeCrypto.layer));
+   const routes = Layer.mergeAll(
+-    HttpApiBuilder.layer(ExecutorApi).pipe(Layer.provide(executorHandlers(executor))),
++    HttpApiBuilder.layer(ExecutorApi).pipe(Layer.provide(executorHandlers(executor)), Layer.provide(requestRejections)),
+     HttpRouter.add("POST", "/_fixture/purge-fault", Effect.gen(function* () {
+       const request = yield* HttpServerRequest.HttpServerRequest;
+       const blocked = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Boolean)));
+diff --git a/e2e/support/account-family-product.ts b/e2e/support/account-family-product.ts
+--- a/e2e/support/account-family-product.ts
++++ b/e2e/support/account-family-product.ts
+@@ -15,10 +15,11 @@
+       `
+ import * as Runtime from "@effect/platform-node/NodeRuntime";
+ import * as NodeServices from "@effect/platform-node/NodeServices";
+-import { launch } from "@executor-js/local-server";
++import { config } from "@executor-js/local-server";
++import { startLocalServer } from "@executor-js/local-server/node";
+ import { AccountFamilyConfiguration, defaultAccountFamilies } from "@executor-js/sdk/core";
+-import { Effect } from "effect";
+-Runtime.runMain(Effect.scoped(launch("headless", process.platform)).pipe(Effect.provide(NodeServices.layer),
++import { Console, Effect } from "effect";
++Runtime.runMain(Effect.scoped(Effect.gen(function* () { const server = yield* startLocalServer(yield* config, { product: "cli" }); yield* Console.log("Executor: " + server.url); yield* server.stopped; })).pipe(Effect.provide(NodeServices.layer),
+   Effect.provideService(AccountFamilyConfiguration, { recipes: [...defaultAccountFamilies, {
+     id: "fixture-family", name: "Fixture family", issuer: ${JSON.stringify(origin)},
+     authorizationUrls: [${JSON.stringify(origin + "/authorize")}], tokenUrls: [${JSON.stringify(origin + "/token")}],
+diff --git a/e2e/support/account-mirror-sdk.ts b/e2e/support/account-mirror-sdk.ts
+--- a/e2e/support/account-mirror-sdk.ts
++++ b/e2e/support/account-mirror-sdk.ts
+@@ -4,8 +4,8 @@
+ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+ import * as NodeServices from "@effect/platform-node/NodeServices";
+ import * as Runtime from "@effect/platform-node/NodeRuntime";
+-import { nativeRepositories } from "@executor-js/app-source/node";
+-import { createExecutor, makeExecutorStorage, executorHandlers, ExecutorApi, OwnerId,
++import { nativeRepositories, systemGit } from "@executor-js/app-source/node";
++import { createExecutor, makeExecutorStorage, executorHandlers, requestRejections, ExecutorApi, OwnerId,
+   AccountId, AccountAcquisitionHost, type Executor,
+   type ExecutorOptions, type ResourceLifecycle } from "@executor-js/sdk/core";
+ import { accountAcquisitionDriver } from "@executor-js/sdk";
+@@ -31,7 +31,7 @@
+   yield* sql\`create table organization (id text primary key, metadata text)\`;
+   yield* sql\`create table member (id text primary key, "organizationId" text, "userId" text, role text)\`;
+   yield* sql\`create table hosted_account_access (account_id text primary key, organization_id text, kind text, personal_user_id text, creator_id text, audience text, revision text)\`;
+-  yield* sql\`create table hosted_app_account_links (app text, requirement text, account text, subject text, created_at bigint default 0, primary key (app, requirement, account))\`;
++  yield* sql\`create table hosted_app_account_links (app text, requirement text, account text, subject text, linked_by text, created_at bigint default 0, primary key (app, requirement, account))\`;
+   yield* sql\`create table hosted_app_access (id text, organization_id text, creator_id text, audience text, revision text)\`;
+   yield* sql\`create table hosted_app_groups (app_id text, group_id text)\`;
+   yield* sql\`create table hosted_account_groups (account_id text, group_id text)\`;
+@@ -57,7 +57,7 @@
+   const host = yield* workerdApps({ directory: path.join(directory, "workerd"), blobs,
+     executor: Deferred.await(ready), npmRegistry: process.env.MIRROR_FIXTURE_REGISTRY!, encryptionKey: secret });
+   const options: ExecutorOptions = { database: storage, secret, blobs,
+-    git: nativeRepositories(path.join(directory, "repositories")), runtime: host.runtime,
++    git: nativeRepositories(path.join(directory, "repositories"), systemGit), runtime: host.runtime,
+     workflows: host.workflows, registry: memoryRegistry(), hooks };
+   const initial = yield* createExecutor(options).pipe(Effect.provide(NodeCrypto.layer));
+   yield* Deferred.succeed(ready, initial);
+@@ -101,7 +101,7 @@
+   const body = <A, I>(schema: Schema.Codec<A, I>) => HttpServerRequest.schemaBodyJson(schema);
+   const Account = Schema.Struct({ account: AccountId });
+   const routes = Layer.mergeAll(
+-    HttpApiBuilder.layer(ExecutorApi).pipe(Layer.provide(executorHandlers(executor))),
++    HttpApiBuilder.layer(ExecutorApi).pipe(Layer.provide(executorHandlers(executor)), Layer.provide(requestRejections)),
+     HttpRouter.add("POST", "/_backend/mirror", Effect.gen(function* () {
+       const value = yield* body(Schema.Struct({ reference: Schema.String, fields: Schema.Record(Schema.String, Schema.String) }));
+       calls.push({ ref: value.reference, operation: "fixture-link", fields: Object.keys(value.fields) });
+diff --git a/e2e/support/account-target-sdk-source.ts b/e2e/support/account-target-sdk-source.ts
+--- a/e2e/support/account-target-sdk-source.ts
++++ b/e2e/support/account-target-sdk-source.ts
+@@ -3,7 +3,7 @@
+ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+ import * as NodeServices from "@effect/platform-node/NodeServices";
+ import * as Runtime from "@effect/platform-node/NodeRuntime";
+-import { nativeRepositories } from "@executor-js/app-source/node";
++import { nativeRepositories, systemGit } from "@executor-js/app-source/node";
+ import { createExecutor, makeExecutorStorage, OwnerId, AccountId, AccountTargetsHost, AccountReadHost,
+   AccountDeviceOffline, AccountExecutionUnavailable, ToolInputs, type Executor } from "@executor-js/sdk/core";
+ import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
+@@ -29,11 +29,11 @@
+   const executor = yield* createExecutor({database:storage,secret,blobs,
+     machineAccounts:{authorize:value=>Effect.succeed(allowed && value.owner === owner),
+       availability:()=>Effect.sync(()=>status)},
+-    git:nativeRepositories(path.join(input.directory,"repositories")),runtime:host.runtime,
++    git:nativeRepositories(path.join(input.directory,"repositories"), systemGit),runtime:host.runtime,
+     workflows:host.workflows,registry:memoryRegistry()}).pipe(Effect.provide(NodeCrypto.layer));
+   yield* Deferred.succeed(ready,executor);
+   const withoutMachineHost = yield* createExecutor({database:storage,secret,blobs,
+-    git:nativeRepositories(path.join(input.directory,"repositories")),runtime:host.runtime,
++    git:nativeRepositories(path.join(input.directory,"repositories"), systemGit),runtime:host.runtime,
+     workflows:host.workflows,registry:memoryRegistry()}).pipe(Effect.provide(NodeCrypto.layer));
+   const setup = Effect.gen(function* () {
+     const existing = yield* executor.apps.list({owner});
+diff --git a/e2e/support/acquisition-product.ts b/e2e/support/acquisition-product.ts
+--- a/e2e/support/acquisition-product.ts
++++ b/e2e/support/acquisition-product.ts
+@@ -20,11 +20,11 @@
+     const revision = input.revision ?? "dpl_fixture_driver_revision";
+     const source = `
+ import * as Runtime from ${JSON.stringify(hosted ? "@effect/platform-bun/BunRuntime" : "@effect/platform-node/NodeRuntime")};
+-${hosted ? 'import { main } from "@executor-js/hosted-self-host/server";' : 'import { launch } from "@executor-js/local-server";\nimport * as NodeServices from "@effect/platform-node/NodeServices";'}
++${hosted ? 'import { main } from "@executor-js/hosted-self-host/server";' : 'import { config } from "@executor-js/local-server";\nimport { startLocalServer } from "@executor-js/local-server/node";\nimport * as NodeServices from "@effect/platform-node/NodeServices";'}
+ import { AccountSourceFailure, AccountFailureDetail, AccountAcquisitionConfiguration, InteractiveConnectionFailed, ProviderId, type AccountAcquisitionContext } from "@executor-js/sdk/core";
+ import { accountAcquisitionDriver } from "@executor-js/sdk";
+ import { InteractiveStart, InteractiveStatus, AccountCheckResult, AccountObservationResult, ProviderError, HostOperationFailed } from "apps/contracts";
+-import { Effect, Redacted, Schema } from "effect";
++import { Console, Effect, Redacted, Schema } from "effect";
+ 
+ const call = async <A, I>(context: AccountAcquisitionContext, step: string, schema: Schema.Codec<A, I>, data: object = {}) => {
+     const response = await context.fetch(${JSON.stringify(input.origin + "/connect")}, {
+@@ -59,7 +59,7 @@
+   fetch: globalThis.fetch,
+ }] };
+ Runtime.runMain(
+-  ${hosted ? "main" : 'Effect.scoped(launch("headless", process.platform)).pipe(Effect.provide(NodeServices.layer))'}
++  ${hosted ? "main" : 'Effect.scoped(Effect.gen(function* () { const server = yield* startLocalServer(yield* config, { product: "cli" }); yield* Console.log("Executor: " + server.url); yield* server.stopped; })).pipe(Effect.provide(NodeServices.layer))'}
+     .pipe(Effect.provideService(AccountAcquisitionConfiguration, configuration)),
+ );
+ `;
+diff --git a/e2e/support/app-call-effects-sdk-source.ts b/e2e/support/app-call-effects-sdk-source.ts
+--- a/e2e/support/app-call-effects-sdk-source.ts
++++ b/e2e/support/app-call-effects-sdk-source.ts
+@@ -2,9 +2,9 @@
+ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+ import * as NodeServices from "@effect/platform-node/NodeServices";
+ import * as Runtime from "@effect/platform-node/NodeRuntime";
+-import { nativeRepositories } from "@executor-js/app-source/node";
++import { nativeRepositories, systemGit } from "@executor-js/app-source/node";
+ import { createExecutor, makeExecutorStorage, OwnerId, AppId, AccountId, CurrentActor, WorkflowHost,
+-  ToolName, ToolInputs, ToolCallFailed, StorageError, workflowApprovalHooks, ExecutorApi, executorHandlers, type Executor } from "@executor-js/sdk/core";
++  ToolName, ToolInputs, ToolCallFailed, StorageError, workflowApprovalHooks, ExecutorApi, executorHandlers, requestRejections, type Executor } from "@executor-js/sdk/core";
+ import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
+ import { memoryRegistry } from "@executor-js/sdk/testing";
+ import { WorkflowRunId, AppCallFailed, AppCallCommand } from "apps/contracts";
+@@ -53,7 +53,7 @@
+     }).pipe(Effect.mapError(()=>new StorageError())),
+   });
+   const executor = yield* createExecutor({database:storage,secret,blobs,appCalls:hooks,
+-    git:nativeRepositories(path.join(input.directory,"repositories")),runtime:runtime.runtime,
++    git:nativeRepositories(path.join(input.directory,"repositories"), systemGit),runtime:runtime.runtime,
+     workflows:runtime.workflows,registry:memoryRegistry()}).pipe(Effect.provide(NodeCrypto.layer));
+   yield* Deferred.succeed(ready,executor);
+   const httpClient=yield* HttpClient.HttpClient;
+@@ -116,7 +116,7 @@
+       return yield* run(value).pipe(Effect.provideService(CurrentActor,"effects-owner"),Effect.provideService(Clock.Clock,clock),Effect.flatMap(value=>HttpServerResponse.json(value)),Effect.catch(error=>HttpServerResponse.json(Schema.is(AppCallFailed)(error)?{reason:error.reason}:Schema.is(ToolCallFailed)(error)?{failure:error.failure}:{failed:true},{status:409})));
+     }).pipe(Effect.orDie));
+   const routes = Layer.mergeAll(
+-    HttpApiBuilder.layer(ExecutorApi).pipe(Layer.provide(executorHandlers(executor))),
++    HttpApiBuilder.layer(ExecutorApi).pipe(Layer.provide(executorHandlers(executor)), Layer.provide(requestRejections)),
+     HttpRouter.add("*","/mcp",mcp.http),
+     route("entry",Entry,enter),
+     // The client loses the response after the real entry has settled, then restarts the host.
+diff --git a/e2e/support/app-call-sdk-source.ts b/e2e/support/app-call-sdk-source.ts
+--- a/e2e/support/app-call-sdk-source.ts
++++ b/e2e/support/app-call-sdk-source.ts
+@@ -3,8 +3,8 @@
+ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+ import * as NodeServices from "@effect/platform-node/NodeServices";
+ import * as Runtime from "@effect/platform-node/NodeRuntime";
+-import { nativeRepositories } from "@executor-js/app-source/node";
+-import { createExecutor, makeExecutorStorage, executorHandlers, ExecutorApi, OwnerId,
++import { nativeRepositories, systemGit } from "@executor-js/app-source/node";
++import { createExecutor, makeExecutorStorage, executorHandlers, requestRejections, ExecutorApi, OwnerId,
+   AppId, ToolName, AppCallReceiptId, AppCallsHost, CurrentActor, ToolInputs, Json, type Executor } from "@executor-js/sdk/core";
+ import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
+ import { memoryRegistry } from "@executor-js/sdk/testing";
+@@ -56,7 +56,7 @@
+         return "user-approval" as const;
+       }),
+     },
+-    git: nativeRepositories(path.join(input.directory, "repositories")), runtime: host.runtime,
++    git: nativeRepositories(path.join(input.directory, "repositories"), systemGit), runtime: host.runtime,
+     workflows: host.workflows, registry: memoryRegistry()}).pipe(Effect.provide(NodeCrypto.layer));
+   yield* Deferred.succeed(ready, executor);
+   const listed = yield* executor.apps.list({owner});
+@@ -99,7 +99,7 @@
+   const configureInput = Schema.Struct({app:AppId,tool:Schema.Literals(["configure","ordinary"]),revision:Schema.String});
+   const queryInput = Schema.Struct({app:AppId,target:AppId});
+   const routes = Layer.mergeAll(
+-    HttpApiBuilder.layer(ExecutorApi).pipe(Layer.provide(executorHandlers(executor))),
++    HttpApiBuilder.layer(ExecutorApi).pipe(Layer.provide(executorHandlers(executor)), Layer.provide(requestRejections)),
+     route("configuration/setup", Schema.Null, () => configurationSetup),
+     route("workflow/setup",Schema.Null,() => workflowSetup),
+     route("workflow/start",Schema.Struct({app:AppId,target:AppId}),value => executor.apps.workflowRuns.start({app:value.app,workflow:"prove",input:{target:value.target}})),
+diff --git a/e2e/support/self-email-sdk-source.ts b/e2e/support/self-email-sdk-source.ts
+--- a/e2e/support/self-email-sdk-source.ts
++++ b/e2e/support/self-email-sdk-source.ts
+@@ -3,7 +3,7 @@
+ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+ import * as NodeServices from "@effect/platform-node/NodeServices";
+ import * as Runtime from "@effect/platform-node/NodeRuntime";
+-import { nativeRepositories } from "@executor-js/app-source/node";
++import { nativeRepositories, systemGit } from "@executor-js/app-source/node";
+ import { createExecutor, makeExecutorStorage, OwnerId, AppId, AppCallsHost, CurrentActor,
+   ToolName, ToolInputs, ToolCallFailed, StorageError, workflowApprovalHooks, type Executor } from "@executor-js/sdk/core";
+ import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
+@@ -43,7 +43,7 @@
+       yield* sql\`insert into fixture_confirmation_history (action) values (\${action})\`;
+       if (failAudit) return yield* new StorageError();
+     }).pipe(Effect.mapError(()=>new StorageError()))},
+-    git:nativeRepositories(path.join(input.directory,"repositories")),runtime:runtime.runtime,
++    git:nativeRepositories(path.join(input.directory,"repositories"), systemGit),runtime:runtime.runtime,
+     workflows:runtime.workflows,registry:memoryRegistry()}).pipe(Effect.provide(NodeCrypto.layer));
+   yield* Deferred.succeed(ready,executor);
+   const setup = Effect.gen(function* () {
+diff --git a/e2e/support/account-definition-host.ts b/e2e/support/account-definition-host.ts
+--- a/e2e/support/account-definition-host.ts
++++ b/e2e/support/account-definition-host.ts
+@@ -59,7 +59,7 @@
+       }));
+       const accounts = Schema.decodeUnknownSync(HostAccounts)({ app: {}, user: input.call ? selected : { [input.slot]: selected[input.slot] } });
+       const before = JSON.stringify(accounts);
+-      const context = { app: "definition-fixture", build: built.build, caller: "synthetic-caller", accounts: Redacted.make(accounts) };
++      const context = { hostApi: undefined, app: "definition-fixture", build: built.build, caller: "synthetic-caller", accounts: Redacted.make(accounts) };
+       const result = yield* Effect.result(input.call
+         ? runtime.call({ ...context, database: false, tool: "read", kind: "query", input: {} })
+         : input.observe ? runtime.observeAccount === undefined
+diff --git a/e2e/tests/account-secret-fields.spec.ts b/e2e/tests/account-secret-fields.spec.ts
+--- a/e2e/tests/account-secret-fields.spec.ts
++++ b/e2e/tests/account-secret-fields.spec.ts
+@@ -16,6 +16,7 @@
+ import { settleWebhookSubscriptions } from "../support/webhook-sources.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { appsManifest } from "../support/apps-release.ts";
++import { nameConnectedAccount } from "../support/name-account.ts";
+ 
+ const Check = Schema.Struct({
+   status: Schema.String,
+@@ -186,24 +187,31 @@
+   );
+ });
+ 
+-/** Drag `text` out of a scratch textarea in `scope` and drop it on `field` with the mouse. */
+-const drop = (scope: Locator, field: Locator, text: string) =>
++/** Deliver an external text drop through Chromium's native drag input. */
++const drop = (field: Locator, text: string) =>
+   Effect.gen(function* () {
+     const browser = yield* Browser;
+-    yield* browser.use(`Drop ${JSON.stringify(text)}`, (page) => {
+-      const source = page.locator("#drag-source");
+-      return scope
+-        .evaluate((element, value) => {
+-          const area = document.createElement("textarea");
+-          area.id = "drag-source";
+-          area.value = value;
+-          area.style.cssText = "font: 16px monospace; padding: 0; width: 12rem; height: 4rem";
+-          element.append(area);
+-        }, text)
+-        .then(() => source.selectText())
+-        .then(() => source.dragTo(field, { sourcePosition: { x: 4, y: 8 } }))
+-        .then(() => source.evaluate((element) => element.remove()));
+-    });
++    yield* browser.use(`Drop ${JSON.stringify(text)}`, (page) =>
++      field.boundingBox().then((bounds) => {
++        if (bounds === null) throw new Error("The drop target must be visible");
++        const position = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
++        const data = { items: [{ mimeType: "text/plain", data: text }], dragOperationsMask: 1 };
++        return page
++          .context()
++          .newCDPSession(page)
++          .then((session) =>
++            session
++              .send("Input.dispatchDragEvent", { type: "dragEnter", ...position, data })
++              .then(() =>
++                session.send("Input.dispatchDragEvent", { type: "dragOver", ...position, data }),
++              )
++              .then(() =>
++                session.send("Input.dispatchDragEvent", { type: "drop", ...position, data }),
++              )
++              .finally(() => session.detach()),
++          );
++      }),
++    );
+   });
+ 
+ layer(HostedLive, { excludeTestServices: true })("Account secret fields", (it) => {
+@@ -244,13 +252,14 @@
+               page.waitForResponse(
+                 (response) =>
+                   response.request().method() === "POST" &&
+-                  new URL(response.url()).pathname.endsWith("/submit"),
++                  new URL(response.url()).pathname.endsWith("/accounts/user/service"),
+               ),
+               connect.getByRole("button", { name: "Continue", exact: true }).click(),
+             ]).then(([response]) => response.json() as Promise<unknown>),
+           )
+           .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Saved)));
+         account.id = saved.id;
++        yield* browser.use("Name the connected key", (page) => nameConnectedAccount(page));
+ 
+         // The stored key reaches the app's check unchanged too.
+         const response = yield* api.request(
+@@ -366,7 +375,7 @@
+         // Dropping text that spans lines works as pasting it.
+         yield* press(field, "ControlOrMeta+A");
+         yield* press(field, "Delete");
+-        yield* drop(connect, field, "IJ\nKL");
++        yield* drop(field, "IJ\nKL");
+         expect(yield* control(field)).toEqual(summary(2));
+         expect(yield* sent).toBe("IJ\nKL");
+ 
+diff --git a/e2e/support/atlassian-adoption-rows.ts b/e2e/support/atlassian-adoption-rows.ts
+--- a/e2e/support/atlassian-adoption-rows.ts
++++ b/e2e/support/atlassian-adoption-rows.ts
+@@ -10,6 +10,7 @@
+ import { productionOpsAccount } from "./production-ops-account.ts";
+ import { nextDataStepSummary } from "./data-steps.ts";
+ import { Target } from "./platform.ts";
++import { prepareManagementApp } from "./management-app.ts";
+ import { Evidence } from "./evidence.ts";
+ 
+ /** A stateless retained copy beside one real app/account, confined to this case's organization. */
+@@ -41,6 +42,7 @@
+   );
+   const actors = yield* Actors;
+   const database = yield* cloudLocks;
++  yield* prepareManagementApp(actors.owner, actors.organization.id, target, undefined, false, true);
+   const original = yield* productionOpsAccount(actors.owner, actors.organization.id);
+   const users = yield* database
+     .run({
+diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
+--- a/e2e/tests/app-package.spec.ts
++++ b/e2e/tests/app-package.spec.ts
+@@ -2,7 +2,6 @@
+ import { expect, layer } from "@effect/vitest";
+ import { Effect, Schema } from "effect";
+ import { randomUUID } from "node:crypto";
+-import { supportedProtocols } from "../../packages/sdk/src/implementation/app-protocols.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { Api, body } from "../support/api.ts";
+ import { Actors } from "../support/actors.ts";
+@@ -147,7 +146,8 @@
+         expect(rejected.status).toBe(422);
+         expect(rejected.body).toMatchObject({
+           _tag: "VersionBuildFailed",
+-          reason: `This app's apps framework uses host protocol 99. This host supports protocol ${supportedProtocols.join(", ")}. Declare a supported apps version.`,
++          reason:
++            "Framework 0.0.1-beta.0, protocol 99, declared SHA-256 (missing), computed SHA-256 ac37ae3a48936a12ae82ef0c766b76fa522a253a2ad4885e564b49f26cf64f1a was refused (protocol-mismatch): Approved protocol 1 differs from recorded protocol 99.",
+         });
+         expect((yield* call("queries.version")).body).toEqual(Published);
+         expect(
+diff --git a/e2e/support/app-package.ts b/e2e/support/app-package.ts
+--- a/e2e/support/app-package.ts
++++ b/e2e/support/app-package.ts
+@@ -179,7 +179,14 @@
+     const runtime = yield* fs
+       .readFileString(runtimeFile)
+       .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(RuntimePackage))));
+-    yield* fs.writeFileString(runtimeFile, JSON.stringify({ ...runtime, protocol }));
++    yield* fs.writeFileString(
++      runtimeFile,
++      JSON.stringify({
++        ...runtime,
++        protocol,
++        ...(protocol === 26 ? { version: "synthetic-e2e-protocol26" } : {}),
++      }),
++    );
+     const { base, archives } = yield* loopbackArchives;
+     const route = `/protocol${protocol}.tgz`;
+     archives.set(route, yield* packDirectory(path.join(extracted, "package"), directory));
+diff --git a/apps/hosted/testing/management-provisioning.ts b/apps/hosted/testing/management-provisioning.ts
+--- a/apps/hosted/testing/management-provisioning.ts
++++ b/apps/hosted/testing/management-provisioning.ts
+@@ -29,7 +29,16 @@
+       and link.app = team.metadata::jsonb->'executorDefaults'->>'app')
+   and (not $3::boolean or not exists (select 1 from hosted_provisioning job
+     where (job.organization_id = $1 or job.user_id = $2)
+-      and job.status <> 'succeeded')) as ready
++      and job.status <> 'succeeded'))
++  and (not $4::boolean or exists (
++    select 1 from jsonb_each(coalesce(team.metadata::jsonb->'basaltPools', '{}'::jsonb)) entry
++    join executor_apps app on app.id = entry.value->>'app'
++      and app.active_deployment = entry.value->>'version'
++      and app.owner = 'organization:' || team.id
++    join executor_accounts account on account.id = entry.value->>'account'
++      and account.owner = app.owner
++    join hosted_app_account_links link on link.app = app.id and link.account = account.id
++    where coalesce(entry.value->>'owner', entry.key) = $2)) as ready
+   from organization team where team.id = $1`;
+ 
+ export const awaitManagementProvisioning = async (
+@@ -38,6 +47,7 @@
+   user: string,
+   signal: AbortSignal,
+   settled = false,
++  pool = false,
+ ) => {
+   let client: PoolClient | undefined;
+   let released = false;
+@@ -92,8 +102,11 @@
+     for (;;) {
+       const observed = revision;
+       const [state] = Schema.decodeUnknownSync(Readiness)(
+-        (await until(() => acquired.query(managementReadiness, [organization, user, settled])))
+-          .rows,
++        (
++          await until(() =>
++            acquired.query(managementReadiness, [organization, user, settled, pool]),
++          )
++        ).rows,
+       );
+       if (state === undefined) throw new ManagementProvisioningFailed();
+       if (state.ready) break;
+diff --git a/apps/hosted/testing/scenario-server.ts b/apps/hosted/testing/scenario-server.ts
+--- a/apps/hosted/testing/scenario-server.ts
++++ b/apps/hosted/testing/scenario-server.ts
+@@ -210,13 +210,19 @@
+   });
+   const managementProvisioned = Effect.gen(function* () {
+     const request = yield* HttpServerRequest.HttpServerRequest;
+-    const { id, user, settled } = yield* request.json.pipe(
++    const {
++      id,
++      user,
++      settled,
++      pool: needsPool,
++    } = yield* request.json.pipe(
+       Effect.flatMap(
+         Schema.decodeUnknownEffect(
+           Schema.Struct({
+             id: Id,
+             user: Schema.NonEmptyString,
+             settled: Schema.optionalKey(Schema.Boolean),
++            pool: Schema.optionalKey(Schema.Boolean),
+           }),
+         ),
+       ),
+@@ -228,7 +234,14 @@
+     const organization = scenario.organization;
+     yield* Effect.tryPromise({
+       try: (signal) =>
+-        awaitManagementProvisioning(database, organization, user, signal, settled === true),
++        awaitManagementProvisioning(
++          database,
++          organization,
++          user,
++          signal,
++          settled === true,
++          needsPool === true,
++        ),
+       catch: () => new TestAccountFailed({ stage: "fixture" }),
+     });
+     return { ready: true };
+diff --git a/e2e/support/management-app.ts b/e2e/support/management-app.ts
+--- a/e2e/support/management-app.ts
++++ b/e2e/support/management-app.ts
+@@ -27,6 +27,7 @@
+   target: typeof Target.Service,
+   report?: (record: ManagementSetupRecord) => void,
+   settled = false,
++  pool = false,
+ ) =>
+   Effect.gen(function* () {
+     const clients = yield* SessionClients;
+@@ -61,6 +62,7 @@
+         id: scenarioId,
+         user: session.user.id,
+         settled,
++        pool,
+       }).pipe(
+         Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ ready: Schema.Literal(true) }))),
+       ),
+diff --git a/scripts/compiler-cache-proof/runtime.ts b/scripts/compiler-cache-proof/runtime.ts
+--- a/scripts/compiler-cache-proof/runtime.ts
++++ b/scripts/compiler-cache-proof/runtime.ts
+@@ -22,6 +22,7 @@
+   )(packageFiles["package.json"]);
+   const configuration = {
+     ALCHEMY_STAGE: "production",
++    EXECUTOR_BUILD_VERSION: "0".repeat(40),
+     EXECUTOR_COMPILER_CACHE_RELEASE: "a".repeat(40),
+     EXECUTOR_APPS_FRAMEWORK: framework,
+     EXECUTOR_COMPILER_CACHE_FRAMEWORK: framework,
+diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/database-pool-fixture.ts
+--- a/apps/hosted/testing/database-pool-fixture.ts
++++ b/apps/hosted/testing/database-pool-fixture.ts
+@@ -606,23 +606,31 @@
+               // so draining it takes the 5 s bound. The gate opens once the sibling has given up.
+               return yield* PgPool.grouped(
+                 Effect.gen(function* () {
+-                  const { awaited, abandoned } = yield* Effect.scoped(
++                  const origin = Date.now();
++                  const { awaited, abandoned, abandonedAt } = yield* Effect.scoped(
+                     Effect.gen(function* () {
+                       yield* holdLock(gateKey);
+                       const awaited = yield* shared
+                         .use((connection) =>
+                           connection.query("SELECT pg_advisory_xact_lock($1)", [gateKey], false),
+                         )
+-                        .pipe(Effect.exit, Effect.forkChild);
++                        .pipe(
++                          Effect.exit,
++                          Effect.map((exit) => ({ exit, finishedAt: Date.now() })),
++                          Effect.forkChild,
++                        );
+                       yield* waitingOnLock;
+-                      return { awaited, abandoned: yield* lockWait(shared, 50) };
++                      const abandoned = yield* lockWait(shared, 50);
++                      return { awaited, abandoned, abandonedAt: Date.now() };
+                     }),
+                   );
+                   const opened = Date.now();
+-                  const exit = yield* Fiber.join(awaited);
++                  const { exit, finishedAt } = yield* Fiber.join(awaited);
+                   return {
+                     awaited: outcome(exit),
+                     awaitedReturned: since(opened),
++                    awaitedFinished: finishedAt - origin,
++                    abandonedReturned: abandonedAt - origin,
+                     gaveUp: Exit.isSuccess(abandoned) && abandoned.value._tag === "None",
+                   };
+                 }),
+diff --git a/e2e/tests/credential-placement.spec.ts b/e2e/tests/credential-placement.spec.ts
+--- a/e2e/tests/credential-placement.spec.ts
++++ b/e2e/tests/credential-placement.spec.ts
+@@ -1158,7 +1158,12 @@
+           expect(product.started.status, key).toBe(200);
+           const url = new URL((yield* body(Redirect, product.started)).authorizationUrl);
+           expect(url.searchParams.get("client_id"), key).toBe(clientId);
+-          expect(url.searchParams.get("scope")?.split(" "), key).toEqual(requested);
++          expect(url.searchParams.get("scope")?.split(" "), key).toEqual([
++            ...requested,
++            "openid",
++            "email",
++          ]);
++          expect(url.searchParams.get("include_granted_scopes"), key).toBe("true");
+         }
+         expect(defaults.started.status, JSON.stringify(defaults.started.body)).toBe(200);
+         const defaultsUrl = new URL((yield* body(Redirect, defaults.started)).authorizationUrl);
+diff --git a/e2e/tests/app-management-contracts.spec.ts b/e2e/tests/app-management-contracts.spec.ts
+--- a/e2e/tests/app-management-contracts.spec.ts
++++ b/e2e/tests/app-management-contracts.spec.ts
+@@ -209,7 +209,7 @@
+       .response;
+     expect(unrootedFailure).toMatchObject({ code: "RequestInvalid", status: 400 });
+     expect(unrootedFailure.message).toContain(
+-      "Executor rejected this request's body because it does not match the operation's schema: $.files: expected a root index.ts.",
++      "Rejected this request's body because it does not match the operation's schema: $.files: expected a root index.ts.",
+     );
+     // A local CLI agent's guess at the format of `links`, a JSON array of account links.
+     if (organization === undefined) {
+diff --git a/e2e/tests/first-entry-behavior.spec.ts b/e2e/tests/first-entry-behavior.spec.ts
+--- a/e2e/tests/first-entry-behavior.spec.ts
++++ b/e2e/tests/first-entry-behavior.spec.ts
+@@ -85,7 +85,7 @@
+             page.goto(`${organization}/connect`),
+           );
+           yield* browser.use("Wait for the neutral page", (page) =>
+-            page.getByRole("heading", { name: "Connect your agent", exact: true }).waitFor(),
++            page.getByRole("heading", { name: "Connections", exact: true }).waitFor(),
+           );
+           yield* Effect.scoped(
+             Effect.gen(function* () {
+diff --git a/e2e/tests/hitl-intent-scope.spec.ts b/e2e/tests/hitl-intent-scope.spec.ts
+--- a/e2e/tests/hitl-intent-scope.spec.ts
++++ b/e2e/tests/hitl-intent-scope.spec.ts
+@@ -543,7 +543,7 @@
+           ).toBeGreaterThan(0);
+           yield* openInApp("Leave the denied queue in the same document", `/org/${a.slug}/connect`);
+           yield* browser.use("The denied queue unmounts", (page) =>
+-            page.getByRole("heading", { name: "Connect your agent", exact: true }).waitFor(),
++            page.getByRole("heading", { name: "Connections", exact: true }).waitFor(),
+           );
+           const authority = yield* holdQuery(directoryPath, "continue", { allRequests: true });
+           // A shared stream may remain active; a real access change makes a new read owed.
+diff --git a/e2e/tests/executor-key-account.spec.ts b/e2e/tests/executor-key-account.spec.ts
+--- a/e2e/tests/executor-key-account.spec.ts
++++ b/e2e/tests/executor-key-account.spec.ts
+@@ -81,10 +81,7 @@
+             page.goto(`/org/${actors.organization.slug}/connect`),
+           );
+           yield* browser.use("Start a scoped connection", (page) =>
+-            page
+-              .getByRole("button", { name: "Create a scoped connection", exact: true })
+-              .or(page.getByRole("button", { name: "New scoped connection", exact: true }))
+-              .click(),
++            page.getByRole("link", { name: "New connection", exact: true }).click(),
+           );
+           yield* browser.use("Find Executor in the picker", (page) =>
+             page.getByRole("searchbox", { name: "Search apps" }).fill("Executor"),
+diff --git a/e2e/support/data-query-batch.ts b/e2e/support/data-query-batch.ts
+--- a/e2e/support/data-query-batch.ts
++++ b/e2e/support/data-query-batch.ts
+@@ -123,13 +123,22 @@
+     yield* evidence.json(`data-query-${label}.json`, { request: made.request, sql, delivered });
+     expect(pipelines, "General data dispatch uses ordinary SDK reads").toHaveLength(0);
+     const reads = sql.filter((span) => span.operation === "sql.execute");
++    const snapshots = reads.filter(
++      ({ text }) =>
++        text.includes("executor_apps") &&
++        text.includes("executor_deployments") &&
++        text.includes('"deployment:build"'),
++    );
+     expect(
+-      reads.filter(
+-        ({ text }) =>
+-          text.includes("executor_apps") &&
+-          text.includes("executor_deployments") &&
+-          text.includes('"deployment:build"'),
+-      ),
++      snapshots,
++      "The product access read and SDK dispatch each own one snapshot",
++    ).toHaveLength(2);
++    expect(
++      snapshots.filter(({ under }) => under.some(({ name }) => name === "sdk.apps.get")),
++      "The product authorizes its app before dispatch",
++    ).toHaveLength(1);
++    expect(
++      snapshots.filter(({ under }) => under.some(({ name }) => name === "sdk.data.query")),
+       "The SDK reads the app and its active version once",
+     ).toHaveLength(1);
+     expect(
+diff --git a/e2e/tests/catalog-oauth-deferrals.spec.ts b/e2e/tests/catalog-oauth-deferrals.spec.ts
+--- a/e2e/tests/catalog-oauth-deferrals.spec.ts
++++ b/e2e/tests/catalog-oauth-deferrals.spec.ts
+@@ -70,10 +70,7 @@
+         );
+         yield* open;
+         yield* browser.use("Wait for resolved client setup", (page) =>
+-          page
+-            .getByRole("dialog")
+-            .getByRole("button", { name: "Register OAuth client", exact: true })
+-            .waitFor(),
++          page.getByRole("dialog").getByLabel("Client ID", { exact: true }).waitFor(),
+         );
+         yield* browser.use("Wait for dialog motion to settle", (page) =>
+           page.waitForFunction(() =>
+@@ -92,14 +89,17 @@
+             page.getByRole("dialog").innerText(),
+           ),
+         ).not.toContain(officialApps.tracker.oauthDeferrals[0].message);
+-        yield* browser.use("Open Advanced client choices", (page) =>
+-          page.getByRole("dialog").locator("summary").filter({ hasText: "Advanced" }).click(),
++        yield* browser.use("Choose the personal developer app audience", (page) =>
++          page
++            .getByRole("dialog")
++            .getByRole("combobox", { name: "Who can use this client", exact: true })
++            .click(),
+         );
+         yield* browser.use("Keep the personal developer app choice", (page) =>
+-          page
+-            .getByRole("dialog")
+-            .getByRole("checkbox", { name: "Use your own Synthetic Tracker app for this account" })
+-            .click(),
++          page.getByRole("option", { name: "Only this account", exact: true }).click(),
++        );
++        yield* browser.use("The audience menu has closed", (page) =>
++          page.getByRole("listbox", { includeHidden: true }).waitFor({ state: "detached" }),
+         );
+         yield* browser.use("Manual client entry remains available", (page) =>
+           page.getByRole("dialog").getByLabel("Client ID", { exact: true }).waitFor(),
+diff --git a/e2e/tests/cloud-database-placement.spec.ts b/e2e/tests/cloud-database-placement.spec.ts
+--- a/e2e/tests/cloud-database-placement.spec.ts
++++ b/e2e/tests/cloud-database-placement.spec.ts
+@@ -1420,13 +1420,16 @@
+             const awaitedReturned = yield* Schema.decodeUnknownEffect(Schema.Number)(
+               sibling.awaitedReturned,
+             );
++            const awaitedFinished = yield* Schema.decodeUnknownEffect(Schema.Number)(
++              sibling.awaitedFinished,
++            );
+             expect(sibling.gaveUp, "The sibling gave up on its lock wait").toBe(true);
+             expect(sibling.awaited).toBe("ok");
+-            expect(sibling.awaitedReturned, "The finished statement returned").toBeLessThan(1_000);
++            expect(awaitedReturned, "The finished statement returned").toBeLessThan(1_000);
+             expect(
+               sibling.abandonedReturned,
+               "The sibling gave up while the awaited statement was running",
+-            ).toBeLessThan(awaitedReturned);
++            ).toBeLessThan(awaitedFinished);
+           }
+ 
+           // A tool call's `BEGIN … COMMIT` batch (`PgConnection.pipelined`) runs inside a hold:
+diff --git a/e2e/tests/mcp-connections.spec.ts b/e2e/tests/mcp-connections.spec.ts
+--- a/e2e/tests/mcp-connections.spec.ts
++++ b/e2e/tests/mcp-connections.spec.ts
+@@ -661,13 +661,20 @@
+             .getByRole("img")
+             .waitFor({ state: "visible" }),
+         );
+-        // Radix paints the dialog before the effect that makes it the topmost layer and moves focus
+-        // into it. Escape pressed before that effect closes the setup dialog beneath it instead.
++        // Focus arrives before Radix's passive effect installs this layer's Escape handler.
++        // Finish entry motion before sending a document-level key to the nested dialog.
+         yield* browser.use("The full-size screenshot takes focus", (page) =>
+           page
+             .getByRole("dialog", { name: "Claude’s Add custom connector dialog" })
+             .and(page.locator(":focus-within"))
+             .waitFor(),
++        );
++        yield* browser.use("Wait for the screenshot entry animation", (page) =>
++          page
++            .getByRole("dialog", { name: "Claude’s Add custom connector dialog", exact: true })
++            .evaluate((element) =>
++              Promise.all(element.getAnimations().map((animation) => animation.finished)),
++            ),
+         );
+         yield* browser.use("Close the full-size screenshot", (page) =>
+           page.keyboard.press("Escape"),

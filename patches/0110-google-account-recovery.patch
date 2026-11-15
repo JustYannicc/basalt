@@ -1,17 +1,3 @@
-diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
-index b86ea29..11fb67c 100644
---- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
-+++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
-@@ -1,7 +1,9 @@
-+import { googleAccountIdentityV1 } from "./migrations/google-account-identity-v1.ts";
- import { providerAppsOpenAIAnthropic } from "./migrations/provider-apps-openai-anthropic-v1.ts";
- import type { ProductionMigration } from "./contracts.ts";
- 
- /** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
- export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {
-   [providerAppsOpenAIAnthropic.name]: providerAppsOpenAIAnthropic,
-+  [googleAccountIdentityV1.name]: googleAccountIdentityV1,
- };
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-identity-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/google-account-identity-v1.ts
 new file mode 100644
 index 0000000..9a7f759
@@ -607,6 +593,20 @@ index 0000000..bdb0760
 +    )
 +      return yield* new GoogleIdentityRefused({ reason: "prepared-proof-changed" });
 +  });
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+index b86ea29..11fb67c 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+@@ -1,7 +1,9 @@
++import { googleAccountIdentityV1 } from "./migrations/google-account-identity-v1.ts";
+ import { providerAppsOpenAIAnthropic } from "./migrations/provider-apps-openai-anthropic-v1.ts";
+ import type { ProductionMigration } from "./contracts.ts";
+ 
+ /** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
+ export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {
+   [providerAppsOpenAIAnthropic.name]: providerAppsOpenAIAnthropic,
++  [googleAccountIdentityV1.name]: googleAccountIdentityV1,
+ };
 diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
 index 61c6758..4f2a432 100644
 --- a/apps/hosted/cloud/src/infrastructure/production-ops/preparations.ts
@@ -820,7 +820,7 @@ index a4387f7..10c8bac 100644
          />
        )}
 diff --git a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
-index 04dde16..02d846c 100644
+index e36dc64..478e4df 100644
 --- a/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
 +++ b/apps/hosted/web/src/implementation/pages/oauth-callback.tsx
 @@ -15,6 +15,7 @@ import { useContext, useEffect, useRef, useState } from "react";
@@ -867,7 +867,7 @@ index 04dde16..02d846c 100644
          fixPrompt: Option.match(error, {
            onSome: (value) =>
              recovery === "configuration" && UserFacingError.is(value) && value.agentFixable
-@@ -180,12 +198,23 @@ export function OAuthCallbackPage() {
+@@ -182,12 +200,23 @@ export function OAuthCallbackPage() {
                onSome: () => "Finishing sign-in. You’ll return to the app automatically.",
              })
        }
@@ -891,7 +891,7 @@ index 04dde16..02d846c 100644
          />
        )}
      </ConnectionStatusPage>
-@@ -197,10 +226,13 @@ function OAuthRecoveryActions({
+@@ -199,10 +228,13 @@ function OAuthRecoveryActions({
    pending,
    recovery,
    fixPrompt,
@@ -905,7 +905,7 @@ index 04dde16..02d846c 100644
  }) {
    const brand = useProductBrand();
    if (Option.isNone(pending))
-@@ -214,7 +246,12 @@ function OAuthRecoveryActions({
+@@ -219,7 +251,12 @@ function OAuthRecoveryActions({
    const retry =
      recovery === "restart" || recovery === "client"
        ? {
@@ -917,8 +917,8 @@ index 04dde16..02d846c 100644
 +                ? "Grant access again"
 +                : "Try again",
            search:
-             recovery === "client" || context.manualClient === true
-               ? { client: "change" as const }
+             recovery === "client"
+               ? { client: registered ?? ("change" as const) }
 diff --git a/apps/local/web/src/contracts/oauth.ts b/apps/local/web/src/contracts/oauth.ts
 index 7ec5caf..e3fbfca 100644
 --- a/apps/local/web/src/contracts/oauth.ts
@@ -1436,10 +1436,10 @@ index d504b6a..100356e 100644
            ? {}
            : { sourceAccount: selection.sourceAccount }),
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
-index 56c19e7..752e905 100644
+index 87090d5..0aed34a 100644
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -212,6 +212,17 @@ export const scenarios = plan({
+@@ -218,6 +218,17 @@ export const scenarios = plan({
        cloud: na("Requires a runner-owned database with a deliberately interrupted upgrade."),
      },
    },
@@ -2021,10 +2021,10 @@ index 8c6aa1d..c5b6035 100644
 +  return requested.filter((scope) => !covered.has(scopeKey(issuer, scope)));
 +};
 diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
-index 772b197..3cda5ee 100644
+index 1111718..6b46fa3 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
-@@ -780,6 +780,8 @@ export const OAuthCompletionFailed = UserFacingError.define({
+@@ -920,6 +920,8 @@ export const OAuthCompletionFailed = UserFacingError.define({
    fields: {
      /** A consumed attempt always needs a new sign-in. */
      reason: OAuthCompletionReason,
@@ -2247,18 +2247,18 @@ index 52e7d8f..1a5f25c 100644
                },
              );
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
-index 16f11f9..385601f 100644
+index a632433..ab53dcf 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
 @@ -1,6 +1,6 @@
  import { projectOAuthFields as project } from "./oauth-fields.ts";
- import type { AppAccountUse, ResourceLifecycle } from "../contracts/executor.ts";
+ import { CurrentActor, type AppAccountUse, type ResourceLifecycle } from "../contracts/executor.ts";
 -import { oauthIdentityConsent } from "../contracts/oauth-families.ts";
 +import { missingOAuthScopes, oauthIdentityConsent } from "../contracts/oauth-families.ts";
  import type { BackgroundWork } from "../contracts/declarations.ts";
  /** Trusted OAuth lifecycle. Provider definitions never contain client secrets or saved grants. */
  import {
-@@ -2511,7 +2511,9 @@ export const makeOAuth = (
+@@ -2628,7 +2628,9 @@ export const makeOAuth = (
                      provider: attempt.provider,
                      owner: attempt.owner,
                      label:
@@ -2269,7 +2269,7 @@ index 16f11f9..385601f 100644
                      description: null,
                      method: attempt.method,
                      ...(attempt.site === undefined ? {} : { site: attempt.site }),
-@@ -2562,7 +2564,12 @@ export const makeOAuth = (
+@@ -2679,7 +2681,12 @@ export const makeOAuth = (
                  tx,
                  crypto,
                  lifecycle,
@@ -2283,7 +2283,7 @@ index 16f11f9..385601f 100644
                  verified,
                  new Date(completedAt),
                );
-@@ -2717,7 +2724,8 @@ export const makeOAuth = (
+@@ -2837,7 +2844,8 @@ export const makeOAuth = (
              grant.identity === undefined ||
              grant.identityId !== account.identityId ||
              grant.grantedScopes === undefined ||

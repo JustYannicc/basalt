@@ -113,12 +113,188 @@ new file mode 100644
 +    );
 +  });
 diff --git a/packages/telemetry/src/isolate.ts b/packages/telemetry/src/isolate.ts
+index bafe3dc..4e5bf09 100644
 --- a/packages/telemetry/src/isolate.ts
 +++ b/packages/telemetry/src/isolate.ts
-@@ -96,10 +96,29 @@
-           const status = typeof statusCode === "number" && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599
-             ? statusCode
-             : undefined;
+@@ -38,23 +38,97 @@ interface Pending {
+ 
+ const traceMethods = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]);
+ const safeRouteWords = new Set([
+-  "api", "v1", "v2", "v8", "auth", "oauth", "organizations", "organization", "apps", "app",
+-  "files", "data", "telemetry", "setup", "tools", "mcp", "pool", "models", "requests", "billing",
+-  "accounts", "account", "computers", "sessions", "invitations", "invites", "status", "health", "ready",
+-  "sign-ins", "callback", "logout", "login", "signup", "feedback", "traces", "metrics", "logs", "operations",
+-  "workflows", "webhooks", "projects", "deployments", "usage", "connectors", "providers", "teams", "members",
+-  "current", "me", "claim", "finish", "start", "cancel", "remove", "search", "list", "create", "update",
+-  "delete", "index", "home", "docs", "terms", "privacy", "static", "healthz", "readyz", "openapi.json",
++  "api",
++  "v1",
++  "v2",
++  "v8",
++  "auth",
++  "oauth",
++  "organizations",
++  "organization",
++  "apps",
++  "app",
++  "files",
++  "data",
++  "telemetry",
++  "setup",
++  "tools",
++  "mcp",
++  "pool",
++  "models",
++  "requests",
++  "billing",
++  "accounts",
++  "account",
++  "computers",
++  "sessions",
++  "invitations",
++  "invites",
++  "status",
++  "health",
++  "ready",
++  "sign-ins",
++  "callback",
++  "logout",
++  "login",
++  "signup",
++  "feedback",
++  "traces",
++  "metrics",
++  "logs",
++  "operations",
++  "workflows",
++  "webhooks",
++  "projects",
++  "deployments",
++  "usage",
++  "connectors",
++  "providers",
++  "teams",
++  "members",
++  "current",
++  "me",
++  "claim",
++  "finish",
++  "start",
++  "cancel",
++  "remove",
++  "search",
++  "list",
++  "create",
++  "update",
++  "delete",
++  "index",
++  "home",
++  "docs",
++  "terms",
++  "privacy",
++  "static",
++  "healthz",
++  "readyz",
++  "openapi.json",
+ ]);
+ 
+ const traceId = (value: unknown, length: number): value is string =>
+-  typeof value === "string" && value.length === length && /^[0-9a-f]+$/i.test(value) && !/^0+$/.test(value);
++  typeof value === "string" &&
++  value.length === length &&
++  /^[0-9a-f]+$/i.test(value) &&
++  !/^0+$/.test(value);
+ 
+ const safeLabel = (value: unknown, max: number): value is string =>
+-  typeof value === "string" && value.length > 0 && value.length <= max && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value);
++  typeof value === "string" &&
++  value.length > 0 &&
++  value.length <= max &&
++  /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value);
+ 
+ const routeTemplate = (value: unknown): string | undefined => {
+-  if (typeof value !== "string" || value.length > 192 || !value.startsWith("/") || value.startsWith("//")) return undefined;
++  if (
++    typeof value !== "string" ||
++    value.length > 192 ||
++    !value.startsWith("/") ||
++    value.startsWith("//")
++  )
++    return undefined;
+   const segments = value.split("/").slice(1);
+   if (segments.length > 8 || segments.some((segment) => segment === "")) return undefined;
+   const safeSegments = segments.map((segment) => {
+@@ -65,7 +139,14 @@ const routeTemplate = (value: unknown): string | undefined => {
+ };
+ 
+ const attribute = (
+-  attributes: ReadonlyArray<{ key: string; value: { stringValue?: string | null; intValue?: string | number | null; doubleValue?: number | null } }>,
++  attributes: ReadonlyArray<{
++    key: string;
++    value: {
++      stringValue?: string | null;
++      intValue?: string | number | null;
++      doubleValue?: number | null;
++    };
++  }>,
+   key: string,
+ ) => attributes.find((entry) => entry.key === key)?.value;
+ 
+@@ -74,9 +155,19 @@ export function strictPrivacyTraceData(
+   data: OtlpTracer.TraceData,
+   config: Pick<TelemetryConfig, "service" | "version" | "environment">,
+ ): OtlpTracer.TraceData {
+-  const resourceAttributes = [{ key: "service.name", value: { stringValue: safeLabel(config.service, 64) ? config.service : "service" } }];
+-  if (safeLabel(config.version, 128)) resourceAttributes.push({ key: "service.version", value: { stringValue: config.version } });
+-  if (safeLabel(config.environment, 64)) resourceAttributes.push({ key: "deployment.environment.name", value: { stringValue: config.environment } });
++  const resourceAttributes = [
++    {
++      key: "service.name",
++      value: { stringValue: safeLabel(config.service, 64) ? config.service : "service" },
++    },
++  ];
++  if (safeLabel(config.version, 128))
++    resourceAttributes.push({ key: "service.version", value: { stringValue: config.version } });
++  if (safeLabel(config.environment, 64))
++    resourceAttributes.push({
++      key: "deployment.environment.name",
++      value: { stringValue: config.environment },
++    });
+   const resource = { attributes: resourceAttributes, droppedAttributesCount: 0 };
+   return {
+     resourceSpans: data.resourceSpans.map((resourceSpan) => ({
+@@ -85,41 +176,78 @@ export function strictPrivacyTraceData(
+         scope: { name: "basalt.telemetry" },
+         spans: scopeSpan.spans.flatMap((span) => {
+           if (!traceId(span.traceId, 32) || !traceId(span.spanId, 16)) return [];
+-          const start = /^\d{1,20}$/.test(span.startTimeUnixNano) ? BigInt(span.startTimeUnixNano) : undefined;
+-          const end = /^\d{1,20}$/.test(span.endTimeUnixNano) ? BigInt(span.endTimeUnixNano) : undefined;
++          const start = /^\d{1,20}$/.test(span.startTimeUnixNano)
++            ? BigInt(span.startTimeUnixNano)
++            : undefined;
++          const end = /^\d{1,20}$/.test(span.endTimeUnixNano)
++            ? BigInt(span.endTimeUnixNano)
++            : undefined;
+           if (start === undefined || end === undefined || end < start) return [];
+           const methodValue = attribute(span.attributes, "http.request.method")?.stringValue;
+-          const method = typeof methodValue === "string" && traceMethods.has(methodValue) ? methodValue : undefined;
++          const method =
++            typeof methodValue === "string" && traceMethods.has(methodValue)
++              ? methodValue
++              : undefined;
+           const route = routeTemplate(attribute(span.attributes, "http.route")?.stringValue);
+           const statusValue = attribute(span.attributes, "http.response.status_code");
+           const statusCode = statusValue?.intValue ?? statusValue?.doubleValue;
+-          const status = typeof statusCode === "number" && Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599
+-            ? statusCode
+-            : undefined;
++          const status =
++            typeof statusCode === "number" &&
++            Number.isInteger(statusCode) &&
++            statusCode >= 100 &&
++            statusCode <= 599
++              ? statusCode
++              : undefined;
 +          const queryDurations = ["session_access", "caller_accounts", "dispatch"].flatMap(
 +            (phase) => {
 +              const key = `app.ui.query.${phase}.duration_ms`;
@@ -135,16 +311,84 @@ diff --git a/packages/telemetry/src/isolate.ts b/packages/telemetry/src/isolate.
 +            phaseOrder === "session_access,caller_accounts" ||
 +            phaseOrder === "session_access,caller_accounts,dispatch";
            const attributes = [
-             ...(method === undefined ? [] : [{ key: "http.request.method", value: { stringValue: method } }]),
+-            ...(method === undefined ? [] : [{ key: "http.request.method", value: { stringValue: method } }]),
++            ...(method === undefined
++              ? []
++              : [{ key: "http.request.method", value: { stringValue: method } }]),
              ...(route === undefined ? [] : [{ key: "http.route", value: { stringValue: route } }]),
-             ...(status === undefined ? [] : [{ key: "http.response.status_code", value: { intValue: status } }]),
+-            ...(status === undefined ? [] : [{ key: "http.response.status_code", value: { intValue: status } }]),
++            ...(status === undefined
++              ? []
++              : [{ key: "http.response.status_code", value: { intValue: status } }]),
 +            ...queryDurations,
 +            ...(knownOrder
 +              ? [{ key: "app.ui.query.phase_order", value: { stringValue: phaseOrder } }]
 +              : []),
            ];
            const parentSpanId = traceId(span.parentSpanId, 16) ? span.parentSpanId : undefined;
-           const kind = Number.isInteger(span.kind) && span.kind >= 0 && span.kind <= 5 ? span.kind : 0;
+-          const kind = Number.isInteger(span.kind) && span.kind >= 0 && span.kind <= 5 ? span.kind : 0;
++          const kind =
++            Number.isInteger(span.kind) && span.kind >= 0 && span.kind <= 5 ? span.kind : 0;
+           const statusCodeSafe = [0, 1, 2].includes(span.status.code) ? span.status.code : 0;
+-          return [{
+-            traceId: span.traceId.toLowerCase(),
+-            spanId: span.spanId.toLowerCase(),
+-            parentSpanId,
+-            name: route === undefined ? "operation" : `${method ?? "HTTP"} ${route}`,
+-            kind,
+-            startTimeUnixNano: start.toString(),
+-            endTimeUnixNano: end.toString(),
+-            attributes,
+-            droppedAttributesCount: 0,
+-            events: [],
+-            droppedEventsCount: 0,
+-            status: { code: statusCodeSafe },
+-            links: [],
+-            droppedLinksCount: 0,
+-          }];
++          return [
++            {
++              traceId: span.traceId.toLowerCase(),
++              spanId: span.spanId.toLowerCase(),
++              parentSpanId,
++              name: route === undefined ? "operation" : `${method ?? "HTTP"} ${route}`,
++              kind,
++              startTimeUnixNano: start.toString(),
++              endTimeUnixNano: end.toString(),
++              attributes,
++              droppedAttributesCount: 0,
++              events: [],
++              droppedEventsCount: 0,
++              status: { code: statusCodeSafe },
++              links: [],
++              droppedLinksCount: 0,
++            },
++          ];
+         }),
+       })),
+     })),
+@@ -248,11 +376,16 @@ export const isolateTelemetry = (
+           [
+             config.traces === undefined || traces.length === 0
+               ? Effect.void
+-              : post("OtlpTracer", config.traces, json.traces({
+-                  resourceSpans: config.strictPrivacy === true
+-                    ? strictPrivacyTraceData({ resourceSpans: traces }, config).resourceSpans
+-                    : traces,
+-                })),
++              : post(
++                  "OtlpTracer",
++                  config.traces,
++                  json.traces({
++                    resourceSpans:
++                      config.strictPrivacy === true
++                        ? strictPrivacyTraceData({ resourceSpans: traces }, config).resourceSpans
++                        : traces,
++                  }),
++                ),
+             config.logs === undefined || logs.length === 0
+               ? Effect.void
+               : post("OtlpLogger", config.logs, json.logs({ resourceLogs: logs })),
 diff --git a/e2e/tests/app-query-timing.spec.ts b/e2e/tests/app-query-timing.spec.ts
 new file mode 100644
 --- /dev/null

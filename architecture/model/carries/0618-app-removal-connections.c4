@@ -1,7 +1,7 @@
 model {
   extend basalt.setupHost {
     metadata {
-      constraint "Deleting an app updates every live scoped connection that names it, for every person, through one server-only grants endpoint. A connection that named only that app is revoked with its grants and tokens; one that also names other apps keeps them with the deleted app removed. Each policy write is conditional on the policy it read and rereads on conflict, so concurrent deletions never restore an app another removed. Hosted removeApp, Cloud through its private grant RPC, and local's removal operation all call it after the app is removed. The app removal never fails because of it: a failure is logged and the leftover connection stays revocable on Connections."
+      constraint "Deleting an app updates every live scoped connection that names it, for every person, through one server-only grants endpoint. A connection that named only that app is revoked with its grants and tokens; one that also names other apps keeps them with the deleted app removed. Each policy write is conditional on the policy it read and rereads on conflict, so concurrent deletions never restore an app another removed. Hosted removeApp, Cloud through its private grant RPC, and local's removal operation all call it after the app is removed. Ordinary connection and grant revocation keep their stored-ID results after completed writes; the distinct bulk cleanup operation keeps its void result. The app removal never fails because of it: a failure is logged and the leftover connection stays revocable on Connections."
     }
   }
 }

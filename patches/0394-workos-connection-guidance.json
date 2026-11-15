@@ -1,7 +1,7 @@
 {
   "identity": "basalt-workos-connection-guidance",
   "file": "0394-workos-connection-guidance.patch",
-  "content_sha256": "954ab65fe042afe02f9c137b8cd372f0516ed36f5a84dd678c133577050b35db",
+  "content_sha256": "bb750891b8c5803862d93e48e8a01ad2c6aa595668f558f9fab76ef2d9eb500d",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

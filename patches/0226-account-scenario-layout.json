@@ -1,7 +1,7 @@
 {
   "identity": "basalt-account-scenario-layout",
   "file": "0226-account-scenario-layout.patch",
-  "content_sha256": "0ca37647c5610a05670fe3376b969b32f18bbd13fab5f26e5a3fd59ce6662f02",
+  "content_sha256": "a8aca4a8d99d1c2ee86b09c7d1694291475d702019bb8ef038571e421748b8b1",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

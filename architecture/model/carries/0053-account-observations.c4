@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Observation inspection and refresh have independent product permissions and retain the last successful reading after refresh failure. Denied inspection hides observation details without changing credential use. Actual checks retain audit and traced dispatch before visibility projection, and fresh-layout error targets come from the current schema registry."
+    }
+  }
+}

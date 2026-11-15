@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The messaging REST client requests user scopes only and requires the nested personal grant on authorization-code exchange. A complete top-level bot response cannot substitute for that grant. Refresh retains the saved personal grant and its scope normalization, while resource-source evidence keeps its declared optionality."
+    }
+  }
+}

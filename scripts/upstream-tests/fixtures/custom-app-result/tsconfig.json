@@ -1,0 +1,9 @@
+{
+  "extends": "../../../../.upstream/tsconfig.json",
+  "compilerOptions": {
+    "jsx": "preserve",
+    "typeRoots": ["../../../../.upstream/node_modules/@types"]
+  },
+  "include": ["contract.tsx"],
+  "exclude": []
+}
