@@ -55,6 +55,84 @@ const appPage = `SELECT a.id,a.code,a.owner,a.active_deployment AS active,
     ON d.id=a.active_deployment AND d.code=a.code AND d.owner=a.owner
   WHERE a.id COLLATE "C">$1 COLLATE "C" ORDER BY a.id COLLATE "C" LIMIT 201`;
 
+const associationLimit = 50;
+const poolAssociations = `WITH pools AS (
+    SELECT id,metadata::jsonb->'basaltPools' AS entries FROM organization
+  )
+  SELECT o.id AS organization,entry.slot,entry.value->>'app' AS app,a.owner AS actual_owner,
+    CASE WHEN entry.slot IS NULL THEN 'invalid-pool-map'
+      WHEN entry.value->>'app' IS NULL THEN 'missing-app-reference'
+      WHEN jsonb_typeof(entry.value->'app')<>'string'
+        OR entry.value->>'app' !~ '^app_[A-Za-z0-9_-]{1,251}$' THEN 'invalid-app-reference'
+      WHEN a.id IS NULL THEN 'app-missing' ELSE 'wrong-owner' END AS reason
+  FROM pools o CROSS JOIN LATERAL (
+    SELECT key AS slot,value FROM jsonb_each(
+      CASE WHEN jsonb_typeof(o.entries)='object' THEN o.entries ELSE '{}'::jsonb END)
+    UNION ALL SELECT NULL::text,NULL::jsonb
+      WHERE o.entries IS NOT NULL AND jsonb_typeof(o.entries)<>'object'
+  ) entry LEFT JOIN executor_apps a ON a.id=entry.value->>'app'
+  WHERE entry.slot IS NULL OR entry.value->>'app' IS NULL
+    OR jsonb_typeof(entry.value->'app')<>'string'
+    OR entry.value->>'app' !~ '^app_[A-Za-z0-9_-]{1,251}$'
+    OR a.owner IS DISTINCT FROM 'organization:' || o.id
+  ORDER BY o.id COLLATE "C",entry.slot COLLATE "C" NULLS FIRST LIMIT ${associationLimit + 1}`;
+
+function diagnosticId(value: unknown) {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 256 &&
+    !/[^A-Za-z0-9_-]/.test(value) &&
+    !/^(?:(?:sk|pk|ghp|gho|ghu|ghs|ghr|github_pat)[_-]|(?:AKIA|ASIA)[A-Z0-9]{16}$)/i.test(value)
+    ? value
+    : null;
+}
+
+function associationDelta(rows: Record<string, unknown>[]) {
+  const changed = rows.slice(0, associationLimit).map((row, index) => {
+    const organization = diagnosticId(row.organization);
+    const slot = row.slot === null ? null : (diagnosticId(row.slot) ?? "invalid-id");
+    const app =
+      row.app === null
+        ? null
+        : typeof row.app === "string" && /^app_[A-Za-z0-9_-]{1,251}$/.test(row.app)
+          ? (diagnosticId(row.app) ?? "invalid-id")
+          : "invalid-id";
+    const owner =
+      typeof row.actual_owner === "string"
+        ? /^(organization|user):(.+)$/.exec(row.actual_owner)
+        : null;
+    const actualOwner =
+      row.actual_owner === null
+        ? null
+        : owner && diagnosticId(owner[2]) !== null
+          ? `${owner[1]}:${owner[2]}`
+          : "invalid-owner";
+    const reason =
+      typeof row.reason === "string" &&
+      [
+        "invalid-pool-map",
+        "missing-app-reference",
+        "invalid-app-reference",
+        "app-missing",
+        "wrong-owner",
+      ].includes(row.reason)
+        ? row.reason
+        : "invalid-diagnostic-row";
+    const context = { organization: organization ?? "invalid-id", slot, app };
+    return {
+      path: `poolAssociations[${index}]`,
+      old: canonical({
+        ...context,
+        owner: organization === null ? "invalid-owner" : `organization:${organization}`,
+      }),
+      new: canonical({ ...context, owner: actualOwner, reason }),
+    };
+  });
+  if (rows.length > associationLimit)
+    changed.push({ path: "poolAssociations.inventory", old: "complete", new: "overflow" });
+  return { fqn: "SQL.tools", type: "PoolAssociation", changed };
+}
+
 /** App versions bind inventory drift; their JavaScript does not implement these host SQL readers. */
 export async function readMigrationAppVersions(source: SqlJournalSource) {
   const session = await source.connect().catch(() => {
@@ -76,14 +154,13 @@ export async function readMigrationAppVersions(source: SqlJournalSource) {
       identity.rows[0]?.read_only !== true
     )
       throw new BarrierRefusal("migration-reader-apps-database-identity", "SQL.tools");
-    const references = await session.query(`SELECT NOT EXISTS (
-      SELECT 1 FROM organization o CROSS JOIN LATERAL
-        jsonb_each(COALESCE(o.metadata::jsonb->'basaltPools','{}'::jsonb)) entry
-      WHERE NOT EXISTS (SELECT 1 FROM executor_apps a
-        WHERE a.id=entry.value->>'app' AND a.owner='organization:' || o.id)
-    ) AS complete`);
-    if (references.rows.length !== 1 || references.rows[0]?.complete !== true)
-      throw new BarrierRefusal("migration-reader-apps-pool-association", "SQL.tools");
+    const references = await session.query(poolAssociations);
+    if (references.rows.length)
+      throw new BarrierRefusal(
+        "migration-reader-apps-pool-association",
+        "SQL.tools",
+        associationDelta(references.rows),
+      );
     const hash = createHash("sha256");
     let after = "";
     let count = 0;
