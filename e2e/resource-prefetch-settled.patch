@@ -144,3 +144,30 @@ diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
      file: "resource-prefetch.spec.ts",
      title: "Organization entry prefetches resources without retaining a polling subscription",
      targets: {
+diff --git a/apps/hosted/testing/management-provisioning.ts b/apps/hosted/testing/management-provisioning.ts
+--- a/apps/hosted/testing/management-provisioning.ts
++++ b/apps/hosted/testing/management-provisioning.ts
+@@ -15,16 +15,21 @@
+     create or replace trigger e2e_management_metadata after update of metadata on organization
+       for each statement execute function e2e_management_provisioned();
+     create or replace trigger e2e_management_links after insert or update or delete on hosted_app_account_links
++      for each statement execute function e2e_management_provisioned();
++    create or replace trigger e2e_management_jobs after insert or update or delete on hosted_provisioning
+       for each statement execute function e2e_management_provisioned()`);
+ 
+-/** The metadata and link must be visible in the same committed snapshot. */
++/** Provisioning status changes advance directory heads after the links already exist. */
+ const managementReadiness = `select coalesce(
+   (team.metadata::jsonb->'executorDefaults'->>'installed')::boolean, false)
+   and exists (select 1 from executor_accounts account join hosted_app_account_links link
+     on link.account = account.id
+     where account.id = team.metadata::jsonb->'executorKeyAccounts'->>$2
+       and account.owner = 'organization:' || team.id
+-      and link.app = team.metadata::jsonb->'executorDefaults'->>'app') as ready
++      and link.app = team.metadata::jsonb->'executorDefaults'->>'app')
++  and not exists (select 1 from hosted_provisioning job
++    where (job.organization_id = $1 or job.user_id = $2)
++      and job.status <> 'succeeded') as ready
+   from organization team where team.id = $1`;
+ 
+ export const awaitManagementProvisioning = async (
