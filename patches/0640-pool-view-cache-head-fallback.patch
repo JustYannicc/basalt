@@ -1,0 +1,23 @@
+diff --git a/apps/hosted/server/src/implementation/pool-view-cache.ts b/apps/hosted/server/src/implementation/pool-view-cache.ts
+--- a/apps/hosted/server/src/implementation/pool-view-cache.ts
++++ b/apps/hosted/server/src/implementation/pool-view-cache.ts
+@@ -76,13 +76,14 @@
+       drop(key);
+       if (!(yield* eligible)) return yield* read;
+       const value = yield* read;
+-      const after = yield* guard;
++      const checked = yield* Effect.result(guard);
++      // Cache validation cannot reject a fresh read; the read still owns its authority checks.
++      if (checked._tag === "Failure") return yield* read;
++      const after = checked.success;
+       const completed = yield* Clock.currentTimeMillis;
+-      if (
+-        fingerprint(head) !== fingerprint(after) ||
+-        (after.validUntil !== undefined && after.validUntil <= completed)
+-      )
++      if (after.validUntil !== undefined && after.validUntil <= completed)
+         return yield* new StorageError();
++      if (fingerprint(head) !== fingerprint(after)) return yield* read;
+       const size = new TextEncoder().encode(JSON.stringify(value)).byteLength;
+       // A cutoff crossed during the fill must still prevent caching its old verdict.
+       const until = Math.min(
