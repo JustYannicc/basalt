@@ -12,6 +12,10 @@ const { changeProtected } =
 const { apiFetchAtom } =
   await import("../../.upstream/packages/dashboard-start/src/contracts/api.ts");
 
+const { OrganizationSlug } =
+  await import("../../.upstream/apps/hosted/server/src/contracts/organization.ts");
+const organization = Schema.decodeUnknownSync(OrganizationSlug)("fixture-organization");
+
 const globals = globalThis as { window?: unknown; document?: unknown };
 
 for (const reason of ["moving", "unavailable", "revoked"] as const)
@@ -46,7 +50,7 @@ for (const reason of ["moving", "unavailable", "revoked"] as const)
           schema: AsyncResult.Schema({ success: Schema.String }),
         }),
       );
-      const query = changeProtected("fixture-organization", ["apps"])(source);
+      const query = changeProtected(organization, ["apps"])(source);
       t.mock.method(apiFetchAtom, "read", () => fetch);
       const server = AtomRegistry.make();
       const browser = AtomRegistry.make();
@@ -71,10 +75,14 @@ for (const reason of ["moving", "unavailable", "revoked"] as const)
         reason === "moving" ? 6 : 1,
         "the server fence used its request-bound fetch",
       );
-      const tag = (value: unknown) =>
-        AsyncResult.isFailure(value)
-          ? Option.getOrThrow(Cause.findErrorOption(value.cause))._tag
-          : "Initial";
+      const tag = (value: unknown) => {
+        assert.ok(typeof value === "object" && value !== null && "_tag" in value);
+        if (value._tag !== "Failure") return "Initial";
+        assert.ok("cause" in value);
+        const error = Option.getOrThrow(Cause.findErrorOption(value.cause));
+        assert.ok(typeof error === "object" && error !== null && "_tag" in error);
+        return error._tag;
+      };
       assert.equal(tag(failure), expected);
       const document = [...server.getNodes()].flatMap(([key, node]) => {
         if (typeof key !== "string" || !Atom.isSerializable(node.atom)) return [];
