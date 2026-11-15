@@ -13,6 +13,7 @@ import {
   candidateEligibilityRefusal,
   checkedActivationClient,
   exactMigrationRelease,
+  migrationActivationGate,
   migrationActivationInput,
   trustedActivationTooling,
 } from "./migration-activation-gate.ts";
@@ -202,6 +203,68 @@ test("only a client whose main push Check passed may send an activation", async 
     }),
     /GitHub unavailable/,
   );
+});
+
+test("the gate asks for the client's Check only before a digest, and before the ledger", async (context) => {
+  const candidate = environment.BASALT_RELEASE_CANDIDATE;
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const client = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  const original = globalThis.fetch;
+  context.after(() => {
+    globalThis.fetch = original;
+  });
+  const gate = async (mode: string, clientCheck: string) => {
+    const urls: string[] = [];
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      urls.push(url.pathname + url.search);
+      if (url.pathname.endsWith("/commits/main")) return Response.json({ sha: candidate });
+      if (url.pathname.endsWith("/actions/workflows/ci.yml/runs")) {
+        const commit = url.searchParams.get("head_sha");
+        return Response.json({
+          workflow_runs: [
+            {
+              head_sha: commit,
+              event: "push",
+              path: ".github/workflows/ci.yml",
+              conclusion: commit === candidate ? "success" : clientCheck,
+            },
+          ],
+        });
+      }
+      // No pull requests for the candidate, and an empty production deployment ledger.
+      return Response.json([]);
+    };
+    const outcome = await migrationActivationGate({
+      ...environment,
+      MIGRATION_ACTIVATION_MODE: mode,
+      GITHUB_SHA: client,
+      GITHUB_TOKEN: "fixture",
+    }).catch((error: unknown) => error);
+    assert.ok(outcome instanceof BarrierRefusal, String(outcome));
+    return {
+      reason: outcome.reason,
+      askedClient: urls.some((url) => url.includes(`head_sha=${client}`)),
+      readLedger: urls.some((url) => url.includes("/deployments")),
+    };
+  };
+  const pastTheCheck = "migration-activation-wrong-production-candidate";
+  assert.deepEqual(await gate("b".repeat(64), "failure"), {
+    reason: "migration-activation-client-check-required",
+    askedClient: true,
+    readLedger: false,
+  });
+  assert.deepEqual(await gate("b".repeat(64), "success"), {
+    reason: pastTheCheck,
+    askedClient: true,
+    readLedger: true,
+  });
+  for (const mode of ["plan", "inspect"])
+    assert.deepEqual(await gate(mode, "failure"), {
+      reason: pastTheCheck,
+      askedClient: false,
+      readLedger: true,
+    });
 });
 
 test("an ineligible candidate is refused by name; other gate errors keep their text private", async () => {
