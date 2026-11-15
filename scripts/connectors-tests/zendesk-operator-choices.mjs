@@ -115,7 +115,7 @@ export function proveOperatorChoices({
       return value.href;
     };
     const invalid = [
-      ["not a callback URL", null],
+      ["not a callback URL", "callback_malformed"],
       [corrupt((url) => url.searchParams.set("state", "x".repeat(64))), "sign_in_not_found"],
       [
         corrupt((url) => url.searchParams.append("state", url.searchParams.get("state"))),
@@ -167,7 +167,7 @@ export function proveOperatorChoices({
     for (const [value, reason] of invalid) {
       const response = yield* complete(path, value);
       assert.equal(response.status, 400, `Refuse ${reason} before exchanging a code`);
-      assert.equal(reason === null ? response.body : response.body.reason, reason);
+      assert.equal(response.body.reason, reason);
       assert.equal(exchangeCount(), before);
     }
     const account = checked(
