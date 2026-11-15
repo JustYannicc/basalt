@@ -1,0 +1,219 @@
+diff --git a/packages/apps/src/browser/change-feed.ts b/packages/apps/src/browser/change-feed.ts
+--- a/packages/apps/src/browser/change-feed.ts
++++ b/packages/apps/src/browser/change-feed.ts
+@@ -1,6 +1,7 @@
+ /**
+  * One committed-revision stream per page. A watch reads again only after a hint, a handshake or a
+- * server deadline shows its data is behind; nothing here reads on a timer. The stream and the
++ * server deadline shows its data is behind. Only a moving-head failure schedules bounded
++ * reconfirmation; healthy watches never schedule a recovery timer. The stream and the
+  * current-heads route both derive scope and resources on the server.
+  */
+ import { Option, Schema } from "effect";
+@@ -51,9 +52,10 @@
+ 
+ /**
+  * A read that could not be accepted. `moving`: heads kept changing, and their hints will read
+- * again. `unavailable`: the head route could not be read; the next hint, handshake or return
++ * again, with three delayed reconfirms if no later signal arrives. `unavailable`: the head route
++ * could not be read; the next hint, handshake or return
+  * to the page reads again. `hidden`: the page was hidden mid-read, so the read parked before
+- * any further data work; the foreground handshake reads again. Nothing retries on a timer.
++ * any further data work; the foreground handshake reads again.
+  */
+ export class ChangeReadRetry extends Error {
+   readonly retryable = true;
+@@ -98,6 +100,7 @@
+ 
+ /** Reads whose heads keep moving stop here; the hints for those moves read again. */
+ const attempts = 3;
++const reconfirmDelays = [1_000, 3_000, 9_000];
+ /** Only a disconnect lasting this long is shown; a quick reconnect stays silent. */
+ const pausedAfter = 30_000;
+ /** The server sends a heartbeat every 15 seconds; three missed ones mean the socket is gone. */
+@@ -126,6 +129,7 @@
+   body: ReadableStream<Uint8Array>,
+   onBytes: () => void,
+   onEvent: (name: string, data: string) => void,
++  onHeartbeat: () => void,
+ ) {
+   const reader = body.getReader();
+   const decoder = new TextDecoder();
+@@ -139,12 +143,15 @@
+     while (end >= 0) {
+       let name = "message";
+       const data: string[] = [];
++      let heartbeat = false;
+       for (const line of buffer.slice(0, end).split("\n")) {
+-        if (line.startsWith("event:")) name = line.slice(6).trim();
++        if (line.startsWith(":")) heartbeat = true;
++        else if (line.startsWith("event:")) name = line.slice(6).trim();
+         else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+       }
+       buffer = buffer.slice(end + 2);
+       if (data.length > 0) onEvent(name, data.join("\n"));
++      else if (heartbeat) onHeartbeat();
+       end = buffer.indexOf("\n\n");
+     }
+   }
+@@ -161,7 +168,9 @@
+   dirty: boolean;
+   reading: boolean;
+   /** The last read through this watch was not accepted. */
+-  failed: boolean;
++  failed: ChangeReadRetry["reason"] | "error" | undefined;
++  reconfirmations: number;
++  reconfirmTimer: ReturnType<typeof setTimeout> | undefined;
+   /** `request()` asked for a read; consumed when one starts, so one asked mid-read survives. */
+   requested: boolean;
+ }
+@@ -251,11 +260,44 @@
+     kick(watch);
+   };
+ 
++  const cancelReconfirm = (watch: WatchState) => {
++    clearTimeout(watch.reconfirmTimer);
++    watch.reconfirmTimer = undefined;
++  };
++  const reconfirm = (watch: WatchState) => {
++    cancelReconfirm(watch);
++    if (
++      watch.failed !== "moving" ||
++      watch.reading ||
++      watch.reconfirmations >= reconfirmDelays.length
++    )
++      return;
++    watch.reconfirmations++;
++    mark(watch);
++  };
++  const scheduleReconfirm = (watch: WatchState) => {
++    if (
++      watch.failed !== "moving" ||
++      watch.reconfirmTimer !== undefined ||
++      watch.reconfirmations >= reconfirmDelays.length ||
++      closed ||
++      revoked ||
++      watch.abort.signal.aborted ||
++      !activity.isActive()
++    )
++      return;
++    watch.reconfirmTimer = setTimeout(
++      () => reconfirm(watch),
++      reconfirmDelays[watch.reconfirmations],
++    );
++  };
++
+   const clearTimers = () => {
+     clearTimeout(retry);
+     clearTimeout(paused);
+     clearTimeout(silent);
+     retry = paused = silent = undefined;
++    for (const watch of watches) cancelReconfirm(watch);
+   };
+   const disconnect = () => {
+     stream?.abort();
+@@ -324,7 +366,11 @@
+     if (streamUntil !== undefined) for (const watch of watches) expireBy(watch, streamUntil);
+     setStatus("live");
+     for (const watch of watches) {
+-      if (behind(watch)) mark(watch);
++      cancelReconfirm(watch);
++      if (watch.failed === "moving") {
++        if (!watch.reading) watch.reconfirmations = 0;
++        reconfirm(watch);
++      } else if (behind(watch)) mark(watch);
+       else watch.options.confirmed?.();
+     }
+   };
+@@ -338,7 +384,10 @@
+     for (const watch of watches) {
+       if (!interested(watch, key)) continue;
+       const seen = watch.heads.get(key);
+-      if (seen === undefined || newerRevision(hint.revision, seen)) mark(watch);
++      if (seen === undefined || newerRevision(hint.revision, seen)) {
++        cancelReconfirm(watch);
++        mark(watch);
++      }
+     }
+   };
+ 
+@@ -407,6 +456,10 @@
+           if (Option.isNone(extras)) return resync();
+           handshake(event.value.revisions, extras.value);
+         },
++        () => {
++          if (stream !== owner) return;
++          for (const watch of watches) reconfirm(watch);
++        },
+       );
+       if (stream === owner) lost();
+     } catch {
+@@ -488,6 +541,10 @@
+   };
+ 
+   const onActive = (active: boolean) => {
++    for (const watch of watches) {
++      cancelReconfirm(watch);
++      if (active && watch.failed === "moving" && !watch.reading) watch.reconfirmations = 0;
++    }
+     if (!active) {
+       // Hidden pages hold nothing open; showing it again handshakes and compares heads.
+       disconnect();
+@@ -515,7 +572,9 @@
+         deadline: undefined,
+         dirty: true,
+         reading: false,
+-        failed: false,
++        failed: undefined,
++        reconfirmations: 0,
++        reconfirmTimer: undefined,
+         requested: false,
+       };
+       if (
+@@ -567,7 +626,9 @@
+               )
+                 continue;
+               record(watch, after);
+-              watch.failed = false;
++              watch.failed = undefined;
++              watch.reconfirmations = 0;
++              cancelReconfirm(watch);
+               // Data accepted with no stream is shown, but never as live.
+               if (connection === undefined) setStatus("paused");
+               publish?.(value, headVersion(watch, after), after);
+@@ -575,21 +636,25 @@
+             }
+           } catch (error) {
+             if (!(error instanceof ChangeReadRetry)) {
+-              watch.failed = true;
++              watch.failed = "error";
+               throw error;
+             }
+             reason = error.reason;
+           }
+-          watch.failed = true;
++          watch.failed = reason;
++          scheduleReconfirm(watch);
+           throw new ChangeReadRetry(reason);
+         },
+         request: () => {
++          watch.reconfirmations = 0;
++          cancelReconfirm(watch);
+           watch.requested = true;
+           mark(watch);
+         },
+         stop: () => {
+           if (watch.abort.signal.aborted) return;
+           watch.abort.abort();
++          cancelReconfirm(watch);
+           clearTimeout(watch.deadline);
+           watches.delete(watch);
+           if (watches.size > 0) return;
+@@ -624,6 +689,7 @@
+       window.removeEventListener("online", online);
+       for (const watch of watches) {
+         watch.abort.abort();
++        cancelReconfirm(watch);
+         clearTimeout(watch.deadline);
+       }
+       watches.clear();
