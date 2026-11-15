@@ -176,6 +176,7 @@ test("signed fleet refusal retains only a closed provider transport cause", asyn
   assert.deepEqual(await response.json(), {
     error: "runtime-handoff-refused",
     cause: "provider_fetch_failed",
+    reason: "provider_fetch_failed",
   });
   assert.deepEqual(await new RuntimeFleetState(f.old.storage, 4).inspect(), []);
   assert.equal(f.instances.size, 0);

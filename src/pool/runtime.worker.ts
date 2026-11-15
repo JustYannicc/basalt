@@ -27,6 +27,7 @@ export async function createPoolLifecycle(
     ledger: LaunchLedger;
     binding: Omit<LaunchTarget, "releaseEpoch">;
     beforeStart?: (record: LaunchRecord, options: StartupOptions) => Promise<void>;
+    assertStart?: () => void;
   },
   schedule?: (at: number) => Promise<void>,
 ) {
@@ -71,6 +72,7 @@ export async function createPoolLifecycle(
           options.env.POOL_LAUNCH_TOKEN = record.token;
         }
         if (record) await launch?.beforeStart?.(record, options);
+        launch?.assertStart?.();
         container.start(options);
       },
       stop: () => container.destroy(),

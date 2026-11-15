@@ -95,10 +95,10 @@ export class FleetHandoffCell implements FleetCell {
     );
     if (!(await this.retired(identity))) throw new SlotRefused("uncertain");
   }
-  async retired(identity: SlotIdentity) {
+  async retired(identity: SlotIdentity, resumeBeforeDispatch = false) {
     const trace = new RuntimeRetirementTrace("cell", ++this.retirementAttempts);
     const signal = AbortSignal.timeout(2_000);
-    const actual = await trace.run(
+    let actual = await trace.run(
       "driver_retirement",
       () => this.deps.driver.retirement(identity, signal),
       (value) => ({
@@ -108,6 +108,20 @@ export class FleetHandoffCell implements FleetCell {
       }),
       signal,
     );
+    if (
+      resumeBeforeDispatch &&
+      sameIdentity(actual.identity, identity) &&
+      !actual.retired &&
+      actual.retireNotStarted
+    ) {
+      const drain = await this.drain(identity);
+      if (!drain.known || drain.active !== 0) return false;
+      await this.deps.provider.observe(this.deps.application, identity.instanceId);
+      // Only the child's zero-activity draining state proves the earlier retire never reached its intent.
+      // Endpoint serialization and its retiring latch prevent concurrent recoveries from destroying twice.
+      await this.deps.driver.retire(identity, identity, AbortSignal.timeout(2_000));
+      actual = await this.deps.driver.retirement(identity, AbortSignal.timeout(2_000));
+    }
     if (!sameIdentity(actual.identity, identity) || !actual.retired || actual.running) return false;
     const observation = AbortSignal.timeout(15_000);
     return trace.run(

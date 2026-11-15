@@ -78,6 +78,48 @@ test("different witness operation, manifest, target, configuration and incomplet
     );
 });
 
+test("promotion joins fresh policy to the original startup but cannot change its active boot or selection epoch", async () => {
+  const f = await runtimeProofFixture();
+  const selection = {
+    ...f.manifest.selection,
+    policyDigest: "9".repeat(64),
+    revisions: f.manifest.selection.revisions.map((row) => ({
+      ...row,
+      revision: row.revision + 1,
+    })),
+  };
+  const observations = {
+    provider: { ...f.provider, instanceId: f.manifest.target.instanceId },
+    witness: f.witness,
+    selection,
+  };
+  const signed = await signRuntimeAdmission(
+    f.manifest,
+    "attested",
+    observations,
+    f.enable,
+    f.signingKey,
+    () => f.now,
+  );
+  assert.deepEqual(signed.proof.selection, selection);
+  assert.equal(signed.proof.manifestDigest, f.witness.manifestDigest);
+  for (const drift of [
+    { ...selection, expectedEpoch: selection.expectedEpoch + 1 },
+    { ...selection, active: { ...selection.active!, bootId: "other-boot" } },
+  ])
+    await assert.rejects(
+      signRuntimeAdmission(
+        f.manifest,
+        "attested",
+        { ...observations, selection: drift },
+        f.enable,
+        f.signingKey,
+        () => f.now,
+      ),
+      /provisioning-input-drift/,
+    );
+});
+
 test("stale provider observations, identity drift, selection drift and missing enable refuse", async () => {
   const f = await runtimeProofFixture();
   for (const provider of [

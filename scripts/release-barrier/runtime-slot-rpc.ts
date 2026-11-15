@@ -22,6 +22,7 @@ export async function runtimeHandoffRequest(
   command: RuntimeHandoffCommand,
   target: PoolOperationsTarget,
   now = Date.now,
+  signal?: AbortSignal,
 ) {
   assertRuntimeProofEnable(manifest, enable, now());
   assertRuntimeBridgeKey(manifest, signingKey);
@@ -42,9 +43,15 @@ export async function runtimeHandoffRequest(
     accountId: target.accountId,
     scriptName: target.worker,
   });
-  return sendRuntimeCommand(frozen, signingKey, target, () => {
-    assertRuntimeProofEnable(manifest, enable, now());
-  });
+  return sendRuntimeCommand(
+    frozen,
+    signingKey,
+    target,
+    () => {
+      assertRuntimeProofEnable(manifest, enable, now());
+    },
+    signal,
+  );
 }
 
 const witnessResponse = Schema.decodeUnknownSync(

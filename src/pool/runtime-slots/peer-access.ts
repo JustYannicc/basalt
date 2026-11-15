@@ -65,11 +65,7 @@ export class HomePeerAccess {
         throw new SlotRefused("identity");
       return;
     }
-    if (
-      target.homePeerOrdinal === undefined ||
-      !record.witness ||
-      !sameWitness(source.witness, record.witness)
-    )
+    if (!record.witness || !sameWitness(source.witness, record.witness))
       throw new SlotRefused("identity");
     const launch = Schema.decodeUnknownSync(LaunchRecord)(
       await this.ctx.storage.get(launchStorageKey),

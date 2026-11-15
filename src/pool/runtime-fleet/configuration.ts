@@ -5,6 +5,7 @@ import {
   SlotRefused,
   sameControllerCode,
   sameIdentity,
+  type PromotionIntent,
 } from "../runtime-slots/contract.ts";
 import { providerDigest } from "../runtime-provider/canonical.ts";
 import type { RuntimeProviderReader } from "../runtime-provider/read.ts";
@@ -69,6 +70,7 @@ interface Dependencies {
     }[]
   >;
   provider: RuntimeProviderReader;
+  beforeCommit?(configuration: FleetConfiguration, transaction: SlotStorage): Promise<void>;
 }
 
 /** Only the signed deployment command may commit launch permission. Reads never refresh or enable it. */
@@ -86,7 +88,6 @@ export class RuntimeFleetConfiguration {
       configuration.controllerId !== this.deps.controllerId ||
       (currentCode && !sameControllerCode(configuration.controllerCode, this.deps.code)) ||
       configuration.legacy.controllerId !== this.deps.controllerId ||
-      configuration.legacy.instanceId !== this.deps.controllerId ||
       configuration.legacy.homePeerOrdinal !== undefined ||
       new Set(configuration.applications.map((value) => value.color)).size !== 2 ||
       new Set(configuration.applications.map((value) => value.applicationId)).size !== 2 ||
@@ -108,6 +109,37 @@ export class RuntimeFleetConfiguration {
       )
     )
       throw new SlotRefused("identity");
+  }
+  async promotePrimary(intent: PromotionIntent, transaction: SlotStorage) {
+    const current = await this.inspect(undefined, transaction);
+    if (!current) return;
+    if (!sameIdentity(current.configuration.legacy, intent.previous))
+      throw new SlotRefused("selection");
+    const application = current.configuration.applications.find(
+      (app) =>
+        app.applicationId === intent.candidate.applicationId &&
+        app.applicationVersion === intent.candidate.applicationVersion &&
+        app.imageDigest === intent.candidate.imageDigest &&
+        app.imageInput === intent.candidate.imageInput,
+    );
+    if (!application || intent.candidate.homePeerOrdinal !== undefined)
+      throw new SlotRefused("identity");
+    const configuration = Schema.decodeUnknownSync(FleetConfiguration)({
+      ...current.configuration,
+      legacy: intent.candidate,
+      active: application.color,
+      revision: current.configuration.revision + 1,
+      previousDigest: current.digest,
+    });
+    this.assertBindings(configuration);
+    const record = {
+      ...current,
+      operationId: `handoff-${intent.operationId}`,
+      configuration,
+      digest: await providerDigest(configuration),
+    };
+    await transaction.put(key, record);
+    await transaction.put(operationKey(record.operationId), record);
   }
   private compare(previous: FleetConfigurationRecord | undefined, next: FleetConfiguration) {
     if (
@@ -161,6 +193,7 @@ export class RuntimeFleetConfiguration {
       await this.assertOccupied(configuration, transaction);
       if (!sameIdentity(await this.deps.legacy(transaction), configuration.legacy))
         throw new SlotRefused("identity");
+      await this.deps.beforeCommit?.(configuration, transaction);
       await transaction.put(key, record);
       await transaction.put(operationKey(operationId), record);
     });

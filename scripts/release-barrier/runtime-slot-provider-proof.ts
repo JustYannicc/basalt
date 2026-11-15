@@ -13,7 +13,9 @@ import { canonical, digest } from "./manifest.ts";
 import type { RuntimeHandoffManifest } from "./runtime-slot-manifest.ts";
 import { provisioningRefusal, sameProvisioningValue } from "./provisioning-refusal.ts";
 
-export function runtimeApplicationConfigDigest(application: ContainerAttributes) {
+export function runtimeApplicationConfigDigest(
+  application: Parameters<typeof runtimeApplicationSettings>[0],
+) {
   return digest(canonical(runtimeApplicationSettings(application)));
 }
 
