@@ -2,11 +2,11 @@ import { Schema } from "effect";
 import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { pathToFileURL } from "node:url";
+import { historyActivationDefinitions, runHistoryOperator } from "../pool-history-operator.ts";
 import { canonical, digest, BarrierRefusal } from "./manifest.ts";
 import type { JournalFunction } from "./migration-activation-database.ts";
 
-const root = fileURLToPath(new URL("../../", import.meta.url));
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 export interface HistoryOptions {
@@ -17,7 +17,6 @@ export interface HistoryOptions {
   readersReady?: string;
 }
 export type HistoryOperator = (options: HistoryOptions, accountId: string) => Promise<unknown>;
-const isOperator = (value: unknown): value is HistoryOperator => typeof value === "function";
 const migrations = Schema.Array(
   Schema.Struct({ name: Schema.String, statements: Schema.Array(Schema.String) }),
 );
@@ -48,13 +47,19 @@ function functions(source: string, names: readonly string[]): JournalFunction[] 
   });
 }
 
-export async function sourceContract(candidate: string, sourceRoot = root) {
-  const root = sourceRoot;
+/**
+ * Everything that must match deployed code, read from the candidate's own prepared checkout. The
+ * client calling this runs from main, so a fix to it never changes what a plan binds.
+ */
+export async function candidateSources(candidate: string, root: string) {
   const cloud = join(root, ".upstream/apps/hosted/cloud");
+  const module = (path: string): Promise<unknown> => import(pathToFileURL(join(root, path)).href);
+  let step = "checkout.head";
   try {
     const git = (...args: string[]) =>
       execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     if (git("rev-parse", "HEAD").trim() !== candidate) throw new Error();
+    step = "checkout.unmodified";
     git(
       "diff",
       "--exit-code",
@@ -64,11 +69,13 @@ export async function sourceContract(candidate: string, sourceRoot = root) {
       "src/pool/model-history",
       "patches",
     );
+    step = "carry.0560";
     const carries = git("ls-tree", "-r", "--name-only", candidate, "patches")
       .trim()
       .split("\n")
       .filter((path) => /^patches\/0560-.*\.(?:patch|json)$/u.test(path));
     if (!carries.some((path) => path.endsWith(".patch"))) throw new Error();
+    step = "sources";
     const paths = [
       "scripts/pool-history-operator.ts",
       "src/pool/model-history/schema.ts",
@@ -85,6 +92,7 @@ export async function sourceContract(candidate: string, sourceRoot = root) {
       readFile(join(cloud, "src/migrate.ts"), "utf8"),
       readFile(join(root, "scripts/pool-history-operator.ts"), "utf8"),
     ]);
+    step = "activation.capability";
     if (
       !cli.includes("--activate-change-journal") ||
       !cli.includes("--readers-ready=checkpoint-count-v1") ||
@@ -92,10 +100,17 @@ export async function sourceContract(candidate: string, sourceRoot = root) {
       !operatorSource.includes("historyJournalActivationPath")
     )
       throw new Error();
-    const imported: unknown = await import("../pool-history-operator.ts");
-    if (!record(imported) || !isOperator(imported.runHistoryOperator)) throw new Error();
-    const schema: unknown = await import("../../src/pool/model-history/schema.ts");
-    if (!record(schema)) throw new Error();
+    step = "definitions";
+    const [schema, protocol, revision] = await Promise.all([
+      module("src/pool/model-history/schema.ts"),
+      module("src/pool/model-history/operator.ts"),
+      module(hostedPath + "pool-worker-revision.ts"),
+    ]);
+    if (!record(schema) || !record(protocol) || !record(revision)) throw new Error();
+    const poolWorkerRevision = revision.poolWorkerRevision;
+    if (typeof poolWorkerRevision !== "string" || !/^[a-f0-9]{64}$/u.test(poolWorkerRevision))
+      throw new Error();
+    step = "schema";
     const prepared = Schema.decodeUnknownSync(migrations)(schema.historySchemaMigrations);
     const active = Schema.decodeUnknownSync(
       Schema.Struct({ name: Schema.String, statements: Schema.Array(Schema.String) }),
@@ -113,9 +128,12 @@ export async function sourceContract(candidate: string, sourceRoot = root) {
       ["pool-prepared", digest(poolPrepared)],
       ["pool-active", digest(canonical(active))],
     );
+    step = "functions";
     return {
       fingerprint: digest(canonical({ candidate, sources: fingerprints })),
-      operator: imported.runHistoryOperator,
+      cloud,
+      poolWorkerRevision,
+      definitions: { ...schema, ...protocol },
       hosted: {
         prepared: functions(hosted, ["hosted_change_revision", "hosted_project_changes"]),
         active: functions(hosted, ["hosted_flush_changes"]),
@@ -133,7 +151,41 @@ export async function sourceContract(candidate: string, sourceRoot = root) {
         inactive: functions(poolPrepared, ["basalt_pool_change"]),
       },
     };
-  } catch {
-    throw new BarrierRefusal("migration-activation-source-capability", "candidate");
+  } catch (error) {
+    if (error instanceof BarrierRefusal) throw error;
+    throw new BarrierRefusal("migration-activation-source-capability", "candidate", {
+      fqn: "candidate",
+      type: "MigrationSource",
+      changed: [{ path: step, changed: true }],
+    });
   }
+}
+
+/**
+ * The trusted operator holds the deployed Worker's report to its own copy of these definitions.
+ * When main's have moved past the candidate's, main no longer describes production.
+ */
+export function assertTrustedDefinitions(
+  trusted: Readonly<Record<string, unknown>>,
+  deployed: Readonly<Record<string, unknown>>,
+) {
+  for (const [name, value] of Object.entries(trusted)) {
+    const old = digest(canonical(deployed[name] ?? null));
+    const current = digest(canonical(value ?? null));
+    if (old !== current)
+      throw new BarrierRefusal("migration-activation-tooling-definition-drift", name, {
+        fqn: name,
+        type: "MigrationDefinition",
+        changed: [{ path: "digest", old, new: current }],
+        why: ["main's migration definition differs from production; release main first"],
+      });
+  }
+}
+
+/** Main's operator and transport, bound to the candidate's sources. */
+export async function sourceContract(candidate: string, root: string) {
+  const { definitions, ...sources } = await candidateSources(candidate, root);
+  assertTrustedDefinitions(historyActivationDefinitions, definitions);
+  const operator: HistoryOperator = runHistoryOperator;
+  return { ...sources, operator };
 }

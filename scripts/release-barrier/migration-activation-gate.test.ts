@@ -7,7 +7,12 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { requiredSecrets } from "../environment.ts";
 import { test } from "node:test";
-import { exactMigrationRelease, migrationActivationInput } from "./migration-activation-gate.ts";
+import { BarrierRefusal } from "./refusal.ts";
+import {
+  exactMigrationRelease,
+  migrationActivationInput,
+  trustedActivationTooling,
+} from "./migration-activation-gate.ts";
 
 const environment = {
   BASALT_RELEASE_CANDIDATE: "a".repeat(40),
@@ -78,21 +83,54 @@ test("only exact candidate plan, digest and inspect inputs enter the trusted act
 });
 
 test("activation refuses PR, non-main and different workflow contexts before connecting", () => {
-  for (const changed of [
-    { GITHUB_ACTIONS: "false" },
-    { GITHUB_EVENT_NAME: "pull_request" },
-    { GITHUB_REF: "refs/heads/topic" },
-    { GITHUB_WORKFLOW_REF: "synthetic/basalt/.github/workflows/other.yml@refs/heads/main" },
-  ])
-    assert.throws(
-      () => migrationActivationInput({ ...environment, ...changed }),
-      /trusted-workflow/,
-    );
+  // Read-only modes get no exemption: a plan from a topic branch would run unreviewed code.
+  for (const mode of ["plan", "inspect", "b".repeat(64)])
+    for (const changed of [
+      { GITHUB_ACTIONS: "false" },
+      { GITHUB_EVENT_NAME: "pull_request" },
+      { GITHUB_REF: "refs/heads/topic" },
+      { GITHUB_REF: "refs/tags/main" },
+      { GITHUB_WORKFLOW_REF: "synthetic/basalt/.github/workflows/other.yml@refs/heads/main" },
+      {
+        GITHUB_WORKFLOW_REF: "synthetic/basalt/.github/workflows/release-main.yml@refs/heads/topic",
+      },
+    ])
+      assert.throws(
+        () =>
+          migrationActivationInput({
+            ...environment,
+            MIGRATION_ACTIVATION_MODE: mode,
+            ...changed,
+          }),
+        /trusted-workflow/,
+      );
   assert.throws(
     () =>
       migrationActivationInput({ ...environment, BASALT_HOME_SCHEMA_RETRY_INTENT: "other-intent" }),
     /conflicting-input/,
   );
+});
+
+test("the client that touches production is the dispatched main commit", () => {
+  const dispatched = "c".repeat(40);
+  assert.equal(trustedActivationTooling({ GITHUB_SHA: dispatched }, dispatched), dispatched);
+  for (const [source, head] of [
+    [{ GITHUB_SHA: dispatched }, environment.BASALT_RELEASE_CANDIDATE],
+    [{ GITHUB_SHA: dispatched }, ""],
+    [{}, dispatched],
+    [{ GITHUB_SHA: "main" }, "main"],
+  ] as const)
+    assert.throws(
+      () => trustedActivationTooling(source, head),
+      (error: unknown) => {
+        assert.ok(error instanceof BarrierRefusal);
+        assert.equal(error.reason, "migration-activation-trusted-tooling-required");
+        assert.deepEqual(error.delta?.changed, [
+          { path: "HEAD", old: source.GITHUB_SHA ?? "unavailable", new: head },
+        ]);
+        return true;
+      },
+    );
 });
 
 test("a production release hold refuses every activation input before connecting", () => {
@@ -144,7 +182,20 @@ test("the activation workflow keeps the release lock and excludes all ordinary d
     step.run?.includes("migration-activation-entry.ts"),
   );
   assert.ok(validate > 0 && select > validate && run > select);
-  assert.equal(steps[run]["working-directory"], "${{ runner.temp }}/candidate");
+  // Main's client runs in main's checkout; the candidate is prepared beside it as data.
+  assert.equal(steps[run]["working-directory"], undefined);
+  assert.equal(steps[run].env.BASALT_ACTIVATION_SOURCE_ROOT, "${{ runner.temp }}/candidate");
+  assert.equal(steps[run].env.BASALT_RELEASE_CANDIDATE, undefined);
+  const prepared = steps
+    .filter((step: { run?: string }) => step.run === "npm run prepare:upstream")
+    .map((step: { "working-directory"?: string }) => step["working-directory"]);
+  assert.deepEqual(prepared, ["${{ runner.temp }}/candidate", undefined]);
+  assert.ok(
+    steps.every(
+      (step: { run?: string; "working-directory"?: string }) =>
+        step["working-directory"] === undefined || step.run === "npm run prepare:upstream",
+    ),
+  );
   const commands = steps.map((step: { run?: string }) => step.run ?? "").join("\n");
   assert.doesNotMatch(
     commands,
@@ -156,10 +207,10 @@ test("the activation workflow keeps the release lock and excludes all ordinary d
     step.uses?.startsWith("actions/upload-artifact@"),
   );
   assert.equal(artifact.if, "always()");
-  assert.match(artifact.with.path, /migration-activation\.json$/);
+  assert.equal(artifact.with.path, ".local/release-barrier/migration-activation.json");
 });
 
-test("the activation workflow starts its candidate client with production deployment config", (context) => {
+test("the activation workflow starts main's client with the candidate's release identity", (context) => {
   const require = createRequire(new URL("../architecture/package.json", import.meta.url));
   const { parse } = require("yaml");
   const workflow = parse(
@@ -173,6 +224,31 @@ test("the activation workflow starts its candidate client with production deploy
   context.after(() => rmSync(scratch, { recursive: true, force: true }));
   const bin = join(scratch, "bin");
   mkdirSync(bin);
+  const candidateRoot = join(scratch, "candidate");
+  mkdirSync(candidateRoot);
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: candidateRoot, encoding: "utf8" }).trim();
+  git("init", "--quiet");
+  writeFileSync(join(candidateRoot, "release"), "candidate\n");
+  git("add", "release");
+  git(
+    "-c",
+    "user.name=fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "--quiet",
+    "--message",
+    "candidate",
+  );
+  const candidate = git("rev-parse", "HEAD");
+  const tooling = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+  }).trim();
+  assert.notEqual(candidate, tooling);
   const output = join(scratch, "config.json");
   const keys = [
     "BETTER_AUTH_URL",
@@ -185,6 +261,8 @@ test("the activation workflow starts its candidate client with production deploy
     "GITHUB_CLIENT_SECRET",
     "TELEMETRY_RELAY_KEY",
     "BASALT_RELEASE_CANDIDATE",
+    "BASALT_ACTIVATION_SOURCE_ROOT",
+    "EXECUTOR_COMPILER_CACHE_RELEASE",
     "BASALT_RELEASE_ATTEMPT",
     "MIGRATION_ACTIVATION_MODE",
     "BASALT_HOME_SCHEMA_RETRY_INTENT",
@@ -211,6 +289,7 @@ process.exit(Number(process.env.CONFIG_CLIENT_EXIT || 0));
     ALCHEMY_STAGE: "production",
     BASALT_RELEASE_ATTEMPT: "stale-fixture-attempt",
     BASALT_HOME_SCHEMA_RETRY_INTENT: "",
+    BASALT_ACTIVATION_SOURCE_ROOT: candidateRoot,
     CONFIG_OUTPUT: output,
     PATH: `${bin}${delimiter}${process.env.PATH}`,
   };
@@ -233,10 +312,10 @@ process.exit(Number(process.env.CONFIG_CLIENT_EXIT || 0));
     assert.equal(captured.env.GITHUB_CLIENT_ID, source.AUTH_GITHUB_CLIENT_ID);
     assert.equal(captured.env.GITHUB_CLIENT_SECRET, source.AUTH_GITHUB_CLIENT_SECRET);
     assert.match(captured.env.TELEMETRY_RELAY_KEY, /^[a-f0-9]{64}$/);
-    assert.equal(
-      captured.env.BASALT_RELEASE_CANDIDATE,
-      execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
-    );
+    // The release identity is the candidate checkout's commit, never the client's own.
+    assert.equal(captured.env.BASALT_RELEASE_CANDIDATE, candidate);
+    assert.equal(captured.env.EXECUTOR_COMPILER_CACHE_RELEASE, candidate);
+    assert.equal(captured.env.BASALT_ACTIVATION_SOURCE_ROOT, candidateRoot);
     assert.match(
       captured.env.BASALT_RELEASE_ATTEMPT,
       /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,

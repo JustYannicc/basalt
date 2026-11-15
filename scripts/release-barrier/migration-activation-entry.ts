@@ -1,6 +1,7 @@
 import { evalStack } from "alchemy/Stack";
 import { Cause, Effect, Exit } from "effect";
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { migrationActivationGate } from "./migration-activation-gate.ts";
 import { migrationActivationPorts } from "./migration-activation-runtime.ts";
@@ -20,6 +21,10 @@ try {
   const gate = await migrationActivationGate();
   if (process.env.ALCHEMY_STAGE !== "production")
     throw new BarrierRefusal("migration-activation-production-stage-required");
+  // No fallback to this checkout: main's own sources are not what production runs.
+  const sourceRoot = process.env.BASALT_ACTIVATION_SOURCE_ROOT ?? "";
+  if (!isAbsolute(sourceRoot))
+    throw new BarrierRefusal("migration-activation-source-root-required", "candidate");
   process.chdir(fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url)));
   const result = await Effect.runPromiseExit(
     Effect.promise(
@@ -35,6 +40,7 @@ try {
                 stack: compiled,
                 candidate: gate.candidate,
                 deploymentId: gate.deploymentId,
+                sourceRoot,
               });
               return yield* Effect.tryPromise({
                 try: () => runMigrationActivation({ ...gate, ports }),
@@ -51,7 +57,7 @@ try {
   const receipt = result.value;
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await writeFile(output, JSON.stringify(receipt, null, 2) + "\n", { mode: 0o600 });
-  const message = `Migration activation ${receipt.status} for ${receipt.candidate}. Plan digest: ${receipt.fingerprint}. Targets: hosted 22, model-history v10.`;
+  const message = `Migration activation ${receipt.status} for ${receipt.candidate}. Plan digest: ${receipt.fingerprint}. Targets: hosted 22, model-history v10. Client: main ${gate.tooling}.`;
   console.log(message);
   if (summary) await appendFile(summary, `${message}\n\n`);
   if (gate.mode !== "plan" && gate.mode !== "inspect" && receipt.status !== "complete") {

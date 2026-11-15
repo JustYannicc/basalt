@@ -33,9 +33,11 @@ export const migrationActivationPorts = (options: {
   stack: CompiledStack;
   candidate: string;
   deploymentId: number;
+  /** The live candidate's prepared checkout; this trusted client only reads and runs its data. */
+  sourceRoot: string;
 }) =>
   Effect.gen(function* () {
-    const { stack, candidate, deploymentId } = options;
+    const { stack, candidate, deploymentId, sourceRoot } = options;
     if (
       stack.stage !== "production" ||
       !/^[a-f0-9]{40}$/u.test(candidate) ||
@@ -66,8 +68,11 @@ export const migrationActivationPorts = (options: {
       throw new BarrierRefusal("migration-activation-worker-identity", "PoolWorker");
     const worker = workerState.attr.workerName;
     const contract = yield* Effect.tryPromise({
-      try: () => sourceContract(candidate),
-      catch: () => new BarrierRefusal("migration-activation-source-capability", "candidate"),
+      try: () => sourceContract(candidate, sourceRoot),
+      catch: (error) =>
+        error instanceof BarrierRefusal
+          ? error
+          : new BarrierRefusal("migration-activation-source-capability", "candidate"),
     });
     const context = yield* Effect.context<never>();
     const journal = migrationActivationJournal(store, stack, candidate, encryptionKey);
@@ -118,7 +123,7 @@ export const migrationActivationPorts = (options: {
       };
     };
     const read = async (): Promise<MigrationActivationSnapshot> => {
-      if ((await sourceContract(candidate)).fingerprint !== contract.fingerprint)
+      if ((await sourceContract(candidate, sourceRoot)).fingerprint !== contract.fingerprint)
         throw new BarrierRefusal("migration-activation-source-drift", "candidate");
       await assertAuthority();
       const [databases, readers] = await Promise.all([
@@ -133,6 +138,7 @@ export const migrationActivationPorts = (options: {
             apiToken,
             tools: authority.sources.tools,
             deploymentId,
+            poolWorkerRevision: contract.poolWorkerRevision,
           }).pipe(Effect.provideContext(context)),
         ),
       ]);
@@ -146,7 +152,8 @@ export const migrationActivationPorts = (options: {
         const before = await read();
         if (canonical(before) !== canonical(intent.before))
           throw new BarrierRefusal("migration-activation-plan-drift", "candidate");
-        if (!before.hosted.active) await activateHosted(Redacted.value(authority.toolsUrl));
+        if (!before.hosted.active)
+          await activateHosted(Redacted.value(authority.toolsUrl), contract.cloud);
         // A lost hosted reply never reaches the pool mutation. A confirmed reply still needs SQL proof.
         const afterHosted = await read();
         if (

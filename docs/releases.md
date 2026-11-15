@@ -105,7 +105,9 @@ The simulated release and broken-patch checks verify update mechanics without cl
 
 ### Activate prepared change journals
 
-Release the candidate normally first, with both the reader-ready journal code and activation client included. In **Manual release of main**, select `main`, set `candidate` to that exact successful production SHA and set `migration_activation` to `plan`. This path keeps the deployment lock and checks the release hold, but does not redeploy. Retain `migration-activation.json` and review its digest, routing and reader-adoption evidence, app inventory hash and prepared hosted 21/model-history v9 state.
+Release the candidate normally first, with the reader-ready journal code included. In **Manual release of main**, select `main`, set `candidate` to that exact successful production SHA and set `migration_activation` to `plan`. This path keeps the deployment lock and checks the release hold, but does not redeploy.
+
+The activation client is the `main` commit the workflow was dispatched from. It reads the candidate's checkout only for what must match deployed code: the hosted journal SQL and migration CLI, the pool history migrations and the pool Worker revision. A fix to the client, its transport or its refusal reports therefore applies to the next dispatch after it merges, without another release. If `main`'s migration definitions have changed since the candidate, the plan refuses with `migration-activation-tooling-definition-drift`; release `main` and plan against that release. Retain `migration-activation.json` and review its digest, routing and reader-adoption evidence, app inventory hash and prepared hosted 21/model-history v9 state.
 
 With approval for that exact plan, dispatch the same workflow and candidate with `migration_activation` set to its 64-character digest. Changed evidence or either target already being active refuses a fresh plan. The existing hosted CLI and pool operator activate hosted 22 and model-history v10 once, with a durable encrypted intent recorded first.
 

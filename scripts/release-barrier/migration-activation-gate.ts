@@ -67,11 +67,32 @@ export function exactMigrationRelease(
   return deploymentId;
 }
 
+/** The client that touches production is the dispatched main commit, never another checkout. */
+export function trustedActivationTooling(source: Record<string, string | undefined>, head: string) {
+  if (!/^[a-f0-9]{40}$/u.test(head) || head !== source.GITHUB_SHA)
+    throw new BarrierRefusal("migration-activation-trusted-tooling-required", "tooling", {
+      fqn: "tooling",
+      type: "Git.Commit",
+      changed: [{ path: "HEAD", old: source.GITHUB_SHA ?? "unavailable", new: head }],
+    });
+  return head;
+}
+
 /** The trusted workflow validates the requested SHA exactly, without the normal newest chooser. */
 export async function migrationActivationGate(source = process.env) {
   const input = migrationActivationInput(source);
   const environment = readLedgerEnvironment(source);
-  const checkedOut = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  // This file's own checkout, so the working directory cannot stand in for the running client.
+  const checkedOut = trustedActivationTooling(
+    source,
+    execFileSync(
+      "git",
+      ["-C", fileURLToPath(new URL("../../", import.meta.url)), "rev-parse", "HEAD"],
+      {
+        encoding: "utf8",
+      },
+    ).trim(),
+  );
   await validateMainCandidate(
     environment.repository,
     environment.token,
@@ -82,7 +103,7 @@ export async function migrationActivationGate(source = process.env) {
     input.candidate,
     await readDeploymentLedger(environment),
   );
-  return { ...input, deploymentId };
+  return { ...input, deploymentId, tooling: checkedOut };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

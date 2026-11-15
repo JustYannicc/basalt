@@ -27,6 +27,14 @@ import {
   historySchemaMigrations,
 } from "../src/pool/model-history/schema.ts";
 
+/** What this operator holds the deployed Worker's activation report to. */
+export const historyActivationDefinitions = {
+  historyJournalActivationPath,
+  historyJournalActivationManifest,
+  historyJournalReaderVersion,
+  historyJournalActivationMigration,
+};
+
 type Platform = {
   env: { POOL_OPERATIONS: { fetch(request: Request): Promise<Response> } };
   dispose(): Promise<void>;
