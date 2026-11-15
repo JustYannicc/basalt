@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { PGlite } from "../.upstream/node_modules/@electric-sql/pglite/dist/index.js";
 import { historyOperatorOptions, runHistoryOperator } from "./pool-history-operator.ts";
+import { HistoryOperatorFailure } from "./pool-history-operator-failure.ts";
 
 import {
   historyAccountTimeSchemaVersion,
@@ -252,7 +253,14 @@ test("schema catalogs refuse unknown versions and manifests without saving an ap
         runHistoryOperator({ ...options, apply: true }, account, async () => {
           throw new Error("must reject before connecting");
         }),
-        /Invalid history schema plan|Unknown history schema statements|catalog hash changed/,
+        (error: unknown) => {
+          assert.ok(error instanceof HistoryOperatorFailure);
+          assert.equal(
+            error.field,
+            "catalog" in change ? "report.catalogHash" : `report.${Object.keys(change)[0]}`,
+          );
+          return true;
+        },
       );
     }
   } finally {
@@ -475,7 +483,8 @@ test("a v4 schema hash cannot approve a v7 migration", async () => {
 
     await assert.rejects(
       runHistoryOperator(options, account, connect),
-      /Invalid pending history migrations/,
+      (error: unknown) =>
+        error instanceof HistoryOperatorFailure && error.field === "report.pendingMigrations",
     );
     await assert.rejects(readFile(path), { code: "ENOENT" });
   } finally {

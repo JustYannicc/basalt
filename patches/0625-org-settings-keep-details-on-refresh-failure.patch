@@ -1,0 +1,199 @@
+diff --git a/apps/hosted/web/src/contracts/organization.ts b/apps/hosted/web/src/contracts/organization.ts
+--- a/apps/hosted/web/src/contracts/organization.ts
++++ b/apps/hosted/web/src/contracts/organization.ts
+@@ -13,7 +13,7 @@
+ import { UploadedOrganizationIcon } from "@executor-js/hosted-server/organization-icon";
+ import { OrganizationAccess, OrganizationForbidden } from "@executor-js/hosted-server/organization";
+ import { OrganizationId } from "@executor-js/hosted-server/organization";
+-import { Effect, Option, Schema } from "effect";
++import { Effect, Option, Predicate, Schema } from "effect";
+ import { AsyncResult, Atom } from "effect/reactivity";
+ import {
+   authCallOptions,
+@@ -173,6 +173,18 @@
+           Effect.sync(() => {
+             get.set(organizationTargetAtom(organization), access.organization);
+             get.set(organizationPresentationAtom(access.organization), access);
++          }),
++        ),
++        // A refusal revokes the retained details, so a later failed refresh cannot show them again.
++        Effect.tapError((error) =>
++          Effect.sync(() => {
++            if (
++              !Predicate.isTagged(error, "OrganizationForbidden") &&
++              !Predicate.isTagged(error, "Unauthorized")
++            )
++              return;
++            const id = get.once(organizationTargetAtom(organization));
++            if (id !== undefined) get.set(organizationPresentationAtom(id), undefined);
+           }),
+         ),
+       );
+diff --git a/apps/hosted/web/src/implementation/components/organization.tsx b/apps/hosted/web/src/implementation/components/organization.tsx
+--- a/apps/hosted/web/src/implementation/components/organization.tsx
++++ b/apps/hosted/web/src/implementation/components/organization.tsx
+@@ -493,7 +493,8 @@
+     location.hash,
+     rejectedResume,
+   ]);
+-  const checked = AsyncResult.isFailure(access) ? undefined : snapshot;
++  // A refresh that fails to answer keeps the last verified details; only a refusal drops them.
++  const checked = unavailable ? undefined : snapshot;
+   const details =
+     organization !== undefined && checked !== undefined
+       ? {
+diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-intent-prefetch.spec.ts
+--- a/e2e/tests/settings-intent-prefetch.spec.ts
++++ b/e2e/tests/settings-intent-prefetch.spec.ts
+@@ -1,8 +1,9 @@
+ import { expect, layer } from "@effect/vitest";
++import { randomUUID } from "node:crypto";
+ import { Deferred, Effect, Option } from "effect";
+-import type { Locator, Page, Request } from "playwright";
++import type { Locator, Page, Request, Route } from "playwright";
+ import { Actors } from "../support/actors.ts";
+-import type { Session } from "../support/api.ts";
++import { Api, type Session } from "../support/api.ts";
+ import { checkSettingsTouchIntent } from "../support/settings-touch-intent.ts";
+ import { Browser } from "../support/browser.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+@@ -43,6 +44,10 @@
+   if (path === "/api/auth/get-session") return ["session"];
+   return [];
+ };
++/** The organization access read, alone or inside a dashboard batch. */
++const accessPath = /\/api\/(?:dashboard\/batch|organizations\/[^/]+\/access)$/;
++const readsAccess = (request: Request) =>
++  request.method() === "GET" || (request.postData() ?? "").includes('"endpoint":"access"');
+ const count = (reads: readonly SettingsRead[], kind: SettingsRead) =>
+   reads.filter((read) => read === kind).length;
+ 
+@@ -66,6 +71,7 @@
+         context,
+         Effect.gen(function* () {
+           const actors = yield* Actors;
++          const api = yield* Api;
+           const browser = yield* Browser;
+           const evidence = yield* Evidence;
+           const organization = `/org/${actors.organization.slug}`;
+@@ -268,6 +274,22 @@
+               window.dispatchEvent(new Event("focus"));
+             }),
+           );
++          // A member's access refresh that fails to answer must not hide the retained settings.
++          let accessFailed = false;
++          const failAccessOnce = (route: Route) => {
++            if (accessFailed || !readsAccess(route.request())) return route.fallback();
++            accessFailed = true;
++            return route.abort("failed");
++          };
++          if (!administrator) {
++            yield* browser.use("Fail the next access refresh once", (page) =>
++              page.route(accessPath, failAccessOnce),
++            );
++            // Request the access refresh now and let its batch send it, so the failure lands before
++            // the clock advance instead of whenever that advance happens to release the batch.
++            yield* refreshVisiblePage;
++            yield* browser.use("Send the access refresh", (page) => page.clock.runFor(5));
++          }
+           // Past the reads' 30 second freshness, so following the link refreshes behind the rows.
+           yield* browser.use("Let the answer go stale", (page) => page.clock.runFor(31_000));
+           yield* settle("Flush fetch dispatch after the due timers");
+@@ -288,6 +310,12 @@
+           membersFailed = yield* Deferred.make<void>();
+           const failing = yield* holdQuery([membersPath], "fail");
+           yield* followed("Follow the warmed Settings link", "intent");
++          if (!administrator) {
++            expect(accessFailed, "The member's access refresh failed once").toBe(true);
++            yield* browser.use("Stop failing access refreshes", (page) =>
++              page.unroute(accessPath, failAccessOnce),
++            );
++          }
+           yield* failing.requested;
+           yield* failing.release;
+           yield* Deferred.await(membersFailed);
+@@ -352,6 +380,84 @@
+             membersImage,
+           );
+           yield* browser.checkpoint(`Settings members from the focus read at ${width}`);
++          if (!administrator) {
++            // A refusal still drops the details at once: the server's own answer for an organization
++            // the member does not belong to replaces the member's next access refresh.
++            const refusal = yield* api.request(
++              session,
++              "GET",
++              `/api/organizations/${randomUUID()}/access`,
++            );
++            expect(refusal.status, "The server refuses an organization outside membership").toBe(
++              403,
++            );
++            const refused = { status: refusal.status, text: JSON.stringify(refusal.body) };
++            let refusedOnce = false;
++            const refuseAccess = (route: Route) => {
++              const request = route.request();
++              if (refusedOnce || !readsAccess(request)) return route.fallback();
++              refusedOnce = true;
++              if (request.method() === "GET")
++                return route.fulfill({
++                  status: refused.status,
++                  contentType: "application/json",
++                  body: refused.text,
++                });
++              const reads: { id: number; endpoint: string }[] = JSON.parse(
++                request.postData() ?? "{}",
++              ).reads;
++              const access = reads.find((read) => read.endpoint === "access")?.id;
++              // The batch answers the other reads as the server did; only the access answer changes.
++              const refuse = (line: string) => {
++                const answer: { id: number } = JSON.parse(line);
++                return answer.id === access
++                  ? JSON.stringify({ id: access, contentType: "application/json", ...refused })
++                  : line;
++              };
++              return route.fetch().then((response) =>
++                response.text().then((text) =>
++                  route.fulfill({
++                    response,
++                    body: `${text.split("\n").filter(Boolean).map(refuse).join("\n")}\n`,
++                  }),
++                ),
++              );
++            };
++            yield* browser.use("Refuse the next access refresh", (page) =>
++              page.route(accessPath, refuseAccess),
++            );
++            yield* refreshVisiblePage;
++            yield* settle("The refused refresh settles");
++            yield* browser.use("A refusal replaces the settings", (page) =>
++              page.getByText("Organization unavailable", { exact: true }).waitFor(),
++            );
++            expect(refusedOnce, "The member's access refresh was refused").toBe(true);
++            expect(
++              yield* rowsShown("Members after a refused refresh"),
++              "A refusal drops the retained members",
++            ).toBe(0);
++            yield* browser.use("Stop refusing access refreshes", (page) =>
++              page.unroute(accessPath, refuseAccess),
++            );
++            // A failed refresh after the refusal must not bring the revoked details back.
++            accessFailed = false;
++            yield* browser.use("Fail the access refresh after the refusal once", (page) =>
++              page.route(accessPath, failAccessOnce),
++            );
++            yield* refreshVisiblePage;
++            yield* settle("The failed refresh after the refusal settles");
++            yield* browser.use("The settings stay withheld", (page) =>
++              page.getByText("Unable to load organization settings.", { exact: true }).waitFor(),
++            );
++            expect(accessFailed, "The access refresh after the refusal failed once").toBe(true);
++            expect(
++              yield* rowsShown("Members after the refusal and a failed refresh"),
++              "A failed refresh after a refusal shows no retained members",
++            ).toBe(0);
++            yield* browser.use("Stop failing access refreshes after the refusal", (page) =>
++              page.unroute(accessPath, failAccessOnce),
++            );
++          }
+           if (phone) yield* checkSettingsTouchIntent(actors.organization.slug);
+         }),
+       ),

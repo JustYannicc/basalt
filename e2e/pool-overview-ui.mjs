@@ -6,9 +6,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
-import { Effect, Redacted } from "effect";
+import { Effect, Redacted, Schedule } from "effect";
 import { root, runtime, until } from "./recipes/harness.mjs";
 import { poolCloudHarness } from "./recipes/pool-cloud-harness.mjs";
+import { cloudLocks } from "../.upstream/e2e/support/cloud-locks.ts";
+import { Target } from "../.upstream/e2e/support/platform.ts";
 import {
   capacityReply,
   historyReply,
@@ -158,8 +160,14 @@ const program = Effect.gen(function* () {
     former: createHash("sha256").update("former-member").digest("hex"),
   };
   const usage = h.fixture.usage;
+  const summaryReads = [];
+  diagnostics.summaryReads = summaryReads;
   usage.respond = (route, payload) => {
-    if (route === "/pool/v1/usage/summary") return summaryReply(payload.input ?? payload);
+    if (route === "/pool/v1/usage/summary") {
+      const input = payload.input ?? payload;
+      summaryReads.push({ at: Date.now(), from: input.from, to: input.to, by: input.by });
+      return summaryReply(input);
+    }
     if (route === "/pool/v1/usage/series") return seriesReply(payload, inPool?.id ?? null, people);
     if (route === "/pool/v1/usage/personal-overview") return personalReply(payload);
     // Anything else, including the legacy overview, is counted and then refused.
@@ -280,6 +288,47 @@ const program = Effect.gen(function* () {
       yield* page(() => owner.emulateMedia({ colorScheme: "light" }));
       yield* page(() => owner.setViewportSize({ width: 1280, height: 900 }));
     });
+
+  // A visible owner pool can precede another member's account and app commits.
+  // Run initial setup through the dispatcher before exact read-count measurements.
+  const database = yield* cloudLocks.pipe(
+    Effect.provideService(Target, { directory: h.runtimeDirectory }),
+  );
+  yield* database.run({
+    sql: `update hosted_provisioning set available_at = now()
+      where organization_id = $1 and kind in ('team', 'member')
+      and id not like 'basalt-%' and status = 'queued'`,
+    params: [h.actors.organization.id],
+  });
+  yield* h.request("POST", "/api/onboarding/prepare", {});
+  yield* database
+    .run({
+      sql: `select id, kind, status from hosted_provisioning where organization_id = $1
+      and kind in ('team', 'member') and id not like 'basalt-%' order by id`,
+      params: [h.actors.organization.id],
+    })
+    .pipe(
+      Effect.flatMap((rows) => {
+        diagnostics.initialProvisioning = rows;
+        const blocked = rows.filter((row) => row.status !== "succeeded");
+        return rows.some((row) => row.kind === "team") && blocked.length === 0
+          ? Effect.void
+          : Effect.fail(
+              `Initial provisioning is unfinished for ${h.actors.organization.id}: ${JSON.stringify(blocked)}`,
+            );
+      }),
+      Effect.retry({ schedule: Schedule.spaced("25 millis"), times: 600 }),
+    );
+
+  // The first minute tick enqueues rollout work and advances heads even before those jobs run.
+  // Finish that startup maintenance before measuring reads for the controls below.
+  yield* Effect.promise(async () => {
+    const response = await fetch(
+      `${h.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
+    );
+    assert.equal(response.status, 200, "the initial maintenance tick succeeds");
+    await response.text();
+  });
 
   const before = usage.requests.length;
   yield* page(() =>
@@ -626,7 +675,7 @@ const program = Effect.gen(function* () {
     yield* page(() => screen.getByText("This pool endpoint does not exist.").count()),
     0,
   );
-  yield* page(() => screen.locator("#capacity").getByText("ChatGPT").first().waitFor());
+  yield* page(() => screen.locator("#capacity").getByText("OpenAI").first().waitFor());
   yield* page(() => screen.getByRole("list", { name: "Banked resets" }).waitFor());
   checked(
     "no reset can be spent from the overview",
@@ -681,9 +730,9 @@ const program = Effect.gen(function* () {
         const frame = await element.contentFrame();
         await frame.waitForFunction(() => innerWidth > 740);
       });
-      const article = screen.getByRole("article", { name: "ChatGPT", exact: true });
+      const article = screen.getByRole("article", { name: "OpenAI", exact: true });
       const control = article.getByRole("radiogroup", {
-        name: "ChatGPT limit window",
+        name: "OpenAI limit window",
         exact: true,
       });
       yield* page(() => settled(screen));
@@ -701,17 +750,13 @@ const program = Effect.gen(function* () {
         })),
       );
       diagnostics.desktopCapacity = geometry;
-      checked("ChatGPT window options share one row at 1280", geometry.optionRows, 1);
-      checked(
-        "ChatGPT desktop switch retains its approved 32 px height",
-        geometry.switchHeight,
-        32,
-      );
-      checked("ChatGPT header retains its approved desktop height", geometry.headerHeight, 129.5);
+      checked("OpenAI window options share one row at 1280", geometry.optionRows, 1);
+      checked("OpenAI desktop switch retains its approved 32 px height", geometry.switchHeight, 32);
+      checked("OpenAI header retains its approved desktop height", geometry.headerHeight, 129.5);
     }),
   );
   yield* section(
-    "Grok weekly units fit on a phone",
+    "xAI weekly units fit on a phone",
     Effect.gen(function* () {
       const control = screen.getByRole("radiogroup", { name: /^(?:grok|xai) limit window$/iu });
       yield* page(() => control.waitFor());
@@ -734,12 +779,12 @@ const program = Effect.gen(function* () {
         );
         diagnostics[`grok-390-${scheme}`] = bounds;
         checked(
-          `Grok window switch fits at 390 in ${scheme}`,
+          `xAI window switch fits at 390 in ${scheme}`,
           bounds.right <= bounds.pageWidth,
           true,
         );
         checked(
-          `Grok capacity keeps the page within 390 px in ${scheme}`,
+          `xAI capacity keeps the page within 390 px in ${scheme}`,
           yield* page(() =>
             screen
               .locator("body")
@@ -753,14 +798,14 @@ const program = Effect.gen(function* () {
           const option = control.getByRole("radio", { name: label, exact: true });
           yield* page(() => option.click());
           checked(
-            `Grok ${label} remains selectable at 390 in ${scheme}`,
+            `xAI ${label} remains selectable at 390 in ${scheme}`,
             yield* page(() => option.getAttribute("aria-checked")),
             "true",
           );
         }
       }
       checked(
-        "Grok window labels print each unit once",
+        "xAI window labels print each unit once",
         (yield* page(() => control.getByRole("radio").allTextContents())).sort(),
         ["Weekly · fixed · Grok Pro account", "Weekly · fixed · account-eq"],
       );
@@ -1125,6 +1170,7 @@ const program = Effect.gen(function* () {
       by: call.payload?.input?.by ?? call.payload?.by ?? null,
     })),
     capacityAsks,
+    summaryReads,
     capacityLayout: {
       desktop: diagnostics.desktopCapacity,
       phone: [diagnostics["grok-390-light"], diagnostics["grok-390-dark"]],
@@ -1149,5 +1195,6 @@ try {
     JSON.stringify({ phase, checks, reds, message: String(error), diagnostics }, null, 2) + "\n",
     { mode: 0o600 },
   );
+  console.error("Pool overview summary reads:", JSON.stringify(diagnostics.summaryReads ?? []));
   throw error;
 }

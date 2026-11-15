@@ -1,5 +1,5 @@
 import { Badge, Button } from "apps/ui";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { UsageForecast, UsageProjection } from "../usage-forecast-contract.ts";
 import type { PoolUsageSummaryResult } from "../usage-overview-contract.ts";
 import {
@@ -12,6 +12,8 @@ import {
 } from "./summary-format.ts";
 import { forecastFor, heat, heatHours, type Metric } from "./summary-model.ts";
 import { forecastUnavailableText } from "./summary-forecast-status.ts";
+import { LabMark, labMarkSizes } from "./lab.tsx";
+import type { LabIdentity } from "./lab-name.ts";
 
 // Every number here is the producer's: median, range, confidence and misses. A null bound is shown
 // as no range, never as a band drawn from elapsed time.
@@ -76,10 +78,12 @@ function Misses({ forecast, metric }: { forecast: UsageForecast; metric: Metric 
 }
 
 function ForecastRow({
+  mark,
   title,
   forecast,
   metric,
 }: {
+  mark: ReactNode;
   title: string;
   forecast: UsageForecast | undefined;
   metric: Metric;
@@ -87,7 +91,10 @@ function ForecastRow({
   return (
     <li className="grid grid-cols-[10rem_minmax(0,1fr)] items-start gap-4 border-t px-3 py-3 first:border-t-0 max-[720px]:grid-cols-1">
       <div className="grid justify-items-start gap-1">
-        <span className="text-sm font-medium">{title}</span>
+        <span className="flex items-center gap-2.5">
+          {mark}
+          <span className="text-sm font-medium">{title}</span>
+        </span>
         {forecast?.status === "available" && (
           <Badge className="text-muted-foreground">{forecast.confidence} confidence</Badge>
         )}
@@ -240,12 +247,16 @@ export function SummaryForecasts({
   summary,
   metric,
   name,
+  lab,
 }: {
   summary: PoolUsageSummaryResult;
   metric: Metric;
   name: (provider: string | null) => string;
+  lab: (provider: string) => LabIdentity | undefined;
 }) {
-  const labs = summary.forecasts.series.filter((series) => series.provider !== null);
+  const labs = summary.forecasts.series.flatMap((series) =>
+    series.provider === null ? [] : [series.provider],
+  );
   const method = forecastFor(summary.forecasts, null, metric);
   return (
     <section aria-labelledby="forecast-heading" className="mb-4 grid gap-5">
@@ -253,12 +264,26 @@ export function SummaryForecasts({
         Where it's heading
       </h2>
       <ul className="grid rounded-lg border">
-        <ForecastRow title="All labs" forecast={method} metric={metric} />
-        {labs.map((series) => (
+        <ForecastRow
+          // The mock's sum tile: every lab together has no single lab's logo.
+          mark={
+            <span
+              aria-hidden="true"
+              className={`grid shrink-0 place-items-center bg-foreground/10 text-xs font-semibold ${labMarkSizes.forecast}`}
+            >
+              Σ
+            </span>
+          }
+          title="All labs"
+          forecast={method}
+          metric={metric}
+        />
+        {labs.map((provider) => (
           <ForecastRow
-            key={series.provider}
-            title={name(series.provider)}
-            forecast={forecastFor(summary.forecasts, series.provider, metric)}
+            key={provider}
+            mark={<LabMark provider={provider} identity={lab(provider)} size="forecast" />}
+            title={name(provider)}
+            forecast={forecastFor(summary.forecasts, provider, metric)}
             metric={metric}
           />
         ))}

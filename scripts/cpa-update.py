@@ -6,11 +6,28 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
+import tempfile
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = "router-for-me/CLIProxyAPI"
+MODULE = "github.com/router-for-me/CLIProxyAPI/v8"
+
+
+def native_module_metadata(root, tag):
+    # Resolve public dependencies independently of caller workspace and checksum exemptions.
+    environment = {**os.environ, "GOENV": "off", "GOWORK": "off", "GOFLAGS": "",
+                   "GO111MODULE": "on", "GOSUMDB": "sum.golang.org",
+                   "GONOSUMDB": "", "GOPRIVATE": "", "GOINSECURE": ""}
+    environment.pop("GONOSUMCHECK", None)
+    with tempfile.TemporaryDirectory(prefix="cpa-native-module-") as temporary:
+        module = Path(temporary) / "typesafe"
+        shutil.copytree(root / "containers/pool/typesafe", module)
+        for command in (["go", "mod", "edit", f"-require={MODULE}@{tag}"], ["go", "mod", "tidy"]):
+            subprocess.run(command, cwd=module, env=environment, check=True, text=True)
+        return {name: (module / name).read_text() for name in ("go.mod", "go.sum")}
 
 
 def api(path):
@@ -22,7 +39,7 @@ def api(path):
         return json.load(response)
 
 
-def plan(root, release, commit, source_digest, module_sums):
+def plan(root, release, commit, source_digest, module_files):
     tag = release["tag_name"]
     if release["draft"] or release["prerelease"] or not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
         raise ValueError("CPA candidate must be a stable release")
@@ -59,17 +76,17 @@ def plan(root, release, commit, source_digest, module_sums):
     pins = {"tools": upstream, "home": releases["artifacts"]["home"], "node": base}
     receipt = {"schemaVersion": 2, "source": "node", "releaseKey": f"node-{tag}",
                "basePins": pins, "candidatePins": {**pins, "node": current}, "removedPatches": []}
-    module = "github.com/router-for-me/CLIProxyAPI/v8"
+    module = MODULE
     expected = [f"{module} {tag} ", f"{module} {tag}/go.mod "]
-    sums = module_sums.strip().splitlines()
+    sums = [line for line in module_files["go.sum"].splitlines() if line.startswith(module + " ")]
     if len(sums) != 2 or any(not any(line.startswith(prefix) and re.fullmatch(r"h1:[A-Za-z0-9+/]{43}=", line[len(prefix):]) for line in sums) for prefix in expected):
         raise ValueError("Missing CPA module checksums")
     go_mod = (root / "containers/pool/typesafe/go.mod").read_text()
-    old = f"require {module} {base['tag']}"
-    if go_mod.count(old) != 1:
+    requirement = rf"(?m)^\s*(?:require\s+)?{re.escape(module)}\s+(\S+)"
+    if re.findall(requirement, go_mod) != [base["tag"]]:
         raise ValueError("Native plugin pin differs from CPA")
-    go_sum = (root / "containers/pool/typesafe/go.sum").read_text()
-    retained = [line for line in go_sum.splitlines() if not line.startswith(module + " ")]
+    if re.findall(requirement, module_files["go.mod"]) != [tag]:
+        raise ValueError("Regenerated native plugin pin differs from CPA")
     architecture = (root / "architecture/model/basalt.c4").read_text()
     old_version = f"Model gateway version {base['tag']}"
     if architecture.count(old_version) != 1:
@@ -79,8 +96,8 @@ def plan(root, release, commit, source_digest, module_sums):
         "containers/pool/sources.json": encode(sources),
         "scripts/releases/patches.json": encode(manifest),
         "scripts/releases/receipts/node.json": encode(receipt),
-        "containers/pool/typesafe/go.mod": go_mod.replace(old, f"require {module} {tag}"),
-        "containers/pool/typesafe/go.sum": "\n".join(sorted(retained + sums)) + "\n",
+        "containers/pool/typesafe/go.mod": module_files["go.mod"],
+        "containers/pool/typesafe/go.sum": module_files["go.sum"],
         "architecture/model/basalt.c4": architecture.replace(old_version, f"Model gateway version {tag}"),
     }
 
@@ -104,12 +121,7 @@ def main():
     with urllib.request.urlopen(f"https://codeload.github.com/{REPOSITORY}/tar.gz/{commit}", timeout=120) as response:
         while chunk := response.read(1024 * 1024):
             digest.update(chunk)
-    result = subprocess.run(["go", "mod", "download", "-json", f"github.com/router-for-me/CLIProxyAPI/v8@{tag}"],
-                            check=True, capture_output=True, text=True)
-    module = json.loads(result.stdout)
-    sums = f"github.com/router-for-me/CLIProxyAPI/v8 {tag} {module['Sum']}\n" + \
-           f"github.com/router-for-me/CLIProxyAPI/v8 {tag}/go.mod {module['GoModSum']}\n"
-    files = plan(ROOT, release, commit, digest.hexdigest(), sums)
+    files = plan(ROOT, release, commit, digest.hexdigest(), native_module_metadata(ROOT, tag))
     for name, content in files.items():
         (ROOT / name).write_text(content)
     args.body_file.write_text(

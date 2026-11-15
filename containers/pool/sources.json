@@ -93,7 +93,7 @@
           "sha256": "ea8e7bd4d1a7619358288dd764f8e861a17394d0a29d1c07138f4259c0b15201",
           "retirement": {
             "mode": "manual",
-            "requires": "remove when the pin moves to ≥ v1.1.8 and the upstream paid omitted-zero, free/unknown-profile, retained-window, supported-client and metadata-only collection regressions pass on the new pin."
+            "requires": "remove when the pin moves to \u2265 v1.1.8 and the upstream paid omitted-zero, free/unknown-profile, retained-window, supported-client and metadata-only collection regressions pass on the new pin."
           }
         },
         {
@@ -262,8 +262,8 @@
     },
     "node": {
       "repository": "router-for-me/CLIProxyAPI",
-      "commit": "f7ae8feeb3710319f524730849fbe32fde1751e4",
-      "sha256": "94f30de04e19df8db4868bfce7abfa0a4c7cac463ba51df405e9a2b9c71b68ed",
+      "commit": "e96d4c4818851cf0e96d27b2bc8b67379e449d9e",
+      "sha256": "21ab830fea73afd9a462ef85f4c71ca0e971c6db5cee49f52521de47add4449a",
       "patches": [
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
@@ -277,7 +277,7 @@
         {
           "identity": "cliproxy-native-typesafe-registration",
           "file": "0559-typesafe-native-registration.patch",
-          "sha256": "e6703def8a02582688b50a51d6c9c200929b3279707d3cd88e4ab243ace1e85f",
+          "sha256": "e149023dff93409e935725d24803ef2e400cd9da7d63359c606b86b72afc6fd9",
           "retirement": {
             "mode": "manual",
             "requires": "Retire this carry only after the replacement serves native System One through Home authority and execution, preserves native errors and accounting, and passes stock SDK, compression, multipart, current-generation catalog and revocation proofs. A forced failure during mirror creation, reconnect or deletion must leave no usable stale credential and must recover on retry without replacing the saved Executor account. Migrate each current mirror to the replacement binding before removing the old path, then purge the retired mirrored Home credentials while retaining original Executor token fields and unrelated Home accounts. Prove that the purge is scoped, resumable after a forced failure and idempotent across repeated boots, with no retired credential selectable after unlink, deletion or generation replacement."
@@ -304,7 +304,7 @@
         {
           "identity": "cliproxy-node-dispatch-timing-header",
           "file": "0516-node-dispatch-timing-header.patch",
-          "sha256": "388cfc96773d43031864ab0a3b26726ccf2ed6f43156cd298f3a9b68a29a94f4",
+          "sha256": "a32b9bc704dcf3783241a9be6025559ed67352c648a5c365f59267410a30b5e9",
           "retirement": {
             "mode": "manual",
             "requires": "Retire only when the pinned sources preserve the opt-in primary dispatch reply, bounded closed timing transport, failure fencing, legacy compatibility and synthetic-provider response proof through Worker logs without exposing diagnostic headers to clients."
@@ -349,7 +349,7 @@
         {
           "identity": "cliproxy-node-no-postwrite-replay",
           "file": "0599-node-no-postwrite-replay.patch",
-          "sha256": "d0b4d0cc13755bb8dbdc534d59a0abe2f458ea895af351a327a30f4481fac0b6",
+          "sha256": "ac31a3fd18d9808402086fd766ca73328ad0c18ad157c00ab61ae28e92997c51",
           "retirement": {
             "mode": "manual",
             "requires": "Retire when the pinned upstream release includes terminal unknown-outcome classification after HTTP submission and passes the real post-write EOF, empty accepted model-pool stream, late truncation, incomplete SSE frames, malformed accepted decoding, submitted POST redirects, header-only framing, terminal request-body closure, generation-only submission tracking with replayable token counting, exactly one request-scoped failed stream result for local and Home observers, JSON document error envelopes, terminal Antigravity credits fallback across model pools and credentials, buffered Claude incomplete-response classification, direct Fast credential-rate-limit result recording and cooldown, internal POST replay, pre-write connect failure and explicit HTTP and SSE refusal regressions. Preserve no replay across models, credentials and retry rounds, public 502 upstream_outcome_unknown with retryable false, existing proxy and protocol selection, and release updates. Re-apply on each source update until the upstream fix is released; remove this carry when that release supplies the same behavior."
@@ -367,7 +367,7 @@
         {
           "identity": "cliproxy-node-generation-submission",
           "file": "0611-node-generation-submission.patch",
-          "sha256": "89c38b9f6053a6d9a96b10b3ee3f418c2235d661871483e6137701d7174b14b6",
+          "sha256": "10d0e78169a3fdd262e77742963b830c49fc3b60c2424d4a3692079938c309b0",
           "retirement": {
             "mode": "manual",
             "requires": "Retire after the pinned upstream release guards only generation sends, treats every local failure after accepted HTTP responses or ambiguous WebSocket frame writes as terminal unknown, and positively validates provider refusal payloads before allowing failover. Pass actual provider and native public error projections, two-credential HTTP and WebSocket disconnect and partial-write proofs, nil-connection pre-write recovery, plugin and token-count auxiliary controls, and retained Home funding fixtures without weakening assertions. Preserve no automatic replay across models, credentials or retry rounds, native error envelopes and correlation identities. Generic credential, refresh and auxiliary HTTP calls remain untracked. Re-apply on each source update until the upstream release supplies the same behavior."

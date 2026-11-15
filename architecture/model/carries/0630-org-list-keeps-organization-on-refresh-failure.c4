@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "An organization list refresh that fails to answer keeps the list it last read, so the organization and its retained details stay available to its pages. A refused access still drops the details, and the server checks current access and membership on every request regardless of what the browser retains."
+    }
+  }
+}

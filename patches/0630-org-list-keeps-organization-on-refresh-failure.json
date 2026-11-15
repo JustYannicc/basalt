@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-org-list-keeps-organization-on-refresh-failure",
+  "file": "0630-org-list-keeps-organization-on-refresh-failure.patch",
+  "content_sha256": "4cab52f330c3458a5edc2efe9869c0465e4874f6dd8149eb7d51726b8d9ae694",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
