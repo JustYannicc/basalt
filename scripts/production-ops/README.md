@@ -223,6 +223,37 @@ The successful workflow upload must finish before apply. Download and decrypt
 that snapshot and recipient key available for recovery. A snapshot alone is not
 a verified restore. Restoring data needs its own reviewed operation and GO.
 
+## Repair a stale pool registration
+
+After the operation is deployed, select `pool-association-repair-v1` with
+`action=migrate`, `mode=dry-run`, and an exact request:
+
+```json
+{"organization":"<organization-id>","slot":"<metadata-slot-id>","app":"<recorded-app-id>","actualOwner":null,"operation":"clear"}
+```
+
+`actualOwner` must match the app's current owner exactly, or be `null` when the
+app is absent globally. A valid organization-owned association refuses. The
+encrypted plan shows the slot before and after, the full organization row
+hashes and dependency hash. Review it and use the standard saved-plan apply
+with an explicit GO for those IDs and checksum. Apply refuses any changed row
+or dependency and records one transaction receipt. Replay verifies without
+repeating the write.
+
+`clear` removes only that registration. Existing reconciliation treats a
+missing app as deliberate deletion; clearing can allow a fresh default pool
+on a later setup job. Decide that consequence before approving it.
+
+For a proven replacement, use `operation=repoint` and add
+`"replacement":"<existing-replacement-app-id>"`. The old app must be absent
+globally. The replacement must already belong to the organization and recorded
+creator, use the exact saved deployment and code lineage, and have no other
+registration. A recorded account or token-key version refuses because an
+app-bound credential cannot be inherited safely. This branch changes only the
+app pointer and preserves the rest of the slot. Missing provenance refuses;
+it never reconstructs apps or moves ownership. Journal activation does not
+run this repair automatically.
+
 ## Retire redundant Google bindings
 
 Use `google-duplicate-bindings-v1` with
