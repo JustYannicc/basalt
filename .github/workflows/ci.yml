@@ -18,7 +18,32 @@ env:
   BASALT_CI_OMIT_RELEASE_DOWNLOADS: "true"
 
 jobs:
+  reuse:
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      reused: ${{ steps.reuse.outputs.reused }}
+      evidence: ${{ steps.reuse.outputs.evidence }}
+      run_id: ${{ steps.reuse.outputs.run_id }}
+      head_sha: ${{ steps.reuse.outputs.head_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - name: Find a successful batch Check for this exact tree and workflow
+        id: reuse
+        run: node scripts/ci/reuse.ts
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
   select:
+    needs: reuse
+    if: always() && !cancelled() && needs.reuse.outputs.reused != 'true'
     runs-on: ubuntu-latest
     outputs:
       base_sha: ${{ steps.comparison.outputs.base_sha }}
@@ -198,7 +223,10 @@ jobs:
           if-no-files-found: warn
 
   cpa-pipeline:
-    needs: select
+    needs: [select, reuse]
+    if: >-
+      always() && !cancelled() &&
+      (needs.select.result == 'success' || needs.reuse.outputs.reused == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -237,6 +265,7 @@ jobs:
           fi
           python3 scripts/cpa-pipeline-guard.py "${args[@]}"
   client-connection:
+    needs: select
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -2542,9 +2571,10 @@ jobs:
           MIGRATION_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
 
   check:
-    name: ${{ needs.select.outputs.full_suite == 'true' && 'check' || 'check (fast-only)' }}
+    name: ${{ (needs.reuse.outputs.reused == 'true' || needs.select.outputs.full_suite == 'true') && 'check' || 'check (fast-only)' }}
     needs:
       [
+        reuse,
         select,
         fast,
         cpa-pipeline,
@@ -2604,6 +2634,9 @@ jobs:
         neon-key-reuse,
       ]
     if: always()
+    outputs:
+      reused_run_id: ${{ steps.gate.outputs.reused_run_id }}
+      reused_head_sha: ${{ steps.gate.outputs.reused_head_sha }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -2612,14 +2645,23 @@ jobs:
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
-      - name: Require every selected job and every fast check to pass
+      - name: Require every selected job or verified batch reuse to pass
+        id: gate
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
+          CI_REUSED: ${{ needs.reuse.outputs.reused }}
+          CI_REUSE_EVIDENCE: ${{ needs.reuse.outputs.evidence }}
           CI_FULL_SUITE: ${{ needs.select.outputs.full_suite }}
           CI_BASELINE_PROBE: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && needs.select.outputs.baseline_probe == 'true' }}
           CI_JOBS: ${{ needs.select.outputs.jobs }}
           CI_BOAT_JOBS: ${{ needs.select.outputs.boat_jobs }}
         run: node scripts/ci/gate.ts
+      - uses: actions/upload-artifact@v4
+        if: success() && needs.reuse.outputs.reused == 'true'
+        with:
+          name: check-reuse-evidence
+          path: check-reuse-evidence.json
+          if-no-files-found: error
       - name: Capture the checked pull request merge result
         if: >-
           github.event_name == 'pull_request' &&

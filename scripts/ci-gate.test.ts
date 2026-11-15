@@ -23,6 +23,9 @@ const runGate = (
     encoding: "utf8",
     env: {
       ...process.env,
+      GITHUB_EVENT_NAME: "pull_request",
+      GITHUB_REF: "refs/pull/1/merge",
+      CI_REUSED: "",
       CI_NEEDS: JSON.stringify(needs),
       CI_JOBS: JSON.stringify(selected),
       CI_BOAT_JOBS: "[]",
@@ -50,6 +53,7 @@ test("the real workflow dependencies reach the aggregate CLI in fast and full la
           job,
           {
             result:
+              job === "reuse" ||
               fastJobs.includes(job) ||
               selected.includes(job) ||
               (job === "baseline-probe" && baseline) ||
