@@ -2,6 +2,43 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BoundSlotDriver } from "./runtime-slots/transport.ts";
 import { slotIdentity } from "../../scripts/pool-tests/runtime-slots-fixture.ts";
+import { runtimeFailureDiagnostic } from "./runtime-route-diagnostic.ts";
+
+test("a private endpoint transport refusal throws with its closed cause while provider HTTP conflicts pass through", async () => {
+  const identity = slotIdentity("candidate");
+  let privateFailure = true,
+    calls = 0;
+  const driver = new BoundSlotDriver(() => ({
+    fetch: async () => {
+      calls++;
+      return new Response("conflict", {
+        status: 409,
+        headers: privateFailure
+          ? {
+              "X-Signalbox-Runtime-Failure-Step": "port_dispatch",
+              "X-Signalbox-Runtime-Failure-Reason": "transport",
+            }
+          : {},
+      });
+    },
+  }));
+  await assert.rejects(
+    driver.fetch(identity, new Request("http://pool/v1/responses"), 8317),
+    (error) => {
+      assert.deepEqual(runtimeFailureDiagnostic(error, "fleet_forward"), {
+        runtimeStep: "port_dispatch",
+        runtimeReason: "transport",
+      });
+      return true;
+    },
+  );
+  assert.equal(calls, 1);
+  privateFailure = false;
+  const response = await driver.fetch(identity, new Request("http://pool/v1/responses"), 8317);
+  assert.equal(response.status, 409);
+  assert.equal(await response.text(), "conflict");
+  assert.equal(calls, 2);
+});
 
 for (const healthDelay of [10, 1_600])
   test(`cold startup gets a separate health lease while health transport still consumes it: ${healthDelay}ms`, async (context) => {

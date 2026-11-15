@@ -8,7 +8,9 @@ export class NativeStreams {
     abort: AbortController;
     close?: () => void;
   }>();
-  get active() { return this.leases.size; }
+  get active() {
+    return this.leases.size;
+  }
   abortAll() {
     for (const lease of this.leases) {
       lease.abort.abort();
@@ -52,4 +54,6 @@ export class NativeStreams {
     };
   }
 }
-export type NativeStreamLease = ReturnType<NativeStreams["acquire"]>;
+export type NativeStreamLease = ReturnType<NativeStreams["acquire"]> & {
+  failed?(error: unknown): void | Promise<void>;
+};

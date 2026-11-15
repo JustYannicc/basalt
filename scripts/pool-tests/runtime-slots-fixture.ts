@@ -161,6 +161,7 @@ export async function slotFixture() {
         }),
       );
     },
+    drain: async () => ({ active: 0, known: true }),
     retire: async (_target, identity) => {
       calls.retire.push(identity);
       await hooks.retire(identity);
