@@ -22,6 +22,7 @@ import { proveZohoMcpPrivacy } from "./zoho-people-mcp-privacy.mjs";
 import { proveZohoMcpUi } from "./zoho-people-mcp-ui.mjs";
 import { installRetainedPeopleConsumer } from "./zoho-people-mcp-legacy.mjs";
 import { proveZohoMcpRecovery } from "./zoho-people-mcp-recovery.mjs";
+import { describeGuidanceFailure } from "../scripts/connectors-tests/guidance-failure.ts";
 
 const root = resolve(import.meta.dirname, "..");
 const upstream = join(root, ".upstream");
@@ -31,6 +32,7 @@ const directory = resolve(
 const red = process.argv.includes("--red");
 await mkdir(directory, { recursive: true, mode: 0o700 });
 const results = [];
+const diagnostics = { phase: "zoho-mcp-runtime", error: undefined };
 const check = (name, actual, expected) => {
   results.push({ name, actual, expected });
   assert.deepEqual(actual, expected, name);
@@ -394,6 +396,7 @@ const program = Effect.gen(function* () {
   yield* legacy.prove(restAccount);
   yield* call("timeTracker.listTimeLogs", restAccount, { query: { user: "employee-fixture" } });
   if (!red) {
+    diagnostics.phase = "zoho-mcp-runtime-restart";
     yield* controlRequest("stop", 200).pipe(Effect.provideService(Target, target));
     yield* controlRequest("environment", 200, {
       EXECUTOR_OAUTH_CALLBACK_URL: new URL("/oauth/callback", target.metadata.origin).href,
@@ -408,8 +411,10 @@ const program = Effect.gen(function* () {
       tls,
       directory,
       check,
+      diagnostics,
     });
   }
+  diagnostics.phase = "zoho-mcp-privacy";
   yield* proveZohoMcpPrivacy({
     api,
     session,
@@ -423,6 +428,7 @@ const program = Effect.gen(function* () {
     directory,
     check,
   });
+  diagnostics.phase = "zoho-mcp-report";
   const accounts = yield* request("GET", `${prefix}/inventory`);
   const appRecord = yield* request("GET", path);
   const safe = JSON.stringify({
@@ -461,8 +467,19 @@ try {
   await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ checks: results.length, directory }));
 } catch (error) {
+  const failure = describeGuidanceFailure(
+    diagnostics.error ?? error,
+    diagnostics.failurePhase ?? diagnostics.phase,
+  );
   await writeFile(join(directory, "partial-results.json"), JSON.stringify(results, null, 2));
-  await writeFile(join(directory, "failure.txt"), String(error?.stack ?? error), { mode: 0o600 });
+  await writeFile(
+    join(directory, "failure.txt"),
+    `${failure.publicLine}\n${failure.privateDetail}`,
+    {
+      mode: 0o600,
+    },
+  );
   console.error("Zoho MCP proof failed; private diagnostics retained.");
+  console.error(failure.publicLine);
   process.exitCode = 1;
 }
