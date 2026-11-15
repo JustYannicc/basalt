@@ -246,6 +246,7 @@ test("the bundled transport pushes and parses delta packs in the Workers runtime
     bundle: true,
     format: "esm",
     platform: "neutral",
+    mainFields: ["module", "main"],
     external: ["node:*"],
     write: false,
   });

@@ -1,3 +1,4 @@
+import { RuntimeMap } from "../../scripts/pool-tests/runtime-map.ts";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
@@ -101,15 +102,12 @@ for (const scenario of cases)
     const background: Promise<unknown>[] = [];
     const worker = new PoolContainer(
       {
+        id: { toString: () => "a".repeat(64) },
         waitUntil: (work: Promise<unknown>) => background.push(work),
-        storage: {
-          get: async (key: string) => structuredClone(values.get(key)),
-          put: async (key: string, value: unknown) => {
-            values.set(key, structuredClone(value));
-          },
+        storage: Object.assign(new RuntimeMap(values), {
           getAlarm: async () => null,
           setAlarm: async () => {},
-        },
+        }),
         container: {
           running: true,
           setInactivityTimeout: async () => {},
@@ -299,7 +297,11 @@ for (const scenario of cases)
     assert.ok(!JSON.stringify(reports).includes(secret));
     fault = false;
     const recovered = await read();
-    assert.equal(recovered.status, 200, await recovered.clone().text());
+    assert.equal(
+      recovered.status,
+      200,
+      JSON.stringify({ reply: await recovered.clone().text(), reports }),
+    );
     assert.equal(((await recovered.json()) as { accounts: unknown[] }).accounts.length, 1);
     for (const work of background) await work;
   });

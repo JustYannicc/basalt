@@ -1,0 +1,63 @@
+name: Provision pool runtimes
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Inspect the retained operation, or apply the exact reviewed provisioning packet
+        required: true
+        default: inspect
+        type: choice
+        options: [inspect, apply]
+      packet:
+        description: Reviewed provisioning packet with an exact operation checksum and expiring coordinator GO
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production-release
+      deployment: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the pinned SDK
+        run: npm run prepare:upstream
+      - name: Provision only the reviewed source declaration
+        run: bun scripts/release-barrier/provisioning-entry.ts
+        env:
+          ALCHEMY_STAGE: production
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          EXECUTOR_ENCRYPTION_KEY: ${{ secrets.EXECUTOR_ENCRYPTION_KEY }}
+          POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
+          POOL_FLEET_IMAGES: ${{ vars.POOL_FLEET_IMAGES }}
+          POOL_PROVISIONING_MODE: ${{ inputs.mode }}
+          POOL_PROVISIONING_PACKET: ${{ inputs.packet }}
+          POOL_PROVISIONING_OUTPUT_DIRECTORY: ${{ runner.temp }}/pool-provisioning
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pool-provisioning-${{ github.run_id }}
+          path: ${{ runner.temp }}/pool-provisioning
+          if-no-files-found: ignore
+          retention-days: 30

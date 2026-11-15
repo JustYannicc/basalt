@@ -61,6 +61,12 @@ export const StartAuthorization = Schema.Struct({
   provider: ProviderApplicationProof,
 });
 export type StartAuthorization = typeof StartAuthorization.Type;
+export const InitialStartAuthorization = Schema.Struct({
+  ...StartAuthorization.fields,
+  kind: Schema.Literal("initial-start"),
+});
+export const LaunchAuthorization = Schema.Union([StartAuthorization, InitialStartAuthorization]);
+export type LaunchAuthorization = typeof LaunchAuthorization.Type;
 
 /** Preserves the existing running boot without representing its startup settings as measured. */
 export const UnattestedActive = Schema.Struct({
@@ -80,12 +86,28 @@ export const RuntimeAttestation = Schema.Struct({
   bootId: Identifier,
 });
 export type RuntimeAttestation = typeof RuntimeAttestation.Type;
+export const InitialRuntimeAttestation = Schema.Struct({
+  ...RuntimeAttestation.fields,
+  kind: Schema.Literal("initial-attested"),
+});
+export const VerifiedRuntimeAttestation = Schema.Union([
+  RuntimeAttestation,
+  InitialRuntimeAttestation,
+]);
 export const AdmissionProof = Schema.Union([
   StartAuthorization,
+  InitialStartAuthorization,
   UnattestedActive,
   RuntimeAttestation,
+  InitialRuntimeAttestation,
 ]);
 export type AdmissionProof = typeof AdmissionProof.Type;
+export const isLaunchAuthorization = (proof: AdmissionProof): proof is LaunchAuthorization =>
+  proof.kind === "start" || proof.kind === "initial-start";
+export const isRuntimeAttestation = (
+  proof: AdmissionProof,
+): proof is typeof VerifiedRuntimeAttestation.Type =>
+  proof.kind === "attested" || proof.kind === "initial-attested";
 
 export const StartupWitness = Schema.Struct({
   operationId: Identifier,
@@ -118,14 +140,19 @@ export function decodeAdmissionProof(value: unknown, now = Date.now()): Admissio
     provider.applicationId !== target.applicationId ||
     provider.applicationVersion !== target.applicationVersion ||
     provider.imageDigest !== target.imageDigest ||
-    (proof.kind !== "start" && proof.provider.instanceId !== target.instanceId)
+    (!isLaunchAuthorization(proof) && proof.provider.instanceId !== target.instanceId)
   )
     throw new Error("Runtime provider identity differs");
   if ((selection.expectedEpoch === 0) !== (selection.active === null))
     throw new Error("Runtime selection epoch differs");
   if (proof.kind === "unattested-active" && selection.active !== null)
     throw new Error("Runtime bootstrap already selected");
-  if (proof.kind !== "unattested-active" && selection.active === null)
+  const initial = proof.kind === "initial-start" || proof.kind === "initial-attested";
+  if (initial && target.homePeerOrdinal === undefined)
+    throw new Error("Initial Home identity is missing");
+  if (initial && (selection.active !== null || selection.expectedEpoch !== 0))
+    throw new Error("Initial runtime already selected");
+  if (!initial && proof.kind !== "unattested-active" && selection.active === null)
     throw new Error("Runtime candidate requires an active selection");
   if (
     selection.active &&
@@ -134,6 +161,12 @@ export function decodeAdmissionProof(value: unknown, now = Date.now()): Admissio
       selection.active.instanceId === target.instanceId)
   )
     throw new Error("Runtime candidate overlaps active");
+  if (
+    selection.active?.homePeerOrdinal !== undefined &&
+    (target.homePeerOrdinal === undefined ||
+      target.homePeerOrdinal === selection.active.homePeerOrdinal)
+  )
+    throw new Error("Runtime candidate overlaps Home identity");
   const keys = selection.revisions.map((row) => row.pool);
   if (
     new Set(keys).size !== keys.length ||

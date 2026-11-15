@@ -17,8 +17,10 @@ const lifetimes = new WeakMap<Response, ModelLifetime>();
 
 class ModelLifetime {
   private ended = false;
+  private completed = false;
+  private cancelled = false;
   private phase: "opening" | "ready" | "dispatched" = "opening";
-  private releases = new Set<() => void>();
+  private releases = new Set<(known: boolean, cancelled: boolean) => void>();
   private resolveReady!: () => void;
   private rejectReady!: (error: Error) => void;
   readonly ready = new Promise<void>((resolve, reject) => {
@@ -35,11 +37,11 @@ class ModelLifetime {
     control.addEventListener("message", this.message);
     control.addEventListener("close", this.abort);
     control.addEventListener("error", this.abort);
-    signal.addEventListener("abort", this.abort, { once: true });
+    signal.addEventListener("abort", this.cancel, { once: true });
   }
   accept() {
     this.control.accept();
-    if (this.signal.aborted) this.abort();
+    if (this.signal.aborted) this.cancel();
   }
   private message = (event: { data: unknown }) => {
     if (this.phase === "opening" && event.data === "ready") {
@@ -48,10 +50,12 @@ class ModelLifetime {
     } else if (this.phase === "dispatched" && event.data === "complete") this.finish(true);
     else this.abort();
   };
-  private finish(known: boolean) {
+  private finish(known: boolean, cancelled = false) {
     if (this.ended) return;
     this.ended = true;
-    this.signal.removeEventListener("abort", this.abort);
+    this.completed = known;
+    this.cancelled = cancelled;
+    this.signal.removeEventListener("abort", this.cancel);
     this.control.removeEventListener("message", this.message);
     this.control.removeEventListener("close", this.abort);
     this.control.removeEventListener("error", this.abort);
@@ -62,10 +66,11 @@ class ModelLifetime {
     try {
       this.control.close(1000, "Lifetime ended");
     } catch {}
-    for (const release of this.releases) release();
+    for (const release of this.releases) release(known, cancelled);
     this.releases.clear();
   }
   abort = () => this.finish(false);
+  private cancel = () => this.finish(false, true);
   discard() {
     this.finish(true);
   }
@@ -75,18 +80,28 @@ class ModelLifetime {
     this.phase = "dispatched";
   }
   bind(lease: NativeStreamLease) {
+    const release = (known: boolean, cancelled: boolean) => {
+      lease.signal.removeEventListener("abort", this.cancel);
+      if (known || cancelled || !lease.failed) {
+        lease.release();
+        return;
+      }
+      try {
+        // A failed durable fence must retain the reservation even after its socket closes.
+        void Promise.resolve(lease.failed(new Error("Model socket lifetime is unavailable"))).then(
+          () => lease.release(),
+          () => {},
+        );
+      } catch {}
+    };
     if (this.ended) {
-      lease.release();
+      release(this.completed, this.cancelled);
       return;
     }
-    const release = () => {
-      lease.signal.removeEventListener("abort", this.abort);
-      lease.release();
-    };
     this.releases.add(release);
-    lease.signal.addEventListener("abort", this.abort, { once: true });
-    lease.onClose(this.abort);
-    if (lease.signal.aborted) this.abort();
+    lease.signal.addEventListener("abort", this.cancel, { once: true });
+    lease.onClose(this.cancel);
+    if (lease.signal.aborted) this.cancel();
   }
 }
 

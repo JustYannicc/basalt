@@ -72,6 +72,31 @@ test("the shared codec keeps launch and release operations distinct and binds ex
     );
 });
 
+test("first-start proofs require an empty cell and cannot masquerade as replacement proofs", () => {
+  const value = proof();
+  const selection = { ...value.selection, active: null, expectedEpoch: 0 };
+  const initial = {
+    ...value,
+    target: { ...value.target, homePeerOrdinal: 1 },
+    kind: "initial-attested",
+    selection,
+  };
+  assert.equal(decodeAdmissionProof(initial).kind, "initial-attested");
+  assert.throws(() => decodeAdmissionProof({ ...initial, kind: "attested" }));
+  assert.throws(() => decodeAdmissionProof({ ...initial, selection: value.selection }));
+  assert.throws(() => decodeAdmissionProof({ ...initial, target: value.target }));
+  const { bootId: _boot, launch: _launch, provider, ...start } = initial;
+  const { instanceId: _instance, ...application } = provider;
+  assert.equal(
+    decodeAdmissionProof({ ...start, provider: application, kind: "initial-start" }).kind,
+    "initial-start",
+  );
+  assert.throws(() => decodeAdmissionProof({ ...start, provider: application, kind: "start" }));
+  assert.throws(() =>
+    decodeAdmissionProof({ ...initial, target: { ...value.target, homePeerOrdinal: 129 } }),
+  );
+});
+
 test("unattested-active is explicit bootstrap preservation and cannot decode as completed attestation", () => {
   const value = proof();
   const { launch: _launch, ...withoutLaunch } = value;
