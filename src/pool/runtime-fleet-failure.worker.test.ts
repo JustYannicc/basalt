@@ -56,11 +56,16 @@ test(
     for (let index = 0; index < 4; index++)
       rootCalls.push(f.model(new Request(`http://pool/v1/models?id=root-held-${index}`)));
     await rootEntered.promise;
-    now += 101;
-    await f.upkeep();
-    const initial = await f.resourcesWhen(
+    const firstReady = f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
+    const ready = f.resourcesWhen(
       (rows) => rows.length === 2 && rows.every((row) => row.phase === "ready"),
     );
+    now += 101;
+    await f.upkeep();
+    await firstReady;
+    now += 101;
+    await f.upkeep();
+    const initial = await ready;
     const first = await f.model(new Request("http://pool/v1/models?id=cell-held-0"));
     const second = await f.model(new Request("http://pool/v1/models?id=cell-held-1"));
     const deadId = first.headers.get("x-fixture-runtime")!,
