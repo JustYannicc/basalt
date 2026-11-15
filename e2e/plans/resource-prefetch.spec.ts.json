@@ -2,6 +2,7 @@
   "scenarios": {
     "resourcePrefetch": {
       "fixtures": "actors",
+      "managementApps": ["owner", "admin", "member"],
       "title": "Organization entry prefetches resources without retaining a polling subscription",
       "targets": {
         "self-host": {
