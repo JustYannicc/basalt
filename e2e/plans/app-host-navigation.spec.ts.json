@@ -48,6 +48,8 @@
     ".upstream/apps/hosted/server/src/implementation/app-sessions.ts",
     ".upstream/apps/hosted/server/src/implementation/app-ui.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/auth-database.ts",
-    ".upstream/e2e/support/app-navigation-lifecycle.ts"
+    ".upstream/e2e/support/app-navigation-lifecycle.ts",
+    ".upstream/apps/hosted/web/src/implementation/pages/app-window.tsx",
+    ".upstream/apps/hosted/web/src/contracts/apps.ts"
   ]
 }

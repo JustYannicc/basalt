@@ -1,0 +1,1066 @@
+diff --git a/apps/hosted/server/src/contracts/account-traffic.ts b/apps/hosted/server/src/contracts/account-traffic.ts
+--- a/apps/hosted/server/src/contracts/account-traffic.ts
++++ b/apps/hosted/server/src/contracts/account-traffic.ts
+@@ -10,6 +10,8 @@
+ 
+ /** The most accounts one read names; an Accounts list asks for its visible rows at once. */
+ export const maxTrafficAccounts = 200;
++/** A change frame holds 32 keys; the organization feed already carries five authority keys. */
++export const maxTrafficWatchAccounts = 27;
+ /** The recent hours an account row shows as ticks, the current partial hour last. */
+ export const trafficTickHours = 8;
+ 
+diff --git a/apps/hosted/server/src/implementation/account-traffic-change-schema.ts b/apps/hosted/server/src/implementation/account-traffic-change-schema.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/account-traffic-change-schema.ts
+@@ -0,0 +1,28 @@
++import { Effect } from "effect";
++import { SqlClient } from "effect/sql";
++
++/** Counter writes publish only their account key; readers must authorize that key separately. */
++export const migrateAccountTrafficChanges = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* sql`create or replace function hosted_account_traffic_changed() returns trigger language plpgsql as $$
++    declare previous text; following text; account_id text; target_scope text;
++    begin
++      -- The SDK never reads hours beyond its 31-day retention window.
++      if TG_OP = 'DELETE' and OLD.hour < current_timestamp - interval '744 hours' then return OLD; end if;
++      if TG_OP <> 'INSERT' then previous := OLD.account; end if;
++      if TG_OP <> 'DELETE' then following := NEW.account; end if;
++      if TG_OP = 'UPDATE' and to_jsonb(OLD) = to_jsonb(NEW) then return NEW; end if;
++      for account_id in select distinct value from unnest(array[previous,following]) value
++        where value is not null loop
++        select owner into target_scope from executor_accounts where id=account_id;
++        if target_scope is not null then
++          perform hosted_queue_change(target_scope,'account-traffic',account_id);
++        end if;
++      end loop;
++      if TG_OP = 'DELETE' then return OLD; end if;
++      return NEW;
++    end $$`;
++  yield* sql`create or replace trigger hosted_account_traffic_changed
++    after insert or update or delete on executor_account_tool_calls
++    for each row execute function hosted_account_traffic_changed()`;
++});
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -25,6 +25,7 @@
+ import { migrateAccountObservations } from "./account-observation-schema.ts";
+ import { migrateChangeRevisions } from "./change-revision-schema.ts";
+ import { migrateAccountChanges } from "./account-change-schema.ts";
++import { migrateAccountTrafficChanges } from "./account-traffic-change-schema.ts";
+ import { prepareChangeJournal, activateChangeJournal } from "./change-journal-schema.ts";
+ 
+ /**
+@@ -181,6 +182,7 @@
+   "19_change_revisions": migrateChangeRevisions,
+   "20_account_changes": migrateAccountChanges,
+   "21_change_journal_prepare": prepareChangeJournal,
++  "23_account_traffic_changes": migrateAccountTrafficChanges,
+ });
+ 
+ /** Activation is deliberately absent from startup migrations; the operator owns the reader cutover. */
+diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/apps/hosted/server/src/implementation/organization-changes.ts
+--- a/apps/hosted/server/src/implementation/organization-changes.ts
++++ b/apps/hosted/server/src/implementation/organization-changes.ts
+@@ -1,5 +1,5 @@
+-import { AppId } from "@executor-js/sdk/core";
+-import { resourceAuthority, requireAppAccessAs } from "./resource-policy.ts";
++import { AccountId, AppId } from "@executor-js/sdk/core";
++import { accountAccesses, resourceAuthority, requireAppAccessAs } from "./resource-policy.ts";
+ import { Effect, Schema } from "effect";
+ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+ import { Authentication, Unauthorized } from "../contracts/auth.ts";
+@@ -11,6 +11,7 @@
+   organizationOwner,
+ } from "../contracts/organization.ts";
+ import { OrganizationTombstones } from "../contracts/organization-removal.ts";
++import { maxTrafficWatchAccounts } from "../contracts/account-traffic.ts";
+ import { makeChangeJournal } from "./change-revisions.ts";
+ import {
+   changeHeaders,
+@@ -88,14 +89,25 @@
+     const pools = yield* Schema.decodeUnknownEffect(
+       Schema.Array(AppId).check(Schema.isMaxLength(100)),
+     )([...new Set(query.getAll("pool"))]);
+-    const authorizePools = Effect.gen(function* () {
+-      if (pools.length === 0) return;
++    const accounts = yield* Schema.decodeUnknownEffect(
++      Schema.Array(AccountId).check(
++        Schema.isMaxLength(Math.max(0, maxTrafficWatchAccounts - pools.length * 4)),
++      ),
++    )([...new Set(query.getAll("account"))]);
++    const authorizeResources = Effect.gen(function* () {
++      if (pools.length === 0 && accounts.length === 0) return;
+       const actor = yield* resourceAuthority(identity.organization, identity.user);
+       yield* Effect.forEach(pools, (app) => requireAppAccessAs(actor, app, "read"), {
+         discard: true,
+       });
++      const permitted = yield* accountAccesses(accounts, actor);
++      if (
++        permitted.length !== accounts.length ||
++        permitted.some((account) => !account.canUse && !account.canManage)
++      )
++        return yield* new OrganizationForbidden();
+     });
+-    yield* authorizePools;
++    yield* authorizeResources;
+     // Slugs can move; this stream keeps checking the canonical scope it subscribed to.
+     const authorize = Effect.gen(function* () {
+       const latest = yield* organizationChangeAuthority(headers, identity.organization);
+@@ -105,7 +117,7 @@
+         latest.session !== identity.session
+       )
+         return yield* new Unauthorized();
+-      yield* authorizePools;
++      yield* authorizeResources;
+       return latest;
+     });
+     const fingerprint = yield* changeIdentity([
+@@ -115,7 +127,20 @@
+     ]);
+     const sql = yield* Effect.flatten(GroupDatabase);
+     const sources = [
+-      ...organizationChangeSources(identity.organization, identity.user),
++      ...organizationChangeSources(identity.organization, identity.user).map((source) =>
++        source.scope !== organizationOwner(identity.organization)
++          ? source
++          : {
++              ...source,
++              keys: [
++                ...source.keys,
++                ...accounts.map((account) => ({
++                  topic: "account-traffic",
++                  resource: account,
++                })),
++              ],
++            },
++      ),
+       ...pools.map((pool) => ({
+         scope: `pool:${pool}`,
+         keys: ["pool-readings", "pool-usage", "pool-samples", "pool-prices"].map((topic) => ({
+diff --git a/apps/hosted/web/src/contracts/accepted-read.ts b/apps/hosted/web/src/contracts/accepted-read.ts
+--- a/apps/hosted/web/src/contracts/accepted-read.ts
++++ b/apps/hosted/web/src/contracts/accepted-read.ts
+@@ -9,11 +9,20 @@
+   readonly hydrated?: true;
+ }
+ 
+-const Snapshot = Schema.Struct({ body: Schema.Unknown, receipt: ChangeReceipt });
++interface FailedRead {
++  readonly failure: "unconfirmed" | "revoked";
++  readonly hydrated?: true;
++}
++
++type DocumentRead<A, E> = AcceptedRead<A, E> | FailedRead;
++const Snapshot = Schema.Union([
++  Schema.Struct({ body: Schema.Unknown, receipt: ChangeReceipt }),
++  Schema.Struct({ failure: Schema.Literals(["unconfirmed", "revoked"]) }),
++]);
+ const decodeSnapshot = Schema.decodeUnknownSync(Snapshot);
+ 
+ export const acceptedRead = <A, E>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
+-  const cache = Atom.make<AcceptedRead<A, E> | undefined>(undefined).pipe(
++  const cache = Atom.make<DocumentRead<A, E> | undefined>(undefined).pipe(
+     Atom.setIdleTTL("30 minutes"),
+   );
+   // Reuse the endpoint's codec, but give the body no independently hydratable atom.
+@@ -23,13 +32,16 @@
+   const retained = Object.assign(cache, {
+     [Atom.SerializableTypeId]: {
+       key: `hosted:accepted:${codec.key}`,
+-      encode: (value: AcceptedRead<A, E> | undefined): unknown => {
+-        if (value === undefined || value.receipt.identity === undefined)
+-          throw new Error("No accepted document read");
++      encode: (value: DocumentRead<A, E> | undefined): unknown => {
++        if (value === undefined) throw new Error("No accepted document read");
++        // A failed fence carries its UI state, never the body it could not authorize.
++        if ("failure" in value) return { failure: value.failure };
++        if (value.receipt.identity === undefined) throw new Error("No accepted document read");
+         return { body: codec.encode(value.result), receipt: value.receipt };
+       },
+-      decode: (value: unknown): AcceptedRead<A, E> => {
++      decode: (value: unknown): DocumentRead<A, E> => {
+         const snapshot = decodeSnapshot(value);
++        if ("failure" in snapshot) return { failure: snapshot.failure, hydrated: true };
+         return { result: codec.decode(snapshot.body), receipt: snapshot.receipt, hydrated: true };
+       },
+     },
+diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src/contracts/app-accounts.ts
+--- a/apps/hosted/web/src/contracts/app-accounts.ts
++++ b/apps/hosted/web/src/contracts/app-accounts.ts
+@@ -4,8 +4,8 @@
+  * connecting reads the app's discovery again.
+  */
+ import { hydrated } from "@executor-js/ui/contracts/http";
+-import { accountPolling, unavailableAccountHealth } from "./account-polling.ts";
+-import { revalidated } from "@executor-js/ui/contracts/refresh";
++import { changeProtected } from "./change-signal.ts";
++import { revalidated, refreshedOnFocus } from "@executor-js/ui/contracts/refresh";
+ import { acknowledge } from "@executor-js/ui/contracts/mutations";
+ import { Data, Effect } from "effect";
+ import { Atom } from "effect/reactivity";
+@@ -54,23 +54,13 @@
+ );
+ const userLinks = Atom.family((key: AppKey) =>
+   HostedClient.query("appAccounts", "userList", hydrated({ params: key })).pipe(
+-    revalidated,
+-    protectedQuery,
++    changeProtected(key.organization, ["accounts", "observations", "apps", "membership"]),
++    refreshedOnFocus,
+   ),
+ );
+ const lists = { app: appLinks, user: userLinks };
+ /** One account linked to one of the app's requirements, with its sign-in and checks. */
+ export type AppAccountLink = Atom.Success<ReturnType<typeof appLinks>>[number];
+-/**
+- * Open pages reconcile the caller's links changed in another tab or by losing access to an
+- * account. App links change only when someone who can edit the app changes them; the page reads
+- * them again on its normal refresh and after the caller's own changes, without polling.
+- */
+-const liveUserLinks = Atom.family((key: AppKey) =>
+-  accountPolling(userLinks(key), undefined, (links) =>
+-    links.some(({ health }) => unavailableAccountHealth(health)),
+-  ),
+-);
+ /**
+  * The accounts linked to the app's own requirements, oldest first per requirement. Anyone who can
+  * use the app reads them; only people who can edit it see the identity checks reported.
+@@ -93,7 +83,7 @@
+ 
+ /** The accounts the caller linked to the app's user requirements and can still use. */
+ export const userLinksAtom = (key: { organization: OrganizationReference; app: AppId }) =>
+-  liveUserLinks(new AppKey(key));
++  userLinks(new AppKey(key));
+ 
+ const appChoices = Atom.family((key: RequirementKey) =>
+   HostedClient.query(
+diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
+--- a/apps/hosted/web/src/contracts/apps.ts
++++ b/apps/hosted/web/src/contracts/apps.ts
+@@ -1,11 +1,10 @@
+ import { interactiveConnectionActions } from "./interactive-accounts.ts";
+ import { hydrated } from "@executor-js/ui/contracts/http";
+-import { revalidated } from "@executor-js/ui/contracts/refresh";
+-import { pollingQuery } from "@executor-js/ui/contracts/polling";
++import { revalidated, refreshedOnFocus } from "@executor-js/ui/contracts/refresh";
++import { changeProtected } from "./change-signal.ts";
+ import { refreshAppLinks } from "./app-accounts.ts";
+ import { discoveryTarget, refreshAppDiscovery } from "./app-discovery.ts";
+ import { refreshResourceDirectory } from "./resource-access.ts";
+-import { protectedQuery } from "./protected-query.ts";
+ /** Organization-specific app queries and mutations use the shared hosted API. */
+ import {
+   AppId,
+@@ -88,7 +87,10 @@
+ 
+ const appQuery = Atom.family(
+   (key: { readonly organization: OrganizationReference; readonly app: AppId }) =>
+-    HostedClient.query("apps", "get", hydrated({ params: key })).pipe(revalidated, protectedQuery),
++    HostedClient.query("apps", "get", hydrated({ params: key })).pipe(
++      changeProtected(key.organization, ["apps", "membership"]),
++      refreshedOnFocus,
++    ),
+ );
+ const versionsQuery = Atom.family((key: AppKey) =>
+   HostedClient.query("apps", "versions", hydrated({ params: key })).pipe(revalidated),
+@@ -616,10 +618,9 @@
+ 
+ export { appError } from "./errors.ts";
+ 
+-const liveApps = Atom.family((key: AppKey) => pollingQuery(appQuery(key)));
+ /** Open app pages follow activations from another tab or caller without evaluating app code. */
+ export const liveAppAtom = (key: ConstructorParameters<typeof AppKey>[0]) =>
+-  liveApps(new AppKey(key));
++  appQuery(new AppKey(key));
+ 
+ /** Structural keys keep each query stable across React renders. */
+ export const appAtom = (key: {
+diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/src/contracts/change-signal.ts
+--- a/apps/hosted/web/src/contracts/change-signal.ts
++++ b/apps/hosted/web/src/contracts/change-signal.ts
+@@ -26,9 +26,13 @@
+   organization: OrganizationReference,
+   pools: readonly string[] = [],
+   suffix = "",
++  accounts: readonly string[] = [],
+ ) => {
+   const target = registry.get(organizationTargetAtom(organization)) ?? organization;
+-  const query = new URLSearchParams([...new Set(pools)].sort().map((pool) => ["pool", pool]));
++  const query = new URLSearchParams([
++    ...[...new Set(pools)].sort().map((pool) => ["pool", pool]),
++    ...[...new Set(accounts)].sort().map((account) => ["account", account]),
++  ]);
+   return `/api/organizations/${encodeURIComponent(target)}/changes${suffix}${query.size ? `?${query}` : ""}`;
+ };
+ 
+@@ -42,8 +46,9 @@
+   registry: Registry,
+   organization: OrganizationReference,
+   pools: readonly string[],
++  accounts: readonly string[],
+ ) => {
+-  const base = changeBase(registry, organization, pools);
++  const base = changeBase(registry, organization, pools, "", accounts);
+   let scoped = feeds.get(registry);
+   if (scoped === undefined) {
+     scoped = new Map();
+@@ -54,7 +59,7 @@
+   existing?.close();
+   const feed = makeChangeFeed({
+     stream: base,
+-    current: changeBase(registry, organization, pools, "/current"),
++    current: changeBase(registry, organization, pools, "/current", accounts),
+   });
+   scoped.set(base, feed);
+   feed.onStatus(() => {
+@@ -83,8 +88,9 @@
+   organization: OrganizationReference,
+   after: number,
+   pools: readonly string[],
++  accounts: readonly string[],
+ ) => {
+-  const url = changeBase(registry, organization, pools, "/current");
++  const url = changeBase(registry, organization, pools, "/current", accounts);
+   let scoped = reads.get(registry);
+   if (scoped === undefined) {
+     scoped = new Map();
+@@ -119,7 +125,12 @@
+ 
+ /** One accepted body owns its fence through server rendering, hydration and warm navigation. */
+ const changeRetained =
+-  (organization: OrganizationReference, topics: readonly string[], pools: readonly string[] = []) =>
++  (
++    organization: OrganizationReference,
++    topics: readonly string[],
++    pools: readonly string[] = [],
++    accounts: readonly string[] = [],
++  ) =>
+   <A, E extends HostedError>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
+     type Value = AsyncResult.AsyncResult<A, E | OrganizationForbidden | ChangeRefreshFailed>;
+     const { source, cache, document: carriesDocument } = acceptedRead(self);
+@@ -137,26 +148,35 @@
+           retained = new Map();
+           retainedReads.set(registry, retained);
+         }
+-        const base = changeBase(registry, organization, pools);
++        const base = changeBase(registry, organization, pools, "", accounts);
+         let entries = retained.get(base);
+         if (entries === undefined) {
+           entries = new Map();
+           retained.set(base, entries);
+         }
+         entries.set(cache, () => registry.set(cache, undefined));
+-        let held = get.once(cache);
++        const snapshot = get.once(cache);
++        const failed = snapshot !== undefined && "failure" in snapshot ? snapshot : undefined;
++        let held = snapshot !== undefined && "receipt" in snapshot ? snapshot : undefined;
+         if (held?.receipt.validUntil !== undefined && held.receipt.validUntil <= Date.now()) {
+           held = undefined;
+           get.set(cache, undefined);
+         }
+-        const document = held?.hydrated === true;
++        const document = held?.hydrated === true || failed?.hydrated === true;
+         if (document && held !== undefined) {
+           held = { result: held.result, receipt: held.receipt };
+           get.set(cache, held);
+         }
++        if (document && failed !== undefined) get.set(cache, { failure: failed.failure });
+         let shown: Value =
+           typeof window === "undefined" || document
+-            ? (held?.result ?? AsyncResult.initial(true))
++            ? failed !== undefined
++              ? AsyncResult.fail(
++                  failed.failure === "revoked"
++                    ? new OrganizationForbidden()
++                    : new ChangeRefreshFailed(),
++                )
++              : (held?.result ?? AsyncResult.initial(true))
+             : AsyncResult.initial(true);
+         let ended = false;
+         let subscribed = false;
+@@ -185,7 +205,7 @@
+         const revoked = () => {
+           ended = true;
+           held = undefined;
+-          get.set(cache, undefined);
++          get.set(cache, { failure: "revoked" });
+           resolveBody?.(AsyncResult.initial());
+           resolveBody = undefined;
+           publish(AsyncResult.fail(new OrganizationForbidden()));
+@@ -213,7 +233,7 @@
+             } else {
+               // The document uses its request-bound fetch; no browser stream or prior identity.
+               for (let attempt = 0; attempt < 3; attempt++) {
+-                const before = await currentHeads(get.registry, organization, 0, pools);
++                const before = await currentHeads(get.registry, organization, 0, pools, accounts);
+                 if (ended) return;
+                 const result = await body();
+                 if (ended) return;
+@@ -222,6 +242,7 @@
+                   organization,
+                   before.sequence,
+                   pools,
++                  accounts,
+                 );
+                 if (ended) return;
+                 if (before.receipt.identity !== after.receipt.identity) return revoked();
+@@ -236,6 +257,7 @@
+             if (ended) return;
+             if (error instanceof OrganizationForbidden) return revoked();
+             if (error instanceof ChangeReadRetry && error.reason === "hidden") return;
++            if (held === undefined) get.set(cache, { failure: "unconfirmed" });
+             publish(
+               AsyncResult.fail(new ChangeRefreshFailed(), {
+                 previousSuccess: AsyncResult.isSuccess(shown) ? Option.some(shown) : Option.none(),
+@@ -246,7 +268,7 @@
+         const watch =
+           typeof window === "undefined"
+             ? undefined
+-            : organizationFeed(get.registry, organization, pools).watch({
++            : organizationFeed(get.registry, organization, pools, accounts).watch({
+                 topics: watched,
+                 ...(held === undefined ? {} : { accepted: held.receipt }),
+                 confirmed: () => {
+@@ -277,10 +299,15 @@
+  * retry becomes one fenced read, and an invalidation only clears what is shown.
+  */
+ export const changeProtected =
+-  (organization: OrganizationReference, topics: readonly string[], pools: readonly string[] = []) =>
++  (
++    organization: OrganizationReference,
++    topics: readonly string[],
++    pools: readonly string[] = [],
++    accounts: readonly string[] = [],
++  ) =>
+   <A, E extends HostedError>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
+     type Value = AsyncResult.AsyncResult<A, E | OrganizationForbidden | ChangeRefreshFailed>;
+-    const { atom: fenced, requests } = changeRetained(organization, topics, pools)(self);
++    const { atom: fenced, requests } = changeRetained(organization, topics, pools, accounts)(self);
+     const query: Atom.Writable<Value, ((current: A) => A) | undefined> = Atom.writable(
+       (get): Value => {
+         const result = get(fenced);
+diff --git a/apps/hosted/web/src/contracts/connector-traffic.ts b/apps/hosted/web/src/contracts/connector-traffic.ts
+--- a/apps/hosted/web/src/contracts/connector-traffic.ts
++++ b/apps/hosted/web/src/contracts/connector-traffic.ts
+@@ -1,17 +1,20 @@
+ /**
+- * The tool calls each visible account served, read in one polled request per page. The host
++ * The tool calls each visible account served, following its authorized committed changes. The host
+  * leaves out accounts the caller may not inspect and accounts no call used, so either gets no
+  * numbers, never 0. A failed read gives nothing at all.
+  */
+ import { browserOnly } from "@executor-js/ui/contracts/http";
+-import { pollingQuery } from "@executor-js/ui/contracts/polling";
+ import type { TrafficTick } from "@executor-js/ui/dashboard/account-traffic";
+-import { Effect } from "effect";
+-import { Atom } from "effect/reactivity";
++import { Effect, Semaphore } from "effect";
++import { AsyncResult, Atom } from "effect/reactivity";
+ import type { AccountId } from "@executor-js/sdk";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+-import { maxTrafficAccounts, trafficTickHours } from "@executor-js/hosted-server/account-traffic";
++import {
++  maxTrafficWatchAccounts,
++  trafficTickHours,
++} from "@executor-js/hosted-server/account-traffic";
+ import { HostedClient } from "./api.ts";
++import { changeProtected } from "./change-signal.ts";
+ 
+ const hour = 3_600_000;
+ 
+@@ -31,52 +34,95 @@
+ const read = ({ organization, accounts }: Key) =>
+   Effect.gen(function* () {
+     const client = yield* HostedClient;
+-    const pages = yield* Effect.forEach(
+-      Array.from({ length: Math.ceil(accounts.length / maxTrafficAccounts) }, (_, index) =>
+-        accounts.slice(index * maxTrafficAccounts, (index + 1) * maxTrafficAccounts),
+-      ),
+-      (batch) =>
+-        client.accountTraffic.read({ params: { organization }, payload: { accounts: batch } }),
+-      { concurrency: 2 },
+-    );
++    const page = yield* client.accountTraffic.read({
++      params: { organization },
++      payload: { accounts },
++    });
++    // The server's hours, so a skewed browser clock never shifts the ticks.
++    const current = Math.floor(Date.parse(page.readAt) / hour) * hour;
+     return new Map(
+-      pages.flatMap((page) => {
+-        // The server's hours, so a skewed browser clock never shifts the ticks.
+-        const current = Math.floor(Date.parse(page.readAt) / hour) * hour;
+-        return page.accounts.map((entry) => {
+-          const traffic: ToolCallTraffic = {
+-            requests: entry.requests,
+-            failed: entry.failed,
+-            ticks: Array.from({ length: trafficTickHours }, (_, index): TrafficTick => {
+-              const start = current - (trafficTickHours - 1 - index) * hour;
+-              const bucket = entry.recent.find((recent) => Date.parse(recent.at) === start);
+-              return bucket === undefined || bucket.requests === 0
+-                ? "none"
+-                : bucket.failed > 0
+-                  ? "bad"
+-                  : "good";
+-            }),
+-            lastSuccessAt: entry.lastSuccessAt,
+-          };
+-          return [entry.account, traffic] as const;
+-        });
++      page.accounts.map((entry) => {
++        const traffic: ToolCallTraffic = {
++          requests: entry.requests,
++          failed: entry.failed,
++          ticks: Array.from({ length: trafficTickHours }, (_, index): TrafficTick => {
++            const start = current - (trafficTickHours - 1 - index) * hour;
++            const bucket = entry.recent.find((recent) => Date.parse(recent.at) === start);
++            return bucket === undefined || bucket.requests === 0
++              ? "none"
++              : bucket.failed > 0
++                ? "bad"
++                : "good";
++          }),
++          lastSuccessAt: entry.lastSuccessAt,
++        };
++        return [entry.account, traffic] as const;
+       }),
+     );
+   });
+ 
+-// String keys: the family reuses the atom, and its polling, while the visible accounts stay put.
+-const traffic = Atom.family((key: string) => {
++const requests = Semaphore.makeUnsafe(2);
++
++// String keys share reads only while the same accounts remain visible in this organization.
++const pageTraffic = Atom.family((key: string) => {
+   const parsed = JSON.parse(key) as Key;
+-  return pollingQuery(
+-    browserOnly(
+-      HostedClient.runtime.atom(
++  return browserOnly(
++    HostedClient.runtime
++      .atom(
+         parsed.accounts.length === 0
+           ? Effect.succeed(undefined)
+-          : read(parsed).pipe(Effect.catch(() => Effect.succeed(undefined))),
++          : read(parsed).pipe(
++              requests.withPermits(1),
++              Effect.catch(() => Effect.succeed(undefined)),
++            ),
++      )
++      .pipe(
++        changeProtected(
++          parsed.organization,
++          ["account-traffic", "membership"],
++          [],
++          parsed.accounts,
++        ),
+       ),
+-    ),
+   );
+ });
+ 
++const traffic = Atom.family((key: string) => {
++  const parsed = JSON.parse(key) as Key;
++  const pages = Array.from(
++    { length: Math.ceil(parsed.accounts.length / maxTrafficWatchAccounts) },
++    (_, index) =>
++      pageTraffic(
++        JSON.stringify({
++          organization: parsed.organization,
++          accounts: parsed.accounts.slice(
++            index * maxTrafficWatchAccounts,
++            (index + 1) * maxTrafficWatchAccounts,
++          ),
++        }),
++      ),
++  );
++  return Atom.readable(
++    (get) => {
++      const values: Map<AccountId, ToolCallTraffic>[] = [];
++      let waiting = false;
++      for (const page of pages) {
++        const result = get(page);
++        if (!AsyncResult.isSuccess(result) || result.value === undefined) return result;
++        values.push(result.value);
++        waiting ||= result.waiting;
++      }
++      return AsyncResult.success(
++        pages.length === 0 ? undefined : new Map(values.flatMap((page) => [...page])),
++        { waiting },
++      );
++    },
++    (refresh) => {
++      for (const page of pages) refresh(page);
++    },
++  ).pipe(Atom.setIdleTTL(0));
++});
++
+ /** Each visible account's counted tool calls; undefined while unread or when the read failed. */
+-export const toolCallTrafficAtom = (key: Key) => traffic(JSON.stringify(key));
++export const toolCallTrafficAtom = (key: Key) =>
++  traffic(JSON.stringify({ ...key, accounts: [...new Set(key.accounts)].sort() }));
+diff --git a/apps/hosted/web/src/implementation/pages/app-window.tsx b/apps/hosted/web/src/implementation/pages/app-window.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-window.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-window.tsx
+@@ -8,6 +8,7 @@
+ import { liveAppAtom } from "../../contracts/apps.ts";
+ import { appAccessAtom } from "../../contracts/resource-access.ts";
+ import { useOrganizationRoute } from "../components/organization.tsx";
++import { useEvictAppFrame } from "../components/app-frames.tsx";
+ import { AppScreen, AppSkeleton } from "./app-screen.tsx";
+ 
+ /**
+@@ -23,6 +24,7 @@
+     app: AsyncResult.isFailure(query.result),
+     access: AsyncResult.isFailure(authority.result),
+   });
++  useEvictAppFrame(appId, screen === "absent");
+   return (
+     <main className="flex h-dvh flex-col bg-background">
+       {screen === "present" && app !== undefined ? (
+diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+--- a/e2e/support/profile-removal-rollback.ts
++++ b/e2e/support/profile-removal-rollback.ts
+@@ -1,8 +1,14 @@
++/** Rewind a named schema step and every later journal row before reconstructing older tables. */
++export const rewindHostedMigrations = (name: string) => ({
++  sql: "DELETE FROM private_hosted_migrations WHERE migration_id >= (SELECT migration_id FROM private_hosted_migrations WHERE name = $1) RETURNING migration_id",
++  params: [name],
++});
++
+ /** Undo the hosted journal before reconstructing its dependency layout. */
+ const beforeHostedAccountChanges = () =>
+   [
+-    // A dropped SDK table also drops its migration-20 trigger. Rewind the whole step so startup
+-    // reinstalls every trigger after the older SDK layout has been reconstructed.
++    // A later journal row makes the migrator skip missing earlier steps. Rewind the recorded
++    // suffix with the account schema, including migrations introduced after this fixture.
+     { sql: "DROP FUNCTION IF EXISTS hosted_change_revision(text, text, text)" },
+     { sql: "DROP FUNCTION IF EXISTS hosted_project_changes(integer)" },
+     { sql: "DROP FUNCTION IF EXISTS hosted_account_changed() CASCADE" },
+@@ -10,11 +16,11 @@
+     { sql: "DROP FUNCTION IF EXISTS hosted_queue_change(text, text, text, bigint)" },
+     { sql: "DROP TABLE IF EXISTS hosted_change_dirty" },
+     { sql: "DROP TABLE IF EXISTS hosted_change_batches" },
++    rewindHostedMigrations("account_changes"),
+     {
+       sql: `DO $rollback$
+         BEGIN
+           IF to_regclass('private_hosted_migrations') IS NOT NULL THEN
+-            DELETE FROM private_hosted_migrations WHERE migration_id IN (20, 21, 22);
+             IF EXISTS (SELECT 1 FROM private_hosted_migrations WHERE migration_id = 19)
+               AND to_regprocedure('hosted_record_change(text,text,text)') IS NOT NULL THEN
+               EXECUTE $migration19$
+@@ -78,11 +84,11 @@
+     { sql: "DROP TRIGGER hosted_deployment_changed ON executor_apps" },
+     { sql: "DROP FUNCTION hosted_deployment_changed(), hosted_record_change(text, text, text)" },
+     { sql: "DROP TABLE hosted_change_pending, hosted_change_heads" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 19" },
++    rewindHostedMigrations("change_revisions"),
+     { sql: "DROP TABLE hosted_tool_availability" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 18" },
++    rewindHostedMigrations("tool_availability"),
+     { sql: "DROP TABLE hosted_account_rechecks, hosted_account_recheck_families" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 17" },
++    rewindHostedMigrations("account_rechecks"),
+   ] as const;
+ 
+ /** Remove policy state and its journal row before replaying an earlier hosted migration. */
+@@ -90,7 +96,7 @@
+   [
+     ...beforeHostedAccountRechecks(),
+     { sql: "DROP TABLE hosted_tool_policy_history, hosted_tool_policies" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 16" },
++    rewindHostedMigrations("tool_policies"),
+   ] as const;
+ 
+ /** Remove Routes' additive state before replaying an earlier hosted migration. */
+@@ -98,7 +104,7 @@
+   [
+     ...beforeHostedToolPolicies(),
+     { sql: "DROP TABLE basalt_hosted_routes_usage, basalt_hosted_routes_accounts" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 15" },
++    rewindHostedMigrations("hosted_routes"),
+   ] as const;
+ 
+ /** Roll back the model-binding objects and journal together before replaying earlier hosted steps. */
+@@ -106,7 +112,7 @@
+   [
+     ...beforeHostedRoutes(),
+     { sql: "DROP TABLE hosted_model_bindings" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 14" },
++    rewindHostedMigrations("model_bindings"),
+   ] as const;
+ 
+ /**
+@@ -132,7 +138,7 @@
+     { sql: "DROP VIEW hosted_contributions" },
+     { sql: "DROP TABLE hosted_contributed_departures, hosted_contributed_departure_jobs" },
+     { sql: "DROP TABLE hosted_account_observation_access" },
+-    { sql: "DELETE FROM private_hosted_migrations WHERE migration_id IN (10, 11, 12, 13)" },
++    rewindHostedMigrations("account_observations"),
+   ] as const;
+ 
+ /**
+diff --git a/e2e/tests/app-account-picker.spec.ts b/e2e/tests/app-account-picker.spec.ts
+--- a/e2e/tests/app-account-picker.spec.ts
++++ b/e2e/tests/app-account-picker.spec.ts
+@@ -428,6 +428,7 @@
+         yield* refresh.requested;
+         yield* refresh.release;
+         yield* failureShown("Refresh failure is reported", "Unable to complete this request");
++        yield* browser.checkpoint("Refresh failure is reported");
+         yield* shows("mailboxes", "A failed refresh keeps the accounts", allMailboxes);
+ 
+         const unlinked = yield* browser.use("Retry clearing the second mailbox", (page) =>
+diff --git a/e2e/tests/app-host-navigation.spec.ts b/e2e/tests/app-host-navigation.spec.ts
+--- a/e2e/tests/app-host-navigation.spec.ts
++++ b/e2e/tests/app-host-navigation.spec.ts
+@@ -500,29 +500,28 @@
+           ),
+         ).toBe(windowPath);
+ 
++        expect(
++          yield* browser.use("Scoped session refusals preserve the document and draft", (page) =>
++            kept(appFrame(page, origin)),
++          ),
++        ).toEqual({ ...sessionFirst, answer: "refused" });
++
+         // The parent login is revoked elsewhere: the browser still holds its cookie.
+         const login = yield* browser.use("Read the dashboard login", (page) =>
+           page.context().cookies(new URL(page.url()).origin),
+         );
+         const elsewhere = yield* api.session(Redacted.make(login));
+         expect((yield* api.request(elsewhere, "POST", "/api/auth/sign-out", {})).status).toBe(200);
+-        expect(yield* refusedHere("After revocation the page asks nothing")).toBe(windowPath);
+-        expect(
+-          yield* raw(
+-            "The host refuses a current-version request after revocation",
+-            request(version, { tab: "settings" }),
+-          ),
+-        ).toBe("refused");
++        // Revoking the parent session evicts its protected document immediately.
++        yield* browser.use("Parent revocation evicts the protected app", (page) =>
++          page.locator("iframe").waitFor({ state: "detached" }),
++        );
++        expect((yield* api.request(elsewhere, "POST", navigationPath, binding)).status).toBe(401);
+         expect(
+           yield* browser.use("Revocation navigated to no destination", (page) =>
+             Promise.resolve(new URL(page.url()).search),
+           ),
+         ).not.toBe("?view=settings");
+-        expect(
+-          yield* browser.use("The document outlived both refusals", (page) =>
+-            kept(appFrame(page, origin)),
+-          ),
+-        ).toEqual({ ...sessionFirst, answer: "refused" });
+       }),
+     ),
+   );
+diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/contributed-departure-observability.spec.ts
+--- a/e2e/tests/contributed-departure-observability.spec.ts
++++ b/e2e/tests/contributed-departure-observability.spec.ts
+@@ -9,7 +9,10 @@
+ import { Evidence } from "../support/evidence.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { RuntimeLive } from "../support/platform.ts";
+-import { beforeHostedModelBindings } from "../support/profile-removal-rollback.ts";
++import {
++  rewindHostedMigrations,
++  beforeHostedModelBindings,
++} from "../support/profile-removal-rollback.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+@@ -143,10 +146,13 @@
+         const account = yield* f.connect(f.actors.member, "app", "shared", "Retained pool account");
+         // The previous host stored this job before migration 13 and could not retain its diagnostics.
+         yield* legacyStorage([
++          {
++            sql: "INSERT INTO private_hosted_migrations (migration_id, name) SELECT max(migration_id) + 1, 'fixture_future_account_change' FROM private_hosted_migrations",
++          },
+           ...beforeHostedModelBindings(),
+           { sql: "ALTER TABLE hosted_contributed_departure_jobs DROP COLUMN queued_at" },
+           { sql: "ALTER TABLE hosted_contributed_departure_jobs DROP COLUMN last_error" },
+-          { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 13" },
++          rewindHostedMigrations("contributed_departure_observability"),
+           {
+             sql: "INSERT INTO hosted_contributed_departure_jobs (id, organization_id, user_id, status, attempts, updated_at) VALUES ($1, $2, $3, 'failed', 8, now() - interval '10 minutes')",
+             params: [`${f.app.id}-retained`, f.actors.organization.id, f.ids.member],
+@@ -182,13 +188,17 @@
+         yield* serverControl("restart");
+         expect(yield* read).toEqual(retained);
+         yield* evidence.json("retained-diagnostics-remain-unknown.json", retained);
+-        const [journal, repeated] = yield* legacyStorage([
++        const [journal, repeated, futureSteps] = yield* legacyStorage([
+           {
+             sql: "SELECT count(*)::integer AS count FROM private_hosted_migrations WHERE migration_id = 13",
+           },
+           journalQuery,
++          {
++            sql: "SELECT migration_id FROM private_hosted_migrations WHERE name = 'fixture_future_account_change'",
++          },
+         ]);
+         expect(journal).toEqual([{ count: 1 }]);
++        expect(futureSteps).toEqual([]);
+         expect(repeated).toEqual(upgraded);
+         yield* evidence.json("retained-diagnostics-and-recheck-migrations.json", {
+           upgraded,
+diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-links.spec.ts
+--- a/e2e/tests/legacy-profile-links.spec.ts
++++ b/e2e/tests/legacy-profile-links.spec.ts
+@@ -6,7 +6,7 @@
+  * The fixture rebuilds the database as step 9 finds it inside the upgrade transaction. The
+  * product's migration ledger is per step: SDK schema versions in FumaDB's settings and hosted
+  * steps in `private_hosted_migrations`, which runs every step above its latest recorded one. The
+- * fixture removes steps 9 through 19 from the ledger and their objects, and writes the profiles an
++ * fixture rewinds later schema and journal rows together, and writes the profiles an
+  * older version left in `executor_installations`. SDK 4.0.13 and 4.0.14 stay applied because, in
+  * a real upgrade, they have already run when step 9 starts, and 4.0.13 keeps
+  * `executor_installations` unchanged for step 9. Step 9 reads only that table, apps, deployments,
+@@ -32,7 +32,10 @@
+ import { Evidence } from "../support/evidence.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { managementApp } from "../support/management-app.ts";
+-import { beforeHostedAccountObservations } from "../support/profile-removal-rollback.ts";
++import {
++  rewindHostedMigrations,
++  beforeHostedAccountObservations,
++} from "../support/profile-removal-rollback.ts";
+ import { serverControl } from "../support/server-control.ts";
+ 
+ const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
+@@ -47,29 +50,6 @@
+     })),
+   }),
+ }));`;
+-
+-/** The hosted steps a current database has recorded, in order. */
+-const ledger = [
+-  "baseline",
+-  "api_key_memberships",
+-  "upgrade_executor_apps",
+-  "data_steps",
+-  "upgrade_executor_apps",
+-  "upgrade_pinned_executor_apps",
+-  "require_connection_targets",
+-  "oauth_client_access",
+-  "app_account_links",
+-  "account_observations",
+-  "contributed_departures",
+-  "account_identity_index",
+-  "contributed_departure_observability",
+-  "model_bindings",
+-  "hosted_routes",
+-  "tool_policies",
+-  "account_rechecks",
+-  "tool_availability",
+-  "change_revisions",
+-].map((name, index) => ({ migration_id: index + 1, name }));
+ 
+ const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
+ const Tokens = Schema.Struct({ primary: Schema.String, extras: Schema.Array(Schema.String) });
+@@ -237,12 +217,20 @@
+         yield* evidence.json("fixture.json", fixture);
+ 
+         // The database as step 9 finds it: profiles, no links, ledger through step 8.
++        const [currentJournal] = yield* legacyStorage([
++          { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
++        ]);
++        const ledger = currentJournal ?? [];
++        const boundary = Number(
++          ledger.find((step) => step.name === "app_account_links")?.migration_id,
++        );
++        expect(Number.isInteger(boundary), "the current journal records app_account_links").toBe(
++          true,
++        );
+         yield* legacyStorage(beforeHostedAccountObservations());
+         const [recorded, rolledBack] = yield* legacyStorage([
+           { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
+-          {
+-            sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 9 RETURNING migration_id",
+-          },
++          rewindHostedMigrations("app_account_links"),
+           { sql: "DROP TABLE hosted_app_account_links" },
+           profile({
+             id: `ins_first_${suffix}`,
+@@ -338,7 +326,7 @@
+           }),
+         ]);
+         expect(recorded, "later steps are pending before rebuilding step 9").toEqual(
+-          ledger.slice(0, 9),
++          ledger.filter((step) => Number(step.migration_id) <= boundary),
+         );
+         expect(rolledBack, "step 9 is pending again").toEqual([{ migration_id: 9 }]);
+         yield* serverControl("start");
+diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
+--- a/e2e/tests/legacy-profile-schedules.spec.ts
++++ b/e2e/tests/legacy-profile-schedules.spec.ts
+@@ -28,6 +28,7 @@
+ import { Evidence } from "../support/evidence.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+ import {
++  rewindHostedMigrations,
+   beforeAppAccounts,
+   beforeHostedAccountObservations,
+   beforeProfileRemoval,
+@@ -314,7 +315,7 @@
+         { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
+         ...beforeAppAccounts(),
+         ...beforeHostedAccountObservations(),
+-        { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 9" },
++        rewindHostedMigrations("app_account_links"),
+         { sql: "DROP TABLE hosted_app_account_links" },
+         ...beforeProfileRemoval(),
+         ...profileAppCopiesPending("private_hosted"),
+diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+--- a/e2e/tests/legacy-targetless-connections.spec.ts
++++ b/e2e/tests/legacy-targetless-connections.spec.ts
+@@ -14,6 +14,7 @@
+ import { Resource } from "../support/contracts.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+ import {
++  rewindHostedMigrations,
+   beforeAppAccounts,
+   beforeHostedAccountObservations,
+   beforeProfileRemoval,
+@@ -262,16 +263,14 @@
+           // Step 9 runs again with steps 7 and 8; it creates the link table and converts profiles
+           // idempotently, and none are left to convert.
+           ...beforeHostedAccountObservations(),
+-          { sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 9` },
++          rewindHostedMigrations("app_account_links"),
+           // Before step 8 no client had an audience, whose rows name stored clients.
+           { sql: `DROP TABLE hosted_oauth_client_groups, hosted_oauth_client_access` },
+-          { sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 8` },
++          rewindHostedMigrations("oauth_client_access"),
+           ...legacyRows(connection, ids),
+           // Before step 7 the product's access rows could have no target either.
+           { sql: `ALTER TABLE hosted_connection_access ALTER COLUMN target DROP NOT NULL` },
+-          {
+-            sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 7`,
+-          },
++          rewindHostedMigrations("require_connection_targets"),
+           ...legacy.map((id) => ({
+             sql: `INSERT INTO hosted_connection_access (connection_id, organization_id, creator_id, destination, target)
+               SELECT $2, organization_id, creator_id, destination, NULL
+diff --git a/e2e/tests/navigation-intent.spec.ts b/e2e/tests/navigation-intent.spec.ts
+--- a/e2e/tests/navigation-intent.spec.ts
++++ b/e2e/tests/navigation-intent.spec.ts
+@@ -8,6 +8,7 @@
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { App } from "../support/contracts.ts";
+ import { scenarios } from "../test-plan.ts";
++import { Evidence } from "../support/evidence.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ 
+ /** Whether a request reads this app's record, batched with other reads or on its own. */
+@@ -25,8 +26,12 @@
+ 
+ /** Whether a dashboard read batch also asks for this app's tool index. */
+ const readsTools = (request: Request, app: string) =>
+-  (request.postData() ?? "").includes(`"group":"tools","endpoint":"index"`) &&
+-  (request.postData() ?? "").includes(app);
++  (request.method() === "GET" &&
++    new RegExp(`^/api/organizations/[^/]+/apps/${app}/tools/index$`).test(
++      new URL(request.url()).pathname,
++    )) ||
++  ((request.postData() ?? "").includes(`"group":"tools","endpoint":"index"`) &&
++    (request.postData() ?? "").includes(app));
+ 
+ layer(HostedLive, { excludeTestServices: true })("Navigation intent", (it) => {
+   it.effect(scenarios.navigationIntentReads.title, (context) =>
+@@ -36,6 +41,7 @@
+         const actors = yield* Actors;
+         const api = yield* Api;
+         const browser = yield* Browser;
++        const evidence = yield* Evidence;
+         const prefix = `/api/organizations/${actors.organization.id}`;
+         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+           name: `Intent example ${randomUUID().slice(0, 8)}`,
+@@ -67,37 +73,50 @@
+         yield* browser.use("Open the app list", (page) => page.goto(appsPath));
+         yield* browser.use("Wait for the app's link", (page) => link(page).waitFor());
+         const reads: Request[] = [];
++        const toolReads: Request[] = [];
+         yield* browser.use("Watch for reads of the app", (page) => {
+           page.on("request", (request) => {
+             if (readsApp(request, app.id)) reads.push(request);
++            if (readsTools(request, app.id)) toolReads.push(request);
+           });
+-          return Promise.resolve();
++          // Observe each real response separately; an unrelated streamed sibling may stay open.
++          return page.route(
++            new RegExp(`/api/organizations/[^/]+/apps/${app.id}(?:/tools/index)?(?:\\?|$)`),
++            (route) => route.fallback(),
++          );
+         });
+-        // Hovering shows intent: the app is read while the list is still open. The list already
+-        // names the app's version and accounts, so its tools are read in the same batch.
+-        const [hovered] = yield* browser.use("Hover the app's link", (page) =>
+-          Promise.all([
+-            page
+-              .waitForRequest((request) => readsApp(request, app.id))
+-              .then((read) => read.response().then(() => read)),
++        // The authoritative app body waits for heads; tools may finish in an earlier batch.
++        yield* browser.use("Hover reads the app and its tools before the click", (page) => {
++          const completed = (matches: (request: Request) => boolean) =>
++            page.waitForRequest(matches).then((read) =>
++              read.response().then((response) => {
++                expect(response?.ok()).toBe(true);
++                return response?.finished().then((error) => expect(error).toBe(null));
++              }),
++            );
++          return Promise.all([
++            completed((request) => readsApp(request, app.id)),
++            completed((request) => readsTools(request, app.id)),
+             link(page).hover(),
+-          ]),
+-        );
+-        expect(readsTools(hovered, app.id)).toBe(true);
++          ]);
++        });
+         expect(
+           yield* browser.use("Read the current path", (page) =>
+             Promise.resolve(new URL(page.url()).pathname),
+           ),
+         ).toBe(appsPath);
+         expect(reads).toHaveLength(1);
+-        // Opening the app renders it from that read instead of reading it again.
+-        yield* browser.use("Open the app", (page) => link(page).click());
+-        // The tools preview reads the app's tools after the page mounts, so any read of the app
+-        // the page started itself has been sent by the time it shows.
+-        yield* browser.use("Wait for the app's tools", (page) =>
+-          page.getByRole("main").getByText("A simple greeting").first().waitFor(),
+-        );
++        expect(toolReads).toHaveLength(1);
++        const clickToContentMs = yield* browser.use("Open the prefetched app", (page) => {
++          const started = performance.now();
++          return link(page)
++            .click()
++            .then(() => page.getByRole("main").getByText("A simple greeting").first().waitFor())
++            .then(() => performance.now() - started);
++        });
+         expect(reads).toHaveLength(1);
++        expect(toolReads).toHaveLength(1);
++        yield* evidence.json("navigation-intent-timing.json", { clickToContentMs });
+       }),
+     ),
+   );
+diff --git a/packages/sdk/src/implementation/account-traffic-store.ts b/packages/sdk/src/implementation/account-traffic-store.ts
+--- a/packages/sdk/src/implementation/account-traffic-store.ts
++++ b/packages/sdk/src/implementation/account-traffic-store.ts
+@@ -1,7 +1,7 @@
+ /**
+  * Per-account, per-UTC-hour counts of the tool calls each account served, so account lists can
+- * show requests, failures and the latest success. Derived data no reactive reader watches: the
+- * storage migration creates its table (`migrateAccountTraffic`), so the runtime only writes, and
++ * show requests, failures and the latest success. The host may publish committed counter writes.
++ * The storage migration creates its table (`migrateAccountTraffic`), so the runtime only writes, and
+  * every write is best-effort for its caller. A write that fails logs its SQLSTATE.
+  */
+ import { Clock, Effect, Schema } from "effect";

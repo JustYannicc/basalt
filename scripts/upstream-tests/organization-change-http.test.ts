@@ -32,6 +32,9 @@ import {
 import { migrateChangeRevisions } from "../../.upstream/apps/hosted/server/src/implementation/change-revision-schema.ts";
 import { migrateAccountChanges } from "../../.upstream/apps/hosted/server/src/implementation/account-change-schema.ts";
 import { makeChangeJournal } from "../../.upstream/apps/hosted/server/src/implementation/change-revisions.ts";
+import { migrateAccountTrafficChanges } from "../../.upstream/apps/hosted/server/src/implementation/account-traffic-change-schema.ts";
+import { makeAccountTrafficStore } from "../../.upstream/packages/sdk/src/implementation/account-traffic-store.ts";
+import { AccountId } from "../../.upstream/packages/sdk/src/contracts/shared.ts";
 import type {
   ChangeKey,
   RevisionEvent,
@@ -177,6 +180,7 @@ const fixture = <A>(context: TestContext, work: (f: Fixture) => Promise<A>) =>
         "organization:team-a",
         "organization:team-b",
         "user:viewer-a",
+        "user:viewer-b",
         "pool:app_a",
       ])
         queues.set(scope, yield* Queue.make<RevisionEvent>());
@@ -509,4 +513,139 @@ test("never-granted members receive no selected pool heads on the read or stream
       assert.equal(await refused.text(), "", "denied members receive no pool revisions");
     }
     assert.deepEqual(f.state.subscriptions, [], "denied streams never subscribe to a pool");
+  }));
+
+test("private traffic keys are authorized before current heads and stream delivery, including guessed IDs", (context) =>
+  fixture(context, async (f) => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* f.sql`alter table hosted_account_access add column creator_id text,
+        add column kind text, add column personal_user_id text, add column revision text`;
+        yield* f.sql`insert into "user" values ('viewer-b','Other member',now())`;
+        yield* f.sql`insert into member values ('member-b','team-a','viewer-b','member')`;
+        yield* f.sql`insert into session values ('session-b','viewer-b',${f.expiresAt},now())`;
+        yield* f.sql`insert into executor_accounts (id,owner,provider,method,label,encrypted_credentials,created_at)
+        values ('acc_b','organization:team-a','prv_a','key','Private B',${new Uint8Array([2])},now())`;
+        for (const [account, user] of [
+          ["acc_a", "viewer-a"],
+          ["acc_b", "viewer-b"],
+        ])
+          yield* f.sql`insert into hosted_account_access
+          (account_id,organization_id,audience,creator_id,kind,personal_user_id,revision)
+          values (${account},'team-a',null,${user},'personal',${user},'1')`;
+        yield* migrateAccountTrafficChanges;
+      }).pipe(Effect.provideService(SqlClient.SqlClient, f.sql)),
+    );
+    await f.deliver();
+    const aPath = `${path}/current?account=acc_a`;
+    const before = await (await f.request(aPath)).json();
+    const stream = frames(await f.request(`${path}?account=acc_a`));
+    try {
+      assert.match((await stream.next()) ?? "", /event: current/);
+      await Effect.runPromise(
+        makeAccountTrafficStore(f.sql).record({
+          accounts: [AccountId.make("acc_b")],
+          at: Date.now(),
+          ok: true,
+        }),
+      );
+      await f.deliver();
+      assert.deepEqual(
+        (await (await f.request(aPath)).json()).revisions,
+        before.revisions,
+        "B's private activity exposes no new key or head to A",
+      );
+      const b = await (
+        await f.request(`${path}/current?account=acc_b`, {
+          cookie: "fixture-session=session-b",
+        })
+      ).json();
+      assert.deepEqual(
+        b.revisions.filter(({ topic }: { topic: string }) => topic === "account-traffic"),
+        [{ topic: "account-traffic", resource: "acc_b", revision: "1" }],
+      );
+      for (const suffix of ["", "/current"])
+        for (const account of ["acc_b", "acc_nonexistent"]) {
+          const denied = await f.request(`${path}${suffix}?account=${account}`);
+          assert.equal(denied.status, 403);
+          assert.equal(
+            await denied.text(),
+            "",
+            "a guessed private ID is indistinguishable from a missing account",
+          );
+        }
+      await Effect.runPromise(
+        makeAccountTrafficStore(f.sql).record({
+          accounts: [AccountId.make("acc_a")],
+          at: Date.now(),
+          ok: true,
+        }),
+      );
+      await f.deliver();
+      assert.match(
+        (await stream.next()) ?? "",
+        /"topic":"account-traffic","resource":"acc_a","revision":"1"/,
+        "the next delivered event is A's own call, with no private B event before it",
+      );
+      f.state.beforeHead = f.sql`update hosted_account_access set personal_user_id='viewer-b'
+        where account_id='acc_a'`.pipe(Effect.asVoid);
+      assert.equal(
+        (await f.request(aPath)).status,
+        403,
+        "authority is checked again after reading selected account heads",
+      );
+    } finally {
+      await stream.cancel();
+    }
+  }));
+
+test("selected traffic accounts share the 32-key protocol budget with common and pool keys", (context) =>
+  fixture(context, async (f) => {
+    const accounts = ["acc_a", ...Array.from({ length: 26 }, (_, i) => `acc_limit_${i}`)];
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* f.sql`alter table hosted_account_access add column creator_id text,
+        add column kind text, add column personal_user_id text, add column revision text`;
+        for (const account of accounts) {
+          if (account !== "acc_a")
+            yield* f.sql`insert into executor_accounts (id,owner,provider,method,label,encrypted_credentials,created_at)
+            values (${account},'organization:team-a','prv_a','key','Visible',${new Uint8Array([2])},now())`;
+          yield* f.sql`insert into hosted_account_access
+          (account_id,organization_id,audience,creator_id,kind,personal_user_id,revision)
+          values (${account},'team-a','everyone','viewer-a','shared',null,'1')`;
+        }
+        yield* f.sql`insert into hosted_app_access (id,organization_id,audience,creator_id,revision)
+        values ('app_a','team-a','everyone','viewer-a','00000000-0000-4000-8000-000000000001')`;
+      }),
+    );
+    const selected = (ids: readonly string[], pool = false) =>
+      new URLSearchParams([
+        ...ids.map((id) => ["account", id]),
+        ...(pool ? [["pool", "app_a"]] : []),
+      ]).toString();
+    for (const [ids, pool] of [
+      [accounts, false],
+      [accounts.slice(0, 23), true],
+    ] as const) {
+      const response = await f.request(`${path}/current?${selected(ids, pool)}`);
+      assert.equal(response.status, 200);
+      const receipt = Schema.decodeUnknownSync(ChangeSnapshot)(await response.json());
+      assert.equal(receipt.revisions.length, 32);
+      assert.equal(
+        receipt.revisions.filter(({ topic }) => topic === "account-traffic").length,
+        ids.length,
+      );
+    }
+    for (const [ids, pool] of [
+      [accounts.concat("acc_too_many"), false],
+      [accounts.slice(0, 24), true],
+    ] as const)
+      for (const suffix of ["", "/current"]) {
+        const refused = await f.request(`${path}${suffix}?${selected(ids, pool)}`);
+        assert.equal(refused.status, 400);
+        assert.equal(await refused.text(), "", "oversized selectors expose no heads");
+      }
+    const duplicate = await f.request(`${path}/current?${selected(accounts.concat("acc_a"))}`);
+    assert.equal(duplicate.status, 200, "the budget counts distinct account keys");
+    assert.equal((await duplicate.json()).revisions.length, 32);
   }));
