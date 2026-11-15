@@ -1026,7 +1026,7 @@ jobs:
         run: bunx vitest run --config e2e/account-mirrors.config.ts
       - name: Verify immutable account declarations across runtime protocols
         working-directory: .upstream
-        run: bunx vitest run --config e2e/account-definition.config.ts
+        run: node ../scripts/ci/with-published-frameworks.ts -- bunx vitest run --config e2e/account-definition.config.ts
       - name: Collect bounded E2E evidence with original-run fallback
         if: always()
         run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
@@ -1879,7 +1879,7 @@ jobs:
       - name: Verify reporting, retained data and registration isolation
         working-directory: .upstream
         run: >-
-          bun run e2e:self-host --test-name
+          node ../scripts/ci/with-published-frameworks.ts -- bun run e2e:self-host --test-name
           "$(node ../scripts/ci/e2e-pattern.ts personal-data-reporting:reporting-retained-data-and-registration-isolation)"
           --workers 2
       - name: Verify Cloud scheduling and organization isolation
@@ -2174,7 +2174,7 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify captured views, source bindings and the packaged renderer
         working-directory: .upstream
-        run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts mcp-apps:captured-views-source-bindings-and-the-packaged-renderer)" --workers 1
+        run: node ../scripts/ci/with-published-frameworks.ts -- bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts mcp-apps:captured-views-source-bindings-and-the-packaged-renderer)" --workers 1
       - name: Verify encrypted retention, concurrent limits and restart
         working-directory: .upstream
         run: bun run e2e:local --test-name "$(node ../scripts/ci/e2e-pattern.ts mcp-apps:encrypted-retention-concurrent-limits-and-restart)" --workers 1

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { Effect } from "effect";
 
+const availableDeferral =
+  "Synthetic registration deferral must stay hidden while automatic sign-in is available.";
+
 const client = {
   steps: ["Create a client in the synthetic management workspace."],
   link: { label: "Open synthetic client settings", url: "https://localhost/oauth-clients" },
@@ -20,6 +23,10 @@ export function withManualGuidance(feed) {
         ? entry
         : {
             ...entry,
+            oauthDeferrals: [
+              { method: "oauth", message: availableDeferral },
+              ...(entry.oauthDeferrals ?? []).filter((deferral) => deferral.method !== "oauth"),
+            ],
             connectionGuidance: [
               {
                 requirement: "other",
@@ -73,6 +80,11 @@ export function verifyManualGuidance(browser, width) {
       assert.equal(
         await dialog.getByRole("link", { name: /Wrong (requirement|method) guide/ }).count(),
         0,
+      );
+      assert.equal(
+        await dialog.getByText(availableDeferral, { exact: true }).count(),
+        0,
+        "An available automatic client suppresses deferrals even beside a structured own-app guide",
       );
       const id = dialog.getByLabel("Management client ID", { exact: true });
       await id.fill("client_synthetic_manual");

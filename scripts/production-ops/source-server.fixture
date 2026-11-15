@@ -2,7 +2,7 @@
 import { createServer } from "node:http";
 import { parseArgs } from "node:util";
 import { Effect, Schema } from "effect";
-import { nativeRepositories } from "@executor-js/app-source/node";
+import { nativeRepositories, systemGit } from "@executor-js/app-source/node";
 import {
   AppCodeId,
   GitObjectId,
@@ -12,7 +12,7 @@ import {
 
 const { values } = parseArgs({ options: { directory: { type: "string" } } });
 if (values.directory === undefined) throw new Error("The proof must own its Git directory");
-const git = nativeRepositories(values.directory);
+const git = nativeRepositories(values.directory, systemGit);
 const Id = { code: AppCodeId };
 const Operation = Schema.Union([
   Schema.Struct({ op: Schema.Literal("create"), ...Id }),

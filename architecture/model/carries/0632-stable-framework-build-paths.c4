@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "Framework server and browser snapshots use a fixed workspace working directory and dependency identities rooted at Bun package locators before esbuild computes chunk hashes. Random preparation generations, checkout paths and FULL versus check-only release lifecycles cannot change framework module bytes. Workspace resolution preserves TypeScript and package semantics, dependency identities preserve package module modes, and coverage maps still resolve to source files. Exact module hashes remain authoritative for source-bound admission; unknown or changed framework bytes are refused."
+      constraint "Framework server and browser snapshots use a fixed workspace working directory and dependency identities rooted at Bun package locators before esbuild computes chunk hashes. Random preparation generations, checkout paths and FULL versus check-only release lifecycles cannot change framework module bytes. Workspace resolution preserves TypeScript and package semantics, dependency identities preserve package module modes, and coverage maps still resolve to source files. Within one build command, immutable dependency paths, source bytes and nearest package metadata are reused. Exact relative JavaScript siblings may skip a repeated native resolution only inside a side-effect-free package without browser remaps, symlinks or matching path externals. All other imports retain native resolution. Exact module hashes remain authoritative for source-bound admission; unknown or changed framework bytes are refused."
     }
   }
 }

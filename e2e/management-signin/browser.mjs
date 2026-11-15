@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { createHash, X509Certificate } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -32,3 +33,32 @@ export const managementBrowser = (certificate) =>
       );
     }),
   );
+
+// Read Chromium's accessibility tree so this checks the description users actually hear.
+export const assertCredentialDescription = async (page, label, expected) => {
+  const session = await page.context().newCDPSession(page);
+  try {
+    const { root } = await session.send("DOM.getDocument");
+    const { nodeId } = await session.send("DOM.querySelector", {
+      nodeId: root.nodeId,
+      selector: `[role="dialog"] input[aria-label="${label}"]`,
+    });
+    assert.ok(nodeId, "The named credential must exist");
+    const { nodes } = await session.send("Accessibility.getPartialAXTree", { nodeId });
+    console.log(
+      JSON.stringify({
+        credentialDescription: {
+          present: nodes[0].description !== undefined,
+          matches: nodes[0].description?.value === expected,
+        },
+      }),
+    );
+    assert.equal(
+      nodes[0].description?.value,
+      expected,
+      "The secret's format hint must be its accessible description",
+    );
+  } finally {
+    await session.detach();
+  }
+};

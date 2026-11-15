@@ -1,9 +1,11 @@
-import { Effect, Schema } from "effect";
+import { Data, Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import type { Change, ProductionMigration } from "./contracts.ts";
 import { canonical, sha256 } from "./crypto.ts";
 import { refuse } from "./migrations/provider-apps-schema.ts";
 import { atPhase } from "./diagnostics.ts";
+
+class ScopeProofFailed extends Data.TaggedError("ScopeProofFailed")<{ readonly message: string }> {}
 
 const Request = Schema.Struct({
   organization: Schema.String,
@@ -108,7 +110,7 @@ export const scopeProof: ProductionMigration = {
           Effect.andThen(Effect.die(poison)),
         );
       if (request.operation === "diagnostic-composite")
-        return yield* Effect.fail(new Error(poison)).pipe(
+        return yield* Effect.fail(new ScopeProofFailed({ message: poison })).pipe(
           Effect.ensuring(sql`select 1 / 0`.pipe(Effect.orDie)),
         );
       const { table, id, key } = descriptor(request);
@@ -130,7 +132,7 @@ export const scopeProof: ProductionMigration = {
         request.operation === "link-subject" ||
         request.operation.startsWith("departure-");
       if (before === undefined && !inserting)
-        return yield* Effect.fail(new Error("Missing proof row"));
+        return yield* Effect.fail(new ScopeProofFailed({ message: "Missing proof row" }));
       const deleting = request.operation === "mutable-delete" || request.operation === "delete";
       const change: Change = {
         table,

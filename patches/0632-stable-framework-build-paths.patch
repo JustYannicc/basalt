@@ -49,28 +49,41 @@ diff --git a/packages/apps/scripts/stable-framework-paths.mjs b/packages/apps/sc
 new file mode 100644
 --- /dev/null
 +++ b/packages/apps/scripts/stable-framework-paths.mjs
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,123 @@
 +import { readFile, realpath } from "node:fs/promises";
-+import { dirname, extname, join, relative, sep } from "node:path";
++import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 +
 +// Chunk hashes include resolved input paths. Keep Bun's package identities, not its random store root.
 +export const stableFrameworkPaths = async (workspace) => {
 +  const root = await realpath(workspace);
 +  const files = new Map();
 +  const packageModes = new Map();
++  const paths = new Map();
++  const sources = new Map();
++  const canonicalPath = (file) => {
++    if (!paths.has(file)) paths.set(file, realpath(file));
++    return paths.get(file);
++  };
 +  const namespace = "framework";
-+  const moduleMode = async (directory) => {
++  const packageInfo = (directory) => {
 +    if (packageModes.has(directory)) return packageModes.get(directory);
-+    let mode;
-+    try {
-+      mode = JSON.parse(await readFile(join(directory, "package.json"), "utf8")).type;
-+    } catch (error) {
-+      if (error.code !== "ENOENT") throw error;
-+      const parent = dirname(directory);
-+      mode = parent === directory ? undefined : await moduleMode(parent);
-+    }
-+    packageModes.set(directory, mode);
-+    return mode;
++    const pending = (async () => {
++      try {
++        const manifest = JSON.parse(await readFile(join(directory, "package.json"), "utf8"));
++        return {
++          directory,
++          type: manifest.type,
++          sideEffects: manifest.sideEffects,
++          browser: manifest.browser,
++        };
++      } catch (error) {
++        if (error.code !== "ENOENT") throw error;
++        const parent = dirname(directory);
++        return parent === directory ? {} : packageInfo(parent);
++      }
++    })();
++    packageModes.set(directory, pending);
++    return pending;
 +  };
 +  return {
 +    sourcePath(source) {
@@ -82,11 +95,40 @@ new file mode 100644
 +    plugin: {
 +      name: "stable-framework-paths",
 +      setup(build) {
++        const packageExternals = (build.initialOptions.external ?? []).every(
++          (specifier) =>
++            /^(?:@[^/]+\/)?[^.*][^*]*(?:\/\*)?$/.test(specifier) && !isAbsolute(specifier),
++        );
 +        build.onResolve({ filter: /.*/ }, async (args) => {
 +          if (args.pluginData?.frameworkResolved) return;
 +          const importer =
 +            args.namespace === namespace ? files.get(args.importer)?.path : args.importer;
-+          const result = await build.resolve(args.path, {
++          let result;
++          if (
++            packageExternals &&
++            args.namespace === namespace &&
++            /^\.{1,2}\//.test(args.path) &&
++            extname(args.path) === ".js" &&
++            Object.keys(args.with).length === 0
++          ) {
++            const info = await packageInfo(dirname(importer));
++            const candidate = resolve(dirname(importer), args.path);
++            if (
++              info.sideEffects === false &&
++              info.browser === undefined &&
++              candidate.startsWith(info.directory + sep)
++            ) {
++              try {
++                if ((await canonicalPath(candidate)) === candidate)
++                  result = { path: candidate, namespace: "file", sideEffects: false };
++              } catch (error) {
++                if (error.code !== "ENOENT") throw error;
++              }
++            }
++          }
++          // Exact JavaScript siblings in a pure package need no package-condition lookup.
++          // Browser remaps, symlinks, missing files and every other import stay with esbuild.
++          result ??= await build.resolve(args.path, {
 +            importer,
 +            namespace: "file",
 +            kind: args.kind,
@@ -94,8 +136,9 @@ new file mode 100644
 +            with: args.with,
 +            pluginData: { frameworkResolved: true },
 +          });
-+          if (result.errors.length || result.external || result.namespace !== "file") return result;
-+          const path = await realpath(result.path);
++          if (result.errors?.length || result.external || result.namespace !== "file")
++            return result;
++          const path = await canonicalPath(result.path);
 +          const normalized = path.split(sep).join("/");
 +          const marker = "/node_modules/.bun/";
 +          const index = normalized.lastIndexOf(marker);
@@ -109,7 +152,7 @@ new file mode 100644
 +          const local = normalized.slice(index + 1);
 +          const extension = extname(path);
 +          // esbuild uses .mjs/.cjs to retain the package's default-import and strict-mode semantics.
-+          const mode = extension === ".js" ? await moduleMode(dirname(path)) : undefined;
++          const mode = extension === ".js" ? (await packageInfo(dirname(path))).type : undefined;
 +          const logical = local + (mode === "module" ? ".mjs" : mode === "commonjs" ? ".cjs" : "");
 +          const previous = files.get(logical);
 +          if (previous !== undefined && previous.path !== path)
@@ -123,7 +166,8 @@ new file mode 100644
 +            extname(file)
 +          ];
 +          if (loader === undefined) throw new Error("Unsupported framework dependency source type");
-+          return { contents: await readFile(file), loader, resolveDir: dirname(file) };
++          if (!sources.has(file)) sources.set(file, readFile(file));
++          return { contents: await sources.get(file), loader, resolveDir: dirname(file) };
 +        });
 +      },
 +    },
