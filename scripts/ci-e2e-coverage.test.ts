@@ -178,6 +178,32 @@ test("a skipped suite cannot claim its planned children executed", () =>
     }
   }));
 
+test("the published-framework wrapper covers root scripts from its upstream working directory", () =>
+  fixture((root, workflow, inventory) => {
+    writeFileSync(join(root, "e2e/wrapped.mjs"), 'import "./wrapped-helper.mjs";');
+    writeFileSync(join(root, "e2e/wrapped-helper.mjs"), "export const proof = true;");
+    for (const run of [
+      "node scripts/ci/unrelated.ts -- bun ../e2e/wrapped.mjs",
+      "node scripts/ci/with-published-frameworks.ts bun ../e2e/wrapped.mjs",
+      "node scripts/ci/with-published-frameworks.ts -- bun --check ../e2e/wrapped.mjs",
+      "node ../scripts/ci/with-published-frameworks.ts -- bun ../e2e/wrapped.mjs",
+    ]) {
+      workflow.jobs.recipe = { steps: [{ run }] };
+      assert.equal(coverageErrors(inventory(), []).length, 2, run);
+    }
+    for (const cwd of [".", ".upstream"]) {
+      const wrapper = cwd === "." ? "scripts/ci/" : "../scripts/ci/";
+      const step = {
+        run: `node ${wrapper}with-published-frameworks.ts -- bun ../e2e/wrapped.mjs`,
+        "working-directory": cwd,
+      };
+      workflow.jobs.recipe = { steps: [step] };
+      assert.deepEqual(coverageErrors(inventory(), []), [], cwd);
+      workflow.jobs.recipe.steps = [{ ...step, if: false }];
+      assert.equal(coverageErrors(inventory(), []).length, 2, cwd);
+    }
+  }));
+
 test("syntax checks, argv data, comments and type-only imports do not execute a recipe", () =>
   fixture((root, workflow, inventory) => {
     writeFileSync(join(root, "e2e/new-recipe-checks.mjs"), 'console.log("proof");');

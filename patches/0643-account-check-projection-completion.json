@@ -1,0 +1,9 @@
+{
+  "identity": "account-check-projection-completion",
+  "file": "0643-account-check-projection-completion.patch",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "content_sha256": "f4e7094be815dfad99a66ef29d03af2d03ea8c9b9b3004db7b5ee3f57f707a0b"
+}

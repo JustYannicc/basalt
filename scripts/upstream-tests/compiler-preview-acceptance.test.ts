@@ -110,63 +110,83 @@ export default {
 test(
   "native preview compiles stay cold while production reuse and normal previews keep their behavior",
   {
-    timeout: 15_000,
     skip:
       process.env.BASALT_CHECK_BUILT_FRAMEWORK !== "1"
         ? "The production framework build runs this proof"
         : false,
   },
-  async () => {
-    const wasm = new Map<string, Buffer>();
-    const bundle = await build({
-      stdin: {
-        contents: worker,
-        sourcefile: "compiler-preview.ts",
-        resolveDir: upstream,
-        loader: "ts",
-      },
-      absWorkingDir: upstream,
-      bundle: true,
-      write: false,
-      format: "esm",
-      platform: "browser",
-      conditions: ["workerd"],
-      external: ["cloudflare:*"],
-      logLevel: "silent",
-      plugins: [
-        {
-          name: "compiler-wasm",
-          setup(builder) {
-            builder.onResolve({ filter: /\.wasm$/ }, (args) => {
-              const path = args.path.startsWith(".")
-                ? resolve(args.resolveDir, args.path)
-                : createRequire(resolve(args.resolveDir, "wasm-resolution.mjs")).resolve(args.path);
-              const name = `compiler-${wasm.size}.wasm`;
-              wasm.set(name, readFileSync(path));
-              return { path: `./${name}`, external: true };
-            });
+  async (context) => {
+    let runtime: InstanceType<typeof Miniflare> | undefined;
+    let initialized = false;
+    await context.test(
+      "initialize the native compiler Worker",
+      { timeout: 6_000 },
+      async (setup) => {
+        const wasm = new Map<string, Buffer>();
+        const bundle = await build({
+          stdin: {
+            contents: worker,
+            sourcefile: "compiler-preview.ts",
+            resolveDir: upstream,
+            loader: "ts",
           },
-        },
-      ],
-    });
-    const framework = readFileSync(
-      resolve(upstream, ".local/basalt-framework/framework.json"),
-      "utf8",
+          absWorkingDir: upstream,
+          bundle: true,
+          write: false,
+          format: "esm",
+          platform: "browser",
+          conditions: ["workerd"],
+          external: ["cloudflare:*"],
+          logLevel: "silent",
+          plugins: [
+            {
+              name: "compiler-wasm",
+              setup(builder) {
+                builder.onResolve({ filter: /\.wasm$/ }, (args) => {
+                  const path = args.path.startsWith(".")
+                    ? resolve(args.resolveDir, args.path)
+                    : createRequire(resolve(args.resolveDir, "wasm-resolution.mjs")).resolve(
+                        args.path,
+                      );
+                  const name = `compiler-${wasm.size}.wasm`;
+                  wasm.set(name, readFileSync(path));
+                  return { path: `./${name}`, external: true };
+                });
+              },
+            },
+          ],
+        });
+        const framework = readFileSync(
+          resolve(upstream, ".local/basalt-framework/framework.json"),
+          "utf8",
+        );
+        setup.signal.throwIfAborted();
+        runtime = new Miniflare({
+          modules: [
+            { type: "ESModule", path: "compiler.mjs", contents: bundle.outputFiles[0]!.text },
+            ...Array.from(wasm, ([path, contents]) => ({
+              type: "CompiledWasm" as const,
+              path,
+              contents,
+            })),
+          ],
+          compatibilityDate: "2026-09-08",
+          compatibilityFlags: ["nodejs_compat", "no_brotli_content_encoding"],
+          cachePersist: false,
+          serviceBindings: { ASSETS: () => new WorkerResponse(framework) },
+        });
+        await runtime.ready;
+        initialized = true;
+      },
     );
-    const runtime = new Miniflare({
-      modules: [
-        { type: "ESModule", path: "compiler.mjs", contents: bundle.outputFiles[0]!.text },
-        ...Array.from(wasm, ([path, contents]) => ({
-          type: "CompiledWasm" as const,
-          path,
-          contents,
-        })),
-      ],
-      compatibilityDate: "2026-09-08",
-      compatibilityFlags: ["nodejs_compat", "no_brotli_content_encoding"],
-      cachePersist: false,
-      serviceBindings: { ASSETS: () => new WorkerResponse(framework) },
-    });
+    if (!initialized) {
+      await context.test("dispose an incomplete compiler Worker", { timeout: 6_000 }, async () =>
+        runtime?.dispose(),
+      );
+      assert.fail("Native compiler setup must finish within its deadline");
+    }
+    assert.ok(runtime, "Native compiler setup must create its Worker");
+    const compiler = runtime;
     const decode = Schema.decodeUnknownSync(
       Schema.Struct({
         ok: Schema.Boolean,
@@ -192,45 +212,55 @@ test(
         | "oversized-hit",
       expectedOk = true,
     ) => {
-      const response = await runtime.dispatchFetch("https://compiler.test", {
-        method: "POST",
-        body: JSON.stringify({
-          stage,
-          fault,
-          cacheUnavailable: fault === "cache-unavailable",
-          reuse: fault === "reuse",
-          config: {
-            EXECUTOR_APPS_VERSION: qualified.version,
-            EXECUTOR_APPS_FRAMEWORK: qualified.framework,
-            EXECUTOR_COMPILER_CACHE_APPS_VERSION: qualified.version,
-            EXECUTOR_COMPILER_CACHE_FRAMEWORK: qualified.framework,
-            EXECUTOR_COMPILER_CACHE_RELEASE: qualified.release,
-            ...(acceptance === undefined
-              ? {}
-              : { EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE: acceptance }),
-          },
-          files: [
-            {
-              path: "package.json",
-              content: JSON.stringify({
-                type: "module",
-                dependencies: {
-                  apps: fault === "nonexact" ? `^${qualified.version}` : qualified.version,
+      let counters: ReturnType<typeof decode>["counters"] | undefined;
+      // Twice the observed CI p95 of 2,599 ms, rounded up; this bounds one request, not the suite.
+      await context.test(
+        `${stage}: ${fault ?? acceptance ?? "default"}`,
+        { timeout: 6_000 },
+        async () => {
+          const response = await compiler.dispatchFetch("https://compiler.test", {
+            method: "POST",
+            body: JSON.stringify({
+              stage,
+              fault,
+              cacheUnavailable: fault === "cache-unavailable",
+              reuse: fault === "reuse",
+              config: {
+                EXECUTOR_APPS_VERSION: qualified.version,
+                EXECUTOR_APPS_FRAMEWORK: qualified.framework,
+                EXECUTOR_COMPILER_CACHE_APPS_VERSION: qualified.version,
+                EXECUTOR_COMPILER_CACHE_FRAMEWORK: qualified.framework,
+                EXECUTOR_COMPILER_CACHE_RELEASE: qualified.release,
+                ...(acceptance === undefined
+                  ? {}
+                  : { EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE: acceptance }),
+              },
+              files: [
+                {
+                  path: "package.json",
+                  content: JSON.stringify({
+                    type: "module",
+                    dependencies: {
+                      apps: fault === "nonexact" ? `^${qualified.version}` : qualified.version,
+                    },
+                  }),
                 },
-              }),
-            },
-            {
-              path: "index.ts",
-              content: 'import { defineApp } from "apps"; export default defineApp({}, {});',
-            },
-          ],
-        }),
-      });
-      assert.equal(response.status, 200);
-      const result = decode(await response.json());
-      assert.equal(result.ok, expectedOk);
-      if (!expectedOk) assert.equal(result.error, "RuntimeBuildFailed");
-      return result.counters;
+                {
+                  path: "index.ts",
+                  content: 'import { defineApp } from "apps"; export default defineApp({}, {});',
+                },
+              ],
+            }),
+          });
+          assert.equal(response.status, 200);
+          const result = decode(await response.json());
+          assert.equal(result.ok, expectedOk);
+          if (!expectedOk) assert.equal(result.error, "RuntimeBuildFailed");
+          counters = result.counters;
+        },
+      );
+      assert.ok(counters, "The native compile must finish within its scenario deadline");
+      return counters;
     };
     try {
       const first = await compile("test-pr-42", "true");
@@ -273,7 +303,9 @@ test(
       const nonexact = await compile("test-pr-42", "true", "nonexact", false);
       assert.deepEqual(nonexact, { names: [], lookups: 0, hits: 0, writes: 0 });
     } finally {
-      await runtime.dispose();
+      await context.test("dispose the native compiler Worker", { timeout: 6_000 }, () =>
+        compiler.dispose(),
+      );
     }
   },
 );

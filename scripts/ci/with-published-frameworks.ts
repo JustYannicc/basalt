@@ -96,17 +96,18 @@ export async function publishedFrameworkFixtures(
       appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${refusal}\n`);
     assert.fail(refusal);
   }
-  fixtures.push({
-    ...localIdentity,
-    version: "synthetic-e2e-protocol26",
-    protocol: 26,
-    browserSha256: localBrowserIdentity.sha256,
-    source: {
-      origin: "basalt",
-      revision: "synthetic-e2e:current-framework:protocol26-adapter",
-      sha256: createHash("sha256").update(localArchive).digest("hex"),
-    },
-  });
+  for (const protocol of [26, 35])
+    fixtures.push({
+      ...localIdentity,
+      version: `synthetic-e2e-protocol${protocol}`,
+      protocol,
+      browserSha256: localBrowserIdentity.sha256,
+      source: {
+        origin: "basalt",
+        revision: `synthetic-e2e:current-framework:protocol${protocol}-adapter`,
+        sha256: createHash("sha256").update(localArchive).digest("hex"),
+      },
+    });
 
   return fixtures;
 }

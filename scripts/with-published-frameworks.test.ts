@@ -52,11 +52,15 @@ test("published framework adapter accepts an archive matching the approved tuple
   try {
     fixture.pack();
     const adapters = await publishedFrameworkFixtures(fixture.root, [fixture.approved]);
-    assert.equal(adapters.length, 1);
+    assert.equal(adapters.length, 2);
     assert.equal(adapters[0].version, "synthetic-e2e-protocol26");
     assert.equal(adapters[0].protocol, 26);
     assert.equal(adapters[0].sha256, fixture.approved.sha256);
     assert.equal(adapters[0].browserSha256, fixture.approved.browserSha256);
+    assert.equal(adapters[1].version, "synthetic-e2e-protocol35");
+    assert.equal(adapters[1].protocol, 35);
+    assert.equal(adapters[1].sha256, fixture.approved.sha256);
+    assert.equal(adapters[1].browserSha256, fixture.approved.browserSha256);
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
