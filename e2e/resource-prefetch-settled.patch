@@ -136,11 +136,20 @@ diff --git a/e2e/tests/resource-prefetch.spec.ts b/e2e/tests/resource-prefetch.s
 diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
 --- a/e2e/test-plan.ts
 +++ b/e2e/test-plan.ts
-@@ -6298,6 +6298,7 @@
+@@ -38,6 +38,7 @@
+   /** Opt in to writing legacy/upgrade-era rows into the stopped product's own database. */
+   legacyStorage: Schema.optional(Schema.Literal(true)),
+   managementApps: Schema.optional(Schema.Array(Schema.Literals(["owner", "admin", "member"]))),
++  settleProvisioning: Schema.optional(Schema.Literal(true)),
+   /** Labels of extra Testing SDK scenarios created during setup; each has its own closeable scope. */
+   sdkScenarios: Schema.optional(Schema.Array(Schema.NonEmptyString)),
+   /** Operator settings the scenario's own product process starts with. */
+@@ -6298,6 +6299,8 @@
    },
    resourcePrefetch: {
      fixtures: "actors",
 +    managementApps: ["owner", "admin", "member"],
++    settleProvisioning: true,
      file: "resource-prefetch.spec.ts",
      title: "Organization entry prefetches resources without retaining a polling subscription",
      targets: {
@@ -165,9 +174,99 @@ diff --git a/apps/hosted/testing/management-provisioning.ts b/apps/hosted/testin
        and account.owner = 'organization:' || team.id
 -      and link.app = team.metadata::jsonb->'executorDefaults'->>'app') as ready
 +      and link.app = team.metadata::jsonb->'executorDefaults'->>'app')
-+  and not exists (select 1 from hosted_provisioning job
++  and (not $3::boolean or not exists (select 1 from hosted_provisioning job
 +    where (job.organization_id = $1 or job.user_id = $2)
-+      and job.status <> 'succeeded') as ready
++      and job.status <> 'succeeded')) as ready
    from organization team where team.id = $1`;
  
  export const awaitManagementProvisioning = async (
+@@ -32,6 +37,7 @@
+   organization: string,
+   user: string,
+   signal: AbortSignal,
++  settled = false,
+ ) => {
+   let client: PoolClient | undefined;
+   let released = false;
+@@ -86,7 +92,8 @@
+     for (;;) {
+       const observed = revision;
+       const [state] = Schema.decodeUnknownSync(Readiness)(
+-        (await until(() => acquired.query(managementReadiness, [organization, user]))).rows,
++        (await until(() => acquired.query(managementReadiness, [organization, user, settled])))
++          .rows,
+       );
+       if (state === undefined) throw new ManagementProvisioningFailed();
+       if (state.ready) break;
+diff --git a/e2e/support/lifecycle.ts b/e2e/support/lifecycle.ts
+--- a/e2e/support/lifecycle.ts
++++ b/e2e/support/lifecycle.ts
+@@ -118,9 +118,15 @@
+               yield* Effect.forEach(
+                 plan.managementApps,
+                 (role) =>
+-                  prepareManagementApp(actors[role], actors.organization.id, target, (record) => {
+-                    if (managementSetup.length < 24) managementSetup.push({ role, record });
+-                  }),
++                  prepareManagementApp(
++                    actors[role],
++                    actors.organization.id,
++                    target,
++                    (record) => {
++                      if (managementSetup.length < 24) managementSetup.push({ role, record });
++                    },
++                    plan.settleProvisioning === true,
++                  ),
+                 { concurrency: 3, discard: true },
+               ).pipe(Effect.provideContext(fixtures));
+             return { target, actors };
+diff --git a/e2e/support/management-app.ts b/e2e/support/management-app.ts
+--- a/e2e/support/management-app.ts
++++ b/e2e/support/management-app.ts
+@@ -26,6 +26,7 @@
+   organizationId: string,
+   target: typeof Target.Service,
+   report?: (record: ManagementSetupRecord) => void,
++  settled = false,
+ ) =>
+   Effect.gen(function* () {
+     const clients = yield* SessionClients;
+@@ -59,6 +60,7 @@
+       fixtureRequest(fixtures, "/management-provisioned", {
+         id: scenarioId,
+         user: session.user.id,
++        settled,
+       }).pipe(
+         Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ ready: Schema.Literal(true) }))),
+       ),
+diff --git a/apps/hosted/testing/scenario-server.ts b/apps/hosted/testing/scenario-server.ts
+--- a/apps/hosted/testing/scenario-server.ts
++++ b/apps/hosted/testing/scenario-server.ts
+@@ -210,9 +210,15 @@
+   });
+   const managementProvisioned = Effect.gen(function* () {
+     const request = yield* HttpServerRequest.HttpServerRequest;
+-    const { id, user } = yield* request.json.pipe(
++    const { id, user, settled } = yield* request.json.pipe(
+       Effect.flatMap(
+-        Schema.decodeUnknownEffect(Schema.Struct({ id: Id, user: Schema.NonEmptyString })),
++        Schema.decodeUnknownEffect(
++          Schema.Struct({
++            id: Id,
++            user: Schema.NonEmptyString,
++            settled: Schema.optionalKey(Schema.Boolean),
++          }),
++        ),
+       ),
+     );
+     const scenario = owned.get(id),
+@@ -221,7 +227,8 @@
+       return yield* new TestAccountFailed({ stage: "fixture" });
+     const organization = scenario.organization;
+     yield* Effect.tryPromise({
+-      try: (signal) => awaitManagementProvisioning(database, organization, user, signal),
++      try: (signal) =>
++        awaitManagementProvisioning(database, organization, user, signal, settled === true),
+       catch: () => new TestAccountFailed({ stage: "fixture" }),
+     });
+     return { ready: true };
