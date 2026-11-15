@@ -81,6 +81,26 @@ test("activation plans and inspects are read-only; one reviewed digest activates
   assert.equal(f.counts().sends, 1);
 });
 
+test("only the fresh plan's exact digest reaches activation", async () => {
+  const f = fixture();
+  const plan = await runMigrationActivation({ candidate, mode: "plan", ports: f.ports });
+  const other = plan.fingerprint.startsWith("0") ? "1" : "0";
+  for (const mode of ["c".repeat(64), other + plan.fingerprint.slice(1)]) {
+    await assert.rejects(
+      runMigrationActivation({ candidate, mode, ports: f.ports }),
+      /migration-activation-plan-stale/,
+    );
+    assert.deepEqual(f.counts(), { sends: 0, writes: 0 });
+  }
+  const complete = await runMigrationActivation({
+    candidate,
+    mode: plan.fingerprint,
+    ports: f.ports,
+  });
+  assert.equal(complete.status, "complete");
+  assert.equal(f.counts().sends, 1);
+});
+
 test("a changed app inventory makes the reviewed digest stale before any activation", async () => {
   const f = fixture();
   const plan = await runMigrationActivation({ candidate, mode: "plan", ports: f.ports });

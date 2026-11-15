@@ -421,23 +421,26 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
-      - name: Prepare that candidate's activation client
+      # The candidate supplies only what must match deployed code: its migrations and hosted CLI.
+      - name: Prepare that candidate's migration sources
         working-directory: ${{ runner.temp }}/candidate
         run: npm run prepare:upstream
+      # The client is this trusted main commit, so a fix to it needs a merge, not a release.
+      - name: Prepare the trusted activation client
+        run: npm run prepare:upstream
       - name: Plan, activate once, or inspect the prepared journals
-        working-directory: ${{ runner.temp }}/candidate
         run: |
           node --input-type=module -e '
           import { randomUUID } from "node:crypto";
           import { deployEnvironment } from "./scripts/environment.ts";
           import { run } from "./scripts/process.ts";
           run("bun", ["scripts/release-barrier/migration-activation-entry.ts"], undefined, {
-            ...deployEnvironment(),
+            ...deployEnvironment(process.env, process.env.BASALT_ACTIVATION_SOURCE_ROOT),
             BASALT_RELEASE_ATTEMPT: randomUUID(),
           });
           '
         env:
-          BASALT_RELEASE_CANDIDATE: ${{ steps.candidate.outputs.head }}
+          BASALT_ACTIVATION_SOURCE_ROOT: ${{ runner.temp }}/candidate
           MIGRATION_ACTIVATION_MODE: ${{ inputs.migration_activation }}
           ALCHEMY_STAGE: production
       - name: Retain activation plan and outcome receipts
@@ -445,7 +448,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: migration-activation
-          path: ${{ runner.temp }}/candidate/.local/release-barrier/migration-activation.json
+          path: .local/release-barrier/migration-activation.json
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 90

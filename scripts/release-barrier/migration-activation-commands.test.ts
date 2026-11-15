@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/index.js";
 import { connectHistoryPlatform, runHistoryOperator } from "../pool-history-operator.ts";
@@ -10,7 +13,7 @@ import {
   historyJournalActivationPath,
   modelHistorySchemaPlan,
 } from "../../src/pool/model-history/operator.ts";
-import { historyPlan } from "./migration-activation-commands.ts";
+import { activateHosted, historyPlan } from "./migration-activation-commands.ts";
 import { BarrierRefusal } from "./refusal.ts";
 import { refusalTable } from "./refusal-report.ts";
 
@@ -206,4 +209,33 @@ test("module loading and remote proxy initialization have distinct closed failur
       },
     );
   }
+});
+
+test("hosted activation runs the candidate's own CLI with only the database role", async (context) => {
+  const cloud = mkdtempSync(join(tmpdir(), "basalt-activation-cloud-"));
+  context.after(() => rmSync(cloud, { recursive: true, force: true }));
+  mkdirSync(join(cloud, "src"));
+  writeFileSync(
+    join(cloud, "src/migrate.ts"),
+    `import { writeFileSync } from "node:fs";
+writeFileSync("ran.json", JSON.stringify({
+  args: process.argv.slice(2),
+  cwd: process.cwd(),
+  role: process.env.DATABASE_URL,
+  inherited: Object.keys(process.env).filter((name) => name !== "DATABASE_URL" && !name.startsWith("__CF")),
+}));
+if (process.env.DATABASE_URL === "refuse") process.exit(3);
+`,
+  );
+  await activateHosted("candidate-role", cloud);
+  const ran = JSON.parse(readFileSync(join(cloud, "ran.json"), "utf8"));
+  assert.deepEqual(ran.args, ["--activate-change-journal", "--readers-ready=checkpoint-count-v1"]);
+  assert.equal(realpathSync(ran.cwd), realpathSync(cloud));
+  assert.equal(ran.role, "candidate-role");
+  assert.deepEqual(ran.inherited, []);
+  await assert.rejects(activateHosted("refuse", cloud), /migration-activation-hosted-command/);
+  await assert.rejects(
+    activateHosted("candidate-role", join(cloud, "missing")),
+    /migration-activation-hosted-command/,
+  );
 });

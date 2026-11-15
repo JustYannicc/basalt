@@ -2,14 +2,12 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { checkpointReaderContract } from "./migration-activation-contract.ts";
 import type { HistoryOperator } from "./migration-activation-source.ts";
 import { digest, BarrierRefusal } from "./manifest.ts";
 import { HistoryOperatorFailure } from "../pool-history-operator-failure.ts";
 import { safeProviderFailureChain } from "./operation-failure.ts";
 
-const cloud = fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url));
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const hash = (value: unknown): value is string =>
@@ -88,8 +86,11 @@ export async function historyPlan(operator: HistoryOperator, accountId: string, 
   }
 }
 
-/** This child receives the existing role only through env; raw output is discarded at the boundary. */
-export function activateHosted(databaseUrl: string) {
+/**
+ * This child receives the existing role only through env; raw output is discarded at the boundary.
+ * `cloud` is the candidate's prepared hosted app, so the migration that runs is the released one.
+ */
+export function activateHosted(databaseUrl: string, cloud: string) {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(
       process.execPath,
