@@ -1491,7 +1491,7 @@ diff --git a/packages/sdk/src/implementation/selection-read-facts.ts b/packages/
 new file mode 100644
 --- /dev/null
 +++ b/packages/sdk/src/implementation/selection-read-facts.ts
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,146 @@
 +import { Context, Effect, Option } from "effect";
 +import { SqlClient } from "effect/sql";
 +import type { AccountId, AppId } from "../contracts/shared.ts";
@@ -1507,6 +1507,7 @@ new file mode 100644
 +import type { uncachedSelectionRows } from "./selection.ts";
 +
 +type Reads<A, E> = WeakMap<Query, Map<string, Effect.Effect<A, E>>>;
++const makeReads = <A, E>(): Reads<A, E> => new WeakMap<Query, Map<string, Effect.Effect<A, E>>>();
 +/** Hosts may provide raw rows for one fenced read. Selections, grants and checks are never stored. */
 +export const SelectionReadFacts = Context.Reference<
 +  | {
@@ -1594,16 +1595,46 @@ new file mode 100644
 +        Effect.provideService(SelectionReadFacts, {
 +          accounts: new Set(accounts),
 +          apps: new Set(apps),
-+          appRows: new WeakMap(),
-+          versions: new WeakMap(),
-+          accountRows: new WeakMap(),
-+          storedApps: new WeakMap(),
-+          storedAccounts: new WeakMap(),
-+          acquisitions: new WeakMap(),
-+          connections: new WeakMap(),
-+          connectionLists: new WeakMap(),
-+          appLists: new WeakMap(),
-+          acquisitionRecords: new WeakMap(),
++          appRows: makeReads<
++            Effect.Success<ReturnType<typeof uncachedAppRow>>,
++            Effect.Error<ReturnType<typeof uncachedAppRow>>
++          >(),
++          versions: makeReads<
++            Effect.Success<ReturnType<typeof uncachedVersionRow>>,
++            Effect.Error<ReturnType<typeof uncachedVersionRow>>
++          >(),
++          accountRows: makeReads<
++            Effect.Success<ReturnType<typeof uncachedSelectionRows>>,
++            Effect.Error<ReturnType<typeof uncachedSelectionRows>>
++          >(),
++          storedApps: makeReads<
++            Effect.Success<ReturnType<typeof uncachedStoredAppRow>>,
++            Effect.Error<ReturnType<typeof uncachedStoredAppRow>>
++          >(),
++          storedAccounts: makeReads<
++            Effect.Success<ReturnType<typeof uncachedStoredAccountRow>>,
++            Effect.Error<ReturnType<typeof uncachedStoredAccountRow>>
++          >(),
++          acquisitions: makeReads<
++            Effect.Success<ReturnType<typeof uncachedAcquisitionRows>>,
++            Effect.Error<ReturnType<typeof uncachedAcquisitionRows>>
++          >(),
++          connections: makeReads<
++            Effect.Success<ReturnType<typeof uncachedConnectionRow>>,
++            Effect.Error<ReturnType<typeof uncachedConnectionRow>>
++          >(),
++          connectionLists: makeReads<
++            Effect.Success<ReturnType<typeof uncachedConnectionRows>>,
++            Effect.Error<ReturnType<typeof uncachedConnectionRows>>
++          >(),
++          appLists: makeReads<
++            Effect.Success<ReturnType<typeof uncachedAppListRows>>,
++            Effect.Error<ReturnType<typeof uncachedAppListRows>>
++          >(),
++          acquisitionRecords: makeReads<
++            Effect.Success<ReturnType<typeof uncachedAcquisitionRecord>>,
++            Effect.Error<ReturnType<typeof uncachedAcquisitionRecord>>
++          >(),
 +        }),
 +      ),
 +    );
