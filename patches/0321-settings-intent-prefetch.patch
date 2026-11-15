@@ -241,7 +241,7 @@ diff --git a/e2e/tests/settings-intent-prefetch.spec.ts b/e2e/tests/settings-int
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/settings-intent-prefetch.spec.ts
-@@ -0,0 +1,350 @@
+@@ -0,0 +1,356 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Deferred, Effect, Option } from "effect";
 +import type { Locator, Page, Request } from "playwright";
@@ -251,7 +251,7 @@ new file mode 100644
 +import { Browser } from "../support/browser.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
 +import { Evidence } from "../support/evidence.ts";
-+import { openThroughBrowser } from "../support/in-app-navigation.ts";
++import { openInApp } from "../support/in-app-navigation.ts";
 +import { observeNavigation } from "../support/instant-navigation.ts";
 +import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
 +import { batchedReads, batchPath } from "../support/read-batches.ts";
@@ -392,14 +392,20 @@ new file mode 100644
 +          const showIntent = (page: Page) =>
 +            phone ? link(page).dispatchEvent("touchstart") : link(page).hover();
 +          const expected: SettingsRead[] = administrator ? ["invitations", "members"] : ["members"];
-+          /** A fresh Apps document that has never read members, invitations or billing. */
++          /**
++           * A fresh Apps document that has never read members, invitations or billing. It opens
++           * from Connections: the shared start page is Settings, whose document carries members.
++           */
 +          const enterApps = (label: string) =>
 +            Effect.gen(function* () {
 +              intentOnly = true;
 +              reads.length = 0;
 +              answered.length = 0;
 +              forbiddenRequests.length = 0;
-+              yield* openThroughBrowser(label, `${organization}/apps`);
++              yield* browser.use(`${label}: start from Connections`, (page) =>
++                page.goto(`${organization}/connect`),
++              );
++              yield* openInApp(label, `${organization}/apps`);
 +              yield* browser.use(`${label}: Apps is shown`, (page) =>
 +                page.getByRole("heading", { name: /^Apps/ }).first().waitFor(),
 +              );
