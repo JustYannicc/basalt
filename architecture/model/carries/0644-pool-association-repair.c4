@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Pool association repair changes only an exact reviewed organization metadata slot through the production operations transaction and receipt. Clearing a stale registration may enable later provisioning. Repointing requires an absent old app, exact existing organization and creator ownership, matching deployment lineage, no duplicate registration and no recorded app credentials. Ownership and app/account rows never change, and drift or ambiguous provenance refuses. Journal activation never performs this repair."
+    }
+  }
+}

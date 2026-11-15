@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-association-repair",
+  "file": "0644-pool-association-repair.patch",
+  "content_sha256": "cbba8b0bffa06c95642571825295fe451afeced30be45d419dd376cde5947e55",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}
