@@ -201,6 +201,7 @@ test(
             body: "{}",
           });
           assert.equal(response.status, 502);
+          assert.equal(response.headers.get("Retry-After"), null);
           assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Step"), null);
           assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Reason"), null);
           const text = await response.text();

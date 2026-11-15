@@ -11,6 +11,7 @@ import { equalContainerConfiguration } from "./container-configuration.ts";
 import type { HomeMigrationIdentity } from "./home-schema-operation.ts";
 import type { AdmittedHomeImage } from "./home-schema-container.ts";
 import { homeImageMetadataMismatch } from "./home-schema-image-identity.ts";
+import type { FleetImageResource } from "./runtime-image-phase.ts";
 
 const cached = Schema.Struct({
   accountId: Schema.String,
@@ -51,10 +52,11 @@ export const releaseHomeImage = (
   state: StateService,
   changed: readonly FrozenContainer[],
   io: HomeImageDependencies = live,
+  resource: FleetImageResource | "PoolContainer" = "PoolContainer",
 ) =>
   Effect.gen(function* () {
     const token = yield* io.token;
-    const candidateContainer = changed.find((entry) => entry.id === "PoolContainer");
+    const candidateContainer = changed.find((entry) => entry.id === resource);
     if (candidateContainer) {
       const image = {
         image: candidateContainer.configuration.image,
@@ -74,20 +76,20 @@ export const releaseHomeImage = (
         },
       } satisfies ReleaseHomeImage;
     }
-    const node = plan.resources.PoolContainer;
+    const node = plan.resources[resource];
     if (!node || node.resource.Type !== "Cloudflare.Container" || node.action !== "noop")
       throw new BarrierRefusal("home-schema-candidate-image-unavailable");
     const stored = yield* state.get({
       stack: stack.name,
       stage: stack.stage,
-      fqn: "PoolContainer",
+      fqn: resource,
     });
     if (
       !stored ||
       !("resourceType" in stored) ||
       stored.resourceType !== "Cloudflare.Container" ||
-      stored.fqn !== "PoolContainer" ||
-      stored.logicalId !== "PoolContainer" ||
+      stored.fqn !== resource ||
+      stored.logicalId !== resource ||
       (stored.status !== "created" && stored.status !== "updated")
     )
       throw new BarrierRefusal("home-schema-candidate-image-unavailable");

@@ -1,4 +1,6 @@
 import type * as Plan from "alchemy/Plan";
+import { pinnedRuntimeDeclaration } from "./legacy-image.ts";
+import type { FleetImageResource } from "./runtime-image-phase.ts";
 import type { Worker } from "alchemy/Cloudflare";
 import { BarrierRefusal, type PlanRefusal } from "./manifest.ts";
 import { havePropsChanged } from "alchemy/Diff";
@@ -87,6 +89,7 @@ export function assertSupportedPlan(
   plan: Plan.Plan,
   imageReasons: ReadonlyMap<string, string[]> = new Map(),
   declarations?: DeclaredChanges,
+  runtimeImage?: FleetImageResource,
 ) {
   const refusals: PlanRefusal[] = declarationRefusals(plan, declarations);
   if (plan.selectedFqns || plan.destroy) refusals.push({ reason: "partial-or-destroy-plan" });
@@ -146,7 +149,25 @@ export function assertSupportedPlan(
       if (props.namespace != null || props.preview != null || props.version != null)
         refuseNode("unsupported-worker-mode");
     } else if (node.resource.Type === "Cloudflare.Container" && node.action === "update") {
-      if (node.resource.LogicalId !== "PoolContainer") refuseNode("unsupported-container");
+      const saved =
+        node.state?.status === "updating"
+          ? node.state.old?.attr
+          : node.state && "attr" in node.state
+            ? node.state.attr
+            : undefined;
+      const previous =
+        node.state?.status === "updating" ? node.state.old?.props : node.state?.props;
+      const pinned =
+        previous &&
+        saved &&
+        typeof saved.configuration?.image === "string" &&
+        pinnedRuntimeDeclaration(node.resource.Props, previous, saved.configuration.image);
+      if (
+        node.resource.LogicalId !== "PoolContainer" &&
+        node.resource.LogicalId !== runtimeImage &&
+        !pinned
+      )
+        refuseNode("unsupported-container");
     } else if (
       node.resource.Type !== "Command.Exec" &&
       node.resource.Type !== "Command.Build" &&

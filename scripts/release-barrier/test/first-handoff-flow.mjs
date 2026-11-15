@@ -26,7 +26,13 @@ globalThis.fetch = () => {
   throw new Error("REAL NETWORK DENIED");
 };
 export async function firstHandoffFlow(options = {}) {
-  const f = await handoffWorker({ adopt: false, rotateSigningKey: true });
+  const f = await handoffWorker({
+    adopt: false,
+    rotateSigningKey: true,
+    bindings: {
+      POOL_PROVIDER_OBSERVATION_TOKEN: { get: async () => "synthetic-provider-read" },
+    },
+  });
   const events = [];
   let worker = f.worker,
     saved,
@@ -189,6 +195,7 @@ export async function firstHandoffFlow(options = {}) {
     },
     applications: { legacyApplication, candidateApplication },
   });
+  globalThis.fetch = fetcher;
   const target = firstHandoffBridge({
     accountId,
     scriptName,

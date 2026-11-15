@@ -52,6 +52,7 @@ interface Dependencies {
     pool: string | undefined,
     legacy: (request: Request, prepared: () => void) => Promise<Response>,
     beforeDispatch: () => void,
+    identity?: RefusalIdentity,
   ) => Promise<Response>;
   warm?: (
     legacy: () => Promise<import("./lifecycle.ts").PoolStatus>,
@@ -187,7 +188,7 @@ export async function forwardPoolRequest(
       "http://pool",
     );
     const upstream = deps.route
-      ? await deps.route(outbound, port, identity?.pool, legacy, beforeDispatch)
+      ? await deps.route(outbound, port, identity?.pool, legacy, beforeDispatch, identity)
       : await legacy(outbound);
     guard = "upstream_response";
     const runtimeRefusal = runtimeResponseDiagnostic(upstream);

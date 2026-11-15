@@ -8,7 +8,7 @@ import { policyHeader, policyUsePrefix } from "./membership-contract.ts";
 type Fixture = Awaited<ReturnType<typeof handoffWorker>>;
 async function promote(f: Fixture) {
   const grant = await f.startGrant();
-  const staged = await f.command("stage", { proof: grant.envelope });
+  const staged = await f.stage(grant.envelope);
   assert.equal(staged.status, 200, await staged.clone().text());
   const joined = await f.joined(grant),
     intent = await f.intent();
