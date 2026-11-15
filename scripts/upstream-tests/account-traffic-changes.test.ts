@@ -91,3 +91,39 @@ test("normal hosted migration 23 preserves retained traffic without activation 2
       assert.equal((yield* read())[0]?.hours[0]?.requests, 3);
     }),
   ));
+
+test("retention purge adds no traffic revision while deleting a retained hour does", () =>
+  fixture(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const account = AccountId.make("acc_a");
+      const store = makeAccountTrafficStore(sql);
+      const journal = makeChangeJournal(sql);
+      const at = Date.now();
+      yield* sql`insert into executor_account_tool_calls
+        (account,hour,requests,failed,last_success)
+        values (${account},now()-interval '32 days',1,0,now()-interval '32 days')`;
+      yield* prepareChangeJournal;
+      yield* migrateAccountTrafficChanges;
+      const head = () =>
+        journal.current("organization:team-a", [{ topic: "account-traffic", resource: account }]);
+      yield* store.record({ accounts: [account], at, ok: true });
+      assert.equal(
+        (yield* head())[0]?.revision,
+        "1",
+        "one call and its expired-row purge publish once",
+      );
+      assert.equal(
+        (yield* sql`select count(*)::int as count from executor_account_tool_calls`)[0]?.count,
+        1,
+      );
+      assert.equal((yield* store.read({ accounts: [account], from: 0 }))[0]?.hours[0]?.requests, 1);
+      yield* sql`delete from executor_account_tool_calls where account=${account}`;
+      assert.equal(
+        (yield* head())[0]?.revision,
+        "2",
+        "deleting readable traffic still invalidates it",
+      );
+      assert.deepEqual(yield* store.read({ accounts: [account], from: 0 }), []);
+    }),
+  ));
