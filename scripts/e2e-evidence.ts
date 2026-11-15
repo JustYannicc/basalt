@@ -43,7 +43,7 @@ function assertionEvidence(path: string) {
       ? input
       : undefined;
   const records = Array.isArray(input) ? input : envelope?.records;
-  if (!records) return unavailable("malformed");
+  if (!Array.isArray(records)) return unavailable("malformed");
   if (
     envelope &&
     "input" in envelope &&
