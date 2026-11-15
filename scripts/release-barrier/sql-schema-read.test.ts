@@ -13,6 +13,7 @@ const expectations: SqlSchemaExpectation[] = [
     journal: "private_hosted_migrations",
     kind: "markers",
     expected: ["1_base", "2_latest"],
+    optional: ["22_change_journal_activate"],
   },
   {
     namespace: "cloud",
@@ -188,6 +189,29 @@ test("a missing journal or same-named view cannot establish a schema version", a
     await f.pool.exec("DROP VIEW home_schema_migration");
     const missing = await f.read();
     assert.equal(missing.observations.find((entry) => entry.namespace === "home")!.pending, null);
+  } finally {
+    await f.close();
+  }
+});
+
+test("an activated optional journal marker remains ready through the actual read and final assertion", async () => {
+  const f = await fixture();
+  try {
+    await f.tools.query(
+      "INSERT INTO private_hosted_migrations VALUES(22,'change_journal_activate')",
+    );
+    const receipt = await f.read();
+    assert.deepEqual(receipt.observations.find((entry) => entry.namespace === "hosted")!.applied, [
+      "1_base",
+      "2_latest",
+      "22_change_journal_activate",
+    ]);
+    assert.doesNotThrow(() => assertSqlSchemas(receipt, candidate));
+    await f.tools.query(
+      "UPDATE private_hosted_migrations SET name='unknown' WHERE migration_id=22",
+    );
+    const unknown = await f.read();
+    assert.throws(() => assertSqlSchemas(unknown, candidate), /hosted.*22_unknown/);
   } finally {
     await f.close();
   }

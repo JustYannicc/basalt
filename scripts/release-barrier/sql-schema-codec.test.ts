@@ -14,7 +14,11 @@ import { readRecoveryProgress, recoveryReceipt } from "./recovery-manifest.ts";
 import { recoverWorkers, type RecoveryReceipt, type RecoveryWorker } from "./recovery.ts";
 import { BarrierRefusal } from "./refusal.ts";
 import { refusalTable } from "./refusal-report.ts";
-import { assertSqlSchemas, type SqlSchemaReceipt } from "./sql-schema-contract.ts";
+import {
+  assertSqlSchemas,
+  observeSqlVersions,
+  type SqlSchemaReceipt,
+} from "./sql-schema-contract.ts";
 import { homeMigrationReceiptCodec, sqlSchemaReceiptCodec } from "./sql-schema-codec.ts";
 import { readySqlSchemas } from "./sql-schema-fixture.ts";
 import { containerRelease } from "./test/container-fixture.ts";
@@ -272,4 +276,43 @@ test("failure evidence keeps SQL versions and exact native Home refusal in the j
   assert.match(table, /SQL.home/u);
   assert.match(table, /15.*16/u);
   assert.match(table, /migration_failed/u);
+});
+
+test("strict receipts preserve optional activation authority without making it required", () => {
+  for (const activated of [false, true]) {
+    const receipt = readySqlSchemas("a".repeat(40));
+    receipt.observations = receipt.observations.map((entry) =>
+      entry.namespace === "hosted"
+        ? observeSqlVersions(
+            {
+              ...entry,
+              kind: "markers",
+              expected: ["21_change_journal_prepare"],
+              optional: ["22_change_journal_activate"],
+            },
+            activated
+              ? ["21_change_journal_prepare", "22_change_journal_activate"]
+              : ["21_change_journal_prepare"],
+          )
+        : entry,
+    );
+    const retained = decode(JSON.parse(JSON.stringify(receipt)));
+    assert.deepEqual(
+      retained.observations.find((entry) => entry.namespace === "hosted")!.optional,
+      ["22_change_journal_activate"],
+    );
+    assert.doesNotThrow(() => assertSqlSchemas(retained, retained.candidate));
+    for (const optional of [
+      ["not a marker"],
+      ["22_change_journal_activate", "22_change_journal_activate"],
+    ])
+      assert.throws(() =>
+        decode({
+          ...receipt,
+          observations: receipt.observations.map((entry) =>
+            entry.namespace === "hosted" ? { ...entry, optional } : entry,
+          ),
+        }),
+      );
+  }
 });

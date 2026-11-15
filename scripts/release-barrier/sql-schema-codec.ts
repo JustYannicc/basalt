@@ -68,6 +68,7 @@ const observation = Schema.Struct({
   database: Schema.Literals(["tools", "pool"]),
   journal: marker,
   expected: markers.check(Schema.isMinLength(1)),
+  optional: Schema.optional(markers),
   applied: Schema.NullOr(markers),
   pending: Schema.NullOr(markers),
   unexpected: Schema.NullOr(markers),

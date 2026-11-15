@@ -3,8 +3,9 @@ import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { readDeploymentLedger, readLedgerEnvironment } from "../deploy-safety/github-ledger.ts";
 import { assertNoReleaseHold } from "../deploy-safety/runtime.ts";
-import { validateMainCandidate } from "../release-merge/main-candidate.ts";
+import { passedMainPushCheck, validateMainCandidate } from "../release-merge/main-candidate.ts";
 import { BarrierRefusal } from "./refusal.ts";
+import { reportRefusal } from "./refusal-report.ts";
 
 export function migrationActivationInput(source: Record<string, string | undefined>) {
   try {
@@ -67,22 +68,116 @@ export function exactMigrationRelease(
   return deploymentId;
 }
 
+const ineligible = [
+  "main does not contain the release candidate",
+  "the main release candidate has no successful push Check",
+  "the release candidate is a release update; release it through Manual release with its pull request",
+];
+
+function githubFailureStatus(error: unknown) {
+  return error instanceof Error
+    ? /^GitHub request for the main release candidate failed with HTTP (\d{3})$/u.exec(
+        error.message,
+      )?.[1]
+    : undefined;
+}
+
+/** Only the validator's own fixed sentences and a bare HTTP status reach the job output. */
+export function candidateEligibilityRefusal(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+  const status = githubFailureStatus(error);
+  const change = status
+    ? { path: "github.status", old: 200, new: Number(status) }
+    : ineligible.includes(message)
+      ? { path: "eligibility", old: "eligible", new: message }
+      : undefined;
+  return change
+    ? new BarrierRefusal("migration-activation-candidate-ineligible", "candidate", {
+        fqn: "candidate",
+        type: "Git.Commit",
+        changed: [change],
+      })
+    : undefined;
+}
+
+function clientCheckRefusal(error: unknown, client: string) {
+  const status = githubFailureStatus(error);
+  return status
+    ? new BarrierRefusal("migration-activation-client-check-unavailable", "tooling", {
+        fqn: "tooling",
+        type: "Git.Commit",
+        changed: [{ path: "github.status", old: 200, new: Number(status) }],
+        why: [`client=${client}`],
+      })
+    : undefined;
+}
+
+/** The client that touches production is the dispatched main commit, never another checkout. */
+export function trustedActivationTooling(source: Record<string, string | undefined>, head: string) {
+  if (!/^[a-f0-9]{40}$/u.test(head) || head !== source.GITHUB_SHA)
+    throw new BarrierRefusal("migration-activation-trusted-tooling-required", "tooling", {
+      fqn: "tooling",
+      type: "Git.Commit",
+      changed: [{ path: "HEAD", old: source.GITHUB_SHA ?? "unavailable", new: head }],
+    });
+  return head;
+}
+
+/**
+ * Plan and inspect only read, so any dispatched main commit may run them. The digest mutates
+ * production, so its client must also have passed main's own push Check; one that is still
+ * running, failed or never ran refuses.
+ */
+export async function checkedActivationClient(
+  mode: string,
+  client: string,
+  passed: (commit: string) => Promise<boolean>,
+) {
+  if (mode === "plan" || mode === "inspect") return;
+  if (!(await passed(client)))
+    throw new BarrierRefusal("migration-activation-client-check-required", "tooling", {
+      fqn: "tooling",
+      type: "Git.Commit",
+      changed: [{ path: "pushCheck", old: "success", new: "not successful" }],
+      why: [`client=${client}`, "activate once main's push Check has passed on this commit"],
+    });
+}
+
 /** The trusted workflow validates the requested SHA exactly, without the normal newest chooser. */
 export async function migrationActivationGate(source = process.env) {
   const input = migrationActivationInput(source);
   const environment = readLedgerEnvironment(source);
-  const checkedOut = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  // This file's own checkout, so the working directory cannot stand in for the running client.
+  const checkedOut = trustedActivationTooling(
+    source,
+    execFileSync(
+      "git",
+      ["-C", fileURLToPath(new URL("../../", import.meta.url)), "rev-parse", "HEAD"],
+      {
+        encoding: "utf8",
+      },
+    ).trim(),
+  );
   await validateMainCandidate(
     environment.repository,
     environment.token,
     checkedOut,
     input.candidate,
+  ).catch((error: unknown) => {
+    throw candidateEligibilityRefusal(error) ?? error;
+  });
+  await checkedActivationClient(input.mode, checkedOut, (commit) =>
+    passedMainPushCheck(environment.repository, environment.token, commit).catch(
+      (error: unknown) => {
+        throw clientCheckRefusal(error, commit) ?? error;
+      },
+    ),
   );
   const deploymentId = exactMigrationRelease(
     input.candidate,
     await readDeploymentLedger(environment),
   );
-  return { ...input, deploymentId };
+  return { ...input, deploymentId, tooling: checkedOut };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -91,9 +186,17 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (process.env.GITHUB_OUTPUT)
       appendFileSync(process.env.GITHUB_OUTPUT, `head=${gate.candidate}\n`);
   } catch (error) {
-    process.stderr.write(
-      `${error instanceof BarrierRefusal ? error.message : "migration-activation-gate-failed"}\n`,
-    );
+    // Before the client exists, this step is the only place its refusal can name what changed.
+    if (error instanceof BarrierRefusal)
+      await reportRefusal(
+        {
+          reason: error.reason,
+          ...(error.worker ? { worker: error.worker } : {}),
+          ...(error.delta ? { delta: error.delta } : {}),
+        },
+        process.env.GITHUB_STEP_SUMMARY,
+      );
+    else process.stderr.write("migration-activation-gate-failed\n");
     process.exitCode = 1;
   }
 }
