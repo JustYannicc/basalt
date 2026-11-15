@@ -412,6 +412,12 @@ const program = Effect.gen(function* () {
       sql: "select revision::text from hosted_change_heads where scope=$1 and topic='observations' and resource='*'",
       params: [scope],
     });
+    h.fixture.refreshReading("synthetic-scoped-change-codex");
+    // Make this synthetic report eligible; the real HTTP writer still owns the revision.
+    yield* database.run({
+      sql: "update executor_account_observations set next_allowed_at=to_timestamp(0) where account=$1",
+      params: [saved.account.id],
+    });
     yield* h.request("POST", `${account}/observations/refresh`);
     yield* until(
       database.run({
@@ -439,7 +445,7 @@ const program = Effect.gen(function* () {
     yield* browserWork(() => usageAnswered);
     yield* browserWork(() => page.clock.runFor(200).then(flush));
     check(
-      `Accounts at ${width}: a relevant usage revision refreshes last-success once`,
+      `Accounts at ${width}: a relevant usage revision refreshes mapped last-success once`,
       successReads() - usageBefore.success,
       usageBefore.success === 0 ? 0 : 1,
     );
