@@ -1,0 +1,142 @@
+diff --git a/apps/hosted/web/src/contracts/accounts.ts b/apps/hosted/web/src/contracts/accounts.ts
+--- a/apps/hosted/web/src/contracts/accounts.ts
++++ b/apps/hosted/web/src/contracts/accounts.ts
+@@ -24,7 +24,7 @@
+ import { inventoryAtom } from "./organization.ts";
+ import { toolsAtom } from "./apps.ts";
+ import { accountObservationsAtom } from "./account-observations.ts";
+-import { refreshSavedAccountRows } from "./account-projection.ts";
++import { refreshSavedAccountRows, settleSavedAccountRows } from "./account-projection.ts";
+ 
+ class AccountKey extends Data.Class<{
+   readonly organization: OrganizationReference;
+@@ -50,34 +50,37 @@
+ /** Run the checks of the apps this member can use and show the results where accounts are listed. */
+ const runCheck = (get: Atom.FnContext, key: AccountKey) =>
+   Effect.flatMap(HostedClient, (client) => client.accounts.check({ params: key })).pipe(
+-    Effect.tap((health) => Effect.sync(() => acknowledgeChecks(get, key.organization, [health]))),
++    Effect.tap((health) => acknowledgeChecks(get, key.organization, [health])),
+   );
+ /** Show recorded checks where accounts are listed; the lists reload once for any number. */
+ const acknowledgeChecks = (
+   get: Atom.FnContext,
+   organization: OrganizationReference,
+   checked: readonly AccountHealth[],
+-) => {
+-  if (checked.length === 0) return;
+-  const health = new Map(checked.map((entry) => [entry.account, entry]));
+-  for (const entry of checked) {
+-    const key = { organization, account: entry.account };
+-    acknowledge(get, accountAtom(key), (data) => ({ ...data, health: entry }));
+-    // An app's check can also report usage, which the row then shows.
+-    get.refresh(accountObservationsAtom(key));
+-  }
+-  // The account list reads the resource directory; reload it for the recorded results.
+-  get.refresh(resourceDirectoryAtom(organization));
+-  get.refresh(resourceDirectoryAtom(organization, "managed"));
+-  refreshSavedAccountRows(get, organization);
+-  acknowledge(get, inventoryAtom(organization), (data) => ({
+-    ...data,
+-    accounts: data.accounts.map((current) => {
+-      const recorded = health.get(current.id);
+-      return recorded === undefined ? current : { ...current, health: recorded };
+-    }),
+-  }));
+-};
++) =>
++  Effect.suspend(() => {
++    if (checked.length === 0) return Effect.void;
++    const settled = settleSavedAccountRows(get, organization);
++    const health = new Map(checked.map((entry) => [entry.account, entry]));
++    for (const entry of checked) {
++      const key = { organization, account: entry.account };
++      acknowledge(get, accountAtom(key), (data) => ({ ...data, health: entry }));
++      // An app's check can also report usage, which the row then shows.
++      get.refresh(accountObservationsAtom(key));
++    }
++    // The account list reads the resource directory; reload it for the recorded results.
++    get.refresh(resourceDirectoryAtom(organization));
++    get.refresh(resourceDirectoryAtom(organization, "managed"));
++    refreshSavedAccountRows(get, organization);
++    acknowledge(get, inventoryAtom(organization), (data) => ({
++      ...data,
++      accounts: data.accounts.map((current) => {
++        const recorded = health.get(current.id);
++        return recorded === undefined ? current : { ...current, health: recorded };
++      }),
++    }));
++    return settled;
++  });
+ 
+ const checkAccount = Atom.family((key: AccountKey) =>
+   HostedClient.runtime.fn((_: void, get) => runCheck(get, key)),
+@@ -100,12 +103,10 @@
+       }),
+     ).pipe(
+       Effect.tap((results) =>
+-        Effect.sync(() =>
+-          acknowledgeChecks(
+-            get,
+-            key.organization,
+-            results.flatMap((result) => (result.status === "checked" ? [result.health] : [])),
+-          ),
++        acknowledgeChecks(
++          get,
++          key.organization,
++          results.flatMap((result) => (result.status === "checked" ? [result.health] : [])),
+         ),
+       ),
+     ),
+diff --git a/apps/hosted/web/src/contracts/account-projection.ts b/apps/hosted/web/src/contracts/account-projection.ts
+--- a/apps/hosted/web/src/contracts/account-projection.ts
++++ b/apps/hosted/web/src/contracts/account-projection.ts
+@@ -1,3 +1,4 @@
++import { settleObserved } from "@executor-js/ui/contracts/observed-result";
+ import { hydrated } from "@executor-js/ui/contracts/http";
+ import { changeProtected } from "./change-signal.ts";
+ import { Data, Effect } from "effect";
+@@ -52,3 +53,7 @@
+       .accounts({ params: { organization }, query: {} })
+       .pipe(Effect.tap(() => Effect.sync(() => refreshSavedAccountRows(get, organization)))),
+   );
++
++/** A mounted account view must accept its refresh before the completed check stops showing pending. */
++export const settleSavedAccountRows = (get: Atom.FnContext, organization: OrganizationReference) =>
++  settleObserved(get.registry, accounts(new OrganizationKey({ organization })));
+diff --git a/packages/ui/src/contracts/observed-result.ts b/packages/ui/src/contracts/observed-result.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/contracts/observed-result.ts
+@@ -0,0 +1,32 @@
++/** Join a view's in-flight result without activating a closed view's retained query. */
++import { Effect } from "effect";
++import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
++
++const observed = (
++  node: AtomRegistry.Node<unknown> | undefined,
++  visited = new Set<object>(),
++): boolean => {
++  if (node === undefined || visited.has(node)) return false;
++  visited.add(node);
++  return node.listeners.size > 0 || [...node.children].some((child) => observed(child, visited));
++};
++
++/** Retained derived nodes are not observers; only a live listener justifies joining the read. */
++export const settleObserved = <A, E>(
++  registry: AtomRegistry.AtomRegistry,
++  query: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
++) => {
++  const key = Atom.isSerializable(query) ? query[Atom.SerializableTypeId].key : query;
++  if (!observed(registry.getNodes().get(key))) return Effect.void;
++  const previous = registry.get(query);
++  return Effect.callback<void, E>((resume) => {
++    const changed = (result: AsyncResult.AsyncResult<A, E>) => {
++      if (result === previous || result.waiting) return;
++      if (AsyncResult.isFailure(result)) resume(Effect.failCause(result.cause));
++      else if (AsyncResult.isSuccess(result)) resume(Effect.void);
++    };
++    const cancel = registry.subscribe(query, changed);
++    changed(registry.get(query));
++    return Effect.sync(cancel);
++  });
++};
