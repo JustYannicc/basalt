@@ -718,7 +718,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/database.ts b/apps/hosted/clou
 index a295e7e..2bb5dca 100644
 --- a/apps/hosted/cloud/src/infrastructure/database.ts
 +++ b/apps/hosted/cloud/src/infrastructure/database.ts
-@@ -210,6 +210,20 @@ export const productionDatabaseMigration = Effect.gen(function* () {
+@@ -210,6 +210,19 @@ export const productionDatabaseMigration = Effect.gen(function* () {
      cwd: fileURLToPath(new URL("../../", import.meta.url)),
      env: {
        BASALT_RELEASE_ATTEMPT: yield* requiredReleaseCommandAttempt,
@@ -731,8 +731,7 @@ index a295e7e..2bb5dca 100644
 +        const environment: Record<string, string> = {};
 +        for (const name of names) {
 +          const value = process.env[name];
-+          if (!value) throw new Error(`Missing migration command input: ${name}`);
-+          environment[name] = value;
++          if (value !== undefined) environment[name] = value;
 +        }
 +        return environment;
 +      })),
