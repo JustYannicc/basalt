@@ -14,6 +14,7 @@ import {
 } from "../../src/pool/runtime-provider/observation.ts";
 import { runtimeApplicationPins } from "./runtime-release-state.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
+import { BarrierRefusal } from "./refusal.ts";
 
 const encryptionKey = "a".repeat(64);
 const Receipt = Schema.Struct({
@@ -69,10 +70,12 @@ for (const fault of ["none", "secret", "provider", "identity", "transport"] as c
       assert.equal(observed.proof.applicationId, state.applications.root.attributes.applicationId);
       assert.equal(observed.credentialBinding, "POOL_PROVIDER_OBSERVATION_TOKEN");
     } else {
-      await assert.rejects(
-        verifyBoundProviderObservation(input),
-        /runtime-provider-observation-refused/,
-      );
+      await assert.rejects(verifyBoundProviderObservation(input), (error: unknown) => {
+        assert.ok(error instanceof BarrierRefusal);
+        assert.equal(error.reason, "runtime-handoff-response-refused");
+        assert.equal(error.delta?.changed[0]?.path, "handoff.response.status");
+        return true;
+      });
     }
     const publicText = await readFile(join(directory, "provider-observation.json"), "utf8");
     const sealedText = await readFile(join(directory, "provider-observation.sealed.json"), "utf8");
@@ -91,6 +94,10 @@ for (const fault of ["none", "secret", "provider", "identity", "transport"] as c
       ),
     );
     assert.equal(summary.status, fault === "none" ? "observed" : "refused");
+    if (fault !== "none") {
+      assert.match(publicText, /runtime-handoff-response-refused/);
+      assert.match(publicText, /handoff.response.status/);
+    }
     assert.equal(receipt.status, summary.status);
     assert.equal(receipt.target.accountId, state.target.accountId);
     assert.equal(receipt.target.applicationId, state.applications.root.attributes.applicationId);
@@ -106,6 +113,57 @@ for (const fault of ["none", "secret", "provider", "identity", "transport"] as c
     assert.equal(f.instances.size, instances);
     assert.deepEqual(f.commands, ["provider-observe"]);
     assert.equal(reads, fault === "secret" ? 0 : 1);
+  });
+
+for (const fault of ["drift", "stale", "unexpected"] as const)
+  test(`the provider gate retains safe ${fault} diagnostics without exception text`, async (context) => {
+    const f = await runtimeReleaseClientFixture();
+    const directory = await mkdtemp(join(tmpdir(), "pool-observation-diagnostic-"));
+    context.after(async () => {
+      await f.cleanup();
+      await rm(directory, { recursive: true, force: true });
+    });
+    const client = {
+      observeProvider: async (...args: Parameters<typeof f.client.observeProvider>) => {
+        if (fault === "unexpected") throw new Error("arbitrary-private-observation-marker");
+        const observation = await f.client.observeProvider(...args);
+        return {
+          ...observation,
+          proof: {
+            ...observation.proof,
+            ...(fault === "drift"
+              ? { applicationVersion: "different-version" }
+              : { observedAt: Date.now() - 60_000 }),
+          },
+        };
+      },
+    };
+    const reason =
+      fault === "drift"
+        ? "provisioning-input-drift"
+        : fault === "stale"
+          ? "runtime-provider-observation-stale"
+          : "runtime-provider-observation-refused";
+    await assert.rejects(
+      verifyBoundProviderObservation({
+        state: f.state,
+        code: runtimeFixtureCode,
+        client,
+        directory,
+        encryptionKey,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof BarrierRefusal);
+        assert.equal(error.reason, reason);
+        if (fault === "drift")
+          assert.equal(error.delta?.changed[0]?.path, "runtime-provider-observation.target");
+        return true;
+      },
+    );
+    const publicText = await readFile(join(directory, "provider-observation.json"), "utf8");
+    assert.ok(publicText.includes(reason));
+    assert.equal(publicText.includes("arbitrary-private-observation-marker"), false);
+    if (fault === "drift") assert.match(publicText, /runtime-provider-observation.target/);
   });
 
 test("credential acceptance refuses a plaintext credential instead of bypassing the deployed binding", async (context) => {
@@ -161,7 +219,7 @@ for (const fault of ["secret", "denied", "identity"] as const)
         directory,
         encryptionKey,
       }),
-      /runtime-provider-observation-refused/,
+      /runtime-handoff-response-refused/,
     );
     globalThis.fetch = providerFetch;
     const token = await signPoolToken(f.old.env.POOL_APP_SIGNING_KEY!, f.claims);

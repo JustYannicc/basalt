@@ -24,6 +24,7 @@ export async function verifyBoundProviderObservation(input: {
   const retain = async (
     status: "observed" | "refused",
     observation?: Awaited<ReturnType<RuntimeReleaseClient["observeProvider"]>>,
+    failure?: Pick<BarrierRefusal, "reason" | "worker" | "delta">,
   ) => {
     const at = observation?.proof.observedAt ?? Date.now();
     const closed = {
@@ -33,6 +34,7 @@ export async function verifyBoundProviderObservation(input: {
       at,
       credentialBinding: "POOL_PROVIDER_OBSERVATION_TOKEN",
       ...(observation ? { observation } : {}),
+      ...(failure ? { failure } : {}),
     };
     const fingerprint = digest(canonical(closed));
     try {
@@ -56,6 +58,7 @@ export async function verifyBoundProviderObservation(input: {
             at,
             credentialBinding: closed.credentialBinding,
             fingerprint,
+            ...(failure ? { failure } : {}),
             target: {
               account: digest(target.accountId),
               application: digest(target.applicationId),
@@ -84,9 +87,17 @@ export async function verifyBoundProviderObservation(input: {
       Date.now() - observation.proof.observedAt > 30_000
     )
       throw new BarrierRefusal("runtime-provider-observation-stale", "PoolWorker");
-  } catch {
-    await retain("refused");
-    throw new BarrierRefusal("runtime-provider-observation-refused", "PoolWorker");
+  } catch (error) {
+    const failure =
+      error instanceof BarrierRefusal
+        ? error
+        : new BarrierRefusal("runtime-provider-observation-refused", "PoolWorker");
+    await retain("refused", undefined, {
+      reason: failure.reason,
+      worker: failure.worker,
+      delta: failure.delta,
+    });
+    throw failure;
   }
   await retain("observed", observation);
   return observation;
