@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { digest } from "../release-barrier/manifest.ts";
@@ -80,11 +80,11 @@ export async function recoveryArtifact(
   writeFileSync(zip, archive, { mode: 0o600, flag: "wx" });
   try {
     const options = {
-      encoding: "utf8" as const,
-      stdio: ["ignore", "pipe", "pipe"] as const,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 2 * 1024 * 1024,
       timeout: 5000,
-    };
+    } satisfies ExecFileSyncOptionsWithStringEncoding;
     const paths = execFileSync("unzip", ["-Z1", zip], options).trim().split(/\r?\n/);
     if (
       new Set(paths).size !== paths.length ||

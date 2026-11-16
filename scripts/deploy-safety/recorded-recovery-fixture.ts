@@ -188,7 +188,10 @@ export function fixture(context: TestContext) {
           },
           async restore(worker) {
             restored.push(worker.id);
-            active.set(worker.id, worker.baseline);
+            active.set(
+              worker.id,
+              worker.baseline.map((version) => ({ ...version })),
+            );
           },
         },
         async () => {},
