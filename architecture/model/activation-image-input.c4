@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "Migration activation binds the PoolWorker's candidate and 64-hex source revision to its authenticated serving identity. The image-build input identity is exactly 16 lowercase hexadecimal characters, distinct from the separate 64-hex content digests. Malformed identities refuse before a plan fingerprint or activation write."
+    }
+  }
+}
