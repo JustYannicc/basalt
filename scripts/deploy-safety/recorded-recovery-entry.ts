@@ -5,8 +5,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { readRecoveryProgress } from "../release-barrier/recovery-manifest.ts";
 import { SafetyGateError } from "./contracts.ts";
 import { readLedgerEnvironment } from "./github-ledger.ts";
+import { prepareRecordedCandidate } from "./recorded-candidate.ts";
 import { runRecordedRecovery } from "./recorded-recovery.ts";
-import { assertBarrierSource, runCommand } from "./release-runner.ts";
+import { runCommand } from "./release-runner.ts";
 
 export function recoveryInvocation(source: NodeJS.ProcessEnv) {
   if (
@@ -38,43 +39,40 @@ export function recoveryInvocation(source: NodeJS.ProcessEnv) {
 async function main() {
   const summary: string[] = ["## Recorded-version recovery", ""];
   try {
+    const preparing = process.argv[2] === "--prepare";
+    if (
+      (process.argv[2] && !preparing) ||
+      process.env.GITHUB_JOB !== (preparing ? "recorded-prepare" : "rollback")
+    )
+      throw new SafetyGateError("Recorded recovery phase differs from its trusted workflow job");
     const request = recoveryInvocation(process.env);
     const root = fileURLToPath(new URL("../../", import.meta.url));
-    const directory = join(root, ".local/recorded-version-recovery");
+    const workflowSha = process.env.GITHUB_SHA ?? "";
+    if (
+      !/^[a-f0-9]{40}$/.test(workflowSha) ||
+      execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim() !==
+        workflowSha
+    )
+      throw new SafetyGateError("Recorded recovery client differs from the trusted workflow SHA");
+    const directory = join(
+      root,
+      preparing ? ".local/recorded-recovery-plan" : ".local/recorded-version-recovery",
+    );
     await runRecordedRecovery(request, {
       directory,
       environment: readLedgerEnvironment(),
       fetcher: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(20_000) }),
-      async prepare(candidate) {
-        const target = join(process.env.RUNNER_TEMP!, "recorded-candidate");
-        execFileSync("git", ["fetch", "--no-tags", "origin", candidate], {
-          cwd: root,
-          stdio: "ignore",
+      async prepare() {
+        return prepareRecordedCandidate({
+          root,
+          target: join(process.env.RUNNER_TEMP!, "recorded-candidate"),
+          request,
+          workflowSha,
+          prepared: !preparing,
         });
-        execFileSync("git", ["worktree", "add", "--detach", target, candidate], {
-          cwd: root,
-          stdio: "ignore",
-        });
-        if (
-          execFileSync("git", ["rev-parse", "HEAD"], { cwd: target, encoding: "utf8" }).trim() !==
-          candidate
-        )
-          throw new SafetyGateError("Recovery candidate checkout differs from its recorded SHA");
-        assertBarrierSource(target);
-        for (const args of [
-          ["run", "prepare:upstream"],
-          ["run", "build"],
-        ]) {
-          const result = await runCommand("npm", args, target);
-          if (!result.started || result.exitCode !== 0)
-            throw new SafetyGateError(
-              `Recovery candidate ${args[1]} failed; no recovery command was started`,
-            );
-        }
-        execFileSync("git", ["diff", "--quiet", "HEAD"], { cwd: target, stdio: "ignore" });
-        return target;
       },
       async execute(candidate, args, compatible) {
+        if (preparing) return;
         const result = await runCommand("npm", args, candidate, {
           ...process.env,
           BASALT_RECOVERY_DATABASE_COMPATIBLE: String(compatible),
@@ -85,18 +83,24 @@ async function main() {
           );
       },
     });
-    const progress = readRecoveryProgress(
-      JSON.parse(readFileSync(join(directory, "recovery.json"), "utf8")),
-    );
-    summary.push(
-      `Candidate: ${request.candidate}`,
-      `Source run: ${request.sourceRun}`,
-      `Pair SHA-256: ${request.pairSha256}`,
-      `Restored Workers: ${progress.restored.length}`,
-      `Recorded container recoveries: ${progress.containers?.length ?? 0}`,
-      "",
-      "Recorded-version recovery completed. No database migration or restore ran. The production release ledger remains failed; verify the live app separately.",
-    );
+    if (preparing) {
+      summary.push(
+        "The exact recovery candidate was prepared and built without production credentials. No recovery command ran.",
+      );
+    } else {
+      const progress = readRecoveryProgress(
+        JSON.parse(readFileSync(join(directory, "recovery.json"), "utf8")),
+      );
+      summary.push(
+        `Candidate: ${request.candidate}`,
+        `Source run: ${request.sourceRun}`,
+        `Pair SHA-256: ${request.pairSha256}`,
+        `Restored Workers: ${progress.restored.length}`,
+        `Recorded container recoveries: ${progress.containers?.length ?? 0}`,
+        "",
+        "Recorded-version recovery completed. No database migration or restore ran. The production release ledger remains failed; verify the live app separately.",
+      );
+    }
   } catch (error) {
     const message =
       error instanceof SafetyGateError

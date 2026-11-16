@@ -146,9 +146,61 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  recorded-prepare:
+    outputs:
+      environment_sha256: ${{ steps.archive.outputs.sha256 }}
+    if: github.ref == 'refs/heads/main' && inputs.recovery_mode == 'recorded-versions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+      deployments: read
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      BASALT_UPSTREAM_CACHE: ${{ runner.temp }}/recorded-cache
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the trusted recovery client without production credentials
+        run: npm run prepare:upstream
+      - name: Validate evidence and build the exact recovery candidate
+        run: node scripts/deploy-safety/recorded-recovery-entry.ts --prepare
+        env:
+          RECOVERY_MODE: ${{ inputs.recovery_mode }}
+          RECOVERY_CANDIDATE: ${{ inputs.release_sha }}
+          RECOVERY_SOURCE_RUN: ${{ inputs.recorded_run }}
+          RECOVERY_PAIR_SHA256: ${{ inputs.recovery_pair_sha256 }}
+          RECOVERY_DATABASE_COMPATIBLE: ${{ inputs.database_compatible }}
+          RECOVERY_PROGRESS_RUN: ${{ inputs.progress_run }}
+          RESTORED_BACKUP: ${{ inputs.restored_backup }}
+      - name: Retain the prepared environment with its original worktree and dependency links
+        id: archive
+        run: |
+          git diff --quiet HEAD
+          tar -czf "$RUNNER_TEMP/recorded-environment.tar.gz" -C / \
+            "${GITHUB_WORKSPACE#/}" "${RUNNER_TEMP#/}/recorded-candidate" "${BASALT_UPSTREAM_CACHE#/}"
+          echo "sha256=$(sha256sum "$RUNNER_TEMP/recorded-environment.tar.gz" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: recorded-recovery-environment
+          path: ${{ runner.temp }}/recorded-environment.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
   rollback:
-    needs: plan
-    if: always() && github.ref == 'refs/heads/main' && ((inputs.recovery_mode == 'recorded-versions' && needs.plan.result == 'skipped') || (inputs.recovery_mode != 'recorded-versions' && needs.plan.result == 'success' && needs.plan.outputs.candidate == inputs.release_sha))
+    needs: [plan, recorded-prepare]
+    if: always() && github.ref == 'refs/heads/main' && ((inputs.recovery_mode == 'recorded-versions' && needs.plan.result == 'skipped' && needs.recorded-prepare.result == 'success') || (inputs.recovery_mode != 'recorded-versions' && needs.plan.result == 'success' && needs.plan.outputs.candidate == inputs.release_sha))
     name: Deploy previous production release
     environment: production-release
     runs-on: ubuntu-latest
@@ -254,9 +306,22 @@ jobs:
           RESTORED_BACKUP: ${{ inputs.restored_backup }}
           EXPECTED_DEPLOYMENT_ID: ${{ needs.plan.outputs.deployment_id }}
 
-      - name: Prepare the trusted recorded-recovery client
+      - uses: actions/download-artifact@v4
         if: inputs.recovery_mode == 'recorded-versions'
-        run: npm run prepare:upstream
+        with:
+          name: recorded-recovery-environment
+          path: ${{ runner.temp }}/recorded-environment
+      - name: Restore this run's prepared environment without executing candidate build scripts
+        if: inputs.recovery_mode == 'recorded-versions'
+        run: |
+          if [[ ! "$EXPECTED_SHA256" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "Prepared recovery environment has no verified digest" >&2
+            exit 1
+          fi
+          printf '%s  %s\n' "$EXPECTED_SHA256" "$RUNNER_TEMP/recorded-environment/recorded-environment.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/recorded-environment/recorded-environment.tar.gz" --no-same-owner -C /
+        env:
+          EXPECTED_SHA256: ${{ needs.recorded-prepare.outputs.environment_sha256 }}
 
       - name: Recover the exact recorded versions without database changes
         if: inputs.recovery_mode == 'recorded-versions'
