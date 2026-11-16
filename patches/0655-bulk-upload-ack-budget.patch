@@ -2,10 +2,10 @@ diff --git a/e2e/support/pool-bulk-ack-peer.ts b/e2e/support/pool-bulk-ack-peer.
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/pool-bulk-ack-peer.ts
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,42 @@
 +import { Effect, Option, Schema, Stream } from "effect";
 +import { ChildProcess, ChildProcessSpawner } from "effect/process";
-+import { driver } from "./platform.ts";
++import { HttpBody, HttpClient } from "effect/http";
 +
 +const Ready = Schema.Struct({
 +  origin: Schema.String.check(Schema.isPattern(/^http:\/\/127\.0\.0\.1:\d+$/u)),
@@ -28,18 +28,17 @@ new file mode 100644
 +  const first = yield* child.stdout.pipe(Stream.decodeText(), Stream.splitLines, Stream.runHead);
 +  if (Option.isNone(first)) return yield* Effect.die("Pool staging peer exited before listening");
 +  const { origin } = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Ready))(first.value);
++  const client = yield* HttpClient.HttpClient;
 +  const call = (path: string, input?: unknown) =>
-+    driver("isolated pool staging peer", async (signal) => {
-+      const response = await fetch(origin + path, {
-+        method: input === undefined ? "GET" : "POST",
-+        signal,
-+        ...(input === undefined
-+          ? {}
-+          : { body: JSON.stringify(input), headers: { "content-type": "application/json" } }),
-+      });
-+      if (response.status !== 200) throw new Error("Pool staging peer control failed");
-+      return (await response.json()) as unknown;
-+    });
++    Effect.scoped(
++      Effect.gen(function* () {
++        const response = yield* input === undefined
++          ? client.get(origin + path)
++          : client.post(origin + path, { body: HttpBody.jsonUnsafe(input) });
++        if (response.status !== 200) return yield* Effect.die("Pool staging peer control failed");
++        return yield* response.json;
++      }),
++    );
 +  return {
 +    origin,
 +    call,
@@ -50,9 +49,9 @@ diff --git a/e2e/tests/pool-bulk-upload-ack.spec.ts b/e2e/tests/pool-bulk-upload
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/pool-bulk-upload-ack.spec.ts
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,196 @@
 +import { expect, layer } from "@effect/vitest";
-+import { Clock, Effect, Fiber, Option, Redacted, Schema } from "effect";
++import { Clock, Deferred, Effect, Fiber, Redacted, Schema } from "effect";
 +import { Actors } from "../support/actors.ts";
 +import { Api, body } from "../support/api.ts";
 +import { App } from "../support/contracts.ts";
@@ -72,7 +71,24 @@ new file mode 100644
 +const source = `import {defineApp,query,object,router} from "apps";
 +export default defineApp({},{tools:router({identity:query({input:object({})},async()=>"allowed")})});`;
 +
-+const setup = (delays: { putDelayMs?: number; saveDelayMs?: number; statusDelayMs?: number }) =>
++const retainedPool = (owner: string, pool: string, organization: string) => ({
++  sql: `update organization set metadata=jsonb_set(coalesce(metadata::jsonb,'{}'::jsonb),'{basaltPools}',$1::jsonb)::text where id=$2`,
++  params: [
++    JSON.stringify({
++      [owner]: {
++        app: pool,
++        version: "retained-version",
++        authorization: "executor-app-v1",
++        membership: "executor-links-v1",
++      },
++    }),
++    organization,
++  ],
++});
++const setup = <A, E, R>(
++  delays: { putDelayMs?: number; saveDelayMs?: number; statusDelayMs?: number },
++  seed: (owner: string, pool: string, organization: string) => Effect.Effect<A, E, R>,
++) =>
 +  Effect.gen(function* () {
 +    const api = yield* Api,
 +      actors = yield* Actors,
@@ -99,22 +115,7 @@ new file mode 100644
 +      })
 +      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Prepared)));
 +    yield* serverControl("stop");
-+    yield* legacyStorage([
-+      {
-+        sql: `update organization set metadata=jsonb_set(coalesce(metadata::jsonb,'{}'::jsonb),'{basaltPools}',$1::jsonb)::text where id=$2`,
-+        params: [
-+          JSON.stringify({
-+            [viewer.userId]: {
-+              app: app.id,
-+              version: "retained-version",
-+              authorization: "executor-app-v1",
-+              membership: "executor-links-v1",
-+            },
-+          }),
-+          actors.organization.id,
-+        ],
-+      },
-+    ]);
++    yield* seed(viewer.userId, app.id, actors.organization.id);
 +    yield* serverControl("environment", 200, {
 +      POOL_APP_SIGNING_KEY: "ab".repeat(32),
 +      BASALT_POOL_ORIGIN: peer.origin,
@@ -156,21 +157,25 @@ new file mode 100644
 +    withHostedHttpCase(
 +      context,
 +      Effect.gen(function* () {
-+        const fixture = yield* setup({ putDelayMs: 15_000, saveDelayMs: 15_000 });
++        const fixture = yield* setup({ putDelayMs: 15_000, saveDelayMs: 15_000 }, (...args) =>
++          legacyStorage([retainedPool(...args)]),
++        );
 +        const evidence = yield* Evidence;
-+        const pending = yield* fixture.request(fixture.upload).pipe(Effect.forkChild);
++        const completed = yield* Deferred.make<void>();
++        const pending = yield* fixture.request(fixture.upload).pipe(
++          Effect.tap(() => Deferred.succeed(completed, undefined)),
++          Effect.forkChild,
++        );
 +        yield* fixture.peer.wait("put-entered");
-+        expect(Option.isNone(yield* Fiber.poll(pending))).toBe(true);
++        expect(yield* Deferred.isDone(completed)).toBe(false);
 +        yield* fixture.peer.wait("save-entered");
-+        const early = yield* Fiber.poll(pending);
-+        if (Option.isSome(early)) {
++        const early = yield* Deferred.isDone(completed);
++        if (early) {
 +          const result = yield* Fiber.join(pending);
 +          yield* evidence.json("early-upload-result.json", result);
 +          expect(result.status, "Upload returned before the durable save").toBe(200);
 +        }
-+        expect(Option.isNone(early), "Upload ACK must still wait for the DO state commit").toBe(
-+          true,
-+        );
++        expect(early, "Upload ACK must still wait for the DO state commit").toBe(false);
 +        const result = yield* Fiber.join(pending);
 +        const events = yield* fixture.peer
 +          .call("/__fixture/events")
@@ -196,7 +201,9 @@ new file mode 100644
 +    withHostedHttpCase(
 +      context,
 +      Effect.gen(function* () {
-+        const fixture = yield* setup({ putDelayMs: 65_000 });
++        const fixture = yield* setup({ putDelayMs: 65_000 }, (...args) =>
++          legacyStorage([retainedPool(...args)]),
++        );
 +        const evidence = yield* Evidence;
 +        const pending = yield* fixture.request(fixture.upload).pipe(Effect.forkChild);
 +        yield* fixture.peer.wait("put-entered");
@@ -224,7 +231,9 @@ new file mode 100644
 +    withHostedHttpCase(
 +      context,
 +      Effect.gen(function* () {
-+        const fixture = yield* setup({ statusDelayMs: 15_000 });
++        const fixture = yield* setup({ statusDelayMs: 15_000 }, (...args) =>
++          legacyStorage([retainedPool(...args)]),
++        );
 +        const pending = yield* fixture.request(fixture.status).pipe(Effect.forkChild);
 +        yield* fixture.peer.wait("request-status");
 +        const result = yield* Fiber.join(pending);
