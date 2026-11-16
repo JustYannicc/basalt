@@ -1,3 +1,4 @@
+import peerProgram from "./home-peer-program.json" with { type: "json" };
 import { stripModelLifetimeRequest } from "./model-lifetime-contract.ts";
 import { historyImportCompletionPath } from "./model-history/import-completion-contract.ts";
 import { reportWhenDue } from "./reporting.ts";
@@ -205,6 +206,28 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         startupAbsence: startupAbortProvider(
           new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN),
         ),
+        selectedChanged: () => this.alarms.schedule("fleet", Date.now() + 2_000),
+        recovery: {
+          provider: new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN),
+          beforeCommit: (previous, next, transaction) =>
+            this.fleet.configuration.recoverPrimary(previous, next, transaction),
+          afterCommit: async (identity, fingerprint) => {
+            if (
+              identity.instanceId === ctx.id.toString() &&
+              identity.applicationId === env.POOL_CONTAINER_APPLICATION_ID
+            )
+              await this.handoff.bootstrapPeer(
+                {
+                  operationId: `recovery-${identity.bootId}`,
+                  identity,
+                  configurationFingerprint: fingerprint,
+                  sourceSha: peerProgram.sourceSha,
+                },
+                AbortSignal.timeout(2_000),
+              );
+            await this.memberships.tick();
+          },
+        },
         beforeStage: (target, transaction) => this.fleet.stagePrimary(target, transaction),
         beforePromote: async (intent, transaction) => {
           if (await this.fleet.configuration.inspect(undefined, transaction))
@@ -933,7 +956,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       route: (request, target, pool, legacy, beforeDispatch, identity) => {
         if (request.headers.has(candidateProbeHeader))
           return this.candidateProbe.route(request, identity, beforeDispatch);
-        const primary = () => this.handoff.forward(request, target, pool, legacy, beforeDispatch);
+        const primary = (attempt: Request = request, dispatch = beforeDispatch) =>
+          this.handoff.forward(attempt, target, pool, legacy, dispatch);
         return target === 8317
           ? this.fleet.forward(request, pool, primary, beforeDispatch)
           : primary();

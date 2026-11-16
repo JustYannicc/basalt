@@ -16,7 +16,7 @@ import { AdoptionReadbackMismatch } from "./adoption-readback.ts";
 
 const defectHeader = "X-Signalbox-Runtime-Defect";
 
-class RemoteRuntimeDefect extends Error {
+export class RemoteRuntimeDefect extends Error {
   readonly requestId: string;
   constructor(requestId: string) {
     super("Runtime request defect");

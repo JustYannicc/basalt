@@ -1,3 +1,5 @@
+import { RuntimeSlotRecovery } from "./recovery.ts";
+import type { RuntimeProviderReader } from "../runtime-provider/read.ts";
 import { Schema } from "effect";
 import { observeUnattestedAdoption } from "./adoption-observation.ts";
 import type { UnattestedActive } from "./admission-proof.ts";
@@ -39,6 +41,16 @@ interface Options {
   beforePromote?(intent: PromotionIntent, transaction: SlotStorage): Promise<void>;
   retirementProvider?: RetirementProvider;
   startupAbsence?(record: StartupStopRecord): Promise<void>;
+  selectedChanged?(): Promise<void>;
+  recovery?: {
+    provider: RuntimeProviderReader;
+    beforeCommit?(
+      previous: SlotIdentity,
+      next: SlotIdentity,
+      transaction: SlotStorage,
+    ): Promise<void>;
+    afterCommit?(identity: SlotIdentity, fingerprint: string): Promise<void>;
+  };
 }
 /** No selection means the existing deployment. A broken admitted selection never falls back. */
 export class RuntimeHandoff {
@@ -52,6 +64,7 @@ export class RuntimeHandoff {
   private routing?: RuntimeSlotRouter;
   private streams = new SlotStreams();
   private adopting?: Promise<void>;
+  private recovery?: RuntimeSlotRecovery;
   private preparations = new Set<Promise<void>>();
   private ctx: ControllerState;
   private options: Options;
@@ -133,6 +146,20 @@ export class RuntimeHandoff {
       active.identity.applicationId === this.env.POOL_CONTAINER_APPLICATION_ID;
     if (!local && !this.options.remote) throw new SlotRefused("selection");
     return active.identity;
+  }
+  available() {
+    return this.recovery?.available() ?? true;
+  }
+  supervise() {
+    if (!this.options.recovery) return Promise.resolve();
+    this.recovery ??= new RuntimeSlotRecovery({
+      ...this.options.recovery,
+      storage: this.storage,
+      driver: this.driver,
+      code: this.controllerCode,
+      key: this.env.POOL_DEPLOYMENT_KEY ?? "",
+    });
+    return this.recovery.recover();
   }
   legacyActive() {
     return this.legacyActivity.active();
@@ -216,6 +243,7 @@ export class RuntimeHandoff {
       );
       return await this.witness(proof.target, proof);
     } finally {
+      await this.options.selectedChanged?.();
       this.adopting = undefined;
       finish();
     }
@@ -275,7 +303,9 @@ export class RuntimeHandoff {
   async promote(intent: PromotionIntent, envelope: string) {
     const proof = await this.authority.promotion(intent, envelope);
     await this.driver.attest(proof.target, envelope);
-    return this.slots.promote(intent, () => this.authority.fresh(proof));
+    const receipt = await this.slots.promote(intent, () => this.authority.fresh(proof));
+    await this.options.selectedChanged?.();
+    return receipt;
   }
   async witness(target: SlotTarget, expected?: UnattestedActive) {
     const value = await this.driver.witness(target);
