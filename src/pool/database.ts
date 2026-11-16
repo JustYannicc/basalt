@@ -138,8 +138,10 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
   return {
     adminUrl: admin.connectionUrl,
     runtimeRole: runtime.username,
-    runtimeUrl: Output.all(runtime.pooledOrigin, readyHash).pipe(
-      Output.map(([origin]) => Redacted.make(poolDatabaseUrl(Redacted.value(postgresUrl(origin))))),
+    // Desired settings are read before apply; per-attempt readiness is a separate Worker dependency.
+    runtimeReady: readyHash,
+    runtimeUrl: runtime.pooledOrigin.pipe(
+      Output.map((origin) => Redacted.make(poolDatabaseUrl(Redacted.value(postgresUrl(origin))))),
     ),
     // Fresh previews need initialization; production admission runs it before activation.
     workerOrigin: (isPreview

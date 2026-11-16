@@ -1,0 +1,118 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/auth-database.ts b/apps/hosted/cloud/src/infrastructure/auth-database.ts
+--- a/apps/hosted/cloud/src/infrastructure/auth-database.ts
++++ b/apps/hosted/cloud/src/infrastructure/auth-database.ts
+@@ -9,7 +9,6 @@
+   Context,
+   Duration,
+   Effect,
+-  ErrorReporter,
+   Exit,
+   Fiber,
+   Layer,
+@@ -37,6 +36,7 @@
+   type QueryResult,
+   type RootOperationNode,
+ } from "kysely";
++import { AuthRateLimitRaced, authRateLimitConflicts } from "./auth-rate-limit.ts";
+ import { ConnectionReservations } from "./database.ts";
+ import {
+   type CleanupDeadline,
+@@ -62,27 +62,6 @@
+   /** Fixed text and a closed code: telemetry records the message itself. */
+   get [RecordedMessage]() {
+     return this.message;
+-  }
+-}
+-
+-/**
+- * Better Auth's database rate limiter inserts an address's row on its first request to a path.
+- * When two such requests race, the later insert violates the key's unique index; Better Auth
+- * catches that, reads the row the other request inserted and counts this request against it.
+- * The request goes on, so the failed insert is recorded on its span but is not a fault to report.
+- */
+-class AuthRateLimitRaced extends Schema.TaggedError<AuthRateLimitRaced>()(
+-  "AuthRateLimitRaced",
+-  {},
+-) {
+-  override get message() {
+-    return "Another request inserted this address's rate-limit row first; Better Auth counts against that row";
+-  }
+-  get [RecordedMessage]() {
+-    return this.message;
+-  }
+-  get [ErrorReporter.ignore]() {
+-    return true;
+   }
+ }
+ 
+@@ -554,6 +533,7 @@
+       createQueryCompiler: () => new PostgresQueryCompiler(),
+     },
+     plugins: [
++      authRateLimitConflicts(),
+       {
+         transformQuery: ({ queryId, node }) => {
+           started.set(queryId, Date.now());
+diff --git a/apps/hosted/cloud/src/infrastructure/auth-rate-limit.ts b/apps/hosted/cloud/src/infrastructure/auth-rate-limit.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/auth-rate-limit.ts
+@@ -0,0 +1,58 @@
++import { RecordedMessage } from "@executor-js/utils/recorded-message";
++import { ErrorReporter, Schema } from "effect";
++import {
++  ColumnNode,
++  InsertQueryNode,
++  OnConflictNode,
++  type KyselyPlugin,
++  type QueryId,
++} from "kysely";
++
++/**
++ * Better Auth's database rate limiter inserts an address's row on its first request to a path.
++ * A skipped conflicting insert must reject so Better Auth reads the winner's row and counts
++ * this request through its native atomic increment. Returning no row would admit it uncounted.
++ */
++export class AuthRateLimitRaced extends Schema.TaggedError<AuthRateLimitRaced>()(
++  "AuthRateLimitRaced",
++  {},
++) {
++  override get message() {
++    return "Another request inserted this address's rate-limit row first; Better Auth counts against that row";
++  }
++  get [RecordedMessage]() {
++    return this.message;
++  }
++  get [ErrorReporter.ignore]() {
++    return true;
++  }
++}
++
++/** Keep normal first-request contention out of PostgreSQL's error log. */
++export const authRateLimitConflicts = (): KyselyPlugin => {
++  const inserts = new WeakSet<QueryId>();
++  return {
++    transformQuery: ({ node, queryId }) => {
++      if (
++        !InsertQueryNode.is(node) ||
++        node.into?.table.identifier.name !== "rateLimit" ||
++        node.returning === undefined ||
++        node.onConflict !== undefined ||
++        !node.columns?.some((column) => column.column.name === "key")
++      )
++        return node;
++      inserts.add(queryId);
++      return InsertQueryNode.cloneWith(node, {
++        onConflict: OnConflictNode.cloneWith(OnConflictNode.create(), {
++          columns: [ColumnNode.create("key")],
++          doNothing: true,
++        }),
++      });
++    },
++    transformResult: async ({ result, queryId }) => {
++      if (inserts.delete(queryId) && result.rows.length === 0 && result.numAffectedRows === 0n)
++        throw new AuthRateLimitRaced();
++      return result;
++    },
++  };
++};
