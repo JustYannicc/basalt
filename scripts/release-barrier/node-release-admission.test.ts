@@ -70,7 +70,7 @@ for (const { version, baselineInputHash, sourceInputHash } of [
     ])
       assert.equal(admit({ ...identity, ...change }, info, before), false);
     if (sourceInputHash === "1e94cc79d7fa50a4")
-      for (const baselineInputHash of ["526fa60bed0df442", "b669a1335e786091"])
+      for (const baselineInputHash of ["526fa60bed0df442", "59a7663b4fbc8e4a", "b669a1335e786091"])
         assert.equal(admit({ ...identity, baselineInputHash }, info, before), false);
     for (const applied_version of [null, 14, 17])
       assert.equal(admit(identity, info, { ...before, applied_version }), false);
