@@ -210,7 +210,7 @@ diff --git a/e2e/support/sql-wire-proof.ts b/e2e/support/sql-wire-proof.ts
        ),
      );
    const configure = (delay: number, measuring: boolean) =>
-@@ -24,22 +42,52 @@
+@@ -24,22 +42,54 @@
        ),
        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ wires: Schema.Array(Wire) }))),
      );
@@ -231,6 +231,8 @@ diff --git a/e2e/support/sql-wire-proof.ts b/e2e/support/sql-wire-proof.ts
 +    arm: (trace: string) => cohort("arm", { trace, cohorts: poolViewCohorts }).pipe(Effect.asVoid),
 +    wait: (id: string) =>
 +      cohort("wait", { id }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Receipt))),
++    status: (id: string) =>
++      cohort("status", { id }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Receipt))),
 +    release: (id: string) => cohort("release", { id }).pipe(Effect.asVoid),
 +    global: () => global,
      end: (trace: string) =>
@@ -358,16 +360,16 @@ new file mode 100644
 +    yield* fs.writeFileString(path, JSON.stringify({ database: url.href }), { mode: 0o600 });
 +    yield* Effect.addFinalizer(() => fs.remove(path, { force: true }).pipe(Effect.orDie));
 +    const database = yield* cloudLocksFor(path);
-+    return (trace: string) =>
++    return (trace: string, marker = "background") =>
 +      database.run({
-+        sql: `select 1 as background /*traceparent='00-${trace}-${trace.slice(0, 16)}-01'*/`,
++        sql: `select 1 as background /*${marker}*/ /*traceparent='00-${trace}-${trace.slice(0, 16)}-01'*/`,
 +      });
 +  });
 diff --git a/e2e/support/sql-wire-cohorts.ts b/e2e/support/sql-wire-cohorts.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/sql-wire-cohorts.ts
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,125 @@
 +import { Schema } from "effect";
 +
 +const Member = Schema.Struct({ id: Schema.String, contains: Schema.String });
@@ -462,6 +464,7 @@ new file mode 100644
 +      const { id } = Schema.decodeUnknownSync(Select)(value);
 +      const group = groups.find((group) => group.id === id);
 +      if (group === undefined) throw new Error(`Unknown SQL cohort ${id}`);
++      if (path === "/cohorts/status") return Promise.resolve(receipt(group));
 +      if (path === "/cohorts/release") {
 +        if (receipt(group).missing.length !== 0) throw new Error(`Incomplete SQL cohort ${id}`);
 +        group.released = true;
@@ -496,7 +499,7 @@ diff --git a/e2e/support/pool-account-view-query.ts b/e2e/support/pool-account-v
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/pool-account-view-query.ts
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,76 @@
 +import { expect } from "@effect/vitest";
 +import { Effect, Fiber } from "effect";
 +import { Browser } from "./browser.ts";
@@ -516,6 +519,14 @@ new file mode 100644
 +      evidence = yield* Evidence;
 +    const noise = yield* sqlWireNoise(wire.port);
 +    yield* wire.arm(trace);
++    const foreign = randomUUID().replaceAll("-", "");
++    for (const cohort of wire.cohorts) {
++      for (const member of cohort.members)
++        expect(yield* noise(foreign, member.contains)).toEqual([{ background: 1 }]);
++      const empty = yield* wire.status(cohort.id);
++      yield* evidence.json(`${fresh ? "fresh" : "initial"}-${cohort.id}-foreign.json`, empty);
++      expect(empty.arrived, "Foreign SQL cannot satisfy a view cohort").toEqual([]);
++    }
 +    const pending = yield* browser
 +      .use("Read the shipped pool view with SQL latency", (page) =>
 +        page.evaluate(
