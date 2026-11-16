@@ -158,7 +158,6 @@ jobs:
       deployments: read
     env:
       GITHUB_TOKEN: ${{ github.token }}
-      BASALT_UPSTREAM_CACHE: ${{ runner.temp }}/recorded-cache
     steps:
       - uses: actions/checkout@v4
         with:
@@ -171,6 +170,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - name: Select this run's isolated preparation cache
+        run: echo "BASALT_UPSTREAM_CACHE=$RUNNER_TEMP/recorded-cache" >> "$GITHUB_ENV"
       - name: Prepare the trusted recovery client without production credentials
         run: npm run prepare:upstream
       - name: Validate evidence and build the exact recovery candidate
