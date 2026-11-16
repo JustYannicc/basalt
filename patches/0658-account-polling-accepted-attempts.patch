@@ -1,0 +1,378 @@
+diff --git a/e2e/tests/account-observation-row-polling.spec.ts b/e2e/tests/account-observation-row-polling.spec.ts
+--- a/e2e/tests/account-observation-row-polling.spec.ts
++++ b/e2e/tests/account-observation-row-polling.spec.ts
+@@ -1,6 +1,6 @@
+ /** A visible account row picks up a newly retained usage report without a manual refresh. */
+ import { expect, layer } from "@effect/vitest";
+-import { Effect, Schema } from "effect";
++import { Effect, Fiber, Schema } from "effect";
+ import type { Page } from "playwright";
+ import { body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
+@@ -12,6 +12,7 @@
+   installBrowserClock,
+ } from "../support/query-transition.ts";
+ import { accountRow, openRowDetails, usageGroupName } from "../support/account-rows.ts";
++import { pollingSettlement } from "../support/account-polling-settlement.ts";
+ import { scenarios } from "../test-plan.ts";
+ 
+ const Detail = Schema.Struct({ account: Schema.Struct({ label: Schema.String }) });
+@@ -128,103 +129,56 @@
+             const f = yield* observationFixture({ observe: true, health: true, shared: true });
+             yield* f.backend.answer({ status: 200, body: allowance() });
+             expect((yield* f.refresh()).status).toBe(200);
+-            let requests = 0;
++            const label =
++              (yield* body(Detail, yield* f.detail())).account.label || "Unnamed account";
++            const menuName =
++              label === "Unnamed account" || /^Default( \d+)?$/.test(label)
++                ? /Observation service account|Observed identity/
++                : label;
+             yield* installBrowserClock;
+-            yield* browser.use("Keep the retained report pending or unavailable", (page) =>
+-              page.route(new RegExp(`/accounts/${f.account}/observations$`), (route) => {
+-                requests++;
+-                if (mode === "failed") return route.abort("failed");
+-                return route.fetch().then((response) =>
+-                  response.json().then((value: unknown) => {
+-                    const json = Schema.decodeUnknownSync(
+-                      Schema.Record(Schema.String, Schema.Unknown),
+-                    )(value);
+-                    const reports = Schema.decodeUnknownSync(
+-                      Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+-                    )(json.reports);
+-                    return route.fulfill({
+-                      response,
+-                      json: {
+-                        ...json,
+-                        reports: reports.map((report) => ({
+-                          ...report,
+-                          collecting: true,
+-                          ...(mode === "unavailable" ? { freshness: "unavailable" } : {}),
+-                        })),
+-                      },
+-                    });
+-                  }),
+-                );
+-              }),
++            const polling = yield* pollingSettlement(f.account, menuName, mode);
++            yield* browser.login(f.actors.owner);
++            const loaded = yield* Effect.forkChild(polling.join(1));
++            yield* polling.armed(1);
++            yield* browser.use("Open Accounts while the pool cannot settle health", (page) =>
++              page.goto(`/org/${f.actors.organization.slug}/accounts`),
+             );
+-            yield* browser.login(f.actors.owner);
+-            yield* browser.use("Open Accounts while the pool cannot settle health", (page) => {
+-              const loaded =
+-                mode === "failed"
+-                  ? page
+-                      .waitForEvent("requestfailed", (request) =>
+-                        new URL(request.url()).pathname.endsWith(
+-                          `/accounts/${f.account}/observations`,
+-                        ),
+-                      )
+-                      .then(() => undefined)
+-                  : page
+-                      .waitForResponse((response) =>
+-                        new URL(response.url()).pathname.endsWith(
+-                          `/accounts/${f.account}/observations`,
+-                        ),
+-                      )
+-                      .then(() => undefined);
+-              return page.goto(`/org/${f.actors.organization.slug}/accounts`).then(() => loaded);
+-            });
+-            yield* Effect.addFinalizer(() =>
+-              browser
+-                .use("Stop simulating the outage before deleting the account", (page) =>
+-                  page.unroute(new RegExp(`/accounts/${f.account}/observations$`)),
+-                )
+-                .pipe(Effect.orDie),
+-            );
+-            const initial = requests;
++            yield* Fiber.join(loaded);
++            const initial = polling.count();
+             expect(initial).toBeGreaterThan(0);
+             yield* browser.use(
+               "Pending and unavailable health do not enable five-second polling",
+               (page) => page.context().clock.runFor(30_000),
+             );
+             expect(
+-              requests - initial,
++              polling.count() - initial,
+               "No extra read in the first thirty seconds of an outage",
+             ).toBe(0);
+             const retryAfter = (milliseconds: number) =>
+-              browser.use("Retry on the shared bounded cadence", (page) => {
+-                const settled =
+-                  mode === "failed"
+-                    ? page
+-                        .waitForEvent("requestfailed", (request) =>
+-                          new URL(request.url()).pathname.endsWith(
+-                            `/accounts/${f.account}/observations`,
+-                          ),
+-                        )
+-                        .then(() => undefined)
+-                    : page
+-                        .waitForResponse((response) =>
+-                          new URL(response.url()).pathname.endsWith(
+-                            `/accounts/${f.account}/observations`,
+-                          ),
+-                        )
+-                        .then(() => undefined);
+-                return page
+-                  .context()
+-                  .clock.runFor(milliseconds)
+-                  .then(() => settled);
++              Effect.gen(function* () {
++                const number = polling.count() + 1;
++                const settled = yield* Effect.forkChild(polling.join(number));
++                yield* polling.armed(number);
++                yield* browser.use("Retry on the shared bounded cadence", (page) =>
++                  page.context().clock.runFor(milliseconds),
++                );
++                yield* polling.held(number);
++                yield* polling.transported(number);
++                expect(
++                  polling.joined(number),
++                  "A retry joins its own accepted result after its fence",
++                ).toBe(false);
++                yield* polling.release(number);
++                yield* Fiber.join(settled);
+               });
+-            let previous = requests;
++            let previous = polling.count();
+             yield* retryAfter(30_000);
+-            expect(requests - previous, "The first retry waits one minute").toBe(1);
++            expect(polling.count() - previous, "The first retry waits one minute").toBe(1);
+             for (const milliseconds of [120_000, 240_000, 300_000]) {
+-              previous = requests;
++              previous = polling.count();
+               yield* retryAfter(milliseconds);
+               expect(
+-                requests - previous,
++                polling.count() - previous,
+                 "Retries back off and remain live at the five-minute cap",
+               ).toBe(1);
+             }
+diff --git a/e2e/support/account-polling-settlement.ts b/e2e/support/account-polling-settlement.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/account-polling-settlement.ts
+@@ -0,0 +1,216 @@
++import { Deferred, Effect, Schema } from "effect";
++import type { Route } from "playwright";
++import { Browser } from "./browser.ts";
++import { accountRow } from "./account-rows.ts";
++import { driver } from "./platform.ts";
++
++/** Keep each outage result behind its real trailing fence until the scenario releases it. */
++export const pollingSettlement = (
++  account: string,
++  label: string | RegExp,
++  mode: "pending" | "unavailable" | "failed",
++) =>
++  Effect.gen(function* () {
++    const browser = yield* Browser;
++    const attempts = yield* Effect.forEach([1, 2, 3, 4, 5], () =>
++      Effect.gen(function* () {
++        return {
++          armed: yield* Deferred.make<void>(),
++          transport: yield* Deferred.make<void>(),
++          fenced: yield* Deferred.make<void>(),
++          release: yield* Deferred.make<void>(),
++          joined: false,
++        };
++      }),
++    );
++    const attemptAt = (number: number) => {
++      const attempt = attempts[number - 1];
++      if (attempt === undefined) throw new Error(`Unexpected polling attempt ${number}`);
++      return attempt;
++    };
++    let requests = 0;
++    let fencing: number | undefined;
++    const active = new Set<Promise<void>>();
++    const failure = yield* Deferred.make<never, unknown>();
++    const awaitAttempt = (signal: Deferred.Deferred<void>) =>
++      Deferred.await(signal).pipe(
++        Effect.raceFirst(Deferred.await(failure)),
++        Effect.timeout("15 seconds"),
++      );
++    const run = (effect: Effect.Effect<void, unknown>) => {
++      // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- Playwright routes must return a Promise
++      const request = Effect.runPromise(
++        effect.pipe(
++          Effect.catchCause((cause) => Deferred.failCause(failure, cause).pipe(Effect.asVoid)),
++        ),
++      );
++      active.add(request);
++      return request.finally(() => active.delete(request));
++    };
++    const observationPath = new RegExp(`/accounts/${account}/observations$`);
++    const headsPath = /\/api\/organizations\/[^/]+\/changes\/current$/;
++    const heads = (route: Route) =>
++      run(
++        Effect.gen(function* () {
++          if (fencing !== undefined) {
++            const attempt = attemptAt(fencing);
++            yield* Deferred.succeed(attempt.fenced, undefined);
++            yield* Deferred.await(attempt.release);
++          }
++          yield* driver("Release a trailing revision fence", () => route.fallback());
++        }),
++      );
++    yield* browser.use("Keep each outage attempt behind its revision fence", (page) => {
++      const observations = (route: Route) =>
++        run(
++          Effect.gen(function* () {
++            const number = ++requests;
++            attemptAt(number);
++            if (mode === "failed") {
++              if (number > 1) {
++                yield* driver("Observe this failed attempt's own waiting transition", () =>
++                  accountRow(page, label)
++                    .and(page.locator(`[data-e2e-outage-waiting="${number}"]`))
++                    .waitFor(),
++                );
++              }
++              fencing = number > 1 ? number : undefined;
++              yield* driver("Fail this account observations transport", () =>
++                route.abort("failed"),
++              );
++              return;
++            }
++            yield* driver("Answer this outage attempt with its own visible marker", () =>
++              route.fetch().then((response) =>
++                response.json().then((value: unknown) => {
++                  const json = Schema.decodeUnknownSync(
++                    Schema.Record(Schema.String, Schema.Unknown),
++                  )(value);
++                  const reports = Schema.decodeUnknownSync(
++                    Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
++                  )(json.reports);
++                  fencing = number > 1 ? number : undefined;
++                  return route.fulfill({
++                    response,
++                    json: {
++                      ...json,
++                      reports: reports.map((report) => ({
++                        ...report,
++                        result: (() => {
++                          const record = Schema.decodeUnknownSync(
++                            Schema.Record(Schema.String, Schema.Unknown),
++                          )(report.result);
++                          const observation = Schema.decodeUnknownSync(
++                            Schema.Record(Schema.String, Schema.Unknown),
++                          )(record.observation);
++                          const plan = Schema.decodeUnknownSync(
++                            Schema.Record(Schema.String, Schema.Unknown),
++                          )(observation.plan);
++                          return {
++                            ...record,
++                            observation: {
++                              ...observation,
++                              plan: { ...plan, label: `Polling Attempt ${number}` },
++                            },
++                          };
++                        })(),
++                        collecting: true,
++                        ...(mode === "unavailable" ? { freshness: "unavailable" } : {}),
++                      })),
++                    },
++                  });
++                }),
++              ),
++            );
++          }),
++        );
++      return page.route(headsPath, heads).then(() => page.route(observationPath, observations));
++    });
++    yield* Effect.addFinalizer(() =>
++      Effect.gen(function* () {
++        fencing = undefined;
++        yield* Effect.forEach(attempts, (attempt) => Deferred.succeed(attempt.release, undefined));
++        yield* browser.use("Remove outage controls before deleting the account", (page) =>
++          page.unroute(observationPath).then(() => page.unroute(headsPath, heads)),
++        );
++        yield* Effect.forEach(
++          [...active],
++          (request) => driver("Drain an outage response", () => request),
++          { concurrency: "unbounded" },
++        );
++      }).pipe(Effect.orDie),
++    );
++    return {
++      count: () => requests,
++      armed: (number: number) => awaitAttempt(attemptAt(number).armed),
++      held: (number: number) => awaitAttempt(attemptAt(number).fenced),
++      transported: (number: number) => awaitAttempt(attemptAt(number).transport),
++      joined: (number: number) => attemptAt(number).joined,
++      release: (number: number) =>
++        Effect.sync(() => {
++          fencing = undefined;
++        }).pipe(Effect.andThen(Deferred.succeed(attemptAt(number).release, undefined))),
++      join: (number: number) =>
++        browser.use("Join this account polling attempt", (page) => {
++          const attempt = attemptAt(number);
++          const observing =
++            mode === "failed" && number > 1
++              ? accountRow(page, label).evaluate((row, number) => {
++                  row.removeAttribute("data-e2e-outage-waiting");
++                  const busy = '[role="alert"][aria-busy="true"]';
++                  const observer = new MutationObserver((records) => {
++                    const entered = records.some(
++                      (record) =>
++                        (record.target instanceof Element &&
++                          record.target.getAttribute("role") === "alert" &&
++                          record.oldValue === "true") ||
++                        [...record.addedNodes].some(
++                          (node) =>
++                            node instanceof Element &&
++                            (node.matches(busy) || node.querySelector(busy) !== null),
++                        ),
++                    );
++                    if (entered || row.querySelector(busy) !== null) {
++                      row.setAttribute("data-e2e-outage-waiting", String(number));
++                      observer.disconnect();
++                    }
++                  });
++                  observer.observe(row, {
++                    subtree: true,
++                    childList: true,
++                    attributes: true,
++                    attributeFilter: ["aria-busy"],
++                    attributeOldValue: true,
++                  });
++                }, number)
++              : Promise.resolve();
++          const loaded =
++            mode === "failed"
++              ? page.waitForEvent("requestfailed", (request) =>
++                  observationPath.test(new URL(request.url()).pathname),
++                )
++              : page.waitForResponse((response) =>
++                  observationPath.test(new URL(response.url()).pathname),
++                );
++          const armed = observing.then(() => {
++            // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- Arm browser observers before navigation or virtual time can deliver the attempt
++            Effect.runSync(Deferred.succeed(attempt.armed, undefined));
++          });
++          const transported = loaded.then(() => {
++            // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- Expose transport independently of accepted UI state
++            Effect.runSync(Deferred.succeed(attempt.transport, undefined));
++          });
++          return Promise.all([armed, transported])
++            .then(() =>
++              mode === "failed"
++                ? accountRow(page, label).locator('[role="alert"][aria-busy="false"]').waitFor()
++                : accountRow(page, label)
++                    .getByText(`Polling Attempt ${number}`, { exact: true })
++                    .waitFor(),
++            )
++            .then(() => {
++              attempt.joined = true;
++            });
++        }),
++    };
++  });

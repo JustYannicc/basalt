@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-polling-accepted-attempts",
+  "file": "0658-account-polling-accepted-attempts.patch",
+  "content_sha256": "47eeef8417ad8f6db7e82419c41a69ae6dacb1acf454c45266f25d122d3c075c",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
