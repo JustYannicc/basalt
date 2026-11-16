@@ -67,10 +67,6 @@ if (import.meta.main && process.argv[2] === "digest") {
     throw new Error("Choose plan, inspect or apply");
   const value = readInput(process.env.POOL_PROVISIONING_PACKET ?? "null");
   const packet = mode === "plan" ? undefined : decodeProvisioningPacket(value);
-  const planRequest =
-    mode === "plan"
-      ? Schema.decodeUnknownSync(ObservationStorePlanRequest, { onExcessProperty: "error" })(value)
-      : undefined;
   if (mode === "apply") validateProvisioningOperation(packet!, writer, Date.now());
   const directory = resolve(
     process.env.POOL_PROVISIONING_OUTPUT_DIRECTORY ?? ".local/pool-provisioning",
@@ -84,58 +80,68 @@ if (import.meta.main && process.argv[2] === "digest") {
   process.chdir(fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url)));
   process.exitCode = await releaseOutcome(evidence, process.env.GITHUB_STEP_SUMMARY, () =>
     Effect.runPromiseExit(
-      evalStack(
-        planRequest || packet?.operation.kind === "observation-store"
-          ? observationStoreStack
-          : provisioningStack,
-        (compiled) =>
-          Effect.gen(function* () {
-            yield* assertReleaseStateVersion(compiled);
-            const receipt = planRequest
-              ? {
-                  operation: {
-                    kind: "observation-store" as const,
-                    manifest: yield* planObservationStore(compiled, planRequest, writer),
-                  },
-                }
-              : mode === "apply"
-                ? yield* runDeclaredProvisioning(
-                    compiled,
-                    packet!,
-                    writer,
-                    process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
-                    process.env.POOL_DEPLOYMENT_KEY ?? "",
-                  )
-                : yield* inspectDeclaredProvisioning(
-                    compiled,
-                    packet!,
-                    writer,
-                    process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
-                  );
-            const output =
-              planRequest && "operation" in receipt
+      Effect.gen(function* () {
+        const planRequest =
+          mode === "plan"
+            ? yield* Schema.decodeUnknownEffect(ObservationStorePlanRequest, {
+                onExcessProperty: "error",
+              })(value)
+            : undefined;
+        return yield* evalStack(
+          planRequest || packet?.operation.kind === "observation-store"
+            ? observationStoreStack
+            : provisioningStack,
+          (compiled) =>
+            Effect.gen(function* () {
+              yield* assertReleaseStateVersion(compiled);
+              const receipt = planRequest
                 ? {
-                    disposition: "plan",
-                    ...receipt,
-                    operationDigest: provisioningOperationDigest(receipt.operation),
+                    operation: {
+                      kind: "observation-store" as const,
+                      manifest: yield* planObservationStore(compiled, planRequest, writer),
+                    },
                   }
-                : {
-                    disposition: mode,
-                    ...(packet ? { manifest: provisioningOperationDigest(packet.operation) } : {}),
-                    receipt,
-                  };
-            yield* Effect.promise(() =>
-              writeFile(resolve(directory, "receipt.json"), JSON.stringify(output), {
-                mode: 0o600,
-                flush: true,
-              }),
-            );
-          }).pipe(
-            Effect.provideContext(compiled.services),
-            Effect.provideService(State, Context.get(compiled.services, State)),
-          ),
-        { stage: "production" },
-      ).pipe(withReleaseRuntime),
+                : mode === "apply"
+                  ? yield* runDeclaredProvisioning(
+                      compiled,
+                      packet!,
+                      writer,
+                      process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
+                      process.env.POOL_DEPLOYMENT_KEY ?? "",
+                    )
+                  : yield* inspectDeclaredProvisioning(
+                      compiled,
+                      packet!,
+                      writer,
+                      process.env.EXECUTOR_ENCRYPTION_KEY ?? "",
+                    );
+              const output =
+                planRequest && "operation" in receipt
+                  ? {
+                      disposition: "plan",
+                      ...receipt,
+                      operationDigest: provisioningOperationDigest(receipt.operation),
+                    }
+                  : {
+                      disposition: mode,
+                      ...(packet
+                        ? { manifest: provisioningOperationDigest(packet.operation) }
+                        : {}),
+                      receipt,
+                    };
+              yield* Effect.promise(() =>
+                writeFile(resolve(directory, "receipt.json"), JSON.stringify(output), {
+                  mode: 0o600,
+                  flush: true,
+                }),
+              );
+            }).pipe(
+              Effect.provideContext(compiled.services),
+              Effect.provideService(State, Context.get(compiled.services, State)),
+            ),
+          { stage: "production" },
+        );
+      }).pipe(withReleaseRuntime),
     ),
   );
 }

@@ -107,14 +107,11 @@ export const readObservationStorePlan = (stack: CompiledStack, accountId: string
 
 export const planObservationStore = (
   stack: CompiledStack,
-  value: unknown,
+  request: typeof ObservationStorePlanRequest.Type,
   writer: ProvisioningWriter,
   now: () => number = Date.now,
 ) =>
   Effect.gen(function* () {
-    const request = Schema.decodeUnknownSync(ObservationStorePlanRequest, {
-      onExcessProperty: "error",
-    })(value);
     if (!writer.lease || !Number.isSafeInteger(now()) || request.expiresAt <= now())
       throw provisioningRefusal(
         "observation-store-plan-not-enabled",
