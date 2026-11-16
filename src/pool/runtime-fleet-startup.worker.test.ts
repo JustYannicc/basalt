@@ -53,17 +53,19 @@ for (const reconstructed of [false, true])
       if (reconstructed) f.reconstruct();
       await f.upkeep();
       const state = new RuntimeFleetState(f.old.storage, 4);
+      const physicalCount = () =>
+        [...f.instances.values()].filter(({ fixture }) => fixture.ctx.container.running).length;
       if (!reconstructed) {
         const warming = await state.inspect();
         assert.equal(warming.length, 1);
         assert.equal(warming[0]!.phase, "warming");
-        assert.equal(await state.physicalCount(), 1);
+        assert.equal(physicalCount(), 1);
         release.resolve();
       }
       const ready = await f.resourcesWhen(
         (rows) => rows.length === 2 && rows.every((row) => row.phase === "ready"),
       );
-      assert.equal(await state.physicalCount(), 2);
+      assert.equal(physicalCount(), 2);
       for (const row of ready) {
         assert.equal(f.instances.get(row.target.instanceId)!.fixture.calls.start, 1);
         assert.equal(f.instances.get(row.target.instanceId)!.fixture.calls.destroy, 0);
