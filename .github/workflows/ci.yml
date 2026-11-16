@@ -1988,6 +1988,8 @@ jobs:
             .generated/pool-removal-intent/**/report.json
             .generated/pool-removal-intent/**/partial-checks.json
             .generated/pool-removal-intent/**/failure.txt
+            .generated/pool-removal-intent/**/runtime-cloud.log
+            .generated/pool-removal-intent/**/runtime-diagnostics.json
             .generated/pool-recipe-checks/**/report.json
             .generated/pool-recipe-checks/**/partial-checks.json
             .generated/pool-recipe-checks/**/failure.txt
