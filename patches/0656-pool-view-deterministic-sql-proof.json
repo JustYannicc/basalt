@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-view-deterministic-sql-proof",
+  "file": "0656-pool-view-deterministic-sql-proof.patch",
+  "content_sha256": "83d1404b01fda64907f795071492b7da928933b0628b211e7b4f69cb37cdefab",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

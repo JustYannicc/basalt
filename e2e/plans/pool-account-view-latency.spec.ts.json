@@ -4,7 +4,7 @@
       "fixtures": "actors",
       "appOrigin": true,
       "deferOnboarding": true,
-      "title": "Full pool account view preserves five exact sources within its SQL round-trip budget",
+      "title": "Full pool account view preserves exact sources within deterministic SQL work and dependency budgets",
       "targets": {
         "cloud": {
           "status": "scheduled",
@@ -22,7 +22,9 @@
     }
   },
   "runs": {
-    "poolAccountViewLatency": ["declared:cloud"]
+    "poolAccountViewLatency": [
+      "declared:cloud"
+    ]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/app-ui.ts",
@@ -37,7 +39,10 @@
     ".upstream/e2e/support/sql-latency-proxy.ts",
     ".upstream/e2e/support/sql-wire-proof.ts",
     "apps/pool/index.ts",
-    "apps/pool/provider-account-view.ts"
+    "apps/pool/provider-account-view.ts",
+    ".upstream/e2e/support/sql-wire-requests.ts",
+    ".upstream/e2e/support/sql-wire-cohorts.ts",
+    ".upstream/e2e/support/pool-account-view-query.ts"
   ],
   "fixture": "pool-setup"
 }
