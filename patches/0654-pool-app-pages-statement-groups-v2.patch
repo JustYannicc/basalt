@@ -1,25 +1,28 @@
 diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
 --- a/apps/hosted/cloud/src/app-ui.ts
 +++ b/apps/hosted/cloud/src/app-ui.ts
-@@ -5,7 +5,8 @@
-   appSandboxLabel,
+@@ -1,3 +1,4 @@
++import { PgPool } from "@effect/sql-pg";
+ import { appCatalogBinding } from "./infrastructure/app-catalog.ts";
+ import {
+   McpAppAssets,
+@@ -6,6 +7,7 @@
    appSandboxResponse,
  } from "@executor-js/mcp";
--import { HostedExecutor } from "@executor-js/hosted-server";
-+import { ConcurrentStatements, HostedExecutor } from "@executor-js/hosted-server";
-+import { PgPool } from "@effect/sql-pg";
- import { requestServices } from "@executor-js/hosted-server";
- import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
- /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
-@@ -37,6 +38,7 @@
+ import {
++  ConcurrentStatements,
+   HostedExecutor,
+   recordUnclassifiedRefusals,
+   requestServices,
+@@ -45,6 +47,7 @@
  import { postHogBindings } from "./infrastructure/posthog.ts";
  import { cloudAppSessions } from "./infrastructure/app-sessions.ts";
  import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
 +import { InvocationStatementGroups } from "./infrastructure/invocation-database.ts";
  import { cloudServingProduct } from "./infrastructure/serving-product.ts";
  import { sentryBindings } from "./infrastructure/sentry.ts";
- import { cloudHosts } from "./infrastructure/stage.ts";
-@@ -178,6 +180,7 @@
+ import { cloudHosts, cloudResourceOrigins } from "./infrastructure/stage.ts";
+@@ -188,6 +191,7 @@
          appSessions,
          executor,
          Layer.succeed(ScopedChanges, changeRevisions.transport),
@@ -27,7 +30,7 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
        ),
      );
      const notFound = HttpServerResponse.empty({ status: 404 });
-@@ -255,7 +258,12 @@
+@@ -267,7 +271,12 @@
        ),
      };
    }).pipe(
@@ -64,9 +67,9 @@ diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/
      return yield* makeBatchExecutionMemo(
        Effect.gen(function* () {
          const object = yield* Effect.serviceOption(ObjectDatabase);
-@@ -48,6 +54,7 @@
-           cloudDatabasePool({
+@@ -49,6 +55,7 @@
              url,
+             route: connection.route,
              maxConnections: invocationConnectionLimit,
 +            statementGroups,
            }),
@@ -290,7 +293,7 @@ diff --git a/apps/hosted/server/src/implementation/selected-account-read.ts b/ap
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -42,6 +42,7 @@
+@@ -44,6 +44,7 @@
  import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.ts";
  import { productionOpsDatabaseProxy } from "./production-ops-database-proxy.ts";
  import { statementBatchProxy } from "./statement-batch-proxy.ts";
@@ -298,7 +301,7 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
  import { cloudPoolGateway, poolFixtureSigningKey } from "./cloud-pool-gateway.ts";
  import { cloudNativeStack } from "./cloud-native-stack.ts";
  import { startMapsRoutesEmulator } from "./maps-routes-emulator.ts";
-@@ -187,8 +188,13 @@
+@@ -191,8 +192,13 @@
      const directory = path.resolve(input.directory);
      const batchProxy =
        process.env.BASALT_E2E_BATCH_STALL === "1" ? yield* statementBatchProxy : undefined;
@@ -1044,38 +1047,37 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
  import { AccountSourceFailure } from "../contracts/account-check-failure.ts";
  import { accountCheckFailure, recordAccountCheckFailure } from "./account-check-failure.ts";
  import {
-@@ -291,21 +292,27 @@
+@@ -297,6 +298,7 @@
+     ids: readonly AppId[],
+   ) =>
      Effect.gen(function* () {
-       // The product names the apps; their owner can differ from the account's, as in local, where
-       // apps belong to the host and accounts to its user.
--      const apps = ids.length === 0 ? [] : yield* listApps({ ids });
--      const rows = yield* query(() =>
--        db.findMany("accountChecks", { where: (b) => b("account", "=", account.id) }),
--      );
--      const report = yield* query(() =>
--        db.findFirst("accountReports", { where: (b) => b("id", "=", account.id) }),
 +      const facts = yield* SelectionReadFacts;
-+      const [apps, rows, report, acquired, driverHealth] = yield* Effect.all(
+       const [stored, [apps, rows]] = yield* inOrder(
+         account,
+         inOrder(
+@@ -306,17 +308,22 @@
+           query(() => db.findMany("accountChecks", { where: (b) => b("account", "=", id) })),
+         ),
+       );
+-      const report = yield* query(() =>
+-        db.findFirst("accountReports", { where: (b) => b("id", "=", stored.id) }),
++      const [report, acquired, driverHealth] = yield* Effect.all(
 +        [
-+          ids.length === 0 ? Effect.succeed([]) : listApps({ ids }),
-+          query(() =>
-+            db.findMany("accountChecks", { where: (b) => b("account", "=", account.id) }),
-+          ),
-+          query(() => db.findFirst("accountReports", { where: (b) => b("id", "=", account.id) })),
-+          interactiveBinding(db, { account: account.id, owner: account.owner }),
-+          driver.report(account),
++          query(() => db.findFirst("accountReports", { where: (b) => b("id", "=", stored.id) })),
++          interactiveBinding(db, { account: stored.id, owner: stored.owner }),
++          driver.report(stored),
 +        ],
 +        { concurrency: facts === undefined ? 1 : "unbounded" },
        );
        const health = yield* project(
-         account,
+         stored,
          apps,
          rows,
--        yield* interactiveBinding(db, { account: account.id, owner: account.owner }),
+-        yield* interactiveBinding(db, { account: stored.id, owner: stored.owner }),
 +        acquired,
          report === null ? undefined : { status: report.status },
        );
--      return withDriverHealth(health, yield* driver.report(account));
+-      return withDriverHealth(health, yield* driver.report(stored));
 +      return withDriverHealth(health, driverHealth);
      });
  

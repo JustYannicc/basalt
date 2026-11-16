@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "AppPages event databases enable the existing grouped SQL transport; other Worker event databases keep their prior mode. Pool AppPages queries group independent SQL, and connection-list concurrency is limited to fenced SelectionReadFacts reads. Every live authority predicate and both before/after fences remain. The v2 account-health read retains its existing inOrder account-read error precedence and apps/checks read-ahead; only its remaining report, binding and driver reads overlap inside SelectionReadFacts. Independent control, exact source and retained presentation reads may overlap, but no authorization verdict is cached and no data escapes a refused control read. Speculative source reads can still run when control later refuses or omits their accounts. The full public five-account query retains all exact source executions and reports within 80 sequential SQL wire waits under injected query latency. A protocol observer starts for the declared pool-setup fixture, excludes connection login, captures pipelined statements, and preserves the existing presentation-path bound."
+    }
+  }
+}
