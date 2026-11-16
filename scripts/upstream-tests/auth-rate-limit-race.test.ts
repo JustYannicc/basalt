@@ -47,7 +47,10 @@ for (const max of [1, 2])
         throw new Error("The auth fixture does not stream SQL");
       },
     };
-    const database = new Kysely<unknown>({
+    const database = new Kysely<{
+      ordinary: { id: string };
+      rateLimit: { id: string; key: string; count: number; lastRequest: number };
+    }>({
       plugins: [authRateLimitConflicts()],
       dialect: {
         createAdapter: () => new PostgresAdapter(),
