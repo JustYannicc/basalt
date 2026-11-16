@@ -1,0 +1,305 @@
+package openai
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/MoeForge/moego/json"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+)
+
+type fundingRetryDispatcher struct {
+	model, firstID, secondID, upstream string
+	calls                              atomic.Int32
+	probes, retries                    atomic.Int32
+	denied                             atomic.Bool
+	mu                                 sync.Mutex
+	checks                             []string
+}
+
+func (*fundingRetryDispatcher) HeartbeatOK() bool       { return true }
+func (*fundingRetryDispatcher) AbortAmbiguousDispatch() {}
+
+func (d *fundingRetryDispatcher) RPopAuth(ctx context.Context, model, session string, headers http.Header, count int) ([]byte, error) {
+	return d.RPopAuthWithConstraints(ctx, model, session, headers, count, nil, "")
+}
+
+func (d *fundingRetryDispatcher) RPopAuthWithConstraints(_ context.Context, model, _ string, headers http.Header, count int, excluded []string, pinned string) ([]byte, error) {
+	d.calls.Add(1)
+	if model != d.model || headers.Get("Authorization") != "Bearer funding-retry-client" {
+		return nil, errors.New("unexpected Home dispatch model or client credential")
+	}
+	if pinned == "" && slices.Contains(excluded, d.firstID) {
+		if count == 2 {
+			d.probes.Add(1)
+		} else if count == 1 {
+			d.retries.Add(1)
+		}
+	}
+	for _, id := range []string{d.firstID, d.secondID} {
+		if (pinned != "" && pinned != id) || slices.Contains(excluded, id) {
+			continue
+		}
+		provider := "codex"
+		if id == d.firstID {
+			provider = "xai"
+		}
+		return json.Marshal(coreauth.Auth{
+			ID: id, Provider: provider, Status: coreauth.StatusActive,
+			Attributes: map[string]string{"websockets": "true", "api_key": "funding-retry-key", "base_url": d.upstream},
+		})
+	}
+	return []byte(`{"error":{"code":"auth_not_found","message":"no eligible fixture account"}}`), nil
+}
+
+func (d *fundingRetryDispatcher) ValidateUsageCreditTurn(_ context.Context, model string, headers http.Header, authID string) error {
+	d.mu.Lock()
+	d.checks = append(d.checks, authID)
+	d.mu.Unlock()
+	if model != d.model || headers.Get("Authorization") != "Bearer funding-retry-client" {
+		return errors.New("unexpected funding model or client credential")
+	}
+	if authID != d.firstID && authID != d.secondID {
+		return errors.New("funding account was not selected by Home")
+	}
+	if authID == d.secondID && d.denied.Load() {
+		return errors.New("second account no longer satisfies pool funding policy")
+	}
+	return nil
+}
+
+func (d *fundingRetryDispatcher) checkedAccounts() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.checks)
+}
+
+type fundingRetry429Error struct{}
+
+func (fundingRetry429Error) StatusCode() int { return http.StatusTooManyRequests }
+func (fundingRetry429Error) Error() string {
+	return `{"error":{"type":"usage_limit_reached","message":"fixture account exhausted","resets_in_seconds":3600}}`
+}
+
+type fundingRetryExecutor struct {
+	firstID    string
+	firstCalls atomic.Int32
+}
+
+func (*fundingRetryExecutor) Identifier() string { return "xai" }
+
+func (*fundingRetryExecutor) Execute(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("fixture supports streaming only")
+}
+
+func (e *fundingRetryExecutor) ExecuteStream(_ context.Context, auth *coreauth.Auth, _ coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
+	if auth.ID != e.firstID {
+		return nil, errors.New("XAI fixture received an unexpected account")
+	}
+	// XAI uses per-response streams even with Codex steering enabled. Its finite
+	// stream can reach the handler retry before B starts the native Codex duplex loop.
+	if e.firstCalls.Add(1) != 1 {
+		return nil, fundingRetry429Error{}
+	}
+	if lifecycle, ok := opts.ExecutionLifecycle.(interface{ Retain() }); ok {
+		lifecycle.Retain()
+	}
+	chunks := make(chan coreexecutor.StreamChunk, 1)
+	chunks <- coreexecutor.StreamChunk{Payload: []byte(`{"type":"response.completed","response":{"id":"resp-a-1","status":"completed","output":[]}}`)}
+	close(chunks)
+	return &coreexecutor.StreamResult{Chunks: chunks}, nil
+}
+
+func (*fundingRetryExecutor) Refresh(context.Context, *coreauth.Auth) (*coreauth.Auth, error) {
+	return nil, errors.New("fixture does not refresh credentials")
+}
+
+func (*fundingRetryExecutor) CountTokens(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (coreexecutor.Response, error) {
+	return coreexecutor.Response{}, errors.New("fixture does not count tokens")
+}
+
+func (*fundingRetryExecutor) HttpRequest(context.Context, *coreauth.Auth, *http.Request) (*http.Response, error) {
+	return nil, errors.New("fixture does not make HTTP requests")
+}
+
+func TestBasaltUsageCreditWebsocketSameSocketRetryRebindsFunding(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, buffering := range []bool{false, true} {
+		t.Run(fmt.Sprintf("buffering=%t", buffering), func(t *testing.T) {
+			var upstreamCreates, upstreamConnections atomic.Int32
+			var upstreamMu sync.Mutex
+			var upstreamEvents []string
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer funding-retry-key" {
+					t.Error("native executor used an unexpected upstream credential")
+					http.Error(w, "unexpected fixture credential", http.StatusUnauthorized)
+					return
+				}
+				conn, errUpgrade := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+				if errUpgrade != nil {
+					t.Error(errUpgrade)
+					return
+				}
+				upstreamConnections.Add(1)
+				defer func() { _ = conn.Close() }()
+				_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+				for {
+					_, payload, errRead := conn.ReadMessage()
+					if errRead != nil {
+						return
+					}
+					if ojson.GetBytesNoCopy(payload, "type").String() != "response.create" {
+						t.Errorf("unexpected native upstream frame: %s", payload)
+						return
+					}
+					event := ojson.GetBytesNoCopy(payload, "event_id").String()
+					upstreamMu.Lock()
+					upstreamEvents = append(upstreamEvents, event)
+					upstreamMu.Unlock()
+					turn := upstreamCreates.Add(1)
+					created := fmt.Sprintf(`{"type":"response.created","response":{"id":"resp-b-%d","status":"in_progress","output":[]}}`, turn)
+					if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(created)); errWrite != nil {
+						t.Error(errWrite)
+						return
+					}
+					if event == "ambiguous" {
+						return // The create was accepted; its generation outcome is unknown.
+					}
+					completed := fmt.Sprintf(`{"type":"response.completed","response":{"id":"resp-b-%d","status":"completed","output":[]}}`, turn)
+					if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(completed)); errWrite != nil {
+						t.Error(errWrite)
+						return
+					}
+				}
+			}))
+			t.Cleanup(upstream.Close)
+			model := "basalt-funding-retry-" + strings.ReplaceAll(t.Name(), "/", "-")
+			dispatcher := &fundingRetryDispatcher{model: model, firstID: model + "-a", secondID: model + "-b", upstream: upstream.URL}
+			cfg := &config.Config{
+				SDKConfig: config.SDKConfig{CodexResponseSteering: true},
+				Home:      config.HomeConfig{Enabled: true},
+				Codex:     config.CodexConfig{ResponseSteering: true, StreamBootstrapBuffering: buffering},
+			}
+			manager := coreauth.NewManager(nil, nil, nil)
+			manager.SetConfig(cfg)
+			manager.PublishHomeDispatch(dispatcher, executionregistry.New(), 1)
+			executor := &fundingRetryExecutor{firstID: dispatcher.firstID}
+			manager.RegisterExecutor(executor)
+			manager.RegisterExecutor(runtimeexecutor.NewCodexAutoExecutor(cfg))
+			for _, id := range []string{dispatcher.firstID, dispatcher.secondID} {
+				provider := "codex"
+				if id == dispatcher.firstID {
+					provider = "xai"
+				}
+				registry.GetGlobalRegistry().RegisterClient(id, provider, []*registry.ModelInfo{{ID: model}})
+				t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
+			}
+			handler := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&cfg.SDKConfig, manager))
+			router := gin.New()
+			router.GET("/v1/responses", handler.ResponsesWebsocket)
+			downstream := httptest.NewServer(router)
+			t.Cleanup(downstream.Close)
+			conn, resp, errDial := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(downstream.URL, "http")+"/v1/responses", http.Header{"Authorization": {"Bearer funding-retry-client"}})
+			if resp != nil && resp.Body != nil {
+				defer func() { _ = resp.Body.Close() }()
+			}
+			if errDial != nil {
+				t.Fatal(errDial)
+			}
+			defer func() { _ = conn.Close() }()
+			send := func(event, previous string) {
+				t.Helper()
+				payload := fmt.Sprintf(`{"type":"response.create","model":%q,"event_id":%q,"input":[{"type":"message","role":"user","content":%q}]}`, model, event, event)
+				if previous != "" {
+					payload = strings.TrimSuffix(payload, "}") + fmt.Sprintf(`,"previous_response_id":%q}`, previous)
+				}
+				_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(payload)); errWrite != nil {
+					t.Fatal(errWrite)
+				}
+			}
+			await := func(wantType, wantID string) []byte {
+				t.Helper()
+				_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				for {
+					_, frame, errRead := conn.ReadMessage()
+					if errRead != nil {
+						t.Fatalf("waiting for %s/%s: %v; XAI A=%d B connections=%d creates=%d dispatches=%d probes=%d retries=%d funding=%q", wantType, wantID, errRead, executor.firstCalls.Load(), upstreamConnections.Load(), upstreamCreates.Load(), dispatcher.calls.Load(), dispatcher.probes.Load(), dispatcher.retries.Load(), dispatcher.checkedAccounts())
+					}
+					kind := ojson.GetBytesNoCopy(frame, "type").String()
+					if kind == "error" && wantType != "error" {
+						t.Fatalf("unexpected error instead of %s: %s", wantType, frame)
+					}
+					if kind == wantType {
+						if wantID != "" && ojson.GetBytesNoCopy(frame, "response.id").String() != wantID {
+							t.Fatalf("unexpected %s: %s", wantType, frame)
+						}
+						return frame
+					}
+				}
+			}
+			send("first", "")
+			await("response.completed", "resp-a-1")
+			send("retry", "")
+			await("response.completed", "resp-b-1")
+			if executor.firstCalls.Load() != 2 || upstreamConnections.Load() != 1 || upstreamCreates.Load() != 1 {
+				t.Fatalf("in-place retry calls: XAI A=%d native B connections=%d creates=%d", executor.firstCalls.Load(), upstreamConnections.Load(), upstreamCreates.Load())
+			}
+			if dispatcher.probes.Load() != 1 || dispatcher.retries.Load() != 1 {
+				t.Fatalf("handler replay-target probe/retry = %d/%d, want 1/1", dispatcher.probes.Load(), dispatcher.retries.Load())
+			}
+			dispatches := dispatcher.calls.Load()
+			checksBefore := len(dispatcher.checkedAccounts())
+			send("allowed", "resp-b-1")
+			await("response.completed", "resp-b-2")
+			dispatcher.denied.Store(true)
+			send("denied", "resp-b-2")
+			denied := await("error", "")
+			if ojson.GetBytesNoCopy(denied, "status").Int() != http.StatusConflict || !strings.Contains(string(denied), "retained account no longer satisfies pool funding policy") {
+				t.Fatalf("funding refusal: %s", denied)
+			}
+			if upstreamCreates.Load() != 2 || dispatcher.calls.Load() != dispatches || upstreamConnections.Load() != 1 {
+				t.Fatal("denied successor was forwarded, redispatched or restarted")
+			}
+			dispatcher.denied.Store(false)
+			send("resumed", "resp-b-2")
+			await("response.completed", "resp-b-3")
+			checks := dispatcher.checkedAccounts()[checksBefore:]
+			if !slices.Equal(checks, []string{dispatcher.secondID, dispatcher.secondID, dispatcher.secondID}) {
+				t.Fatalf("retained successor funding accounts = %q, want B for allowed, denied and resumed", checks)
+			}
+			send("ambiguous", "resp-b-3")
+			await("response.created", "resp-b-4")
+			lost := await("error", "")
+			if ojson.GetBytesNoCopy(lost, "error.code").String() != "upstream_websocket_lost" {
+				t.Fatalf("accepted turn loss was reclassified: %s", lost)
+			}
+			send("recovery", "")
+			await("response.completed", "resp-b-5")
+			upstreamMu.Lock()
+			events := slices.Clone(upstreamEvents)
+			upstreamMu.Unlock()
+			if !slices.Equal(events, []string{"retry", "allowed", "resumed", "ambiguous", "recovery"}) || executor.firstCalls.Load() != 2 || upstreamConnections.Load() != 2 {
+				t.Fatalf("upstream turns were lost or replayed: events=%q XAI A=%d native B connections=%d", events, executor.firstCalls.Load(), upstreamConnections.Load())
+			}
+		})
+	}
+}

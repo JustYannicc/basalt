@@ -1,0 +1,1160 @@
+diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
+--- a/apps/hosted/cloud/src/app-ui.ts
++++ b/apps/hosted/cloud/src/app-ui.ts
+@@ -5,7 +5,8 @@
+   appSandboxLabel,
+   appSandboxResponse,
+ } from "@executor-js/mcp";
+-import { HostedExecutor } from "@executor-js/hosted-server";
++import { ConcurrentStatements, HostedExecutor } from "@executor-js/hosted-server";
++import { PgPool } from "@effect/sql-pg";
+ import { requestServices } from "@executor-js/hosted-server";
+ import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
+ /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
+@@ -37,6 +38,7 @@
+ import { postHogBindings } from "./infrastructure/posthog.ts";
+ import { cloudAppSessions } from "./infrastructure/app-sessions.ts";
+ import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
++import { InvocationStatementGroups } from "./infrastructure/invocation-database.ts";
+ import { cloudServingProduct } from "./infrastructure/serving-product.ts";
+ import { sentryBindings } from "./infrastructure/sentry.ts";
+ import { cloudHosts } from "./infrastructure/stage.ts";
+@@ -178,6 +180,7 @@
+         appSessions,
+         executor,
+         Layer.succeed(ScopedChanges, changeRevisions.transport),
++        Layer.succeed(ConcurrentStatements, { group: PgPool.grouped }),
+       ),
+     );
+     const notFound = HttpServerResponse.empty({ status: 404 });
+@@ -255,7 +258,12 @@
+       ),
+     };
+   }).pipe(
+-    Effect.provide(Layer.mergeAll(cloudAuthDatabase, cloudTelemetry)),
++    Effect.provide(
++      Layer.mergeAll(
++        cloudAuthDatabase.pipe(Layer.provide(Layer.succeed(InvocationStatementGroups, true))),
++        cloudTelemetry,
++      ),
++    ),
+     Effect.tapCause(logFailure),
+   ),
+ ) {}
+diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+--- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
++++ b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+@@ -28,6 +28,11 @@
+   Effect.Effect<Context.Context<SqlServices>, SqlError.SqlError>
+ >()("executor/cloud/InvocationDatabase") {}
+ 
++export const InvocationStatementGroups = Context.Reference<boolean>(
++  "executor/cloud/InvocationStatementGroups",
++  { defaultValue: () => false },
++);
++
+ /**
+  * One client per execution, closed with the event. A Durable Object lends its own held client
+  * instead. Both come from {@link cloudDatabasePool}, so neither relies on session state, and both
+@@ -37,6 +42,7 @@
+   InvocationDatabase,
+   Effect.gen(function* () {
+     const connection = yield* cloudDatabaseConnection;
++    const statementGroups = yield* InvocationStatementGroups;
+     return yield* makeBatchExecutionMemo(
+       Effect.gen(function* () {
+         const object = yield* Effect.serviceOption(ObjectDatabase);
+@@ -48,6 +54,7 @@
+           cloudDatabasePool({
+             url,
+             maxConnections: invocationConnectionLimit,
++            statementGroups,
+           }),
+         );
+         return Context.add(sql, ConnectionReservations, {
+diff --git a/apps/hosted/server/src/implementation/change-revisions.ts b/apps/hosted/server/src/implementation/change-revisions.ts
+--- a/apps/hosted/server/src/implementation/change-revisions.ts
++++ b/apps/hosted/server/src/implementation/change-revisions.ts
+@@ -13,22 +13,25 @@
+ 
+ /** Captures the request's uncached SQL client, never a rendered answer or authorization verdict. */
+ export const makeChangeJournal = (sql: SqlClient.SqlClient) => ({
+-  current: (scope: string, keys: readonly ChangeKey[]) =>
++  current: (scope: string, keys: readonly ChangeKey[], concurrency: number | "unbounded" = 1) =>
+     Effect.gen(function* () {
+       const prepared = yield* changeJournalPrepared(sql);
+-      return yield* Effect.forEach(keys, (key) =>
+-        (prepared
+-          ? sql`select hosted_change_revision(${scope},${key.topic},${key.resource})::text as revision`
+-          : sql`select revision::text as revision from hosted_change_heads
++      return yield* Effect.forEach(
++        keys,
++        (key) =>
++          (prepared
++            ? sql`select hosted_change_revision(${scope},${key.topic},${key.resource})::text as revision`
++            : sql`select revision::text as revision from hosted_change_heads
+           where scope = ${scope} and topic = ${key.topic} and resource = ${key.resource}`
+-        ).pipe(
+-          Effect.flatMap(
+-            Schema.decodeUnknownEffect(
+-              Schema.Array(Schema.Struct({ revision: RevisionHint.fields.revision })),
++          ).pipe(
++            Effect.flatMap(
++              Schema.decodeUnknownEffect(
++                Schema.Array(Schema.Struct({ revision: RevisionHint.fields.revision })),
++              ),
+             ),
++            Effect.map((rows) => ({ ...key, revision: rows[0]?.revision ?? "0" })),
+           ),
+-          Effect.map((rows) => ({ ...key, revision: rows[0]?.revision ?? "0" })),
+-        ),
++        { concurrency },
+       );
+     }),
+   /** Network I/O holds no transaction. The pass leaves five seconds for host cleanup before a forced stop. */
+diff --git a/apps/hosted/server/src/implementation/pool-account-read-facts.ts b/apps/hosted/server/src/implementation/pool-account-read-facts.ts
+--- a/apps/hosted/server/src/implementation/pool-account-read-facts.ts
++++ b/apps/hosted/server/src/implementation/pool-account-read-facts.ts
+@@ -11,7 +11,7 @@
+ import { AccountId } from "@executor-js/sdk/core";
+ import { acquisitionLabels } from "./account-identity.ts";
+ import { CurrentUserId } from "../contracts/auth.ts";
+-import { HostedExecutor } from "../contracts/executor.ts";
++import { HostedExecutor, statementGroup } from "../contracts/executor.ts";
+ import { CurrentOrganization } from "../contracts/organization.ts";
+ import { recordedServiceInstalls } from "./service-install-records.ts";
+ import { AccountFactLink, AccountFactReads } from "./account-fact-reads.ts";
+@@ -71,12 +71,17 @@
+     });
+     const facts = Effect.gen(function* () {
+       const executor = yield* Effect.flatten(HostedExecutor);
+-      const actor = yield* resourceAuthority(organization, user);
+-      const links = yield* Schema.decodeUnknownEffect(Schema.Array(AccountFactLink))(
+-        yield* sql`select l.app, l.account, l.requirement, l.subject from hosted_app_account_links l
++      const [actor, links] = yield* Effect.all(
++        [
++          resourceAuthority(organization, user),
++          sql`select l.app, l.account, l.requirement, l.subject from hosted_app_account_links l
+         join executor_apps a on a.id = l.app and a.owner = ${owner}
+         where ${sql.in("l.account", accounts)} and (l.subject is null or l.subject = ${user})
+-        order by l.app, l.requirement, l.account`,
++        order by l.app, l.requirement, l.account`.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(AccountFactLink))),
++          ),
++        ],
++        { concurrency: "unbounded" },
+       );
+       const ids = [...new Set([app.id, ...links.map((link) => link.app)])];
+       const [apps, appPolicies, accountPolicies] = yield* Effect.all(
+@@ -88,34 +93,40 @@
+         { concurrency: "unbounded" },
+       );
+       const metadata = new Map(apps.map((app) => [app.id, app]));
+-      const services = yield* recordedServiceInstalls(sql, apps);
+-      const registered = yield* Schema.decodeUnknownEffect(
+-        Schema.Array(Schema.Struct({ app: AppId })),
+-      )(
+-        yield* sql`select a.id as app from organization o join executor_apps a on a.owner = 'organization:' || o.id
++      const [services, registered, groups, observations, labels] = yield* Effect.all(
++        [
++          recordedServiceInstalls(sql, apps),
++          sql`select a.id as app from organization o join executor_apps a on a.owner = 'organization:' || o.id
+         where o.id = ${organization} and ${sql.in("a.id", ids)} and exists (
+           select 1 from jsonb_each(coalesce(o.metadata::jsonb -> 'basaltPools', '{}'::jsonb)) pool
+-          where pool.value ->> 'app' = a.id)`,
++          where pool.value ->> 'app' = a.id)`.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ app: AppId })))),
++          ),
++          sql`select gm.group_id as "group" from hosted_group_members gm join hosted_groups g on g.id=gm.group_id
++        where gm.member_id=${actor.member} and g.organization_id=${organization}`.pipe(
++            Effect.flatMap(
++              Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ group: GroupId }))),
++            ),
++          ),
++          sql`select account_id as account, read_audience as read, refresh_audience as refresh, revision
++        from hosted_account_observation_access where organization_id=${organization} and ${sql.in("account_id", accounts)}`.pipe(
++            Effect.flatMap(
++              Schema.decodeUnknownEffect(
++                Schema.Array(Schema.Struct({ account: AccountId, ...ObservationPolicy.fields })),
++              ),
++            ),
++          ),
++          acquisitionLabels(accounts),
++        ],
++        { concurrency: "unbounded" },
+       );
+       const pools = new Set(registered.map((row) => row.app));
+-      const groups = yield* Schema.decodeUnknownEffect(
+-        Schema.Array(Schema.Struct({ group: GroupId })),
+-      )(
+-        yield* sql`select gm.group_id as "group" from hosted_group_members gm join hosted_groups g on g.id=gm.group_id
+-        where gm.member_id=${actor.member} and g.organization_id=${organization}`,
+-      );
+-      const observations = yield* Schema.decodeUnknownEffect(
+-        Schema.Array(Schema.Struct({ account: AccountId, ...ObservationPolicy.fields })),
+-      )(
+-        yield* sql`select account_id as account, read_audience as read, refresh_audience as refresh, revision
+-        from hosted_account_observation_access where organization_id=${organization} and ${sql.in("account_id", accounts)}`,
+-      );
+       const token = Symbol();
+       return {
+         token,
+         groups: new Set(groups.map((row) => row.group)),
+         observations: new Map(observations.map(({ account, ...policy }) => [account, policy])),
+-        labels: yield* acquisitionLabels(accounts),
++        labels,
+         actor,
+         accounts: new Set(accounts),
+         apps: metadata,
+@@ -140,5 +151,5 @@
+           Effect.provideService(HostedExecutor, Effect.succeed(facts.executor)),
+         ),
+       fresh,
+-    );
++    ).pipe(statementGroup);
+   });
+diff --git a/apps/hosted/server/src/implementation/pool-view-cache.ts b/apps/hosted/server/src/implementation/pool-view-cache.ts
+--- a/apps/hosted/server/src/implementation/pool-view-cache.ts
++++ b/apps/hosted/server/src/implementation/pool-view-cache.ts
+@@ -2,6 +2,7 @@
+ import { StorageError, observationDeadline, type App } from "@executor-js/sdk/core";
+ import { AccountObservationResult } from "apps/contracts";
+ import { HttpServerRequest } from "effect/http";
++import { statementGroup } from "../contracts/executor.ts";
+ import { CurrentAuthorization } from "../contracts/authorization.ts";
+ import { CurrentOrganization, organizationOwner } from "../contracts/organization.ts";
+ import { CurrentUserId } from "../contracts/auth.ts";
+@@ -139,17 +140,18 @@
+     const user = yield* CurrentUserId;
+     if (user === undefined) return yield* new StorageError();
+     const sql = yield* Effect.flatten(GroupDatabase);
+-    const native = yield* sendPoolCommand("changeRevisions", { pool: app.id }, ChangeSnapshot);
+-    return {
+-      ...native,
+-      revisions: [
+-        ...native.revisions,
+-        ...(yield* makeChangeJournal(sql).current(
++    const [native, revisions] = yield* Effect.all(
++      [
++        sendPoolCommand("changeRevisions", { pool: app.id }, ChangeSnapshot),
++        makeChangeJournal(sql).current(
+           organizationOwner(access.organization),
+           organizationChangeKeys,
+-        )),
++          "unbounded",
++        ),
+       ],
+-    };
++      { concurrency: "unbounded" },
++    );
++    return { ...native, revisions: [...native.revisions, ...revisions] };
+   }).pipe(Effect.catch(() => new StorageError()));
+ 
+ export const withPoolViewCache = <E, R>(
+@@ -189,5 +191,5 @@
+       app.activeVersion ?? "",
+       JSON.stringify(operation.input),
+     ]);
+-    return yield* cached(key, current(app), read, registeredPool(app.id));
++    return yield* cached(key, current(app), read, registeredPool(app.id)).pipe(statementGroup);
+   });
+diff --git a/apps/hosted/server/src/implementation/selected-account-read.ts b/apps/hosted/server/src/implementation/selected-account-read.ts
+--- a/apps/hosted/server/src/implementation/selected-account-read.ts
++++ b/apps/hosted/server/src/implementation/selected-account-read.ts
+@@ -48,15 +48,16 @@
+         const apps = yield* linkedApps(owner, input.account);
+         const ids = apps.map((app) => app.id);
+         const canInspect = (yield* observationAccess(input.account)).canInspect;
+-        const account = yield* executor.accounts.get({ owner, account: input.account });
+-        const health = yield* executor.accounts.health({
+-          owner,
+-          account: input.account,
+-          apps: ids,
+-        });
+-        const observations = canInspect
+-          ? yield* executor.accounts.observations({ owner, account: input.account, apps: ids })
+-          : null;
++        const [account, health, observations] = yield* Effect.all(
++          [
++            executor.accounts.get({ owner, account: input.account }),
++            executor.accounts.health({ owner, account: input.account, apps: ids }),
++            canInspect
++              ? executor.accounts.observations({ owner, account: input.account, apps: ids })
++              : Effect.succeed(null),
++          ],
++          { concurrency: "unbounded" },
++        );
+         const [visible] = yield* visibleAccountStatuses([
+           {
+             account,
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -42,6 +42,7 @@
+ import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.ts";
+ import { productionOpsDatabaseProxy } from "./production-ops-database-proxy.ts";
+ import { statementBatchProxy } from "./statement-batch-proxy.ts";
++import { sqlLatencyProxy } from "./sql-latency-proxy.ts";
+ import { cloudPoolGateway, poolFixtureSigningKey } from "./cloud-pool-gateway.ts";
+ import { cloudNativeStack } from "./cloud-native-stack.ts";
+ import { startMapsRoutesEmulator } from "./maps-routes-emulator.ts";
+@@ -187,8 +188,13 @@
+     const directory = path.resolve(input.directory);
+     const batchProxy =
+       process.env.BASALT_E2E_BATCH_STALL === "1" ? yield* statementBatchProxy : undefined;
++    const poolProxy =
++      process.env.BASALT_E2E_POOL_BACKEND === "1" || process.env.BASALT_E2E_POOL_SETUP === "1"
++        ? yield* sqlLatencyProxy(path.join(directory, "sql-wire.json"))
++        : undefined;
+     const databaseProxy =
+       batchProxy ??
++      poolProxy ??
+       (process.env.BASALT_E2E_PRODUCTION_OPS === "1"
+         ? yield* productionOpsDatabaseProxy()
+         : undefined);
+diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
+--- a/e2e/support/cloud-pool-gateway.ts
++++ b/e2e/support/cloud-pool-gateway.ts
+@@ -60,6 +60,11 @@
+       path = yield* Path.Path;
+     const source = yield* fs.readFileString(
+       path.resolve("..", "src/catalog/provider-apps/openai.json"),
++    );
++    const additionalSources = yield* Effect.forEach(["anthropic", "xai"], (lab) =>
++      fs
++        .readFileString(path.resolve("..", "src/catalog/provider-apps", `${lab}.json`))
++        .pipe(Effect.map((source) => ({ lab, source }))),
+     );
+     const events = yield* Ref.make<
+       readonly {
+@@ -286,6 +291,15 @@
+                 icons: [],
+                 source: "apps/provider-openai.json",
+               },
++              ...additionalSources.map(({ lab }) => ({
++                id: `provider-${lab}`,
++                package: `provider-${lab}`,
++                name: lab,
++                description: "Synthetic provider source",
++                auth: [],
++                icons: [],
++                source: `apps/provider-${lab}.json`,
++              })),
+             ],
+           }),
+         ),
+@@ -294,6 +308,13 @@
+         "GET",
+         `${catalog}/apps/provider-openai.json`,
+         Effect.succeed(HttpServerResponse.text(source, { contentType: "application/json" })),
++      ),
++      ...additionalSources.map(({ lab, source }) =>
++        HttpRouter.add(
++          "GET",
++          `${catalog}/apps/provider-${lab}.json`,
++          Effect.succeed(HttpServerResponse.text(source, { contentType: "application/json" })),
++        ),
+       ),
+     );
+     const context = yield* Layer.build(
+diff --git a/e2e/support/legacy-pool-handoff-setup.ts b/e2e/support/legacy-pool-handoff-setup.ts
+--- a/e2e/support/legacy-pool-handoff-setup.ts
++++ b/e2e/support/legacy-pool-handoff-setup.ts
+@@ -13,7 +13,7 @@
+ });
+ const Links = Schema.Array(Schema.Struct({ requirement: Schema.String, account: Resource }));
+ 
+-const prepare = (diagnostic: string) =>
++const prepare = (diagnostic: string, nativeSources: boolean) =>
+   Effect.gen(function* () {
+     const api = yield* SessionClients,
+       actors = yield* Actors,
+@@ -55,16 +55,22 @@
+     for (const [requirement, method, count] of [
+       ["openai", "codex", 1],
+       ["anthropic", "claude", 3],
++      ...(nativeSources ? [["xai", "xai", 1] as const] : []),
+     ] as const) {
+       const source = yield* fs
+         .readFileString(path.resolve(`../src/catalog/provider-apps/${requirement}.json`))
+         .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Source))));
+       const provider = yield* body(
+         Resource,
+-        yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+-          name: `Retained ${requirement}`,
+-          files: source.files,
+-        }),
++        nativeSources
++          ? yield* api.request(actors.owner, "POST", `${prefix}/apps/install`, {
++              entry: `provider-${requirement}`,
++              name: `Synthetic ${requirement}`,
++            })
++          : yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++              name: `Retained ${requirement}`,
++              files: source.files,
++            }),
+       );
+       for (let index = 0; index < count; index++) {
+         const connection = yield* body(
+@@ -85,6 +91,14 @@
+           yield* api.request(actors.owner, "GET", `${interactive}/status`),
+         );
+         accounts.push({ id: connected.account.id, requirement });
++        if (nativeSources)
++          expect(
++            (yield* api.request(
++              actors.owner,
++              "PUT",
++              `${prefix}/apps/${provider.id}/accounts/app/${requirement}/${connected.account.id}`,
++            )).status,
++          ).toBe(200);
+         expect(
+           (yield* api.request(
+             actors.owner,
+@@ -100,7 +114,7 @@
+         .pipe(Effect.flatMap((response) => body(Links, response)));
+     const beforeLinks = yield* links();
+     expect(beforeLinks.filter((link) => link.requirement === "pool")).toHaveLength(1);
+-    expect(beforeLinks).toHaveLength(5);
++    expect(beforeLinks).toHaveLength(nativeSources ? 6 : 5);
+     const control = beforeLinks.find((link) => link.requirement === "pool")!.account.id;
+     const controlState = () =>
+       database.run({
+@@ -124,14 +138,14 @@
+ 
+ // The native hook owns fixture preparation; Effect Vitest still owns the strict case deadline.
+ /* oxlint-disable executor/no-manual-effect-runtime-in-tests */
+-export const installLegacyPoolHandoffSetup = () =>
++export const installLegacyPoolHandoffSetup = (options: { readonly nativeSources?: boolean } = {}) =>
+   beforeEach((context) => {
+     const lifetime = scenarioLifetime(context);
+     if (lifetime.actors === undefined)
+       throw new Error("Legacy pool setup requires scenario actors");
+     const diagnostic = `${lifetime.target.directory}/report/lifecycle/${context.task.id}-pool-setup.json`;
+     return Effect.runPromise(
+-      prepare(diagnostic).pipe(
++      prepare(diagnostic, options.nativeSources === true).pipe(
+         Effect.tap((fixture) => Effect.sync(() => fixtures.set(context, fixture))),
+         Effect.provideService(Actors, lifetime.actors),
+         Effect.provide(SessionClients.layer),
+diff --git a/e2e/support/pool-account-view-observations.ts b/e2e/support/pool-account-view-observations.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/pool-account-view-observations.ts
+@@ -0,0 +1,49 @@
++/** Synthetic retained readings with the same nested windows and balances as provider reports. */
++export const poolObservation = (provider: string, now: number) => {
++  const observedAt = new Date(now).toISOString();
++  const staleAt = new Date(now + 3600000).toISOString();
++  return {
++    observedAt,
++    observation: {
++      offering: "subscription",
++      plan: { label: `Synthetic ${provider}`, observedAt, staleAt },
++      usageCredits: {
++        state: "available",
++        balance: { value: "20", unit: "credits" },
++        observedAt,
++        staleAt,
++        freshness: "fresh",
++        extraUsage: null,
++      },
++      windows: [18000, 604800].map((seconds) => ({
++        id: `window-${seconds}`,
++        label: `Synthetic window ${seconds}`,
++        observedAt,
++        staleAt,
++        scope: { kind: "account" },
++        measure: {
++          unit: "requests",
++          used: 25,
++          remaining: 75,
++          limit: 100,
++          remainingRatio: 0.75,
++          unlimited: false,
++        },
++        period: { mode: "rolling", seconds },
++        resetsAt: staleAt,
++      })),
++      balances: [1, 2].map((index) => ({
++        id: `reset-${index}`,
++        label: `Synthetic reset ${index}`,
++        unit: "resets",
++        observedAt,
++        staleAt,
++        available: 1,
++        scope: { kind: "account" },
++        reset: { kind: "full", clears: ["window-18000", "window-604800"] },
++        expiresAt: staleAt,
++      })),
++    },
++    collection: { attemptedAt: observedAt, outcome: "success", retryAt: staleAt },
++  };
++};
+diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/sql-latency-proxy.ts
+@@ -0,0 +1,183 @@
++import { Effect, FileSystem } from "effect";
++import { connect, createServer, type Socket } from "node:net";
++import { createServer as createHttpServer } from "node:http";
++
++interface Wire {
++  readonly start: number;
++  readonly end: number;
++}
++
++/** Local SQL response latency and wire intervals, excluding the connection handshake. */
++export const sqlLatencyProxy = (controlFile: string) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem;
++    let delay = 0;
++    let generation = 0;
++    let measuring = false;
++    let wires: Wire[] = [];
++    const configure = createHttpServer((request, response) => {
++      const chunks: Buffer[] = [];
++      request.on("data", (chunk) => chunks.push(chunk));
++      request.on("end", () => {
++        try {
++          const value: unknown = JSON.parse(Buffer.concat(chunks).toString());
++          if (
++            typeof value !== "object" ||
++            value === null ||
++            !("delay" in value) ||
++            typeof value.delay !== "number" ||
++            value.delay < 0 ||
++            value.delay > 100 ||
++            !("measuring" in value) ||
++            typeof value.measuring !== "boolean"
++          )
++            throw new Error("Invalid wire control");
++          delay = value.delay;
++          if (value.measuring) {
++            generation++;
++            wires = [];
++          }
++          measuring = value.measuring;
++          response.writeHead(200, { "content-type": "application/json" });
++          response.end(JSON.stringify({ wires }));
++        } catch {
++          response.writeHead(400);
++          response.end();
++        }
++      });
++    });
++    yield* Effect.acquireRelease(
++      Effect.promise(
++        () =>
++          new Promise<void>((resolve, reject) => {
++            configure.once("error", reject);
++            configure.listen(0, "127.0.0.1", () => {
++              configure.off("error", reject);
++              resolve();
++            });
++          }),
++      ),
++      () =>
++        Effect.promise(
++          () =>
++            new Promise<void>((resolve, reject) =>
++              configure.close((error) => (error ? reject(error) : resolve())),
++            ),
++        ),
++    );
++    const control = configure.address();
++    if (control === null || typeof control === "string")
++      return yield* Effect.die("Missing wire control");
++    yield* fs.writeFileString(
++      controlFile,
++      JSON.stringify({ url: `http://127.0.0.1:${control.port}` }),
++    );
++    yield* Effect.addFinalizer(() => fs.remove(controlFile, { force: true }).pipe(Effect.orDie));
++    let target: number | undefined;
++    const sockets = new Set<Socket>();
++    const timers = new Set<ReturnType<typeof setTimeout>>();
++    const server = createServer((incoming) => {
++      if (target === undefined) return incoming.destroy();
++      const outgoing = connect({ host: "127.0.0.1", port: target });
++      incoming.setNoDelay(true);
++      outgoing.setNoDelay(true);
++      sockets.add(incoming);
++      sockets.add(outgoing);
++      let startup = true;
++      let initialized = false;
++      let front = Buffer.alloc(0);
++      let back = Buffer.alloc(0);
++      let deliveryAt = 0;
++      const requests: { readonly start: number; readonly generation?: number }[] = [];
++      const close = () => {
++        incoming.destroy();
++        outgoing.destroy();
++        sockets.delete(incoming);
++        sockets.delete(outgoing);
++      };
++      incoming.once("close", close);
++      outgoing.once("close", close);
++      incoming.on("error", close);
++      outgoing.on("error", close);
++      incoming.on("data", (chunk) => {
++        const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
++        front = Buffer.concat([front, bytes]);
++        while (front.length >= (startup ? 4 : 5)) {
++          const size = startup ? front.readInt32BE(0) : front.readInt32BE(1) + 1;
++          if (size < (startup ? 4 : 5)) return close();
++          if (front.length < size) break;
++          const frame = front.subarray(0, size);
++          front = front.subarray(size);
++          if (startup) startup = false;
++          else if (frame[0] === 83 || frame[0] === 81)
++            requests.push({ start: Date.now(), ...(measuring ? { generation } : {}) });
++        }
++        outgoing.write(bytes);
++      });
++      outgoing.on("data", (chunk) => {
++        const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
++        const now = Date.now();
++        const milliseconds = initialized ? delay : 0;
++        // A later zero-delay chunk must never overtake one already waiting.
++        deliveryAt = Math.max(deliveryAt, now + milliseconds);
++        const end = deliveryAt;
++        back = Buffer.concat([back, bytes]);
++        while (back.length >= 5) {
++          const size = back.readInt32BE(1) + 1;
++          if (size < 5) return close();
++          if (back.length < size) break;
++          const kind = back[0];
++          back = back.subarray(size);
++          if (kind !== 90) continue;
++          if (!initialized) {
++            initialized = true;
++            continue;
++          }
++          const request = requests.shift();
++          if (request?.generation === generation && measuring)
++            wires.push({ start: request.start, end });
++        }
++        const wait = end - now;
++        if (wait <= 0) {
++          incoming.write(bytes);
++          return;
++        }
++        const timer = setTimeout(() => {
++          timers.delete(timer);
++          if (!incoming.destroyed) incoming.write(bytes);
++        }, wait);
++        timers.add(timer);
++      });
++    });
++    yield* Effect.acquireRelease(
++      Effect.promise(
++        () =>
++          new Promise<void>((resolve, reject) => {
++            server.once("error", reject);
++            server.listen(0, "127.0.0.1", () => {
++              server.off("error", reject);
++              resolve();
++            });
++          }),
++      ),
++      () =>
++        Effect.promise(
++          () =>
++            new Promise<void>((resolve, reject) => {
++              for (const timer of timers) clearTimeout(timer);
++              for (const socket of sockets) socket.destroy();
++              server.close((error) => (error ? reject(error) : resolve()));
++            }),
++        ),
++    );
++    const address = server.address();
++    if (address === null || typeof address === "string")
++      return yield* Effect.die("Missing SQL proxy address");
++    return {
++      port: address.port,
++      select: (port: number) =>
++        Effect.sync(() => {
++          target = port;
++        }),
++    };
++  });
+diff --git a/e2e/support/sql-wire-proof.ts b/e2e/support/sql-wire-proof.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/sql-wire-proof.ts
+@@ -0,0 +1,46 @@
++import { Effect, FileSystem, Schema } from "effect";
++import { HttpBody, HttpClient } from "effect/http";
++import { randomUUID } from "node:crypto";
++import { Target } from "./platform.ts";
++
++const Wire = Schema.Struct({ start: Schema.Number, end: Schema.Number });
++
++/** Observe the actual local Postgres protocol, including statements the multiplexed client pipelines. */
++export const sqlWireProof = Effect.gen(function* () {
++  const target = yield* Target;
++  const fs = yield* FileSystem.FileSystem;
++  const http = yield* HttpClient.HttpClient;
++  const control = yield* fs
++    .readFileString(`${target.directory}/sql-wire.json`)
++    .pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Struct({ url: Schema.String }))),
++      ),
++    );
++  const configure = (delay: number, measuring: boolean) =>
++    http.post(control.url, { body: HttpBody.jsonUnsafe({ delay, measuring }) }).pipe(
++      Effect.flatMap((response) =>
++        response.status === 200 ? response.json : Effect.die("SQL wire control refused"),
++      ),
++      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ wires: Schema.Array(Wire) }))),
++    );
++  yield* Effect.addFinalizer(() => configure(0, false).pipe(Effect.orDie));
++  return {
++    begin: (delay = 0) => configure(delay, true).pipe(Effect.asVoid),
++    end: (trace: string) =>
++      configure(0, false).pipe(
++        Effect.map(({ wires }) =>
++          wires.map((wire) => ({
++            span: {
++              spanId: randomUUID().replaceAll("-", "").slice(0, 16),
++              parentSpanId: trace.slice(0, 16),
++              operationName: "sql.wire",
++              startTime: new Date(wire.start).toISOString(),
++              durationMs: wire.end - wire.start,
++              tags: { "db.wire.clock": "date-now", "db.wire.observer": "local-protocol" },
++            },
++          })),
++        ),
++      ),
++  };
++});
+diff --git a/e2e/tests/pool-account-view-cloud-read.spec.ts b/e2e/tests/pool-account-view-cloud-read.spec.ts
+--- a/e2e/tests/pool-account-view-cloud-read.spec.ts
++++ b/e2e/tests/pool-account-view-cloud-read.spec.ts
+@@ -1,3 +1,4 @@
++import { sqlWireProof } from "../support/sql-wire-proof.ts";
+ import { appCallDelivery } from "../support/app-call-delivery.ts";
+ import { sqlCriticalPath } from "../support/sql-critical-path.ts";
+ import { expect, layer } from "@effect/vitest";
+@@ -198,10 +199,12 @@
+         const browser = yield* Browser;
+         const evidence = yield* Evidence;
+         const telemetry = yield* Telemetry;
++        const wire = yield* sqlWireProof;
+         yield* browser.login(p.actors.owner);
+         yield* openPrivateApp(yield* waitForAppUrl(p.actors.owner, `${consumerPath}/ui`));
+         for (const name of ["view", "viewAgain"]) {
+           const trace = randomUUID().replaceAll("-", "");
++          yield* wire.begin();
+           const start = yield* Clock.currentTimeMillis;
+           const reply = yield* browser.use("Read five selected provider accounts", (page) =>
+             page.evaluate(
+@@ -234,6 +237,8 @@
+             ),
+           );
+           const end = yield* Clock.currentTimeMillis;
++          const observedWires = yield* wire.end(trace);
++          yield* evidence.json(`${name}-sql-wire.json`, observedWires);
+           expect(
+             yield* telemetry.export([
+               {
+@@ -307,7 +312,7 @@
+               spans.filter(({ span }) => span.operationName === operation).length,
+             ]),
+           );
+-          const criticalPath = sqlCriticalPath(spans);
++          const criticalPath = sqlCriticalPath(observedWires);
+           yield* evidence.json(`${name}-fresh-facts-work.json`, {
+             ...work,
+             criticalPath,
+diff --git a/e2e/tests/pool-account-view-latency.spec.ts b/e2e/tests/pool-account-view-latency.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/pool-account-view-latency.spec.ts
+@@ -0,0 +1,262 @@
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, Schedule, Schema } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence, Telemetry } from "../support/evidence.ts";
++import { legacyPoolHome } from "../support/legacy-pool-home.ts";
++import {
++  installLegacyPoolHandoffSetup,
++  legacyPoolHandoffFixture,
++} from "../support/legacy-pool-handoff-setup.ts";
++import { Target, driver } from "../support/platform.ts";
++import { poolHistoryDatabase } from "../support/pool-history-database.ts";
++import { poolWorkerRuntime } from "../support/pool-worker-runtime.ts";
++import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
++import { sqlCriticalPath } from "../support/sql-critical-path.ts";
++import { sqlWireProof } from "../support/sql-wire-proof.ts";
++import { poolObservation } from "../support/pool-account-view-observations.ts";
++import { scenarios } from "../test-plan.ts";
++
++const View = Schema.Struct({
++  ok: Schema.Literal(true),
++  value: Schema.Struct({
++    accounts: Schema.Array(
++      Schema.Struct({
++        nativeAccountId: Schema.String,
++        nativeView: Schema.Struct({
++          state: Schema.Literal("available"),
++          account: Schema.Struct({ id: Schema.String }),
++          sourceApp: Schema.Struct({ id: Schema.String }),
++          observations: Schema.Struct({
++            account: Schema.String,
++            reports: Schema.Array(
++              Schema.Struct({
++                result: Schema.Struct({
++                  observation: Schema.Struct({ plan: Schema.Struct({ label: Schema.String }) }),
++                }),
++              }),
++            ),
++          }),
++        }),
++      }),
++    ),
++  }),
++});
++
++layer(HostedLive, { excludeTestServices: true })("Pool account view SQL latency", (it) => {
++  installLegacyPoolHandoffSetup({ nativeSources: true });
++  it.effect(scenarios.poolAccountViewLatency.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors,
++          target = yield* Target;
++        const evidence = yield* Evidence,
++          browser = yield* Browser,
++          telemetry = yield* Telemetry;
++        const wire = yield* sqlWireProof;
++        const { pool, accounts, database } = legacyPoolHandoffFixture(context);
++        const providers = ["codex", "claude", "claude", "claude", "xai"];
++        const home = yield* legacyPoolHome(
++          pool.id,
++          providers.map((provider, index) => ({
++            id: `synthetic-cloud-native-reference-${index + 1}`,
++            provider,
++          })),
++        );
++        const history = yield* poolHistoryDatabase;
++        const worker = yield* poolWorkerRuntime(
++          target.metadata.origin,
++          home.origin,
++          history.connection,
++        );
++        expect(
++          (yield* api.request(actors.owner, "POST", "/native-provider-fixture/product-peer", {
++            pool: pool.id,
++            origin: worker.origin,
++          })).status,
++        ).toBe(200);
++        yield* Effect.addFinalizer(() =>
++          api
++            .request(actors.owner, "POST", "/native-provider-fixture/product-peer", {
++              pool: pool.id,
++              origin: null,
++            })
++            .pipe(Effect.asVoid, Effect.orDie),
++        );
++        const plan = yield* worker.operations("/model-history/schema/catalog");
++        expect(plan.status).toBe(200);
++        const hashes = yield* driver("Read isolated schema plan", () => plan.json()).pipe(
++          Effect.flatMap(
++            Schema.decodeUnknownEffect(
++              Schema.Struct({ schemaHash: Schema.String, catalogHash: Schema.String }),
++            ),
++          ),
++        );
++        expect(
++          (yield* worker.operations("/model-history/schema", {
++            method: "POST",
++            headers: { "content-type": "application/json" },
++            body: JSON.stringify({ go: true, ...hashes }),
++          })).status,
++        ).toBe(200);
++        const now = yield* Clock.currentTimeMillis;
++        for (const account of accounts) {
++          const result = poolObservation(account.requirement, now);
++          yield* database.run({
++            sql: `insert into executor_account_observations (id,account,owner,source,generation,data,checked_at,next_allowed_at)
++        select a.id||':'||a.credential_generation||':driver:'||encode(sha256(convert_to(b.driver,'UTF8')),'hex'),
++          a.id,a.owner,'driver:'||encode(sha256(convert_to(b.driver,'UTF8')),'hex'),a.credential_generation,
++          jsonb_build_object('kind','driver','id',b.driver,'version',b.driver_revision,'bindingRevision',b.revision,
++            'result',$2::jsonb,'lastAttempt',null,'attemptSource',jsonb_build_object('version',b.driver_revision,'bindingRevision',b.revision)),
++          now(),now()+interval '1 hour'
++        from executor_accounts a join executor_account_acquisitions b on b.account=a.id where a.id=$1
++        on conflict (account,source,generation) do update
++          set data=excluded.data,checked_at=excluded.checked_at,next_allowed_at=excluded.next_allowed_at`,
++            params: [account.id, JSON.stringify(result)],
++          });
++        }
++        const path = `/api/organizations/${actors.organization.id}/apps/${pool.id}`;
++        yield* browser.login(actors.owner);
++        // Measure only the explicit public query, without a UI auto-read racing it.
++        yield* browser.use("Keep query measurement explicit", (page) =>
++          page.route("**/*.js", (route) => route.abort()),
++        );
++        yield* openPrivateApp(yield* waitForAppUrl(actors.owner, `${path}/ui`));
++        const timings: number[] = [];
++        for (const fresh of [false, true]) {
++          const trace = randomUUID().replaceAll("-", "");
++          yield* wire.begin(15);
++          const start = yield* Clock.currentTimeMillis;
++          const reply = yield* browser.use("Read the shipped pool view with SQL latency", (page) =>
++            page.evaluate(
++              ({ trace, fresh }) => {
++                const context = JSON.parse(
++                  document.getElementById("executor-context")?.textContent ?? "{}",
++                );
++                const start = performance.now();
++                return fetch("/_executor/api/query", {
++                  method: "POST",
++                  headers: {
++                    "content-type": "application/json",
++                    traceparent: `00-${trace}-${trace.slice(0, 16)}-01`,
++                  },
++                  body: JSON.stringify({
++                    version: context.version ?? context.deployment,
++                    name: "view",
++                    input: { fresh },
++                  }),
++                }).then((response) =>
++                  response.json().then((body) => ({
++                    status: response.status,
++                    body,
++                    milliseconds: performance.now() - start,
++                    timing: response.headers.get("server-timing"),
++                  })),
++                );
++              },
++              { trace, fresh },
++            ),
++          );
++          const end = yield* Clock.currentTimeMillis;
++          const wires = yield* wire.end(trace);
++          const name = fresh ? "fresh" : "initial";
++          yield* evidence.json(`${name}.json`, reply);
++          yield* evidence.json(`${name}-sql-wire.json`, wires);
++          expect(reply.status, JSON.stringify(reply.body)).toBe(200);
++          const value = yield* Schema.decodeUnknownEffect(View)(reply.body);
++          expect(value.value.accounts.map((account) => account.nativeAccountId).sort()).toEqual(
++            accounts.map((account) => account.id).sort(),
++          );
++          const sources = new Set<string>();
++          for (const account of value.value.accounts) {
++            expect(account.nativeView.account.id).toBe(account.nativeAccountId);
++            expect(account.nativeView.observations.account).toBe(account.nativeAccountId);
++            expect(account.nativeView.observations.reports).toHaveLength(1);
++            const selected = accounts.find((selected) => selected.id === account.nativeAccountId)!;
++            expect(account.nativeView.observations.reports[0]!.result.observation.plan.label).toBe(
++              `Synthetic ${selected.requirement}`,
++            );
++            sources.add(account.nativeView.sourceApp.id);
++          }
++          expect(sources.size).toBe(3);
++          expect(
++            yield* telemetry.export([
++              {
++                traceId: trace,
++                spanId: trace.slice(0, 16),
++                name: "POST /_executor/api/query",
++                kind: 3,
++                startTimeUnixNano: String(BigInt(start) * 1000000n),
++                endTimeUnixNano: String(BigInt(end) * 1000000n),
++                status: { code: 1 },
++              },
++            ]),
++          ).toBe(200);
++          const spans = yield* telemetry.query(trace).pipe(
++            Effect.tap((result) => evidence.json(`${name}-captured-trace.json`, result.data)),
++            Effect.flatMap((result) => {
++              const spans = result.data.map((item) => item.span),
++                ids = new Set(spans.map((span) => span.spanId));
++              const server = reply.timing?.match(/executor-span;desc="([a-f0-9]{16})"/)?.[1];
++              return server !== undefined &&
++                spans.some(
++                  (span) => span.spanId === server && span.operationName === "http.server POST",
++                ) &&
++                spans.filter((span) => span.operationName === "runtime.app.rpc.release").length >=
++                  6 &&
++                spans.every(
++                  (span) =>
++                    !span.operationName.startsWith("[missing parent") &&
++                    (span.parentSpanId === null || ids.has(span.parentSpanId)),
++                )
++                ? Effect.succeed(result.data)
++                : Effect.fail(new Error("Incomplete pool query trace"));
++            }),
++            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
++          );
++          const operations = [
++            "sql.execute",
++            "sdk.apps.get",
++            "sdk.apps.list",
++            "sdk.accounts.health",
++            "sdk.accounts.observations",
++            "runtime.app.remote.invoke",
++            "catalog.lookup",
++          ];
++          const work = Object.fromEntries(
++            operations.map((name) => [
++              name,
++              spans.filter((item) => item.span.operationName === name).length,
++            ]),
++          );
++          const criticalPath = sqlCriticalPath(wires);
++          yield* evidence.json(`${name}-work.json`, {
++            milliseconds: reply.milliseconds,
++            timing: reply.timing,
++            work,
++            criticalPath,
++            spans,
++          });
++          expect(
++            criticalPath.sequentialRoundTrips,
++            "Full pool query round-trip budget at 15 ms SQL latency",
++          ).toBeLessThanOrEqual(80);
++          expect(work["sql.execute"]).toBeLessThanOrEqual(204);
++          expect(work["sdk.apps.get"]).toBeLessThanOrEqual(1);
++          expect(work["sdk.apps.list"]).toBeLessThanOrEqual(11);
++          expect(work["sdk.accounts.health"]).toBe(5);
++          expect(work["sdk.accounts.observations"]).toBe(5);
++          expect(work["runtime.app.remote.invoke"]).toBe(6);
++          expect(work["catalog.lookup"]).toBe(1);
++          timings.push(reply.milliseconds);
++        }
++        yield* evidence.json("query-times.json", { milliseconds: timings, sqlDelayMs: 15 });
++      }),
++    ),
++  );
++});
+diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+--- a/packages/sdk/src/implementation/account-health.ts
++++ b/packages/sdk/src/implementation/account-health.ts
+@@ -1,3 +1,4 @@
++import { SelectionReadFacts } from "./selection-read-facts.ts";
+ import { AccountSourceFailure } from "../contracts/account-check-failure.ts";
+ import { accountCheckFailure, recordAccountCheckFailure } from "./account-check-failure.ts";
+ import {
+@@ -291,21 +292,27 @@
+     Effect.gen(function* () {
+       // The product names the apps; their owner can differ from the account's, as in local, where
+       // apps belong to the host and accounts to its user.
+-      const apps = ids.length === 0 ? [] : yield* listApps({ ids });
+-      const rows = yield* query(() =>
+-        db.findMany("accountChecks", { where: (b) => b("account", "=", account.id) }),
+-      );
+-      const report = yield* query(() =>
+-        db.findFirst("accountReports", { where: (b) => b("id", "=", account.id) }),
++      const facts = yield* SelectionReadFacts;
++      const [apps, rows, report, acquired, driverHealth] = yield* Effect.all(
++        [
++          ids.length === 0 ? Effect.succeed([]) : listApps({ ids }),
++          query(() =>
++            db.findMany("accountChecks", { where: (b) => b("account", "=", account.id) }),
++          ),
++          query(() => db.findFirst("accountReports", { where: (b) => b("id", "=", account.id) })),
++          interactiveBinding(db, { account: account.id, owner: account.owner }),
++          driver.report(account),
++        ],
++        { concurrency: facts === undefined ? 1 : "unbounded" },
+       );
+       const health = yield* project(
+         account,
+         apps,
+         rows,
+-        yield* interactiveBinding(db, { account: account.id, owner: account.owner }),
++        acquired,
+         report === null ? undefined : { status: report.status },
+       );
+-      return withDriverHealth(health, yield* driver.report(account));
++      return withDriverHealth(health, driverHealth);
+     });
+ 
+   /**
+diff --git a/packages/sdk/src/implementation/account-observations.ts b/packages/sdk/src/implementation/account-observations.ts
+--- a/packages/sdk/src/implementation/account-observations.ts
++++ b/packages/sdk/src/implementation/account-observations.ts
+@@ -1,3 +1,4 @@
++import { SelectionReadFacts } from "./selection-read-facts.ts";
+ import { accountCheckFailure } from "./account-check-failure.ts";
+ import type { AccountDriverResolver } from "./account-driver-source.ts";
+ import { retainedDriverBinding } from "./account-driver-source.ts";
+@@ -31,8 +32,11 @@
+   const store = makeObservationStore(db, crypto);
+   const report = (account: StoredAccount, apps: readonly App[]) =>
+     Effect.gen(function* () {
+-      const binding = yield* retainedDriverBinding(acquisition, account);
+-      const view = yield* store.report(account, apps);
++      const facts = yield* SelectionReadFacts;
++      const [binding, view] = yield* Effect.all(
++        [retainedDriverBinding(acquisition, account), store.report(account, apps)],
++        { concurrency: facts === undefined ? 1 : "unbounded" },
++      );
+       const driver = yield* store.reportDriver(account, binding);
+       return driver === undefined ? view : { ...view, reports: [...view.reports, driver] };
+     });
+diff --git a/packages/sdk/src/implementation/app-connections.ts b/packages/sdk/src/implementation/app-connections.ts
+--- a/packages/sdk/src/implementation/app-connections.ts
++++ b/packages/sdk/src/implementation/app-connections.ts
+@@ -349,26 +349,33 @@
+   const bindings: AppCallsHost["bindings"] = {
+     list: (input) =>
+       Effect.gen(function* () {
++        const facts = yield* SelectionReadFacts;
+         const listed = yield* operations.list(input);
+-        const result = [];
+-        for (const connection of listed.connections) {
+-          const row = yield* find(
+-            input.app,
+-            connection.dependency,
+-            yield* subject(connection.scope),
+-            connection.target,
+-          );
+-          if (row === null || row.id !== connection.id || row.revision !== connection.revision)
+-            continue;
+-          const data = yield* payload(row);
+-          result.push({
+-            connection,
+-            accounts: data.accounts,
+-            authorizer: row.authorizer,
+-            ...(data.selections === undefined ? {} : { selections: data.selections }),
+-          });
+-        }
+-        return result;
++        const result = yield* Effect.forEach(
++          listed.connections,
++          (connection) =>
++            Effect.gen(function* () {
++              const row = yield* find(
++                input.app,
++                connection.dependency,
++                yield* subject(connection.scope),
++                connection.target,
++              );
++              if (row === null || row.id !== connection.id || row.revision !== connection.revision)
++                return [];
++              const data = yield* payload(row);
++              return [
++                {
++                  connection,
++                  accounts: data.accounts,
++                  authorizer: row.authorizer,
++                  ...(data.selections === undefined ? {} : { selections: data.selections }),
++                },
++              ];
++            }),
++          { concurrency: facts === undefined ? 1 : 4 },
++        );
++        return result.flat();
+       }),
+     save: ({ selections, ...input }) => save(input, selections),
+     rewrite: (input) =>

@@ -1,0 +1,43 @@
+{
+  "scenarios": {
+    "poolAccountViewLatency": {
+      "fixtures": "actors",
+      "appOrigin": true,
+      "deferOnboarding": true,
+      "title": "Full pool account view preserves five exact sources within its SQL round-trip budget",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Uses the managed Cloud Postgres transport and a synthetic external pool backend."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host organization pools."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolAccountViewLatency": ["declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/app-ui.ts",
+    ".upstream/apps/hosted/cloud/src/infrastructure/invocation-database.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-account-read-facts.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-view-cache.ts",
+    ".upstream/apps/hosted/server/src/implementation/change-revisions.ts",
+    ".upstream/apps/hosted/server/src/implementation/selected-account-read.ts",
+    ".upstream/packages/sdk/src/implementation/account-health.ts",
+    ".upstream/packages/sdk/src/implementation/account-observations.ts",
+    ".upstream/packages/sdk/src/implementation/app-connections.ts",
+    ".upstream/e2e/support/sql-latency-proxy.ts",
+    ".upstream/e2e/support/sql-wire-proof.ts",
+    "apps/pool/index.ts",
+    "apps/pool/provider-account-view.ts"
+  ],
+  "fixture": "pool-setup"
+}

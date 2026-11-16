@@ -1,0 +1,13 @@
+diff --git a/e2e/vitest.config.ts b/e2e/vitest.config.ts
+--- a/e2e/vitest.config.ts
++++ b/e2e/vitest.config.ts
+@@ -27,7 +27,8 @@ export default defineConfig({
+     maxWorkers: Schema.decodeUnknownSync(
+       Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 32 })),
+     )(Number(process.env.E2E_WORKERS)),
+-    testTimeout: process.env.E2E_INTERACTIVE === "1" ? 0 : 60000,
++    // Hosted journeys include compiler, browser and account provisioning work.
++    testTimeout: process.env.E2E_INTERACTIVE === "1" ? 0 : 120000,
+     hookTimeout: 60000,
+     teardownTimeout: 30000,
+     retry: 0,

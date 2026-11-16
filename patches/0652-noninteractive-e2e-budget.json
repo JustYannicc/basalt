@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-noninteractive-e2e-budget",
+  "file": "0652-noninteractive-e2e-budget.patch",
+  "content_sha256": "205c91b7653ce4ec7159cddb16754e417db178ede4bb78ae0e4fb37607fa727f",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
