@@ -193,7 +193,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.file,
           name === "home"
             ? "0506-home-usage-credits.patch"
-            : "0507-node-usage-credit-routing.patch",
+            : "0647-node-usage-credit-routing.patch",
         );
         assert.match(
           patch.retirement.requires,
@@ -375,7 +375,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /without a schema or lease change/);
       } else if (patch.identity === "cliproxy-node-terminal-request-id") {
         assert.equal(name, "node");
-        assert.equal(patch.file, "0592-node-terminal-request-id.patch");
+        assert.equal(patch.file, "0648-node-terminal-request-id.patch");
         assert.match(
           patch.retirement.requires,
           /validated per-request terminal correlation identities/,
@@ -433,7 +433,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /without inference replay or a byte-lifetime cap/);
       } else if (patch.identity === "cliproxy-node-no-postwrite-replay") {
         assert.equal(name, "node");
-        assert.equal(patch.file, "0599-node-no-postwrite-replay.patch");
+        assert.equal(patch.file, "0649-node-no-postwrite-replay.patch");
         assert.match(patch.retirement.requires, /terminal unknown-outcome classification/);
         assert.match(patch.retirement.requires, /real post-write EOF/);
         assert.match(patch.retirement.requires, /empty accepted model-pool stream/);
@@ -498,7 +498,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /funding-denial and missing-validator controls/);
       } else if (patch.identity === "cliproxy-node-generation-submission") {
         assert.equal(name, "node");
-        assert.equal(patch.file, "0642-node-generation-submission.patch");
+        assert.equal(patch.file, "0650-node-generation-submission.patch");
         assert.match(patch.retirement.requires, /guards only generation sends/);
         assert.match(
           patch.retirement.requires,
