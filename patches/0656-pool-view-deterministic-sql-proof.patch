@@ -83,7 +83,7 @@ diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
      yield* Effect.addFinalizer(() => fs.remove(controlFile, { force: true }).pipe(Effect.orDie));
      let target: number | undefined;
      const sockets = new Set<Socket>();
-@@ -83,17 +112,47 @@
+@@ -83,17 +112,57 @@
        outgoing.setNoDelay(true);
        sockets.add(incoming);
        sockets.add(outgoing);
@@ -109,23 +109,33 @@ diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
 +          ...(parent === null ? {} : { trace: parent[1], span: parent[2] }),
 +        };
 +      });
++      let deliveryTimer: ReturnType<typeof setTimeout> | undefined;
 +      const flush = () => {
-+        if (holds.some((blocked) => blocked())) return;
-+        for (const { bytes, end } of waiting.splice(0)) {
-+          const wait = end - Date.now();
-+          if (wait <= 0) {
-+            if (!incoming.destroyed) incoming.write(bytes);
-+          } else {
++        if (deliveryTimer !== undefined || holds.some((blocked) => blocked())) return;
++        while (waiting.length !== 0) {
++          const next = waiting[0]!;
++          const wait = next.end - Date.now();
++          if (wait > 0) {
 +            const timer = setTimeout(() => {
 +              timers.delete(timer);
-+              if (!incoming.destroyed) incoming.write(bytes);
++              deliveryTimer = undefined;
++              flush();
 +            }, wait);
++            deliveryTimer = timer;
 +            timers.add(timer);
++            return;
 +          }
++          waiting.shift();
++          if (!incoming.destroyed) incoming.write(next.bytes);
 +        }
 +      };
 +      const unsubscribe = cohorts.onRelease(flush);
        const close = () => {
++        if (deliveryTimer !== undefined) {
++          clearTimeout(deliveryTimer);
++          timers.delete(deliveryTimer);
++          deliveryTimer = undefined;
++        }
          incoming.destroy();
          outgoing.destroy();
          sockets.delete(incoming);
@@ -134,7 +144,7 @@ diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
        };
        incoming.once("close", close);
        outgoing.once("close", close);
-@@ -101,18 +160,14 @@
+@@ -101,18 +170,14 @@
        outgoing.on("error", close);
        incoming.on("data", (chunk) => {
          const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
@@ -161,7 +171,7 @@ diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
        });
        outgoing.on("data", (chunk) => {
          const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-@@ -133,20 +188,12 @@
+@@ -133,20 +198,12 @@
              initialized = true;
              continue;
            }
@@ -187,7 +197,7 @@ diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
        });
      });
      yield* Effect.acquireRelease(
-@@ -173,6 +220,10 @@
+@@ -173,6 +230,10 @@
      const address = server.address();
      if (address === null || typeof address === "string")
        return yield* Effect.die("Missing SQL proxy address");
