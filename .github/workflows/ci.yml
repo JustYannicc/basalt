@@ -2417,18 +2417,34 @@ jobs:
         uses: ./.github/actions/pool-release-assets
       - name: Build the pinned pool image
         run: |
+          build_pool_image() {
+            local attempt status log
+            for attempt in 1 2 3; do
+              log=$(mktemp "$RUNNER_TEMP/pool-build.XXXXXX")
+              if docker build "$@" 2>&1 | tee "$log"; then
+                return 0
+              else
+                status=$?
+              fi
+              if (( attempt == 3 )) || ! grep -Eq 'read "https://proxy[.]golang[.]org/[^"]+[.]zip": stream error: stream ID [0-9]+; INTERNAL_ERROR; received from peer' "$log"; then
+                return "$status"
+              fi
+              echo "::warning::Go module proxy reset the download stream; retrying pool build after attempt $attempt/3"
+              sleep "$((attempt * 5))"
+            done
+          }
           mkdir -p "$RUNNER_TEMP/pool-usage-privacy-baseline"
           git archive b35314687e8972f64d7c1c3c73a1492a50fb7bac containers/pool | tar -x -C "$RUNNER_TEMP/pool-usage-privacy-baseline"
           node scripts/ci/pool-release-assets.ts context "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
-          docker build --target runtime --tag basalt-1409-pool:usage-privacy-baseline "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
-          docker build --target legacy-runtime --tag basalt-1409-pool:privacy-legacy "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
+          build_pool_image --target runtime --tag basalt-1409-pool:usage-privacy-baseline "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
+          build_pool_image --target legacy-runtime --tag basalt-1409-pool:privacy-legacy "$RUNNER_TEMP/pool-usage-privacy-baseline/containers/pool"
           echo "Runner disk before compatibility build cache cleanup (bytes)"
           df -B1 /
           docker builder prune --all --force
           docker image inspect basalt-1409-pool:usage-privacy-baseline basalt-1409-pool:privacy-legacy > /dev/null
           echo "Runner disk before candidate build (bytes)"
           df -B1 /
-          docker build --target runtime --tag basalt-1409-pool:test containers/pool
+          build_pool_image --target runtime --tag basalt-1409-pool:test containers/pool
       - name: Allow pool fixture HTTP from Docker bridges on Boat
         if: contains(fromJSON(needs.select.outputs.boat_jobs), 'pool-runtime')
         run: |
