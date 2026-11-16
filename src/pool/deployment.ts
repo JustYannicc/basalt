@@ -76,6 +76,7 @@ export const poolWorker = Effect.gen(function* () {
         scriptName: (yield* ArtifactsCredentials).workerName,
       }),
       POOL_DATABASE_URL: database.runtimeUrl,
+      POOL_DATABASE_READY: database.runtimeReady,
       POOL_AUTH_DATABASE: workerDatabase,
       POOL_DEPLOYMENT_KEY: yield* Config.Redacted("POOL_DEPLOYMENT_KEY"),
       POOL_MANAGEMENT_KEY: yield* Config.Redacted("POOL_MANAGEMENT_KEY"),
