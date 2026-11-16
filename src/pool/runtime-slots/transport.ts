@@ -119,6 +119,11 @@ export class BoundSlotDriver implements SlotDriver {
       await this.call(target, "attest", { envelope }, AbortSignal.timeout(5_000))
     ).body?.cancel();
   }
+  async recoveryWitness(target: SlotTarget) {
+    return (
+      await this.call(target, "recovery-witness", { target }, AbortSignal.timeout(2_000))
+    ).json();
+  }
   async witness(target: SlotTarget) {
     return (await this.call(target, "witness", { target }, AbortSignal.timeout(2_000))).json();
   }
@@ -240,11 +245,15 @@ export async function runtimeRequest(
           ? await endpoint.abortStartup(intent, request.signal)
           : await endpoint.inspectStartupAbort(intent),
       );
-    } else if (action === "/witness") {
+    } else if (action === "/witness" || action === "/recovery-witness") {
       const { target } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ target: SlotTarget }))(value),
       );
-      return Response.json(await endpoint.witness(target));
+      return Response.json(
+        await (action === "/recovery-witness"
+          ? endpoint.recoveryWitness(target)
+          : endpoint.witness(target)),
+      );
     } else if (action === "/ready") {
       const input = runtimeInput(() =>
         Schema.decodeUnknownSync(

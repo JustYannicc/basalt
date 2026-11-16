@@ -16,6 +16,7 @@ export interface FleetCell {
   start(target: SlotTarget): Promise<SlotIdentity>;
   observe(target: SlotTarget, retryUnsent?: boolean): Promise<SlotIdentity | undefined>;
   selected(): Promise<SlotIdentity | undefined>;
+  healthy?(identity: SlotIdentity): Promise<void>;
   forward(
     request: Request,
     port: 8317,
@@ -45,6 +46,9 @@ interface Dependencies {
   changed?(): void;
   keepReady?(identity: SlotIdentity): Promise<boolean>;
   balancePrimary?: boolean;
+  recentDemandUntil?(): Promise<number>;
+  primaryAvailable?(): boolean;
+  recoverPrimary?(): Promise<void>;
   demandAt?(at: number): void;
 }
 
@@ -53,6 +57,8 @@ export class RuntimeFleet {
   private deps: Dependencies;
   private growing?: Promise<void>;
   private atCapacity = false;
+  private primaryFailed = false;
+  private primaryFailure = 0;
   private nextGrowthCheck = 0;
   private growthAlarm?: number;
   private cells = new Map<string, { target: SlotTarget; cell: FleetCell }>();
@@ -121,7 +127,11 @@ export class RuntimeFleet {
         (await this.deps.legacyActive()) + rows.reduce((sum, row) => sum + row.active, 0),
       );
       if (physical >= this.deps.maximum) this.atCapacity = true;
-      const desired = Math.min(this.deps.maximum, Math.floor(active / this.deps.targetActive));
+      const minimum = this.deps.now() < ((await this.deps.recentDemandUntil?.()) ?? 0) ? 1 : 0;
+      const desired = Math.min(
+        this.deps.maximum,
+        Math.max(minimum, Math.floor(active / this.deps.targetActive)),
+      );
       const replacements = await this.deps.state.replacements();
       if (physical >= this.deps.maximum) return;
       if (
@@ -146,16 +156,21 @@ export class RuntimeFleet {
       throw error;
     }
   }
+  async recoverPrimary() {
+    const failure = this.primaryFailure;
+    await this.deps.recoverPrimary?.();
+    if (failure === this.primaryFailure) this.primaryFailed = false;
+  }
   async forward(
     request: Request,
     pool: string | undefined,
-    legacy: () => Promise<Response>,
+    legacy: (request: Request, beforeDispatch: () => void) => Promise<Response>,
     beforeDispatch: () => void,
   ) {
     let acquired;
     try {
       acquired = await this.dispatches.acquire(() =>
-        this.deps.balancePrimary
+        this.deps.balancePrimary && !this.primaryFailed && this.deps.primaryAvailable?.() !== false
           ? this.deps.state.acquire(Number.MAX_SAFE_INTEGER, true)
           : this.deps.state.acquire(Number.MAX_SAFE_INTEGER),
       );
@@ -163,7 +178,9 @@ export class RuntimeFleet {
       if (!(error instanceof FleetRefused) || error.reason !== "capacity")
         refuseRuntime("fleet_acquire", error);
       // Start legacy admission before reading pressure so the triggering request is counted too.
-      const response = legacy();
+      if (this.primaryFailed || this.deps.primaryAvailable?.() === false)
+        throw new FleetRefused("capacity");
+      const response = legacy(request, beforeDispatch);
       this.grow();
       return response;
     }
@@ -173,7 +190,7 @@ export class RuntimeFleet {
     this.grow();
     try {
       if (reservation.kind === "primary") {
-        const response = await legacy();
+        const response = await legacy(request, beforeDispatch);
         return this.deps.wrap(response, {
           signal: request.signal,
           onClose: () => {},
@@ -204,6 +221,11 @@ export class RuntimeFleet {
       });
     } catch (error) {
       rememberRuntimeFailure(step, error);
+      if (reservation.kind === "primary") {
+        this.primaryFailed = true;
+        this.primaryFailure++;
+        if (this.deps.recoverPrimary) this.deps.defer(this.recoverPrimary().catch(() => {}));
+      }
       if (reservation.kind === "runtime") {
         try {
           await this.failures.failed(reservation.identity, error, request.signal);
@@ -255,7 +277,20 @@ export class RuntimeFleet {
   async upkeep() {
     const trace = new PoolUpkeepTrace("fleet");
     return trace.run("upkeep", async () => {
-      for (const row of await trace.run("snapshot", () => this.deps.state.inspect())) {
+      const rows = await trace.run("snapshot", () => this.deps.state.inspect());
+      await Promise.all(
+        rows
+          .filter((row) => row.phase === "ready" && row.identity)
+          .map(async (row) => {
+            try {
+              await this.cell(row.target).healthy?.(row.identity!);
+            } catch (error) {
+              await this.failures.failed(row.identity!, error, new AbortController().signal);
+            }
+          }),
+      );
+      const surviving = await this.deps.state.inspect();
+      for (const row of surviving) {
         await trace.run(
           row.phase,
           async () => {
@@ -282,6 +317,12 @@ export class RuntimeFleet {
               row.identity &&
               (row.active === 0 || this.deps.enabled?.() === false) &&
               (this.deps.enabled?.() === false || !(await this.deps.keepReady?.(row.identity))) &&
+              (this.deps.enabled?.() === false ||
+                this.deps.now() >= ((await this.deps.recentDemandUntil?.()) ?? 0) ||
+                !sameIdentity(
+                  surviving.find((value) => value.phase === "ready")?.identity,
+                  row.identity,
+                )) &&
               (this.deps.enabled?.() === false ||
                 this.deps.now() - row.lastUsedAt >= this.deps.idleMilliseconds)
             ) {

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { NativeMemberships } from "./membership.ts";
 import { PoolLifecycle } from "./lifecycle.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
+import { membershipTtlMs } from "./membership-contract.ts";
 import {
   membershipGraceFixture,
   membershipSigningKey,
@@ -62,7 +63,10 @@ async function fixture() {
     "fixture",
   );
   const dispatches: { method: string; body: string }[] = [];
-  const forward = (request: Request) =>
+  const forward = (
+    request: Request,
+    recoverAdmission?: (signal: AbortSignal) => Promise<boolean>,
+  ) =>
     forwardPoolRequest(request, 8317, {
       appModel: { pool: "pool", person: "person" },
       env: { POOL_APP_SIGNING_KEY: membershipSigningKey },
@@ -73,6 +77,7 @@ async function fixture() {
         observeUsage: async () => {},
       },
       memberships,
+      recoverAdmission,
       streams: f.streams,
       lifecycle: Promise.resolve(lifecycle),
       protection,
@@ -138,6 +143,57 @@ test("revocation during assertion signing cannot register a late stream and disp
   assert.equal(recovered.status, 200);
   assert.deepEqual(await recovered.json(), { ok: true });
   assert.equal(f.dispatches.length, 1);
+});
+
+test("expired admission joins recovery and checks renewed authority before dispatching its original upload", async (t) => {
+  const f = await fixture();
+  t.after(f.finish);
+  f.advance(membershipTtlMs + 24 * 60 * 60_000);
+  const entered = deferred(),
+    release = deferred();
+  t.after(() => release.resolve());
+  const pending = f.forward(
+    new Request("https://pool.invalid/v1/responses", { method: "POST", body: "original upload" }),
+    async () => {
+      entered.resolve();
+      await release.promise;
+      await f.memberships.ensure("pool", "organization");
+      return true;
+    },
+  );
+  await entered.promise;
+  assert.equal(f.dispatches.length, 0);
+  release.resolve();
+  const response = await pending;
+  assert.equal(response.status, 200);
+  await response.body?.cancel();
+  assert.deepEqual(f.dispatches, [{ method: "POST", body: "original upload" }]);
+});
+
+test("revocation while expired admission joins recovery cannot dispatch after authority is renewed", async (t) => {
+  const f = await fixture();
+  t.after(f.finish);
+  f.advance(membershipTtlMs + 24 * 60 * 60_000);
+  const entered = deferred(),
+    release = deferred();
+  t.after(() => release.resolve());
+  const pending = f.forward(
+    new Request("https://pool.invalid/v1/responses", { method: "POST", body: "revoked upload" }),
+    async () => {
+      entered.resolve();
+      await release.promise;
+      await f.memberships.ensure("pool", "organization");
+      return true;
+    },
+  );
+  await entered.promise;
+  await f.reserve(f.memberships);
+  release.resolve();
+  const response = await pending;
+  assert.equal(response.status, 503);
+  await response.body?.cancel();
+  assert.equal(f.dispatches.length, 0);
+  assert.equal(f.streams.active, 0);
 });
 
 test("failed assertion signing releases admission without dispatching a request", async (t) => {

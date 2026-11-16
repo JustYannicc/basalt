@@ -48,6 +48,8 @@ hooks.deregister();
 
 test("the Worker logs dispatch timings and strips their header without changing the provider stream", async () => {
   const header = "X-Signalbox-Pool-Dispatch-Timing";
+  const providerStream =
+    'data: synthetic-provider-terminal\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n';
   const metrics = ["authenticate", "selection", "admission", "reply_write", "ping", "rpop"].map(
     (stage, duration_ms) => ({ stage, duration_ms, outcome: "ok" }),
   );
@@ -72,7 +74,7 @@ test("the Worker logs dispatch timings and strips their header without changing 
           if (port === 8318)
             return Response.json({ boot_id: "synthetic-boot", started_at: "2026-11-01T00:00:00Z" });
           providerCalls++;
-          return new Response("data: synthetic-provider-terminal\n\n", {
+          return new Response(providerStream, {
             headers: { [header]: JSON.stringify(metrics), "Content-Type": "text/event-stream" },
           });
         },
@@ -109,7 +111,7 @@ test("the Worker logs dispatch timings and strips their header without changing 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get(header), null);
     assert.equal(response.headers.get("Content-Type"), "text/event-stream");
-    assert.equal(await response.text(), "data: synthetic-provider-terminal\n\n");
+    assert.equal(await response.text(), providerStream);
     assert.equal(providerCalls, 1);
     assert.deepEqual(
       logs.filter(([marker]) => marker === "POOL_DISPATCH_TIMING"),
@@ -952,20 +954,22 @@ test("an unhealthy warm runtime returns a retryable 503 before another model dis
   try {
     const response = await worker.fetch(request());
     assert.equal(response.status, 503);
-    assert.equal(response.headers.get("Retry-After"), "2");
+    assert.equal(response.headers.get("Retry-After"), "1");
     assert.ok(response.headers.get("X-Request-Id"));
-    const body = (await response.json()) as { error: { code: string; retryable: boolean } };
-    assert.equal(body.error.code, "pool_protection_unavailable");
-    assert.equal(body.error.retryable, true);
-    assert.equal(readinessCalls, 2, "warm failure does not enter the cold retry loop");
+    const body = (await response.json()) as { error: { type: string } };
+    assert.equal(body.error.type, "server_error");
+    assert.ok(
+      readinessCalls > 2 && readinessCalls <= 7,
+      "safe reads use bounded readiness retries",
+    );
     assert.equal(modelCalls, 1, "unhealthy readiness prevents model dispatch");
-    assert.match(JSON.stringify(errors), /POOL_GATEWAY_FAILURE/);
+    assert.match(JSON.stringify(errors), /POOL_RUNTIME_ROUTE_FAILURE/);
     assert.partialDeepStrictEqual(
-      errors.find((entry) => entry[0] === "POOL_GATEWAY_FAILURE")?.[1],
+      errors.find((entry) => entry[0] === "POOL_RUNTIME_ROUTE_FAILURE")?.[1],
       {
-        guard: "runtime_readiness",
-        cause: "PoolRuntimeUnhealthy",
-        refusalReason: "runtime_readiness",
+        requestId: response.headers.get("X-Request-Id"),
+        runtimeStep: "fleet_forward",
+        runtimeReason: "unhealthy",
       },
     );
     assert.ok(!JSON.stringify(errors).includes("synthetic-private-key"));
@@ -1296,7 +1300,7 @@ test("native SQL writes to a running container require the exact policy install 
   await Promise.all(background);
 });
 
-test("uncertain container model sends suppress retries while definite Home refusals pass through", async () => {
+test("uncertain model sends are not replayed and allow client retries while definite Home refusals pass through", async () => {
   const values = new Map<string, unknown>();
   const background: Promise<unknown>[] = [];
   const paths = [
@@ -1361,13 +1365,12 @@ test("uncertain container model sends suppress retries while definite Home refus
         body: '{"state":"synthetic-unknown"}',
       }),
     );
-    assert.equal(response.status, 502, path);
-    assert.equal(response.headers.get("x-should-retry"), "false");
-    assert.equal(response.headers.get("retry-after"), null);
+    assert.equal(response.status, path === "/v1/messages" ? 529 : 503, path);
+    assert.equal(response.headers.get("x-should-retry"), null);
+    assert.equal(response.headers.get("retry-after"), "1");
     assert.equal(response.headers.get("retry-after-ms"), null);
-    const body = (await response.json()) as { error: { code: string; retryable: boolean } };
-    assert.equal(body.error.code, "upstream_outcome_unknown");
-    assert.equal(body.error.retryable, false);
+    const body = (await response.json()) as { error: { type: string } };
+    assert.equal(body.error.type, path === "/v1/messages" ? "overloaded_error" : "server_error");
     assert.equal(sends, before + 1);
   }
   refuse = true;
