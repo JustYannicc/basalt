@@ -200,7 +200,7 @@ async function main() {
         headers,
         redirect: "error",
         signal: AbortSignal.timeout(
-          operation === "upload" || operation === "begin" ? 30_000 : 10_000,
+          operation === "upload" ? 75_000 : operation === "begin" ? 30_000 : 10_000,
         ),
         body: JSON.stringify({
           operation,

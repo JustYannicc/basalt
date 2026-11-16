@@ -275,3 +275,40 @@ test("account source isolation inputs select and schedule every owned scenario",
       `${input} must select the pool account job that executes source isolation scenarios`,
     );
 });
+
+test("bulk ACK proofs run once in the runtime job with their own self-host group", () => {
+  const id = "host-managed-accounts-runtime";
+  const group = `${id}:bulk-upload-acknowledgements`;
+  const job = workflow.jobs[id];
+  const steps = job.steps.filter((step: { run?: string }) => step.run?.includes(group));
+  assert.equal(steps.length, 1);
+  assert.equal(steps[0].name, "Verify durable bulk upload acknowledgements");
+  assert.equal(steps[0]["working-directory"], ".upstream");
+  assert.equal(
+    steps[0].run,
+    'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-runtime:bulk-upload-acknowledgements)" --workers 1',
+  );
+  const scenarios = [
+    "poolBulkStatusAckBudget",
+    "poolBulkUploadDurableAck",
+    "poolBulkUploadUnknownAck",
+  ];
+  assert.deepEqual(selectedScenarios(patternForGroup(group)), scenarios);
+  const oldPattern = new RegExp(
+    patternForGroup(
+      "host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api",
+    ),
+  );
+  const file = readDeclarations().files["pool-bulk-upload-ack.spec.ts"];
+  assert.ok(file);
+  for (const scenario of Object.values(file.scenarios))
+    assert.equal(oldPattern.test(scenario.title), false);
+  for (const input of [".upstream/e2e/tests/pool-bulk-upload-ack.spec.ts", ...file.inputs]) {
+    assert.ok(selectPaths([input]).jobs.includes(id), `${input} must select the bulk ACK job`);
+  }
+  assert.equal(job["timeout-minutes"], 20);
+  assert.ok(workflow.jobs.check.needs.includes(id));
+  assert.equal(job.steps.at(-2).if, "always()");
+  assert.equal(job.steps.at(-1).if, "always()");
+  assert.equal(job.steps.at(-1).with.name, `${id}-e2e`);
+});

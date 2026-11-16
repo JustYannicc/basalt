@@ -6,6 +6,7 @@ import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 const hash = (raw: string) => createHash("sha256").update(raw).digest("hex");
 const source = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -113,12 +114,13 @@ async function fixture(directory: string, target: string, count: number, large =
   return { file, accepted, map, descriptor, prepare, raw, acceptedRaw, sourceHash, ids };
 }
 
-test("bulk CLI preserves accepted IDs, separates upload from approval, and stops uncertain or unsafe operations", async () => {
+test("bulk CLI waits past thirty seconds for upload ACKs and stops uncertain or unsafe operations", async () => {
   const directory = await mkdtemp(join(tmpdir(), "basalt-bulk-cli-"));
   let target = "",
     wrongViewer = false,
     wrongMap = false,
     dropUpload = false;
+  let slowUpload = true;
   let expectedGuard: Record<string, unknown> | undefined;
   let current: Record<string, unknown> = {},
     definition: Record<string, unknown> = {};
@@ -152,6 +154,10 @@ test("bulk CLI preserves accepted IDs, separates upload from approval, and stops
       if (dropUpload) {
         response.destroy();
         return;
+      }
+      if (slowUpload) {
+        slowUpload = false;
+        await delay(35_000);
       }
       const previous = uploads.get(input.chunk);
       if (previous !== undefined) assert.equal(input.data, previous);
