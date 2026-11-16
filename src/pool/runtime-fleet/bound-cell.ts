@@ -15,6 +15,7 @@ import { runtimeCellState } from "./cell-state.ts";
 import type { SlotStorage } from "../runtime-slots/storage.ts";
 import { FleetAdmission } from "./admission.ts";
 import { FleetHandoffCell } from "./cell.ts";
+import { EndpointTrace } from "./endpoint-trace.ts";
 
 interface Input {
   ctx: ControllerState;
@@ -44,18 +45,62 @@ export function boundFleetCell(input: Input) {
     POOL_HOME_PEER_ORDINAL: String(target.homePeerOrdinal),
   };
   let retained: RuntimeStub | undefined;
+  const cellId = crypto.randomUUID();
+  let sequence = 0;
+  const stubs = new WeakMap<RuntimeStub, number>();
+  const acquire = (value: SlotTarget) => {
+    const runtimeStub = input.remote(value);
+    stubs.set(runtimeStub, ++sequence);
+    return runtimeStub;
+  };
   const remote = (value: SlotTarget): RuntimeStub => {
     if (!sameTarget(value, target)) throw new SlotRefused("identity");
     // Same-stub E-order keeps an earlier model send ahead of the endpoint drain.
-    const runtimeStub = (retained ??= input.remote(value));
+    const runtimeStub = (retained ??= acquire(value));
     return {
       fetch: async (request) => {
+        const trace = EndpointTrace.forRequest(request, target.slotId, cellId);
+        let result: unknown;
+        const health =
+          request.method === "POST" &&
+          new URL(request.url).pathname === "/health" &&
+          !request.headers.has("X-Signalbox-Runtime-Identity")
+            ? request.clone()
+            : undefined;
+        const send = async (runtimeStub: RuntimeStub, forwarded: Request) => {
+          try {
+            return await trace.send(stubs.get(runtimeStub)!, () => runtimeStub.fetch(forwarded));
+          } catch (error) {
+            if (retained === runtimeStub) retained = undefined;
+            throw error;
+          }
+        };
         try {
-          return await runtimeStub.fetch(request);
+          try {
+            const response = await send(runtimeStub, request);
+            result = response;
+            return response;
+          } catch (error) {
+            trace.eligible =
+              !!health &&
+              error instanceof Error &&
+              !("overloaded" in error && error.overloaded === true);
+            if (!trace.eligible || !health) throw error;
+            // Only this read precedes model dispatch. Reconnect once within its original signal.
+            health.signal.throwIfAborted();
+            trace.reconnected = true;
+            const replacement = (retained ??= acquire(value));
+            trace.reconnectAcquired = true;
+            const response = await send(replacement, health);
+            result = response;
+            return response;
+          }
         } catch (error) {
-          // Native exceptions poison this stub. Future calls reconnect; this call never retries.
-          if (retained === runtimeStub) retained = undefined;
+          result = error;
           throw error;
+        } finally {
+          trace.finish(result);
+          if (health && !health.bodyUsed) void health.body?.cancel().catch(() => {});
         }
       },
     };

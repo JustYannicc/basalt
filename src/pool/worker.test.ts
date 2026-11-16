@@ -1383,21 +1383,43 @@ test("uncertain container model sends suppress retries while definite Home refus
   await Promise.all(background);
 });
 
-test("the Worker answers its release without waking the pool container", async () => {
+test("the Worker reports image readiness without waking the pool container", async () => {
+  let imageReady = false,
+    starts = 0;
   const env = {
     POOL_APP_SIGNING_KEY: "ab".repeat(32),
     PoolContainer: {
-      jurisdiction() {
-        throw new Error("The release route must not reach the container");
+      jurisdiction(region: string) {
+        assert.equal(region, "eu");
+        return {
+          getByName(name: string) {
+            assert.equal(name, "control-plane");
+            return {
+              async imageReleaseReady() {
+                return imageReady;
+              },
+              async deploymentReady() {
+                starts++;
+                throw new Error("The release route must not start the container");
+              },
+            };
+          },
+        };
       },
     },
   };
-  const response = await poolWorker.fetch(new Request("https://pool.example/pool/v1/release"), env);
-  assert.equal(response.status, 200);
-  assert.deepEqual(Object.keys((await response.json()) as object).sort(), [
-    "keyVersion",
-    "revision",
-  ]);
+  for (const ready of [false, true]) {
+    imageReady = ready;
+    const response = await poolWorker.fetch(
+      new Request("https://pool.example/pool/v1/release"),
+      env,
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(Object.keys(body).sort(), ["imageReady", "keyVersion", "revision"]);
+    assert.equal(body.imageReady, ready);
+  }
+  assert.equal(starts, 0);
 });
 
 test("deployment readiness cannot be invoked on public routes or without the release signature", async () => {

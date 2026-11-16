@@ -3,7 +3,13 @@ import { modelLifetimeFetch } from "../model-lifetime.worker.ts";
 import { RuntimeProtection } from "../runtime-protection.ts";
 import { PoolRuntimeUnhealthy } from "../lifecycle.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
-import { SlotRefused, executionKey, type SlotDriver, type SlotIdentity } from "./contract.ts";
+import {
+  SlotRefused,
+  executionKey,
+  sameIdentity,
+  type SlotDriver,
+  type SlotIdentity,
+} from "./contract.ts";
 import { healthy, type SlotClock } from "./proof.ts";
 import { RuntimeSlotStorage } from "./storage.ts";
 import { SlotStreams } from "./streams.ts";
@@ -32,6 +38,7 @@ export class RuntimeSlotRouter {
     port: 8317 | 8327,
     authorize: (signal: AbortSignal) => Promise<Request>,
     beforeDispatch: () => void = () => {},
+    candidate?: SlotIdentity,
   ): Promise<Response> {
     const pending = this.deps.streams.acquire(pool ?? "", request.signal);
     let step: RuntimeRouteDiagnostic["runtimeStep"] = "slot_authorize";
@@ -39,12 +46,13 @@ export class RuntimeSlotRouter {
       request = await authorize(pending.lease.signal);
       step = "slot_selection";
       const identity = await this.deps.storage.transact(async ({ selection, policies }) => {
-        const active = selection?.active;
+        const active = candidate ? selection?.candidate : selection?.active;
         if (
           !active?.identity ||
           active.fenced ||
           active.retirement ||
-          active.target.controllerId !== this.deps.controllerId
+          active.target.controllerId !== this.deps.controllerId ||
+          (candidate && !sameIdentity(active.identity, candidate))
         )
           throw new SlotRefused("selection");
         const policy = policies.find((policy) => policy.pool === pool);

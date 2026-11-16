@@ -21,12 +21,17 @@ import { readManualRollout } from "./container-promotion.ts";
 import { verifyContainerHealth } from "./container-health.ts";
 import { readServingObservation } from "./serving-observation.ts";
 import { sealRecovery } from "./recovery-envelope.ts";
+import type { FrozenContainer, ContainerAttributes } from "./container.ts";
 
 export const resumeForwardRelease = (
   stack: CompiledStack,
   options: {
     dryRun?: boolean;
     directory: string;
+    runtime?(
+      container: FrozenContainer,
+      observed: ContainerAttributes,
+    ): Promise<{ instanceId: string; bootId: string; checkedAt: number }>;
     io?: {
       baseline?: typeof readBaseline;
       container?: typeof observeContainer;
@@ -42,7 +47,7 @@ export const resumeForwardRelease = (
     const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
     const journal = yield* readForwardJournal(stack, Redacted.value(key));
     if (journal?.complete) return undefined;
-    const saved = yield* state.get(containerKey(stack));
+    let saved = yield* state.get(containerKey(stack));
     const seed = !journal
       ? yield* Effect.tryPromise({
           try: () => forwardSeed(saved, Redacted.value(key)),
@@ -76,6 +81,8 @@ export const resumeForwardRelease = (
     }
     verifyForwardWorkers(packet, live);
     const container = packet.frozen.containers[0]!;
+    if (container.id !== "PoolContainer")
+      saved = yield* state.get(containerKey(stack, container.id));
     const observed = yield* (options.io?.container ?? observeContainer)(container.baseline);
     const adoption = forwardAdoption(packet, saved, observed);
     const activation = packet.receipt.containers?.find((item) => item.container === container.id);
@@ -110,32 +117,43 @@ export const resumeForwardRelease = (
           activeRolloutId: placements.activeRolloutId ?? null,
         },
       );
-    if (
-      !pool ||
-      !placements.instances.length ||
-      placements.instances.some(
-        (instance) => instance.state !== "running" || instance.digest !== adoption.receipt.digest,
+    let input: ReturnType<typeof forwardWorkerInput>;
+    let health: Awaited<ReturnType<typeof verifyContainerHealth>>;
+    if (options.runtime) {
+      if (container.id !== "PoolContainer" && placements.instances.length)
+        throw new BarrierRefusal("forward-inactive-runtime-not-empty", container.id);
+      input = { workerInputHash: adoption.receipt.inputHash, continuation: undefined };
+      health = yield* Effect.promise(() => options.runtime!(container, observed));
+    } else {
+      if (container.id !== "PoolContainer")
+        throw new BarrierRefusal("forward-runtime-release-proof-required", container.id);
+      if (
+        !pool ||
+        !placements.instances.length ||
+        placements.instances.some(
+          (instance) => instance.state !== "running" || instance.digest !== adoption.receipt.digest,
+        )
       )
-    )
-      throw new BarrierRefusal("forward-instance-not-serving");
-    const input = forwardWorkerInput(
-      packet,
-      live.get("PoolWorker"),
-      observed,
-      adoption.receipt.inputHash,
-    );
-    const health = yield* Effect.tryPromise({
-      try: () =>
-        (options.io?.health ?? verifyContainerHealth)(
-          { worker: pool!.scriptName, accountId: pool!.accountId },
-          input.workerInputHash,
-          AbortSignal.timeout(30_000),
-          true,
-        ),
-      catch: (error) => error,
-    });
-    if (!placements.instances.some((instance) => instance.id === health.instanceId))
-      throw new BarrierRefusal("forward-boot-instance-mismatch");
+        throw new BarrierRefusal("forward-instance-not-serving");
+      input = forwardWorkerInput(
+        packet,
+        live.get("PoolWorker"),
+        observed,
+        adoption.receipt.inputHash,
+      );
+      health = yield* Effect.tryPromise({
+        try: () =>
+          (options.io?.health ?? verifyContainerHealth)(
+            { worker: pool!.scriptName, accountId: pool!.accountId },
+            input.workerInputHash,
+            AbortSignal.timeout(30_000),
+            true,
+          ),
+        catch: (error) => error,
+      });
+      if (!placements.instances.some((instance) => instance.id === health.instanceId))
+        throw new BarrierRefusal("forward-boot-instance-mismatch");
+    }
     const report = {
       ...adoption.receipt,
       readOnly: !!options.dryRun,
@@ -176,9 +194,9 @@ export const resumeForwardRelease = (
     if (options.dryRun) return report;
     if (seed && (seed.approvedBefore !== report.before || seed.approvedAfter !== report.after))
       throw new BarrierRefusal("forward-seed-awaits-reviewed-hashes");
-    const current = yield* state.get(containerKey(stack));
+    const current = yield* state.get(containerKey(stack, container.id));
     if (encodedRecordHash(current) !== report.before)
-      throw new BarrierRefusal("forward-native-before-drift", "PoolContainer");
+      throw new BarrierRefusal("forward-native-before-drift", container.id);
     if (report.disposition === "already-adopted") {
       yield* writeForwardJournal(
         state,
@@ -197,10 +215,10 @@ export const resumeForwardRelease = (
       backup,
     });
     if (report.before !== report.after)
-      yield* state.set({ ...containerKey(stack), value: adoption.after });
-    const after = yield* state.get(containerKey(stack));
+      yield* state.set({ ...containerKey(stack, container.id), value: adoption.after });
+    const after = yield* state.get(containerKey(stack, container.id));
     if (encodedRecordHash(after) !== report.after)
-      throw new BarrierRefusal("forward-native-write-unconfirmed", "PoolContainer");
+      throw new BarrierRefusal("forward-native-write-unconfirmed", container.id);
     yield* writeForwardJournal(state, stack, Redacted.value(key), packet, !input.continuation, {
       before: report.before,
       after: report.after,

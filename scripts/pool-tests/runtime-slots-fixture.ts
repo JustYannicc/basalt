@@ -162,6 +162,12 @@ export async function slotFixture() {
       );
     },
     drain: async () => ({ active: 0, known: true }),
+    retirement: async (identity) => ({
+      identity,
+      retired: !runtimes.has(identity.instanceId),
+      running: runtimes.has(identity.instanceId),
+      ...(runtimes.has(identity.instanceId) ? { retireNotStarted: true as const } : {}),
+    }),
     retire: async (_target, identity) => {
       calls.retire.push(identity);
       await hooks.retire(identity);

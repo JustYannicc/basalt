@@ -12,13 +12,14 @@ import {
   type SlotSnapshot,
 } from "./contract.ts";
 import { currentPolicies, healthy, proveSlot, type SlotClock } from "./proof.ts";
-import { RuntimeSlotStorage, slotSelectionKey } from "./storage.ts";
+import { RuntimeSlotStorage, slotSelectionKey, type SlotStorage } from "./storage.ts";
 
 interface Dependencies {
   controllerId: string;
   controllerCode: ControllerCode;
   storage: RuntimeSlotStorage;
   driver: SlotDriver;
+  beforePromote?(intent: PromotionIntent, transaction: SlotStorage): Promise<void>;
 }
 const revisions = (snapshot: SlotSnapshot) =>
   [...snapshot.policies, ...snapshot.denials]
@@ -83,6 +84,7 @@ export class SlotPromotion {
           status: "promoted",
           epoch: selection.epoch + 1,
         };
+        await this.deps.beforePromote?.(intent, transaction);
         await transaction.put(slotSelectionKey, {
           epoch: receipt.epoch,
           active: selection.candidate!,

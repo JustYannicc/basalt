@@ -80,6 +80,7 @@ export async function observeRuntimeRetirement(
   if (!record || !sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
   let retired = record.retired === true;
   let intent = false;
+  let retireNotStarted = false;
   if (!retired) {
     const retained = await trace.run(
       "activity_read",
@@ -88,10 +89,12 @@ export async function observeRuntimeRetirement(
       signal,
     );
     intent = retained?.phase === "retiring" && retained.known && retained.active === 0;
+    retireNotStarted = retained?.phase === "draining" && retained.known && retained.active === 0;
   }
   if (retired || intent) {
     monitor.start(identity);
-    if (!retired && container.running) return { identity, retired: false, running: true };
+    if (!retired && container.running)
+      return { identity, retired: false, running: true, provider: record.authorization.provider };
     await monitor.stopped(identity, trace, signal);
     if (!retired) {
       await trace.run(
@@ -103,5 +106,11 @@ export async function observeRuntimeRetirement(
       retired = true;
     }
   }
-  return { identity, retired, running: container.running };
+  return {
+    identity,
+    retired,
+    running: container.running,
+    provider: record.authorization.provider,
+    ...(retireNotStarted ? { retireNotStarted: true as const } : {}),
+  };
 }

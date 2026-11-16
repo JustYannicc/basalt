@@ -1,3 +1,4 @@
+import { Schema } from "effect";
 import { isModelLifetimePath } from "../model-lifetime-contract.ts";
 import { RuntimeModelLifetimes, type RuntimeControlPair } from "./model-lifetime.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
@@ -5,7 +6,6 @@ import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
 import { RuntimeRetirementMonitor, observeRuntimeRetirement } from "./retirement-observation.ts";
 import { RuntimeReadTrace, runtimeReadStep } from "../runtime-read-trace.ts";
 import { refuseRuntime } from "../runtime-route-diagnostic.ts";
-import { logRuntimeEndpointFailure } from "../runtime-endpoint-failure.ts";
 import {
   SlotIdentity,
   SlotRefused,
@@ -28,6 +28,7 @@ import { RuntimeChannel } from "./channel.ts";
 import {
   configurationDigest,
   runtimeConfiguration,
+  RuntimeConfiguration,
   type RuntimeEnvironment,
 } from "./configuration.ts";
 import type { ControllerState } from "./runtime-state.ts";
@@ -40,6 +41,8 @@ import type { NativeStreamLease } from "../native-streams.ts";
 import { proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 import { RuntimeMaintenance } from "./maintenance.ts";
+import { RuntimeStartupStop } from "./startup-stop.ts";
+import type { StartupStopIntent } from "./startup-abort-contract.ts";
 
 export interface EndpointEnvironment extends RuntimeEnvironment {
   POOL_RUNTIME_APPLICATION_ID?: string;
@@ -66,6 +69,7 @@ export class RuntimeEndpoint {
   private retirementMonitor: RuntimeRetirementMonitor;
   private options: EndpointOptions;
   private maintenance: RuntimeMaintenance;
+  private startupStop: RuntimeStartupStop;
   private modelLifetimes: RuntimeModelLifetimes;
   constructor(
     ctx: ControllerState,
@@ -82,6 +86,7 @@ export class RuntimeEndpoint {
     this.role = role;
     this.code = code;
     this.store = new RuntimeWitnessStore(ctx.storage, env.POOL_DEPLOYMENT_KEY ?? "");
+    this.startupStop = new RuntimeStartupStop(ctx, this.store);
     this.channel = new RuntimeChannel(ctx, env);
     this.activity = new RuntimeActivity(ctx.storage);
     this.maintenance = new RuntimeMaintenance({
@@ -89,22 +94,12 @@ export class RuntimeEndpoint {
       store: this.store,
       channel: this.channel,
       monitor: this.retirementMonitor,
+      activity: this.activity,
       bound: (target) => this.bound(target),
       checked: (record, status) => this.checked(record, status),
     });
     this.wrap = wrap;
     this.options = options;
-  }
-  recordFailure(operation: string, error: unknown) {
-    logRuntimeEndpointFailure(error, operation, {
-      role: this.role,
-      instanceId: this.ctx.id.toString(),
-      applicationId:
-        this.role === "legacy"
-          ? this.env.POOL_CONTAINER_APPLICATION_ID
-          : this.env.POOL_RUNTIME_APPLICATION_ID,
-      ...this.code,
-    });
   }
   private serialize<T>(work: () => Promise<T>): Promise<T> {
     const pending = this.queue.then(work);
@@ -160,12 +155,24 @@ export class RuntimeEndpoint {
           throw new SlotRefused("identity");
         return;
       }
-      const configuration = runtimeConfiguration({
-        ...this.env,
-        ...(proof.target.homePeerOrdinal !== undefined
-          ? { POOL_HOME_PEER_ORDINAL: String(proof.target.homePeerOrdinal) }
-          : {}),
-      });
+      const configuration =
+        this.role === "runtime" &&
+        this.env.POOL_CANDIDATE_APPLICATION_ID === proof.target.applicationId &&
+        this.env.POOL_CANDIDATE_RUNTIME_CONFIGURATION
+          ? Schema.decodeUnknownSync(RuntimeConfiguration)({
+              ...Schema.decodeUnknownSync(RuntimeConfiguration)(
+                JSON.parse(this.env.POOL_CANDIDATE_RUNTIME_CONFIGURATION),
+              ),
+              ...(proof.target.homePeerOrdinal !== undefined
+                ? { homePeerOrdinal: proof.target.homePeerOrdinal }
+                : {}),
+            })
+          : runtimeConfiguration({
+              ...this.env,
+              ...(proof.target.homePeerOrdinal !== undefined
+                ? { POOL_HOME_PEER_ORDINAL: String(proof.target.homePeerOrdinal) }
+                : {}),
+            });
       if (
         configuration.imageInput !== proof.target.imageInput ||
         (await configurationDigest(configuration)) !== proof.configurationFingerprint
@@ -195,10 +202,19 @@ export class RuntimeEndpoint {
         configuration,
         signal,
         this.options.beforeStart,
+        () => this.startupStop.assertStart(target),
       );
       signal.throwIfAborted();
       return this.complete(target, signal);
     });
+  }
+  abortStartup(intent: StartupStopIntent, signal: AbortSignal) {
+    this.bound(intent.target);
+    return this.startupStop.abort(intent, signal);
+  }
+  inspectStartupAbort(intent: StartupStopIntent) {
+    this.bound(intent.target);
+    return this.startupStop.inspect(intent);
   }
   private checked(record: WitnessRecord, status: PoolStatus) {
     if (record.identity && status.boot_id !== record.identity.bootId)

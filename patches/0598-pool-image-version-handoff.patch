@@ -1,0 +1,50 @@
+diff --git a/apps/hosted/server/src/contracts/pool-defaults.ts b/apps/hosted/server/src/contracts/pool-defaults.ts
+--- a/apps/hosted/server/src/contracts/pool-defaults.ts
++++ b/apps/hosted/server/src/contracts/pool-defaults.ts
+@@ -21,6 +21,7 @@
+ export interface PoolWorkerRelease {
+   readonly revision: string;
+   readonly keyVersion: string;
++  readonly imageReady: boolean;
+ }
+ export const PoolWorkerReport = Context.Reference<
+   Effect.Effect<PoolWorkerRelease, PoolSetupPending> | undefined
+diff --git a/apps/hosted/server/src/contracts/organization-defaults.ts b/apps/hosted/server/src/contracts/organization-defaults.ts
+--- a/apps/hosted/server/src/contracts/organization-defaults.ts
++++ b/apps/hosted/server/src/contracts/organization-defaults.ts
+@@ -39,6 +39,7 @@
+   reason: Schema.Literals([
+     "bundle",
+     "worker-unreachable",
++    "runtime-image",
+     "worker-revision",
+     "key-version",
+     "worker-revision-and-key",
+diff --git a/apps/hosted/server/src/implementation/pool-worker-gate.ts b/apps/hosted/server/src/implementation/pool-worker-gate.ts
+--- a/apps/hosted/server/src/implementation/pool-worker-gate.ts
++++ b/apps/hosted/server/src/implementation/pool-worker-gate.ts
+@@ -8,7 +8,11 @@
+ 
+ /** Matches `poolReleasePath` in Basalt's src/pool/release.ts. */
+ const releasePath = "/pool/v1/release";
+-const Release = Schema.Struct({ revision: Schema.String, keyVersion: Schema.String });
++const Release = Schema.Struct({
++  revision: Schema.String,
++  keyVersion: Schema.String,
++  imageReady: Schema.Boolean,
++});
+ 
+ const fetchRelease = (origin: string) =>
+   Effect.gen(function* () {
+@@ -48,7 +48,10 @@
+     const keyVersion = Option.isNone(key)
+       ? true
+       : report.keyVersion === (yield* poolTokenKeyVersion(key.value));
+-    if (revision && keyVersion) return;
++    if (revision && keyVersion) {
++      if (report.imageReady) return;
++      return yield* new PoolSetupPending({ reason: "runtime-image" });
++    }
+     return yield* new PoolSetupPending({
+       reason: revision ? "key-version" : keyVersion ? "worker-revision" : "worker-revision-and-key",
+     });

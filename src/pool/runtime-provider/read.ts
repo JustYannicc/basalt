@@ -182,9 +182,15 @@ export class RuntimeProviderReader {
     instanceId: string,
     signal = AbortSignal.timeout(15_000),
   ) {
+    if (!instanceId) return false;
+    return this.absence(expected, signal, instanceId);
+  }
+  empty(expected: RuntimeProviderTarget, signal = AbortSignal.timeout(15_000)) {
+    return this.absence(expected, signal);
+  }
+  private async absence(expected: RuntimeProviderTarget, signal: AbortSignal, instanceId?: string) {
     try {
-      if (!/^[a-f0-9]{32}$/u.test(expected.accountId) || !expected.applicationId || !instanceId)
-        return false;
+      if (!/^[a-f0-9]{32}$/u.test(expected.accountId) || !expected.applicationId) return false;
       const at = this.now();
       const base = `https://api.cloudflare.com/client/v4/accounts/${expected.accountId}/containers/applications/${encodeURIComponent(expected.applicationId)}`;
       const before = decodeProviderApplication((await this.read(base, signal)).result);
@@ -195,7 +201,7 @@ export class RuntimeProviderReader {
       return (
         this.now() - at <= 30_000 &&
         canonicalProviderValue(before) === canonicalProviderValue(after) &&
-        !instances.includes(instanceId)
+        (instanceId === undefined ? instances.length === 0 : !instances.includes(instanceId))
       );
     } catch {
       return false;

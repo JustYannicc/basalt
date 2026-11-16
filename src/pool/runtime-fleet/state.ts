@@ -1,6 +1,9 @@
 import { Schema } from "effect";
 import { SlotIdentity, SlotTarget, sameIdentity, sameTarget } from "../runtime-slots/contract.ts";
 import type { SlotStorage, TransactionStorage } from "../runtime-slots/storage.ts";
+import { physicalPrimaryTargets, sameGeneration, selectedPrimary } from "./physical.ts";
+import { slotFirstStartKey } from "../runtime-slots/storage.ts";
+import { runtimeCellKey } from "./cell-state.ts";
 
 const Count = Schema.Number.check(
   Schema.isInt(),
@@ -92,6 +95,12 @@ export class RuntimeFleetState {
   async inspect(storage: SlotStorage = this.storage) {
     return this.rows(await storage.get(key));
   }
+  async physicalCount(storage: SlotStorage = this.storage) {
+    return (
+      (await this.inspect(storage)).filter((row) => row.phase !== "retired").length +
+      (await physicalPrimaryTargets(storage)).length
+    );
+  }
   async replacements(storage: SlotStorage = this.storage) {
     const count = Schema.decodeUnknownSync(Count)((await storage.get(replacementKey)) ?? 0);
     if (count > this.maximum) throw new FleetRefused("uncertain");
@@ -109,7 +118,8 @@ export class RuntimeFleetState {
     return this.change(async (rows, transaction) => {
       await this.permission?.(target, transaction);
       const live = rows.filter((row) => row.phase !== "retired");
-      if (live.length >= this.maximum) throw new FleetRefused("capacity");
+      if (live.length + (await physicalPrimaryTargets(transaction)).length >= this.maximum)
+        throw new FleetRefused("capacity");
       if (
         target.homePeerOrdinal === undefined ||
         rows.some((row) => row.target.slotId === target.slotId) ||
@@ -159,20 +169,46 @@ export class RuntimeFleetState {
   }
   ready(value: SlotIdentity) {
     const identity = Schema.decodeUnknownSync(SlotIdentity)(value);
-    return this.change((rows) => {
+    return this.change(async (rows, transaction) => {
       const row = this.row(rows, identity);
       if (
         !["warming", "uncertain", "ready"].includes(row.phase) ||
         (row.identity && !sameIdentity(row.identity, identity))
       )
         throw new FleetRefused("uncertain");
+      const primary = await selectedPrimary(transaction);
       rows[rows.indexOf(row)] = {
         ...row,
-        phase: "ready",
+        phase:
+          primary &&
+          primary.instanceId !== primary.controllerId &&
+          !sameGeneration(primary, identity)
+            ? "draining"
+            : "ready",
         identity,
         lastUsedAt: row.phase === "ready" ? row.lastUsedAt : this.now(),
       };
     });
+  }
+  async promoteGeneration(primary: SlotTarget, transaction: SlotStorage) {
+    const rows = this.rows(await transaction.get(key));
+    // Reservation is the cut: earlier sends drain normally; later acquisitions cannot select old cells.
+    const retained: Row[] = [];
+    for (const row of rows) {
+      if (sameGeneration(row.target, primary)) {
+        retained.push(row);
+        continue;
+      }
+      if (
+        ["reserved", "warming", "uncertain"].includes(row.phase) &&
+        !row.identity &&
+        row.active === 0 &&
+        (await transaction.get(runtimeCellKey(row.target.slotId, slotFirstStartKey))) === undefined
+      ) {
+        await transaction.put(retiredKey(row.target.slotId), { ...row, phase: "retired" });
+      } else retained.push(row.phase === "ready" ? { ...row, phase: "draining" } : row);
+    }
+    await transaction.put(key, retained);
   }
   cancelReserved(target: SlotTarget) {
     return this.change(async (rows, transaction) => {

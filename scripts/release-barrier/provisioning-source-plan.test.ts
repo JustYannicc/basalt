@@ -10,11 +10,74 @@ import { withReleaseRuntime } from "./runtime.ts";
 import { fleetInfrastructure } from "../../src/pool/fleet-deployment.ts";
 import { decodeProvisioningManifest } from "./provisioning-contract.ts";
 import { provisioningFixture } from "./test/provisioning-fixtures.ts";
+import { runtimeDeclaration } from "./test/provisioning-fixtures.ts";
+import { containerPublication } from "./test/container-fixture.ts";
+import {
+  RuntimeImageReleasePlan,
+  type ImageReleasePlan,
+} from "../../src/pool/image-release-plan.ts";
+import { retainedRuntimeImage } from "../../src/pool/legacy-image.ts";
 import { sourceRuntimeCreatePlan, sourceObservationTokenPlan } from "./provisioning-source-plan.ts";
 import type { ObservationTokenManifest } from "./observation-token-contract.ts";
 
 const accountId = "1".repeat(32);
-async function compiled() {
+async function compiled(retainExisting = false) {
+  const native = await Effect.runPromise(InMemoryService());
+  if (retainExisting)
+    for (const resource of ["PoolRuntime", "PoolRuntimeBlue", "PoolRuntimeGreen"] as const) {
+      const props = runtimeDeclaration(resource).props;
+      const attr = {
+        ...containerPublication().previous,
+        accountId,
+        applicationId: `native-${resource}`,
+        configuration: { image: props.image, instanceType: "basic" },
+        maxInstances: props.maxInstances,
+        instances: 0,
+        hash: { image: "7".repeat(16), digest: props.image.split("@")[1]! },
+      };
+      await Effect.runPromise(
+        native.set({
+          stack: "synthetic",
+          stage: "production",
+          fqn: resource,
+          value: {
+            resourceType: "Cloudflare.Container",
+            logicalId: resource,
+            fqn: resource,
+            namespace: undefined,
+            instanceId: "2".repeat(32),
+            providerVersion: 0,
+            status: "created",
+            props,
+            attr,
+            bindings: [],
+            downstream: ["PoolWorker"],
+          },
+        }),
+      );
+    }
+  let releasePlan: ImageReleasePlan | undefined;
+  if (retainExisting) {
+    const row = await Effect.runPromise(
+      native.get({ stack: "synthetic", stage: "production", fqn: "PoolRuntime" }),
+    );
+    assert.ok(row && "props" in row);
+    assert.ok(row.props);
+    const images: ImageReleasePlan["images"] = {};
+    for (const color of ["blue", "green"] as const) {
+      const resource = color === "blue" ? "PoolRuntimeBlue" : "PoolRuntimeGreen";
+      images[color] = retainedRuntimeImage(
+        await Effect.runPromise(
+          native.get({ stack: "synthetic", stage: "production", fqn: resource }),
+        ),
+        resource,
+      )!.image;
+    }
+    releasePlan = {
+      images,
+      legacy: { props: row.props, image: retainedRuntimeImage(row, "PoolRuntime")!.image },
+    };
+  }
   const stack = Stack(
     "synthetic",
     {
@@ -28,7 +91,7 @@ async function compiled() {
           delete: () => Effect.die("Source-plan test cannot delete"),
         }),
       ),
-      state: Layer.effect(State, Effect.map(InMemoryService(), Effect.succeed)),
+      state: Layer.succeed(State, Effect.succeed(native)),
     },
     Effect.gen(function* () {
       const env = yield* fleetInfrastructure;
@@ -40,16 +103,19 @@ async function compiled() {
   );
   return Effect.runPromise(
     evalStack(stack, Effect.succeed, { stage: "production" }).pipe(
+      Effect.provideService(RuntimeImageReleasePlan, releasePlan),
       Effect.provideService(Cloudflare.CloudflareEnvironment, Effect.succeed({ accountId })),
       Effect.provide(
         ConfigProvider.layer(
           ConfigProvider.fromEnv({
-            env: {
-              POOL_FLEET_IMAGES: JSON.stringify({
-                blue: `registry.cloudflare.com/${accountId}/synthetic@sha256:${"a".repeat(64)}`,
-                green: `registry.cloudflare.com/${accountId}/synthetic@sha256:${"b".repeat(64)}`,
-              }),
-            },
+            env: retainExisting
+              ? {}
+              : {
+                  POOL_FLEET_IMAGES: JSON.stringify({
+                    blue: `registry.cloudflare.com/${accountId}/synthetic@sha256:${"a".repeat(64)}`,
+                    green: `registry.cloudflare.com/${accountId}/synthetic@sha256:${"b".repeat(64)}`,
+                  }),
+                },
           }),
         ),
       ),
@@ -57,6 +123,20 @@ async function compiled() {
     ),
   );
 }
+
+test("the explicit ordinary release plan retains native single-runtime and fleet image pins without an opt-in image setting", async () => {
+  const stack = await compiled(true);
+  for (const resource of ["PoolRuntime", "PoolRuntimeBlue", "PoolRuntimeGreen"] as const) {
+    const declared = stack.resources[resource];
+    assert.ok(declared);
+    assert.equal(declared.RemovalPolicy, "retain");
+    assert.equal(declared.Props.className, resource);
+    assert.equal(declared.Props.image, runtimeDeclaration(resource).props.image);
+    assert.equal(declared.Props.maxInstances, resource === "PoolRuntime" ? 1 : 4);
+    assert.equal(declared.Props.instances, 0);
+  }
+  assert.equal("context" in stack.resources.PoolRuntime!.Props, false);
+});
 
 test("exact source declarations produce isolated native create plans with the independently observed namespace", async () => {
   const stack = await compiled();

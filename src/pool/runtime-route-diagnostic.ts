@@ -2,6 +2,7 @@ import { SlotRefused } from "./runtime-slots/contract.ts";
 import { FleetRefused } from "./runtime-fleet/state.ts";
 import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
 import { ProtectionRefusal } from "./runtime-protection.ts";
+import { endpointRequestId, retainEndpointRequestId } from "./runtime-fleet/endpoint-trace.ts";
 
 const steps = [
   "primary_forward",
@@ -47,6 +48,7 @@ const reasons = [
 export interface RuntimeRouteDiagnostic {
   runtimeStep: (typeof steps)[number];
   runtimeReason: (typeof reasons)[number];
+  runtimeEndpointRequestId?: string;
 }
 const stepHeader = "X-Signalbox-Runtime-Failure-Step";
 const reasonHeader = "X-Signalbox-Runtime-Failure-Reason";
@@ -64,7 +66,11 @@ function reason(error: unknown): RuntimeRouteDiagnostic["runtimeReason"] {
   return error instanceof Error ? "transport" : "unknown";
 }
 export function runtimeRouteDiagnostic(error: unknown) {
-  return object(error) ? observed.get(error) : undefined;
+  const diagnostic = object(error) ? observed.get(error) : undefined;
+  const requestId = endpointRequestId(error);
+  return diagnostic && requestId
+    ? { ...diagnostic, runtimeEndpointRequestId: requestId }
+    : diagnostic;
 }
 export function rememberRuntimeFailure(
   step: RuntimeRouteDiagnostic["runtimeStep"],
@@ -81,7 +87,12 @@ export function runtimeFailureDiagnostic(
   error: unknown,
   step: RuntimeRouteDiagnostic["runtimeStep"],
 ) {
-  return runtimeRouteDiagnostic(error) ?? { runtimeStep: step, runtimeReason: reason(error) };
+  const diagnostic = runtimeRouteDiagnostic(error) ?? {
+    runtimeStep: step,
+    runtimeReason: reason(error),
+  };
+  const requestId = endpointRequestId(error);
+  return requestId ? { ...diagnostic, runtimeEndpointRequestId: requestId } : diagnostic;
 }
 export function runtimeFailureCode(diagnostic: RuntimeRouteDiagnostic) {
   return `runtime_${diagnostic.runtimeStep}_${diagnostic.runtimeReason}`;
@@ -100,6 +111,7 @@ export function stripRuntimeFailureHeaders(headers: Headers) {
   headers.delete(reasonHeader);
 }
 export function retainRuntimeFailure(response: Response, error: object) {
+  retainEndpointRequestId(response, error);
   const diagnostic = runtimeResponseDiagnostic(response);
   if (diagnostic) observed.set(error, diagnostic);
   return error;

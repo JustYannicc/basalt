@@ -34,6 +34,7 @@ export async function startRuntime(
   configuration: RuntimeConfiguration,
   signal: AbortSignal,
   afterWitness?: (witness: StartupWitness) => Promise<void>,
+  assertStart: () => void = () => {},
 ) {
   const target = record.authorization.target;
   const { ledger, binding } = runtimeLaunch(ctx, record);
@@ -54,6 +55,10 @@ export async function startRuntime(
     {
       ledger,
       binding,
+      assertStart: () => {
+        signal.throwIfAborted();
+        assertStart();
+      },
       beforeStart: async (launch, options) => {
         signal.throwIfAborted();
         decodeAdmissionProof(record.authorization);
@@ -75,6 +80,9 @@ export async function startRuntime(
         };
         await store.put(target, { ...record, witness });
         await afterWitness?.(witness);
+        signal.throwIfAborted();
+        assertStart();
+        await store.read(target);
       },
     },
   );
