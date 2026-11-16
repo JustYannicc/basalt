@@ -1,0 +1,227 @@
+diff --git a/e2e/support/platform.ts b/e2e/support/platform.ts
+--- a/e2e/support/platform.ts
++++ b/e2e/support/platform.ts
+@@ -76,20 +76,45 @@
+ export const RuntimeLive = Target.layer.pipe(
+   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
+ );
++const DriverErrorClass = Schema.Literals([
++  "TimeoutError",
++  "AssertionError",
++  "TypeError",
++  "Error",
++  "unknown",
++]);
++const errorClass = (cause: unknown): typeof DriverErrorClass.Type => {
++  if (!(cause instanceof Error)) return "unknown";
++  switch (cause.name) {
++    case "TimeoutError":
++      return "TimeoutError";
++    case "AssertionError":
++      return "AssertionError";
++    case "TypeError":
++      return "TypeError";
++    case "Error":
++      return "Error";
++    default:
++      return "unknown";
++  }
++};
++
+ /** Boundary failure with a safe operation label; raw SDK errors stay redacted. */
+ export class DriverFailed extends Schema.TaggedError<DriverFailed>()("DriverFailed", {
+   operation: Schema.String,
++  errorClass: DriverErrorClass,
+   cause: Schema.Redacted(Schema.Unknown),
+ }) {
+   get message() {
+-    return `Driver operation failed: ${this.operation}`;
++    return `Driver operation failed: ${this.operation} [${this.errorClass}]`;
+   }
+ }
+ /** Lift exactly one third-party operation. Orchestration stays in Effect. */
+ export const driver = <A>(operation: string, run: (signal: AbortSignal) => Promise<A>) =>
+   Effect.tryPromise({
+     try: run,
+-    catch: (cause) => new DriverFailed({ operation, cause: Redacted.make(cause) }),
++    catch: (cause) =>
++      new DriverFailed({ operation, errorClass: errorClass(cause), cause: Redacted.make(cause) }),
+   });
+ /** Public wire response, fully consumed inside the request scope. */
+ export interface Response {
+diff --git a/e2e/support/browser.ts b/e2e/support/browser.ts
+--- a/e2e/support/browser.ts
++++ b/e2e/support/browser.ts
+@@ -342,6 +342,15 @@
+             yield* focus.use(
+               "Set browser actor",
+               Effect.gen(function* () {
++                // Cookies belong to the context; no previous actor's document may keep using them.
++                yield* driver("retire previous actor documents", () =>
++                  Promise.all(
++                    context
++                      .pages()
++                      .filter((opened) => !opened.isClosed() && opened.url() !== "about:blank")
++                      .map((opened) => opened.goto("about:blank", { waitUntil: "commit" })),
++                  ),
++                );
+                 yield* driver("clear browser cookies", () => context.clearCookies());
+                 const cookies = yield* session.cookies;
+                 yield* driver("set actor session", () =>
+diff --git a/e2e/support/app-activation-observer.ts b/e2e/support/app-activation-observer.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/app-activation-observer.ts
+@@ -0,0 +1,67 @@
++import { errors, type Page, type Request, type Response } from "playwright";
++
++/** Arm before deployment: either the version body or both location reads confirms activation. */
++export const observeAppActivation = (
++  page: Page,
++  appRead: (response: Response) => boolean,
++  locationReads: (request: Request) => number,
++) => {
++  const bodies: string[] = [];
++  let reads = 0;
++  let expected: string | undefined;
++  let confirm: (() => void) | undefined;
++  let timer: ReturnType<typeof setTimeout> | undefined;
++  let disposed = false;
++  const check = () => {
++    const version = expected;
++    if (reads >= 2 || (version !== undefined && bodies.some((body) => body.includes(version))))
++      confirm?.();
++  };
++  const count = (request: Request) => {
++    reads += locationReads(request);
++    check();
++  };
++  const body = (response: Response) => {
++    if (!appRead(response)) return;
++    void response.text().then(
++      (text) => {
++        if (disposed) return;
++        bodies.push(text);
++        check();
++      },
++      () => {},
++    );
++  };
++  const dispose = () => {
++    disposed = true;
++    clearTimeout(timer);
++    page.off("request", count);
++    page.off("response", body);
++    bodies.length = 0;
++  };
++  page.on("request", count);
++  page.on("response", body);
++  return {
++    dispose,
++    waitForVersion: (version: string) => {
++      expected = version;
++      const ready = new Promise<void>((resolve, reject) => {
++        confirm = resolve;
++        // Match Browser's existing operation deadline, including the response-body fallback.
++        timer = setTimeout(
++          () => reject(new errors.TimeoutError("Dashboard activation was not observed")),
++          15_000,
++        );
++        check();
++      });
++      return Promise.all([
++        ready,
++        page.evaluate(() =>
++          document.dispatchEvent(new Event("visibilitychange", { bubbles: true })),
++        ),
++      ])
++        .then(() => undefined)
++        .finally(dispose);
++    },
++  };
++};
+diff --git a/e2e/tests/embedded-app-ui.spec.ts b/e2e/tests/embedded-app-ui.spec.ts
+--- a/e2e/tests/embedded-app-ui.spec.ts
++++ b/e2e/tests/embedded-app-ui.spec.ts
+@@ -14,6 +14,7 @@
+ import { observeFrameDeadline, waitForFrameDeadline } from "../support/frame-deadline.ts";
+ import { batchPath, batchedReads } from "../support/read-batches.ts";
+ import { Target } from "../support/platform.ts";
++import { observeAppActivation } from "../support/app-activation-observer.ts";
+ 
+ const files = [
+   {
+@@ -284,6 +285,24 @@
+         const original = yield* browser.use("Keep the open App frame", (page) =>
+           page.locator(`iframe[title="${first.app.name} app"]`).elementHandle(),
+         );
++        const activation = yield* Effect.acquireRelease(
++          browser.use("Observe dashboard activation before deployment", (page) =>
++            Promise.resolve(
++              observeAppActivation(
++                page,
++                (response) => {
++                  const url = new URL(response.url());
++                  return (
++                    url.origin === target.metadata.origin &&
++                    (url.pathname === batchPath || url.pathname.endsWith(`/apps/${first.app.id}`))
++                  );
++                },
++                (request) => locationReads(first.app.id, request),
++              ),
++            ),
++          ),
++          (observation) => Effect.sync(() => observation.dispose()),
++        );
+         const updated = yield* saveAndDeploy(actors.owner, `${prefix}/apps/${first.app.id}`, {
+           files: files.map((file) =>
+             file.path === "ui/index.html"
+@@ -308,34 +327,9 @@
+             .getByRole("heading", { name: "Embedded fixture screen updated" })
+             .waitFor({ timeout: 20_000 }),
+         );
+-        yield* browser.use("The dashboard reads the activated version", (page) => {
+-          // A returning tab reads the app and its location again; the activated version then reads
+-          // the location once more. Chrome does not always keep streamed batch bodies, so either
+-          // signal shows the dashboard has the new version.
+-          const appRead = page.waitForResponse((response) => {
+-            const url = new URL(response.url());
+-            return url.origin === target.metadata.origin &&
+-              (url.pathname === batchPath || url.pathname.endsWith(`/apps/${first.app.id}`))
+-              ? response.text().then(
+-                  (text) => text.includes(activated.activeVersion),
+-                  () => false,
+-                )
+-              : false;
+-          });
+-          let reads = 0;
+-          let reread!: () => void;
+-          const reread2 = new Promise<void>((resolve) => (reread = resolve));
+-          const countReads = (request: Request) => {
+-            reads += locationReads(first.app.id, request);
+-            if (reads >= 2) reread();
+-          };
+-          page.on("request", countReads);
+-          return page
+-            .evaluate(() =>
+-              document.dispatchEvent(new Event("visibilitychange", { bubbles: true })),
+-            )
+-            .then(() => Promise.race([appRead, reread2]))
+-            .finally(() => page.off("request", countReads))
++        yield* browser.use("The dashboard reads the activated version", (page) =>
++          activation
++            .waitForVersion(activated.activeVersion)
+             .then(() =>
+               page.evaluate(
+                 () =>
+@@ -343,8 +337,8 @@
+                     requestAnimationFrame(() => requestAnimationFrame(resolve)),
+                   ),
+               ),
+-            );
+-        });
++            ),
++        );
+         yield* browser.use("Activation keeps the mounted frame without a loading state", (page) =>
+           Promise.all([
+             frameChanges(page),
