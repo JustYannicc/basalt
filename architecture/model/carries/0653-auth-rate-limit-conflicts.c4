@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Concurrent first auth requests skip only conflicting rate-limit keys without a database error. A skipped insert rejects into Better Auth's existing read and atomic-increment recovery so every admitted request is counted. Other database failures and borrowed transaction recovery remain unchanged."
+    }
+  }
+}
