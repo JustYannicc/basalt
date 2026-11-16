@@ -2,9 +2,9 @@
   "package": "@executor.sh/clerk",
   "publishedUrl": "https://catalog.executor.sh/apps/clerk.json",
   "publishedSha256": "b2b30977e63ca2da1b1c4524c690ff7cc3a9dbda50611e99adbdf284bd4a8597",
-  "carriedSha256": "c667534b44c5816f7c8acd2244da06fc9f11032452b017a00885daba55e0a01f",
-  "patchSha256": "d9afa2bfc11dfb57ac421fc997cc4d182f12398de5d75817d3e22894704d0351",
-  "appsVersion": "0.0.1-beta.104-basalt.16",
+  "carriedSha256": "da46b277d9666c7f7a8c3f317ac09d4de42be4695b4d324a1f7097abd1926dfe",
+  "patchSha256": "b988dc3d05ce9b6cbfdcd88295acb6e97d69629592350ad9967f74efd9579cf9",
+  "appsVersion": "0.0.1-beta.104-basalt.17",
   "license": "Not declared in the published package",
   "contribution": {
     "state": "Official management MCP sign-in added beside the unchanged secret-key provider; publication not claimed"

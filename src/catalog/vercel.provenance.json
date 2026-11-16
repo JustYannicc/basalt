@@ -2,9 +2,9 @@
   "package": "@executor.sh/vercel",
   "publishedUrl": "https://catalog.executor.sh/apps/vercel.json",
   "publishedSha256": "af9ee81d20f08aa45b4b024055fa7ee1ab61c78c26dbbc27f31a129f84666e65",
-  "carriedSha256": "68558f29e3fe01ce1625485b348cf4cd6a03c7ae25de7f2e6e732ffaf9c11115",
-  "patchSha256": "78dfb2e3212d359572ce555cc71efd51e60d15e97b9592b81d09c553bfab34c9",
-  "appsVersion": "0.0.1-beta.104-basalt.16",
+  "carriedSha256": "be5927b4774e22a75e80d940859d5fa72261ea1fa3c8a3854e3513f8c2c672d0",
+  "patchSha256": "cace618148f289ceef1f7eb56e6e5a419ebdd6eac0342a069b7d0ce9d7096fed",
+  "appsVersion": "0.0.1-beta.104-basalt.17",
   "license": "Not declared in the published package",
   "contribution": {
     "state": "Official MCP sign-in added alongside the unchanged API-token provider; publication not claimed"

@@ -2,11 +2,11 @@
   "package": "@executor.sh/plaid",
   "publishedUrl": "https://catalog.executor.sh/apps/plaid.json",
   "publishedSha256": "15a2a01aa5fd6e9389c549cbab3b56a741740ece581bf100713e7ffe17d19808",
-  "carriedSha256": "3ebfad8d5d15acab75c26eb6c7e00cb5e570754cb0e2958dda895b0fdc7d6e58",
-  "patchSha256": "fa308e01825067d29cc2b4ef35d34f4058681c7743f37c822feffad26db490de",
+  "carriedSha256": "3ef6ccf2127e1cbe1d20a6dc077078e1b7126e6959ada5f8e774725782988b93",
+  "patchSha256": "020dc4f3354a972ab405e5d3331465eb9393eeab5ebe8500b934435a311b9ff4",
   "license": "Not declared in the published package",
   "contribution": {
     "state": "Native Production-key MCP grant retained as a replayable patch; publication not claimed"
   },
-  "appsVersion": "0.0.1-beta.104-basalt.16"
+  "appsVersion": "0.0.1-beta.104-basalt.17"
 }

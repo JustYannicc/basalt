@@ -355,7 +355,7 @@
     {
       "entry": "aws",
       "package": "aws",
-      "sourceSha256": "d309ce056b8e3a63bac33cd91a65f88483214fc051ca521b76375fc02b662ea8",
+      "sourceSha256": "72f2e5796fe293644517a7ec4987ff258f9513b04bcbf232b12c8d2ff729fbe0",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -878,7 +878,7 @@
     {
       "entry": "clerk",
       "package": "@executor.sh/clerk",
-      "sourceSha256": "99b61be886139859710d9e3f1890be4760b2a6071c73ea6b780928f0cf7fbf51",
+      "sourceSha256": "41add38990f9aa7bace040b94c6be9b9b6023cdcc96d9375e76bc0e1e20a1bac",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -981,7 +981,7 @@
           "metadataSha256": "d3d40fdfe4c2c544a49020b7469907eeb3c861276248be4dfec3f2dff86013ff"
         }
       },
-      "sourceSha256": "e75baf3eae21dbf746d2824e06b659700610b6da8ce58fa1904d8961ed7171db"
+      "sourceSha256": "fc2ff2f4af329fd41d0df6dbc46aa7cbc8060effa739ea746eaf566758c43bd6"
     },
     {
       "entry": "cloudinary",
@@ -1063,7 +1063,7 @@
           "message": "Shared sign-in for Atlassian is not configured on this host. You can connect with your own OAuth app."
         }
       },
-      "sourceSha256": "92b6b1d7905a6ac4f770335bad4138ab5154cfb2fd02422bec6ba712765f0ff0"
+      "sourceSha256": "6fb6a3640d2d9748b21a106cb2b06e4b8eb74774b661a9043078eb8d1fd28d2f"
     },
     {
       "entry": "connecteam",
@@ -1496,7 +1496,7 @@
     {
       "entry": "elevenlabs",
       "package": "@executor.sh/elevenlabs",
-      "sourceSha256": "bd825989a939e972180908813f810db765f9a5118a273bed996e5e11909eaff3",
+      "sourceSha256": "fcca29b6b4280f90c8131be6afb05ee1fa945e01a215d3b80622ab0b4cbe030c",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -1909,7 +1909,7 @@
     {
       "entry": "gitlab",
       "package": "@executor.sh/gitlab",
-      "sourceSha256": "e7f6095f729f5688f358b6275ce2b61fa275f27b4e7afe1b93d6f7cec65c2186",
+      "sourceSha256": "69785a828f910ade85c61ee5e5e0bab100ce3e8b6fe942b7aa2ed2a09153448d",
       "methods": {
         "mcp": {
           "kind": "deferred",
@@ -2572,7 +2572,7 @@
           "message": "Shared sign-in for Atlassian is not configured on this host. You can connect with your own OAuth app."
         }
       },
-      "sourceSha256": "ac34c853fc20c426c0f5c65c536459ccb2671d43643c27ac46853ad8b37e6d75"
+      "sourceSha256": "7c2b9010ef5d0ae0ff428e5a757e3fb9b5a349fa8420c87ad47d6ac525475d8e"
     },
     {
       "entry": "jobadder",
@@ -3057,7 +3057,7 @@
     {
       "entry": "miro",
       "package": "@executor.sh/miro",
-      "sourceSha256": "de37a63708612dfd8512cb515651b7f67cc2dd52c323c09d805a35da99f3d4f0",
+      "sourceSha256": "9834fce2cd7e072a40292e8194323661b8816f3951b9a9fdfff2d7e227fc12ea",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -3259,7 +3259,7 @@
     {
       "entry": "notion",
       "package": "@executor.sh/notion",
-      "sourceSha256": "81d2e1b3f3a4fc5b4fcb50b15839faaf2fd97ee78fad39bb1a1bff34f5391ba1",
+      "sourceSha256": "ad1ae71258646ae6feff6a5e81826c143180faa5c90524c859200c2e27e6eebc",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -4203,7 +4203,7 @@
           "metadataSha256": "48af54e2e9736b4e947a3250093ec3c1fef2924aa7a38949047e9fc898fc0033"
         }
       },
-      "sourceSha256": "2dfc5319c4cfb8d16216dd600677b0592ae116de9c8bfb274c8483d6373bc168"
+      "sourceSha256": "f8cbed36a3395b3748835af61cf85147f75fc209c8451bebe27271f7e4f01434"
     },
     {
       "entry": "servicem8",
@@ -4288,7 +4288,7 @@
     {
       "entry": "slack",
       "package": "@executor.sh/slack",
-      "sourceSha256": "7b8eb5a4bb548c6e4f6067983d25336269bf155a177a1da6d874628ca1cdae57",
+      "sourceSha256": "a15fc404bfa8636e1946a8cc956a9e9cd4186c2da5b63d1edbff9402e6ada20f",
       "methods": {
         "user": {
           "kind": "hosted",
@@ -4846,7 +4846,7 @@
     {
       "entry": "vercel",
       "package": "@executor.sh/vercel",
-      "sourceSha256": "bfeed24ddc7db295bce347adb526ab6f792126a6e0272f9a6d6e541149c599ee",
+      "sourceSha256": "4d934b0936775cf50c2c4a124177f7697e0bdc97215e48e227819397a53b4846",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -5107,7 +5107,7 @@
     {
       "entry": "workos",
       "package": "@executor.sh/workos",
-      "sourceSha256": "a04577a55bb772853effd33382aa6527de765f48c96a34ca6057d5f5fbb216b5",
+      "sourceSha256": "5508f00cbbfd3b485d5ff50b69c5a74685baf8951590377c32245633d3d5ac41",
       "methods": {
         "oauth": {
           "kind": "automatic",
@@ -5291,7 +5291,7 @@
     {
       "entry": "zoho-people",
       "package": "@signalbox/zoho-people",
-      "sourceSha256": "d7f583408978e7c79021d9ac5bb8c9e101507a3a9b96c3b4773046ce2418c478",
+      "sourceSha256": "fc77753cac341611325890ee3d7aaf10ec9c3813fc3a5c8245d2ba3fc3f9cfa1",
       "methods": {
         "oauthEu": {
           "kind": "hosted",
@@ -5592,7 +5592,7 @@
           "message": "Shared sign-in for PlanetScale is not configured on this host. You can connect with your own OAuth app or a service token."
         }
       },
-      "sourceSha256": "9cfc1e24221b7273e6d303edefde7fab6aec6ac0c915ed9e66afe8768f75a04a"
+      "sourceSha256": "c953bc265421a2bf88a2b0da0a7c86c4af41ee34fec90a969c0ce390507f22ac"
     }
   ]
 }
