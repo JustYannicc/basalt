@@ -15,6 +15,7 @@ import { homeSchemaAdmission } from "./home-schema-admission.ts";
 import { prepareHomeSchema, HomeSchemaCommandError } from "./home-schema-operation.ts";
 import { readSqlSchemaJournal } from "./sql-schema-journal.ts";
 import { BarrierRefusal } from "./refusal.ts";
+import type { FleetImageResource } from "./runtime-image-phase.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -25,6 +26,7 @@ export const deploymentSqlSchemas = (options: {
   plan: Plan.Plan;
   state: StateService;
   changedContainers: readonly FrozenContainer[];
+  resource?: FleetImageResource;
   encryptionKey: string;
   retryIntentId?: string;
   record(receipt: SqlSchemaReceipt): Promise<void>;
@@ -37,6 +39,8 @@ export const deploymentSqlSchemas = (options: {
       options.plan,
       options.state,
       options.changedContainers,
+      undefined,
+      options.resource,
     );
     const prior = yield* readSqlSchemaJournal(options.stack, options.encryptionKey);
     return yield* Effect.tryPromise({

@@ -6,7 +6,7 @@ import {
 } from "../../src/pool/runtime-slots/configuration.ts";
 import { SelectionProof } from "../../src/pool/runtime-slots/admission-proof.ts";
 import { canonical, digest } from "./manifest.ts";
-import type { ProvisioningEnable } from "./provisioning-contract.ts";
+import { provisioningAuthority, type ProvisioningEnable } from "./provisioning-contract.ts";
 import {
   decodeProvisioningInput,
   provisioningRefusal,
@@ -100,8 +100,8 @@ export function assertRuntimeProofEnable(
     manifest.controller.accountId,
   );
   if (
-    !enable?.coordinatorGo ||
-    !enable.writerLease ||
+    !provisioningAuthority(enable, manifest.candidate) ||
+    !enable?.writerLease ||
     enable.manifest !== runtimeHandoffDigest(manifest) ||
     !Number.isSafeInteger(now) ||
     !Number.isSafeInteger(enable.expiresAt) ||

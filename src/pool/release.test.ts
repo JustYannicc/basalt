@@ -12,6 +12,7 @@ test("the release route reports the code revision and key version, never key mat
       POOL_APP_SIGNING_KEY: key,
     },
     "fixture-revision",
+    async () => true,
   );
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "no-store");
@@ -20,6 +21,7 @@ test("the release route reports the code revision and key version, never key mat
     revision: "fixture-revision",
     // The tools service records the same value as `tokenKeyVersion`.
     keyVersion: createHash("sha256").update(key).digest("hex").slice(0, 16),
+    imageReady: true,
   });
   assert.ok(!text.includes(key));
   const write = await poolRelease(

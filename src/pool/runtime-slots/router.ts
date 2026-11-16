@@ -1,8 +1,15 @@
+import { refuseRuntime, type RuntimeRouteDiagnostic } from "../runtime-route-diagnostic.ts";
 import { modelLifetimeFetch } from "../model-lifetime.worker.ts";
 import { RuntimeProtection } from "../runtime-protection.ts";
 import { PoolRuntimeUnhealthy } from "../lifecycle.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
-import { SlotRefused, executionKey, type SlotDriver, type SlotIdentity } from "./contract.ts";
+import {
+  SlotRefused,
+  executionKey,
+  sameIdentity,
+  type SlotDriver,
+  type SlotIdentity,
+} from "./contract.ts";
 import { healthy, type SlotClock } from "./proof.ts";
 import { RuntimeSlotStorage } from "./storage.ts";
 import { SlotStreams } from "./streams.ts";
@@ -31,17 +38,21 @@ export class RuntimeSlotRouter {
     port: 8317 | 8327,
     authorize: (signal: AbortSignal) => Promise<Request>,
     beforeDispatch: () => void = () => {},
+    candidate?: SlotIdentity,
   ): Promise<Response> {
     const pending = this.deps.streams.acquire(pool ?? "", request.signal);
+    let step: RuntimeRouteDiagnostic["runtimeStep"] = "slot_authorize";
     try {
       request = await authorize(pending.lease.signal);
+      step = "slot_selection";
       const identity = await this.deps.storage.transact(async ({ selection, policies }) => {
-        const active = selection?.active;
+        const active = candidate ? selection?.candidate : selection?.active;
         if (
           !active?.identity ||
           active.fenced ||
           active.retirement ||
-          active.target.controllerId !== this.deps.controllerId
+          active.target.controllerId !== this.deps.controllerId ||
+          (candidate && !sameIdentity(active.identity, candidate))
         )
           throw new SlotRefused("selection");
         const policy = policies.find((policy) => policy.pool === pool);
@@ -50,6 +61,7 @@ export class RuntimeSlotRouter {
         pending.bind(executionKey(active.identity));
         return active.identity;
       });
+      step = "slot_health";
       const status = healthy(
         await this.deps.driver.health(
           identity,
@@ -58,16 +70,19 @@ export class RuntimeSlotRouter {
         identity,
         this.deps.clock,
       );
+      step = "slot_protection";
       this.guard(identity).admit({
         boot_id: identity.bootId,
         started_at: "slot",
         policyLeaseUntil: status.policyLeaseUntil,
       });
+      step = "slot_pre_send";
       pending.lease.signal.throwIfAborted();
       const outbound = new Request(request, { signal: pending.lease.signal });
       const forward = (request: Request) => this.deps.driver.fetch(identity, request, port);
       const dispatch = (request: Request) => {
         beforeDispatch();
+        step = "slot_port";
         return forward(request);
       };
       const upstream =
@@ -87,7 +102,7 @@ export class RuntimeSlotRouter {
       return this.deps.wrap(tagged, pending.lease);
     } catch (error) {
       pending.lease.release();
-      throw error;
+      refuseRuntime(step, error);
     }
   }
 

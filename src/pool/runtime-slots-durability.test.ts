@@ -125,9 +125,9 @@ test("unknown retirement stays durable and never destroys the exact old boot twi
   f.memory.beforeCommit = () => {};
   const restarted = f.reconstruct();
   assert.equal((await restarted.retirement.inspect("retirement-unknown"))?.status, "started");
-  assert.equal((await restarted.retireDrained("retirement-unknown")).status, "started");
+  assert.equal((await restarted.retireDrained("retirement-unknown")).status, "retired");
   assert.equal(f.calls.retire.length, 1);
-  assert.equal((await restarted.inspect()).selection?.draining?.fenced, true);
+  assert.equal((await restarted.inspect()).selection?.draining, undefined);
 });
 
 test("a third runtime cannot be staged while the old slot is draining", async (context) => {
@@ -138,4 +138,25 @@ test("a third runtime cannot be staged while the old slot is draining", async (c
   await assert.rejects(f.slots.stage(slotIdentity("third")), /selection/);
   assert.equal(f.calls.start.length, 1);
   assert.equal((await f.slots.inspect()).selection?.draining?.identity?.bootId, f.old.bootId);
+});
+
+test("retirement needs positive endpoint drain before committing its irreversible intent", async (context) => {
+  const f = await slotFixture();
+  context.after(f.cleanup);
+  await f.slots.stage(f.candidate);
+  await f.slots.promote(await f.intent());
+  let active = 1;
+  let known = true;
+  f.driver.drain = async () => ({ active, known });
+  const reconstructed = f.reconstruct();
+  await assert.rejects(reconstructed.retireDrained("endpoint-drain"), /draining/);
+  assert.equal(await reconstructed.retirement.inspect("endpoint-drain"), undefined);
+  assert.equal(f.calls.retire.length, 0);
+  active = 0;
+  known = false;
+  await assert.rejects(reconstructed.retireDrained("endpoint-drain"), /draining/);
+  assert.equal(await reconstructed.retirement.inspect("endpoint-drain"), undefined);
+  known = true;
+  assert.equal((await reconstructed.retireDrained("endpoint-drain")).status, "retired");
+  assert.equal(f.calls.retire.length, 1);
 });

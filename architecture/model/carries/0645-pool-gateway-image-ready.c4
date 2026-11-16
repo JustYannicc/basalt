@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The synthetic stable pool gateway reports image readiness with the required release revision and key version. Real image, revision and key refusals remain authoritative; the listener proof pins exactly imageReady, keyVersion and revision, with true image readiness, while retaining its revision, key, no-secret assertions and deadline."
+    }
+  }
+}

@@ -4,9 +4,10 @@ model {
       #basalt
       description "A manually dispatched test owns one temporary stage, synthetic traffic, its time and cost limits, and verified cleanup. Provisioning keeps state on its own runner. Size changes and deletion use only issue-scoped resources; production state and runtime are outside this boundary. An independent load-evidence gate requires complete raw traffic, latency, persistence and cleanup records. Deploy and destroy never pass this gate; single-instance measurements never claim autoscaling."
       metadata {
+        constraint "A scratch readiness hold always reads the real container port first, retains each positive body, boot and launch witness, then suppresses that result while the exact runtime and attempt are held. Release admits only a fresh observation and never replays a stale policy lease. The hold is bounded within the unchanged startup budget and changes no Home database authority. Stage state proof reads the production root, witness and endpoint activity records. Doubled Home ports do not establish real fleet acceptance."
         code "scripts/scale-test|.github/workflows/scale-test.yml"
         libraries "asyncio|ssl|resource"
-        bindings "stageClient=basalt.scaleStage|globalThis=basalt.scaleStage|stub(this.env.Mock)=basalt.scaleStage.fixtures|super=basalt.scaleStage.controller|this.ctx.container!.getTcpPort=basalt.scaleStage.runtime|c.getTcpPort=basalt.scaleStage.fixtures|stub(env.PoolContainer)=basalt.scaleStage.controller|target=basalt.scaleStage.fixtures"
+        bindings "real=basalt.scaleStage.runtime|stageClient=basalt.scaleStage|globalThis=basalt.scaleStage|stub(this.env.Mock)=basalt.scaleStage.fixtures|super=basalt.scaleStage.controller|this.ctx.container!.getTcpPort=basalt.scaleStage.runtime|c.getTcpPort=basalt.scaleStage.fixtures|stub(env.PoolContainer)=basalt.scaleStage.controller|target=basalt.scaleStage.fixtures"
       }
     }
     scaleStage = adapter "Isolated scale stage" {
@@ -23,6 +24,7 @@ model {
     #external
     metadata { sdks "@basalt-scale/candidate" }
   }
+  basalt.scaleTest -[sync]-> basalt.modelGateway "observe production lifecycle and durable state through the scratch container adapter"
   basalt.scaleTest -[sync]-> basalt.scaleStage "call only the validated test gateway"
   basalt.scaleTest -[sync]-> basalt.scaleStage.controller "wrap the pinned controller with test control operations"
   basalt.scaleTest -[sync]-> basalt.scaleStage.runtime "sample processes, readiness and direct database usage"

@@ -1,6 +1,17 @@
-import { Schema } from "effect";
-import { ControllerCode, PromotionIntent, SlotIdentity, SlotTarget } from "./contract.ts";
+import { runtimeInput } from "./input.ts";
+import { Schema, Tuple } from "effect";
+import {
+  ControllerCode,
+  PromotionIntent,
+  SlotIdentity,
+  SlotTarget,
+  SlotRefused,
+} from "./contract.ts";
 import { deploymentReadinessPrefix } from "../deployment-readiness.ts";
+import { FleetConfiguration } from "../runtime-fleet/configuration.ts";
+import { ImageUpdateIntent } from "../runtime-fleet/image-update.ts";
+import { StartupAbortIntent } from "./startup-abort-contract.ts";
+import { ProviderObservationTarget } from "../runtime-provider/observation.ts";
 
 export const runtimeHandoffPath = "/runtime-handoff";
 export const runtimeHandoffCommandPrefix = deploymentReadinessPrefix;
@@ -10,14 +21,84 @@ const Milliseconds = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrE
 const fields = { controllerCode: ControllerCode, at: Milliseconds, expiresAt: Milliseconds };
 
 /** The existing bridge authenticates a closed command; the inner proof has its separate allocated kind. */
+export const RuntimeFleetOperationPayload = Schema.Union([
+  Schema.Struct({
+    controllerCode: ControllerCode,
+    action: Schema.Literal("fleet-configure"),
+    operationId: OperationId,
+    configuration: FleetConfiguration,
+  }),
+  Schema.Struct({
+    controllerCode: ControllerCode,
+    action: Schema.Literal("fleet-inspect"),
+    operationId: Schema.optional(OperationId),
+  }),
+  Schema.Struct({
+    controllerCode: ControllerCode,
+    action: Schema.Literal("fleet-disable"),
+    operationId: OperationId,
+    expectedDigest: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+  }),
+  Schema.Struct({
+    controllerCode: ControllerCode,
+    action: Schema.Literal("fleet-replace"),
+    operationId: OperationId,
+    identity: SlotIdentity,
+  }),
+]);
+export type RuntimeFleetOperationPayload = typeof RuntimeFleetOperationPayload.Type;
+export const RuntimeFleetCommand = RuntimeFleetOperationPayload.mapMembers(
+  Tuple.map(Schema.fieldsAssign({ at: Milliseconds, expiresAt: Milliseconds })),
+);
+export type RuntimeFleetCommand = typeof RuntimeFleetCommand.Type;
+
 export const RuntimeHandoffCommand = Schema.Union([
-  Schema.Struct({ ...fields, action: Schema.Literals(["inspect", "observe"]) }),
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literal("provider-observe"),
+    target: ProviderObservationTarget,
+  }),
+  ...RuntimeFleetCommand.members,
+  Schema.Struct({ ...fields, action: Schema.Literal("startup-abort"), intent: StartupAbortIntent }),
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literal("startup-abort-inspect"),
+    operationId: OperationId,
+  }),
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literal("candidate-target"),
+    operationId: OperationId,
+    applicationId: Schema.NonEmptyString,
+  }),
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literal("candidate-probe"),
+    operationId: OperationId,
+    pool: Schema.NonEmptyString,
+  }),
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literals(["candidate-probe-inspect", "candidate-probe-cancel"]),
+    operationId: OperationId,
+  }),
+  Schema.Struct({ ...fields, action: Schema.Literal("image-prepare"), update: ImageUpdateIntent }),
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literals(["image-inspect", "image-cancel"]),
+    operationId: OperationId,
+  }),
+  Schema.Struct({ ...fields, action: Schema.Literals(["inspect", "observe", "active-health"]) }),
   Schema.Struct({
     ...fields,
     action: Schema.Literals(["receipt", "retirement", "drain", "discard"]),
     operationId: OperationId,
   }),
-  Schema.Struct({ ...fields, action: Schema.Literal("witness"), target: SlotTarget }),
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literals(["witness", "stage-inspect"]),
+    target: SlotTarget,
+  }),
   Schema.Struct({ ...fields, action: Schema.Literals(["adopt", "stage"]), proof: Proof }),
   Schema.Struct({
     ...fields,
@@ -30,19 +111,30 @@ export const RuntimeHandoffCommand = Schema.Union([
     action: Schema.Literals(["fence", "unfence"]),
     identity: SlotIdentity,
   }),
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literal("peer-bootstrap"),
+    operationId: OperationId,
+    identity: SlotIdentity,
+    configurationFingerprint: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+    sourceSha: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+  }),
 ]);
 export type RuntimeHandoffCommand = typeof RuntimeHandoffCommand.Type;
 
 export function decodeRuntimeHandoffCommand(value: unknown, now = Date.now()) {
-  const command = Schema.decodeUnknownSync(RuntimeHandoffCommand, { onExcessProperty: "error" })(
-    value,
+  const command = runtimeInput(() =>
+    Schema.decodeUnknownSync(RuntimeHandoffCommand, { onExcessProperty: "error" })(value),
   );
   if (
     command.at > now + 5_000 ||
     command.expiresAt <= now ||
     command.expiresAt <= command.at ||
     command.expiresAt > command.at + 60_000
-  )
-    throw new Error("Runtime handoff command expired");
+  ) {
+    const refusal = new SlotRefused("identity");
+    refusal.message = "Runtime handoff command expired";
+    throw refusal;
+  }
   return command;
 }

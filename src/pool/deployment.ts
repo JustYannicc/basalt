@@ -7,6 +7,10 @@ import { Config, Effect, Option, Redacted } from "effect";
 import { fileURLToPath } from "node:url";
 import { verifyRuntimeDatabaseBudget } from "./database-budget.ts";
 import { poolDatabaseInfrastructure } from "./database.ts";
+import { euPlacement } from "./placement.ts";
+import { fleetInfrastructure } from "./fleet-deployment.ts";
+import { desiredPoolImageInput, RuntimeImageReleasePlan } from "./image-release-plan.ts";
+import { bindPoolObservationSecret } from "./fleet-observation.ts";
 import { poolWorkerDatabase } from "./worker-database.ts";
 import { telemetryBindings, workerObservability } from "../telemetry/deployment.ts";
 import { validSentryDsn } from "../telemetry/sentry-target.ts";
@@ -14,13 +18,6 @@ import { inventoryCron } from "./inventory.ts";
 import { availabilityCron, validProbeTarget } from "./availability-config.ts";
 import { ArtifactsCredentials } from "../../.upstream/apps/hosted/cloud/src/infrastructure/artifacts-credentials-worker.ts";
 import { Api } from "../../.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
-
-// Alchemy beta.80 forwards these Cloudflare API fields but omits them from its type.
-// https://developers.cloudflare.com/containers/concepts/placement/
-const euPlacement: Cloudflare.ContainerApplication.Constraints & {
-  jurisdiction: "eu";
-  regions: ("EEUR" | "WEUR")[];
-} = { jurisdiction: "eu", regions: ["EEUR", "WEUR"] };
 
 export const poolWorker = Effect.gen(function* () {
   const probeTarget = yield* Config.String("POOL_AVAILABILITY_TARGET").pipe(Config.withDefault(""));
@@ -50,6 +47,8 @@ export const poolWorker = Effect.gen(function* () {
     observability: { logs: { enabled: true } },
   });
   const application = yield* image.Application;
+  const fleet = yield* fleetInfrastructure;
+  const imageRelease = yield* RuntimeImageReleasePlan;
   // Set only while rotating: the Worker still accepts pool tokens signed with it.
   const previousSigningKey = yield* Config.option(Config.Redacted("POOL_APP_SIGNING_KEY_PREVIOUS"));
   const worker = yield* Cloudflare.Worker("PoolWorker", {
@@ -60,6 +59,18 @@ export const poolWorker = Effect.gen(function* () {
     observability: workerObservability,
     env: {
       PoolContainer: image,
+      ...fleet,
+      POOL_CONTAINER_APPLICATION_ID: application.applicationId,
+      POOL_PRESERVE_LEGACY_IMAGE: "true",
+      POOL_DESIRED_IMAGE_INPUT: yield* desiredPoolImageInput.pipe(Effect.orDie),
+      ...(imageRelease?.candidateConfiguration
+        ? {
+            POOL_CANDIDATE_APPLICATION_ID: imageRelease.candidateConfiguration.applicationId,
+            POOL_CANDIDATE_RUNTIME_CONFIGURATION: Redacted.make(
+              JSON.stringify(imageRelease.candidateConfiguration.configuration),
+            ),
+          }
+        : {}),
       BulkUsageImport: Cloudflare.DurableObject("ArtifactsTokenCoordinator", {
         className: "ArtifactsTokenCoordinator",
         scriptName: (yield* ArtifactsCredentials).workerName,
@@ -90,6 +101,7 @@ export const poolWorker = Effect.gen(function* () {
       ...(recoveryTarget ? { POOL_AUTOMATIC_RECOVERY_TARGET: recoveryTarget } : {}),
     },
   });
+  if (fleet || imageRelease) yield* bindPoolObservationSecret(worker);
   yield* verifyRuntimeDatabaseBudget("PoolBackendBudget", {
     adminUrl: database.adminUrl,
     runtimeLogin: database.runtimeRole,

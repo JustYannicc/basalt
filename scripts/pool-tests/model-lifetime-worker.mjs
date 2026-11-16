@@ -78,7 +78,28 @@ export class Proxy extends DurableObject {
     const health = async (identity) => ({ identity, policyLeaseUntil: performance.now() + 1500 });
     this.driver = {
       health,
-      fetch: async (_identity, request) => env.NODE.getByName("node").fetch(request),
+      fetch: async (identity, request) => {
+        const headers = new Headers(request.headers);
+        headers.set("X-Fixture-Lifetime-Boot", identity.bootId);
+        return env.NODE.getByName("node").fetch(new Request(request, { headers }));
+      },
+      drain: async (identity) => {
+        const state = await (
+          await env.NODE.getByName("node").fetch(
+            "https://node/node-state?boot=" + encodeURIComponent(identity.bootId),
+          )
+        ).json();
+        return { active: state.lifetimes, known: true };
+      },
+      retirement: async (identity) => {
+        const retired = this.retired.includes(identity.bootId);
+        return {
+          identity,
+          retired,
+          running: !retired,
+          ...(!retired ? { retireNotStarted: true } : {}),
+        };
+      },
       retire: async (_target, identity) => {
         this.retired.push(identity.bootId);
       },
