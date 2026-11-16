@@ -22,7 +22,7 @@ function fixture() {
         acceptedVersionId: `${role}-version`,
         percentage: 100,
       })),
-      poolAdoption: { candidate, poolWorkerRevision: hash, imageInput: hash },
+      poolAdoption: { candidate, poolWorkerRevision: hash, imageInput: "526fa60bed0df442" },
       apps: { count: 4, fingerprint: hash },
     },
     hosted: { prepared: true, active: false, fingerprint: hash },
@@ -57,6 +57,51 @@ function fixture() {
   };
   return { snapshot, ports, counts: () => ({ sends, writes }) };
 }
+
+test("activation plans accept the real 16-character image input without writes", async () => {
+  const f = fixture();
+  f.snapshot.readers.poolAdoption.imageInput = "526fa60bed0df442";
+  const plan = await runMigrationActivation({ candidate, mode: "plan", ports: f.ports });
+  assert.equal(plan.intent.before.readers.poolAdoption.imageInput, "526fa60bed0df442");
+  assert.deepEqual(f.counts(), { sends: 0, writes: 0 });
+});
+
+test("activation plans refuse malformed image input identities without writes", async () => {
+  for (const imageInput of [
+    "b".repeat(64),
+    "526FA60BED0DF442",
+    "526fa60bed0df44g",
+    "526fa60bed0df44",
+    "526fa60bed0df4420",
+    "526fa60bed0df442\n",
+    "",
+  ]) {
+    const f = fixture();
+    f.snapshot.readers.poolAdoption.imageInput = imageInput;
+    await assert.rejects(
+      runMigrationActivation({ candidate, mode: "plan", ports: f.ports }),
+      /migration-activation-reader-adoption-missing/,
+    );
+    assert.deepEqual(f.counts(), { sends: 0, writes: 0 });
+  }
+});
+
+test("activation keeps Worker revisions and receipt digests at 64 lowercase hex characters", () => {
+  for (const invalid of ["526fa60bed0df442", "B".repeat(64), ""]) {
+    const worker = fixture();
+    worker.snapshot.readers.poolAdoption.poolWorkerRevision = invalid;
+    assert.throws(
+      () => migrationActivationIntent(candidate, worker.snapshot),
+      /migration-activation-reader-adoption-missing/,
+    );
+    const receipt = fixture();
+    receipt.snapshot.readers.release.receiptDigest = invalid;
+    assert.throws(
+      () => migrationActivationIntent(candidate, receipt.snapshot),
+      /migration-activation-release-evidence-invalid/,
+    );
+  }
+});
 
 test("activation plans and inspects are read-only; one reviewed digest activates both targets once", async () => {
   const f = fixture();
