@@ -22,9 +22,7 @@
     }
   },
   "runs": {
-    "poolAccountViewLatency": [
-      "declared:cloud"
-    ]
+    "poolAccountViewLatency": ["declared:cloud"]
   },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/app-ui.ts",
@@ -42,7 +40,8 @@
     "apps/pool/provider-account-view.ts",
     ".upstream/e2e/support/sql-wire-requests.ts",
     ".upstream/e2e/support/sql-wire-cohorts.ts",
-    ".upstream/e2e/support/pool-account-view-query.ts"
+    ".upstream/e2e/support/pool-account-view-query.ts",
+    ".upstream/e2e/support/sql-wire-noise.ts"
   ],
   "fixture": "pool-setup"
 }
