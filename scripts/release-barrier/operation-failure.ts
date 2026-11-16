@@ -233,11 +233,8 @@ export class ReleaseOperationFailure extends BarrierRefusal {
       ? undefined
       : {
           ...safeProviderFailure(error),
-          // Native programming errors have no provider body; retain their useful text after redaction.
-          ...((error instanceof TypeError ||
-            error instanceof RangeError ||
-            error instanceof SyntaxError) &&
-          typeof message === "string"
+          // Fetch TypeErrors explain transport failures. Parser messages can contain response bodies.
+          ...(error instanceof TypeError && typeof message === "string"
             ? {
                 message: redactFailureOutput(message, process.env)
                   .replace(/https?:\/\/[^\s"'<>]+/gu, "[url]")

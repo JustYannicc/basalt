@@ -221,3 +221,19 @@ test("a native TypeError retains its redacted message in the failure artifact an
     /private-fixture|archive\.example\.test|signed\?token/,
   );
 });
+
+test("a malformed provider response keeps its parser classification without exposing body excerpts", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "release-parser-error-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const error = await new Response("customer42 confidential provider record")
+    .json()
+    .catch((error: unknown) => error);
+  assert.ok(error instanceof SyntaxError);
+  const failure = await releaseEvidence(root, candidate).failure(error);
+  assert.equal(failure.provider?.type, "SyntaxError");
+  assert.equal(failure.provider?.message, undefined);
+  const output: string[] = [];
+  await reportRefusal(failure, undefined, (message) => output.push(message));
+  const retained = await readFile(join(root, "failure.json"), "utf8");
+  assert.doesNotMatch(retained + output.join("\n"), /customer42|confidential|provider record/);
+});
