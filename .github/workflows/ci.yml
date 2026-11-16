@@ -2208,6 +2208,7 @@ jobs:
   fast:
     needs: select
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       # Bytecode inside the pool context changes its reviewed publication identity.
       PYTHONDONTWRITEBYTECODE: "1"
@@ -2284,12 +2285,14 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node scripts/batch-preflight.ts
       - name: Run focused owned unit tests
+        timeout-minutes: 15
         if: needs.select.outputs.full_suite != 'true'
         env:
           BASE_SHA: ${{ needs.select.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node scripts/ci/unit-tests.ts
       - name: Run the complete owned unit suite
+        timeout-minutes: 15
         if: needs.select.outputs.full_suite == 'true'
         run: npm run check
       - name: Check app source snapshots against verified pins and hashes
