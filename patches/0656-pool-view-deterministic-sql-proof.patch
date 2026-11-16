@@ -19,12 +19,13 @@ diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
  }
  
  /** Local SQL response latency and wire intervals, excluding the connection handshake. */
-@@ -15,12 +22,25 @@
+@@ -15,12 +22,36 @@
      let generation = 0;
      let measuring = false;
      let wires: Wire[] = [];
 +    let connectionId = 0;
 +    let cycleId = 0;
++    let failure: string | null = null;
 +    const cohorts = sqlWireCohorts();
      const configure = createHttpServer((request, response) => {
        const chunks: Buffer[] = [];
@@ -33,8 +34,18 @@ diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
          try {
            const value: unknown = JSON.parse(Buffer.concat(chunks).toString());
 +          if (request.url?.startsWith("/cohorts/")) {
++            if (failure !== null) {
++              response.writeHead(500, { "content-type": "application/json" });
++              response.end(JSON.stringify({ failure }));
++              return;
++            }
 +            cohorts.control(request.url, value).then(
 +              (result) => {
++                if (failure !== null) {
++                  response.writeHead(500, { "content-type": "application/json" });
++                  response.end(JSON.stringify({ failure }));
++                  return;
++                }
 +                response.writeHead(200, { "content-type": "application/json" });
 +                response.end(JSON.stringify(result));
 +              },
@@ -45,15 +56,23 @@ diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
            if (
              typeof value !== "object" ||
              value === null ||
-@@ -38,6 +58,7 @@
+@@ -34,12 +65,14 @@
+             throw new Error("Invalid wire control");
+           delay = value.delay;
+           if (value.measuring) {
++            failure = null;
+             generation++;
              wires = [];
            }
            measuring = value.measuring;
 +          if (!measuring) cohorts.reset();
            response.writeHead(200, { "content-type": "application/json" });
-           response.end(JSON.stringify({ wires }));
+-          response.end(JSON.stringify({ wires }));
++          response.end(JSON.stringify({ wires, failure }));
          } catch {
-@@ -68,10 +89,6 @@
+           response.writeHead(400);
+           response.end();
+@@ -68,10 +101,6 @@
      const control = configure.address();
      if (control === null || typeof control === "string")
        return yield* Effect.die("Missing wire control");
@@ -64,7 +83,7 @@ diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
      yield* Effect.addFinalizer(() => fs.remove(controlFile, { force: true }).pipe(Effect.orDie));
      let target: number | undefined;
      const sockets = new Set<Socket>();
-@@ -83,17 +100,47 @@
+@@ -83,17 +112,47 @@
        outgoing.setNoDelay(true);
        sockets.add(incoming);
        sockets.add(outgoing);
@@ -115,7 +134,7 @@ diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
        };
        incoming.once("close", close);
        outgoing.once("close", close);
-@@ -101,17 +148,7 @@
+@@ -101,18 +160,14 @@
        outgoing.on("error", close);
        incoming.on("data", (chunk) => {
          const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
@@ -130,11 +149,19 @@ diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
 -          else if (frame[0] === 83 || frame[0] === 81)
 -            requests.push({ start: Date.now(), ...(measuring ? { generation } : {}) });
 -        }
-+        protocol.push(bytes);
-         outgoing.write(bytes);
+-        outgoing.write(bytes);
++        try {
++          protocol.push(bytes);
++          outgoing.write(bytes);
++        } catch (error) {
++          failure = error instanceof Error ? error.message : "SQL protocol observer failed";
++          close();
++          cohorts.reset();
++        }
        });
        outgoing.on("data", (chunk) => {
-@@ -133,20 +170,12 @@
+         const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+@@ -133,20 +188,12 @@
              initialized = true;
              continue;
            }
@@ -142,8 +169,7 @@ diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
 +          const request = protocol.requests.shift();
            if (request?.generation === generation && measuring)
 -            wires.push({ start: request.start, end });
-+            wires.push({ ...request, connection, end });
-         }
+-        }
 -        const wait = end - now;
 -        if (wait <= 0) {
 -          incoming.write(bytes);
@@ -154,12 +180,14 @@ diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
 -          if (!incoming.destroyed) incoming.write(bytes);
 -        }, wait);
 -        timers.add(timer);
++            wires.push({ ...request, connection, end });
++        }
 +        waiting.push({ bytes, end });
 +        flush();
        });
      });
      yield* Effect.acquireRelease(
-@@ -173,6 +202,10 @@
+@@ -173,6 +220,10 @@
      const address = server.address();
      if (address === null || typeof address === "string")
        return yield* Effect.die("Missing SQL proxy address");
@@ -199,7 +227,7 @@ diff --git a/e2e/support/sql-wire-proof.ts b/e2e/support/sql-wire-proof.ts
  
  /** Observe the actual local Postgres protocol, including statements the multiplexed client pipelines. */
  export const sqlWireProof = Effect.gen(function* () {
-@@ -14,7 +30,9 @@
+@@ -14,32 +30,77 @@
      .readFileString(`${target.directory}/sql-wire.json`)
      .pipe(
        Effect.flatMap(
@@ -209,21 +237,37 @@ diff --git a/e2e/support/sql-wire-proof.ts b/e2e/support/sql-wire-proof.ts
 +        ),
        ),
      );
-   const configure = (delay: number, measuring: boolean) =>
-@@ -24,22 +42,54 @@
+-  const configure = (delay: number, measuring: boolean) =>
++  const configure = (delay: number, measuring: boolean, cleanup = false) =>
+     http.post(control.url, { body: HttpBody.jsonUnsafe({ delay, measuring }) }).pipe(
+       Effect.flatMap((response) =>
+         response.status === 200 ? response.json : Effect.die("SQL wire control refused"),
        ),
-       Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ wires: Schema.Array(Wire) }))),
+-      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ wires: Schema.Array(Wire) }))),
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(
++          Schema.Struct({ wires: Schema.Array(Wire), failure: Schema.NullOr(Schema.String) }),
++        ),
++      ),
++      Effect.flatMap((result) =>
++        result.failure === null || cleanup ? Effect.succeed(result) : Effect.die(result.failure),
++      ),
      );
+-  yield* Effect.addFinalizer(() => configure(0, false).pipe(Effect.orDie));
 +  const cohort = (operation: string, input: unknown) =>
 +    http
 +      .post(`${control.url}/cohorts/${operation}`, { body: HttpBody.jsonUnsafe(input) })
 +      .pipe(
 +        Effect.flatMap((response) =>
-+          response.status === 200 ? response.json : Effect.die("SQL cohort control refused"),
++          response.json.pipe(
++            Effect.flatMap((body) =>
++              response.status === 200 ? Effect.succeed(body) : Effect.die(body),
++            ),
++          ),
 +        ),
 +      );
 +  let global: (typeof Wire.Type)[] = [];
-   yield* Effect.addFinalizer(() => configure(0, false).pipe(Effect.orDie));
++  yield* Effect.addFinalizer(() => configure(0, false, true).pipe(Effect.orDie));
    return {
 +    port: control.port,
      begin: (delay = 0) => configure(delay, true).pipe(Effect.asVoid),
@@ -479,7 +523,7 @@ new file mode 100644
 +          resolve(receipt(group));
 +        };
 +        const changed = () => {
-+          if (receipt(group).missing.length === 0) finish();
++          if (group.released || receipt(group).missing.length === 0) finish();
 +        };
 +        // Deadlock watchdog only. Successful proofs depend on arrivals, never elapsed time.
 +        const timer = setTimeout(finish, 15_000);
