@@ -17,6 +17,7 @@ interface PoolRuntimeEnvironment {
   POOL_APP_SIGNING_KEY: string;
   POOL_APP_SIGNING_KEY_PREVIOUS?: string;
   POOL_CLAUDE_QUOTA_DIAGNOSTIC?: string;
+  POOL_HOME_PEER_ORDINAL?: string;
 }
 
 export async function createPoolLifecycle(
@@ -27,6 +28,7 @@ export async function createPoolLifecycle(
     binding: Omit<LaunchTarget, "releaseEpoch">;
     beforeStart?: (record: LaunchRecord, options: StartupOptions) => Promise<void>;
   },
+  schedule?: (at: number) => Promise<void>,
 ) {
   const container = ctx.container;
   if (!container) throw new Error("Pool container binding is missing");
@@ -42,6 +44,7 @@ export async function createPoolLifecycle(
       env.POOL_APP_SIGNING_KEY_PREVIOUS ?? null,
       poolDatabase.owner,
       ...(env.POOL_CLAUDE_QUOTA_DIAGNOSTIC === "true" ? ["claude-shape-diagnostic"] : []),
+      ...(env.POOL_HOME_PEER_ORDINAL !== undefined ? [env.POOL_HOME_PEER_ORDINAL] : []),
     ]),
   );
   const revision = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", input)))
@@ -49,6 +52,7 @@ export async function createPoolLifecycle(
     .join("");
   return new PoolLifecycle(
     {
+      ...(schedule ? { schedule } : {}),
       running: () => container.running,
       start: async (record) => {
         if (

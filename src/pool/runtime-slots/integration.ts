@@ -9,7 +9,7 @@ import { RuntimeSlotRouter } from "./router.ts";
 import { SlotStreams } from "./streams.ts";
 import { slotClock } from "./proof.ts";
 import { BoundSlotDriver, runtimeRequest, type RuntimeStub } from "./transport.ts";
-import { RuntimeEndpoint, type EndpointEnvironment } from "./endpoint.ts";
+import { RuntimeEndpoint, type EndpointEnvironment, type EndpointOptions } from "./endpoint.ts";
 import {
   SlotRefused,
   type ControllerCode,
@@ -20,9 +20,12 @@ import {
 import type { PoolStatus } from "../lifecycle.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import type { ControllerState } from "./runtime-state.ts";
+import { LegacyActivity } from "./legacy-activity.ts";
+import type { PeerBootstrapInput } from "./peer-bootstrap.ts";
 
 export interface HandoffEnvironment extends EndpointEnvironment {}
 interface Options {
+  endpoint?: EndpointOptions;
   remote?: (target: SlotTarget) => RuntimeStub;
   wrap(response: Response, lease: NativeStreamLease): Response;
 }
@@ -40,6 +43,8 @@ export class RuntimeHandoff {
   private ctx: ControllerState;
   private options: Options;
   private env: HandoffEnvironment;
+  private legacyActivity: LegacyActivity;
+  private legacyEndpoint: RuntimeEndpoint;
   constructor(
     ctx: ControllerState,
     env: HandoffEnvironment,
@@ -51,7 +56,9 @@ export class RuntimeHandoff {
     this.env = env;
     this.controllerCode = code;
     this.storage = new RuntimeSlotStorage(ctx.storage);
-    const local = new RuntimeEndpoint(ctx, env, "legacy", code);
+    this.legacyActivity = new LegacyActivity(ctx.storage);
+    const local = new RuntimeEndpoint(ctx, env, "legacy", code, options.wrap, options.endpoint);
+    this.legacyEndpoint = local;
     this.driver = new BoundSlotDriver((target): RuntimeStub => {
       if (target.controllerId !== ctx.id.toString()) throw new SlotRefused("identity");
       if (
@@ -97,6 +104,12 @@ export class RuntimeHandoff {
     const active = selection.active;
     if (!active.identity || active.fenced || active.retirement) throw new SlotRefused("selection");
     return active.identity;
+  }
+  legacyActive() {
+    return this.legacyActivity.active();
+  }
+  peerHealth(identity: SlotIdentity) {
+    return this.legacyEndpoint.health(identity, AbortSignal.timeout(2_000));
   }
   async status(signal = AbortSignal.timeout(2_000)) {
     const identity = await this.selected();
@@ -175,6 +188,38 @@ export class RuntimeHandoff {
       active: proof.selection.active,
       digest: proof.selection.policyDigest,
     });
+  }
+  async startInitial(envelope: string) {
+    const proof = await this.authority.read(envelope);
+    if (proof.kind !== "initial-start" || !this.options.remote || this.ctx.container)
+      throw new SlotRefused("identity");
+    await this.authority.selection(proof);
+    await this.driver.admit(proof.target, envelope);
+    return this.slots.firstStart.start(proof.target, proof.selection.policyDigest);
+  }
+  async activateInitial(envelope: string) {
+    const proof = await this.authority.read(envelope);
+    if (proof.kind !== "initial-attested") throw new SlotRefused("identity");
+    await this.authority.selection(proof);
+    await this.driver.attest(proof.target, envelope);
+    return this.slots.firstStart.activate(
+      { ...proof.target, bootId: proof.bootId },
+      proof.selection.policyDigest,
+      () => this.authority.fresh(proof),
+    );
+  }
+  async bootstrapPeer(input: PeerBootstrapInput, signal: AbortSignal) {
+    const { selection } = await this.storage.inspect();
+    if (
+      !selection ||
+      ![selection.active, selection.draining].some(
+        (slot) =>
+          slot?.identity?.bootId === input.identity.bootId &&
+          slot.identity.instanceId === this.ctx.id.toString(),
+      )
+    )
+      throw new SlotRefused("selection");
+    return this.legacyEndpoint.bootstrapPeer(input, signal);
   }
   async promote(intent: PromotionIntent, envelope: string) {
     const proof = await this.authority.promotion(intent, envelope);
@@ -266,11 +311,23 @@ export class RuntimeHandoff {
     try {
       return await this.choose(
         async (prepared) => {
-          const response = await legacy(
-            new Request(request, { signal: pending.lease.signal }),
-            prepared,
-          );
-          return this.options.wrap(response, pending.lease);
+          const done = await this.legacyActivity.acquire();
+          try {
+            const response = await legacy(
+              new Request(request, { signal: pending.lease.signal }),
+              prepared,
+            );
+            return this.options.wrap(response, {
+              ...pending.lease,
+              release: () => {
+                this.ctx.waitUntil(done());
+                return pending.lease.release();
+              },
+            });
+          } catch (error) {
+            await done();
+            throw error;
+          }
         },
         async () => {
           pending.lease.release();
