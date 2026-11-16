@@ -1,9 +1,11 @@
+import { runtimeFailureHeaders } from "./runtime-route-diagnostic.ts";
+
 const message = "The model runtime restarted. Please retry this request.";
 function anthropic(request: Request) {
   return /\/(?:v1\/)?messages$/.test(new URL(request.url).pathname);
 }
 
-export function nativeRuntimeUnavailable(request: Request) {
+export function nativeRuntimeUnavailable(request: Request, error?: unknown) {
   const claude = anthropic(request);
   return Response.json(
     claude
@@ -11,7 +13,11 @@ export function nativeRuntimeUnavailable(request: Request) {
       : { error: { type: "server_error", code: "server_error", message } },
     {
       status: claude ? 529 : 503,
-      headers: { "Retry-After": "1", "Cache-Control": "no-store" },
+      headers: {
+        "Retry-After": "1",
+        "Cache-Control": "no-store",
+        ...(error === undefined ? {} : runtimeFailureHeaders(error, "fleet_forward")),
+      },
     },
   );
 }
@@ -26,7 +32,7 @@ export function nativeRuntimeStream(response: Response, request: Request) {
     return response;
   const path = new URL(request.url).pathname;
   const claude = anthropic(request),
-    responses = /\/responses$/.test(path);
+    responses = path.endsWith("/responses");
   if (!claude && !responses) return response;
   const reader = response.body.getReader();
   const decoder = new TextDecoder(),

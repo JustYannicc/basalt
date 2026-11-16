@@ -247,7 +247,7 @@ export async function forwardPoolRequest(
     headers.delete("X-Basalt-Terminal-Protocol");
     headers.delete(dispatchTimingHeader);
     stripRuntimeFailureHeaders(headers);
-    if (modelCall) headers.set("X-Request-Id", requestId);
+    if (modelCall || runtimeRefusal) headers.set("X-Request-Id", requestId);
     const observedBoot = upstream.headers.get("X-Signalbox-Pool-Boot") ?? boot;
     if (observedBoot) headers.set("X-Signalbox-Pool-Boot", observedBoot);
     const forwarded = new Response(response.body, {

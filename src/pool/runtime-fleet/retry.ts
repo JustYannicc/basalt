@@ -42,6 +42,7 @@ export async function forwardRecoverably(
   let retained = new Request(request, { signal });
   let recovered = false;
   let retainedOwned = true;
+  let failure: unknown;
   try {
     for (let index = 0; index < 6; index++) {
       signal.throwIfAborted();
@@ -67,16 +68,17 @@ export async function forwardRecoverably(
         if (backup) void backup.body?.cancel().catch(() => {});
         return nativeRuntimeStream(response, request);
       } catch (error) {
+        failure = error;
         if (!dispatched) void current.body?.cancel().catch(() => {});
         if (signal.aborted || !recoverable(error)) {
           if (backup) void backup.body?.cancel().catch(() => {});
           throw error;
         }
-        if (dispatched && !safe) return nativeRuntimeUnavailable(request);
+        if (dispatched && !safe) return nativeRuntimeUnavailable(request, error);
         retained = backup ?? new Request(request, { signal });
         retainedOwned = true;
         if (error instanceof FleetRefused && error.reason === "capacity") {
-          if (recovered || !recover) return nativeRuntimeUnavailable(request);
+          if (recovered || !recover) return nativeRuntimeUnavailable(request, error);
           recovered = true;
           await awaitProbe(recover, signal);
         }
@@ -86,10 +88,10 @@ export async function forwardRecoverably(
         }
       }
     }
-    return nativeRuntimeUnavailable(request);
+    return nativeRuntimeUnavailable(request, failure);
   } catch (error) {
     if (deadline.signal.aborted && !request.signal.aborted)
-      return nativeRuntimeUnavailable(request);
+      return nativeRuntimeUnavailable(request, error);
     throw error;
   } finally {
     clearTimeout(timer);
