@@ -241,7 +241,7 @@ export class ReleaseOperationFailure extends BarrierRefusal {
             ? {
                 message: redactFailureOutput(message, process.env)
                   .replace(/https?:\/\/[^\s"'<>]+/gu, "[url]")
-                  .replace(/[\u0000-\u001f\u007f]/gu, " ")
+                  .replace(/\p{Cc}/gu, " ")
                   .slice(0, 1024),
               }
             : {}),
