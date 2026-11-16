@@ -25,9 +25,13 @@ export function selectUnitTests(tests: readonly string[], inputs: readonly strin
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const root = process.cwd();
   const command = JSON.parse(readFileSync("package.json", "utf8")).scripts.check as string;
-  if (!command.startsWith("node --test ") || /[;&|]/.test(command))
+  if (!command.startsWith("node --test ") || /[;&|'"`$<>\\]/.test(command))
     throw new Error("Owned unit suite must be a node --test file list");
-  const patterns = command.slice("node --test ".length).split(/\s+/);
+  const args = command.slice("node ".length).split(/\s+/);
+  const options = args.filter((arg) => arg.startsWith("--"));
+  const patterns = args.filter((arg) => !arg.startsWith("--"));
+  if (options.some((option) => !/^--[a-z][a-z-]*(?:=\S+)?$/.test(option)))
+    throw new Error("Owned unit options must use --name=value syntax");
   const tests = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
     .split("\0")
     .filter((file) => existsSync(file) && patterns.some((pattern) => matchesGlob(file, pattern)));
@@ -43,5 +47,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
   if (!selected.length) throw new Error("Fast lane selected no unit tests");
   console.log("Selected unit tests:\n" + selected.join("\n"));
-  execFileSync(process.execPath, ["--test", ...selected], { stdio: "inherit" });
+  execFileSync(process.execPath, [...options, ...selected], { stdio: "inherit" });
 }
