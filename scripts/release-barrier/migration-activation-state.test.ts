@@ -31,7 +31,7 @@ function receipt(): MigrationActivationReceipt {
         acceptedVersionId: role,
         percentage: 100,
       })),
-      poolAdoption: { candidate, poolWorkerRevision: key, imageInput: key },
+      poolAdoption: { candidate, poolWorkerRevision: key, imageInput: "526fa60bed0df442" },
       apps: { count: 0, fingerprint: key },
     },
     hosted: { prepared: true, active: false, fingerprint: key },
