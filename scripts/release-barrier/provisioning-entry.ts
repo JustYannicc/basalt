@@ -9,7 +9,7 @@ import { State } from "alchemy/State/State";
 import { observationStoreStack } from "./observation-store-stack.ts";
 import { JournalRestorePlanRequest } from "./journal-restore-contract.ts";
 import { planJournalRestore } from "./journal-restore.ts";
-import { loadAdoptionProof } from "./journal-restore-proof.ts";
+import { assertAdoptionRunPin, loadAdoptionProof } from "./journal-restore-proof.ts";
 import { ObservationStorePlanRequest } from "./observation-store-contract.ts";
 import { assertObservationStorePlanGo, planObservationStore } from "./observation-store-plan.ts";
 import { provisioningStack } from "./provisioning-stack.ts";
@@ -116,14 +116,16 @@ if (import.meta.main && process.argv[2] === "digest") {
           const restore =
             planRequest?.kind === "observation-store-restore"
               ? planRequest
-              : mode === "apply" && packet?.operation.kind === "observation-store-restore"
+              : packet?.operation.kind === "observation-store-restore"
                 ? packet.operation.manifest
                 : undefined;
-          const adoptionProof = restore
-            ? yield* Effect.promise(() =>
-                loadAdoptionProof(restore.source, restore.adoption, process.env),
-              )
-            : undefined;
+          if (restore) assertAdoptionRunPin(restore.source, process.env);
+          const adoptionProof =
+            restore && mode !== "inspect"
+              ? yield* Effect.promise(() =>
+                  loadAdoptionProof(restore.source, restore.adoption, process.env),
+                )
+              : undefined;
           envelope?.beginAuth();
           return yield* evalStack(
             planRequest ||

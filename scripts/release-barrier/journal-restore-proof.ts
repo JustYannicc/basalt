@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Schema } from "effect";
-import { canonical, digest } from "./manifest.ts";
+import { BarrierRefusal, canonical, digest } from "./manifest.ts";
 import { observationStoreDigest } from "./observation-store-contract.ts";
 import {
   AdoptionSource,
@@ -29,6 +29,15 @@ const Receipt = Schema.Struct({
   receipt: StoreAdoptionReceipt,
   networkEnvelope: Envelope,
 });
+
+export function assertAdoptionRunPin(source: typeof AdoptionSource.Type, env: NodeJS.ProcessEnv) {
+  if (
+    !Number.isSafeInteger(source.runId) ||
+    source.runId <= 0 ||
+    env.POOL_OBSERVATION_STORE_RESTORE_RUN_ID !== String(source.runId)
+  )
+    throw new BarrierRefusal("journal-restore-run-not-approved");
+}
 
 export function verifyAdoptionReceipt(bytes: Uint8Array, proof: Omit<AdoptionProof, "receipt">) {
   sameProvisioningValue("restore.source.receipt", proof.source.receiptDigest, digest(bytes));
@@ -61,6 +70,7 @@ export async function loadAdoptionProof(
   env: NodeJS.ProcessEnv,
   fetcher = globalThis.fetch,
 ) {
+  assertAdoptionRunPin(source, env);
   if (!/^[\w.-]+\/[\w.-]+$/u.test(env.GITHUB_REPOSITORY ?? "") || !env.GITHUB_TOKEN)
     throw new Error("Restore requires the workflow's repository artifact reader");
   const base = `https://api.github.com/repos/${env.GITHUB_REPOSITORY}`;

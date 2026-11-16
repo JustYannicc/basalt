@@ -91,7 +91,11 @@ test("a restore artifact proves the exact successful workflow, candidate, archiv
     const proof = await loadAdoptionProof(
       source,
       adoption,
-      { GITHUB_REPOSITORY: "synthetic/basalt", GITHUB_TOKEN: "synthetic-only" },
+      {
+        GITHUB_REPOSITORY: "synthetic/basalt",
+        GITHUB_TOKEN: "synthetic-only",
+        POOL_OBSERVATION_STORE_RESTORE_RUN_ID: "123",
+      },
       fetcher,
     );
     assert.deepEqual(proof.receipt, settled);
@@ -101,7 +105,11 @@ test("a restore artifact proves the exact successful workflow, candidate, archiv
       loadAdoptionProof(
         { ...source, runId: 999 },
         adoption,
-        { GITHUB_REPOSITORY: "synthetic/basalt", GITHUB_TOKEN: "synthetic-only" },
+        {
+          GITHUB_REPOSITORY: "synthetic/basalt",
+          GITHUB_TOKEN: "synthetic-only",
+          POOL_OBSERVATION_STORE_RESTORE_RUN_ID: "123",
+        },
         fetcher,
       ),
     );
@@ -109,7 +117,11 @@ test("a restore artifact proves the exact successful workflow, candidate, archiv
       loadAdoptionProof(
         { ...source, archiveDigest: "0".repeat(64) },
         adoption,
-        { GITHUB_REPOSITORY: "synthetic/basalt", GITHUB_TOKEN: "synthetic-only" },
+        {
+          GITHUB_REPOSITORY: "synthetic/basalt",
+          GITHUB_TOKEN: "synthetic-only",
+          POOL_OBSERVATION_STORE_RESTORE_RUN_ID: "123",
+        },
         fetcher,
       ),
     );
@@ -139,4 +151,28 @@ test("a mismatched source receipt, operation or network envelope refuses before 
   assert.throws(() =>
     verifyAdoptionReceipt(bad, { ...proof, source: { ...baseSource, receiptDigest: digest(bad) } }),
   );
+});
+
+test("an absent or mismatched repository run pin refuses before any artifact access", async () => {
+  let requests = 0;
+  const fetcher: typeof fetch = async () => {
+    requests++;
+    throw new Error("Artifact access escaped the source-run pin");
+  };
+  for (const pin of [undefined, "999", "", "0123"]) {
+    await assert.rejects(
+      loadAdoptionProof(
+        baseSource,
+        adoption,
+        {
+          GITHUB_REPOSITORY: "synthetic/basalt",
+          GITHUB_TOKEN: "synthetic-only",
+          POOL_OBSERVATION_STORE_RESTORE_RUN_ID: pin,
+        },
+        fetcher,
+      ),
+      /journal-restore-run-not-approved/u,
+    );
+  }
+  assert.equal(requests, 0);
 });
