@@ -1,0 +1,89 @@
+{
+  "scenarios": {
+    "poolBulkUploadDurableAck": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "bulk uploads acknowledge a thirty-second R2 and DO stage only after durable save",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted owner sessions and organization access locks."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses runner-owned retained pool records and a signed loopback import backend."
+        }
+      }
+    },
+    "poolBulkUploadUnknownAck": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "bulk uploads refuse within sixty seconds and reconcile an unknown stage through status",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted owner sessions and organization access locks."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses runner-owned retained pool records and a signed loopback import backend."
+        }
+      }
+    },
+    "poolBulkStatusAckBudget": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "title": "bulk status retains its ten-second interactive ACK budget",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Uses hosted owner sessions and organization access locks."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Uses runner-owned retained pool records and a signed loopback import backend."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolBulkUploadDurableAck": [
+      "host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api"
+    ],
+    "poolBulkUploadUnknownAck": [
+      "host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api"
+    ],
+    "poolBulkStatusAckBudget": [
+      "host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/cloud/src/main.ts",
+    ".upstream/apps/hosted/self-host/src/implementation/routes.ts",
+    ".upstream/apps/hosted/server/src/contracts/pool-usage-bulk-import.ts",
+    ".upstream/apps/hosted/server/src/contracts/pool-usage-import.ts",
+    ".upstream/apps/hosted/server/src/contracts/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-backend.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage-bulk-import.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage-import.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/index.ts",
+    "scripts/import-cpamp-bulk.ts",
+    "scripts/usage-import-bulk.ts",
+    "src/pool/deployment.ts",
+    "src/pool/model-history/**",
+    "src/pool/worker.ts",
+    "scripts/pool-tests/bulk-ack-peer.ts",
+    "scripts/pool-tests/bulk-ack-runtime.fixture.mjs",
+    "src/pool/usage-storage.ts"
+  ]
+}

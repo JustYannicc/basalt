@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-bulk-upload-ack-budget",
+  "file": "0655-bulk-upload-ack-budget.patch",
+  "content_sha256": "1f5354d917f138dd2036b5e278bf4cd6dc74315d1e0effadb2d9dcfe8cec707a",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

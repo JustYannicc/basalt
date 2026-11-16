@@ -1,0 +1,239 @@
+diff --git a/e2e/support/pool-bulk-ack-peer.ts b/e2e/support/pool-bulk-ack-peer.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/pool-bulk-ack-peer.ts
+@@ -0,0 +1,43 @@
++import { Effect, Option, Schema, Stream } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
++import { driver } from "./platform.ts";
++
++const Ready = Schema.Struct({
++  origin: Schema.String.check(Schema.isPattern(/^http:\/\/127\.0\.0\.1:\d+$/u)),
++});
++
++/** The external pool runs its real coordinator with SQLite DO storage and an R2 bucket. */
++export const poolBulkAckPeer = Effect.gen(function* () {
++  const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++  const child = yield* processes.spawn(
++    ChildProcess.make(
++      "node",
++      ["--experimental-transform-types", "../scripts/pool-tests/bulk-ack-peer.ts"],
++      {
++        stdout: "pipe",
++        stderr: "inherit",
++        forceKillAfter: "5 seconds",
++      },
++    ),
++  );
++  const first = yield* child.stdout.pipe(Stream.decodeText(), Stream.splitLines, Stream.runHead);
++  if (Option.isNone(first)) return yield* Effect.die("Pool staging peer exited before listening");
++  const { origin } = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Ready))(first.value);
++  const call = (path: string, input?: unknown) =>
++    driver("isolated pool staging peer", async (signal) => {
++      const response = await fetch(origin + path, {
++        method: input === undefined ? "GET" : "POST",
++        signal,
++        ...(input === undefined
++          ? {}
++          : { body: JSON.stringify(input), headers: { "content-type": "application/json" } }),
++      });
++      if (response.status !== 200) throw new Error("Pool staging peer control failed");
++      return (await response.json()) as unknown;
++    });
++  return {
++    origin,
++    call,
++    wait: (phase: string) => call(`/__fixture/wait?phase=${encodeURIComponent(phase)}`),
++  };
++});
+diff --git a/e2e/tests/pool-bulk-upload-ack.spec.ts b/e2e/tests/pool-bulk-upload-ack.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/pool-bulk-upload-ack.spec.ts
+@@ -0,0 +1,186 @@
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, Fiber, Option, Redacted, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { App } from "../support/contracts.ts";
++import { appsManifest } from "../support/apps-release.ts";
++import { withHostedHttpCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { legacyStorage } from "../support/legacy-storage.ts";
++import { RuntimeLive, Target } from "../support/platform.ts";
++import { poolBulkAckPeer } from "../support/pool-bulk-ack-peer.ts";
++import { rawRequest, targetHosts } from "../support/role-hosts.ts";
++import { serverControl } from "../support/server-control.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Status = Schema.Struct({ uploadedChunks: Schema.Number, committedChunks: Schema.Number });
++const Prepared = Schema.Struct({ job: Schema.String, data: Schema.String, status: Status });
++const Events = Schema.Array(Schema.Struct({ phase: Schema.String, at: Schema.Number }));
++const source = `import {defineApp,query,object,router} from "apps";
++export default defineApp({},{tools:router({identity:query({input:object({})},async()=>"allowed")})});`;
++
++const setup = (delays: { putDelayMs?: number; saveDelayMs?: number; statusDelayMs?: number }) =>
++  Effect.gen(function* () {
++    const api = yield* Api,
++      actors = yield* Actors,
++      target = yield* Target;
++    const viewer = yield* body(
++      Schema.Struct({ userId: Schema.String }),
++      yield* api.request(actors.owner, "GET", "/api/viewer"),
++    );
++    const prefix = `/api/organizations/${actors.organization.id}`;
++    const app = yield* body(
++      App,
++      yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
++        name: "Durable upload ACK",
++        files: [{ path: "index.ts", content: source }, appsManifest],
++      }),
++    );
++    const peer = yield* poolBulkAckPeer;
++    yield* peer.call("/__fixture/configure", delays);
++    const prepared = yield* peer
++      .call("/__fixture/prepare", {
++        pool: app.id,
++        organization: actors.organization.id,
++        owner: viewer.userId,
++      })
++      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Prepared)));
++    yield* serverControl("stop");
++    yield* legacyStorage([
++      {
++        sql: `update organization set metadata=jsonb_set(coalesce(metadata::jsonb,'{}'::jsonb),'{basaltPools}',$1::jsonb)::text where id=$2`,
++        params: [
++          JSON.stringify({
++            [viewer.userId]: {
++              app: app.id,
++              version: "retained-version",
++              authorization: "executor-app-v1",
++              membership: "executor-links-v1",
++            },
++          }),
++          actors.organization.id,
++        ],
++      },
++    ]);
++    yield* serverControl("environment", 200, {
++      POOL_APP_SIGNING_KEY: "ab".repeat(32),
++      BASALT_POOL_ORIGIN: peer.origin,
++    });
++    yield* serverControl("start");
++    const path = `${prefix}/apps/${app.id}/pool-usage/import/bulk`;
++    const origin = targetHosts(target).browser;
++    const cookie = Redacted.value(yield* actors.owner.cookies)
++      .map(({ name, value }) => `${name}=${value}`)
++      .join("; ");
++    // The ordinary test session's 60s timeout would race the host's own 60s refusal.
++    const request = (input: unknown) =>
++      Effect.gen(function* () {
++        const startedAt = yield* Clock.currentTimeMillis;
++        const response = yield* rawRequest(origin + path, {
++          method: "POST",
++          headers: { cookie, origin, "content-type": "application/json" },
++          body: JSON.stringify(input),
++        }).pipe(Effect.timeout("75 seconds"));
++        return {
++          status: response.status,
++          body: yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
++            response.text,
++          ),
++          startedAt,
++          completedAt: yield* Clock.currentTimeMillis,
++        };
++      });
++    return {
++      peer,
++      request,
++      upload: { operation: "upload", job: prepared.job, chunk: 0, data: prepared.data },
++      status: { operation: "status", job: prepared.job },
++    };
++  });
++
++layer(RuntimeLive, { excludeTestServices: true })("Bulk upload ACK budgets", (it) => {
++  it.effect(scenarios.poolBulkUploadDurableAck.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* setup({ putDelayMs: 15_000, saveDelayMs: 15_000 });
++        const evidence = yield* Evidence;
++        const pending = yield* fixture.request(fixture.upload).pipe(Effect.forkChild);
++        yield* fixture.peer.wait("put-entered");
++        expect(Option.isNone(yield* Fiber.poll(pending))).toBe(true);
++        yield* fixture.peer.wait("save-entered");
++        const early = yield* Fiber.poll(pending);
++        if (Option.isSome(early)) {
++          const result = yield* Fiber.join(pending);
++          yield* evidence.json("early-upload-result.json", result);
++          expect(result.status, "Upload returned before the durable save").toBe(200);
++        }
++        expect(Option.isNone(early), "Upload ACK must still wait for the DO state commit").toBe(
++          true,
++        );
++        const result = yield* Fiber.join(pending);
++        const events = yield* fixture.peer
++          .call("/__fixture/events")
++          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Events)));
++        yield* evidence.json("durable-upload-ack.json", { result, events });
++        expect(result.status).toBe(200);
++        expect(result.body).toMatchObject({ uploadedChunks: 1, committedChunks: 0 });
++        const put = events.find((event) => event.phase === "put-committed")!;
++        const save = events.find((event) => event.phase === "save-committed")!;
++        expect(
++          save.at - events.find((event) => event.phase === "put-entered")!.at,
++        ).toBeGreaterThanOrEqual(30_000);
++        expect(put.at).toBeLessThanOrEqual(save.at);
++        expect(result.completedAt).toBeGreaterThanOrEqual(save.at);
++        const status = yield* fixture.request(fixture.status);
++        expect(status.status).toBe(200);
++        expect(status.body).toMatchObject({ uploadedChunks: 1, committedChunks: 0 });
++      }),
++    ),
++  );
++
++  it.effect(scenarios.poolBulkUploadUnknownAck.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* setup({ putDelayMs: 65_000 });
++        const evidence = yield* Evidence;
++        const pending = yield* fixture.request(fixture.upload).pipe(Effect.forkChild);
++        yield* fixture.peer.wait("put-entered");
++        const result = yield* Fiber.join(pending);
++        yield* evidence.json("bounded-upload-refusal.json", result);
++        expect(result.status).toBe(503);
++        expect(result.body).toMatchObject({ _tag: "PoolUsageUnavailable" });
++        expect(result.completedAt - result.startedAt).toBeGreaterThanOrEqual(60_000);
++        expect(result.completedAt - result.startedAt).toBeLessThan(65_000);
++        const before = yield* fixture.peer
++          .call("/__fixture/events")
++          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Events)));
++        expect(before.some((event) => event.phase === "save-committed")).toBe(false);
++        yield* fixture.peer.wait("save-committed");
++        const status = yield* fixture.request(fixture.status);
++        const events = yield* fixture.peer.call("/__fixture/events");
++        yield* evidence.json("unknown-upload-reconciled.json", { status, events });
++        expect(status.status).toBe(200);
++        expect(status.body).toMatchObject({ uploadedChunks: 1, committedChunks: 0 });
++      }),
++    ),
++  );
++
++  it.effect(scenarios.poolBulkStatusAckBudget.title, (context) =>
++    withHostedHttpCase(
++      context,
++      Effect.gen(function* () {
++        const fixture = yield* setup({ statusDelayMs: 15_000 });
++        const pending = yield* fixture.request(fixture.status).pipe(Effect.forkChild);
++        yield* fixture.peer.wait("request-status");
++        const result = yield* Fiber.join(pending);
++        yield* (yield* Evidence).json("status-ack-budget.json", result);
++        expect(result.status).toBe(503);
++        expect(result.body).toMatchObject({ _tag: "PoolUsageUnavailable" });
++        expect(result.completedAt - result.startedAt).toBeGreaterThanOrEqual(10_000);
++        expect(result.completedAt - result.startedAt).toBeLessThan(15_000);
++      }),
++    ),
++  );
++});

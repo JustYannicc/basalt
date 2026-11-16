@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Only bulk usage import uploads receive a sixty-second host ACK deadline. Interactive commands and bulk status retain ten seconds. The upload allowance is policy headroom, not a bound on the natural R2 or storage worst case. Success still requires the receiver to finish R2 staging and its durable job-state save. A host timeout remains PoolUsageUnavailable with an unknown outcome; callers reconcile status before retrying. The external staging proof uses the real coordinator, R2 bucket and SQLite DO transaction, holding each write before commit. No DO deadline, storage format or import authority changes."
+    }
+  }
+}
