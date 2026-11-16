@@ -187,10 +187,7 @@ test(
     for (const [id, body] of pending) {
       body.enqueue(new TextEncoder().encode("terminal"));
       body.close();
-      assert.equal(
-        await (await requests.get(id)!).text(),
-        `${id}:terminal`,
-      );
+      assert.equal(await (await requests.get(id)!).text(), `${id}:terminal`);
     }
     pending.clear();
     await f.settle();
