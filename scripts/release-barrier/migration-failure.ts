@@ -46,8 +46,50 @@ export type MigrationDiagnostic = {
   migration?: string;
   version?: string;
   sqlState?: string;
+  causeTags?: string[];
   message: string;
 };
+
+const safeCauseTags = new Set([
+  "StorageMigrationFailed",
+  "HostedMigrationFailed",
+  "StorageError",
+  "MigrationError",
+  "SqlError",
+  "ConnectionError",
+  "AuthenticationError",
+  "AuthorizationError",
+  "SqlSyntaxError",
+  "UniqueViolation",
+  "ConstraintError",
+  "DeadlockError",
+  "SerializationError",
+  "LockTimeoutError",
+  "StatementTimeoutError",
+  "UnknownError",
+  "DatabaseError",
+  "Error",
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "ReferenceError",
+  "AggregateError",
+  "TimeoutError",
+]);
+
+/** Producer classes are useful without retaining any driver's message, identifier or stack. */
+function producerCauseTags(description: string) {
+  const parts = description
+    .replace(
+      /^(?:auth|product) migration failed(?: at executor version \d{1,3}\.\d{1,3}\.\d{1,3})?: /u,
+      "",
+    )
+    .replace(/ \(SQLSTATE [0-9A-Z]{5}\)$/u, "")
+    .split(" > ")
+    .slice(0, 8);
+  if (!parts.some((part) => safeCauseTags.has(part))) return undefined;
+  return parts.map((part) => (safeCauseTags.has(part) ? part : "UnknownError"));
+}
 
 const sqlStatePattern =
   /(?:\bSQLSTATE |\()(?:([0-5][0-9A-Z][0-9A-Z]{3}|F0[0-9A-Z]{3}|HV[0-9A-Z]{3}|P0[0-9A-Z]{3}|XX[0-9A-Z]{3}))\b/;
@@ -77,8 +119,14 @@ function diagnostic(stderr: string): MigrationDiagnostic {
     const description = failed[3]!;
     const state = sqlStatePattern.exec(description)?.[1];
     const version = versionPattern.exec(description)?.[1];
+    const causeTags = producerCauseTags(description);
     if (state) current.sqlState = state;
     if (version) current.version = version;
+    if (
+      causeTags &&
+      !(current.causeTags && causeTags.length === 1 && causeTags[0] === "HostedMigrationFailed")
+    )
+      current.causeTags = causeTags;
   }
   const category =
     current.sqlState === "55P03"
@@ -87,11 +135,15 @@ function diagnostic(stderr: string): MigrationDiagnostic {
         ? "statement timeout or cancel"
         : current.sqlState
           ? "database error"
-          : "details unavailable";
+          : current.causeTags
+            ? current.causeTags.join(" > ")
+            : "details unavailable";
+  const tags =
+    current.sqlState && current.causeTags ? `; cause=${current.causeTags.join(" > ")}` : "";
   return {
     ...current,
     message:
-      `Migration failed: ${category}${current.sqlState ? `; SQLSTATE ${current.sqlState}` : ""}`.slice(
+      `Migration failed: ${category}${current.sqlState ? `; SQLSTATE ${current.sqlState}` : ""}${tags}`.slice(
         0,
         240,
       ),
