@@ -16,6 +16,11 @@ for (const { version, baselineInputHash, sourceInputHash } of [
     sourceInputHash: "3c69ffd86382c294",
   },
   {
+    version: "8.0.74 with scale-out after the first fleet bootstrap",
+    baselineInputHash: "b669a1335e786091",
+    sourceInputHash: "5120df81c4faab06",
+  },
+  {
     version: "8.0.74 with scale-out",
     baselineInputHash: "59a7663b4fbc8e4a",
     sourceInputHash: "5120df81c4faab06",
@@ -64,6 +69,12 @@ for (const { version, baselineInputHash, sourceInputHash } of [
       { sourceInputHash: baselineInputHash },
     ])
       assert.equal(admit({ ...identity, ...change }, info, before), false);
+    if (baselineInputHash === "b669a1335e786091")
+      assert.equal(
+        admit({ ...identity, baselineInputHash: "526fa60bed0df442" }, info, before),
+        false,
+        "Controller/bind retain the root image; its source hash is not a fleet baseline",
+      );
     for (const applied_version of [null, 14, 17])
       assert.equal(admit(identity, info, { ...before, applied_version }), false);
     assert.equal(admit(identity, { ...info, target_version: 17 }, before), false);
