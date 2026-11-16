@@ -12,6 +12,7 @@ import { changeFeedRecoveryProof } from "./recipes/change-feed-recovery-proof.mj
 import { startScopedChangeFixture } from "./recipes/scoped-change-fixture.mjs";
 import { accountTrafficProof } from "./recipes/account-traffic-proof.mjs";
 import { accountTrafficPrivacyProof } from "./recipes/account-traffic-privacy-proof.mjs";
+import { holdInitialAccountsProjection } from "./recipes/initial-accounts-projection.mjs";
 import { cloudLocks } from "../.upstream/e2e/support/cloud-locks.ts";
 import { Target } from "../.upstream/e2e/support/platform.ts";
 import { roleHost } from "../.upstream/e2e/support/role-hosts.ts";
@@ -225,8 +226,16 @@ const program = Effect.gen(function* () {
           : route.abort("blockedbyclient");
       }),
     );
-    yield* browserWork(() => splitRoutedReads(context, browserOrigin));
+    const initialProjection =
+      width === 1280
+        ? yield* browserWork(() =>
+            holdInitialAccountsProjection(context, () => splitRoutedReads(context, browserOrigin)),
+          )
+        : undefined;
+    if (initialProjection === undefined)
+      yield* browserWork(() => splitRoutedReads(context, browserOrigin));
     const page = yield* browserWork(() => context.newPage());
+    if (initialProjection) yield* Effect.addFinalizer(() => Effect.sync(initialProjection.release));
     let reads = 0,
       routingReads = 0;
     diagnostics.accountProgress = { width, phase: "initial", responses: [], heads: [] };
@@ -270,6 +279,7 @@ const program = Effect.gen(function* () {
     });
     const currentReads = [];
     const lastSuccessResponses = [];
+    let initialAccountsResponse;
     page.on("response", (response) => {
       const pathname = new URL(response.url()).pathname;
       if (pathname.endsWith("/pool-usage/last-success") && response.status() === 200)
@@ -287,6 +297,8 @@ const program = Effect.gen(function* () {
           .catch(() => undefined);
       }
       if (resources(new URL(response.url()))) {
+        if (response.request().method() === "GET" && response.status() === 200)
+          initialAccountsResponse ??= response;
         const entry = { status: response.status(), labels: [] };
         progress.responses.push(entry);
         void response
@@ -357,6 +369,22 @@ const program = Effect.gen(function* () {
               response.status() === 200,
           ),
     );
+    const joinInitialProjection = async () => {
+      const response =
+        initialAccountsResponse ??
+        (await page.waitForResponse(
+          (response) =>
+            response.request().method() === "GET" &&
+            resources(new URL(response.url())) &&
+            response.status() === 200,
+        ));
+      await response.finished();
+    };
+    yield* browserWork(() =>
+      initialProjection
+        ? initialProjection.verifyJoin(page, joinInitialProjection, row(label), updating())
+        : joinInitialProjection(),
+    );
     yield* browserWork(async () => {
       await resourceIdle();
       await updating().waitFor({ state: "hidden" });
@@ -371,6 +399,7 @@ const program = Effect.gen(function* () {
       reads - idle,
       0,
     );
+    initialProjection?.assertJoined();
 
     let enter, release;
     const started = new Promise((resolve) => {
