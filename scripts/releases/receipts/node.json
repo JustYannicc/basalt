@@ -1,46 +1,8 @@
 {
   "schemaVersion": 2,
   "source": "node",
-  "releaseKey": "node-v8.0.74",
+  "releaseKey": "node-v8.0.75",
   "basePins": {
-    "tools": {
-      "repository": "https://github.com/UsefulSoftwareCo/executor.git",
-      "commit": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
-    },
-    "home": {
-      "repository": "router-for-me/CLIProxyAPIHome",
-      "tag": "v1.1.6",
-      "commit": "eca75d683c89c1e66a07865d9de530c6cae3ef9f",
-      "binary": "cli-proxy-api",
-      "assets": {
-        "amd64": {
-          "name": "CLIProxyAPIHome_1.1.6_linux_amd64_no-plugin.tar.gz",
-          "sha256": "e437899f97c0c64dbda1d7e3483dbbd2375d2cb3c849b52309006c14da1074f4"
-        },
-        "arm64": {
-          "name": "CLIProxyAPIHome_1.1.6_linux_aarch64_no-plugin.tar.gz",
-          "sha256": "a8ca8efbe41b8de27fc933499312fd2f58c78fc3b888e4a73e5d838d851c12b5"
-        }
-      }
-    },
-    "node": {
-      "repository": "router-for-me/CLIProxyAPI",
-      "tag": "v8.0.73",
-      "commit": "43806c865da7d47f9252316e95e315ad9f885b84",
-      "binary": "cli-proxy-api",
-      "assets": {
-        "amd64": {
-          "name": "CLIProxyAPI_8.0.73_linux_amd64_no-plugin.tar.gz",
-          "sha256": "b4bd14bc297e61c5e61173cb51991692b66db46aaf6205e7a3c79f2c47ad327c"
-        },
-        "arm64": {
-          "name": "CLIProxyAPI_8.0.73_linux_aarch64_no-plugin.tar.gz",
-          "sha256": "da8a8f7a1cf3a099a3eedbe3bf6565110955cec639ae77401d0f303caf92d761"
-        }
-      }
-    }
-  },
-  "candidatePins": {
     "tools": {
       "repository": "https://github.com/UsefulSoftwareCo/executor.git",
       "commit": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
@@ -74,6 +36,44 @@
         "arm64": {
           "name": "CLIProxyAPI_8.0.74_linux_aarch64_no-plugin.tar.gz",
           "sha256": "ede8ae1cb57593e863214d317927d1d7694e85673bd441cb06f978d2ffed01be"
+        }
+      }
+    }
+  },
+  "candidatePins": {
+    "tools": {
+      "repository": "https://github.com/UsefulSoftwareCo/executor.git",
+      "commit": "f69c667936e4c02c75f9d7cc79fb750c230839b9"
+    },
+    "home": {
+      "repository": "router-for-me/CLIProxyAPIHome",
+      "tag": "v1.1.6",
+      "commit": "eca75d683c89c1e66a07865d9de530c6cae3ef9f",
+      "binary": "cli-proxy-api",
+      "assets": {
+        "amd64": {
+          "name": "CLIProxyAPIHome_1.1.6_linux_amd64_no-plugin.tar.gz",
+          "sha256": "e437899f97c0c64dbda1d7e3483dbbd2375d2cb3c849b52309006c14da1074f4"
+        },
+        "arm64": {
+          "name": "CLIProxyAPIHome_1.1.6_linux_aarch64_no-plugin.tar.gz",
+          "sha256": "a8ca8efbe41b8de27fc933499312fd2f58c78fc3b888e4a73e5d838d851c12b5"
+        }
+      }
+    },
+    "node": {
+      "repository": "router-for-me/CLIProxyAPI",
+      "tag": "v8.0.75",
+      "commit": "c19787b25262b5e6e46a9e8da62f4333e7e478bc",
+      "binary": "cli-proxy-api",
+      "assets": {
+        "amd64": {
+          "name": "CLIProxyAPI_8.0.75_linux_amd64_no-plugin.tar.gz",
+          "sha256": "6f816be5be3a45891bbb68954b7514087e575cb4c5f4e553fcb1dd4c27c25250"
+        },
+        "arm64": {
+          "name": "CLIProxyAPI_8.0.75_linux_aarch64_no-plugin.tar.gz",
+          "sha256": "32c96ce6eb0ed7facb43c5b22e164aa6ad45edcce6ceb710f0db0d7314171ec2"
         }
       }
     }
