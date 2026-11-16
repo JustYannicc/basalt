@@ -6,6 +6,11 @@ import type { HomeMigrationIdentity, HomeSchemaResult } from "./home-schema-oper
 
 for (const { version, baselineInputHash, sourceInputHash } of [
   {
+    version: "8.0.75 after the scale-out release",
+    baselineInputHash: "5120df81c4faab06",
+    sourceInputHash: "1e94cc79d7fa50a4",
+  },
+  {
     version: "8.0.73",
     baselineInputHash: "36a7ce7f37bea4a5",
     sourceInputHash: "526fa60bed0df442",
@@ -64,6 +69,9 @@ for (const { version, baselineInputHash, sourceInputHash } of [
       { sourceInputHash: baselineInputHash },
     ])
       assert.equal(admit({ ...identity, ...change }, info, before), false);
+    if (sourceInputHash === "1e94cc79d7fa50a4")
+      for (const baselineInputHash of ["526fa60bed0df442", "b669a1335e786091"])
+        assert.equal(admit({ ...identity, baselineInputHash }, info, before), false);
     for (const applied_version of [null, 14, 17])
       assert.equal(admit(identity, info, { ...before, applied_version }), false);
     assert.equal(admit(identity, { ...info, target_version: 17 }, before), false);
