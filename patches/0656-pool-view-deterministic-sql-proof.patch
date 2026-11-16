@@ -473,7 +473,7 @@ new file mode 100644
 +  }[] = [];
 +  const listeners = new Set<() => void>();
 +  const wake = () => {
-+    for (const listener of [...listeners]) listener();
++    for (const listener of listeners) listener();
 +  };
 +  const receipt = (group: (typeof groups)[number]) => ({
 +    id: group.id,
