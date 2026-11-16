@@ -2416,6 +2416,7 @@ jobs:
       - name: Restore the pinned pool compatibility archives
         uses: ./.github/actions/pool-release-assets
       - name: Build the pinned pool image
+        shell: bash
         run: |
           build_pool_image() {
             local attempt status log
