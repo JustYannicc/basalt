@@ -60,7 +60,7 @@ const activate = async (page) => {
   await page.getByRole("heading", { name: "Activated", exact: true }).waitFor();
 };
 
-test("activation observed before the frame update survives an unreadable streamed body", async (t) => {
+test("one pre-check read and one later read cannot replace the two-read fallback", async (t) => {
   const f = await fixture(t);
   const observed = observeAppActivation(
     f.page,
@@ -69,7 +69,7 @@ test("activation observed before the frame update survives an unreadable streame
   );
   await activate(f.page);
   assert.equal(f.reads(), 1);
-  await observed.waitForVersion("activated-version");
+  await assert.rejects(observed.waitForVersion("activated-version"), { name: "TimeoutError" });
   assert.equal(f.reads(), 2);
 });
 
