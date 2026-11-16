@@ -159,7 +159,7 @@ diff --git a/e2e/support/account-polling-settlement.ts b/e2e/support/account-pol
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/account-polling-settlement.ts
-@@ -0,0 +1,216 @@
+@@ -0,0 +1,219 @@
 +import { Deferred, Effect, Schema } from "effect";
 +import type { Route } from "playwright";
 +import { Browser } from "./browser.ts";
@@ -351,14 +351,17 @@ new file mode 100644
 +              ? page.waitForEvent("requestfailed", (request) =>
 +                  observationPath.test(new URL(request.url()).pathname),
 +                )
-+              : page.waitForResponse((response) =>
-+                  observationPath.test(new URL(response.url()).pathname),
-+                );
++              : page
++                  .waitForResponse((response) =>
++                    observationPath.test(new URL(response.url()).pathname),
++                  )
++                  .then((response) => response.finished());
 +          const armed = observing.then(() => {
 +            // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- Arm browser observers before navigation or virtual time can deliver the attempt
 +            Effect.runSync(Deferred.succeed(attempt.armed, undefined));
 +          });
 +          const transported = loaded.then(() => {
++            // The body finishes before the state waiter attaches; a trailing fence can still block acceptance.
 +            // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- Expose transport independently of accepted UI state
 +            Effect.runSync(Deferred.succeed(attempt.transport, undefined));
 +          });
