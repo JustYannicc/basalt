@@ -174,7 +174,7 @@ test("Node transport preserves the activation report, saved plan and final finge
           poolAdoption: {
             candidate,
             poolWorkerRevision: "b".repeat(64),
-            imageInput: "b".repeat(64),
+            imageInput: "526fa60bed0df442",
           },
           apps: { count: 4, fingerprint: "b".repeat(64) },
         },
