@@ -20,6 +20,7 @@ export const failureCodec = Schema.Struct({
           migration: Schema.optional(Schema.String),
           version: Schema.optional(Schema.String),
           sqlState: Schema.optional(Schema.String),
+          causeTags: Schema.optional(Schema.Array(Schema.String)),
           message: Schema.String,
         }),
       ),
