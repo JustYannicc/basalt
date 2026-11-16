@@ -22,7 +22,7 @@ const load = (name) =>
       import.meta.url,
     )
   );
-const [{ Store, StoreProviderLive }, { State }, { InMemoryService }, { CloudflareEnvironment }] =
+const [{ StoreProviderLive }, { State }, { InMemoryService }, { CloudflareEnvironment }] =
   await Promise.all([
     load("Cloudflare/SecretsStore/SecretsStore"),
     load("State/State"),
