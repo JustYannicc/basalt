@@ -1,3 +1,28 @@
+diff --git a/apps/hosted/server/src/implementation/pool-backend.ts b/apps/hosted/server/src/implementation/pool-backend.ts
+--- a/apps/hosted/server/src/implementation/pool-backend.ts
++++ b/apps/hosted/server/src/implementation/pool-backend.ts
+@@ -12,6 +12,8 @@
+ } from "./resource-policy.ts";
+ import { hostAssertionTtlMs, signEnvelope } from "./pool-token.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
++
++const isBulkUpload = Schema.is(Schema.Struct({ operation: Schema.Literal("upload") }));
+ 
+ const Pool = Schema.Struct({
+   owner: Principal.fields.userId,
+@@ -80,7 +82,11 @@
+     });
+     return { status: response.status, body: yield* response.json };
+   }).pipe(
+-    Effect.timeout("10 seconds"),
++    // R2 staging and the durable state save can outlast an interactive request. This cap
++    // bounds the ACK wait, not receiver work; a timeout still has an unknown outcome.
++    Effect.timeout(
++      action === "importUsageBulk" && isBulkUpload(payload.input) ? "60 seconds" : "10 seconds",
++    ),
+     Effect.provide(FetchHttpClient.layer),
+     Effect.catch(() => new PoolUsageUnavailable()),
+   );
 diff --git a/e2e/support/pool-bulk-ack-peer.ts b/e2e/support/pool-bulk-ack-peer.ts
 new file mode 100644
 --- /dev/null
